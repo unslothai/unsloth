@@ -86,8 +86,7 @@ def managed_account() -> bool:
 
 
 def account_scope() -> str | None:
-    """None keeps legacy installation-wide scope; any managed-account record scopes owner work,
-    since a deactivated account's downloads keep running."""
+    """None keeps legacy install-wide scope; any managed-account record scopes owner work too."""
     if not is_owner_context():
         return current_account_id()
     return current_account_id() if policy.installation_has_managed_accounts() else None
@@ -101,8 +100,7 @@ _generation_lock = threading.Lock()
 
 @contextmanager
 def media_generation(modality: str):
-    """Recorded even on one-account installs: an account created mid-generation must still see
-    this work as foreign. Same-account entries never read as foreign."""
+    """Recorded even on one-account installs: an account created mid-generation sees it foreign."""
     account_id = current_account_id()
     with _generation_lock:
         counts = _generation_accounts.setdefault(modality, {})
@@ -216,8 +214,7 @@ media_load_lock = threading.Lock()
 
 
 def admit_media_load(modality: str, start, *references: str):
-    """Start a load under the retirement scan's lock: a tombstoned account starts none, and one
-    started here is what the scan finds."""
+    """Start a load under the retirement scan's lock, so a tombstoned account starts none."""
     with media_load_lock:
         if managed_account():
             from core.training.account_jobs import account_is_retired
@@ -380,8 +377,7 @@ def gpu_busy_error(path: str | None = None) -> HTTPException:
 
 
 def require_idle_other_accounts(path: str | None = None) -> None:
-    # Managed accounts, not login mode: deactivating the last drops the active count while
-    # its generation still holds the GPU.
+    # Managed accounts, not login mode: deactivating the last drops the count mid-generation.
     if policy.installation_has_managed_accounts():
         from core.inference.gpu_arbiter import require_no_foreign_generations
         require_no_foreign_generations(current_account_id(), path = path)
@@ -496,8 +492,7 @@ def _public_verdict(repo_id: str, repo_type: str) -> bool | None:
 
 
 def repo_is_public(repo_id: str, repo_type: str = "model") -> bool:
-    """Only an anonymous Hub answer proves a shared-cache repo public; a definitive
-    private/gated/missing answer withdraws the on-disk proof."""
+    """Only an anonymous Hub answer proves a shared-cache repo public."""
     key = (repo_type, repo_id.lower())
     name = f"{repo_type}:{repo_id.lower()}"
     with _public_lock:
@@ -625,8 +620,7 @@ def model_grants() -> set[str]:
 
 
 def record_model_grant(repo_id: str, repo_type: str = "model") -> None:
-    """Record a grant in the initiating account's studio.db, transactionally so concurrent
-    completions both survive."""
+    """Record a grant in the initiating account's studio.db; transactional for concurrent writes."""
     if not managed_account() or not repo_id:
         return
     from core.training.account_jobs import account_is_retired
@@ -697,8 +691,7 @@ def model_visible(
     grants: set[str] | None = None,
     repo_type: str = "model",
 ) -> bool:
-    """Grants cover repo ids and cache snapshot/file spellings alike; other local paths stay
-    private to the workspace."""
+    """Grants cover repo ids and cache snapshot/file spellings; other local paths stay private."""
     if not managed_account():
         return True
     if not isinstance(reference, str) or not reference:

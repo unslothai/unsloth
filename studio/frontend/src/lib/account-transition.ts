@@ -58,8 +58,7 @@ export function browserAccountMarker(account: BrowserAccount | string): string {
     : username;
 }
 
-/** The owner keeps the historical name; a managed account gets its own store, so a switch
- * never has to delete saved data. */
+/** The owner keeps the historical name; a managed account gets its own store. */
 export function accountDatabaseName(
   name: string,
   storage: Pick<Storage, "getItem"> | null = typeof window === "undefined"
@@ -91,8 +90,7 @@ function parseAccountMarker(marker: string): MarkedAccount {
   };
 }
 
-/** Whether the browser's data may carry over. Ids decide when both sides have one; the
- * username fallback cannot tell a recreated account apart. */
+/** May the browser data carry over? The username fallback cannot tell a recreated account apart. */
 function isSameAccount(previous: MarkedAccount, next: MarkedAccount): boolean {
   if (previous.accountId && next.accountId)
     return previous.accountId === next.accountId;
@@ -112,8 +110,7 @@ const IMPORTED_FONT_SELECTIONS = [
   "codeFont",
 ] as const;
 
-/** Appearance chrome carries over, but an imported font is uploaded file bytes, not chrome:
- * strip the fonts and any selection naming one, leaving the rest of the value untouched. */
+/** An imported font is uploaded file bytes, not chrome: strip it and any selection naming it. */
 function purgeImportedFonts(storage: Storage): void {
   const raw = storage.getItem(APPEARANCE_KEY);
   if (!raw?.includes("importedFonts")) return;
@@ -174,8 +171,8 @@ function deleteAccountDatabase(
   });
 }
 
-/** Run before publishing new tokens; an absent marker means the historical owner browser. The
- * marker is published last, so other tabs reload only once the new session is ready. */
+/** Run before publishing new tokens; the marker is published last so other tabs reload only
+ * once the new session is ready. */
 export async function transitionBrowserAccount(
   account: BrowserAccount | string,
   postAuthRoute: string,

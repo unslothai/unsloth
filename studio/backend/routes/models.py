@@ -2469,9 +2469,8 @@ async def _require_model_access_or_caller_token(
     local_path: Optional[str] = None,
     prefer_local_cache: bool = False,
 ) -> None:
-    """Managed access check that also accepts the caller's own Hub token: a remote preflight
-    precedes the first download and its grant. Local and cache-only selections keep the
-    account check; the owner is unaffected."""
+    """Managed access check that also accepts the caller's own Hub token, since a remote preflight
+    precedes the first download and its grant. Local and cache-only selections keep the check."""
     if not account_access.managed_account():
         return
     try:
@@ -5223,7 +5222,7 @@ def _preferred_gguf_copy(
 async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
-        # Off the loop: the managed-account filter can probe the Hub per ungranted repo.
+        # Off the loop: the filter can probe the Hub per ungranted repo.
         return {"cached": await asyncio.to_thread(cached_gguf_rows)}
     except Exception as e:
         logger.error(f"Error listing cached GGUF repos: {e}", exc_info = True)
@@ -5334,7 +5333,7 @@ async def list_cached_models(
 ):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
-        # Off the loop: the managed-account filter can probe the Hub per ungranted repo.
+        # Off the loop: the filter can probe the Hub per ungranted repo.
         return {"cached": await asyncio.to_thread(cached_model_rows)}
     except Exception as e:
         logger.error(f"Error listing cached models: {e}", exc_info = True)

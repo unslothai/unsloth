@@ -3931,7 +3931,7 @@ def _passthrough_client_tools(payload):
 
 
 def _admit_tool_access(payload) -> None:
-    """Refuse full access at the door, before a stream opens and 400 is no longer possible."""
+    """Refuse full access before a stream opens and 400 is no longer possible."""
     from state.tool_policy import require_tool_access
     require_tool_access(
         getattr(payload, "permission_mode", None),
@@ -4302,7 +4302,7 @@ _PENDING_CANCEL_TTL_S = 30.0
 
 
 def _account_cancel_key(key):
-    # Tuples cannot collide with the legacy string ids retained for one-account installs.
+    # Tuples cannot collide with the legacy string ids of one-account installs.
     if account_access.managed_account():
         return current_account_id(), key
     return key
@@ -7060,8 +7060,7 @@ async def _lease_ollama_model_ref(
 
 
 def _defers_access_to_native_grant(request) -> bool:
-    """A native selection sends a display label, so the account check waits for the lease's
-    canonical path, which is what the account roots are checked against."""
+    """A native selection sends a label, so the check waits for the lease's canonical path."""
     return bool(
         account_access.managed_account()
         and getattr(request, "native_path_lease", None)
@@ -7211,8 +7210,7 @@ async def _wait_for_model_switch_idle(
     from core.inference.llama_keepwarm import other_inference_request_count
     from core.inference.gpu_arbiter import require_no_foreign_generations
 
-    # account_scope(), not login mode: deactivating the last managed account only signals
-    # its generation, which keeps decoding on the backend this drain protects.
+    # account_scope(), not login mode: deactivation only signals its generation, not the decode.
     account_id = account_access.account_scope()
     deadline = None if timeout_s is None else time.monotonic() + timeout_s
     while True:
@@ -8504,8 +8502,7 @@ async def _reject_unservable_model(
 async def _require_named_model_access(
     named_model: str, fastapi_request: Optional[Request] = None
 ) -> None:
-    """Authorize a named model; a path-free local id from /v1/models resolves through the
-    account catalog, and an uncached Hub reference through the caller's own token."""
+    """Authorize a named model via the account catalog, or an uncached Hub ref via caller token."""
     try:
         await asyncio.to_thread(account_access.require_model_access, named_model)
         return
@@ -8527,8 +8524,7 @@ async def _require_named_model_access(
 async def _caller_token_authorizes_download(
     named_model: str, fastapi_request: Optional[Request]
 ) -> bool:
-    """Whether the caller's own Hub token authorizes fetching an uncached Hub reference. A local
-    path is never downloadable, and this is the same proof the download itself demands."""
+    """Whether the caller's own Hub token authorizes fetching an uncached Hub reference."""
     from core.inference.openai_auto_download import is_downloadable_ref, split_model_ref
     from utils.openai_auto_switch_settings import get_openai_auto_download_enabled
 
@@ -8605,7 +8601,7 @@ async def _maybe_auto_switch_model(
     :func:`_preflight_audio_for_switch`. ``image_preflight`` does the same for
     non-GGUF image count and byte validation.
     """
-    # The reload-only sentinel means an omitted model to the account checks, not a name.
+    # The reload-only sentinel means an omitted model, not a name.
     named_model = requested_model if requested_model != _RELOAD_ONLY_MODEL else None
     if account_access.managed_account():
         if named_model:
@@ -9371,16 +9367,14 @@ def _loaded_slot_ident() -> Optional[str]:
 
 
 def release_chat_gpu_claim() -> bool:
-    """Drop the CHAT claim once nothing is resident or loading, as /images/unload does;
-    otherwise the arbiter keeps naming the loader and hides an empty GPU from every other
-    account. release_if evaluates under the arbiter lock, so a re-registered load keeps it."""
+    """Drop the CHAT claim once nothing is resident or loading, else the arbiter hides an empty GPU
+    from other accounts. release_if runs under the arbiter lock, so a re-registered load keeps it."""
     from core.inference.gpu_arbiter import CHAT, release_if
     from core.inference.llama_cpp import chat_load_active
 
     def chat_idle() -> bool:
         llama = get_llama_cpp_backend()
-        # is_active, not is_loaded: a starting model holds VRAM; chat_load_active covers
-        # an HF load with no process yet.
+        # is_active, not is_loaded: a starting model holds VRAM, and an HF load has no process yet.
         if llama.is_active or chat_load_active():
             return False
         backend = _peek_inference_backend()
@@ -13679,9 +13673,8 @@ def _raise_or_cancel_active_generations(
     scope = account_access.account_scope()
     if scope is not None:
         # Before the count and the cancel: a foreign generation refuses the swap, so cancelling
-        # first would end the caller's chats for nothing, and the caller's count is zero when only
-        # foreign work runs. Keyed on account_scope(): deactivating the last managed account drops
-        # the count while its generation still holds the GPU.
+        # first would end the caller's chats for nothing. Keyed on account_scope(), whose count
+        # drops while a deactivated account's generation still holds the GPU.
         require_no_foreign_generations(scope)
     if not active_generations.count(scope):
         return 0
@@ -14289,8 +14282,7 @@ async def _run_gguf_load_attempt(llama_backend, intent, load_cancel_event) -> bo
 
 
 def _require_resolved_base_access(config) -> None:
-    """Grants apply to the base named in an adapter's config, so an owned adapter cannot pull
-    another account's cached base."""
+    """Grants apply to the base in an adapter's config, so it cannot pull a foreign cached base."""
     base = getattr(config, "base_model", None)
     if account_access.managed_account() and isinstance(base, str) and base.strip():
         account_access.require_model_access(base.strip())
@@ -16746,8 +16738,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
         and account_access.managed_account()
         and account_access.release_shared_resident("chat")
     ):
-        # Other accounts still share the model: only this account's share ends, and the
-        # backend, its keep-warm state and the GPU claim stay as they are.
+        # Other accounts still share the model: only this account's share ends, nothing is unloaded.
         return UnloadResponse(status = "unloaded", model = request.model_path)
     account_access.require_resident_control(
         "chat", _loaded_slot_ident() if account_access.managed_account() else None
@@ -18538,8 +18529,7 @@ def _start_account_stt_download(
     from core.training.account_jobs import account_is_retired
 
     with _stt_download_lock:
-        # Shares this lock with retire_stt_downloads: a start admitted before the sweep is
-        # cancelled by it, one admitted after sees the tombstone here.
+        # Shares retire_stt_downloads' lock: a start is either swept by it or sees this tombstone.
         if account_is_retired():
             raise HTTPException(status_code = 403, detail = "Account is retired")
         if module.download_status().get("downloading"):
@@ -18891,7 +18881,7 @@ async def stt_load(
         raise HTTPException(status_code = 500, detail = safe_error_detail(e))
     finally:
         await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
-    # The load lock is released; another account may have switched the engine, so claim only ours.
+    # The load lock is released and another account may have switched engines, so claim only ours.
     loaded = sidecar.loaded_model
     if loaded is not None and loaded == _stt_resolved_model_id(payload.model, engine):
         account_access.note_resident_account(f"stt:{engine}", loaded)
@@ -35900,8 +35890,7 @@ async def load_diffusion_model_gated(
             preflighted = engine_for(pending_name)
             await asyncio.to_thread(_preflight, preflighted)
 
-        # Activation can unload the previous engine and begin_load signals whatever generation is
-        # running, so guard on every device; only the GPU handoff is conditional.
+        # begin_load signals whatever generation is running, so guard on every device, not just GPU.
         require_no_foreign_generations()
         # Pick the engine for this host (diffusers on GPU, native sd.cpp otherwise), installing sd-cli if needed, BEFORE evicting chat.
         engine = await asyncio.to_thread(
@@ -36086,8 +36075,7 @@ async def generate_diffusion_image(
                 expected_load = load_identity(
                     status.get("repo_id"), status.get("base_repo"), status.get("family")
                 )
-        # Ahead of the run: milestones are keyed on the previous poll, so a run starting at or
-        # above where the last one stopped would log nothing.
+        # Ahead of the run: milestones key off the previous poll, so a resumed range logs nothing.
         reset_media_generation_progress("image")
         try:
             with account_access.media_generation("diffusion"):
@@ -36131,8 +36119,7 @@ async def generate_diffusion_image(
                 raise HTTPException(status_code = 409, detail = str(exc))
             continue
         except RuntimeError as exc:
-            # Both engines raise these two EXACT client-state messages (409); the native engine
-            # also raises RuntimeError for sd-cli failures, so match exactly.
+            # Match these two EXACT client-state messages (409); other RuntimeErrors are failures.
             msg = str(exc)
             if msg in (DIFFUSION_NOT_LOADED_MSG, DIFFUSION_CANCELLED_MSG):
                 raise HTTPException(status_code = 409, detail = msg)
@@ -36610,8 +36597,7 @@ async def cancel_diffusion_generation(current_subject: str = Depends(get_current
     ):
         return {"cancelled": False}
 
-    # The slot can change hands between the checks above and the executor callback, so the engine
-    # rechecks under the lock binding the cancel event.
+    # The slot can change hands before the executor callback, so the engine rechecks under the lock.
     expected = account_access.tracked_generation_account()
     cancel = get_active_diffusion_engine().cancel_generate
     if expected is not None:

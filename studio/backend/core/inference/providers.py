@@ -712,8 +712,7 @@ _REGISTRY_HOSTNAMES = frozenset(
 
 
 def _public_registry_hostname(host: str) -> bool:
-    """A shipped public vendor hostname (not the ollama or llama.cpp local presets), usable
-    by a managed account without a lookup a transient resolver failure would refuse."""
+    """A shipped public vendor hostname, usable by a managed account without a lookup."""
     host = (host or "").lower().rstrip(".")
     if host not in _REGISTRY_HOSTNAMES:
         return False
@@ -910,9 +909,8 @@ def _reject_non_public(hostname: str, port: int | None, scheme: str, reason: str
 def public_provider_address(url: str) -> str:
     """Resolve ``url``'s host now and return one public address to dial, or raise ``ValueError``.
 
-    ``validate_provider_base_url`` checks one lookup and caches it, so a managed
-    account's connection re-resolves: a name cannot rebind to loopback or the
-    LAN between the check and the dial.
+    Re-resolving per connection stops a name rebinding to loopback or the LAN after the
+    cached check.
     """
     import socket
 
@@ -989,8 +987,7 @@ def validate_provider_base_url(base_url: str) -> str:
             f"server ({_BLOCK_PRIVATE_ENV}=1).",
         )
     elif _managed_account_caller() and not _public_registry_hostname(hostname):
-        # The managed MCP rule: caller-controlled egress must not reach the owner's
-        # loopback models or the host's LAN. The owner keeps Ollama and llama.cpp.
+        # Caller-controlled egress must not reach the owner's loopback models or LAN.
         _reject_non_public(
             hostname,
             port,

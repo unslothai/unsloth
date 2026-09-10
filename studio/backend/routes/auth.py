@@ -47,7 +47,8 @@ router = APIRouter()
 
 
 def _account_id_of(username: str) -> "str | None":
-    """Immutable id of ``username``'s account: managed names can be reused, and state keyed on the name alone would hand a recreated account its predecessor's data. None if the managed row is gone."""
+    """Immutable account id for ``username``, or None. Names are reusable, so state must not key
+    on the name: a recreated account would inherit its predecessor's data."""
     if username == storage.DEFAULT_ADMIN_USERNAME:
         return OWNER_ACCOUNT_ID
     account = storage.get_account(username)
@@ -453,7 +454,7 @@ def auth_status() -> AuthStatusResponse:
 
 
 def _login_failure_detail() -> str:
-    """Recovery hint for a rejected login; the name is a placeholder, never the attacker-controlled submitted one, and ``reset-password`` refuses without a target once more than one account is active."""
+    """Recovery hint for a rejected login. The name shown is a placeholder, not the submitted."""
     if policy.installation_is_multi_user():
         return (
             "Incorrect username, password or setup code. Ask the installation owner to reset "
@@ -484,8 +485,7 @@ async def login(payload: AuthLoginRequest, request: Request) -> Token:
 
     record = storage.get_user_and_secret(username)
     if record is None:
-        # Use the same bounded per-name buckets as existing accounts. A shared
-        # unknown-name bucket makes another name's lockout an existence oracle.
+        # Per-name buckets as for real accounts: a shared unknown bucket is an existence oracle.
         hashing.equalize_login_work(payload.password)
         _record_login_failure(key)
         raise HTTPException(

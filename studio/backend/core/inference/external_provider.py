@@ -783,8 +783,7 @@ _http_client = _create_shared_http_client()
 
 
 class _PinnedPublicTransport(httpx.AsyncBaseTransport):
-    """Managed-account egress: each connection re-resolves the host and dials one
-    validated public address with SNI on the name, as managed MCP transports do."""
+    """Managed-account egress: re-resolve per connection, dial one validated public address."""
 
     def __init__(self):
         # Separate pools retain TLS identity when two names resolve to one IP.

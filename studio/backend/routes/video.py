@@ -456,7 +456,7 @@ def _generation_started_by(backend) -> Optional[str]:
 
 
 def _read_generate_progress(backend, expected_account):
-    """Progress rechecked against the authorized reservation, when the backend supports it."""
+    """Recheck progress against the authorized reservation, if the backend supports it."""
     if expected_account is None:
         return backend.generate_progress()
     try:
@@ -592,13 +592,10 @@ async def generate_video(
         flow_shift = request.flow_shift,
         audio_flow_shift = request.audio_flow_shift,
     )
-    # Authorize the exact resident token generation_snapshot returns and pin it to the reservation,
-    # so a load committing in the gap cannot render another account's weights into this gallery;
-    # on a mismatch re-authorize once and retry, as /images/generate does.
-    # The real rule for shape is the LOADED family's, applied by begin_generate under the same lock that reserves the state, so a
-    # concurrent load cannot leave the shape judged against one family and denoised by another.
-    # Unloaded still falls through to the not-loaded 409, and a family with no declared presets keeps the old SIZE
-    # snapping, though frame_step is declared regardless.
+    # Authorize the exact resident token from generation_snapshot and pin it to the reservation,
+    # so a load committing in the gap cannot render another account's weights here; on a mismatch,
+    # re-authorize once and retry. begin_generate judges shape against the LOADED family under the
+    # same lock that reserves the state, so a concurrent load cannot judge and denoise against two.
     for attempt in range(2):
         expected_state = None
         if account_access.managed_account():
@@ -611,14 +608,14 @@ async def generate_video(
                 **({"expected_state": expected_state} if expected_state is not None else {}),
             )
         except VideoShapeError as exc:
-            # 422 before the 400 below, and it must stay first: VideoShapeError IS a ValueError.
+            # Must stay before the 400 below: VideoShapeError IS a ValueError.
             raise HTTPException(status_code = 422, detail = str(exc))
         except ValueError as exc:
-            # Bad client input -- a 400 with the reason, not a generic 500.
+            # Bad client input: 400 with the reason, not a generic 500.
             raise HTTPException(status_code = 400, detail = str(exc))
         except RuntimeError as exc:
-            # Only the not-loaded / busy / replaced sentinels are client-state (409); match exactly so an unrelated
-            # failure cannot leak its message.
+            # Only the not-loaded / busy / replaced sentinels are 409; match exactly so
+            # an unrelated failure cannot leak its message.
             msg = str(exc)
             if msg == VIDEO_MODEL_CHANGED_MSG and attempt == 0:
                 continue
@@ -642,8 +639,8 @@ async def video_generate_progress(current_subject: str = Depends(get_current_sub
     from core.inference.video import get_video_backend
 
     backend = get_video_backend()
-    # One reservation read serves the visibility check; the backend rechecks the owner under its
-    # lock, since begin_generate runs on a worker thread and a successor can reserve mid-poll.
+    # One reservation read serves the visibility check; the backend rechecks the owner under
+    # its lock, since begin_generate runs on a worker thread and a successor can reserve mid-poll.
     reserved = _reserved_generation_account(backend)
     if reserved is not None:
         started_by = reserved
@@ -665,8 +662,8 @@ async def cancel_video_generation(current_subject: str = Depends(get_current_sub
     from core.inference.video import get_video_backend
 
     backend = get_video_backend()
-    # One read serves check and recheck: begin_generate runs on a worker thread, so a second read
-    # could name a successor and hand it back as expected_account.
+    # One read serves check and recheck: a second read could name a successor and hand it back
+    # as expected_account.
     reserved = _reserved_generation_account(backend)
     if reserved is not None:
         started_by = reserved
@@ -678,8 +675,8 @@ async def cancel_video_generation(current_subject: str = Depends(get_current_sub
     if started_by is None and account_access.foreign_work_active():
         return {"cancelled": False}
     if reserved is None:
-        # No reservation yet: bind the cancel to the caller, or an account reserving before the
-        # executor runs would receive it. An idle backend stays a no-op.
+        # No reservation yet: bind the cancel to the caller, else an account reserving before the
+        # executor runs would receive it.
         from utils.account_context import current_account
         expected = current_account().account_id
     else:
@@ -1595,8 +1592,8 @@ async def _create_openai_video(
 
     backend = get_video_backend()
     video_id = _VIDEO_JOB_ID_PREFIX + uuid.uuid4().hex
-    # A managed caller is authorized against the exact resident state, pinned to the reservation;
-    # on a mismatch re-authorize once and retry, as /video/generate does.
+    # Managed callers are authorized against the exact resident state, pinned to the reservation;
+    # on a mismatch, re-authorize once and retry, as /video/generate does.
     pin_state = pin_requested_model or account_access.managed_account()
     for attempt in range(2):
         expected_state = None

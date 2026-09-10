@@ -41,8 +41,8 @@ def _account_errors():
 
 
 def retire_account_roots(account: AccountContext):
-    """Signal this account's work, then rename each private root aside (children first, since roots
-    may nest). Returns a callable that renames them back for a caller whose later step fails."""
+    """Signal this account's work, then rename each private root aside (children first, as roots
+    may nest). Returns a callable that renames them back if a later step fails."""
     if account.is_owner or account.account_id == "owner":
         raise ValueError("The installation owner cannot be retired")
     active_generations.fence(account.account_id)
@@ -80,7 +80,7 @@ def retire_account_roots(account: AccountContext):
     moved: list[tuple[Path, Path]] = []
 
     def restore() -> None:
-        # A root that will not come back stays listed, and the caller hears where its data is.
+        # A root that will not come back stays listed, so the caller hears where its data is.
         stranded: list[tuple[Path, Path, OSError]] = []
         with storage_roots.root_retirement_lock:
             for root, destination in reversed(moved):
@@ -110,8 +110,7 @@ def retire_account_roots(account: AccountContext):
                 Path.rename(root, destination)
                 moved.append((root, destination))
         except OSError:
-            # All or nothing: reactivation restores no roots, so a half-retired account
-            # would come back with an empty workspace.
+            # All or nothing: reactivation restores no roots, so a half-retired account is empty.
             restore()
             raise
     return restore
@@ -144,7 +143,7 @@ def set_account_active(account_id: str, payload: AccountActiveRequest):
             restore_account_jobs(account_id)
             active_generations.lift_fence(account_id)
         else:
-            # Fence first: a request past authentication that registers after the sweep is cancelled too.
+            # Fence first, so a request registering after the sweep is cancelled too.
             active_generations.fence(account_id)
             active_generations.cancel_all(account_id)
             account_access.retire_resident_shares(account_id)

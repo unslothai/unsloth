@@ -1228,7 +1228,7 @@ class DiffusionBackend:
         self._generation_cancel_lock = threading.Lock()
         # Cancel Event of the in-flight generation; per-generation so a cancel can't be lost or leak
         self._active_generate_cancel: Optional[threading.Event] = None
-        # Bound with the event under the same lock, so a cancel authorized for one account cannot land on the generation that took the slot.
+        # Bound with the event under the same lock, so a cancel cannot land on the wrong generation.
         self._active_generate_account: Optional[str] = None
         # Queued requests; cancel_generate() decides which Stop may signal.
         self._queued_generate_cancels: set[threading.Event] = set()
@@ -6360,7 +6360,10 @@ class DiffusionBackend:
         }
 
     def cancel_generate(self, expected_account: Optional[str] = None) -> bool:
-        """Signal the in-flight generation to stop at its next step boundary; returns False when nothing is running. Best effort: the sampler stops at the NEXT step callback, so a cancel during the VAE decode or the encode before step 0 lands when that finishes."""
+        """Stop the in-flight generation at its next step boundary; False when nothing is running.
+
+        Best effort: the sampler stops at the NEXT step callback, so a cancel during the VAE
+        decode or the encode before step 0 lands when that finishes."""
         with self._generation_cancel_lock:
             # Stop targets the denoising generation, not a serialized waiter.
             active = self._active_generate_cancel
@@ -6391,8 +6394,7 @@ class DiffusionBackend:
                 from .gpu_arbiter import DIFFUSION, GpuBusyForAnotherAccountError
                 from hub.services.models.account_access import require_resident_control
 
-                # The route checked before executor dispatch; recheck under the lock that
-                # admits a generation before setting any cancellation event.
+                # Recheck under the generation-admitting lock before setting any cancel event.
                 if (
                     self._active_generate_cancel is not None
                     and self._active_generate_account != expected_account

@@ -25,7 +25,7 @@ VIDEO = "video"
 _lock = threading.Lock()
 _owner: Optional[str] = None
 _owner_epoch = 0
-# The account whose load put the current owner on the GPU, so routes can refuse to evict another account's in-use model.
+# Account whose load put the current owner on the GPU, so routes can refuse to evict it.
 _owner_account: Optional[str] = None
 _prior_account: Optional[str] = None
 
@@ -93,7 +93,7 @@ class GpuOwnerBusyError(RuntimeError):
 
 
 class GpuBusyForAnotherAccountError(GpuOwnerBusyError):
-    """Another account is generating on the resident model: routes answer 409 ``gpu_busy`` rather than cancelling its stream."""
+    """Another account is generating on the resident model; routes answer 409 ``gpu_busy``."""
 
     def __init__(self, owner: str, active: int):
         self.active = active
@@ -132,7 +132,7 @@ def other_accounts_active(account_id: str) -> int:
 
 
 def raise_if_other_accounts_active(account_id: Optional[str] = None) -> None:
-    """Guard a destructive reload or teardown; call under the lifecycle gate before touching any backend."""
+    """Guard a destructive reload; call under the lifecycle gate before touching any backend."""
     from utils.account_context import current_account_id
 
     busy = other_accounts_active(account_id or current_account_id())
@@ -171,7 +171,8 @@ def acquire_for(
 ) -> Any:
     """Make ``owner`` the sole GPU owner, evicting the other if it holds it.
 
-    ``register`` runs under the arbiter lock right after ownership transfers, closing the window where a competing acquire evicts this owner and both loaders allocate VRAM at once.
+    ``register`` runs under the arbiter lock as ownership transfers, so a competing acquire cannot
+    evict this owner and let both loaders allocate VRAM at once.
     """
     global _owner, _owner_epoch, _owner_account, _prior_account
     if owner not in _EVICTORS:
@@ -193,19 +194,19 @@ def acquire_for(
                 raise GpuBusyForAnotherAccountError(_owner, busy)
             logger.info("gpu_arbiter: evicting %s for %s", _owner, owner)
             _EVICTORS[_owner]()
-        # ``_owner_account`` records who LOADED the model; rewriting it on a plain re-assert would hand the model to whoever asked last.
+        # Records who LOADED the model; a plain re-assert must not hand it to whoever asked last.
         claims = _owner != owner or register is not None or replacing
         _owner = owner
         _owner_epoch += 1
         result = register() if register is not None else None
-        # After ``register``: a raising registration loaded nothing and must not take residency.
+        # A raising registration loaded nothing and must not take residency.
         if claims:
             _prior_account, _owner_account = _owner_account, acting
         return result
 
 
 def restore_owner_account(owner: str, account_id: Optional[str] = None) -> bool:
-    """Hand residency back to the displaced account when a claim's async load never committed; no-op once anything else took residency."""
+    """Hand residency back to the displaced account when a claim's load never committed."""
     global _owner_account, _prior_account
     from utils.account_context import current_account_id
 

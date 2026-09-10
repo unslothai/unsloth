@@ -49,6 +49,5 @@ _EQUALIZE_HASH = "0" * 64
 
 
 def equalize_login_work(password: str) -> None:
-    """Run the verification cost without a stored hash, so an unknown or inactive
-    name is not faster to reject than a wrong password."""
+    """Spend the verification cost with no stored hash, so a miss is not faster to reject."""
     verify_password(password, _EQUALIZE_SALT, _EQUALIZE_HASH)

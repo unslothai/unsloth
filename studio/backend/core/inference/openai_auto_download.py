@@ -84,7 +84,7 @@ class _Active:
     # the client would restart the same failing download.
     error: Optional[str] = None
     failed_at: float = 0.0
-    # Who asked: another account's busy answer names no repo or quant of this one.
+    # Who asked: another account's busy answer names no repo or quant.
     account_id: Optional[str] = None
 
 

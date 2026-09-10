@@ -54,8 +54,7 @@ def require_download_account(registry, key: str) -> None:
 
 
 def require_live_account(registry, key: str) -> None:
-    """Called right after ownership is recorded: a claim before retirement's scan is cancelled
-    by it, and one after sees the tombstone here, so neither reaches spawn with the token."""
+    """Called right after ownership is recorded, so no claim racing retirement reaches spawn."""
     from core.training.account_jobs import account_is_retired
 
     if not account_is_retired():
@@ -1367,8 +1366,7 @@ def idle_status(
 ) -> tuple[DownloadJobState, Optional[str], int]:
     state = registry.get_job(key)
     generation = registry.current_generation(key)
-    # Ownership is recorded per job, so a repo with no job (never downloaded, or lost to a
-    # restart) has no owner to compare; a 404 there strands a client hydrating a download.
+    # A repo with no job has no recorded owner; a 404 there strands a client hydrating a download.
     if state.state != "idle":
         require_download_account(registry, key)
     if (

@@ -94,8 +94,9 @@ def get_active_diffusion_engine() -> Any:
 
 def cancel_generation_for_account(account_id: str) -> bool:
     """Stop an in-flight image generation owned by ``account_id``; True when one was signalled.
+
     Engines come from ``sys.modules`` (no import, no construction); both are checked because a
-    deselected engine can still be draining a generation."""
+    deselected engine can still be draining."""
     cancelled = False
     for module_name, attribute in (
         ("core.inference.diffusion", "_diffusion_backend"),

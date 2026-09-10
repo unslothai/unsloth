@@ -3,11 +3,10 @@
 
 """Opt-in idle auto-unload (TTL keep-warm) for the local llama.cpp model.
 
-Off by default (idle seconds = 0). When enabled, a background loop unloads the GGUF
-after the configured TTL to free VRAM, and a pure-ASGI middleware tracks in-flight
-requests so a long stream is never unloaded mid-response. The resident model is
-shared, so activity from any account resets the one global idle clock. The same loop
-and middleware drive the image/video side (media_keepwarm).
+Off by default (idle seconds = 0). A background loop unloads the GGUF after the TTL, and a
+pure-ASGI middleware tracks in-flight requests so a long stream is never unloaded mid-response.
+The resident model is shared, so any account's activity resets the one global idle clock. The
+same loop and middleware drive media_keepwarm.
 """
 
 from __future__ import annotations

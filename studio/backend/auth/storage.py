@@ -230,8 +230,8 @@ def credential_generation(jwt_secret: str) -> str:
     return hashlib.sha256(jwt_secret.encode("utf-8")).hexdigest()
 
 
-# Downgrade fence: managed creds live in ``account_*`` with prefixed hashes, so a build
-# without account support 401s a managed login.
+# Downgrade fence: managed creds live in ``account_*`` with prefixed hashes, so a build without
+# account support 401s a managed login.
 _FENCE_PREFIX = "account:"
 _FENCED_HASH_SQL = "IN (?, ?)"
 _LEGACY_PASSWORD_HASH_SENTINEL = "managed-account"
@@ -440,7 +440,7 @@ def _ensure_account_columns(conn: sqlite3.Connection, existing: set) -> None:
     if all(name in existing for name, _decl in _ACCOUNT_COLUMNS):
         _repair_owner_account_id(conn)
         return
-    # Both connections can see the columns missing: re-read under the write lock, and a losing
+    # Both connections can see the columns missing: re-read under the write lock, where a losing
     # ALTER is the other side's, not an error.
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -473,8 +473,8 @@ _account_keys_synced: set[str] = set()
 
 
 def _ensure_account_api_keys(conn: sqlite3.Connection, existing: set) -> None:
-    """Pin managed API keys to the immutable ``account_id`` (a recreated namesake inherits none)
-    and mirror them into ``account_api_keys``. Idempotent."""
+    """Pin managed API keys to the immutable ``account_id`` (a namesake inherits none) and mirror
+    them into ``account_api_keys``. Idempotent."""
     db_key = str(DB_PATH)
     if db_key in _account_keys_synced and "account_id" in existing:
         return
@@ -618,8 +618,7 @@ def count_active_accounts() -> int:
 
 
 def account_counts() -> tuple[int, int]:
-    """``(active, managed-of-any-state)``; the second counts deactivated accounts, whose files
-    remain on disk."""
+    """``(active, managed-of-any-state)``; the second counts deactivated accounts too."""
     conn = get_connection()
     try:
         row = conn.execute(
@@ -748,8 +747,8 @@ def issue_account_setup_code(
 def authenticate_account_login(
     username: str, password: str
 ) -> Optional[Tuple[str, str, str, bool]]:
-    """Managed login. A setup code is consumed once, so it cannot log in again; and
-    must_change_password with no pending code admits only the issued session's password change."""
+    """Managed login. A setup code is consumed once; must_change_password with no pending code
+    admits only the issued session's password change."""
     from auth.hashing import equalize_login_work, verify_password
 
     def miss():
@@ -867,8 +866,8 @@ def delete_account(account_id: str, retire) -> None:
                 )
                 conn.execute("DELETE FROM auth_user WHERE account_id = ?", (account_id,))
         except Exception:
-            # The identity survives the rollback, so the roots must come back too; a restore
-            # that fails is the error to report, the account staying disabled either way.
+            # The identity survives the rollback, so the roots must come back too; a failed
+            # restore is the error to report, the account staying disabled either way.
             try:
                 if restore_roots is not None:
                     restore_roots()

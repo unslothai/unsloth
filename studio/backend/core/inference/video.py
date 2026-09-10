@@ -6252,8 +6252,8 @@ class VideoBackend:
         expected_video_id: Optional[str] = None,
         expected_account: Optional[str] = None,
     ) -> bool:
-        """Signal the in-flight generation to stop. The expected_* arguments are rechecked under
-        begin_generate's lock, so a cancel of a finished job cannot hit its successor."""
+        """Stop the in-flight generation; expected_* are rechecked under begin_generate's lock,
+        so a cancel of a finished job cannot hit its successor."""
         with self._lock:
             if expected_video_id is not None and self._gen_video_id != expected_video_id:
                 return False

@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Confine managed-account tool subprocesses: Landlock (Linux), sandbox-exec (macOS), else
-refuse unless the override env allows it."""
+"""Confine managed-account tool procs: Landlock (Linux), sandbox-exec (macOS), else refuse."""
 
 from __future__ import annotations
 
@@ -56,8 +55,7 @@ _SYSTEM_READ_ROOTS = (
 )
 _DEVICE_ROOT = "/dev"
 
-# /run/user is Studio's own 0700 dir, so DAC alone does not stop a tool; container and
-# systemd secret mounts are readable by the service user too. The rest of /run is readable.
+# Readable by the service user, so DAC alone does not stop a tool. The rest of /run is readable.
 _PRIVATE_RUNTIME_ROOTS = ("/run/user", "/run/secrets", "/run/credentials")
 
 
@@ -331,8 +329,7 @@ def _landlock_preexec(
         os.close(ruleset_fd)
 
 
-# ABI 3+ (Linux 6.2) handles truncation; only ABI 6+ (Linux 6.12) scopes signals, and below
-# that a managed child can kill the server or another account's processes over the shared UID.
+# Only ABI 6+ (Linux 6.12) scopes signals; below it a child can kill the server over the shared UID.
 _MIN_LANDLOCK_ABI = 6
 
 

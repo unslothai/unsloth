@@ -29,7 +29,7 @@ from utils.account_context import current_account_id
 # unregisters, and one key would drop the other.
 _ACTIVE: dict[str, dict[str, Any]] = {}
 _LOCK = threading.Lock()
-# Accounts disabled or retired: a generation registering late for one starts cancelled.
+# Disabled or retired accounts: a generation registering late for one starts cancelled.
 _FENCED: set[str] = set()
 
 
@@ -116,7 +116,7 @@ class ActiveGeneration:
 
 
 def snapshot(account_id: Optional[str] = None) -> list[dict[str, Any]]:
-    """In-flight generations, newest last; ``account_id`` None (every account) is for shutdown and the arbiter only."""
+    """In-flight generations, newest last; ``account_id`` None (all) is shutdown/arbiter only."""
     with _LOCK:
         entries = [
             e for e in _ACTIVE.values() if account_id is None or e["account_id"] == account_id
@@ -164,7 +164,8 @@ def foreign_count(account_id: str) -> int:
 
 
 def cancel_all(account_id: Optional[str] = None) -> int:
-    """Signal in-flight generations to stop; returns how many were signalled. Every request-driven caller must pass ``account_id``, as None is everyone and is for shutdown only."""
+    """Signal in-flight generations to stop, returning the count. Request-driven callers must pass
+    ``account_id``; None means everyone and is for shutdown only."""
     with _LOCK:
         events = [
             e["event"]
@@ -180,7 +181,7 @@ def cancel_all(account_id: Optional[str] = None) -> int:
 
 
 def cancel_thread(thread_id: str, account_id: Optional[str] = None) -> int:
-    """Signal the generations for ``thread_id``; thread ids are client-chosen, so the cancel is account-scoped."""
+    """Signal ``thread_id``'s generations; thread ids are client-chosen, so scope by account."""
     if not thread_id:
         return 0
     scope = account_id or current_account_id()
