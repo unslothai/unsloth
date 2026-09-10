@@ -2127,12 +2127,13 @@ def _exact_parking_need_mib(
     parked sequences' state at once. Under the unified cache any one sequence can have grown to
     the whole pool before it was parked, and parked history lives outside the pool, so up to
     P - 1 parked histories plus the one being written can each be the whole pool: the bound is
-    both pools times the slot count, plus the margin. Sharing the pool out per slot, the earlier
-    bound, accepted a budget three near-pool histories overflow, and the overflow is re-prefilled."""
+    both pools plus the margin, times the slot count, the margin being per park. Sharing the pool
+    out per slot, the earlier bound, accepted a budget three near-pool histories overflow, and
+    the overflow is re-prefilled."""
     slots = max(int(parallel or 1), 1)
     total = max(int(kv_bytes), 0) + max(int(draft_bytes), 0)
     pool_mib = -(-total // (1024 * 1024))
-    return pool_mib * slots + _PARKING_MARGIN_MIB
+    return (pool_mib + _PARKING_MARGIN_MIB) * slots
 
 
 def _available_host_memory_mib() -> Optional[int]:
@@ -36404,13 +36405,18 @@ class LlamaCppBackend:
                         # second time yields "fragment1 + fragment1 + continuation1".
                         _candidate_messages = list(stream_payload["messages"])
                         _merged_f = trailing_assistant_text(_candidate_messages) is not None
+                        _partial_f = {
+                            "role": "assistant",
+                            "content": _final_prose[_final_replayed_chars:],
+                        }
+                        # The thought before the prose is the same attempt's work, as the pause
+                        # path replays it: without it the continuation is conditioned on a
+                        # prefix that never produced what the user has already read.
+                        _thought_f = reasoning_text[_final_replayed_reasoning_chars:]
+                        if _thought_f:
+                            _partial_f["reasoning_content"] = _thought_f
                         _append_assistant_turn(
-                            _candidate_messages,
-                            {
-                                "role": "assistant",
-                                "content": _final_prose[_final_replayed_chars:],
-                            },
-                            continue_final_message = True,
+                            _candidate_messages, _partial_f, continue_final_message = True
                         )
                         # The replay is text the MODEL just produced, and the first payload
                         # neutralized everything it carried. Sent raw, a template delimiter
@@ -36444,6 +36450,7 @@ class LlamaCppBackend:
                             stream_payload["messages"] = _candidate_messages
                             _record_refit_tail(_candidate_messages, _continuation_tail, _merged_f)
                             _final_replayed_chars = len(_final_prose)
+                            _final_replayed_reasoning_chars = len(reasoning_text)
                             stream_payload["continue_final_message"] = True
                             stream_payload["add_generation_prompt"] = False
                             if _next_cap is not None:

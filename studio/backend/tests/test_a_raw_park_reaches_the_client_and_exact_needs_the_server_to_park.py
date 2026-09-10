@@ -295,13 +295,14 @@ class TestTheNamedBudgetIsJudged:
         # server holds one more snapshot while it rotates another in.
         pool = 1024 * 1024 * 1024
         need = llama_mod._exact_parking_need_mib(pool, draft_bytes = pool, parallel = 4)
-        assert need == 4 * 2048 + llama_mod._PARKING_MARGIN_MIB
+        # The margin is per park: page rounding and slot metadata come with every snapshot.
+        assert need == 4 * (2048 + llama_mod._PARKING_MARGIN_MIB)
         # A 768 MiB history parked twice is 1536 MiB; the per-slot share this replaces
         # accepted 1088 MiB for a 1024 MiB pool at four slots.
-        assert llama_mod._exact_parking_need_mib(pool, parallel = 4) == 4 * 1024 + 64
+        assert llama_mod._exact_parking_need_mib(pool, parallel = 4) == 4 * (1024 + 64)
         assert llama_mod._exact_parking_shortfall_mib(
             pool, args = ["--preempt-ram", "1088"], env = {}, parallel = 4
-        ) == (1088, 1024, 4 * 1024 + 64)
+        ) == (1088, 1024, 4 * (1024 + 64))
         assert llama_mod._exact_parking_need_mib(pool) == 1088
         short = llama_mod._exact_parking_shortfall_mib(
             pool,
