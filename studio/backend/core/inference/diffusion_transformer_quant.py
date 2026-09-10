@@ -330,12 +330,19 @@ class _AutoPrefer:
     applies only where ``nvfp4_gate_passed(family, base_repo)`` says a reviewed gate record covers
     THIS base at the policy this commit resolves. That is what lets the image rows below be checked
     in ahead of their evidence -- they are inert until the record lands, and they turn on for the
-    gated base alone rather than for every checkpoint that shares the family name."""
+    gated base alone rather than for every checkpoint that shares the family name.
+
+    ``backend`` names the NVFP4 backend the row's measurements were taken on. The head applies only
+    where ``select_nvfp4_backend`` would answer with that name for THIS device. The same 4-bit
+    bytes run at 1.115x fp8 through the flashinfer FP4 GEMM and at 0.93x fp8 through torchao's, so
+    a row measured on one backend is not evidence about the other, and a device that cannot reach
+    the measured backend must keep walking the plain tier."""
 
     floor: tuple[int, int]
     schemes: tuple[str, ...]
     consumer_ok: bool = False
     gated: bool = False
+    backend: Optional[str] = None
 
 
 # Keys are lowercased family names, so the 480p and 720p HunyuanVideo-1.5 tiers are separate rows (separate base repos,
@@ -355,6 +362,25 @@ _FAMILY_AUTO_PREFER: dict[str, _AutoPrefer] = {
     "flux.1": _AutoPrefer(floor = (10, 0), schemes = (TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8), gated = True),
     "qwen-image": _AutoPrefer(
         floor = (10, 0), schemes = (TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8), gated = True
+    ),
+    # The one row where nvfp4 leads, and the only family that has earned it. Whole-model NVFP4
+    # (GPTQ-calibrated, both experts, the hosted artifact) on B200, 50 steps at 1280x720x81f,
+    # held-out LPIPS against bf16 and paired against fp8, measured 2026-09-08:
+    #   speed     p50 432 s vs fp8 482 s, 1.115x, 5/5 paired wins
+    #   memory    26.18 GiB steady resident for the whole pipeline vs 38.59 at fp8
+    #   accuracy  LPIPS 0.356 vs fp8 0.431 (paired gap -0.075, 95% upper -0.025), SSIM 0.571
+    #             vs 0.510 -- BETTER than fp8 on both, not merely within the bar
+    # NOT gated: this is whole-model nvfp4 on a fingerprint-verified hosted checkpoint, not a
+    # per-layer policy, so there is no gate record to wait for. It IS backend-conditional: the
+    # SAME artifact on torchao's kernels is 0.93x fp8, i.e. slower than the scheme it would
+    # displace, so the head applies only where flashinfer actually serves the device.
+    # The other three video families were measured on the same rig and are NOT promoted:
+    # wan2.2-ti2v-5b (LPIPS 0.362 vs 0.194), hunyuanvideo-1.5 480p (0.581 vs 0.465) and 720p
+    # (0.797 vs 0.531) all fail the accuracy gate, whatever their speed.
+    "wan2.2-t2v-a14b": _AutoPrefer(
+        floor = (10, 0),
+        schemes = (TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8),
+        backend = "flashinfer",
     ),
 }
 
@@ -385,6 +411,25 @@ def _nvfp4_gate_passed(family, base_repo) -> bool:
         from .diffusion_nvfp4_gate import nvfp4_gate_passed
         return bool(nvfp4_gate_passed(family, base_repo))
     except Exception:  # noqa: BLE001 -- see the docstring: an unanswerable gate keeps the deny
+        return False
+
+
+def _nvfp4_backend_is(device: Any, name: str) -> bool:
+    """Whether ``select_nvfp4_backend`` would answer ``name`` for ``device``.
+
+    Imported INSIDE the function for the same reason as ``_nvfp4_gate_passed`` above: this module
+    is imported whole by the spawned smoke-probe child, which is stdlib-only by contract, while
+    the ops module reaches torch and flashinfer. A top-level import would put that graph in the
+    child.
+
+    Never raises. Any failure -- no torch, a trimmed install with no ops module, a probe that
+    throws -- answers False, which DROPS the backend-conditional head and leaves the family on the
+    plain arch tier. "Could not tell" and "not the measured backend" are the same answer here,
+    because the head's evidence only covers the backend it was measured on."""
+    try:
+        from .diffusion_nvfp4_ops import select_nvfp4_backend
+        return str(select_nvfp4_backend(device)) == str(name)
+    except Exception:  # noqa: BLE001 -- see the docstring: an unanswerable probe drops the head
         return False
 
 
@@ -792,7 +837,12 @@ def _auto_scheme_order(
             # to a base a reviewed gate record covers. Without one the row is not a weaker
             # preference, it is an untested one, and the family walks the plain tier.
             if not prefer.gated or _nvfp4_gate_passed(family, base_repo):
-                head = prefer.schemes
+                # A backend-conditional row's ordering was measured through ONE NVFP4 backend, and
+                # the same bytes reverse the ordering through the other, so the head stands only
+                # where that backend would actually serve this device. ``device`` is the one the
+                # walk was called with, which is the device the load will run on.
+                if prefer.backend is None or _nvfp4_backend_is(device, prefer.backend):
+                    head = prefer.schemes
     order: list[str] = []
     for scheme in head + tier:
         if scheme not in order:

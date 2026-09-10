@@ -1690,29 +1690,50 @@ def test_a_capability_below_every_tier_has_no_order_even_with_a_head(monkeypatch
         set(),
     ],
 )
+@pytest.mark.parametrize("row_backend", [None, "flashinfer", "torchao"])
+@pytest.mark.parametrize("probe_backend", ["flashinfer", "torchao", "raises"])
 def test_the_candidate_head_stays_the_selector_winner_with_a_prefer_row(
-    monkeypatch, family, allowed
+    monkeypatch, family, allowed, row_backend, probe_backend
 ):
-    # The anti-drift invariant, now across the preference table too: whatever the head does to the
-    # order, both entry points must still walk the same one, or the retry path could propose a
-    # scheme auto itself would refuse.
+    # The anti-drift invariant, now across the preference table too, and across the backend
+    # requirement: whatever the head does to the order, both entry points must still walk the same
+    # one, or the retry path could propose a scheme auto itself would refuse. Both callers reach
+    # the same ``_auto_scheme_order``, so a backend probe that answers differently between them --
+    # or throws in one and not the other -- is exactly the drift this catches.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, allowed)
-    _prefer(monkeypatch, _nvfp4_head())
-    candidates = tq.auto_scheme_candidates(_target(), family)
-    chosen = select_transformer_quant_scheme(_target(), "auto", family = family)
+    _stub_nvfp4_backend(monkeypatch, probe_backend)
+    _prefer(monkeypatch, _nvfp4_head(backend = row_backend))
+    candidates = tq.auto_scheme_candidates(_target(), family, **_HAS_PREQUANT)
+    chosen = select_transformer_quant_scheme(
+        _target(), "auto", family = family, **_HAS_PREQUANT
+    )
     assert (candidates[0] if candidates else None) == chosen, (family, allowed)
 
 
 def test_the_shipped_prefer_table_keeps_the_ladder_as_it_was(monkeypatch):
-    # Every row the table ships is GATED, and no gate record ships, so auto must behave exactly as
-    # the ladder alone says -- for the families that have a row as much as for those that do not.
-    # This is the test that fails first when a row is added without its own coverage, or when an
-    # ungated row is added at all.
+    # Every IMAGE row the table ships is GATED, and no gate record ships, so auto must behave
+    # exactly as the ladder alone says for those families. This is the test that fails first when
+    # a row is added without its own coverage.
+    #
+    # wan2.2-t2v-a14b is the one row that is not gated: it is whole-model nvfp4 on a hosted
+    # artifact, measured outright rather than pending a per-layer gate record. It is excluded from
+    # the sweep below and owns its own tests -- every OTHER video family stays on the ladder, which
+    # is the half this test still has to hold.
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
-    assert all(row.gated for row in tq._FAMILY_AUTO_PREFER.values())
-    assert set(tq._FAMILY_AUTO_PREFER) == {"z-image", "flux.1", "qwen-image"}
+    assert set(tq._FAMILY_AUTO_PREFER) == {
+        "z-image",
+        "flux.1",
+        "qwen-image",
+        "wan2.2-t2v-a14b",
+    }
+    ungated = {name for name, row in tq._FAMILY_AUTO_PREFER.items() if not row.gated}
+    assert ungated == {"wan2.2-t2v-a14b"}
+    # An ungated row must carry evidence of its own: a measured backend. A row that is neither
+    # gated nor backend-conditional would turn on everywhere, which no measurement covers.
+    for name in ungated:
+        assert tq._FAMILY_AUTO_PREFER[name].backend
     families = (
         None,
         "hunyuanvideo-1.5",
@@ -1738,6 +1759,194 @@ def test_the_shipped_prefer_table_keeps_the_ladder_as_it_was(monkeypatch):
     assert tq.auto_scheme_candidates(
         _target(), "qwen-image", base_repo = "Qwen/Qwen-Image", **_HAS_PREQUANT
     ) == (TQ_FP8, TQ_INT8)
+
+
+# ── the backend requirement on a preference head ──────────────────────────────
+
+
+def _stub_nvfp4_backend(monkeypatch, answer):
+    """Make ``select_nvfp4_backend`` answer ``answer``, or raise when it is "raises".
+
+    Patched on the ops module rather than on ``tq._nvfp4_backend_is``, so the helper's own lazy
+    import and its swallow-everything contract are what the tests below exercise."""
+    from core.inference import diffusion_nvfp4_ops as ops
+
+    def _answer(device = None):
+        if answer == "raises":
+            raise RuntimeError("probe blew up")
+        return answer
+
+    monkeypatch.setattr(ops, "select_nvfp4_backend", _answer)
+
+
+def test_a_backend_conditional_head_applies_on_the_backend_it_was_measured_on(monkeypatch):
+    # The row's 1.115x came out of the flashinfer FP4 GEMM. Where that backend serves the device,
+    # the head leads and the tier still follows it in order.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    _stub_nvfp4_backend(monkeypatch, "flashinfer")
+    _prefer(monkeypatch, _nvfp4_head(backend = "flashinfer"))
+    assert (
+        select_transformer_quant_scheme(_target(), "auto", family = "fake-video", **_HAS_PREQUANT)
+        == TQ_NVFP4
+    )
+    assert tq.auto_scheme_candidates(_target(), "fake-video", **_HAS_PREQUANT) == (
+        TQ_NVFP4,
+        TQ_FP8,
+        TQ_MXFP8,
+        TQ_INT8,
+    )
+
+
+def test_a_backend_conditional_head_is_dropped_on_the_other_backend(monkeypatch):
+    # The SAME 4-bit bytes run at 0.93x fp8 through torchao's kernels, i.e. slower than the scheme
+    # the head would displace. A device that lands on torchao therefore walks the plain tier.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    _stub_nvfp4_backend(monkeypatch, "torchao")
+    _prefer(monkeypatch, _nvfp4_head(backend = "flashinfer"))
+    assert (
+        select_transformer_quant_scheme(_target(), "auto", family = "fake-video", **_HAS_PREQUANT)
+        == TQ_FP8
+    )
+    assert tq.auto_scheme_candidates(_target(), "fake-video", **_HAS_PREQUANT) == (
+        TQ_FP8,
+        TQ_MXFP8,
+        TQ_INT8,
+    )
+
+
+def test_a_backend_probe_that_raises_drops_the_head_rather_than_the_load(monkeypatch):
+    # This runs on the selection path, where an exception would be a 500. "Could not tell" is the
+    # same answer as "not the measured backend": keep the ladder, lose only the promotion.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    _stub_nvfp4_backend(monkeypatch, "raises")
+    _prefer(monkeypatch, _nvfp4_head(backend = "flashinfer"))
+    assert tq._nvfp4_backend_is("cuda", "flashinfer") is False
+    assert (
+        select_transformer_quant_scheme(_target(), "auto", family = "fake-video", **_HAS_PREQUANT)
+        == TQ_FP8
+    )
+    assert tq.auto_scheme_candidates(_target(), "fake-video", **_HAS_PREQUANT) == (
+        TQ_FP8,
+        TQ_MXFP8,
+        TQ_INT8,
+    )
+
+
+def test_the_backend_helper_answers_false_without_torch(monkeypatch):
+    # A torch-free host (the stdlib-only smoke-probe child imports this module whole) must get a
+    # plain False out of the helper, not an ImportError climbing out of the walk.
+    monkeypatch.setitem(sys.modules, "torch", None)
+    assert tq._nvfp4_backend_is("cuda", "flashinfer") is False
+
+
+def test_a_row_with_no_backend_requirement_is_unconditional(monkeypatch):
+    # backend=None is the pre-existing behaviour and must not start consulting the probe: the
+    # image rows carry their evidence in the gate record instead.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    _stub_nvfp4_backend(monkeypatch, "torchao")
+    _prefer(monkeypatch, _nvfp4_head())
+    assert (
+        select_transformer_quant_scheme(_target(), "auto", family = "fake-video", **_HAS_PREQUANT)
+        == TQ_NVFP4
+    )
+
+
+def test_the_floor_and_the_consumer_rule_still_outrank_the_backend(monkeypatch):
+    # The backend requirement is an ADDITIONAL condition, not a replacement: a card below the
+    # floor, or a consumer part, drops the head even where flashinfer serves it.
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    _stub_nvfp4_backend(monkeypatch, "flashinfer")
+    _prefer(monkeypatch, _nvfp4_head(backend = "flashinfer"))
+    _stub_torch(monkeypatch, cc = (8, 9), device_name = "NVIDIA L40S")
+    assert (
+        select_transformer_quant_scheme(_target(), "auto", family = "fake-video", **_HAS_PREQUANT)
+        == TQ_FP8
+    )
+    _stub_torch(monkeypatch, cc = (12, 0), device_name = "NVIDIA GeForce RTX 5090")
+    assert (
+        select_transformer_quant_scheme(_target(), "auto", family = "fake-video", **_HAS_PREQUANT)
+        == TQ_INT8
+    )
+
+
+def test_the_a14b_row_leads_with_nvfp4_only_where_flashinfer_serves_it(monkeypatch):
+    # The shipped row, not a synthetic one. Datacenter Blackwell + flashinfer + a hosted checkpoint
+    # is the whole of the measured case; anything else keeps fp8.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    base = "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
+
+    _stub_nvfp4_backend(monkeypatch, "flashinfer")
+    assert (
+        select_transformer_quant_scheme(
+            _target(), "auto", family = "wan2.2-t2v-a14b", base_repo = base, **_HAS_PREQUANT
+        )
+        == TQ_NVFP4
+    )
+    assert tq.auto_scheme_candidates(
+        _target(), "wan2.2-t2v-a14b", base_repo = base, **_HAS_PREQUANT
+    ) == (TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8)
+
+    # No hosted checkpoint for this load: nvfp4 is in require_prequant, so auto may not build it.
+    assert (
+        select_transformer_quant_scheme(
+            _target(),
+            "auto",
+            family = "wan2.2-t2v-a14b",
+            base_repo = base,
+            has_prequant = lambda scheme: False,
+        )
+        == TQ_FP8
+    )
+
+    # torchao backend: the promotion is off and the family is a plain Blackwell family again.
+    _stub_nvfp4_backend(monkeypatch, "torchao")
+    assert (
+        select_transformer_quant_scheme(
+            _target(), "auto", family = "wan2.2-t2v-a14b", base_repo = base, **_HAS_PREQUANT
+        )
+        == TQ_FP8
+    )
+
+
+def test_the_a14b_promotion_does_not_touch_the_explicit_request_path(monkeypatch):
+    # An explicit scheme is honoured or refused on support alone. The head reorders AUTO and
+    # nothing else, so neither the backend nor the checkpoint probe may change these answers.
+    _stub_torch(monkeypatch, cc = (10, 0))
+    base = "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
+    for backend in ("flashinfer", "torchao", "raises"):
+        _stub_nvfp4_backend(monkeypatch, backend)
+        _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+        for scheme in (TQ_NVFP4, TQ_FP8, TQ_INT8):
+            assert (
+                select_transformer_quant_scheme(
+                    _target(),
+                    scheme,
+                    family = "wan2.2-t2v-a14b",
+                    base_repo = base,
+                    has_prequant = lambda candidate: False,
+                )
+                == scheme
+            ), (backend, scheme)
+        # And an unsupported explicit scheme is still None rather than a silent swap.
+        _allow(monkeypatch, {TQ_FP8})
+        assert (
+            select_transformer_quant_scheme(
+                _target(), TQ_NVFP4, family = "wan2.2-t2v-a14b", base_repo = base
+            )
+            is None
+        )
+
+
+def test_the_other_three_measured_video_families_were_not_promoted():
+    # Speed alone does not promote: all three cleared the speed bar on flashinfer and failed the
+    # held-out accuracy bar against fp8 (LPIPS 0.362 vs 0.194, 0.581 vs 0.465, 0.797 vs 0.531).
+    for family in ("wan2.2-ti2v-5b", "hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"):
+        assert family not in tq._FAMILY_AUTO_PREFER
 
 
 # ── GEMM alignment floors ─────────────────────────────────────────────────────
