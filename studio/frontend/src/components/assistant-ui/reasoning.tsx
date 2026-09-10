@@ -60,6 +60,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useShallow } from "zustand/react/shallow";
 const ANIMATION_DURATION = 200;
 const AUTO_SCROLL_THRESHOLD_PX = 24;
 
@@ -288,6 +289,7 @@ function ReasoningText({
       return;
     }
     const el = scrollRef.current;
+    el.scrollTop = el.scrollHeight;
     const updateAutoScroll = () => {
       const currentScrollTop = el.scrollTop;
       if (currentScrollTop < lastScrollTopRef.current) {
@@ -521,13 +523,15 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
 
   const reasoningContentRef = useRef<HTMLDivElement>(null);
 
-  const reasoningText = useAuiState(({ message }) =>
-    message.parts
-      .slice(startIndex, endIndex + 1)
-      .filter((part) => part.type === "reasoning")
-      .map((part) => ("text" in part ? (part as { text: string }).text : ""))
-      .join("\n"),
+  const reasoningDocuments = useAuiState(
+    useShallow(({ message }) =>
+      message.parts
+        .slice(startIndex, endIndex + 1)
+        .filter((part) => part.type === "reasoning")
+        .map((part) => ("text" in part ? (part as { text: string }).text : "")),
+    ),
   );
+  const reasoningText = reasoningDocuments.join("");
   const wantsPagination = shouldPaginateReasoning(reasoningText);
   const [storedPaginationSession, setPaginationSession] = useState(() => ({
     history: [] as ReasoningPageBoundary[],
@@ -604,7 +608,7 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
   const paginationActive = paginationSession.started && wantsPagination;
   const page = useMemo(
     () =>
-      pageSelector.select(reasoningText, {
+      pageSelector.selectDocument(reasoningDocuments, {
         end: paginationActive ? selectedEnd : reasoningText.length,
 
         streaming:
@@ -614,6 +618,7 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
       isReasoningStreaming,
       pageSelector,
       paginationActive,
+      reasoningDocuments,
       reasoningText,
       selectedEnd,
     ],
@@ -790,6 +795,7 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
               ) : (
                 <SearchImagesEnabledContext.Provider value={false}>
                   <MarkdownTextSource
+                    key={page.documentIndex}
                     messageHasRenderableRenderHtmlTool={
                       messageHasRenderableRenderHtmlTool
                     }

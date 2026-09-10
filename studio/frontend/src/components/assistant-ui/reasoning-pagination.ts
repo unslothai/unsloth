@@ -117,6 +117,42 @@ function consumeFenceLine(
 // partial trailing line is reconsidered when its newline arrives.
 export class ReasoningPageSelector {
   private committedOffset = 0;
+  private documentIndex = -1;
+
+  // Each reasoning part is an independent Markdown document, even when adjacent.
+  selectDocument(
+    documents: readonly string[],
+    options: ReasoningPageOptions = {},
+  ): ReasoningPage & { documentIndex: number } {
+    const total = documents.reduce((length, text) => length + text.length, 0);
+    const end = Math.max(0, Math.min(total, options.end ?? total));
+    let offset = 0;
+    let index = 0;
+    while (
+      index < documents.length - 1 &&
+      offset + documents[index].length < end
+    ) {
+      offset += documents[index].length;
+      index += 1;
+    }
+    if (index !== this.documentIndex) {
+      this.reset();
+      this.source = "";
+      this.documentIndex = index;
+    }
+    const page = this.select(documents[index] ?? "", {
+      ...options,
+      end: end - offset,
+    });
+    return {
+      ...page,
+      documentIndex: index,
+      start: offset + page.start,
+      end: offset + page.end,
+      hasEarlier: offset + page.start > 0,
+      hasNewer: offset + page.end < total,
+    };
+  }
 
   private liveStart: number | null = null;
   private open: OpenFence | null = null;
