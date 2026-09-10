@@ -6,8 +6,9 @@ use crate::native_backend_lease::{
 use crate::native_path_policy::{
     classify_artifact_path, classify_native_attachment_path, classify_native_dataset_path,
     classify_native_document_folder, classify_native_model_path, is_audio_only_3gp,
-    is_binary_property_list, is_binary_tracker_mod, is_binary_vobsub, is_binary_office_template, is_compiled_fortran_mod, is_text_attachment_name,
-    reveal_target, ClassifiedPath, NativeArtifactKind,
+    is_binary_office_template, is_binary_property_list, is_binary_tracker_mod, is_binary_vobsub,
+    is_compiled_fortran_mod, is_text_attachment_name, reveal_target, ClassifiedPath,
+    NativeArtifactKind,
 };
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};

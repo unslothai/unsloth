@@ -385,7 +385,7 @@ print(json.dumps({
         tcp_listener.close()
         unix_path.unlink(missing_ok = True)
 
-    assert result["status"] == "passed", result
+    assert result["status"] == "passed", json.dumps(result, indent = 2)
     observed = json.loads(result["output"])
     assert observed == {
         "home": False,

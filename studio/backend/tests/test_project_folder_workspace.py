@@ -576,6 +576,7 @@ def test_folder_project_python_cannot_escape_even_in_full_access(tmp_path):
         assert result.startswith("Execution error:")
         assert not (folder / "inside-python.txt").exists()
     else:
+        assert (folder / "inside-python.txt").exists(), result
         assert (folder / "inside-python.txt").read_text(encoding = "utf-8") == "confined"
         assert "Execution error" not in result
 
