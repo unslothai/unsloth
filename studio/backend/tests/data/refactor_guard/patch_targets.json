@@ -287,6 +287,9 @@
   ],
   "core.inference.llama_cpp.logger": [
     "tests/test_llama_cpp_wait_for_health.py",
+    "tests/test_llama_cpp_wait_for_health.py",
+    "tests/test_llama_cpp_wait_for_health.py",
+    "tests/test_llama_cpp_wait_for_health.py",
     "tests/test_slot_reduction_context_refit.py",
     "tests/test_slot_reduction_context_refit.py"
   ],
@@ -470,12 +473,6 @@
     "tests/test_web_fetch_extraction.py",
     "tests/test_web_fetch_extraction.py",
     "tests/test_web_fetch_extraction.py",
-    "tests/test_web_fetch_extraction.py",
-    "tests/test_web_fetch_extraction.py",
-    "tests/test_web_fetch_extraction.py",
-    "tests/test_web_fetch_extraction.py",
-    "tests/test_web_fetch_extraction.py",
-    "tests/test_web_fetch_extraction.py",
     "tests/test_web_fetch_extraction.py"
   ],
   "core.inference.tools._validate_and_resolve_host": [
@@ -497,6 +494,7 @@
     "tests/test_length_truncated_reasoning_continuation.py",
     "tests/test_length_truncated_reasoning_continuation.py",
     "tests/test_length_truncated_reasoning_continuation.py",
+    "tests/test_llama_admission_enforced_paths.py",
     "tests/test_llama_admission_enforced_paths.py",
     "tests/test_llama_cpp_tool_loop.py",
     "tests/test_llama_cpp_tool_loop.py",
@@ -970,8 +968,6 @@
     "tests/test_personalization_settings.py",
     "tests/test_personalization_settings.py",
     "tests/test_personalization_settings.py",
-    "tests/test_personalization_settings.py",
-    "tests/test_personalization_settings.py",
     "tests/test_personalization_settings.py"
   ],
   "storage.studio_db.get_run": [
@@ -1015,8 +1011,6 @@
     "tests/test_model_memory_settings.py",
     "tests/test_model_memory_settings.py",
     "tests/test_model_memory_settings.py",
-    "tests/test_personalization_settings.py",
-    "tests/test_personalization_settings.py",
     "tests/test_personalization_settings.py",
     "tests/test_personalization_settings.py"
   ],
@@ -1335,8 +1329,6 @@
     "tests/test_utils.py"
   ],
   "utils.hardware.hardware.platform": [
-    "tests/test_utils.py",
-    "tests/test_utils.py",
     "tests/test_utils.py"
   ],
   "utils.hardware.hardware.resolve_requested_gpu_ids": [
@@ -1381,8 +1373,6 @@
     "tests/test_diffusion_backend.py",
     "tests/test_diffusion_backend.py",
     "tests/test_hub_token_caller_identity.py",
-    "tests/test_rag_embeddings.py",
-    "tests/test_rag_embeddings.py",
     "tests/test_rag_embeddings.py",
     "tests/test_rag_embeddings.py",
     "tests/test_sd_cpp_backend.py",
@@ -1441,10 +1431,6 @@
     "tests/test_diffusion_backend.py",
     "tests/test_sd_cpp_backend.py",
     "tests/test_sd_cpp_h3_matrix.py",
-    "tests/test_video_backend.py",
-    "tests/test_video_backend.py",
-    "tests/test_video_backend.py",
-    "tests/test_video_backend.py",
     "tests/test_video_backend.py",
     "tests/test_video_backend.py",
     "tests/test_video_backend.py",
@@ -1741,12 +1727,6 @@
     "tests/test_transformers_version.py"
   ],
   "utils.transformers_version._check_tokenizer_config_needs_v5": [
-    "tests/test_transformers_version.py",
-    "tests/test_transformers_version.py",
-    "tests/test_transformers_version.py",
-    "tests/test_transformers_version.py",
-    "tests/test_transformers_version.py",
-    "tests/test_transformers_version.py",
     "tests/test_transformers_version.py",
     "tests/test_transformers_version.py",
     "tests/test_transformers_version.py",
