@@ -749,14 +749,16 @@ def _torch_runtime_tag() -> str:
 #
 # It is not a rare shape. The default Studio root hangs off the profile directory, and
 # "C:\Users\First Last" is an ordinary Windows account name.
-_TOOLCHAIN_PATH_KEYS = frozenset({
-    "TORCHINDUCTOR_CACHE_DIR",
-    "TORCH_EXTENSIONS_DIR",
-    "TRITON_CACHE_DIR",
-    "TRITON_DUMP_DIR",
-    "TRITON_HOME",
-    "CUDA_CACHE_PATH",
-})
+_TOOLCHAIN_PATH_KEYS = frozenset(
+    {
+        "TORCHINDUCTOR_CACHE_DIR",
+        "TORCH_EXTENSIONS_DIR",
+        "TRITON_CACHE_DIR",
+        "TRITON_DUMP_DIR",
+        "TRITON_HOME",
+        "CUDA_CACHE_PATH",
+    }
+)
 
 
 def _toolchain_unsafe(key: str, value: str) -> bool:
@@ -807,7 +809,8 @@ def _setup_cache_env() -> None:
                 logger.debug(
                     "leaving %s unset: %s contains whitespace, which the C++ builders "
                     "paste into a command line unquoted",
-                    key, value,
+                    key,
+                    value,
                 )
                 continue
             os.environ[key] = value

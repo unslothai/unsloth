@@ -404,8 +404,10 @@ def test_the_windows_node_guard_covers_a_master_root():
     """
     ps = SETUP_PS1.read_text(encoding = "utf-8")
     guards = [
-        line for line in ps.splitlines()
-        if "$NodeDir" in line and ".unsloth-studio-owned" not in line
+        line
+        for line in ps.splitlines()
+        if "$NodeDir" in line
+        and ".unsloth-studio-owned" not in line
         and ("$NodeOverride" in line or "$RuntimeRootIsCustom" in line)
     ]
     # The guard's `if`, and the marker's `if`. Fewer means the block was restructured and this
@@ -438,7 +440,7 @@ def test_the_windows_uninstaller_resolves_a_relative_root_like_setup(tmp_path):
     initial.mkdir()
     script = tmp_path / "probe.ps1"
     script.write_text(
-        f'''$txt = Get-Content -Raw "{UNINSTALL_PS1}"
+        f"""$txt = Get-Content -Raw "{UNINSTALL_PS1}"
 foreach ($n in @("_ExpandTilde", "_MasterRoot")) {{
     $m = [regex]::Match($txt, "(?ms)^    function $n \\{{.*?^    \\}}")
     if (-not $m.Success) {{ Write-Output "EXTRACT-FAILED:$n"; exit 1 }}
@@ -449,12 +451,14 @@ Set-Location "{chosen}"
 $env:UNSLOTH_HOME = "portable"
 $env:USERPROFILE = "{tmp_path}/profile"
 Write-Output (_MasterRoot)
-''',
+""",
         encoding = "utf-8",
     )
     out = subprocess.run(
         ["pwsh", "-NoProfile", "-File", str(script)],
-        capture_output = True, text = True, check = True,
+        capture_output = True,
+        text = True,
+        check = True,
     ).stdout.strip()
     assert "EXTRACT-FAILED" not in out, out
     assert out == str(chosen / "portable"), out

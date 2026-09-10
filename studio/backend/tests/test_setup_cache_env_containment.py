@@ -119,7 +119,7 @@ _TOOLCHAIN_PINNED = (
 
 
 def test_a_spaced_root_leaves_the_compiler_caches_to_their_own_defaults(monkeypatch, tmp_path):
-    """"C:\\Users\\First Last" is an ordinary Windows account name, so the DEFAULT Studio root
+    """ "C:\\Users\\First Last" is an ordinary Windows account name, so the DEFAULT Studio root
     contains a space for a large share of installs. Before this file pinned these, Inductor used
     its own whitespace-free temporary directory and the build worked; pinning it into a spaced
     root broke torch.compile outright. Unset is the behaviour that shipped, so that is the
