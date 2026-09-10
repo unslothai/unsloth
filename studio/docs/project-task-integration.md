@@ -9,8 +9,8 @@ Install these prerequisite layers before exposing task execution:
 | Prerequisite | Exact revision used in CI |
 | --- | --- |
 | #10633 project lifecycle | `10eec87e411ee03fed1999fd3df3971bf0c8d632` |
-| #10577 secure edits | `c6118ec5a653e94158bd637bc59bc18656ca6257` |
-| #10594 Git and worktrees | `016da23650c227ccfb99d8e3fca16473143f5bb9` |
+| #10577 secure edits | `a85723e1cc245a6d286fc0f3521eee8a21c869d3` |
+| #10594 Git and worktrees | `9d86e2547b9ce03b89910912e095c80aae23e719` |
 
 The task endpoints return 503 when prerequisites are missing or their protocol
 versions are incompatible. Shutdown also tolerates an unavailable task service. The integration
@@ -106,11 +106,10 @@ provider and model-visible result caps. Adjacent engine, loop, lifecycle, worktr
 secure-edit suites are included in native CI, plus frontend API, type and build
 checks. This does not claim live-model quality, performance or GPU qualification.
 
-The lazy task entry adds 195 compressed startup bytes with the same local
-toolchain: main `191b69c12` measured 1,620,018 bytes and the integration measured
-1,620,213 bytes, both with 82 eager chunks. The existing 1,620,000-byte ceiling was
-already exceeded by 18 bytes on that baseline. The budget increases by 1 KiB;
-the task panel, API code and review controls remain in a separate lazy chunk.
+The branch uses upstream `08733896d`'s startup limits of 1,645,000 transfer bytes
+and 5,500,000 raw bytes. The current local build reports 1,586.0 KB transfer,
+5,307.7 KB raw and 82 eager chunks, within those limits. The task panel, API code
+and review controls remain in a separate lazy chunk.
 
 
 ## Optional command layer
