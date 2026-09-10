@@ -673,6 +673,10 @@ def planned_core_names(marker: Optional[dict]) -> list:
     return names
 
 
+# How long a prefetch stays usable, as studio/src-tauri/src/prefetch.rs (MAX_AGE_MS) has it.
+MARKER_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+
+
 def marker_is_current(
     marker: Optional[dict],
     *,
@@ -690,6 +694,12 @@ def marker_is_current(
     if python is not None and marker.get("python") != python:
         return False
     if cache_dir is not None and marker.get("cache_dir") != cache_dir:
+        return False
+    # The same age the shell's status applies: a marker older than this reads as stale
+    # there, and pins the shell no longer offers must not reach the offline retry from
+    # a Studio left open past the week, or from a terminal update.
+    created = marker.get("created_at")
+    if isinstance(created, (int, float)) and (time.time() * 1000 - created) > MARKER_MAX_AGE_MS:
         return False
     if floor:
         backend = marker.get("backend_version")
@@ -1157,6 +1167,13 @@ def _run_unguarded(
     # Built here rather than after the disk check: the uv search reads the same
     # environment the child will run under, so it has to exist by now.
     child_env = dict(env) if env is not None else dict(os.environ)
+    # A marker another offer left. Every exit from here that does not end in a new
+    # marker (uv missing, a full volume, a root that is not ours) would otherwise leave
+    # the old offer's pins on disk for a shell that asked about this one, and the
+    # offline retry does not compare the shell version before it takes them.
+    existing = read_marker(studio_home)
+    if isinstance(existing, dict) and existing.get("shell_version") != shell_version:
+        discard(studio_home)
     # The budget starts here, before uv is looked for: a fallback candidate that hangs on
     # --version is a uv call like any other, and it used to get the full subprocess
     # timeout per candidate before the deadline existed.

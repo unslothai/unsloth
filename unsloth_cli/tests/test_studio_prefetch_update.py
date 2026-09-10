@@ -1376,3 +1376,50 @@ def test_a_relative_uv_cache_dir_is_recorded_as_uv_resolves_it(tmp_path):
         assert _studio_prefetch.resolved_cache_dir("uv-cache") == str(
             tmp_path / "script" / "uv-cache"
         )
+
+
+def test_a_marker_older_than_the_shell_accepts_is_not_current():
+    """The shell's status reads a marker past seven days as stale; the CLI's offline
+    retry must not take pins from one, whether Studio stayed open past the week or the
+    update runs from a terminal."""
+    import time as _time
+
+    marker = {
+        "schema": _studio_prefetch.MARKER_SCHEMA,
+        "state": "ready",
+        "backend_version": "2026.9.2",
+        "created_at": int(_time.time() * 1000) - _studio_prefetch.MARKER_MAX_AGE_MS - 1000,
+    }
+    assert not _studio_prefetch.marker_is_current(marker)
+    assert _studio_prefetch.marker_is_current({**marker, "created_at": int(_time.time() * 1000)})
+    # A clock that went backwards reads as a negative age, which is not old.
+    assert _studio_prefetch.marker_is_current({**marker, "created_at": int(_time.time() * 1000) + 10_000})
+
+
+def test_a_prefetch_that_prepares_nothing_still_retires_another_offers_marker(managed, monkeypatch):
+    """uv missing on the second offer's prefetch: without this the first offer's marker
+    stayed on disk, the shell read the skipped command as settled, and the offline retry
+    could have taken the old offer's exact pins for the new shell."""
+    root = _studio_prefetch.prefetch_root(managed)
+    root.mkdir(parents = True, exist_ok = True)
+    (root / _studio_prefetch.OWNED_MARKER).write_text("", encoding = "utf-8")
+    (root / _studio_prefetch.MARKER_NAME).write_text(
+        json.dumps({"schema": _studio_prefetch.MARKER_SCHEMA, "state": "ready", "shell_version": "1.0.1"}),
+        encoding = "utf-8",
+    )
+    monkeypatch.setattr(_studio_prefetch.shutil, "which", lambda name: None)
+    monkeypatch.setattr(_studio_prefetch, "_uv_search_dirs", lambda env: [])
+    with pytest.raises(_studio_prefetch.PrefetchSkipped):
+        _studio_prefetch.run(studio_home = managed, shell_version = "1.0.2", echo = lambda line: None)
+    assert not (root / _studio_prefetch.MARKER_NAME).exists()
+    # The same offer asking again keeps what it prepared.
+    root.mkdir(parents = True, exist_ok = True)
+    (root / _studio_prefetch.OWNED_MARKER).write_text("", encoding = "utf-8")
+    (root / _studio_prefetch.MARKER_NAME).write_text(
+        json.dumps({"schema": _studio_prefetch.MARKER_SCHEMA, "state": "ready", "shell_version": "1.0.2"}),
+        encoding = "utf-8",
+    )
+    with pytest.raises(_studio_prefetch.PrefetchSkipped):
+        _studio_prefetch.run(studio_home = managed, shell_version = "1.0.2", echo = lambda line: None)
+    assert (root / _studio_prefetch.MARKER_NAME).exists()
+

@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -908,7 +909,9 @@ def _prefetch_marker(studio, home: Path, cache: Path, venv_python: Path, **extra
         "cache_dir": str(cache),
         "python": str(venv_python),
         "core_plan": {"unsloth": "2026.9.5", "unsloth-zoo": "2026.9.4"},
-        "created_at": 0,
+        # Fresh: a marker past the shell's seven-day limit names nothing (see
+        # marker_is_current), which the age case in test_studio_prefetch_update covers.
+        "created_at": int(time.time() * 1000),
     }
     payload.update(extra)
     (home / _studio_prefetch.PREFETCH_DIR_NAME).mkdir(parents = True, exist_ok = True)

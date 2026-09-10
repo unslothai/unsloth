@@ -243,10 +243,20 @@ fn same_cache(expected: &Path, recorded: &Path) -> bool {
         return true;
     }
     if expected.is_relative() && recorded.is_absolute() {
-        let relative: PathBuf = expected
-            .components()
-            .filter(|component| !matches!(component, std::path::Component::CurDir))
-            .collect();
+        // Normalised the way the CLI normalised what it recorded: `.` dropped, `..`
+        // folded into the component before it, and a leading `..` (which only the setup
+        // script's working directory could resolve) dropped, so what is left is the
+        // tail the recorded absolute path has to end with.
+        let mut relative = PathBuf::new();
+        for component in expected.components() {
+            match component {
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    relative.pop();
+                }
+                other => relative.push(other.as_os_str()),
+            }
+        }
         return !relative.as_os_str().is_empty() && recorded.ends_with(&relative);
     }
     false
@@ -442,6 +452,10 @@ mod tests {
         assert_eq!(status_for(&home, Some("warm-cache")).state, "ready");
         assert_eq!(status_for(&home, Some("./warm-cache")).state, "ready");
         assert_eq!(status_for(&home, Some("other-cache")).state, "stale");
+        // Parent components, which the CLI's normpath folded before recording.
+        assert_eq!(status_for(&home, Some("../warm-cache")).state, "ready");
+        assert_eq!(status_for(&home, Some("x/../warm-cache")).state, "ready");
+        assert_eq!(status_for(&home, Some("../other-cache")).state, "stale");
         let _ = fs::remove_dir_all(&home);
     }
 
