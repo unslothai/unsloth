@@ -30478,6 +30478,16 @@ class LlamaCppBackend:
                     _recosted_allowance = on_conversation_grew(conversation, safe_tools)
                     if _recosted_allowance is not None:
                         admission_output_allowance = _recosted_allowance
+                        # Everything sized BELOW this point -- the result and recall
+                        # budgets, the reply-room gates, the respawn refit -- ran on the
+                        # figure the fit above had to use, which is the previous round's.
+                        # This round's is known now, and it is the one the payload sends.
+                        _iteration_fit_max_tokens = min(
+                            _iteration_max_tokens
+                            if _iteration_max_tokens is not None
+                            else (self._effective_context_length or _DEFAULT_MAX_TOKENS_FLOOR),
+                            _recosted_allowance,
+                        )
                 except LlamaAdmissionRecostRefused:
                     # The lease holds the previous figure, so sending this is the overcommit.
                     logger.info(
@@ -33286,6 +33296,11 @@ class LlamaCppBackend:
                     )
                     if _final_recosted_allowance is not None:
                         admission_output_allowance = _final_recosted_allowance
+                        # As in the loop: the respawn refit below is the one sizing left
+                        # under the re-cost, and this attempt's cap is what it sends.
+                        _final_fit_max_tokens = min(
+                            _final_attempt_cap, _final_recosted_allowance
+                        )
                 except LlamaAdmissionRecostRefused:
                     # As in the loop: not sent, and a continuation keeps what it has shown.
                     logger.info(

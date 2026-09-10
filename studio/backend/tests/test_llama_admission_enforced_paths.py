@@ -29,7 +29,11 @@ if _BACKEND_DIR not in sys.path:
 import core.inference.llama_cpp as llama_cpp_mod
 import routes.inference as inf_mod
 from core.inference.api_monitor import ApiMonitor
-from core.inference.context_window import tool_result_budget
+from core.inference.chat_template_helpers import (
+    model_markup,
+    neutralize_control_markup_in_messages,
+)
+from core.inference.context_window import estimate_messages_tokens_dense, tool_result_budget
 from core.inference.llama_admission import (
     ADMISSION_CONTROL_ENV,
     ADMISSION_KV_BUDGET_ENV,
@@ -1258,6 +1262,12 @@ class TestWhatTheWireActuallyCarries:
         assert with_clip > without
         assert with_clip >= len(clip) // 4
 
+    @staticmethod
+    def _marker_paste(markers: int):
+        """A transcript pasted into one turn, carrying the loaded model's own markers."""
+        body = "".join(f"<|im_start|>user\nq {index}<|im_end|>\n" for index in range(markers // 2))
+        return [{"role": "user", "content": "Explain this log:\n" + body}]
+
 
 class TestARetryThatGrewItsPrompt:
     def test_the_nudge_retry_is_bounded_by_its_own_prompt(self):
@@ -1881,6 +1891,76 @@ class TestTheLoopSizesAgainstTheAdmittedAllowance:
         assert self._final_pass_recall_cap(monkeypatch, None) == _CTX
 
 
+class TestARoundSizesAgainstWhatItsOwnReCostEarned:
+    """The re-cost runs below the fit, so everything under it has this round's figure.
+
+    The fit has to price against the previous round's -- the re-cost cannot run until the
+    prompt it charges for exists. Every sizing decision AFTER it can, and the result
+    budget, the recall budget and the reply-room gates were all still reading the figure
+    the fit used. A round that opened with a roomy allowance and re-costed down to a
+    narrow one then cut its tool result to reserve output the wire is no longer sending.
+    """
+
+    _OPENED = 1024
+    _RECOSTED = 128
+
+    @staticmethod
+    def _round(monkeypatch, *, opened, recosted):
+        """The result budget one round hands its tool, and the caps it put on the wire."""
+        seen: list[int] = []
+
+        def _fake_execute_tool(name, arguments, *, result_budget_tokens = None, **_kwargs):
+            seen.append(result_budget_tokens)
+            return "Linux kernel 6.10."
+
+        monkeypatch.setattr("core.inference.tools.execute_tool", _fake_execute_tool)
+        payloads: list[dict] = []
+        backend = _make_backend(
+            monkeypatch,
+            [
+                _tool_call("web_search", {"query": "kernel"}, "c1"),
+                [_sse({"content": "6.10"}), _done()],
+            ],
+            payloads,
+        )
+        list(
+            backend.generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "Which kernel?"}],
+                tools = [_TOOL],
+                max_tool_iterations = 1,
+                permission_mode = "off",
+                max_tokens = _CTX,
+                admission_output_allowance = opened,
+                on_conversation_grew = (
+                    None if recosted is None else lambda _conversation, _tools = None: recosted
+                ),
+            )
+        )
+        assert seen, "the tool never ran, so nothing was priced"
+        return seen[0], _caps(payloads)
+
+    def test_the_result_is_priced_against_the_cap_the_round_actually_sends(self, monkeypatch):
+        """Re-costed down to 128, the round sends 128; the result must be sized for 128."""
+        budget, caps = self._round(
+            monkeypatch, opened = self._OPENED, recosted = self._RECOSTED
+        )
+        assert caps[0] == self._RECOSTED, caps
+        opened_there, _caps_there = self._round(
+            monkeypatch, opened = self._RECOSTED, recosted = self._RECOSTED
+        )
+        assert budget == opened_there, (budget, opened_there)
+
+    def test_a_round_that_kept_its_allowance_is_unchanged(self, monkeypatch):
+        """A re-cost that says nothing leaves the figure alone, so nothing else moves."""
+        stale, caps = self._round(monkeypatch, opened = self._OPENED, recosted = None)
+        assert caps[0] == self._OPENED, caps
+        assert stale == self._round(monkeypatch, opened = self._OPENED, recosted = self._OPENED)[0]
+        # A narrower cap reserves less reply room, so the result gets more of the window.
+        assert (
+            self._round(monkeypatch, opened = self._OPENED, recosted = self._RECOSTED)[0] > stale
+        )
+
+
 class TestTheSizingSitesReadTheClampedFigure:
     """Source-level, because a seventh sizing site added against the unclamped name is
     the same defect again and no single behaviour test sees all of them."""
@@ -1954,3 +2034,26 @@ class TestTheSizingSitesReadTheClampedFigure:
                     if keyword.value.id not in self._CLAMPED:
                         unclamped.append(f"{name}(max_tokens = {keyword.value.id})")
         assert not unclamped, f"these size against a cap the wire will not send: {unclamped}"
+
+    def test_a_re_cost_that_moves_the_allowance_re_sizes_with_it(self):
+        """The fit above a re-cost cannot price against this round's allowance; the re-cost
+        needs the fitted prompt first. Everything below it can, so both re-costs rebuild
+        the sizing figure, and the final pass has no behaviour test that reaches its
+        respawn refit."""
+        import ast
+
+        resized: set = set()
+        tree = ast.parse(Path(llama_cpp_mod.__file__).read_text(encoding = "utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            assigned = [
+                target.id
+                for statement in node.body
+                if isinstance(statement, ast.Assign)
+                for target in statement.targets
+                if isinstance(target, ast.Name)
+            ]
+            if "admission_output_allowance" in assigned:
+                resized.update(name for name in assigned if name in self._CLAMPED)
+        assert set(self._CLAMPED) <= resized, resized
