@@ -2982,9 +2982,9 @@ class TestTheBackendPathIsEvidenceOnlyWhenItHoldsAPlugin:
     @staticmethod
     def _no_verdict(monkeypatch):
         from core.inference.llama_cpp import LlamaCppBackend
-
         monkeypatch.setattr(
-            LlamaCppBackend, "_binary_ships_no_gpu_backend",
+            LlamaCppBackend,
+            "_binary_ships_no_gpu_backend",
             staticmethod(lambda binary = None, env = None: False),
         )
 
@@ -3008,7 +3008,6 @@ class TestTheBackendPathIsEvidenceOnlyWhenItHoldsAPlugin:
 
     def test_a_stale_or_missing_path_does_not(self, monkeypatch, tmp_path):
         from core.inference.llama_cpp import LlamaCppBackend
-
         self._no_verdict(monkeypatch)
         assert not LlamaCppBackend._build_offers_gpu_backend(
             "llama-server", {"GGML_BACKEND_PATH": str(tmp_path / "gone")}
@@ -3058,5 +3057,5 @@ class TestTheSnapshotCarriesTheDioTokens:
         src = inspect.getsource(LlamaCppBackend.load_model)
         # Copied on the way in, so a later strip cannot reach back into the snapshot.
         assert src.count("_mem_dio_flags_for_cmd = list(self._memory_dio_flags)") == 2
-        assert src.count("_mem_dio_flags_for_cmd,") == 2           # both snapshots
-        assert "self._memory_dio_flags,\n" in src                  # the restore
+        assert src.count("_mem_dio_flags_for_cmd,") == 2  # both snapshots
+        assert "self._memory_dio_flags,\n" in src  # the restore
