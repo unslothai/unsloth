@@ -4291,18 +4291,14 @@ def _strip_flag_pairs(args: Iterable[str], flags: frozenset[str]) -> list[str]:
 # common_params defaults in the bundled llama.cpp runtime.
 _DEFAULT_LLAMA_N_BATCH = 2048
 _DEFAULT_LLAMA_N_UBATCH = 512
-# mtmd cuts an image into chunks of min(n_batch, its tokens) and decodes each one,
-# which asserts n_ubatch >= the chunk while attention is non-causal
-# (llama-context.cpp). At the defaults above that chunk is 1120 against a 512 ubatch
-# on Gemma 4, and the server aborts.
-#
-# 2048 is a ceiling, not a guess. mtmd_decode_use_non_causal answers True for exactly
-# gemma4v (outside E2B/E4B), gemma4uv, gemma3 and deepseek4v, and clip.cpp caps one
-# image at 1120, 1120, 256 and 384 tokens for those. Everything larger -- qwen3vl at
-# 4096, hunyuanvl, youtuvl at 62500 -- decodes causally and never reaches the assert.
-# So no image any of the affected families produces can exceed 2048, whatever
-# --batch-size is set to. Only a hand-raised --image-max-tokens can, and that flag
-# comes with its own instruction to raise -ub.
+# mtmd cuts an image into chunks of min(n_batch, its tokens) and asserts n_ubatch >=
+# the chunk while attention is non-causal (llama-context.cpp): 1120 against a 512
+# ubatch on Gemma 4, and the server aborts. 2048 is a bound, not a guess --
+# mtmd_decode_use_non_causal is True only for gemma4v (outside E2B/E4B), gemma4uv,
+# gemma3 and deepseek4v, which clip.cpp caps at 1120, 1120, 256 and 384 tokens per
+# image, while qwen3vl (4096) and youtuvl (62500) decode causally and never reach the
+# assert. Only a hand-raised --image-max-tokens gets past it, and that flag documents
+# raising -ub alongside.
 _MMPROJ_DEFAULT_N_BATCH_UBATCH = 2048
 _LLAMA_ARG_TRUE_VALUES = frozenset({"on", "enabled", "true", "1"})
 _LLAMA_ARG_FALSE_VALUES = frozenset({"off", "disabled", "false", "0"})
@@ -5825,10 +5821,9 @@ def _child_effective_mmproj(
 ) -> Optional[str]:
     """The projector llama-server ends up with, given the one Unsloth would emit.
 
-    Four sources, in the order the child resolves them. ``LLAMA_ARG_MMPROJ_URL`` wins
-    outright: its download overwrites ``mmproj.path`` after argv is parsed. Then a
-    pass-through ``--mmproj``, appended after the managed flags and so last-wins over
-    them. Then Unsloth's own. A plain ``LLAMA_ARG_MMPROJ`` only fills a gap, and fills
+    ``LLAMA_ARG_MMPROJ_URL`` wins outright: its download overwrites ``mmproj.path``
+    after argv is parsed. Then a pass-through ``--mmproj``, appended after the managed
+    flags. Then Unsloth's own. A plain ``LLAMA_ARG_MMPROJ`` only fills a gap, and fills
     it even under ``--no-mmproj``, which empties the command line without clearing
     ``mmproj.path``.
     """
@@ -5850,8 +5845,8 @@ def _mmproj_opens_images(mmproj_path: Optional[str]) -> bool:
 
     ``is_vision`` cannot answer it: ModelConfig sets that flag for ANY discovered
     mmproj, so an audio-only encoder (ultravox, Voxtral, Qwen3-ASR) reads as vision.
-    Unreadable, or a URL nothing has fetched yet, stays image-capable, which is both
-    llama.cpp's own reading and the safe direction for a reserve.
+    Unreadable, or a URL nothing has fetched, stays image-capable, as upstream reads it
+    and as a reserve wants it.
     """
     if not mmproj_path:
         return False
@@ -5873,15 +5868,13 @@ def _batch_ubatch_for_mmproj(
     """Raise the default batch/ubatch for a launch that opens an image projector.
 
     See ``_MMPROJ_DEFAULT_N_BATCH_UBATCH`` for why the chunk has to fit the ubatch.
-    Keyed on the projector the child will really open, not the one the request named:
-    a suppressed, missing or family-mismatched file launches a text-only server, which
-    must not pay the bigger compute buffer, while an inherited one launches a vision
-    server nothing in the request mentions.
+    Keyed on the projector the child will really open, not the one the request named,
+    so a text-only server never pays the bigger compute buffer and an inherited
+    projector still gets it.
 
-    The micro-batch is the half that aborts, so it is the half this raises, and only
-    while nobody has named one. A named BATCH is respected and caps the raise instead,
-    since it also caps the chunk mtmd cuts: at ``-b 256`` the chunk is 256 and the
-    default 512 already holds it.
+    Only the micro-batch aborts, so only it is raised, and only while nobody has named
+    one. A named BATCH caps the raise rather than cancelling it, since it also caps the
+    chunk mtmd cuts: at ``-b 256`` the chunk is 256 and the default 512 holds it.
     """
     if not opens_vision_mmproj:
         return n_batch, n_ubatch
@@ -20026,10 +20019,8 @@ class LlamaCppBackend:
                 return False
 
             # Here, not at the intent unpack: a Hub load carries no mmproj_path of its
-            # own, the companion download above is what assigns it, and Phase 3's fit
-            # must price the micro-batch the child will actually launch with. Resolved
-            # as the launch block resolves it, so a suppressed or family-mismatched
-            # file leaves the text-only server it produces at the llama.cpp defaults.
+            # own until the companion download above, and Phase 3's fit has to price the
+            # micro-batch the child launches with.
             _fit_emitted_mmproj = (
                 None
                 if (disable_vision or not is_vision or extra_args_disable_mmproj(extra_args))
@@ -20039,8 +20030,8 @@ class LlamaCppBackend:
                 )
             )
             # The switch suppresses Unsloth's own projector and scrubs the env pair, but
-            # a pass-through --mmproj is still appended to the command line, so it can
-            # open an image tower on a load that reports vision off.
+            # never the extras, so a pass-through --mmproj opens an image tower even on
+            # a load that reports vision off.
             _fit_vision_mmproj = _child_effective_mmproj(
                 _fit_emitted_mmproj,
                 extra_args,

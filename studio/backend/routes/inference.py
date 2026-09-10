@@ -9955,11 +9955,10 @@ def _launch_vision_mmproj(
 ) -> Optional[str]:
     """The projector this launch really opens, or None.
 
-    What ``_batch_ubatch_for_mmproj`` needs so a panel and the admission guard price
-    the micro-batch the child runs at, resolved exactly as ``load_model`` resolves it:
-    the configured projector only when it is on disk and matches the family, the switch
-    and ``--no-mmproj`` suppressing that one and the switch scrubbing the environment
-    pair, and a pass-through ``--mmproj`` or an inherited variable surviving both.
+    Resolved exactly as ``load_model`` resolves it, so the panel and the admission
+    guard price the micro-batch the child runs at: the configured projector only while
+    it is on disk and matches the family, the switch and ``--no-mmproj`` suppressing
+    that one, and a pass-through or inherited projector surviving both.
     """
     from core.inference.llama_cpp import _child_effective_mmproj, extra_args_disable_mmproj
 
@@ -9981,10 +9980,10 @@ def _remote_opens_vision_mmproj(
 ) -> bool:
     """``_launch_vision_mmproj`` for a repository nothing has downloaded yet.
 
-    No file to ask, so a vision repo is charged as if its projector opens images, the
-    same direction ``include_mmproj`` already takes. Read off the config rather than a
-    Hub listing: ``_gguf_resident_file_gb`` subtracts this term and must pair with it
-    without spending a listing per settings change.
+    No file to ask, so a vision repo is charged as if its projector opens images, as
+    ``include_mmproj`` already does. Off the config, not a Hub listing, because
+    ``_gguf_resident_file_gb`` subtracts this term and pairs with it on every settings
+    change.
     """
     from core.inference.llama_cpp import (
         _child_effective_mmproj,
@@ -9998,9 +9997,8 @@ def _remote_opens_vision_mmproj(
         and not disable_vision
         and not extra_args_disable_mmproj(llama_extra_args)
     ):
-        # The download will emit one, so it takes the precedence slot an emitted
-        # --mmproj holds at launch. Named by its repo because nothing has fetched it:
-        # unreadable classifies as image-capable, the direction include_mmproj takes.
+        # The download will emit one, so it takes the emitted slot. Named by its repo
+        # because nothing has fetched it, and unreadable classifies as image-capable.
         emitted = str(getattr(config, "gguf_hf_repo", None) or getattr(config, "identifier", None))
     return _mmproj_opens_images(
         _child_effective_mmproj(emitted, llama_extra_args, {} if disable_vision else None)
@@ -10045,8 +10043,8 @@ def _gguf_runtime_bytes(
         )
 
         # load_model raises the pair for an image-projector launch, so price that pair
-        # here too: the panel would otherwise quote, and admission approve against, a
-        # micro-batch the child does not run at.
+        # here too, or the panel quotes and admission approves a micro-batch the child
+        # does not run at.
         n_batch, n_ubatch = _batch_ubatch_for_mmproj(
             not is_diffusion and _mmproj_opens_images(launch_vision_mmproj),
             n_batch,
@@ -10378,9 +10376,9 @@ def _remote_gguf_compute_reserve_gb(
     else, a drafter for instance, can hold it at zero the way it already holds
     _estimate_gguf_kv_gb at zero. The arithmetic is unchanged.
 
-    ``opens_vision_mmproj`` is the same raise load_model will apply once the download
-    finishes; without it the guard admits an uncached vision load against a micro-batch
-    four times smaller than the one it then launches with.
+    ``opens_vision_mmproj`` is the raise load_model applies once the download finishes;
+    without it the guard admits an uncached vision load against a micro-batch four times
+    smaller than the one it launches with.
     """
     # remote dims are unreadable; only the kq mask, linear in ubatch x ctx, can be sized here
     from core.inference.llama_cpp import _batch_ubatch_for_mmproj
@@ -10830,10 +10828,6 @@ def _estimate_gguf_required_gb(
                 n_devices = n_devices,
                 tensor_parallel = tensor_parallel,
                 is_diffusion = is_diffusion,
-                # Same reasoning as include_mmproj above: nothing here holds the file,
-                # so a repo that ships a projector is charged as if it opens images.
-                # From the config, not the listing, because _gguf_resident_file_gb
-                # subtracts this exact term and cannot spend a Hub listing to pair.
                 opens_vision_mmproj = _remote_opens_vision_mmproj(
                     config, llama_extra_args, disable_vision
                 ),
@@ -11264,8 +11258,8 @@ def _gguf_resident_file_gb(
             0,
             llama_extra_args,
             model_identifier = getattr(config, "identifier", None),
-            # Paired with the arm above, which raises the micro-batch for a projector
-            # launch; a term added at 2048 and taken away at 512 moves the files figure.
+            # Paired with the arm above: a term added at 2048 and taken away at 512
+            # would move the weights figure by the difference.
             launch_vision_mmproj = _launch_vision_mmproj(config, llama_extra_args, disable_vision),
         )
     else:
