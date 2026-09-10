@@ -9274,3 +9274,181 @@ def test_a_speed_off_plan_stages_the_dense_experts_the_load_will_open(monkeypatc
     assert "transformer/diffusion_pytorch_model.safetensors" in staged
     assert "transformer_2/diffusion_pytorch_model.safetensors" in staged
     assert not any(f.endswith(".pt") for f in staged)
+
+
+def _cuda_plan_target(monkeypatch, video_mod, *, free_gib):
+    """Point the planning path at a cuda card of ``free_gib``, off the test host's own hardware."""
+    import torch
+
+    from core.inference.diffusion_device import DiffusionDeviceTarget
+    from core.inference.diffusion_memory import DeviceMemory
+
+    target = DiffusionDeviceTarget(
+        device = "cuda",
+        dtype = torch.bfloat16,
+        backend = "cuda",
+        vendor = "nvidia",
+        supports_model_cpu_offload = True,
+        supports_default_torch_compile = True,
+        supports_pinned_transfer = True,
+    )
+    monkeypatch.setattr(video_mod, "resolve_diffusion_device_target", lambda **kw: target)
+    monkeypatch.setattr(
+        video_mod,
+        "settled_snapshot_device_memory",
+        lambda t, *a, **k: DeviceMemory(
+            backend = "cuda",
+            device = "cuda",
+            memory_kind = "discrete_vram",
+            free_mib = int(free_gib * 1024),
+            total_mib = int(free_gib * 1024),
+        ),
+    )
+
+
+def _a14b_plan(monkeypatch):
+    """The A14B repo pair the seeded-plan tests resolve against."""
+    import core.inference.video_denoiser_prequant as dq
+
+    _plan_api(
+        monkeypatch,
+        {
+            "Wan-AI/Wan2.2-T2V-A14B-Diffusers": [
+                _PlanSibling("model_index.json", 1000),
+                _PlanSibling("transformer/config.json", 1000),
+                _PlanSibling("transformer/diffusion_pytorch_model.safetensors", 28_000_000_000),
+                _PlanSibling("transformer_2/config.json", 1000),
+                _PlanSibling("transformer_2/diffusion_pytorch_model.safetensors", 28_000_000_000),
+                _PlanSibling("text_encoder/model-00001-of-00001.safetensors", 11_000_000_000),
+                _PlanSibling("vae/diffusion_pytorch_model.safetensors", 500_000_000),
+            ],
+            "unsloth/Wan2.2-T2V-A14B-NVFP4": [
+                _PlanSibling("Wan2.2-T2V-A14B-NVFP4.pt", 8_000_000_000),
+                _PlanSibling("Wan2.2-T2V-A14B-transformer_2-NVFP4.pt", 8_100_000_000),
+            ],
+        },
+    )
+    sources = {
+        "transformer": types.SimpleNamespace(
+            kind = "repo",
+            location = "unsloth/Wan2.2-T2V-A14B-NVFP4",
+            filename = "Wan2.2-T2V-A14B-NVFP4.pt",
+            fallback_filename = None,
+        ),
+        "transformer_2": types.SimpleNamespace(
+            kind = "repo",
+            location = "unsloth/Wan2.2-T2V-A14B-NVFP4",
+            filename = "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt",
+            fallback_filename = None,
+        ),
+    }
+    monkeypatch.setattr(dq, "denoiser_prequant_sources", lambda fam, scheme, base: sources)
+
+
+def test_a_plan_that_still_offloads_at_artifact_size_stages_the_dense_experts(monkeypatch):
+    """A card the ARTIFACT-sized model still has to offload on cannot seed: offload hooks move the
+    DiT and torchao tensors reject the move, so ``load_pipeline`` drops the seed and builds the
+    dense bf16 denoiser. The plan has to reach the same verdict, or it drops 56 GB of shards the
+    load then tops up inline, outside its progress, cancel and disk preflight."""
+    import core.inference.video as video_mod
+
+    _a14b_plan(monkeypatch)
+    # The scheme itself is settled here so the staging assertions do not depend on the test host's card.
+    monkeypatch.setattr(video_mod, "_video_auto_denoiser_scheme", lambda fam, **kw: "nvfp4")
+    _cuda_plan_target(monkeypatch, video_mod, free_gib = 24)
+
+    plan = VideoBackend().download_plan(
+        "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+        model_kind = "pipeline",
+        transformer_quant = "nvfp4",
+    )
+
+    staged = {f for e in plan["entries"] for f in e["files"]}
+    assert "transformer/diffusion_pytorch_model.safetensors" in staged
+    assert "transformer_2/diffusion_pytorch_model.safetensors" in staged
+    assert not any(f.endswith(".pt") for f in staged)
+
+
+def test_a_card_the_artifact_fits_on_still_stages_the_artifacts(monkeypatch):
+    """The other side of the same gate: where the artifact-sized plan stays resident the load seeds,
+    so the dense shards stay out of the pull."""
+    import core.inference.video as video_mod
+
+    _a14b_plan(monkeypatch)
+    monkeypatch.setattr(video_mod, "_video_auto_denoiser_scheme", lambda fam, **kw: "nvfp4")
+    _cuda_plan_target(monkeypatch, video_mod, free_gib = 180)
+
+    plan = VideoBackend().download_plan(
+        "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+        model_kind = "pipeline",
+        transformer_quant = "nvfp4",
+    )
+
+    staged = {f for e in plan["entries"] for f in e["files"]}
+    assert "Wan2.2-T2V-A14B-NVFP4.pt" in staged
+    assert "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt" in staged
+    assert not any(
+        f.endswith("diffusion_pytorch_model.safetensors") and f.startswith("transformer")
+        for f in staged
+    )
+
+
+def test_an_offloading_memory_mode_stages_the_dense_experts_on_any_card(monkeypatch):
+    """The user's own memory_mode reaches the same verdict on a card with room to spare: an
+    explicit offload request is an offload policy, and an offloaded load will not seed."""
+    import core.inference.video as video_mod
+
+    _a14b_plan(monkeypatch)
+    monkeypatch.setattr(video_mod, "_video_auto_denoiser_scheme", lambda fam, **kw: "nvfp4")
+    _cuda_plan_target(monkeypatch, video_mod, free_gib = 180)
+
+    plan = VideoBackend().download_plan(
+        "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+        model_kind = "pipeline",
+        transformer_quant = "nvfp4",
+        memory_mode = "low_vram",
+    )
+
+    staged = {f for e in plan["entries"] for f in e["files"]}
+    assert "transformer/diffusion_pytorch_model.safetensors" in staged
+    assert not any(f.endswith(".pt") for f in staged)
+
+
+def test_a_dense_encoder_fallback_that_forces_offload_also_drops_the_seed(
+    fake_runtime, monkeypatch
+):
+    """The pre-cast encoder is best-effort, and its fallback re-plans at the dense bf16 size (~11 GB
+    more for ltx-2). That re-plan can select offload, and an offloading load cannot seed: offload
+    hooks move the DiT with ``Module.to()``, which torchao quantized tensors reject. The seed
+    decision has to be re-taken on the plan the load ends up with, not only on the first one."""
+    import core.inference.diffusion_te_prequant as te
+    import core.inference.video as video_mod
+
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
+    monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(video_mod, "quantize_transformer", lambda *a, **k: None)
+    calls, _modules = _stub_denoiser_seed(monkeypatch)
+    # A pre-cast encoder is budgeted for and then does not land, which is what re-plans at bf16.
+    monkeypatch.setattr(te, "te_prequant_budget_scale", lambda fam, **kwargs: 0.5)
+    monkeypatch.setattr(te, "te_prequant_pipe_kwargs", lambda fam, base, **kwargs: {})
+    real_plan = video_mod.plan_diffusion_memory
+    seen: list = []
+
+    def _plan(**kwargs):
+        seen.append(kwargs.get("model_dense_mib"))
+        planned = real_plan(**kwargs)
+        # The artifact-sized plan with the pre-cast encoder fits; every plan after it offloads.
+        return planned if len(seen) == 1 else dataclasses.replace(planned, offload_policy = "model")
+
+    monkeypatch.setattr(video_mod, "plan_diffusion_memory", _plan)
+    _stub_apply_memory_plan(monkeypatch, video_mod)
+
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-T2V-A14B-Diffusers",
+        model_kind = "pipeline",
+        transformer_quant = "nvfp4",
+    )
+
+    assert calls == [], "no checkpoint may be seeded into a load that will offload the DiT"
+    assert status["transformer_quant"] is None

@@ -1474,3 +1474,52 @@ def test_both_experts_of_an_moe_resolve_to_one_claimed_repo():
     # Nothing to claim when nothing resolves: an unseeded load keeps its dense shards.
     assert VideoBackend._denoiser_prequant_repo_ids(a14b, "int8", a14b.base_repo) == ()
     assert VideoBackend._denoiser_prequant_repo_ids(a14b, "auto", a14b.base_repo) == ()
+
+
+def test_the_seeded_denoiser_artifact_is_fetched_under_the_load_cancel_event(monkeypatch):
+    """The plan that drops the dense DiT shards makes the artifact the one file this load cannot
+    come up without, and it is 2.8 to 16.1 GB. Left to the injection it arrives through a plain
+    ``hf_hub_download`` inside ``load_prequantized_transformer``, which holds no cancel event, so an
+    unload or a superseding load cannot interrupt it. Prefetched beside the conditioner it is
+    cancellable and resumable like every other load download."""
+    import threading
+
+    from core.inference import video as vid
+    from core.inference.video_families import detect_video_family
+
+    wan = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    assert wan is not None and not wan.modular_workflow
+    backend = vid.VideoBackend()
+    backend._load_token = 1
+    backend._loading = vid._VideoLoadingState(repo_id = wan.base_repo, base_repo = wan.base_repo)
+    monkeypatch.setattr(vid, "_detect_load_family", lambda *a, **k: wan)
+    monkeypatch.setattr(vid, "_assert_pick_is_not_speech", lambda *a, **k: None)
+    monkeypatch.setattr(backend, "_h3_planned_auto_denoiser_scheme", lambda *a, **k: None)
+    monkeypatch.setattr(backend, "_video_planned_auto_denoiser_scheme", lambda *a, **k: "nvfp4")
+    monkeypatch.setattr(backend, "_denoiser_prequant_verified", lambda *a, **k: True)
+    monkeypatch.setattr(backend, "_run_load_h3_native", lambda **kwargs: None)
+    monkeypatch.setattr(backend, "load_pipeline", lambda **kwargs: None)
+    fetched: list = []
+    import utils.hf_xet_fallback as xet
+
+    monkeypatch.setattr(
+        xet,
+        "hf_hub_download_with_xet_fallback",
+        lambda repo, filename, token = None, **kwargs: fetched.append(
+            (repo, filename, kwargs.get("cancel_event"))
+        ),
+    )
+    cancel = threading.Event()
+
+    backend._run_load(
+        repo_id = wan.base_repo,
+        local_files_only = True,
+        _load_token = 1,
+        _cancel_event = cancel,
+        transformer_quant = "nvfp4",
+    )
+
+    assert [(r, f) for r, f, _ in fetched] == [
+        ("unsloth/Wan2.2-TI2V-5B-NVFP4", "Wan2.2-TI2V-5B-NVFP4.pt")
+    ]
+    assert fetched[0][2] is cancel
