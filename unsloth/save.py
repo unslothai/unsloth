@@ -5424,8 +5424,8 @@ def _push_merged_to_hub_revision(save_kwargs):
             raise
         except EntryNotFoundError:
             card = ModelCard.load(card_path) if card_path.is_file() else None
-        if card is None:
-            model = save_kwargs["model"]
+        model = save_kwargs["model"]
+        if card is None or isinstance(model, PeftModel):
             base_model = model.config._name_or_path
             if os.path.isdir(base_model):
                 original_model_id = get_original_model_id(base_model)
@@ -5434,6 +5434,7 @@ def _push_merged_to_hub_revision(save_kwargs):
                     if original_model_id is not None and not os.path.exists(original_model_id)
                     else repo_id
                 )
+        if card is None:
             card = ModelCard(
                 MODEL_CARD.format(
                     username = username,
@@ -5443,6 +5444,8 @@ def _push_merged_to_hub_revision(save_kwargs):
                     extra = "unsloth",
                 )
             )
+        if isinstance(model, PeftModel):
+            card.data.base_model = base_model
         if save_kwargs["datasets"]:
             card.data.datasets = save_kwargs["datasets"]
         card.data.tags = list(

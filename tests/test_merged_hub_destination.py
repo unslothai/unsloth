@@ -354,6 +354,23 @@ def test_remote_destination_card_survives(saving, revision, model_class):
     assert records["downloads"] == [("owner/model", "README.md", revision, "explicit-fixture")]
 
 
+@pytest.mark.parametrize("revision", [None, "candidate", "refs/pr/3"])
+def test_reused_destination_refreshes_merged_adapter_provenance(saving, revision):
+    env, records, _ = saving
+    records["remote_cards"] = {
+        revision
+        or "main": "---\nbase_model: previous/base\nlicense: mit\ncustom_field: retained\n---\nUser description"
+    }
+    env["unsloth_generic_push_to_hub_merged"](
+        PeftModel(), "owner/model", revision = revision, create_pr = revision is None
+    )
+    card = ModelCard(records["uploads"][0]["files"]["README.md"])
+    assert card.data.base_model == "base/model"
+    assert card.data.license == "mit"
+    assert card.data.to_dict()["custom_field"] == "retained"
+    assert "User description" in card.content
+
+
 @pytest.mark.parametrize("error", [OSError, LocalEntryNotFoundError])
 def test_card_download_failure_does_not_overwrite_remote_card(saving, error):
     env, records, _ = saving
