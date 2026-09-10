@@ -9,6 +9,7 @@ import ntpath
 import os
 import platform
 import re
+import stat as stat_module
 import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Iterable
@@ -544,6 +545,13 @@ def _nothing_at(path: Path, *, ending: str = "") -> bool:
     try:
         if not ending:
             os.lstat(path)
+            return False
+        # A link at the directory itself is something the user put there, and scandir follows
+        # it: an empty target, or a dangling one whose volume is not mounted right now, would
+        # read as an empty directory and the styles placed at that target would be hidden behind
+        # the pin. lstat, so the link and not its target answers, and so an unreadable parent
+        # still raises into the handler below rather than being called absence.
+        if stat_module.S_ISLNK(os.lstat(path).st_mode) or _is_reparse_point(path):
             return False
         with os.scandir(path) as entries:
             return not any(entry.name.lower().endswith(ending) for entry in entries)

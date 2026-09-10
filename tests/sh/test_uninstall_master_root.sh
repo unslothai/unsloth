@@ -43,13 +43,16 @@ done
 
 # The real block, anchored on its own first line so a rename fails loudly instead of vacuously.
 BLOCK_FILE=$(mktemp -p "$_TMP_ROOT")
-sed -n '/^[[:space:]]*_mr_root="\$(_master_root)"/,/^[[:space:]]*# end master-root children$/p' "$UNINSTALL_SH" > "$BLOCK_FILE"
+sed -n '/^[[:space:]]*_mr_root="\$_MASTER_ROOT_SAVED"/,/^[[:space:]]*# end master-root children$/p' "$UNINSTALL_SH" > "$BLOCK_FILE"
 [ -s "$BLOCK_FILE" ] || { echo "FAIL: master-root removal block not extracted"; exit 1; }
 grep -q 'unsloth-studio-owned' "$BLOCK_FILE" || { echo "FAIL: extracted block lost the marker gate"; exit 1; }
 
 run_block() {
+    # The real script resolves the master root ONCE before anything is removed, because the note
+    # it can read lives inside a tree the custom-root loop deletes. The block takes that saved
+    # value, so the harness has to seed it the same way.
     ( set -e; HOME="$1"; UNSLOTH_HOME="$2"; export HOME UNSLOTH_HOME
-      . "$HELPERS_FILE"; . "$BLOCK_FILE" ) || true
+      . "$HELPERS_FILE"; _MASTER_ROOT_SAVED="$(_master_root)"; . "$BLOCK_FILE" ) || true
 }
 
 echo "== an owned master root loses its runtime children =="
@@ -204,6 +207,35 @@ printf '%s\n' "$HOME/.unsloth" > "$HOME/.unsloth/studio/share/.unsloth-master-ro
 got=$( ( HOME="$HOME"; unset UNSLOTH_HOME; export HOME; . "$HELPERS_FILE"; _master_root ) )
 assert_eq "a note naming the default root is still refused" "$got" ""
 rm -f "$HOME/.unsloth/studio/share/.unsloth-master-root"
+
+echo "== a padded Studio override still finds the note setup.sh wrote =="
+# setup.sh trims UNSLOTH_STUDIO_HOME before choosing where to write, so the note for
+# UNSLOTH_STUDIO_HOME="  /mnt/studio  " lands at /mnt/studio/share. Appending to the padded
+# value looked somewhere that does not exist: the note was never found, while the removal loop
+# trimmed the same override and took /mnt/studio, stranding the master-root runtimes.
+PADDED="$_TMP_ROOT/padded-studio"
+PADDED_MASTER="$_TMP_ROOT/padded-master"
+mkdir -p "$PADDED/share" "$PADDED_MASTER"
+printf '%s\n' "$PADDED_MASTER" > "$PADDED/share/.unsloth-master-root"
+got=$( ( HOME="$HOME"; unset UNSLOTH_HOME; UNSLOTH_STUDIO_HOME="  $PADDED  "
+         export HOME UNSLOTH_STUDIO_HOME; . "$HELPERS_FILE"; _master_root ) )
+assert_eq "a padded override finds the note" "$got" "$PADDED_MASTER"
+got=$( ( HOME="$HOME"; unset UNSLOTH_HOME UNSLOTH_STUDIO_HOME; STUDIO_HOME="  $PADDED  "
+         export HOME STUDIO_HOME; . "$HELPERS_FILE"; _master_root ) )
+assert_eq "the padded alias finds it too" "$got" "$PADDED_MASTER"
+
+echo "== only the installer's own stale locks are swept =="
+# prebuilt_core.py moves a lock aside as <name>.stale.<pid>. A bare .*.install.lock.stale.* glob
+# also matched an unrelated hidden file, and in a root the user chose that file is theirs.
+STALE="$_TMP_ROOT/stale-root"
+mkdir -p "$STALE"
+: > "$STALE/.node.install.lock.stale.4242"
+: > "$STALE/.backup.install.lock.stale.copy"
+: > "$STALE/.llama.cpp.install.lock.stale.notapid"
+run_block "$HOME" "$STALE"
+assert_nodir "the installer's own stale lock goes" "$STALE/.node.install.lock.stale.4242"
+assert_present "an unrelated hidden file stays" "$STALE/.backup.install.lock.stale.copy"
+assert_present "a non-numeric suffix stays" "$STALE/.llama.cpp.install.lock.stale.notapid"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

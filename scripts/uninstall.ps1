@@ -119,6 +119,12 @@ Environment:
         }
     }
 
+    # The exact shape prebuilt_core.py leaves behind when it takes over an abandoned lock: one of
+    # the component lock names, ".stale.", and the pid it moved aside. The leading dot alone was
+    # not enough, since ".backup.install.lock.stale.copy" is dotted too, and in a user-chosen
+    # master root that file is theirs. uninstall.sh applies the same shape.
+    $script:StaleLockPattern = '^\.(llama\.cpp|node|whisper\.cpp|sd\.cpp)\.install\.lock\.stale\.[0-9]+$'
+
     # An install lock, and only an install lock.
     #
     # prebuilt_core.install_lock creates these with os.open(O_CREAT | O_EXCL) and writes a pid,
@@ -1038,7 +1044,7 @@ Environment:
         # Every other master-root child below is individually marker-gated so a user-chosen root
         # is never removed wholesale; this was the one hole in that rule. Kept rather than pruned:
         # data left behind is recoverable and printed, a deleted file is not. Mirrors uninstall.sh.
-        $flatMaster = _MasterRoot
+        $flatMaster = $masterRootToStop
         if ($flatMaster -and ($r.TrimEnd('\', '/') -ieq $flatMaster.TrimEnd('\', '/'))) {
             _Substep "keeping $r`: UNSLOTH_HOME and the Studio root name the same directory," "Yellow"
             _Substep "so removing it would take whatever else you keep there. Delete it by hand" "Yellow"
@@ -1084,7 +1090,11 @@ Environment:
     # ~/.unsloth ones below: <master> is a directory the user chose and may hold their files, so
     # only a tree an Unsloth installer marked is ours to delete. The locks and .staging are ours
     # by name (prebuilt_core.py) and carry no marker. Mirrors scripts/uninstall.sh.
-    $masterRoot = _MasterRoot
+    # $masterRootToStop, not a fresh _MasterRoot: that resolver can read its answer from a note
+    # inside a Studio tree, and the custom-root loop above has already removed that tree, so a
+    # second call returns nothing and the marked llama.cpp, Node and whisper.cpp siblings are
+    # stranded. It was resolved before the stop pass, which is before any deletion.
+    $masterRoot = $masterRootToStop
     if ($masterRoot -and (_IsUnsafeRoot $masterRoot)) {
         _Substep "refusing to remove unsafe path: $masterRoot" "Yellow"
         $masterRoot = $null
@@ -1111,11 +1121,10 @@ Environment:
             _RemovePath $masterStaging
         }
         if (Test-Path -LiteralPath $masterRoot) {
-            # ".*" and not "*": install_node_prebuilt renames <root>\.<name>.install.lock, so the
-            # leading dot is part of the name. Without it this also matches, say, a user's
-            # "backup.install.lock.stale.copy", which is not ours to delete in their own root.
+            # $script:StaleLockPattern, not a glob: the shape has to be the installer's own,
+            # name and numeric pid both, or a user's file in their own root is taken.
             foreach ($stale in @(Get-ChildItem -LiteralPath $masterRoot -Force -ErrorAction SilentlyContinue |
-                                 Where-Object { $_.Name -like ".*.install.lock.stale.*" })) {
+                                 Where-Object { $_.Name -match $script:StaleLockPattern })) {
                 _RemoveLockFile $stale.FullName
             }
         }
@@ -1151,9 +1160,10 @@ Environment:
         # Taking over an abandoned lock renames it to .stale.<pid> before unlinking; a crash
         # between the two strands the rename, so sweep any leftovers. -Force sees dotted names.
         if (Test-Path -LiteralPath $defaultUnslothHome) {
-            # -like, not -Filter: the Win32 filter is unreliable for names with several dots.
+            # -match, not -Filter: the Win32 filter is unreliable for names with several dots,
+            # and only the installer's exact shape is ours to remove.
             foreach ($stale in @(Get-ChildItem -LiteralPath $defaultUnslothHome -Force -ErrorAction SilentlyContinue |
-                                 Where-Object { $_.Name -like ".*.install.lock.stale.*" })) {
+                                 Where-Object { $_.Name -match $script:StaleLockPattern })) {
                 _RemoveLockFile $stale.FullName
             }
         }

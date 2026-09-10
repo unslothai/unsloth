@@ -496,9 +496,16 @@ _master_root() {
     # first readable note wins; the deny list and the marker gate below still apply to whatever
     # it names, so a stale note cannot license a removal the environment could not.
     if [ -z "$_mr" ]; then
+        # Trimmed exactly as _custom_studio_roots trims these, and as setup.sh trimmed them when
+        # it chose where to write the note. UNSLOTH_STUDIO_HOME="  /mnt/studio  " puts the note
+        # at /mnt/studio/share, and appending to the padded value looked somewhere that does not
+        # exist: the note was never found, while the loop below still removed /mnt/studio and
+        # left the master-root runtimes behind.
+        _mr_ush=$(printf '%s' "${UNSLOTH_STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+        _mr_sh=$(printf '%s' "${STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
         for _mr_conf in "$HOME/.unsloth/studio/share/.unsloth-master-root" \
-                        "${UNSLOTH_STUDIO_HOME:-}/share/.unsloth-master-root" \
-                        "${STUDIO_HOME:-}/share/.unsloth-master-root"; do
+                        "${_mr_ush}/share/.unsloth-master-root" \
+                        "${_mr_sh}/share/.unsloth-master-root"; do
             case "$_mr_conf" in /share/*) continue ;; esac
             [ -f "$_mr_conf" ] || continue
             # One line, first only: a note that grew a second line is not one we wrote.
@@ -669,6 +676,11 @@ _unsloth_uninstall_main() {
     _pkill_studio
 
     echo "Removing data and install directories..."
+    # Resolved ONCE, before anything is deleted. _master_root can read its answer from a note
+    # inside a Studio tree, and the custom-root loop below removes that tree, so a later call
+    # returns nothing and the marked llama.cpp, Node and whisper.cpp siblings are stranded. Every
+    # use in this function takes this value.
+    _MASTER_ROOT_SAVED="$(_master_root)"
     _custom_studio_roots | while IFS= read -r _custom_root; do
         [ -n "$_custom_root" ] || continue
         if _is_unsafe_root "$_custom_root"; then
@@ -694,7 +706,7 @@ _unsloth_uninstall_main() {
         # not. Canonicalised on both sides, or a symlinked path compares unequal to itself.
         _crf_canon=$(CDPATH= cd -P -- "$_custom_root" 2>/dev/null && pwd -P) || _crf_canon=""
         [ -n "$_crf_canon" ] || _crf_canon="$_custom_root"
-        _crf_master="$(_master_root)"
+        _crf_master="$_MASTER_ROOT_SAVED"
         if [ -n "$_crf_master" ] && [ "$_crf_canon" = "$_crf_master" ]; then
             echo "  keeping $_custom_root: UNSLOTH_HOME and the Studio root name the same" >&2
             echo "  directory, so removing it would take whatever else you keep there." >&2
@@ -746,7 +758,7 @@ _unsloth_uninstall_main() {
     # like the ~/.unsloth ones below: <master> is a directory the user chose and may hold their
     # files, so only a tree an Unsloth installer marked is ours to delete. The locks and .staging
     # are ours by name (prebuilt_core.py) and carry no marker.
-    _mr_root="$(_master_root)"
+    _mr_root="$_MASTER_ROOT_SAVED"
     if [ -n "$_mr_root" ]; then
         if _is_unsafe_root "$_mr_root"; then
             echo "  refusing to remove unsafe path: $_mr_root" >&2
@@ -773,8 +785,18 @@ _unsloth_uninstall_main() {
             # anything left in it here is not ours. rmdir, not _remove_path: in a user-chosen
             # root a recursive delete would take files an install was content to leave.
             rmdir "$_mr_root/.staging" 2>/dev/null || true
-            for _mr_stale in "$_mr_root"/.*.install.lock.stale.*; do
-                [ -e "$_mr_stale" ] && _remove_lock_file "$_mr_stale"
+            # The exact shape prebuilt_core.py leaves: one of the component lock names above,
+            # ".stale.", and the pid it moved aside. A bare .*.install.lock.stale.* also matched
+            # an unrelated hidden file such as .backup.install.lock.stale.copy, and in a root the
+            # user chose that file is theirs.
+            for _mr_lock in .llama.cpp.install.lock .node.install.lock \
+                    .whisper.cpp.install.lock .sd.cpp.install.lock; do
+                for _mr_stale in "$_mr_root/$_mr_lock".stale.*; do
+                    case "${_mr_stale##*.stale.}" in
+                        ''|*[!0-9]*) continue ;;
+                    esac
+                    { [ -e "$_mr_stale" ] || [ -L "$_mr_stale" ]; } && _remove_lock_file "$_mr_stale"
+                done
             done
             # Only when nothing of the user's is left; rmdir refuses a non-empty directory.
             rmdir "$_mr_root" 2>/dev/null || true
@@ -827,8 +849,17 @@ _unsloth_uninstall_main() {
     # Taking over an abandoned lock renames it to .stale.<pid> before unlinking
     # (install_node_prebuilt.py); a crash between the two strands the rename, and a stranded one
     # blocks the rmdir below. Unmatched globs stay literal, hence the existence test.
-    for _stale in "$HOME"/.unsloth/.*.install.lock.stale.*; do
-        [ -e "$_stale" ] && _remove_lock_file "$_stale"
+    # Same shape restriction as the master-root sweep above: the help text promises that
+    # anything else kept under ~/.unsloth is left in place, and .backup.install.lock.stale.copy
+    # is dotted too.
+    for _lock in .llama.cpp.install.lock .node.install.lock \
+            .whisper.cpp.install.lock .sd.cpp.install.lock; do
+        for _stale in "$HOME/.unsloth/$_lock".stale.*; do
+            case "${_stale##*.stale.}" in
+                ''|*[!0-9]*) continue ;;
+            esac
+            { [ -e "$_stale" ] || [ -L "$_stale" ]; } && _remove_lock_file "$_stale"
+        done
     done
     # ROCm-on-WSL helper artifacts (librocdxg clone, smoke-test venv); removing them frees the rmdir.
     _remove_path "$HOME/.unsloth/librocdxg"

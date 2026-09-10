@@ -1189,3 +1189,46 @@ def test_the_layout_unsloth_creates_still_defers_to_a_legacy_home(tmp_path):
     sr._setup_cache_env()
 
     assert "DATA_DESIGNER_HOME" not in os.environ
+
+
+def test_a_linked_style_library_is_configuration_not_an_empty_directory(tmp_path):
+    """scandir follows a link, so a stylelib symlink to an empty directory read as empty.
+
+    The link is the user sending their styles to another volume. Treating it as nothing let
+    MPLCONFIGDIR move, and the styles placed at that target later were then hidden behind the
+    pin. The Data Designer probe already checks the link itself for the same reason.
+    """
+    config = _matplotlib_config_dir(tmp_path / "home")
+    config.mkdir(parents = True)
+    elsewhere = tmp_path / "styles-volume"
+    elsewhere.mkdir()  # empty, which is the whole point
+    (config / "stylelib").symlink_to(elsewhere, target_is_directory = True)
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert "MPLCONFIGDIR" not in os.environ
+
+
+def test_a_dangling_style_library_link_is_not_read_as_absence(tmp_path):
+    """The target volume is not mounted right now. The link is still the user's."""
+    config = _matplotlib_config_dir(tmp_path / "home")
+    config.mkdir(parents = True)
+    (config / "stylelib").symlink_to(tmp_path / "never-mounted", target_is_directory = True)
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert "MPLCONFIGDIR" not in os.environ
+
+
+def test_a_plain_empty_style_library_still_lets_the_pin_through(tmp_path):
+    """The rule above must not swallow the pre-existing one: matplotlib creates stylelib on
+    import, so an ordinary empty one is not configuration."""
+    config = _matplotlib_config_dir(tmp_path / "home")
+    (config / "stylelib").mkdir(parents = True)
+    sr = _load_storage_roots()
+
+    sr._setup_cache_env()
+
+    assert os.environ["MPLCONFIGDIR"] == str(tmp_path / "studio" / "cache" / "matplotlib")

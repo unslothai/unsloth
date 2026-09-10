@@ -634,9 +634,11 @@ def test_neither_uninstaller_recurses_into_an_install_lock_path():
         # tokens above had stopped matching and this loop proved nothing.
         assert hits >= 4, (remover, hits)
 
-    # The rename install_node_prebuilt makes keeps the leading dot, so a glob without one also
-    # matches names the user owns in their own root.
-    assert '".*.install.lock.stale.*"' in ps
+    # The rename install_node_prebuilt makes keeps the leading dot, and a glob without one also
+    # matched names the user owns in their own root. The dot alone turned out not to be enough
+    # either, so the sweep now matches the installer's full shape; the rule is held by
+    # test_neither_uninstaller_sweeps_a_stale_lock_name_it_did_not_make below.
+    assert "install.lock.stale" in ps
     assert '"*.install.lock.stale.*"' not in ps
 
 
@@ -811,13 +813,63 @@ def test_neither_uninstaller_takes_a_studio_root_that_is_also_the_master_root():
 
     sh_block = _slice(sh, "_crf_canon=", "_remove_root_recording_db \"$_custom_root\"")
     sh_code = "\n".join(l for l in sh_block.splitlines() if not l.lstrip().startswith("#"))
-    assert "_master_root" in sh_code and "continue" in sh_code
+    assert "_MASTER_ROOT_SAVED" in sh_code and "continue" in sh_code
     # Canonicalised on both sides, or a symlinked path compares unequal to itself and the guard
     # never fires on the very layout it is for.
     assert "cd -P --" in sh_code
 
-    ps_block = _slice(ps, "$flatMaster = _MasterRoot", "_RemoveRootRecordingDb $r")
+    ps_block = _slice(ps, "$flatMaster = $masterRootToStop", "_RemoveRootRecordingDb $r")
     ps_code = "\n".join(l for l in ps_block.splitlines() if not l.lstrip().startswith("#"))
-    assert "_MasterRoot" in ps_code and "continue" in ps_code
+    assert "$masterRootToStop" in ps_code and "continue" in ps_code
     # Case-insensitive: Windows paths differing only in case are the same directory.
     assert "-ieq" in ps_code
+
+
+def test_neither_uninstaller_re_resolves_the_master_root_after_deleting_it():
+    """_master_root can read its answer from a note INSIDE a Studio tree.
+
+    The custom-root loop removes that tree, so a second call after it returns nothing and the
+    marked llama.cpp, Node and whisper.cpp siblings are stranded: the very failure the note was
+    added to prevent, reintroduced by asking too late. Both scripts resolve it once, before
+    anything is deleted, and every later use takes that value.
+    """
+    sh = UNINSTALL_SH.read_text(encoding = "utf-8")
+    ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
+
+    sh_code = "\n".join(l for l in sh.splitlines() if not l.lstrip().startswith("#"))
+    saved = sh_code.index('_MASTER_ROOT_SAVED="$(_master_root)"')
+    removal = sh_code.index("_custom_studio_roots | while")
+    # Resolved before the first deletion, and nothing asks again after it. Calls BEFORE the
+    # removal loop are fine: _custom_studio_roots and _owned_sd_cpp_roots both enumerate while
+    # every tree is still on disk.
+    assert saved < removal
+    after = sh_code[removal:]
+    assert "_master_root" not in after, after[: after.index("_master_root") + 200]
+    # Both consumers take the saved value: the flat-layout guard and the children block.
+    assert after.count('"$_MASTER_ROOT_SAVED"') >= 2
+
+    ps_code = "\n".join(l for l in ps.splitlines() if not l.lstrip().startswith("#"))
+    ps_saved = ps_code.index("$masterRootToStop = _MasterRoot")
+    ps_removal = ps_code.index("_RemoveRootRecordingDb $r")
+    assert ps_saved < ps_removal
+    ps_after = ps_code[ps_removal:]
+    assert "_MasterRoot" not in ps_after, ps_after[: ps_after.index("_MasterRoot") + 200]
+    assert ps_after.count("$masterRootToStop") >= 1
+
+
+def test_neither_uninstaller_sweeps_a_stale_lock_name_it_did_not_make():
+    """prebuilt_core.py leaves <name>.stale.<pid>. A dotted glob also matched a user's own
+    ".backup.install.lock.stale.copy", and in a root the user chose that file is theirs.
+    Behaviour for the POSIX half is in tests/sh/test_uninstall_master_root.sh."""
+    sh = UNINSTALL_SH.read_text(encoding = "utf-8")
+    ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
+
+    sh_code = "\n".join(l for l in sh.splitlines() if not l.lstrip().startswith("#"))
+    assert ".*.install.lock.stale.*" not in sh_code
+    # A numeric pid, checked at both sweeps: the master root and the default home.
+    assert sh_code.count("*[!0-9]*) continue ;;") >= 2
+
+    ps_code = "\n".join(l for l in ps.splitlines() if not l.lstrip().startswith("#"))
+    assert '-like ".*.install.lock.stale.*"' not in ps_code
+    assert "$script:StaleLockPattern" in ps_code
+    assert "[0-9]+$" in ps_code
