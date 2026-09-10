@@ -723,6 +723,11 @@ def test_pandas_fallback_exports_a_schema_duckdb_will_not_take(tmp_path: Path):
     parquet_dir = tmp_path / "parquet-files"
     _write_parquet_rows(parquet_dir, [{"filename": "a.png", "text": "x"}])
 
+    # Decided from the schema, not from DuckDB raising: it refuses the option today, but if it
+    # ever disambiguated instead, EXCLUDE would drop the user's column and keep the virtual one.
+    from core.data_recipe.export import _parquet_files, _schema_uses_duckdb_helper_names
+
+    assert _schema_uses_duckdb_helper_names(_parquet_files(parquet_dir))
     assert not _stream_jsonl_from_parquet_with_duckdb(
         parquet_dir = parquet_dir,
         destination = tmp_path / "unused.jsonl",
@@ -889,3 +894,17 @@ def test_to_preview_jsonable_row_converts_each_column(tmp_path: Path):
     # A column that really is an image dict is still rendered as a preview payload.
     cell = to_preview_jsonable_row({"image": {"path": str(picture)}})["image"]
     assert cell["type"] == "image" and cell["mime"] == "image/jpeg"
+
+
+def test_a_column_named_file_row_number_also_survives(tmp_path: Path):
+    from core.data_recipe.export import _write_jsonl_from_parquet
+
+    parquet_dir = tmp_path / "parquet-files"
+    _write_parquet_rows(parquet_dir, [{"file_row_number": 7, "filename": "a.png", "label": "x"}])
+    destination = tmp_path / "out.jsonl"
+    _write_jsonl_from_parquet(parquet_dir, destination)
+    assert json.loads(destination.read_text().strip()) == {
+        "file_row_number": 7,
+        "filename": "a.png",
+        "label": "x",
+    }

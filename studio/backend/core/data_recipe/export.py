@@ -24,6 +24,10 @@ ExportFormat = Literal["jsonl", "parquet"]
 _JSONL_EXPORT_BATCH_ROWS = 8192
 # file_row_number, not row_number() OVER (PARTITION BY filename): a window with no ORDER BY is
 # undefined in DuckDB, and its parallel scan renumbered every query.
+# The virtual columns the ORDER BY below needs. A dataset carrying either name of its own cannot
+# be read this way: today DuckDB refuses the option outright, but were it ever to disambiguate
+# instead, the EXCLUDE would drop the user's column and keep the virtual one.
+_DUCKDB_HELPER_COLUMNS = ("filename", "file_row_number")
 _PARQUET_EXPORT_SQL = (
     "SELECT * EXCLUDE (filename, file_row_number) "
     "FROM read_parquet(?, filename=true, file_row_number=true) "
@@ -79,10 +83,29 @@ def _write_jsonl_rows(handle, rows: list[dict[str, Any]]) -> None:
         handle.write("\n")
 
 
+def _schema_uses_duckdb_helper_names(parquet_files: list[Path]) -> bool:
+    try:
+        import pyarrow.parquet as pyarrow_parquet  # type: ignore
+    except Exception:
+        return False
+    try:
+        return any(
+            name in _DUCKDB_HELPER_COLUMNS
+            for path in parquet_files
+            for name in pyarrow_parquet.ParquetFile(path).schema_arrow.names
+        )
+    except Exception:
+        return True
+
+
 def _stream_jsonl_from_parquet_with_duckdb(*, parquet_dir: Path, destination: Path) -> bool:
     try:
         import duckdb  # type: ignore
     except Exception:
+        return False
+
+    parquet_files = _parquet_files(parquet_dir)
+    if _schema_uses_duckdb_helper_names(parquet_files):
         return False
 
     try:
@@ -94,7 +117,7 @@ def _stream_jsonl_from_parquet_with_duckdb(*, parquet_dir: Path, destination: Pa
         # once. A shard list, not a glob DuckDB would re-expand over the companions.
         conn.execute(
             _PARQUET_EXPORT_SQL,
-            [[str(path.resolve()) for path in _parquet_files(parquet_dir)]],
+            [[str(path.resolve()) for path in parquet_files]],
         )
         # Arrow rather than a DataFrame, so this reads the same values the fallback below does: a
         # pandas round trip turns an int column holding nulls into floats and a DATE into midnight.
