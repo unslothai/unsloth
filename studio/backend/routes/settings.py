@@ -958,12 +958,15 @@ def _model_memory_reload_required() -> bool:
     if state is _NO_LAUNCH:
         return False
 
-    # A launch whose flags are not resolved yet has no state to compare, and the
-    # comparator reads None as "not governed by this policy". What it IS committed to
-    # is the toggle snapshot it took, so answer from that: a save that changes either
-    # toggle will not reach this child.
+    # A launch in flight has not resolved its flags yet, so there is no state of its
+    # own to compare and the comparator reads None as "not governed by this policy".
+    # What it IS committed to is the toggle snapshot it took, so answer from that.
+    #
+    # Whenever one is pending, NOT only when `state` is None: replacing a model kills
+    # the old process without clearing its `_memory_state`, so the stale placement of
+    # a child that is already gone would otherwise answer for the launch replacing it.
     pending = _pending_launch_settings()
-    if state is None and pending is not None:
+    if pending is not None:
         from utils.model_memory_settings import get_model_memory_settings
         return get_model_memory_settings() != pending
 

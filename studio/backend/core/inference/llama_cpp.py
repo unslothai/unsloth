@@ -6187,12 +6187,21 @@ def _pending_placement_cleared(backend):
     A successful spawn clears it earlier, where `is_active` takes over; this only
     guarantees that a failure, a cancel or a raise between the memory snapshot and
     Popen cannot leave it set with no child to answer for.
+
+    Clears only the marker THIS load published. The cleanup runs outside
+    `_serial_load_scope`, so with concurrent /load calls the first caller can reach
+    here after a queued one has taken the lock and published its own marker, and an
+    unconditional clear would blank a launch still in its placement probe.
     """
+    token = object()
+    backend._memory_pending_token = token
     try:
         yield
     finally:
-        backend._memory_launch_pending = False
-        backend._memory_pending_settings = None
+        if getattr(backend, "_memory_pending_token", None) is token:
+            backend._memory_launch_pending = False
+            backend._memory_pending_settings = None
+            backend._memory_pending_token = None
 
 
 @contextlib.contextmanager
@@ -6653,6 +6662,9 @@ class LlamaCppBackend:
         # published WITH the marker: a save during the placement work has no resolved
         # state to compare against yet, only the snapshot the child will use.
         self._memory_pending_settings: Optional[tuple[bool, bool]] = None
+        # Identity of the load call that owns the two above, so a concurrent load's
+        # teardown cannot clear a marker it did not publish.
+        self._memory_pending_token: Optional[object] = None
         # True when the resident model came from an explicit UI load rather than
         # the OpenAI API, so the idle unload can be scoped to API-loaded models.
         # Not on GgufLoadIntent: that is compared for equality to detect
@@ -8582,14 +8594,8 @@ class LlamaCppBackend:
         # a positive is the fail-open this check exists to avoid, so look for the
         # plugin itself, in the external path when one is set and beside the binary
         # otherwise. A stale, missing or CPU-only path confirms nothing.
-        source = os.environ if env is None else env
-        external = str(source.get("GGML_BACKEND_PATH", "") or "").strip()
         try:
-            roots = (
-                [Path(part) for part in external.split(os.pathsep) if part.strip()]
-                if external
-                else [_llama_lib_dir(binary)]
-            )
+            roots = LlamaCppBackend._ggml_plugin_roots(str(_llama_lib_dir(binary)), env)
         except Exception:
             # Naming the directory can fail too, and an install we cannot even
             # locate is the fail-closed case by definition.
@@ -12664,8 +12670,39 @@ class LlamaCppBackend:
         _add(site_packages / "torch" / "lib")
         return out
 
+    # Backends whose offload target this code can actually classify: CUDA and HIP
+    # through _amd_apu_wants_unified_memory, Vulkan through _run_vulkan_probe. A
+    # SYCL, MUSA, CANN or OpenCL plugin has neither, and an Intel iGPU reached that
+    # way shares system memory, so a "full offload" there is still host-backed and
+    # DirectIO would buffer it. Deliberately NARROWER than _GGML_GPU_BACKEND_RE,
+    # which answers the different question of whether a GPU backend exists at all.
+    _CLASSIFIABLE_GPU_BACKENDS: frozenset = frozenset({"cuda", "hip", "vulkan"})
+
     @staticmethod
-    def _windows_cuda_runtime_missing(binary_dir: str, path_dirs: list[str]) -> bool:
+    def _offload_target_is_classifiable(binary: Optional[str] = None) -> bool:
+        """Whether a discrete-vs-shared verdict is available for this build."""
+        backends = LlamaCppBackend._installed_ggml_backends(binary)
+        return bool(backends & LlamaCppBackend._CLASSIFIABLE_GPU_BACKENDS)
+
+    @staticmethod
+    def _ggml_plugin_roots(binary_dir: str, env: Optional[Mapping[str, str]] = None):
+        """Where this install's ggml plugins really live.
+
+        ``GGML_BACKEND_PATH`` points the child at plugins outside the executable
+        directory, and a check that only looks beside the binary answers about a
+        different install than the one that will load. One resolver, so the backend
+        check and the loadability check cannot disagree about which plugin they mean.
+        """
+        source = os.environ if env is None else env
+        external = str(source.get("GGML_BACKEND_PATH", "") or "").strip()
+        if external:
+            return [Path(part) for part in external.split(os.pathsep) if part.strip()]
+        return [Path(binary_dir)]
+
+    @staticmethod
+    def _windows_cuda_runtime_missing(
+        binary_dir: str, path_dirs: list[str], env: Optional[Mapping[str, str]] = None
+    ) -> bool:
         """Whether this CUDA build has no cudart to load.
 
         The predicate behind ``_warn_missing_windows_cuda_runtime``, split out
@@ -12680,7 +12717,13 @@ class LlamaCppBackend:
         """
         # Same identification _installed_ggml_backends uses: the official prebuilts are
         # single-backend, so the ggml CUDA lib beside llama-server IS the build.
-        if not os.path.isfile(os.path.join(binary_dir, "ggml-cuda.dll")):
+        # Looked for wherever the plugins actually are: an external GGML_BACKEND_PATH
+        # plugin is the one that will load, and answering "nothing missing" because
+        # binary_dir holds no ggml-cuda.dll left exactly that install unvalidated.
+        if not any(
+            (root / "ggml-cuda.dll").is_file()
+            for root in LlamaCppBackend._ggml_plugin_roots(binary_dir, env)
+        ):
             return False
         # BOTH, because the prebuilt links both: cudart alone does not make the plugin
         # loadable, and a venv can hold one without the other.
@@ -12783,7 +12826,9 @@ class LlamaCppBackend:
             # card. Recorded against the search path the CHILD gets, which is the only
             # place it is known.
             LlamaCppBackend._cuda_runtime_missing_by_dir[binary_dir] = (
-                LlamaCppBackend._windows_cuda_runtime_missing(binary_dir, _full_search_path)
+                LlamaCppBackend._windows_cuda_runtime_missing(
+                    binary_dir, _full_search_path, env
+                )
             )
 
             # ROCm: the prebuilt bundles rocblas.dll but NOT the Tensile
@@ -24103,6 +24148,7 @@ class LlamaCppBackend:
                     and (_detected_gpus or gpu_indices)
                     # A probe that did not answer declines rather than confirms; see
                     # _vulkan_offload_is_discrete.
+                    and self._offload_target_is_classifiable(binary)
                     and (
                         not is_vulkan_backend
                         or self._vulkan_offload_is_discrete(binary, gpu_indices)
@@ -24239,6 +24285,9 @@ class LlamaCppBackend:
                             str(_llama_lib_dir(binary)), False
                         )
                         and (_detected_gpus or devices)
+                        # No classifier, no confirmation: see
+                        # _offload_target_is_classifiable.
+                        and self._offload_target_is_classifiable(binary)
                         and (
                             not is_vulkan_backend
                             or self._vulkan_offload_is_discrete(binary, devices)

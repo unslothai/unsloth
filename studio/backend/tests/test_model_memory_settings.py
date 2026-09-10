@@ -3259,3 +3259,140 @@ class TestASaveDuringPlacementIsAnswered:
         monkeypatch.setattr(rs, "_pending_launch_settings", lambda: (False, True))
         monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))
         assert rs._model_memory_reload_required() is False
+
+
+class TestOnlyAClassifiableTargetConfirms:
+    """"Has a GPU backend" and "we can tell whether its target is discrete" are
+    different questions, and broadening the first silently broadened the second.
+    CUDA and HIP are classified by _amd_apu_wants_unified_memory and Vulkan by the
+    probe; a SYCL, MUSA, CANN or OpenCL plugin has neither, and an Intel iGPU
+    reached that way shares system memory, so DirectIO would buffer it."""
+
+    @pytest.mark.parametrize(
+        "backends,classifiable",
+        [
+            (frozenset({"base", "cpu", "cuda"}), True),
+            (frozenset({"base", "cpu", "hip"}), True),
+            (frozenset({"base", "cpu", "vulkan"}), True),
+            (frozenset({"base", "cpu", "sycl"}), False),
+            (frozenset({"base", "cpu", "opencl"}), False),
+            (frozenset({"base", "cpu"}), False),
+        ],
+    )
+    def test_the_classifier_set_is_narrower_than_the_backend_check(
+        self, monkeypatch, backends, classifiable
+    ):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        monkeypatch.setattr(
+            LlamaCppBackend, "_installed_ggml_backends",
+            staticmethod(lambda binary = None: backends),
+        )
+        assert LlamaCppBackend._offload_target_is_classifiable("llama-server") is classifiable
+
+    def test_both_confirmations_require_it(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert flat.count("self._offload_target_is_classifiable(binary)") == 2
+
+
+class TestTheLoadabilityCheckFollowsThePlugin:
+    """GGML_BACKEND_PATH puts the plugin outside the executable directory. The
+    backend check accepts it there, so the loadability check has to look there too
+    or an external CUDA plugin with a missing dependency goes unvalidated."""
+
+    def test_one_resolver_serves_both(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        for fn in (
+            LlamaCppBackend._build_offers_gpu_backend,
+            LlamaCppBackend._windows_cuda_runtime_missing,
+        ):
+            assert "_ggml_plugin_roots(" in inspect.getsource(fn)
+
+    def test_an_external_root_wins(self, tmp_path):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        beside, external = tmp_path / "beside", tmp_path / "ext"
+        beside.mkdir(); external.mkdir()
+        assert LlamaCppBackend._ggml_plugin_roots(str(beside), {}) == [beside]
+        assert LlamaCppBackend._ggml_plugin_roots(
+            str(beside), {"GGML_BACKEND_PATH": str(external)}
+        ) == [external]
+
+    def test_an_external_cuda_plugin_is_validated(self, tmp_path):
+        """The plugin lives outside binary_dir, so the old check returned "nothing
+        missing" and skipped the guard entirely."""
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        beside, external = tmp_path / "beside", tmp_path / "ext"
+        beside.mkdir(); external.mkdir()
+        (external / "ggml-cuda.dll").write_text("")
+        env = {"GGML_BACKEND_PATH": str(external)}
+        # no cudart/cublas anywhere on the search path
+        assert LlamaCppBackend._windows_cuda_runtime_missing(str(beside), [], env)
+        libs = tmp_path / "libs"
+        libs.mkdir()
+        (libs / "cudart64_12.dll").write_text("")
+        (libs / "cublas64_12.dll").write_text("")
+        assert not LlamaCppBackend._windows_cuda_runtime_missing(
+            str(beside), [str(libs)], env
+        )
+
+
+class TestConcurrentLoadsOwnTheirOwnMarker:
+    """The cleanup runs outside `_serial_load_scope`, so the first caller can reach
+    it after a queued load has taken the lock and published its own marker."""
+
+    def test_a_finished_load_does_not_clear_a_newer_one(self):
+        import core.inference.llama_cpp as m
+
+        backend = type("_B", (), {})()
+        backend._memory_launch_pending = False
+        backend._memory_pending_settings = None
+        backend._memory_pending_token = None
+        outer = m._pending_placement_cleared(backend)
+        outer.__enter__()
+        backend._memory_launch_pending = True
+        backend._memory_pending_settings = (False, True)
+        # a queued load takes over and publishes its own
+        inner = m._pending_placement_cleared(backend)
+        inner.__enter__()
+        backend._memory_launch_pending = True
+        backend._memory_pending_settings = (True, True)
+        # the first load's teardown must not blank the second's
+        outer.__exit__(None, None, None)
+        assert backend._memory_launch_pending is True
+        assert backend._memory_pending_settings == (True, True)
+        inner.__exit__(None, None, None)
+        assert backend._memory_launch_pending is False
+        assert backend._memory_pending_settings is None
+
+
+class TestAReplacementLoadIsNotAnsweredByTheOldChild:
+    """Replacing a model kills the old process without clearing its `_memory_state`,
+    so a save during the new launch's probe was compared against a placement that
+    belongs to a child already gone."""
+
+    def test_the_pending_snapshot_wins_over_a_stale_state(self, monkeypatch):
+        import routes.settings as rs
+        import utils.model_memory_settings as mm
+
+        # the killed child's state is still present and non-None
+        monkeypatch.setattr(
+            rs, "_active_launch_placement", lambda: ((False, False), False, True, False, False)
+        )
+        monkeypatch.setattr(rs, "_pending_launch_settings", lambda: (False, False))
+        monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))
+        assert rs._model_memory_reload_required() is True
+
+    def test_the_route_does_not_gate_on_a_none_state(self):
+        import routes.settings as rs
+        import inspect
+
+        src = inspect.getsource(rs._model_memory_reload_required)
+        assert "if pending is not None:" in src
+        assert "if state is None and pending is not None:" not in src
