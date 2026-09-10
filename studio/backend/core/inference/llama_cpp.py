@@ -9001,6 +9001,13 @@ class LlamaCppBackend:
         ``torch.cuda.*`` and ``_rocm_unified_memory_gpu_ids`` already answers for it.
         Empty off CUDA and on error, so every caller keeps its discrete-GPU default.
         """
+        cached = LlamaCppBackend._INTEGRATED_CUDA_IDS.get(
+            LlamaCppBackend._integrated_cuda_mask_key()
+        )
+        if cached is not None:
+            # Settled for this mask, and integratedness cannot change under one, so
+            # there is nothing a second pass over the devices could learn.
+            return set(cached)
         try:
             import torch
 
@@ -9012,10 +9019,17 @@ class LlamaCppBackend:
             # (CUDA_VISIBLE_DEVICES=2) does not answer for the wrong card.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
             integrated: set[int] = set()
+            # A device that did not answer leaves this answer incomplete. It is still
+            # returned, so a card that cannot be queried keeps its discrete default,
+            # but it is not remembered: a later caller reading it as settled could
+            # retry the query that failed, and a retry that succeeds initialises that
+            # device after the budget was taken.
+            complete = True
             for ordinal in range(torch.cuda.device_count()):
                 try:
                     props = torch.cuda.get_device_properties(ordinal)
                 except Exception:
+                    complete = False
                     continue
                 # Both spellings: the attribute was `integrated` before torch renamed
                 # it, and an old wheel exposing neither reads discrete.
@@ -9029,11 +9043,14 @@ class LlamaCppBackend:
                     else ordinal
                 )
             # Remembered so the launch preflight can read it without a second probe.
-            # Only a completed probe is cached: a torch that raised says nothing about
-            # the hardware, and caching its empty answer would make the miss permanent.
-            LlamaCppBackend._INTEGRATED_CUDA_IDS[LlamaCppBackend._integrated_cuda_mask_key()] = (
-                integrated
-            )
+            # Only a probe that reached every visible device is cached: a torch that
+            # raised, or a card that did not answer, says nothing about the hardware,
+            # and caching that would either make the miss permanent or invite a retry
+            # whose cost nothing has accounted for.
+            if complete:
+                LlamaCppBackend._INTEGRATED_CUDA_IDS[
+                    LlamaCppBackend._integrated_cuda_mask_key()
+                ] = integrated
             return integrated
         except Exception:
             return set()

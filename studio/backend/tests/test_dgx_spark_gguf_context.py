@@ -18,6 +18,8 @@ from __future__ import annotations
 import sys
 import types
 
+import pytest
+
 from core.inference.llama_cpp import LlamaCppBackend
 
 GIB = 1 << 30
@@ -41,6 +43,14 @@ class _DiscreteProps:
     total_memory = 183 * GIB
     is_integrated = 0
     gcnArchName = ""
+
+
+@pytest.fixture(autouse = True)
+def _forget_the_last_machine(monkeypatch):
+    """The integrated classification is cached for the life of the process, which is
+    right for one machine and wrong for a file that describes several. Each case starts
+    with an empty cache so it cannot inherit the hardware the previous one invented."""
+    monkeypatch.setattr(LlamaCppBackend, "_INTEGRATED_CUDA_IDS", {})
 
 
 def _spark_torch(driver_free_mib: int, total_mib: int) -> types.ModuleType:
@@ -337,3 +347,59 @@ def test_repricing_still_says_apu_for_an_apu():
 
     assert "unified-memory APU" in backend._last_load_warning
     assert ".wslconfig" in backend._last_load_warning
+
+
+def test_a_device_that_did_not_answer_is_not_settled(monkeypatch):
+    """An incomplete probe must not be remembered as a finished one.
+
+    If one ordinal raised, a later caller reading the answer as settled could retry the
+    query that failed; a retry that succeeds initialises that device after the budget
+    was taken, which is the allocation this guard exists to keep out of the launch.
+    """
+    import sys as _sys
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(LlamaCppBackend, "_INTEGRATED_CUDA_IDS", {})
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+
+    def _properties(ordinal):
+        if ordinal == 1:
+            raise RuntimeError("device 1 did not answer")
+        return _SparkProps()
+
+    module = _spark_torch(29509, 124609)
+    module.cuda.device_count = lambda: 2
+    module.cuda.get_device_properties = _properties
+    monkeypatch.setitem(_sys.modules, "torch", module)
+
+    # The answer still comes back, so a card that cannot be queried keeps its default.
+    assert LlamaCppBackend._integrated_cuda_gpu_ids() == {0}
+    # ...but the preflight is told there is nothing free to read.
+    assert LlamaCppBackend._integrated_cuda_probe_is_free() is False
+
+
+def test_a_settled_answer_is_never_probed_again(monkeypatch):
+    """Integratedness cannot change under a fixed mask, so one pass is the whole cost."""
+    import sys as _sys
+
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.setattr(LlamaCppBackend, "_INTEGRATED_CUDA_IDS", {})
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    calls = []
+    module = _spark_torch(29509, 124609)
+    original = module.cuda.get_device_properties
+
+    def _counted(ordinal):
+        calls.append(ordinal)
+        return original(ordinal)
+
+    module.cuda.get_device_properties = _counted
+    monkeypatch.setitem(_sys.modules, "torch", module)
+
+    assert LlamaCppBackend._integrated_cuda_gpu_ids() == {0}
+    assert len(calls) == 1
+    assert LlamaCppBackend._integrated_cuda_gpu_ids() == {0}
+    assert LlamaCppBackend._integrated_cuda_unified_memory([0]) is True
+    assert len(calls) == 1
