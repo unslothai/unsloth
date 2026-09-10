@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Only a trailing `;base64` marks the payload as base64. A segment named
-// `base64` anywhere else is an ordinary parameter, so
-// `data:text/plain;base64;charset=utf-8,SGVsbG8=` stays literal text.
+// Only a trailing `;base64` marks the payload as base64. A segment named `base64` anywhere else is
+// an ordinary parameter, so `data:text/plain;base64;charset=utf-8,SGVsbG8=` stays literal text.
 const DATA_URI_BASE64_RE = /;[ \t]*base64[ \t]*$/i;
 const PERCENT_ESCAPE_RE = /%([0-9a-f]{2})/gi;
 const DEFAULT_MIME_TYPE = "text/plain;charset=US-ASCII";

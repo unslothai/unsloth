@@ -90,13 +90,12 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   },
 }));
 
-// Once an authoritative (server-reported) platform has been fetched, a
-// non-forced response must not overwrite it. The post-render fetchDeviceType()
-// in main.tsx runs before auth is ready and can resolve after the authed
-// root-route/provider fetches; such a late write would reset deviceType,
-// cloudflareUrl/serverUrl/secure, and fetched, whether it is a browser fallback
-// (unauthenticated) or an earlier authenticated request that landed after a
-// later forced refresh. Forced refreshes are explicit re-reads, so they still write.
+// Once an authoritative (server-reported) platform has been fetched, a non-forced response must not
+// overwrite it. The post-render fetchDeviceType() in main.tsx runs before auth is ready and can
+// resolve after the authed root-route/provider fetches; such a late write would reset deviceType,
+// cloudflareUrl/serverUrl/secure, and fetched, whether it is a browser fallback (unauthenticated)
+// or an earlier authenticated request that landed after a later forced refresh. Forced refreshes
+// are explicit re-reads, so they still write.
 function shouldKeepAuthoritativePlatform(force?: boolean): boolean {
   return !force && usePlatformStore.getState().fetched;
 }
@@ -167,12 +166,11 @@ export async function fetchDeviceType(options?: {
         server_url?: string | null;
         secure?: boolean;
       };
-      // Once the store holds an authoritative (server-reported) platform, a
-      // non-forced response must not overwrite it. It may be an unauthenticated
-      // fallback, or an earlier authenticated request that resolved after a
-      // later forced refresh already picked up device_type and the tunnel
-      // fields; writing either would reset device type or null the tunnel
-      // fields. Forced refreshes are explicit re-reads, so they still write.
+      // Once the store holds an authoritative (server-reported) platform, a non-forced response
+      // must not overwrite it. It may be an unauthenticated fallback, or an earlier authenticated
+      // request that resolved after a later forced refresh already picked up device_type and the
+      // tunnel fields; writing either would reset device type or null the tunnel fields. Forced
+      // refreshes are explicit re-reads, so they still write.
       if (shouldKeepAuthoritativePlatform(options?.force)) {
         return usePlatformStore.getState().deviceType;
       }
@@ -212,10 +210,9 @@ export async function fetchDeviceType(options?: {
       return deviceType;
     }
   } catch {
-    // Backend not ready: use client-side detection so chat-only guard works
-    // on initial load (important for macOS). Keep fetched=false so a later
-    // call retries against the backend. But a late non-forced failure must not
-    // wipe an authoritative platform that already resolved.
+    // Backend not ready: use client-side detection so chat-only guard works on initial load
+    // (important for macOS). Keep fetched=false so a later call retries against the backend. But a
+    // late non-forced failure must not wipe an authoritative platform that already resolved.
     if (shouldKeepAuthoritativePlatform(options?.force)) {
       return usePlatformStore.getState().deviceType;
     }
