@@ -1426,6 +1426,30 @@ def test_save_settings_waits_for_gguf_classification():
     )
 
 
+def test_save_settings_waits_for_the_vram_budget_to_settle():
+    """The Save button (#10216) must carry Load's budget gate as well.
+
+    `handleRun` early-returns on `budgetSettling` and the Load button is disabled
+    by it, because between `settleVramBudgetSave()` and the load it stages the
+    click is answered by a network round trip rather than by the load it looks
+    like it started. The page stays mounted for that whole window. A Save landing
+    in it persists to localStorage AND to the API override and toasts "Settings
+    saved.", while the load already in flight carries `effectiveLoadConfig`,
+    captured before the click -- so the panel reports storing one config and the
+    model comes up on another.
+    """
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    # Keyed on the handler, not the label: a relabelled button must not silently
+    # stop being gated.
+    save_button = page.split("onClick={handleSave}", 1)[0].rsplit("<Button", 1)[1]
+    gate = save_button.split("disabled={", 1)[1].split("}", 1)[0]
+    assert "budgetSettling" in gate, (
+        "Save settings is clickable while a VRAM budget PUT is settling a load; "
+        f"gate was: {gate.strip()!r}"
+    )
+
+
+
 def test_save_settings_reflects_the_context_it_pinned():
     """A save that does not load must leave the panel showing what it stored (#10216).
 

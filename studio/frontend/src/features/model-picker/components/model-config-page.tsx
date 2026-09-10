@@ -3289,8 +3289,15 @@ export function ModelConfigPage({
               // save made in that window persists -- locally and to the API override an
               // auto-switch load reads -- settings the panel would have stripped once the
               // model came back classified.
+              //
+              // budgetSettling for the same reason once more. handleRun early-returns on
+              // it and holds this row's Load closed while a budget PUT is in flight; the
+              // page stays mounted for that window, so a Save landing in it persists and
+              // toasts "Settings saved." while the load already in flight carries the
+              // config it captured before the click.
               disabled={
                 stagedMetadataPending ||
+                budgetSettling ||
                 !extraArgsLoadable ||
                 extraArgsHydrating ||
                 (!remember && !savedRemember)
