@@ -75,6 +75,22 @@ class TestARawStreamForwardsTheServersPark:
         )
         assert inference._server_park_sse(": preempted\r") == inference._OPENAI_PREEMPT_SSE_PAUSED
 
+    def test_a_recompute_the_server_only_counted_reaches_the_translated_relays(self):
+        # The Responses and Anthropic relays rebuild the final object, dropping its `preempt`
+        # field, so a build that counts a recompute without writing the notice has it
+        # synthesised there, once, as the chat path does.
+        assert inference._server_recompute_counted({"preempt": {"parks": 1, "recomputes": 1}})
+        assert not inference._server_recompute_counted({"preempt": {"parks": 2, "recomputes": 0}})
+        assert not inference._server_recompute_counted({"preempt": {"recomputes": "x"}})
+        assert not inference._server_recompute_counted({"choices": []})
+        assert not inference._server_recompute_counted("data: {}")
+        for relay in (inference._responses_stream, inference._anthropic_passthrough_stream):
+            source = inspect.getsource(relay)
+            assert source.count("_raw_saw_recompute = False") == 1
+            assert "_raw_saw_recompute |= _park == _OPENAI_PREEMPT_SSE_RECOMPUTED" in source
+            assert "if not _raw_saw_recompute and _server_recompute_counted(" in source
+            assert source.count("yield _OPENAI_PREEMPT_SSE_RECOMPUTED") == 1
+
     def test_every_raw_loop_asks(self):
         """One relay per raw loop: Responses, Anthropic passthrough, chat passthrough and the
         completions byte loop. The count is the guard against a loop that forgets."""
@@ -429,7 +445,7 @@ class TestTheNamedBudgetIsJudged:
         source = inspect.getsource(LlamaCppBackend.load_model)
         assert "self._exact_pool_unknown = _exact_kv_bytes <= 0" in source
         judged = source.index('getattr(self, "_exact_pool_unknown", False)')
-        window = source[judged : judged + 2700]
+        window = source[judged : source.index("self._exact_state_after_launch(", judged) + 40]
         assert "self._query_server_n_ctx()" in window
         assert "default_mib = _PREEMPT_RAM_DEFAULT_MIB" in window
         assert "_named_now = _named_preempt_ram_mib(" in window
@@ -439,6 +455,20 @@ class TestTheNamedBudgetIsJudged:
         assert window.index("self._exact_parking_short = _exact_short") < window.index(
             "self._exact_state_after_launch("
         )
+
+    def test_the_pool_sized_after_launch_is_judged_against_the_host_too(self):
+        # The host reading before launch had no pool to price, so the fitted one is priced and
+        # judged against free host RAM, or an auto-fit context certified exact on a host whose
+        # first large park would fail to allocate.
+        source = inspect.getsource(LlamaCppBackend.load_model)
+        judged = source.index('getattr(self, "_exact_pool_unknown", False)')
+        window = source[judged : source.index("self._exact_state_after_launch(", judged)]
+        assert "self._exact_parking_writes = _fitted_writes" in window
+        assert window.index("_exact_parking_need_mib(") < window.index(
+            "_exact_host_shortfall_after_load("
+        )
+        assert "_fitted_writes = min(_fitted_cap, _fitted_writes)" in window
+        assert "self._exact_host_short = _exact_host_short" in window
 
     def test_the_environment_and_a_later_flag_are_read_in_llama_cpps_order(self):
         # The variable first, argv last-wins over it, as the child applies them.

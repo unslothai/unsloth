@@ -1800,6 +1800,20 @@ def _server_park_sse(raw_line) -> Optional[str]:
     return _SERVER_PARK_SSE_BY_COMMENT.get(str(raw_line or "").strip())
 
 
+def _server_recompute_counted(chunk) -> bool:
+    """Whether a final object's ``preempt`` counters say this answer was re-prefilled.
+
+    The chat path synthesises the ``: recomputed`` notice from the count when a build only counts;
+    the raw relays translate the final object and would drop the count with it."""
+    counts = chunk.get("preempt") if isinstance(chunk, dict) else None
+    if not isinstance(counts, dict):
+        return False
+    try:
+        return int(counts.get("recomputes") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
 # Cap on waiting for a cancelled teardown task. Request.is_disconnected() can swallow
 # cancel() (#7617), so teardown abandons the task rather than hold the response, and
@@ -30868,6 +30882,7 @@ async def _responses_stream(
                 _await_disconnect_then_close(request, resp, disconnect_event)
             )
             _raw_measured = False
+            _raw_saw_recompute = False
             async for raw_line in _aiter_llama_stream_items(
                 lines_iter,
                 stall_grace = _raw_park_grace(llama_backend),
@@ -30880,6 +30895,7 @@ async def _responses_stream(
                     continue
                 _park = _server_park_sse(raw_line)
                 if _park is not None:
+                    _raw_saw_recompute |= _park == _OPENAI_PREEMPT_SSE_RECOMPUTED
                     yield _park
                     continue
                 if not raw_line.startswith("data: "):
@@ -30894,6 +30910,9 @@ async def _responses_stream(
                     chunk_data = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
+                if not _raw_saw_recompute and _server_recompute_counted(chunk_data):
+                    _raw_saw_recompute = True
+                    yield _OPENAI_PREEMPT_SSE_RECOMPUTED
                 if payload.parallel_tool_calls is False:
                     _drop_parallel_tool_call_deltas(chunk_data)
 
@@ -34614,6 +34633,7 @@ async def _anthropic_passthrough_stream(
             )
             lines_iter = resp.aiter_lines()
             _raw_measured = False
+            _raw_saw_recompute = False
             async for raw_line in _aiter_llama_stream_items(
                 lines_iter,
                 stall_grace = _raw_park_grace(llama_backend),
@@ -34624,6 +34644,7 @@ async def _anthropic_passthrough_stream(
             ):
                 _park = _server_park_sse(raw_line)
                 if _park is not None:
+                    _raw_saw_recompute |= _park == _OPENAI_PREEMPT_SSE_RECOMPUTED
                     yield _park
                     continue
                 if not raw_line or not raw_line.startswith("data: "):
@@ -34638,6 +34659,9 @@ async def _anthropic_passthrough_stream(
                     chunk = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
+                if not _raw_saw_recompute and _server_recompute_counted(chunk):
+                    _raw_saw_recompute = True
+                    yield _OPENAI_PREEMPT_SSE_RECOMPUTED
                 if isinstance(chunk, dict):
                     error_message = _monitor_openai_error_message(chunk)
                     if error_message:

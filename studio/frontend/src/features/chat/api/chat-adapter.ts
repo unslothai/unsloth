@@ -6324,8 +6324,8 @@ export function createOpenAIStreamAdapter(
               if (admissionStatus !== undefined) {
                 if (admissionStatus === "recomputed") {
                   // Qualifies the resume before it, so the status line stays as it is.
+                  // Reaches the chip through the message metadata below, per branch.
                   sawPreemptRecompute = true;
-                  runtime.notePreemptRecompute(liveThreadKey(serverCancel));
                   continue;
                 }
                 runtime.setToolStatus(
@@ -7702,13 +7702,6 @@ export function createOpenAIStreamAdapter(
         );
 
         reasoningDurationTracker.finishGroup();
-        // The chip follows the thread's last answer: cleared only once this one replaces it,
-        // not when the turn started, so a turn that failed leaves the previous note standing.
-        if (sawPreemptRecompute) {
-          runtime.notePreemptRecompute(liveThreadKey(serverCancel));
-        } else {
-          runtime.clearPreemptRecompute(liveThreadKey(serverCancel));
-        }
         const finalIncompleteReason = resolveIncompleteReason(
           incompleteReason,
           contextWindowExceeded,

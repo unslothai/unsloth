@@ -43,9 +43,9 @@ test("a recompute marks the thread instead of rewriting the status line", () => 
   // pause label for it would say the opposite of what happened.
   const branch = chunkBranch();
   assert.match(branch, /chunk\._admissionStatus === "recomputed"/);
-  assert.match(branch, /notePreemptRecompute\(threadId\)/);
+  assert.match(branch, /preemptRecomputed: true/);
   assert.ok(
-    branch.indexOf("notePreemptRecompute") < branch.indexOf("setToolStatus"),
+    branch.indexOf("preemptRecomputed: true") < branch.indexOf("setToolStatus"),
     "the recompute is taken before the label branch it must not reach",
   );
 });

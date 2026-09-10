@@ -2245,6 +2245,13 @@ def _exact_parking_shortfall_mib(
     return (named, saved, need) if named < need else None
 
 
+_EXACT_HOST_SHORT_AFTER_LOAD = (
+    "Exact concurrency may park up to %d MiB of KV state in host RAM, and this host has %d MiB "
+    "free now that the model is loaded. A park the host cannot hold is re-prefilled, which is "
+    "not byte-identical."
+)
+
+
 def _exact_host_shortfall_after_load(
     writes: Optional[int], free_mib: Optional[int]
 ) -> Optional[tuple[int, int]]:
@@ -27212,12 +27219,7 @@ class LlamaCppBackend:
                     )
                     if _exact_host_short is not None:
                         self._exact_host_short = _exact_host_short
-                        self._record_load_warning(
-                            "Exact concurrency may park up to %d MiB of KV state in host RAM, "
-                            "and this host has %d MiB free now that the model is loaded. A park "
-                            "the host cannot hold is re-prefilled, which is not byte-identical."
-                            % _exact_host_short
-                        )
+                        self._record_load_warning(_EXACT_HOST_SHORT_AFTER_LOAD % _exact_host_short)
                 if (
                     _exact_short is not None
                     and _mtp_will_engage
@@ -27271,6 +27273,25 @@ class LlamaCppBackend:
                             draft_bytes = _fitted_draft,
                             parallel = n_parallel,
                         )
+                        # The host reading before launch skipped the unsized pool, so what the
+                        # fitted context parks is judged against free host RAM here.
+                        _fitted_cap = _named_preempt_ram_mib(_last_spawn_cmd or cmd, env)
+                        if _fitted_cap is None:
+                            _fitted_cap = _PREEMPT_RAM_DEFAULT_MIB
+                        _fitted_writes = _exact_parking_need_mib(
+                            _fitted_bytes, draft_bytes = _fitted_draft, parallel = n_parallel
+                        )
+                        if _fitted_cap >= 0:
+                            _fitted_writes = min(_fitted_cap, _fitted_writes)
+                        self._exact_parking_writes = _fitted_writes
+                        _exact_host_short = _exact_host_shortfall_after_load(
+                            _fitted_writes, _available_host_memory_mib()
+                        )
+                        if _exact_host_short is not None:
+                            self._exact_host_short = _exact_host_short
+                            self._record_load_warning(
+                                _EXACT_HOST_SHORT_AFTER_LOAD % _exact_host_short
+                            )
                     else:
                         # Named by the launch or by the user; zero only if nothing parks, and
                         # then `server_preempts_kv` is what reports it.

@@ -2443,9 +2443,9 @@ type ChatRuntimeStore = {
   /** Live denoising frame per conversation ("__default" until the id exists). Transient and
    *  keyed, since two denoising chats overwrote each other's frame. */
   activeDiffusionCanvasByThreadId: Record<string, DiffusionCanvasFrame>;
-  /** Whether this conversation's last answer was re-prefilled after a park the server could not
-   *  hold, so it is not byte-identical however exact concurrency is reported. Keyed like the
-   *  canvas above: the server reports a recompute per answer, not per load. */
+  /** Whether the answer on screen in this conversation was re-prefilled after a park the server
+   *  could not hold, so it is not byte-identical however exact concurrency is reported. Written
+   *  from the visible branch's last assistant message, since a retry branch has its own answer. */
   preemptRecomputedByThreadId: Record<string, boolean>;
   customContextLength: number | null;
   /** The pinned context the loaded model used (null = Auto), so dirty-tracking and a later fit
@@ -2626,9 +2626,8 @@ type ChatRuntimeStore = {
   ) => void;
   /** Drop only `threadId`'s canvas: a run ending in a background chat must not wipe another's. */
   clearActiveDiffusionCanvasForThread: (threadId: string | null) => void;
-  /** Record that this conversation took a recompute; cleared when its next turn starts. */
-  notePreemptRecompute: (threadId: string | null) => void;
-  clearPreemptRecompute: (threadId: string | null) => void;
+  /** Whether the visible answer in this conversation took a recompute. */
+  setPreemptRecompute: (threadId: string | null, recomputed: boolean) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setNudgeToolCalls: (enabled: boolean) => void;
   setAutoCompactEnabled: (enabled: boolean) => void;
@@ -5529,23 +5528,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       delete next[key];
       return { activeDiffusionCanvasByThreadId: next };
     }),
-  notePreemptRecompute: (threadId) =>
+  setPreemptRecompute: (threadId, recomputed) =>
     set((state) => {
       const key = threadId || "__default";
-      if (state.preemptRecomputedByThreadId[key]) return state;
-      return {
-        preemptRecomputedByThreadId: {
-          ...state.preemptRecomputedByThreadId,
-          [key]: true,
-        },
-      };
-    }),
-  clearPreemptRecompute: (threadId) =>
-    set((state) => {
-      const key = threadId || "__default";
-      if (state.preemptRecomputedByThreadId[key] === undefined) return state;
+      if ((state.preemptRecomputedByThreadId[key] === true) === recomputed) return state;
       const next = { ...state.preemptRecomputedByThreadId };
-      delete next[key];
+      if (recomputed) next[key] = true;
+      else delete next[key];
       return { preemptRecomputedByThreadId: next };
     }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
