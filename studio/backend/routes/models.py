@@ -5472,7 +5472,11 @@ def cached_model_rows(cache_scans = None) -> list[dict]:
                 companion_only = _repo_pipeline_missing_denoiser(repo_info, selected)
                 companion_prefetch = companion_only and not download_partial
                 # Prefer the most COMPLETE snapshot, then largest: a partial copy in one cache root must not shadow a complete copy in another.
-                if existing is None or (not download_partial, not companion_prefetch, total_size) > (
+                if existing is None or (
+                    not download_partial,
+                    not companion_prefetch,
+                    total_size,
+                ) > (
                     not bool(existing.get("partial")),
                     not bool(existing.get("companion_prefetch")),
                     existing["size_bytes"],

@@ -2218,7 +2218,9 @@ def _diffusion_scan(
     if any(f.file_name == "model_index.json" for f in files):
         manifest = {
             key.rstrip("/").split("/")[0]: ["stub", "Stub"]
-            for key in {f.file_name.split("/")[0] for f in files if f.file_name != "model_index.json"}
+            for key in {
+                f.file_name.split("/")[0] for f in files if f.file_name != "model_index.json"
+            }
         }
         if "transformer" not in manifest and "unet" not in manifest:
             manifest["transformer"] = ["stub", "Stub"]
