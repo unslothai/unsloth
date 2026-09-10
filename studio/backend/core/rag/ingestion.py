@@ -14,10 +14,11 @@ import os
 import queue
 import re
 import threading
+from collections.abc import Callable
 
 from storage import rag_db
 
-from . import captioner, chunking, config, embeddings, job_leases, parsers, store
+from . import captioner, chunking, config, embeddings, job_leases, parsers, pdf_ocr, store
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +48,15 @@ def _remove_upload(stored_path: str | None, *, keep_path: str | None = None) -> 
         return
     try:
         target = os.path.realpath(stored_path)
-        if keep_path is not None and target == os.path.realpath(keep_path):
-            return
+        if keep_path is not None:
+            if target == os.path.realpath(keep_path):
+                return
+            # Case aliases can name the same file on macOS and Windows.
+            try:
+                if os.path.samefile(target, keep_path):
+                    return
+            except OSError:
+                pass
         from utils.paths import rag_uploads_root
 
         uploads = os.path.realpath(str(rag_uploads_root()))
@@ -110,7 +118,11 @@ def _abort_if_document_deleted(conn, job_id: str, document_id: str) -> bool:
     return True
 
 
-def _embed_pass(texts: list[str], model_name: str | None):
+def _embed_pass(
+    texts: list[str],
+    model_name: str | None,
+    on_progress: Callable[[int, int], None] | None = None,
+):
     """One batched pass. Returns ``(vectors, identity, changed)``, ``changed`` when the
     embedder swapped part way and the vectors therefore span two spaces."""
     vectors: list = []
@@ -124,17 +136,23 @@ def _embed_pass(texts: list[str], model_name: str | None):
         changed = changed or (identity is not None and batch_identity != identity)
         identity = batch_identity
         vectors.extend(out)
+        if on_progress is not None:
+            on_progress(min(i + _EMBED_BATCH, len(texts)), len(texts))
     return vectors, identity or embeddings.embedding_identity(model_name), changed
 
 
-def _embed_all(texts: list[str], model_name: str | None):
+def _embed_all(
+    texts: list[str],
+    model_name: str | None,
+    on_progress: Callable[[int, int], None] | None = None,
+):
     """Embed texts in batches. Returns ``(vectors, identity)`` of the embedder that
     produced them. An ST encode failure swaps the process to llama-server, and a swap
     between batches would leave one document holding vectors from two spaces, so the
     document restarts under the backend that took over. That swap is one-way, so the
     second pass is uniform."""
     for _ in range(2):
-        vectors, identity, changed = _embed_pass(texts, model_name)
+        vectors, identity, changed = _embed_pass(texts, model_name, on_progress)
         if not changed:
             return vectors, identity
         logger.warning("embedder changed mid-document; re-embedding under the new one")
@@ -149,8 +167,8 @@ def _ocr_scanned_pages(
     ocr: bool | None = None,
 ) -> tuple[list, set[int]]:
     """Replace text on near-empty (scanned/image-only) PDF pages with vision-model OCR
-    so image PDFs become searchable. ``ocr`` overrides ``config.OCR_SCANNED`` per upload
-    (``None`` = config default); no-op without scanned pages or a vision model. OCR'd
+    so image PDFs become searchable. Local Tesseract is the fallback. The per-upload
+    ``ocr`` flag overrides ``config.OCR_SCANNED``; no-op without scanned pages. OCR'd
     pages have no text layer, so no preview highlight regions, but stay searchable.
     Returns ``(pages, ocred)``: new ``Page`` objects for OCR'd pages (originals
     otherwise) and the set of page numbers actually transcribed."""
@@ -159,10 +177,14 @@ def _ocr_scanned_pages(
     scanned = [
         p.page_number
         for p in pages
-        if p.page_number is not None and len((p.text or "").strip()) < config.OCR_MIN_CHARS
+        if p.page_number is not None
+        and (p.needs_ocr or len((p.text or "").strip()) < config.OCR_MIN_CHARS)
     ]
-    if not scanned or captioner.vision_endpoint() is None:
+    if not scanned:
         return pages, set()
+    required = {p.page_number for p in pages if p.needs_ocr}
+    # Optional short/blank pages must not displace actual scans from the budget.
+    scanned.sort(key = lambda number: number not in required)
     if len(scanned) > config.OCR_MAX_PAGES:
         logger.warning(
             "OCR: %d scanned pages exceed OCR_MAX_PAGES=%d; pages past the cap stay "
@@ -172,8 +194,22 @@ def _ocr_scanned_pages(
         )
     scanned = scanned[: config.OCR_MAX_PAGES]
     _progress(conn, job_id, "ocr", 0.25)
-    page_pngs = parsers.render_pdf_pages(stored_path, scanned, dpi = config.OCR_DPI)
-    texts = captioner.ocr_pages(page_pngs)
+    texts = {}
+    if captioner.vision_endpoint() is not None:
+        page_pngs = parsers.render_pdf_pages(stored_path, scanned, dpi = config.OCR_DPI)
+        texts = captioner.ocr_pages(
+            page_pngs,
+            on_progress = lambda done, total: _progress(
+                conn, job_id, "ocr", 0.25 + 0.15 * done / total
+            ),
+        )
+    # Keep the existing vision pass, but allow scanned PDFs with text-only models too.
+    local_pages = [
+        p.page_number
+        for p in pages
+        if p.needs_ocr and p.page_number in scanned and p.page_number not in texts
+    ]
+    texts.update(pdf_ocr.ocr_pages(stored_path, local_pages))
     if not texts:
         return pages, set()
 
@@ -217,6 +253,38 @@ def _replace_old_document(
         logger.warning("failed to remove replaced document %s", old_id, exc_info = True)
 
 
+def _retire_orphan_after_failure(
+    conn, replaces: tuple[str, str | None] | None, keep_path: str, document_id: str
+) -> None:
+    """Clear a never-indexed document whose replacement did not complete.
+
+    Orphans only: an ``empty_completed`` / stale-embedder original is still searchable. The
+    orphan has no live job, so startup repair (which scans jobs) never reaches it and the
+    scope would stay indexing forever, holding queued chat sends.
+
+    Checked against the replacement inside the transaction, as ``_replace_old_document`` is: a
+    delete that removed the replacement took its upload too, so dropping the orphan there would
+    discard the last copy. Failing that one instead still frees the scope.
+    """
+    if replaces is None:
+        return
+    old_id, old_path = replaces
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        doc = store.get_document(conn, old_id)
+        if doc is None or doc.get("status") not in {"pending", "running"}:
+            conn.rollback()
+            return
+        if store.get_document(conn, document_id) is None:
+            conn.rollback()
+            store.set_document_status(conn, old_id, "failed", error = "Indexing did not finish")
+            return
+        store.delete_document(conn, old_id)
+        _remove_upload(old_path, keep_path = keep_path)
+    except Exception:  # noqa: BLE001 - cleanup must not mask the original failure
+        logger.warning("failed to retire orphaned document %s", old_id, exc_info = True)
+
+
 def _run(
     job_id: str,
     document_id: str,
@@ -233,12 +301,14 @@ def _run(
         _progress(conn, job_id, "parsing", 0.1)
         pages = parsers.parse(stored_path)
         is_pdf = stored_path.lower().endswith(".pdf")
+        scanned_pages = {p.page_number for p in pages if p.needs_ocr}
         ocred: set[int] = set()
         if is_pdf:
             pages, ocred = _ocr_scanned_pages(pages, stored_path, conn, job_id, ocr = ocr)
         caption_on = config.CAPTION_IMAGES if caption is None else caption
         # Skip all figure work (PDF rasterization included) without a vision model.
         if caption_on and is_pdf and captioner.vision_endpoint() is not None:
+            _progress(conn, job_id, "captioning", 0.4)
             # Tile figure pages, transcribe+describe each tile, then merge/dedup/splice into the page text so
             # small labels and every sub-figure are captured.
             try:
@@ -266,11 +336,40 @@ def _run(
                 logger.warning("figure tiling failed for job %s", job_id, exc_info = True)
                 tiles = []
             if tiles:
-                _progress(conn, job_id, "captioning", 0.28)
-                captions = captioner.merge_page_captions(captioner.caption_images(tiles))
-                pages = captioner.splice_captions(pages, captions)
+                complete_captions: set[int] = set()
+                captioned_tiles: dict[int, set[int]] = {}
 
-        _progress(conn, job_id, "chunking", 0.3)
+                def record_caption(image):
+                    number = image.page_number
+                    if image.full_page:
+                        complete_captions.add(number)
+                    elif image.tile_index is not None and image.tile_count:
+                        indices = captioned_tiles.setdefault(number, set())
+                        indices.add(image.tile_index)
+                        if len(indices) == image.tile_count:
+                            complete_captions.add(number)
+
+                captions = captioner.merge_page_captions(
+                    captioner.caption_images(
+                        tiles,
+                        on_caption = record_caption,
+                        on_progress = lambda done, total: _progress(
+                            conn, job_id, "captioning", 0.4 + 0.2 * done / total
+                        ),
+                    )
+                )
+                pages = captioner.splice_captions(pages, captions)
+                ocred.update(complete_captions)
+
+        if scanned_pages - ocred:
+            if _abort_if_document_deleted(conn, job_id, document_id):
+                return
+            if not job_leases.renew_owned(conn, job_leases.INGESTION, job_id):
+                conn.rollback()
+                raise job_leases.JobLeaseLost("Ingestion job lease was reclaimed")
+            raise pdf_ocr.unreadable_pages_error(scanned_pages - ocred)
+
+        _progress(conn, job_id, "chunking", 0.6)
         count = embeddings.token_counter(model_name)
         chunks = chunking.chunk_pages(
             pages,
@@ -279,23 +378,27 @@ def _run(
             count = count,
         )
         if not chunks:
-            # An empty parse still completes the document and retires the one it replaces, so it needs the same
-            # guard as the chunk write.
             if _abort_if_document_deleted(conn, job_id, document_id):
                 return
-            # inside the write transaction the guard opened, as _progress does
             if not job_leases.renew_owned(conn, job_leases.INGESTION, job_id):
+                conn.rollback()
                 raise job_leases.JobLeaseLost("Ingestion job lease was reclaimed")
-            store.set_document_status(conn, document_id, "completed", num_chunks = 0)
-            _replace_old_document(conn, replaces, stored_path, document_id)
-            _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
-            _emit(job_id, {"type": "complete", "num_chunks": 0})
-            return
+            raise ValueError(
+                "No extractable text found in file. Upload a document containing readable text."
+            )
 
-        _progress(conn, job_id, "embedding", 0.5)
+        _progress(conn, job_id, "embedding", 0.65)
         # An ST encode failure swaps the process to llama-server, so the embedder that produced these
         # vectors is only known once they exist.
-        vectors, identity = _embed_all([c.text for c in chunks], model_name)
+        embedded_progress = 0.65
+
+        def report_embeddings(done, total):
+            nonlocal embedded_progress
+            # Keep progress monotonic when a backend swap repeats a batch.
+            embedded_progress = max(embedded_progress, 0.65 + 0.25 * done / total)
+            _progress(conn, job_id, "embedding", embedded_progress)
+
+        vectors, identity = _embed_all([c.text for c in chunks], model_name, report_embeddings)
         store.set_document_embedding_model(conn, document_id, identity)
 
         # Locate each chunk's highlight regions (non-PDFs/failures yield none).
@@ -308,7 +411,7 @@ def _run(
                 logger.warning("pdf region location failed for job %s", job_id, exc_info = True)
                 regions = None
 
-        _progress(conn, job_id, "storing", 0.9)
+        _progress(conn, job_id, "storing", 0.95)
         if _abort_if_document_deleted(conn, job_id, document_id):
             return
         store.add_chunks(conn, scope, document_id, chunks, vectors, regions)
@@ -335,6 +438,9 @@ def _run(
         _emit(job_id, {"type": "error", "stage": "error", "error": str(exc)})
     finally:
         if conn is not None:
+            # Every exit but a completed one, which already retired its orphan. Nothing relaunches
+            # ingestion, so a lost lease ends the work too: only _new_job ever claims one.
+            _retire_orphan_after_failure(conn, replaces, stored_path, document_id)
             conn.close()
         job_leases.release(job_leases.INGESTION, job_id)
         with _jobs_lock:
@@ -361,7 +467,8 @@ def start_ingestion(
 ) -> tuple[str, str]:
     """Create the document + job rows and spawn the worker, returning
     ``(document_id, job_id)``. A duplicate content hash in this scope returns the
-    existing id with an already-completed job (no re-ingest).
+    existing id and its active job while indexing, or an already-completed job
+    when the document is ready (no re-ingest).
 
     ``content_hash`` lets a caller that already hashed ``stored_path`` (linked-folder
     reconciliation hashes it to detect content-identical renames) pass that digest
@@ -398,6 +505,17 @@ def start_ingestion(
         existing = store.document_by_hash(conn, scope, sha) if dedupe else None
         if existing is not None:
             doc = store.get_document(conn, existing)
+            in_progress = doc.get("status") in {"pending", "running"}
+            if in_progress:
+                job = conn.execute(
+                    "SELECT id FROM ingestion_jobs WHERE document_id=? "
+                    "AND status IN ('pending','running') ORDER BY created_at DESC LIMIT 1",
+                    (existing,),
+                ).fetchone()
+                if job is not None:
+                    conn.commit()
+                    _remove_upload(stored_path, keep_path = doc.get("stored_path"))
+                    return existing, job["id"]
             empty_completed = (
                 doc is not None and doc.get("status") == "completed" and not doc.get("num_chunks")
             )
@@ -411,12 +529,12 @@ def start_ingestion(
                     doc.get("embedding_model"), effective_identity
                 )
             )
-            if empty_completed or stale_model:
-                # Zero chunks previously, or a different embedder: re-ingest rather than dedupe.
+            if empty_completed or stale_model or in_progress:
+                # Retry empty, stale or orphaned documents; keep the old copy until success.
                 replaces = (existing, doc.get("stored_path"))
             else:
                 job_id = _new_job(conn, existing, scope, status = "completed", progress = 1.0)
-                _remove_upload(stored_path)
+                _remove_upload(stored_path, keep_path = doc.get("stored_path"))
                 with _jobs_lock:
                     _jobs[job_id] = queue.Queue()
                 _emit(
@@ -481,6 +599,12 @@ def start_ingestion(
             _workers.pop(job_id, None)
         job_leases.release(job_leases.INGESTION, job_id)
         fail_stalled_job(job_id, "Ingestion worker could not start")
+        # _run never entered, so its finally cannot retire the orphan this retry replaced.
+        conn = rag_db.get_connection()
+        try:
+            _retire_orphan_after_failure(conn, replaces, stored_path, document_id)
+        finally:
+            conn.close()
         raise
     return document_id, job_id
 

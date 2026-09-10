@@ -240,7 +240,7 @@ class TestResolveRequestedLlamaTag:
             lambda repo, published_release_tag = "": iter([invalid, valid]),
         )
 
-        def fake_load(repo, release_tag):
+        def fake_load(repo, release_tag, assets):
             if release_tag == "v2.0":
                 raise MOD.PrebuiltFallback("checksum asset missing")
             return ApprovedReleaseChecksums(

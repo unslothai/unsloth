@@ -29,6 +29,54 @@ import sys
 import asyncio
 from types import SimpleNamespace
 
+
+def _shared_setup_1(monitor):
+    monitor_id = monitor.start(
+        endpoint = "/v1/responses",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+    )
+    payload = ResponsesRequest(input = "hi", stream = True)
+    messages = [ChatMessage(role = "user", content = "hi")]
+    return messages, monitor_id, payload
+
+
+def _shared_setup_3(api_monitor, tool):
+    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
+    messages = [ChatMessage(role = "user", content = "hi")]
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+    return messages, monitor_id, payload
+
+
+def _shared_setup_4():
+    messages = [ChatMessage(role = "user", content = "hi")]
+    request = SimpleNamespace(
+        state = SimpleNamespace(),
+        url = SimpleNamespace(path = "/v1/responses"),
+        method = "POST",
+    )
+    return messages, request
+
+
+def _shared_setup_5(payload):
+    messages = [ChatMessage(role = "user", content = "hi")]
+
+    chat_req = _build_chat_request(payload, messages, stream = False)
+
+    assert _extract_response_format(chat_req) is None
+
+
+def _shared_setup_6():
+    from core.inference.api_monitor import api_monitor
+
+    xml = TestResponsesStreamHealing._XML
+    tool = TestResponsesStreamHealing._TOOL
+    return api_monitor, tool, xml
+
+
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
@@ -448,27 +496,15 @@ class TestBuildChatRequest:
         # Codex and the Agents SDK send this on ordinary requests; constraining
         # them would route every call onto the schema path.
         payload = ResponsesRequest(input = "hi", text = {"format": {"type": "text"}})
-        messages = [ChatMessage(role = "user", content = "hi")]
-
-        chat_req = _build_chat_request(payload, messages, stream = False)
-
-        assert _extract_response_format(chat_req) is None
+        _shared_setup_5(payload)
 
     def test_text_verbosity_only_carries_no_response_format(self):
         payload = ResponsesRequest(input = "hi", text = {"verbosity": "low"})
-        messages = [ChatMessage(role = "user", content = "hi")]
-
-        chat_req = _build_chat_request(payload, messages, stream = False)
-
-        assert _extract_response_format(chat_req) is None
+        _shared_setup_5(payload)
 
     def test_text_format_json_schema_without_schema_is_ignored(self):
         payload = ResponsesRequest(input = "hi", text = {"format": {"type": "json_schema"}})
-        messages = [ChatMessage(role = "user", content = "hi")]
-
-        chat_req = _build_chat_request(payload, messages, stream = False)
-
-        assert _extract_response_format(chat_req) is None
+        _shared_setup_5(payload)
 
     def test_chat_template_kwargs_enable_thinking_true_is_lifted(self):
         payload = ResponsesRequest(
@@ -817,6 +853,464 @@ class TestNormaliseResponsesInputWithTools:
             _normalise_responses_input(payload)
         assert exc.value.status_code == 400
         assert "image_url" in str(exc.value.detail)
+
+    def test_input_file_message_part_rejected_clearly(self):
+        # Same shape function_call_output already refuses; dropped here, it answered 200.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "summarise this"},
+                        {
+                            "type": "input_file",
+                            "file_data": "data:application/pdf;base64,AAA",
+                            "filename": "report.pdf",
+                        },
+                    ],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "input_file" in str(exc.value.detail)
+
+    def test_file_id_image_message_part_rejected_clearly(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "what is in this?"},
+                        {"type": "input_image", "file_id": "file_abc"},
+                    ],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "file_id" in str(exc.value.detail)
+
+    def test_unmodelled_message_part_is_named_not_dropped(self):
+        # Matches _reject_unsupported_content_parts on /chat/completions.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "hello"},
+                        {"type": "input_something_new", "value": 1},
+                    ],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "input_something_new" in str(exc.value.detail)
+
+    def test_image_message_part_without_any_source_rejected_clearly(self):
+        # Nothing to serve, and the tool-result path already says so in these words.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "what is in this?"},
+                        {"type": "input_image"},
+                    ],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "require an image_url string" in str(exc.value.detail)
+
+    def test_image_message_part_with_unknown_detail_rejected_clearly(self):
+        # Fails the Literal, degrades to the catch-all, and loses a servable url with it.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "what is in this?"},
+                        {
+                            "type": "input_image",
+                            "image_url": "https://example.com/a.png",
+                            "detail": "medium",
+                        },
+                    ],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "auto, low, high, or original" in str(exc.value.detail)
+
+    def test_image_message_part_with_url_and_file_id_is_served_from_the_url(self):
+        # file_id means instead of a url, not as well as: with a url, serve it.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "what is in this?"},
+                        {
+                            "type": "input_image",
+                            "image_url": "https://example.com/a.png",
+                            "file_id": "file_abc",
+                        },
+                    ],
+                }
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert len(msgs) == 1
+        assert msgs[0].content[1].image_url.url == "https://example.com/a.png"
+
+    @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
+    def test_attachment_refused_on_the_roles_that_exit_early(self, role):
+        # Both return via `continue`, so a refusal in the user parts loop never sees them.
+        text_part = (
+            {"type": "output_text", "text": "hi"}
+            if role == "assistant"
+            else {"type": "input_text", "text": "hi"}
+        )
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": role,
+                    "content": [text_part, {"type": "input_file", "filename": "r.pdf"}],
+                },
+                {"role": "user", "content": "and now?"},
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "input_file" in str(exc.value.detail)
+
+    def test_assistant_replay_keeps_its_lenient_text_flatten(self):
+        # Clients round-trip prior assistant output verbatim, so only attachments are
+        # refused on a replay turn.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "earlier answer"},
+                        {"type": "refusal", "refusal": "I cannot help with that"},
+                    ],
+                },
+                {"role": "user", "content": "why not?"},
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert [(m.role, m.content) for m in msgs] == [
+            ("assistant", "earlier answer"),
+            ("user", "why not?"),
+        ]
+
+    def test_string_content_never_hides_an_attachment(self):
+        payload = ResponsesRequest(
+            input = [
+                {"role": "system", "content": "be brief"},
+                {"role": "assistant", "content": "earlier"},
+                {"role": "user", "content": "hello"},
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert [(m.role, m.content) for m in msgs] == [
+            ("system", "be brief"),
+            ("assistant", "earlier"),
+            ("user", "hello"),
+        ]
+
+    def test_refusal_body_is_the_openai_unsupported_parameter_shape(self):
+        # Clients branch on error.code / error.param.
+        payload = ResponsesRequest(
+            input = [{"role": "user", "content": [{"type": "input_file", "filename": "r.pdf"}]}],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        error = exc.value.detail["error"]
+        assert error["code"] == "unsupported_parameter"
+        assert error["param"] == "input"
+        assert error["type"] == "invalid_request_error"
+
+
+# Every part shape and the answer it is owed; the failures live in the combinations.
+_IMG = "https://example.com/a.png"
+_RESPONSES_PART_MATRIX = [
+    # (part, refused, needle in the message)
+    ({"type": "input_text", "text": "hi"}, False, ""),
+    ({"type": "output_text", "text": "hi"}, False, ""),
+    ({"type": "input_image", "image_url": _IMG}, False, ""),
+    ({"type": "input_image", "image_url": _IMG, "detail": "auto"}, False, ""),
+    ({"type": "input_image", "image_url": _IMG, "detail": "low"}, False, ""),
+    ({"type": "input_image", "image_url": _IMG, "detail": "high"}, False, ""),
+    ({"type": "input_image", "image_url": _IMG, "detail": "original"}, False, ""),
+    ({"type": "input_image", "image_url": _IMG, "detail": None}, False, ""),
+    ({"type": "input_image", "image_url": _IMG, "file_id": "f1"}, False, ""),
+    ({"type": "input_image", "image_url": "data:image/png;base64,AAAA"}, False, ""),
+    ({"type": "input_image", "file_id": "f1"}, True, "file_id"),
+    ({"type": "input_image"}, True, "require an image_url string"),
+    ({"type": "input_image", "image_url": None}, True, "require an image_url string"),
+    ({"type": "input_image", "image_url": ""}, True, "require an image_url string"),
+    ({"type": "input_image", "image_url": 17}, True, "require an image_url string"),
+    ({"type": "input_image", "image_url": {"url": _IMG}}, True, "require an image_url string"),
+    ({"type": "input_image", "image_url": _IMG, "detail": "medium"}, True, "auto, low, high"),
+    ({"type": "input_image", "image_url": _IMG, "detail": 4}, True, "auto, low, high"),
+    ({"type": "input_file", "file_id": "f1"}, True, "input_file"),
+    ({"type": "input_file", "file_data": "data:application/pdf;base64,AA"}, True, "input_file"),
+    ({"type": "input_file", "file_url": "https://example.com/d.pdf"}, True, "input_file"),
+    ({"type": "input_file", "filename": "r.pdf"}, True, "input_file"),
+    ({"type": "input_file"}, True, "input_file"),
+    ({"type": "input_audio", "input_audio": {"data": "AA", "format": "wav"}}, True, "input_audio"),
+    ({"type": "input_something_new", "value": 1}, True, "input_something_new"),
+]
+
+
+def _matrix_id(case):
+    part, refused, _ = case
+    keys = "+".join(k for k in part if k != "type")
+    return f"{part['type']}({keys or 'bare'})-{'400' if refused else '200'}"
+
+
+class TestResponsesMessagePartMatrix:
+    """One expected answer per (part shape, role, position). No server, no GPU."""
+
+    @pytest.mark.parametrize("case", _RESPONSES_PART_MATRIX, ids = _matrix_id)
+    @pytest.mark.parametrize("alone", [True, False], ids = ["alone", "with_text"])
+    def test_user_turn(self, case, alone):
+        part, refused, needle = case
+        content = [part] if alone else [{"type": "input_text", "text": "hi"}, part]
+        payload = ResponsesRequest(input = [{"role": "user", "content": content}])
+        if refused:
+            with pytest.raises(HTTPException) as exc:
+                _normalise_responses_input(payload)
+            assert exc.value.status_code == 400
+            assert needle in str(exc.value.detail)
+        else:
+            assert _normalise_responses_input(payload)
+
+    @pytest.mark.parametrize("case", _RESPONSES_PART_MATRIX, ids = _matrix_id)
+    @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
+    def test_attachments_refused_on_every_role(self, case, role):
+        # These roles flatten to text, so only a text-ish part survives; everything else,
+        # servable image included, is caller content the flatten would drop.
+        part, refused, needle = case
+        payload = ResponsesRequest(
+            input = [
+                {"role": role, "content": [{"type": "input_text", "text": "hi"}, part]},
+                {"role": "user", "content": "go on"},
+            ],
+        )
+        survives = part["type"] in ("input_text", "output_text") or (
+            role == "assistant" and part["type"] in ("refusal", "summary_text")
+        )
+        if survives:
+            assert _normalise_responses_input(payload)
+            return
+        if part["type"] == "input_file":
+            expected = needle
+        elif part["type"] == "input_image":
+            expected = needle if refused else "only supported on user messages"
+        else:
+            expected = part["type"]
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert expected in str(exc.value.detail)
+
+    @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
+    def test_a_servable_image_is_refused_on_a_role_that_flattens(self, role):
+        # Passed every shape check and vanished in the flatten anyway. Nowhere to forward
+        # it to: Chat Completions wants a plain string on system and assistant.
+        text_part = (
+            {"type": "output_text", "text": "hi"}
+            if role == "assistant"
+            else {"type": "input_text", "text": "hi"}
+        )
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": role,
+                    "content": [
+                        text_part,
+                        {"type": "input_image", "image_url": "https://example.com/a.png"},
+                    ],
+                },
+                {"role": "user", "content": "go on"},
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "only supported on user messages" in str(exc.value.detail)
+        assert role in str(exc.value.detail)
+
+    @pytest.mark.parametrize("role", ["system", "developer", "assistant"])
+    @pytest.mark.parametrize(
+        "part",
+        [
+            {"type": "input_audio", "input_audio": {"data": "AA", "format": "wav"}},
+            {"type": "computer_screenshot", "image_url": "https://example.com/a.png"},
+            {"type": "input_brand_new", "value": 1},
+        ],
+        ids = ["input_audio", "computer_screenshot", "future"],
+    )
+    def test_a_non_text_part_is_refused_on_a_role_that_flattens(self, role, part):
+        # Anything the flatten does not keep is caller content that vanishes.
+        text_part = (
+            {"type": "output_text", "text": "hi"}
+            if role == "assistant"
+            else {"type": "input_text", "text": "hi"}
+        )
+        payload = ResponsesRequest(
+            input = [
+                {"role": role, "content": [text_part, part]},
+                {"role": "user", "content": "go on"},
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert part["type"] in str(exc.value.detail)
+        assert role in str(exc.value.detail)
+
+    @pytest.mark.parametrize("role", ["system", "developer", "user", "assistant"])
+    @pytest.mark.parametrize(
+        "part",
+        [
+            {"type": "input_text"},
+            {"type": "input_text", "text": None},
+            {"type": "input_text", "text": 123},
+            {"type": "output_text"},
+        ],
+        ids = ["no_text", "null_text", "int_text", "output_no_text"],
+    )
+    def test_a_text_part_without_text_is_named_for_what_is_wrong(self, role, part):
+        # A known type name on an untyped part: waved through, then dropped by the flatten.
+        payload = ResponsesRequest(
+            input = [
+                {"role": role, "content": [part]},
+                {"role": "user", "content": "go on"},
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "require a text field" in str(exc.value.detail)
+        assert part["type"] in str(exc.value.detail)
+
+    def test_a_malformed_text_part_does_not_hide_behind_a_good_one(self):
+        # Servable text beside it, so the request succeeded and only the broken part went.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": "keep"}, {"type": "input_text"}],
+                },
+                {"role": "user", "content": "go on"},
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert "require a text field" in str(exc.value.detail)
+
+    @pytest.mark.parametrize("part_type", ["refusal", "summary_text"])
+    @pytest.mark.parametrize("role", ["system", "developer"])
+    def test_output_metadata_is_caller_content_on_a_non_assistant_turn(self, role, part_type):
+        # Only the model's own output on a replay turn; elsewhere someone wrote it.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": role,
+                    "content": [
+                        {"type": "input_text", "text": "keep"},
+                        {"type": part_type, "text": "x", "refusal": "x"},
+                    ],
+                },
+                {"role": "user", "content": "go on"},
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert part_type in str(exc.value.detail)
+
+    @pytest.mark.parametrize("part_type", ["refusal", "summary_text"])
+    def test_assistant_output_metadata_survives_the_flatten(self, part_type):
+        # Clients round-trip these, and the prompt needs nothing from them.
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "earlier answer"},
+                        {"type": part_type, "text": "x", "refusal": "x"},
+                    ],
+                },
+                {"role": "user", "content": "why?"},
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert [(m.role, m.content) for m in msgs] == [
+            ("assistant", "earlier answer"),
+            ("user", "why?"),
+        ]
+
+    def test_a_servable_image_still_passes_on_a_user_turn(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "hi"},
+                        {"type": "input_image", "image_url": "https://example.com/a.png"},
+                    ],
+                }
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert msgs[0].content[1].image_url.url == "https://example.com/a.png"
+
+    def test_instructions_still_merge_when_a_turn_is_servable(self):
+        payload = ResponsesRequest(
+            instructions = "be brief",
+            input = [
+                {"role": "developer", "content": [{"type": "input_text", "text": "and kind"}]},
+                {"role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert [(m.role, m.content) for m in msgs] == [
+            ("system", "be brief\n\nand kind"),
+            ("user", "hello"),
+        ]
+
+    def test_top_level_item_types_are_untouched_by_the_refusal(self):
+        # The refusal walks message items only.
+        payload = ResponsesRequest(
+            input = [
+                {"type": "reasoning", "summary": [], "id": "rs_1"},
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "get_weather",
+                    "arguments": "{}",
+                },
+                {"type": "function_call_output", "call_id": "call_1", "output": "sunny"},
+                {"role": "user", "content": "thanks"},
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert [m.role for m in msgs] == ["assistant", "tool", "user"]
 
     def test_empty_function_call_output_gets_no_output_sentinel(self):
         payload = ResponsesRequest(
@@ -1179,12 +1673,7 @@ class TestResponsesNonStreamingAdapter:
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
         payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
-        messages = [ChatMessage(role = "user", content = "hi")]
-        request = SimpleNamespace(
-            state = SimpleNamespace(),
-            url = SimpleNamespace(path = "/v1/responses"),
-            method = "POST",
-        )
+        messages, request = _shared_setup_4()
 
         async def run():
             response = await _responses_non_streaming(payload, messages, request)
@@ -1381,12 +1870,7 @@ class TestResponsesNonStreamingAdapter:
             input = "hi",
             tools = [{"type": "function", "name": "lookup"}],
         )
-        messages = [ChatMessage(role = "user", content = "hi")]
-        request = SimpleNamespace(
-            state = SimpleNamespace(),
-            url = SimpleNamespace(path = "/v1/responses"),
-            method = "POST",
-        )
+        messages, request = _shared_setup_4()
 
         async def run():
             response = await _responses_non_streaming(payload, messages, request)
@@ -1415,12 +1899,7 @@ class TestResponsesNonStreamingAdapter:
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
         payload = ResponsesRequest(input = "hi")
-        messages = [ChatMessage(role = "user", content = "hi")]
-        request = SimpleNamespace(
-            state = SimpleNamespace(),
-            url = SimpleNamespace(path = "/v1/responses"),
-            method = "POST",
-        )
+        messages, request = _shared_setup_4()
 
         async def run():
             with pytest.raises(asyncio.CancelledError):
@@ -1470,11 +1949,11 @@ class TestResponsesNonStreamingAdapter:
         assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
         assert body["output"][1]["content"][0]["text"] == "answer"
 
-    def test_reasoning_capable_gguf_sanitizes_think_tags_when_disabled(self, monkeypatch):
+    def test_reasoning_capable_gguf_keeps_think_tags_visible_when_disabled(self, monkeypatch):
         payload = ResponsesRequest(input = "hi", reasoning = {"effort": "none"})
         body = self._run_with_message(
             monkeypatch,
-            {"content": "<think>leaked</think>answer"},
+            {"content": "Use <think>hi</think> in your prompt."},
             payload = payload,
             llama_backend = SimpleNamespace(
                 is_loaded = True,
@@ -1483,8 +1962,94 @@ class TestResponsesNonStreamingAdapter:
             ),
         )
 
+        assert [item["type"] for item in body["output"]] == ["message"]
+        assert body["output"][0]["content"][0]["text"] == "Use <think>hi</think> in your prompt."
+
+    def test_effort_dial_gguf_still_parses_think_tags_when_disabled(self, monkeypatch):
+        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "none"})
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "<think>plan</think>answer"},
+            payload = payload,
+            llama_backend = SimpleNamespace(
+                is_loaded = True,
+                reasoning_always_on = False,
+                supports_reasoning = True,
+                # gpt-oss offers no "none" level, so it stays on low effort and the markup is real.
+                _request_reasoning_kwargs = (
+                    lambda enable_thinking, reasoning_effort = None, preserve_thinking = None: (
+                        {"reasoning_effort": "low"}
+                    )
+                ),
+            ),
+        )
+
         assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
-        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "leaked"}]
+        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
+        assert body["output"][1]["content"][0]["text"] == "answer"
+
+    def test_inkling_numeric_zero_effort_keeps_think_tags_visible(self, monkeypatch):
+        # Real resolver, not a stand-in: for Inkling, _coerce_reasoning_effort rewrites
+        # the "none" sentinel to numeric 0, which a string-only check misreads as still on.
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        backend = LlamaCppBackend.__new__(LlamaCppBackend)
+        backend._process = object()
+        backend._healthy = True
+        backend._supports_reasoning = True
+        backend._reasoning_always_on = False
+        backend._reasoning_style = "reasoning_effort"
+        backend._reasoning_effort_levels = ["none", "low", "medium", "high", "max"]
+        backend._supports_preserve_thinking = False
+        backend._preserve_thinking_default = False
+        backend._reasoning_default = True
+        backend._architecture = "inkling"
+
+        assert backend._request_reasoning_kwargs(False, "none", None) == {"reasoning_effort": 0.0}
+
+        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "none"})
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "Use <think>hi</think> in your prompt."},
+            payload = payload,
+            llama_backend = backend,
+        )
+
+        assert [item["type"] for item in body["output"]] == ["message"]
+        assert body["output"][0]["content"][0]["text"] == "Use <think>hi</think> in your prompt."
+
+    def test_launch_default_thinking_off_keeps_think_tags_visible(self, monkeypatch):
+        # No reasoning field means no override, so the model runs on the default it was
+        # launched with. The Qwen3.5 Small tier launches thinking off.
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "Use <think>hi</think> in your prompt."},
+            llama_backend = SimpleNamespace(
+                is_loaded = True,
+                reasoning_always_on = False,
+                supports_reasoning = True,
+                reasoning_default = False,
+            ),
+        )
+
+        assert [item["type"] for item in body["output"]] == ["message"]
+        assert body["output"][0]["content"][0]["text"] == "Use <think>hi</think> in your prompt."
+
+    def test_launch_default_thinking_on_still_parses_think_tags(self, monkeypatch):
+        # Mirror: a thinking-on launch default still splits, so the fix is not "never parse".
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "<think>plan</think>answer"},
+            llama_backend = SimpleNamespace(
+                is_loaded = True,
+                reasoning_always_on = False,
+                supports_reasoning = True,
+                reasoning_default = True,
+            ),
+        )
+
+        assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
+        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
         assert body["output"][1]["content"][0]["text"] == "answer"
 
     def test_structured_reasoning_content_extracts_text_parts(self, monkeypatch):
@@ -1537,6 +2102,31 @@ class TestResponsesStreamAdapter:
         async for chunk in response.body_iterator:
             chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
         return chunks
+
+    def _stream_lines(
+        self,
+        payload,
+        messages,
+        monitor_id = None,
+    ):
+        """Drive _responses_stream to completion and return the SSE lines it wrote."""
+
+        async def run():
+            response = await _responses_stream(
+                payload, messages, self._Request(), monitor_id = monitor_id
+            )
+            return await self._collect(response)
+
+        return asyncio.run(run())
+
+    def _stream_deltas(self, payload, messages):
+        """The SSE lines plus the reasoning and output-text deltas carried in them."""
+        lines = self._stream_lines(payload, messages)
+        return (
+            lines,
+            self._payloads(lines, "response.reasoning_text.delta"),
+            self._payloads(lines, "response.output_text.delta"),
+        )
 
     @staticmethod
     def _payloads(lines, event_name):
@@ -1634,14 +2224,7 @@ class TestResponsesStreamAdapter:
         payload = ResponsesRequest(input = "hi", stream = True, reasoning = {"effort": "high"})
         messages = [ChatMessage(role = "user", content = "hi")]
 
-        async def run():
-            response = await _responses_stream(payload, messages, self._Request())
-            return await self._collect(response)
-
-        lines = asyncio.run(run())
-
-        reasoning_deltas = self._payloads(lines, "response.reasoning_text.delta")
-        text_deltas = self._payloads(lines, "response.output_text.delta")
+        lines, reasoning_deltas, text_deltas = self._stream_deltas(payload, messages)
         assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
         assert "".join(event["delta"] for event in text_deltas) == "33"
         completed = self._payloads(lines, "response.completed")[0]
@@ -1662,25 +2245,9 @@ class TestResponsesStreamAdapter:
         self._install_stream_mock(monkeypatch, chunks)
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/responses",
-            method = "POST",
-            model = "m",
-            prompt = "hi",
-        )
-        payload = ResponsesRequest(input = "hi", stream = True)
-        messages = [ChatMessage(role = "user", content = "hi")]
+        messages, monitor_id, payload = _shared_setup_1(monitor)
 
-        async def run():
-            response = await _responses_stream(
-                payload,
-                messages,
-                self._Request(),
-                monitor_id = monitor_id,
-            )
-            return await self._collect(response)
-
-        asyncio.run(run())
+        self._stream_lines(payload, messages, monitor_id)
 
         [entry] = monitor.snapshot()
         assert entry["status"] == "completed"
@@ -1703,25 +2270,9 @@ class TestResponsesStreamAdapter:
         self._install_stream_mock(monkeypatch, chunks)
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/responses",
-            method = "POST",
-            model = "m",
-            prompt = "hi",
-        )
-        payload = ResponsesRequest(input = "hi", stream = True)
-        messages = [ChatMessage(role = "user", content = "hi")]
+        messages, monitor_id, payload = _shared_setup_1(monitor)
 
-        async def run():
-            response = await _responses_stream(
-                payload,
-                messages,
-                self._Request(),
-                monitor_id = monitor_id,
-            )
-            return await self._collect(response)
-
-        asyncio.run(run())
+        self._stream_lines(payload, messages, monitor_id)
 
         [entry] = monitor.snapshot()
         assert entry["decode_ms"] == 1000
@@ -1754,25 +2305,9 @@ class TestResponsesStreamAdapter:
         self._install_stream_mock(monkeypatch, chunks)
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/responses",
-            method = "POST",
-            model = "m",
-            prompt = "hi",
-        )
-        payload = ResponsesRequest(input = "hi", stream = True)
-        messages = [ChatMessage(role = "user", content = "hi")]
+        messages, monitor_id, payload = _shared_setup_1(monitor)
 
-        async def run():
-            response = await _responses_stream(
-                payload,
-                messages,
-                self._Request(),
-                monitor_id = monitor_id,
-            )
-            return await self._collect(response)
-
-        lines = asyncio.run(run())
+        lines = self._stream_lines(payload, messages, monitor_id)
 
         assert self._payloads(lines, "response.output_item.done")[-1]["item"]["name"] == "lookup"
         [entry] = monitor.snapshot()
@@ -1799,16 +2334,7 @@ class TestResponsesStreamAdapter:
         payload = ResponsesRequest(input = "hi", stream = True)
         messages = [ChatMessage(role = "user", content = "hi")]
 
-        async def run():
-            response = await _responses_stream(
-                payload,
-                messages,
-                self._Request(),
-                monitor_id = monitor_id,
-            )
-            return await self._collect(response)
-
-        asyncio.run(run())
+        self._stream_lines(payload, messages, monitor_id)
 
         [entry] = monitor.snapshot()
         assert entry["status"] == "cancelled"
@@ -1888,25 +2414,9 @@ class TestResponsesStreamAdapter:
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monkeypatch.setattr(inf_mod, "_ResponsesReasoningExtractor", FakeExtractor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/responses",
-            method = "POST",
-            model = "m",
-            prompt = "hi",
-        )
-        payload = ResponsesRequest(input = "hi", stream = True)
-        messages = [ChatMessage(role = "user", content = "hi")]
+        messages, monitor_id, payload = _shared_setup_1(monitor)
 
-        async def run():
-            response = await _responses_stream(
-                payload,
-                messages,
-                self._Request(),
-                monitor_id = monitor_id,
-            )
-            return await self._collect(response)
-
-        lines = asyncio.run(run())
+        lines = self._stream_lines(payload, messages, monitor_id)
 
         assert self._payloads(lines, "response.output_text.delta")[-1]["delta"] == "tail"
         [entry] = monitor.snapshot()
@@ -1934,25 +2444,9 @@ class TestResponsesStreamAdapter:
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monkeypatch.setattr(inf_mod, "_ResponsesReasoningExtractor", FakeExtractor)
-        monitor_id = monitor.start(
-            endpoint = "/v1/responses",
-            method = "POST",
-            model = "m",
-            prompt = "hi",
-        )
-        payload = ResponsesRequest(input = "hi", stream = True)
-        messages = [ChatMessage(role = "user", content = "hi")]
+        messages, monitor_id, payload = _shared_setup_1(monitor)
 
-        async def run():
-            response = await _responses_stream(
-                payload,
-                messages,
-                self._Request(),
-                monitor_id = monitor_id,
-            )
-            return await self._collect(response)
-
-        lines = asyncio.run(run())
+        lines = self._stream_lines(payload, messages, monitor_id)
 
         assert self._payloads(lines, "response.output_text.delta") == []
         assert self._payloads(lines, "response.reasoning_text.delta")[-1]["delta"] == "plan"
@@ -1970,14 +2464,7 @@ class TestResponsesStreamAdapter:
         payload = ResponsesRequest(input = "hi", stream = True)
         messages = [ChatMessage(role = "user", content = "hi")]
 
-        async def run():
-            response = await _responses_stream(payload, messages, self._Request())
-            return await self._collect(response)
-
-        lines = asyncio.run(run())
-
-        reasoning_deltas = self._payloads(lines, "response.reasoning_text.delta")
-        text_deltas = self._payloads(lines, "response.output_text.delta")
+        lines, reasoning_deltas, text_deltas = self._stream_deltas(payload, messages)
         assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
         assert "".join(event["delta"] for event in text_deltas) == "answer"
         completed = self._payloads(lines, "response.completed")[0]
@@ -1998,14 +2485,7 @@ class TestResponsesStreamAdapter:
         payload = ResponsesRequest(input = "hi", stream = True, reasoning = {"effort": "high"})
         messages = [ChatMessage(role = "user", content = "hi")]
 
-        async def run():
-            response = await _responses_stream(payload, messages, self._Request())
-            return await self._collect(response)
-
-        lines = asyncio.run(run())
-
-        reasoning_deltas = self._payloads(lines, "response.reasoning_text.delta")
-        text_deltas = self._payloads(lines, "response.output_text.delta")
+        lines, reasoning_deltas, text_deltas = self._stream_deltas(payload, messages)
         assert reasoning_deltas == []
         assert "".join(event["delta"] for event in text_deltas) == "show <think>x</think> tags"
         completed = self._payloads(lines, "response.completed")[0]
@@ -2023,14 +2503,7 @@ class TestResponsesStreamAdapter:
         payload = ResponsesRequest(input = "hi", stream = True, reasoning = {"effort": "high"})
         messages = [ChatMessage(role = "user", content = "hi")]
 
-        async def run():
-            response = await _responses_stream(payload, messages, self._Request())
-            return await self._collect(response)
-
-        lines = asyncio.run(run())
-
-        reasoning_deltas = self._payloads(lines, "response.reasoning_text.delta")
-        text_deltas = self._payloads(lines, "response.output_text.delta")
+        lines, reasoning_deltas, text_deltas = self._stream_deltas(payload, messages)
         assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
         assert text_deltas == []
         completed = self._payloads(lines, "response.completed")[0]
@@ -2047,14 +2520,7 @@ class TestResponsesStreamAdapter:
         payload = ResponsesRequest(input = "hi", stream = True, reasoning = {"effort": "high"})
         messages = [ChatMessage(role = "user", content = "hi")]
 
-        async def run():
-            response = await _responses_stream(payload, messages, self._Request())
-            return await self._collect(response)
-
-        lines = asyncio.run(run())
-
-        reasoning_deltas = self._payloads(lines, "response.reasoning_text.delta")
-        text_deltas = self._payloads(lines, "response.output_text.delta")
+        lines, reasoning_deltas, text_deltas = self._stream_deltas(payload, messages)
         assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
         assert text_deltas == []
         completed = self._payloads(lines, "response.completed")[0]
@@ -2071,14 +2537,7 @@ class TestResponsesStreamAdapter:
         payload = ResponsesRequest(input = "hi", stream = True)
         messages = [ChatMessage(role = "user", content = "hi")]
 
-        async def run():
-            response = await _responses_stream(payload, messages, self._Request())
-            return await self._collect(response)
-
-        lines = asyncio.run(run())
-
-        reasoning_deltas = self._payloads(lines, "response.reasoning_text.delta")
-        text_deltas = self._payloads(lines, "response.output_text.delta")
+        lines, reasoning_deltas, text_deltas = self._stream_deltas(payload, messages)
         assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
         assert "".join(event["delta"] for event in text_deltas) == "33"
         completed = self._payloads(lines, "response.completed")[0]
@@ -2108,14 +2567,7 @@ class TestResponsesStreamAdapter:
         payload = ResponsesRequest(input = "hi", stream = True)
         messages = [ChatMessage(role = "user", content = "hi")]
 
-        async def run():
-            response = await _responses_stream(payload, messages, self._Request())
-            return await self._collect(response)
-
-        lines = asyncio.run(run())
-
-        reasoning_deltas = self._payloads(lines, "response.reasoning_text.delta")
-        text_deltas = self._payloads(lines, "response.output_text.delta")
+        lines, reasoning_deltas, text_deltas = self._stream_deltas(payload, messages)
         assert "".join(event["delta"] for event in reasoning_deltas) == "plan next"
         assert "".join(event["delta"] for event in text_deltas) == "33"
         assert "reasoning_text" not in "".join(event["delta"] for event in reasoning_deltas)
@@ -2148,11 +2600,7 @@ class TestResponsesStreamAdapter:
         payload = ResponsesRequest(input = "hi", stream = True)
         messages = [ChatMessage(role = "user", content = "hi")]
 
-        async def run():
-            response = await _responses_stream(payload, messages, self._Request())
-            return await self._collect(response)
-
-        lines = asyncio.run(run())
+        lines = self._stream_lines(payload, messages)
 
         done_events = self._payloads(lines, "response.output_item.done")
         assert [event["output_index"] for event in done_events] == [0, 1]
@@ -2272,6 +2720,106 @@ class TestResponsesStreamAdapter:
         assert done[0]["item"]["type"] == "function_call"
         assert self._payloads(lines, "response.function_call_arguments.done")
 
+    def test_studio_ownership_marker_reaches_the_chat_request(self):
+        """ResponsesRequest takes the marker as an extra field, and every fold downstream reads
+        it off the ChatCompletionRequest. Dropped in translation, only the legacy
+        search_conversation arm can claim a Studio thread, so one that ran terminal or
+        search_knowledge_base is refused non-streaming and forwarded raw when streamed."""
+        from routes.inference import _build_chat_request
+
+        payload = ResponsesRequest.model_validate(
+            {"input": "hi", "stream": True, "model": "org/M-GGUF", "studio_tool_history": True}
+        )
+        chat_req = _build_chat_request(
+            payload, [ChatMessage(role = "user", content = "hi")], stream = True
+        )
+        assert chat_req.studio_tool_history is True
+
+        # Absent stays absent: a plain client must not be read as Studio's.
+        plain = _build_chat_request(
+            ResponsesRequest.model_validate({"input": "hi", "model": "org/M-GGUF"}),
+            [ChatMessage(role = "user", content = "hi")],
+            stream = False,
+        )
+        assert not plain.studio_tool_history
+
+    def test_studio_tool_history_is_folded_on_the_direct_stream(self, monkeypatch):
+        """This half of /v1/responses builds the passthrough body itself, so it has to fold the
+        way openai_chat_completions does. Otherwise the same thread on the same model answers
+        non-streaming and ships role="tool" to a toolless template when streamed."""
+        import routes.inference as inf_mod
+
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = json.loads(request.content.decode())
+            content = 'data: {"choices": [{"delta": {"content": "ok"}}]}\n\ndata: [DONE]\n\n'
+            return httpx.Response(
+                200,
+                content = content.encode(),
+                headers = {"content-type": "text/event-stream"},
+            )
+
+        transport = httpx.MockTransport(handler)
+        real_async_client = httpx.AsyncClient
+        monkeypatch.setattr(
+            inf_mod.httpx,
+            "AsyncClient",
+            lambda *a, **kw: real_async_client(transport = transport, timeout = kw.get("timeout", 600)),
+        )
+        monkeypatch.setattr(
+            inf_mod,
+            "get_llama_cpp_backend",
+            lambda: SimpleNamespace(
+                is_loaded = True,
+                is_vision = False,
+                context_length = 4096,
+                base_url = "http://llama.test",
+                supports_tools = False,
+                supports_tool_passthrough = False,
+                _request_reasoning_kwargs = (
+                    lambda enable_thinking = None, reasoning_effort = None, preserve_thinking = None: None
+                ),
+            ),
+        )
+
+        payload = ResponsesRequest(input = "and now?", stream = True, model = "org/M-GGUF")
+        messages = [
+            ChatMessage(role = "user", content = "what did we say about seeds?"),
+            ChatMessage(
+                role = "assistant",
+                content = None,
+                tool_calls = [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "search_conversation",
+                            "arguments": '{"query": "seeds"}',
+                        },
+                    }
+                ],
+            ),
+            ChatMessage(
+                role = "tool",
+                tool_call_id = "call_1",
+                name = "search_conversation",
+                content = "we said 3407",
+            ),
+            ChatMessage(role = "user", content = "and now?"),
+        ]
+
+        async def run():
+            response = await _responses_stream(payload, messages, self._Request())
+            return await self._collect(response)
+
+        asyncio.run(run())
+
+        roles = [m.get("role") for m in captured["body"]["messages"]]
+        assert "tool" not in roles, roles
+        assert not any(a == "user" and b == "user" for a, b in zip(roles, roles[1:])), roles
+        assert "we said 3407" in json.dumps(captured["body"]["messages"])
+
     def test_requests_usage_and_caps_parallel_tool_calls(self, monkeypatch):
         import routes.inference as inf_mod
 
@@ -2356,11 +2904,7 @@ class TestResponsesStreamAdapter:
         )
         messages = [ChatMessage(role = "user", content = "hi")]
 
-        async def run():
-            response = await _responses_stream(payload, messages, self._Request())
-            return await self._collect(response)
-
-        lines = asyncio.run(run())
+        lines = self._stream_lines(payload, messages)
 
         assert captured["body"]["stream_options"] == {"include_usage": True}
         joined = "".join(lines)
@@ -2666,25 +3210,79 @@ class TestTranslatedMessagesValidate:
 # reasoning_prefilled: enable_thinking templates prefill an unclosed <think>, so
 # generation begins inside the block; the extractor must start in reasoning.
 class TestReasoningPrefilledExtractor:
-    def test_prefilled_single_feed_splits_lone_close(self):
-        # T1: reasoning...</think>answer with a prefilled (unseen) open tag.
+    @pytest.mark.parametrize(
+        "text, parse_think_markers, reasoning_prefilled, expected, expected_visible",
+        [
+            # T1: reasoning...</think>answer with a prefilled (unseen) open tag.
+            pytest.param(
+                "plan</think>answer",
+                True,
+                True,
+                "plan",
+                "answer",
+                id = "prefilled_single_feed_splits_lone_close",
+            ),
+            # T2: truncated mid-thought (no </think>) -> all reasoning (GGUF parity).
+            pytest.param(
+                "still thinking with no close",
+                True,
+                True,
+                "still thinking with no close",
+                "",
+                id = "prefilled_never_closed_is_all_reasoning",
+            ),
+            # T5: nothing generated.
+            pytest.param("", True, True, "", "", id = "prefilled_empty_generation"),
+            # T6: Qwen commonly emits </think>\n\n before the answer.
+            pytest.param(
+                "plan</think>\n\nanswer",
+                True,
+                True,
+                "plan",
+                "\n\nanswer",
+                id = "prefilled_whitespace_after_close_is_visible",
+            ),
+            # T8: model closed immediately (empty reasoning) then answered.
+            pytest.param(
+                "</think>hi", True, True, "", "hi", id = "prefilled_close_at_start_empty_reasoning"
+            ),
+            # T9: without prefilled, a lone close tag keeps the pre-fix behavior (parity guard).
+            pytest.param(
+                "reasoning</think>ans",
+                True,
+                False,
+                "",
+                "reasoningans",
+                id = "not_prefilled_lone_close_preserves_current_behavior",
+            ),
+            # T10: normal explicit <think>..</think> (GGUF / Harmony) unchanged.
+            pytest.param(
+                "<think>r</think>v",
+                True,
+                False,
+                "r",
+                "v",
+                id = "not_prefilled_full_pair_still_splits",
+            ),
+            # T11: a non-reasoning model passes text through even with reasoning_prefilled False.
+            pytest.param(
+                "just an answer",
+                False,
+                False,
+                "",
+                "just an answer",
+                id = "prefilled_ignored_when_markers_not_parsed",
+            ),
+        ],
+    )
+    def test_reasoning_prefilled_extractor_cases(
+        self, text, parse_think_markers, reasoning_prefilled, expected, expected_visible
+    ):
         reasoning, visible = _extract_responses_reasoning(
-            "plan</think>answer",
-            parse_think_markers = True,
-            reasoning_prefilled = True,
+            text, parse_think_markers = parse_think_markers, reasoning_prefilled = reasoning_prefilled
         )
-        assert reasoning == "plan"
-        assert visible == "answer"
-
-    def test_prefilled_never_closed_is_all_reasoning(self):
-        # T2: truncated mid-thought (no </think>) -> all reasoning (GGUF parity).
-        reasoning, visible = _extract_responses_reasoning(
-            "still thinking with no close",
-            parse_think_markers = True,
-            reasoning_prefilled = True,
-        )
-        assert reasoning == "still thinking with no close"
-        assert visible == ""
+        assert reasoning == expected
+        assert visible == expected_visible
 
     def test_prefilled_close_split_across_feeds(self):
         # T3: </think> straddles two feed() calls; holdback resolves it.
@@ -2707,26 +3305,6 @@ class TestReasoningPrefilledExtractor:
         assert (reasoning + fr) == "plan"
         assert (visible + fv) == "x"
 
-    def test_prefilled_empty_generation(self):
-        # T5: nothing generated.
-        reasoning, visible = _extract_responses_reasoning(
-            "",
-            parse_think_markers = True,
-            reasoning_prefilled = True,
-        )
-        assert reasoning == ""
-        assert visible == ""
-
-    def test_prefilled_whitespace_after_close_is_visible(self):
-        # T6: Qwen commonly emits </think>\n\n before the answer.
-        reasoning, visible = _extract_responses_reasoning(
-            "plan</think>\n\nanswer",
-            parse_think_markers = True,
-            reasoning_prefilled = True,
-        )
-        assert reasoning == "plan"
-        assert visible == "\n\nanswer"
-
     def test_prefilled_stray_open_tag_is_suppressed(self):
         # T7: a re-emitted literal <think> inside prefilled reasoning is dropped,
         # not leaked into the drawer (covers enable_thinking_effort full-tag output).
@@ -2738,46 +3316,6 @@ class TestReasoningPrefilledExtractor:
         assert reasoning == "ab"
         assert visible == "c"
         assert "<think>" not in reasoning
-
-    def test_prefilled_close_at_start_empty_reasoning(self):
-        # T8: model closed immediately (empty reasoning) then answered.
-        reasoning, visible = _extract_responses_reasoning(
-            "</think>hi",
-            parse_think_markers = True,
-            reasoning_prefilled = True,
-        )
-        assert reasoning == ""
-        assert visible == "hi"
-
-    def test_not_prefilled_lone_close_preserves_current_behavior(self):
-        # T9: without prefilled, a lone close tag keeps the pre-fix behavior (parity guard).
-        reasoning, visible = _extract_responses_reasoning(
-            "reasoning</think>ans",
-            parse_think_markers = True,
-            reasoning_prefilled = False,
-        )
-        assert reasoning == ""
-        assert visible == "reasoningans"
-
-    def test_not_prefilled_full_pair_still_splits(self):
-        # T10: normal explicit <think>..</think> (GGUF / Harmony) unchanged.
-        reasoning, visible = _extract_responses_reasoning(
-            "<think>r</think>v",
-            parse_think_markers = True,
-            reasoning_prefilled = False,
-        )
-        assert reasoning == "r"
-        assert visible == "v"
-
-    def test_prefilled_ignored_when_markers_not_parsed(self):
-        # T11: a non-reasoning model passes text through even with reasoning_prefilled False.
-        reasoning, visible = _extract_responses_reasoning(
-            "just an answer",
-            parse_think_markers = False,
-            reasoning_prefilled = False,
-        )
-        assert reasoning == ""
-        assert visible == "just an answer"
 
 
 # =====================================================================
@@ -2957,18 +3495,11 @@ class TestResponsesStreamHealing:
 def test_healed_responses_tool_call_stamps_first_token(monkeypatch):
     # Healed output bypasses append_reply, so a text-form tool call would go untimed
     # until the item closes near end-of-stream.
-    from core.inference.api_monitor import api_monitor
-
-    xml = TestResponsesStreamHealing._XML
-    tool = TestResponsesStreamHealing._TOOL
+    api_monitor, tool, xml = _shared_setup_6()
     TestResponsesStreamAdapter._install_stream_mock(
         monkeypatch, [{"choices": [{"delta": {"content": xml}}]}]
     )
-    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
-    messages = [ChatMessage(role = "user", content = "hi")]
-    monitor_id = api_monitor.start(
-        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
-    )
+    messages, monitor_id, payload = _shared_setup_3(api_monitor, tool)
     stamped: list[str] = []
     real_mark = api_monitor.mark_first_token
     monkeypatch.setattr(
@@ -2998,11 +3529,7 @@ def test_finalized_healed_tool_call_stamps_first_token(monkeypatch):
     TestResponsesStreamAdapter._install_stream_mock(
         monkeypatch, [{"choices": [{"delta": {"content": unclosed}}]}]
     )
-    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
-    messages = [ChatMessage(role = "user", content = "hi")]
-    monitor_id = api_monitor.start(
-        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
-    )
+    messages, monitor_id, payload = _shared_setup_3(api_monitor, tool)
     stamped: list[str] = []
     real_mark = api_monitor.mark_first_token
     monkeypatch.setattr(
@@ -3027,19 +3554,12 @@ def test_finalized_healed_tool_call_stamps_first_token(monkeypatch):
 def test_healed_responses_tool_call_reports_a_tool_call_stop(monkeypatch):
     # The upstream chunk still says "stop" while this adapter emitted a function_call,
     # so the monitor would disagree with the chat stream's synthetic finish line.
-    from core.inference.api_monitor import api_monitor
-
-    xml = TestResponsesStreamHealing._XML
-    tool = TestResponsesStreamHealing._TOOL
+    api_monitor, tool, xml = _shared_setup_6()
     TestResponsesStreamAdapter._install_stream_mock(
         monkeypatch,
         [{"choices": [{"delta": {"content": xml}, "finish_reason": "stop"}]}],
     )
-    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
-    messages = [ChatMessage(role = "user", content = "hi")]
-    monitor_id = api_monitor.start(
-        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
-    )
+    messages, monitor_id, payload = _shared_setup_3(api_monitor, tool)
 
     async def run():
         response = await _responses_stream(
@@ -3062,11 +3582,7 @@ def test_unhealed_responses_stream_keeps_the_upstream_stop(monkeypatch):
         monkeypatch,
         [{"choices": [{"delta": {"content": "plain text"}, "finish_reason": "stop"}]}],
     )
-    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
-    messages = [ChatMessage(role = "user", content = "hi")]
-    monitor_id = api_monitor.start(
-        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
-    )
+    messages, monitor_id, payload = _shared_setup_3(api_monitor, tool)
 
     async def run():
         response = await _responses_stream(
@@ -3116,19 +3632,12 @@ def test_a_truncated_responses_stream_ends_on_response_incomplete(
 def test_a_healed_truncated_tool_call_remains_incomplete(
     monkeypatch, finish_reason, incomplete_reason
 ):
-    from core.inference.api_monitor import api_monitor
-
-    xml = TestResponsesStreamHealing._XML
-    tool = TestResponsesStreamHealing._TOOL
+    api_monitor, tool, xml = _shared_setup_6()
     TestResponsesStreamAdapter._install_stream_mock(
         monkeypatch,
         [{"choices": [{"delta": {"content": xml}, "finish_reason": finish_reason}]}],
     )
-    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
-    messages = [ChatMessage(role = "user", content = "hi")]
-    monitor_id = api_monitor.start(
-        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
-    )
+    messages, monitor_id, payload = _shared_setup_3(api_monitor, tool)
 
     async def run():
         response = await _responses_stream(

@@ -18,6 +18,7 @@ from auth.authentication import authenticated_without_credential, get_current_su
 from auth.storage import DEFAULT_ADMIN_USERNAME
 from models.inference import ChatCompletionRequest, LoadRequest
 from routes.inference import (
+    _reject_unsupported_content_parts,
     disable_openai_auto_switch_for_request,
     load_model_for_preview,
     openai_chat_completions,
@@ -134,6 +135,9 @@ async def _serve_chat(
     run: str, checkpoint: str | None, payload: ChatCompletionRequest, request: Request
 ):
     path = _resolve_or_4xx(run, checkpoint)
+    # Before the lock and the load: openai_chat_completions refuses these too, but only after a
+    # checkpoint load that can evict the resident model on its way to the same 400.
+    _reject_unsupported_content_parts(payload)
     is_lora = (path / "adapter_config.json").exists()
     payload = _sanitize_preview_payload(payload, is_lora)
     scope = getattr(request, "scope", None)
@@ -153,9 +157,8 @@ async def _serve_chat(
         if serializer_waiting:
             await resume_preview_after_serializer(scope)
             serializer_waiting = False
-        # The in-process coroutine, not the /load route: the route's padding returns a
-        # StreamingResponse while the checkpoint is still loading, so the chat below
-        # would run against the previous model (or none).
+        # The in-process coroutine, not the /load route: the route's padding returns a StreamingResponse while the
+        # checkpoint is still loading, so the chat below would run against the previous model (or none).
         await load_model_for_preview(
             LoadRequest(model_path = str(path)), request, DEFAULT_ADMIN_USERNAME
         )

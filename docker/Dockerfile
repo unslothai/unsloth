@@ -425,8 +425,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
 #   ffmpeg  torchcodec dlopens system FFmpeg libs (not bundled in the wheel)
 #   wget    notebooks fetch assets with `!wget URL`
 #   ninja-build  flashinfer cpp_ext JIT shells out to ninja
-#   cuda-nvcc + cudart-dev  flash-linear-attention TileLang JIT-compiles CUDA
-#                kernels via nvcc, absent from the -base image
+#   cuda-nvcc + cudart-dev  flashinfer JIT-compiles CUDA kernels via nvcc for
+#                ops with no cached cubin, absent from the -base image
 RUN CUDA_PKG="$(echo "${CUDA_VERSION}" | awk -F. '{print $1"-"$2}')" \
     && apt-get update && apt-get install -y --no-install-recommends \
         software-properties-common ca-certificates curl wget git libgomp1 \
