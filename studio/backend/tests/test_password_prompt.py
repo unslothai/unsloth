@@ -176,11 +176,42 @@ def test_loop_success_applies_once(monkeypatch):
     assert "new-password" not in out
 
 
-def test_loop_short_password_reprompts(monkeypatch):
-    ok, applied, out = _run_loop(monkeypatch, _keys("short", "long-enough-pw", "long-enough-pw"))
+@pytest.mark.parametrize(
+    "first, second, third, expected_applied, expected_message",
+    [
+        pytest.param(
+            "short",
+            "long-enough-pw",
+            "long-enough-pw",
+            "long-enough-pw",
+            "at least 8 characters",
+            id = "loop_short_password_reprompts",
+        ),
+        pytest.param(
+            "has space pw",
+            "long-enough-pw",
+            "long-enough-pw",
+            "long-enough-pw",
+            "contain spaces",
+            id = "loop_password_with_inner_space_reprompts",
+        ),
+        pytest.param(
+            "bootstrap-pw",
+            "fresh-password",
+            "fresh-password",
+            "fresh-password",
+            "must differ",
+            id = "loop_rejects_current_password",
+        ),
+    ],
+)
+def test_prompt_loop_reprompts_until_the_password_is_acceptable(
+    monkeypatch, first, second, third, expected_applied, expected_message
+):
+    ok, applied, out = _run_loop(monkeypatch, _keys(first, second, third))
     assert ok is True
-    assert applied == ["long-enough-pw"]
-    assert "at least 8 characters" in out
+    assert applied == [expected_applied]
+    assert expected_message in out
 
 
 def test_loop_whitespace_only_reprompts(monkeypatch):
@@ -188,24 +219,6 @@ def test_loop_whitespace_only_reprompts(monkeypatch):
     assert ok is True
     assert applied == ["long-enough-pw"]
     assert "contain spaces" in out
-
-
-def test_loop_password_with_inner_space_reprompts(monkeypatch):
-    ok, applied, out = _run_loop(
-        monkeypatch, _keys("has space pw", "long-enough-pw", "long-enough-pw")
-    )
-    assert ok is True
-    assert applied == ["long-enough-pw"]
-    assert "contain spaces" in out
-
-
-def test_loop_rejects_current_password(monkeypatch):
-    ok, applied, out = _run_loop(
-        monkeypatch, _keys("bootstrap-pw", "fresh-password", "fresh-password")
-    )
-    assert ok is True
-    assert applied == ["fresh-password"]
-    assert "must differ" in out
 
 
 def test_loop_mismatch_reprompts_then_succeeds(monkeypatch):

@@ -1,36 +1,34 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Backend-neutral tool-call parser shared by GGUF, safetensors, and MLX, so the
-safetensors + MLX agentic loop sees the same call shape llama-server gives GGUF:
-
-  - ``<tool_call>{json}</tool_call>``           (Qwen / Hermes)
-  - ``<function=name><parameter=k>v</parameter></function>``  (Qwen3.5 xml)
-  - ``<|python_tag|>NAME.call(k="v", ...)``     (Llama-3 built-in tools)
-  - ``<|python_tag|>{"name":..., "parameters":...}``  (Llama-3 custom)
-  - ``{"name":..., "parameters":...}``          (Llama-3.2 bare JSON)
-  - ``[TOOL_CALLS] [{...}, ...]``               (Mistral v0.3 / Nemo / Small)
-  - ``[TOOL_CALLS]name{json}``                  (Mistral v11+ / Magistral)
-  - ``[TOOL_CALLS]name[ARGS]{json}``            (Ministral / Mistral Large 3)
-  - ``<|tool_call>call:NAME{k:<|"|>v<|"|>}<tool_call|>``  (Gemma 4)
-  - ``<｜tool▁calls▁begin｜>...function<｜tool▁sep｜>NAME\\n``\\`\\`\\`json\\n{...}\\n\\`\\`\\`...``  (DeepSeek R1)
-  - ``<｜tool▁calls▁begin｜>...<｜tool▁call▁begin｜>NAME<｜tool▁sep｜>{json}<｜tool▁call▁end｜>...``  (DeepSeek V3 / V3.1)
-  - ``<tool_call>NAME\\n<arg_key>k</arg_key>\\n<arg_value>v</arg_value>...</tool_call>``  (GLM 4.5 / 4.6 / 4.7)
-  - ``<|tool_calls_section_begin|>...<|tool_call_begin|>functions.NAME:IDX<|tool_call_argument_begin|>{json}<|tool_call_end|>...``  (Kimi K2)
-
-Missing closing tags / brackets are tolerated: models often truncate mid-stream.
-"""
+"""Backend-neutral tool-call parser shared by GGUF, safetensors, and MLX, so the safetensors + MLX
+agentic loop sees the same call shape llama-server gives GGUF. Formats:
+``<tool_call>{json}</tool_call>`` (Qwen / Hermes);
+``<function=name><parameter=k>v</parameter></function>`` (Qwen3.5 xml);
+``<|python_tag|>NAME.call(k="v", ...)`` and ``<|python_tag|>{"name":..., "parameters":...}``
+(Llama-3); bare ``{"name":..., "parameters":...}`` (Llama-3.2); ``[TOOL_CALLS]`` array /
+``name{json}`` / ``name[ARGS]{json}`` (Mistral v0.3 through Large 3);
+``<|tool_call>call:NAME{k:<|"|>v<|"|>}<tool_call|>`` (Gemma 4); the fullwidth-pipe envelopes of
+DeepSeek R1 / V3 / V3.1; ``<tool_call>NAME<arg_key>..<arg_value>..</tool_call>`` (GLM 4.5-4.7);
+and the ``<|tool_calls_section_begin|>`` form (Kimi K2). Missing closing tags / brackets are
+tolerated: models often truncate mid-stream."""
 
 # Lazy annotations keep the standalone python 3.9 import working.
 from __future__ import annotations
 
 import json
+import bisect
 import re
 from typing import Any, Optional
 
 # Qwen/Hermes, Qwen3.5 XML and Gemma 4 live in core.tool_healing; this module adds the rest
 from core import tool_healing as _tool_healing
+
+# Shared with tool_healing so every markerless parse path applies the same guard. Wrapped and
+# marker forms (<|tool_call>, [TOOL_CALLS], <function=>) are unaffected.
+_markerless_promotable = _tool_healing._markerless_promotable
+_markerless_blocked_execution = _tool_healing._markerless_blocked_execution
+_markerless_execution_class = _tool_healing._markerless_execution_class
 
 
 # Flip the streaming buffer STREAMING->DRAINING so partial markup never leaks.
@@ -41,8 +39,8 @@ TOOL_XML_SIGNALS = (
     "<|python_tag|>",
     "[TOOL_CALLS]",
     "<|tool_call>",
-    # Bare reasoning-rehearsal marker (``name[ARGS]{...}``, no leading [TOOL_CALLS]); keeps a rehearsed call held in the
-    # stream so it is promoted, not leaked as prose.
+    # Bare reasoning-rehearsal marker (``name[ARGS]{...}``, no leading [TOOL_CALLS]); keeps a rehearsed call held in
+    # the stream so it is promoted, not leaked as prose.
     "[ARGS]",
     # DeepSeek R1 / V3 / V3.1 -- 5 opener variants llama.cpp keeps.
     "<｜tool▁calls▁begin｜>",
@@ -156,8 +154,8 @@ BUDGET_EXHAUSTED_NUDGE = (
 # The exact-args dup guard misses paraphrased re-searches, so also cap KB searches per turn
 RAG_MAX_SEARCHES_PER_TURN = 3
 # Both retrieval tools share that cap. Their top-K passages land in the current exchange, which the rolling window
-# protects and cannot evict, so an uncapped search only ends the turn in a context-length error. Here so both tool loops
-# agree on it.
+# protects and cannot evict, so an uncapped search only ends the turn in a context-length error. Here so both tool
+# loops agree on it.
 RAG_SEARCH_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
 RAG_SEARCH_CAP_NUDGE = (
     "You have already searched the knowledge base several times this turn. "
@@ -166,19 +164,17 @@ RAG_SEARCH_CAP_NUDGE = (
 )
 
 
-# Verbs naming work this turn.
-# ── Plan-without-action re-prompt (shared by the GGUF and safetensors loops) ── Verbs naming work this turn. Narrow on
+# Plan-without-action re-prompt (shared by the GGUF and safetensors loops). Verbs naming work this turn. Narrow on
 # purpose: "install"/"add"/"open" belong to advice for the user, which must not be re-prompted.
-# ── Plan-without-action re-prompt (shared by the GGUF and safetensors loops) ──
 _ACTION_VERB = (
     r"(?:search|check|look|find|fetch|get|call|use|run|query|invoke|analy[sz]e"
     r"|review|inspect|read|gather|examine|retrieve|browse|consult|verify"
     r"|confirm|compute|calculate|determine|identify|render)"
 )
-# Offering to help hands control back exactly like "let me know": measured on real turns, "I'll do my best to help" and
-# "allow me to assist" close a clarification request and never precede a tool call. "help you" keeps its plan reading
-# when an action follows it ("I'll help you search the web"). name no work of their own, so they only ever sign off a
-# question to the user (#8907)
+# Offering to help hands control back exactly like "let me know": measured on real turns, "I'll do my best to help"
+# and "allow me to assist" close a clarification request and never precede a tool call. "help you" keeps its plan
+# reading when an action follows it ("I'll help you search the web"). These name no work of their own, so they only
+# ever sign off a question to the user (#8907)
 _SIGN_OFF = r"(?:dig\s+in|help\s+analy[sz]e)\b(?=[^\w]*\Z)"  # \Z not $: a later line is still work
 _HELP_OFFER = (
     r"(?:do(?:ing)?\s+my\s+best|try\s+my\s+best|be\s+(?:able|happy|glad)\s+to\b"
@@ -197,9 +193,8 @@ INTENT_SIGNAL = re.compile(
     # bare "assist" still names work here ("let me assist by searching"), so only the sign-offs skip the "to"
     r"(?!\s+" + _SIGN_OFF + r")(?!\s+to\s+" + _HELP_OFFER + r")"
     r"|"
-    # "first" must open a sentence and be followed by a plan (pronoun, "my/our plan", or an action verb);
     # Step/plan framing. "first" must open a sentence and be followed by a plan (pronoun, "my/our plan", or an action
-    # verb); otherwise it is prose ("The first line is blank.", "First place went to Alice") or advice to the user.
+    # verb); otherwise it is prose ("The first line is blank.") or advice to the user.
     r"(?:^|[.!?]\s+)\s*(?:the\s+)?first\s+step\b"
     r"|(?:^|[.!?]\s+)\s*first\s*[,:–—-]?\s+(?:my|our)\s+(?:plan|approach|step)\b"
     r"|(?:^|[.!?]\s+)\s*first\s*[,:–—-]?\s+(?:i|we|let['’]?s|let us)\b"
@@ -240,16 +235,17 @@ def _normalize_for_repeat(text: str) -> str:
     return " ".join(words)
 
 
-# A nudge that just gets the same answer back has not worked, so stop there. Exact after normalisation. Every relaxation
-# tried here lost a real correction: a similarity ratio is length dependent (one changed token in a 50-word plan still
-# scored 0.98), a set ignores order ("cats not dogs"), and ignoring filler words eats the target itself ("The Who", "OK
-# Go"). A missed repeat costs one nudge out of MAX_ACT_REPROMPTS; a false one strands the plan unexecuted.
+# A nudge that just gets the same answer back has not worked, so stop there. Exact after normalisation: every
+# relaxation tried here lost a real correction -- a similarity ratio is length dependent (one changed token in a
+# 50-word plan still scored 0.98), a set ignores order ("cats not dogs"), and ignoring filler words eats the target
+# itself ("The Who", "OK Go"). A missed repeat costs one nudge out of MAX_ACT_REPROMPTS; a false one strands the plan
+# unexecuted.
 def is_reprompt_repeat(text: str, previous: str) -> bool:
     return is_reprompt_restatement(text, previous)
 
 
-# Same comparison, different decision: this one discards the turn. An appended answer must not match, and deletions flip
-# meaning ("is not supported" -> "is supported").
+# Same comparison, different decision: this one discards the turn. An appended answer must not match, and deletions
+# flip meaning ("is not supported" -> "is supported").
 def is_reprompt_restatement(text: str, previous: str) -> bool:
     if not previous:
         return False
@@ -267,9 +263,9 @@ def reprompt_to_act_message(tool_hint: str) -> str:
     )
 
 
-# How much of the unfinished thought is carried into the continuation. The point is to resume, not to replay: the whole
-# thought is what filled the window, so putting it back reproduces the same ending. The tail is the part still being
-# worked on.
+# How much of the unfinished thought is carried into the continuation. The point is to resume, not to replay: the
+# whole thought is what filled the window, so putting it back reproduces the same ending. The tail is the part still
+# being worked on.
 _LENGTH_PROGRESS_TAIL_CHARS = 600
 
 
@@ -280,12 +276,10 @@ def unfinished_thought_progress(reasoning: str) -> str:
 
 
 def starved_result_message(tool_name: str, result: str) -> str:
-    """Appended when the window priced this call's result at nothing before it ran.
-
-    Said on the FIRST such call rather than after a run of identical ones: the pricing is
-    known before the tool executes, so waiting for the repeat guard to notice costs several
-    calls to learn something already computed.
-    """
+    """Appended when the window priced this call's result at nothing before it ran. Said on the
+    FIRST such call rather than after a run of identical ones: the pricing is known before the
+    tool executes, so waiting for the repeat guard to notice costs several calls to learn
+    something already computed."""
     return (
         f"{result}\n\n"
         f"[No room in the window for this result, so {tool_name} returned nothing usable. "
@@ -295,11 +289,9 @@ def starved_result_message(tool_name: str, result: str) -> str:
 
 
 def repeated_result_message(tool_name: str, times: int, last_result: str) -> str:
-    """Appended to a result the tool has now returned unchanged several times.
-
-    The last result is kept rather than replaced: it may be the truncation notice that
-    caused the repeats, and dropping it would leave the model with less than it had.
-    """
+    """Appended to a result the tool has now returned unchanged several times. The last result is
+    kept rather than replaced: it may be the truncation notice that caused the repeats, and
+    dropping it would leave the model with less than it had."""
     return (
         f"{last_result}\n\n"
         f"[{tool_name} returned exactly this {times} times; it will not change. Continue "
@@ -308,15 +300,12 @@ def repeated_result_message(tool_name: str, times: int, last_result: str) -> str
 
 
 def thinking_exhausted_message(context_length: Optional[int] = None) -> str:
-    """Shown when even a thinking-off retry produced nothing visible.
-
-    Names the lever the user actually has. Hermes surfaces the same advice
-    (NousResearch/hermes-agent, `_thinking_exhausted`) and Codex's guidance for the
-    identical symptom is likewise to lower reasoning effort, because no amount of
-    retrying fits a thought that did not fit the first time.
-    """
-    # Built by substitution rather than `.format` on a pre-spaced fragment, which produced "spent its whole reply of the
-    # 4096-token window on reasoning".
+    """Shown when even a thinking-off retry produced nothing visible. Names the lever the user
+    actually has. Hermes surfaces the same advice and Codex's guidance for the identical symptom
+    is likewise to lower reasoning effort, because no amount of retrying fits a thought that did
+    not fit the first time."""
+    # Built by substitution rather than `.format` on a pre-spaced fragment, which produced "spent its whole reply of
+    # the 4096-token window on reasoning".
     window = f"{context_length}-token " if context_length else ""
     return (
         f"The model spent the whole of its {window}window on reasoning and had none "
@@ -329,14 +318,12 @@ def thinking_exhausted_message(context_length: Optional[int] = None) -> str:
 
 
 def reasoning_cap_spent_message(max_tokens: Optional[int] = None) -> str:
-    """Shown when a reasoning-only turn was stopped by the CALLER's own Max Tokens.
-
-    A different wall from the one `thinking_exhausted_message` describes, and the levers
-    are opposite: the window has room, the allowance does not, and only one attempt ran.
-    Blaming the context window there sends the user to raise the one setting that was
-    never the constraint, and this text reaches the client as ordinary content, so the
-    frontend's cap-aware error cannot correct it afterwards.
-    """
+    """Shown when a reasoning-only turn was stopped by the CALLER's own Max Tokens. A different wall
+    from the one `thinking_exhausted_message` describes, and the levers are opposite: the window
+    has room, the allowance does not, and only one attempt ran. Blaming the context window there
+    sends the user to raise the one setting that was never the constraint, and this text reaches
+    the client as ordinary content, so the frontend's cap-aware error cannot correct it
+    afterwards."""
     allowance = f" of {max_tokens} tokens" if max_tokens else ""
     return (
         f"The model used its whole output allowance{allowance} on reasoning and had none "
@@ -349,12 +336,10 @@ def reasoning_cap_spent_message(max_tokens: Optional[int] = None) -> str:
 
 
 def continue_after_length_message() -> str:
-    """The user message appended when a turn ended inside its own reasoning.
-
-    The instruction is to ACT, not to think more carefully: the previous turn ended with
-    nothing to show because thinking consumed the whole window, so asking for more
-    deliberation is asking for the same ending a second time.
-    """
+    """The user message appended when a turn ended inside its own reasoning. The instruction is to
+    ACT, not to think more carefully: the previous turn ended with nothing to show because
+    thinking consumed the whole window, so asking for more deliberation is asking for the same
+    ending a second time."""
     return (
         "You ran out of room while thinking, so nothing was produced. Stop thinking and "
         "act: call a tool or answer now. If it will not all fit, deliver the first part "
@@ -392,9 +377,8 @@ _LLAMA3_CALL_CHAIN_RE = re.compile(r"\s*;\s*([\w\.\-]+)\s*\.\s*call\s*\(")
 # retries every offset of a long run (ReDoS).
 _LLAMA3_KEY_RE = re.compile(r"\w+")
 _LLAMA3_WS_RE = re.compile(r"\s*")
-# ints, decimals (1.5, 1., .5) and sci notation
-# ints, decimals (1.5, 1., .5) and sci notation; trailing ``(?![\w.])`` stops a token like ``1.2.3`` being truncated to
-# ``1.2`` (which would mis-parse the remainder).
+# ints, decimals (1.5, 1., .5) and sci notation; trailing ``(?![\w.])`` stops a token like ``1.2.3`` being truncated
+# to ``1.2`` (which would mis-parse the remainder).
 _LLAMA3_NUM_RE = re.compile(r"-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?(?![\w.])")
 _LLAMA3_LIT_RE = re.compile(r"true|false|null")
 
@@ -403,7 +387,7 @@ _LLAMA3_LIT_RE = re.compile(r"true|false|null")
 _MISTRAL_TRIGGER = "[TOOL_CALLS]"
 _MISTRAL_ARGS_MARKER = "[ARGS]"
 # Mistral Small 3.2 emits ``name[CALL_ID]<id>[ARGS]{json}`` (absent on Ministral / Magistral); llama.cpp distinguishes
-# the two on ``[CALL_ID]`` (common/chat.cpp).
+# the two on ``[CALL_ID]``.
 _MISTRAL_CALL_ID_MARKER = "[CALL_ID]"
 # Magistral wraps reasoning in ``[THINK]...[/THINK]``; a ``[TOOL_CALLS]`` inside that block is chain-of-thought, not a
 # real call.
@@ -423,8 +407,6 @@ _DEEPSEEK_R1_FUNC_MARKER = "function" + _DEEPSEEK_SEP
 _DEEPSEEK_R1_FENCE = "\n```json\n"
 _DEEPSEEK_R1_CLOSE_RE = re.compile(r"```[\s\r\n]*" + re.escape(_DEEPSEEK_CALL_END))
 
-# GLM 4.5-4.7: the lookahead also allows a direct ``<arg_key>``/``</tool_call>`` (4.7 drops the newline, zero-arg calls
-# close at once).
 # GLM 4.5-4.7: ``<tool_call>NAME[\n]<arg_key>K</arg_key>...``; the lookahead also allows a direct
 # ``<arg_key>``/``</tool_call>`` (4.7 drops the newline, zero-arg calls close at once). Name class ``[\w.\-]+`` keeps
 # prose like ``<tool_call>not a call</tool_call>`` unparsed; ``{`` stays with the Qwen JSON parser.
@@ -434,11 +416,10 @@ _GLM_ARG_KEY_OPEN = "<arg_key>"
 _GLM_ARG_KEY_CLOSE = "</arg_key>"
 _GLM_ARG_VAL_OPEN = "<arg_value>"
 _GLM_ARG_VAL_CLOSE = "</arg_value>"
-# Strings arrive raw, non-strings via tojson; only unambiguous JSON literals decode (bare ``42``/``true``/``null`` stay
-# strings).
+# Strings arrive raw, non-strings via tojson; only unambiguous JSON literals decode (bare ``42``/``true``/``null``
+# stay strings).
 _GLM_JSON_NUMERIC_RE = re.compile(r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?")
 
-# Kimi K2 / Moonshot (ASCII pipes).
 # Kimi K2 / Moonshot (ASCII pipes). Id ``functions.NAME:IDX`` -- strip ``functions.``/``:N`` for the name.
 _KIMI_SECTION_BEGIN = "<|tool_calls_section_begin|>"
 _KIMI_SECTION_END = "<|tool_calls_section_end|>"
@@ -453,8 +434,8 @@ _GEMMA_STR_BEGIN = '<|"|>'
 _GEMMA_STR_END = '<|"|>'
 _GEMMA_TC_END = "<tool_call|>"
 
-# skip_special_tokens strips the wrapper and ``<|"|>`` markers, so streamed Gemma calls arrive as bare ``call:NAME{k:v,
-# ...}``
+# skip_special_tokens strips the wrapper and ``<|"|>`` markers, so streamed Gemma calls arrive as bare
+# ``call:NAME{k:v, ...}``
 _GEMMA_BARE_TC_RE = re.compile(r"(?<!\w)call\s*:\s*([\w\.\-]+)\s*\{")
 # Partial leading prefix (``call``, ``call :``, ``call : name``) so the streaming buffer holds it instead of leaking
 # visible text
@@ -463,8 +444,17 @@ _GEMMA_BARE_TC_PREFIX_RE = re.compile(r"(?<!\w)call\s*(?::\s*[\w\.\-]*)?$")
 _GEMMA_KEY_RE = re.compile(r"\s*([A-Za-z_][\w.\-]*)\s*:")
 
 
-# Shared with the healer, but brackets-only depth: a stray ``}`` must not end the span early and leave the rest of a
-# malformed call on screen.
+def leading_bare_gemma_call_is_promotable(stripped: str, enabled_tool_names) -> bool:
+    """True when a buffered leading ``call:NAME{`` is one ``_parse_gemma_tool_calls`` would
+    promote. The loops drain on this shape before the parser runs, so it must answer the same
+    question or the turn is held to EOS for nothing. The ``call:partial`` PREFIX stays ungated:
+    ``call:term`` may yet be ``call:termdict``."""
+    m = _GEMMA_BARE_TC_RE.match(stripped)
+    return m is not None and _markerless_promotable(m.group(1), enabled_tool_names)
+
+
+# Shared with the healer, but brackets-only depth: a stray ``}`` must not end the span
+# early and leave the rest of a malformed call on screen.
 def _balanced_bracket_end(src: str, start: int) -> "int | None":
     return _tool_healing._balanced_bracket_end(src, start, braces_count = False)
 
@@ -489,8 +479,8 @@ def _skip_mistral_call_id(text: str, pos: int) -> int:
 
 
 def _strip_mistral_reasoning(content: str) -> str:
-    """Drop a leading Magistral ``[THINK]...[/THINK]`` so a ``[TOOL_CALLS]`` inside
-    reasoning is not taken as a real call; an unclosed ``[THINK]`` drops from it on."""
+    """Drop a leading Magistral ``[THINK]...[/THINK]`` so a ``[TOOL_CALLS]`` inside reasoning is not
+    taken as a real call; an unclosed ``[THINK]`` drops from it on."""
     i = 0
     n = len(content)
     while i < n and content[i] in " \t\n\r":
@@ -504,10 +494,9 @@ def _strip_mistral_reasoning(content: str) -> str:
 
 
 def _strip_mistral_closed_calls(text: str) -> str:
-    """Strip cleanly-closed ``[TOOL_CALLS]`` blocks (array, ``name{json}``,
-    ``name[ARGS]{json}``) via balanced scanning -- a non-greedy ``\\{.*?\\}`` would
-    truncate at the first ``}`` and lose nested JSON. Unclosed runs are left for
-    ``final=True`` cleanup."""
+    """Strip cleanly-closed ``[TOOL_CALLS]`` blocks (array, ``name{json}``, ``name[ARGS]{json}``)
+    via balanced scanning -- a non-greedy ``\\{.*?\\}`` would truncate at the first ``}`` and
+    lose nested JSON. Unclosed runs are left for ``final=True`` cleanup."""
     n = len(text)
     out = []
     cursor = 0
@@ -563,7 +552,7 @@ def _strip_mistral_closed_calls(text: str) -> str:
             break
         cursor = end + 1
         # Consume the optional EOS marker too, mirroring the array shape, so a ``[TOOL_CALLS]name{json}</s>`` tail
-        # doesn't leave ``</s>`` as content.
+        # does not leave ``</s>`` as content.
         if text.startswith("</s>", cursor):
             cursor += len("</s>")
     return "".join(out)
@@ -575,12 +564,11 @@ _GEMMA_ANCHOR_CLOSERS = ("</think>", "[/THINK]", "</thinking>")
 
 
 def _gemma_call_is_anchored(text: str, start: int, floor: int) -> bool:
-    """Whether a markerless ``call:NAME{...}`` at ``start`` OWNS its position: only
-    horizontal whitespace between it and ``floor`` (the scan origin), the start of its
-    line, or a reasoning close. Anywhere else it reads as a sentence documenting the
-    syntax, so the DISPLAY strip keeps it. The parser is deliberately NOT gated this
-    way, so a call it promotes mid-prose stays visible instead of the answer being
-    deleted around it."""
+    """Whether a markerless ``call:NAME{...}`` at ``start`` OWNS its position: only horizontal
+    whitespace between it and ``floor`` (the scan origin), the start of its line, or a reasoning
+    close. Anywhere else it reads as a sentence documenting the syntax, so the DISPLAY strip
+    keeps it. The parser is deliberately NOT gated this way, so a call it promotes mid-prose
+    stays visible instead of the answer being deleted around it."""
     i = start - 1
     while i >= floor and text[i] in " \t\r":
         i -= 1
@@ -589,11 +577,685 @@ def _gemma_call_is_anchored(text: str, start: int, floor: int) -> bool:
     return any(text.endswith(closer, floor, i + 1) for closer in _GEMMA_ANCHOR_CLOSERS)
 
 
+def blocked_markerless_prefix_end(text: str, start: int, enabled_tool_names) -> int:
+    """End of the run of blocked markerless calls at ``start``, else ``start``.
+
+    The parser scans past a blocked call in ANY markerless format and promotes the peer behind
+    it, so the run is consumed markup: the strip anchors the peer to it, and the GGUF card
+    sniff must not read the blocked call's own arguments for a name."""
+    cursor = start
+    while True:
+        probe = text[cursor:]
+        lead = strip_llama3_leading_sentinels(probe.lstrip(" \t\n\r;"))
+        stripped = lead
+        offset = cursor + (len(probe) - len(lead))
+        gem = _GEMMA_BARE_TC_RE.match(text, offset)
+        if gem is not None and _markerless_blocked_execution(gem.group(1), enabled_tool_names):
+            end = _gemma_body_brace_end(text, gem.end() - 1)
+            if end is None:
+                return cursor
+            cursor = end + 1
+            continue
+        reh = _tool_healing._REHEARSAL_RE.match(text, offset)
+        if reh is not None and _markerless_blocked_execution(reh.group(1), enabled_tool_names):
+            end = _tool_healing._balanced_json_span(text, reh.end())
+            if end is None:
+                return cursor
+            cursor = end + 1
+            continue
+        if stripped.startswith("{"):
+            end = _balanced_brace_end(text, offset)
+            name = _top_level_bare_json_name(text[offset : (end + 1) if end else len(text)])
+            if end is not None and _markerless_blocked_execution(name, enabled_tool_names):
+                cursor = end + 1
+                continue
+        # Consume the inter-call separator too. ``_parse_llama3_bare_json`` treats ``;`` as one
+        # and promotes the peer behind it, but the anchor check does not, so a floor left just
+        # before the ``;`` made that peer unanchored and its raw text survived the strip.
+        return cursor + len(text[cursor:]) - len(text[cursor:].lstrip(" \t\n\r;"))
+
+
+# A blocked call's arguments are text the model QUOTED. Masking them to an equal-length run
+# keeps every offset (and so every anchor) exact while the other passes run over it.
+# Private-use, so it is valid inside a JSON string (``\x00`` is not) and matched by no pattern.
+_BLOCKED_BODY_MASK = ""
+_BLOCKED_BODY_MASK_RUN_RE = re.compile("+")
+# The aliases ``_parse_bare_json_call`` accepts for the argument object.
+# The aliases ``_parse_bare_json_call`` accepts for the argument object.
+_BARE_JSON_ARGS_KEYS = ("arguments", "parameters", "args")
+
+
+def _decoded_key(literal: str) -> "str | None":
+    """The VALUE of a JSON string literal, or None. ``"argu\\u006dents"`` is ``arguments`` to
+    ``json.loads``; comparing the source spelling left such a body unmasked and the healer
+    promoted the wrapper quoted inside it."""
+    if "\\" not in literal:
+        return literal[1:-1] if len(literal) >= 2 else None
+    try:
+        value = json.loads(literal)
+    except ValueError:
+        return None
+    return value if isinstance(value, str) else None
+
+
+# The keys the scans READ to classify a call. ``arguments`` is handled separately, since a
+# blocked call's arguments keep their own structural treatment.
+_BARE_JSON_CLASSIFY_KEYS = ("name", "function")
+
+
+def _top_level_maskable_values(
+    text: str,
+    start: int,
+    end: int,
+    keep: str = None,
+) -> list:
+    """``(begin, stop)`` spans to blank for every top-level DATA field of the object at
+    ``start`` other than ``arguments`` and the classification value actually in use.
+
+    A blocked call is opaque as a WHOLE: a wrapper quoted in any other field, as in
+    ``{"note":"<function=python>...","name":"terminal"}``, stayed visible and the passthrough
+    healer promoted it. Strings blank whole, objects and arrays only in their string contents,
+    so the shape still parses. ``keep`` is the resolved classification name and stays readable;
+    the OTHER classification field is data like any other, since exempting both let
+    ``{"name":"terminal","function":"<function=python>..."}`` keep a wrapper in plain sight."""
+    spans: list = []
+    skip = _BARE_JSON_ARGS_KEYS
+    depth = 0
+    i = start
+    while i < end:
+        ch = text[i]
+        if ch == '"':
+            j = i + 1
+            while j < end and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            key = _decoded_key(text[i : j + 1]) if depth == 1 else None
+            if depth == 1 and key not in skip:
+                k = j + 1
+                while k < end and text[k].isspace():
+                    k += 1
+                if k < end and text[k] == ":":
+                    # The KEY is data too. A truncated object cannot be claimed by the
+                    # balanced-leading-object guard, so a wrapper spelled into a key was
+                    # reconsidered on its own and promoted; only its value was masked.
+                    if key not in _BARE_JSON_CLASSIFY_KEYS:
+                        spans.append((i + 1, min(j, end)))
+                    k += 1
+                    while k < end and text[k].isspace():
+                        k += 1
+                    if k < end and text[k] in "{[":
+                        closer = _balanced_brace_end if text[k] == "{" else _balanced_bracket_end
+                        stop = closer(text, k)
+                        if stop is None:
+                            spans.extend(_string_content_spans(text, k + 1, end))
+                            return spans
+                        spans.extend(_string_content_spans(text, k + 1, stop))
+                        i = stop + 1
+                        continue
+                    if k < end and text[k] == '"':
+                        stop = k + 1
+                        while stop < end and text[stop] != '"':
+                            stop += 2 if text[stop] == "\\" else 1
+                        in_use = (
+                            key in _BARE_JSON_CLASSIFY_KEYS
+                            and keep is not None
+                            and _decoded_key(text[k : min(stop, end) + 1]) == keep
+                        )
+                        if not in_use:
+                            spans.append((k + 1, min(stop, end)))
+                        if stop >= end:
+                            return spans
+                        i = stop + 1
+                        continue
+                    # A scalar holds no markup; keep walking so later fields still mask.
+                    i = k
+                    continue
+            i = j + 1
+            continue
+        if ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+            if depth == 0:
+                return spans
+        i += 1
+    return spans
+
+
+def _top_level_args_values(text: str, start: int, end: int) -> list:
+    """``(begin, stop, is_string)`` for EVERY top-level argument value of the JSON call at
+    ``start``. ``begin``/``stop`` bound each value's INTERIOR.
+
+    Structural, not the first textual match: an earlier nested or decoy ``arguments`` mapping
+    matched instead, so only the decoy was masked. Accepts the object and the JSON-string form
+    (both shapes the parser reads); the string form carried an executable payload unmasked.
+    Every occurrence, since ``json.loads`` keeps the LAST of a repeated key, so stopping at the
+    first left the effective value unmasked for the healer to promote."""
+    values: list = []
+    depth = 0
+    i = start
+    while i < end:
+        ch = text[i]
+        if ch == '"':
+            j = i + 1
+            while j < end and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            if depth == 1 and _decoded_key(text[i : j + 1]) in _BARE_JSON_ARGS_KEYS:
+                k = j + 1
+                while k < end and text[k].isspace():
+                    k += 1
+                if k < end and text[k] == ":":
+                    k += 1
+                    while k < end and text[k].isspace():
+                        k += 1
+                    # An ARRAY too: not a valid call shape, but the healer still reads the
+                    # markup inside it, so ``{"name":"terminal","arguments":["<function=..."]}``
+                    # went unmasked and was promoted.
+                    if k < end and text[k] in "{[":
+                        closer = _balanced_brace_end if text[k] == "{" else _balanced_bracket_end
+                        stop = closer(text, k)
+                        if stop is None:
+                            # Truncated mid-stream: the body still reaches the healer, so it
+                            # runs to ``end`` rather than going unmasked.
+                            values.append((k + 1, end, False))
+                            return values
+                        values.append((k + 1, stop, False))
+                        i = stop + 1
+                        continue
+                    if k < end and text[k] == '"':
+                        stop = k + 1
+                        while stop < end and text[stop] != '"':
+                            stop += 2 if text[stop] == "\\" else 1
+                        if stop >= end:
+                            values.append((k + 1, end, True))
+                            return values
+                        values.append((k + 1, stop, True))
+                        i = stop + 1
+                        continue
+                    # A MALFORMED scalar body: not a valid JSON value, so no shape has to be
+                    # preserved, but the healer still reads raw wrapper syntax sitting there.
+                    # Returning empty here left ``"arguments":<function=python>...`` promotable.
+                    boundary = _next_top_level_comma(text, k, end)
+                    values.append((k, end if boundary is None else boundary, False))
+                    return values
+            i = j + 1
+            continue
+        if ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+            if depth == 0:
+                return values
+        i += 1
+    return values
+
+
+def _string_content_spans(text: str, start: int, end: int) -> list:
+    """Interiors of the string literals in ``text[start:end]``.
+
+    Only string CONTENT, never the structure around it: the scans that decide a call is
+    blocked read the name and keys out of the same body, and an unparseable body dropped the
+    calls behind it. Gemma's ``<|"|>`` counts as a quote, or masking would start at the ``"``
+    inside it and run past the real delimiter."""
+    spans: list = []
+    i = start
+    while i < end:
+        if text.startswith(_tool_healing._GEMMA_QUOTE, i):
+            close = text.find(_tool_healing._GEMMA_QUOTE, i + len(_tool_healing._GEMMA_QUOTE), end)
+            if close < 0:
+                break
+            spans.append((i + len(_tool_healing._GEMMA_QUOTE), close))
+            i = close + len(_tool_healing._GEMMA_QUOTE)
+            continue
+        if text[i] == '"':
+            j = i + 1
+            while j < end:
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == '"':
+                    break
+                j += 1
+            if j >= end:
+                break
+            spans.append((i + 1, j))
+            i = j + 1
+            continue
+        i += 1
+    return spans
+
+
+def _escaped_string_content_spans(text: str, start: int, end: int) -> list:
+    """Interiors of the string literals inside a BACKSLASH-ESCAPED JSON body.
+
+    ``arguments`` in its JSON-string form holds an object whose quotes are ``\\"``, so
+    ``_string_content_spans`` found no literals and the whole interior was masked, leaving it
+    unparseable; ``_parse_llama3_bare_json``'s shape check then dropped every call BEHIND it in
+    a ``;`` chain. Mask content, never the structure later scans read. A delimiter quote carries
+    one backslash and a quote inside an inner string three, which tells them apart."""
+    spans: list = []
+    open_at = -1
+    i = start
+    while i < end:
+        if text[i] == '"':
+            run = 0
+            k = i - 1
+            while k >= start and text[k] == "\\":
+                run += 1
+                k -= 1
+            if run == 1:
+                if open_at < 0:
+                    open_at = i + 1
+                else:
+                    # Stop before the closing ``\``, so the delimiter survives intact.
+                    spans.append((open_at, i - 1))
+                    open_at = -1
+        i += 1
+    return spans
+
+
+# A wrapper immediately in front makes the call trusted, not markerless; this mask runs before
+# the passes that consume those wrappers.
+# ``[CALL_ID]`` is NOT one: in the Mistral v11 form it follows the name INSIDE a
+# ``[TOOL_CALLS]`` envelope, which is already trusted here, so on its own it only let
+# ``[CALL_ID] terminal[ARGS]{...}`` borrow a trust no wrapper had granted.
+_MARKERLESS_TRUSTED_PREFIXES = (
+    "<|tool_call>",
+    "[TOOL_CALLS]",
+    "<tool_call>",
+    "<|python_tag|>",
+)
+
+
+def _merge_spans(spans: list) -> list:
+    """``spans`` sorted and merged into a disjoint, ordered list.
+
+    OVERLAPPING only: coalescing merely ADJACENT spans loses the boundary ``_strictly_inside``
+    reads, so two back-to-back ``NAME[ARGS]{...}`` envelopes become one region and the second
+    call starts inside it rather than opening it, leaving its body unmasked."""
+    merged: list = []
+    for start, end in sorted(spans):
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            continue
+        merged.append((start, end))
+    return merged
+
+
+def _strictly_inside(spans: list, pos: int) -> bool:
+    """Whether ``pos`` sits INSIDE one of ``spans`` rather than opening it: a blocked
+    rehearsal is itself tool markup, so its own span starts where it does."""
+    i = bisect.bisect_right(spans, (pos, pos)) - 1
+    return i >= 0 and spans[i][0] < pos < spans[i][1]
+
+
+# Wrappers this module parses that ``core.tool_healing`` does not: a blocked candidate inside
+# one of their argument objects is that call's DATA, and masking it corrupts a real call.
+_INFERENCE_WRAPPER_OPENERS = (
+    _LLAMA3_PYTHON_TAG,
+    "<|content_invoke_tool_json|>",
+    _DEEPSEEK_CALL_BEGIN,
+    _DEEPSEEK_SEP,
+    _KIMI_CALL_BEGIN,
+    "<|tool_call_argument_begin|>",
+)
+
+
+# Openers whose body can hold a markerless call as ARGUMENT text.
+_CONTAINING_WRAPPERS = (
+    "<tool_call>",
+    "<|tool_call>",
+    "<function=",
+    '<function name="',
+    "[TOOL_CALLS]",
+) + _INFERENCE_WRAPPER_OPENERS
+
+
+def _balanced_paren_end(text: str, paren_start: int) -> "int | None":
+    """Index of the ``)`` matching the ``(`` at ``paren_start``, or None. Quotes are honoured
+    so a paren inside a kwarg string does not close the call."""
+    if paren_start >= len(text) or text[paren_start] != "(":
+        return None
+    depth = 0
+    quote = ""
+    i = paren_start
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+        elif ch in "\"'":
+            quote = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return None
+
+
+def _only_a_code_fence(between: str) -> bool:
+    """Whether ``between`` is nothing but blank space and an opening code fence.
+
+    DeepSeek-R1 fences its argument object (``<｜tool▁sep｜>name\\n```json\\n{...}``), so a
+    whitespace-only test refused to trust the body and the mask rewrote a genuine call's
+    arguments. Deliberately narrow: a fence token, not arbitrary text."""
+    stripped = between.strip()
+    return not stripped or _FENCE_ONLY_RE.fullmatch(stripped) is not None
+
+
+_FENCE_ONLY_RE = re.compile(r"[\w.\-]*[ \t]*\n?[ \t]*`{3,}[a-zA-Z0-9_+-]*")
+
+
+def _inference_wrapper_spans(text: str) -> list:
+    """Spans covering the argument object of each inference-only wrapped call."""
+    spans: list = []
+    for opener in _INFERENCE_WRAPPER_OPENERS:
+        pos = text.find(opener)
+        while pos != -1:
+            brace = text.find("{", pos + len(opener))
+            # Only the object that follows the marker directly; anything else is not its body.
+            if brace != -1 and _only_a_code_fence(text[pos + len(opener) : brace]):
+                end = _balanced_brace_end(text, brace)
+                if end is not None:
+                    spans.append((pos, end + 1))
+            pos = text.find(opener, pos + 1)
+    # Llama-3's other shape is callable, not a JSON body, so the brace scan above never
+    # covered it and blocked syntax quoted in a kwarg was masked inside the call's own input.
+    # The kwargs INTERIOR only: a span reaching the closing paren is adjacent to whatever
+    # follows, ``_merge_spans`` fuses the two, and a rehearsal starting right after the call
+    # then reads as strictly inside a trusted span and stops being masked.
+    for m in _LLAMA3_PY_CALL_RE.finditer(text):
+        end = _balanced_paren_end(text, m.end() - 1)
+        spans.append((m.end(), len(text) if end is None else end))
+    # MiniCPM/MiniMax spell the call as attributes rather than a JSON body, so no opener above
+    # matched it and execution-shaped text inside a ``<parameter>`` read as an independent
+    # blocked call: the mask then rewrote a GENUINE call's arguments. The element INTERIOR
+    # only, for the adjacency reason above.
+    for m in _ATTR_FUNC_OPEN_RE.finditer(text):
+        close = text.find("</function>", m.end())
+        spans.append((m.end(), len(text) if close < 0 else close))
+    # A Mistral array still streaming has no closing ``]``, so the closed-span patterns do not
+    # see it, yet ``_parse_mistral_tool_calls`` accepts it under allow_incomplete. The envelope
+    # is trusted through EOS, or a blocked shape quoted in a GENUINE argument was masked before
+    # that parser ran and the tool received U+E000 in place of the model's text.
+    pos = text.find(_MISTRAL_TRIGGER)
+    while pos != -1:
+        i = pos + len(_MISTRAL_TRIGGER)
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i < len(text) and text[i] == "[" and _balanced_bracket_end(text, i) is None:
+            spans.append((i + 1, len(text)))
+        pos = text.find(_MISTRAL_TRIGGER, pos + 1)
+    return spans
+
+
+def _has_gemma_bare_trigger(text: str) -> bool:
+    """Whether ``_GEMMA_BARE_TC_RE`` could match, settled with C-level finds.
+
+    ``_GEMMA_BARE_SENTINEL`` alone is the word ``call``, which every ``<tool_call>`` and every
+    "called" satisfies, so gating on it swept the whole buffer per token for nothing: 500 of the
+    521 us this cost on 32k of wrapped-call text. Requiring the colon the regex needs is a
+    NECESSARY condition, deliberately weaker (no ``(?<!\\w)`` recheck, ``isspace`` covers
+    ``\\s``), so only sweeps that would find nothing are skipped."""
+    n = len(text)
+    at = text.find(_GEMMA_BARE_SENTINEL)
+    while at >= 0:
+        i = at + len(_GEMMA_BARE_SENTINEL)
+        while i < n and text[i].isspace():
+            i += 1
+        if i < n and text[i] == ":":
+            return True
+        at = text.find(_GEMMA_BARE_SENTINEL, at + 1)
+    return False
+
+
+# A fenced ``json`` block is a REAL call for the templates that emit one (see
+# ``test_rehearsal_in_code_block``), so a blocked body inside one has to mask like any other.
+# Skipping the fence is what lets the walk below reach it; without this a leading fence was
+# enough to carry an execution call's quoted wrapper past the guard untouched.
+_LEADING_JSON_FENCE_RE = re.compile(r"^`{3,}[a-zA-Z0-9_+-]*[ \t]*\r?\n")
+
+
+def _strip_leading_code_fence(text: str) -> str:
+    """``text`` without an opening code fence line, else unchanged."""
+    m = _LEADING_JSON_FENCE_RE.match(text)
+    return text[m.end() :] if m else text
+
+
+# Cheap necessary condition for a blocked name being present anywhere in the text.
+_EXECUTION_CLASS_HINTS = tuple(_tool_healing.EXECUTION_CLASS_TOOL_NAMES) + (
+    _tool_healing._MCP_TOOL_PREFIX,
+)
+
+
+# Every opener that OWNS the text behind it, so skipping across one would re-read that call's
+# own arguments. ``call:`` is Gemma's, spelled out since _GEMMA_BARE_SENTINEL is defined below.
+_MARKUP_OPENERS = _CONTAINING_WRAPPERS + ("[ARGS]", "call:")
+
+
+def _has_execution_class_hint(text: str) -> bool:
+    """Whether ``text`` could name an execution-class tool at all.
+
+    A backslash counts on its own: ``"\\u0070ython"`` is ``python`` to ``json.loads`` and no
+    literal search finds it, so escapes must fall on the permissive side."""
+    return "\\" in text or any(hint in text for hint in _EXECUTION_CLASS_HINTS)
+
+
+def _blocked_markerless_body_spans(text: str, enabled_tool_names) -> list:
+    """``(start, end)`` of the argument body of every blocked markerless call, ordered.
+
+    The WHOLE balanced body, not just the strings in it: Gemma also takes a raw value, and
+    ``call:terminal{command:web_search[ARGS]{}}`` promoted the rehearsal out of it. An unclosed
+    body runs to the end of the text, as the parser already treats it; leaving that tail visible
+    let a wrapped call inside a truncated blocked call execute. Hence candidates in order,
+    not per pattern."""
+    spans: list = []
+    # The parser accepts Llama sentinels ahead of the object and a ``;`` chain behind it, so
+    # walk the chain as it does; ``shift`` keeps offsets in the caller's coordinates. First,
+    # because a PROMOTABLE call's arguments are that call's own input: masking a blocked
+    # candidate quoted inside them rewrote what the tool actually received.
+    protected: list = []
+    # Hoisted: it scans the whole buffer, and the resume below runs once per prose gap.
+    execution_hint = _has_execution_class_hint(text)
+    cursor = 0
+    while cursor < len(text):
+        rest = text[cursor:]
+        probe = _strip_leading_code_fence(strip_llama3_leading_sentinels(rest.lstrip(" \t\r\n;")))
+        shift = cursor + len(rest) - len(probe)
+        lead = _leading_json_value_end(probe)
+        if not lead:
+            # An UNCLOSED leading object still names its call and the healer still parses it,
+            # so an execution body has to stay opaque through EOF; breaking here left the
+            # wrapper quoted inside a truncated ``terminal`` call visible and promotable.
+            truncated_name = _top_level_bare_json_name(probe)
+            if probe.startswith("{") and _markerless_execution_class(truncated_name):
+                spans.extend(
+                    (a + shift, b + shift)
+                    for a, b in _top_level_maskable_values(probe, 0, len(probe), truncated_name)
+                )
+                # The WHOLE argument span, not just its quoted strings: an unresolved object is
+                # not a call whose structure has to survive, and raw wrapped syntax sitting
+                # outside a string literal was left intact for the healer to promote.
+                spans.extend(
+                    (begin + shift, stop + shift)
+                    for begin, stop, _ in _top_level_args_values(probe, 0, len(probe))
+                )
+            # A value STARTS here but did not resolve, so the rest is its truncated body and
+            # nothing behind it is a sibling.
+            if probe[:1] in ("{", "["):
+                break
+            # Otherwise prose merely PREFIXES the call ("Answer:\n{...}"), which left the whole
+            # chain unwalked and executed the wrapper quoted inside the blocked call behind it.
+            # Resume at the next brace; with no execution name there is no blocked body to hide.
+            # Linear: every brace either resolves and is stepped past, or breaks above.
+            nxt = text.find("{", shift) if execution_hint else -1
+            if nxt < 0:
+                break
+            # Only across INERT prose: markup in the gap OWNS the object behind it, as arguments
+            # or as its marker. ``<|python_tag|>{...}{"name":"terminal",...}`` came back with its
+            # command blanked instead of executed.
+            if any(opener in text[cursor:nxt] for opener in _MARKUP_OPENERS):
+                break
+            cursor = nxt
+            continue
+        # A leading ARRAY is a valid JSON value with no object in it, so ``index`` raised.
+        obj = probe.find("{", 0, lead)
+        if obj < 0:
+            cursor = shift + lead
+            continue
+        name = _top_level_bare_json_name(probe[:lead])
+        values = _top_level_args_values(probe, obj, lead)
+        # Name only, not the enabled gate: a DISABLED execution name must still hide its
+        # body, or a wrapper quoted inside it is reconsidered on its own and promoted.
+        if _markerless_execution_class(name):
+            # Every DATA field, not just the arguments: the scans that decide the call is
+            # blocked read only the name, so the rest of the object can stay opaque.
+            spans.extend(
+                (a + shift, b + shift)
+                for a, b in _top_level_maskable_values(probe, obj, lead, name)
+            )
+            for begin, stop, is_string in values:
+                inner = (
+                    _escaped_string_content_spans(probe, begin, stop)
+                    if is_string
+                    else _string_content_spans(probe, begin, stop)
+                )
+                spans.extend((a + shift, b + shift) for a, b in inner)
+        elif _markerless_promotable(name, enabled_tool_names):
+            protected.extend((begin + shift, stop + shift) for begin, stop, _ in values)
+        cursor = shift + lead
+    candidates: list = []
+    if _has_gemma_bare_trigger(text):
+        candidates += [("gemma", m) for m in _GEMMA_BARE_TC_RE.finditer(text)]
+    if "[ARGS]" in text:
+        candidates += [("rehearsal", m) for m in _tool_healing._REHEARSAL_RE.finditer(text)]
+    if candidates:
+        candidates.sort(key = lambda c: c[1].start())
+        # A candidate inside a trusted call's markup is that call's ARGUMENT text. Merged and
+        # bisected because spans and candidates both grow with the input, so a scan is quadratic.
+        # Both scans sweep the whole buffer and the incremental strip calls this per snapshot,
+        # so they run only for a wrapper that could CONTAIN a candidate. The bare rehearsal
+        # literal is excluded: a candidate is never excluded by its own span.
+        trusted = _merge_spans(
+            (
+                _tool_healing._tool_call_markup_spans(text) + _inference_wrapper_spans(text)
+                if any(opener in text for opener in _CONTAINING_WRAPPERS)
+                else []
+            )
+            + protected
+        )
+        covered = 0
+        for kind, m in candidates:
+            head = text[: m.start()].rstrip()
+            if (
+                m.start() < covered
+                # Strictly inside: a blocked rehearsal IS tool markup, so its own span starts
+                # where it does and ``<=`` would exclude every one of them.
+                or _strictly_inside(trusted, m.start())
+                or any(head.endswith(prefix) for prefix in _MARKERLESS_TRUSTED_PREFIXES)
+                or not _markerless_execution_class(m.group(1))
+            ):
+                continue
+            # An open body cannot close without a ``}``, which ``find`` settles in C. The walk
+            # below restarts at the brace, so per-snapshot it would be quadratic.
+            body_start = m.end() if kind == "gemma" else m.end() + 1
+            if text.find("}", body_start) < 0:
+                end = None
+            elif kind == "gemma":
+                end = _gemma_body_brace_end(text, m.end() - 1)
+            else:
+                end = _tool_healing._balanced_json_span(text, m.end())
+            if end is None:
+                # Truncated: the rest is this call's arguments, so nothing behind it is a
+                # sibling. Stopping here also keeps the walk linear.
+                spans.append((body_start, len(text)))
+                break
+            spans.append((body_start, end))
+            covered = end
+    spans = [(start, end) for start, end in spans if end > start]
+    spans.sort()
+    # Nested blocked calls are already covered by the outer body; keep spans disjoint so the
+    # mask runs stay one-to-one with the bodies restored afterwards.
+    merged: list = []
+    for start, end in spans:
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            continue
+        merged.append((start, end))
+    return merged
+
+
+def _mask_blocked_bodies(
+    text: str,
+    enabled_tool_names,
+    *,
+    think: bool = False,
+) -> tuple:
+    """``(masked_text, bodies)``; ``bodies`` restores them in order.
+
+    ``think`` also hides reasoning blocks, for the PARSE path only: a call rehearsed inside one
+    must not execute, which the rehearsal dispatch honoured but the function-XML, python-tag,
+    DeepSeek and Kimi dispatches did not. Display keeps the block verbatim, so the strip path
+    passes ``think=False`` and ``strip_outside_think`` handles it there."""
+    spans = _blocked_markerless_body_spans(text, enabled_tool_names)
+    if think:
+        # Merged, not just sorted: a blocked body may CONTAIN a reasoning block, and sorting
+        # alone moves the masking cursor backward and re-appends the rest of it unmasked.
+        think_spans = _tool_healing._think_spans_outside_tool_markup(text)
+        # ``_think_spans_outside_tool_markup`` only knows the XML/JSON wrappers, so a literal
+        # ``<think>`` in the arguments of an INFERENCE-only wrapper (python_tag, TML, DeepSeek,
+        # Kimi) read as reasoning and was masked, handing the tool a run of U+E000 to execute.
+        # Inside one of those, the tags are argument data, exactly as for the wrappers it does
+        # know. Start tested only, matching that helper.
+        inference_spans = _inference_wrapper_spans(text)
+        if inference_spans:
+            think_spans = [
+                (s, e)
+                for (s, e) in think_spans
+                if not any(ws <= s < we for ws, we in inference_spans)
+            ]
+        spans = _merge_spans(spans + think_spans)
+    if not spans:
+        return text, []
+    out: list = []
+    bodies: list = []
+    prev = 0
+    for start, end in spans:
+        out.append(text[prev:start])
+        bodies.append(text[start:end])
+        out.append(_BLOCKED_BODY_MASK * (end - start))
+        prev = end
+    out.append(text[prev:])
+    return "".join(out), bodies
+
+
+def _unmask_blocked_bodies(text: str, bodies: list) -> Optional[str]:
+    """Put the bodies back, or ``None`` when a pass disturbed the runs and the caller
+    should fall back to the unmasked result rather than emit a mangled body."""
+    if not bodies:
+        return text
+    restored = iter(bodies)
+    count = 0
+
+    def _put(_m):
+        nonlocal count
+        count += 1
+        return next(restored, "")
+
+    result = _BLOCKED_BODY_MASK_RUN_RE.sub(_put, text)
+    return result if count == len(bodies) else None
+
+
 def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] = None) -> str:
-    """Strip closed wrapper-less Gemma ``call:NAME{...}`` calls with balanced brace
-    scanning (nested arguments are removed whole). ``enabled_tool_names`` gates the
-    strip like the parser gate: a disabled/example name stays visible; ``None``
-    strips every closed call. An unanchored (mid-sentence) call is prose too."""
+    """Strip closed wrapper-less Gemma ``call:NAME{...}`` calls with balanced brace scanning (nested
+    arguments are removed whole). Gated like the parser: a name that is not markerless-promotable
+    stays visible, as does an unanchored mid-sentence call. ``None`` strips every anchored closed
+    non-execution call."""
     if _whole_content_is_json_value(text):
         return text
     n = len(text)
@@ -604,13 +1266,18 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
         out.append(text[:cursor])
     # Anchor origin, advanced only past calls this strip removed, so ``call:a{} call:b{}`` stays a pair while prose
     # after a call does not inherit its anchor.
-    floor = cursor
+    # A blocked prefix in EITHER markerless format anchors, or the peer behind it is promoted
+    # while its raw text stays in the content and the next iteration replays the call.
+    floor = blocked_markerless_prefix_end(text, cursor, enabled_tool_names)
     while cursor < n:
         m = _GEMMA_BARE_TC_RE.search(text, cursor)
         if not m:
             out.append(text[cursor:])
             break
-        keep = (enabled_tool_names is not None and m.group(1) not in enabled_tool_names) or (
+        # A blocked call is skipped markup, not a sentence: it holds its position so the
+        # promotable call beside it stays anchored, and is still stripped.
+        blocked = _markerless_blocked_execution(m.group(1), enabled_tool_names)
+        keep_as_prose = not _markerless_promotable(m.group(1), enabled_tool_names) or (
             not _gemma_call_is_anchored(text, m.start(), floor)
         )
         brace = m.end() - 1
@@ -619,14 +1286,17 @@ def _strip_gemma_wrapperless_calls(text: str, enabled_tool_names: Optional[set] 
         closed = end is not None
         next_index = (end + 1) if closed else len(text)
         if not closed:
-            # Unclosed: drop an anchored enabled call to EOS, keep prose as written.
-            out.append(text[cursor:] if keep else text[cursor : m.start()])
+            out.append(text[cursor:] if keep_as_prose else text[cursor : m.start()])
             break
-        if keep:
+        # Both branches carry the anchor past whatever blocked run and separators follow.
+        # Advancing only in the blocked branch makes the strip non-idempotent.
+        if keep_as_prose:
             out.append(text[cursor:next_index])
+            if blocked:
+                floor = blocked_markerless_prefix_end(text, next_index, enabled_tool_names)
         else:
             out.append(text[cursor : m.start()])
-            floor = next_index
+            floor = blocked_markerless_prefix_end(text, next_index, enabled_tool_names)
         cursor = next_index
     return "".join(out)
 
@@ -635,7 +1305,9 @@ _FUNC_CLOSE_TAG_RE = re.compile(r"</function>")
 
 
 def _strip_function_xml_calls(text: str, *, final: bool) -> str:
-    """Strip ``<function=...>`` calls by mirroring the parser: an opener inside an open ``<parameter>`` is data and each call closes at its first ``</function>`` that is not parameter data; ``final`` drops a trailing unclosed call."""
+    """Strip ``<function=...>`` calls by mirroring the parser: an opener inside an open
+    ``<parameter>`` is data and each call closes at its first ``</function>`` that is not
+    parameter data; ``final`` drops a trailing unclosed call."""
     starts = [
         m for m in _TC_FUNC_START_RE.finditer(text) if not _inside_open_parameter(text, m.start())
     ]
@@ -671,15 +1343,14 @@ def _glm_value_close(
     *,
     strict: bool = False,
 ) -> int:
-    """Index of the ``</arg_value>`` that really ends the GLM value at ``vs``: the
-    first one whose next non-space token is ``<arg_key>``, ``</tool_call>`` or
-    end-of-text AND that sits at balanced quote state (an embedded literal pair
-    like ``print("</arg_value></tool_call>")`` lives inside a still-open string).
-    Quote openers are contextual (single quote only after punctuation, so
-    apostrophes are prose; double quote also at word start), mirroring the Gemma
-    scanners. If no candidate balances, the first token-valid one wins -- except
-    in ``strict`` mode (Auto-Heal off), which refuses the in-quote fallback rather
-    than execute truncated arguments. Returns -1 if unclosed."""
+    """Index of the ``</arg_value>`` that really ends the GLM value at ``vs``: the first one whose
+    next non-space token is ``<arg_key>``, ``</tool_call>`` or end-of-text AND that sits at
+    balanced quote state (an embedded literal pair like ``print("</arg_value></tool_call>")``
+    lives inside a still-open string). Quote openers are contextual (single quote only after
+    punctuation, so apostrophes are prose; double quote also at word start), mirroring the Gemma
+    scanners. If no candidate balances, the first token-valid one wins -- except in ``strict``
+    mode (Auto-Heal off), which refuses the in-quote fallback rather than execute truncated
+    arguments. Returns -1 if unclosed."""
     n = len(text)
     search = vs
     first_candidate = -1
@@ -717,11 +1388,10 @@ def _glm_value_close(
 
 
 def _strip_glm_calls(text: str, *, final: bool) -> str:
-    """Strip GLM 4.x calls by scanning to each call's REAL ``</tool_call>`` (the one
-    after the last consumed ``<arg_value>``, mirroring ``_parse_glm_tool_calls``), so
-    a literal ``</tool_call>`` inside a value is data. Qwen ``<tool_call>{json}`` has
-    no NAME token and is left to the regex arms. ``final`` drops a truncated call to
-    EOS; otherwise it stays buffered."""
+    """Strip GLM 4.x calls by scanning to each call's REAL ``</tool_call>`` (the one after the last
+    consumed ``<arg_value>``, mirroring ``_parse_glm_tool_calls``), so a literal ``</tool_call>``
+    inside a value is data. Qwen ``<tool_call>{json}`` has no NAME token and is left to the regex
+    arms. ``final`` drops a truncated call to EOS; otherwise it stays buffered."""
     out: list[str] = []
     cursor = 0
     n = len(text)
@@ -771,13 +1441,11 @@ def strip_segment(
     seg_final: bool,
     enabled_tool_names: Optional[set] = None,
 ) -> str:
-    """Strip tool-call markup from one non-``<think>`` segment.
-
-    The single definition of the scan order, shared by the GGUF and safetensors paths.
-    ``routes/inference.py`` keeps a deliberately different order for the passthrough
-    path, pinned by ``tests/test_route_strip_drift.py``. ``seg_final`` enables the
-    end-of-turn arms (markerless Gemma, open tails, trailing partial rehearsal).
-    """
+    """Strip tool-call markup from one non-``<think>`` segment. The single definition of the scan
+    order, shared by the GGUF and safetensors paths. ``routes/inference.py`` keeps a deliberately
+    different order for the passthrough path, pinned by ``tests/test_route_strip_drift.py``.
+    ``seg_final`` enables the end-of-turn arms (markerless Gemma, open tails, trailing partial
+    rehearsal)."""
     seg = _strip_mistral_closed_calls(segment)
     # Bare rehearsal ``name[ARGS]{json}`` and the Mistral name form, through the shared balanced scan. Name-gated: an
     # inactive ``foo[ARGS]{..}`` is prose and is kept.
@@ -787,8 +1455,8 @@ def strip_segment(
         seg = _strip_gemma_wrapperless_calls(seg, enabled_tool_names)
     # Scan, not regex, so a literal ``<function=...>`` inside a value stays data.
     seg = _strip_function_xml_calls(seg, final = seg_final)
-    # GLM 4.x: scan to the call's real </tool_call>, so a literal one inside a value is data. Qwen <tool_call>{json} is
-    # left to the regex arms.
+    # GLM 4.x: scan to the call's real </tool_call>, so a literal one inside a value is data. Qwen <tool_call>{json}
+    # is left to the regex arms.
     seg = _strip_glm_calls(seg, final = seg_final)
     pats = _TOOL_ALL_PATS if seg_final else _TOOL_CLOSED_PATS
     required_pairs = (
@@ -812,8 +1480,8 @@ def strip_segment(
                 continue
             scan_end = last_close + len(token)
             if pat_idx == 3:
-                # The Mistral array arm keeps consuming an optional ``\s*</s>`` PAST the ``]`` the bound is taken from;
-                # without this the EOS survives
+                # The Mistral array arm keeps consuming an optional ``\s*</s>`` PAST the ``]`` the bound is taken
+                # from; without this the EOS survives
                 eos = scan_end
                 while eos < len(seg) and seg[eos].isspace():
                     eos += 1
@@ -841,13 +1509,11 @@ def strip_tool_markup(
     final: bool = False,
     enabled_tool_names: Optional[set] = None,
 ) -> str:
-    """Strip tool-call markup. ``final=False`` keeps in-progress markup buffered;
-    ``final=True`` also drops trailing unclosed runs and trims.
-
-    ``enabled_tool_names`` gates the name-conditioned forms so a disabled/example name in
-    prose is kept (mirrors the parser gate): the bare reasoning-rehearsal ``name[ARGS]{...}``
-    and the markerless Gemma ``call:NAME{...}`` strip. ``None`` strips every closed call.
-    """
+    """Strip tool-call markup. ``final=False`` keeps in-progress markup buffered; ``final=True``
+    also drops trailing unclosed runs and trims. ``enabled_tool_names`` gates the
+    name-conditioned forms so a disabled/example name in prose is kept (mirrors the parser gate):
+    the bare reasoning-rehearsal ``name[ARGS]{...}`` and the markerless Gemma ``call:NAME{...}``
+    strip. ``None`` strips every closed call."""
     if final:
         # Drop a leading Magistral ``[THINK]...[/THINK]`` at end-of-turn; its bracket form is not the ``<think>`` the
         # reasoning channel renders.
@@ -860,10 +1526,19 @@ def strip_tool_markup(
             enabled_tool_names = enabled_tool_names,
         )
 
-    # ``<think>`` / ``[THINK]`` reasoning is preserved verbatim (a rehearsed call inside it is not executed, so it must
-    # not be stripped from display either); a literal think marker inside a real call's arguments is that call's data
-    # and is stripped with the call.
-    result = _tool_healing.strip_outside_think(text, _strip_segment)
+    # ``<think>`` / ``[THINK]`` reasoning is preserved verbatim (a rehearsed call inside it is not executed, so it
+    # must not be stripped from display either); a literal think marker inside a real call's arguments is that call's
+    # data and is stripped with the call.
+    # A blocked call's body is quoted prose: hide it from the passes, then put it back.
+    masked, bodies = _mask_blocked_bodies(text, enabled_tool_names)
+    result = _tool_healing.strip_outside_think(masked, _strip_segment)
+    if bodies:
+        restored = _unmask_blocked_bodies(result, bodies)
+        result = (
+            restored
+            if restored is not None
+            else _tool_healing.strip_outside_think(text, _strip_segment)
+        )
     return result.strip() if final else result
 
 
@@ -892,17 +1567,36 @@ _SENTINEL_MAX_LEN = max(len(sentinel) for sentinel in _STRIP_SENTINELS)
 _EXTENSION_SAMPLE = 64
 
 
-def _first_sentinel(text: str, start: int) -> int:
-    """Lowest index >= ``start`` at which any strip sentinel occurs, or -1.
+def _promotable_gemma_call_pos(text: str, start: int, enabled_tool_names) -> int:
+    """Offset of the first bare ``call:NAME{`` the strip would remove, or -1: a name it keeps
+    whole is prose, not markup, for any of the streaming scans.
 
-    ``call`` is the one sentinel that is also an ordinary English word, and treating
-    every "I will call the tool" as markup would put the full strip back on the per-token
-    path for a plain prose answer. It is therefore confirmed against the arm it stands
-    for: either the whole ``call:NAME{`` anchor is present, or the buffer ends inside a
-    partial one that the next token could complete (``_GEMMA_BARE_TC_PREFIX_RE``, which
-    the parser already keeps for exactly that reason). Every append is checked, so a call
-    that arrives a character at a time is caught while it is still a partial.
-    """
+    The sentinel search is an exact pre-filter, not a heuristic: the regex cannot match without
+    a literal ``call``, and this runs per streamed chunk over the whole cumulative text, where
+    sweeping call-free prose was quadratic. ``find`` walks it in C and hands the regex a start
+    ``(?<!\\w)`` still reads behind."""
+    start = text.find(_GEMMA_BARE_SENTINEL, start)
+    if start < 0:
+        return -1
+    for m in _GEMMA_BARE_TC_RE.finditer(text, start):
+        if _markerless_promotable(m.group(1), enabled_tool_names):
+            return m.start()
+    return -1
+
+
+def _first_sentinel(
+    text: str,
+    start: int,
+    enabled_tool_names = None,
+) -> int:
+    """Lowest index >= ``start`` at which any strip sentinel occurs, or -1. ``call`` is the one
+    sentinel that is also an ordinary English word, and treating every "I will call the tool" as
+    markup would put the full strip back on the per-token path for plain prose. It is therefore
+    confirmed against the arm it stands for: the whole ``call:NAME{`` anchor with a name the strip
+    would remove, or a partial the next token could complete (``_GEMMA_BARE_TC_PREFIX_RE``; the name
+    is incomplete, so it cannot be gated yet). Every append is checked, so a call arriving a
+    character at a time is caught while partial. A complete non-promotable call is prose; counting
+    it would re-strip every token of a long quoted one."""
     best = -1
     for sentinel in _STRIP_SENTINELS:
         if sentinel == _GEMMA_BARE_SENTINEL:
@@ -915,29 +1609,27 @@ def _first_sentinel(text: str, start: int) -> int:
         found = text.find(_GEMMA_BARE_SENTINEL, at)
         if found < 0 or (0 <= best <= found):
             return best
-        if _GEMMA_BARE_TC_RE.match(text, found) or _GEMMA_BARE_TC_PREFIX_RE.match(text, found):
+        if _GEMMA_BARE_TC_PREFIX_RE.match(text, found):
+            return found
+        m = _GEMMA_BARE_TC_RE.match(text, found)
+        if m is not None and _markerless_promotable(m.group(1), enabled_tool_names):
             return found
         at = found + len(_GEMMA_BARE_SENTINEL)
 
 
 def _is_provisional_call(text: str, found: int) -> bool:
     """True when ``found`` is a ``call`` that only qualifies while it ends the buffer.
-
-    ``_first_sentinel`` accepts such a hit because the next token may complete it, but
-    the acceptance has to expire: the word ``call`` at a token boundary would otherwise
-    pin the scan and put the full strip back on every later token.
-    """
+    ``_first_sentinel`` accepts such a hit because the next token may complete it, but the
+    acceptance has to expire: the word ``call`` at a token boundary would otherwise pin the scan
+    and put the full strip back on every later token."""
     return text.startswith(_GEMMA_BARE_SENTINEL, found) and not _GEMMA_BARE_TC_RE.match(text, found)
 
 
 def _unmatched_think_closer(text: str, start: int = 0) -> int:
-    """Lowest index >= ``start`` of a reasoning closer with no opener ahead of it, or -1.
-
-    A stray closer is what a prefilled reasoning turn looks like, and
-    ``strip_outside_think`` handles it by synthesising a span that begins at offset 0 of
-    the segment. Anything that changes where offset 0 sits therefore has to leave such a
-    segment alone.
-    """
+    """Lowest index >= ``start`` of a reasoning closer with no opener ahead of it, or -1. A stray
+    closer is what a prefilled reasoning turn looks like, and ``strip_outside_think`` handles it
+    by synthesising a span that begins at offset 0 of the segment, so anything that changes where
+    offset 0 sits has to leave such a segment alone."""
     best = -1
     for opener, closer in (("<think>", "</think>"), ("[THINK]", "[/THINK]")):
         close_at = text.find(closer, start)
@@ -954,24 +1646,17 @@ def _unmatched_think_closer(text: str, start: int = 0) -> int:
 def _safe_cut(text: str, first: int) -> int:
     """Largest index <= ``first`` that no strip decision can depend on text before.
 
-    Every arm anchors on a sentinel, so a match cannot begin before the first sentinel --
-    with two exceptions, both of which reach backwards:
+    Every arm anchors on a sentinel, so a match cannot begin before the first sentinel, with two
+    exceptions that reach backwards. The rehearsal form is ``NAME[ARGS]{...}``, whose match starts
+    at the name, before its ``[ARGS]`` sentinel; a name contains no whitespace, so backing up to the
+    start of the preceding run covers it. And the ``[TOOL_CALLS]`` / ``[ARGS]`` arms are gated on
+    markdown code spans, where an opening fence can sit arbitrarily far back, so if any backtick or
+    tilde precedes the cut, no cut is safe. (The markerless Gemma arm reaches back to the start of
+    the segment too, but is handled by ``StreamingMarkupStripper.strip``.)
 
-    * the rehearsal form is ``NAME[ARGS]{...}``, whose match starts at the name, before
-      its ``[ARGS]`` sentinel. A name contains no whitespace, so backing up to the start
-      of the preceding run covers it. (``[TOOL_CALLS] NAME[ARGS]`` needs no wider window:
-      ``[TOOL_CALLS]`` is itself a sentinel, so it would be the first one found.)
-    * the ``[TOOL_CALLS]`` and ``[ARGS]`` arms are gated on markdown code spans, and an
-      opening fence can sit arbitrarily far back. If any backtick or tilde precedes the
-      cut, no cut is safe.
-
-    (The markerless Gemma arm reaches back to the start of the segment as well, but is
-    handled by its caller rather than here: see ``StreamingMarkupStripper.strip``.)
-
-    The result is then snapped back to a line start. The code-fence pattern is anchored
-    with ``^``, so cutting mid-line can turn a fence that was mid-line into one that opens
-    a block -- which flips the in-code gate and changes the output. Snapping to a newline
-    keeps ``^`` meaning the same thing on the slice as on the whole buffer.
+    The result is then snapped back to a line start: the code-fence pattern is anchored with ``^``,
+    so cutting mid-line can turn a fence that was mid-line into one that opens a block, flipping the
+    in-code gate.
     """
     if first <= 0:
         return 0
@@ -990,9 +1675,9 @@ def _safe_cut(text: str, first: int) -> int:
     close_at = _unmatched_think_closer(text)
     if 0 <= close_at and first < close_at:
         return 0
-    # ``_strip_function_xml_calls`` treats a ``<function>`` opener inside an unclosed ``<parameter>`` as a literal in an
-    # argument value, and decides that from the text before it. Cutting there loses the context and the nested markup
-    # leaks into the display. The literal test keeps the common case off the scan.
+    # ``_strip_function_xml_calls`` treats a ``<function>`` opener inside an unclosed ``<parameter>`` as a literal in
+    # an argument value, and decides that from the text before it. Cutting there loses the context and the nested
+    # markup leaks into the display. The literal test keeps the common case off the scan.
     if "<param" in head and _inside_open_parameter(text, cut):
         return 0
     return cut
@@ -1001,26 +1686,22 @@ def _safe_cut(text: str, first: int) -> int:
 class StreamingMarkupStripper:
     """Strip tool markup from an append-only buffer without rescanning it every token.
 
-    The streaming display path used to call the full strip on the entire accumulated
-    response once per content token, which is a linear scan with ~10 regex passes per
-    token and therefore quadratic in the response length. Two properties make that
-    avoidable, both asserted by ``test_refactor_guard.py``:
+    The streaming display path used to call the full strip on the entire accumulated response once
+    per content token, which is a linear scan with ~10 regex passes per token and therefore
+    quadratic in the response length. Two properties make that avoidable, both asserted by
+    ``test_refactor_guard.py``: text containing no sentinel from ``_STRIP_SENTINELS`` is returned
+    unchanged, so a prose-only response does no regex work at all; and no arm can match before the
+    first sentinel, so ``strip(text) == text[:first] + strip(text[first:])``. The scan for that
+    first sentinel resumes where the previous call stopped (overlapping by ``_SENTINEL_MAX_LEN - 1``
+    so a sentinel split across two appends is still seen), which makes the pre-markup phase
+    amortized constant per token rather than linear.
 
-    * text containing no sentinel from ``_STRIP_SENTINELS`` is returned unchanged, so a
-      prose-only response does no regex work at all; and
-    * no arm can match before the first sentinel, so
-      ``strip(text) == text[:first] + strip(text[first:])``.
-
-    The scan for that first sentinel resumes where the previous call stopped (overlapping
-    by ``_SENTINEL_MAX_LEN - 1`` so a sentinel split across two appends is still seen),
-    which makes the pre-markup phase amortized constant per token rather than linear.
-
-    The instance assumes append-only growth: one instance per buffer, appended to, with
-    ``reset()`` before a new buffer. A shorter buffer, or one whose sampled head, middle
-    or previous tail no longer matches, re-derives the state, so an ordinary rewind is
-    handled. That check samples rather than compares in full, because comparing in full
-    would be linear in the buffer and reintroduce the cost this class removes, so it is a
-    guard against misuse rather than a guarantee for arbitrary call sequences.
+    The instance assumes append-only growth: one instance per buffer, appended to, with ``reset()``
+    before a new buffer. A shorter buffer, or one whose sampled head, middle or previous tail no
+    longer matches, re-derives the state, so an ordinary rewind is handled. That check samples
+    rather than compares in full, because comparing in full would be linear in the buffer and
+    reintroduce the cost this class removes, so it is a guard against misuse rather than a guarantee
+    for arbitrary call sequences.
     """
 
     __slots__ = (
@@ -1048,8 +1729,8 @@ class StreamingMarkupStripper:
     ):
         self._enabled_tool_names = enabled_tool_names
         # Whether the last segment gets the end-of-turn arms. The tool-generation loop wants them (partial markup must
-        # never render); the final-answer loop strips with ``final = False`` and does not. The incremental machinery is
-        # the same either way: fewer arms on the same sentinels, and ``_safe_cut``'s guards stay a superset.
+        # never render); the final-answer loop strips with ``final = False`` and does not. The incremental machinery
+        # is the same either way: fewer arms on the same sentinels, and ``_safe_cut``'s guards stay a superset.
         self._seg_final = seg_final
         self._reset()
 
@@ -1077,20 +1758,17 @@ class StreamingMarkupStripper:
     def _think_block(self, text: str, first: int) -> str:
         """Classify the reasoning block opening at absolute offset ``first``.
 
-        Returns ``"settled"`` when a complete, unambiguous block was folded into the
-        settled prefix, ``"open"`` when a clean block is still streaming (its content is
-        preserved verbatim, so the whole buffer is currently unchanged), or ``""`` when
-        the shape is anything else and the full strip has to run.
+        Returns ``"settled"`` when a complete, unambiguous block was folded into the settled prefix,
+        ``"open"`` when a clean block is still streaming (its content is preserved verbatim, so the
+        whole buffer is currently unchanged), or ``""`` when the shape is anything else and the full
+        strip has to run.
 
-        ``strip_outside_think`` already processes each segment in isolation, so a segment
-        boundary is a point nothing downstream can reach back across -- unlike a cut inside
-        a segment, which is why this needs neither the line-start snap nor the backtick
-        check that ``_safe_cut`` does.
-
-        Deliberately conservative: it only fires on a block whose opener is the first
-        sentinel in the remaining text and whose body carries no other markup. A
-        ``</think>`` sitting inside a call's arguments is that call's data, not a closer,
-        and this refuses to guess about it.
+        ``strip_outside_think`` already processes each segment in isolation, so a segment boundary
+        is a point nothing downstream can reach back across -- unlike a cut inside a segment, which
+        is why this needs neither the line-start snap nor the backtick check that ``_safe_cut``
+        does. Deliberately conservative: it only fires on a block whose opener is the first sentinel
+        in the remaining text and whose body carries no other markup, since a ``</think>`` sitting
+        inside a call's arguments is that call's data.
         """
         for opener, closer in (("<think>", "</think>"), ("[THINK]", "[/THINK]")):
             if text.startswith(opener, first):
@@ -1104,11 +1782,12 @@ class StreamingMarkupStripper:
             resume = max(body_start, self._open_scanned - _SENTINEL_MAX_LEN + 1)
         end = text.find(closer, resume)
         if end < 0:
-            # Still streaming. An unclosed block runs to EOF verbatim and the text before it is markup-free, so the
-            # buffer is untouched unless something else needs stripping. Scan from ``resume``, not from the opener:
-            # everything below it was checked on an earlier token, and a reasoning body is most of a reasoning model's
-            # answer, so restarting each token is the quadratic this class removes.
-            if _first_sentinel(text, resume) >= 0:
+            # Still streaming. An unclosed block runs to EOF verbatim and the text before
+            # it is markup-free, so the buffer is untouched unless something else needs
+            # stripping. Scan from ``resume``, not from the opener: everything below it
+            # was checked on an earlier token, and a reasoning body is most of a reasoning
+            # model's answer, so restarting each token is the quadratic this class removes.
+            if _first_sentinel(text, resume, self._enabled_tool_names) >= 0:
                 self._open_at = -1
                 return ""
             self._open_at = first
@@ -1117,7 +1796,12 @@ class StreamingMarkupStripper:
         self._open_at = -1
         end += len(closer)
         body = text[self._floor : end]
-        if _first_sentinel(body.replace(opener, "").replace(closer, ""), 0) >= 0:
+        if (
+            _first_sentinel(
+                body.replace(opener, "").replace(closer, ""), 0, self._enabled_tool_names
+            )
+            >= 0
+        ):
             return ""
         settled = self._full_strip(body)
         self._floor_out += settled
@@ -1130,20 +1814,16 @@ class StreamingMarkupStripper:
     def _needs_whole_buffer(self, text: str) -> bool:
         """True when no split of ``text`` is safe and the strip has to see all of it.
 
-        Two shapes reach back to the start of a segment rather than to their own anchor:
-
-        * the markerless Gemma arm keeps a whole-JSON or leading-JSON answer's
-          ``call:NAME{...}`` examples visible as data, and earlier arms can leave behind
-          a trimmed segment that is whole JSON when the untrimmed one was not; and
-        * a reasoning closer with no opener, which makes offset 0 of the segment the
-          thing ``_think_spans_outside_tool_markup`` decides from.
-
-        Either way a split can delete text out of the user's answer, so the buffer is
-        stripped whole instead. That is the pre-change cost, paid only by a buffer that
-        actually holds one of these -- and only once markup is present, since this runs
-        after the sentinel scan rather than in front of it.
+        Two shapes reach back to the start of a segment rather than to their own anchor: the
+        markerless Gemma arm, which keeps a whole-JSON or leading-JSON answer's ``call:NAME{...}``
+        examples visible as data (and earlier arms can leave behind a trimmed segment that is whole
+        JSON when the untrimmed one was not); and a reasoning closer with no opener, which makes
+        offset 0 of the segment the thing ``_think_spans_outside_tool_markup`` decides from. Either
+        way a split can delete text out of the user's answer, so the buffer is stripped whole
+        instead. That is the pre-change cost, paid only by a buffer that actually holds one of
+        these, and only once markup is present.
         """
-        return bool(_GEMMA_BARE_TC_RE.search(text, self._floor)) or (
+        return _promotable_gemma_call_pos(text, self._floor, self._enabled_tool_names) >= 0 or (
             self._floor > 0 and _unmatched_think_closer(text, self._floor) >= 0
         )
 
@@ -1156,31 +1836,33 @@ class StreamingMarkupStripper:
                 enabled_tool_names = self._enabled_tool_names,
             )
 
-        return _tool_healing.strip_outside_think(text, _seg)
+        # Same masking ``strip_tool_markup`` applies: a blocked call's body is quoted prose.
+        # Without it the incremental path edited that body while the final strip preserved it,
+        # and since consumers get cumulative append-only snapshots, the corrupted one it had
+        # already emitted could never be repaired.
+        masked, bodies = _mask_blocked_bodies(text, self._enabled_tool_names)
+        result = _tool_healing.strip_outside_think(masked, _seg)
+        if not bodies:
+            return result
+        restored = _unmask_blocked_bodies(result, bodies)
+        return restored if restored is not None else _tool_healing.strip_outside_think(text, _seg)
 
     def reset(self):
-        """Drop every cached prefix, for a caller starting a new buffer.
-
-        The streaming caller keeps one instance for the whole request but begins a fresh
-        ``cumulative_display`` in each tool iteration. ``_is_extension`` samples the ends
-        rather than comparing, deliberately, so it cannot be relied on to notice: two
-        buffers agreeing on a length and 64 bytes at each end are accepted, and the scan
-        then resumes at an offset belonging to the previous iteration and never looks
-        below it again. Saying so explicitly costs nothing and makes the sampled check
-        exact for that caller, since within an iteration every mutation is an append.
-        """
+        """Drop every cached prefix, for a caller starting a new buffer. The streaming caller keeps
+        one instance for the whole request but begins a fresh ``cumulative_display`` in each tool
+        iteration, and ``_is_extension`` samples the ends rather than comparing, so it cannot be
+        relied on to notice: two buffers agreeing on a length and 64 bytes at each end are
+        accepted, and the scan then resumes at an offset belonging to the previous iteration and
+        never looks below it again."""
         self._reset()
 
     def _note(self, text: str):
-        """Record what this call saw, as measurements rather than as the buffer.
-
-        Holding a reference to the caller's string is what makes this expensive: the
-        streaming loop grows it with ``cumulative_display += token``, and CPython can
-        only resize a string in place while nothing else refers to it. One extra
-        reference turns every append into a full copy, so the concatenation goes
-        quadratic even though the scanning here does not. Measured over an append-only
-        loop at 64k tokens: 1.14s holding the buffer, 0.003s holding these three.
-        """
+        """Record what this call saw, as measurements rather than as the buffer. Holding a reference
+        to the caller's string is what makes this expensive: the streaming loop grows it with
+        ``cumulative_display += token``, and CPython can only resize a string in place while
+        nothing else refers to it, so one extra reference turns every append into a full copy and
+        the concatenation goes quadratic even though the scanning here does not. Measured over an
+        append-only loop at 64k tokens: 1.14s holding the buffer, 0.003s holding these three."""
         self._seen_len = len(text)
         # A buffer at or under the sample size aliases itself here. Harmless: the copy that forces is bounded by the
         # sample size.
@@ -1192,16 +1874,15 @@ class StreamingMarkupStripper:
     def _is_extension(self, text: str) -> bool:
         """Cheap check that ``text`` continues the previous call's buffer.
 
-        A full ``startswith`` would be linear in the buffer and so reintroduce the
-        quadratic cost this class exists to remove, so this samples three fixed windows
-        instead: the head, the middle, and the previous buffer's last bytes. All three
-        are O(1) and all three must still match.
+        A full ``startswith`` would be linear in the buffer and so reintroduce the quadratic cost
+        this class exists to remove, so this samples three fixed windows instead: the head, the
+        middle, and the previous buffer's last bytes. All three are O(1) and all three must still
+        match.
 
-        This is a guard against obvious misuse, not a proof. Two different buffers that
-        agree on all three windows and on length would still be taken for a continuation;
-        the middle window exists because head and tail alone missed the case where only
-        the middle changed. The contract remains: one instance per buffer, appended to,
-        and ``reset()`` before a new one. Both callers in this repo do exactly that.
+        This is a guard against obvious misuse, not a proof. Two different buffers that agree on all
+        three windows and on length would still be taken for a continuation; the middle window
+        exists because head and tail alone missed the case where only the middle changed. The
+        contract remains: one instance per buffer, appended to, and ``reset()`` before a new one.
         """
         end = self._seen_len
         if end < 0:
@@ -1236,7 +1917,11 @@ class StreamingMarkupStripper:
                 # Resume where the last scan stopped, overlapping just enough to catch a sentinel straddling two
                 # appends. This is what keeps the pre-markup phase from rescanning the whole buffer per token.
                 resume = self._scanned_upto - _SENTINEL_MAX_LEN + 1
-                found = _first_sentinel(text, resume if resume > self._floor else self._floor)
+                found = _first_sentinel(
+                    text,
+                    resume if resume > self._floor else self._floor,
+                    self._enabled_tool_names,
+                )
                 if found < 0:
                     self._scanned_upto = len(text)
                     return self._unchanged(text)
@@ -1262,8 +1947,8 @@ class StreamingMarkupStripper:
         # streaming, so re-deriving keeps the cut exact.
         cut = _safe_cut(tail, self._first)
         # After the cut, not before: with nothing settled and nothing to trim, the whole-buffer strip below already is
-        # the split one, so these two scans would decide nothing and an answer with markup near its front would pay them
-        # per token.
+        # the split one, so these two scans would decide nothing and an answer with markup near its front would pay
+        # them per token.
         if (cut or self._floor) and self._needs_whole_buffer(text):
             out = self._full_strip(text)
             self._note(text)
@@ -1276,9 +1961,9 @@ class StreamingMarkupStripper:
     def _unchanged(self, text: str) -> str:
         """Result when nothing after the settled prefix needs stripping."""
         self._note(text)
-        # With nothing removed the answer is the caller's own string, so hand it straight back rather than rebuilding it
-        # a token at a time. Returned, not kept: holding a reference is exactly what would stop the caller growing it in
-        # place.
+        # With nothing removed the answer is the caller's own string, so hand it straight back rather than rebuilding
+        # it a token at a time. Returned, not kept: holding a reference is exactly what would stop the caller growing
+        # it in place.
         return text if self._floor_identity else self._floor_out + text[self._floor :]
 
 
@@ -1293,7 +1978,7 @@ _EMBEDDED_MARKER_RE = re.compile(
 )
 # Covers ``<function=NAME>`` and the attribute form. ``<|python_tag|>`` is Llama-3's envelope too (built-in
 # ``NAME.call(`` and custom ``{json}``), so a quoted DeepSeek/Kimi example is data; the call-shaped lookahead mirrors
-# the ``_TOOL_ALL_PATS`` python_tag arm so a bare prose ``<|python_tag|>`` mention isn't treated as one.
+# the ``_TOOL_ALL_PATS`` python_tag arm so a bare prose ``<|python_tag|>`` mention is not treated as one.
 _OUTER_ENVELOPE_OPEN_RE = re.compile(
     r'<tool_call>|<function(?:=|\s+name=")|<\|tool_call>'
     r"|<\|python_tag\|>(?=\s*(?:\{|[A-Za-z_][\w.]*\())"
@@ -1326,7 +2011,7 @@ def _marker_inside_leading_envelope(content: str, enabled_tool_names: Optional[s
                 # example (same rule as the XML envelopes below).
                 return True
             if name is not None and first_marker.start() <= end:
-                # A disabled-name leading object is prose (can't own the turn), but a marker inside its own strings
+                # A disabled-name leading object is prose (cannot own the turn), but a marker inside its own strings
                 # stays data. A marker AFTER it falls through to the pre-pass.
                 return True
     elif content.startswith(_MISTRAL_TRIGGER, i):
@@ -1366,26 +2051,39 @@ def _marker_inside_leading_envelope(content: str, enabled_tool_names: Optional[s
     marker = _EMBEDDED_MARKER_RE.search(residue)
     if marker is None:
         return True
-    # A marker still stands; any opener left in the residue is UNCLOSED. One before the marker is a truncated outer call
-    # holding the marker as data: skip the pre-pass.
+    # A marker still stands; any opener left in the residue is UNCLOSED. One before the marker is a truncated outer
+    # call holding the marker as data: skip the pre-pass.
     opener = _OUTER_ENVELOPE_OPEN_RE.search(residue)
     return opener is not None and opener.start() < marker.start()
 
 
-def _mistral_region_end(text: str, idx: int) -> int | None:
-    """Exclusive end of the balanced ``[TOOL_CALLS]`` call starting at ``idx``,
-    or ``None`` when truncated/unrecognised (same shapes as the strip scan:
-    array, single-object, and named ``name [CALL_ID]? [ARGS]? {json}``)."""
+def _mistral_region_end(
+    text: str,
+    idx: int,
+    *,
+    open_envelope_runs_to_eof: bool = False,
+) -> int | None:
+    """Exclusive end of the balanced ``[TOOL_CALLS]`` call starting at ``idx``, or ``None`` when
+    truncated/unrecognised (same shapes as the strip scan: array, single-object, and named ``name
+    [CALL_ID]? [ARGS]? {json}``).
+
+    ``open_envelope_runs_to_eof`` treats a still-streaming ``[``/``{`` envelope as reaching EOF.
+    ``_parse_mistral_tool_calls`` accepts that form under allow_incomplete, so refusing it here
+    dropped the outer call and executed a wrapper QUOTED in its arguments instead."""
     n = len(text)
     i = idx + len(_MISTRAL_TRIGGER)
     while i < n and text[i] in " \t\n\r":
         i += 1
     if i < n and text[i] == "[":
         end = _balanced_bracket_end(text, i)
-        return None if end is None else end + 1
+        if end is None:
+            return n if open_envelope_runs_to_eof else None
+        return end + 1
     if i < n and text[i] == "{":
         end = _balanced_brace_end(text, i)
-        return None if end is None else end + 1
+        if end is None:
+            return n if open_envelope_runs_to_eof else None
+        return end + 1
     name_match = _MISTRAL_V11_NAME_RE.match(text, i)
     if not name_match:
         return None
@@ -1404,7 +2102,9 @@ def _mistral_region_end(text: str, idx: int) -> int | None:
 
 
 def _xml_signal_inside_leading_mistral(content: str) -> bool:
-    """True when a parseable Mistral call is the first tool emission in document order: it owns the turn, so later XML (quoted in its arguments or in trailing prose) is not promoted over it. A signal BEFORE the trigger keeps normal order."""
+    """True when a parseable Mistral call is the first tool emission in document order: it owns the
+    turn, so later XML (quoted in its arguments or in trailing prose) is not promoted over it. A
+    signal BEFORE the trigger keeps normal order."""
     trig = content.find(_MISTRAL_TRIGGER)
     if trig < 0:
         return False
@@ -1414,7 +2114,7 @@ def _xml_signal_inside_leading_mistral(content: str) -> bool:
     # Only plain prose precedes the trigger: a visible preface must not hand the turn to a later XML literal
     # (preamble-tolerant, like the wrapperless-Gemma guard). Prose that merely mentions the marker has no parseable
     # region and keeps the normal order.
-    return _mistral_region_end(content, trig) is not None
+    return _mistral_region_end(content, trig, open_envelope_runs_to_eof = True) is not None
 
 
 def _parse_bare_rehearsals(
@@ -1456,8 +2156,8 @@ _ATTR_FUNC_OPEN_RE = re.compile(r'<function\s+name="')
 
 
 def _first_foreign_tool_signal(content: str) -> int | None:
-    """Offset of the first tool signal a non-envelope parser would fire on
-    (XML forms plus ``<|python_tag|>``, which also runs before the Mistral parser)."""
+    """Offset of the first tool signal a non-envelope parser would fire on (XML forms plus
+    ``<|python_tag|>``, which also runs before the Mistral parser)."""
     first = None
     for sig in ("<tool_call>", "<|tool_call>", "<function=", "<|python_tag|>"):
         p = content.find(sig)
@@ -1466,8 +2166,9 @@ def _first_foreign_tool_signal(content: str) -> int | None:
     attr = _ATTR_FUNC_OPEN_RE.search(content)
     if attr is not None and (first is None or attr.start() < first):
         first = attr.start()
-    # DeepSeek/Kimi markers are foreign to a JSON envelope too: a marker inside a leading object routes through the same
-    # guard (and, if disabled, the drop-and-parse-the-tail recursion, so a real call after the object is still reached).
+    # DeepSeek/Kimi markers are foreign to a JSON envelope too: a marker inside a leading object routes through the
+    # same guard (and, if disabled, the drop-and-parse-the-tail recursion, so a real call after the object is still
+    # reached).
     marker = _EMBEDDED_MARKER_RE.search(content)
     if marker is not None and (first is None or marker.start() < first):
         first = marker.start()
@@ -1475,9 +2176,9 @@ def _first_foreign_tool_signal(content: str) -> int | None:
 
 
 def _xml_signal_inside_leading_bare_json(content: str) -> bool:
-    """True when the first foreign tool signal is a quoted literal inside a
-    LEADING bare-JSON call object or JSON answer -- data, not a real call
-    (sibling of ``_xml_signal_inside_leading_mistral``)."""
+    """True when the first foreign tool signal is a quoted literal inside a LEADING bare-JSON call
+    object or JSON answer -- data, not a real call (sibling of
+    ``_xml_signal_inside_leading_mistral``)."""
     i = 0
     n = len(content)
     while i < n and content[i] in " \t\n\r":
@@ -1520,24 +2221,24 @@ def _xml_signal_inside_leading_bare_json(content: str) -> bool:
 def _signal_inside_leading_wrapperless_gemma(
     content: str, enabled_tool_names: Optional[set]
 ) -> bool:
-    """True when the first foreign tool signal is a quoted literal inside (or
-    after) a LEADING enabled wrapper-less Gemma call (sibling of the
-    Mistral/bare-JSON leading guards). Markerless form, so gated on an enabled
-    name (``None`` keeps the name-agnostic behaviour)."""
+    """True when the first foreign tool signal is a quoted literal inside (or after) a LEADING
+    promotable wrapper-less Gemma call (sibling of the Mistral/bare-JSON leading guards). Markerless
+    form, so a non-promotable name is skipped as prose; ``None`` keeps the name-agnostic behaviour
+    for non-execution names."""
     first = _first_foreign_tool_signal(content)
     trig = content.find(_MISTRAL_TRIGGER)
     if trig >= 0 and (first is None or trig < first):
         first = trig
     if first is None:
         return False
-    # A preamble before ``call:NAME{...}`` is normal; what matters is an ENABLED balanced call beginning before the
-    # first foreign signal.
+    # A preamble before ``call:NAME{...}`` is normal; what matters is a PROMOTABLE balanced
+    # call beginning before the first foreign signal.
     cursor = 0
     while True:
         m = _GEMMA_BARE_TC_RE.search(content, cursor)
         if m is None or m.start() > first:
             return False
-        if enabled_tool_names is not None and m.group(1) not in enabled_tool_names:
+        if not _markerless_promotable(m.group(1), enabled_tool_names):
             cursor = m.end()
             continue
         end = _gemma_body_brace_end(content, m.end() - 1)
@@ -1545,20 +2246,44 @@ def _signal_inside_leading_wrapperless_gemma(
             return False
         if m.end() - 1 < first <= end:
             return True
-        # An enabled call that CLOSES before the signal still owns the turn (inside-or-after rule, as for closed
-        # bare-JSON/Mistral envelopes), gated on an enabled name.
+        # A promotable call that CLOSES before the signal still owns the turn, as for closed
+        # bare-JSON/Mistral envelopes; name-agnostic mode keeps the "inside only" rule.
         return enabled_tool_names is not None and end < first
+
+
+def _inside_leading_markerless_body(
+    content: str, signal: int, enabled_tool_names: Optional[set]
+) -> bool:
+    """True when ``signal`` sits inside the balanced body of a LEADING promotable markerless
+    call, bare Gemma or rehearsal, so it is that call's ARGUMENT text.
+
+    Inside only, unlike ``_signal_inside_leading_wrapperless_gemma``: a promotable call that
+    CLOSES before the signal leaves a real wrapped call behind it, and claiming the turn there
+    would drop it."""
+    cursor = 0
+    while True:
+        gem = _GEMMA_BARE_TC_RE.search(content, cursor)
+        reh = _tool_healing._REHEARSAL_RE.search(content, cursor)
+        m = min((x for x in (gem, reh) if x is not None), key = lambda x: x.start(), default = None)
+        if m is None or m.start() > signal:
+            return False
+        if not _markerless_promotable(m.group(1), enabled_tool_names):
+            cursor = m.end()
+            continue
+        if m is gem:
+            body, end = m.end() - 1, _gemma_body_brace_end(content, m.end() - 1)
+        else:
+            body, end = m.end(), _tool_healing._balanced_json_span(content, m.end())
+        return end is not None and body < signal <= end
 
 
 def _disabled_gemma_call_end_containing_signal(
     content: str, enabled_tool_names: Optional[set]
 ) -> int | None:
-    """End offset (exclusive) of the earliest DISABLED wrapper-less Gemma call
-    whose balanced body contains the first foreign signal, else None. A disabled
-    name is prose, so the quoted literal is data: the caller drops the span and
-    recurses on the tail. An ENABLED call defers to the enabled-call guard."""
-    if enabled_tool_names is None:
-        return None
+    """End offset (exclusive) of the earliest PROSE (non-promotable) wrapper-less Gemma call whose
+    balanced body holds the first foreign signal, else None. A prose name makes the quoted literal
+    data, so the caller drops the span and recurses on the tail; a promotable call defers to the
+    enabled-call guard."""
     first = _first_foreign_tool_signal(content)
     trig = content.find(_MISTRAL_TRIGGER)
     if trig >= 0 and (first is None or trig < first):
@@ -1570,7 +2295,7 @@ def _disabled_gemma_call_end_containing_signal(
         m = _GEMMA_BARE_TC_RE.search(content, cursor)
         if m is None or m.start() > first:
             return None
-        if m.group(1) in enabled_tool_names:
+        if _markerless_promotable(m.group(1), enabled_tool_names):
             return None
         end = _gemma_body_brace_end(content, m.end() - 1)
         if end is None:
@@ -1589,21 +2314,23 @@ def parse_tool_calls_from_text(
     enabled_tool_names: Optional[set] = None,
 ) -> list[dict]:
     """Return OpenAI-format tool calls, first-match wins so calls are never double-counted.
-
-    ``allow_incomplete=True`` (default) heals truncated calls (missing close tag /
-    unclosed parameter); ``False`` accepts only well-formed closed calls (trailing
-    prose tolerated), matching llama-server's strict path when Auto-Heal is off.
-
-    ``enabled_tool_names`` gates only the markerless Llama-3.2 bare-JSON form (the
-    marker-based forms carry an explicit signal, so a disabled-tool name there is a
-    real call attempt). ``None`` keeps the name-agnostic behaviour."""
+    ``allow_incomplete=True`` (default) heals truncated calls (missing close tag / unclosed
+    parameter); ``False`` accepts only well-formed closed calls (trailing prose tolerated),
+    matching llama-server's strict path when Auto-Heal is off. ``enabled_tool_names`` gates only
+    the markerless Llama-3.2 bare-JSON form (the marker-based forms carry an explicit signal, so
+    a disabled-tool name there is a real call attempt); ``None`` keeps the name-agnostic
+    behaviour."""
     # Drop Magistral [THINK]...[/THINK] BEFORE dispatch: a rehearsed call inside it must never be promoted, and the
     # parse path must agree with the display strip.
     content = _strip_mistral_reasoning(content)
 
-    # A leading bare-JSON value is decided FIRST: a string argument quoting tool markup (XML or a Mistral trigger) must
-    # stay data, so the bare-JSON parser takes the outer call before any other pass. Precedes the Mistral guard, whose
-    # preamble tolerance would otherwise claim a trigger quoted inside the leading object.
+    # Equal-length mask, so the spans this returns still index the caller's text: a blocked
+    # call's arguments are quoted prose, and a wrapped call nested there was promoted.
+    content, _blocked_bodies = _mask_blocked_bodies(content, enabled_tool_names, think = True)
+
+    # A leading bare-JSON value is decided FIRST: a string argument quoting tool markup (XML or a Mistral trigger)
+    # must stay data, so the bare-JSON parser takes the outer call before any other pass. Precedes the Mistral guard,
+    # whose preamble tolerance would otherwise claim a trigger quoted inside the leading object.
     if _xml_signal_inside_leading_bare_json(content):
         calls = _parse_llama3_bare_json(
             content, id_offset = id_offset, enabled_tool_names = enabled_tool_names
@@ -1653,8 +2380,8 @@ def parse_tool_calls_from_text(
         )
         if calls:
             # A bare rehearsal ``name[ARGS]{..}`` after the Mistral call is a peer tool call, not foreign XML the
-            # owns-the-turn guard protects against: promote it too so a Mistral call and a rehearsal in one message both
-            # parse.
+            # owns-the-turn guard protects against: promote it too so a Mistral call and a rehearsal in one message
+            # both parse.
             calls.extend(
                 _parse_bare_rehearsals(
                     content,
@@ -1667,7 +2394,7 @@ def parse_tool_calls_from_text(
     # DeepSeek/Kimi markers are unique, so try them first -- unless an outer envelope opens before the first marker
     # (then the marker is argument data).
     if not _marker_inside_leading_envelope(content, enabled_tool_names):
-        # Dispatch by earliest opener so a quoted DS example inside a Kimi call (or vice versa) can't hijack the turn
+        # Dispatch by earliest opener so a quoted DS example inside a Kimi call (or vice versa) cannot hijack the turn
         # via fixed parser order
         _ds = _DEEPSEEK_BEGIN_RE.search(content)
         _ds_pos = _ds.start() if _ds else len(content)
@@ -1684,9 +2411,9 @@ def parse_tool_calls_from_text(
             if calls:
                 return calls
 
-    # A leading MiniCPM/MiniMax attribute-form call owns the turn: tool_healing doesn't know the <function name="...">
-    # wrapper, so a <tool_call> quoted in its parameter would beat the outer call. Any earlier signal keeps normal
-    # order.
+    # A leading MiniCPM/MiniMax attribute-form call owns the turn: tool_healing does not know the <function
+    # name="..."> wrapper, so a <tool_call> quoted in its parameter would beat the outer call. Any earlier signal
+    # keeps normal order.
     attr = _ATTR_FUNC_OPEN_RE.search(content)
     if attr is not None:
         first_other = None
@@ -1727,10 +2454,23 @@ def parse_tool_calls_from_text(
             if calls:
                 return calls
 
-    # Qwen/Hermes, Qwen3.5 XML, Gemma 4, plus Mistral [TOOL_CALLS] / bare rehearsal ``name[ARGS]{json}`` use the shared
-    # tool_healing parser (strict/Auto-Heal contract + nested-marker, trailing-prose, and ``<|"|>`` quoted-string
-    # handling the GGUF path relies on). ``enabled_tool_names`` gates the ambiguous bare-rehearsal form so an inactive
-    # ``foo[ARGS]{..}`` stays prose.
+    # A leading promotable rehearsal owns the turn like the envelopes above: a wrapper quoted in
+    # its arguments is that call's data. tool_healing dispatches by opener, so a quoted
+    # ``<|tool_call>`` or ``<function=`` beat the outer call and ran terminal instead.
+    _reh_signal = _first_foreign_tool_signal(content)
+    if _reh_signal is not None and _inside_leading_markerless_body(
+        content, _reh_signal, enabled_tool_names
+    ):
+        calls = _parse_bare_rehearsals(
+            content, id_offset = id_offset, enabled_tool_names = enabled_tool_names
+        )
+        if calls:
+            return calls
+
+    # Qwen/Hermes, Qwen3.5 XML, Gemma 4, plus Mistral [TOOL_CALLS] / bare rehearsal ``name[ARGS]{json}`` use the
+    # shared tool_healing parser (strict/Auto-Heal contract + nested-marker, trailing-prose, and ``<|"|>``
+    # quoted-string handling the GGUF path relies on). ``enabled_tool_names`` gates the ambiguous bare-rehearsal form
+    # so an inactive ``foo[ARGS]{..}`` stays prose.
     calls = _tool_healing.parse_tool_calls_from_text(
         content,
         id_offset = id_offset,
@@ -1741,9 +2481,9 @@ def parse_tool_calls_from_text(
         return calls
 
     # Formats tool_healing does not cover; these run only after it finds nothing, so a strict-rejected call is never
-    # re-healed here. Blank any JSON/Gemma marker coverage first: markup inside a marker's span (even one that failed to
-    # parse) is that call's data, not a sibling, so a nested ``<function=...>`` / ``<|python_tag|>`` / ``[TOOL_CALLS]``
-    # must not be promoted.
+    # re-healed here. Blank any JSON/Gemma marker coverage first: markup inside a marker's span (even one that failed
+    # to parse) is that call's data, not a sibling, so a nested ``<function=...>`` / ``<|python_tag|>`` /
+    # ``[TOOL_CALLS]`` must not be promoted.
     fallback_content = content
     coverage = _tool_healing.marker_coverage(content)
     if coverage:
@@ -1762,17 +2502,17 @@ def parse_tool_calls_from_text(
         if calls:
             return calls
 
-    # Llama-3.2 bare ``{"name":..., "parameters":...}`` (strict shape). Only a LEADING call object matches and owns the
-    # turn, so an enabled ``call:NAME{...}`` in its arguments stays data (Gemma never starts ``{``).
+    # Llama-3.2 bare ``{"name":..., "parameters":...}`` (strict shape). Only a LEADING call object matches and owns
+    # the turn, so an enabled ``call:NAME{...}`` in its arguments stays data (Gemma never starts ``{``).
     calls = _parse_llama3_bare_json(
-        content, id_offset = id_offset, enabled_tool_names = enabled_tool_names
+        fallback_content, id_offset = id_offset, enabled_tool_names = enabled_tool_names
     )
     if calls:
         return calls
 
     # Gemma wrapper-less ``call:NAME{...}``: markerless, so the same enabled-name gate applies
     return _parse_gemma_tool_calls(
-        content,
+        fallback_content,
         id_offset = id_offset,
         allow_incomplete = allow_incomplete,
         enabled_tool_names = enabled_tool_names,
@@ -1826,12 +2566,11 @@ _trim_param_value = _tool_healing._trim_param_value
 
 
 def _inside_open_parameter(text: str, pos: int) -> bool:
-    """True if ``pos`` sits inside an unclosed ``<parameter>``/``<param>`` block --
-    i.e. a ``<function>`` / ``<parameter>`` opener at ``pos`` is a literal inside an
-    argument value (e.g. code that prints tool-call XML), not a real nested call.
-
-    The healer's algorithm over a wider vocabulary (``<param name="...">`` openers,
-    ``</tool_call>`` closers for GLM 4.x / Kimi K2); only that is passed in."""
+    """True if ``pos`` sits inside an unclosed ``<parameter>``/``<param>`` block -- i.e. a
+    ``<function>`` / ``<parameter>`` opener at ``pos`` is a literal inside an argument value
+    (e.g. code that prints tool-call XML), not a real nested call. The healer's algorithm over a
+    wider vocabulary (``<param name="...">`` openers, ``</tool_call>`` closers for GLM 4.x / Kimi
+    K2); only that is passed in."""
     return _tool_healing._inside_open_parameter(
         text,
         pos,
@@ -1861,7 +2600,7 @@ def _parse_function_xml(
         body_start = fm.end()
         next_func = func_starts[idx + 1].start() if idx + 1 < len(func_starts) else len(content)
         # The call ends at the FIRST </function> / </tool_call> not inside an open parameter: a literal close in a
-        # code/search argument is skipped as data, and prose after the real close isn't folded into the last argument
+        # code/search argument is skipped as data, and prose after the real close is not folded into the last argument
         # (mirrors _strip_function_xml_calls and tool_healing._func_close_index).
         close_match = None
         for cm in _TC_END_TAG_RE.finditer(content, body_start, next_func):
@@ -1924,8 +2663,8 @@ def _parse_function_xml(
 
 
 def _llama3_kv_value(body: str, p: int, n: int) -> tuple[Any, int | None]:
-    """One ``.call`` value (string/number/true/false/null) at ``body[p:]``.
-    Returns ``(value, consumed_len)`` or ``(None, None)`` if none matches."""
+    """One ``.call`` value (string/number/true/false/null) at ``body[p:]``. Returns ``(value,
+    consumed_len)`` or ``(None, None)`` if none matches."""
     if p >= n:
         return None, None
     if body[p] == '"':
@@ -1951,8 +2690,8 @@ def _llama3_kv_value(body: str, p: int, n: int) -> tuple[Any, int | None]:
     nm = _LLAMA3_NUM_RE.match(body, p)
     if nm:
         v = nm.group(0)
-        # Scientific notation (1e-3, -2E+4, 0.5e2) and decimals decode as float; a bare integer stays int. ``"." in v``
-        # alone missed the exponent forms (1e-3 -> 1).
+        # Scientific notation (1e-3, -2E+4, 0.5e2) and decimals decode as float; a bare integer stays int. ``"." in
+        # v`` alone missed the exponent forms (1e-3 -> 1).
         return (float(v) if any(c in v for c in ".eE") else int(v)), nm.end() - p
     lm = _LLAMA3_LIT_RE.match(body, p)
     if lm:
@@ -1961,8 +2700,8 @@ def _llama3_kv_value(body: str, p: int, n: int) -> tuple[Any, int | None]:
 
 
 def _parse_llama3_kv_args(body: str) -> dict[str, Any]:
-    """``k=v, ...`` kwargs from a ``.call(...)`` body, left to right (later keys win).
-    Linear hand-scan replacing the quadratic ``_LLAMA3_KV_RE.finditer`` walk."""
+    """``k=v, ...`` kwargs from a ``.call(...)`` body, left to right (later keys win). Linear
+    hand-scan replacing the quadratic ``_LLAMA3_KV_RE.finditer`` walk."""
     args: dict[str, Any] = {}
     n = len(body)
     i = 0
@@ -1992,16 +2731,15 @@ def _parse_llama3_python_tag(
     allow_incomplete: bool = True,
 ) -> list[dict]:
     """Parse the Llama-3 emissions: ``<|python_tag|>NAME.call(...)`` (built-in),
-    ``<|python_tag|>{"name":..., "parameters":...}`` (custom), multi-call via
-    ``; ``, ``parameters`` or ``arguments`` key."""
+    ``<|python_tag|>{"name":..., "parameters":...}`` (custom), multi-call via ``; ``,
+    ``parameters`` or ``arguments`` key."""
     out: list[dict] = []
     if _LLAMA3_PYTHON_TAG not in content:
         return out
 
-    # ``NAME.call(...)`` built-in form, anchored to ``<|python_tag|>`` and optionally ``
     # 1. ``NAME.call(...)`` built-in form, anchored to ``<|python_tag|>`` and optionally ``; ``-chained within one
-    # emission. Anchoring to the tag boundary (not a free scan) keeps a literal ``<|python_tag|>x.call(...)`` quoted in
-    # a custom-form JSON argument from being mistaken for a real built-in call.
+    # emission. Anchoring to the tag boundary (not a free scan) keeps a literal ``<|python_tag|>x.call(...)`` quoted
+    # in a custom-form JSON argument from being mistaken for a real built-in call.
     pos = content.find(_LLAMA3_PYTHON_TAG)
     truncated = False
     while pos >= 0 and not truncated:
@@ -2035,7 +2773,6 @@ def _parse_llama3_python_tag(
                         if depth == 0:
                             break
                 i += 1
-            # Truncated ``.call(...)`` with no closing paren
             # Truncated ``.call(...)`` with no closing paren: reject in strict mode instead of executing a partial.
             if not allow_incomplete and depth > 0:
                 truncated = True
@@ -2060,7 +2797,6 @@ def _parse_llama3_python_tag(
         # Past the consumed region: a second ``<|python_tag|>`` may carry more calls.
         pos = content.find(_LLAMA3_PYTHON_TAG, i + 1)
 
-    # ``<|python_tag|>{"name":..., "parameters":...}``
     # 2. ``<|python_tag|>{"name":..., "parameters":...}``. ``raw_decode`` peels multiple ``; ``-separated objects from
     # one emission.
     if not out:
@@ -2121,9 +2857,9 @@ _LLAMA3_HEADER_ROLES = ("assistant", "user", "system", "tool", "ipython")
 
 def strip_llama3_leading_sentinels(content: str) -> str:
     """Strip leading Llama-3 special-token sentinels (and the role label after
-    ``<|start_header_id|>``) that can leak from a prior turn before a bare-JSON tool
-    call. Shared by the parser and the streaming buffering guards so a
-    sentinel-prefixed ``{"name":...}`` is recognised the same everywhere."""
+    ``<|start_header_id|>``) that can leak from a prior turn before a bare-JSON tool call. Shared
+    by the parser and the streaming buffering guards so a sentinel-prefixed ``{"name":...}`` is
+    recognised the same everywhere."""
     stripped = content.lstrip()
     while True:
         stripped = stripped.lstrip()
@@ -2150,8 +2886,8 @@ def _parse_llama3_bare_json(
     enabled_tool_names: Optional[set] = None,
 ) -> list[dict]:
     """Llama-3.2 ``custom_tools`` bare ``{"name":.., "parameters":{..}}`` (no ``<|python_tag|>``),
-    strict so prose/echoes don't fire. ``enabled_tool_names`` gates on the parsed name so an
-    ordinary JSON answer isn't misread as a call to a disabled tool; ``None`` is name-agnostic."""
+    strict so prose/echoes do not fire. ``enabled_tool_names`` gates on the parsed name so an
+    ordinary JSON answer is not misread as a call to a disabled tool; ``None`` is name-agnostic."""
     out: list[dict] = []
     stripped = strip_llama3_leading_sentinels(content)
     if not stripped.startswith("{"):
@@ -2175,9 +2911,10 @@ def _parse_llama3_bare_json(
         name = obj.get("name") or obj.get("function") or ""
         if not isinstance(name, str) or not name:
             break
-        # Markerless JSON is ambiguous: treat it as a call only when the name is an enabled tool, else it is an ordinary
-        # JSON answer
-        if enabled_tool_names is not None and name not in enabled_tool_names:
+        blocked = _markerless_blocked_execution(name, enabled_tool_names)
+        if not blocked and not _markerless_promotable(name, enabled_tool_names):
+            # An unlisted name means an ordinary JSON answer, not a call chain: stop rather
+            # than promote objects deeper in the data.
             break
         # ``parameters`` must be a dict (Llama-3 spec); ``arguments`` may be a dict or JSON-string of one (OpenAI).
         # Looser would fire on ``{"name":"x","parameters":"sentence"}``.
@@ -2202,6 +2939,11 @@ def _parse_llama3_bare_json(
                 break
         else:
             break
+        if blocked:
+            # Call-shaped but blocked: keep decoding, or a benign call behind it is dropped.
+            # The shape check runs first, so {"name":"terminal","result":".."} stops as data.
+            cursor += end_offset
+            continue
         out.append(
             {
                 "id": f"call_{id_offset + len(out)}",
@@ -2219,8 +2961,8 @@ def _parse_mistral_tool_calls(
     id_offset: int,
     allow_incomplete: bool = True,
 ) -> list[dict]:
-    """Parse all Mistral emissions: pre-v11 ``[TOOL_CALLS][...]`` / ``[TOOL_CALLS]{...}``
-    and v11+ ``[TOOL_CALLS]name{json}`` / ``[TOOL_CALLS]name[ARGS]{json}``."""
+    """Parse all Mistral emissions: pre-v11 ``[TOOL_CALLS][...]`` / ``[TOOL_CALLS]{...}`` and v11+
+    ``[TOOL_CALLS]name{json}`` / ``[TOOL_CALLS]name[ARGS]{json}``."""
     out: list[dict] = []
     content = _strip_mistral_reasoning(content)
     idx = content.find(_MISTRAL_TRIGGER)
@@ -2385,10 +3127,10 @@ def _consume_mistral_call(obj_text: str, out: list[dict], id_offset: int) -> Non
 
 
 def _whole_content_is_json_value(text: str) -> bool:
-    """True when the entire content is one valid JSON value (a structured
-    answer, e.g. a response_format turn). Markerless scans must treat text
-    inside it as data: an answer documenting an enabled tool's syntax must
-    not execute that tool or have the example stripped from display."""
+    """True when the entire content is one valid JSON value (a structured answer, e.g. a
+    response_format turn). Markerless scans must treat text inside it as data: an answer
+    documenting an enabled tool's syntax must not execute that tool or have the example stripped
+    from display."""
     t = text.strip()
     if t[:1] not in "{[":
         return False
@@ -2400,10 +3142,10 @@ def _whole_content_is_json_value(text: str) -> bool:
 
 
 def _leading_json_value_end(text: str) -> int | None:
-    """End index (exclusive) of a balanced LEADING JSON value that parses as
-    JSON: a structured answer possibly followed by prose. Markerless scans treat
-    its contents as data (extends ``_whole_content_is_json_value``); leading-keyed,
-    so a JSON blob mid-prose is not an answer span."""
+    """End index (exclusive) of a balanced LEADING JSON value that parses as JSON: a structured
+    answer possibly followed by prose. Markerless scans treat its contents as data (extends
+    ``_whole_content_is_json_value``); leading-keyed, so a JSON blob mid-prose is not an answer
+    span."""
     i = 0
     n = len(text)
     while i < n and text[i].isspace():
@@ -2428,17 +3170,22 @@ def _parse_gemma_tool_calls(
     enabled_tool_names: Optional[set] = None,
 ) -> list[dict]:
     """Gemma 4: ``<|tool_call>call:NAME{k:<|"|>v<|"|>, ...}<tool_call|>``, plus the
-    ``skip_special_tokens`` stream where the wrapper and string markers were
-    stripped (bare ``call:NAME{k:v, ...}``).
-
-    ``enabled_tool_names`` gates on the parsed name: the wrapper-less shape is
-    indistinguishable from prose documenting the syntax, so a disabled/example
-    name must not be stolen as a call. ``None`` keeps the name-agnostic behaviour."""
+    ``skip_special_tokens`` stream where the wrapper and string markers were stripped (bare
+    ``call:NAME{k:v, ...}``). ``enabled_tool_names`` gates on the parsed name: the wrapper-less
+    shape is indistinguishable from prose documenting the syntax, so a disabled/example name must
+    not be stolen as a call (``None`` keeps the name-agnostic behaviour). Execution-class and MCP
+    names are never promoted here whatever the gate, since a bare call may be attacker-quoted prose;
+    they must carry the ``<|tool_call>`` wrapper."""
     out: list[dict] = []
     # The WRAPPED form (strict + nested-marker handling) is tool_healing's, which runs first: defer content with a
     # wrapped opener. A marker literal alone is not enough -- a wrapper-less call mentioning ``<|tool_call>`` would be
     # lost if deferred.
-    if _GEMMA_TC_RE.search(content):
+    _wrapped = _GEMMA_TC_RE.search(content)
+    # Not when it sits INSIDE a leading promotable call's body: that is the outer call's own
+    # argument text, and deferring handed the turn to a wrapper the model was only quoting.
+    if _wrapped is not None and not _inside_leading_markerless_body(
+        content, _wrapped.start(), enabled_tool_names
+    ):
         return out
     # A whole-content JSON value is a structured answer: quoted examples must not become calls
     if _whole_content_is_json_value(content):
@@ -2446,10 +3193,36 @@ def _parse_gemma_tool_calls(
     # Manual cursor: resume AFTER each consumed balanced body so a nested ``call:OTHER{...}`` in an argument is never
     # re-matched. A leading JSON answer's span is data -- scan after it.
     cursor = _leading_json_value_end(content) or 0
+    # A blocked rehearsal's body is argument text too, so refusing to promote it must not hand
+    # the contents here. One forward pass like _iter_bracket_spans; per-opener restart is
+    # quadratic.
+    blocked_spans = []
+    _reh_cursor = 0
+    _reh_last_close = content.rfind("}")
+    while _reh_last_close >= 0:
+        _reh = _tool_healing._REHEARSAL_RE.search(content, _reh_cursor)
+        if _reh is None or _reh.end() > _reh_last_close:
+            break
+        _reh_cursor = _reh.end()
+        if not _markerless_blocked_execution(_reh.group(1), enabled_tool_names):
+            continue
+        _reh_end = _tool_healing._balanced_json_span(content, _reh.end())
+        if _reh_end is None:
+            # This body runs past the last closer, so no later opener can balance either.
+            break
+        blocked_spans.append((_reh.start(), _reh_end + 1))
+        _reh_cursor = _reh_end + 1
+    # Monotonic index into the sorted spans: re-testing every span per match is quadratic.
+    blocked_i = 0
     while True:
         m = _GEMMA_BARE_TC_RE.search(content, cursor)
         if m is None:
             break
+        while blocked_i < len(blocked_spans) and blocked_spans[blocked_i][1] <= m.start():
+            blocked_i += 1
+        if blocked_i < len(blocked_spans) and blocked_spans[blocked_i][0] <= m.start():
+            cursor = m.end()
+            continue
         name = m.group(1)
         body_start = m.end() - 1
         end = _gemma_body_brace_end(content, body_start)
@@ -2458,7 +3231,7 @@ def _parse_gemma_tool_calls(
             # argument text.
             break
         cursor = end + 1
-        if enabled_tool_names is not None and name not in enabled_tool_names:
+        if not _markerless_promotable(name, enabled_tool_names):
             continue
         body = content[body_start + 1 : end]
         try:
@@ -2480,13 +3253,11 @@ _balanced_brace_end = _tool_healing._balanced_brace_end
 
 
 def _gemma_body_brace_end(text: str, brace_pos: int) -> int | None:
-    """Index of the ``}`` closing the wrapper-less Gemma body at ``brace_pos``.
-
-    Values are raw after ``skip_special_tokens``, so quoted strings (single or
-    double) hide braces; the quote rules mirror ``_gemma_parse_stripped_body`` so
-    the boundary always agrees with the body parser. Contextual openers: a single
-    quote opens only at value-start context (after ``:{[(,=`` -- apostrophes in
-    ``what's the weather`` are prose), a double quote also at word start (so
+    """Index of the ``}`` closing the wrapper-less Gemma body at ``brace_pos``. Values are raw after
+    ``skip_special_tokens``, so quoted strings (single or double) hide braces; the quote rules
+    mirror ``_gemma_parse_stripped_body`` so the boundary always agrees with the body parser.
+    Contextual openers: a single quote opens only at value-start context (after ``:{[(,=``, so
+    apostrophes in ``what's the weather`` are prose), a double quote also at word start (so
     ``query:find "a, b"`` hides its delimiters)."""
     if brace_pos >= len(text) or text[brace_pos] != "{":
         return None
@@ -2524,120 +3295,173 @@ _BARE_JSON_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
 
 def _top_level_bare_json_name(probe: str) -> Optional[str]:
     """TOP-LEVEL ``"name"`` (or ``"function"`` alias, name wins) of a bare-JSON object, else None.
-
-    Skips nested objects/arrays so a nested ``"name"`` isn't mistaken for the call name; a
-    truncated tail returns None so the caller keeps the text."""
+    Skips nested objects/arrays so a nested ``"name"`` is not mistaken for the call name. A
+    truncated tail yields the name found SO FAR (None if none), so the caller keeps text that never
+    named a call while a held fragment is still recognised as one."""
     if not probe.startswith("{"):
         return None
     decoder = json.JSONDecoder()
     function_value = None  # the ``"function"`` alias, used only if no ``"name"`` key
+    name_value = None  # last top-level ``"name"``, which is the one json.loads keeps
     i = 1
     n = len(probe)
     while i < n:
         while i < n and probe[i] in " \t\r\n,":
             i += 1
         if i >= n or probe[i] == "}":
-            # End of the object with no top-level ``"name"``: fall back to a recorded ``"function"`` alias
-            return function_value
+            # End of the object: the last ``"name"`` wins, else a recorded ``"function"`` alias
+            return name_value or function_value
         if probe[i] != '"':
-            return None
+            return name_value or function_value
         try:
             key, consumed = decoder.raw_decode(probe[i:])
         except (json.JSONDecodeError, ValueError):
-            return None
+            return name_value or function_value
         if not isinstance(key, str):
-            return None
+            return name_value or function_value
         i += consumed
         while i < n and probe[i] in " \t\r\n":
             i += 1
         if i >= n or probe[i] != ":":
-            return None
+            return name_value or function_value
         i += 1
         while i < n and probe[i] in " \t\r\n":
             i += 1
-        if key == "name":
-            if i < n and probe[i] == '"':
-                try:
-                    value, _consumed = decoder.raw_decode(probe[i:])
-                except (json.JSONDecodeError, ValueError):
-                    return None
-                return value if isinstance(value, str) else None
-            return None
-        if key == "function" and function_value is None and i < n and probe[i] == '"':
-            # ``"function"`` aliases the call name.
+        if key == "name" and i < n:
             try:
                 value, consumed = decoder.raw_decode(probe[i:])
             except (json.JSONDecodeError, ValueError):
-                return None
-            if isinstance(value, str):
-                function_value = value
+                return name_value or function_value
+            # Recorded, not returned: ``json.loads`` keeps the LAST duplicate, so taking the
+            # first classified ``{"name":"terminal","name":"web_search",...}`` as blocked and
+            # masked the arguments that the parser then promoted web_search with.
+            # A falsey LAST name still OVERWRITES, so the ``function`` alias wins exactly when
+            # it does for ``obj.get("name") or obj.get("function")``; keeping an earlier truthy
+            # name here read ``{"name":"web_search","name":"","function":"terminal"}`` as
+            # web_search and left the terminal body visible.
+            name_value = value if isinstance(value, str) else ""
             i += consumed
             continue
-        # Skip a non-name top-level value; a truncated one can't prove a top-level name exists, so return None (keep the
-        # text).
+        if key == "function" and i < n:
+            # ``"function"`` aliases the call name, and like ``name`` the LAST duplicate is the
+            # one ``json.loads`` keeps: retaining the first read
+            # ``{"function":"web_search","function":"terminal",...}`` as promotable web_search
+            # and left the terminal body visible for the healer to promote.
+            try:
+                value, consumed = decoder.raw_decode(probe[i:])
+            except (json.JSONDecodeError, ValueError):
+                return name_value or function_value
+            function_value = value if isinstance(value, str) else ""
+            i += consumed
+            continue
+        # Skip a non-name top-level value; a truncated one can't prove a FURTHER name exists,
+        # so stop and report the name found so far.
         if i < n and probe[i] == "{":
             end = _balanced_brace_end(probe, i)
             if end is None:
-                return None
+                return name_value or function_value
             i = end + 1
         elif i < n and probe[i] == "[":
             end = _balanced_bracket_end(probe, i)
             if end is None:
-                return None
+                return name_value or function_value
             i = end + 1
         else:
             try:
                 _value, consumed = decoder.raw_decode(probe[i:])
             except (json.JSONDecodeError, ValueError):
-                return None
+                # Resync instead of giving up: malformed data BEFORE the classification key
+                # (``{"junk":oops,"name":"terminal",...}``) reported no name at all, so the
+                # object was never recognised as blocked and its quoted wrapper was promoted.
+                nxt = _next_top_level_comma(probe, i, n)
+                if nxt is None:
+                    return name_value or function_value
+                i = nxt + 1
+                continue
             i += consumed
-    return function_value
+    return name_value or function_value
+
+
+def _next_top_level_comma(text: str, start: int, end: int) -> "int | None":
+    """Index of the next ``,`` at the object's own depth, or None.
+
+    Lets the name scan step over one malformed field rather than abandoning the object;
+    strings and nested containers are skipped so a comma inside them cannot resync early."""
+    depth = 0
+    i = start
+    while i < end:
+        ch = text[i]
+        if ch == '"':
+            i += 1
+            while i < end and text[i] != '"':
+                i += 2 if text[i] == "\\" else 1
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            if depth == 0:
+                return None
+            depth -= 1
+        elif ch == "," and depth == 0:
+            return i
+        i += 1
+    return None
 
 
 def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = None) -> str:
-    """Remove leading Llama-3.2 bare-JSON calls (including a ``;``-chained run)
-    that ``strip_tool_markup`` misses; non-call text is unchanged and
-    ``enabled_tool_names`` gates like the parser. Consuming the whole chain
-    matters because the loops keep this text as next-turn assistant history: a
-    leftover executed call would be replayed alongside the structured
-    ``tool_calls``."""
+    """Remove leading Llama-3.2 bare-JSON calls (including a ``;``-chained run) that
+    ``strip_tool_markup`` misses; non-call text is unchanged and ``enabled_tool_names`` gates
+    like the parser. Consuming the whole chain matters because the loops keep this text as
+    next-turn assistant history: a leftover executed call would be replayed alongside the
+    structured ``tool_calls``."""
     remainder = text
     stripped_any = False
+    # The blocked call-shaped objects the parser skipped, in order, so parse and strip agree.
+    kept: list[str] = []
+
+    def _out(tail: str) -> str:
+        if not (stripped_any or kept):
+            return text
+        return ("".join(kept) + tail).lstrip()
+
     while True:
         probe = strip_llama3_leading_sentinels(remainder.lstrip())
         # Skip the Llama-3 ``;`` inter-call separator between chained calls.
-        if stripped_any:
+        if stripped_any or kept:
             probe = probe.lstrip(" \t\n\r;")
+        # The separator consumed to reach ``probe``, displayed only when the object before it
+        # still is. Stripping only removes a prefix, so this is exact.
+        sep = remainder[: len(remainder) - len(probe)] if kept else ""
         if not (probe.startswith("{") and ('"name"' in probe or '"function"' in probe)):
-            return probe.lstrip() if stripped_any else text
-        if enabled_tool_names is not None:
-            # Only suppress when the leading object's TOP-LEVEL name is an enabled tool. A nested ``"name"`` (e.g.
-            # {"result":{"name":"web_search",...}}) is data, not the call name, so it must not gate the strip. An
-            # un-extractable name is kept.
-            name = _top_level_bare_json_name(probe)
-            if name not in enabled_tool_names:
-                return probe.lstrip() if stripped_any else text
+            return _out(sep + probe)
+        # Top-level name only: a nested ``"name"`` is data, and an un-extractable or unlisted
+        # one means a JSON answer, so the rest is kept as written.
+        name = _top_level_bare_json_name(probe)
+        blocked = _markerless_blocked_execution(name, enabled_tool_names)
+        if not blocked and not _markerless_promotable(name, enabled_tool_names):
+            return _out(sep + probe)
         end = _balanced_brace_end(probe, 0)
         if end is None:
-            return ""  # truncated bare-JSON call -- nothing recoverable
-        # A closed object must have the CALL SHAPE the parser accepts (dict ``parameters``, or dict / JSON-string
-        # ``arguments``). An ordinary JSON answer like {"name":"web_search","result":"no call"} is content, so the strip
-        # keeps it visible.
+            return _out(sep + probe) if blocked else ""
+        # A closed object must have the CALL SHAPE the parser accepts. An ordinary answer like
+        # {"name":"web_search","result":"no call"} is content, so the strip keeps it visible.
         try:
             obj = json.loads(probe[: end + 1])
         except (json.JSONDecodeError, ValueError):
-            return probe.lstrip() if stripped_any else text
+            return _out(sep + probe)
         if not _bare_json_call_shaped(obj):
-            return probe.lstrip() if stripped_any else text
+            return _out(sep + probe)
+        if blocked:
+            kept.append(sep + probe[: end + 1])  # visible as text; the scan goes on
+        else:
+            stripped_any = True
         remainder = probe[end + 1 :]
-        stripped_any = True
 
 
 def _bare_json_call_shaped(obj) -> bool:
     """The shape gate ``_parse_llama3_bare_json`` applies to a decoded object."""
     if not isinstance(obj, dict):
         return False
-    # The parser requires a TOP-LEVEL name; a nested one (e.g. in a "result" value of an ordinary JSON answer) is data,
+    # The parser requires a TOP-LEVEL name; a nested one (say in a "result" value) is data,
     # and stripping it name-agnostically would delete content.
     name = obj.get("name") or obj.get("function") or ""
     if not isinstance(name, str) or not name:
@@ -2653,6 +3477,190 @@ def _bare_json_call_shaped(obj) -> bool:
         except (json.JSONDecodeError, ValueError):
             return False
     return False
+
+
+def blocked_bare_json_chain_may_continue(text: str, enabled_tool_names: Optional[set]) -> bool:
+    """Whether a leading guarded call still owns a possible ``; {peer}`` chain. Walks the whole
+    run (a closed guarded peer is not an answer either) and stops once something settles the
+    turn: a peer that is not call-shaped, or a disabled name, which ends
+    ``_parse_llama3_bare_json`` outright. Holding past that withholds the response to EOS for
+    nothing, and a cancel before EOS would lose it."""
+    probe = strip_llama3_leading_sentinels(text.lstrip())
+    if not probe.startswith("{"):
+        return False
+    # Same quadratic shape as the Gemma sibling: the loops call this per cumulative snapshot
+    # while the object is still arriving, and the walk restarts at ``{`` each time. Without a
+    # ``}`` anywhere the leading object cannot have closed, which ``in`` settles in C. Counting
+    # braces instead would be wrong here: a CLOSED leading object followed by a still-open peer
+    # is unbalanced too, and that chain may yet produce a call.
+    if "}" not in probe:
+        return False
+    end = _balanced_brace_end(probe, 0)
+    if end is None:
+        return False
+    try:
+        obj = json.loads(probe[: end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(obj, dict):
+        return False
+    name = obj.get("name") or obj.get("function") or ""
+    if not _markerless_blocked_execution(name, enabled_tool_names):
+        return False
+    if not _bare_json_call_shaped(obj):
+        return False
+    suffix = probe[end + 1 :].lstrip(" \t\n\r;")
+    while True:
+        if not suffix:
+            return True  # more may still arrive
+        if not suffix.startswith("{"):
+            # The parser scans the whole turn, so a bare Gemma peer behind the blocked
+            # object is promoted all the same and must not stream.
+            return gemma_tail_may_hide_a_call(suffix, enabled_tool_names)
+        peer_end = _balanced_brace_end(suffix, 0)
+        if peer_end is None:
+            return True  # still arriving; it may yet close as a call
+        try:
+            peer = json.loads(suffix[: peer_end + 1])
+        except (json.JSONDecodeError, ValueError):
+            return False
+        if not isinstance(peer, dict) or not _bare_json_call_shaped(peer):
+            return False
+        peer_name = peer.get("name") or peer.get("function") or ""
+        if _markerless_promotable(peer_name, enabled_tool_names):
+            return True  # this peer WILL be promoted; it must not stream first
+        if not _markerless_blocked_execution(peer_name, enabled_tool_names):
+            return False  # a disabled name stops the chain scan
+        suffix = suffix[peer_end + 1 :].lstrip(" \t\n\r;")
+
+
+def promotable_gemma_call_pos(
+    text: str,
+    enabled_tool_names,
+    start: int = 0,
+    *,
+    floor: int = 0,
+) -> int:
+    """Offset of the first bare ``call:NAME{`` the parser would promote, or -1. Bare Gemma has
+    no ``TOOL_XML_SIGNALS`` entry, so without this the streaming detectors miss a mid-prose
+    call and serialize it before it runs. The boundary is the call's own start, so prose ahead
+    of it still streams.
+
+    ``start`` is a resume hint, not a hard floor: widened by ``_MAX_GEMMA_PREFIX_TAIL`` because
+    the streaming caller advances it by a fixed 27-byte overlap, and a longer tool name left the
+    ``call:`` opener behind the window, hiding a call the end-of-turn parser then promotes. 256
+    covers 4x the 64-character cap every provider enforces (OpenAI/Bedrock
+    ``^[a-zA-Z0-9_-]{1,64}$``, MCP SEP-986). Sentinel-gated like ``_promotable_gemma_call_pos``.
+    ``enabled_tool_names`` may be a zero-argument callable, resolved only once a candidate
+    exists, so an ordinary completion never materializes a large MCP catalogue per chunk."""
+    # Widen, do not seek: an rfind window has to contain the whole sentinel, so a ``call``
+    # straddling the boundary was missed and a short-named call went unseen.
+    start = text.find(_GEMMA_BARE_SENTINEL, max(0, start - _MAX_GEMMA_PREFIX_TAIL))
+    if start < 0:
+        return -1
+    names = enabled_tool_names() if callable(enabled_tool_names) else enabled_tool_names
+    for m in _GEMMA_BARE_TC_RE.finditer(text, start):
+        # Skip and keep scanning, never give up: the widening above can re-find a call the
+        # caller has already stepped past (one rehearsed inside a ``<think>`` block), and
+        # returning it made the caller treat "below my floor" as "no call anywhere", so a
+        # real call after the block went undetected while streaming.
+        if m.start() < floor:
+            continue
+        if _markerless_promotable(m.group(1), names):
+            return m.start()
+    return -1
+
+
+# ``call`` plus separators and any name worth holding; the candidate can only sit at the end.
+_MAX_GEMMA_PREFIX_TAIL = 256
+
+
+def _last_bare_call_word(text: str) -> int:
+    """Offset of the last ``call`` that starts a word, or -1 (so ``recall`` is skipped)."""
+    idx = text.rfind("call")
+    while idx > 0 and (text[idx - 1].isalnum() or text[idx - 1] == "_"):
+        idx = text.rfind("call", 0, idx)
+    return idx
+
+
+def _partial_call_word_len(text: str) -> int:
+    """Length of a trailing ``c``/``ca``/``cal`` that could still become ``call``: a chunk
+    can end mid-word (the leading-position buffer covers these via ``"call:".startswith``)."""
+    for n in (3, 2, 1):
+        start = len(text) - n
+        if start >= 0 and text[start:] == "call"[:n]:
+            if start == 0 or not (text[start - 1].isalnum() or text[start - 1] == "_"):
+                return n
+    return 0
+
+
+def gemma_tail_may_hide_a_call(tail: str, enabled_tool_names: Optional[set]) -> bool:
+    """Whether a chain tail can still turn into a bare Gemma call the parser promotes. Shared
+    by both chain predicates: the end-of-turn parser searches the whole turn, so a blocked
+    leading call in either format can be followed by a Gemma peer. The reverse does not arise,
+    since ``_parse_llama3_bare_json`` only reads a LEADING object."""
+    for nxt in _GEMMA_BARE_TC_RE.finditer(tail):
+        if _markerless_promotable(nxt.group(1), enabled_tool_names):
+            return True
+    # A name still being typed at the very end could become one.
+    trailing = tail.rstrip()
+    idx = _last_bare_call_word(trailing)
+    if idx >= 0:
+        rest = trailing[idx:]
+        if "call:".startswith(rest) or _GEMMA_BARE_TC_PREFIX_RE.match(rest) is not None:
+            return True
+    if _partial_call_word_len(trailing):
+        return True
+    return not tail  # an empty tail may still grow a peer
+
+
+def held_bare_gemma_tail_len(text: str, enabled_tool_names: Optional[set]) -> int:
+    """Length of a trailing partial ``call:NAME{..`` the parser will promote once it closes.
+    ``promotable_gemma_call_pos`` needs the ``{``, so a mid-prose call leaks ``call:web`` first.
+    STREAMING holds this tail as it holds a split ``NAME[ARGS]`` rehearsal; prose releases it,
+    and so does a closed call, whose boundary the signal scan already owns.
+    ``enabled_tool_names`` may be a zero-argument callable, resolved only on the open-body
+    branch, since materializing a large MCP catalog costs more than the scan it gates."""
+    # ``pos`` rather than a slice, so ``(?<!\w)`` still sees the character before the window,
+    # and an unanchored scan of the cumulative text per chunk would be quadratic.
+    partial = _GEMMA_BARE_TC_PREFIX_RE.search(text, max(0, len(text) - _MAX_GEMMA_PREFIX_TAIL))
+    if partial is not None:
+        return len(text) - partial.start()
+    # Only an unclosed brace can still be an open body: two rfinds beat scanning back to the
+    # opener on every chunk of prose.
+    if text.rfind("{") > text.rfind("}"):
+        idx = _last_bare_call_word(text)
+        m = _GEMMA_BARE_TC_RE.match(text, idx) if idx >= 0 else None
+        if m is not None and _gemma_body_brace_end(text, m.end() - 1) is None:
+            names = enabled_tool_names() if callable(enabled_tool_names) else enabled_tool_names
+            if _markerless_promotable(m.group(1), names):
+                return len(text) - idx
+    return _partial_call_word_len(text)
+
+
+def blocked_gemma_chain_may_continue(text: str, enabled_tool_names: Optional[set]) -> bool:
+    """Whether a leading guarded ``call:NAME{..}`` still hides a call the parser will promote.
+    Sibling of ``blocked_bare_json_chain_may_continue``. The tail is SEARCHED, not matched:
+    ``_parse_gemma_tool_calls`` scans forward from the blocked call's body, so a peer behind a
+    ``;`` or a sentence counts as much as an adjacent one."""
+    probe = text.lstrip()
+    m = _GEMMA_BARE_TC_RE.match(probe)
+    if m is None or not _markerless_blocked_execution(m.group(1), enabled_tool_names):
+        return False
+    # The streaming loops call this on every cumulative snapshot while the body is still
+    # arriving, and the scan below walks it from the opening brace each time, which is
+    # quadratic in the body the model streams (measured 2.6s at 8KB, and the buffer allows
+    # 16KB). Without a ``}`` at or after the opening brace the body cannot have closed, which
+    # ``find`` settles in C. Counting braces instead was wrong: a CLOSED body followed by an
+    # open peer is unbalanced too, and answering True there withheld a settled chain.
+    if probe.find("}", m.end() - 1) < 0:
+        return True
+    end = _gemma_body_brace_end(probe, m.end() - 1)
+    if end is None:
+        return True  # body still arriving
+    # Separators are not an answer, so a tail of them counts as empty (as in the bare-JSON
+    # sibling); otherwise the peer arriving after them streams before promotion.
+    return gemma_tail_may_hide_a_call(probe[end + 1 :].lstrip(" \t\n\r;"), enabled_tool_names)
 
 
 def _gemma_balanced_brace_end(text: str, brace_pos: int, hard_stop: int) -> int | None:
@@ -2685,11 +3693,11 @@ def _gemma_parse_value(
     *,
     in_mapping: bool = False,
 ):
-    """Parse one Gemma arg value at ``i`` in a single O(n) forward pass; returns
-    ``(value, next_index, closed)``. ``closed`` is False when a string/object/array
-    runs off the end without its terminator, so the caller can fall back to raw.
-    ``in_mapping`` applies the top-level rule that a comma only ends the value
-    when a ``key:`` follows (array elements split on every top-level comma)."""
+    """Parse one Gemma arg value at ``i`` in a single O(n) forward pass; returns ``(value,
+    next_index, closed)``. ``closed`` is False when a string/object/array runs off the end
+    without its terminator, so the caller can fall back to raw. ``in_mapping`` applies the
+    top-level rule that a comma only ends the value when a ``key:`` follows (array elements split
+    on every top-level comma)."""
     if text.startswith(_GEMMA_STR_BEGIN, i):
         close = text.find(_GEMMA_STR_END, i + len(_GEMMA_STR_BEGIN))
         if close < 0:
@@ -2767,8 +3775,8 @@ def _gemma_parse_value(
 
 
 def _gemma_parse_array(text: str, start: int):
-    """Parse a Gemma ``[...]`` array at ``text[start] == '['`` in one forward
-    pass; returns ``(list, next_index, closed)``."""
+    """Parse a Gemma ``[...]`` array at ``text[start] == '['`` in one forward pass; returns ``(list,
+    next_index, closed)``."""
     items: list[Any] = []
     i, n = start + 1, len(text)
     while i < n:
@@ -2784,8 +3792,8 @@ def _gemma_parse_array(text: str, start: int):
 
 
 def _gemma_coerce_scalar(raw: str) -> Any:
-    """Coerce an unquoted Gemma value to bool/int/float/None, else keep str
-    (quotes stripped first so quoted/unquoted variants compare identical)."""
+    """Coerce an unquoted Gemma value to bool/int/float/None, else keep str (quotes stripped first
+    so quoted/unquoted variants compare identical)."""
     raw = raw.strip()
     if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
         return raw[1:-1]
@@ -2807,8 +3815,8 @@ def _gemma_coerce_scalar(raw: str) -> Any:
 
 
 def _gemma_strip_quoted_leaves(value: Any) -> Any:
-    """Recursively unquote quoted string leaves of a nested stripped-stream value,
-    so nested ``city:"New York"`` matches the top-level coercion (no stray quotes)."""
+    """Recursively unquote quoted string leaves of a nested stripped-stream value, so nested
+    ``city:"New York"`` matches the top-level coercion (no stray quotes)."""
     if isinstance(value, str):
         v = value.strip()
         if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
@@ -2822,10 +3830,10 @@ def _gemma_strip_quoted_leaves(value: Any) -> Any:
 
 
 def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:
-    """Parse a quote-less Gemma arg body ``key:value, key2:value2`` (the
-    ``skip_special_tokens`` stream with ``<|"|>`` markers removed). Each value runs
-    to the next top-level ``, key:`` boundary, tracking ``{}``/``[]``/``()`` depth so
-    commas/braces inside a ``code`` / ``command`` value aren't truncated."""
+    """Parse a quote-less Gemma arg body ``key:value, key2:value2`` (the ``skip_special_tokens``
+    stream with ``<|"|>`` markers removed). Each value runs to the next top-level ``, key:``
+    boundary, tracking ``{}``/``[]``/``()`` depth so commas/braces inside a ``code`` /
+    ``command`` value are not truncated."""
     out: dict[str, Any] = {}
     i, n = 0, len(body)
     while i < n:
@@ -2862,8 +3870,8 @@ def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:
             i += 1
         raw_val = body[vstart:i].strip()
         if raw_val[:1] in "{[":
-            # Nested object/array: accept only a fully consumed, closed parse; a truncated/malformed value falls back to
-            # the raw string.
+            # Nested object/array: accept only a fully consumed, closed parse; a truncated/malformed value falls back
+            # to the raw string.
             parsed, end, closed = _gemma_parse_value(raw_val, 0)
             out[key] = (
                 _gemma_strip_quoted_leaves(parsed)
@@ -2878,9 +3886,8 @@ def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:
 
 
 def _gemma_parse_mapping(text: str, start: int):
-    """Parse a Gemma ``{key:value, ...}`` mapping at ``text[start] == '{'`` in one
-    forward pass; returns ``(dict, next_index, closed)`` (``closed`` True iff the
-    matching ``}`` was reached)."""
+    """Parse a Gemma ``{key:value, ...}`` mapping at ``text[start] == '{'`` in one forward pass;
+    returns ``(dict, next_index, closed)`` (``closed`` True iff the matching ``}`` was reached)."""
     out: dict[str, Any] = {}
     i, n = start + 1, len(text)
     while i < n:
@@ -2918,12 +3925,9 @@ def _gemma_parse_mapping(text: str, start: int):
     return out, i, False
 
 
-# ── DeepSeek R1 / V3 / V3.1 ─────────────────────────────────────────
-
-
 def _find_outside_json_strings(text: str, needle: str, start: int) -> int:
-    """Index of ``needle`` at/after ``start`` OUTSIDE any JSON string, or -1: a
-    marker inside an argument string must not be taken as the structural terminator."""
+    """Index of ``needle`` at/after ``start`` OUTSIDE any JSON string, or -1: a marker inside an
+    argument string must not be taken as the structural terminator."""
     i = start
     n = len(text)
     in_string = False
@@ -2955,14 +3959,10 @@ def _parse_deepseek_tool_calls(
     id_offset: int,
     allow_incomplete: bool = True,
 ) -> list[dict]:
-    """DeepSeek R1 / V3 / V3.1.
-
-    R1:    ``<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>NAME\\n``\\`\\`\\`json\\n{...}\\n\\`\\`\\`<｜tool▁call▁end｜>...``
-    V3.x:  ``<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>NAME<｜tool▁sep｜>{json}<｜tool▁call▁end｜>...``
-
-    Mirrors llama.cpp's pre-autoparser ``common_chat_parse_deepseek_r1`` /
-    ``_v3_1`` handling; tolerates the 5 opener variants llama.cpp keeps.
-    """
+    """DeepSeek R1 / V3 / V3.1. R1 wraps the arguments in a ```json fence after
+    ``function<|tool_sep|>NAME``; V3.x puts ``NAME<|tool_sep|>{json}`` directly. Mirrors
+    llama.cpp's pre-autoparser ``common_chat_parse_deepseek_r1`` / ``_v3_1`` handling and
+    tolerates the 5 opener variants llama.cpp keeps."""
     out: list[dict] = []
     begin = _DEEPSEEK_BEGIN_RE.search(content)
     if not begin:
@@ -3005,9 +4005,9 @@ def _parse_deepseek_tool_calls(
         if not isinstance(args, dict):
             pos = brace_end + 1
             continue
-        # The closing fence + <｜tool▁call▁end｜> must IMMEDIATELY follow the JSON, else an unbounded search lands on a
-        # LATER call's terminator. Absent close: heal past the JSON (strict rejects); later well-formed calls are still
-        # kept.
+        # The closing fence + tool-call-end marker must IMMEDIATELY follow the JSON, else an unbounded search lands on
+        # a LATER call's terminator. Absent close: heal past the JSON (strict rejects); later well-formed calls are
+        # still kept.
         after = brace_end + 1
         while after < len(body) and body[after] in " \t\r\n":
             after += 1
@@ -3035,8 +4035,8 @@ def _parse_deepseek_tool_calls(
         sep_pos = body.find(_DEEPSEEK_SEP, pos)
         if sep_pos < 0:
             break
-        # Walk left from sep_pos to the name start; stop at ``\n`` (turn boundary), ``<`` (tag start), or ``>`` (end of
-        # an optional ``<｜tool▁call▁begin｜>``).
+        # Walk left from sep_pos to the name start; stop at ``\n`` (turn boundary), ``<`` (tag start), or ``>`` (end
+        # of an optional call-begin marker).
         name_start = sep_pos
         while name_start > pos and body[name_start - 1] not in "\n<>":
             name_start -= 1
@@ -3076,13 +4076,10 @@ def _parse_deepseek_tool_calls(
                     },
                 }
             )
-        # Advance just past the JSON; seeking the optional <｜tool▁call▁end｜> could land on a LATER call's end marker and
+        # Advance just past the JSON; seeking the optional call-end marker could land on a LATER call's end marker and
         # skip the call between
         pos = brace_end + 1
     return out
-
-
-# ── GLM 4.5 / 4.6 / 4.7 ─────────────────────────────────────────────
 
 
 def _parse_glm_tool_calls(
@@ -3091,13 +4088,11 @@ def _parse_glm_tool_calls(
     id_offset: int,
     allow_incomplete: bool = True,
 ) -> list[dict]:
-    """GLM 4.5 / 4.6 / 4.7.
-
-    ``<tool_call>NAME[\\n]<arg_key>K</arg_key>[\\n]<arg_value>V</arg_value>
-    ...</tool_call>``. Multi-call is back-to-back blocks, no envelope.
-    Mirrors llama.cpp's GLM 4.x tool-call handling (``common_chat_params_init_glm_4_5``
-    plus its generalized XML-style parser, llama.cpp PRs #15904 / #16932).
-    """
+    """GLM 4.5 / 4.6 / 4.7:
+    ``<tool_call>NAME[\\n]<arg_key>K</arg_key>[\\n]<arg_value>V</arg_value>...</tool_call>``.
+    Multi-call is back-to-back blocks, no envelope. Mirrors llama.cpp's GLM 4.x tool-call
+    handling (``common_chat_params_init_glm_4_5`` plus its generalized XML-style parser, PRs
+    #15904 / #16932)."""
     out: list[dict] = []
     pos = 0
     while pos < len(content):
@@ -3110,8 +4105,8 @@ def _parse_glm_tool_calls(
         args: dict[str, Any] = {}
         valid = True
         close = -1
-        # Walk arg pairs directly against ``content``: a value may contain a literal </tool_call>, so the real close is
-        # the </tool_call> before the next <arg_key>. ``str.find`` keeps this linear.
+        # Walk arg pairs directly against ``content``: a value may contain a literal </tool_call>, so the real close
+        # is the </tool_call> before the next <arg_key>. ``str.find`` keeps this linear.
         while True:
             ks = content.find(_GLM_ARG_KEY_OPEN, apos)
             tc = content.find(_GLM_TC_CLOSE, apos)
@@ -3143,7 +4138,7 @@ def _parse_glm_tool_calls(
                     valid = False
                     break
                 # Bound the healed value at the next structural tag, not EOF, so a value missing only its </arg_value>
-                # can't swallow the markup after it.
+                # cannot swallow the markup after it.
                 nk = content.find(_GLM_ARG_KEY_OPEN, vs)
                 tc = content.find(_GLM_TC_CLOSE, vs)
                 bounds = [b for b in (nk, tc) if b >= 0]
@@ -3156,8 +4151,6 @@ def _parse_glm_tool_calls(
                 continue
             raw_val = content[vs:ve]
             apos = ve + len(_GLM_ARG_VAL_CLOSE)
-            # Decode only unambiguous JSON literals; ``"`` is left out of the probe: a verbatim string's quotes are
-            # meaningful
             # Decode only unambiguous JSON literals; else keep the value RAW so whitespace in string args survives
             # (matches vLLM glm4_moe). ``"`` is left out of the probe: a verbatim string's quotes are meaningful.
             probe = raw_val.strip()
@@ -3192,24 +4185,17 @@ def _parse_glm_tool_calls(
     return out
 
 
-# ── Kimi K2 / Moonshot ──────────────────────────────────────────────
-
-
 def _parse_kimi_tool_calls(
     content: str,
     *,
     id_offset: int,
     allow_incomplete: bool = True,
 ) -> list[dict]:
-    """Kimi K2.
-
-    ``<|tool_calls_section_begin|><|tool_call_begin|>functions.NAME:IDX
-    <|tool_call_argument_begin|>{json}<|tool_call_end|>...
-    <|tool_calls_section_end|>``. Full id is preserved on ``tool_calls
-    [i].id`` for round-trip through the chat template. Outer loop walks
-    every section in the stream (vLLM / SGLang parity); mirrors llama.cpp's
-    Kimi K2 handling via its generalized XML-style parser (llama.cpp PR #16932).
-    """
+    """Kimi K2:
+    ``<|tool_calls_section_begin|><|tool_call_begin|>functions.NAME:IDX<|tool_call_argument_begin|>{json}<|tool_call_end|>...<|tool_calls_section_end|>``.
+    The full id is preserved on ``tool_calls[i].id`` for round-trip through the chat template.
+    The outer loop walks every section in the stream (vLLM / SGLang parity); mirrors llama.cpp's
+    Kimi K2 handling via its generalized XML-style parser (PR #16932)."""
     out: list[dict] = []
     outer_pos = 0
     while True:
@@ -3217,13 +4203,13 @@ def _parse_kimi_tool_calls(
         if section_start < 0:
             break
         scan_start = section_start + len(_KIMI_SECTION_BEGIN)
-        # Section end OUTSIDE JSON strings: an argument may contain the literal end token, and a raw find would drop the
-        # later valid call.
+        # Section end OUTSIDE JSON strings: an argument may contain the literal end token, and a raw find would drop
+        # the later valid call.
         section_end = _find_outside_json_strings(content, _KIMI_SECTION_END, scan_start)
         scan_end = section_end if section_end >= 0 else len(content)
         body = content[scan_start:scan_end]
-        # Truncated tail: parse what we have, then exit. In strict mode a section with no <|tool_calls_section_end|> is
-        # truncated; reject it instead.
+        # Truncated tail: parse what we have, then exit. In strict mode a section with no <|tool_calls_section_end|>
+        # is truncated; reject it instead.
         if section_end < 0:
             if allow_incomplete:
                 out.extend(
@@ -3274,9 +4260,8 @@ def _parse_kimi_section_body(
         else:
             base = full_id.split(":")[0]
             name = base[len("functions.") :] if base.startswith("functions.") else base
-        # Drop bare-counter ids (``3``, ``42``) -- matches vLLM
         # Drop bare-counter ids (``3``, ``42``) -- matches vLLM; SGLang infers the name from the tool schema, which we
-        # don't have here.
+        # do not have here.
         if name.isdigit():
             json_start = arg_begin + len(_KIMI_ARG_BEGIN)
             brace_end = (
@@ -3297,8 +4282,8 @@ def _parse_kimi_section_body(
             continue
         brace_end = _balanced_brace_end(body, json_start)
         if brace_end is None:
-            # Malformed / truncated JSON: skip this call but keep parsing later ones instead of dropping the rest of the
-            # section (vLLM recovers them)
+            # Malformed / truncated JSON: skip this call but keep parsing later ones instead of dropping the rest of
+            # the section (vLLM recovers them)
             nxt = body.find(_KIMI_CALL_BEGIN, json_start)
             if nxt < 0:
                 break
@@ -3313,8 +4298,8 @@ def _parse_kimi_section_body(
             pos = brace_end + 1
             continue
         if not allow_incomplete:
-            # Strict mode: this call must close with <|tool_call_end|> before the next <|tool_call_begin|>; otherwise it
-            # is truncated, so reject it.
+            # Strict mode: this call must close with <|tool_call_end|> before the next <|tool_call_begin|>; otherwise
+            # it is truncated, so reject it.
             end_marker = body.find(_KIMI_CALL_END, brace_end + 1)
             next_call = body.find(_KIMI_CALL_BEGIN, brace_end + 1)
             if end_marker < 0 or (next_call >= 0 and end_marker > next_call):

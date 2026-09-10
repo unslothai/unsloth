@@ -115,11 +115,10 @@ export function useDiscoverSearch({
   // stale window can no longer announce "Back online" without a working request.
   const online = phase === "available";
 
-  // Gated on the live backoff only, never on "probing". Gating on availability
-  // is what discarded the error and made every cause render the same, and that
-  // is now safe because the disabled path preserves it; but leaving it ungated
-  // let a user typing through an outage issue a request per debounce tick, each
-  // one re-arming the window it was meant to be waiting out.
+  // Gated on the live backoff only, never on "probing". Gating on availability is what discarded
+  // the error and made every cause render the same, and that is now safe because the disabled path
+  // preserves it; but leaving it ungated let a user typing through an outage issue a request per
+  // debounce tick, each one re-arming the window it was meant to be waiting out.
   const modelSearch = useHubModelSearch(debouncedQuery, {
     accessToken,
     sortBy,

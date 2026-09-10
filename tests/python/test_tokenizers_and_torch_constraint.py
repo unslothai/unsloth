@@ -285,35 +285,48 @@ class TestTorchConstraintShell:
         assert result.returncode == 0, f"Script failed: {result.stderr}"
         return result.stdout.strip()
 
-    def test_arm64_macos_py313_tightened(self, tmp_path):
-        out = self._run(tmp_path, py_minor = 13, os_val = "macos", arch = "arm64")
-        assert out == "torch>=2.6,<2.11.0"
-
-    def test_arm64_macos_py314_tightened(self, tmp_path):
-        out = self._run(tmp_path, py_minor = 14, os_val = "macos", arch = "arm64")
-        assert out == "torch>=2.6,<2.11.0"
-
-    def test_arm64_macos_py312_default(self, tmp_path):
-        out = self._run(tmp_path, py_minor = 12, os_val = "macos", arch = "arm64")
-        assert out == "torch>=2.4,<2.11.0"
-
-    def test_arm64_macos_py311_default(self, tmp_path):
-        out = self._run(tmp_path, py_minor = 11, os_val = "macos", arch = "arm64")
-        assert out == "torch>=2.4,<2.11.0"
+    @pytest.mark.parametrize(
+        "py_minor, os_val, arch, expected",
+        [
+            pytest.param(
+                13, "macos", "arm64", "torch>=2.6,<2.11.0", id = "arm64_macos_py313_tightened"
+            ),
+            pytest.param(
+                14, "macos", "arm64", "torch>=2.6,<2.11.0", id = "arm64_macos_py314_tightened"
+            ),
+            pytest.param(
+                12, "macos", "arm64", "torch>=2.4,<2.11.0", id = "arm64_macos_py312_default"
+            ),
+            pytest.param(
+                11, "macos", "arm64", "torch>=2.4,<2.11.0", id = "arm64_macos_py311_default"
+            ),
+            pytest.param(13, "linux", "x86_64", "torch>=2.4,<2.11.0", id = "linux_x86_py313_default"),
+            pytest.param(
+                13, "linux", "aarch64", "torch>=2.4,<2.11.0", id = "linux_aarch64_py313_default"
+            ),
+            pytest.param(
+                13, "macos", "x86_64", "torch>=2.4,<2.11.0", id = "intel_mac_x86_py313_default"
+            ),
+            pytest.param(13, "wsl", "x86_64", "torch>=2.4,<2.11.0", id = "wsl_py313_default"),
+            # A failed python query returns 0, which keeps the default constraint.
+            pytest.param(
+                0, "macos", "arm64", "torch>=2.4,<2.11.0", id = "py_minor_0_fallback_default"
+            ),
+            pytest.param(
+                12, "macos", "arm64", "torch>=2.4,<2.11.0", id = "boundary_py_minor_12_not_tightened"
+            ),
+            pytest.param(
+                13, "macos", "arm64", "torch>=2.6,<2.11.0", id = "boundary_py_minor_13_tightened"
+            ),
+        ],
+    )
+    def test_torch_constraint_shell_cases(self, tmp_path, py_minor, os_val, arch, expected):
+        out = self._run(tmp_path, py_minor = py_minor, os_val = os_val, arch = arch)
+        assert out == expected
 
     # Linux is unaffected by the tightening.
-    def test_linux_x86_py313_default(self, tmp_path):
-        out = self._run(tmp_path, py_minor = 13, os_val = "linux", arch = "x86_64")
-        assert out == "torch>=2.4,<2.11.0"
-
-    def test_linux_aarch64_py313_default(self, tmp_path):
-        out = self._run(tmp_path, py_minor = 13, os_val = "linux", arch = "aarch64")
-        assert out == "torch>=2.4,<2.11.0"
 
     # Intel Mac: arch mismatch, no tightening.
-    def test_intel_mac_x86_py313_default(self, tmp_path):
-        out = self._run(tmp_path, py_minor = 13, os_val = "macos", arch = "x86_64")
-        assert out == "torch>=2.4,<2.11.0"
 
     # SKIP_TORCH bypasses the tightening.
     def test_skip_torch_arm64_macos_py313_default(self, tmp_path):
@@ -325,23 +338,6 @@ class TestTorchConstraintShell:
             skip_torch = "true",
         )
         assert out == "torch>=2.4,<2.11.0"
-
-    def test_wsl_py313_default(self, tmp_path):
-        out = self._run(tmp_path, py_minor = 13, os_val = "wsl", arch = "x86_64")
-        assert out == "torch>=2.4,<2.11.0"
-
-    def test_py_minor_0_fallback_default(self, tmp_path):
-        """Failed python query (returns 0) keeps the default constraint."""
-        out = self._run(tmp_path, py_minor = 0, os_val = "macos", arch = "arm64")
-        assert out == "torch>=2.4,<2.11.0"
-
-    def test_boundary_py_minor_12_not_tightened(self, tmp_path):
-        out = self._run(tmp_path, py_minor = 12, os_val = "macos", arch = "arm64")
-        assert out == "torch>=2.4,<2.11.0"
-
-    def test_boundary_py_minor_13_tightened(self, tmp_path):
-        out = self._run(tmp_path, py_minor = 13, os_val = "macos", arch = "arm64")
-        assert out == "torch>=2.6,<2.11.0"
 
     def test_mock_uv_receives_correct_constraint(self, tmp_path):
         """A mock uv receives the tightened constraint on py3.13 arm64 macOS."""
@@ -471,22 +467,34 @@ class TestTorchConstraintShell:
         url = f"https://download.pytorch.org/whl/{leaf}"
         assert self._resolve_index(tmp_path, url) == "torch>=2.4,<2.12.0"
 
-    def test_rocm72_index_uses_211_floor(self, tmp_path):
-        url = "https://download.pytorch.org/whl/rocm7.2"
-        assert self._resolve_index(tmp_path, url) == "torch>=2.11.0,<2.12.0"
-
-    def test_cpu_index_keeps_default(self, tmp_path):
-        # /cpu must NOT match the */cu[0-9]* branch.
-        url = "https://download.pytorch.org/whl/cpu"
-        assert self._resolve_index(tmp_path, url) == "torch>=2.4,<2.11.0"
-
-    def test_older_rocm_index_keeps_default(self, tmp_path):
-        url = "https://download.pytorch.org/whl/rocm7.1"
-        assert self._resolve_index(tmp_path, url) == "torch>=2.4,<2.11.0"
-
-    def test_cuda_index_custom_mirror_widens(self, tmp_path):
-        url = "https://internal.example.com/pytorch/cu128"
-        assert self._resolve_index(tmp_path, url) == "torch>=2.4,<2.12.0"
+    @pytest.mark.parametrize(
+        "url, expected",
+        [
+            pytest.param(
+                "https://download.pytorch.org/whl/rocm7.2",
+                "torch>=2.11.0,<2.12.0",
+                id = "rocm72_index_uses_211_floor",
+            ),
+            # /cpu must NOT match the */cu[0-9]* branch.
+            pytest.param(
+                "https://download.pytorch.org/whl/cpu",
+                "torch>=2.4,<2.11.0",
+                id = "cpu_index_keeps_default",
+            ),
+            pytest.param(
+                "https://download.pytorch.org/whl/rocm7.1",
+                "torch>=2.4,<2.11.0",
+                id = "older_rocm_index_keeps_default",
+            ),
+            pytest.param(
+                "https://internal.example.com/pytorch/cu128",
+                "torch>=2.4,<2.12.0",
+                id = "cuda_index_custom_mirror_widens",
+            ),
+        ],
+    )
+    def test_torch_constraint_shell_cases_2(self, tmp_path, url, expected):
+        assert self._resolve_index(tmp_path, url) == expected
 
     @pytest.mark.parametrize(
         "url",

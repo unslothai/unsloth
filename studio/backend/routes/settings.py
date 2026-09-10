@@ -250,15 +250,13 @@ class VideoGenerationPresetState(MediaGenerationPresetState):
 
 
 class ImageGenerationPresetSettings(ImageGenerationPresetState):
-    # No cap on the read: upsert_media_generation_preset owns the limit, and refusing to
-    # report a store that somehow exceeds it would only turn a GET into a 500.
+    # No cap on the read: upsert_media_generation_preset owns the limit, and refusing to report a store
+    # that somehow exceeds it would only turn a GET into a 500.
     customPresets: list[ImageGenerationPreset] = Field(default_factory = list)
     saved: bool = False
 
 
 class VideoGenerationPresetSettings(VideoGenerationPresetState):
-    # No cap on the read: upsert_media_generation_preset owns the limit, and refusing to
-    # report a store that somehow exceeds it would only turn a GET into a 500.
     customPresets: list[VideoGenerationPreset] = Field(default_factory = list)
     saved: bool = False
 
@@ -271,12 +269,10 @@ def _nested_model(annotation: Any) -> Optional[type[BaseModel]]:
 
 
 def _readable(model: type[BaseModel], value: Any) -> Any:
-    """Drop what this build's schema does not define, keeping every field it does.
-
-    `extra = "forbid"` is right for a submitted payload but wrong for reading storage back: a blob
-    holding one field from a newer build would otherwise fail validation, and a stored recipe the
-    user can no longer read is worse than one missing a field this build cannot render anyway.
-    """
+    """Drop what this build's schema does not define, keeping every field it does. `extra = "forbid"` is right
+    for a submitted payload but wrong for reading storage back: a blob holding one field from a newer build
+    would otherwise fail validation, and a stored recipe the user can no longer read is worse than one
+    missing a field this build cannot render anyway."""
     if isinstance(value, list):
         return [_readable(model, item) for item in value]
     if not isinstance(value, dict):
@@ -310,11 +306,8 @@ def _without_field_at_location(value: Any, location: tuple[Any, ...]) -> tuple[A
 def _validated_without_invalid_fields(
     schema: type[BaseModel], payload: dict
 ) -> tuple[BaseModel, list[tuple[Any, ...]]]:
-    """Validate, dropping only the fields that fail.
-
-    Resetting the whole recipe over one unreadable field would hand the client schema defaults,
-    which it then autosaves over the rest of a perfectly good stored recipe.
-    """
+    """Validate, dropping only the fields that fail. Resetting the whole recipe over one unreadable field would
+    hand the client schema defaults, which it then autosaves over the rest of a good stored recipe."""
     remaining = payload
     removed_locations = []
     while True:
@@ -358,13 +351,10 @@ def _with_value_at_location(
 
 
 def _preserve_recovered_defaults(schema: type[BaseModel], stored: dict, submitted: dict) -> dict:
-    """Do not mistake a recovery default for an edit to an unreadable stored field.
-
-    A downgraded GET omits known fields whose values this schema cannot validate, then Pydantic
-    supplies their defaults in the response. The client cannot tell those defaults from stored
-    values and echoes them in its next state write. Preserve the raw leaf only while the submitted
-    value is still the synthesized value; a real edit remains authoritative.
-    """
+    """Do not mistake a recovery default for an edit to an unreadable stored field. A downgraded GET omits
+    known fields whose values this schema cannot validate, then Pydantic supplies their defaults in the
+    response; the client cannot tell those defaults from stored values and echoes them in its next state
+    write. Preserve the raw leaf only while the submitted value is still the synthesized value."""
     recovered, locations = _validated_without_invalid_fields(schema, _readable(schema, stored))
     recovered_values = recovered.model_dump()
     merged = submitted
@@ -394,15 +384,14 @@ def _get_generation_preset_settings(kind, schema):
     try:
         response = schema.model_validate(_readable(schema, stored))
     except ValidationError:
-        # A value this build cannot represent at all. Drop only what fails: one unreadable entry
-        # costs neither the rest of the list nor the state, which is validated on its own here.
+        # A value this build cannot represent at all. Drop only what fails: one unreadable entry costs neither
+        # the rest of the list nor the state.
         logger.warning("Dropping unreadable %s generation preset entries", kind)
         presets = schema.model_fields["customPresets"].annotation
         item = _nested_model(get_args(presets)[0] if get_args(presets) else presets)
         readable = []
-        # Only a list is a preset collection. Recovery exists so a store this build cannot
-        # represent still reads; iterating a scalar here would answer 500 instead, which is the
-        # one outcome it is meant to prevent. _custom_presets takes the same view on the write.
+        # Only a list is a preset collection. Recovery exists so a store this build cannot represent still
+        # reads; iterating a scalar here would answer 500 instead. _custom_presets takes the same view on write.
         raw_presets = stored.get("customPresets")
         for raw in raw_presets if isinstance(raw_presets, list) else []:
             validated = _validated_readable_model(item, raw)
@@ -608,15 +597,13 @@ class DownloadTransportResponse(BaseModel):
     mode: str
     xet_available: bool
     xet_unavailable_reason: Optional[str] = None
-    # What "auto" resolves to here right now, and why.
     auto_resolves_to: str
     auto_reason: Optional[str] = None
 
 
 class XetNoticeReservePayload(BaseModel):
-    # A legacy localStorage count from a client that has not reported one before.
-    # Can only raise the stored count (see reserve_xet_notice), so a client cannot
-    # talk its own way back under the limit with it.
+    # A legacy localStorage count from a client that has not reported one before. Can only raise the
+    # stored count (see reserve_xet_notice), so a client cannot talk its own way back under the limit.
     seen_hint: int = 0
 
 
@@ -663,16 +650,14 @@ class ModelMemoryResponse(BaseModel):
     # vetoes it; the UI surfaces that rather than failing silently.
     mlock_active: bool
     reload_required: bool
-    # Soft RLIMIT_MEMLOCK when finite. mlock cannot exceed it, so the UI warns
-    # that residency will not fully pin a model larger than this. None means
-    # unlimited (macOS) or not applicable (Windows).
+    # Soft RLIMIT_MEMLOCK when finite. mlock cannot exceed it, so the UI warns that residency will not
+    # fully pin a larger model. None means unlimited (macOS) or not applicable (Windows).
     memlock_limit_bytes: Optional[int] = None
 
 
 class VramBudgetPayload(BaseModel):
-    # None clears the stored budget so env/default applies again; it cannot also mean "leave
-    # untouched", hence required rather than defaulted: with a default, a client that dropped the
-    # field would silently discard the stored budget.
+    # None clears the stored budget so env/default applies again; it cannot also mean "leave untouched", hence
+    # required rather than defaulted: with a default, a client that dropped the field would silently discard it.
     fraction: Optional[float] = Field(ge = VRAM_FRACTION_MIN, le = VRAM_FRACTION_MAX)
 
     @field_validator("fraction", mode = "before")
@@ -735,7 +720,6 @@ class OpenAIAutoSwitchPayload(BaseModel):
     auto_unload_api_only: Optional[bool] = None
     # The image/video TTL is its own setting, not a share of the chat one.
     media_auto_unload_idle_seconds: Optional[int] = Field(default = None, ge = 0)
-    # And so is image/video auto-switch, for the same reason.
     media_auto_switch_model: Optional[bool] = None
 
 
@@ -743,9 +727,8 @@ class OpenAIAutoSwitchResponse(BaseModel):
     enabled: bool
     auto_unload_idle_seconds: int
     default_enabled: bool = DEFAULT_OPENAI_AUTO_SWITCH_ENABLED
-    # True when the idle-unload loop will actually unload (effective TTL > 0). With
-    # UNSLOTH_MODEL_IDLE_TTL set and nothing stored, this is true even while enabled
-    # is false, so the UI can show idle-unload as active instead of "needs enable".
+    # True when the idle-unload loop will actually unload (effective TTL > 0). With UNSLOTH_MODEL_IDLE_TTL set
+    # and nothing stored this is true even while enabled is false, so the UI can show idle-unload as active.
     idle_unload_active: bool = False
     auto_unload_keep_kv: bool = DEFAULT_AUTO_UNLOAD_KEEP_KV
     # Stored, not effective: the UI must round-trip the saved value across an auto-switch toggle.
@@ -810,10 +793,9 @@ class ModelOverridePayload(BaseModel):
     # meaningful values (none kept; cache disabled; no limit). Bounds mirror LoadRequest.
     ctx_checkpoints: Optional[int] = Field(default = None, ge = 0, le = CTX_CHECKPOINTS_MAX)
     cache_ram: Optional[int] = Field(default = None, ge = CACHE_RAM_MIN_MIB, le = CACHE_RAM_MAX_MIB)
-    # Does this client know the four above exist? A save REPLACES the entry, so an omission from a build that predates
-    # them is indistinguishable from a user clearing them. Only a client that sets this may clear by omission; default
-    # False, so an old payload is the safe case. Not a blanket carry-over: that would make clearing impossible for
-    # everyone.
+    # Does this client know the four above exist? A save REPLACES the entry, so an omission from a build that
+    # predates them is indistinguishable from a user clearing them. Only a client that sets this may clear by
+    # omission; default False, so an old payload is the safe case.
     mirrors_server_tuning: bool = False
     tensor_parallel: bool = False
     disable_vision: bool = False
@@ -835,7 +817,6 @@ class ModelOverridePayload(BaseModel):
     @field_validator("chat_template_override")
     @classmethod
     def _limit_chat_template_bytes(cls, value: Optional[str]) -> Optional[str]:
-        # Mirrors LoadRequest.normalize_blank_chat_template_override.
         if value is None:
             return None
         size = chat_template_byte_length(value)
@@ -872,8 +853,8 @@ class ModelOverridePayload(BaseModel):
 class ModelOverridesResponse(BaseModel):
     overrides: dict[str, dict]
     # Filled only when the caller named a model, resolved here rather than in the browser: the folding rules are
-    # Python's, so a client mirroring them can only approximate.
-    # casefold is not toLowerCase, and an ambiguous fold matches nothing on purpose.
+    # Python's (casefold is not toLowerCase), so a client mirroring them can only approximate, and an ambiguous
+    # fold matches nothing on purpose.
     resolved: Optional[dict] = None
     resolved_key: Optional[str] = None
     # What an explicit remove cleared; empty for a save.
@@ -921,11 +902,9 @@ _NO_LAUNCH = object()
 
 
 def _active_launch_placement():
-    """``(state, policy_active, mlock_applicable)`` for the running child.
-
-    ``state`` is ``_NO_LAUNCH`` when nothing is running or coming up, so the
-    caller can tell "no process" apart from "a process with no load-mode".
-    """
+    """``(state, policy_active, mlock_applicable)`` for the running child. ``state`` is ``_NO_LAUNCH``
+    when nothing is running or coming up, so the caller can tell "no process" from "a process with no
+    load-mode"."""
     try:
         from routes.inference import get_llama_cpp_backend
 
@@ -943,19 +922,12 @@ def _active_launch_placement():
 
 
 def _model_memory_reload_required() -> bool:
-    """True when the loaded process's memory placement contradicts the settings.
-
-    Compares the state the child ACTUALLY launched with -- env defaults plus
-    last-wins argv, so a user-supplied --mlock / --no-mmap counts -- against
-    what the current settings would produce. The idle-unload veto applies
-    immediately (the loop re-reads each poll), so only placement can be stale.
-
-    Keyed on is_active, not is_loaded: a save that lands while a load is still
-    passing its health check would otherwise report no reload while the child is
-    already committed to the pre-save flags. _memory_launch_pending covers the
-    same window before Popen, where the placement is decided but _process is
-    still None.
-    """
+    """True when the loaded process's memory placement contradicts the settings. Compares the state the child
+    ACTUALLY launched with (env defaults plus last-wins argv, so a user-supplied --mlock / --no-mmap counts)
+    against what the current settings would produce. The idle-unload veto applies immediately, so only
+    placement can be stale. Keyed on is_active, not is_loaded: a save that lands while a load is still
+    passing its health check would otherwise report no reload while the child is already committed to the
+    pre-save flags."""
     state, policy_active, mlock_applicable = _active_launch_placement()
     if state is _NO_LAUNCH:
         return False
@@ -967,16 +939,11 @@ def _model_memory_reload_required() -> bool:
 
 
 def _model_memory_mlock_active(want_mlock: bool) -> bool:
-    """Whether page-locking is actually in force, not merely asked for.
-
-    This drives the locked-memory cap warning, so taking it from the toggles
-    alone would tell a discrete-GPU user to raise a limit nothing consults.
-    With nothing running this is the intent, so the UI reflects the toggle. Once
-    a child exists it is what that child got: a full offload to a discrete GPU
-    skips the lock, and a diffusion runner has no load-mode at all, so claiming
-    otherwise would warn about ulimit -l for a lock nobody took. A user's own
-    --mlock counts, since the resolver reads the launched argv.
-    """
+    """Whether page-locking is actually in force, not merely asked for. This drives the locked-memory cap
+    warning, so taking it from the toggles alone would tell a discrete-GPU user to raise a limit nothing
+    consults. With nothing running this is the intent; once a child exists it is what that child got, since
+    a full offload to a discrete GPU skips the lock and a diffusion runner has no load-mode at all. A
+    user's own --mlock counts, since the resolver reads the launched argv."""
     if not want_mlock:
         return False
     state, _policy_active, _applicable = _active_launch_placement()
@@ -998,20 +965,15 @@ def _model_memory_response() -> ModelMemoryResponse:
 
 
 def _vram_budget_reload_required(fraction: float) -> bool:
-    """True when a child is running that was sized against a different budget.
-
-    Compares against the fraction the child actually launched with, not merely
-    "is something loaded", so re-saving the same value does not nag for a reload.
-    Exact equality is fine: both sides come from the same clamp, so a stored 0.97
-    and a launched 0.97 are the same float.
-    """
+    """True when a child is running that was sized against a different budget. Compares against the fraction the
+    child actually launched with, so re-saving the same value does not nag for a reload. Exact equality is
+    fine: both sides come from the same clamp."""
     try:
         from routes.inference import get_llama_cpp_backend
 
         backend = get_llama_cpp_backend()
-        # A planned-but-unspawned load has no _process, so is_active is False while
-        # the child is already committed to its captured fraction; answer from the
-        # pending value there, as _active_launch_placement does for Model Memory.
+        # A planned-but-unspawned load has no _process, so is_active is False while the child is already
+        # committed to its captured fraction; answer from the pending value there.
         pending = getattr(backend, "_vram_fraction_pending", None)
         if pending is not None:
             return float(pending) != float(fraction)
@@ -1101,7 +1063,6 @@ def update_llama_cpp_path(
         raise log_and_http_error(
             exc,
             400,
-            # Validator messages are safe to expose to the UI.
             str(exc),
             event = "settings.update_llama_cpp_path_failed",
             log = logger,
@@ -1322,9 +1283,8 @@ class LastLocalModelPayload(BaseModel):
     gguf_variant: Optional[str] = Field(default = None, max_length = MAX_GGUF_VARIANT_KEY_LEN)
     # Epoch ms of the load; orders writes from surfaces that keep their own local shadow.
     loaded_at: Optional[int] = Field(default = None, ge = 0)
-    # The client clock when the request was sent: the skew translates loaded_at into the server
-    # frame. Never persisted.
-    # The skew is server_now - client_now.
+    # The client clock when the request was sent: the skew (server_now - client_now) translates loaded_at
+    # into the server frame. Never persisted.
     client_now: Optional[int] = Field(default = None, ge = 0)
 
 
@@ -1475,7 +1435,6 @@ def update_openai_auto_switch(
         ) from exc
     idle_unload_active = get_auto_unload_idle_seconds() > 0
     if not keep_kv or not idle_unload_is_configured():
-        # Drop already-saved chat context too.
         from core.inference.llama_keepwarm import purge_kv_resume
         purge_kv_resume()
     return OpenAIAutoSwitchResponse(
@@ -1525,19 +1484,12 @@ def _bare_model_id(model_id: str) -> Optional[str]:
 
 
 def _fallback_supplies_extra_args(model_id: str, target_id: str) -> bool:
-    """Whether a load for this model would still pick flags off another entry.
-
-    The carry-over copies a legacy bare ``repo`` row's flags onto the first
-    ``repo:QUANT`` save and leaves the bare row in place, and a load reads the
-    qualified key first and the bare one after it. So clearing the box for the quant
-    is only a clear while the quant keeps a row of its own: an all-default save
-    stores nothing, and the next load falls through to a row no page can show.
-
-    Answered rather than repaired. Stripping the flags off the bare row was the first
-    fix and it is too broad: that row is the fallback for every quant that has no row,
-    so forgetting Q4's flags took Q6's with them, and it did nothing at all when a
-    sibling quant had a row of its own.
-    """
+    """Whether a load for this model would still pick flags off another entry. The carry-over copies a legacy
+    bare ``repo`` row's flags onto the first ``repo:QUANT`` save and leaves the bare row in place, and a
+    load reads the qualified key first and the bare one after it, so clearing the box for the quant is only
+    a clear while the quant keeps a row of its own. Answered rather than repaired: stripping the flags off
+    the bare row was the first fix and it is too broad, since that row is the fallback for every quant that
+    has no row."""
     from utils.openai_auto_switch_settings import get_model_override
 
     for candidate in (
@@ -1554,12 +1506,9 @@ def _fallback_supplies_extra_args(model_id: str, target_id: str) -> bool:
 
 
 def _other_quants_remain(bare_id: str, removed_ids: list[str]) -> bool:
-    """Whether a quant of ``bare_id`` other than the ones being removed still has an entry.
-
-    Such a quant has its own settings and never reads the bare fallback, so this is not
-    "is anyone inheriting" but "is this forget the last one for the model". If it is not,
-    the bare entry stays: an inheriting quant is exactly what it is there for.
-    """
+    """Whether a quant of ``bare_id`` other than the ones being removed still has an entry. Such a quant has its
+    own settings and never reads the bare fallback, so this is not "is anyone inheriting" but "is this
+    forget the last one for the model"."""
     from utils.openai_auto_switch_settings import split_quant_suffix
 
     removed = {key.strip().lower() for key in removed_ids}
@@ -1574,16 +1523,10 @@ def _other_quants_remain(bare_id: str, removed_ids: list[str]) -> bool:
 
 
 def _legacy_standalone_gguf_key(model_id: str) -> Optional[str]:
-    """The stored ``<path>:LABEL`` entry for a bare standalone .gguf path, if any.
-
-    A loose file has no quant to choose between, so it is keyed by the bare path,
-    but the label derived from its filename is never empty and that is how the
-    picker keyed the same file before, so an upgraded install carries entries
-    under it. The auto-switch loader reads that spelling after the bare path
-    misses; resolve_model_override_key does not, since folding a POSIX path only
-    touches an existing suffix. None for an id that already names a quant, for a
-    repo id, and when nothing is stored under the derived key.
-    """
+    """The stored ``<path>:LABEL`` entry for a bare standalone .gguf path, if any. A loose file has no quant to
+    choose between, so it is keyed by the bare path, but the label derived from its filename is never empty
+    and that is how the picker keyed the same file before, so an upgraded install carries entries under it.
+    The auto-switch loader reads that spelling after the bare path misses."""
     import os
 
     if not model_id.lower().endswith(".gguf"):
@@ -1601,18 +1544,12 @@ def _legacy_standalone_gguf_key(model_id: str) -> Optional[str]:
 
 
 def _fill_target_id(target_id: str) -> str:
-    """Where a one-time backfill write for ``target_id`` has to land.
-
-    A fill only adds, so unlike a save it cannot retire the other spelling of a cached
-    repo. Creating the snapshot-path key while the server already holds the repo id
-    would leave two entries for one quant, and the loader reads the load path before the
-    advertised id, so an upgraded browser's pre-upgrade copy would shadow the newer
-    server config on every API load. Fill into the entry already there instead: nothing
-    outranks it, and the fields it lacks still arrive.
-
-    Only in that direction. A repo-id key never outranks an existing path entry, and two
-    snapshot paths name two caches, neither of which is knowably the one loaded here.
-    """
+    """Where a one-time backfill write for ``target_id`` has to land. A fill only adds, so unlike a save it
+    cannot retire the other spelling of a cached repo. Creating the snapshot-path key while the server
+    already holds the repo id would leave two entries for one quant, and the loader reads the load path
+    before the advertised id, so an upgraded browser's pre-upgrade copy would shadow the newer server
+    config. Only in that direction: a repo-id key never outranks an existing path entry, and two snapshot
+    paths name two caches."""
     from core.inference.model_ids import hf_cache_repo_id
     from utils.openai_auto_switch_settings import split_quant_suffix
 
@@ -1630,22 +1567,17 @@ def _fill_target_id(target_id: str) -> str:
     return target_id
 
 
-# One override write at a time. A save stores its target key and then reads the map back to retire the other spelling of
-# the same cached repo, and a remove clears up to four keys, each its own transaction: atomic on their own, but not as a
-# sequence. This route is a plain `def`, so FastAPI runs it in a threadpool, and two clients saving one quant under both
-# spellings (the repo id the picker sends and the snapshot path an upgraded install still holds) could each write before
-# either cleanup ran and then retire the other's row, leaving no override at all from two saves that both returned 200.
-# Serialize the whole handler instead: overrides are written by a settings edit, never on a hot path, and the server
-# runs one process.
+# One override write at a time. A save stores its target key and then reads the map back to retire the other
+# spelling of the same cached repo, and a remove clears up to four keys, each its own transaction: atomic on
+# their own, but not as a sequence. This route is a plain `def`, so FastAPI runs it in a threadpool, and two
+# clients saving one quant under both spellings could each write before either cleanup ran and then retire the
+# other's row, leaving no override at all from two saves that both returned 200.
 _override_write_lock = threading.Lock()
 
 
 def _serialized_override_write(func):
-    """Run ``func`` under _override_write_lock, keeping the handler body as it reads.
-
-    functools.wraps carries __wrapped__, which inspect.signature follows, so FastAPI still
-    sees the endpoint's own parameters and dependencies.
-    """
+    """Run ``func`` under _override_write_lock. functools.wraps carries __wrapped__, which
+    inspect.signature follows, so FastAPI still sees the endpoint's own parameters and dependencies."""
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
@@ -1669,9 +1601,9 @@ def update_openai_auto_switch_override(
             raise ValueError("fill_absent_fields cannot be combined with remove.")
         # Only model_id is the documented "remove"; otherwise omitted flags carry over.
         requested_extra_args = payload.llama_extra_args
-        # fill_absent_fields and mirrors_server_tuning are write modes.
-        # Leaving either in would make every payload look non-empty (they are bools, so exclude_none does not drop them)
-        # and break the legacy "no fields means remove".
+        # fill_absent_fields and mirrors_server_tuning are write modes. Leaving either in would make every payload
+        # look non-empty (they are bools, so exclude_none does not drop them) and break the legacy "no fields
+        # means remove".
         saved_fields = payload.model_dump(
             exclude = {
                 "model_id",
@@ -1685,7 +1617,6 @@ def update_openai_auto_switch_override(
         if payload.remove is not None:
             is_removal = payload.remove
         else:
-            # Both booleans are carried.
             is_removal = (
                 not payload.tensor_parallel
                 and not payload.disable_vision
@@ -1706,9 +1637,8 @@ def update_openai_auto_switch_override(
                     if bare_id:
                         requested_extra_args = get_model_override(bare_id).get("llama_extra_args")
                 if requested_extra_args is None:
-                    # And for a standalone .gguf upgraded from the build that keyed it by its
-                    # filename label: the bare path written here is read before that key, so
-                    # its flags would go dark with no page able to show or restore them.
+                    # And for a standalone .gguf upgraded from the build that keyed it by its filename label: the bare
+                    # path written here is read before that key, so its flags would go dark with no page able to show them.
                     legacy_id = _legacy_standalone_gguf_key(payload.model_id)
                     if legacy_id:
                         requested_extra_args = get_model_override(legacy_id).get("llama_extra_args")
@@ -1734,14 +1664,14 @@ def update_openai_auto_switch_override(
                 )
         else:
             extra_args = validate_extra_args(requested_extra_args)
-        # Same shape as the extra-args carry-over above, for the same reason: a save replaces the entry, so a field the
-        # caller never knew about must survive it. Gated on is_removal, not on payload.remove: the documented legacy
-        # contract is a payload carrying only model_id, which leaves remove None while is_removal is true.
+        # Same shape as the extra-args carry-over above, for the same reason: a save replaces the entry, so a field
+        # the caller never knew about must survive it. Gated on is_removal, not on payload.remove: the documented
+        # legacy contract is a payload carrying only model_id, which leaves remove None.
         _tuning_fields = ("load_mode", "spec_draft_cache_type", "ctx_checkpoints", "cache_ram")
         _kept_tuning = {name: getattr(payload, name) for name in _tuning_fields}
         if not payload.mirrors_server_tuning and not is_removal:
-            # The same spellings the extra-args carry-over walks: a cached repo is not an ordinary folded match, so a
-            # save under the repo id would find nothing and retire the alias with its tuning.
+            # The same spellings the extra-args carry-over walks: a cached repo is not an ordinary folded match,
+            # so a save under the repo id would find nothing and retire the alias with its tuning.
             _alias_ids = [payload.model_id]
             for _candidate in (
                 _bare_model_id(payload.model_id),
@@ -1750,12 +1680,12 @@ def update_openai_auto_switch_override(
             ):
                 if _candidate and _candidate not in _alias_ids:
                     _alias_ids.append(_candidate)
-            # Load order, not collection order: a lookup reads the concrete load path before the advertised repo id, so
-            # reading the repo row first adopts tuning no load has used.
+            # Load order, not collection order: a lookup reads the concrete load path before the advertised repo
+            # id, so reading the repo row first adopts tuning no load has used.
             _alias_ids.sort(key = lambda _key: not is_cache_load_path_key(_key))
-            # Taken as a unit from the first row that exists, not field by field down the list.
-            # A load stops at the first non-empty row (resolve_override_for_load) rather than merging, so filling a gap
-            # in the winner from a loser would switch dormant tuning on.
+            # Taken as a unit from the first row that exists, not field by field down the list: a load stops at the
+            # first non-empty row rather than merging, so filling a gap in the winner from a loser would switch
+            # dormant tuning on.
             for _alias_id in _alias_ids:
                 _stored_tuning = get_model_override(_alias_id)
                 if not _stored_tuning:
@@ -1766,9 +1696,9 @@ def update_openai_auto_switch_override(
                 break
         removed_keys: list[str] = []
         if payload.remove is True:
-            # An explicit remove wins over any other field. Remove the key a load resolves to,
-            # not the literal one sent (the browser normalizes casing), and every spelling:
-            # clearing one of two leaves the survivor as the sole fold match.
+            # An explicit remove wins over any other field. Remove the key a load resolves to, not the literal one sent
+            # (the browser normalizes casing), and every spelling: clearing one of two leaves the survivor as the sole
+            # fold match.
             target_ids = resolve_model_override_keys(payload.model_id) or [
                 payload.model_id,
             ]
@@ -1780,9 +1710,8 @@ def update_openai_auto_switch_override(
                 removed_keys.append(legacy_id)
             # The mirror image of the carry-over above: a save under repo:QUANT copies the flags off a legacy bare
             # `repo` entry and leaves it in place, and the loader falls back to it when the qualified key misses, so
-            # clearing only the qualified key hands the same flags straight back and the forget does nothing. Nothing in
-            # the UI can reach that bare entry. Only once it is nobody else's fallback, though: it backs every quant
-            # with no entry of its own, so forgetting Q4 must not strip Q8.
+            # clearing only the qualified key hands the same flags straight back. Only once it is nobody else's
+            # fallback, though: it backs every quant with no entry of its own, so forgetting Q4 must not strip Q8.
             bare_id = _bare_model_id(payload.model_id)
             if (
                 bare_id
@@ -1808,9 +1737,9 @@ def update_openai_auto_switch_override(
                 # A fill retires nothing below, so it must not create the higher-priority spelling of a row
                 # the server already holds.
                 target_id = _fill_target_id(target_id)
-            # An explicit clear keeps a row even when nothing else is set, so long as a fallback would
-            # otherwise answer for this model: "no launch flags" and "nothing stored" are the same thing
-            # everywhere else, and different here. Written on the quant's own key, so no other quant moves.
+            # An explicit clear keeps a row even when nothing else is set, so long as a fallback would otherwise answer
+            # for this model: "no launch flags" and "nothing stored" are the same thing everywhere else, and different
+            # here. Written on the quant's own key, so no other quant moves.
             keep_empty = (
                 payload.llama_extra_args == []
                 and not payload.fill_absent_fields
@@ -1932,10 +1861,8 @@ def _model_names_gguf_repo(model: str) -> bool:
 
 
 def _llama_runtime_available() -> bool:
-    """Whether a llama-server binary this install can launch is present.
-
-    Shares the embedder's own probe so the resolver and the loader cannot disagree
-    about whether the backend exists."""
+    """Whether a llama-server binary this install can launch is present. Shares the embedder's own probe
+    so the resolver and the loader cannot disagree about whether the backend exists."""
     from core.rag import embeddings
     try:
         return embeddings._llama_server_runtime_available()
@@ -1944,13 +1871,10 @@ def _llama_runtime_available() -> bool:
 
 
 def _llama_backend_active(model: str | None = None) -> bool:
-    """Whether llama serves the active model, or would serve ``model`` if supplied.
-
-    Delegates to the embeddings module so a runtime fallback from
-    sentence-transformers to llama-server (after a torch/CUDA load or encode
-    failure) is honored: in that state the process loads only inert GGUF, so the
-    ST pickle gate below must not hard-block a repo whose GGUF companion is clean.
-    Before any backend is built this still reflects the resolver."""
+    """Whether llama serves the active model, or would serve ``model`` if supplied. Delegates to the embeddings
+    module so a runtime fallback from sentence-transformers to llama-server is honored: in that state the
+    process loads only inert GGUF, so the ST pickle gate below must not hard-block a repo whose GGUF
+    companion is clean. Before any backend is built this reflects the resolver."""
     from core.rag import embeddings
     try:
         if model is not None:
@@ -1961,9 +1885,8 @@ def _llama_backend_active(model: str | None = None) -> bool:
 
 
 def _resolves_as_local_gguf(model: str) -> bool:
-    """True when ``model`` is a local .gguf file or a directory holding one, so
-    a save on the llama-server backend needs no HF verification (the artifact
-    itself is the proof)."""
+    """True when ``model`` is a local .gguf file or a directory holding one, so a save on the
+    llama-server backend needs no HF verification: the artifact itself is the proof."""
     from core.rag.embed_llama_server import LlamaServerBackend
     try:
         return LlamaServerBackend._resolve_local_gguf(model) is not None
@@ -1972,10 +1895,9 @@ def _resolves_as_local_gguf(model: str) -> bool:
 
 
 def _local_gguf_backend_error(model: str) -> str | None:
-    """409 detail when ``model`` is a local dir without a .gguf but this install
-    embeds via llama-server (macOS/CPU default), which needs one. A
-    sentence-transformers-only folder would verify fine yet fail at first index.
-    None when not applicable. ``force`` skips this check like HF verification."""
+    """409 detail when ``model`` is a local dir without a .gguf but this install embeds via llama-server
+    (macOS/CPU default), which needs one: a sentence-transformers-only folder would verify fine yet fail at
+    first index. ``force`` skips this check like HF verification."""
     from pathlib import Path
 
     from utils.paths import normalize_path
@@ -2002,10 +1924,9 @@ def _local_gguf_backend_error(model: str) -> str | None:
 
 
 def _hf_gguf_backend_error(model: str, hf_token: Optional[str]) -> str | None:
-    """409 detail when the llama-server backend would find no .gguf for an HF
-    repo: neither the derived companion repo nor the repo itself has one. Saves
-    that verify as embedding models would otherwise fail at first index.
-    None when not applicable; ``force`` skips this like HF verification."""
+    """409 detail when the llama-server backend would find no .gguf for an HF repo: neither the derived
+    companion repo nor the repo itself has one, so saves that verify as embedding models would fail at
+    first index. ``force`` skips this like HF verification."""
     from pathlib import Path
 
     if Path(model).expanduser().exists():
@@ -2045,9 +1966,8 @@ def get_embedding_model(
 class EmbeddingModelResolveResponse(BaseModel):
     embedding_model: str
     backend: Literal["llama", "sentence-transformers"]
-    # Repo the picker hands the download manager, and the files to take from it.
-    # Split GGUF plans contain every shard in the selected family.
-    # Both None when nothing needs fetching, or when ``error`` is set.
+    # Repo the picker hands the download manager, and the files to take from it. Split GGUF plans contain
+    # every shard in the selected family; both None when nothing needs fetching or when ``error`` is set.
     download_repo: Optional[str] = None
     files: Optional[list[str]] = None
     cached: bool = False
@@ -2121,24 +2041,18 @@ def _list_repo_files_bounded(repo: str, hf_token: Optional[str]) -> list[str]:
 
 
 def _gguf_conversion_name_matches(hit_name: str, base: str) -> bool:
-    """Whether a search hit names a conversion of exactly ``base``.
-
-    Prefix matching is unsafe (``foo`` must never resolve to ``foo-bar-GGUF``).
-    The Hub filter already requires GGUF; this check accepts only the common
-    conversion suffix spellings and the exact model name.
-    """
+    """Whether a search hit names a conversion of exactly ``base``. Prefix matching is unsafe (``foo`` must
+    never resolve to ``foo-bar-GGUF``); the Hub filter already requires GGUF, so this accepts only the
+    common conversion suffix spellings and the exact model name."""
     name = hit_name.casefold()
     base = base.casefold()
     return name == base or name in {f"{base}-gguf", f"{base}_gguf", f"{base}.gguf"}
 
 
 def _gguf_files_for_pick(names: list[str], picked: str) -> Optional[list[str]]:
-    """The complete downloadable file family for a picked GGUF.
-
-    llama-server opens split siblings implicitly, so a single selected shard is
-    not a usable plan. Incomplete published families are rejected. Deferred to the
-    loader so the plan offered here and the transfer it performs name one set.
-    """
+    """The complete downloadable file family for a picked GGUF. llama-server opens split siblings implicitly,
+    so a single selected shard is not a usable plan, and incomplete published families are rejected.
+    Deferred to the loader so the plan offered here and the transfer name one set."""
     from core.rag.embed_llama_server import LlamaServerBackend
     return LlamaServerBackend._split_family(names, picked)
 
@@ -2152,10 +2066,8 @@ def _pick_downloadable_gguf(names: list[str]) -> Optional[list[str]]:
 
 
 def _search_hub_for_gguf(model: str, hf_token: Optional[str]) -> Optional[tuple[str, list[str]]]:
-    """``(repo, files)`` for a GGUF conversion of ``model`` published by the same
-    owner under a name the -GGUF candidates do not cover.
-
-    Same owner only: a third party's "Qwen3-Embedding-8B-GGUF" is an unverified
+    """``(repo, files)`` for a GGUF conversion of ``model`` published by the same owner under a name the -GGUF
+    candidates do not cover. Same owner only: a third party's "Qwen3-Embedding-8B-GGUF" is an unverified
     re-upload, and picking unsloth/X must download unsloth's own weights."""
     from core.rag import config as rag_config
 
@@ -2272,21 +2184,17 @@ def _st_backend_available() -> bool:
 
 
 def _is_st_weight_name(basename: str) -> bool:
-    """Whether a filename is a checkpoint, not just something ending in a suffix.
-
-    Shared with the loader so the plan and the cache check cannot disagree."""
+    """Whether a filename is a checkpoint, not just something ending in a suffix. Shared with the loader
+    so the plan and the cache check cannot disagree."""
     from utils.utils import is_st_weight_name
     return is_st_weight_name(basename)
 
 
 def _st_weight_source(model: str, hf_token: Optional[str]) -> Optional[tuple[str, list[str]]]:
-    """``(repo, weight files)`` for the repo an ST load of ``model`` would open.
-
-    A slashless name such as ``all-MiniLM-L6-v2`` resolves under the
-    ``sentence-transformers/`` namespace, which is what the loader's own
-    ``st_repo_id_candidates`` encodes. Probing only the literal id refused the
-    alias outright and a forced save then pinned it cache-only.
-    """
+    """``(repo, weight files)`` for the repo an ST load of ``model`` would open. A slashless name such as
+    ``all-MiniLM-L6-v2`` resolves under the ``sentence-transformers/`` namespace, which is what the loader's
+    own ``st_repo_id_candidates`` encodes; probing only the literal id refused the alias outright and a
+    forced save then pinned it cache-only."""
     from utils.utils import st_repo_id_candidates
 
     for candidate in st_repo_id_candidates(model) or [model]:
@@ -2315,11 +2223,9 @@ def _st_weight_files(model: str, hf_token: Optional[str]) -> Optional[list[str]]
 
 
 def _cached_snapshot_has_st_weights(model: str) -> bool:
-    """Whether the cached snapshot holds a checkpoint ST itself can open.
-
-    ``hf_cache_snapshot_is_loadable`` counts ``.gguf``, which is right for the
-    llama backend and wrong here: a cached GGUF-only repo would come back ready
-    with no checkpoint ST can load. No network."""
+    """Whether the cached snapshot holds a checkpoint ST itself can open. ``hf_cache_snapshot_is_loadable``
+    counts ``.gguf``, which is right for the llama backend and wrong here: a cached GGUF-only repo would
+    come back ready with no checkpoint ST can load. No network."""
     try:
         from utils.utils import snapshot_has_st_weights
         return snapshot_has_st_weights(model)
@@ -2328,11 +2234,10 @@ def _cached_snapshot_has_st_weights(model: str) -> bool:
 
 
 def _cached_st_source(model: str):
-    """``(repo id, snapshot dir)`` the cached ST weights for ``model`` came from.
-
-    The same predicate as ``_cached_snapshot_has_st_weights``, keeping the repo it
-    matched under rather than reducing it to a yes: for a slashless alias that repo
-    is the ``sentence-transformers/`` one, and the PUT verifies and scans it."""
+    """``(repo id, snapshot dir)`` the cached ST weights for ``model`` came from. Same predicate as
+    ``_cached_snapshot_has_st_weights``, keeping the repo it matched under rather than reducing it to a yes:
+    for a slashless alias that repo is the ``sentence-transformers/`` one, and the PUT verifies and scans
+    it."""
     try:
         from utils.utils import cached_st_source
         return cached_st_source(model)
@@ -2358,19 +2263,17 @@ def _cached_st_weight_names(model: str) -> list[str]:
 
 
 def _safetensors_plan(model: str, hf_token: Optional[str]) -> Optional[tuple[str, list[str]]]:
-    """``(repo, files)`` for running ``model`` on sentence-transformers instead.
-
-    An embedder with no GGUF still works from its own safetensors, for about 1 GB
-    more memory, which beats refusing the model or pulling a stranger's conversion."""
+    """``(repo, files)`` for running ``model`` on sentence-transformers instead. An embedder with no GGUF still
+    works from its own safetensors, for about 1 GB more memory, which beats refusing the model or pulling a
+    stranger's conversion."""
     if not _st_backend_available():
         return None
     # A complete local snapshot is the same proof the listing gives, and works
     # offline, where the listing fails and a downloaded model became unselectable.
     from utils.utils import cached_st_repo
 
-    # The repo the snapshot is actually filed under: a slashless name caches under
-    # sentence-transformers/, and naming the literal id sends the download manager
-    # at a repo that usually does not exist.
+    # The repo the snapshot is actually filed under: a slashless name caches under sentence-transformers/, and
+    # naming the literal id sends the download manager at a repo that usually does not exist.
     cached_repo = cached_st_repo(model)
     if cached_repo:
         return (cached_repo, _cached_st_weight_names(cached_repo))
@@ -2387,8 +2290,7 @@ def _sentence_transformers_fallback_allowed(model: str) -> bool:
 
 
 def _hf_files_size(repo: str, files: list[str], hf_token: Optional[str]) -> Optional[int]:
-    """Total bytes of ``files`` in ``repo``, for the confirm dialog. None when the
-    hub does not say; the dialog has copy for that."""
+    """Total bytes of ``files`` in ``repo``, for the confirm dialog. None when the hub does not say."""
     try:
         from huggingface_hub import model_info
 
@@ -2524,9 +2426,8 @@ def _resolve_embedding_model_plan(
                     "The repository publishes no checkpoint this backend can load."
                 ),
             )
-        # The repo that actually publishes the weights, which for a slashless
-        # alias is the sentence-transformers/ one, not the literal name. Same
-        # question whether the answer came from the cache or from the Hub.
+        # The repo that actually publishes the weights, which for a slashless alias is the
+        # sentence-transformers/ one, not the literal name.
         if cached:
             download_repo = cached_source[0]
         elif source is None:
@@ -2547,9 +2448,8 @@ def _resolve_embedding_model_plan(
     llama_only = (
         local_gguf
         or _model_names_gguf_repo(resolved)
-        # An explicit llama policy (or a runtime pin) refuses the safetensors
-        # fallback for every model, not only GGUF-named ones, so an ordinary repo
-        # id is just as unservable here without a binary.
+        # An explicit llama policy (or a runtime pin) refuses the safetensors fallback for every model, not
+        # only GGUF-named ones, so an ordinary repo id is just as unservable here without a binary.
         or not _sentence_transformers_fallback_allowed(resolved)
     )
     if llama_only and not _llama_runtime_available():
@@ -2617,7 +2517,6 @@ def _resolve_embedding_model_plan(
             return EmbeddingModelResolveResponse(
                 embedding_model = resolved,
                 backend = backend,
-                # Every remote/cache/fallback probe above has already failed
                 error = _no_embedding_weights_error(candidates),
             )
         st_repo, _st_files = st_plan
@@ -2725,34 +2624,33 @@ def update_embedding_model(
             detail = "The embedding download repository was not validated for this model.",
         )
     destination_is_llama = plan.backend == "llama"
-    # Verify and scan the repo the loader will actually open: a slashless alias resolves under sentence-transformers/,
-    # so the literal name scans a repo that usually does not exist.
-    # Only the ST path can diverge: a llama download_repo is the GGUF companion, which is not what is scanned here.
+    # Verify and scan the repo the loader will actually open: a slashless alias resolves under
+    # sentence-transformers/, so the literal name scans a repo that usually does not exist. Only the ST path can
+    # diverge: a llama download_repo is the GGUF companion, which is not what is scanned here.
     verify_target = model
     if not destination_is_llama and plan.download_repo and plan.download_repo != model:
         verify_target = plan.download_repo
-    # The env/default model needs no verification; saving it is a no-op override.
-    # A local GGUF on the llama-server backend is accepted as-is: it is exactly
-    # what the backend loads, and HF metadata cannot verify a local path.
+    # The env/default model needs no verification; saving it is a no-op override. A local GGUF on the
+    # llama-server backend is accepted as-is: it is exactly what the backend loads, and HF metadata cannot
+    # verify a local path.
     is_local_gguf = destination_is_llama and _resolves_as_local_gguf(model)
-    # The pickle gate matters only for the sentence-transformers backend; on llama-server the embedder loads inert
-    # GGUFs, so scanning the ST pickle wrongly rejects a clean companion.
-    # On the llama-server backend the embedder loads GGUF files from effective_gguf_repo().
+    # The pickle gate matters only for the sentence-transformers backend; on llama-server the embedder loads
+    # inert GGUFs from effective_gguf_repo(), so scanning the ST pickle wrongly rejects a clean companion.
     scan_st_pickle = (
         model != default_embedding_model() and not is_local_gguf and not destination_is_llama
     )
     if scan_st_pickle:
-        # Malware/pickle gate before persisting a repo the embedder later loads; runs even under force, which only skips
-        # the is-embedding type check for repos HF cannot verify.
-        # Local paths and unreachable scans fail open inside evaluate_file_security.
+        # Malware/pickle gate before persisting a repo the embedder later loads; runs even under force, which only
+        # skips the is-embedding type check for repos HF cannot verify. Local paths and unreachable scans fail open
+        # inside evaluate_file_security.
         from utils.security import evaluate_file_security, security_load_subdirs
         from core.rag.embeddings import _st_module_subdirs
 
         # Fall back to the loader's own token so a gated/private repo is actually scanned
         # (a token-less scan fails open for exactly the repo that would still load).
         scan_token = hf_token or _ambient_hf_token()
-        # Offline: subdir probes would hit the network and hang; the offline gate walks the whole cached snapshot, so no
-        # load-subdir hints are needed.
+        # Offline: subdir probes would hit the network and hang; the offline gate walks the whole cached
+        # snapshot, so no load-subdir hints are needed.
         if local_only_load:
             load_subdirs = ()
         else:
@@ -2794,8 +2692,8 @@ def update_embedding_model(
         gguf_named = destination_is_llama and rag_config._names_gguf(model)
         if not gguf_named and not is_embedding_model(verify_target, hf_token = hf_token):
             # Offline, is_embedding_model can only confirm the ST layout, so a cached and loadable transformers-native
-            # embedder is accepted rather than 409'd where online would not.
-            # The unverifiable case is a transformers-native embedder such as gte-modernbert; uncached still 409s.
+            # embedder (gte-modernbert and the like) is accepted rather than 409'd where online would not. Uncached
+            # still 409s.
             from utils.utils import hf_cache_snapshot_is_loadable
 
             # Require a genuinely loadable cache (config + weights), not just a resolved refs/main,
@@ -2825,9 +2723,9 @@ def update_embedding_model(
     trusted_download_pending = False
     if plan.error is None:
         trusted_backend = "llama-server" if destination_is_llama else "sentence-transformers"
-        # The exact family this transfer delivers.
-        # A repo publishing no RAG_EMBED_GGUF_VARIANT is served another quant on purpose, which the loader's variant
-        # lookup cannot recognize as what was downloaded, so the model would stay cache-only.
+        # The exact family this transfer delivers. A repo publishing no RAG_EMBED_GGUF_VARIANT is served another
+        # quant on purpose, which the loader's variant lookup cannot recognize as what was downloaded, so the model
+        # would stay cache-only.
         trusted_gguf_files = plan.files if destination_is_llama else None
         # A sentence-transformers download repo is not a GGUF source. Keeping
         # it out also prevents a later runtime fallback from mislabelling it.
@@ -2836,9 +2734,8 @@ def update_embedding_model(
         # cache-only until the transfer completes, or a close/cancel becomes an implicit download.
         trusted_download_pending = bool(plan.download_repo and not plan.cached)
     else:
-        # Save anyway, over a failed plan: nothing validated to record, but the
-        # marker still has to go on or both loaders take their uncached path and
-        # fetch invisibly at the first index, which this picker exists to replace.
+        # Save anyway, over a failed plan: nothing validated to record, but the marker still has to go on or
+        # both loaders take their uncached path and fetch invisibly at the first index.
         trusted_download_pending = True
     set_rag_embedding_model(
         model,
@@ -3177,12 +3074,9 @@ def update_current_date_prompt(
 
 
 def _require_ui_session_for_keyless(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:
-    """Only a signed-in UI session may change who needs a key.
-
-    An sk-unsloth key must not be able to switch authentication off for the whole
-    install, and a keyless caller must not be able to widen its own scope; both are
-    ``authenticated_via_api_key``, so one check covers them.
-    """
+    """Only a signed-in UI session may change who needs a key. An sk-unsloth key must not be able to switch
+    authentication off for the whole install, and a keyless caller must not be able to widen its own scope;
+    both are ``authenticated_via_api_key``, so one check covers them."""
     if via_api_key:
         raise HTTPException(
             status_code = 403,
@@ -3277,14 +3171,13 @@ class PersonalizationCustomColorModes(BaseModel):
 MAX_IMPORTED_FONTS = 3
 # ~1.5 MB font file as base64; matches MAX_IMPORTED_FONT_DATA_URL_LENGTH in the frontend.
 MAX_FONT_DATA_URL_LENGTH = 2_200_000
-# Aggregate cap across all imported fonts, matching the frontend so a synced payload always fits
-# the browser's localStorage quota.
-# Matches MAX_TOTAL_IMPORTED_FONT_DATA_URL_LENGTH in the frontend.
+# Aggregate cap across all imported fonts, matching MAX_TOTAL_IMPORTED_FONT_DATA_URL_LENGTH in the
+# frontend so a synced payload always fits the browser's localStorage quota.
 MAX_TOTAL_FONT_DATA_URL_LENGTH = 4_400_000
 
-# Characters that could terminate a CSS declaration, escape the quoted font-family value or smuggle
-# extra fallbacks/comments if a stored name reached a stylesheet. The server is the authoritative
-# gate; the frontend strips the same set.
+# Characters that could terminate a CSS declaration, escape the quoted font-family value or smuggle extra
+# fallbacks/comments if a stored name reached a stylesheet. The server is the authoritative gate; the frontend
+# strips the same set.
 _FONT_NAME_FORBIDDEN = set(";{}()<>\"'\\/,`")
 
 
@@ -3315,9 +3208,8 @@ class PersonalizationImportedFont(BaseModel):
     @field_validator("dataUrl")
     @classmethod
     def _validate_font_data_url(cls, value: str) -> str:
-        # fullmatch, not match: re's ``$`` also matches just before a trailing
-        # newline, so ``match`` would accept "data:font/woff2;base64,AAAA\n",
-        # which the frontend's JS pattern (``$`` = end of string) rejects.
+        # fullmatch, not match: re's ``$`` also matches just before a trailing newline, which the frontend's
+        # JS pattern (``$`` = end of string) rejects.
         if not _FONT_DATA_URL_PATTERN.fullmatch(value):
             raise ValueError("dataUrl must be a base64 font data URL.")
         return value
@@ -3336,12 +3228,10 @@ SIDEBAR_MENU_ITEM_DEFAULTS = {
     "connections": False,
 }
 
-# Navigable sidebar rows the user can pin/reorder; the boolean is each id's default pin state.
-# Order and pin state MUST match the frontend's shipped layout: the client sends every id on each save, so a missing id
+# Navigable sidebar rows the user can pin/reorder; the boolean is each id's default pin state. Order and pin
+# state MUST match the frontend's shipped layout (SIDEBAR_NAV_ITEM_IDS / SIDEBAR_NAV_DEFAULT_PINNED in
+# features/settings/stores/appearance-custom-store.ts): the client sends every id on each save, so a missing id
 # 422s the whole personalization PUT.
-# The frontend constants are SIDEBAR_NAV_ITEM_IDS / SIDEBAR_NAV_DEFAULT_PINNED in features/settings/stores/appearance-
-# custom-store.ts, and a legacy record predating sidebarNav is served this default as if it were an explicit remote
-# choice.
 SIDEBAR_NAV_ITEM_DEFAULTS = {
     "hub": True,
     "projects": True,
@@ -3522,9 +3412,8 @@ def get_personalization_settings(
 
 
 def _merge_personalization(base: dict, overlay: dict) -> dict:
-    # Recursively overlay only the request's set fields onto the stored record,
-    # so a stale client that omits newer keys (palette, customization) does not
-    # materialize their defaults and defeat the *Saved legacy detection.
+    # Recursively overlay only the request's set fields onto the stored record, so a stale client that
+    # omits newer keys does not materialize their defaults and defeat the *Saved legacy detection.
     merged = dict(base)
     for key, value in overlay.items():
         existing = merged.get(key)
@@ -3558,13 +3447,8 @@ def update_personalization_settings(
     return PersonalizationPayload.model_validate(merged)
 
 
-# Backs Settings > Logs: the session log always existed, but its path was only printed to a
-# console the desktop user never sees.
-
-
-# ── Logs: read the log files from inside the app ─────────────────────────────
-# Backs the Settings > Logs tab. The session log always existed, but its
-# path was only printed to a console the desktop user never sees.
+# Backs Settings > Logs: the session log always existed, but its path was only printed to a console
+# the desktop user never sees.
 class DebugLogSourceModel(BaseModel):
     id: str
     family: str

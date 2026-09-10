@@ -55,16 +55,13 @@ REFERENCE_HOST_THREADS = 192
 _THREAD_PARALLEL_MS_PER_GIB = 138.4
 _THREAD_SERIAL_MS_PER_GIB = 5.57
 
-# across DIFFERENT machines the slope is steeper (12 cloud vCPUs are ~6 physical cores on one memory controller)
 # The fit above varies threads on ONE machine; across DIFFERENT machines the slope is steeper (12 cloud vCPUs are ~6
 # physical cores on one memory controller). Least squares over dense Q4 on 12 and 48 vCPU hosts (24.21 and 6.82 ms per
-# GiB) gives a = 278.2, b = 1.03. Neither fit dominates -- at 192 threads cross-machine predicts 2.48 vs 5.498 measured,
-# at 12 one-machine predicts 17.1 vs 24.21 -- so take whichever is MORE expensive: optimism quotes a spill that runs
-# several times slower than promised.
+# GiB) gives a = 278.2, b = 1.03. Neither fit dominates -- at 192 threads cross-machine predicts 2.48 vs 5.498
+# measured, at 12 one-machine predicts 17.1 vs 24.21 -- so take whichever is MORE expensive: optimism quotes a spill
+# that runs several times slower than promised.
 _CROSS_HOST_PARALLEL_MS_PER_GIB = 278.2
 _CROSS_HOST_SERIAL_MS_PER_GIB = 1.03
-
-# residual model/measured over 70 runs (T4, L4, A100, RTX PRO 6000 at 2-48 vCPU)
 
 
 # Residual model/measured over 70 runs on T4, L4, A100 and RTX PRO 6000 (2, 8, 12, 48 vCPU), Qwen3.8-27B and
@@ -78,9 +75,7 @@ class Access(str, Enum):
 
     # : Dense FFN: large contiguous matmuls, best case for the CPU backend.
     CONTIGUOUS = "contiguous"
-    # : lm_head: one tall matvec; parallelises worse than 64 independent FFN blocks and dequantises more bytes per
-    # output element.
-    # : lm_head: one tall matvec, usually higher-bit. Parallelises worse than 64 : independent FFN blocks and
+    # : lm_head: one tall matvec, usually higher-bit. Parallelises worse than 64 independent FFN blocks and
     # dequantises more bytes per output element.
     SINGLE_MATVEC = "single_matvec"
     # : MoE experts: 8-of-256 scattered small matmuls per layer per token.
@@ -99,9 +94,8 @@ _RATE_RATIOS: dict[Access, float] = {
     Access.KV_CACHE: 20.1,
 }
 
-# bracketed by the two measurements (dense 49.4, MoE 66.9)
-# Prefill streaming bandwidth, GiB/s. Bracketed by the two measurements (dense 49.4, MoE 66.9); that spread is why this
-# is a coarse constant, not a curve.
+# Prefill streaming bandwidth, GiB/s. Bracketed by the two measurements (dense 49.4, MoE 66.9); that spread is why
+# this is a coarse constant, not a curve.
 PREFILL_STREAM_GIB_S = 55.0
 
 # Spilling several groups costs MORE than the sum of each alone -- contention, not amortisation. Measured 6% for the
