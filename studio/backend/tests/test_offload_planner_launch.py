@@ -1013,6 +1013,65 @@ def test_the_snapshot_carries_the_windowed_half_as_a_callable(tmp_path, monkeypa
     assert off["inputs"]["kv_swa_bytes_at"] is None
 
 
+def test_a_rocm_host_leaves_the_link_rate_unset(tmp_path, monkeypatch):
+    """nvidia-smi on a mixed host answers for the NVIDIA cards, whose indices share nothing with
+    the ROCm ids the plan credits, so the rate must stay unset there and the cost model's PCIe 5
+    default stands. The same launch on a CUDA host does read the link."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    probes = []
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_nvidia_link_query",
+        staticmethod(lambda: probes.append(1) or "0, 5, 16\n"),
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_host_torch_is_rocm", staticmethod(lambda: True))
+    _cmd, _b, seen = _launch_with(tmp_path, monkeypatch, Plan(reason = "declined"))
+    assert seen["inputs"]["link_gib_s"] is None
+    assert probes == []
+
+    monkeypatch.setattr(LlamaCppBackend, "_host_torch_is_rocm", staticmethod(lambda: False))
+    _cmd, _b, cuda = _launch_with(tmp_path, monkeypatch, Plan(reason = "declined"))
+    assert cuda["inputs"]["link_gib_s"] is not None
+    assert probes == [1]
+
+
+def test_a_user_split_across_a_multi_device_plan_pins_the_child_order(tmp_path, monkeypatch):
+    """The plan's per-device rows were modelled against the physical-order device list, and a
+    ratio the user typed reaches the child in place of the plan's own split, so the child's
+    enumeration is pinned the way it is for the plan's split or for a manual ratio."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    pins = []
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_pin_visible_gpu_order_for_split",
+        staticmethod(lambda env: pins.append(dict(env)) or None),
+    )
+    plan = Plan(
+        changed = True,
+        priced = True,
+        n_ctx = 8192,
+        ot_patterns = ("x",),
+        spilled_blocks = (1,),
+        device_layer_counts = (30, 18),
+    )
+    cmd, _b, _s = _launch_with(tmp_path, monkeypatch, plan, extra_args = ["--tensor-split", "1,1"])
+    assert cmd.count("--tensor-split") == 1, "the user's ratio reaches the child, not the plan's"
+    assert len(pins) == 1
+
+    one_device = Plan(
+        changed = True,
+        priced = True,
+        n_ctx = 8192,
+        ot_patterns = ("x",),
+        spilled_blocks = (1,),
+        device_layer_counts = (48,),
+    )
+    _launch_with(tmp_path, monkeypatch, one_device, extra_args = ["--tensor-split", "1,1"])
+    assert len(pins) == 1, "a single-device plan has no rows to pin"
+
+
 def test_a_plan_that_moves_no_weight_is_watched_for_sysmem_fallback(tmp_path, monkeypatch):
     """On Windows CUDA a knob-only plan launches -ngl -1 --fit off with every layer on the card,
     exactly the placement WDDM pages silently, but the watch was keyed on the coarse fit's flag

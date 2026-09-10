@@ -2534,6 +2534,26 @@ def test_an_explicit_context_above_the_training_window_is_priced_as_asked():
     assert plan_placement(layout, [40 * GIB], 256 * GIB, 0, opts = opts).n_ctx == layout.n_ctx_train
 
 
+def test_the_ladder_from_an_explicit_request_can_stop_above_the_training_window():
+    """A 2x-window request that does not fit may fit well above the window, and the ladder's
+    upper bound followed the window, so it never tried; explicit contexts are priced as asked and
+    the bound follows the request."""
+    layout = _bound_layout(resident_per_block = 100 * MIB)
+    opts = PlanOptions(
+        overhead_bytes_per_device = GIB,
+        overhead_bytes_per_token = 0,
+        context_policy = ContextPolicy.FIT_ONLY,
+        min_ctx = 4096,
+    )
+    asked = 2 * layout.n_ctx_train
+    plan = plan_placement(layout, [26 * GIB], 256 * GIB, asked, opts = opts)
+    assert plan.changed and not plan.insufficient, plan
+    assert layout.n_ctx_train < plan.n_ctx < asked, plan.n_ctx
+    # The default still reads the window.
+    default = plan_placement(layout, [26 * GIB], 256 * GIB, 0, opts = opts)
+    assert default.n_ctx <= layout.n_ctx_train
+
+
 def test_a_resident_context_plan_is_priced_at_the_slots_it_was_checked_at():
     """PREFER_RESIDENT charges one recurrent state per slot when it checks the requested context,
     so assembling the plan without them under-reported a hybrid by (slots - 1) states."""

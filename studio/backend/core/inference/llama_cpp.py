@@ -23299,13 +23299,18 @@ class LlamaCppBackend:
                         "shared_gpu_ids": set(_shared_gpu_ids or ()),
                         # The PCIe rate a spill's prefill stream will run at, over the devices
                         # this plan may credit. None on a Vulkan or ROCm host, where the cost
-                        # model's PCIe 5 default stands: nvidia-smi has no answer there. Probed
-                        # only for a load the planner may own and only when a device is credited:
-                        # a flag-off load, and a CPU-only one that masks every card away, must
+                        # model's PCIe 5 default stands: nvidia-smi has no answer there, and on
+                        # a mixed host it answers for the OTHER vendor's cards, whose indices
+                        # share nothing with the ROCm ids this plan credits. Probed only for a
+                        # load the planner may own and only when a device is credited: a
+                        # flag-off load, and a CPU-only one that masks every card away, must
                         # spawn nothing the launch itself would not.
                         "link_gib_s": (
                             None
-                            if is_vulkan_backend or not _planner_owns_fit or not _link_indices
+                            if is_vulkan_backend
+                            or not _planner_owns_fit
+                            or not _link_indices
+                            or self._host_torch_is_rocm()
                             else self._nvidia_link_gib_s(_link_indices)
                         ),
                     }
@@ -24071,6 +24076,13 @@ class LlamaCppBackend:
                     )
                     # NOT `if _spill:` -- Plan is a dataclass, so every instance is truthy,
                     # including ones saying it could not place this at all.
+                    # A ratio the user typed, or one inherited through the env twin, reaches
+                    # the child either way (the extras are appended after this block), so the
+                    # plan emits no second one.
+                    _user_split_in_force = bool(
+                        _extra_args_set_any_flag(extra_args, _TENSOR_SPLIT_FLAGS)
+                        or str(os.environ.get("LLAMA_ARG_TENSOR_SPLIT", "")).strip()
+                    )
                     _spill_flags = self._spill_plan_flags_for(
                         _spill,
                         requested_ctx = (
@@ -24078,21 +24090,20 @@ class LlamaCppBackend:
                         ),
                         may_shrink = bool((_spill_inputs or {}).get("context_policy_fit_only")),
                         emitted_ctx = int(effective_ctx or 0) if "-c" in cmd else 0,
-                        # A ratio the user typed, or one inherited through the env twin, reaches
-                        # the child either way (the extras are appended after this block), so the
-                        # plan emits no second one.
-                        user_tensor_split = bool(
-                            _extra_args_set_any_flag(extra_args, _TENSOR_SPLIT_FLAGS)
-                            or str(os.environ.get("LLAMA_ARG_TENSOR_SPLIT", "")).strip()
-                        ),
+                        user_tensor_split = _user_split_in_force,
                     )
                     if _spill_flags:
                         self._spill_plan_flags = _spill_flags
-                        if "--tensor-split" in _spill_flags:
+                        if "--tensor-split" in _spill_flags or (
+                            _user_split_in_force and len(_spill.device_layer_counts) > 1
+                        ):
                             # Positional over the child's device list, and the plan's device
                             # order is the ascending physical/PCI order _get_gpu_memory reports,
                             # so the child's enumeration has to be pinned to match it (the env
                             # block below reads this the same way it does for a manual ratio).
+                            # A ratio the user typed was modelled against that same order, so a
+                            # plan budgeted across more than one device pins it too, or CUDA's
+                            # fastest-first enumeration hands the rows to different cards.
                             manual_tensor_split_emitted = True
                         self._spill_plan_restore = {}
                         self._spill_plan_append = []

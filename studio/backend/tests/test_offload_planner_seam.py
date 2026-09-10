@@ -698,12 +698,16 @@ def test_the_launch_path_pins_the_device_order_it_split_against(monkeypatch):
     it is for a manual ratio, or share 0 lands on whichever card CUDA enumerated first.
     """
     compact = "".join(_load_model_source().split())
-    assert 'if"--tensor-split"in_spill_flags:' in compact
-    # Two sites set it now: the manual per-GPU ratio, and the plan's own split.
+    assert 'if"--tensor-split"in_spill_flagsor(' in compact
+    # Two sites set it now: the manual per-GPU ratio, and the plan's own split (which also
+    # covers a user ratio across a multi-device plan).
     assert compact.count("manual_tensor_split_emitted=True") == 2
     # And the predicate really is read from the launch, not defaulted.
-    assert "user_tensor_split=bool(" in compact
+    assert "_user_split_in_force=bool(" in compact
+    assert "user_tensor_split=_user_split_in_force," in compact
     assert "_extra_args_set_any_flag(extra_args,_TENSOR_SPLIT_FLAGS)" in compact
+    # A plan budgeted across devices under the user's ratio pins the enumeration too.
+    assert "_user_split_in_forceandlen(_spill.device_layer_counts)>1" in compact
 
 
 # ---------------------------------------------------- the argv, structurally
@@ -3111,7 +3115,7 @@ def test_the_launch_path_snapshots_the_link_over_the_credited_devices():
     compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
     assert (
         '"link_gib_s":(Noneifis_vulkan_backendornot_planner_owns_fitornot_link_indices'
-        "elseself._nvidia_link_gib_s(_link_indices)" in compact
+        "orself._host_torch_is_rocm()elseself._nvidia_link_gib_s(_link_indices)" in compact
     )
     assert "gpu_indicesifgpu_indicesisnotNoneelse[_idxfor_idx,_freein(gpusor())]" in compact
 

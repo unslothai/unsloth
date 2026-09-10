@@ -896,9 +896,16 @@ def max_context_for(
     n_seq: int = 1,
     kv_on_host: bool = False,
     outside_layout_bytes: Optional[int] = None,
+    ctx_cap: int = 0,
 ) -> int:
-    """Largest context whose cache fits, rounded down to 256 as CUDA wants."""
+    """Largest context whose cache fits, rounded down to 256 as CUDA wants.
+
+    Bounded by the training window unless ``ctx_cap`` names the context an explicit request
+    asked for: llama-server serves a ``-c`` above the window, and a ladder walking down from
+    such a request must be able to stop between it and the window.
+    """
     opts = opts or PlanOptions()
+    ctx_top = int(ctx_cap) if ctx_cap and ctx_cap > 0 else int(layout.n_ctx_train or 0)
     if not layout.complete or layout.kv_bytes_per_token_f16 <= 0:
         return 0
     fixed = (
@@ -955,8 +962,8 @@ def max_context_for(
         per_token_reserve = max(0, opts.overhead_bytes_per_token)
         if per_token_reserve > 0:
             hi = max(0, opts.overhead_free_ctx) + slack // per_token_reserve
-        elif layout.n_ctx_train:
-            hi = layout.n_ctx_train
+        elif ctx_top:
+            hi = ctx_top
         elif priced:
             # No reserve slope and no window: double until the priced cache alone is over budget,
             # since the product would cut the search off far below it.
@@ -968,8 +975,8 @@ def max_context_for(
         hi = hi // 256 * 256
     else:
         hi = (top // per_token) // 256 * 256
-    if layout.n_ctx_train:
-        hi = min(hi, layout.n_ctx_train // 256 * 256)
+    if ctx_top:
+        hi = min(hi, ctx_top // 256 * 256)
     if hi <= 0 or not fits(256):
         return 0
     lo = 256
@@ -1225,6 +1232,9 @@ def _plan_placement(
                 n_seq = relieved.n_parallel,
                 kv_on_host = opts.kv_on_host,
                 outside_layout_bytes = _outside_layout_bytes(opts, relieved),
+                # An explicit request above the window is priced as asked (only the default
+                # reads the window), so the ladder's bound follows the request too.
+                ctx_cap = requested_ctx if requested_ctx > 0 else 0,
             )
             top = min(hi, n_ctx) // 256 * 256
             hi = top
