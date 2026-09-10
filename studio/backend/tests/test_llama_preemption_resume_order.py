@@ -249,6 +249,26 @@ class TestAResidencySampleIsOrderedAgainstTheMark:
         assert controller.participant("b").measured is False
         assert controller.snapshot().committed == 7000
 
+    def test_an_older_sample_finishing_after_a_newer_one_is_dropped(self):
+        # Two probes leave together; the arming one outlives its join window and lands
+        # after the token-path one that read a fuller cache.
+        controller = _controller()
+        controller.register(
+            "raw", lease = _Lease(1000), tokens = 1000, state = ParticipantState.STREAMING_RAW
+        )
+        controller.note_measured("raw")
+        arming = controller.residency_epoch()
+        newer = controller.residency_epoch()
+        controller.note_resident(9000, started_at_seq = newer)
+        controller.note_resident(2000, started_at_seq = arming)
+        assert controller.snapshot().committed == 9000, "the older count came back"
+        controller.note_resident(None, started_at_seq = arming)
+        assert controller.snapshot().committed == 9000, "a stale failed read cleared it"
+        # A probe sent after the recorded one is the newest word, whatever it says.
+        later = controller.residency_epoch()
+        controller.note_resident(2000, started_at_seq = later)
+        assert controller.snapshot().committed == 2000
+
     def test_a_caller_that_states_no_epoch_keeps_the_old_behaviour(self):
         controller = _controller()
         controller.register(

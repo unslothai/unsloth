@@ -668,6 +668,7 @@ class PreemptionController:
         "_batch_tokens",
         "_resident",
         "_resident_seq",
+        "_last_sample_seq",
         "_resume_tickets",
         "_reclaimable",
         "_residency_probe",
@@ -700,6 +701,9 @@ class PreemptionController:
         # Bumped per successful reading AND per `note_measured`, so a mark can be ordered
         # against a probe that was already in flight when it was made.
         self._resident_seq = 0
+        # The clock as it stood when the last reading was recorded: a probe that started
+        # before that is older than what is already here.
+        self._last_sample_seq = 0
         # Resume order, taken BEFORE the room test, so a later smaller resume cannot book the
         # space an older one waits for; the admission queue keeps the same rule one layer down.
         self._resume_tickets: "OrderedDict[str, int]" = OrderedDict()
@@ -1022,8 +1026,12 @@ class PreemptionController:
         """The cache as llama-server actually sees it, None when the read failed. ``reclaimable``
         is the part held by IDLE slots: it counts toward the watermark but is erased on demand.
         ``started_at_seq`` is `residency_epoch()` read before the probe was sent; None means
-        the reading is treated as taken now."""
+        the reading is treated as taken now. A reading whose probe started before the last one
+        was recorded is dropped, so an arming probe past its join window cannot put an older
+        count back over a newer sample."""
         with self._lock:
+            if started_at_seq is not None and started_at_seq < self._last_sample_seq:
+                return
             if resident is None:
                 self._resident = None
                 self._reclaimable = 0
@@ -1034,6 +1042,7 @@ class PreemptionController:
             self._resident = max(0, min(int(resident), ceiling))
             self._reclaimable = max(0, min(int(reclaimable or 0), self._resident))
             self._resident_seq += 1
+            self._last_sample_seq = self._resident_seq
             for participant in self._participants.values():
                 if participant.measured_at_seq is None:
                     continue
