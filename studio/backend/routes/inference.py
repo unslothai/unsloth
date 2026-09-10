@@ -22712,8 +22712,18 @@ async def produce_openai_chat_completions(
             # reservation exists but not ITERATED until after, so the callback always sees
             # a reservation by the time a round can call it.
             _gguf_admission_hold: dict = {"reservation": None}
+            _gguf_decode_slot = None
+            _gguf_cache_reclaimed = False
+
+            def _gguf_record_decode_slot(base_url: str, slot: int) -> None:
+                nonlocal _gguf_decode_slot, _gguf_cache_reclaimed
+                _gguf_decode_slot = (base_url, slot)
+                _gguf_cache_reclaimed = False
 
             def _gguf_recost(conversation) -> None:
+                nonlocal _gguf_decode_slot, _gguf_cache_reclaimed
+                _gguf_decode_slot = None
+                _gguf_cache_reclaimed = False
                 _openai_llama_admission_recost(
                     _gguf_admission_hold["reservation"],
                     conversation,
@@ -22795,6 +22805,9 @@ async def produce_openai_chat_completions(
                     permission_mode = payload.permission_mode,
                     perf_callback = _gguf_perf_callback,
                     on_conversation_grew = _gguf_recost,
+                    on_decode_slot = _gguf_record_decode_slot
+                    if _effective_confirm and not payload.bypass_permissions
+                    else None,
                     context_overflow = _rolling_context_policy(payload),
                     context_policy = _request_context_policy(payload),
                     compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
@@ -22848,7 +22861,7 @@ async def produce_openai_chat_completions(
                 _parked = False
 
                 async def _park_admission(on: bool, *, wait: bool = True):
-                    nonlocal _parked
+                    nonlocal _parked, _gguf_cache_reclaimed
                     if on == _parked:
                         return
                     # This run's own lease, not a fresh lookup: queues are keyed by base_url and a
@@ -22859,7 +22872,13 @@ async def produce_openai_chat_completions(
                     if on:
                         # Refused when the budget is spent: the slot stays here,
                         # so there is nothing to take back afterwards.
-                        if not lease.park():
+                        reclaimed = _gguf_cache_reclaimed
+                        if not reclaimed and _gguf_decode_slot is not None:
+                            reclaimed = await asyncio.to_thread(
+                                llama_backend.release_idle_chat_slot, *_gguf_decode_slot
+                            )
+                        _gguf_cache_reclaimed = reclaimed
+                        if not lease.park(cache_reclaimed = reclaimed):
                             return
                     elif wait:
                         # Resuming: park() may have handed our slot to a waiter, so wait for room instead

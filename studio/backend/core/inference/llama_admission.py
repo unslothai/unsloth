@@ -317,6 +317,7 @@ class LlamaAdmissionLease:
         "_parked",
         "_budgeted",
         "_tokens",
+        "_parked_tokens",
     )
 
     def __init__(
@@ -331,17 +332,21 @@ class LlamaAdmissionLease:
         self._release_lock = threading.Lock()
         self._parked = False
         self._budgeted = False
-        # Returned to the queue on release, not on park: a parked holder has stopped decoding but llama-server still
-        # holds its KV until the task ends.
+        # A parked holder keeps its KV commitment unless the caller has confirmed
+        # engine erasure. Reclaimed tokens are held separately for readmission.
         self._tokens = max(0, int(tokens or 0))
+        self._parked_tokens = 0
 
     @property
     def slot(self) -> Optional[int]:
         """Pool slot this lease holds, or None when admission is disabled."""
         return self._slot
 
-    def park(self) -> bool:
+    def park(self, *, cache_reclaimed: bool = False) -> bool:
         """Hand the slot back while this holder waits on something off the GPU.
+
+        Set cache_reclaimed only after llama-server confirms that this request's
+        resident KV was erased. Resume then reacquires both tokens and a slot.
 
         A run stopped on a tool approval prompt is not decoding, so holding its
         slot would let unanswered prompts fill the pool while llama-server idles.
@@ -358,8 +363,11 @@ class LlamaAdmissionLease:
                 return False
             # Under the lease lock so the decision and the handover cannot split. Nothing takes the queue lock then a
             # lease lock, so this order is the only one in play.
-            if not queue.try_park(self._slot):
+            returned = self._tokens if cache_reclaimed else 0
+            if not queue.try_park(self._slot, tokens = returned):
                 return False
+            self._parked_tokens = returned
+            self._tokens -= returned
             self._parked = True
             self._budgeted = True
             self._slot = None
@@ -413,7 +421,10 @@ class LlamaAdmissionLease:
         # Before the wait, not after: the prompt is answered, so this holder is already off the executor and must not
         # keep anyone else off it.
         self._drop_budget()
-        slot = await queue.acquire_parked_slot(cancel_event = cancel_event, poll_s = poll_s)
+        tokens = self._parked_tokens
+        slot = await queue.acquire_parked_slot(
+            cancel_event = cancel_event, poll_s = poll_s, tokens = tokens
+        )
         stranded = None
         with self._release_lock:
             # release() may have run during the wait; it clears the flag and does the unpark itself, so only the caller
@@ -425,10 +436,13 @@ class LlamaAdmissionLease:
                 stranded = slot
             else:
                 self._slot = slot
+                if slot is not None:
+                    self._tokens += tokens
+                    self._parked_tokens = 0
         if parked:
             queue.unpark()
         if stranded is not None:
-            queue.release(stranded)
+            queue.release(stranded, tokens)
 
     def recost(self, tokens: int) -> bool:
         """Re-state what this lease actually occupies as its conversation grows.
@@ -920,7 +934,12 @@ class LlamaAdmissionQueue:
             self._committed += max(0, int(restore or 0))
             self._grant_waiters_locked()
 
-    def try_park(self, slot: Optional[int]) -> bool:
+    def try_park(
+        self,
+        slot: Optional[int],
+        *,
+        tokens: int = 0,
+    ) -> bool:
         """Return a parked holder's slot to the pool. See ``LlamaAdmissionLease.park``.
 
         False leaves the slot with its holder, so a refused park costs nothing to
@@ -931,6 +950,7 @@ class LlamaAdmissionQueue:
             return False
         with self._lock:
             self._parked += 1
+            self._committed = max(0, self._committed - tokens)
             self._release_slot_locked(slot)
             self._grant_waiters_locked()
         return True
@@ -945,6 +965,7 @@ class LlamaAdmissionQueue:
         *,
         cancel_event = None,
         poll_s: float = 0.02,
+        tokens: int = 0,
     ) -> Optional[int]:
         """Wait for a slot for a holder resuming from a park, None if cancelled.
 
@@ -965,7 +986,7 @@ class LlamaAdmissionQueue:
                             break
                         ahead += 1
                     # Only the approvals ahead of this one hold slots back from it.
-                    slot = self._take_slot_locked(ahead)
+                    slot = self._take_slot_locked(ahead, tokens)
                     if slot is not None:
                         return slot
                     if cancel_event is not None and cancel_event.is_set():
