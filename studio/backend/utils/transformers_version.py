@@ -2450,9 +2450,15 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> None:
     the sidecar was built (the latest sidecar in particular, which no setup top-up
     visits) left Qwen tokenizers broken until the user deleted the directory. Best
     effort and non-destructive: a failure is logged and not retried in this process,
-    nothing is attempted while the session is offline (a worker would otherwise sit
-    through network retries for a model that may not even need the package), and one
-    process at a time writes into a sidecar every worker shares.
+    and nothing is attempted while the session is offline (a worker would otherwise
+    sit through network retries for a model that may not even need the package).
+
+    Workers activate tiers independently and share the sidecar, so the add is staged:
+    the package is installed into a scratch directory beside the sidecar and its
+    entries are renamed in, payload first and dist-info last, so a scan by another
+    worker never meets a RECORD whose files have not landed and reads the sidecar as
+    damaged. One process at a time does this; another that finds the lock held waits
+    for it, then finds the package there.
     """
     if _env_offline() or os.environ.get("UV_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES:
         return
@@ -2465,12 +2471,12 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> None:
         _OPTIONAL_TOP_UP_ATTEMPTED.add(key)
         with _optional_top_up_lock(venv_dir) as held:
             if not held:
-                # Another process is adding it now; this one uses whatever it leaves.
+                logger.warning("%s: another process held the top-up lock too long; left as is", venv_dir)
                 continue
             if not _optional_package_absent(venv_dir, pkg):
                 continue
             logger.info("Adding %s to %s (optional package missing) ...", pkg, venv_dir)
-            if not _install_to_dir(pkg, venv_dir):
+            if not _stage_optional_package(pkg, venv_dir):
                 logger.warning(
                     "%s could not be added to %s; continuing without it (Qwen tokenizers may fail)",
                     pkg,
@@ -2478,28 +2484,69 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> None:
                 )
 
 
+def _stage_optional_package(pkg: str, venv_dir: str) -> bool:
+    """Install *pkg* beside the sidecar, then move its entries in, dist-info last."""
+    staging = os.path.join(venv_dir, ".top-up-staging")
+    shutil.rmtree(staging, ignore_errors = True)
+    try:
+        os.makedirs(staging, exist_ok = True)
+        if not _install_to_dir(pkg, staging):
+            return False
+        entries = sorted(os.listdir(staging), key = lambda name: name.endswith(".dist-info"))
+        for name in entries:
+            source = os.path.join(staging, name)
+            target = os.path.join(venv_dir, name)
+            if os.path.isdir(target) and not os.path.islink(target):
+                shutil.rmtree(target, ignore_errors = True)
+            elif os.path.lexists(target):
+                os.unlink(target)
+            os.replace(source, target)
+        return True
+    except OSError as exc:
+        logger.warning("staging %s into %s failed: %s", pkg, venv_dir, exc)
+        return False
+    finally:
+        shutil.rmtree(staging, ignore_errors = True)
+
+
 _OPTIONAL_TOP_UP_LOCK = ".optional-top-up.lock"
+
+
+# How long a worker waits for another process's top-up before giving up on it.
+_OPTIONAL_TOP_UP_WAIT_SECONDS = 120.0
 
 
 @contextlib.contextmanager
 def _optional_top_up_lock(venv_dir: str):
-    """A non-blocking cross-process lock on a sidecar's optional top-up.
+    """A cross-process lock on a sidecar's optional top-up, waited for up to a bound.
 
     Workers activate tiers independently, so two can find the package absent at once;
-    two installers writing one --target tree leave it half-written. Yields True when
-    this process holds the lock, False when another does (or the lock cannot be taken,
-    which is read as "someone else's turn" rather than a reason to write unguarded).
+    two installers writing one --target tree leave it half-written, and a worker that
+    went on without waiting would activate with the package still absent. Yields True
+    when this process holds the lock, False when another kept it past the bound (or
+    the lock cannot be taken at all, read as "someone else's turn" rather than a
+    reason to write unguarded).
     """
     handle = None
     try:
         handle = open(os.path.join(venv_dir, _OPTIONAL_TOP_UP_LOCK), "a+b")
-        if sys.platform == "win32":
-            import msvcrt
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        deadline = time.monotonic() + _OPTIONAL_TOP_UP_WAIT_SECONDS
+        while True:
+            try:
+                if sys.platform == "win32":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.25)
     except OSError:
         if handle is not None:
             handle.close()

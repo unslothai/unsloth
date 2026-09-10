@@ -1,3 +1,4 @@
+import pathlib
 # Unsloth Zoo - Utilities for Unsloth
 # Copyright 2023-present Daniel Han-Chen, Michael Han-Chen & the Unsloth team. All rights reserved.
 #
@@ -155,7 +156,7 @@ def test_a_valid_sidecar_missing_tiktoken_is_topped_up_once(tmp_path, monkeypatc
     )
     tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
-    assert installed == [("tiktoken", str(root))]
+    assert installed == [("tiktoken", str(root / ".top-up-staging"))]
     assert root.is_dir(), "the top-up must not wipe the sidecar"
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
     assert len(installed) == 1, "an unavailable wheel is asked for once per process"
@@ -183,7 +184,7 @@ def test_latest_sidecar_activation_tops_up_a_missing_tiktoken(tmp_path, monkeypa
     )
     tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
     assert tv._ensure_venv_t5_latest_exists() is True
-    assert installed == [("tiktoken", str(latest))]
+    assert installed == [("tiktoken", str(latest / ".top-up-staging"))]
 
 
 def test_the_top_up_stays_home_offline_and_yields_to_another_process(tmp_path, monkeypatch):
@@ -204,7 +205,9 @@ def test_the_top_up_stays_home_offline_and_yields_to_another_process(tmp_path, m
     tv._top_up_optional_packages(str(root), packages)
     assert installed == []
     monkeypatch.delenv("UV_OFFLINE")
-    # Another process holds the sidecar's top-up lock: this one leaves it to them.
+    # Another process holds the sidecar's top-up lock: this one waits for it, up to the
+    # bound, and leaves the package to the holder when the bound passes.
+    monkeypatch.setattr(tv, "_OPTIONAL_TOP_UP_WAIT_SECONDS", 0.5)
     with tv._optional_top_up_lock(str(root)) as held:
         assert held is True
         tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
@@ -213,3 +216,31 @@ def test_the_top_up_stays_home_offline_and_yields_to_another_process(tmp_path, m
     tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
     tv._top_up_optional_packages(str(root), packages)
     assert installed == ["tiktoken"]
+
+
+def test_the_top_up_is_staged_and_lands_dist_info_last(tmp_path, monkeypatch):
+    """A scan by another worker must never meet a RECORD whose files have not landed:
+    the package is built beside the sidecar and moved in, payload first, dist-info last."""
+    root = tmp_path / ".venv_t5_550"
+    root.mkdir()
+    order = []
+
+    def fake_install(pkg, target):
+        assert target != str(root), "installed straight into the shared sidecar"
+        for d in ("tiktoken", "tiktoken_ext", "tiktoken-0.9.0.dist-info"):
+            (pathlib.Path(target) / d).mkdir()
+            (pathlib.Path(target) / d / "marker").write_text(d, encoding = "utf-8")
+        return True
+
+    real_replace = tv.os.replace
+
+    def replacing(src, dst):
+        order.append(pathlib.Path(dst).name)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(tv, "_install_to_dir", fake_install)
+    monkeypatch.setattr(tv.os, "replace", replacing)
+    assert tv._stage_optional_package("tiktoken", str(root)) is True
+    assert order[-1] == "tiktoken-0.9.0.dist-info"
+    assert set(order) == {"tiktoken", "tiktoken_ext", "tiktoken-0.9.0.dist-info"}
+    assert (root / "tiktoken" / "marker").is_file() and not (root / ".top-up-staging").exists()
