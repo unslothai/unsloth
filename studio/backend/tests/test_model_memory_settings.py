@@ -2892,44 +2892,122 @@ class TestEveryDeviceSetChangeReAsks:
             assert f"{marker} or self._memory_policy_active" in src, marker
 
 
-class TestTheVulkanProbeRunsOncePerLoad:
-    """The probe spawns a subprocess that loads the Vulkan backend behind a 15s
-    timeout, and one load now needs its rows from the host-residency verdict, the
-    DirectIO confirmation, and again per rung that narrows the device set. Left
-    unmemoised that was a second full probe delay on every Windows Vulkan load,
-    including with the toggle off, since the probe is deliberately
-    toggle-independent."""
+class TestTheVulkanProbeMemoIsScopedToALoad:
+    """Several placement decisions in one launch want the same rows and each probe
+    is a subprocess behind a 15s timeout, so a load memoises. Nothing outside a
+    load may be served that snapshot: system-info polling reaches the same probe
+    through vulkan_device_inventory and needs LIVE free/used VRAM."""
 
-    def test_repeated_asks_spawn_one_probe(self, monkeypatch):
-        import core.inference.llama_cpp as m
-
-        m._reset_vulkan_probe_memo()
+    @staticmethod
+    def _count_probes(monkeypatch, m, *, raising = False):
         calls = []
-        rows = [{"index": 0, "is_igpu": False}]
         monkeypatch.setattr(m, "_llama_lib_dir", lambda b: Path("/nope"))
         monkeypatch.setattr(m, "_lib_dir_has_ggml_backend", lambda d, n: True)
-        monkeypatch.setattr(
-            m.subprocess,
-            "run",
-            lambda *a, **k: calls.append(1)
-            or type("R", (), {"returncode": 0, "stdout": "0 1 2 0 dGPU", "stderr": ""})(),
-        )
-        for _ in range(3):
-            m.LlamaCppBackend._run_vulkan_probe("llama-server")
+
+        def run(*a, **k):
+            calls.append(1)
+            if raising:
+                raise OSError("probe timed out")
+            return type("R", (), {"returncode": 0, "stdout": "0 1 2 0 dGPU", "stderr": ""})()
+
+        monkeypatch.setattr(m.subprocess, "run", run)
+        return calls
+
+    def test_inside_a_load_repeated_asks_spawn_one_probe(self, monkeypatch):
+        import core.inference.llama_cpp as m
+
+        calls = self._count_probes(monkeypatch, m)
+        with m._vulkan_probe_memo_scope():
+            for _ in range(3):
+                m.LlamaCppBackend._run_vulkan_probe("llama-server")
         assert len(calls) == 1
 
-    def test_a_new_load_re_probes(self, monkeypatch):
-        """A driver or device change between loads must not be answered from cache."""
+    def test_a_failed_probe_is_memoised_too(self, monkeypatch):
+        """An unanswered probe folds into "not an iGPU" upstream, which sends the
+        confirmation straight back here, so an uncached timeout is paid twice over
+        and again per device-set rung."""
         import core.inference.llama_cpp as m
+
+        calls = self._count_probes(monkeypatch, m, raising = True)
+        with m._vulkan_probe_memo_scope():
+            for _ in range(3):
+                assert m.LlamaCppBackend._run_vulkan_probe("llama-server") == []
+        assert len(calls) == 1
+
+    def test_outside_a_load_every_ask_is_live(self, monkeypatch):
+        """Stale rows here would report free/used VRAM captured before llama-server
+        allocated, and a transient empty result would stick indefinitely."""
+        import core.inference.llama_cpp as m
+
+        calls = self._count_probes(monkeypatch, m)
+        for _ in range(3):
+            m.LlamaCppBackend._run_vulkan_probe("llama-server")
+        assert len(calls) == 3
+        assert not m._VULKAN_PROBE_MEMO
+
+    def test_the_scope_clears_at_both_ends(self, monkeypatch):
+        import core.inference.llama_cpp as m
+
+        self._count_probes(monkeypatch, m)
+        with m._vulkan_probe_memo_scope():
+            m.LlamaCppBackend._run_vulkan_probe("llama-server")
+            assert m._VULKAN_PROBE_MEMO
+        assert not m._VULKAN_PROBE_MEMO
+        assert m._VULKAN_PROBE_MEMO_ACTIVE is False
+
+    def test_the_load_call_owns_the_scope(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect, core.inference.llama_cpp as m
+
+        # on the decorator that brackets the whole synchronous load call
+        assert "_vulkan_probe_memo_scope(), gguf_load_in_flight(" in inspect.getsource(
+            m._with_gguf_load_marker
+        )
+        assert "_reset_vulkan_probe_memo" not in inspect.getsource(LlamaCppBackend.load_model)
+
+
+class TestALoadableGpuPluginIsRequired:
+    """Present is not loadable: a CUDA build with no cudart64_*.dll on the child's
+    search path reports no devices and runs on the CPU, while host probes still see
+    the card. DirectIO there buffers the whole model in host RAM."""
+
+    def test_the_predicate_is_the_warning_s_own(self):
+        from core.inference.llama_cpp import LlamaCppBackend
         import inspect
 
-        m._reset_vulkan_probe_memo()
-        m._VULKAN_PROBE_MEMO["llama-server"] = [{"index": 9, "is_igpu": True}]
-        assert m.LlamaCppBackend._run_vulkan_probe("llama-server")[0]["index"] == 9
-        m._reset_vulkan_probe_memo()
-        assert "llama-server" not in m._VULKAN_PROBE_MEMO
-        # and the load path clears it
-        assert "_reset_vulkan_probe_memo()" in inspect.getsource(m.LlamaCppBackend.load_model)
+        # one definition, so the diagnostic and the placement fact cannot drift
+        warn = inspect.getsource(LlamaCppBackend._warn_missing_windows_cuda_runtime)
+        assert "cls._windows_cuda_runtime_missing(binary_dir, path_dirs)" in warn
+
+    def test_a_cuda_build_without_cudart_is_missing(self, tmp_path):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        (tmp_path / "ggml-cuda.dll").write_text("")
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        assert LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [str(empty)])
+
+    def test_cudart_on_the_path_clears_it(self, tmp_path):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        (tmp_path / "ggml-cuda.dll").write_text("")
+        libs = tmp_path / "libs"
+        libs.mkdir()
+        (libs / "cudart64_12.dll").write_text("")
+        assert not LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [str(libs)])
+
+    def test_a_non_cuda_build_is_never_missing(self, tmp_path):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        (tmp_path / "ggml-vulkan.dll").write_text("")
+        assert not LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [])
+
+    def test_both_confirmations_consult_it(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert flat.count("andnotself._cuda_runtime_missing_by_dir.get(") == 2
 
 
 class TestTheBackendCheckReusesTheRepoRecognition:
@@ -3020,29 +3098,6 @@ class TestTheBackendPathIsEvidenceOnlyWhenItHoldsAPlugin:
         (tmp_path / "ggml-vulkan.dll").write_text("")
         monkeypatch.setattr(m, "_llama_lib_dir", lambda b: tmp_path)
         assert m.LlamaCppBackend._build_offers_gpu_backend("llama-server", {})
-
-
-class TestAFailedProbeIsMemoisedToo:
-    def test_a_raising_probe_is_cached(self, monkeypatch):
-        """An unanswered probe folds into "not an iGPU" upstream, which sends the
-        confirmation straight back here, so an uncached timeout is paid twice over
-        and again per device-set rung."""
-        import core.inference.llama_cpp as m
-
-        m._reset_vulkan_probe_memo()
-        calls = []
-        monkeypatch.setattr(m, "_llama_lib_dir", lambda b: Path("/nope"))
-        monkeypatch.setattr(m, "_lib_dir_has_ggml_backend", lambda d, n: True)
-
-        def boom(*a, **k):
-            calls.append(1)
-            raise OSError("probe timed out")
-
-        monkeypatch.setattr(m.subprocess, "run", boom)
-        for _ in range(3):
-            assert m.LlamaCppBackend._run_vulkan_probe("llama-server") == []
-        assert len(calls) == 1
-        assert m._VULKAN_PROBE_MEMO["llama-server"] == []
 
 
 class TestTheSnapshotCarriesTheDioTokens:

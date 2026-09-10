@@ -3512,7 +3512,11 @@ def _with_gguf_load_marker(load: Callable):
         load_cancel_event: Optional[threading.Event] = None,
     ):
         hf_repo = intent.hf_repo
-        with gguf_load_in_flight(hf_repo):
+        # The Vulkan probe memo lives exactly as long as this call: several placement
+        # decisions inside want the same rows and each probe is a subprocess behind a
+        # 15s timeout, while system-info polling outside a load needs LIVE free/used
+        # VRAM and must never be served that snapshot.
+        with _vulkan_probe_memo_scope(), gguf_load_in_flight(hf_repo):
             if hf_repo and _hub_download_blocks_gguf_load(
                 hf_repo,
                 intent.hf_variant,
@@ -6099,14 +6103,28 @@ def _prepend_loader_dir(existing: str, lib_dir: str) -> str:
 _CPU_RUNTIME_OWNER_FILE = "UNSLOTH_OWNER_PID"
 
 # GPU backends the staged CPU-only runtime must not carry over. Module level: compiled once.
-# Vulkan probe rows for the current load, keyed by binary. See _run_vulkan_probe.
+# Vulkan probe rows for the load in progress, keyed by binary. See _run_vulkan_probe.
 _VULKAN_PROBE_MEMO: dict = {}
+# Armed only for the duration of a load. `vulkan_device_inventory` reaches the probe
+# from system-info polling as well, and that caller wants LIVE free/used VRAM: served
+# from a memo taken before llama-server allocated, it reports stale numbers until the
+# next load, and a transient empty result would stick indefinitely.
+_VULKAN_PROBE_MEMO_ACTIVE = False
 
 
-def _reset_vulkan_probe_memo() -> None:
-    """Drop the memo. Called once per load, so a driver or device change between
-    loads is re-probed rather than answered from cache."""
+@contextlib.contextmanager
+def _vulkan_probe_memo_scope():
+    """Memoise the probe for one load. Several decisions in a launch want the same
+    rows and each probe is a subprocess behind a 15s timeout, but nothing outside
+    the launch should be answered from that snapshot."""
+    global _VULKAN_PROBE_MEMO_ACTIVE
     _VULKAN_PROBE_MEMO.clear()
+    _VULKAN_PROBE_MEMO_ACTIVE = True
+    try:
+        yield
+    finally:
+        _VULKAN_PROBE_MEMO_ACTIVE = False
+        _VULKAN_PROBE_MEMO.clear()
 
 
 _GGML_GPU_BACKEND_RE = re.compile(
@@ -10279,13 +10297,14 @@ class LlamaCppBackend:
         # Vulkan backend and carries a 15s timeout, and one load now asks for the rows
         # from several places: the host-residency verdict, the DirectIO confirmation,
         # and again per rung that narrows the device set. Cleared by
-        # _reset_vulkan_probe_memo at the top of every load, so a driver or device
-        # change is never answered from cache.
-        if binary in _VULKAN_PROBE_MEMO:
+        # _vulkan_probe_memo_scope for the duration of one load, so a driver or
+        # device change between loads is never answered from cache.
+        if _VULKAN_PROBE_MEMO_ACTIVE and binary in _VULKAN_PROBE_MEMO:
             return _VULKAN_PROBE_MEMO[binary]
         binary_dir = _llama_lib_dir(binary)
         if not _lib_dir_has_ggml_backend(binary_dir, "vulkan"):
-            _VULKAN_PROBE_MEMO[binary] = []
+            if _VULKAN_PROBE_MEMO_ACTIVE:
+                _VULKAN_PROBE_MEMO[binary] = []
             return []
 
         env = child_env_without_native_path_secret()
@@ -10316,7 +10335,8 @@ class LlamaCppBackend:
                 logger.debug(
                     f"vulkan GPU probe exited {result.returncode}: {result.stderr.strip()}"
                 )
-                _VULKAN_PROBE_MEMO[binary] = []
+                if _VULKAN_PROBE_MEMO_ACTIVE:
+                    _VULKAN_PROBE_MEMO[binary] = []
                 return []
         except Exception as e:
             logger.debug(f"vulkan GPU probe failed: {e}")
@@ -10324,7 +10344,8 @@ class LlamaCppBackend:
             # "not an iGPU" upstream, which sends the DirectIO confirmation
             # straight back here, so an uncached timeout is paid twice over
             # and again per device-set rung.
-            _VULKAN_PROBE_MEMO[binary] = []
+            if _VULKAN_PROBE_MEMO_ACTIVE:
+                _VULKAN_PROBE_MEMO[binary] = []
             return []
 
         rows: list[dict] = []
@@ -10346,7 +10367,8 @@ class LlamaCppBackend:
             except ValueError:
                 continue
         rows.sort(key = lambda r: r["index"])
-        _VULKAN_PROBE_MEMO[binary] = rows
+        if _VULKAN_PROBE_MEMO_ACTIVE:
+            _VULKAN_PROBE_MEMO[binary] = rows
         return rows
 
     @staticmethod
@@ -12000,6 +12022,9 @@ class LlamaCppBackend:
     # Binary dirs already reported by _warn_missing_windows_cuda_runtime. The env is rebuilt
     # for every launch and every --list-devices probe, so one line per binary is enough.
     _missing_cuda_runtime_warned: set[str] = set()
+    # binary_dir -> whether its CUDA backend has no cudart to load. See
+    # _windows_cuda_runtime_missing; consumed by the DirectIO confirmation.
+    _cuda_runtime_missing_by_dir: dict[str, bool] = {}
 
     @classmethod
     def _binary_key(cls, binary: Optional[str]) -> Optional[tuple[str, int]]:
@@ -12124,6 +12149,32 @@ class LlamaCppBackend:
         _add(site_packages / "torch" / "lib")
         return out
 
+    @staticmethod
+    def _windows_cuda_runtime_missing(binary_dir: str, path_dirs: list[str]) -> bool:
+        """Whether this CUDA build has no cudart to load.
+
+        The predicate behind ``_warn_missing_windows_cuda_runtime``, split out
+        because it is also a placement fact: without cudart the CUDA ggml backend
+        does not load, ``--list-devices`` prints "(none)" and the child runs on the
+        CPU, while host probes still report the card. A DirectIO decision taken on
+        the filename alone would then buffer the whole model in host RAM.
+
+        False for a non-CUDA build and for any unreadable path entry, so only a
+        positively broken CUDA install answers True.
+        """
+        # Same identification _installed_ggml_backends uses: the official prebuilts are
+        # single-backend, so the ggml CUDA lib beside llama-server IS the build.
+        if not os.path.isfile(os.path.join(binary_dir, "ggml-cuda.dll")):
+            return False
+        for directory in path_dirs:
+            try:
+                names = os.listdir(directory)
+            except OSError:
+                continue
+            if any(name.lower().startswith("cudart64_") for name in names):
+                return False
+        return True
+
     @classmethod
     def _warn_missing_windows_cuda_runtime(cls, binary_dir: str, path_dirs: list[str]) -> None:
         """Say so when a CUDA llama-server has no cudart to load. Diagnostic only.
@@ -12142,18 +12193,9 @@ class LlamaCppBackend:
         try:
             if binary_dir in cls._missing_cuda_runtime_warned:
                 return
-            # Same identification _installed_ggml_backends uses: the official prebuilts are
-            # single-backend, so the ggml CUDA lib beside llama-server IS the build.
-            ggml_cuda = os.path.join(binary_dir, "ggml-cuda.dll")
-            if not os.path.isfile(ggml_cuda):
+            if not cls._windows_cuda_runtime_missing(binary_dir, path_dirs):
                 return
-            for directory in path_dirs:
-                try:
-                    names = os.listdir(directory)
-                except OSError:
-                    continue
-                if any(name.lower().startswith("cudart64_") for name in names):
-                    return
+            ggml_cuda = os.path.join(binary_dir, "ggml-cuda.dll")
             cls._missing_cuda_runtime_warned.add(binary_dir)
             logger.warning(
                 "llama.cpp is the CUDA build (%s) but no cudart64_*.dll was found on its "
@@ -12206,9 +12248,14 @@ class LlamaCppBackend:
             # Warn against the FULL search path, inherited entries included: a hand-installed CUDA
             # toolkit puts cudart64_*.dll on PATH without the venv or CUDA_PATH knowing, and warning
             # on the prepended directories alone told working custom setups to repair a fine install.
-            LlamaCppBackend._warn_missing_windows_cuda_runtime(
-                binary_dir,
-                path_dirs + [d for d in existing_path.split(";") if d],
+            _full_search_path = path_dirs + [d for d in existing_path.split(";") if d]
+            LlamaCppBackend._warn_missing_windows_cuda_runtime(binary_dir, _full_search_path)
+            # A placement fact, not just a diagnostic: without cudart the backend does
+            # not load and the child runs on the CPU while host probes still see the
+            # card. Recorded against the search path the CHILD gets, which is the only
+            # place it is known.
+            LlamaCppBackend._cuda_runtime_missing_by_dir[binary_dir] = (
+                LlamaCppBackend._windows_cuda_runtime_missing(binary_dir, _full_search_path)
             )
 
             # ROCm: the prebuilt bundles rocblas.dll but NOT the Tensile
@@ -18963,10 +19010,6 @@ class LlamaCppBackend:
         intent: GgufLoadIntent,
         load_cancel_event: Optional[threading.Event] = None,
     ) -> bool:
-        # One Vulkan probe per load: several decisions below want its rows, and the
-        # probe is a subprocess behind a 15s timeout. Cleared here rather than
-        # cached across loads so a driver or device change is re-probed.
-        _reset_vulkan_probe_memo()
         """Start llama-server from one immutable load intent."""
 
         def _load_cancelled() -> bool:
@@ -23508,6 +23551,9 @@ class LlamaCppBackend:
                 _mem_gpu_offload_confirmed = bool(
                     not _mem_host_resident
                     and self._build_offers_gpu_backend(binary, _mem_env)
+                    and not self._cuda_runtime_missing_by_dir.get(
+                        str(_llama_lib_dir(binary)), False
+                    )
                     and (_detected_gpus or gpu_indices)
                     # A probe that did not answer declines rather than confirms; see
                     # _vulkan_offload_is_discrete.
@@ -23641,6 +23687,11 @@ class LlamaCppBackend:
                     confirmed = bool(
                         not host_resident
                         and self._build_offers_gpu_backend(binary, _mem_env)
+                        # Present is not loadable: a CUDA build with no cudart on the
+                        # child's search path reports no devices and runs on the CPU.
+                        and not self._cuda_runtime_missing_by_dir.get(
+                            str(_llama_lib_dir(binary)), False
+                        )
                         and (_detected_gpus or devices)
                         and (
                             not is_vulkan_backend
