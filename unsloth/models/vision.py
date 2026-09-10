@@ -2453,15 +2453,19 @@ class FastBaseModel:
         try:
             from ._utils import patch_checkpoint_rng_state
             if patch_checkpoint_rng_state(model):
-                print("Unsloth: no dropout in the model, gradient checkpointing skips RNG state save/restore.")
+                print(
+                    "Unsloth: no dropout in the model, gradient checkpointing skips RNG state save/restore."
+                )
         except Exception as e:
             logger.warning(f"Unsloth: checkpoint RNG patch not applied: {e}")
         # Qwen3.5: compile the eager ops around the fla kernel (_gated_delta_net.py) and fuse each
         # decoder layer into two compiled regions (_qwen3_5_layer.py); either falls back per layer.
         try:
             from ._gated_delta_net import patch_gated_delta_net_fast_forward
+
             patch_gated_delta_net_fast_forward(model)
             from ._qwen3_5_layer import patch_qwen3_5_decoder_layers
+
             patch_qwen3_5_decoder_layers(model)
         except Exception as e:
             logger.warning(f"Unsloth: Qwen3.5 fused layer forward not installed: {e}")

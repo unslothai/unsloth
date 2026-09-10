@@ -30,6 +30,7 @@ original dtype boundaries, so the numbers match the stock path. Training path on
 (`past_key_values is None`); vanilla single-adapter LoRA or plain Linear; anything else
 falls back to the original layer forward.
 """
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -115,9 +116,26 @@ def _apply_rotary_pos_emb(q, k, cos, sin):
 
 # ----------------------------------------------------------------------------- regions
 @torch.compile(fullgraph = True, dynamic = True, options = _EAGER_LIKE_OPTIONS)
-def _gdn_pre(hidden_states, norm_w, eps: float, attention_mask, w_qkv, w_z, w_b, w_a, conv_weight,
-             A_log, dt_bias, key_dim: int, value_dim: int, head_k_dim: int, head_v_dim: int,
-             conv_dim: int, conv_padding: int, n_rep: int):
+def _gdn_pre(
+    hidden_states,
+    norm_w,
+    eps: float,
+    attention_mask,
+    w_qkv,
+    w_z,
+    w_b,
+    w_a,
+    conv_weight,
+    A_log,
+    dt_bias,
+    key_dim: int,
+    value_dim: int,
+    head_k_dim: int,
+    head_v_dim: int,
+    conv_dim: int,
+    conv_padding: int,
+    n_rep: int,
+):
     if attention_mask is not None:
         # apply_mask_to_padding_states, moved in front of the norm: RMSNorm(0) == 0 and the mask
         # is 0/1, so the result is the stock `norm(x) * mask` bit for bit, without leaving the
@@ -162,8 +180,26 @@ def _mlp_block(x, hidden, Wg, Ag, Bg, sg: float, Wu, Au, Bu, su: float, Wd, Ad, 
 
 
 @torch.compile(fullgraph = True, dynamic = True, options = _EAGER_LIKE_OPTIONS)
-def _attn_pre(hidden_states, norm_w, eps: float, Wq, Aq, Bq, sq: float, Wk, Ak, Bk, sk: float,
-              Wv, Av, Bv, sv: float, qn_w, kn_w, head_dim: int):
+def _attn_pre(
+    hidden_states,
+    norm_w,
+    eps: float,
+    Wq,
+    Aq,
+    Bq,
+    sq: float,
+    Wk,
+    Ak,
+    Bk,
+    sk: float,
+    Wv,
+    Av,
+    Bv,
+    sv: float,
+    qn_w,
+    kn_w,
+    head_dim: int,
+):
     x = _rmsnorm(hidden_states, norm_w, eps)
     input_shape = x.shape[:-1]
     hidden_shape = (*input_shape, -1, head_dim)
@@ -244,8 +280,11 @@ def _lora_params_uncached(m):
 
 
 def _is_rmsnorm(m):
-    return type(m).__name__ == "Qwen3_5RMSNorm" and isinstance(getattr(m, "weight", None), torch.Tensor) \
+    return (
+        type(m).__name__ == "Qwen3_5RMSNorm"
+        and isinstance(getattr(m, "weight", None), torch.Tensor)
         and isinstance(getattr(m, "eps", None), float)
+    )
 
 
 def _layer_static_ok(layer):
@@ -256,7 +295,11 @@ def _layer_static_ok(layer):
         return False
     act = getattr(mlp, "act_fn", None)
     # nn.SiLU, transformers' SiLUActivation (forward = F.silu) or F.silu itself
-    if not (isinstance(act, nn.SiLU) or type(act).__name__ in ("SiLU", "SiLUActivation") or act is F.silu):
+    if not (
+        isinstance(act, nn.SiLU)
+        or type(act).__name__ in ("SiLU", "SiLUActivation")
+        or act is F.silu
+    ):
         return False
     if layer.layer_type == "linear_attention":
         gdn = getattr(layer, "linear_attn", None)
@@ -315,52 +358,148 @@ def _fused_decoder_layer_forward(
         gdn = self.linear_attn
         if pg is None or pu is None or pd is None:
             return self._unsloth_original_forward(
-                hidden_states, position_embeddings = position_embeddings, attention_mask = attention_mask,
-                position_ids = position_ids, past_key_values = past_key_values, **kwargs,
+                hidden_states,
+                position_embeddings = position_embeddings,
+                attention_mask = attention_mask,
+                position_ids = position_ids,
+                past_key_values = past_key_values,
+                **kwargs,
             )
         mask = attention_mask
         if mask is not None and not (mask.shape[1] > 1 and mask.shape[0] > 1):
             mask = None
         query, key, value, g, beta, z = _gdn_pre(
-            hidden_states, norm1.weight, norm1.eps, mask,
-            gdn.in_proj_qkv.weight, gdn.in_proj_z.weight, gdn.in_proj_b.weight, gdn.in_proj_a.weight,
-            gdn.conv1d.weight, gdn.A_log, gdn.dt_bias,
-            gdn.key_dim, gdn.value_dim, gdn.head_k_dim, gdn.head_v_dim, gdn.conv_dim,
-            gdn.conv_kernel_size - 1, gdn.num_v_heads // gdn.num_k_heads,
+            hidden_states,
+            norm1.weight,
+            norm1.eps,
+            mask,
+            gdn.in_proj_qkv.weight,
+            gdn.in_proj_z.weight,
+            gdn.in_proj_b.weight,
+            gdn.in_proj_a.weight,
+            gdn.conv1d.weight,
+            gdn.A_log,
+            gdn.dt_bias,
+            gdn.key_dim,
+            gdn.value_dim,
+            gdn.head_k_dim,
+            gdn.head_v_dim,
+            gdn.conv_dim,
+            gdn.conv_kernel_size - 1,
+            gdn.num_v_heads // gdn.num_k_heads,
         )
         core_attn_out, _ = gdn.chunk_gated_delta_rule(
-            query, key, value, g = g, beta = beta, initial_state = None,
-            output_final_state = False, use_qk_l2norm_in_kernel = True,
+            query,
+            key,
+            value,
+            g = g,
+            beta = beta,
+            initial_state = None,
+            output_final_state = False,
+            use_qk_l2norm_in_kernel = True,
         )
-        core_attn_out = gdn.norm(core_attn_out.reshape(-1, gdn.head_v_dim), z.reshape(-1, gdn.head_v_dim))
+        core_attn_out = gdn.norm(
+            core_attn_out.reshape(-1, gdn.head_v_dim), z.reshape(-1, gdn.head_v_dim)
+        )
         hidden, x = _gdn_mid(core_attn_out, residual, gdn.out_proj.weight, norm2.weight, norm2.eps)
-        return _mlp_block(x, hidden, pg[0], pg[1], pg[2], pg[3], pu[0], pu[1], pu[2], pu[3], pd[0], pd[1], pd[2], pd[3])
+        return _mlp_block(
+            x,
+            hidden,
+            pg[0],
+            pg[1],
+            pg[2],
+            pg[3],
+            pu[0],
+            pu[1],
+            pu[2],
+            pu[3],
+            pd[0],
+            pd[1],
+            pd[2],
+            pd[3],
+        )
 
     attn = self.self_attn
-    pq, pk, pv, po = _lora_params(attn.q_proj), _lora_params(attn.k_proj), _lora_params(attn.v_proj), _lora_params(attn.o_proj)
-    if pg is None or pu is None or pd is None or pq is None or pk is None or pv is None or po is None:
+    pq, pk, pv, po = (
+        _lora_params(attn.q_proj),
+        _lora_params(attn.k_proj),
+        _lora_params(attn.v_proj),
+        _lora_params(attn.o_proj),
+    )
+    if (
+        pg is None
+        or pu is None
+        or pd is None
+        or pq is None
+        or pk is None
+        or pv is None
+        or po is None
+    ):
         return self._unsloth_original_forward(
-            hidden_states, position_embeddings = position_embeddings, attention_mask = attention_mask,
-            position_ids = position_ids, past_key_values = past_key_values, **kwargs,
+            hidden_states,
+            position_embeddings = position_embeddings,
+            attention_mask = attention_mask,
+            position_ids = position_ids,
+            past_key_values = past_key_values,
+            **kwargs,
         )
     cos, sin = position_embeddings
     query_states, key_states, value_states, gate = _attn_pre(
-        hidden_states, norm1.weight, norm1.eps,
-        pq[0], pq[1], pq[2], pq[3], pk[0], pk[1], pk[2], pk[3], pv[0], pv[1], pv[2], pv[3],
-        attn.q_norm.weight, attn.k_norm.weight, attn.head_dim,
+        hidden_states,
+        norm1.weight,
+        norm1.eps,
+        pq[0],
+        pq[1],
+        pq[2],
+        pq[3],
+        pk[0],
+        pk[1],
+        pk[2],
+        pk[3],
+        pv[0],
+        pv[1],
+        pv[2],
+        pv[3],
+        attn.q_norm.weight,
+        attn.k_norm.weight,
+        attn.head_dim,
     )
-    query_states, key_states, value_states = _attn_rope(query_states, key_states, value_states, cos, sin)
+    query_states, key_states, value_states = _attn_rope(
+        query_states, key_states, value_states, cos, sin
+    )
     from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
     attention_interface = ALL_ATTENTION_FUNCTIONS[attn.config._attn_implementation]
     attn_output, _ = attention_interface(
-        attn, query_states, key_states, value_states, attention_mask,
+        attn,
+        query_states,
+        key_states,
+        value_states,
+        attention_mask,
         dropout = 0.0 if not attn.training else attn.attention_dropout,
         scaling = attn.scaling,
         position_ids = position_ids,
         **kwargs,
     )
-    hidden, x = _attn_mid(attn_output, gate, residual, po[0], po[1], po[2], po[3], norm2.weight, norm2.eps)
-    return _mlp_block(x, hidden, pg[0], pg[1], pg[2], pg[3], pu[0], pu[1], pu[2], pu[3], pd[0], pd[1], pd[2], pd[3])
+    hidden, x = _attn_mid(
+        attn_output, gate, residual, po[0], po[1], po[2], po[3], norm2.weight, norm2.eps
+    )
+    return _mlp_block(
+        x,
+        hidden,
+        pg[0],
+        pg[1],
+        pg[2],
+        pg[3],
+        pu[0],
+        pu[1],
+        pu[2],
+        pu[3],
+        pd[0],
+        pd[1],
+        pd[2],
+        pd[3],
+    )
 
 
 def patch_qwen3_5_decoder_layers(model):
@@ -381,5 +520,7 @@ def patch_qwen3_5_decoder_layers(model):
         n += int(module._unsloth_fused_ok)
     layers = sum(1 for m in model.modules() if type(m).__name__ == "Qwen3_5DecoderLayer")
     if layers:
-        print(f"Unsloth: Qwen3.5 fused layer forward on {n}/{layers} decoder layers (cpp_wrapper={_BASE_OPTIONS['cpp_wrapper']}).")
+        print(
+            f"Unsloth: Qwen3.5 fused layer forward on {n}/{layers} decoder layers (cpp_wrapper={_BASE_OPTIONS['cpp_wrapper']})."
+        )
     return n

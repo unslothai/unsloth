@@ -27,6 +27,7 @@ Training path only (`cache_params is None`). Anything else, a LoRA-wrapped proje
 fused causal-conv1d being available, or an unexpected module layout, falls back to the
 original forward.
 """
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -104,12 +105,19 @@ def _fast_path_applicable(self):
         return False
     if conv.stride != (1,) or conv.dilation != (1,) or conv.padding != (self.conv_kernel_size - 1,):
         return False
-    if not isinstance(getattr(self, "A_log", None), torch.Tensor) or not isinstance(getattr(self, "dt_bias", None), torch.Tensor):
+    if not isinstance(getattr(self, "A_log", None), torch.Tensor) or not isinstance(
+        getattr(self, "dt_bias", None), torch.Tensor
+    ):
         return False
     return True
 
 
-def _gated_delta_net_fast_forward(self, hidden_states, cache_params = None, attention_mask = None):
+def _gated_delta_net_fast_forward(
+    self,
+    hidden_states,
+    cache_params = None,
+    attention_mask = None,
+):
     if cache_params is not None or not getattr(self, "_unsloth_gdn_fast_ok", False):
         return self._unsloth_original_forward(
             hidden_states, cache_params = cache_params, attention_mask = attention_mask
