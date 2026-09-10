@@ -67,25 +67,18 @@ def expected_file_from_sibling(sibling) -> Optional[ExpectedFile]:
 
 
 def is_companion_gguf_path(path: str) -> bool:
-    """Companion (non-main) GGUF downloaded alongside a variant: the vision
-    mmproj or the separate MTP drafter (Gemma 4)."""
+    """Companion (non-main) GGUF downloaded alongside a variant: the vision mmproj or the separate MTP drafter (Gemma 4)."""
     return is_gguf_filename(path) and (is_mmproj_filename(path) or is_mtp_drafter_path(path))
 
 
 def is_main_gguf_variant_path(path: str, variant: str) -> bool:
-    """Whether *path* is one of *variant*'s own weight files.
-
-    Keyed on :func:`gguf_variant_key`, in lockstep with the listers: a row built under
-    one identity and matched under another produces a variant that can be shown but
-    not downloaded.
-    """
+    """Whether *path* is one of *variant*'s own weight files. Keyed on :func:`gguf_variant_key`, in lockstep with the listers: a row built under one identity and matched under another produces a variant that can be shown but not downloaded."""
     return (
         is_gguf_filename(path)
         and not is_mmproj_filename(path)
         and not is_mtp_drafter_path(path)
         and not is_imatrix_filename(path)
-        # The endian predicate reads a quant TOKEN, so hand it the label: given the qualified key it
-        # cannot see a parent-only quant and drops the file, leaving the plan with no main files.
+        # The endian predicate reads a quant TOKEN, so hand it the label: given the qualified key it cannot see a parent-only quant and drops the file, leaving the plan with no main files.
         and not is_big_endian_gguf_path(path, extract_quant_label(path))
         and gguf_variant_key(path).lower() == variant.lower()
     )
@@ -114,13 +107,7 @@ def preferred_mmproj_sibling(siblings: Sequence) -> Optional[object]:
 
 
 def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
-    """The separate MTP drafter to fetch with every variant: the repo-root
-    ``mtp-*.gguf`` copy unsloth ships for llama.cpp ``-hf`` auto-discovery
-    (Gemma 4). Same pick as the loader's drafter resolution (root-level
-    ``mtp-`` prefix, first in sort order) so download and load resolve the same
-    file; the higher-precision ``MTP/`` subdir copies are for explicit
-    selection and are not auto-fetched. None for repos with the head baked into
-    the main GGUF (Qwen)."""
+    """The separate MTP drafter to fetch with every variant: the repo-root ``mtp-*.gguf`` copy unsloth ships for llama.cpp ``-hf`` auto-discovery (Gemma 4). Same pick as the loader's drafter resolution (root-level ``mtp-`` prefix, first in sort order) so download and load resolve the same file; the higher-precision ``MTP/`` subdir copies are for explicit selection and are not auto-fetched. None for repos with the head baked into the main GGUF (Qwen)."""
     # Root-level only: the MTP/ subdir copies now share the mtp- prefix too.
     candidates = sorted(
         (
@@ -138,15 +125,7 @@ def preferred_dflash_sibling(
     weight_name: Optional[str] = None,
     other_weight_names: Sequence[str] = (),
 ) -> Optional[object]:
-    """The DFlash sidecar to fetch alongside ``weight_name``.
-
-    Root level only, like preferred_mtp_sibling: detect_dflash_file never offers a
-    nested ``quants/dflash-*.gguf``, and a listing cannot read a header, so matching
-    the basename would plan a whole ordinary weight nothing could reject in time.
-
-    Ordered by dflash_repo_preference_key, as the download, snapshot reuse and offline
-    cache are, so the manifest promises the file the loader launches.
-    """
+    """The DFlash sidecar to fetch alongside ``weight_name``. Root level only, like preferred_mtp_sibling: detect_dflash_file never offers a nested ``quants/dflash-*.gguf``, and a listing cannot read a header, so matching the basename would plan a whole ordinary weight nothing could reject in time. Ordered by dflash_repo_preference_key, as the download, snapshot reuse and offline cache are, so the manifest promises the file the loader launches."""
     from utils.models.drafters import dflash_repo_preference_key
 
     candidates = [
@@ -173,17 +152,11 @@ def dflash_plan_files(
 ) -> tuple[ExpectedFile, ...]:
     """Every shard of the DFlash sidecar to plan alongside ``weight_name``, or ().
 
-    Whole shard family, not the ranked file alone: the loader refuses an incomplete
-    split set, so planning shard 1 reports the variant complete and then loses DFlash.
-    A half-published family is dropped for the same reason.
+    Whole shard family, not the ranked file alone: the loader refuses an incomplete split set, so planning shard 1 reports the variant complete and then loses DFlash. A half-published family is dropped for the same reason.
 
-    Bounded by ``max_bytes``, the variant's own weights. ``dflash-`` is a prefix real
-    weights carry (Lucebox/Qwen3.6-27B-DFlash-GGUF) and a listing cannot read the
-    ``general.architecture`` the loader rejects them by, but a drafter is a few layers
-    of its target and cannot outweigh it. An unknown size stays out.
+    Bounded by ``max_bytes``, the variant's own weights: ``dflash-`` is a prefix real weights carry (Lucebox/Qwen3.6-27B-DFlash-GGUF) and a listing cannot read the ``general.architecture`` the loader rejects them by, but a drafter is a few layers of its target and cannot outweigh it. An unknown size stays out.
 
-    Both rules filter BEFORE the ranking, so an oversized or half-published name at the
-    top steps aside for a usable sidecar behind it.
+    Both rules filter BEFORE the ranking, so an oversized or half-published name at the top steps aside for a usable sidecar behind it.
     """
     from utils.models.drafters import dflash_repo_preference_key, split_listing_is_complete
 
@@ -217,9 +190,7 @@ def dflash_plan_files(
 
 
 def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
-    # Family grouping keeps the family holding the lexicographically first name, which is the "._"
-    # one, so the plan fetched the sidecar and marked the variant complete, leaving header-based local
-    # discovery no main GGUF to load.
+    # Family grouping keeps the family holding the lexicographically first name, which is the "._" one, so the plan fetched the sidecar and marked the variant complete, leaving header-based local discovery no main GGUF to load.
     siblings = drop_shadowed_appledouble_siblings(list(siblings))
     main: dict[str, list] = {}
     all_mmproj = mmproj_siblings(siblings)
@@ -239,22 +210,17 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
         name = _gguf_rfilename(sibling)
         if name is None:
             continue
-        # Keep companions out of the quant grouping so a drafter never lands in a variant's main files: the
-        # root mtp-*.gguf carries a quant label.
-        # An imatrix leaves entirely rather than joining companions_expected: no variant needs llama-
-        # quantize's calibration data downloaded.
+        # Keep companions out of the quant grouping so a drafter never lands in a variant's main files: the root mtp-*.gguf carries a quant label. An imatrix leaves entirely rather than joining companions_expected, since no variant needs llama-quantize's calibration data downloaded.
         if is_mmproj_filename(name) or is_mtp_drafter_path(name) or is_imatrix_filename(name):
             continue
         quant = gguf_variant_key(name).lower()
-        # The endian predicate reads a quant TOKEN, so a qualified key would make it misread the path and
-        # drop the file from every plan.
+        # The endian predicate reads a quant TOKEN, so a qualified key would make it misread the path and drop the file from every plan.
         if is_big_endian_gguf_path(name, extract_quant_label(name)):
             continue
         main.setdefault(quant, []).append(sibling)
 
     plans: dict[str, GgufVariantPlan] = {}
-    # Every weight in the listing, so the ranking can tell a sidecar naming a neighbouring family from
-    # one naming this variant's.
+    # Every weight in the listing, so the ranking can tell a sidecar naming a neighbouring family from one naming this variant's.
     all_weight_names = [
         name.rsplit("/", 1)[-1]
         for quant_siblings in main.values()
@@ -267,9 +233,7 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
             for sibling in target_main_siblings
             if (file := expected_file_from_sibling(sibling)) is not None
         )
-        # Per variant, unlike mmproj and the MTP drafter: ranked against the weight being fetched, and
-        # against the family plan_from_expected_files KEEPS, or a two-family variant key pairs the wrong
-        # sidecar.
+        # Per variant, unlike mmproj and the MTP drafter: ranked against the weight being fetched, and against the family plan_from_expected_files KEEPS, or a two-family variant key pairs the wrong sidecar.
         kept_main = _one_shard_family(main_expected)
         target_weight_name = (
             min(file.path for file in kept_main).rsplit("/", 1)[-1] if kept_main else None
@@ -298,16 +262,9 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
 def plan_for_variant(plans: dict[str, GgufVariantPlan], variant: str) -> Optional[GgufVariantPlan]:
     """The plan for *variant*, accepting a bare quant when exactly one plan carries it.
 
-    A repo that files every variant under one shared container (``weights/model-Q4_K_M.gguf``)
-    qualifies every key, because the key is a pure function of the path and cannot know that the
-    directory disambiguates nothing. Every stored pin and every explicit ``repo:Q4_K_M`` then
-    missed the plan map and the worker exited with "No GGUF shards matching variant".
+    A repo that files every variant under one shared container (``weights/model-Q4_K_M.gguf``) qualifies every key, because the key is a pure function of the path and cannot know that the directory disambiguates nothing. Every stored pin and every explicit ``repo:Q4_K_M`` then missed the plan map and the worker exited with "No GGUF shards matching variant".
 
-    Resolved at LOOKUP rather than by aliasing the map, so the key stays a pure function of the
-    path -- the remote listing and a partial cache scan have to agree on it -- and the advertised
-    rows stay one per checkpoint. Only when the bare name is UNAMBIGUOUS: a repo that really does
-    hold several checkpoints at one quant gets no fallback, because there the bare name genuinely
-    does not name one of them.
+    Resolved at LOOKUP rather than by aliasing the map, so the key stays a pure function of the path (the remote listing and a partial cache scan have to agree on it) and the advertised rows stay one per checkpoint. Only when the bare name is UNAMBIGUOUS: a repo that really does hold several checkpoints at one quant gets no fallback, because there the bare name genuinely does not name one of them.
     """
     wanted = (variant or "").strip().lower()
     if not wanted:
@@ -315,23 +272,13 @@ def plan_for_variant(plans: dict[str, GgufVariantPlan], variant: str) -> Optiona
     exact = plans.get(wanted)
     if exact is not None:
         return exact
-    # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant names
-    # both partitions, and picking either would load a different task.
+    # PATH-qualified keys only, not is_qualified_gguf_variant_key: an H3 root stem's bare quant names both partitions, and picking either would load a different task.
     matches = [key for key in plans if "/" in key and bare_quant_alias(key).lower() == wanted]
     return plans[matches[0]] if len(matches) == 1 else None
 
 
 def _one_shard_family(main_files: Sequence[ExpectedFile]) -> tuple[ExpectedFile, ...]:
-    """Narrow a variant's weight files to the single shard family a load would read.
-
-    A repo can ship one quant twice under names that share a variant key -- the same
-    BF16 as ``QwQ-32B-BF16-*`` and ``QwQ-32B.BF16-*``, or one Q6_K under both ``Q6_K/``
-    and ``<model>-Q6_K/``. Fetching both doubles the download and leaves the variant
-    permanently short of its expected bytes, because the loader only ever opens one.
-    Keep the family holding the lexicographically first file, the shard the lister
-    advertises and the loader opens. A genuinely split GGUF is one family, so all of
-    its shards survive this untouched.
-    """
+    """Narrow a variant's weight files to the single shard family a load would read. A repo can ship one quant twice under names that share a variant key, the same BF16 as ``QwQ-32B-BF16-*`` and ``QwQ-32B.BF16-*``, or one Q6_K under both ``Q6_K/`` and ``<model>-Q6_K/``; fetching both doubles the download and leaves the variant permanently short of its expected bytes, because the loader only ever opens one. Keep the family holding the lexicographically first file, the shard the lister advertises and the loader opens. A genuinely split GGUF is one family, so all of its shards survive untouched."""
     if len(main_files) < 2:
         return tuple(main_files)
     families: dict[str, list[ExpectedFile]] = {}
@@ -353,9 +300,7 @@ def plan_from_expected_files(
     expected = tuple(expected_files)
     all_main = tuple(file for file in expected if is_main_gguf_variant_path(file.path, variant))
     main_files = _one_shard_family(all_main)
-    # A discarded family has to leave the plan ENTIRELY: target_filenames, required_hashes and
-    # download_size_bytes are what the worker fetches, so leaving the copy there downloaded it, then
-    # reclaim deleted it as not-ours (absent from main_hashes) and the job fetched it again.
+    # A discarded family has to leave the plan ENTIRELY: target_filenames, required_hashes and download_size_bytes are what the worker fetches, so leaving the copy there downloaded it, then reclaim deleted it as not-ours (absent from main_hashes) and the job fetched it again.
     kept = {file.path for file in main_files}
     expected = tuple(file for file in expected if file not in all_main or file.path in kept)
     companion_files = tuple(file for file in expected if is_companion_gguf_path(file.path))
