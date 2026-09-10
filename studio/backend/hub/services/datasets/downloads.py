@@ -178,69 +178,75 @@ async def download_dataset_response(
     cache_paths = get_hf_cache_paths()
     cache_env = cache_paths.child_env({})
 
-    claimed, claim_state = _registry.claim(
-        key,
-        transport,
-        repo_type = "dataset",
-        repo_id = repo_id,
-        hub_cache = str(cache_paths.hub_cache),
-        xet_cache = str(cache_paths.xet_cache),
-    )
-    generation = _registry.current_generation(key)
-    if not claimed:
-        # Both come from adoptable: an in-progress delete leaves no job, and only an in-flight job of this
-        # repo attached to anything.
-        adoptable = _registry.adoptable(key)
+    def claim_and_launch():
+        # Keep ownership and launch in one synchronous operation: cancellation while
+        # queued must not leave a claimed job without a worker. Token resolution can
+        # perform network I/O (OAuth refresh or OIDC exchange), so run it off the loop.
+        claimed, claim_state = _registry.claim(
+            key,
+            transport,
+            repo_type = "dataset",
+            repo_id = repo_id,
+            hub_cache = str(cache_paths.hub_cache),
+            xet_cache = str(cache_paths.xet_cache),
+        )
+        generation = _registry.current_generation(key)
+        if not claimed:
+            # Both come from adoptable: an in-progress delete leaves no job, and only an in-flight job of this
+            # repo attached to anything.
+            adoptable = _registry.adoptable(key)
+            return {
+                "repo_id": repo_id,
+                "state": claim_state,
+                "accepted": adoptable,
+                "attached": adoptable,
+                "generation": generation,
+                # An adopted job keeps the transport it started on, so report it rather than let the caller assume
+                # the one it asked for.
+                "transport": _registry.job_transport(key),
+                # And its cancel marker: a run that fell back from Xet to HTTP still cancels into a restart-only
+                # partial.
+                "cancel_transport": _registry.job_cancel_transport(key),
+            }
+        download_manifest.clear_cancel_marker(
+            "dataset",
+            repo_id,
+            None,
+            hub_cache = cache_paths.hub_cache,
+        )
+
+        state = download_lifecycle.launch_worker(
+            _registry,
+            key,
+            spawn = lambda: download_lifecycle.spawn_worker(
+                ["--repo-id", repo_id, "--dataset"],
+                hf_token,
+                use_xet = use_xet,
+                cache_env = cache_env,
+                allow_ambient_token = allow_ambient_token,
+            ),
+            hf_token = hf_token,
+            allow_ambient_token = allow_ambient_token,
+            label = repo_id,
+            log_prefix = "Dataset download",
+            logger = logger,
+            repo_type = "dataset",
+            repo_id = repo_id,
+            transport = transport,
+            watch_name = f"hf-dataset-download-watch-{repo_id}",
+        )
+
         return {
             "repo_id": repo_id,
-            "state": claim_state,
-            "accepted": adoptable,
-            "attached": adoptable,
+            "state": state,
+            "accepted": True,
+            "attached": False,
             "generation": generation,
-            # An adopted job keeps the transport it started on, so report it rather than let the caller assume
-            # the one it asked for.
-            "transport": _registry.job_transport(key),
-            # And its cancel marker: a run that fell back from Xet to HTTP still cancels into a restart-only
-            # partial.
-            "cancel_transport": _registry.job_cancel_transport(key),
+            # See models: the resolved transport, which a downgrade can make different from the one requested.
+            "transport": transport,
         }
-    download_manifest.clear_cancel_marker(
-        "dataset",
-        repo_id,
-        None,
-        hub_cache = cache_paths.hub_cache,
-    )
 
-    state = download_lifecycle.launch_worker(
-        _registry,
-        key,
-        spawn = lambda: download_lifecycle.spawn_worker(
-            ["--repo-id", repo_id, "--dataset"],
-            hf_token,
-            use_xet = use_xet,
-            cache_env = cache_env,
-            allow_ambient_token = allow_ambient_token,
-        ),
-        hf_token = hf_token,
-        allow_ambient_token = allow_ambient_token,
-        label = repo_id,
-        log_prefix = "Dataset download",
-        logger = logger,
-        repo_type = "dataset",
-        repo_id = repo_id,
-        transport = transport,
-        watch_name = f"hf-dataset-download-watch-{repo_id}",
-    )
-
-    return {
-        "repo_id": repo_id,
-        "state": state,
-        "accepted": True,
-        "attached": False,
-        "generation": generation,
-        # See models: the resolved transport, which a downgrade can make different from the one requested.
-        "transport": transport,
-    }
+    return await asyncio.to_thread(claim_and_launch)
 
 
 async def cancel_dataset_download_response(body: CancelDatasetDownloadRequest) -> dict:

@@ -1102,9 +1102,13 @@ def cancel_worker(
     proc = registry.get_process(key)
     # No worker process yet: arm a pending cancel so register_process kills it on arrival during the claim-to-register window.
     if proc is None:
-        if registry.mark_pending_cancel(key, generation):
+        if not registry.mark_pending_cancel(key, generation):
+            return registry.get_job(key).state
+        # Registration can race the first lookup while launch runs in a thread.
+        # If it already passed the pending-cancel check, stop that process below.
+        proc = registry.get_process(key)
+        if proc is None:
             return "cancelling"
-        return registry.get_job(key).state
     # Worker already exited; let its watcher classify the real return code.
     if proc.poll() is not None:
         get_metadata = getattr(registry, "get_job_metadata", None)
