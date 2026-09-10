@@ -844,6 +844,17 @@ def test_a_kv_head_list_with_zeros_keeps_the_attention_row_count():
             "kda.attention.key_length": 32,
             "kda.attention.value_length": 32,
         }
+        if 0 in heads:
+            # The zero-head rows must hold a state the layout can size, or it abstains; the
+            # all-attention control carries no state keys, since keys without a map abstain too.
+            fields.update(
+                {
+                    "kda.ssm.inner_size": 64,
+                    "kda.ssm.state_size": 8,
+                    "kda.ssm.conv_kernel": 4,
+                    "kda.ssm.group_count": 1,
+                }
+            )
 
         class _F:
             def __init__(self, v):
@@ -955,6 +966,11 @@ def test_an_interval_hybrid_sums_the_attention_rows_of_its_per_layer_vector():
         "kda.embedding_length": 256,
         "kda.attention.key_length": 32,
         "kda.attention.value_length": 32,
+        # The zero-head rows must hold a state the layout can size, or it abstains.
+        "kda.ssm.inner_size": 64,
+        "kda.ssm.state_size": 8,
+        "kda.ssm.conv_kernel": 4,
+        "kda.ssm.group_count": 1,
     }
 
     class _F:

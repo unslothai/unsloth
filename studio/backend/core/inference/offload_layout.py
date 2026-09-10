@@ -35,9 +35,14 @@ _DENSE_FFN_RE = re.compile(r"^ffn_(up|gate|down)\.weight$")
 class SpillClass(Enum):
     """One rung's worth of tensors, in the order the ladder gives them up.
 
-    The order is llama.cpp's, from ``common/fit.cpp:407-440``, where the per-layer fractions are
-    named for what STAYS resident and so read backwards: ``LAYER_FRACTION_GATE`` moves ``ffn_down``
-    only, ``_UP`` moves down plus gate, ``_ATTN`` moves the whole FFN.
+    The ladder's own order: ``ffn_down``, then ``ffn_up`` (or the fused ``gate_up``), then a
+    separate ``ffn_gate``. It is NOT the fitter's. ``common/fit.cpp`` names its per-layer
+    fractions for what STAYS resident, so ``LAYER_FRACTION_GATE`` moves ``ffn_down`` only and
+    ``LAYER_FRACTION_UP`` moves down plus GATE; the fallback arm the cost gate ranks against is
+    modelled with that sequence in ``_fit_boundary_overflow``, never with this one. Measured on
+    the same type and size, up and gate spill within 1.7% of each other, so the second rung only
+    matters where the two differ, and the ladder keeps its stated order there rather than the
+    fitter's.
     """
 
     FFN_DOWN = "ffn_down"
@@ -474,6 +479,10 @@ def _layout_from_readers(readers) -> ModelLayout:
     kda_head_dim = int(_field(reader, f"{arch}.kda.head_dim") or 0)
     if arch not in _KDA_STATE_ARCHS:
         kda_head_dim = 0
+    # LFM2's short convolution keeps (l_cache - 1) rows of n_embd per recurrent layer and no
+    # ssm state at all (llama-hparams.cpp:n_embd_r, the n_shortconv_l_cache branch; n_embd_s
+    # falls through to ssm_d_state * ssm_d_inner, both zero there).
+    shortconv_l_cache = int(_field(reader, f"{arch}.shortconv.l_cache") or 0)
     recurrent = 0
     if n_recurrent and d_inner and d_state and d_conv:
         n_embd_r = max(0, d_conv - 1) * (d_inner + 2 * n_group * d_state)
@@ -489,6 +498,8 @@ def _layout_from_readers(readers) -> ModelLayout:
         n_embd_r = 3 * max(0, (d_conv or 4) - 1) * d_inner_kda
         n_embd_s = kda_head_dim * kda_head_dim * int(n_head)
         recurrent = n_recurrent * (n_embd_r + n_embd_s) * 4
+    elif n_recurrent and shortconv_l_cache > 1 and n_embd:
+        recurrent = n_recurrent * int(n_embd) * (shortconv_l_cache - 1) * 4
 
     # The PLE conv history is a row of its own in the recurrent cache, not part of the delta-net
     # conv state next door (llama-memory-recurrent.cpp allocates cache_ple_r_l separately, sized by
@@ -503,9 +514,21 @@ def _layout_from_readers(readers) -> ModelLayout:
         )
         recurrent += len(ple_layers) * ple_conv_state * 4
 
-    # ssm.*/kda.* keys say the model HAS recurrent layers; nothing above could say which.
-    if not recurrent_known and ((d_inner and d_state and d_conv) or kda_head_dim):
+    # ssm.*/kda.*/shortconv.* keys say the model HAS recurrent layers; nothing above could say
+    # which.
+    if not recurrent_known and (
+        (d_inner and d_state and d_conv) or kda_head_dim or shortconv_l_cache > 1
+    ):
         logger.debug("offload layout: %s has recurrent keys but no recurrent-layer map", arch)
+        return ModelLayout()
+    # The map named rows that hold no cache, and none of the branches above could size what they
+    # hold instead (RWKV token shifts, MiniMax linear attention, an unread key). A complete layout
+    # here would let the planner emit --fit off with a per-layer, per-slot allocation missing from
+    # both the pooled and the per-device check; abstain, and the seam reproduces --fit on.
+    if n_recurrent and not recurrent:
+        logger.debug(
+            "offload layout: %s has %d recurrent rows of unknown state size", arch, n_recurrent
+        )
         return ModelLayout()
 
     n_expert = int(_field(reader, f"{arch}.expert_count") or 0)

@@ -3375,6 +3375,49 @@ def test_a_kda_hybrid_is_charged_its_recurrent_state():
     assert round(glm.recurrent_bytes / MIB) == 146
 
 
+def _lfm2_fields(**extra):
+    heads = [0 if i % 3 else 8 for i in range(18)]
+    base = {
+        "general.architecture": "lfm2",
+        "lfm2.block_count": 18,
+        "lfm2.attention.head_count_kv": heads,
+        "lfm2.attention.head_count": 32,
+        "lfm2.embedding_length": 2048,
+        "lfm2.attention.key_length": 64,
+        "lfm2.attention.value_length": 64,
+        "lfm2.shortconv.l_cache": 3,
+        "lfm2.context_length": 32768,
+    }
+    base.update(extra)
+    return base
+
+
+def test_an_lfm2_hybrid_is_charged_its_shortconv_state():
+    """A short-convolution row carries shortconv.l_cache and neither ssm.inner_size nor
+    kda.head_dim, so both state branches sized it at zero while llama.cpp keeps
+    n_embd * (l_cache - 1) f32 values per recurrent layer per slot (llama-hparams.cpp:n_embd_r)."""
+    layout = _layout_from_reader(_StubReader(_lfm2_fields(), _shard_tensors(range(18))))
+    assert layout.complete
+    assert layout.n_attention_layers == 6
+    # 12 shortconv rows x 2048 x (3 - 1) x 4 B.
+    assert layout.recurrent_bytes == 12 * 2048 * 2 * 4
+
+
+def test_zero_head_rows_whose_state_cannot_be_sized_abstain():
+    """The per-layer head list names rows that hold no cache; when no branch can say what they
+    hold instead, a complete layout would let the planner drop a per-slot allocation from every
+    feasibility check, so it abstains and the seam falls back to --fit on."""
+    fields = _lfm2_fields()
+    del fields["lfm2.shortconv.l_cache"]
+    assert _layout_from_reader(_StubReader(fields, _shard_tensors(range(18)))).complete is False
+
+
+def test_a_shortconv_header_with_no_recurrent_map_abstains():
+    """Same rule the ssm.* and kda.* branches follow."""
+    fields = _lfm2_fields(**{"lfm2.attention.head_count_kv": 8})
+    assert _layout_from_reader(_StubReader(fields, _shard_tensors(range(18)))).complete is False
+
+
 def test_a_kda_header_with_no_recurrent_map_abstains():
     """Same rule the ssm.* branch follows: kda.head_dim says the model HAS recurrent rows, and
     calling every row attention would charge a cache none of them hold."""
