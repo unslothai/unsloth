@@ -266,11 +266,11 @@ def test_agent_guides_lists_the_route_modules_that_serve_what_it_curls():
             "studio/backend/main.py",
             "studio/backend/core/inference/llama_cpp.py",
             "studio/backend/models/**",
-            "unsloth_cli/commands/start.py",
-            "unsloth_cli/commands/studio.py",
+            "unsloth_cli/*",
+            "unsloth_cli/commands/*.py",
         ):
             assert required in paths, f"{AGENT_GUIDES} {event}.paths lost {required}"
         assert "unsloth_cli/**" not in paths, (
-            f"{AGENT_GUIDES} {event}.paths matches the whole CLI package; the cells only run "
-            "`unsloth run` and `unsloth start`"
+            f"{AGENT_GUIDES} {event}.paths matches the whole CLI package; the cells never run "
+            "unsloth_cli/tests/**"
         )

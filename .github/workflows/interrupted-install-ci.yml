@@ -21,8 +21,9 @@ name: Interrupted install recovery
 # schedule and workflow_dispatch run all 10, picked by the `select` job below. 6 of the 10
 # are macOS on an account capped at five concurrent macOS jobs, and on every PR audited
 # before the split the full set was cancelled by the next push before its macOS legs had
-# started. Installers only: pyproject.toml and the Tauri preflight sources were dropped
-# because neither is an installer and both change far more often than the kill path does.
+# started. Installers plus the ready/stale predicate the probes call: pyproject.toml and
+# the Tauri preflight sources were dropped because neither is an installer and both change
+# far more often than the kill path does.
 
 on:
   pull_request:
@@ -33,6 +34,8 @@ on:
       - 'studio/setup.ps1'
       - 'studio/install_python_stack.py'
       - 'unsloth_cli/commands/studio.py'
+      # install_state() decides ready vs stale for every probe (commands/studio.py:501).
+      - 'unsloth_cli/_studio_deps.py'
       - 'studio/install_manifest.py'
       # The requirement files are the phases: studio.txt declares structlog, whose absence
       # IS the reported false-ready bug, so moving a package between them changes every
@@ -58,6 +61,8 @@ on:
       - 'studio/setup.ps1'
       - 'studio/install_python_stack.py'
       - 'unsloth_cli/commands/studio.py'
+      # install_state() decides ready vs stale for every probe (commands/studio.py:501).
+      - 'unsloth_cli/_studio_deps.py'
       - 'studio/install_manifest.py'
       - 'studio/backend/requirements/**'
       - '.github/scripts/interrupt-install.sh'
