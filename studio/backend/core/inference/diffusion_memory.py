@@ -395,9 +395,47 @@ def _cuda_memory(backend: str) -> tuple[Optional[int], Optional[int], str]:
                 kind = "unified_memory"  # e.g. Jetson / integrated SoC
         except Exception:
             pass
-        return int(free // (1024 * 1024)), int(total // (1024 * 1024)), kind
+        free_mib, total_mib = int(free // (1024 * 1024)), int(total // (1024 * 1024))
+        # A ROCm APU sets the same integrated flag and reaches `unified_memory` too, but
+        # its free reading is wrong in the OPPOSITE direction (Windows HIP reports
+        # free == total, #7072): crediting host memory would enlarge an over-report.
+        if kind == "unified_memory" and not getattr(getattr(torch, "version", None), "hip", None):
+            free_mib = _unified_reclaimable_free_mib(free_mib, total_mib)
+        return free_mib, total_mib, kind
     except Exception:
         return None, None, "discrete_vram"
+
+
+def _unified_reclaimable_free_mib(free_mib: int, total_mib: int) -> int:
+    """Credit reclaimable page cache back to an integrated CUDA device's free reading.
+
+    ``cudaMemGetInfo`` reports the kernel's ``MemFree`` here, which counts the page cache
+    as used, so a model's own download collapses the budget the load that follows is
+    measured against: ``flux.2-klein`` refused at "about 0 GB usable (of the 3 GB
+    currently free)" on a 121 GiB machine (#9919). That cache is reclaimed on demand.
+
+    ``MemAvailable`` is the kernel's estimate of what an allocation can have without
+    swapping, a floor rather than an optimistic figure, and it is clamped to the driver
+    reading and the device total, so a genuinely full machine is refused as it is today.
+
+    Through the llama.cpp helper, which caps it by the cgroup remainder: a
+    ``--memory``-capped Spark is where an over-credit reaches the OOM kill this
+    guard pre-empts.
+    """
+    available_mib = _available_system_memory_mib()
+    if available_mib is None:
+        return free_mib
+    return max(free_mib, min(int(available_mib), total_mib))
+
+
+def _available_system_memory_mib() -> Optional[int]:
+    """Available host RAM in MiB, capped by any enforcing cgroup limit."""
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        return LlamaCppBackend._available_system_memory_mib()
+    except Exception:  # noqa: BLE001 - the host reading still stands
+        return _system_memory_mib()[1]
 
 
 def _xpu_memory() -> tuple[Optional[int], Optional[int]]:
