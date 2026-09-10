@@ -45,10 +45,7 @@ def _read_all_rows_with_duckdb(parquet_dir: Path) -> list[dict[str, Any]] | None
         conn = duckdb.connect(":memory:")
         try:
             dataframe = conn.execute(
-                (
-                    "SELECT * FROM read_parquet(?, filename=true) "
-                    "ORDER BY filename"
-                ),
+                ("SELECT * FROM read_parquet(?, filename=true) ORDER BY filename"),
                 [parquet_glob],
             ).fetchdf()
         finally:
@@ -118,10 +115,7 @@ def _safe_filename_stem(value: str) -> str:
 
 
 def build_dataset_download(
-    *,
-    artifact_path: str,
-    export_format: ExportFormat,
-    filename_stem: str,
+    *, artifact_path: str, export_format: ExportFormat, filename_stem: str
 ) -> tuple[Path, str, str]:
     """Return ``(temp_path, media_type, download_filename)``.
 
@@ -153,9 +147,7 @@ def build_dataset_download(
 
 
 def build_in_memory_dataset_download(
-    rows: list[dict[str, Any]],
-    *,
-    filename_stem: str,
+    rows: list[dict[str, Any]], *, filename_stem: str
 ) -> tuple[Path, str, str]:
     """Export rows already held in memory to a temporary JSONL file."""
     stem = _safe_filename_stem(filename_stem)

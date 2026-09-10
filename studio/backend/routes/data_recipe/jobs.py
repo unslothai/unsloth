@@ -548,20 +548,20 @@ def job_dataset(
 
 
 def _content_disposition_attachment(filename: str) -> str:
-    ascii_name = "".join(ch if 32 <= ord(ch) < 127 and ch not in {'"', "\\"} else "_" for ch in filename)
+    ascii_name = "".join(
+        ch if 32 <= ord(ch) < 127 and ch not in {'"', "\\"} else "_" for ch in filename
+    )
     if not ascii_name.strip("_"):
         ascii_name = "dataset.jsonl"
     from urllib.parse import quote
 
-    return f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(filename)}'
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
 
 
-def _resolve_download_artifact_path(
-    *,
-    job_id: str,
-    artifact_path: str | None,
-) -> str | None:
-    resolved = artifact_path.strip() if isinstance(artifact_path, str) and artifact_path.strip() else None
+def _resolve_download_artifact_path(*, job_id: str, artifact_path: str | None) -> str | None:
+    resolved = (
+        artifact_path.strip() if isinstance(artifact_path, str) and artifact_path.strip() else None
+    )
     mgr = get_job_manager()
     status = mgr.get_status(job_id)
     if status is not None:

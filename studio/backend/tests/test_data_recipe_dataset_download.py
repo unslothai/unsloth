@@ -22,23 +22,23 @@ def _write_parquet_rows(parquet_dir: Path, rows: list[dict]) -> None:
     pytest.importorskip("pandas")
     import pandas as pd
 
-    parquet_dir.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows).to_parquet(parquet_dir / "batch_00000.parquet", index=False)
+    parquet_dir.mkdir(parents = True, exist_ok = True)
+    pd.DataFrame(rows).to_parquet(parquet_dir / "batch_00000.parquet", index = False)
 
 
 def test_build_in_memory_dataset_download_writes_jsonl(tmp_path: Path):
     rows = [{"instruction": "Say hi", "output": "Hello"}]
     file_path, media_type, download_name = build_in_memory_dataset_download(
         rows,
-        filename_stem="preview-run",
+        filename_stem = "preview-run",
     )
     try:
         assert media_type == "application/x-ndjson"
         assert download_name == "preview-run.jsonl"
-        lines = file_path.read_text(encoding="utf-8").strip().splitlines()
+        lines = file_path.read_text(encoding = "utf-8").strip().splitlines()
         assert json.loads(lines[0]) == rows[0]
     finally:
-        file_path.unlink(missing_ok=True)
+        file_path.unlink(missing_ok = True)
 
 
 def test_build_dataset_download_jsonl_from_artifact(tmp_path: Path, monkeypatch):
@@ -53,17 +53,17 @@ def test_build_dataset_download_jsonl_from_artifact(tmp_path: Path, monkeypatch)
     )
 
     file_path, media_type, download_name = build_dataset_download(
-        artifact_path=str(dataset_path),
-        export_format="jsonl",
-        filename_stem="my-run",
+        artifact_path = str(dataset_path),
+        export_format = "jsonl",
+        filename_stem = "my-run",
     )
     try:
         assert media_type == "application/x-ndjson"
         assert download_name == "my-run.jsonl"
-        lines = file_path.read_text(encoding="utf-8").strip().splitlines()
+        lines = file_path.read_text(encoding = "utf-8").strip().splitlines()
         assert json.loads(lines[0])["question"] == "Q1"
     finally:
-        file_path.unlink(missing_ok=True)
+        file_path.unlink(missing_ok = True)
 
 
 def test_build_dataset_download_parquet_zip_from_artifact(tmp_path: Path, monkeypatch):
@@ -78,9 +78,9 @@ def test_build_dataset_download_parquet_zip_from_artifact(tmp_path: Path, monkey
     )
 
     file_path, media_type, download_name = build_dataset_download(
-        artifact_path=str(dataset_path),
-        export_format="parquet",
-        filename_stem="parquet-run",
+        artifact_path = str(dataset_path),
+        export_format = "parquet",
+        filename_stem = "parquet-run",
     )
     try:
         assert media_type == "application/zip"
@@ -89,7 +89,7 @@ def test_build_dataset_download_parquet_zip_from_artifact(tmp_path: Path, monkey
             names = archive.namelist()
         assert names == ["batch_00000.parquet"]
     finally:
-        file_path.unlink(missing_ok=True)
+        file_path.unlink(missing_ok = True)
 
 
 def test_build_dataset_download_missing_parquet_raises(tmp_path: Path, monkeypatch):
@@ -100,11 +100,11 @@ def test_build_dataset_download_missing_parquet_raises(tmp_path: Path, monkeypat
         lambda artifact_path: dataset_path,
     )
 
-    with pytest.raises(RecipeDatasetExportError, match="parquet"):
+    with pytest.raises(RecipeDatasetExportError, match = "parquet"):
         build_dataset_download(
-            artifact_path=str(dataset_path),
-            export_format="jsonl",
-            filename_stem="missing",
+            artifact_path = str(dataset_path),
+            export_format = "jsonl",
+            filename_stem = "missing",
         )
 
 
@@ -114,7 +114,7 @@ def test_download_job_dataset_route_uses_artifact_path(monkeypatch, tmp_path: Pa
 
     jobs_route = pytest.importorskip(
         "routes.data_recipe.jobs",
-        reason="studio backend routes unavailable",
+        reason = "studio backend routes unavailable",
     )
 
     captured: dict[str, str] = {}
@@ -122,7 +122,7 @@ def test_download_job_dataset_route_uses_artifact_path(monkeypatch, tmp_path: Pa
     def fake_build_dataset_download(**kwargs):
         captured.update(kwargs)
         jsonl_path = tmp_path / "out.jsonl"
-        jsonl_path.write_text('{"ok": true}\n', encoding="utf-8")
+        jsonl_path.write_text('{"ok": true}\n', encoding = "utf-8")
         return jsonl_path, "application/x-ndjson", "run.jsonl"
 
     class _FakeManager:
@@ -137,10 +137,10 @@ def test_download_job_dataset_route_uses_artifact_path(monkeypatch, tmp_path: Pa
 
     response = jobs_route.download_job_dataset(
         "job-1",
-        background_tasks=BackgroundTasks(),
-        export_format="jsonl",
-        artifact_path=None,
-        filename="My Run",
+        background_tasks = BackgroundTasks(),
+        export_format = "jsonl",
+        artifact_path = None,
+        filename = "My Run",
     )
     assert captured["artifact_path"] == "/tmp/artifacts/job-1"
     assert captured["filename_stem"] == "My Run"
@@ -162,9 +162,9 @@ def test_download_job_dataset_route_rejects_incomplete_run(monkeypatch):
     with pytest.raises(HTTPException) as exc_info:
         jobs_route.download_job_dataset(
             "job-1",
-            background_tasks=BackgroundTasks(),
-            export_format="jsonl",
-            artifact_path=None,
-            filename=None,
+            background_tasks = BackgroundTasks(),
+            export_format = "jsonl",
+            artifact_path = None,
+            filename = None,
         )
     assert exc_info.value.status_code == 409
