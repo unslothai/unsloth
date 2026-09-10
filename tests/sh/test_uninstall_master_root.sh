@@ -22,6 +22,8 @@ mkdir -p "$HOME"
 
 assert_nodir() { _l="$1"; [ -e "$2" ] && { echo "  FAIL: $_l (still present: $2)"; FAIL=$((FAIL+1)); } || { echo "  PASS: $_l"; PASS=$((PASS+1)); }; }
 assert_dir()   { _l="$1"; [ -e "$2" ] && { echo "  PASS: $_l"; PASS=$((PASS+1)); } || { echo "  FAIL: $_l (missing $2)"; FAIL=$((FAIL+1)); }; }
+# -e is false for a dangling symlink, which is exactly the shape one case below is about.
+assert_present() { _l="$1"; { [ -e "$2" ] || [ -L "$2" ]; } && { echo "  PASS: $_l"; PASS=$((PASS+1)); } || { echo "  FAIL: $_l (missing $2)"; FAIL=$((FAIL+1)); }; }
 assert_eq()    { _l="$1"; [ "$2" = "$3" ] && { echo "  PASS: $_l"; PASS=$((PASS+1)); } || { echo "  FAIL: $_l (got '$2', want '$3')"; FAIL=$((FAIL+1)); }; }
 
 HELPERS_FILE=$(mktemp -p "$_TMP_ROOT")
@@ -151,6 +153,57 @@ for _shell in dash "bash --posix" sh; do
         || true )
     assert_eq "$_shell keeps going past a missing root" "$out" "REACHED_END"
 done
+
+echo "== a dangling runtime symlink is not ours to unlink =="
+# -e is false for a dangling symlink, so an unmarked one named llama.cpp fell past the marker
+# gate into _remove_path, which treats -L as present and removes the link. Its target volume
+# being unmounted is the ordinary reason, and the link is the user's.
+MRD="$_TMP_ROOT/dangling"
+mkdir -p "$MRD/studio" "$MRD/node"
+: > "$MRD/node/.unsloth-studio-owned"
+ln -s "$_TMP_ROOT/no-such-volume/llama.cpp" "$MRD/llama.cpp"
+run_block "$HOME" "$MRD"
+assert_present "an unmarked dangling link is kept" "$MRD/llama.cpp"
+assert_nodir "a marked tree beside it still goes" "$MRD/node"
+
+echo "== a whitespace-only Studio override does not suppress the master root =="
+# storage_roots.studio_root() trims these, so "   " is unset to every resolver. A bare -n test
+# called it present, skipped the master-root branch, and then discarded the whitespace path:
+# the runtime siblings went and <UNSLOTH_HOME>/studio stayed.
+ROOTS_FILE=$(mktemp -p "$_TMP_ROOT")
+sed -n '/^_custom_studio_roots() {/,/^}/p' "$UNINSTALL_SH" > "$ROOTS_FILE" 2>/dev/null || : > "$ROOTS_FILE"
+if grep -q '_custom_studio_roots() {' "$ROOTS_FILE"; then
+    MRW="$_TMP_ROOT/blankoverride"
+    mkdir -p "$MRW/studio"
+    got=$( ( HOME="$HOME"; UNSLOTH_HOME="$MRW"; UNSLOTH_STUDIO_HOME="   "
+             export HOME UNSLOTH_HOME UNSLOTH_STUDIO_HOME
+             . "$HELPERS_FILE"
+             _emit() { printf '%s\n' "$1"; }
+             _from_conf() { :; }
+             . "$ROOTS_FILE"
+             _custom_studio_roots 2>/dev/null ) | grep -c "$MRW/studio" ) || got=0
+    assert_eq "a blank override still reaches the master root" "$got" "1"
+else
+    echo "  FAIL: _custom_studio_roots could not be extracted"; FAIL=$((FAIL+1))
+fi
+
+echo "== the master root is remembered when the environment does not carry it =="
+# `UNSLOTH_HOME=/mnt/portable unsloth studio update` installs the runtimes there and leaves
+# nothing behind in the environment. setup.sh writes a note in the Studio tree; without it an
+# uninstall later removed the Studio tree and stranded the runtimes.
+NOTED="$_TMP_ROOT/noted"
+mkdir -p "$HOME/.unsloth/studio/share" "$NOTED"
+printf '%s\n' "$NOTED" > "$HOME/.unsloth/studio/share/.unsloth-master-root"
+got=$( ( HOME="$HOME"; unset UNSLOTH_HOME; export HOME; . "$HELPERS_FILE"; _master_root ) )
+assert_eq "the note names the master root" "$got" "$NOTED"
+# The environment still outranks it, and the deny list still applies to whatever it names.
+got=$( ( HOME="$HOME"; UNSLOTH_HOME="$_TMP_ROOT/from-env"; export HOME UNSLOTH_HOME
+         . "$HELPERS_FILE"; _master_root ) )
+assert_eq "the environment outranks the note" "$got" "$_TMP_ROOT/from-env"
+printf '%s\n' "$HOME/.unsloth" > "$HOME/.unsloth/studio/share/.unsloth-master-root"
+got=$( ( HOME="$HOME"; unset UNSLOTH_HOME; export HOME; . "$HELPERS_FILE"; _master_root ) )
+assert_eq "a note naming the default root is still refused" "$got" ""
+rm -f "$HOME/.unsloth/studio/share/.unsloth-master-root"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

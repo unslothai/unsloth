@@ -86,10 +86,20 @@ def _resolve_studio_home() -> tuple[Path, bool]:
         except (OSError, ValueError):
             candidate = Path(master).expanduser() / "studio"
         try:
-            is_custom = candidate != (Path.home() / ".unsloth" / "studio").resolve()
+            legacy = (Path.home() / ".unsloth" / "studio").resolve()
         except (OSError, ValueError):
-            is_custom = candidate != (Path.home() / ".unsloth" / "studio")
-        return candidate, is_custom
+            legacy = Path.home() / ".unsloth" / "studio"
+        # install.sh and install.ps1 do not read UNSLOTH_HOME yet: they still place the venv and
+        # the launcher at the legacy root, while setup puts the managed runtimes under the
+        # master root. Preferring <master>/studio unconditionally therefore made a machine with
+        # UNSLOTH_HOME merely exported report "Unsloth Studio not set up" for an install that is
+        # right there. So the master root wins only when it HAS an install; otherwise the one
+        # that exists does. Once the installers learn the flag, <master>/studio is populated and
+        # this fallback stops being reachable.
+        if candidate != legacy and not _looks_like_installer_managed_studio_home(candidate):
+            if _looks_like_installer_managed_studio_home(legacy):
+                return legacy, False
+        return candidate, candidate != legacy
     try:
         prefix = Path(sys.prefix).resolve()
         if prefix.name == "unsloth_studio":

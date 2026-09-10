@@ -630,10 +630,14 @@ Environment:
         }
 
         $envRoot = $null
-        if ($env:UNSLOTH_STUDIO_HOME) {
-            $envRoot = $env:UNSLOTH_STUDIO_HOME
-        } elseif ($env:STUDIO_HOME) {
-            $envRoot = $env:STUDIO_HOME
+        # IsNullOrWhiteSpace, not truthiness: storage_roots.studio_root() trims these, so a
+        # whitespace-only override is unset to every resolver. A bare truthy test called it
+        # present, suppressed the master-root branch below, and then discarded the whitespace
+        # path, leaving <UNSLOTH_HOME>\studio installed while its runtime siblings went.
+        if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) {
+            $envRoot = $env:UNSLOTH_STUDIO_HOME.Trim()
+        } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) {
+            $envRoot = $env:STUDIO_HOME.Trim()
         } else {
             # Last, as in storage_roots.studio_root(): UNSLOTH_HOME names the tree, and the two
             # above name this exact directory, so either of them wins outright.

@@ -1041,7 +1041,24 @@ fi
 # "false" is what licenses the installers to os.replace() and rm -rf without checking the
 # Unsloth-owned marker. The Studio home itself, and the venvs under it, keep the other flag.
 _RUNTIME_ROOT_IS_CUSTOM="$_STUDIO_HOME_IS_CUSTOM"
-[ -z "$_MASTER_ROOT" ] || _RUNTIME_ROOT_IS_CUSTOM=true
+# Where the runtimes actually land, not merely whether a master root was named. Setting
+# UNSLOTH_HOME=$HOME/.unsloth on an existing default install names the root that install is
+# already using, so nothing moves; classifying it custom anyway would demand an owner marker
+# from a legacy source-built ~/.unsloth/llama.cpp that predates the marker, and the assertion
+# below would reject an update that used to reuse that build.
+if [ -n "$_MASTER_ROOT" ]; then
+    # Canonicalised the same way _MASTER_ROOT was, or a symlinked $HOME compares unequal to
+    # itself and the legacy root reads as custom after all. Derived here rather than read from
+    # _LEGACY_STUDIO_HOME so this block stays self-contained.
+    _rrc_legacy="$HOME/.unsloth"
+    if [ -d "$_rrc_legacy" ]; then
+        _rrc_canon=$(CDPATH= cd -P -- "$_rrc_legacy" 2>/dev/null && pwd -P) || _rrc_canon=""
+        [ -z "$_rrc_canon" ] || _rrc_legacy="$_rrc_canon"
+        unset _rrc_canon
+    fi
+    [ "$_MASTER_ROOT" = "$_rrc_legacy" ] || _RUNTIME_ROOT_IS_CUSTOM=true
+    unset _rrc_legacy
+fi
 # Directory-local evidence Unsloth created "$1": only prebuilt-installer metadata
 # counts (UNSLOTH_PREBUILT_INFO.json for llama.cpp, UNSLOTH_NODE_PREBUILT_INFO.json
 # for Node, UNSLOTH_WHISPER_PREBUILT_INFO.json for whisper.cpp), all written only
@@ -1126,14 +1143,39 @@ _report_denied_ancestor() {
     fi
 }
 
+# What is at "$1", for the refusal message. A user told the path is "not an Unsloth install"
+# when it is their own dangling symlink has no idea what to move aside.
+_studio_path_shape() {
+    if [ -L "$1" ]; then
+        if [ -e "$1" ]; then printf 'a symlink'; else printf 'a dangling symlink'; fi
+    elif [ -f "$1" ]; then printf 'a regular file'
+    elif [ -d "$1" ]; then printf 'a directory'
+    else printf 'an existing path'
+    fi
+}
+
 # $3 is the ownership flag: the runtime children pass _RUNTIME_ROOT_IS_CUSTOM, everything
 # under the Studio home keeps _STUDIO_HOME_IS_CUSTOM.
 _assert_studio_owned_or_absent() {
     _aso_dir="$1"
     _aso_label="$2"
     _aso_custom="${3:-$_STUDIO_HOME_IS_CUSTOM}"
-    [ -d "$_aso_dir" ] || return 0
+    # -d alone read a dangling symlink and a regular file as "nothing is here", and the caller
+    # then rm -rf'd the path or let install_*_prebuilt.py os.replace() over it. Both shapes are
+    # things a user put in a directory they chose. A dangling link is the ordinary case: its
+    # target volume is simply not mounted right now, and following it later would install into
+    # somebody's other disk.
+    if [ ! -d "$_aso_dir" ] && [ ! -e "$_aso_dir" ] && [ ! -L "$_aso_dir" ]; then
+        return 0
+    fi
     if [ "$_aso_custom" = true ] && [ ! -f "$_aso_dir/$_STUDIO_OWNED_MARKER" ]; then
+        # Only a directory can carry the marker or the prebuilt metadata, so anything else here
+        # is unowned by construction and the adoption path below cannot apply to it.
+        if [ ! -d "$_aso_dir" ]; then
+            echo "ERROR: $_aso_dir already exists and is not an Unsloth-owned $_aso_label." >&2
+            echo "       It is $(_studio_path_shape "$_aso_dir"). Move it aside before re-running." >&2
+            setup_fail 1 "$_aso_label path is not an Unsloth-owned install: $_aso_dir"
+        fi
         if _studio_owned_adoptable "$_aso_dir"; then
             : > "$_aso_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
             return 0
@@ -2606,6 +2648,29 @@ else
     UNSLOTH_HOME="$HOME/.unsloth"
 fi
 mkdir -p "$UNSLOTH_HOME"
+# Record the master root inside the Studio tree, for the uninstaller.
+#
+# UNSLOTH_HOME can be set for a single command -- `UNSLOTH_HOME=/mnt/portable unsloth studio
+# update` -- and the runtimes then live somewhere only that environment named. The uninstaller
+# finds the Studio root by its own means, so it can find this note; without it, it removed the
+# Studio tree and stranded multi-gigabyte llama.cpp, node and whisper.cpp trees.
+#
+# Only for a master root: the other branches derive UNSLOTH_HOME from paths the uninstaller
+# already knows, and a stale note claiming a root that moved would be worse than none.
+if [ -n "$_MASTER_ROOT" ] && [ -z "$STAGE_ROOT" ]; then
+    if mkdir -p "$STUDIO_HOME/share" 2>/dev/null; then
+        # Staged then renamed: a reader that catches a half-written note would name a truncated
+        # path, and this note licenses deletions.
+        _mrn_tmp="$STUDIO_HOME/share/.unsloth-master-root.$$"
+        if printf '%s\n' "$UNSLOTH_HOME" > "$_mrn_tmp" 2>/dev/null; then
+            mv -f "$_mrn_tmp" "$STUDIO_HOME/share/.unsloth-master-root" 2>/dev/null \
+                || rm -f "$_mrn_tmp" 2>/dev/null || true
+        else
+            rm -f "$_mrn_tmp" 2>/dev/null || true
+        fi
+        unset _mrn_tmp
+    fi
+fi
 LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 _NEED_LLAMA_SOURCE_BUILD=false

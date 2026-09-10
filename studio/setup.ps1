@@ -5227,9 +5227,25 @@ if ($script:UnslothVerbose) {
 
 # Triton/inductor filenames are long and can hit Windows MAX_PATH (260). With long
 # paths on, cache under Unsloth home; else use a short drive-root dir for headroom.
-if ($StageRoot -or $LongPathsEnabled) {
+#
+# This value is persisted to the USER environment below, so every later Studio process inherits
+# it and _setup_cache_env's fill-if-unset default never applies on Windows. It therefore has to
+# name the same directory the resolver would have chosen, or the containment this branch is for
+# simply does not happen on Windows.
+#
+# Two things still outrank that. Long paths off keeps the short drive-root directory, because
+# Inductor's filenames hit MAX_PATH and a contained cache that cannot be written is worse than
+# an uncontained one. And a path containing a space is refused for the same reason
+# storage_roots._TOOLCHAIN_PATH_KEYS refuses one: torch/_inductor/cpp_builder.py pastes it into
+# a compiler command line unquoted, and "C:\Users\First Last" is an ordinary account name.
+$TorchCacheDir = $null
+if ($StageRoot) {
     $TorchCacheDir = Join-Path $RuntimeRoot "TORCHINDUCTOR_CACHE_DIR"
-} else {
+} elseif ($LongPathsEnabled) {
+    $candidate = Join-Path (Join-Path $StudioHome "cache") "torchinductor"
+    if ($candidate -notmatch '\s') { $TorchCacheDir = $candidate }
+}
+if (-not $TorchCacheDir) {
     $TorchCacheDir = "C:\tc"
 }
 if (-not (Test-Path -LiteralPath $TorchCacheDir)) { [System.IO.Directory]::CreateDirectory($TorchCacheDir) | Out-Null }

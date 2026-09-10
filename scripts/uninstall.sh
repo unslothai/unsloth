@@ -489,6 +489,24 @@ _custom_studio_data_dirs() {
 # would name a directory neither install nor uninstall agrees on.
 _master_root() {
     _mr=$(printf '%s' "${UNSLOTH_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    # The note setup.sh leaves in the Studio tree, when this run has no UNSLOTH_HOME of its own.
+    # `UNSLOTH_HOME=/mnt/portable unsloth studio update` installs the runtimes there and leaves
+    # nothing in this environment, so without the note an uninstall later removed the Studio
+    # tree and stranded them. Every Studio root this script already knows is consulted, and the
+    # first readable note wins; the deny list and the marker gate below still apply to whatever
+    # it names, so a stale note cannot license a removal the environment could not.
+    if [ -z "$_mr" ]; then
+        for _mr_conf in "$HOME/.unsloth/studio/share/.unsloth-master-root" \
+                        "${UNSLOTH_STUDIO_HOME:-}/share/.unsloth-master-root" \
+                        "${STUDIO_HOME:-}/share/.unsloth-master-root"; do
+            case "$_mr_conf" in /share/*) continue ;; esac
+            [ -f "$_mr_conf" ] || continue
+            # One line, first only: a note that grew a second line is not one we wrote.
+            _mr=$(head -n 1 "$_mr_conf" 2>/dev/null | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//') \
+                || _mr=""
+            [ -n "$_mr" ] && break
+        done
+    fi
     [ -n "$_mr" ] || return 0
     # shellcheck disable=SC2088
     case "$_mr" in
@@ -547,12 +565,18 @@ _custom_studio_roots() {
     }
     # Mirror install.sh's precedence: UNSLOTH_STUDIO_HOME wins, STUDIO_HOME is ignored when both
     # are set, or uninstalling install A could also delete install B from a leftover STUDIO_HOME.
-    if [ -n "${UNSLOTH_STUDIO_HOME:-}" ]; then
-        _emit "$UNSLOTH_STUDIO_HOME"
-        _from_conf "$UNSLOTH_STUDIO_HOME/share/studio.conf"
-    elif [ -n "${STUDIO_HOME:-}" ]; then
-        _emit "$STUDIO_HOME"
-        _from_conf "$STUDIO_HOME/share/studio.conf"
+    # Trimmed, as storage_roots.studio_root() trims them: a whitespace-only override is unset to
+    # every resolver, but a bare -n test called it present and suppressed the master-root branch
+    # below. _emit then discarded the whitespace path, so an uninstall carrying that environment
+    # removed the master root's runtime siblings and left <UNSLOTH_HOME>/studio installed.
+    _ush=$(printf '%s' "${UNSLOTH_STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    _sh=$(printf '%s' "${STUDIO_HOME:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    if [ -n "$_ush" ]; then
+        _emit "$_ush"
+        _from_conf "$_ush/share/studio.conf"
+    elif [ -n "$_sh" ]; then
+        _emit "$_sh"
+        _from_conf "$_sh/share/studio.conf"
     elif [ -n "$(_master_root)" ]; then
         # Last, as in storage_roots.studio_root(): UNSLOTH_HOME names the tree, and the two
         # above name this exact directory, so either of them wins outright.
@@ -710,7 +734,11 @@ _unsloth_uninstall_main() {
                 _mr_path="$_mr_root/$_mr_child"
                 if _is_unsafe_root "$_mr_path"; then
                     echo "  refusing to remove unsafe path: $_mr_path" >&2
-                elif [ -e "$_mr_path" ] && [ ! -f "$_mr_path/.unsloth-studio-owned" ]; then
+                # -L as well as -e: -e is false for a dangling symlink, so one named llama.cpp
+                # with its target volume unmounted fell through to _remove_path, which treats
+                # -L as present and unlinks it. In a root the user chose, that link is theirs.
+                elif { [ -e "$_mr_path" ] || [ -L "$_mr_path" ]; } \
+                    && [ ! -f "$_mr_path/.unsloth-studio-owned" ]; then
                     echo "  keeping $_mr_child without Unsloth owner marker: $_mr_path" >&2
                 else
                     _remove_path "$_mr_path"

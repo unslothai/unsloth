@@ -13,6 +13,7 @@ tests/test_managed_tools_master_root.py, which holds the resolvers to each other
 
 from __future__ import annotations
 
+import pathlib
 import shutil
 import subprocess
 from pathlib import Path
@@ -406,6 +407,109 @@ def test_every_runtime_ownership_guard_uses_the_runtime_flag():
         assert not any(
             name in line for name in ("$LlamaCppDir", "$WhisperCppDir", "$NodeDir")
         ), line
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+def test_the_legacy_root_named_explicitly_is_not_custom(tmp_path):
+    """UNSLOTH_HOME=$HOME/.unsloth names the root a default install already uses.
+
+    Nothing moves, so demanding an owner marker there rejects an update that used to reuse a
+    legacy source-built ~/.unsloth/llama.cpp, which predates the marker entirely. Customness has
+    to come from where the runtimes LAND, not from whether the variable was set.
+    """
+    home = tmp_path / "home"
+    (home / ".unsloth" / "studio").mkdir(parents = True)
+    src = SETUP_SH.read_text(encoding = "utf-8")
+    block = _slice(src, "# Stripped before anything else", "# Directory-local evidence")
+    script = "\n".join((
+        "set -u", "_STUDIO_HOME_IS_CUSTOM=false", block,
+        'printf "%s\\n" "$_RUNTIME_ROOT_IS_CUSTOM"',
+    ))
+
+    def flag(master: str) -> str:
+        done = subprocess.run(
+            ["bash", "-c", script],
+            env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "UNSLOTH_HOME": master},
+            capture_output = True, text = True, timeout = 60,
+        )
+        assert done.returncode == 0, done.stderr
+        return done.stdout.strip()
+
+    assert flag(str(home / ".unsloth")) == "false"
+    # Non-vacuity: a root that really is elsewhere still takes the strict path.
+    assert flag(str(tmp_path / "portable")) == "true"
+    assert flag("") == "false"
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
+def test_only_a_directory_can_be_adopted_at_a_runtime_path(tmp_path):
+    """A dangling symlink and a regular file are both things the user put there.
+
+    -d alone read either as "nothing is here", and the caller then rm -rf'd the path or let
+    install_*_prebuilt.py os.replace() over it. A dangling link is the ordinary case: its target
+    volume is simply not mounted, and resolving it later installs onto somebody's other disk.
+    """
+    src = SETUP_SH.read_text(encoding = "utf-8")
+    block = _slice(src, "_studio_path_shape() {", "\n_packaged_frontend_available")
+    script = "\n".join((
+        "set -u",
+        "_STUDIO_OWNED_MARKER=.unsloth-studio-owned",
+        "_studio_owned_adoptable() { return 1; }",
+        "_studio_dir_unsearchable() { return 1; }",
+        "_path_access_denied() { echo DENIED; exit 9; }",
+        "setup_fail() { echo REFUSED; exit 1; }",
+        block,
+        '_assert_studio_owned_or_absent "$1" llama.cpp true',
+        "echo ALLOWED",
+    ))
+
+    def verdict(path: pathlib.Path) -> str:
+        done = subprocess.run(
+            ["bash", "-c", script, "_", str(path)],
+            env = {"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+            capture_output = True, text = True, timeout = 60,
+        )
+        return done.stdout.strip().splitlines()[-1] if done.stdout.strip() else done.stderr[-120:]
+
+    assert verdict(tmp_path / "absent") == "ALLOWED"
+
+    dangling = tmp_path / "dangling"
+    dangling.symlink_to(tmp_path / "no-such-volume" / "llama.cpp")
+    assert verdict(dangling) == "REFUSED"
+
+    plain = tmp_path / "afile"
+    plain.write_text("mine")
+    assert verdict(plain) == "REFUSED"
+
+    owned = tmp_path / "owned"
+    owned.mkdir()
+    (owned / ".unsloth-studio-owned").touch()
+    assert verdict(owned) == "ALLOWED"
+
+
+def test_the_windows_inductor_cache_agrees_with_the_resolver():
+    """setup.ps1 persists TORCHINDUCTOR_CACHE_DIR to the USER environment.
+
+    Every later Studio process inherits it, so _setup_cache_env's fill-if-unset default never
+    applies on Windows and the containment this branch is for does not happen there. It has to
+    name the directory the resolver would have chosen. Two things still outrank that, and both
+    are recorded here so a later edit cannot quietly drop them: long paths off keeps the short
+    drive-root directory for MAX_PATH headroom, and a path containing a space is refused for the
+    same reason storage_roots does, since the C++ builders paste it in unquoted.
+    """
+    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    block = _slice(ps, "$TorchCacheDir = $null", "$env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir")
+    assert 'Join-Path (Join-Path $StudioHome "cache") "torchinductor"' in block
+    assert "$LongPathsEnabled" in block
+    assert "'\\s'" in block or '"\\s"' in block, "the whitespace refusal is gone"
+    assert '"C:\\tc"' in block
+
+    roots = (REPO_ROOT / "studio" / "backend" / "utils" / "paths" / "storage_roots.py").read_text(
+        encoding = "utf-8"
+    )
+    # The same key, named by both sides, so the two cannot drift apart silently.
+    assert '"TORCHINDUCTOR_CACHE_DIR",' in roots
+    assert 'str(root / "torchinductor")' in roots
 
 
 def test_the_windows_node_guard_covers_a_master_root():

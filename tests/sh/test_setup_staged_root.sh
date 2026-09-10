@@ -91,8 +91,18 @@ check "setup.ps1 does not install Git while staging" \
     "$(has "$SETUP_PS1" 'Background staging cannot install Git; retry with the foreground updater.')"
 check "setup.ps1 preserves foreground Git bootstrap" \
     "$(has "$SETUP_PS1" 'if ($gitNeeded -or -not $StageRoot) {')"
+# The branch that decides TORCHINDUCTOR_CACHE_DIR, by what it does rather than by its old
+# spelling: a staged run must take the stage root and must be asked FIRST, ahead of the Studio
+# cache and the short drive-root fallback that a normal install chooses between.
+_tcd="$(awk '/^\$TorchCacheDir = \$null$/{g=1} g{print} g && /^\$env:TORCHINDUCTOR_CACHE_DIR/{exit}' "$SETUP_PS1")"
 check "setup.ps1 keeps the staging compiler cache under the stage root" \
-    "$(has "$SETUP_PS1" 'if ($StageRoot -or $LongPathsEnabled) {')"
+    "$(printf '%s' "$_tcd" | grep -qF 'if ($StageRoot) {' \
+       && printf '%s' "$_tcd" | grep -qF '$TorchCacheDir = Join-Path $RuntimeRoot "TORCHINDUCTOR_CACHE_DIR"' \
+       && echo 0 || echo 1)"
+check "setup.ps1 asks about staging before anything else" \
+    "$([ "$(printf '%s' "$_tcd" | grep -n 'if ($StageRoot) {' | cut -d: -f1)" -lt \
+         "$(printf '%s' "$_tcd" | grep -n 'LongPathsEnabled' | head -1 | cut -d: -f1)" ] \
+       && echo 0 || echo 1)"
 
 # ── the staged activation cannot dot-source a copied Activate script ──
 # A venv copied out of $STUDIO_HOME still names the original root in its activate
