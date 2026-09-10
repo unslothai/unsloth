@@ -323,8 +323,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               ? { targetModules: cptDefaultsPatch.targetModules }
               : {};
             // Only trainOnCompletions: CPT's forced adapter values are not the model's.
+            // Targets are pinned to what cptDefaultsPatch resolved FROM, so the summary's
+            // resolveCptTargetModules(baseline) reproduces the live set even when the model
+            // config carries none and cptTargetModules falls back to live state.
             const cptBaselineOverride = {
               trainOnCompletions: cptDefaultsPatch.trainOnCompletions,
+              targetModules: [...cptTargetModules],
             };
             const modelDefaultsBaseline = {
               ...modelDefaultsPatch,
@@ -416,11 +420,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                   : {}),
               advancedSettingsBaseline: shouldApplyTrainingDefaults
                 ? modelDefaultsBaseline
-                : shouldApplyCptTargetDefaults &&
-                    modelDefaultsPatch.targetModules !== undefined
+                : shouldApplyCptTargetDefaults
                   ? {
                       ...advancedSettingsBaseline,
-                      targetModules: modelDefaultsPatch.targetModules,
+                      targetModules: [...cptTargetModules],
                     }
                   : advancedSettingsBaseline,
               modelType: inferredModelType,

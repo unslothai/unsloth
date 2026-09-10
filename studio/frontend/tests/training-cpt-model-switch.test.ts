@@ -610,6 +610,54 @@ test("leaving CPT does not report untouched adapter params as modified", async (
   );
 });
 
+// load_model_defaults returns {} when its YAML read raises or default.yaml is gone,
+// so the patch carries no target modules and cptTargetModules falls back to live state.
+// The baseline has to follow that fallback or the summary compares the all-linear set
+// the UI is showing against the generic CPT list and reports a phantom edit.
+test("an empty model config does not invent a modified target-modules setting", async () => {
+  useTrainingConfigStore.getState().reset();
+  useTrainingConfigStore
+    .getState()
+    .setTargetModules(["all-linear", "embed_tokens", "lm_head"]);
+  useTrainingConfigStore.getState().setTrainingMethod("cpt");
+  setAuthFetchHandler(() =>
+    Promise.resolve(
+      Response.json({
+        id: "org/no-defaults",
+        config: {},
+        is_vision: false,
+        is_embedding: false,
+        is_audio: false,
+        audio_type_known: true,
+        is_lora: false,
+        model_type: "text",
+        model_size_bytes: null,
+        max_position_embeddings: 32768,
+      }),
+    ),
+  );
+  useTrainingConfigStore.getState().selectTrainingModel("org/no-defaults", "text");
+  await waitForModelDefaults("org/no-defaults");
+
+  const inCpt = useTrainingConfigStore.getState();
+  assert.deepEqual(inCpt.targetModules, [
+    "all-linear",
+    "embed_tokens",
+    "lm_head",
+  ]);
+  assert.equal(
+    countNonDefaultAdvancedSettings(inCpt, inCpt.advancedSettingsBaseline),
+    0,
+  );
+
+  useTrainingConfigStore.getState().setTrainingMethod("qlora");
+  const out = useTrainingConfigStore.getState();
+  assert.equal(
+    countNonDefaultAdvancedSettings(out, out.advancedSettingsBaseline),
+    0,
+  );
+});
+
 // Cache reconciliation restarts the request with applyTrainingDefaults: false.
 async function cacheRestartInsideCpt(beforeRestart: () => void): Promise<void> {
   useTrainingConfigStore.getState().reset();
