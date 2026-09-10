@@ -711,7 +711,10 @@ export function AgentWorkspacePanel({
   async function prepareCommitPreview(): Promise<void> {
     let ownedPaths: string[];
     try {
-      ownedPaths = agentCommitOwnedPaths(gitStatus?.files ?? [], selectedCommitPaths);
+      ownedPaths = agentCommitOwnedPaths(
+        gitStatus?.files ?? [],
+        selectedCommitPaths,
+      );
     } catch (error) {
       toast.error(safeAgentWorkspaceError(error));
       return;

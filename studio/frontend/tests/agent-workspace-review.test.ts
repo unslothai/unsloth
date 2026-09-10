@@ -495,27 +495,42 @@ test("pre-dispatch rejection is a known non-submission outcome", async () => {
   }
 });
 
-
 test("commit path selection includes both sides of a selected rename", () => {
   const files = [
     { code: "R ", path: "new.txt", oldPath: "old.txt" },
     { code: " M", path: "other.txt" },
   ];
-  assert.deepEqual(agentCommitOwnedPaths(files, new Set(["new.txt"])), ["new.txt", "old.txt"]);
-  assert.deepEqual(agentCommitOwnedPaths(files, new Set(["other.txt"])), ["other.txt"]);
+  assert.deepEqual(agentCommitOwnedPaths(files, new Set(["new.txt"])), [
+    "new.txt",
+    "old.txt",
+  ]);
+  assert.deepEqual(agentCommitOwnedPaths(files, new Set(["other.txt"])), [
+    "other.txt",
+  ]);
   assert.deepEqual(agentCommitOwnedPaths(files, new Set(["stale.txt"])), []);
 });
 
 test("commit path selection deduplicates rename sources without owning copy sources", () => {
-  assert.deepEqual(agentCommitOwnedPaths([
-    { code: "R ", path: "new.txt", oldPath: "old.txt" },
-    { code: " D", path: "old.txt" },
-    { code: "C ", path: "copy.txt", oldPath: "unselected.txt" },
-  ], new Set(["new.txt", "old.txt", "copy.txt"])), ["copy.txt", "new.txt", "old.txt"]);
+  assert.deepEqual(
+    agentCommitOwnedPaths(
+      [
+        { code: "R ", path: "new.txt", oldPath: "old.txt" },
+        { code: " D", path: "old.txt" },
+        { code: "C ", path: "copy.txt", oldPath: "unselected.txt" },
+      ],
+      new Set(["new.txt", "old.txt", "copy.txt"]),
+    ),
+    ["copy.txt", "new.txt", "old.txt"],
+  );
 });
 
 test("commit path selection rejects a selected rename without its source", () => {
-  assert.throws(() => agentCommitOwnedPaths(
-    [{ code: "R ", path: "new.txt" }], new Set(["new.txt"]),
-  ), /Rename source is unavailable/);
+  assert.throws(
+    () =>
+      agentCommitOwnedPaths(
+        [{ code: "R ", path: "new.txt" }],
+        new Set(["new.txt"]),
+      ),
+    /Rename source is unavailable/,
+  );
 });

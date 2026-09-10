@@ -314,7 +314,9 @@ export function agentCommitOwnedPaths(
     paths.add(file.path);
     if (file.code.includes("R")) {
       if (!file.oldPath) {
-        throw new Error("Rename source is unavailable. Refresh Git status and retry.");
+        throw new Error(
+          "Rename source is unavailable. Refresh Git status and retry.",
+        );
       }
       paths.add(file.oldPath);
     }
