@@ -1453,9 +1453,13 @@ def test_a_relative_uv_cache_dir_is_recorded_as_uv_resolves_it(tmp_path, monkeyp
     # UV_WORKING_DIR moves uv's working directory (itself relative to the process cwd
     # when relative), and a relative cache follows it, as the installers already read it.
     monkeypatch.setenv("UV_WORKING_DIR", "work")
-    assert _studio_prefetch.resolved_cache_dir("uv-cache", tmp_path) == str(tmp_path / "work" / "uv-cache")
+    assert _studio_prefetch.resolved_cache_dir("uv-cache", tmp_path) == str(
+        tmp_path / "work" / "uv-cache"
+    )
     monkeypatch.setenv("UV_WORKING_DIR", str(tmp_path / "abs"))
-    assert _studio_prefetch.resolved_cache_dir("uv-cache", tmp_path) == str(tmp_path / "abs" / "uv-cache")
+    assert _studio_prefetch.resolved_cache_dir("uv-cache", tmp_path) == str(
+        tmp_path / "abs" / "uv-cache"
+    )
     monkeypatch.delenv("UV_WORKING_DIR", raising = False)
     # Without an explicit anchor, the working directory the prefetch's uv calls run from.
     with _studio_prefetch._working_directory(tmp_path / "script"):
