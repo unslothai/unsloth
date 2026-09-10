@@ -4,11 +4,28 @@
 
 """Measure where Unsloth Studio's startup time goes, per platform.
 
-Nothing measured this before: the backend logs "lifespan startup completed in X ms" but no test or CI job asserted a budget, and studio_test_kit discards the elapsed time of its /healthz poll. A first local run (Linux, warm cache, fast server CPU) found `import main` alone costs 6.6s before the server can bind, dominated by eager module-level imports pulled in by the `routes` package: torch 1930 ms self, unsloth_zoo 914 ms, routes 779 ms, transformers 524 ms.
+Nothing measured this before: the backend logs "lifespan startup completed in X ms"
+but no test or CI job asserted a budget, and studio_test_kit discards the elapsed
+time of its /healthz poll. A first local run (Linux, warm cache, fast server CPU)
+found `import main` alone costs 6.6s before the server can bind, dominated by eager
+module-level imports pulled in by the `routes` package:
 
-Phases measured: import (`python -X importtime -c "import main"`, top cumulative plus per-package self), spawn (process start to first byte on stdout), healthz (process start to /api/health or /healthz answering 200), and lifespan (the backend's own "lifespan startup completed in X ms" log line).
+    torch          1930 ms self
+    unsloth_zoo     914 ms self
+    routes          779 ms self
+    transformers    524 ms self
 
-Usage: `python scripts/profile_startup.py --repeats 3 --json out.json`, or `--import-only` for no server and no port. Exit code is 0 unless --max-healthz-seconds is given and exceeded.
+Phases measured:
+  import   `python -X importtime -c "import main"`, top cumulative + per-package self
+  spawn    process start -> first byte on stdout
+  healthz  process start -> /api/health (or /healthz) answers 200
+  lifespan the backend's own "lifespan startup completed in X ms" log line
+
+Usage:
+    python scripts/profile_startup.py --repeats 3 --json out.json
+    python scripts/profile_startup.py --import-only     # no server, no port needed
+
+Exit code is 0 unless --max-healthz-seconds is given and exceeded.
 """
 
 from __future__ import annotations

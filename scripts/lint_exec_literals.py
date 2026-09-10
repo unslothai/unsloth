@@ -3,11 +3,23 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 """Fail CI when `exec`, `eval` or `compile` is handed something that is not a literal.
 
-Two of the holes fixed in unsloth-zoo#1108 and unsloth#9777 were exactly this shape: `exec` of an HTTPS response body, and `exec` of a string built from a downloaded config. CodeQL runs here with Python enabled and raises other injection findings, `py/path-injection` among them, but has never once raised `py/code-injection`, so this class is not covered by what is already running.
+Two of the holes fixed in unsloth-zoo#1108 and unsloth#9777 were exactly this shape:
+`exec` of an HTTPS response body, and `exec` of a string built from a downloaded
+config. GitHub's CodeQL runs on these repositories with Python enabled and raises
+other injection findings here, `py/path-injection` among them, but it has never once
+raised `py/code-injection` - so this class is not covered by what is already running.
 
-The rule is deliberately blunt: the first argument to one of those three builtins must be a written-out string, and anything else (a name, a call, an f-string with a placeholder) is reported. The realistic failure is a contributor writing `exec(f"...")` without thinking about where the pieces came from, not somebody engineering a way past a checker they could equally well delete.
+The rule is deliberately the blunt one: the first argument to one of those three
+builtins must be a written-out string. Anything else - a name, a call, an f-string
+with a placeholder - is reported. That is coarse, and it is meant to be. The realistic
+failure is a contributor writing `exec(f"...")` without thinking about where the
+pieces came from, not somebody engineering a way past a checker they could equally
+well delete.
 
-Existing call sites are recorded in a baseline beside this script, so the gate starts green and only new ones fail. A baseline entry carries the call's own text rather than its line number, so moving code does not churn it, and it carries a count, so a new call cannot hide behind a removed one.
+Existing call sites are recorded in a baseline beside this script, so the gate starts
+green and only new ones fail. A baseline entry carries the call's own text rather than
+its line number, so moving code does not churn it, and it carries a count, so a new
+call cannot hide behind a removed one.
 
     python scripts/lint_exec_literals.py             # check, exit 1 on a new site
     python scripts/lint_exec_literals.py --update    # rewrite the baseline
