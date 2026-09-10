@@ -26,12 +26,18 @@ assert_eq()    { _l="$1"; [ "$2" = "$3" ] && { echo "  PASS: $_l"; PASS=$((PASS+
 
 HELPERS_FILE=$(mktemp -p "$_TMP_ROOT")
 {
-    sed -n '/^_remove_path() {/,/^}/p'     "$UNINSTALL_SH"
-    sed -n '/^_is_unsafe_root() {/,/^}/p'  "$UNINSTALL_SH"
-    sed -n '/^_master_root() {/,/^}/p'     "$UNINSTALL_SH"
-    sed -n '/^_set_marker() {/,/^}/p'      "$UNINSTALL_SH"
+    sed -n '/^_remove_path() {/,/^}/p'      "$UNINSTALL_SH"
+    sed -n '/^_remove_lock_file() {/,/^}/p' "$UNINSTALL_SH"
+    sed -n '/^_is_unsafe_root() {/,/^}/p'   "$UNINSTALL_SH"
+    sed -n '/^_master_root() {/,/^}/p'      "$UNINSTALL_SH"
+    sed -n '/^_set_marker() {/,/^}/p'       "$UNINSTALL_SH"
 } > "$HELPERS_FILE"
-grep -q '_master_root() {' "$HELPERS_FILE" || { echo "FAIL: helpers missing _master_root"; exit 1; }
+# Every helper the block calls, by name. A helper that stops being extracted goes "command not
+# found" inside a subshell the harness already swallows, which reads as "nothing was removed"
+# and passes the keep-assertions while failing the remove-assertions for the wrong reason.
+for _h in _remove_path _remove_lock_file _is_unsafe_root _master_root _set_marker; do
+    grep -q "^$_h() {" "$HELPERS_FILE" || { echo "FAIL: helpers missing $_h"; exit 1; }
+done
 
 # The real block, anchored on its own first line so a rename fails loudly instead of vacuously.
 BLOCK_FILE=$(mktemp -p "$_TMP_ROOT")
@@ -57,6 +63,23 @@ assert_nodir "whisper.cpp removed" "$MR/whisper.cpp"
 assert_nodir "llama lock removed"  "$MR/.llama.cpp.install.lock"
 assert_nodir "node lock removed"   "$MR/.node.install.lock"
 assert_dir   "studio root left to the Studio removal" "$MR/studio"
+
+echo "== only a FILE is removed from an install-lock path =="
+# prebuilt_core.install_lock creates the lock with os.open(O_CREAT | O_EXCL), so it is always a
+# regular file. The names are fixed, so in a user-chosen root a directory here is the user's:
+# rm -rf on it would take a tree that never carried the owner marker the children above need.
+MRL="$_TMP_ROOT/lockshapes"
+mkdir -p "$MRL/studio" "$MRL/.node.install.lock/keep"
+: > "$MRL/.node.install.lock/keep/user-file"
+: > "$MRL/.llama.cpp.install.lock"
+ln -s "$MRL/.llama.cpp.install.lock" "$MRL/.whisper.cpp.install.lock"
+: > "$MRL/.sd.cpp.install.lock.stale.4242"
+run_block "$HOME" "$MRL"
+assert_nodir "a real lock file is removed"          "$MRL/.llama.cpp.install.lock"
+assert_nodir "a stale lock file is removed"         "$MRL/.sd.cpp.install.lock.stale.4242"
+assert_nodir "a symlinked lock is unlinked"         "$MRL/.whisper.cpp.install.lock"
+assert_dir   "a directory at a lock path is kept"   "$MRL/.node.install.lock"
+assert_dir   "and so is everything under it"        "$MRL/.node.install.lock/keep/user-file"
 
 echo "== an unmarked tree is somebody else's and is kept =="
 MR2="$_TMP_ROOT/mixed"

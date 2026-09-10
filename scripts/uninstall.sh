@@ -343,6 +343,25 @@ _remove_path() {
     fi
 }
 
+# An install lock, and only an install lock.
+#
+# prebuilt_core.install_lock creates these with os.open(O_CREAT | O_EXCL) and writes a pid, so
+# the lock is always a regular file. _remove_path is rm -rf, which in a user-chosen master root
+# would take a whole tree that merely happens to be named .node.install.lock -- a name the user
+# owns as much as any other, since the root is theirs. Nothing outside these fixed names reaches
+# here, so the test costs nothing and removes the one shape we never meant to delete.
+#
+# A symlink is unlinked rather than followed: -f is true for a link to a file, and rm on the link
+# takes the link.
+_remove_lock_file() {
+    _rlf="$1"
+    if [ -L "$_rlf" ] || [ -f "$_rlf" ]; then
+        _remove_path "$_rlf"
+    elif [ -e "$_rlf" ]; then
+        echo "  keeping non-file at an install-lock path: $_rlf" >&2
+    fi
+}
+
 # $1 override, $2 default. A relative override is invalid per XDG and dropped by dirs (which
 # Tauri resolves through), so honouring one would spare the real data and rm -rf under our cwd.
 _xdg_dir() {
@@ -692,14 +711,14 @@ _unsloth_uninstall_main() {
             done
             for _mr_lock in .llama.cpp.install.lock .node.install.lock \
                     .whisper.cpp.install.lock .sd.cpp.install.lock; do
-                _remove_path "$_mr_root/$_mr_lock"
+                _remove_lock_file "$_mr_root/$_mr_lock"
             done
             # The prebuilt installers SHARE <root>/.staging and prune it only when empty, so
             # anything left in it here is not ours. rmdir, not _remove_path: in a user-chosen
             # root a recursive delete would take files an install was content to leave.
             rmdir "$_mr_root/.staging" 2>/dev/null || true
             for _mr_stale in "$_mr_root"/.*.install.lock.stale.*; do
-                [ -e "$_mr_stale" ] && _remove_path "$_mr_stale"
+                [ -e "$_mr_stale" ] && _remove_lock_file "$_mr_stale"
             done
             # Only when nothing of the user's is left; rmdir refuses a non-empty directory.
             rmdir "$_mr_root" 2>/dev/null || true
