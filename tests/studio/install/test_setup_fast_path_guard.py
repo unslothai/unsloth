@@ -346,11 +346,13 @@ def test_the_offline_fast_path_never_wipes_a_sidecar():
     assert "Set-Variable -Name $flag -Value $false" in ps1[guard_ps1 : guard_ps1 + 900]
     # The legacy migration is itself a wipe, and it sits above the guard; under the
     # offline keep it has to be skipped, not merely followed by cleared flags.
+    # ...and under UV_OFFLINE without the fast path as well: the legacy tree is the only
+    # sidecar the install has, and the three rebuilds would come from a cache that may be cold.
     assert sh.index(
-        '[ "${_OFFLINE_FAST_PATH:-false}" = true ]; then\n    # The migration'
+        '[ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; }; then\n    # The migration'
     ) < sh.index('rm -rf "$STUDIO_HOME/.venv_t5"')
     assert ps1.index(
-        "(Test-Path -LiteralPath $VenvT5Legacy) -and $script:OfflineFastPath"
+        "(Test-Path -LiteralPath $VenvT5Legacy) -and ($script:OfflineFastPath -or (Test-UvOfflineRequested))"
     ) < ps1.index("Remove-Item -LiteralPath $VenvT5Legacy -Recurse -Force")
     # ...and the tiktoken top-up a current tier gets must not run either: its pip
     # fallback reaches the network, and a deferred tier would gain a tiktoken-only dir.
@@ -373,8 +375,11 @@ def test_uv_offline_without_the_fast_path_still_keeps_an_existing_sidecar():
         < offline_sh
         < sh.index('if [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then')
     )
-    block_sh = sh[offline_sh : offline_sh + 900]
-    assert '&& [ -d "$3" ]; then' in block_sh
+    block_sh = sh[offline_sh : offline_sh + 1100]
+    # The directory comes through its own variable: a Studio home with a space in its
+    # path must not split inside the loop's word list.
+    assert '&& [ -d "$_ofp_dir" ]; then' in block_sh
+    assert "$VENV_T5_530_DIR\"" not in block_sh.split("for _ofp in", 1)[1].split("\n", 1)[0]
     assert 'eval "_NEED_T5_$1=false"' in block_sh and 'eval "_DEFER_T5_$1=true"' in block_sh
     offline_ps1 = ps1.index("if (-not $script:OfflineFastPath -and (Test-UvOfflineRequested)) {")
     assert (

@@ -2435,7 +2435,10 @@ _install_sidecar() {
 _NEED_T5_530=false
 _NEED_T5_550=false
 _NEED_T5_510=false
-if [ -d "$STUDIO_HOME/.venv_t5" ] && [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then
+# Under the offline keep, and under UV_OFFLINE without it (the core not verified, or
+# PyPI still answering): the migration is a wipe followed by three rebuilds from a cache
+# that may be cold, and the legacy tree is the only sidecar this install has.
+if [ -d "$STUDIO_HOME/.venv_t5" ] && { [ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; }; then
     # The migration below is a wipe followed by three rebuilds, and under the offline
     # keep nothing can be fetched: the legacy sidecar is the only one this install has,
     # so it stays, untouched, for the next online update to migrate.
@@ -2471,15 +2474,18 @@ _DEFER_T5_510=false
 # absent. An existing stale tier is left for the next online update; an absent tier
 # has nothing to lose and is built from the cache if the cache can.
 if [ "${_OFFLINE_FAST_PATH:-false}" != true ] && _uv_offline_requested; then
-    for _ofp in "530 5.3.0 $VENV_T5_530_DIR" "550 5.5.0 $VENV_T5_550_DIR" "510 5.10.2 $VENV_T5_510_DIR"; do
+    # The tier's directory is read through its own variable, never packed into the
+    # word list: a Studio home with a space in its path would split there.
+    for _ofp in "530 5.3.0" "550 5.5.0" "510 5.10.2"; do
         set -- $_ofp
-        if eval "[ \"\$_NEED_T5_$1\" = true ]" && [ -d "$3" ]; then
+        _ofp_dir=$(eval "printf '%s' \"\$VENV_T5_$1_DIR\"")
+        if eval "[ \"\$_NEED_T5_$1\" = true ]" && [ -d "$_ofp_dir" ]; then
             substep "transformers $2 sidecar is stale but UV_OFFLINE is set -- left for the next online update"
             eval "_NEED_T5_$1=false"
             eval "_DEFER_T5_$1=true"
         fi
     done
-    unset _ofp
+    unset _ofp _ofp_dir
 fi
 if [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then
     for _ofp in "530 5.3.0" "550 5.5.0" "510 5.10.2"; do

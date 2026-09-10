@@ -6192,7 +6192,10 @@ function Install-T5Sidecar {
 $_NeedT5_530 = $false
 $_NeedT5_550 = $false
 $_NeedT5_510 = $false
-if ((Test-Path -LiteralPath $VenvT5Legacy) -and $script:OfflineFastPath) {
+# Under the offline keep, and under UV_OFFLINE without it (the core not verified, or
+# PyPI still answering): the migration is a wipe followed by three rebuilds from a cache
+# that may be cold, and the legacy tree is the only sidecar this install has.
+if ((Test-Path -LiteralPath $VenvT5Legacy) -and ($script:OfflineFastPath -or (Test-UvOfflineRequested))) {
     # The migration below is a wipe followed by three rebuilds, and under the offline keep
     # nothing can be fetched: the legacy sidecar is the only one this install has, so it
     # stays, untouched, for the next online update to migrate.
