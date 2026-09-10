@@ -5387,7 +5387,7 @@ def save_to_gguf_generic(
 def _push_merged_to_hub_revision(save_kwargs):
     import tempfile
     from huggingface_hub import CommitOperationAdd, ModelCard, hf_hub_download
-    from huggingface_hub.errors import EntryNotFoundError
+    from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
     from unsloth_zoo.saving_utils import get_original_model_id
 
     if not save_kwargs["is_main_process"]:
@@ -5420,6 +5420,8 @@ def _push_merged_to_hub_revision(save_kwargs):
                 token = token,
             )
             card = ModelCard.load(remote_card_path)
+        except LocalEntryNotFoundError:
+            raise
         except EntryNotFoundError:
             card = ModelCard.load(card_path) if card_path.is_file() else None
         if card is None:

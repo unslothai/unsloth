@@ -11,7 +11,11 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 from huggingface_hub import HfApi, ModelCard
-from huggingface_hub.errors import EntryNotFoundError, RevisionNotFoundError
+from huggingface_hub.errors import (
+    EntryNotFoundError,
+    LocalEntryNotFoundError,
+    RevisionNotFoundError,
+)
 
 
 class PeftModel:
@@ -350,10 +354,11 @@ def test_remote_destination_card_survives(saving, revision, model_class):
     assert records["downloads"] == [("owner/model", "README.md", revision, "explicit-fixture")]
 
 
-def test_card_download_failure_does_not_overwrite_remote_card(saving):
+@pytest.mark.parametrize("error", [OSError, LocalEntryNotFoundError])
+def test_card_download_failure_does_not_overwrite_remote_card(saving, error):
     env, records, _ = saving
-    records["download_error"] = OSError("connection failed")
-    with pytest.raises(OSError, match = "connection failed"):
+    records["download_error"] = error("connection failed")
+    with pytest.raises(error, match = "connection failed"):
         env["unsloth_generic_push_to_hub_merged"](FullModel(), "owner/model", create_pr = True)
     assert records["uploads"] == []
     assert not any(directory.exists() for directory in records["directories"])
