@@ -3262,7 +3262,7 @@ class TestASaveDuringPlacementIsAnswered:
 
 
 class TestOnlyAClassifiableTargetConfirms:
-    """"Has a GPU backend" and "we can tell whether its target is discrete" are
+    """ "Has a GPU backend" and "we can tell whether its target is discrete" are
     different questions, and broadening the first silently broadened the second.
     CUDA and HIP are classified by _amd_apu_wants_unified_memory and Vulkan by the
     probe; a SYCL, MUSA, CANN or OpenCL plugin has neither, and an Intel iGPU
@@ -3283,9 +3283,9 @@ class TestOnlyAClassifiableTargetConfirms:
         self, monkeypatch, backends, classifiable
     ):
         from core.inference.llama_cpp import LlamaCppBackend
-
         monkeypatch.setattr(
-            LlamaCppBackend, "_installed_ggml_backends",
+            LlamaCppBackend,
+            "_installed_ggml_backends",
             staticmethod(lambda binary = None: backends),
         )
         assert LlamaCppBackend._offload_target_is_classifiable("llama-server") is classifiable
@@ -3306,7 +3306,6 @@ class TestTheLoadabilityCheckFollowsThePlugin:
     def test_one_resolver_serves_both(self):
         from core.inference.llama_cpp import LlamaCppBackend
         import inspect
-
         for fn in (
             LlamaCppBackend._build_offers_gpu_backend,
             LlamaCppBackend._windows_cuda_runtime_missing,
@@ -3317,7 +3316,8 @@ class TestTheLoadabilityCheckFollowsThePlugin:
         from core.inference.llama_cpp import LlamaCppBackend
 
         beside, external = tmp_path / "beside", tmp_path / "ext"
-        beside.mkdir(); external.mkdir()
+        beside.mkdir()
+        external.mkdir()
         assert LlamaCppBackend._ggml_plugin_roots(str(beside), {}) == [beside]
         assert LlamaCppBackend._ggml_plugin_roots(
             str(beside), {"GGML_BACKEND_PATH": str(external)}
@@ -3329,7 +3329,8 @@ class TestTheLoadabilityCheckFollowsThePlugin:
         from core.inference.llama_cpp import LlamaCppBackend
 
         beside, external = tmp_path / "beside", tmp_path / "ext"
-        beside.mkdir(); external.mkdir()
+        beside.mkdir()
+        external.mkdir()
         (external / "ggml-cuda.dll").write_text("")
         env = {"GGML_BACKEND_PATH": str(external)}
         # no cudart/cublas anywhere on the search path
@@ -3338,9 +3339,7 @@ class TestTheLoadabilityCheckFollowsThePlugin:
         libs.mkdir()
         (libs / "cudart64_12.dll").write_text("")
         (libs / "cublas64_12.dll").write_text("")
-        assert not LlamaCppBackend._windows_cuda_runtime_missing(
-            str(beside), [str(libs)], env
-        )
+        assert not LlamaCppBackend._windows_cuda_runtime_missing(str(beside), [str(libs)], env)
 
 
 class TestConcurrentLoadsOwnTheirOwnMarker:

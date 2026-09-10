@@ -12701,7 +12701,9 @@ class LlamaCppBackend:
 
     @staticmethod
     def _windows_cuda_runtime_missing(
-        binary_dir: str, path_dirs: list[str], env: Optional[Mapping[str, str]] = None
+        binary_dir: str,
+        path_dirs: list[str],
+        env: Optional[Mapping[str, str]] = None,
     ) -> bool:
         """Whether this CUDA build has no cudart to load.
 
@@ -12826,9 +12828,7 @@ class LlamaCppBackend:
             # card. Recorded against the search path the CHILD gets, which is the only
             # place it is known.
             LlamaCppBackend._cuda_runtime_missing_by_dir[binary_dir] = (
-                LlamaCppBackend._windows_cuda_runtime_missing(
-                    binary_dir, _full_search_path, env
-                )
+                LlamaCppBackend._windows_cuda_runtime_missing(binary_dir, _full_search_path, env)
             )
 
             # ROCm: the prebuilt bundles rocblas.dll but NOT the Tensile
