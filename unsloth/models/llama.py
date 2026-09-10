@@ -2055,7 +2055,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
 
         device_index = x.device.index
 
-        if seq_len is not None and seq_len < self.original_max_position_embeddings:
+        if seq_len is not None and seq_len <= self.original_max_position_embeddings:
             return (
                 self.multi_gpu_short_cos_cached[device_index][:seq_len],
                 self.multi_gpu_short_sin_cached[device_index][:seq_len],
@@ -2073,7 +2073,7 @@ class LongRopeRotaryEmbedding(torch.nn.Module):
     ):
         if device_index is None:
             device_index = get_current_device()
-        if seq_len is not None and seq_len < self.original_max_position_embeddings:
+        if seq_len is not None and seq_len <= self.original_max_position_embeddings:
             return self.multi_gpu_short_cos_cached[device_index], self.multi_gpu_short_sin_cached[
                 device_index
             ]
