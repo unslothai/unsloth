@@ -41,9 +41,24 @@ export const BUDGET = {
   // Raised for the audio placement control: same build both sides, merge base
   // 1,560.9 KB transfer against branch 1,562.6 KB, so it crossed the old 1,562.5 KB
   // ceiling by a tenth of a kilobyte.
-  // Merging main's eager Settings restoration with KV pause recovery measures
-  // 1,582.6 KB transfer, versus 1,582.0 KB on main and 1,575.2 KB on the PR head.
-  transferBytes: 1_622_000,
+  //
+  // Raised again because main crossed 1,582.0 KB and stayed there. Four builds on
+  // one machine, same toolchain, transfer / raw / chunks:
+  //
+  //   3f2c89537  #10629's parent          1,574.7 / 5,260.1 / 91
+  //   e3e457a7d  #10629 eager Settings    1,579.9 / 5,288.8 / 82
+  //   19c86b3cc  last green Frontend CI   1,576.5 / 5,267.6 / 91
+  //   7436c103e  main                     1,585.6 / 5,306.4 / 82
+  //
+  // No single change is over the line. #10629 is the largest contributor at
+  // +5.2 KB -- it statically imports SettingsDialog and FloatingMonitor to make
+  // Settings eager again, which is the fix it shipped, and which is what folds
+  // nine chunks into the eager graph and takes settings-*.js from 158.0 KB raw to
+  // 208.2 KB. It left 2.1 KB of headroom; the ~40 commits after it spent that.
+  // So this is a deliberate raise, not a regression to lazy-load away.
+  //
+  // Raw is untouched: 5,306.4 KB still has 64.7 KB to spare under 5,500,000.
+  transferBytes: 1_645_000,
   rawBytes: 5_500_000,
 };
 
