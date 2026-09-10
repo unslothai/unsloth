@@ -747,7 +747,9 @@ def test_what_a_build_writes_into_the_plugin_tree_does_not_move_its_digest(tmp_p
     (plugin / "build" / "lib" / "pkg").mkdir(parents = True)
     (plugin / "build" / "lib" / "pkg" / "__init__.py").write_text("VALUE = 1\n", encoding = "utf-8")
     (plugin / "src" / "pkg.egg-info").mkdir()
-    (plugin / "src" / "pkg.egg-info" / "SOURCES.txt").write_text("pyproject.toml\n", encoding = "utf-8")
+    (plugin / "src" / "pkg.egg-info" / "SOURCES.txt").write_text(
+        "pyproject.toml\n", encoding = "utf-8"
+    )
     (plugin / "src" / "pkg.egg-info" / "PKG-INFO").write_text("Name: x\n", encoding = "utf-8")
     (plugin / "src" / "pkg" / "__pycache__").mkdir()
     (plugin / "src" / "pkg" / "__pycache__" / "__init__.cpython-313.pyc").write_bytes(b"\x00")
@@ -1291,7 +1293,12 @@ def test_a_rebuilt_mlx_stack_is_always_probed(mlx) -> None:
         # A dependency the probe imports moved between two passes (still inside its
         # declared range, so no step reinstalled it), and a record from before the
         # imports were fingerprinted.
-        {"imports": {**{n: "0.4.5" for n in stack._MLX_IMPORTED_DEPENDENCIES}, "transformers": "4.0.0"}},
+        {
+            "imports": {
+                **{n: "0.4.5" for n in stack._MLX_IMPORTED_DEPENDENCIES},
+                "transformers": "4.0.0",
+            }
+        },
         {"imports": None},
     ],
 )
