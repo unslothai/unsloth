@@ -70,6 +70,9 @@ def caches(monkeypatch, tmp_path):
 
 class _Result:
     returncode = 0
+    # The installed-version probe behind the prefetched core pins reads stdout; an empty
+    # answer is "unknown", which never counts against the plan.
+    stdout = ""
 
 
 def _run_posix(monkeypatch, tmp_path: Path) -> dict:

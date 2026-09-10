@@ -1249,22 +1249,69 @@ def test_a_successful_update_leaves_a_running_prefetchs_directory_alone(managed)
     assert not root.exists()
 
 
-def test_a_plan_spelled_otherwise_at_the_same_release_is_not_trusted():
-    """2026.9.5rc1 against 2026.9.5, or 2026.9.5 against 2026.9.5.post1, order by parts this
-    stdlib-only module does not parse; unequal, the plan is treated as behind, since a
-    wrong yes is a downgrade the offline retry would report as success."""
+def test_a_plan_at_the_same_release_orders_by_its_pre_post_and_dev_parts():
+    """2026.9.5rc1 against 2026.9.5 is behind and 2026.9.5 against 2026.9.5.post1 is behind,
+    but 2026.9.5.post2 against 2026.9.5.post1 is ahead: a post release of the installed
+    version is exactly the update a prefetch was made for, and refusing it as "another
+    spelling" left the swap asking the index it could not reach."""
     assert not _studio_prefetch.plan_is_not_behind(
         {"core_plan": {"unsloth": "2026.9.5rc1"}}, {"unsloth": "2026.9.5"}
     )
     assert not _studio_prefetch.plan_is_not_behind(
         {"core_plan": {"unsloth": "2026.9.5"}}, {"unsloth": "2026.9.5.post1"}
     )
+    assert not _studio_prefetch.plan_is_not_behind(
+        {"core_plan": {"unsloth": "2026.9.5.post1"}}, {"unsloth": "2026.9.5.post2"}
+    )
     assert _studio_prefetch.plan_is_not_behind(
         {"core_plan": {"unsloth": "2026.9.5"}}, {"unsloth": "2026.9.5"}
     )
     assert _studio_prefetch.plan_is_not_behind(
+        {"core_plan": {"unsloth": "2026.9.5.post2"}}, {"unsloth": "2026.9.5.post1"}
+    )
+    assert _studio_prefetch.plan_is_not_behind(
+        {"core_plan": {"unsloth": "2026.9.5.post1"}}, {"unsloth": "2026.9.5.post1"}
+    )
+    assert _studio_prefetch.plan_is_not_behind(
+        {"core_plan": {"unsloth": "2026.9.5"}}, {"unsloth": "2026.9.5rc1"}
+    )
+    assert _studio_prefetch.plan_is_not_behind(
+        {"core_plan": {"unsloth": "2026.9.5"}}, {"unsloth": "2026.9.5.dev1"}
+    )
+    assert _studio_prefetch.plan_is_not_behind(
         {"core_plan": {"unsloth": "2026.9.6"}}, {"unsloth": "2026.9.5.post1"}
     )
+    # A local version label does not order; an unparseable spelling at the same release
+    # is still treated as behind, since a wrong yes is a downgrade the offline retry would
+    # report as success.
+    assert _studio_prefetch.plan_is_not_behind(
+        {"core_plan": {"unsloth": "2026.9.5+local"}}, {"unsloth": "2026.9.5"}
+    )
+    assert not _studio_prefetch.plan_is_not_behind(
+        {"core_plan": {"unsloth": "2026.9.5.weird"}}, {"unsloth": "2026.9.5"}
+    )
+
+
+def test_the_version_key_orders_as_pep_440_does():
+    key = _studio_prefetch._version_key
+    ordered = [
+        "2026.9.5.dev1",
+        "2026.9.5a1",
+        "2026.9.5b2",
+        "2026.9.5rc1",
+        "2026.9.5",
+        "2026.9.5.post1",
+        "2026.9.5.post2",
+        "2026.9.6",
+    ]
+    keys = [key(v) for v in ordered]
+    assert all(k is not None for k in keys)
+    assert keys == sorted(keys)
+    assert key("2026.9.5.0") == key("2026.9.5")
+    assert key("2026.9.5+cu130") == key("2026.9.5")
+    assert key("1!2026.9.5") > key("2027.1.1")
+    assert key("2026.9.5.weird") is None
+    assert key("") is None
 
 
 def test_a_noop_marker_stands_for_the_installed_core_pins():

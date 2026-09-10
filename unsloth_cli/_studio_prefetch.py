@@ -478,6 +478,53 @@ def _release_tuple(version: str) -> Tuple[int, ...]:
     return tuple(parts)
 
 
+_VERSION_RE = re.compile(
+    r"^v?(?:(?P<epoch>\d+)!)?(?P<release>\d+(?:\.\d+)*)"
+    r"(?:[._-]?(?P<pre_l>a|b|c|rc|alpha|beta|pre|preview)[._-]?(?P<pre_n>\d*))?"
+    r"(?:(?:[._-]?(?:post|rev|r)[._-]?(?P<post_n>\d*))|(?:-(?P<post_implicit>\d+)))?"
+    r"(?:[._-]?dev[._-]?(?P<dev_n>\d*))?"
+    r"(?:\+[a-z0-9]+(?:[._-][a-z0-9]+)*)?$",
+    re.IGNORECASE,
+)
+_PRE_RANK = {"a": 0, "alpha": 0, "b": 1, "beta": 1, "c": 2, "rc": 2, "pre": 2, "preview": 2}
+
+
+def _version_key(version: str) -> Optional[tuple]:
+    """A PEP 440 ordering key for one version, or None when it does not parse.
+
+    Stdlib only (this module cannot import packaging): epoch, release, then the pre,
+    post and dev parts ordered as PEP 440 orders them, so that 2026.9.5.post2 sorts
+    after 2026.9.5.post1, 2026.9.5 after 2026.9.5rc1, and 2026.9.5.dev1 before both.
+    Trailing zeros of the release segment are dropped, as PEP 440 equality drops them.
+    """
+    match = _VERSION_RE.match(version.strip())
+    if match is None:
+        return None
+    release = [int(part) for part in match.group("release").split(".")]
+    while len(release) > 1 and release[-1] == 0:
+        release.pop()
+    pre_label = match.group("pre_l")
+    pre = (_PRE_RANK[pre_label.lower()], int(match.group("pre_n") or 0)) if pre_label else None
+    if match.group("post_n") is not None:
+        post: Optional[int] = int(match.group("post_n") or 0)
+    elif match.group("post_implicit") is not None:
+        post = int(match.group("post_implicit"))
+    else:
+        post = None
+    dev = int(match.group("dev_n") or 0) if match.group("dev_n") is not None else None
+    # The same sentinels packaging uses: a dev release without pre/post sorts before any
+    # pre-release, a final release sorts after every pre-release.
+    if pre is None and post is None and dev is not None:
+        pre_key: tuple = (-1,)
+    elif pre is None:
+        pre_key = (1,)
+    else:
+        pre_key = (0, pre[0], pre[1])
+    post_key = (-1,) if post is None else (0, post)
+    dev_key = (1,) if dev is None else (0, dev)
+    return (int(match.group("epoch") or 0), tuple(release), pre_key, post_key, dev_key)
+
+
 def version_meets_floor(version: str, floor: str) -> bool:
     """True when `version` is at least `floor` on the release segment.
 
@@ -671,12 +718,20 @@ def plan_is_not_behind(marker: Optional[dict], installed: Dict[str, Optional[str
         if not current:
             continue
         planned, present = version.strip(), current.strip()
+        planned_key, present_key = _version_key(planned), _version_key(present)
+        if planned_key is not None and present_key is not None:
+            # Full PEP 440 order: 2026.9.5.post2 planned over 2026.9.5.post1 installed is
+            # ahead, 2026.9.5 over 2026.9.5.post1 is behind, 2026.9.5 over 2026.9.5rc1 is
+            # ahead. A post release of the same version is exactly the update a
+            # prefetch was made for and used to be refused as "another spelling".
+            if planned_key < present_key:
+                return False
+            continue
         if _release_tuple(planned) < _release_tuple(present):
             return False
-        # The same release segment with another spelling (2026.9.5rc1 against 2026.9.5,
-        # 2026.9.5 against 2026.9.5.post1) orders by pre, dev and post parts this
-        # stdlib-only module does not parse; unequal, it is treated as behind, since the
-        # cost of a wrong yes is a downgrade the offline retry would report as success.
+        # A spelling this module cannot parse at the same release segment is treated as
+        # behind, since the cost of a wrong yes is a downgrade the offline retry would
+        # report as success.
         if (
             _release_tuple(planned) == _release_tuple(present)
             and planned.lower() != present.lower()
