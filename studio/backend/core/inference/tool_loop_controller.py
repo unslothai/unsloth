@@ -869,6 +869,12 @@ def _is_file_entry(entry: object) -> bool:
     )
 
 
+# A real envelope is a short list: the filenames a call wrote, a source map, or one
+# plot's data URI. Past this it is not one of ours, and `json.loads` on unbounded MCP
+# text turns a few megabytes of "[{},{},...]" into hundreds of megabytes of objects.
+_MAX_SENTINEL_PAYLOAD_CHARS = 8 << 20
+
+
 def _strip_images_sentinel(result: str) -> str:
     """Drop the trailing ``__IMAGES__`` envelopes, and only those.
 
@@ -893,6 +899,8 @@ def _strip_images_sentinel(result: str) -> str:
         start = result.rfind(marker, 0, end)
         if start == -1:
             break
+        if end - start - len(marker) > _MAX_SENTINEL_PAYLOAD_CHARS:
+            break
         try:
             images = json.loads(result[start + len(marker) : end])
         except (ValueError, RecursionError):
@@ -913,7 +921,7 @@ def _strip_rag_sources_sentinel(result: str) -> str:
     result that merely mentions the marker is text.
     """
     head, sep, payload = result.rpartition("\n__RAG_SOURCES__:")
-    if not sep:
+    if not sep or len(payload) > _MAX_SENTINEL_PAYLOAD_CHARS:
         return result
     try:
         sources = json.loads(payload)

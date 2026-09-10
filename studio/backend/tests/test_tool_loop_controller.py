@@ -345,6 +345,24 @@ def test_a_flood_of_stacked_image_markers_stays_linear():
     assert large / small < 10.0, f"4x the markers cost {large / small:.1f}x the time"
 
 
+def test_an_oversized_sentinel_payload_is_left_unparsed():
+    """`json.loads` on unbounded MCP text is the allocation, not the marker count: a
+    few megabytes of tiny items decode into hundreds of megabytes of objects. Both
+    payloads below are the shape the validators accept, so without the cap they strip;
+    past it the text is not one of ours and reaches the model as written."""
+    images = "answer\n__IMAGES__:[" + '"x",' * 2_500_000 + '"x"]'
+    assert len(images) > 8 << 20
+    assert strip_result_for_model(images, "mcp__server__read") == images
+
+    sources = "answer\n__RAG_SOURCES__:[" + "{}," * 3_000_000 + "{}]"
+    assert len(sources) > 8 << 20
+    assert strip_result_for_model(sources, "mcp__server__read") == sources
+
+    # A plot's data URI is the largest thing a real envelope carries, and it still goes.
+    big_but_real = 'output\n__IMAGES__:["data:image/png;base64,' + "A" * 500_000 + '"]'
+    assert strip_result_for_model(big_but_real, "code_execution") == "output"
+
+
 def test_the_card_text_keeps_digits_the_browser_would_round():
     """`JSON.parse` reads 9007199254740993 back as ...992, so a card that re-encodes the
     parsed arguments in the browser would show a record the tool is not being run with."""
