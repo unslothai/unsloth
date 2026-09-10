@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the per-layer NVFP4 image policies (``diffusion_nvfp4_policy.py``).
-
-The module trees here are SYNTHETIC but census-exact: every fqn and every ``(in_features,
-out_features)`` pair is the one the linear census read off the real diffusers module for that base
-repo (z-image 276 linears / 239 admitted, flux.1 502 / 499, qwen-image 846 / 843), built as
-``nn.Linear`` on the meta device so a 60-block DiT costs no memory. The counts the policies assert
-were verified against those same trees instantiated from the real configs, so a test passing here
-means the policy selects the layers the campaign measured.
-
-What is being tested is fail-closed behaviour. A policy that silently selects a different set of
-layers produces an artifact that loads clean, renders, and is not the model any gate ran on, so
-every rule carries a count and every count is asserted; the tests below are mostly the ways that
-assertion has to fire.
-"""
+"""Tests for the per-layer NVFP4 image policies (``diffusion_nvfp4_policy.py``)."""
 
 from __future__ import annotations
 
@@ -50,7 +37,6 @@ FP8 = "fp8"
 BF16 = "bf16"
 
 
-# ── the census-derived module trees ──────────────────────────────────────────────
 
 
 def _zimage_rows() -> list:
@@ -60,7 +46,6 @@ def _zimage_rows() -> list:
         ("all_final_layer.2-1.linear", 3840, 64),
         ("all_final_layer.2-1.adaLN_modulation.1", 256, 3840),
         ("cap_embedder.1", 2560, 3840),
-        # TimestepEmbedder.forward reads mlp[0].weight.dtype, so these two can never be swapped.
         ("t_embedder.mlp.0", 256, 1024),
         ("t_embedder.mlp.2", 1024, 256),
     ]
@@ -86,7 +71,6 @@ def _zimage_rows() -> list:
     for index in range(2):
         rows += block("noise_refiner", index)
     for index in range(2):
-        # The context refiners carry no modulation projection, which is why 32 and not 34.
         rows += block("context_refiner", index, modulation = False)
     return rows
 
@@ -120,8 +104,6 @@ def _flux_rows() -> list:
         rows.append((f"{prefix}.ff.net.2", 12288, 3072))
         rows.append((f"{prefix}.ff_context.net.0.proj", 3072, 12288))
         rows.append((f"{prefix}.ff_context.net.2", 12288, 3072))
-        # The double blocks spell their modulation projection norm1.linear, at twice the width of
-        # the single blocks' norm.linear. Nothing gated them.
         rows.append((f"{prefix}.norm1.linear", 3072, 18432))
         rows.append((f"{prefix}.norm1_context.linear", 3072, 18432))
     for index in range(38):
@@ -167,11 +149,7 @@ def _qwen_rows() -> list:
 
 
 class _Tree:
-    """A DiT as far as everything under test looks at one: a flat ``named_modules`` walk.
-
-    The Linears are real ``nn.Linear`` (the shared filter asks ``isinstance``, ``in_features``
-    and ``weight.dtype``) on the meta device, so the whole 846-linear qwen tree allocates nothing.
-    """
+    """A DiT as far as everything under test looks at one: a flat ``named_modules`` walk."""
 
     def __init__(self, rows) -> None:
         self.linears = {
@@ -206,32 +184,24 @@ def test_the_synthetic_trees_reproduce_the_census_they_came_from():
         assert sum(1 for fqn, m in tree.linears.items() if admitted(m, fqn)) == admits
 
 
-# ── T-1 resolution per base ──────────────────────────────────────────────────────
 
 
 def test_a_policy_resolves_for_the_bases_it_was_solved_on_and_no_others():
     assert resolve_policy("z-image", "Tongyi-MAI/Z-Image-Turbo") is ZIMAGE_F8MOD_TOQ34
     assert resolve_policy("flux.1", "black-forest-labs/FLUX.1-schnell") is FLUX_MOD_SINGLE
     assert resolve_policy("qwen-image", "Qwen/Qwen-Image") is QWEN_P02
-    # A mirror is the same weights under another name, so it canonicalises to the same verdict.
     assert resolve_policy("z-image", "unsloth/Z-Image-Turbo") is ZIMAGE_F8MOD_TOQ34
     assert resolve_policy("flux.1", "  UNSLOTH/FLUX.1-schnell ") is FLUX_MOD_SINGLE
-    # A sibling checkpoint is a different set of weights whose gate has not run.
     assert resolve_policy("flux.1", "black-forest-labs/FLUX.1-dev") is None
     assert resolve_policy("qwen-image", "Qwen/Qwen-Image-Edit-2511") is None
-    # An unnamed base never inherits the family's only policy: today's "only" is a fact about the
-    # table, not about the model the caller is holding.
     assert resolve_policy("z-image", None) is None
     assert resolve_policy("z-image", "") is None
-    # An unlisted family has no policy at all, and neither has a missing one.
     assert resolve_policy("wan2.2-ti2v-5b", "Wan-AI/Wan2.2-TI2V-5B-Diffusers") is None
     assert resolve_policy(None, "Tongyi-MAI/Z-Image-Turbo") is None
-    # The id round-trips, which is how a checkpoint's declaration is re-resolved.
     assert policy_by_id("qwen_p02_v1") is QWEN_P02
     assert policy_by_id("qwen_p02_v2") is None
 
 
-# ── T-2 exact counts on the census trees ─────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -256,15 +226,11 @@ def test_zimage_takes_the_to_q_projections_and_admits_the_modulation_the_floor_r
     nvfp4 = sorted(fqn for fqn, precision in assignment.items() if precision == NVFP4)
     assert len(nvfp4) == 34
     assert all(fqn.endswith(".attention.to_q") for fqn in nvfp4)
-    # Every to_q in the model, refiners included, not just the 30 main layers.
     assert "context_refiner.0.attention.to_q" in nvfp4
     assert "noise_refiner.1.attention.to_q" in nvfp4
-    # The 32 (256, 15360) modulation projections are below the 512 floor and quantised anyway,
-    # which is where most of this policy's saving comes from.
     admits = [fqn for fqn in assignment if fqn.endswith(".adaLN_modulation.0")]
     assert len(admits) == 32
     assert {assignment[fqn] for fqn in admits} == {FP8}
-    # The final layer's adaLN_modulation.1 is a different layer of a different width: not admitted.
     assert assignment["all_final_layer.2-1.adaLN_modulation.1"] == BF16
 
 
@@ -274,11 +240,9 @@ def test_qwen_takes_both_modulation_streams_and_nothing_else():
     assert len(nvfp4) == 120
     assert sum(1 for fqn in nvfp4 if fqn.endswith(".img_mod.1")) == 60
     assert sum(1 for fqn in nvfp4 if fqn.endswith(".txt_mod.1")) == 60
-    # The mlp projections that share the mod prefix stay fp8.
     assert assignment["transformer_blocks.0.img_mlp.net.0.proj"] == FP8
 
 
-# ── T-3 fail closed on a rename or a shape drift ─────────────────────────────────
 
 
 def test_a_renamed_layer_raises_rather_than_shipping_a_different_model():
@@ -287,28 +251,23 @@ def test_a_renamed_layer_raises_rather_than_shipping_a_different_model():
     ]
     with pytest.raises(PolicyMismatch, match = "attention.to_q"):
         assign_precisions(_Tree(rows), ZIMAGE_F8MOD_TOQ34)
-    # One extra layer wearing the rule's name is just as wrong as one fewer.
     extra = _zimage_rows() + [("layers.30.attention.to_q", 3840, 3840)]
     with pytest.raises(PolicyMismatch, match = "expects 34 layers, found 35"):
         assign_precisions(_Tree(extra), ZIMAGE_F8MOD_TOQ34)
 
 
 def test_an_admitted_layer_of_another_width_is_refused_not_quantised():
-    # The min_features floor is being overridden for one measured layer, so a layer of another
-    # width wearing the same name is not that layer.
     rows = [
         (fqn, i, 7680 if fqn.endswith(".adaLN_modulation.0") else o) for fqn, i, o in _zimage_rows()
     ]
     with pytest.raises(PolicyMismatch, match = r"\(256, 15360\)"):
         assign_precisions(_Tree(rows), ZIMAGE_F8MOD_TOQ34)
-    # A missing admit is caught by its own count before any shape is looked at.
     fewer = [row for row in _zimage_rows() if not row[0].startswith("noise_refiner.0.adaLN")]
     with pytest.raises(PolicyMismatch, match = "expecting 32 layers, found 31"):
         assign_precisions(_Tree(fewer), ZIMAGE_F8MOD_TOQ34)
 
 
 def test_a_layer_that_changed_width_moves_the_totals_and_raises():
-    # Every rule count still holds; what changed is that one fp8 layer dropped below the floor.
     rows = [
         (fqn, 256 if fqn == "transformer_blocks.0.attn.to_k" else i, o)
         for fqn, i, o in _qwen_rows()
@@ -332,8 +291,6 @@ def test_a_policy_whose_totals_do_not_add_up_cannot_be_applied_at_all():
 
 
 def test_a_table_that_spells_out_a_zero_total_still_applies():
-    # A Counter never records a precision no layer took, so a policy whose model has nothing left
-    # dense may write bf16: 0 or leave it out and mean the same thing.
     spelled = NVFP4Policy(
         policy_id = "spelled_v1",
         version = 1,
@@ -352,7 +309,6 @@ def test_a_table_that_spells_out_a_zero_total_still_applies():
     assert assign_precisions(_flux(), spelled)
 
 
-# ── T-4 suffix, never substring ──────────────────────────────────────────────────
 
 
 def test_the_flux_rule_takes_the_single_blocks_modulation_and_no_other_linear():
@@ -360,13 +316,9 @@ def test_the_flux_rule_takes_the_single_blocks_modulation_and_no_other_linear():
     nvfp4 = sorted(fqn for fqn, precision in assignment.items() if precision == NVFP4)
     assert len(nvfp4) == 38
     assert nvfp4[0] == "single_transformer_blocks.0.norm.linear"
-    # norm1.linear ENDS WITH "linear" and CONTAINS "norm", and is a different layer at twice the
-    # width. A substring match would have taken all 38 of these too.
     assert assignment["transformer_blocks.0.norm1.linear"] == FP8
     assert assignment["transformer_blocks.0.norm1_context.linear"] == FP8
-    # And the top-level norm_out.linear, which the prefix excludes as well.
     assert assignment["norm_out.linear"] == FP8
-    # The rule's prefix is a subtree, not a name fragment: a double block never matches it.
     assert not any(fqn.startswith("transformer_blocks.") for fqn in nvfp4)
 
 
@@ -388,27 +340,20 @@ def test_a_suffix_never_matches_a_longer_leaf_name():
     assert not prefixed.matches("single_transformer_blocks.7.norm1.linear")
 
 
-# ── T-5 the layers that can never be swapped ─────────────────────────────────────
 
 
 def test_the_timestep_embedder_mlp_stays_dense_under_every_image_policy():
-    # TimestepEmbedder.forward reads mlp[0].weight.dtype, so a quantised weight there is a raise
-    # on the first denoise. They sit below the 512 floor, and this is the reason no policy is
-    # allowed to lower it (256 would admit them).
     assignment = assign_precisions(_zimage(), ZIMAGE_F8MOD_TOQ34)
     assert assignment["t_embedder.mlp.0"] == BF16
     assert assignment["t_embedder.mlp.2"] == BF16
-    # The same layer in the other two families, under their own policies.
     flux = assign_precisions(_flux(), FLUX_MOD_SINGLE)
     assert flux["time_text_embed.timestep_embedder.linear_1"] == BF16
     qwen = assign_precisions(_qwen(), QWEN_P02)
     assert qwen["time_text_embed.timestep_embedder.linear_1"] == BF16
-    # And the layers the GEMM floor rejects for shape rather than size.
     assert flux["x_embedder"] == BF16 and flux["proj_out"] == BF16
     assert qwen["img_in"] == BF16 and qwen["proj_out"] == BF16
 
 
-# ── T-6 the two quantise passes ──────────────────────────────────────────────────
 
 
 class _FakeQuantized:
@@ -424,10 +369,7 @@ def _stub_quantize(
     skip = (),
     produced = None,
 ):
-    """Record every ``quantize_`` pass and swap the selected weights for the class it produces.
-
-    ``skip`` names fqns the stub selects but silently leaves dense, which is the shape of a
-    torchao that declines a layer and the reason the post-pass walk exists."""
+    """Record every ``quantize_`` pass and swap the selected weights for the class it produces."""
     calls: list = []
     classes = produced or {"cfg:nvfp4": "NVFP4Tensor", "cfg:fp8": "Float8Tensor"}
 
@@ -446,8 +388,6 @@ def _stub_quantize(
         for fqn in selected:
             if fqn in skip:
                 continue
-            # nn.Module.__setattr__ refuses a non-Parameter over a Parameter, and the real
-            # torchao writes the subclass straight into _parameters.
             modules[fqn]._parameters["weight"] = _FakeQuantized(classes[config])
 
     quantization = types.ModuleType("torchao.quantization")
@@ -471,12 +411,9 @@ def test_the_two_passes_are_disjoint_and_nvfp4_runs_first(monkeypatch):
     assert not (nvfp4 & fp8)
     assert nvfp4 == {fqn for fqn, p in assignment.items() if p == NVFP4}
     assert fp8 == {fqn for fqn, p in assignment.items() if p == FP8}
-    # NVFP4 first is what lets pass 2 require a plain Parameter: the layers pass 1 took are no
-    # longer holding one, so no fqn-set bug can quantise a layer twice.
     fp8_filter = calls[1]["filter_fn"]
     already = tree.linears["single_transformer_blocks.0.norm.linear"]
     assert not fp8_filter(already, "single_transformer_blocks.0.norm.linear")
-    # Even for a layer the fp8 SET claims, an already-quantised weight is refused.
     victim = "single_transformer_blocks.0.attn.to_q"
     tree.linears[victim]._parameters["weight"] = _FakeQuantized("NVFP4Tensor")
     assert not fp8_filter(tree.linears[victim], victim)
@@ -492,14 +429,11 @@ def test_a_layer_the_quantiser_silently_declined_fails_the_build(monkeypatch):
 def test_a_pass_that_produced_the_wrong_tensor_class_fails_the_build(monkeypatch):
     import core.inference.diffusion_transformer_quant  # noqa: F401 - the stub patches the module
 
-    # An NVFP4 pass that quietly produced fp8 weights is an artifact whose metadata lies about
-    # the precision of 34 layers.
     _stub_quantize(monkeypatch, produced = {"cfg:nvfp4": "Float8Tensor", "cfg:fp8": "Float8Tensor"})
     with pytest.raises(PolicyMismatch, match = "wanted NVFP4Tensor"):
         quantize_with_policy(_zimage(), ZIMAGE_F8MOD_TOQ34)
 
 
-# ── the metadata contract ────────────────────────────────────────────────────────
 
 
 def test_the_metadata_block_records_the_set_that_was_built():
@@ -511,12 +445,9 @@ def test_the_metadata_block_records_the_set_that_was_built():
     assert block["counts"] == {BF16: 5, FP8: 237, NVFP4: 34}
     assert len(block["nvfp4_fqns"]) == 34
     assert block["nvfp4_fqns"] == sorted(block["nvfp4_fqns"])
-    # Both flags are off until the passes that set them run (PR 2 commits 7 and later).
     assert block["activation_scales_baked"] is False and block["gptq"] is False
-    # The fragment is what a builder merges into its metadata, so it declares a policy there.
     assert declares_policy({"scheme": "nvfp4", **fragment})
     assert policy_metadata_error({"scheme": "nvfp4", **fragment}) is None
-    # Two builds of the same model produce the same block, so artifacts can be diffed.
     assert (
         policy_metadata(ZIMAGE_F8MOD_TOQ34, assign_precisions(_zimage(), ZIMAGE_F8MOD_TOQ34))
         == fragment
@@ -524,8 +455,6 @@ def test_the_metadata_block_records_the_set_that_was_built():
 
 
 def test_an_unreadable_policy_block_reads_as_declared_so_it_can_be_refused():
-    # "Declared" is keyed on the KEY, so a block this build cannot parse is refused rather than
-    # read as a whole-model artifact and loaded at the wrong precisions.
     assert not declares_policy({"scheme": "nvfp4"})
     assert not declares_policy(None)
     assert not declares_policy({NVFP4_POLICY_KEY: None})

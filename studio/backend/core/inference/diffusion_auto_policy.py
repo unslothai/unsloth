@@ -37,14 +37,9 @@ _QUANT_STEADY_FACTOR: dict[str, float] = {
     "nvfp4": 0.33,
 }
 
-# nvfp4 on the image DiTs is not whole-model nvfp4: a per-layer policy quantises a small named set
-# to 4 bits and leaves the rest at fp8, so the artifact lands NEAR the fp8 factor rather than near
-# 0.33. Sizing it at 0.33 is not a harmless over-estimate -- it is what makes the planner keep a
-# model resident that does not fit, and it makes the /diffusion/info advertise a footprint the load
-# then misses by gigabytes. Keyed on the POLICY id, not the family: retuning the layer set changes
-# the number, and a policy that is not in this table falls back to the whole-model factor above.
-# Measured on the built checkpoints (vs the bf16 transformer): z-image -5.5 percent, flux -4.0
-# percent, qwen -14.6 percent against whole-model fp8.
+# A policy artifact is mostly fp8 by weight, so it lands NEAR the fp8 factor rather than near 0.33,
+# and sizing it at 0.33 makes the planner keep a model resident that does not fit. Keyed on the
+# POLICY id, not the family: retuning the layer set changes the number.
 _POLICY_STEADY_FACTOR: dict[str, float] = {
     "zimg_f8mod_toq34_v1": 0.52,
     "flux_mod_single_v1": 0.53,
@@ -53,11 +48,8 @@ _POLICY_STEADY_FACTOR: dict[str, float] = {
 
 
 def policy_steady_factor(family: Any, base_repo: Optional[str] = None) -> Optional[float]:
-    """The steady factor of the NVFP4 POLICY that resolves for ``(family, base_repo)``, or None.
-
-    None means "no policy here": an unnamed base, a family with no table row, or a policy with no
-    measured factor, all of which keep the whole-model ``_QUANT_STEADY_FACTOR`` number. Never
-    raises -- a sizing estimate must not be the thing that sinks a load."""
+    """The steady factor of the NVFP4 POLICY that resolves for ``(family, base_repo)``, or None,
+    which keeps the whole-model factor. Never raises: a sizing estimate must not sink a load."""
     try:
         from .diffusion_nvfp4_policy import resolve_policy
         policy = resolve_policy(getattr(family, "name", family), base_repo)
@@ -267,8 +259,6 @@ def estimate_dense_quant(
     components = family_bf16_components_gb(fam, base_repo)
     factor = _QUANT_STEADY_FACTOR.get(scheme)
     if scheme == "nvfp4":
-        # The base decides the number: an nvfp4 load of a base with a per-layer policy is mostly
-        # fp8 by weight, and only the whole-model artifacts are near 0.33.
         factor = policy_steady_factor(fam, base_repo) or factor
     if components is None or factor is None:
         return None
@@ -314,9 +304,7 @@ def _has_usable_prequant(
     fam: Any, scheme: str, prequant_path: Optional[str], base_repo: Optional[str]
 ) -> bool:
     """Whether a hosted (or operator-supplied) prequant checkpoint for ``scheme`` is usable here.
-
-    The ``has_prequant`` probe the auto ladder asks before offering a scheme that may only run
-    from a gated artifact. Answers False on any failure: "cannot tell" is not "yes"."""
+    Answers False on any failure: "cannot tell" is not "yes"."""
     try:
         from .diffusion_prequant import usable_prequant_source
         return (
@@ -356,9 +344,7 @@ def resolve_dense_quant_candidate(
         requested,
         family = getattr(fam, "name", None),
         base_repo = base_repo,
-        # Under auto, nvfp4 is offered only where a hosted checkpoint exists for THIS base: the
-        # gate measured that artifact. usable_ (not resolve_) for the same reason the prequant
-        # probe below uses it -- a path override counts only when the loader would accept it.
+        # usable_ (not resolve_): a path override counts only when the loader would accept it.
         has_prequant = lambda candidate: _has_usable_prequant(
             fam, candidate, prequant_path, base_repo
         ),

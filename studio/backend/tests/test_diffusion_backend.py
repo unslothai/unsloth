@@ -5381,17 +5381,11 @@ def test_status_reports_the_dense_build_when_it_replaced_the_gguf(
 
 
 def test_status_names_the_nvfp4_kernel_backend_that_actually_ran():
-    # nvfp4 is the only scheme with two implementations, and which one served is decided per
-    # device at load time: an artifact without baked activation scales, a failed preflight or a
-    # Windows host all leave the model on torchao under the same "nvfp4". Read from the module
-    # tree, so it reports what ran rather than what the load intended.
     from types import SimpleNamespace
 
     import core.inference.diffusion as dmod
 
     class _FlashInferLinear:
-        # The duck type is_nvfp4_flashinfer_linear matches: the class name plus the baked
-        # activation scale buffer.
         a_gsf = 1.0
 
     _FlashInferLinear.__name__ = "NVFP4FlashInferLinear"
@@ -5405,20 +5399,16 @@ def test_status_names_the_nvfp4_kernel_backend_that_actually_ran():
         )
 
     assert dmod._transformer_quant_backend(_state("nvfp4", [_FlashInferLinear()])) == "flashinfer"
-    # nvfp4 engaged and nothing converted: torchao is the designed fallback, not an error.
     assert dmod._transformer_quant_backend(_state("nvfp4", [object()])) == "torchao"
-    # A loader that stamps the attribute is believed over the walk.
     assert (
         dmod._transformer_quant_backend(
             _state("nvfp4", [object()], _unsloth_nvfp4_backend = "flashinfer")
         )
         == "flashinfer"
     )
-    # Every other scheme, and the GGUF, have one path each and report nothing.
     for scheme in ("fp8", "int8", "mxfp8", None):
         assert dmod._transformer_quant_backend(_state(scheme, [_FlashInferLinear()])) is None
 
-    # A status read is a poll: a denoiser that raises on inspection must not take it down.
     def _boom():
         raise RuntimeError("no")
 
@@ -5431,8 +5421,6 @@ def test_status_names_the_nvfp4_kernel_backend_that_actually_ran():
 
 
 def test_the_unloaded_status_declares_the_quant_backend_key():
-    # The unloaded payload must declare every key the loaded one does, or the row keeps the
-    # previous model's backend after an eject.
     status = DiffusionBackend().status()
     assert "transformer_quant_backend" in status
     assert status["transformer_quant_backend"] is None
@@ -5443,7 +5431,6 @@ def test_diffusion_status_response_declares_the_quant_backend():
 
     resp = DiffusionStatusResponse(loaded = True, transformer_quant_backend = "flashinfer")
     assert resp.model_dump()["transformer_quant_backend"] == "flashinfer"
-    # Additive: a backend that predates the field still parses, and reports null.
     assert DiffusionStatusResponse(loaded = True).model_dump()["transformer_quant_backend"] is None
 
 
@@ -8266,8 +8253,6 @@ def test_auto_retries_a_lower_scheme_that_has_a_prequant(monkeypatch):
 
     monkeypatch.setattr(
         "core.inference.diffusion_transformer_quant.auto_scheme_candidates",
-        # **_kw: the retry also passes base_repo and the has_prequant probe the ladder needs to
-        # decide whether a checkpoint-only scheme may be offered at all.
         lambda target, family = None, **_kw: ("fp8", "mxfp8", "int8"),
     )
     have = {"int8"}

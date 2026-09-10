@@ -3,36 +3,11 @@
 
 """Per-layer NVFP4 policies for the image DiTs.
 
-Whole-model NVFP4 pays on the video denoisers (smaller AND faster than fp8). On the image ones it
-does not: the campaign measured every admitted linear at NVFP4 as a quality loss the render shows,
-and the arms that held up quantise only a small, named set of layers to 4 bits and leave the rest
-at fp8. Those sets are what this module holds:
-
-  * z-image  ``F8mod_toq34``  the 34 ``attention.to_q`` projections at NVFP4, everything else fp8,
-    and the 32 ``adaLN_modulation.0`` modulation projections pulled INTO the fp8 set even though
-    their 256-wide input is below the min_features floor (they are the family's second-largest
-    weight block, and fp8 on them is where most of its saving comes from);
-  * flux.1   ``mod_single``    the 38 single-block ``norm.linear`` modulation projections;
-  * qwen-image ``P02``         the 120 ``img_mod.1`` / ``txt_mod.1`` modulation projections.
-
-These are memory levers at fp8-parity quality, not speed wins: the NVFP4 layers are ``to_q`` and
-M=1 modulation projections far below the GEMM crossover, which is why nvfp4 sits BELOW fp8 in the
-image auto order.
-
-Everything here FAILS CLOSED. A policy names its layers by exact dotted suffix and asserts a count
-for every rule, for the admitted set and for the final assignment, so a diffusers rename or a
-config change that moves one linear raises at build time instead of shipping an artifact whose
-per-layer precisions are not the ones anything measured. A checkpoint carries the same counts and
-the loader re-resolves the in-tree policy against them, so the two halves cannot drift apart
-either. The alternative -- deriving the set from a rule at load time -- is how a policy silently
-becomes a different policy.
-
-Matching is by dotted SUFFIX, never substring: ``norm.linear`` must not select flux's
-``transformer_blocks.N.norm1.linear`` or its top-level ``norm_out.linear``, which are different
-layers of a different width that no gate ran on.
-
-torch is imported inside the functions, matching the other lazily-loaded inference helpers, so
-reading the tables or the metadata contract costs no import.
+A policy quantises a small, named set of layers to 4 bits and leaves the rest at fp8: a memory
+lever at fp8-parity quality, not a speed win, which is why nvfp4 sits BELOW fp8 in the image auto
+order. Everything FAILS CLOSED: layers are named by exact dotted SUFFIX (never substring) and every
+rule asserts a count, so a diffusers rename raises at build time instead of shipping an artifact
+whose per-layer precisions are not the measured ones.
 """
 
 from __future__ import annotations
@@ -41,36 +16,25 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 
-# The precision tokens an assignment uses. The two quantised ones are the scheme tokens
-# ``diffusion_transformer_quant`` already defines (spelled out here so reading the tables costs no
-# import); "bf16" is "left dense", which is not a scheme and has no token there.
+# Spelled out rather than imported so that reading the tables costs no import.
 PRECISION_NVFP4 = "nvfp4"
 PRECISION_FP8 = "fp8"
 PRECISION_BF16 = "bf16"
 
-# ── the metadata contract, carried in the prequant checkpoint's own ``metadata`` dict ──────────
-# The key a checkpoint's policy block lives under, and the KIND that block declares. The kind is
-# versioned separately from the individual policies: it describes the SHAPE of the block, so a
-# build that adds a field bumps it, while a retuned z-image set bumps ``zimg_..._v2`` instead.
+# The kind describes the SHAPE of the block, so it is versioned separately from the policy ids.
 NVFP4_POLICY_KEY = "nvfp4_policy"
 NVFP4_POLICY_KIND = "unsloth_nvfp4_layer_policy_v1"
 
 
 class PolicyMismatch(ValueError):
-    """The model this policy was applied to is not the model it was written for.
-
-    Raised rather than warned: every count here was measured on one specific base repo at one
-    diffusers version, so a rule that now selects a different number of layers is a DIFFERENT
-    model, and building it anyway produces an artifact whose quality nothing has measured."""
+    """The model this policy was applied to is not the model it was written for. Raised, never
+    warned: a rule selecting a different number of layers is a different model."""
 
 
 @dataclass(frozen = True)
 class Rule:
-    """``suffix`` -> ``precision``, for the layers of an admitted set that match it.
-
-    ``expect`` is the number of layers this rule must select, asserted at assignment time.
-    ``prefix`` narrows the rule to one subtree (flux's single blocks carry a ``norm.linear`` its
-    double blocks spell ``norm1.linear``, and only the single ones were gated)."""
+    """``suffix`` -> ``precision`` for matching layers. ``expect`` is asserted at assignment time;
+    ``prefix`` narrows the rule to one subtree."""
 
     suffix: str
     precision: str
@@ -78,10 +42,8 @@ class Rule:
     prefix: str = ""
 
     def matches(self, fqn: str) -> bool:
-        """Exact dotted-suffix match, never a substring one.
-
-        ``to_q`` selects ``layers.0.attention.to_q`` and not ``...attention.to_q_extra``;
-        ``norm.linear`` selects neither ``norm1.linear`` nor ``norm_out.linear``."""
+        """Exact dotted-suffix match, never a substring one: ``norm.linear`` selects neither
+        ``norm1.linear`` nor ``norm_out.linear``."""
         if self.prefix and not fqn.startswith(self.prefix):
             return False
         return fqn == self.suffix or fqn.endswith("." + self.suffix)
@@ -89,15 +51,10 @@ class Rule:
 
 @dataclass(frozen = True)
 class Admit:
-    """A linear the shared filter rejects that this policy quantises anyway.
-
-    z-image's ``adaLN_modulation.0`` is (256, 15360): its INPUT is below the 512 floor, but it is
-    the second-largest weight block in the model and leaving 32 of them dense gives up most of the
-    saving. ``shape`` is ``(in_features, out_features)`` and is asserted exactly -- the floor is
-    being overridden for a specific measured layer, so a layer of another width wearing the same
-    name is not it. Dropping the floor to 256 instead is what this exists to avoid: that would
-    also admit ``t_embedder.mlp.*``, which cannot be quantised at all (``TimestepEmbedder.forward``
-    reads ``mlp[0].weight.dtype``)."""
+    """A linear the shared filter rejects that this policy quantises anyway. ``shape`` is asserted
+    exactly, since the floor is overridden for one measured layer; dropping the floor instead would
+    admit ``t_embedder.mlp.*``, which must stay bf16 (``TimestepEmbedder.forward`` reads
+    ``mlp[0].weight.dtype``)."""
 
     suffix: str
     shape: tuple
@@ -109,12 +66,8 @@ class Admit:
 
 @dataclass(frozen = True)
 class NVFP4Policy:
-    """One measured per-layer precision assignment, for one family on one set of base repos.
-
-    ``base_repos`` are lowercased upstream ids: a policy is a claim about weights, and a sibling
-    checkpoint (flux dev beside schnell) is a different set of weights whose gate has not run.
-    ``expected_counts`` is the whole assignment, bf16 included, so a linear that stops being a
-    linear is caught as loudly as one that changes rule."""
+    """One measured per-layer precision assignment, keyed on lowercased ``base_repos``: a sibling
+    checkpoint is a different set of weights whose gate has not run."""
 
     policy_id: str
     version: int
@@ -126,10 +79,7 @@ class NVFP4Policy:
     expected_counts: Mapping = field(default_factory = dict)
 
 
-# ── the tables ────────────────────────────────────────────────────────────────────────────────
-# Every count below was verified against the diffusers module tree instantiated on the meta device
-# for the base repo named in the row, and matches the linear census the campaign measured on
-# (z-image 239 admitted, flux 499, qwen-image 843).
+# Every count below was verified against the diffusers module tree on the meta device.
 
 ZIMAGE_F8MOD_TOQ34 = NVFP4Policy(
     policy_id = "zimg_f8mod_toq34_v1",
@@ -138,9 +88,7 @@ ZIMAGE_F8MOD_TOQ34 = NVFP4Policy(
     base_repos = ("tongyi-mai/z-image-turbo",),
     rules = (Rule(suffix = "attention.to_q", precision = PRECISION_NVFP4, expect = 34),),
     admit = (Admit(suffix = "adaLN_modulation.0", shape = (256, 15360), expect = 32),),
-    # 276 linears: 34 to_q at NVFP4, 237 at fp8 (205 admitted by the filter plus the 32 admits),
-    # and 5 dense -- the two ``t_embedder.mlp`` layers, which cannot be swapped at all, plus the
-    # 64-wide patch embedder and final layer.
+    # The two ``t_embedder.mlp`` layers cannot be swapped at all and stay dense.
     expected_counts = {PRECISION_NVFP4: 34, PRECISION_FP8: 237, PRECISION_BF16: 5},
 )
 
@@ -148,8 +96,7 @@ FLUX_MOD_SINGLE = NVFP4Policy(
     policy_id = "flux_mod_single_v1",
     version = 1,
     family = "flux.1",
-    # schnell only: dev and Krea-dev are separate weights and get their own gate runs before they
-    # get a row here.
+    # schnell only: dev and Krea-dev are separate weights and need their own gate runs.
     base_repos = ("black-forest-labs/flux.1-schnell",),
     rules = (
         Rule(
@@ -159,9 +106,6 @@ FLUX_MOD_SINGLE = NVFP4Policy(
             prefix = "single_transformer_blocks.",
         ),
     ),
-    # 502 linears: 38 single-block modulation projections at NVFP4, 461 at fp8, and the 3 the
-    # filter leaves dense (``x_embedder`` and ``proj_out`` are 64-wide, the timestep embedder's
-    # first layer is 256-wide).
     expected_counts = {PRECISION_NVFP4: 38, PRECISION_FP8: 461, PRECISION_BF16: 3},
 )
 
@@ -169,14 +113,11 @@ QWEN_P02 = NVFP4Policy(
     policy_id = "qwen_p02_v1",
     version = 1,
     family = "qwen-image",
-    # qwen-image-edit is a separate row with its own gate.
     base_repos = ("qwen/qwen-image",),
     rules = (
         Rule(suffix = "img_mod.1", precision = PRECISION_NVFP4, expect = 60),
         Rule(suffix = "txt_mod.1", precision = PRECISION_NVFP4, expect = 60),
     ),
-    # 846 linears: 120 modulation projections at NVFP4, 723 at fp8, 3 dense (``img_in`` and
-    # ``proj_out`` are 64-wide, the timestep embedder's first layer is 256-wide).
     expected_counts = {PRECISION_NVFP4: 120, PRECISION_FP8: 723, PRECISION_BF16: 3},
 )
 
@@ -193,27 +134,17 @@ def policy_by_id(policy_id: Any) -> Optional[NVFP4Policy]:
 
 
 def policy_expected_counts(policy: NVFP4Policy) -> dict:
-    """``policy.expected_counts`` as a ``Counter`` comparison sees it: zero entries dropped.
-
-    A Counter never records a precision no layer took, so a table that spells out ``bf16: 0``
-    would otherwise fail against an assignment that is exactly right."""
+    """``policy.expected_counts`` as a ``Counter`` comparison sees it: zero entries dropped, since
+    a Counter never records a precision no layer took."""
     return {
         str(key): int(value) for key, value in dict(policy.expected_counts).items() if int(value)
     }
 
 
 def resolve_policy(family: Any, base_repo: Any = None) -> Optional[NVFP4Policy]:
-    """The policy for ``(family, base_repo)``, or None when there is none.
-
-    A policy is keyed on the BASE, not on the family: the layer sets were solved against one
-    checkpoint's weights, and flux dev is not flux schnell. Mirrors are canonicalised first, since
-    a local mirror is the same weights under another name.
-
-    An unnamed base answers None even when the family has exactly one policy today. Inheriting a
-    verdict is the failure mode this whole module exists to prevent, and "the family has one
-    policy" is a fact about the table at this commit, not about the caller's model: the day a
-    second base is gated, every anonymous load would silently pick up the first one's precisions.
-    Callers that know their base pass it; callers that do not get the whole-model path."""
+    """The policy for ``(family, base_repo)``, or None. Keyed on the BASE, not the family, and an
+    unnamed base answers None even when the family has exactly one policy today: otherwise the day
+    a second base is gated every anonymous load picks up the first one's precisions."""
     fam = str(family or "").strip().lower()
     if not fam:
         return None
@@ -236,16 +167,8 @@ def assign_precisions(
     min_features: Optional[int] = None,
     require_divisible: Optional[int] = None,
 ) -> dict:
-    """``{fqn: precision}`` for EVERY Linear in ``transformer``, or raise ``PolicyMismatch``.
-
-    The admitted set is the shared runtime filter's, so a policy layer is one the whole-model path
-    would have quantised too, plus this policy's explicit ``admit`` entries. Rules are applied in
-    order and the first one to claim a layer keeps it; whatever the rules do not claim takes the
-    policy's default, and every Linear outside the admitted set is dense bf16.
-
-    Four assertions, each of which is a rename or a config change caught at build time rather than
-    a differently-quantised model shipped: the admit count and shape, each rule's count, and the
-    final ``Counter`` against the policy's expected totals."""
+    """``{fqn: precision}`` for EVERY Linear in ``transformer``, or raise ``PolicyMismatch``. Rules
+    apply in order, first claim wins, and four count assertions turn a rename into a failure."""
     import torch
 
     from .diffusion_transformer_quant import (
@@ -259,9 +182,7 @@ def assign_precisions(
         min_features = DEFAULT_MIN_LINEAR_FEATURES
     if require_divisible is None:
         require_divisible = divisible_for_scheme(TQ_NVFP4)
-    # "lora_" keeps a baked adapter's side path high precision, and require_bf16 skips the layers
-    # the fp8 pass would abort on. Same call the runtime and the builder make, so "admitted" means
-    # one thing in all three.
+    # Same call the runtime and the builder make, so "admitted" means one thing in all three.
     base_filter = make_filter_fn(
         min_features,
         ("lora_",),
@@ -293,7 +214,6 @@ def assign_precisions(
         admitted.update(hits)
     assignment: dict = {}
     for rule in policy.rules:
-        # Among the layers no earlier rule claimed, so "first wins" is what the count asserts too.
         hits = sorted(fqn for fqn in admitted if fqn not in assignment and rule.matches(fqn))
         if len(hits) != rule.expect:
             raise PolicyMismatch(
@@ -323,12 +243,9 @@ def policy_metadata(
     activation_scales_baked: bool = False,
     gptq: bool = False,
 ) -> dict:
-    """The metadata fragment an offline builder merges in after applying ``policy``.
-
-    Sorted, so two builds of the same model produce identical metadata and a rebuilt artifact can
-    be diffed against the shipped one. The fqn list is recorded rather than re-derived for the
-    same reason the rotation's is: at load time the model is a skeleton on ``meta``, and a rule
-    that has drifted would re-derive a different set with nothing saying so."""
+    """The metadata fragment an offline builder merges in after applying ``policy``. Sorted, so two
+    builds diff byte for byte, and the fqn list is recorded rather than re-derived from a rule that
+    may have drifted."""
     counts = Counter(assignment.values())
     return {
         NVFP4_POLICY_KEY: {
@@ -339,8 +256,7 @@ def policy_metadata(
             "nvfp4_fqns": sorted(
                 fqn for fqn, precision in assignment.items() if precision == PRECISION_NVFP4
             ),
-            # Set by --bake-activation-scales; the flashinfer backend refuses an artifact without
-            # baked scales and falls back to torchao.
+            # The flashinfer backend falls back to torchao without baked scales.
             "activation_scales_baked": bool(activation_scales_baked),
             "gptq": bool(gptq),
         }
@@ -348,21 +264,14 @@ def policy_metadata(
 
 
 def declares_policy(metadata: Any) -> bool:
-    """True when ``metadata`` claims a per-layer policy was applied.
-
-    Keyed on the KEY being populated, not on the block being one this build understands: an
-    unreadable block has to read as "a policy is declared" so the validator can refuse it, rather
-    than as "no policy" so the loader treats a mixed-precision artifact as a whole-model one."""
+    """True when ``metadata`` claims a per-layer policy was applied. Keyed on the KEY, not on the
+    block being readable: an unreadable block must refuse, not read as "no policy"."""
     return isinstance(metadata, dict) and metadata.get(NVFP4_POLICY_KEY) not in (None, "")
 
 
 def policy_metadata_error(metadata: Any) -> Optional[str]:
-    """Why ``metadata``'s declared policy is unusable, or None when it is well formed.
-
-    Pure and torch-free, so the prequant validator can call it before anything is built. Checks
-    the CONTRACT only (kind, ids, counts, fqn list shape); whether the declaration agrees with the
-    policy this build resolves for the artifact's family and base is the validator's question,
-    since answering it needs the family tables."""
+    """Why ``metadata``'s declared policy is unusable, or None. Torch-free, and checks the CONTRACT
+    only; agreement with the resolved policy is the validator's question."""
     if not declares_policy(metadata):
         return None
     block = metadata.get(NVFP4_POLICY_KEY)
@@ -385,9 +294,7 @@ def policy_metadata_error(metadata: Any) -> Optional[str]:
             return f"nvfp4 policy {policy_id!r} has a malformed count entry {key!r}: {value!r}"
     fqns = block.get("nvfp4_fqns")
     if not isinstance(fqns, (list, tuple)) or not fqns:
-        # An empty list is refused rather than read as "quantise nothing to 4 bits": a builder
-        # that failed to record its set would otherwise emit an artifact that loads clean and
-        # renders from precisions nobody chose.
+        # An empty list is refused rather than read as "quantise nothing to 4 bits".
         return f"nvfp4 policy {policy_id!r} records no nvfp4_fqns ({fqns!r})"
     if not all(isinstance(fqn, str) and fqn for fqn in fqns):
         return f"nvfp4 policy {policy_id!r} nvfp4_fqns has non-string entries"
@@ -402,10 +309,8 @@ def policy_metadata_error(metadata: Any) -> Optional[str]:
     return None
 
 
-# What ``quantize_`` leaves on a module's ``weight`` for each precision, by class NAME: torchao's
-# subclasses are re-exported under several module paths and the prototype ones move between
-# releases, and asking for the name keeps this module torch-lazy. A layer the policy left dense
-# keeps a plain ``nn.Parameter``.
+# By class NAME: torchao's subclasses are re-exported under several module paths and move between
+# releases, and asking for the name keeps this module torch-lazy.
 _EXPECTED_WEIGHT_CLASS = {
     PRECISION_NVFP4: "NVFP4Tensor",
     PRECISION_FP8: "Float8Tensor",
@@ -414,12 +319,8 @@ _EXPECTED_WEIGHT_CLASS = {
 
 
 def _verify_weight_types(transformer: Any, assignment: Mapping) -> None:
-    """Raise unless every assigned layer ended up holding the weight class its precision implies.
-
-    The two passes are filtered by fqn set, so a torchao that silently skipped a layer (an
-    unsupported shape, a config it declined) would leave it dense with nothing in the logs and an
-    artifact whose metadata claims a precision it does not have. Checked here rather than trusted:
-    the whole point of a policy is that the per-layer precisions are exactly the measured ones."""
+    """Raise unless every assigned layer holds the weight class its precision implies: a torchao
+    that silently skipped a layer would otherwise leave it dense with nothing in the logs."""
     wrong: list = []
     for fqn, module in transformer.named_modules():
         precision = assignment.get(fqn)
@@ -446,16 +347,10 @@ def quantize_with_policy(
     fast_accum: Optional[bool] = None,
     logger: Any = None,
 ) -> dict:
-    """Apply ``policy`` to ``transformer`` in place. Returns the assignment it applied.
-
-    Two ``quantize_`` passes over disjoint fqn sets, NVFP4 first. The order matters: after pass 1
-    the NVFP4 layers no longer hold a plain ``nn.Parameter``, so pass 2's filter can require one
-    and a layer can never be quantised twice however the sets are computed.
-
-    Both configs come from the shared factory, so they are the ones the runtime path builds (and
-    go through ``_quiet_config``, whose default would otherwise change every render). Not
-    best-effort: a raise here means the module is partly quantised, which is the caller's cue to
-    throw it away, not to save it."""
+    """Apply ``policy`` to ``transformer`` in place. Returns the assignment it applied. Two
+    ``quantize_`` passes over disjoint fqn sets, NVFP4 first: after pass 1 those layers hold no
+    plain ``nn.Parameter``, so pass 2 requires one and no layer is quantised twice. A raise leaves
+    the module partly quantised and it must be discarded."""
     import torch
     from torchao.quantization import quantize_
 
@@ -471,8 +366,7 @@ def quantize_with_policy(
     def fp8_filter(module: Any, fqn: str = "") -> bool:
         if fqn not in fp8_fqns:
             return False
-        # Belt and braces on the disjointness: a quantised weight is no longer a plain Parameter
-        # (torchao returns the tensor subclass itself), and fp8 asserts a bf16 input weight.
+        # Belt and braces on the disjointness: a quantised weight is no longer a plain Parameter.
         weight = getattr(module, "weight", None)
         return type(weight) is torch.nn.Parameter and weight.dtype == torch.bfloat16
 

@@ -56,10 +56,6 @@ def test_nvfp4_is_below_int8():
 
 
 def test_a_policy_family_reports_its_policy_nvfp4_footprint():
-    # T-12, on the pre-load summary the UI sizes the tradeoff with. nvfp4 on a family whose
-    # default base carries a per-layer policy is mostly fp8 by weight, so the number the endpoint
-    # advertises has to come from the policy rather than from the whole-model factor -- otherwise
-    # the UI promises gigabytes the load then takes.
     from core.inference.diffusion_auto_policy import _POLICY_STEADY_FACTOR, policy_steady_factor
     infos = {info["family"]: info for info in family_inference_infos()}
     for family, policy_id in (
@@ -70,7 +66,6 @@ def test_a_policy_family_reports_its_policy_nvfp4_footprint():
         transformer, text_encoders, vae = _FAMILY_BF16_GB[family]
         expected = round(transformer * _POLICY_STEADY_FACTOR[policy_id] + text_encoders + vae, 1)
         assert infos[family]["estimated_resident_gb"]["nvfp4"] == expected, family
-        # And it is the policy's number, not the whole-model one.
         whole = round(transformer * _QUANT_STEADY_FACTOR["nvfp4"] + text_encoders + vae, 1)
         assert expected > whole, family
 

@@ -3,37 +3,11 @@
 
 """The FlashInfer NVFP4 Linear, and the conversion that puts a hosted checkpoint onto it.
 
-ONE artifact, two backends. A pre-quantized NVFP4 checkpoint is stored in torchao's payload format
-and nothing here requantizes it: ``NVFP4Tensor``'s ``qdata`` IS FlashInfer's packed e2m1x2 weight
-and its swizzled ``scale`` IS FlashInfer's 128x4 block-scale buffer, byte for byte, so the
-conversion is a re-expression of the same bytes under different names:
-
-    qdata            -> wq       [N, K / 2] uint8, unchanged
-    scale (swizzled) -> w_sf     the same flat buffer, viewed as FlashInfer's (-1, K // 16) matrix
-    per_tensor_scale == 1 / w_gsf
-    alpha            =  per_tensor_scale / a_gsf
-
-That equality is a go/no-go CUDA test (T-CUDA-3) rather than an assumption, and the unswizzled
-branch below reswizzles through ``diffusion_nvfp4_ops`` for a checkpoint built without swizzling.
-
-**The activation global scale is BAKED, never calibrated here.** The canon layer this is ported
-from learned ``a_gsf`` over the first few forwards, keeping a running minimum. That state machine
-is not capture-safe (its first calls mutate a buffer inside what may already be a captured graph),
-it is nondeterministic (the value depends on which frames arrived first), and it is the mechanism
-behind the flux black-frame latch: one non-finite forward at number 8 was frozen into the scale and
-every later render was black. So the scale is measured at build time, stored per fqn in the
-checkpoint metadata, and a layer whose scale is absent is NOT converted -- the artifact stays on
-torchao rather than running on a guessed scale.
-
-Everything else the research layer carried is dropped on purpose: no GFLOP routing, no fp8 weight
-replica, no SmoothQuant migration, no rotation, no fused-bias nvcc extension. What is left is a
-weight, two scales, an alpha and a bias.
-
-One research lever DID survive, because it costs no resident bytes: the **per-step precision
-switch**. At a step named by ``UNSLOTH_NVFP4_PROTECT_STEPS`` the layer dequantises its own 4-bit
-payload to a transient bf16 weight and runs a dense GEMM (W4A16) instead of the FP4 one (W4A4).
-Same checkpoint, same bytes, nothing extra resident, and the step set is per-model and off by
-default. ``diffusion_nvfp4_protect`` owns the schedule and the step counter.
+ONE artifact, two backends. Nothing here requantizes: torchao's payload IS FlashInfer's, byte for
+byte, with ``per_tensor_scale == 1 / w_gsf`` and ``alpha = per_tensor_scale / a_gsf``. The
+activation global scale is BAKED, never calibrated here: learning it over the first few forwards
+is not capture-safe, is nondeterministic, and is the mechanism behind the flux black-frame latch,
+so a layer whose baked scale is absent is NOT converted.
 """
 
 from __future__ import annotations
@@ -52,16 +26,12 @@ from .diffusion_nvfp4_ops import (
 )
 from .diffusion_nvfp4_protect import protect_controller
 
-# Where the builder records the per-fqn activation global scale (``6 * 448 / act_amax``, the same
-# convention FlashInfer's ``nvfp4_quantize`` takes) and the flag that says it did.
 ACT_SCALES_KEY = "act_global_scales"
 POLICY_KEY = "nvfp4_policy"
 POLICY_BAKED_KEY = "activation_scales_baked"
 
-# GEMM shapes already profiled, keyed ``(M, K, N)`` and shared across ALL instances. A DiT has
-# hundreds of layers but only a handful of distinct shapes, and FlashInfer caches the chosen tactic
-# per shape internally, so a per-module cache would pay the ~0.4 s profiling pass hundreds of times
-# over for the same tactic.
+# Shared across ALL instances: a per-module cache would pay the profiling pass once per layer for
+# a tactic FlashInfer already caches per shape.
 _TUNED_SHAPES: set = set()
 
 
@@ -72,30 +42,16 @@ def reset_tuned_shapes() -> None:
 
 @lru_cache(maxsize = 1)
 def nvfp4_linear_class():
-    """The ``NVFP4FlashInferLinear`` class, defined on first use so this module imports torch-free.
-
-    Cached, so the class object is a singleton and ``isinstance`` works across call sites.
-    """
+    """The ``NVFP4FlashInferLinear`` class, defined on first use so this module imports torch-free
+    and cached so the class object is a singleton."""
     import torch
     from torch import nn
     from torch.nn import functional as F
 
     class NVFP4FlashInferLinear(nn.Module):
-        """A Linear whose weight is already NVFP4 and whose activation is quantized per call.
-
-        The forward is deliberately dull: two opaque ops and an in-place bias add. No host
-        synchronize, no Python branch on a device value, and no allocation beyond what the two ops
-        return, because this runs inside a captured CUDA graph.
-
-        One branch breaks that rule and earns it. At a PROTECTED denoising step the layer
-        dequantises its own 4-bit bytes to a transient bf16 weight and runs a plain ``F.linear``
-        (W4A16) instead of the NVFP4 GEMM (W4A4). The switch is a Python ``bool`` on a controller
-        object -- a host value, constant for the whole step, so Dynamo compiles two variants of the
-        block and no more, and there is no device value read on the host anywhere. The dequantised
-        weight is built inside the call and dropped when it returns: no second resident operand,
-        and the checkpoint is the same checkpoint. ``diffusion_nvfp4_protect`` owns the schedule
-        and the step counter; the lever is OFF unless an operator names the steps.
-        """
+        """A Linear whose weight is already NVFP4 and whose activation is quantized per call. The
+        forward keeps no host synchronize and no branch on a device value, because it runs inside
+        a captured CUDA graph."""
 
         def __init__(
             self,
@@ -115,60 +71,42 @@ def nvfp4_linear_class():
             self.in_features = int(in_features)
             self.out_features = int(out_features)
             self.backend = str(backend)
-            # Whether ``a_gsf`` came from the checkpoint's baked scales rather than from anything
-            # measured at run time. Defaults to False so a layer built by some future path that
-            # does calibrate is reported as unbaked: ``diffusion_cuda_graph`` refuses to capture a
-            # module holding one, since a scale that is still moving would be frozen into the graph
-            # at whatever value the capture happened to see.
+            # Defaults to False so a calibrating path reads as unbaked: a capture would freeze a
+            # scale that is still moving.
             self.activation_scales_baked = bool(activation_scales_baked)
             self.register_buffer("wq", wq)
             self.register_buffer("w_sf", w_sf)
             self.register_buffer("alpha", alpha)
             self.register_buffer("a_gsf", a_gsf)
-            # torchao's own ``per_tensor_scale`` (``1 / w_gsf``), which is what the block scales
-            # have to be multiplied by to dequantise. ONE fp32 element per layer, 1.2 KB across a
-            # 304-linear video denoiser, and it is a buffer rather than a derived value because
-            # ``alpha * a_gsf`` reconstructs it only to within a rounding: the protected step has
-            # to read the weight the GEMM reads, bit for bit, or the lever is a second quantiser.
+            # A stored buffer rather than ``alpha * a_gsf``, which reconstructs it only to within
+            # a rounding: the protected step must read the weight the GEMM reads, bit for bit.
             self.register_buffer(
                 "w_scale",
                 (alpha * a_gsf) if w_scale is None else w_scale,
             )
             self.register_buffer("bias", bias)
             self._tuned = False
-            # The process-wide schedule. Read (not called) in forward, so it is a compile guard.
             self.protect = protect_controller()
 
         def forward(self, x):
             shape = x.shape
             flat = x.reshape(-1, self.in_features)
-            # FlashInfer's fp4 quantiser takes fp16, bf16 or e4m3 and raises on anything else,
-            # while torchao's NVFP4 path happily takes fp32 -- so a whole-model artifact has layers
-            # this one cannot run as they stand. Wan2.2 is the live case: its time embedder ships
-            # FP32 weights, so ``time_embedder.linear_1`` stays a dense fp32 Linear (256 in, below
-            # the quantise floor) and hands ``linear_2``, which IS quantized, an fp32 activation on
-            # every step of every render. The activation is about to be rounded to 4 bits with an
-            # e4m3 block scale, so the bf16 hop costs nothing measurable; returning the caller's own
-            # dtype keeps nn.Linear's contract, which the fp16 case needs too (the GEMM always
-            # writes bf16). Both casts are no-ops for a bf16 model, i.e. for the hot path.
+            # FlashInfer's ``fp4_quantize`` raises on fp32 input while torchao's path accepts it,
+            # and Wan2.2's fp32 time embedder feeds exactly that into a quantized layer. Returning
+            # the caller's own dtype keeps nn.Linear's contract; both casts are no-ops at bf16.
             out_dtype = flat.dtype
             if out_dtype not in (torch.bfloat16, torch.float16):
                 flat = flat.to(torch.bfloat16)
             if flat.shape[0] == 0:
-                # An attention trim can hand a quantized Linear an empty batch. The GEMM has
-                # nothing to compute and FlashInfer has no shape for it; a shape check is a host
-                # value, not a device one, so this costs no synchronize.
+                # torchao's nvfp4 activation path raises on numel() == 0, and an attention trim
+                # can hand a quantized Linear an empty batch. A shape check costs no synchronize.
                 return flat.new_zeros((0, self.out_features), dtype = out_dtype).reshape(
                     *shape[:-1], self.out_features
                 )
-            # The per-step precision switch. ``armed`` is fixed for the life of the load, so a
-            # load that never asked for the lever short-circuits here and ``protected`` is neither
-            # read nor guarded: one compiled variant, byte for byte the forward that shipped.
-            # An armed load reads a bool that changes at most twice per render, so it traces two.
+            # ``armed`` is fixed for the life of the load, so an unarmed load never guards on
+            # ``protected`` and compiles exactly the forward that shipped.
             if self.protect.armed and self.protect.protected:
-                # W4A16 on the SAME bytes: the 4-bit operand decoded to bf16 for this call only,
-                # then dropped. No activation quantiser, no FP4 GEMM, no device guard needed --
-                # nothing here launches a flashinfer kernel.
+                # W4A16 on the SAME bytes, decoded for this call only. No flashinfer kernel here.
                 weight = dequantize_nvfp4_weight(
                     self.wq, self.w_sf, self.w_scale, dtype = torch.bfloat16
                 )
@@ -179,13 +117,10 @@ def nvfp4_linear_class():
                     out = torch.ops.unsloth_nvfp4.mm(
                         xq, self.wq, x_sf, self.w_sf, self.alpha, self.out_features, self.backend
                     )
-            # Back to the caller's dtype BEFORE the bias, so an fp32 layer adds its fp32 bias at
-            # fp32. A no-op returning the op's own output when the model is bf16. The bias is added
-            # the same way on both branches, so a step never changes how a layer applies it.
+            # Back to the caller's dtype BEFORE the bias, so an fp32 layer adds its bias at fp32.
             out = out.to(out_dtype)
             if self.bias is not None:
-                # mm_fp4 has no bias epilogue (no bias argument, no beta accumulate), so the add is
-                # a separate pass over the M x N output. In place, on the op's own fresh output.
+                # mm_fp4 has no bias epilogue, so the add is a separate in-place pass.
                 out.add_(self.bias)
             return out.reshape(*shape[:-1], self.out_features)
 
@@ -224,13 +159,8 @@ def nvfp4_linear_from_torchao(
     *,
     backend: str = DEFAULT_MM_BACKEND,
 ):
-    """Re-express one torchao NVFP4 ``nn.Linear`` as an ``NVFP4FlashInferLinear``.
-
-    A re-expression, NEVER a requantization: every 4-bit code and every block scale in the returned
-    module is the byte that was in the checkpoint. ``a_gsf`` is the baked activation global scale
-    (``6 * 448 / act_amax``); the alpha the GEMM wants is ``per_tensor_scale / a_gsf``, since
-    FlashInfer's alpha is ``1 / (a_gsf * w_gsf)`` and torchao's ``per_tensor_scale`` is ``1 / w_gsf``.
-    """
+    """Re-express one torchao NVFP4 ``nn.Linear`` as an ``NVFP4FlashInferLinear``, never a
+    requantization: every byte is the checkpoint's."""
     import torch
 
     register_ops()
@@ -253,8 +183,7 @@ def nvfp4_linear_from_torchao(
 
     scale = weight.scale
     if getattr(weight, "is_swizzled_scales", False):
-        # torchao's ``to_blocked`` 128x4 layout and FlashInfer's ``do_shuffle = False`` buffer are
-        # the same bytes in the same order (T-CUDA-3 asserts it), so this is a view, not a repack.
+        # Same bytes in the same order, so this is a view, not a repack.
         flat = scale.reshape(-1)
         w_sf = flat if flat.dtype == torch.uint8 else flat.view(torch.uint8)
     else:
@@ -274,22 +203,15 @@ def nvfp4_linear_from_torchao(
         alpha = alpha,
         a_gsf = _as_scale_tensor(a_gsf, device = device, dtype = torch.float32),
         bias = bias,
-        # Kept as torchao stored it, not rebuilt from alpha: the W4A16 branch dequantises with it
-        # and has to land on torchao's own bytes.
+        # Kept as torchao stored it: the W4A16 branch must land on torchao's own bytes.
         w_scale = _as_scale_tensor(per_tensor_scale, device = device, dtype = torch.float32),
         backend = backend,
-        # The caller reached this scale through the checkpoint's ``act_global_scales`` block, which
-        # is the only source ``convert_nvfp4_backend`` accepts, so it is baked by construction.
         activation_scales_baked = True,
     )
 
 
 def _baked_activation_scales(metadata: Any) -> Optional[dict]:
-    """The per-fqn baked activation scales, or None when the artifact declares none.
-
-    Keyed on the SCALES being present rather than on the flag alone: a checkpoint that says it
-    baked them and then ships none is refused exactly like one that never claimed to.
-    """
+    """The per-fqn baked activation scales, or None. Keyed on the scales, not on the flag."""
     if not isinstance(metadata, dict):
         return None
     scales = metadata.get(ACT_SCALES_KEY)
@@ -299,15 +221,7 @@ def _baked_activation_scales(metadata: Any) -> Optional[dict]:
 
 
 def _declares_baked_scales(metadata: Any) -> bool:
-    """Did this artifact CLAIM to bake activation scales, whatever shape it has?
-
-    Two artifacts declare it in two places, because they have two shapes: a per-layer policy build
-    carries the flag inside its policy block, and a WHOLE-MODEL build (PR 1's video artifacts, every
-    admitted linear at nvfp4) has no policy block at all and declares it at the top level. Only the
-    refusal message reads this -- the conversion itself is keyed on the scales being present -- but
-    a whole-model artifact whose bake produced nothing would otherwise be reported as one that never
-    asked for it, which is the difference between a build to rerun and a backend to stop asking for.
-    """
+    """Did this artifact CLAIM to bake activation scales? Read only by the refusal message."""
     if not isinstance(metadata, dict):
         return False
     policy = metadata.get(POLICY_KEY)
@@ -323,13 +237,8 @@ def convert_nvfp4_backend(
     *,
     logger: Any = None,
 ) -> int:
-    """Move every NVFP4 Linear in ``transformer`` onto the FlashInfer path. Returns how many.
-
-    All or nothing. A model with some layers on FlashInfer and some on torchao is a model nothing
-    measured, so the walk collects first and converts only when EVERY NVFP4 Linear has a baked
-    activation scale; otherwise it logs why and returns 0 with the module tree untouched, and the
-    artifact runs on torchao exactly as PR 1 shipped it.
-    """
+    """Move every NVFP4 Linear in ``transformer`` onto the FlashInfer path. Returns how many. All
+    or nothing: a missing baked scale anywhere leaves the whole tree untouched on torchao."""
     if backend != BACKEND_FLASHINFER:
         return 0
     scales = _baked_activation_scales(metadata)
@@ -384,17 +293,9 @@ def nvfp4_prewarm(
     *,
     logger: Any = None,
 ) -> int:
-    """Autotune every converted layer at the given token counts. Returns shapes tuned.
-
-    ``mm_fp4`` always consults FlashInfer's AutoTuner, but outside a tuning context it returns a
-    DEFAULT tactic rather than a profiled one, and the default is not the best tile for diffusion
-    shapes (measured 1.11x to 1.14x, bit-identical output either way). Tuning costs one profiling
-    pass per distinct ``(M, K, N)``, so it belongs here -- outside the request path, and before a
-    capture, since an untuned layer under capture bakes the default tactic into the graph.
-
-    Runs with the per-step precision lever SUSPENDED, so that a prewarm triggered at a protected
-    step still tunes the FP4 kernel rather than marking the shape tuned after a bf16 forward.
-    """
+    """Autotune every converted layer at the given token counts. Returns shapes tuned. Must run
+    before any capture, which would otherwise bake in ``mm_fp4``'s default tactic, and it suspends
+    the per-step precision lever so the pass tunes the FP4 kernel rather than a bf16 forward."""
     import torch
 
     try:
@@ -408,10 +309,6 @@ def nvfp4_prewarm(
     register_ops()
     modules = [mod for _, mod in _iter_linears(transformer) if is_nvfp4_flashinfer_linear(mod)]
     counter = [0]
-    # The per-step lever OFF for the whole pass. A protected step would send every one of these
-    # forwards down the bf16 branch, which tunes no FlashInfer tactic while the loop below still
-    # records the shape as tuned -- so the next capture, on the other branch, would bake in the
-    # default tactic. See ``suspend_protect``.
     with suspend_protect(modules):
         _prewarm_shapes(modules, shapes, logger = logger, tuned_box = counter)
     tuned = counter[0]
@@ -449,16 +346,9 @@ def _prewarm_shapes(modules, shapes, *, logger, tuned_box) -> None:
         module._tuned = True
 
 
-# ── module-tree plumbing ──────────────────────────────────────────────────────────────────────
-
-
 def _iter_linears(transformer: Any):
-    """``(fqn, module)`` for every leaf that looks like a Linear, in definition order.
-
-    Keyed on the two feature counts rather than on ``weight``, so that the walk still finds a layer
-    this module has ALREADY converted -- an ``NVFP4FlashInferLinear`` holds packed buffers and no
-    ``weight`` at all, and the prewarm has to be able to reach it.
-    """
+    """Every leaf that looks like a Linear, keyed on the feature counts: a converted layer has no
+    ``weight``."""
     for name, module in transformer.named_modules():
         if not name:
             continue

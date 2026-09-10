@@ -341,9 +341,9 @@ class _Bytes:
 
 
 class Float8Tensor:
-    """A quantized fp8 weight as far as this module is concerned: the class NAME is the key, for
-    the fingerprint's payload table and for the activation-floor check that has to tell an fp8
-    weight apart from the 4-bit ones beside it in a policy checkpoint."""
+    """A quantized fp8 weight as far as this module is concerned: the class NAME is the key, for the
+    fingerprint's payload table and for the activation-floor check that has to tell an fp8 weight
+    apart from the 4-bit ones beside it in a policy checkpoint."""
 
     def __init__(
         self,
@@ -356,9 +356,7 @@ class Float8Tensor:
 
 
 class NVFP4Tensor:
-    """The other half of a per-layer policy checkpoint: 4-bit weights sitting in the same state
-    dict. It carries act_quant_kwargs too, with no hp_value_lb, because its activation quantiser
-    has no such knob."""
+    """The other half of a per-layer policy checkpoint: 4-bit weights sitting in the same state dict."""
 
     def __init__(self, qdata = b""):
         self.qdata = _Bytes(qdata)
@@ -2080,7 +2078,6 @@ def test_the_floor_check_ignores_dense_and_unreadable_state_dicts():
     assert pq._fp8_activation_floor_present({}, None) is True
 
 
-# ── the per-layer nvfp4 policy contract (format v3) ─────────────────────────────
 
 
 def _policy_meta(
@@ -2098,7 +2095,6 @@ def _policy_meta(
     )
 
     policy = policy or ZIMAGE_F8MOD_TOQ34
-    # The assignment a build of this policy produces, as counts and fqns rather than a module tree.
     assignment = {f"layers.{i}.attention.to_q": "nvfp4" for i in range(34)}
     assignment.update({f"layers.{i}.feed_forward.w1": "fp8" for i in range(237)})
     assignment.update({f"t_embedder.mlp.{i}": "bf16" for i in range(5)})
@@ -2118,8 +2114,6 @@ def test_the_format_tag_follows_the_policy_and_refuses_to_carry_two_claims():
     assert pq.prequant_format_for({"scheme": "nvfp4"}) == pq.PREQUANT_FORMAT
     assert pq.prequant_format_for(_policy_meta()) == pq.PREQUANT_FORMAT_POLICY
     assert pq.PREQUANT_FORMAT_POLICY not in (pq.PREQUANT_FORMAT, pq.PREQUANT_FORMAT_ROTATED)
-    # One tag slot, two things an older build has to be warned about: a build declaring both would
-    # have to lie about one of them, so it is refused before it writes anything.
     both = {**_policy_meta(), **rotation_metadata(128, ["layers.0.attention.to_q"])}
     with pytest.raises(ValueError, match = "both"):
         pq.prequant_format_for(both)
@@ -2130,11 +2124,8 @@ def test_the_format_tag_follows_the_policy_and_refuses_to_carry_two_claims():
     [
         (pq.PREQUANT_FORMAT_POLICY, True, True),
         (pq.PREQUANT_FORMAT, False, True),
-        # A policy artifact tagged v1 is read by an older build as a whole-model nvfp4 one: it
-        # loads clean and renders from precisions nothing measured.
         (pq.PREQUANT_FORMAT, True, False),
         (pq.PREQUANT_FORMAT_ROTATED, True, False),
-        # A v3 tag with no policy: something was meant to happen and did not.
         (pq.PREQUANT_FORMAT_POLICY, False, False),
     ],
 )
@@ -2147,22 +2138,14 @@ def test_a_policy_declaration_this_build_cannot_reproduce_is_refused():
     from core.inference.diffusion_nvfp4_policy import NVFP4_POLICY_KEY
 
     fmt = pq.PREQUANT_FORMAT_POLICY
-    # The one that must pass, so every refusal below is the field it names and nothing else.
     assert pq._validate_policy(fmt, _policy_meta(), "nvfp4", None) is True
-    # A block that does not parse.
     assert pq._validate_policy(fmt, _policy_meta(kind = "v2"), "nvfp4", None) is False
     assert pq._validate_policy(fmt, _policy_meta(nvfp4_fqns = []), "nvfp4", None) is False
-    # The policy's own default precision is fp8 and its rules name nvfp4, so no other scheme can
-    # describe it. (The recorded scheme is checked against the requested one separately.)
     assert pq._validate_policy(fmt, _policy_meta(), "fp8", None) is False
-    # A base this build has no policy for: nothing to check the declaration against.
     assert pq._validate_policy(fmt, _policy_meta(base = "some/other-dit"), "nvfp4", None) is False
     assert pq._validate_policy(fmt, _policy_meta(family = "flux.1"), "nvfp4", None) is False
-    # A retuned table bumps the version precisely so artifacts built under the old one stop
-    # loading rather than being read as the new one.
     assert pq._validate_policy(fmt, _policy_meta(policy_version = 2), "nvfp4", None) is False
     assert pq._validate_policy(fmt, _policy_meta(policy_id = "qwen_p02_v1"), "nvfp4", None) is False
-    # And the counts, which are the whole per-layer assignment in four numbers.
     drifted = _policy_meta()
     drifted[NVFP4_POLICY_KEY]["counts"] = {"nvfp4": 34, "fp8": 236, "bf16": 6}
     assert pq._validate_policy(fmt, drifted, "nvfp4", None) is False
@@ -2176,31 +2159,23 @@ def test_a_policy_checkpoint_is_validated_end_to_end():
         "state_dict": {"weight": object()},
     }
     assert pq._validate_checkpoint(ckpt, "nvfp4", "Tongyi-MAI/Z-Image-Turbo", logger) is True
-    # The same artifact under the v1 tag reaches the same refusal through the loader's own path.
     ckpt["format"] = pq.PREQUANT_FORMAT
     assert pq._validate_checkpoint(ckpt, "nvfp4", "Tongyi-MAI/Z-Image-Turbo", logger) is False
     assert "v3" in logger.text
 
 
 def test_the_floor_check_skips_the_4_bit_weights_beside_the_fp8_ones():
-    # THE bug this fix exists for: a policy checkpoint's state dict holds both classes, and an
-    # NVFP4Tensor carries act_quant_kwargs with no hp_value_lb. Stopping at the first tensor with
-    # the attribute refused every policy artifact whose first quantised weight was a 4-bit one.
     mixed = {
         "layers.0.attention.to_q.weight": NVFP4Tensor(b"q4"),
         "layers.0.feed_forward.w1.weight": Float8Tensor(hp_value_lb = 1e-12),
     }
     assert pq._fp8_activation_floor_present(mixed, None) is True
-    # And the fp8 half is still checked: an unfloored weight behind a 4-bit one is still refused.
     mixed["layers.0.feed_forward.w1.weight"] = Float8Tensor(hp_value_lb = None)
     assert pq._fp8_activation_floor_present(mixed, None) is False
-    # A dict of 4-bit weights alone has no fp8 floor to be missing.
     assert pq._fp8_activation_floor_present({"w": NVFP4Tensor()}, None) is True
 
 
 def test_pinning_the_fp8_kernel_leaves_the_4_bit_weights_alone(monkeypatch):
-    # _pin_kernel_preference walks every value in the state dict. An NVFP4Tensor has no
-    # kernel_preference, so it must read as nothing to pin rather than as an AUTO to rewrite.
     _stub_kernel_preference(monkeypatch)
     sd = {
         "layers.0.attention.to_q.weight": NVFP4Tensor(b"q4"),
@@ -2211,10 +2186,6 @@ def test_pinning_the_fp8_kernel_leaves_the_4_bit_weights_alone(monkeypatch):
 
 
 def test_an_nvfp4_install_must_be_able_to_open_the_fp8_weights_too():
-    # A policy checkpoint is an nvfp4 artifact whose state dict holds Float8Tensor weights beside
-    # the NVFP4Tensor ones, so the nvfp4 answer covers both constructor sets. Answering on the
-    # 4-bit names alone would report the file loadable and then fail mid-unpickle, after the plan
-    # had already dropped the dense shards.
     required = pq._SCHEME_REQUIRED_GLOBALS["nvfp4"]
     assert pq._SCHEME_REQUIRED_GLOBALS["fp8"] <= required
     assert "torchao.prototype.mx_formats.nvfp4_tensor.NVFP4Tensor" in required

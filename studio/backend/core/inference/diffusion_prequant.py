@@ -41,11 +41,9 @@ PREQUANT_FORMAT = "unsloth_prequant_transformer_state_dict_v1"
 # hand-edited tag nor a builder that forgot one half can produce something that loads.
 PREQUANT_FORMAT_ROTATED = "unsloth_prequant_transformer_state_dict_v2"
 
-# v3 is v1 plus a PER-LAYER PRECISION POLICY (see ``diffusion_nvfp4_policy``): the state dict holds NVFP4 weights and
-# fp8 weights side by side, chosen layer by layer, instead of one scheme applied to every admitted linear. A build that
-# predates this code reads such a file as a whole-model nvfp4 artifact: it loads clean, it renders, and the precisions
-# are not the ones any gate measured -- so it gets its own tag and is refused outright there. Biconditional with the
-# declaration, exactly as v2 is with the rotation: a v3 artifact MUST declare a policy and a v1/v2 one must NOT.
+# v3 is v1 plus a PER-LAYER PRECISION POLICY: NVFP4 and fp8 weights side by side, chosen layer by layer. Its own tag,
+# because an older build would otherwise read such a file as a whole-model nvfp4 artifact and render precisions no gate
+# measured. Biconditional with the declaration: a v3 artifact MUST declare a policy and a v1/v2 one must NOT.
 PREQUANT_FORMAT_POLICY = "unsloth_prequant_transformer_state_dict_v3"
 
 PREQUANT_FORMATS = (PREQUANT_FORMAT, PREQUANT_FORMAT_ROTATED, PREQUANT_FORMAT_POLICY)
@@ -57,12 +55,9 @@ DEFAULT_PREQUANT_COMPONENT = "transformer"
 
 
 def prequant_format_for(metadata: Any) -> str:
-    """The on-disk format tag an offline builder should stamp for ``metadata``.
-
-    The two tags above v1 are mutually exclusive, and a build declaring both is refused rather
-    than given one of them: there is only one tag slot, so whichever it got would tell every
-    older build the other half is absent. The two features are also incompatible in substance --
-    a rotation is solved for one quantiser over the whole model, and a policy runs two."""
+    """The on-disk format tag an offline builder should stamp for ``metadata``. The two tags above
+    v1 are mutually exclusive and a build declaring both is refused: there is one tag slot, so
+    whichever it got would tell an older build the other half is absent."""
     from .diffusion_convrot import declares_rotation
     from .diffusion_nvfp4_policy import declares_policy
 
@@ -149,10 +144,8 @@ _RESOLVED_SAFE_GLOBALS: set = set()
 # What a checkpoint of each scheme actually NAMES, read off the artifacts with pickletools rather than assumed: every
 # hosted repo the family tables list, plus a local bake of each scheme for the two nothing hosts. Only these are
 # required, so dropping an unused name does not fail a scheme.
-# fp8's own constructor names, pulled out because the nvfp4 entry below needs them too.
 _FP8_REQUIRED_GLOBALS: frozenset = frozenset(
     {
-        # The ALIAS spelling, which is what the fp8 pickles record.
         "torchao.quantization.Float8Tensor",
         "torchao.quantization.quantize_.workflows.float8.float8_tensor."
         "QuantizeTensorToFloat8Kwargs",
@@ -185,13 +178,8 @@ _SCHEME_REQUIRED_GLOBALS: dict = {
             "torchao.quantization.quantize_.common.kernel_preference.KernelPreference",
         }
     ),
-    # The UNION with fp8, because a per-layer policy checkpoint (format v3) is an nvfp4 artifact
-    # whose state dict holds Float8Tensor weights beside the NVFP4Tensor ones. Asking for the
-    # nvfp4 names alone would register an allowlist the file's own fp8 weights then trip, and the
-    # refusal would arrive as an UnpicklingError halfway through a multi-gigabyte load rather than
-    # as a "this install cannot open it" before the plan sized anything. Every torchao that ships
-    # the prototype nvfp4 tensor ships the fp8 one, so the union costs nothing for a whole-model
-    # nvfp4 artifact either.
+    # The UNION with fp8: a v3 policy checkpoint holds Float8Tensor weights beside the NVFP4Tensor
+    # ones, and the nvfp4 names alone would trip on them as an UnpicklingError mid-load.
     "nvfp4": frozenset(
         {
             "torchao.prototype.mx_formats.nvfp4_tensor.NVFP4Tensor",
@@ -986,10 +974,6 @@ def load_prequantized_transformer(
 
         apply_activation_rotation(transformer, metadata, logger = logger)
 
-        # The other backend for the same bytes: torchao's NVFP4 payload re-expressed as flashinfer
-        # operands, when this device passes the guarded preflight and the artifact baked its
-        # activation scales. A no-op for every other scheme, and a logged refusal (leaving torchao
-        # in place) for an nvfp4 artifact that baked none.
         # Gated on the scheme so that an int8 or fp8 artifact never pays for the flashinfer probe,
         # whose first call can JIT a kernel.
         if scheme == "nvfp4":
@@ -1202,8 +1186,8 @@ def _load_transformer_config(
     raise last  # type: ignore[misc]
 
 
-# The class name of the only tensor subclass this floor applies to. By NAME, because the class is re-exported under
-# several module paths and asking for it here would import torchao into a check that runs before the load.
+# By NAME: the class is re-exported under several module paths, and importing torchao here would pull it into a check
+# that runs before the load.
 _FLOAT8_TENSOR_CLASS = "Float8Tensor"
 
 
@@ -1288,25 +1272,8 @@ def _validate_activation_rotation(ckpt_format: Any, meta: Any, scheme: str, logg
 
 def _validate_policy(ckpt_format: Any, meta: Any, scheme: str, logger: Any) -> bool:
     """Reject a checkpoint whose per-layer nvfp4 policy this build cannot reproduce EXACTLY.
-
-    A policy artifact is a mixture: some layers at 4 bits, the rest at fp8, chosen by a table that
-    was solved and gated on one base repo. Nothing about the file's weights says which layers got
-    which, and a loader that guesses wrong renders finite, plausible, differently-quantised
-    pixels. So every way the artifact and this build can disagree is refused here:
-
-      * the artifact declares a policy and is tagged v1/v2, or is tagged v3 and declares none.
-        Only the v3 tag makes an Unsloth too old for this code refuse the file instead of loading
-        it as a whole-model nvfp4 one;
-      * the block does not parse (an unknown kind, a missing id, an empty fqn list);
-      * the scheme is not nvfp4. The policy's own default precision is fp8 and its rules name
-        nvfp4, so there is no other scheme it could describe;
-      * this build resolves no policy at all for the artifact's family and base, so there is
-        nothing to check the declaration against;
-      * the declared ``(policy_id, policy_version)`` or the declared counts differ from the
-        in-tree policy's. A retuned table bumps the version precisely so the artifacts built
-        under the old one stop loading rather than being read as the new one.
-
-    Refusing costs a dense fallback: slower and bigger, never wrong."""
+    Nothing in the weights says which layer got which precision, so a loader that guesses wrong
+    renders plausible, differently-quantised pixels. Refusing costs a dense fallback instead."""
     from .diffusion_nvfp4_policy import (
         NVFP4_POLICY_KEY,
         declares_policy,

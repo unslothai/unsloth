@@ -1757,9 +1757,8 @@ class DiffusionBackend:
                 target,
                 getattr(fam, "name", None),
                 base_repo = base_repo,
-                # The retry only ever proposes a rung that HAS a usable checkpoint (it re-checks
-                # below), so answering the ladder's own prequant requirement with the same probe
-                # keeps the two from disagreeing about which rungs exist.
+                # Same probe as the retry uses below, so the two cannot disagree about which
+                # rungs exist.
                 has_prequant = lambda candidate: usable_prequant_source(
                     fam, candidate, path_override = path_override, base_repo = base_repo
                 )
@@ -4778,13 +4777,9 @@ class DiffusionBackend:
             target,
             mode,
             family = getattr(fam, "name", None),
-            # The base decides two things the family cannot: whether a gate record lifts the nvfp4
-            # deny for THESE weights, and whether the per-family auto head applies at all.
             base_repo = base,
-            # Under auto, a scheme that only ships as a gated checkpoint is offered only where that
-            # checkpoint is actually resolvable for this load. usable_ (not resolve_) so a local
-            # override counts only when this loader would accept it -- the same question step 1
-            # below asks, so the ladder cannot pick a rung the very next line then cannot serve.
+            # usable_ (not resolve_): the same question step 1 below asks, so the ladder cannot
+            # pick a rung the very next line then cannot serve.
             has_prequant = lambda candidate: (
                 fam is not None
                 and usable_prequant_source(
@@ -4828,13 +4823,9 @@ class DiffusionBackend:
                 )
                 if transformer is not None:
                     if scheme == TQ_NVFP4:
-                        # Autotune the FlashInfer NVFP4 GEMMs off the request path. Only the M = 1
-                        # modulation shapes are knowable here: the loader has no width or height,
-                        # and this family's other 4-bit layers see one row per token, so their M is
-                        # a function of the render's resolution. Those are tuned at the first
-                        # generate instead, in ``GraphedForward``'s warm-up, which sees the real
-                        # shapes and runs before any capture. A checkpoint on the torchao backend
-                        # has no converted layer and this is a walk that finds nothing.
+                        # Autotune off the request path. Only the M = 1 modulation shapes are
+                        # knowable here; the resolution-dependent ones are tuned in
+                        # ``GraphedForward``'s warm-up, which runs before any capture.
                         from .diffusion_nvfp4_linear import nvfp4_prewarm
                         nvfp4_prewarm(transformer, (1,), logger = logger)
                     pipe = self._assemble_pipe(
@@ -4915,8 +4906,7 @@ class DiffusionBackend:
             target,
             mode = mode,
             family = getattr(fam, "name", None),
-            # The upstream id, not ``fetch_base``: the per-layer NVFP4 policy is a claim about one
-            # set of weights, and a mirror is those weights under another name.
+            # The upstream id, not ``fetch_base``: a policy is a claim about one set of weights.
             base_repo = base,
             fast_accum = fast_accum,
             logger = logger,
@@ -6197,9 +6187,8 @@ class DiffusionBackend:
                 if "callback_on_step_end" in call_params:
                     kwargs["callback_on_step_end"] = _on_step
 
-                # The EFFECTIVE denoise steps: img2img at strength < 1 denoises a fraction of `steps`. Both the auto
-                # step-cache decision and the NVFP4 per-step precision schedule key on this rather than on `steps`,
-                # since a negative index in the schedule ("the last step") has to land on a step the loop reaches.
+                # The EFFECTIVE denoise steps: img2img at strength < 1 denoises a fraction of `steps`, and a negative
+                # index in the protect schedule has to land on a step the loop reaches.
                 strength_applied = effective_request_strength(
                     strength,
                     init_pil is not None,
@@ -6267,17 +6256,8 @@ class DiffusionBackend:
                     # __call__, so a raised call leaves a residual the next forward trips over.
                     if state.transformer_cache:
                         self._reset_step_cache(state.pipe)
-                    # The NVFP4 per-step precision lever, armed for the duration of THIS chunk. Per chunk, not per
-                    # generate: a batch that splits into chunks runs one denoise loop each, and each one starts again
-                    # at step 0. Inert (nothing wrapped, nothing counted) unless UNSLOTH_NVFP4_PROTECT_STEPS names
-                    # steps.
-                    #
-                    # It counts scheduler.step, which a step cache does NOT skip: FBCache skips the transformer's
-                    # BLOCKS, not the loop, so the index stays right. What it does mean is that a protected step whose
-                    # forward the cache skipped simply does not run the protected branch -- the lever protects the
-                    # steps that are computed, and a cached step was never going to read the 4-bit weight at all.
-                    # Nothing to reconcile with the bypass above either: that one keys on the cache, this one on the
-                    # step, and the graph key carries both.
+                    # Armed per CHUNK, not per generate: a batch that splits runs one denoise loop each, starting
+                    # again at step 0. It counts scheduler.step, which a step cache does not skip.
                     protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
                     try:
                         # inference_mode is faster than no_grad and numerically identical here.
@@ -6566,15 +6546,8 @@ class DiffusionBackend:
 def _transformer_quant_backend(state: Any) -> Optional[str]:
     """Which NVFP4 kernel path the loaded denoiser is actually running, or None.
 
-    Only nvfp4 has two implementations, so every other scheme (and the GGUF) answers None. The
-    scheme is not the answer for nvfp4 either: flashinfer is chosen per device, and a checkpoint
-    without baked activation scales, a failed preflight or a Windows host all leave the model on
-    torchao with the same 'nvfp4' in ``transformer_quant``. Read from the module tree rather than
-    from what the load intended -- ``convert_nvfp4_backend`` is all-or-nothing, so a single
-    converted layer means the conversion ran.
-
-    Never raises: a status read is a poll, and a probe of someone else's module tree must not be
-    what takes it down."""
+    Read from the MODULE TREE rather than from what the load intended: the same 'nvfp4' scheme
+    lands on either backend depending on the device and the artifact. Never raises."""
     if getattr(state, "transformer_quant", None) != TQ_NVFP4:
         return None
     try:
@@ -6591,8 +6564,6 @@ def _transformer_quant_backend(state: Any) -> Optional[str]:
         for module in denoiser.modules():
             if is_nvfp4_flashinfer_linear(module):
                 return "flashinfer"
-        # nvfp4 engaged and nothing was converted: torchao is what ran, which is the fallback the
-        # backend selection is designed to reach rather than an error.
         return "torchao"
     except Exception:  # noqa: BLE001 -- see the docstring: a poll must not fail on a probe
         return None

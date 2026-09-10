@@ -3,41 +3,11 @@
 
 """Per-step precision for the NVFP4 backend: which denoising steps run W4A16 instead of W4A4.
 
-A DiT runs the same weights 40-100 times in a feedback loop, and the damage the 4-bit activation
-path does is nowhere near uniform across those calls. Step 0 carries by far the most of it. The
-lever this module drives is therefore to run the SAME 4-bit bytes at a higher activation precision
-on a named handful of steps: at a protected step ``NVFP4FlashInferLinear`` dequantises ``wq`` /
-``w_sf`` / ``w_scale`` to a transient bf16 weight and runs a plain ``F.linear``; everywhere else it
-runs the FlashInfer NVFP4 GEMM exactly as before.
-
-**Zero extra resident memory.** The bf16 weight is built inside the forward and dropped when it
-returns; there is never a second resident operand and the checkpoint is byte-identical to the one
-the plain flashinfer arm loads. That is the whole point of switching on the ACTIVATION side.
-
-Three things live here:
-
-1. **The schedule.** ``UNSLOTH_NVFP4_PROTECT_STEPS`` is a comma list of step indices, negative
-   indices counting from the end (``0,1,2,3,-1``), ``auto`` for "the first 8 percent of the steps
-   plus the last one" (``0,1,2,3,49`` at 50 steps, ``0,8`` at 9, ``0,3`` at 4), or ``all`` for the
-   ceiling. Empty (the default) is OFF and the layer keeps the forward it has today, guard for
-   guard.
-2. **The controller.** One small object per process holding a plain Python ``bool``. The layer
-   reads ``ctl.armed and ctl.protected``, which under Dynamo is two constant guards and therefore
-   at most TWO compiled variants of a block for a whole render, not one per step. ``armed`` is
-   fixed for the life of a load (it comes from the environment), so a load that never asked for
-   the lever traces exactly one variant: the short circuit means ``protected`` is never read and
-   never guarded.
-3. **The step counter.** ``protect_generation`` wraps ``pipe.scheduler.step`` for the duration of
-   one generation. Every diffusers denoise loop calls it exactly once per step, AFTER the
-   transformer forward for that step, which is what makes a counter incremented there the index of
-   the forward that is about to run. It is the same hook ``video._scheduler_step_progress`` and the
-   gate harness's step timer already use, and it works for the pipelines that expose
-   ``callback_on_step_end`` and the ones that do not, which is why the lever is wired there rather
-   than to a callback only half the families accept.
-
-The protected set must be MEASURED per model. Copying one model's set to another has been observed
-to make held-out prompts worse than protecting nothing, so there is no per-family default here and
-the lever is off unless an operator names the steps.
+At a protected step the layer dequantises its own bytes to a transient bf16 weight, so there is
+never a second resident operand. The step counter wraps ``pipe.scheduler.step``, which every
+diffusers denoise loop calls once per step, after that step's forward. The protected set must be
+MEASURED per model: copying one model's set to another has been observed to make held-out prompts
+worse than protecting nothing, so the lever is off unless an operator names the steps.
 """
 
 from __future__ import annotations
@@ -47,18 +17,12 @@ import math
 import os
 from typing import Any, Optional
 
-# The schedule. Empty / unset / "off" is OFF, which is the default everywhere.
 PROTECT_STEPS_ENV = "UNSLOTH_NVFP4_PROTECT_STEPS"
 
-# ``auto``: the first ``AUTO_HEAD_FRACTION`` of the schedule, plus the last step. 0.08 of 50 is 4,
-# i.e. ``0,1,2,3,-1``, which is the set the video campaign measured on Wan2.2-TI2V-5B; the fraction
-# is what carries it to a schedule with a different step count.
+# ``auto``: the first ``AUTO_HEAD_FRACTION`` of the schedule, plus the last step.
 AUTO = "auto"
 AUTO_HEAD_FRACTION = 0.08
 
-# ``all``: every step. The ceiling arm -- what the lever would buy if speed were free -- and the
-# only spelling of it that survives a schedule whose step count is not known when the environment
-# is written.
 ALL = "all"
 
 _OFF_TOKENS = ("", "off", "none", "0-none", "false", "no")
@@ -71,15 +35,9 @@ def protect_steps_env() -> str:
 
 
 def parse_protect_steps(spec: Any, total_steps: int) -> tuple:
-    """``spec`` resolved against a schedule of ``total_steps`` steps, as a sorted tuple.
-
-    ``auto`` is the first ``AUTO_HEAD_FRACTION`` of the steps plus the last one; ``all`` is every
-    step. Negative indices count from the end, so one environment value serves every step count
-    that wants "the first few and the last". An index the schedule does not REACH is dropped rather
-    than raising: the same value has to survive a 4-step smoke render and a 50-step production one. A
-    token that is not an integer DOES raise, because that is a typo and silently protecting nothing
-    is how a lever gets reported as measured when it never ran.
-    """
+    """``spec`` resolved against a schedule of ``total_steps`` steps, as a sorted tuple. An
+    out-of-range index is dropped, so one value serves any step count; a non-integer token DOES
+    raise, since a typo that silently protects nothing reads as a measured lever that never ran."""
     total = int(total_steps)
     if total <= 0:
         return ()
@@ -115,13 +73,8 @@ def parse_protect_steps(spec: Any, total_steps: int) -> tuple:
 
 
 class NVFP4StepController:
-    """Which denoising step is running, and whether it is protected.
-
-    ``protected`` is a plain ``bool`` attribute rather than a property on purpose: Dynamo turns a
-    constant attribute read into one guard and compiles one variant per value, so a render traces
-    two variants of a protected block and no more. A property computing ``index in steps`` would
-    guard the index instead, which is one variant per STEP.
-    """
+    """Which denoising step is running, and whether it is protected. ``protected`` is a plain
+    ``bool``, never a property: a property would make Dynamo compile one variant per STEP."""
 
     def __init__(self, spec: Any = None) -> None:
         self.spec: str = ""
@@ -130,15 +83,13 @@ class NVFP4StepController:
         self.steps: tuple = ()
         self.index: int = 0
         self.protected: bool = False
-        # Diagnostics, so a run can prove the lever fired without reading the renders.
         self.protected_steps_seen: int = 0
         self.generations: int = 0
         self.configure(protect_steps_env() if spec is None else spec)
 
-    # ── configuration ────────────────────────────────────────────────────────────────────────
     def configure(self, spec: Any) -> "NVFP4StepController":
-        """Set the schedule. ``armed`` is fixed here and read as a compile guard by the layer, so
-        it must not move once a load has traced: configure before the first forward."""
+        """Set the schedule. ``armed`` is read as a compile guard, so it must not move once a load
+        has traced: configure before the first forward."""
         raw = "" if spec is None else str(spec).strip().lower()
         self.spec = "" if raw in _OFF_TOKENS else raw
         self.armed = bool(self.spec)
@@ -156,7 +107,6 @@ class NVFP4StepController:
             "generations": self.generations,
         }
 
-    # ── the per-generation state machine ─────────────────────────────────────────────────────
     def begin(self, total_steps: int, *, logger: Any = None) -> tuple:
         """Start a generation of ``total_steps`` steps. Returns the resolved protected set."""
         self.reset()
@@ -198,9 +148,7 @@ class NVFP4StepController:
         return self
 
 
-# One controller per process. Studio serves one generation at a time behind its load lock, and the
-# layers take this object at construction, so a per-model controller buys nothing today; injecting
-# one (assign ``layer.protect``) is still how the tests drive a layer without touching the process.
+# One controller per process: Studio serves one generation at a time behind its load lock.
 _CONTROLLER = NVFP4StepController()
 
 
@@ -210,8 +158,7 @@ def protect_controller() -> NVFP4StepController:
 
 
 def reset_protect_controller(spec: Any = None) -> NVFP4StepController:
-    """Re-read the environment (or take ``spec``) and clear any generation state. For tests, and
-    for a load that changed the schedule under a process that had already read it."""
+    """Re-read the environment (or take ``spec``) and clear any generation state."""
     return _CONTROLLER.configure(protect_steps_env() if spec is None else spec)
 
 
@@ -223,15 +170,8 @@ def protect_generation(
     controller: Optional[NVFP4StepController] = None,
     logger: Any = None,
 ):
-    """Drive ``controller`` across one generation of ``steps`` steps, then restore everything.
-
-    A no-op context when the lever is off: nothing is wrapped, nothing is counted, and the
-    scheduler is left exactly as it was found. When it is on, ``pipe.scheduler.step`` is wrapped
-    for the duration -- it is called once per denoise step, after that step's transformer forward,
-    so incrementing there leaves the counter holding the index of the NEXT forward. A pipeline with
-    no scheduler to count (a modular workflow that hides it) protects NOTHING rather than
-    everything, and says so.
-    """
+    """Drive ``controller`` across one generation of ``steps`` steps, then restore everything. A
+    no-op when the lever is off, and a pipeline with no scheduler to count protects NOTHING."""
     ctl = controller if controller is not None else protect_controller()
     if not ctl.armed:
         yield ctl
@@ -255,11 +195,8 @@ def protect_generation(
         ctl.advance()
         return out
 
-    # Whether ``step`` was an instance attribute BEFORE this wrap. If it was not (the ordinary
-    # case: a bound class method), restoring by assignment would leave an instance attribute
-    # shadowing the class for the life of the scheduler, so unwind by deleting instead. Nesting
-    # under another wrapper -- the video backend's progress hook, the gate harness's step timer --
-    # is the case where it WAS one, and that callable is put back exactly.
+    # Restoring a bound class method by assignment would leave an instance attribute shadowing the
+    # class forever, so unwind by deleting unless there really was one before this wrap.
     had_own = "step" in getattr(scheduler, "__dict__", {})
     scheduler.step = _step
     try:
@@ -278,14 +215,8 @@ def protect_generation(
 @contextlib.contextmanager
 def suspend_protect(modules: Any):
     """Force every controller reachable from ``modules`` to report itself unarmed, then restore.
-
-    ONE caller needs this and it is not optional there. ``nvfp4_prewarm`` autotunes the FlashInfer
-    GEMM by running each layer inside ``flashinfer.autotune(True)`` and then marking the shape
-    tuned. If a protected step is live while it runs, every one of those forwards takes the bf16
-    branch, tunes nothing, and marks the shape tuned anyway -- and the NEXT capture, on the
-    unprotected branch, skips the prewarm and records an untuned tactic into the graph. Suspending
-    here makes the tuning pass measure the kernel it is tuning, whatever step the model is on.
-    """
+    The prewarm MUST suspend the lever: otherwise its forwards take the bf16 branch, tune nothing,
+    mark the shape tuned anyway, and the next capture records an untuned tactic."""
     seen: dict = {}
     for module in modules or ():
         ctl = getattr(module, "protect", None)
@@ -302,12 +233,8 @@ def suspend_protect(modules: Any):
 
 def protect_graph_key(protected: Optional[bool] = None) -> tuple:
     """The CUDA-graph cache-key suffix for the branch in flight, or ``()`` when the lever is off.
-
-    A captured graph records ONE branch. Without this the graph taken at an unprotected step would
-    replay at a protected one and the lever would be silently inert under capture, which is worse
-    than refusing to capture: the numbers would look like the lever ran. With it each branch gets
-    its own graph, at the cost of doubling the graph count for a load that arms the lever.
-    """
+    A captured graph records ONE branch, so without this the lever is silently inert under
+    capture while the numbers look like it ran."""
     ctl = protect_controller()
     if not ctl.armed:
         return ()
@@ -330,8 +257,7 @@ def protect_layers(module: Any) -> list:
 
 
 def attach_controller(module: Any, controller: NVFP4StepController) -> int:
-    """Point every NVFP4 layer under ``module`` at ``controller``. Returns how many. Tests use it;
-    the load path does not need it, since the layers take the process controller at construction."""
+    """Point every NVFP4 layer under ``module`` at ``controller``. Returns how many."""
     layers = protect_layers(module)
     for _, layer in layers:
         layer.protect = controller

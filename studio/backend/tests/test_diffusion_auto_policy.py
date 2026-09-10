@@ -151,10 +151,6 @@ def test_estimate_nvfp4_is_smaller_than_int8():
 
 
 def test_an_nvfp4_policy_base_is_sized_by_the_policy_not_by_whole_model_nvfp4():
-    # T-12. nvfp4 on the image DiTs is a PER-LAYER policy: a small named set at 4 bits, the rest at
-    # fp8, so the artifact lands near the fp8 factor rather than near 0.33. Sizing it at 0.33 is
-    # what makes the planner keep resident a model that does not fit, so the estimate follows the
-    # policy that resolves for the base.
     from core.inference.diffusion_auto_policy import (
         _MIB_PER_GB,
         _POLICY_STEADY_FACTOR,
@@ -168,15 +164,11 @@ def test_an_nvfp4_policy_base_is_sized_by_the_policy_not_by_whole_model_nvfp4():
     assert policy.steady_transformer_mib == int(
         transformer_gb * _POLICY_STEADY_FACTOR["zimg_f8mod_toq34_v1"] * _MIB_PER_GB
     )
-    # Well above the whole-model number it would otherwise have reported.
     whole_model = int(transformer_gb * _QUANT_STEADY_FACTOR["nvfp4"] * _MIB_PER_GB)
     assert policy.steady_transformer_mib > whole_model
-    # An unnamed base resolves no policy (a policy is a claim about weights), and neither does a
-    # base outside the policy's own list, so both keep the whole-model factor.
     for base in (None, "some-org/Z-Image-Fork"):
         plain = estimate_dense_quant(_fam("z-image"), "nvfp4", base_repo = base)
         assert plain is not None and plain.steady_transformer_mib == whole_model, base
-    # A family with no policy at all is untouched, base or no base.
     kontext = estimate_dense_quant(
         _fam("flux.1-kontext"), "nvfp4", base_repo = "black-forest-labs/FLUX.1-Kontext-dev"
     )
@@ -185,7 +177,6 @@ def test_an_nvfp4_policy_base_is_sized_by_the_policy_not_by_whole_model_nvfp4():
         ap._FAMILY_BF16_GB["flux.1-kontext"][0] * _QUANT_STEADY_FACTOR["nvfp4"] * _MIB_PER_GB
     )
     assert policy_steady_factor("flux.1-kontext", "black-forest-labs/FLUX.1-Kontext-dev") is None
-    # The other schemes never consult the policy table.
     fp8 = estimate_dense_quant(_fam("z-image"), "fp8", base_repo = "Tongyi-MAI/Z-Image-Turbo")
     assert fp8 is not None
     assert fp8.steady_transformer_mib == int(
@@ -210,8 +201,6 @@ def _patch_selector(
 
     monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: supported)
     monkeypatch.setattr(
-        # **_kw: the selector also takes base_repo / has_prequant / require_prequant, which the
-        # candidate resolver passes and this stub does not need to model.
         tq,
         "select_transformer_quant_scheme",
         lambda target, req, family = None, **_kw: scheme,

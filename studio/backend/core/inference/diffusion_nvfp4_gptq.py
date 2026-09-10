@@ -3,57 +3,26 @@
 
 """GPTQ correction and activation-scale baking for the NVFP4 layers of a prequant build.
 
-Two build-time passes over a DENSE pipeline, both driven by the same calibration prompts and both
-scoped to the layers a build actually quantises to 4 bits (a policy's NVFP4 set, or every admitted
-linear for a whole-model video artifact):
-
-  * **Hessians and GPTQ.** Round-to-nearest is the weakest possible quantiser. GPTQ corrects the
-    weight onto the same NVFP4 grid using the layer's own input second-moment matrix, which on real
-    z-image weights takes the 4-bit weight error from 0.0215 to 0.0064 against fp8's 0.0067. The
-    correction is applied PER LAYER and only where it is measured to help, through torchao's own
-    quantiser, because a correction that is right on paper and wrong on this model is a silently
-    worse artifact.
-  * **Activation global scales.** The FlashInfer NVFP4 layer needs one ``a_gsf = 6 * 448 /
-    act_amax`` per layer. Measuring it at run time is what the shipped canon layer did, and it is
-    not capture-safe, not deterministic, and the mechanism behind the flux black-frame latch (one
-    non-finite forward frozen into a running minimum). So it is measured here, once, on the
-    calibration set, and stored in the checkpoint.
-
-Scope, deliberately: this module accumulates, corrects and scores. It does not decide which layers
-to touch (the policy does), it does not run the pipeline (the builder does) and it never falls back
-to a different quantiser -- ``gptq_correct`` raises when its Cholesky will not factor at any damping
-in the ladder, because "the correction failed, so the weight is plain RTN" is a different artifact
-than the one that was asked for and nothing would say so.
-
-The two quantisers below are ported from ``scripts/nvfp4_linear_canon.py`` (the shipping candidate
-of the research layer) and kept verbatim: they define the grid the correction lands on, and the
-whole point of correcting onto the grid is that torchao's re-rounding at build time reproduces it.
-
-torch is imported inside the functions, like the other lazily loaded inference helpers.
+Two build-time passes over a DENSE pipeline: GPTQ corrects each weight onto the same NVFP4 grid
+using the layer's own input second moment, and one ``a_gsf = 6 * 448 / act_amax`` per layer is
+measured here rather than at run time. This module never falls back to another quantiser; it raises
+rather than shipping a weight at plain RTN with nothing saying so.
 """
 
 from __future__ import annotations
 
 from typing import Any, Mapping, Optional, Sequence
 
-# The NVFP4 grid: e2m1 elements up to 6.0, an e4m3 per-block scale up to 448.0, one fp32 global
-# scale. The activation global scale a layer stores is the same convention FlashInfer's
-# ``nvfp4_quantize`` takes, ``6 * 448 / amax``.
 FP4_MAX = 6.0
 FP8_MAX = 448.0
 
-# Damping ladder for the Cholesky, smallest first. A Hessian accumulated over a few hundred
-# forwards of a 3072-wide layer is positive SEMI-definite at best, so the first factorisation can
-# fail; the answer is more damping, not another quantiser.
+# Damping ladder for the Cholesky, smallest first: the Hessian is positive SEMI-definite at best,
+# so the answer to a failed factorisation is more damping, not another quantiser.
 DAMP_LADDER: tuple = (0.01, 0.05, 0.1, 0.5, 1.0)
 
 
 class GPTQFailure(RuntimeError):
-    """The correction could not be solved for a layer. Raised, never swallowed.
-
-    Falling back to round-to-nearest here would produce an artifact that is PARTLY corrected with
-    nothing in the metadata to say which half, which is exactly the state the do-no-harm scoring
-    exists to keep out of a checkpoint."""
+    """The correction could not be solved for a layer. Raised, never swallowed."""
 
 
 def gptq_quantize_to_nvfp4(
@@ -62,17 +31,8 @@ def gptq_quantize_to_nvfp4(
     block: int = 16,
     damp: float = 0.01,
 ):
-    """GPTQ-correct a weight ONTO the NVFP4 grid. Returns a bf16 tensor already representable.
-
-    Round-to-nearest is the weakest possible quantiser and it is what every 4-bit number in this
-    investigation used. Measured on real z-image weights with real activations and a HELD-OUT
-    evaluation split, this takes 4-bit weight error from 0.0215 to 0.0064 against fp8's 0.0067,
-    i.e. from 3.2x worse than fp8 to parity, at 4.5 bits/weight instead of 8.
-
-    The output must land exactly on the format's grid (e2m1 values, fp8 per-block scale, one global
-    scale), because it is then handed to the quantiser that packs the checkpoint. If the grid here
-    disagreed with that one's, the requantisation would silently undo the correction.
-    """
+    """GPTQ-correct a weight ONTO the NVFP4 grid. The output must land exactly on the format's
+    grid, or the quantiser that packs the checkpoint silently undoes the correction."""
     import torch
 
     n, k = weight.shape
@@ -95,8 +55,7 @@ def gptq_quantize_to_nvfp4(
         tile = w[:, start:stop].clone()
         err = torch.zeros_like(tile)
         hd = torch.diag(h)[start:stop]
-        # fp8-rounded block scale: the format stores it in e4m3, so rounding it here is what makes
-        # the result exactly representable downstream.
+        # The format stores the block scale in e4m3, so round it here to stay representable.
         bs = (tile.abs().amax(-1, keepdim = True) / FP4_MAX / gscale).clamp(min = 1e-12)
         bs = bs.to(torch.float8_e4m3fn).float().clamp(min = 1e-12)
         step = (bs * gscale)[:, 0]
@@ -139,12 +98,8 @@ def gptq_correct(
     block: int = 16,
     damps: Sequence = DAMP_LADDER,
 ) -> tuple:
-    """``(corrected_weight, damp)``, escalating the damping until the Cholesky factors.
-
-    Escalation, never substitution: each rung is a slightly more regularised version of the SAME
-    correction, so the artifact stays the thing the build asked for and the damping that produced
-    it is recorded per layer. When the last rung fails the layer raises ``GPTQFailure`` and the
-    build stops, rather than quietly shipping this one weight at round-to-nearest."""
+    """``(corrected_weight, damp)``, escalating the damping until the Cholesky factors: the last
+    rung raises rather than shipping this weight at RTN."""
     last: Optional[Exception] = None
     for damp in damps:
         try:
@@ -160,22 +115,9 @@ def gptq_correct(
     )
 
 
-# ── Hessians ──────────────────────────────────────────────────────────────────────────────────
-
-
 class HessianAccumulator:
-    """Per-layer ``sum(x^T x)`` in fp32 over the sampled steps of a calibration run.
-
-    Bounded on purpose. One K x K fp32 matrix per layer is the whole memory cost of the pass and it
-    is quadratic in the input width, so the budget is checked UP FRONT against the layers that were
-    asked for and the pass refuses rather than filling the card halfway through a 40 minute
-    calibration. On the sets this is used for (z-image's 34 to_q at K = 3072, qwen's 120 modulation
-    projections at K = 3072) the cost is 1.3 to 4.5 GB.
-
-    Accumulation is gated by ``active`` rather than by attaching and detaching hooks per step: the
-    pipeline calls the denoiser twice per step under real CFG, and a flag catches both halves of a
-    sampled step without assuming anything about how many forwards a step makes.
-    """
+    """Per-layer ``sum(x^T x)`` in fp32 over the sampled steps of a calibration run. The budget is
+    checked UP FRONT, and gating on ``active`` catches both CFG halves."""
 
     #: fp32 bytes the accumulator may hold across all layers before it refuses to attach.
     DEFAULT_BUDGET_BYTES = 24 * 1024**3
@@ -263,8 +205,7 @@ class HessianAccumulator:
         self.samples.clear()
 
     def normalised(self) -> dict:
-        """``{fqn: H / rows}``, the mean second moment. Rows differ per layer under an attention
-        trim, so the division is per layer and not one global count."""
+        """``{fqn: H / rows}``, divided per layer, since rows differ under an attention trim."""
         out: dict = {}
         for fqn, hessian in self.hessians.items():
             rows = max(1, int(self.samples.get(fqn, 0)))
@@ -272,17 +213,13 @@ class HessianAccumulator:
         return out
 
     def unseen(self) -> list:
-        """Layers no sampled forward ever reached. A Hessian of zeros corrects nothing, and a
-        layer the calibration never exercised is a layer this build cannot claim to have measured."""
+        """Layers no sampled forward reached: a Hessian of zeros corrects nothing."""
         return sorted(fqn for fqn, count in self.samples.items() if not count)
 
-    # ``callback_on_step_end`` support ---------------------------------------------------------
 
     def step_callback(self, steps: Sequence):
-        """A diffusers ``callback_on_step_end`` that arms the hooks for ``steps`` only.
-
-        The callback fires AFTER step i, so it arms step i + 1; step 0 is armed by ``arm_first``
-        before the pipeline is called. Returning the kwargs unchanged is the contract."""
+        """A ``callback_on_step_end`` that arms the hooks for ``steps``. It fires AFTER step i, so
+        it arms step i + 1 and ``arm_first`` covers step 0."""
         wanted = {int(step) for step in steps}
 
         def callback(pipe, step_index, timestep, callback_kwargs):
@@ -297,12 +234,7 @@ class HessianAccumulator:
 
 
 def sampled_steps(total_steps: int, spec: Sequence) -> tuple:
-    """Which step indices to accumulate on, for a schedule of ``total_steps``.
-
-    ``spec`` is the default 38-step schedule's sample points (0, 12, 25, 37: start, both thirds and
-    the end). A distilled model runs 4 to 8 steps, where those indices do not exist, so a shorter
-    schedule is sampled at the same PLACES rather than the same indices: 0, n/4, n/2, 3n/4. The
-    result is deduplicated and clamped, so a 1-step schedule samples step 0 and nothing else."""
+    """Which step indices to accumulate on: a short schedule is sampled at the same PLACES."""
     total = max(1, int(total_steps))
     wanted = [int(step) for step in spec]
     if wanted and max(wanted) < total:
@@ -311,16 +243,8 @@ def sampled_steps(total_steps: int, spec: Sequence) -> tuple:
     return tuple(sorted({min(max(0, step), total - 1) for step in quarters}))
 
 
-# ── do no harm ────────────────────────────────────────────────────────────────────────────────
-
-
 def torchao_roundtrip(weight, *, quantize_config: Any = None):
-    """``weight`` through TORCHAO's own NVFP4 quantiser and back to fp32.
-
-    The scorer has to measure the error of the weight that ends up IN the checkpoint, and that
-    weight is whatever ``quantize_`` packs. Scoring the grid maths in this module instead would
-    measure a quantiser the artifact does not use, which is how a correction that torchao re-rounds
-    away gets shipped as an improvement."""
+    """``weight`` through TORCHAO's quantiser and back: the scorer must measure the shipped bytes."""
     import torch
     from torchao.quantization import quantize_
 
@@ -346,9 +270,8 @@ def torchao_roundtrip(weight, *, quantize_config: Any = None):
 
 
 def hessian_weighted_error(delta, hessian) -> float:
-    """``sqrt(sum(dW H dW^T))``: the output error a weight perturbation causes on the calibration
-    activations, which is the quantity GPTQ minimises. The plain Frobenius weight error is the
-    wrong scorer here -- GPTQ RAISES it by construction, trading it for this one."""
+    """``sqrt(sum(dW H dW^T))``, the quantity GPTQ minimises. Frobenius weight error is the WRONG
+    scorer: GPTQ raises it by construction."""
     import torch
 
     d = delta.float()
@@ -362,8 +285,7 @@ def score_correction(
     *,
     quantize_config: Any = None,
 ) -> dict:
-    """Hessian-weighted output error of the RTN weight and of the corrected one, re-rounded by
-    torchao. ``improved`` is the do-no-harm verdict for this one layer."""
+    """Hessian-weighted output error of the RTN and corrected weights, re-rounded by torchao."""
     reference = weight.detach().float()
     err_rtn = hessian_weighted_error(
         reference - torchao_roundtrip(weight, quantize_config = quantize_config), hessian
@@ -381,13 +303,7 @@ def score_correction(
 
 def plan_corrections(scores: Mapping, *, max_regressions: int = 0) -> dict:
     """Which scored layers take their correction: every one that improved, plus at most
-    ``max_regressions`` of the rest, least harmful first.
-
-    Do no harm is the default and the whole point: a correction is applied only where it is
-    MEASURED to lower this layer's output error through the quantiser the build will use.
-    ``--gptq-max-regressions`` above 0 is the deliberate escape hatch for reproducing a campaign
-    that applied a whole set, and it applies the least harmful ones first so the number means
-    something."""
+    ``max_regressions`` of the rest, least harmful first."""
     improved = sorted(fqn for fqn, score in scores.items() if score.get("improved"))
     regressed = sorted(
         (fqn for fqn, score in scores.items() if not score.get("improved")),
@@ -407,15 +323,9 @@ def plan_corrections(scores: Mapping, *, max_regressions: int = 0) -> dict:
     }
 
 
-# ── activation global scales ──────────────────────────────────────────────────────────────────
-
-
 class ActivationAmaxAccumulator:
-    """Running ``max(abs(x))`` per layer, over EVERY step of every calibration prompt.
-
-    Every step, not the sampled ones: the scale has to cover the whole trajectory, and the step
-    that produces the largest activation is exactly the one a sampled subset would miss. Kept on
-    the device as a 0-d tensor per layer so a 30-step render costs no host synchronise."""
+    """Running ``max(abs(x))`` per layer over EVERY step, as a 0-d device tensor: the largest
+    activation is the step a sampled subset would miss."""
 
     def __init__(self, modules: Mapping) -> None:
         self.modules = dict(modules)
@@ -441,8 +351,7 @@ class ActivationAmaxAccumulator:
             if x.numel() == 0:
                 return None
             value = x.abs().amax().float()
-            # A non-finite forward must not become the scale every later render is quantised by:
-            # that is the flux black-frame latch, and baking it would make it permanent.
+            # A non-finite forward must not become the scale: that is the black-frame latch.
             value = torch.where(torch.isfinite(value), value, torch.zeros_like(value))
             self.amax[fqn] = torch.maximum(self.amax[fqn], value)
             self.seen[fqn] += 1
@@ -463,11 +372,8 @@ class ActivationAmaxAccumulator:
         return sorted(fqn for fqn, count in self.seen.items() if not count)
 
     def global_scales(self) -> dict:
-        """``{fqn: 6 * 448 / amax}``, the FlashInfer activation global scale, as plain floats.
-
-        A layer whose amax is zero or non-finite gets no entry rather than an infinite scale: the
-        loader refuses to convert an artifact with a missing scale and runs it on torchao, which is
-        the right outcome for a layer this calibration never measured."""
+        """``{fqn: 6 * 448 / amax}``, the FlashInfer activation global scale, as plain floats. A
+        zero or non-finite amax gets no entry, so the loader keeps that artifact on torchao."""
         import math
 
         out: dict = {}

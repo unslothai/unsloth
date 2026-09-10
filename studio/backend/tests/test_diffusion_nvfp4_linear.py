@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the FlashInfer NVFP4 Linear and the torchao -> flashinfer conversion.
-
-The CUDA-gated group comes first because it is the go/no-go for the whole backend: if torchao's
-payload is not FlashInfer's payload then the hosted artifact cannot be re-expressed and would have
-to be requantized, which is a different model. Those tests import torch inside the body and skip
-without a Blackwell card plus flashinfer. The hermetic group below them runs on CPU torch and
-covers the refusals, the walk and the state dict.
-"""
+"""Tests for the FlashInfer NVFP4 Linear and the torchao -> flashinfer conversion."""
 
 from __future__ import annotations
 
@@ -21,27 +14,14 @@ import pytest
 from core.inference import diffusion_nvfp4_linear as nl
 from core.inference import diffusion_nvfp4_ops as ops
 
-# Real DiT shapes: z-image / flux attention projections, and the (256, 15360) modulation
-# projection the image policy admits below min_features.
 REAL_SHAPES = ((3072, 3072), (12288, 3072), (18432, 3072), (15360, 256))
 
-# Measured on a B200 with flashinfer 0.6.6 over 8 seeds x 4 token counts: the converted layer
-# differs from torchao's own NVFP4 module by 0.003 to 0.032 relative (worst case M = 4096), which
-# is two independent roundings of the SAME quantization -- the two encoders break e2m1 ties
-# differently and the two GEMMs accumulate in a different order. The bound below is set above that
-# worst case. The stronger claim, and the one that says the flashinfer arm is not a second, worse
-# quantization, is DENSE_GAP_BOUND: each arm's distance to the dense bf16 Linear (0.131) agrees to
-# 0.0005 or better at every token count.
 FORWARD_REL_BOUND = 0.05
 DENSE_GAP_BOUND = 0.002
 
 
 def _cuda_or_skip():
     torch = pytest.importorskip("torch")
-    # A hermetic run masks every device with an EMPTY CUDA_VISIBLE_DEVICES. torch answers is_available()
-    # from the mask it saw when the driver was first initialised, and another test in the same process
-    # can rewrite the variable (test_gpu_arch_gate_consumers_7624 asserts on it), so the variable is
-    # checked directly as well: a masked process has no device to run these on, whatever torch believes.
     if os.environ.get("CUDA_VISIBLE_DEVICES", None) == "":
         pytest.skip("CUDA devices are masked off for this process")
     if not getattr(torch, "cuda", None) or not torch.cuda.is_available():
@@ -79,21 +59,11 @@ def _rel(a, b) -> float:
     return float((a.float() - b.float()).norm() / b.float().norm())
 
 
-# ── T-CUDA-3: payload byte equivalence, the go/no-go ──────────────────────────────────────────
 
 
 @pytest.mark.parametrize("out_features,in_features", REAL_SHAPES)
 def test_torchao_and_flashinfer_pack_the_same_payload(out_features, in_features):
-    """torchao's ``qdata``/``scale`` ARE FlashInfer's ``wq``/``w_sf``, which is what makes the
-    conversion a re-expression rather than a requantization.
-
-    Block scales are bit-identical, always. The 4-bit codes agree on 99.8 percent of nibbles and
-    every disagreement is one e2m1 step in magnitude with the sign preserved -- the two quantisers
-    round the same ties differently in fp32, which is a property of the two ENCODERS and not of the
-    format. Nothing in the shipped path depends on the two agreeing: the checkpoint carries
-    torchao's bytes and the GEMM reads exactly those bytes. What this test guards is that they are
-    the same LAYOUT, so that reading them as FlashInfer operands is legitimate.
-    """
+    """torchao's ``qdata``/``scale`` ARE FlashInfer's ``wq``/``w_sf``, so this is no requantization."""
     torch = _cuda_or_skip()
     import flashinfer
     from torchao.prototype.mx_formats.nvfp4_tensor import NVFP4Tensor
@@ -109,7 +79,6 @@ def test_torchao_and_flashinfer_pack_the_same_payload(out_features, in_features)
 
     ao_q = tensor.qdata.view(torch.uint8)
     assert tuple(ao_q.shape) == tuple(fi_q.shape) == (out_features, in_features // 2)
-    # The block scales: same bytes, same order, no repack anywhere.
     assert torch.equal(tensor.scale.reshape(-1).view(torch.uint8), fi_sf.reshape(-1))
     assert tensor.scale.numel() == ops._swizzled_sf_numel(out_features, in_features // 16, 128)
 
@@ -119,13 +88,10 @@ def test_torchao_and_flashinfer_pack_the_same_payload(out_features, in_features)
     fraction = float(differing.float().mean())
     assert fraction < 0.005, f"{fraction:.4%} of nibbles differ, which is more than tie noise"
     if fraction:
-        # Every disagreement is one magnitude step, same sign: a round-to-nearest tie, not a
-        # different encoding.
         assert torch.equal((ca >= 8)[differing], (cb >= 8)[differing])
         assert int(((ca & 7).int() - (cb & 7).int()).abs()[differing].max()) == 1
 
 
-# ── T-CUDA-4: the converted layer against torchao's own module ────────────────────────────────
 
 
 @pytest.mark.parametrize("m", [1, 512, 4096, 16384])
@@ -143,8 +109,6 @@ def test_converted_layer_matches_the_torchao_module(m):
     assert bool(torch.isfinite(got).all())
     assert tuple(got.shape) == (m, 18432)
     against_torchao = _rel(got, want)
-    # Both quantized paths sit the same distance from the dense Linear: the flashinfer arm is not
-    # a second, worse quantization, it is the same one on a different kernel.
     assert against_torchao < FORWARD_REL_BOUND, f"M={m} rel={against_torchao:.5f}"
     assert abs(_rel(got, reference) - _rel(want, reference)) < DENSE_GAP_BOUND
 
@@ -160,19 +124,15 @@ def test_converted_layer_keeps_the_leading_dimensions_and_the_bias():
     x = torch.randn(2, 77, 3072, device = "cuda", dtype = torch.bfloat16) * 0.05
     with torch.inference_mode():
         assert tuple(converted(x).shape) == (2, 77, 3072)
-        # An empty batch is what an attention trim can hand a quantized Linear.
         empty = converted(torch.zeros(0, 3072, device = "cuda", dtype = torch.bfloat16))
     assert tuple(empty.shape) == (0, 3072)
 
 
-# ── T-CUDA-7: the M = 1 GEMM, never exercised before ──────────────────────────────────────────
 
 
 @pytest.mark.parametrize("out_features,in_features", [(18432, 3072), (15360, 256)])
 def test_m1_gemm_is_finite_on_both_backends(out_features, in_features, capsys):
-    """The image policies quantize modulation projections that run at M = 1. An FP4 tensor-core
-    GEMM with a single row is the shape furthest from what these kernels are tuned for, so it gets
-    its own test rather than being assumed to work because M = 512 does."""
+    """The image policies quantize modulation projections that run at M = 1."""
     torch = _cuda_or_skip()
     import time
 
@@ -200,7 +160,6 @@ def test_m1_gemm_is_finite_on_both_backends(out_features, in_features, capsys):
         )
 
 
-# ── T-CUDA-5: one graph, no breaks ────────────────────────────────────────────────────────────
 
 
 def test_a_two_layer_block_compiles_fullgraph():
@@ -236,14 +195,10 @@ def test_a_two_layer_block_compiles_fullgraph():
     assert not counters["graph_break"], dict(counters["graph_break"])
     assert counters["stats"]["unique_graphs"] == 1, dict(counters["stats"])
     assert bool(torch.isfinite(got).all())
-    # Compiled against eager over a TWO layer chain: inductor fuses the silu and the bias add
-    # differently, the intermediate moves by a bf16 ulp or two, and the second layer's 4-bit
-    # activation quantiser turns some of those into a one step code change. Measured 0.018.
     assert _rel(got, want) < 0.03
     torch._dynamo.reset()
 
 
-# ── T-CUDA-6: capture and replay ──────────────────────────────────────────────────────────────
 
 
 def test_graphed_forward_captures_and_replays_a_converted_block():
@@ -280,8 +235,6 @@ def test_graphed_forward_captures_and_replays_a_converted_block():
             for _ in range(20):
                 replayed = module(hidden_states = x, timestep = timestep, return_dict = False)[0]
                 assert _rel(replayed, eager) < FORWARD_REL_BOUND
-                # Every replay is the same kernels on the same input: a replay that drifts is a
-                # captured buffer being written from outside the graph.
                 first = replayed.clone() if first is None else first
                 assert torch.equal(replayed, first)
         assert handle.stats["captures"] == 1
@@ -291,7 +244,6 @@ def test_graphed_forward_captures_and_replays_a_converted_block():
         cg.uninstall_all([handle])
 
 
-# ── CUDA: the whole-model conversion and the prewarm ──────────────────────────────────────────
 
 
 def test_convert_nvfp4_backend_moves_a_real_quantized_tree_and_prewarms_it():
@@ -305,9 +257,6 @@ def test_convert_nvfp4_backend_moves_a_real_quantized_tree_and_prewarms_it():
     tree = tree.to("cuda", torch.bfloat16).eval()
     quantize_(tree, NVFP4DynamicActivationNVFP4WeightConfig(use_triton_kernel = False))
     x = torch.randn(512, 3072, device = "cuda", dtype = torch.bfloat16) * 0.05
-    # What the builder bakes: each layer's OWN input amax, not the model input's. A scale taken
-    # from the wrong activation is not an error anywhere, it is just a worse model, which is why
-    # the builder measures it per fqn.
     with torch.inference_mode():
         hidden = tree[1](tree[0](x))
         before = tree(x)
@@ -335,15 +284,10 @@ def test_convert_nvfp4_backend_moves_a_real_quantized_tree_and_prewarms_it():
     nl.reset_tuned_shapes()
 
 
-# ── hermetic: the walk, the refusals and the state dict ───────────────────────────────────────
 
 
 class _FakeNVFP4Tensor:
-    """Duck-typed like torchao's tensor subclass for the walk, without needing a GPU to build one.
-
-    The name matters: ``is_nvfp4_tensor`` keys on it rather than importing torchao, so that the
-    prequant loader can ask the question on a host that has no torchao at all.
-    """
+    """Duck-typed like torchao's tensor subclass for the walk, without needing a GPU to build one."""
 
     __name__ = "NVFP4Tensor"
 
@@ -473,10 +417,7 @@ def test_state_dict_round_trips_with_and_without_a_bias():
         )
 
     with_bias = _build(True)
-    # ``w_scale`` is torchao's per_tensor_scale, kept so the W4A16 protect branch dequantises with
-    # the number torchao stored rather than one rebuilt from alpha. One fp32 element per layer.
     assert sorted(with_bias.state_dict()) == ["a_gsf", "alpha", "bias", "w_scale", "w_sf", "wq"]
-    # Absent, it is derived, so an old construction site still builds a usable layer.
     assert float(with_bias.w_scale) == 0.25 * 1344.0
     reloaded = _build(True)
     reloaded.load_state_dict(with_bias.state_dict(), strict = True)
@@ -505,9 +446,7 @@ def test_prewarm_without_flashinfer_is_a_no_op(monkeypatch):
 
 
 def test_a_whole_model_artifact_converts_without_a_policy_block():
-    """PR 1's video artifacts quantise EVERY admitted linear and declare no policy at all. The
-    backend keys on the baked scales, not on a policy, so those artifacts get the fast layer too;
-    a conversion that required a policy block would silently leave every video family on torchao."""
+    """PR 1's video artifacts quantise EVERY admitted linear and declare no policy at all."""
     torch = _cuda_or_skip()
     import torch.nn as nn
     from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
@@ -524,7 +463,6 @@ def test_a_whole_model_artifact_converts_without_a_policy_block():
     metadata = {
         "scheme": "nvfp4",
         "family": "wan2.2-ti2v-5b",
-        # Top level, because a whole-model artifact has no policy block to carry it.
         "activation_scales_baked": True,
         "act_global_scales": {
             "0": float(ops.global_scale(x)),
@@ -540,8 +478,7 @@ def test_a_whole_model_artifact_converts_without_a_policy_block():
 
 
 def test_a_whole_model_artifact_that_baked_nothing_says_the_flag_is_set():
-    """The same distinction the policy artifacts get: a build whose bake produced no scales is a
-    build to rerun, and a checkpoint that never asked for one is a backend to stop asking."""
+    """A build whose bake produced no scales reads differently from one that never asked."""
     pytest.importorskip("torch")
 
     logger = _RecordingLogger()
@@ -551,12 +488,8 @@ def test_a_whole_model_artifact_that_baked_nothing_says_the_flag_is_set():
 
 
 def test_an_fp32_layer_runs_and_answers_in_fp32():
-    """A whole-model video artifact has layers torchao quantises from FP32 weights, and they are
-    fed FP32 activations at run time: Wan2.2's time embedder ships fp32, so its 256-wide linear_1
-    stays dense below the quantise floor and hands the quantized linear_2 an fp32 tensor on every
-    step of every render. FlashInfer's fp4 quantiser raises on fp32, which torchao's does not, so
-    without the cast the fast backend cannot run a video artifact at all -- and it fails on the
-    first forward, after the model is loaded and the request is in flight."""
+    """A quantized layer is fed FP32 activations at run time by Wan2.2's fp32 time embedder, and
+    flashinfer's ``fp4_quantize`` rejects fp32 input."""
     torch = _cuda_or_skip()
     import torch.nn as nn
     from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
@@ -577,7 +510,6 @@ def test_an_fp32_layer_runs_and_answers_in_fp32():
     assert after.dtype == torch.float32  # nn.Linear's contract: the caller's dtype back
     assert bool(torch.isfinite(after).all())
     assert _rel(after.float(), before.float()) < FORWARD_REL_BOUND
-    # And the empty-input guard answers in the caller's dtype too.
     with torch.inference_mode():
         empty = converted(x[:0])
     assert empty.shape == (0, 3072) and empty.dtype == torch.float32

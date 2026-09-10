@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The checked-in NVFP4 gate record, and the script that writes it.
-
-Two halves, both hermetic. The first is a contract on the SHIPPED file: it has to parse, every
-record it carries has to name a policy this commit still resolves for that base, and every repo it
-names has to be one the family actually hosts -- a record is the only thing that puts nvfp4 into
-the auto ladder, so a stale one enables a scheme against a checkpoint nobody can fetch. The second
-is the verdict logic, proved on synthetic record files: no record, a failed run, and a policy
-version bump all read False, and only an exactly matching record reads True.
-"""
+"""The checked-in NVFP4 gate record, and the script that writes it."""
 
 from __future__ import annotations
 
@@ -76,22 +68,16 @@ def _gate_file(
     return path
 
 
-# ── the shipped file (T-17) ───────────────────────────────────────────────────
 
 
 def test_the_shipped_gate_record_parses_and_declares_this_schema():
     document = json.loads(GATE_RECORD_PATH.read_text(encoding = "utf-8"))
     assert document["version"] == GATE_RECORD_VERSION
     assert isinstance(document["records"], list)
-    # Same answer through the reader, which is what the ladder consults.
     assert len(load_gate_records()) == len(document["records"])
 
 
 def test_every_shipped_record_names_a_policy_this_commit_resolves():
-    # A record is evidence about a specific per-layer assignment. If the tree no longer resolves
-    # that policy for that base, or resolves it at another version, the record describes a model
-    # this commit cannot build, and ``nvfp4_gate_passed`` would (correctly) ignore it. Rather than
-    # ship an ignored record, fail here.
     for record in load_gate_records():
         policy = policy_by_id(record["policy_id"])
         assert policy is not None, record["policy_id"]
@@ -115,9 +101,6 @@ def test_every_shipped_record_names_a_checkpoint_the_family_hosts():
 
 
 def test_the_shipped_record_leaves_every_family_ungated():
-    # The state this PR ships in: no measurement has been reviewed in, so no family is gated and
-    # the ladder behaves exactly as it did. The test that fails first when a record is added
-    # without the auto-ladder coverage that goes with it.
     if load_gate_records():
         pytest.skip("a gate record has been added; the ladder tests cover its effect")
     assert nvfp4_gate_passed("z-image", ZIMAGE_BASE) is False
@@ -125,7 +108,6 @@ def test_the_shipped_record_leaves_every_family_ungated():
     assert nvfp4_gate_passed("flux.1", "black-forest-labs/FLUX.1-schnell") is False
 
 
-# ── the verdict ───────────────────────────────────────────────────────────────
 
 
 def test_no_record_at_all_reads_false(tmp_path):
@@ -137,7 +119,6 @@ def test_no_record_at_all_reads_false(tmp_path):
 def test_a_matching_record_reads_true_and_canonicalises_the_base(tmp_path):
     path = _gate_file(tmp_path, _record())
     assert nvfp4_gate_passed("z-image", ZIMAGE_BASE, path = path) is True
-    # Case and a mirror id are the same weights, so they get the same verdict.
     assert nvfp4_gate_passed("Z-Image", ZIMAGE_BASE.lower(), path = path) is True
     mirrors = [
         mirror
@@ -150,15 +131,11 @@ def test_a_matching_record_reads_true_and_canonicalises_the_base(tmp_path):
 
 def test_a_failed_run_reads_false(tmp_path):
     path = _gate_file(tmp_path, _record(all_pass = False))
-    # The record is still readable (bookkeeping is why --allow-fail exists), it just says no.
     assert nvfp4_gate_record("z-image", ZIMAGE_BASE, path = path) is not None
     assert nvfp4_gate_passed("z-image", ZIMAGE_BASE, path = path) is False
 
 
 def test_a_policy_version_bump_invalidates_the_verdict(tmp_path, monkeypatch):
-    # Retuning the layer set is a different model. The record's stored version stays where the
-    # measurement was taken, so the pair stops matching and nvfp4 leaves the ladder until the gate
-    # is re-run -- rather than carrying a v1 verdict onto v2's precisions.
     path = _gate_file(tmp_path, _record())
     bumped = dataclasses.replace(policy_mod.ZIMAGE_F8MOD_TOQ34, version = 2)
     monkeypatch.setattr(
@@ -171,9 +148,7 @@ def test_a_policy_version_bump_invalidates_the_verdict(tmp_path, monkeypatch):
 
 def test_a_record_for_another_base_or_family_is_not_inherited(tmp_path):
     path = _gate_file(tmp_path, _record())
-    # Same family, a base the gate never ran on (and which resolves no policy).
     assert nvfp4_gate_passed("z-image", "some-org/Z-Image-Fork", path = path) is False
-    # No base at all: a policy is keyed on weights, so an anonymous load is never gated.
     assert nvfp4_gate_passed("z-image", None, path = path) is False
     assert nvfp4_gate_passed("flux.1", ZIMAGE_BASE, path = path) is False
 
@@ -201,7 +176,6 @@ def test_a_rewritten_file_is_re_read_rather_than_served_from_the_cache(tmp_path)
     assert nvfp4_gate_passed("z-image", ZIMAGE_BASE, path = path) is True
 
 
-# ── scripts/record_nvfp4_gate.py ──────────────────────────────────────────────
 
 
 def _results(**overrides):
@@ -263,8 +237,6 @@ def test_the_script_refuses_a_policy_the_tree_does_not_resolve_for_that_base(tmp
             policy_id = "not_a_policy_v9",
             checkpoint = checkpoint,
         )
-    # A real policy, but not the one this base resolves: recording it would enable nvfp4 on the
-    # strength of a run against a different model.
     with pytest.raises(ValueError):
         script.build_record(
             _results(),
@@ -291,7 +263,6 @@ def test_the_script_appends_and_then_refuses_the_same_key_twice(tmp_path):
     with pytest.raises(ValueError):
         script.append_record(path, record)
     assert len(load_gate_records(path)) == 1
-    # A different checkpoint is a different key and appends (the GPTQ build of the same policy).
     other = tmp_path / "Z-Image-Turbo-NVFP4-GPTQ.pt"
     other.write_bytes(b"gptq corrected weights")
     second = script.build_record(
@@ -319,6 +290,5 @@ def test_the_script_refuses_a_failed_run_unless_it_is_asked_to_record_the_failur
     with pytest.raises(ValueError):
         script.append_record(path, failed)
     script.append_record(path, failed, allow_fail = True)
-    # Recorded, and it enables nothing.
     assert load_gate_records(path)[0]["all_pass"] is False
     assert nvfp4_gate_passed("z-image", ZIMAGE_BASE, path = path) is False

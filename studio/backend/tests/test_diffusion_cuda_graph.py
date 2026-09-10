@@ -825,7 +825,6 @@ def test_real_cuda_capture_replays_bit_identically():
         cg.uninstall_all([handle])
 
 
-# ── NVFP4 flashinfer layers: autotune in the warm-up, refuse capture on unbaked scales ─────────
 
 
 class _FakeNVFP4Linear:
@@ -883,10 +882,7 @@ def test_capture_prewarms_the_nvfp4_layers_before_the_warmup(stub_torch, record_
     assert len(record_prewarm) == 1
     tuned_module, shapes = record_prewarm[0]
     assert tuned_module is module
-    # M = 1 for the per-sample modulation projections, and the call's own token count (2 x 8) for
-    # the attention ones, whose M the loader could not know.
     assert 1 in shapes and 16 in shapes
-    # Tuned BEFORE the capture succeeded, so no profiling launch is recorded into the graph.
     assert handle.stats["captures"] == 1
     assert handle.poisoned is False
 
@@ -912,7 +908,6 @@ def test_unbaked_activation_scales_poison_the_capture(stub_torch, record_prewarm
     assert handle.stats["captures"] == 0
     assert "unbaked activation scales" in handle.capture_error["msg"]
     assert "blocks.1.attention.to_q" in handle.capture_error["msg"]
-    # Refused before the warm-up, so nothing was tuned and nothing was recorded.
     assert record_prewarm == []
     assert module.calls == 1  # the eager fallback only
     assert out[0].value == ("out", 1)
