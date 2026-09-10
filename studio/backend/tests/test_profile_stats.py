@@ -31,6 +31,15 @@ from storage.api_usage_db import (
 from storage.profile_stats_db import compute_profile_stats, invalidate_profile_stats_cache
 
 
+def _shared_setup_1(conn):
+    conn.execute(
+        "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
+        "started_at, total_steps, final_step, duration_seconds, output_dir, resume_blocked) "
+        "VALUES ('src', 'stopped', 'm', 'd', '{}', '2026-01-01T10:00:00', 20, 10, 600, "
+        "'/runs/out', 1)",
+    )
+
+
 @pytest.fixture
 def stats_db(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
@@ -900,12 +909,7 @@ def test_resumed_runs_do_not_double_count_steps_or_tokens(stats_db):
         # 'stopped' at step 10, then claimed by the resume below. The claim sets
         # resume_blocked and leaves output_dir, which is how it is told apart
         # from a cancelled run.
-        conn.execute(
-            "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
-            "started_at, total_steps, final_step, duration_seconds, output_dir, resume_blocked) "
-            "VALUES ('src', 'stopped', 'm', 'd', '{}', '2026-01-01T10:00:00', 20, 10, 600, "
-            "'/runs/out', 1)",
-        )
+        _shared_setup_1(conn)
         conn.execute(
             "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
             "started_at, total_steps, final_step, duration_seconds, output_dir, resume_blocked) "
@@ -1528,12 +1532,7 @@ def test_a_resume_that_never_logged_a_step_keeps_the_source_counters(stats_db):
     """create_run claims the source before the continuation flushes a metric."""
     conn = studio_db.get_connection()
     try:
-        conn.execute(
-            "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
-            "started_at, total_steps, final_step, duration_seconds, output_dir, resume_blocked) "
-            "VALUES ('src', 'stopped', 'm', 'd', '{}', '2026-01-01T10:00:00', 20, 10, 600, "
-            "'/runs/out', 1)",
-        )
+        _shared_setup_1(conn)
         # Errored before its first training step: no final_step, no metrics.
         conn.execute(
             "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
@@ -1580,12 +1579,7 @@ def test_cancelling_a_resumed_run_keeps_the_source_superseded(stats_db):
     """mark_run_cancel_requested nulls output_dir, so lineage carries it."""
     conn = studio_db.get_connection()
     try:
-        conn.execute(
-            "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
-            "started_at, total_steps, final_step, duration_seconds, output_dir, resume_blocked) "
-            "VALUES ('src', 'stopped', 'm', 'd', '{}', '2026-01-01T10:00:00', 20, 10, 600, "
-            "'/runs/out', 1)",
-        )
+        _shared_setup_1(conn)
         # Resumed, then cancelled: output_dir cleared, counters still cumulative.
         conn.execute(
             "INSERT INTO training_runs (id, status, model_name, dataset_name, config_json, "
