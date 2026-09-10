@@ -7,23 +7,31 @@ Run a script block and report whether a C# compiler ran, or a DLL landed in a
 temporary directory, while it did.
 
 .DESCRIPTION
-Two independent detectors, because either one alone can be defeated by something
-that is not the code under test:
+Two independent detectors, because either alone can be defeated by something that
+is not the code under test:
 
   1. Security log event 4688, process creation. Authoritative about what ran, and
-     it sees a compiler spawned through any depth of child process, which is the
-     case a text search of our own scripts cannot reach. Needs auditing enabled
-     by the caller; the workflow does that and verifies it took.
+     it sees a compiler spawned through any depth of child process, which a text
+     search of our own scripts cannot reach. Needs auditing enabled by the caller;
+     the workflow does that and verifies it took.
 
   2. New *.dll, *.cmdline, *.rsp and *.?.cs files under every temporary directory
-     in play. This is the artefact half of the same shape, and it survives the
-     case where auditing is silently overridden by a machine policy. csc.exe
-     writes the source and the response file next to the assembly, so the
-     supporting names are watched too: an assembly written and cleaned up leaves
-     the job with nothing to show, and a .cmdline left behind still names it.
+     in play. The artefact half of the same shape, and it survives auditing being
+     silently overridden by machine policy. csc.exe writes the source and the
+     response file next to the assembly, so those names are watched too.
 
-Both are reported. A caller decides what to do with them; the positive control
-requires both to fire, and the real measurement requires neither to.
+     Watched live, with a FileSystemWatcher, and not only by comparing a listing
+     taken before the action against one taken after. CodeDom deletes its whole
+     intermediate directory once the assembly is loaded, so on a hosted runner the
+     before-and-after diff saw nothing at all while 4688 recorded
+
+         csc.exe /noconfig /fullpaths @"...\Temp\vpmyd5eq\vpmyd5eq.cmdline"
+
+     which is a compile this half missed entirely. The two are unioned: the listing
+     catches what was left behind, the watcher catches what was cleaned up.
+
+Both are reported. The positive control requires both to fire, and the real
+measurement requires neither to.
 
 TEMP is read from the environment rather than assumed, and the machine-wide
 C:\Windows\Temp is watched alongside it, because a compile launched from a
@@ -68,10 +76,85 @@ function Get-StudioTempArtifacts {
         }
     }
     # Comma-wrapped: PowerShell unrolls an empty array to nothing on return, and the
-    # caller casts this into a HashSet whose two-argument constructor rejects null. On a
-    # clean runner with no matching temp files that killed the watcher before it ran even
-    # the positive control.
+    # caller casts this into a HashSet whose two-argument constructor rejects null.
+    # On a clean runner that killed the watcher before the positive control ran.
     return ,[string[]]$found
+}
+
+$script:ArtifactPattern = '\.(dll|cmdline|rsp|cs|err|out)$'
+$script:LibraryPattern = '\.(dll|cmdline|rsp)$'
+
+function Start-StudioTempWatch {
+    <#
+    .SYNOPSIS
+    Begin recording file creations under every temp root, and return the handles.
+    .DESCRIPTION
+    Register-ObjectEvent without an -Action: the events queue in the session's event
+    manager as they are raised, and Stop-StudioTempWatch drains them afterwards. An
+    -Action block would have to run for anything to be recorded, and there is nothing
+    to run it while a synchronous installer holds the pipeline.
+
+    A root that cannot be watched is skipped rather than fatal. The listing half still
+    covers it, and on a machine where none of them can be watched the positive control
+    is what says so.
+    #>
+    $handles = @()
+    foreach ($root in (Get-StudioTempRoots)) {
+        try {
+            $watcher = New-Object System.IO.FileSystemWatcher
+            $watcher.Path = $root
+            $watcher.IncludeSubdirectories = $true
+            $watcher.NotifyFilter = [System.IO.NotifyFilters]::FileName
+            # The default 8 KB buffer overflows on a busy temp directory, and an
+            # overflow drops events silently, which here reads as a clean run.
+            $watcher.InternalBufferSize = 65536
+            $identifier = "StudioTempWatch-" + [guid]::NewGuid().ToString('N')
+            $null = Register-ObjectEvent -InputObject $watcher -EventName Created `
+                -SourceIdentifier $identifier
+            $watcher.EnableRaisingEvents = $true
+            $handles += [pscustomobject]@{
+                Watcher          = $watcher
+                SourceIdentifier = $identifier
+                Root             = $root
+            }
+        } catch {
+            continue
+        }
+    }
+    return ,[object[]]$handles
+}
+
+function Stop-StudioTempWatch {
+    <#
+    .SYNOPSIS
+    Stop recording and return every path created while the handles were live.
+    .DESCRIPTION
+    Always unregisters and disposes, including on a path that saw nothing: a leaked
+    subscription keeps firing into the next measurement's queue.
+    #>
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Handle)
+
+    # Delivery is asynchronous, so the last few creations before the action returned may
+    # still be in flight. Settle first, then stop raising: draining immediately dropped
+    # exactly the events that matter, the ones from the end of a compile.
+    Start-Sleep -Milliseconds 750
+
+    $seen = @()
+    foreach ($entry in $Handle) {
+        try { $entry.Watcher.EnableRaisingEvents = $false } catch { }
+        try {
+            foreach ($record in @(Get-Event -SourceIdentifier $entry.SourceIdentifier `
+                    -ErrorAction SilentlyContinue)) {
+                $path = ''
+                try { $path = [string]$record.SourceEventArgs.FullPath } catch { }
+                if (-not [string]::IsNullOrWhiteSpace($path)) { $seen += $path }
+                Remove-Event -EventIdentifier $record.EventIdentifier -ErrorAction SilentlyContinue
+            }
+        } catch { }
+        Unregister-Event -SourceIdentifier $entry.SourceIdentifier -ErrorAction SilentlyContinue
+        try { $entry.Watcher.Dispose() } catch { }
+    }
+    return ,[string[]]$seen
 }
 
 function Get-StudioProcessImageName {
@@ -79,12 +162,10 @@ function Get-StudioProcessImageName {
     .SYNOPSIS
     The image a 4688 record says was created, from the record's own field.
     .DESCRIPTION
-    NewProcessName, read out of the event XML by name rather than by position, since
-    the position is a property of the schema and this has to keep meaning the same
-    thing if the schema gains a field. Nothing else in the record is consulted: the
-    rendered message also contains the command line, so matching the message scores
-    `cmd.exe /c echo csc.exe` as a compiler, which is a false report of the one thing
-    this job exists to detect.
+    NewProcessName, read out of the event XML by name rather than by position, so a
+    schema that gains a field still means the same thing. Nothing else is consulted:
+    the rendered message also carries the command line, so matching it would score
+    `cmd.exe /c echo csc.exe` as a compiler.
     #>
     param([Parameter(Mandatory = $true)]$Event)
 
@@ -102,9 +183,8 @@ function Select-StudioCompilerHits {
     .SYNOPSIS
     The records among $Events whose created image is a compiler.
     .DESCRIPTION
-    Separate from the query so it can be exercised without a Security log, which is
-    the only way to test the classification anywhere but a Windows runner that has
-    just compiled something.
+    Separate from the query so the classification can be exercised without a
+    Security log, which is the only way to test it off a Windows runner.
     #>
     param([Parameter(Mandatory = $true)][AllowEmptyCollection()][array]$Events)
 
@@ -112,10 +192,10 @@ function Select-StudioCompilerHits {
     foreach ($record in $Events) {
         $image = Get-StudioProcessImageName -Event $record
         if ([string]::IsNullOrEmpty($image)) { continue }
-        # Split explicitly rather than through [System.IO.Path]::GetFileName, which splits on
-        # the separators of the HOST it runs on: under a Linux pwsh, which is where the
-        # classification is tested, a backslash is an ordinary character and the whole path
-        # came back as the leaf. The records are always Windows paths whatever reads them.
+        # Split explicitly, not via [System.IO.Path]::GetFileName, which splits on the
+        # HOST's separators: under the Linux pwsh where this is tested a backslash is an
+        # ordinary character and the whole path came back as the leaf. The records are
+        # always Windows paths whatever reads them.
         $leaf = ($image -split '[\\/]')[-1]
         foreach ($name in $script:CompilerNames) {
             if ($leaf -eq $name) {
@@ -139,14 +219,13 @@ function Get-StudioCompilerEvents {
     filtering afterwards by a fixed window, so a slow installer cannot outrun it.
     .PARAMETER Until
     The instant it ended. Both ends are needed: a runner is a shared machine, and an
-    unrelated service starting a compiler after the action would otherwise be scored
-    against it.
+    unrelated service starting a compiler after the action would be scored against it.
 
-    This window is the honest bound rather than the process tree the workflow prose
-    describes. 4688 carries the creator's pid, but a compile can be several processes
-    deep and the intermediate pids have exited by the time this reads the log, so an
-    ancestry walk is not reconstructable after the fact. The window is what can be
-    measured; the positive control is what proves it measures anything.
+    A window, not the process tree the workflow prose describes. 4688 carries the
+    creator's pid, but a compile can be several processes deep and the intermediate
+    pids have exited by the time this reads the log, so ancestry is not
+    reconstructable after the fact. The positive control proves the window measures
+    anything.
     #>
     param(
         [Parameter(Mandatory = $true)][datetime]$Since,
@@ -155,9 +234,8 @@ function Get-StudioCompilerEvents {
 
     $events = @()
     try {
-        # Bounded at both ends. Open-ended, a compiler started by something else while the
-        # recursive temp scan was still running counted against the action that had
-        # already finished.
+        # Bounded at both ends. Open-ended, a compiler started by something else during
+        # the recursive temp scan counted against the action that had already finished.
         $events = Get-WinEvent -FilterHashtable @{
             LogName   = 'Security'
             Id        = 4688
@@ -165,17 +243,15 @@ function Get-StudioCompilerEvents {
             EndTime   = $Until
         } -ErrorAction Stop
     } catch [System.Exception] {
-        # No matching events is an exception from Get-WinEvent, not an empty set, and on a
-        # clean run that is the expected result. A log this cannot READ throws the same way,
-        # and swallowing both made an unreadable Security log indistinguishable from a clean
-        # measurement: the job would print "no compiler" having seen nothing at all. The
-        # positive control does not cover this, because it runs in an earlier step and says
-        # nothing about whether the log was still readable during the two measurements.
+        # No matching events is an exception from Get-WinEvent, not an empty set, and on
+        # a clean run that is expected. A log this cannot READ throws the same way, so
+        # swallowing both would print "no compiler" having seen nothing at all. The
+        # positive control runs in an earlier step and says nothing about whether the log
+        # was readable during the measurements.
         #
-        # So the two are separated structurally rather than by matching the message text,
-        # which is localised: ask the log for any one record at all. If that succeeds the log
-        # is readable and the filter genuinely matched nothing; if it fails too, this
-        # measurement is void and the caller must not report it as clean.
+        # Separate them structurally rather than by the localised message text: ask the
+        # log for any one record. If that succeeds the filter genuinely matched nothing;
+        # if it fails too, this measurement is void, not clean.
         # Bound before the probe below, whose own catch rebinds $_.
         $reason = $_.Exception.Message
         $readable = $false
@@ -199,9 +275,8 @@ function Invoke-WithCompilerWatch {
     Run $Action and return what the two detectors saw while it ran.
     .OUTPUTS
     A hashtable with Compilers and TempLibraries, each an array of strings, plus
-    the exit state of the action. Evidence is written under $EvidenceRoot whether
-    the action succeeded or not, since a failed installer is exactly when the
-    trace is wanted.
+    the exit state of the action. Evidence is written under $EvidenceRoot even when
+    the action fails, which is exactly when the trace is wanted.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -212,45 +287,53 @@ function Invoke-WithCompilerWatch {
     New-Item -ItemType Directory -Force -Path $EvidenceRoot | Out-Null
 
     # Baseline first, THEN open the window. The sweep walks every temp root
-    # recursively and can take seconds on a runner with a large temp tree, and a
-    # csc.exe the machine started during that walk predates the action: counting it
-    # fails the positive control or the installer measurement for something neither
-    # one did. Same reasoning as the $until below, which is taken before the second
-    # sweep for the same reason.
+    # recursively and can take seconds, and a csc.exe the machine started during that
+    # walk predates the action, so counting it fails a measurement for something it
+    # did not do. Same reasoning as the $until below.
     $before = New-Object 'System.Collections.Generic.HashSet[string]' (
         [string[]](Get-StudioTempArtifacts), [StringComparer]::OrdinalIgnoreCase)
-    # A second back, so a process created in the same tick as the timestamp is not
-    # filtered out by a strictly-later comparison inside Get-WinEvent. Stated exactly,
-    # since the sweep above runs before this: the window still reaches one second into
-    # the tail of that sweep, so a compiler the machine started in that last second is
-    # counted. The trade is deliberate and it errs towards a false alarm, which fails a
-    # measurement loudly, rather than towards dropping a real compile.
+    # A second back, so a process created in the same tick as the timestamp survives
+    # Get-WinEvent's strictly-later comparison. That reaches one second into the tail
+    # of the sweep above, so a compiler started in that second is counted: a deliberate
+    # trade towards a loud false alarm rather than a dropped real compile.
     $since = (Get-Date).AddSeconds(-1)
+    # Opened here, with the 4688 window, and not before the baseline: a file the
+    # machine creates during that recursive sweep predates the action.
+    $watch = Start-StudioTempWatch
 
     $failure = $null
+    $live = @()
     try {
-        # Piped to Out-Host, not left on the success stream. The installer action tees its
-        # log, and every one of those lines would otherwise be emitted as function output
-        # ahead of the result hashtable, so the caller's $seen became an object array and
-        # $seen.Compilers failed under Set-StrictMode against the string elements rather
-        # than reporting the measurement.
+        # Out-Host, not the success stream. The installer action tees its log, and those
+        # lines would be emitted as function output ahead of the result hashtable, making
+        # the caller's $seen an object array whose $seen.Compilers fails under
+        # Set-StrictMode instead of reporting the measurement.
         & $Action | Out-Host
     } catch {
-        # Recorded and re-thrown by the caller if it cares. The detectors still
-        # report, because "the installer died AND spawned a compiler" is a more
-        # useful message than either half alone.
+        # Recorded and re-thrown below. The detectors still report, because "the
+        # installer died AND spawned a compiler" beats either half alone.
         $failure = $_
+    } finally {
+        # In the finally, so an action that threw still closes its subscriptions.
+        $live = @(Stop-StudioTempWatch -Handle $watch)
     }
 
-    # Closed before the temp sweep, not after it: the sweep walks every temp root
-    # recursively and can take seconds, and anything the machine starts during that walk
-    # belongs to nobody's measurement.
+    # Closed before the temp sweep, which can take seconds: anything the machine
+    # starts during that walk belongs to nobody's measurement.
     $until = Get-Date
     $compilers = @(Get-StudioCompilerEvents -Since $since -Until $until)
 
     $after = Get-StudioTempArtifacts
-    $newArtifacts = @($after | Where-Object { -not $before.Contains($_) })
-    $newLibraries = @($newArtifacts | Where-Object { $_ -match '\.(dll|cmdline|rsp)$' })
+    $left = @($after | Where-Object { -not $before.Contains($_) })
+    # Only the names the compiler writes, because the watcher reports every creation
+    # under temp and most of them are nobody's business.
+    $transient = @($live | Where-Object { $_ -match $script:ArtifactPattern })
+    $union = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $newArtifacts = @()
+    foreach ($path in ($left + $transient)) {
+        if ($union.Add($path)) { $newArtifacts += $path }
+    }
+    $newLibraries = @($newArtifacts | Where-Object { $_ -match $script:LibraryPattern })
 
     $stem = Join-Path $EvidenceRoot $Name
     $compilers | Out-File -FilePath "$stem-compilers.txt" -Encoding utf8
