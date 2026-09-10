@@ -179,8 +179,26 @@ def _whisper_root_block() -> str:
     return _slice(src, "_root_value() {", "STUDIO_OWNED_MARKER=")
 
 
+@pytest.fixture
+def whisper_path(tmp_path_factory):
+    """PATH for the extracted whisper block, with git and cmake satisfied by stubs.
+
+    The slice above is the shipped file verbatim, so it carries the builder's `command -v`
+    preflight along with the root selection these tests are about. On a runner without cmake the
+    block exits 1 before choosing anything and four tests fail for a reason that has nothing to
+    do with what they assert. Stubbed rather than excised: cutting the preflight out of the slice
+    would mean the tests no longer run the shipped text, which is the whole point of lifting it.
+    """
+    stub_bin = tmp_path_factory.mktemp("stubbin")
+    for tool in ("git", "cmake"):
+        path = stub_bin / tool
+        path.write_text("#!/bin/sh\nexit 0\n", encoding = "utf-8")
+        path.chmod(0o755)
+    return f"{stub_bin}:/usr/bin:/bin"
+
+
 @pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
-def test_the_whisper_builder_installs_under_the_master_root(tmp_path):
+def test_the_whisper_builder_installs_under_the_master_root(tmp_path, whisper_path):
     """setup.sh runs this with UNSLOTH_STUDIO_HOME=<root>/studio still inherited, so a builder
     that preferred it would install a level below _managed_whisper_cpp_dir()."""
     root = tmp_path / "portable"
@@ -191,7 +209,7 @@ def test_the_whisper_builder_installs_under_the_master_root(tmp_path):
         ["bash", "-c", script],
         env = {
             "HOME": str(tmp_path / "home"),
-            "PATH": "/usr/bin:/bin",
+            "PATH": whisper_path,
             "UNSLOTH_HOME": str(root),
             "UNSLOTH_STUDIO_HOME": str(root / "studio"),
         },
@@ -204,7 +222,7 @@ def test_the_whisper_builder_installs_under_the_master_root(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
-def test_the_whisper_builder_still_honours_a_studio_home_alone(tmp_path):
+def test_the_whisper_builder_still_honours_a_studio_home_alone(tmp_path, whisper_path):
     studio = tmp_path / "elsewhere" / "studio"
     src = BUILD_WHISPER.read_text(encoding = "utf-8")
     block = _whisper_root_block()
@@ -213,7 +231,7 @@ def test_the_whisper_builder_still_honours_a_studio_home_alone(tmp_path):
         ["bash", "-c", script],
         env = {
             "HOME": str(tmp_path / "home"),
-            "PATH": "/usr/bin:/bin",
+            "PATH": whisper_path,
             "UNSLOTH_STUDIO_HOME": str(studio),
         },
         capture_output = True,
@@ -225,7 +243,7 @@ def test_the_whisper_builder_still_honours_a_studio_home_alone(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
-def test_a_blank_master_root_does_not_outrank_the_whisper_studio_home(tmp_path):
+def test_a_blank_master_root_does_not_outrank_the_whisper_studio_home(tmp_path, whisper_path):
     """${VAR:-} only treats the EMPTY string as unset, so an unstripped whitespace value would
     win the new precedence and name a relative "   /whisper.cpp"."""
     studio = tmp_path / "elsewhere" / "studio"
@@ -243,7 +261,7 @@ def test_a_blank_master_root_does_not_outrank_the_whisper_studio_home(tmp_path):
         ],
         env = {
             "HOME": str(tmp_path / "home"),
-            "PATH": "/usr/bin:/bin",
+            "PATH": whisper_path,
             "UNSLOTH_HOME": "   ",
             "UNSLOTH_STUDIO_HOME": str(studio),
         },
@@ -256,7 +274,7 @@ def test_a_blank_master_root_does_not_outrank_the_whisper_studio_home(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason = "needs bash")
-def test_a_tilde_master_root_expands_for_the_whisper_builder(tmp_path):
+def test_a_tilde_master_root_expands_for_the_whisper_builder(tmp_path, whisper_path):
     home = tmp_path / "home"
     completed = subprocess.run(
         [
@@ -270,7 +288,7 @@ def test_a_tilde_master_root_expands_for_the_whisper_builder(tmp_path):
                 )
             ),
         ],
-        env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "UNSLOTH_HOME": "~/portable"},
+        env = {"HOME": str(home), "PATH": whisper_path, "UNSLOTH_HOME": "~/portable"},
         capture_output = True,
         text = True,
         timeout = 60,
