@@ -534,6 +534,9 @@ def stored_denoiser_precision(local_dir: Optional[str]) -> Optional[str]:
             sub = root / attr
             if not sub.is_dir():
                 continue
+            # EVERY shard. A narrow checkpoint keeps its norms and embeddings wide -- which is why
+            # _DENSE_PARAM_DTYPE_NAMES admits float32 -- and shards are cut by size, so the first
+            # file can be entirely wide while the linears in a later one are fp8.
             for shard in sorted(sub.glob("*.safetensors")):
                 with safetensors.safe_open(str(shard), "pt") as handle:
                     for key in handle.keys():
@@ -541,8 +544,6 @@ def stored_denoiser_precision(local_dir: Optional[str]) -> Optional[str]:
                         narrow = _NARROW_STORED_DTYPES.get(dtype)
                         if narrow is not None:
                             return narrow
-                # One shard settles it: a checkpoint does not mix storage precisions per file.
-                break
     except Exception:  # noqa: BLE001 -- an unreadable header is not evidence of anything
         return None
     return None

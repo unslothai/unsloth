@@ -1907,3 +1907,21 @@ def test_a_host_that_cannot_compile_advertises_nothing(monkeypatch):
     assert tq.dense_quant_host_capable(_target()) is False
     monkeypatch.setattr(diffusion_speed, "compile_eligible", lambda target, **kw: True)
     assert tq.dense_quant_host_capable(_target()) is True
+
+
+def test_a_later_shard_still_reveals_a_narrow_source(tmp_path):
+    """Narrow checkpoints keep norms and embeddings wide, so shard one can be entirely bf16."""
+    import torch
+    from safetensors.torch import save_file
+
+    sub = tmp_path / "transformer"
+    sub.mkdir(parents = True)
+    save_file(
+        {"norm.weight": torch.zeros(4, dtype = torch.bfloat16)},
+        str(sub / "diffusion_pytorch_model-00001-of-00002.safetensors"),
+    )
+    save_file(
+        {"proj.weight": torch.zeros(4, 4, dtype = torch.float8_e4m3fn)},
+        str(sub / "diffusion_pytorch_model-00002-of-00002.safetensors"),
+    )
+    assert tq.stored_denoiser_precision(str(tmp_path)) == "fp8"
