@@ -2770,15 +2770,10 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
     # still serve, and the rebuild would need the network. A directory with nothing in
     # it (the latest sidecar's staging directory, a first install) has nothing to lose,
     # and uv's offline mode installs from a warm cache; the pip fallback, which would
-    # reach for the network, is skipped by _install_to_dir under the same switch.
+    # reach for the network, is skipped by _install_to_dir under the same switch. So
+    # the replacement is built beside the tree, from the cache, and swapped in whole.
     if _runtime_repair_is_offline() and _sidecar_has_content(venv_dir):
-        logger.warning(
-            "%s not found or incomplete at %s, and this session is offline -- left as is "
-            "until the next online update",
-            label,
-            venv_dir,
-        )
-        return False
+        return _repair_offline_beside(venv_dir, packages, label)
 
     logger.warning("%s not found or incomplete at %s -- installing at runtime", label, venv_dir)
     shutil.rmtree(venv_dir, ignore_errors = True)
@@ -2802,9 +2797,51 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
             # Nothing usable was there before this began (it was just wiped), and a
             # partial tree left behind would count as one next time: offline, the
             # guard above would then keep it instead of asking the cache again.
+            # Unless another process rebuilt this same directory meanwhile (nothing
+            # serialises two workers repairing one tier): what is there now is
+            # checked before it is removed, and a complete tree is the answer.
+            if _venv_dir_is_valid_and_undamaged(venv_dir, packages):
+                logger.info("%s at %s was completed by another process", label, venv_dir)
+                return True
             shutil.rmtree(venv_dir, ignore_errors = True)
             return False
     logger.info("Installed %s to %s", label, venv_dir)
+    return True
+
+
+def _repair_offline_beside(venv_dir: str, packages: tuple[str, ...], label: str) -> bool:
+    """Rebuild *venv_dir* from uv's cache into a staging directory beside it and swap
+    only once every package landed; a cold cache leaves the tree exactly as it was."""
+    base = venv_dir.rstrip("/\\")
+    staging = base + ".offline-staging"
+    retired = base + ".offline-old"
+    shutil.rmtree(staging, ignore_errors = True)
+    # An empty directory takes the ordinary path, and _install_to_dir asks only the
+    # cache under the offline switch; a failure removes the staging tree itself.
+    if not _ensure_venv_dir(staging, packages, label):
+        shutil.rmtree(staging, ignore_errors = True)
+        logger.warning(
+            "%s not found or incomplete at %s, and this session is offline with no cached "
+            "copy to rebuild it from -- left as is until the next online update",
+            label,
+            venv_dir,
+        )
+        return False
+    try:
+        shutil.rmtree(retired, ignore_errors = True)
+        os.rename(venv_dir, retired)
+        try:
+            os.rename(staging, venv_dir)
+        except OSError:
+            if not os.path.isdir(venv_dir) and os.path.isdir(retired):
+                os.rename(retired, venv_dir)
+            raise
+    except OSError as exc:
+        logger.warning("could not swap the offline rebuild of %s into %s: %s", label, venv_dir, exc)
+        shutil.rmtree(staging, ignore_errors = True)
+        return False
+    shutil.rmtree(retired, ignore_errors = True)
+    logger.info("Rebuilt %s at %s offline, from the cache", label, venv_dir)
     return True
 
 

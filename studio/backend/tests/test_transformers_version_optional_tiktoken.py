@@ -442,19 +442,44 @@ def test_a_recordless_record_beside_a_complete_install_is_removed_without_a_top_
 
 def test_an_offline_session_does_not_wipe_a_sidecar_it_cannot_rebuild(tmp_path, monkeypatch):
     """`studio update` under UV_OFFLINE leaves a stale tier for the next online update;
-    the runtime repair used to delete that tier and then reach for the network."""
+    the runtime repair used to delete that tier and then reach for the network. With a
+    cold cache the tree stays exactly as it was; with a warm one the replacement is
+    built beside it and swapped in whole."""
     root = tmp_path / ".venv_t5_550"
     root.mkdir()
     (root / "keep.txt").write_text("", encoding = "utf-8")
     monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: False)
     installed = []
-    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: installed.append(pkg) or True)
+    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: installed.append(pkg) and False)
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     for value in ("1", "t", "Y", "true", "on"):
         monkeypatch.setenv("UV_OFFLINE", value)
+        installed.clear()
         assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is False
         assert (root / "keep.txt").is_file()
-        assert installed == []
+        # The cache was asked, beside the tree, never in it.
+        assert installed == [tv._VENV_T5_550_PACKAGES[0]]
+        assert not (tmp_path / ".venv_t5_550.offline-staging").exists()
+        assert not (tmp_path / ".venv_t5_550.offline-old").exists()
+    # A warm cache: every package installs into the staging tree and the swap is whole.
+    staged_into = []
+
+    def warm_install(pkg, target):
+        staged_into.append(target)
+        return True
+
+    monkeypatch.setattr(tv, "_install_to_dir", warm_install)
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
+    assert set(staged_into) == {str(tmp_path / ".venv_t5_550.offline-staging")}
+    assert not (root / "keep.txt").exists()
+    assert (root / tv._STUDIO_OWNED_MARKER).is_file()
+    assert not (tmp_path / ".venv_t5_550.offline-staging").exists()
+    assert not (tmp_path / ".venv_t5_550.offline-old").exists()
+    root.mkdir(exist_ok = True)
+    (root / "keep.txt").write_text("", encoding = "utf-8")
+    installed.clear()
+    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: installed.append(pkg) or True)
     # The HF offline switches turn off Hub access, not the package index: a damaged tier
     # is still rebuilt under them, or the tier stays unusable while PyPI answers.
     monkeypatch.setenv("UV_OFFLINE", "0")
@@ -508,6 +533,19 @@ def test_the_pip_fallback_stays_out_offline(tmp_path, monkeypatch):
     calls.clear()
     assert tv._install_to_dir("tiktoken", str(tmp_path)) is False
     assert [c[0] for c in calls] == ["uv", tv.sys.executable]
+
+
+def test_a_failed_install_keeps_a_tree_another_process_completed_meanwhile(tmp_path, monkeypatch):
+    """Two workers repairing one tier: the late cleanup of the failing one must not
+    delete the complete tree the other just finished."""
+    root = tmp_path / ".venv_t5_550"
+    root.mkdir()
+    verdicts = iter([False, True])
+    monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: next(verdicts))
+    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
+    monkeypatch.delenv("UV_OFFLINE", raising = False)
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
+    assert root.is_dir()
 
 
 def test_a_failed_first_install_leaves_nothing_the_offline_guard_would_keep(tmp_path, monkeypatch):
