@@ -118,7 +118,9 @@ _DENYLIST_GROUPS: tuple[frozenset[str], ...] = (
     frozenset({"--log-file"}),
     frozenset({"--log-disable"}),
     # Slot-state dir: Unsloth owns it for KV persistence across idle unload. Endpoint exposure (--slots, --props) is
-    # deliberately NOT denied alongside it: Unsloth reads GET /props and never /slots, so either is the user's own call.
+    # deliberately NOT denied alongside it: GET /props is always served and GET /slots is on by default in every build
+    # that can start here (ggml-org/llama.cpp#15630), so these flags only turn things OFF, which is the user's own
+    # call. --no-slots does cost the residency probe its reading, and preemption then runs on the ledger alone.
     frozenset({"--slot-save-path"}),
     # These print and exit instead of serving, so the load would "succeed" with no server behind it and only time out
     # later
