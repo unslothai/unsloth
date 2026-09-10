@@ -588,8 +588,34 @@ Environment:
     # whisper.cpp are its other children, so removing the Studio root alone strands them. Trimmed
     # and tilde-expanded like storage_roots.unsloth_home() and studio\setup.ps1.
     function _MasterRoot {
-        if ([string]::IsNullOrWhiteSpace($env:UNSLOTH_HOME)) { return $null }
-        $expanded = _ExpandTilde $env:UNSLOTH_HOME.Trim()
+        $raw = $env:UNSLOTH_HOME
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            # The note setup.ps1 leaves in the Studio tree, when this run has no UNSLOTH_HOME of
+            # its own. `$env:UNSLOTH_HOME = 'D:\portable'; unsloth studio update` installs the
+            # runtimes there and leaves nothing in a later environment, so without the note an
+            # uninstall removed the Studio tree and stranded them. Every Studio root this script
+            # already knows is consulted and the first readable note wins; the deny list and the
+            # marker gates still apply to whatever it names, so a stale note cannot license a
+            # removal the environment could not. Mirrors _master_root in uninstall.sh.
+            $noteRoots = @()
+            if ($env:USERPROFILE) { $noteRoots += (Join-Path $env:USERPROFILE ".unsloth\studio") }
+            foreach ($override in @($env:UNSLOTH_STUDIO_HOME, $env:STUDIO_HOME)) {
+                if (-not [string]::IsNullOrWhiteSpace($override)) {
+                    $noteRoots += (_ExpandTilde $override.Trim())
+                }
+            }
+            foreach ($noteRoot in $noteRoots) {
+                $notePath = Join-Path $noteRoot "share\.unsloth-master-root"
+                if (-not (Test-Path -LiteralPath $notePath -PathType Leaf)) { continue }
+                try {
+                    # One line, first only: a note that grew a second line is not one we wrote.
+                    $line = @(Get-Content -LiteralPath $notePath -TotalCount 1 -ErrorAction Stop)[0]
+                } catch { continue }
+                if (-not [string]::IsNullOrWhiteSpace($line)) { $raw = $line; break }
+            }
+        }
+        if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+        $expanded = _ExpandTilde $raw.Trim()
         $norm = $null
         # The provider path first, exactly as setup.ps1's Get-CanonicalDir resolves it.
         # [IO.Path]::GetFullPath anchors a RELATIVE root at [Environment]::CurrentDirectory,
@@ -1218,6 +1244,33 @@ Environment:
         }
     } catch {
         _Substep "could not update user PATH: $($_.Exception.Message)" "Yellow"
+    }
+    # Clear the persisted Inductor cache path, when it still names a tree this run deleted.
+    #
+    # setup.ps1 writes TORCHINDUCTOR_CACHE_DIR to the USER environment, so it outlives the
+    # install and every later PyTorch process on this account inherits it, including ones with
+    # nothing to do with Unsloth. Left behind, they compile into the removed directory and
+    # rebuild part of the tree the uninstall just took away.
+    #
+    # Only a value inside a root this run owned. A user who pointed the variable at a directory
+    # of their own keeps it, and so does the shared C:\tc fallback, which is not install
+    # specific and is not deleted here either.
+    try {
+        $persistedCache = [Environment]::GetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', 'User')
+        if (-not [string]::IsNullOrWhiteSpace($persistedCache)) {
+            $expandedCache = [Environment]::ExpandEnvironmentVariables($persistedCache).TrimEnd('\', '/')
+            foreach ($r in $ownedRoots) {
+                if (-not $r) { continue }
+                $rNorm = $r.TrimEnd('\', '/')
+                if ($expandedCache -ieq $rNorm -or $expandedCache -ilike "$rNorm\*") {
+                    [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', [NullString]::Value, 'User')
+                    _Substep "cleared TORCHINDUCTOR_CACHE_DIR: $persistedCache" "Green"
+                    break
+                }
+            }
+        }
+    } catch {
+        _Substep "could not clear TORCHINDUCTOR_CACHE_DIR: $($_.Exception.Message)" "Yellow"
     }
     # Remove HKCU\Software\Unsloth (PathBackup lives here; install.ps1 owns it).
     try {

@@ -2271,6 +2271,35 @@ $RuntimeRootIsCustom = $StudioHomeIsCustom -or [bool](Get-MasterRootOverride)
 $LlamaCppDir = Get-ManagedLlamaCppDir -StagingRoot $StageRoot
 $UnslothHome = Split-Path -Parent $LlamaCppDir
 
+# Record the master root inside the Studio tree, for the uninstaller. Mirrors setup.sh.
+#
+# UNSLOTH_HOME can be set for a single command -- `$env:UNSLOTH_HOME = 'D:\portable'; unsloth
+# studio update` -- and node\, llama.cpp\ and whisper.cpp\ then live somewhere only that
+# environment named. uninstall.ps1 finds the Studio root by its own means, so it can find this
+# note; without it, a later uninstall run without the variable removed the Studio tree and
+# stranded multi-gigabyte runtimes beside it.
+#
+# Only for a master root: the other branches derive the root from paths the uninstaller already
+# knows, and a stale note claiming a root that moved would be worse than none.
+if ((Get-MasterRootOverride) -and -not $StageRoot) {
+    try {
+        $noteDir = Join-Path $StudioHome "share"
+        if (-not (Test-Path -LiteralPath $noteDir -PathType Container)) {
+            [void][System.IO.Directory]::CreateDirectory($noteDir)
+        }
+        # Staged then renamed: a reader that caught a half-written note would name a truncated
+        # path, and this note licenses deletions.
+        $notePath = Join-Path $noteDir ".unsloth-master-root"
+        $noteTmp = "$notePath.$PID"
+        [System.IO.File]::WriteAllText($noteTmp, $UnslothHome + [Environment]::NewLine)
+        # Move-Item -Force, not [IO.File]::Move with an overwrite flag: that overload is .NET
+        # Core only and setup.ps1 still runs under Windows PowerShell 5.1.
+        Move-Item -LiteralPath $noteTmp -Destination $notePath -Force
+    } catch {
+        Write-StudioLine "  note: could not record the master root for uninstall: $($_.Exception.Message)" -ForegroundColor DarkGray
+    }
+}
+
 $WithLlamaCppDir = $null
 $llamaPreflightFailure = Invoke-ManagedLlamaCppPreflight -StagingRoot $StageRoot
 if ($llamaPreflightFailure) {

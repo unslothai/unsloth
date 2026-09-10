@@ -688,3 +688,89 @@ def test_a_shared_staging_directory_is_pruned_not_deleted():
     assert '_remove_path "$_mr_root/.staging"' not in sh
     staging = _slice(ps, "$masterStaging = Join-Path $masterRoot", "# Shared llama.cpp build")
     assert "Get-ChildItem -LiteralPath $masterStaging" in staging, staging
+
+
+def test_the_windows_uninstaller_finds_a_master_root_from_the_note(tmp_path):
+    """`$env:UNSLOTH_HOME = 'D:\\portable'; unsloth studio update` names the root for one command.
+
+    setup.ps1 puts node\\, llama.cpp\\ and whisper.cpp\\ under it and marks them, and a later
+    uninstall run from an ordinary shell has no UNSLOTH_HOME at all. Reading only the current
+    environment, _MasterRoot answered null there, so the run removed <master>\\studio and left
+    multi-gigabyte runtimes beside it. setup.sh already wrote the note; setup.ps1 did not, and
+    the PowerShell uninstaller did not read it.
+
+    Runs the shipped function, so a rewrite that keeps the words and loses the behaviour fails.
+    """
+    master = tmp_path / "portable"
+    (master / "studio" / "share").mkdir(parents = True)
+    (master / "studio" / "share" / ".unsloth-master-root").write_text(
+        f"{master}\n", encoding = "utf-8"
+    )
+    profile = tmp_path / "profile"
+    (profile / ".unsloth" / "studio" / "share").mkdir(parents = True)
+
+    script = tmp_path / "probe.ps1"
+    script.write_text(
+        f"""$txt = Get-Content -Raw "{UNINSTALL_PS1}"
+foreach ($n in @("_ExpandTilde", "_MasterRoot")) {{
+    $m = [regex]::Match($txt, "(?ms)^    function $n \\{{.*?^    \\}}")
+    if (-not $m.Success) {{ Write-Output "EXTRACT-FAILED:$n"; exit 1 }}
+    Invoke-Expression $m.Value
+}}
+$env:UNSLOTH_HOME = ""
+$env:STUDIO_HOME = ""
+$env:UNSLOTH_STUDIO_HOME = "{master}/studio"
+$env:USERPROFILE = "{profile}"
+Write-Output (_MasterRoot)
+""",
+        encoding = "utf-8",
+    )
+    out = subprocess.run(
+        ["pwsh", "-NoProfile", "-File", str(script)],
+        capture_output = True,
+        text = True,
+        check = True,
+    ).stdout.strip()
+    assert "EXTRACT-FAILED" not in out, out
+    assert out == str(master), out
+
+
+def test_the_windows_setup_records_the_master_root_for_the_uninstaller():
+    """The note the test above reads has to be written, and only where it is true.
+
+    A staging run installs to a throwaway root, and every non-master branch derives the root
+    from paths the uninstaller already knows, so a note there would only ever be able to go
+    stale. This is the same rule setup.sh applies.
+    """
+    ps = SETUP_PS1.read_text(encoding = "utf-8")
+    block = _slice(ps, "# Record the master root inside the Studio tree", "$WithLlamaCppDir = $null")
+    assert "(Get-MasterRootOverride)" in block
+    assert "-not $StageRoot" in block
+    assert '".unsloth-master-root"' in block
+    # Staged then renamed: a reader catching a half-written note would name a truncated path,
+    # and this note licenses deletions.
+    assert "$noteTmp" in block and "Move-Item" in block
+    # The 3-argument overwrite overload is .NET Core only, and setup.ps1 runs under 5.1.
+    assert "[System.IO.File]::Move(" not in block
+
+
+def test_the_windows_uninstaller_clears_the_inductor_path_it_persisted():
+    """setup.ps1 writes TORCHINDUCTOR_CACHE_DIR to the USER environment, so it outlives the
+    install. Every later PyTorch process on the account inherits it, including ones unrelated to
+    Unsloth, and they compile into the deleted tree and rebuild part of it.
+
+    Only a value inside a root this run owned: a directory the user chose is theirs, and the
+    shared C:\\tc fallback is not install specific and is not deleted here either.
+    """
+    ps = UNINSTALL_PS1.read_text(encoding = "utf-8")
+    block = _slice(ps, "# Clear the persisted Inductor cache path", "# Remove HKCU\\Software\\Unsloth")
+    assert "GetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', 'User')" in block
+    assert "[NullString]::Value, 'User'" in block
+    # Scoped to what this run owns. $knownRoots includes roots the gates refused to delete.
+    assert "$ownedRoots" in block and "$knownRoots" not in block
+    # Comments stripped first: this block explains why C:\tc is spared, and a comment saying so
+    # is not the same thing as code naming it.
+    code = "\n".join(
+        line for line in block.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "C:\\tc" not in code
