@@ -18,7 +18,7 @@ from collections.abc import Callable
 
 from storage import rag_db
 
-from . import captioner, chunking, config, embeddings, job_leases, parsers, store
+from . import captioner, chunking, config, embeddings, job_leases, parsers, pdf_ocr, store
 
 logger = logging.getLogger(__name__)
 
@@ -167,8 +167,8 @@ def _ocr_scanned_pages(
     ocr: bool | None = None,
 ) -> tuple[list, set[int]]:
     """Replace text on near-empty (scanned/image-only) PDF pages with vision-model OCR
-    so image PDFs become searchable. ``ocr`` overrides ``config.OCR_SCANNED`` per upload
-    (``None`` = config default); no-op without scanned pages or a vision model. OCR'd
+    so image PDFs become searchable. Local Tesseract is the fallback. The per-upload
+    ``ocr`` flag overrides ``config.OCR_SCANNED``; no-op without scanned pages. OCR'd
     pages have no text layer, so no preview highlight regions, but stay searchable.
     Returns ``(pages, ocred)``: new ``Page`` objects for OCR'd pages (originals
     otherwise) and the set of page numbers actually transcribed."""
@@ -177,10 +177,14 @@ def _ocr_scanned_pages(
     scanned = [
         p.page_number
         for p in pages
-        if p.page_number is not None and len((p.text or "").strip()) < config.OCR_MIN_CHARS
+        if p.page_number is not None
+        and (p.needs_ocr or len((p.text or "").strip()) < config.OCR_MIN_CHARS)
     ]
-    if not scanned or captioner.vision_endpoint() is None:
+    if not scanned:
         return pages, set()
+    required = {p.page_number for p in pages if p.needs_ocr}
+    # Optional short/blank pages must not displace actual scans from the budget.
+    scanned.sort(key = lambda number: number not in required)
     if len(scanned) > config.OCR_MAX_PAGES:
         logger.warning(
             "OCR: %d scanned pages exceed OCR_MAX_PAGES=%d; pages past the cap stay "
@@ -190,11 +194,22 @@ def _ocr_scanned_pages(
         )
     scanned = scanned[: config.OCR_MAX_PAGES]
     _progress(conn, job_id, "ocr", 0.25)
-    page_pngs = parsers.render_pdf_pages(stored_path, scanned, dpi = config.OCR_DPI)
-    texts = captioner.ocr_pages(
-        page_pngs,
-        on_progress = lambda done, total: _progress(conn, job_id, "ocr", 0.25 + 0.15 * done / total),
-    )
+    texts = {}
+    if captioner.vision_endpoint() is not None:
+        page_pngs = parsers.render_pdf_pages(stored_path, scanned, dpi = config.OCR_DPI)
+        texts = captioner.ocr_pages(
+            page_pngs,
+            on_progress = lambda done, total: _progress(
+                conn, job_id, "ocr", 0.25 + 0.15 * done / total
+            ),
+        )
+    # Keep the existing vision pass, but allow scanned PDFs with text-only models too.
+    local_pages = [
+        p.page_number
+        for p in pages
+        if p.needs_ocr and p.page_number in scanned and p.page_number not in texts
+    ]
+    texts.update(pdf_ocr.ocr_pages(stored_path, local_pages))
     if not texts:
         return pages, set()
 
@@ -286,6 +301,7 @@ def _run(
         _progress(conn, job_id, "parsing", 0.1)
         pages = parsers.parse(stored_path)
         is_pdf = stored_path.lower().endswith(".pdf")
+        scanned_pages = {p.page_number for p in pages if p.needs_ocr}
         ocred: set[int] = set()
         if is_pdf:
             pages, ocred = _ocr_scanned_pages(pages, stored_path, conn, job_id, ocr = ocr)
@@ -320,15 +336,38 @@ def _run(
                 logger.warning("figure tiling failed for job %s", job_id, exc_info = True)
                 tiles = []
             if tiles:
+                complete_captions: set[int] = set()
+                captioned_tiles: dict[int, set[int]] = {}
+
+                def record_caption(image):
+                    number = image.page_number
+                    if image.full_page:
+                        complete_captions.add(number)
+                    elif image.tile_index is not None and image.tile_count:
+                        indices = captioned_tiles.setdefault(number, set())
+                        indices.add(image.tile_index)
+                        if len(indices) == image.tile_count:
+                            complete_captions.add(number)
+
                 captions = captioner.merge_page_captions(
                     captioner.caption_images(
                         tiles,
+                        on_caption = record_caption,
                         on_progress = lambda done, total: _progress(
                             conn, job_id, "captioning", 0.4 + 0.2 * done / total
                         ),
                     )
                 )
                 pages = captioner.splice_captions(pages, captions)
+                ocred.update(complete_captions)
+
+        if scanned_pages - ocred:
+            if _abort_if_document_deleted(conn, job_id, document_id):
+                return
+            if not job_leases.renew_owned(conn, job_leases.INGESTION, job_id):
+                conn.rollback()
+                raise job_leases.JobLeaseLost("Ingestion job lease was reclaimed")
+            raise pdf_ocr.unreadable_pages_error(scanned_pages - ocred)
 
         _progress(conn, job_id, "chunking", 0.6)
         count = embeddings.token_counter(model_name)
@@ -339,18 +378,14 @@ def _run(
             count = count,
         )
         if not chunks:
-            # An empty parse still completes the document and retires the one it replaces, so it needs the same
-            # guard as the chunk write.
             if _abort_if_document_deleted(conn, job_id, document_id):
                 return
-            # inside the write transaction the guard opened, as _progress does
             if not job_leases.renew_owned(conn, job_leases.INGESTION, job_id):
+                conn.rollback()
                 raise job_leases.JobLeaseLost("Ingestion job lease was reclaimed")
-            store.set_document_status(conn, document_id, "completed", num_chunks = 0)
-            _replace_old_document(conn, replaces, stored_path, document_id)
-            _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
-            _emit(job_id, {"type": "complete", "num_chunks": 0})
-            return
+            raise ValueError(
+                "No extractable text found in file. Upload a document containing readable text."
+            )
 
         _progress(conn, job_id, "embedding", 0.65)
         # An ST encode failure swaps the process to llama-server, so the embedder that produced these
