@@ -114,6 +114,8 @@ def _ensure_studio_env_exported() -> None:
 
 BOOTSTRAP_PASSWORD_FILE = ".bootstrap_password"
 DESKTOP_SECRET_FILE = ".desktop_secret"
+# Cached raw CLI API key; the full name carries a digest: ".cli_api_key_cli_<digest>".
+CLI_API_KEY_FILE_PREFIX = ".cli_api_key_"
 DEFAULT_ADMIN_USERNAME = "unsloth"
 DESKTOP_SECRET_PREFIX = "desktop-"
 API_KEY_PBKDF2_SALT_KEY = "api_key_pbkdf2_salt"
@@ -681,15 +683,56 @@ def _wait_for_server(
     return False
 
 
+def _cli_api_key_secret_path(name: str) -> Path:
+    """Cache path for the raw API key named *name*.
+
+    Identity is the digest; the stem is only so a human can tell the files apart.
+    Sharing a stem would hand one label's credential to another (`foo/bar` vs
+    `foo?bar`, past the 64-char cut, `cli` vs `CLI` on APFS/NTFS). ASCII-only
+    keeps 64 chars at 64 bytes: NAME_MAX is 255 BYTES, so multibyte alnums made a
+    282-byte name that failed to cache and re-minted every launch (#10595 again).
+    """
+    safe = "".join(
+        ch if (ch.isascii() and ch.isalnum()) or ch in "-_" else "_" for ch in name
+    ).strip("_")
+    if not safe:
+        safe = "cli"
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]
+    return STUDIO_HOME / "auth" / f"{CLI_API_KEY_FILE_PREFIX}{safe[:64]}_{digest}"
+
+
+def _read_cli_api_key_secret(name: str) -> str:
+    try:
+        return _cli_api_key_secret_path(name).read_text(encoding = "utf-8").strip()
+    except (OSError, ValueError):
+        return ""
+
+
 def _create_api_key_inprocess(name: str) -> str:
-    """Create an API key via direct storage call, bypassing the ``must_change_password`` gate that
+    """Return a raw API key for *name*, minting only when the cached one is dead.
+
+    Uses a direct storage call, bypassing the ``must_change_password`` gate that
     blocks HTTP POST /api/auth/api-keys on fresh installs."""
     storage = _load_backend_auth_storage()
+    cached = _read_cli_api_key_secret(name)
+    if cached and storage.validate_api_key_with_credential(cached, touch = False):
+        return cached
 
     raw_key, _row = storage.create_api_key(
         username = storage.DEFAULT_ADMIN_USERNAME,
         name = name,
     )
+    # Best-effort: the key is already committed and the caller shuts the server
+    # down on any exception, so raising here would kill a healthy launch and
+    # re-mint on every retry. Same trade-off as start.py's _write_private_json.
+    try:
+        _write_auth_secret(_cli_api_key_secret_path(name), raw_key)
+    except OSError as exc:
+        typer.echo(
+            f"Warning: could not cache the {name} API key ({exc}); this launch is "
+            "unaffected, but the next one will create another key.",
+            err = True,
+        )
     return raw_key
 
 
@@ -1040,7 +1083,17 @@ def _cli_update_password(
         )
         if revoke_api_keys:
             conn.execute("DELETE FROM api_keys")
-    for stale in (BOOTSTRAP_PASSWORD_FILE, DESKTOP_SECRET_FILE):
+    stale_files = [BOOTSTRAP_PASSWORD_FILE, DESKTOP_SECRET_FILE]
+    if revoke_api_keys:
+        # Reset only: the rows are gone, so each cached key is now plaintext for a
+        # dead credential. An ordinary change keeps the rows, so its cache stays valid.
+        try:
+            stale_files += sorted(
+                p.name for p in (STUDIO_HOME / "auth").glob(f"{CLI_API_KEY_FILE_PREFIX}*")
+            )
+        except OSError:
+            pass
+    for stale in stale_files:
         stale_path = STUDIO_HOME / "auth" / stale
         try:
             stale_path.unlink(missing_ok = True)
@@ -2028,7 +2081,7 @@ def run(
         "cli",
         "--api-key-name",
         rich_help_panel = _RUN_PANEL_ADVANCED,
-        help = "Label for the auto-generated API key",
+        help = "Label for the API key reused across runs",
     ),
     port: int = typer.Option(8888, "--port", "-p", rich_help_panel = _RUN_PANEL_SERVER),
     host: str = typer.Option("127.0.0.1", "--host", "-H", rich_help_panel = _RUN_PANEL_SERVER),

@@ -781,6 +781,59 @@ _resolve_studio_destinations
 _UNSLOTH_LOGIN_PATH="$PATH"
 VENV_DIR="$STUDIO_HOME/unsloth_studio"
 
+# Claim the root before anything of ours goes into it: the uv cache, the venv and the venv's own
+# marker all land inside $STUDIO_HOME, so an install that dies in between used to leave a
+# directory the uninstaller could only identify by guessing at leftovers. Never fatal.
+#
+# Only a root this run may take over: in env mode $STUDIO_HOME is a user-chosen workspace, so an
+# empty one, or one already carrying an unambiguous marker, and nothing else, or a run that
+# aborts at the venv-step guard leaves somebody's project marked. Shorter than that guard's list
+# on purpose: it only refuses to overwrite, this authorizes a delete, so no bin/unsloth.
+# A sentinel this list may trust: a regular file, never a link, never inside a linked directory
+# ($2). -f follows a link and -L answers for the named file only, so a planted marker or a linked
+# `share` holding a genuine one would otherwise short-circuit the emptiness test below.
+_claim_sentinel() {
+    [ -f "$1" ] || return 1
+    [ -L "$1" ] && return 1
+    [ -n "${2:-}" ] && [ -L "$2" ] && return 1
+    return 0
+}
+
+_claim_studio_root() {
+    _claim_marker="$STUDIO_HOME/.unsloth-studio-owned"
+    # Already ours and the right shape: leave it. A run killed between the unlink and the write
+    # would lose the only proof this root is ours.
+    _claim_sentinel "$_claim_marker" && return 0
+    if [ "$_STUDIO_HOME_REDIRECT" = "env" ] \
+       && ! _claim_sentinel "$VENV_DIR/.unsloth-studio-owned" "$VENV_DIR" \
+       && ! _claim_sentinel "$STUDIO_HOME/share/studio.conf" "$STUDIO_HOME/share"; then
+        if [ -d "$STUDIO_HOME" ]; then
+            # Not enumerable: without read the globs cannot expand and an occupied workspace
+            # reads as empty. Fail closed like _dir_has_entries.
+            { [ -r "$STUDIO_HOME" ] && [ -x "$STUDIO_HOME" ]; } || return 0
+            # The globs ARE the emptiness check, so a caller's `sh -f` would make every workspace
+            # look empty. Saved and restored like _dir_has_entries.
+            _claim_glob=on
+            case $- in *f*) _claim_glob=off ;; esac
+            set +f
+            _claim_empty=true
+            for _claim_entry in "$STUDIO_HOME"/* "$STUDIO_HOME"/.[!.]* "$STUDIO_HOME"/..?*; do
+                if [ -e "$_claim_entry" ] || [ -L "$_claim_entry" ]; then _claim_empty=false; break; fi
+            done
+            [ "$_claim_glob" = off ] && set -f
+            [ "$_claim_empty" = true ] || return 0
+        fi
+    fi
+    mkdir -p "$STUDIO_HOME" 2>/dev/null || true
+    # Unlink first, then confirm it: the redirection follows a symlink here and truncates its
+    # TARGET, and rm can fail on a root we cannot write while that target stays writable. No
+    # marker is fine; the venv writes its own later.
+    rm -f "$_claim_marker" 2>/dev/null || true
+    if [ -e "$_claim_marker" ] || [ -L "$_claim_marker" ]; then return 0; fi
+    printf '' > "$_claim_marker" 2>/dev/null || true
+}
+_claim_studio_root
+
 # Keep uv's cache on the same filesystem as the venv it fills.
 # uv hardlinks wheels within one filesystem and copies across a boundary, so a moved
 # STUDIO_HOME paid double the disk and stranded the cache. An explicit UV_CACHE_DIR wins.
@@ -2951,7 +3004,11 @@ if [ -x "$VENV_DIR/bin/python" ] || _dir_has_entries "$VENV_DIR"; then
     # not blocked. Sentinels must be regular files: -f follows symlinks
     # to files (the legitimate ln -s shim shape) but rejects directories
     # and broken/dir-targeted symlinks.
+    # The root marker goes through _claim_sentinel, not -f: the claim refuses to write one
+    # through a link, so reading one through a link here would undo that decision. The older
+    # sentinels keep -f, since bin/unsloth is legitimately a symlink into the venv.
     if [ "$_STUDIO_HOME_REDIRECT" = "env" ] \
+       && ! _claim_sentinel "$STUDIO_HOME/.unsloth-studio-owned" \
        && [ ! -f "$VENV_DIR/.unsloth-studio-owned" ] \
        && [ ! -f "$STUDIO_HOME/share/studio.conf" ] \
        && [ ! -f "$STUDIO_HOME/bin/unsloth" ]; then

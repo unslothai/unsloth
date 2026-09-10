@@ -22,6 +22,14 @@ import types as _types
 import pytest
 
 
+def _shared_setup_1(monkeypatch):
+    monkeypatch.setattr(
+        preview,
+        "list_preview_targets",
+        lambda: [{"ref": "demorun", "is_latest": True}],
+    )
+
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -182,11 +190,7 @@ def test_models_endpoint_shape(client):
 
 
 def test_list_previews_builds_urls(client, monkeypatch):
-    monkeypatch.setattr(
-        preview,
-        "list_preview_targets",
-        lambda: [{"ref": "demorun", "is_latest": True}],
-    )
+    _shared_setup_1(monkeypatch)
     r = client.get("/p")
     assert r.status_code == 200
     data = r.json()["data"]
@@ -197,11 +201,7 @@ def test_list_previews_builds_urls(client, monkeypatch):
 
 
 def test_list_previews_omits_capability_when_sharing_disabled(client, monkeypatch):
-    monkeypatch.setattr(
-        preview,
-        "list_preview_targets",
-        lambda: [{"ref": "demorun", "is_latest": True}],
-    )
+    _shared_setup_1(monkeypatch)
     monkeypatch.setattr(preview, "get_preview_sharing_enabled", lambda: False)
     r = client.get("/p")
     assert r.status_code == 200
@@ -213,11 +213,7 @@ def test_list_previews_omits_capability_when_sharing_disabled(client, monkeypatc
 
 
 def test_list_previews_omits_capability_for_keyless_caller(client, monkeypatch):
-    monkeypatch.setattr(
-        preview,
-        "list_preview_targets",
-        lambda: [{"ref": "demorun", "is_latest": True}],
-    )
+    _shared_setup_1(monkeypatch)
     client.app.dependency_overrides[preview.authenticated_without_credential] = lambda: True
     body = client.get("/p").json()
     assert body["data"][0]["key"] is None

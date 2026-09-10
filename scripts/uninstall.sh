@@ -236,6 +236,8 @@ $_roots_from_conf"
 # where an assignment would never reach the summary.
 #   remove-failed  an rm failed, or a root was skipped while still holding data
 #   db-removed     a removed install root actually held studio.db
+#   db-kept        the default root was REFUSED and still holds studio.db. Its own flag, not
+#                  remove-failed: nothing failed, so "remove those paths by hand" is wrong here.
 # studio.db holds the chat history (backend/storage/studio_db.py), not the provider API keys:
 # providers_db.py keeps those in the browser's localStorage only. An env-mode install keeps it in
 # a custom root a bare run cannot discover, so claim the history is gone only if one was deleted.
@@ -243,9 +245,11 @@ $_roots_from_conf"
 _MARKER_DIR=$(mktemp -d 2>/dev/null || true)
 _REMOVE_FAILED_FLAG=""
 _DB_REMOVED_FLAG=""
+_DB_KEPT_FLAG=""
 if [ -n "$_MARKER_DIR" ] && [ -d "$_MARKER_DIR" ]; then
     _REMOVE_FAILED_FLAG="$_MARKER_DIR/remove-failed"
     _DB_REMOVED_FLAG="$_MARKER_DIR/db-removed"
+    _DB_KEPT_FLAG="$_MARKER_DIR/db-kept"
 fi
 
 # `printf`, never `: > "$f"`: `:` is a POSIX special builtin, so a redirection error on it kills a
@@ -273,6 +277,15 @@ _cleanup_markers() {
     fi
 }
 trap _cleanup_markers EXIT
+
+# A removal that got part way can take the sentinels and then fail on a locked child, leaving a
+# root the next run's gate would refuse. Put the marker back so a retry recognises it.
+_restore_owner_marker() {
+    [ -d "$1" ] || return 0
+    if [ -e "$1/.unsloth-studio-owned" ] || [ -L "$1/.unsloth-studio-owned" ]; then return 0; fi
+    printf '' > "$1/.unsloth-studio-owned" 2>/dev/null || true
+    return 0
+}
 
 # Remove an install root and record whether its studio.db really went with it. The check runs on
 # the RESOLVED path: a relocated install (~/.unsloth/studio a symlink to another disk) passes
@@ -305,6 +318,7 @@ _remove_root_recording_db() {
         fi
     fi
     _remove_path "$_rrd_root"
+    _restore_owner_marker "$_rrd_root"
     if [ "$_rrd_had_db" = 1 ]; then
         if [ -f "$_rrd_db" ]; then
             # Only the link went, or the delete failed: the data is still on disk.
@@ -338,15 +352,91 @@ _xdg_dir() {
 # Accept as Unsloth root only if an Unsloth sentinel exists (matching install.sh's env-mode
 # ownership guard). A bare unsloth_studio/ directory is NOT enough: require the install-time owner
 # marker so a user directory that happens to contain such a folder is safe.
+# Is $1 a Python venv? What the gate reads out of one is evidence only if the directory really
+# is one; a bare file at that path is somebody else's.
+# A sentinel this gate may trust. Deliberately just -f, following links: refusing one that is a
+# link, or that sits inside a linked directory, buys nothing here and costs a supported install.
+# It buys nothing because anyone who can plant a link at that path can plant a plain file there
+# instead, which this has always accepted. It costs a supported install because relocating a
+# multi-gigabyte venv with a symlink leaves a REAL marker behind a link, and refusing it strands
+# the install, which is the failure this whole gate exists to prevent. The link test belongs in
+# install.sh's _claim_sentinel, where following one would TRUNCATE the target rather than read it.
+_is_owner_marker() { [ -f "$1" ]; }
+
+# No -L here either, and for the same reason: a relocated venv is still a venv. The leftover scan
+# below rejects links on its own, where the name came from a glob rather than from us.
+_is_venv_dir() {
+    [ -d "$1" ] || return 1
+    [ -f "$1/pyvenv.cfg" ] && return 0
+    [ -f "$1/bin/python" ] && return 0
+    return 1
+}
+
+# The exact name an installer gives a moved-aside venv: <prefix>.<stamp>.<pid>[.<n>], with a
+# 14-digit stamp or install.sh's "time" date(1) fallback. install.sh keeps every other spelling
+# as the user's data (_studio_venv_rollback_must_be_preserved); do not be looser.
+_is_installer_leftover_name() {
+    _l=${1##*/}
+    # Only the rollback name carries a collision counter (install.sh:823); .venv.invalid is
+    # written once per run, so it takes no suffix.
+    _l_suffix_ok=false
+    case "$_l" in
+        unsloth_studio.rollback.*) _l=${_l#unsloth_studio.rollback.}; _l_suffix_ok=true ;;
+        .venv.invalid.*)           _l=${_l#.venv.invalid.} ;;
+        *) return 1 ;;
+    esac
+    _l_rest=${_l#*.}
+    [ "$_l_rest" != "$_l" ] || return 1
+    _l_stamp=${_l%%.*}
+    case "$_l_stamp" in
+        time) ;;
+        ''|*[!0-9]*) return 1 ;;
+        *) [ "${#_l_stamp}" -eq 14 ] || return 1 ;;
+    esac
+    _l_pid=${_l_rest%%.*}
+    case "$_l_pid" in ''|*[!0-9]*) return 1 ;; esac
+    _l_suffix=${_l_rest#*.}
+    if [ "$_l_suffix" != "$_l_rest" ]; then
+        [ "$_l_suffix_ok" = true ] || return 1
+        case "$_l_suffix" in ''|*[!0-9]*) return 1 ;; esac
+    fi
+    return 0
+}
+
 _is_studio_root() {
     _r="$1"
+    # $2 = "managed": $_r is the default root install.sh manages, $HOME/.unsloth/studio.
+    _managed="${2:-}"
     [ -n "$_r" ] || return 1
-    [ -f "$_r/share/studio.conf" ] && return 0
-    [ -f "$_r/unsloth_studio/.unsloth-studio-owned" ] && return 0
+    # install.sh writes the first when it creates the root, before the uv cache and long before
+    # the venv, so a partial install identifies itself instead of being guessed at. The last is
+    # the legacy venv name, which only install.sh writes.
+    _is_owner_marker "$_r/.unsloth-studio-owned" && return 0
+    _is_owner_marker "$_r/share/studio.conf" && return 0
+    _is_owner_marker "$_r/unsloth_studio/.unsloth-studio-owned" && return 0
+    _is_owner_marker "$_r/.venv/.unsloth-studio-owned" && return 0
     if [ -L "$_r/bin/unsloth" ]; then
         _t=$(readlink "$_r/bin/unsloth" 2>/dev/null || true)
         case "$_t" in *unsloth_studio/bin/unsloth) return 0 ;; esac
     fi
+    # All a pre-marker install has left is bin/unsloth inside the venv, pip's console script,
+    # which ANY venv with the wheel has: proof only at the managed root, which install.sh:2987
+    # also makes the only root that can hold the layout, or a stale UNSLOTH_STUDIO_HOME deletes
+    # the project it points at.
+    [ "$_managed" = managed ] || return 1
+    for _v in unsloth_studio .venv; do
+        _is_venv_dir "$_r/$_v" || continue
+        [ -f "$_r/$_v/bin/unsloth" ] && return 0
+    done
+    # An install that died between moving the old venv aside (install.sh:3027, :819) and writing
+    # the marker (install.sh:3190) leaves only these, and only install.sh makes either name,
+    # always by renaming a venv.
+    for _p in "$_r"/unsloth_studio.rollback.* "$_r"/.venv.invalid.*; do
+        # Never a link: install.sh refuses to prune a rollback symlink either.
+        [ -L "$_p" ] && continue
+        _is_installer_leftover_name "$_p" || continue
+        _is_venv_dir "$_p" && return 0
+    done
     return 1
 }
 
@@ -557,7 +647,21 @@ _unsloth_uninstall_main() {
             _remove_path "$_lex_sd_cpp"
         fi
     done
-    _remove_root_recording_db "$HOME/.unsloth/studio"
+    # Same gate as a custom root: an ungated run takes a hand-made ~/.unsloth/studio, and then
+    # ~/.unsloth via the empty-dir prune below.
+    # -e OR -L: -e follows a link and misses a dangling one, which _remove_path would still
+    # unlink, so the gate has to see every entry that exists at that path.
+    if { [ -e "$HOME/.unsloth/studio" ] || [ -L "$HOME/.unsloth/studio" ]; } \
+       && ! _is_studio_root "$HOME/.unsloth/studio" managed; then
+        echo "  refusing to remove non-Unsloth path: $HOME/.unsloth/studio" >&2
+        # A refused CUSTOM root is somebody else's by definition. This is our own default path,
+        # where a damaged install can sit, so a studio.db here is chat history.
+        if [ -f "$HOME/.unsloth/studio/studio.db" ]; then
+            _set_marker "$_DB_KEPT_FLAG"
+        fi
+    else
+        _remove_root_recording_db "$HOME/.unsloth/studio"
+    fi
     # Shared llama.cpp build + cache, siblings of studio in default mode (deleting studio misses
     # them). No-op in env/custom mode and when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is kept.
     _remove_path "$HOME/.unsloth/llama.cpp"
@@ -832,8 +936,16 @@ _unsloth_uninstall_main() {
         echo "Note: this also removed the app's WebView data, so the desktop app's session is"
         echo "      gone. A browser session is not affected: its tokens live in the same"
         echo "      localStorage as the API keys below."
-        echo "      No studio.db was found, so any chat history in an install root this run"
-        echo "      did not see is still on disk."
+        if _marker_set "$_DB_KEPT_FLAG"; then
+            # Named, and with no advice to delete it: the gate kept it precisely because it
+            # does not look like ours.
+            echo "      $HOME/.unsloth/studio carries no Unsloth install marker, so it was left"
+            echo "      alone. The studio.db inside it is still there; look at that directory"
+            echo "      yourself before deciding what to do with it."
+        else
+            echo "      No studio.db was found, so any chat history in an install root this run"
+            echo "      did not see is still on disk."
+        fi
     fi
     echo "Note: provider API keys are kept in the browser's localStorage, not in studio.db."
     echo "      Unless you ran Unsloth as the desktop app, clear site data for the"
