@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 """LongRope must use the short factor at exactly the pretraining length.
 
 transformers switches to the long factor at `seq_len > original_max_position_embeddings`
