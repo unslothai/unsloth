@@ -9133,6 +9133,10 @@ class LlamaCppBackend:
     _NVML_SUCCESS = 0
     _NVML_P2P_CAPS_INDEX_NVLINK = 2
     _NVML_P2P_STATUS_OK = 0
+    # 1..5 are the documented "not supported, and here is why" answers. 6 is
+    # UNKNOWN, and a newer driver could return something past the end of the enum
+    # entirely; neither is a denial, so neither may be recorded as one.
+    _NVML_P2P_STATUS_DEFINITE_NEGATIVES = frozenset({1, 2, 3, 4, 5})
     _NVML_FEATURE_ENABLED = 1
     # Link enumeration stops at the first error; this only bounds a runaway loop.
     _NVML_MAX_LINKS = 64
@@ -9158,7 +9162,19 @@ class LlamaCppBackend:
         present exactly when nvidia-smi is (nvidia-smi is itself an NVML client) and
         this adds no Python dependency: nvidia-ml-py is NOT installed in a Studio
         env. None when it cannot be loaded."""
-        names = ("nvml.dll",) if os.name == "nt" else ("libnvidia-ml.so.1", "libnvidia-ml.so")
+        if os.name == "nt":
+            # A driver install can leave nvml.dll in the NVSMI directory rather than a
+            # DLL search path, the same way it does nvidia-smi.exe (see
+            # _nvidia_smi_executable in utils/hardware/nvidia.py).
+            names = ["nvml.dll"]
+            for root in (os.environ.get("ProgramFiles"), os.environ.get("ProgramW6432")):
+                if root:
+                    names.append(os.path.join(root, "NVIDIA Corporation", "NVSMI", "nvml.dll"))
+            windir = os.environ.get("SystemRoot")
+            if windir:
+                names.append(os.path.join(windir, "System32", "nvml.dll"))
+        else:
+            names = ["libnvidia-ml.so.1", "libnvidia-ml.so"]
         for name in names:
             try:
                 return ctypes.CDLL(name)
@@ -9243,6 +9259,16 @@ class LlamaCppBackend:
                     if rc != cls._NVML_SUCCESS:
                         return None  # unknown for one pair is unknown for all
                     linked = status.value == cls._NVML_P2P_STATUS_OK
+                    if not linked and status.value not in cls._NVML_P2P_STATUS_DEFINITE_NEGATIVES:
+                        # UNKNOWN, or a status this build has never heard of. Recording
+                        # it as NO-NVLINK would make the matrix look conclusive and rob
+                        # `topo -m` of the chance to answer, losing P2P on a host whose
+                        # fabric is real but whose driver cannot answer this query.
+                        logger.debug(
+                            f"NVML P2P status {status.value} for GPU {a}<->{b} is not a "
+                            "definite answer; treating the topology as unreadable"
+                        )
+                        return None
                     # A pair cannot be NVLinked if an endpoint has no live NVLink.
                     # This is the guard for the case no host here could test: if the
                     # NVLink capability index ever reads OK on a PCIe-only box, the
@@ -9378,7 +9404,7 @@ class LlamaCppBackend:
         return cls._probe_nvlink_topology()
 
     @classmethod
-    def _nvlink_topology(cls, refresh = False) -> Optional[dict]:
+    def _nvlink_topology(cls, refresh = False, cache_failure = True) -> Optional[dict]:
         """_probe_interconnect_matrix, cached for the life of the process.
 
         The probe runs outside the lock (it is slow and a duplicate pass is
@@ -9397,6 +9423,12 @@ class LlamaCppBackend:
         probed = cls._probe_interconnect_matrix()
         with cls._NVLINK_TOPO_LOCK:
             if generation == cls._NVLINK_TOPO_GENERATION:
+                if probed is None and not cache_failure:
+                    # A speculative caller (the startup prime) that probed too early,
+                    # e.g. mid driver initialisation. Caching the miss would keep P2P
+                    # off for the life of the process even once the topology becomes
+                    # readable, so leave the cache cold and let the load path probe.
+                    return None
                 cls._NVLINK_TOPO_CACHE = (probed,)
                 return probed
             # A refresh started while this pass was running: its answer is the

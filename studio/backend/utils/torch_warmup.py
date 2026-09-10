@@ -248,7 +248,10 @@ def _prime_nvlink_topology() -> None:
     so a separate stage would need a purge mapping it has no use for.
 
     Only hosts that would probe anyway do any work, and a failure here must not fail
-    the stage: the gate re-probes on demand and fails closed by itself (#10613)."""
+    the stage. cache_failure=False because this runs early, possibly mid driver
+    initialisation: a miss cached here would keep P2P off for the life of the process
+    even once the topology became readable, so a failed prime leaves the cache cold
+    and the load path probes as it would have (#10613)."""
     try:
         from core.inference.llama_cpp import LlamaCppBackend
         if LlamaCppBackend._effective_gpu_count() < 2:
@@ -257,7 +260,7 @@ def _prime_nvlink_topology() -> None:
             LlamaCppBackend._NVLINK_FABRIC_GPU_RE, None
         ):
             return
-        LlamaCppBackend._nvlink_topology()
+        LlamaCppBackend._nvlink_topology(cache_failure = False)
     except Exception as e:  # noqa: BLE001 -- a warm miss costs latency, never correctness
         logger.debug("NVLink topology prime skipped: %r", e)
 

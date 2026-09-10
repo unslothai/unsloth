@@ -12,6 +12,8 @@ link across the selection and fails CLOSED on unknowns.
 
 from __future__ import annotations
 
+import ctypes
+import os
 import subprocess
 import sys
 import types
@@ -85,6 +87,7 @@ def _clear_cuda_visible_devices(monkeypatch):
 
 # Captured before the autouse fixture stubs it, so the probe can run for real.
 _REAL_IOMMU_IS_TRANSLATING = LlamaCppBackend.__dict__["_iommu_is_translating"].__func__
+_REAL_NVML_LIBRARY = LlamaCppBackend.__dict__["_nvml_library"].__func__
 
 
 def _no_nvidia_smi(*a, **k):
@@ -1090,6 +1093,7 @@ class _FakeNvml:
         linked_pairs = None,
         active_links = None,
         status_rc = _NVML_OK,
+        status_value = None,
         handle_rc = _NVML_OK,
         init_rc = _NVML_OK,
         count_rc = _NVML_OK,
@@ -1102,6 +1106,7 @@ class _FakeNvml:
         # None = every device has links.
         self.active_links = active_links
         self.status_rc = status_rc
+        self.status_value = status_value
         self.handle_rc = handle_rc
         self.init_rc = init_rc
         self.count_rc = count_rc
@@ -1162,7 +1167,10 @@ class _FakeNvml:
                 return self.status_rc
             pair = (int(a.value) - 1000, int(b.value) - 1000)
             linked = self.linked_pairs is None or pair in self.linked_pairs
-            ref._obj.value = 0 if linked else 5  # OK / NOT_SUPPORTED
+            if self.status_value is not None:
+                ref._obj.value = self.status_value
+            else:
+                ref._obj.value = 0 if linked else 5  # OK / NOT_SUPPORTED
             return _NVML_OK
         return self._fn("nvmlDeviceGetP2PStatus", _status)
 
@@ -1296,3 +1304,63 @@ def test_crosscheck_prefers_topo_on_disagreement(monkeypatch):
     matrix = LlamaCppBackend._probe_interconnect_matrix()
     assert not LlamaCppBackend._matrix_is_nvml(matrix)
     assert any("cross-check disagreement" in r for r in records)
+
+
+def test_nvml_unknown_status_is_not_a_denial(monkeypatch):
+    """NVML_P2P_STATUS_UNKNOWN (6), or a status from a newer driver, is not evidence
+    of no NVLink. Recording it as NO-NVLINK would make the matrix look conclusive and
+    deny topo -m the chance to confirm a fabric that is really there."""
+    for status in (6, 42):
+        _use_nvml(monkeypatch, _FakeNvml(count = 2, status_value = status))
+        assert LlamaCppBackend._probe_nvml_nvlink_topology() is None
+    # A documented "not supported, and here is why" IS a denial, and stays one.
+    for status in (1, 2, 3, 4, 5):
+        _use_nvml(monkeypatch, _FakeNvml(count = 2, status_value = status))
+        matrix = LlamaCppBackend._probe_nvml_nvlink_topology()
+        assert matrix and not any(LlamaCppBackend._label_is_nvlink(v) for v in matrix.values())
+
+
+def test_a_failed_prime_does_not_poison_the_cache(monkeypatch):
+    """The startup prime runs early, possibly mid driver init. A miss cached there
+    would keep P2P off for the whole process even once the topology is readable."""
+    monkeypatch.setattr(
+        LlamaCppBackend, "_probe_interconnect_matrix", classmethod(lambda cls: None)
+    )
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    assert LlamaCppBackend._nvlink_topology(cache_failure = False) is None
+    assert LlamaCppBackend._NVLINK_TOPO_CACHE is None, "a failed prime cached its miss"
+    # The load path still caches its own miss, as it did before this change.
+    assert LlamaCppBackend._nvlink_topology() is None
+    assert LlamaCppBackend._NVLINK_TOPO_CACHE == (None,)
+
+
+def test_a_successful_prime_is_still_cached(monkeypatch):
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_probe_interconnect_matrix",
+        classmethod(lambda cls: {(0, 1): "NVLINK", (1, 0): "NVLINK"}),
+    )
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    assert LlamaCppBackend._nvlink_topology(cache_failure = False) is not None
+    assert LlamaCppBackend._NVLINK_TOPO_CACHE is not None
+
+
+def test_windows_nvml_candidates_include_the_nvsmi_directory(monkeypatch):
+    """A driver install can leave nvml.dll in NVSMI rather than a DLL search path,
+    the same way it does nvidia-smi.exe."""
+    tried = []
+    # The autouse fixture stubs _nvml_library absent, so restore the real one; taken
+    # from the module-level capture, since the class attribute is already the stub.
+    monkeypatch.setattr(LlamaCppBackend, "_nvml_library", staticmethod(_REAL_NVML_LIBRARY))
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+
+    def _fake_cdll(name):
+        tried.append(name)
+        raise OSError("not here")
+
+    monkeypatch.setattr(ctypes, "CDLL", _fake_cdll)
+    assert LlamaCppBackend._nvml_library() is None
+    assert any("NVSMI" in t for t in tried), tried
+    assert tried[0] == "nvml.dll", "the search path should still be tried first"
