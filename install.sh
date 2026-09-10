@@ -728,76 +728,110 @@ _configure_uv_cache() {
         _uv_default_cache=$(_absolutize_uv_cache_dir "$_uv_default_cache")
     fi
 
+    # The cache THIS install last recorded outranks uv's default, while it is still warm. A
+    # rerun or a Desktop repair would otherwise abandon a Studio cache holding Torch and CUDA
+    # the moment one unrelated wheel made uv's default read as warm, re-downloading gigabytes
+    # to "avoid duplicate downloads". Content cannot decide it -- the launch repoint below
+    # leaves backend bytes in the losing cache -- which is why the marker exists. Same
+    # precedence the update path uses (unsloth_cli/commands/studio.py:_with_studio_uv_cache).
+    _uv_recorded=$(cat "$STUDIO_HOME/cache/uv-cache-dir" 2>/dev/null) || _uv_recorded=""
+    case "$_uv_recorded" in
+        *[![:space:]]*) _uv_recorded=$(_absolutize_uv_cache_dir "$_uv_recorded") ;;
+        *) _uv_recorded="" ;;
+    esac
+
     # Readable is not usable: uv writes CACHEDIR.TAG into the root and renames distributions
     # into the buckets, aborting on either. Nested entries are deliberately NOT probed -- that
     # walks hundreds of thousands of files, and a denied leaf keeps a warm cache warm
     # (tests/sh/test_install_uv_cache_root.sh).
-    _uv_default_populated=false
-    _uv_default_writable=true
     _uv_scan_blocked=false
-    if [ -n "$_uv_default_cache" ] && [ -d "$_uv_default_cache" ] && [ -r "$_uv_default_cache" ]; then
-        # The globs below ARE the scan, so a caller's set -f reads every cache as empty.
-        _uv_glob=on
-        case $- in *f*) _uv_glob=off ;; esac
-        set +f
+    _uv_blocked_cache=""
+    _uv_warn_cache=""
+    _uv_chosen_cache=""
+    for _uv_candidate in "$_uv_recorded" "$_uv_default_cache"; do
+        { [ -n "$_uv_candidate" ] && [ -z "$_uv_chosen_cache" ]; } || continue
+        _uv_cand_populated=false
+        _uv_cand_writable=true
+        if [ -d "$_uv_candidate" ] && [ -r "$_uv_candidate" ]; then
+            # The globs below ARE the scan, so a caller's set -f reads every cache as empty.
+            _uv_glob=on
+            case $- in *f*) _uv_glob=off ;; esac
+            set +f
 
-        # EVERY existing bucket, not the artifact families below: uv mutates interpreter-v4
-        # too, and a curated list would miss the next one it adds. A real create, since -w
-        # reads the mode not the filesystem; mktemp, since a fixed name can be a planted link.
-        for _uv_probe_dir in "$_uv_default_cache" "$_uv_default_cache"/*; do
-            if [ ! -d "$_uv_probe_dir" ]; then
-                # Only where a BUCKET should be, which uv names <kind>-v<N>. There a file or a
-                # symlink, dangling or not, is still an existing path to mkdir(2), which
-                # answers EEXIST, so uv refuses it (see _dir_has_entries). The root's own
-                # files -- CACHEDIR.TAG, .gitignore -- are not directories uv creates.
-                case "${_uv_probe_dir##*/}" in
-                    *-v[0-9]*)
-                        if [ -e "$_uv_probe_dir" ] || [ -L "$_uv_probe_dir" ]; then
-                            _uv_default_writable=false
-                        fi
-                        ;;
-                esac
-                continue
-            fi
-            _uv_probe=$(mktemp "$_uv_probe_dir/.unsloth-write-probe.XXXXXX" 2>/dev/null) \
-                || _uv_default_writable=false
-            [ -z "$_uv_probe" ] || rm -f "$_uv_probe" 2>/dev/null || true
-        done
-        unset _uv_probe _uv_probe_dir
+            # EVERY existing bucket, not the artifact families below: uv mutates
+            # interpreter-v4 too, and a curated list would miss the next one it adds. A real
+            # create, since -w reads the mode not the filesystem; mktemp, since a fixed name
+            # can be a planted link.
+            for _uv_probe_dir in "$_uv_candidate" "$_uv_candidate"/*; do
+                if [ ! -d "$_uv_probe_dir" ]; then
+                    # Only where a BUCKET should be, which uv names <kind>-v<N>. There a file
+                    # or a symlink, dangling or not, is still an existing path to mkdir(2),
+                    # which answers EEXIST, so uv refuses it (see _dir_has_entries). The
+                    # root's own files -- CACHEDIR.TAG, .gitignore -- are not directories uv
+                    # creates.
+                    case "${_uv_probe_dir##*/}" in
+                        *-v[0-9]*)
+                            if [ -e "$_uv_probe_dir" ] || [ -L "$_uv_probe_dir" ]; then
+                                _uv_cand_writable=false
+                            fi
+                            ;;
+                    esac
+                    continue
+                fi
+                _uv_probe=$(mktemp "$_uv_probe_dir/.unsloth-write-probe.XXXXXX" 2>/dev/null) \
+                    || _uv_cand_writable=false
+                [ -z "$_uv_probe" ] || rm -f "$_uv_probe" 2>/dev/null || true
+            done
+            unset _uv_probe _uv_probe_dir
 
-        # Warm means package BYTES: wheels-* is metadata only (.msgpack/.http on uv
-        # 0.10), so a bare `--dry-run` used to read as warm. -L to match Get-ChildItem.
-        for _uv_bucket in \
-            "$_uv_default_cache"/archive-* \
-            "$_uv_default_cache"/builds-* \
-            "$_uv_default_cache"/built-wheels-* \
-            "$_uv_default_cache"/wheels-* \
-            "$_uv_default_cache"/sdists-*; do
-            [ -d "$_uv_bucket" ] || continue
-            # Unreadable is not empty; remembered so the message below says why.
-            if [ ! -r "$_uv_bucket" ] || [ ! -x "$_uv_bucket" ]; then
-                _uv_scan_blocked=true
-                continue
-            fi
-            # `|| true`, not `|| _uv_artifact=""`: head closes the pipe, so find dies on
-            # SIGPIPE on a large bucket, and under pipefail that cleared the path it printed.
-            _uv_artifact=$(find -L "$_uv_bucket" -type f \
-                ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
-                ! -name '.unsloth-write-probe.*' \
-                ! -name '*.lock' ! -name '*.msgpack' ! -name '*.http' ! -name '*.rev' \
-                -print 2>/dev/null | head -n 1) || true
-            if [ -n "$_uv_artifact" ]; then
-                _uv_default_populated=true
-                break
-            fi
-        done
+            # Warm means package BYTES: wheels-* is metadata only (.msgpack/.http on uv
+            # 0.10), so a bare `--dry-run` used to read as warm. -L to match Get-ChildItem.
+            for _uv_bucket in \
+                "$_uv_candidate"/archive-* \
+                "$_uv_candidate"/builds-* \
+                "$_uv_candidate"/built-wheels-* \
+                "$_uv_candidate"/wheels-* \
+                "$_uv_candidate"/sdists-*; do
+                [ -d "$_uv_bucket" ] || continue
+                # Unreadable is not empty; remembered so the message below says why.
+                if [ ! -r "$_uv_bucket" ] || [ ! -x "$_uv_bucket" ]; then
+                    _uv_scan_blocked=true
+                    [ -n "$_uv_blocked_cache" ] || _uv_blocked_cache="$_uv_candidate"
+                    continue
+                fi
+                # `|| true`, not `|| _uv_artifact=""`: head closes the pipe, so find dies on
+                # SIGPIPE on a large bucket, and under pipefail that cleared the path it
+                # printed.
+                _uv_artifact=$(find -L "$_uv_bucket" -type f \
+                    ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
+                    ! -name '.unsloth-write-probe.*' \
+                    ! -name '*.lock' ! -name '*.msgpack' ! -name '*.http' ! -name '*.rev' \
+                    -print 2>/dev/null | head -n 1) || true
+                if [ -n "$_uv_artifact" ]; then
+                    _uv_cand_populated=true
+                    break
+                fi
+            done
 
-        if [ "$_uv_glob" = off ]; then set -f; fi
-    fi
+            if [ "$_uv_glob" = off ]; then set -f; fi
+        fi
+        if [ "$_uv_cand_populated" = true ] && [ "$_uv_cand_writable" = true ]; then
+            _uv_chosen_cache="$_uv_candidate"
+        elif [ "$_uv_cand_populated" = true ] && [ -z "$_uv_warn_cache" ]; then
+            _uv_warn_cache="$_uv_candidate"
+        fi
+    done
+    unset _uv_candidate _uv_cand_populated _uv_cand_writable
 
-    if [ "$_uv_default_populated" = true ] && [ "$_uv_default_writable" = true ]; then
-        UV_CACHE_DIR="$_uv_default_cache"
-        _UV_CACHE_MODE=shared
+    if [ -n "$_uv_chosen_cache" ]; then
+        UV_CACHE_DIR="$_uv_chosen_cache"
+        # studio, not shared, when the choice IS the Studio cache: the launch repoint below
+        # only has to move a cache that is not already ours.
+        if [ "$_uv_chosen_cache" = "$_uv_studio_cache" ]; then
+            _UV_CACHE_MODE=studio
+        else
+            _UV_CACHE_MODE=shared
+        fi
     else
         UV_CACHE_DIR="$_uv_studio_cache"
         _UV_CACHE_MODE=studio
@@ -810,11 +844,13 @@ _configure_uv_cache() {
             step "uv cache" "reusing existing shared cache ($UV_CACHE_DIR) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate"
             ;;
         studio)
-            if [ "$_uv_scan_blocked" = true ]; then
-                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); part of $_uv_default_cache could not be read, so cached packages may download again" "$C_WARN"
+            if [ -n "$_uv_chosen_cache" ]; then
+                step "uv cache" "reusing this install's Studio cache ($UV_CACHE_DIR)"
+            elif [ "$_uv_scan_blocked" = true ]; then
+                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); part of $_uv_blocked_cache could not be read, so cached packages may download again" "$C_WARN"
             # Warm and still here means the write probe refused it.
-            elif [ "$_uv_default_populated" = true ]; then
-                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); $_uv_default_cache is populated but not writable, so cached packages may download again" "$C_WARN"
+            elif [ -n "$_uv_warn_cache" ]; then
+                step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); $_uv_warn_cache is populated but not writable, so cached packages may download again" "$C_WARN"
             else
                 step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR)"
             fi

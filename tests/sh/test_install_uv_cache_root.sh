@@ -82,6 +82,15 @@ run_case() { # shell, label, state, input, isolate, home, xdg-state, xdg, root, 
     _mode=$3
     _message=$4
     _launch=$5
+    # The marker is a selector INPUT now (an install reuses the cache it recorded), and these
+    # cases share one studio root, so each starts from the state _PRESET_MARKER asks for.
+    if [ "${_KEEP_MARKER:-0}" != 1 ]; then
+        rm -f "$_root/cache/uv-cache-dir" 2>/dev/null || true
+        if [ -n "${_PRESET_MARKER:-}" ]; then
+            mkdir -p "$_root/cache" 2>/dev/null || true
+            printf '%s\n' "$_PRESET_MARKER" > "$_root/cache/uv-cache-dir" 2>/dev/null || true
+        fi
+    fi
     _actual=$($_shell "$PROBE" "$_state" "$_input" "$_isolate" "$_home" "$_xdg_state" "$_xdg" "$_root" "$_shell" "$_effective")
     _wanted=$(printf 'message=%s\nvalue=%s\nmode=%s\nchild=x:%s\nlaunch=%s' \
         "$_message" "$_expected" "$_mode" "$_expected" "$_launch")
@@ -270,6 +279,32 @@ for shell in sh bash; do
         "$STUDIO_CACHE"
     check_marker "shared mode records the shared cache, not the Studio one" "$BUILDS_CACHE"
 
+    # A rerun or a Desktop repair must not abandon the cache this install already recorded
+    # while it is still warm: uv's default reads as warm on ONE unrelated wheel, and
+    # switching to it re-downloads the Torch and CUDA bytes we already hold.
+    mkdir -p "$STUDIO_CACHE/archive-v0/torch"
+    : > "$STUDIO_CACHE/archive-v0/torch/libtorch.so"
+    _PRESET_MARKER="$STUDIO_CACHE"
+    run_case "$shell" "a warm recorded Studio cache outranks a warm default" unset "" false \
+        "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$STUDIO_CACHE" studio \
+        "reusing this install's Studio cache ($STUDIO_CACHE)" "$STUDIO_CACHE"
+    # ...and it does NOT outrank an explicit isolation request.
+    run_case "$shell" "isolation still wins over a warm marker" unset "" true \
+        "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$STUDIO_CACHE" isolated \
+        "forced Studio cache isolation ($STUDIO_CACHE); already-cached packages may download again" \
+        "$STUDIO_CACHE"
+    # A marker naming a cache that is no longer warm loses to uv's default, so a machine that
+    # really has moved on still reaches the shared cache.
+    _PRESET_MARKER="$CASE/gone/uv"
+    run_case "$shell" "a cold recorded cache falls through to shared" unset "" false \
+        "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$BUILDS_CACHE" shared \
+        "reusing existing shared cache ($BUILDS_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
+        "$STUDIO_CACHE"
+    _PRESET_MARKER=""
+    rm -rf "$STUDIO_CACHE"
+
+    # These cases drive the marker themselves, so the per-case reset stands down.
+    _KEEP_MARKER=1
     rm -f "$MARKER"
     run_case "$shell" "isolation still forces the Studio cache" unset "" true \
         "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$STUDIO_CACHE" isolated \
@@ -314,6 +349,8 @@ for shell in sh bash; do
             bad "$shell: an unreadable marker was overwritten ([$(cat "$MARKER")])"
         fi
     fi
+
+    _KEEP_MARKER=0
 
     # uv resolves a relative cache against its own working directory, which --directory
     # and UV_WORKING_DIR move.
