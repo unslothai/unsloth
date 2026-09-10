@@ -231,6 +231,21 @@ def test_factory_builds_a_watch_on_windows_cuda(monkeypatch):
     assert w._floor == pytest.approx(25.0 / 8.0)
 
 
+def test_nvidia_smi_probe_gives_no_sample_when_the_mask_is_in_cuda_ordinals(monkeypatch):
+    """A numeric CUDA_VISIBLE_DEVICES without CUDA_DEVICE_ORDER=PCI_BUS_ID names CUDA
+    ordinals, and nvidia-smi rows are PCI indices; filtering one by the other can drop the
+    launch's own card and the watch then never starts. No sample instead, the rule
+    _cuda_compute_caps already applies; with the shared order the filter is exact."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    out = "0, 160, 16303\n1, 200, 24564\n"
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+    monkeypatch.delenv("CUDA_DEVICE_ORDER", raising = False)
+    assert LlamaCppBackend._nvidia_smi_free_total_mib(runner = lambda: out) == []
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    assert LlamaCppBackend._nvidia_smi_free_total_mib(runner = lambda: out) == [(1, 200, 24564)]
+
+
 def test_nvidia_smi_probe_drops_unreadable_totals(monkeypatch):
     from core.inference.llama_cpp import LlamaCppBackend
 

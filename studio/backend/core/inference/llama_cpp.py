@@ -8752,7 +8752,16 @@ class LlamaCppBackend:
         if _lazy_mode_explicitly_set(extra_args, env):
             return None
         layout = self._tensor_spill_layout(model_path, all_shards = True)
-        if layout is None or int(getattr(layout, "per_layer_embd_bytes", 0) or 0) <= 0:
+        ple_bytes = (
+            int(getattr(layout, "per_layer_embd_bytes", 0) or 0) if layout is not None else 0
+        )
+        if ple_bytes <= 0:
+            return None
+        # At or under llama.cpp's own auto threshold the table stays resident whatever the
+        # devices can map, so saying "on" would turn a small table lazy where auto leaves it
+        # alone, on every launch. Nothing to pin below the threshold: auto and the planner's
+        # pricing (_per_layer_embd_read_lazily) already agree there.
+        if ple_bytes <= _LAZY_MODE_AUTO_MIN_BYTES:
             return None
         return (
             "on"
@@ -9549,6 +9558,12 @@ class LlamaCppBackend:
         if not out:
             return []
         allowed = LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES")
+        if allowed is not None and os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID":
+            # Numeric mask entries are CUDA ordinals; nvidia-smi rows are PCI physical
+            # indices. Intersecting the two without a shared order can drop the very card
+            # the launch uses, and a missing sample means the watch never starts. Same
+            # rule as _cuda_compute_caps: no sample when the mapping is unknown.
+            return []
         wanted = {int(i) for i in gpu_indices} if gpu_indices else None
         rows: list[tuple[int, int, int]] = []
         for line in str(out).strip().splitlines():

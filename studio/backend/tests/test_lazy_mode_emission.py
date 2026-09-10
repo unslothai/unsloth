@@ -134,6 +134,18 @@ def test_a_build_without_the_flag_gets_nothing():
     assert _mode(server_caps = {}) is None
 
 
+def test_a_table_at_or_under_the_auto_threshold_is_left_to_auto():
+    """llama.cpp's auto keeps a table at or under 4 GiB resident
+    (llama_model_loader::lazy_read::add), so emitting on for it would turn a small
+    table lazy on every launch, flag on or off. Nothing is emitted there; the planner's
+    pricing already says resident below the threshold."""
+    from core.inference.llama_cpp import _LAZY_MODE_AUTO_MIN_BYTES
+
+    assert _mode(ple_bytes = _LAZY_MODE_AUTO_MIN_BYTES) is None
+    assert _mode(ple_bytes = 1536 * 1024**2) is None
+    assert _mode(ple_bytes = _LAZY_MODE_AUTO_MIN_BYTES + 1) == "on"
+
+
 def test_a_model_with_no_per_layer_table_gets_nothing():
     assert _mode(ple_bytes = 0) is None
     assert _mode(layout_readable = False) is None
