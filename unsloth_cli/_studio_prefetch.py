@@ -569,16 +569,35 @@ def read_marker(studio_home: Path) -> Optional[dict]:
 CORE_PINS_ENV = "UNSLOTH_PREFETCHED_CORE_PINS"
 
 
-def prefetched_core_pins(marker: Optional[dict]) -> list:
-    """`name==version` for every core package a marker planned, in plan order.
+def _core_pin_source(marker: Optional[dict]) -> dict:
+    """The pins a marker stands for: its plan, or for a `noop` the versions that were
+    installed when it found nothing to fetch.
 
-    Empty for a marker that planned nothing (`noop`) or one that is not a marker at all.
-    Callers pair this with marker_is_current: a plan is only worth naming when the
-    cache it was fetched into is the cache the update is about to read.
+    A noop still leaves the swap's core step asking the index which versions are
+    newest; with the index gone the installer's offline retry needs exact pins to
+    audit against what is installed, and the installed versions are those pins.
     """
-    plan = (marker or {}).get("core_plan") if isinstance(marker, dict) else None
-    if not isinstance(plan, dict):
-        return []
+    if not isinstance(marker, dict):
+        return {}
+    plan = marker.get("core_plan")
+    if isinstance(plan, dict) and plan:
+        return plan
+    if marker.get("state") == "noop":
+        installed = marker.get("installed_core")
+        if isinstance(installed, dict):
+            return installed
+    return {}
+
+
+def prefetched_core_pins(marker: Optional[dict]) -> list:
+    """`name==version` for every core package a marker stands for, in plan order.
+
+    Empty for a marker that is not a marker at all, or a noop written before the
+    installed versions were recorded. Callers pair this with marker_is_current: a plan
+    is only worth naming when the cache it was fetched into is the cache the update is
+    about to read.
+    """
+    plan = _core_pin_source(marker)
     pins = []
     for name, version in plan.items():
         if not isinstance(name, str) or not isinstance(version, str):
@@ -597,9 +616,7 @@ def planned_core_names(marker: Optional[dict]) -> list:
     the plan is still safe to hand over has to look at every one of them, not only at
     the two the plan was made for.
     """
-    plan = (marker or {}).get("core_plan") if isinstance(marker, dict) else None
-    if not isinstance(plan, dict):
-        return []
+    plan = _core_pin_source(marker)
     names = []
     for name in plan:
         if isinstance(name, str) and name.strip():
@@ -646,9 +663,7 @@ def plan_is_not_behind(marker: Optional[dict], installed: Dict[str, Optional[str
     old exact pins would downgrade them and call the update done. Unknown installed
     versions do not count against the plan.
     """
-    plan = (marker or {}).get("core_plan") if isinstance(marker, dict) else None
-    if not isinstance(plan, dict):
-        return True
+    plan = _core_pin_source(marker)
     for name, version in plan.items():
         if not isinstance(name, str) or not isinstance(version, str):
             continue
@@ -794,6 +809,11 @@ def _volumes_to_check(root: Path, cache_dir: Optional[str]) -> list:
     volumes = [root]
     if cache_dir:
         cache = Path(cache_dir)
+        if not cache.is_absolute():
+            # uv resolves a relative UV_CACHE_DIR against ITS working directory, which
+            # every uv call here is given (_working_directory); anchor the check there
+            # rather than at this process's.
+            cache = Path(_RUN_CWD or os.getcwd()) / cache
         root_id, cache_id = _filesystem_id(root), _filesystem_id(cache)
         if root_id is None or cache_id is None or root_id != cache_id:
             volumes.append(cache)
@@ -1218,6 +1238,16 @@ def _run_prefetch(
             raise PrefetchError(
                 f"the index offers no unsloth>={floor}; installed is {installed_backend}"
             )
+        # The installed versions, so the swap's offline retry has exact pins to audit
+        # against when the index has gone away since (see _core_pin_source).
+        payload["installed_core"] = {
+            name: version
+            for name, version in (
+                ("unsloth", installed_backend),
+                ("unsloth-zoo", _installed_version("unsloth-zoo")),
+            )
+            if isinstance(version, str) and version
+        }
         step("prefetch nothing to prepare")
         write_marker(studio_home, payload)
         return payload
