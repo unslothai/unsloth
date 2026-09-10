@@ -506,7 +506,14 @@ def test_the_triton_step_keeps_a_current_build_even_on_a_full_pass(monkeypatch, 
     monkeypatch.setattr(stack, "_record_step", lambda key, outcome: recorded.append((key, outcome)))
     monkeypatch.setattr(stack, "_progress", lambda *_a, **_k: None)
 
-    def _skip(req, label, *, no_deps, constrain, extra_check = None):
+    def _skip(
+        req,
+        label,
+        *,
+        no_deps,
+        constrain,
+        extra_check = None,
+    ):
         # A full pass: the requirement is not counted as satisfied, extra_check unasked.
         return False
 
@@ -530,14 +537,23 @@ def test_the_triton_step_keeps_a_current_build_even_on_a_full_pass(monkeypatch, 
     monkeypatch.setattr(stack, "_direct_reference_is_installed", _current(False))
     stack._triton_kernels_step()
     assert len(installs) == 1 and installs[0][0][0] == "Installing triton kernels"
-    assert installs[0][1]["req"].name == "triton-kernels.txt" and installs[0][1]["constrain"] is False
+    assert (
+        installs[0][1]["req"].name == "triton-kernels.txt" and installs[0][1]["constrain"] is False
+    )
     assert asked == [("triton-kernels.txt", "triton_kernels")]
 
     # Evidence available and the extra check consulted by _skip_step: one question, no install.
     installs.clear()
     asked.clear()
 
-    def _skip_asking(req, label, *, no_deps, constrain, extra_check = None):
+    def _skip_asking(
+        req,
+        label,
+        *,
+        no_deps,
+        constrain,
+        extra_check = None,
+    ):
         return bool(extra_check())
 
     monkeypatch.setattr(stack, "_skip_step", _skip_asking)
