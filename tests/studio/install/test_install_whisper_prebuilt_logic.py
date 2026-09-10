@@ -2266,6 +2266,12 @@ def _installed_cpu_tree(
     monkeypatch.setattr(
         M.llama, "_download_host_latest_release_tag", lambda _repo: RELEASE_TAG, raising = False
     )
+    # The release list an upstream pin is answered from: one packaging of the tag.
+    monkeypatch.setattr(
+        M.llama,
+        "github_releases",
+        lambda _repo, max_pages = 1: [{"tag_name": RELEASE_TAG, "published_at": "2026-01-01T00:00:00Z"}],
+    )
     monkeypatch.delenv("UNSLOTH_PREBUILT_FULL_CHECK", raising = False)
     return install_dir, host, calls
 
@@ -2343,12 +2349,26 @@ def test_whisper_an_upstream_pin_still_takes_a_newer_packaging_revision(tmp_path
     path takes the newest that matches, so an upstream pin is current only when the
     installed release is also the newest one; a wrong pin is refused outright."""
     install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    listed = {"tags": [RELEASE_TAG]}
+    monkeypatch.setattr(
+        M.llama,
+        "github_releases",
+        lambda _repo, max_pages = 1: [{"tag_name": tag, "published_at": f"2026-01-0{i + 1}T00:00:00Z"}
+                                      for i, tag in enumerate(listed["tags"])],
+    )
+
+    def no_head(_repo):
+        raise AssertionError("an upstream pin is answered from the release list, not global latest")
+
+    monkeypatch.setattr(M.llama, "_download_host_latest_release_tag", no_head)
     assert _whisper_check(install_dir, host, whisper_tag = UPSTREAM_TAG) is True
     assert _whisper_check(install_dir, host, whisper_tag = "v1.0.0") is False
-    monkeypatch.setattr(
-        M.llama, "_download_host_latest_release_tag", lambda _repo: RELEASE_TAG + "-unsloth.99"
-    )
+    # A newer packaging revision of the same upstream tag is what the full path takes.
+    listed["tags"] = [RELEASE_TAG, RELEASE_TAG[:-1] + "2"]
     assert _whisper_check(install_dir, host, whisper_tag = UPSTREAM_TAG) is False
+    # A newer UPSTREAM version being the repository's latest changes nothing for a pin.
+    listed["tags"] = [RELEASE_TAG, "v9.9.9-unsloth.1"]
+    assert _whisper_check(install_dir, host, whisper_tag = UPSTREAM_TAG) is True
 
 
 def test_whisper_a_different_repo_or_backend_is_not_current(tmp_path, monkeypatch):

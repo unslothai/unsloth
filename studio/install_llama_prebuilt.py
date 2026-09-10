@@ -7338,8 +7338,13 @@ def runtime_file_records(
             continue
         try:
             record["sha256"] = hashlib.sha256(candidate.read_bytes()).hexdigest()
-        except OSError:
-            continue
+        except OSError as exc:
+            # A binary that can be statted but not read (a scanner holding it, say)
+            # must not stay in the record at the size-only tier the sweep above gave
+            # it: the fast path would then trust a same-size corrupt binary it never
+            # hashed or started. No record at all fails closed instead.
+            log(f"could not hash {relative} for the runtime record ({exc}); not recording")
+            return {}
         records[relative] = record
     return records
 
@@ -7534,8 +7539,20 @@ def _runtime_preference_moved(marker: "dict[str, Any]", host: HostInfo) -> bool:
         # the installed line is not what it was: only the preference itself moving is
         # movement, and a stable preference keeps the fast path however it was routed.
         recorded_preference = marker.get("torch_runtime_preference")
-        if preferred == recorded_preference or not preferred:
+        if preferred == recorded_preference:
             return False
+        if not preferred:
+            # The preference is gone (torch removed, a CPU build, CUDA unavailable to
+            # it): the selectors fall back to the host's own runtime order, which is
+            # movement only when that order starts somewhere other than the install.
+            fallback = _fallback_runtime_line(host)
+            if fallback is None or fallback == recorded_line:
+                return False
+            log(
+                f"kept install rejected: torch no longer states a CUDA preference and the "
+                f"host's runtime order starts at {fallback}, the install is {recorded_line}"
+            )
+            return True
         if not _runtime_line_selectable(host, preferred):
             return False
         log(
@@ -7558,6 +7575,32 @@ def _runtime_preference_moved(marker: "dict[str, Any]", host: HostInfo) -> bool:
         f"the install is {recorded_line}"
     )
     return True
+
+
+def _fallback_runtime_line(host: HostInfo) -> "str | None":
+    """The CUDA line the selectors try first when torch states no preference, or None
+    when that cannot be told from here.
+
+    Mirrors the orderings in linux_cuda_choice_from_release and windows_cuda_attempts
+    without a release in hand: Linux takes the detected lines the driver can run, in
+    detection order; Windows the driver-compatible lines narrowed to the detected ones,
+    or all of them when none is detected. A Blackwell host is routed by its own rule
+    ahead of any preference, so nothing about torch moves its choice.
+    """
+    try:
+        if _host_is_blackwell(host):
+            return None
+        if host.is_linux:
+            detected = detected_linux_runtime_lines()[0]
+            compatible = compatible_linux_runtime_lines(host)
+            order = [line for line in detected if line in compatible]
+        else:
+            detected = detected_windows_runtime_lines()[0]
+            compatible = compatible_windows_runtime_lines(host)
+            order = [line for line in compatible if line in detected] or list(compatible)
+    except Exception:  # noqa: BLE001 - an unreadable host answers "cannot tell"
+        return None
+    return order[0] if order else None
 
 
 def _torch_runtime_preference_for_marker(host: "HostInfo | None") -> "str | None":

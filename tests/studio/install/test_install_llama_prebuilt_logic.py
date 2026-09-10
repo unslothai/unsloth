@@ -6371,7 +6371,7 @@ def test_a_truncated_shared_library_is_not_current(tmp_path, monkeypatch):
     assert _check(install_dir) is False
 
 
-def test_the_payload_records_cover_the_bundles_own_allowlist(tmp_path):
+def test_the_payload_records_cover_the_bundles_own_allowlist(tmp_path, monkeypatch):
     """Not just the three binaries: every file runtime_patterns_for_install_kind names."""
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
@@ -6383,6 +6383,17 @@ def test_the_payload_records_cover_the_bundles_own_allowlist(tmp_path):
     # Size and mtime only for the payload; the binaries keep their digest.
     assert "sha256" not in records["build/bin/libggml-base.so.0"]
     assert len(records["build/bin/llama-server"]["sha256"]) == 64
+    # A binary that stats but cannot be read must not stay at the size-only tier the
+    # sweep gave it: the record is unusable, so the fast path fails closed.
+    real_read_bytes = Path.read_bytes
+
+    def denied(self):
+        if self.name == "llama-server":
+            raise PermissionError("held by a scanner")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", denied)
+    assert runtime_file_records(install_dir, linux_host(), patterns) == {}
 
 
 def test_the_reuse_path_backfills_what_the_no_network_check_needs(tmp_path, monkeypatch):
@@ -6724,6 +6735,25 @@ def test_a_moved_torch_cuda_preference_declines_the_marker_fast_path(monkeypatch
             {"runtime_line": "cuda12", "torch_runtime_preference": None}, host
         )
         is True
+    )
+    # The preference vanished (torch removed or a CPU build): the selectors fall back to
+    # the host's runtime order, so it is movement only when that order starts elsewhere.
+    monkeypatch.setattr(
+        M,
+        "detect_torch_cuda_runtime_preference",
+        lambda _host: SimpleNamespace(runtime_line = None, selection_log = []),
+    )
+    monkeypatch.setattr(M, "_host_is_blackwell", lambda _h: False)
+    monkeypatch.setattr(M, "detected_linux_runtime_lines", lambda: (["cuda13", "cuda12"], {}))
+    assert M._runtime_preference_moved({"runtime_line": "cuda12", "torch_runtime_preference": "cuda12"}, host) is True
+    assert M._runtime_preference_moved({"runtime_line": "cuda13", "torch_runtime_preference": "cuda12"}, host) is False
+    monkeypatch.setattr(M, "_host_is_blackwell", lambda _h: True)
+    assert M._runtime_preference_moved({"runtime_line": "cuda12", "torch_runtime_preference": "cuda12"}, host) is False
+    monkeypatch.setattr(M, "_host_is_blackwell", lambda _h: False)
+    monkeypatch.setattr(
+        M,
+        "detect_torch_cuda_runtime_preference",
+        lambda _host: SimpleNamespace(runtime_line = "cuda13", selection_log = []),
     )
     # A preference the selectors cannot act on (no such runtime on disk, or a driver
     # that cannot run it) is ignored by them, and is not movement here either.

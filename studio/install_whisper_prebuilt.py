@@ -1561,6 +1561,32 @@ def _existing_install_is_intact(
     return marker
 
 
+def _api_newest_release_tag_for_upstream(
+    repo: str, whisper_tag: str, recorded_release: str
+) -> "str | None":
+    """The newest published release packaging *whisper_tag* (v1.9.2-unsloth.17, .18, ...).
+
+    The release the marker records is known to package it, so it is a candidate too;
+    the newest of them is what _release_plan_for_host would take.
+    """
+    wanted = _normalized_upstream_tag(whisper_tag)
+    try:
+        releases = llama.github_releases(
+            repo, max_pages = llama.DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES
+        )
+    except Exception as exc:  # noqa: BLE001 - unreachable is a reason to do the work
+        log(f"could not list the {COMPONENT} releases packaging {whisper_tag} ({exc})")
+        return None
+    matching = []
+    for release in releases:
+        tag = release.get("tag_name") if isinstance(release, dict) else None
+        if not isinstance(tag, str):
+            continue
+        if tag == recorded_release or _normalized_upstream_tag(tag.split("-", 1)[0]) == wanted:
+            matching.append(release)
+    return llama._newest_release_tag_from_releases(matching)
+
+
 def existing_install_current_without_plan(
     install_dir: Path,
     host: HostInfo,
@@ -1613,6 +1639,13 @@ def existing_install_current_without_plan(
             return False
     if pinned:
         if pinned != recorded_release:
+            return False
+    elif requested not in ("", "latest"):
+        # An upstream pin selects the newest release packaging THAT version, which the
+        # repository-wide latest cannot name once a newer upstream is published: ask
+        # the release list for it instead, as llama's check does for its upstream pins.
+        newest = _api_newest_release_tag_for_upstream(published_repo, whisper_tag, recorded_release)
+        if not newest or newest != recorded_release:
             return False
     else:
         if not llama._download_host_resolve_enabled():
