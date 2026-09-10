@@ -761,7 +761,7 @@ _configure_uv_cache() {
                     _uv_cand_writable=false
                 fi
             done
-            unset _uv_probe _uv_probe_dir
+            unset _uv_probe _uv_probe_dir _uv_bucket_base
 
             # Warm means package BYTES: wheels-* is metadata only (.msgpack/.http on uv
             # 0.10), so a bare `--dry-run` used to read as warm. -L to match Get-ChildItem.
@@ -772,9 +772,19 @@ _configure_uv_cache() {
                 "$_uv_candidate"/wheels-* \
                 "$_uv_candidate"/sdists-*; do
                 [ -d "$_uv_bucket" ] || continue
-                # `archive-*` also matches `archive-v0.backup`, whose bytes uv cannot reuse:
-                # counting them warm picks a cache that is empty in practice.
-                _uv_is_bucket_name "${_uv_bucket##*/}" || continue
+                # Warmth is stricter than the probe above, and deliberately so. Here the
+                # KIND must be one of uv's own artifact buckets: `archive-*` also matches
+                # `archive-backup-v0` and `archive-v0.backup`, whose bytes uv cannot reuse, so
+                # counting them warm picks a cache that is empty in practice. Under-detecting
+                # a future bucket kind only costs a fallback to the Studio cache, whereas
+                # under-PROBING one would let an unwritable cache through, which is why the
+                # probe stays on the open <kind>-v<N> pattern.
+                _uv_bucket_base="${_uv_bucket##*/}"
+                _uv_is_bucket_name "$_uv_bucket_base" || continue
+                case "${_uv_bucket_base%-v*}" in
+                    archive|builds|built-wheels|wheels|sdists) ;;
+                    *) continue ;;
+                esac
                 # Unreadable is not empty; remembered so the message below says why.
                 if [ ! -r "$_uv_bucket" ] || [ ! -x "$_uv_bucket" ]; then
                     _uv_scan_blocked=true

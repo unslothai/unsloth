@@ -148,6 +148,12 @@ _lookalike_dir="$_TMP/uvlookalikedir"
 mkdir -p "$_lookalike_dir/archive-v0.backup/pkg"
 : > "$_lookalike_dir/archive-v0.backup/pkg/payload.so"
 : > "$_lookalike_dir/CACHEDIR.TAG"
+# Same for a qualifier BEFORE the version: `archive-backup-v0` passes the <kind>-v<N> shape,
+# so warmth also has to check that the kind itself is one uv fills.
+_lookalike_kind="$_TMP/uvlookalikekind"
+mkdir -p "$_lookalike_kind/archive-backup-v0/pkg"
+: > "$_lookalike_kind/archive-backup-v0/pkg/payload.so"
+: > "$_lookalike_kind/CACHEDIR.TAG"
 # uv mutates interpreter-v4 too, so the verdict cannot stop at the five artifact families.
 _denied_meta="$_TMP/uvmeta2"
 mkdir -p "$_denied_meta/archive-v0/torch" "$_denied_meta/interpreter-v4"
@@ -210,6 +216,8 @@ _out=$(_run "$_TMP/r" '' "$_lookalike")
 assert_eq "a bucket lookalike is not a bucket" "shared" "$(echo "$_out" | cut -d' ' -f1)"
 _out=$(_run "$_TMP/t" '' "$_lookalike_dir")
 assert_eq "a lookalike dir is not warmth"      "studio" "$(echo "$_out" | cut -d' ' -f1)"
+_out=$(_run "$_TMP/u" '' "$_lookalike_kind")
+assert_eq "a lookalike KIND is not warmth"     "studio" "$(echo "$_out" | cut -d' ' -f1)"
 
 echo "=== UV_NO_CACHE stands the selection down, in every spelling uv honours ==="
 # uv takes this case-insensitively, so matching a fixed spelling would leave us probing and
