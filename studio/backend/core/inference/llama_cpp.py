@@ -32954,9 +32954,7 @@ class LlamaCppBackend:
         # Reuse only when an in-loop request already left KV in the slot. A
         # max_tool_iterations=0 run never enters the loop and this pass is the first
         # request, so it must keep the cold-cache pin for a fixed seed.
-        _apply_seeded_llama_request(
-            stream_payload, seed, reuse_prompt_cache = _in_loop_request_sent
-        )
+        _apply_seeded_llama_request(stream_payload, seed, reuse_prompt_cache = _in_loop_request_sent)
         stream_payload["stream_options"] = {"include_usage": True}
 
         # Progress events feed the first-token deadline; timings stay opt-in.
