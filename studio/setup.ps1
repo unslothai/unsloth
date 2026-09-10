@@ -4632,9 +4632,9 @@ function Get-SetupUvExecutableVerdict {
     #
     # The verdict is the ONLY thing this returns. Its diagnostics go through substep: a
     # message written to the pipeline here rode along in the return value, and a caller
-    # comparing that array with -ne "ok" read every probe as not ok. A uv that printed its version is "ok"
-    # whatever the exit code says, since the timed wait can return before the code is
-    # cached (below), and that empty code is what made the runners re-download uv.
+    # comparing that array with -ne "ok" read every probe as not ok. The exit code decides
+    # where there is one; where the timed wait returned before the code was cached (the
+    # empty code that made the runners re-download uv), a printed version is "ok".
     param([string]$Path)
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return "failed" }
     $outFile = [System.IO.Path]::GetTempFileName()
@@ -4652,15 +4652,19 @@ function Get-SetupUvExecutableVerdict {
         # read as broken. The parameterless wait settles it and returns at once, since
         # the process has already exited.
         try { $proc.WaitForExit() } catch {}
-        $answer = ""
-        try { $answer = Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue } catch {}
-        if ($answer -and ($answer.Trim() -match '^uv \d+\.\d+')) { return "ok" }
         $code = $null
         try { $code = $proc.ExitCode } catch {}
         if ($null -eq $code -or "$code" -eq "") {
+            # No code to read: the printed version is the next best evidence. A uv that
+            # printed one is "ok"; one that printed nothing got no verdict.
+            $answer = ""
+            try { $answer = Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue } catch {}
+            if ($answer -and ($answer.Trim() -match '^uv \d+\.\d+')) { return "ok" }
             substep "uv --version gave no exit code; installing it unprobed."
             return "unknown"
         }
+        # A code that is there decides: a binary that printed a version and still exited
+        # non-zero reported its own failure, and setup must not run `uv pip` with it.
         if ($code -eq 0) { return "ok" }
         $detail = ""
         try {
