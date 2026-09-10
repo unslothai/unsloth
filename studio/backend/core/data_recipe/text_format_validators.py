@@ -155,9 +155,7 @@ def _build_text_format_validation_function(format_kind: str):
             else [_coerce_validation_value(value) for value in df[value_column].tolist()]
         )
 
-        results = [
-            _validate_text_format(value = value, format_kind = format_kind) for value in values
-        ]
+        results = [_validate_text_format(value = value, format_kind = format_kind) for value in values]
         return pd.DataFrame(results)
 
     _validator.__name__ = f"{format_kind}_format_validator"
