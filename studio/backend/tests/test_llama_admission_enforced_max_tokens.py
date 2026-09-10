@@ -148,6 +148,7 @@ class TestTheMarkupTheBuilderRewrites:
 
     def test_the_wire_figure_counts_the_rewrite(self):
         from routes.inference import _openai_llama_admission_wire_prompt_tokens as wire
+
         raw = [{"role": "user", "content": (self._MARKER + "user hello ") * 64}]
         plain = [{"role": "user", "content": ("user hello ") * 64}]
         assert wire(raw) > wire(plain), "the neutralised marker is not being charged"
@@ -160,6 +161,7 @@ class TestTheMarkupTheBuilderRewrites:
             bound = _enforced(payload, backend)
             assert bound is not None
             from routes.inference import _openai_llama_admission_wire_prompt_tokens as wire
+
             sent = wire([{"role": "user", "content": text}])
             assert (sent + bound) * 4 < 16384, f"{markers} markers occupy {(sent + bound) * 4}"
 
