@@ -162,14 +162,26 @@ def anthropic_messages_to_openai(
                 elif btype == "tool_result":
                     tc = b.get("content", "")
                     if isinstance(tc, list):
-                        tc = " ".join(
-                            p["text"] for p in tc if isinstance(p, dict) and p.get("type") == "text"
+                        parts = []
+                        for item in tc:
+                            if not isinstance(item, dict):
+                                continue
+                            if item.get("type") == "text":
+                                parts.append({"type": "text", "text": item["text"]})
+                            elif item.get("type") == "image":
+                                part = _anthropic_image_block_to_openai_part(item)
+                                if part is not None:
+                                    parts.append(part)
+                        tc = (
+                            parts
+                            if any(p["type"] == "image_url" for p in parts)
+                            else " ".join(p["text"] for p in parts)
                         )
                     tool_results.append(
                         {
                             "role": "tool",
                             "tool_call_id": b["tool_use_id"],
-                            "content": str(tc),
+                            "content": tc if isinstance(tc, list) else str(tc),
                         }
                     )
 
@@ -218,12 +230,16 @@ def fold_tool_results_into_user(messages: list[dict]) -> list[dict]:
         response["content"] = msg.get("content", "")
         if tool_call_id:
             response["tool_call_id"] = tool_call_id
-        out.append(
-            {
-                "role": "user",
-                "content": json.dumps({"tool_response": response}, indent = 2),
-            }
-        )
+        content = response["content"]
+        if isinstance(content, list):
+            response.pop("content")
+            folded_content = [
+                {"type": "text", "text": json.dumps({"tool_response": response}, indent = 2)},
+                *content,
+            ]
+        else:
+            folded_content = json.dumps({"tool_response": response}, indent = 2)
+        out.append({"role": "user", "content": folded_content})
     return out
 
 
