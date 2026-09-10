@@ -3002,7 +3002,7 @@ class TestTheVulkanProbeMemoIsScopedToThePlacement:
         # Whitespace-normalised: a formatter may split the with-statement across
         # lines, and pinning the wrapping made that read as a behaviour change.
         flat = "".join(inspect.getsource(m._with_gguf_load_marker).split())
-        assert "_vulkan_probe_memo_scope(),_pending_placement_cleared(self)," in flat
+        assert "_vulkan_probe_memo_scope(),gguf_load_in_flight(hf_repo)" in flat
         assert "_arm_vulkan_probe_memo()" in inspect.getsource(LlamaCppBackend.load_model)
 
 
@@ -3020,29 +3020,6 @@ class TestThePlacementWindowIsPublished:
         set_at = src.index("self._memory_launch_pending = True")
         assert set_at < src.index("_arm_vulkan_probe_memo()")
         assert set_at < src.index("_mem_gpu_offload_confirmed = bool(")
-
-    def test_it_cannot_stick_when_no_child_starts(self):
-        """Every early return between the snapshot and Popen would otherwise leave
-        the route reporting a reload for a child that never started."""
-        import core.inference.llama_cpp as m
-
-        backend = type("_B", (), {"_memory_launch_pending": True})()
-        with m._pending_placement_cleared(backend):
-            pass
-        assert backend._memory_launch_pending is False
-        backend._memory_launch_pending = True
-        try:
-            with m._pending_placement_cleared(backend):
-                raise RuntimeError("spawn failed")
-        except RuntimeError:
-            pass
-        assert backend._memory_launch_pending is False
-
-
-class TestALoadableGpuPluginIsRequired:
-    """Present is not loadable: a CUDA build with no cudart64_*.dll on the child's
-    search path reports no devices and runs on the CPU, while host probes still see
-    the card. DirectIO there buffers the whole model in host RAM."""
 
     def test_the_predicate_is_the_warning_s_own(self):
         from core.inference.llama_cpp import LlamaCppBackend
@@ -3227,17 +3204,6 @@ class TestASaveDuringPlacementIsAnswered:
         assert "self._memory_pending_settings = _mem_settings" in src
         assert src.index("self._memory_pending_settings = _mem_settings") > marker
 
-    def test_it_is_dropped_with_the_marker(self):
-        import core.inference.llama_cpp as m
-
-        backend = type(
-            "_B", (), {"_memory_launch_pending": True, "_memory_pending_settings": (False, True)}
-        )()
-        with m._pending_placement_cleared(backend):
-            pass
-        assert backend._memory_launch_pending is False
-        assert backend._memory_pending_settings is None
-
     def test_a_save_that_changes_a_toggle_asks_for_a_reload(self, monkeypatch):
         import routes.settings as rs
         import utils.model_memory_settings as mm
@@ -3269,33 +3235,50 @@ class TestOnlyAClassifiableTargetConfirms:
     reached that way shares system memory, so DirectIO would buffer it."""
 
     @pytest.mark.parametrize(
-        "backends,classifiable",
+        "lib,classifiable",
         [
-            (frozenset({"base", "cpu", "cuda"}), True),
-            (frozenset({"base", "cpu", "hip"}), True),
-            (frozenset({"base", "cpu", "vulkan"}), True),
-            (frozenset({"base", "cpu", "sycl"}), False),
-            (frozenset({"base", "cpu", "opencl"}), False),
-            (frozenset({"base", "cpu"}), False),
+            ("ggml-cuda.dll", True),
+            ("ggml-hip.dll", True),
+            ("ggml-vulkan.dll", True),
+            ("ggml-sycl.dll", False),
+            ("ggml-opencl.dll", False),
+            ("ggml-cpu.dll", False),
         ],
     )
     def test_the_classifier_set_is_narrower_than_the_backend_check(
-        self, monkeypatch, backends, classifiable
+        self, monkeypatch, tmp_path, lib, classifiable
     ):
-        from core.inference.llama_cpp import LlamaCppBackend
-        monkeypatch.setattr(
-            LlamaCppBackend,
-            "_installed_ggml_backends",
-            staticmethod(lambda binary = None: backends),
+        import core.inference.llama_cpp as m
+
+        monkeypatch.setattr(m.sys, "platform", "win32")
+        monkeypatch.setattr(m, "_llama_lib_dir", lambda b: tmp_path)
+        (tmp_path / lib).write_text("")
+        assert (
+            m.LlamaCppBackend._offload_target_is_classifiable("llama-server", {})
+            is classifiable
         )
-        assert LlamaCppBackend._offload_target_is_classifiable("llama-server") is classifiable
+
+    def test_it_follows_an_external_backend_path(self, monkeypatch, tmp_path):
+        """Third check to need this: scanning only beside the binary answered
+        "unclassifiable" for an external CUDA plugin the policy can classify."""
+        import core.inference.llama_cpp as m
+
+        beside, external = tmp_path / "beside", tmp_path / "ext"
+        beside.mkdir(); external.mkdir()
+        (external / "ggml-cuda.dll").write_text("")
+        monkeypatch.setattr(m.sys, "platform", "win32")
+        monkeypatch.setattr(m, "_llama_lib_dir", lambda b: beside)
+        assert not m.LlamaCppBackend._offload_target_is_classifiable("llama-server", {})
+        assert m.LlamaCppBackend._offload_target_is_classifiable(
+            "llama-server", {"GGML_BACKEND_PATH": str(external)}
+        )
 
     def test_both_confirmations_require_it(self):
         from core.inference.llama_cpp import LlamaCppBackend
         import inspect
 
         flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert flat.count("self._offload_target_is_classifiable(binary)") == 2
+        assert flat.count("self._offload_target_is_classifiable(binary,_mem_env)") == 2
 
 
 class TestTheLoadabilityCheckFollowsThePlugin:
@@ -3342,33 +3325,40 @@ class TestTheLoadabilityCheckFollowsThePlugin:
         assert not LlamaCppBackend._windows_cuda_runtime_missing(str(beside), [str(libs)], env)
 
 
-class TestConcurrentLoadsOwnTheirOwnMarker:
-    """The cleanup runs outside `_serial_load_scope`, so the first caller can reach
-    it after a queued load has taken the lock and published its own marker."""
+class TestTheMarkerIsReleasedWithTheLoadLock:
+    """A token assigned at decorator entry was installed before the call had the
+    lock, so a merely queued load stole ownership. `_serial_load_scope` already
+    solves this shape for the fraction marker: release on the way out of the LOCK,
+    because a queued load arms its own the instant it takes it."""
 
-    def test_a_finished_load_does_not_clear_a_newer_one(self):
+    def test_the_scope_releases_it(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend._serial_load_scope)
+        assert "self._memory_launch_pending = False" in src
+        assert "self._memory_pending_settings = None" in src
+        # released beside the markers that already had this treatment
+        assert "self._vram_fraction_pending = None" in src
+
+    def test_the_load_call_no_longer_owns_it(self):
         import core.inference.llama_cpp as m
+        import inspect
 
-        backend = type("_B", (), {})()
-        backend._memory_launch_pending = False
-        backend._memory_pending_settings = None
-        backend._memory_pending_token = None
-        outer = m._pending_placement_cleared(backend)
-        outer.__enter__()
-        backend._memory_launch_pending = True
-        backend._memory_pending_settings = (False, True)
-        # a queued load takes over and publishes its own
-        inner = m._pending_placement_cleared(backend)
-        inner.__enter__()
-        backend._memory_launch_pending = True
-        backend._memory_pending_settings = (True, True)
-        # the first load's teardown must not blank the second's
-        outer.__exit__(None, None, None)
-        assert backend._memory_launch_pending is True
-        assert backend._memory_pending_settings == (True, True)
-        inner.__exit__(None, None, None)
-        assert backend._memory_launch_pending is False
-        assert backend._memory_pending_settings is None
+        assert not hasattr(m, "_pending_placement_cleared")
+        src = inspect.getsource(m._with_gguf_load_marker)
+        assert "_pending_placement_cleared" not in src
+        assert "_memory_pending_token" not in inspect.getsource(m.LlamaCppBackend.load_model)
+
+    def test_the_publish_is_inside_the_lock(self):
+        """Releasing on lock-exit is only correct if the publish is inside it."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        assert src.index("with self._serial_load_scope():") < src.index(
+            "self._memory_launch_pending = True"
+        )
 
 
 class TestAReplacementLoadIsNotAnsweredByTheOldChild:

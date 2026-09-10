@@ -3547,15 +3547,10 @@ def _with_gguf_load_marker(load: Callable):
         # polling outside a load needs LIVE free/used VRAM and must never be served
         # that snapshot. (Arming is narrower still; see _arm_vulkan_probe_memo.)
         #
-        # And the pre-spawn placement marker: it is set as soon as the memory snapshot
-        # is taken so a save cannot fall through the window before Popen, which means
-        # every early return between the two would otherwise leave it stuck on and the
-        # route reporting a reload for a child that never started.
-        with (
-            _vulkan_probe_memo_scope(),
-            _pending_placement_cleared(self),
-            gguf_load_in_flight(hf_repo),
-        ):
+        # (The pre-spawn placement marker is released by `_serial_load_scope` instead,
+        # on the way out of the LOCK rather than the call, so a finished load cannot
+        # blank a queued one that has already taken the lock and published.)
+        with _vulkan_probe_memo_scope(), gguf_load_in_flight(hf_repo):
             if hf_repo and _hub_download_blocks_gguf_load(
                 hf_repo,
                 intent.hf_variant,
@@ -6181,30 +6176,6 @@ def _arm_vulkan_probe_memo() -> None:
 
 
 @contextlib.contextmanager
-def _pending_placement_cleared(backend):
-    """Drop the pre-spawn placement marker when the load call ends.
-
-    A successful spawn clears it earlier, where `is_active` takes over; this only
-    guarantees that a failure, a cancel or a raise between the memory snapshot and
-    Popen cannot leave it set with no child to answer for.
-
-    Clears only the marker THIS load published. The cleanup runs outside
-    `_serial_load_scope`, so with concurrent /load calls the first caller can reach
-    here after a queued one has taken the lock and published its own marker, and an
-    unconditional clear would blank a launch still in its placement probe.
-    """
-    token = object()
-    backend._memory_pending_token = token
-    try:
-        yield
-    finally:
-        if getattr(backend, "_memory_pending_token", None) is token:
-            backend._memory_launch_pending = False
-            backend._memory_pending_settings = None
-            backend._memory_pending_token = None
-
-
-@contextlib.contextmanager
 def _vulkan_probe_memo_scope():
     """Guarantee the memo cannot outlive a load however it exits. Arming is the
     narrower `_arm_vulkan_probe_memo`, taken around the placement decision."""
@@ -6662,9 +6633,6 @@ class LlamaCppBackend:
         # published WITH the marker: a save during the placement work has no resolved
         # state to compare against yet, only the snapshot the child will use.
         self._memory_pending_settings: Optional[tuple[bool, bool]] = None
-        # Identity of the load call that owns the two above, so a concurrent load's
-        # teardown cannot clear a marker it did not publish.
-        self._memory_pending_token: Optional[object] = None
         # True when the resident model came from an explicit UI load rather than
         # the OpenAI API, so the idle unload can be scoped to API-loaded models.
         # Not on GgufLoadIntent: that is compared for equality to detect
@@ -12679,10 +12647,31 @@ class LlamaCppBackend:
     _CLASSIFIABLE_GPU_BACKENDS: frozenset = frozenset({"cuda", "hip", "vulkan"})
 
     @staticmethod
-    def _offload_target_is_classifiable(binary: Optional[str] = None) -> bool:
-        """Whether a discrete-vs-shared verdict is available for this build."""
-        backends = LlamaCppBackend._installed_ggml_backends(binary)
-        return bool(backends & LlamaCppBackend._CLASSIFIABLE_GPU_BACKENDS)
+    def _offload_target_is_classifiable(
+        binary: Optional[str] = None, env: Optional[Mapping[str, str]] = None
+    ) -> bool:
+        """Whether a discrete-vs-shared verdict is available for this build.
+
+        Reads the plugin roots, not just the executable directory:
+        `_installed_ggml_backends` scans beside the binary, so an external
+        `GGML_BACKEND_PATH` CUDA or HIP plugin answered "unclassifiable" and the
+        policy declined a placement it can in fact classify. Third check to need
+        this, hence `_ggml_plugin_roots` rather than a fourth private scan.
+        """
+        try:
+            roots = LlamaCppBackend._ggml_plugin_roots(str(_llama_lib_dir(binary)), env)
+        except Exception:
+            return False
+        prefix = "ggml-" if sys.platform == "win32" else "libggml-"
+        wanted = {f"{prefix}{name}" for name in LlamaCppBackend._CLASSIFIABLE_GPU_BACKENDS}
+        for root in roots:
+            try:
+                names = tuple(path.name for path in root.iterdir() if path.is_file())
+            except OSError:
+                continue
+            if any(name.startswith(tuple(wanted)) for name in names):
+                return True
+        return False
 
     @staticmethod
     def _ggml_plugin_roots(binary_dir: str, env: Optional[Mapping[str, str]] = None):
@@ -19576,6 +19565,13 @@ class LlamaCppBackend:
             finally:
                 self._vram_fraction_pending = None
                 self._binary_revision_pending = None
+                # Same reasoning for the Model Memory placement marker: it is armed
+                # before the spawn and read by the settings route ahead of is_active,
+                # so it has to be given back on the way out of the LOCK. Released at
+                # the end of the call instead, a finished load could blank the marker
+                # of a queued one that had already taken the lock and published.
+                self._memory_launch_pending = False
+                self._memory_pending_settings = None
 
     @_with_gguf_load_marker
     def load_model(
@@ -24148,7 +24144,7 @@ class LlamaCppBackend:
                     and (_detected_gpus or gpu_indices)
                     # A probe that did not answer declines rather than confirms; see
                     # _vulkan_offload_is_discrete.
-                    and self._offload_target_is_classifiable(binary)
+                    and self._offload_target_is_classifiable(binary, _mem_env)
                     and (
                         not is_vulkan_backend
                         or self._vulkan_offload_is_discrete(binary, gpu_indices)
@@ -24287,7 +24283,7 @@ class LlamaCppBackend:
                         and (_detected_gpus or devices)
                         # No classifier, no confirmation: see
                         # _offload_target_is_classifiable.
-                        and self._offload_target_is_classifiable(binary)
+                        and self._offload_target_is_classifiable(binary, _mem_env)
                         and (
                             not is_vulkan_backend
                             or self._vulkan_offload_is_discrete(binary, devices)
