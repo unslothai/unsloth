@@ -44,7 +44,7 @@ SELECTOR = REPO / ".github" / "scripts" / "select_install_matrix.py"
 EXPECTED = {
     "clean-machine-install-ci.yml": (
         ".github/ci/clean-machine-matrix.yml",
-        {"macos": (7, 2), "linux": (6, 2), "windows": (3, 1), "windows_container_install": (2, 0)},
+        {"macos": (7, 3), "linux": (6, 2), "windows": (3, 1), "windows_container_install": (2, 1)},
     ),
     "interrupted-install-ci.yml": (
         ".github/ci/interrupted-install-matrix.yml",

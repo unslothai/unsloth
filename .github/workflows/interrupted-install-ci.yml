@@ -19,7 +19,8 @@ name: Interrupted install recovery
 # ── Which legs run when ──────────────────────────────────────────────────────
 # The legs live in .github/ci/interrupted-install-matrix.yml, each with a `pr` flag. A
 # pull_request runs the `pr: true` subset (2 of 10, one per verdict family, one per
-# process-semantics family); the nightly schedule and workflow_dispatch run all 10. The
+# process-semantics family); a push to main, the nightly schedule and workflow_dispatch
+# run all 10. The
 # `select` job below does the picking and both matrix jobs take their `include` list
 # from it. 6 of the 10 legs are macOS on an account capped at five concurrent macOS
 # jobs, and on every PR audited before the split the full set was cancelled by the
@@ -54,6 +55,31 @@ on:
       - '.github/ci/interrupted-install-matrix.yml'
       - '.github/workflows/interrupted-install-ci.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
+  # Every push to main that touches an installer runs the full set, so a merge is
+  # covered at merge time and not only by the nightly.
+  push:
+    branches: [main]
+    paths:
+      - 'install.sh'
+      - 'install.ps1'
+      - 'studio/setup.sh'
+      - 'studio/setup.ps1'
+      - 'studio/install_python_stack.py'
+      - 'unsloth_cli/commands/studio.py'
+      - 'studio/install_manifest.py'
+      # The requirement files are the phases: studio.txt declares structlog, whose absence
+      # IS the reported false-ready bug, so moving a package between them changes every
+      # interrupted state.
+      - 'studio/backend/requirements/**'
+      # `interrupt*-install*` would match the .sh / .ps1 but NOT the underscored probe
+      # (`*` never matches `/`, and a literal `-install` follows), so list all three.
+      - '.github/scripts/interrupt-install.sh'
+      - '.github/scripts/interrupt-install.ps1'
+      - '.github/scripts/interrupted_install_probe.py'
+      - '.github/scripts/select_install_matrix.py'
+      - '.github/ci/interrupted-install-matrix.yml'
+      - '.github/workflows/interrupted-install-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
   schedule:
     # Nightly, all 10 legs. Off the hour so it does not land with every other nightly
     # in the org, and offset from clean-machine-install-ci.yml's 09:23 so the two do
@@ -62,11 +88,12 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # The event is part of the group so a scheduled run and a manual one cannot cancel
-  # each other: both resolve to refs/heads/main. On a PR branch the group is the ref,
-  # so a new push cancels the run for the previous one.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: true
+  # The event is part of the group so a scheduled run and a push to main cannot cancel
+  # each other: both resolve to refs/heads/main. Unique per commit on main, so a merge
+  # burst cannot cancel a pending run (see studio-backend-ci.yml). On a PR branch the
+  # group is the ref, so a new push cancels the run for the previous one.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read

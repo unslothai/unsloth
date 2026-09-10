@@ -13,9 +13,10 @@
 # full set never once finished; every run was cancelled by the next push while its
 # macOS legs were still queued, which also starved every other macOS job in the org.
 # The PR subset keeps one leg per claim the workflow makes (the reported dependency
-# gate with this ref's Python under test, the trace/dylib-patch contract, the nonroot
-# Linux install, the no-transport diagnostics, the Windows scrub) and leaves the
-# dimensions that only vary the OS, the arch or the delivery shape to the nightly.
+# gate with this ref's Python under test, the `curl | sh` shape users run, the
+# trace/dylib-patch contract, the nonroot Linux install, the no-transport diagnostics,
+# the Windows scrub, the VC++-less container) and leaves the dimensions that only vary
+# the OS or the arch to the nightly and to every push to main.
 #
 # tests/studio/test_install_matrix_selection.py pins the counts and the keys.
 
@@ -26,9 +27,9 @@ macos:
   #
   # The reported failure, in the shape users run it, with torch because that is
   # what a consumer gets.
-  # Nightly only: pipe delivery differs from file delivery only in how the script
-  # arrives (`curl | sh` truncation, curl: (56) on an early exit).
-  - {os: macos-15, mode: mask,  delivery: pipe,  flags: '',           experimental: false, overlay: false, pr: false}
+  # On PRs too: `curl | sh` is the shape users run, and pipe delivery is the only
+  # leg that sees a truncated script or a curl: (56) from an early exit.
+  - {os: macos-15, mode: mask,  delivery: pipe,  flags: '',           experimental: false, overlay: false, pr: true}
   - {os: macos-15, mode: mask,  delivery: file,  flags: '',           experimental: false, overlay: true,  pr: true}
   # What the desktop app runs: no tty, stdin closed, TAURI markers on.
   # Nightly only: the invocation shape and the legacy ~/.unsloth root.
@@ -181,8 +182,8 @@ windows_container_install:
   # This ref's studio/setup.ps1 and install_python_stack.py, via
   # UNSLOTH_CI_SOURCE_OVERLAY (install.ps1:2643). Without it a branch changing
   # setup.ps1 gets a green run proving nothing about the change.
-  # Nightly only: the only environment with no preinstalled VC++ runtime, so the
-  # direct-download fallback is proved here and nowhere else. The probe job it
-  # depends on is skipped with it on PRs.
+  # On PRs too: the only environment with no preinstalled VC++ runtime, so the
+  # direct-download fallback is proved here and nowhere else, and windows-2022 is a
+  # pinned image that starts in about a minute. The probe job runs with it.
   - overlay: true
-    pr: false
+    pr: true

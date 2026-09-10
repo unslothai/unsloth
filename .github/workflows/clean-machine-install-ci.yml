@@ -39,7 +39,7 @@ name: Clean machine install
 
 # ── Which legs run when ──────────────────────────────────────────────────────
 # The legs live in .github/ci/clean-machine-matrix.yml, each with a `pr` flag. A
-# pull_request runs the `pr: true` subset (5 of 20); the nightly schedule, a push to
+# pull_request runs the `pr: true` subset (8 of 20); the nightly schedule, a push to
 # main and workflow_dispatch run all 20. The `select` job below does the picking and
 # every matrix job takes its `include` list from it, so a leg's keys are the same on
 # both paths and the steps do not know which path they are on.
@@ -156,7 +156,7 @@ jobs:
       linux: ${{ steps.pick.outputs.linux }}
       windows: ${{ steps.pick.outputs.windows }}
       windows_container_install: ${{ steps.pick.outputs.windows_container_install }}
-      # Both container legs are nightly-only, and an empty matrix is a workflow error
+      # The consumer container leg is nightly-only, and an empty matrix is a workflow error
       # rather than an empty job, so the probe and the install gate on this count.
       windows_container_install_count: ${{ steps.pick.outputs.windows_container_install_count }}
     steps:
