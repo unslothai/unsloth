@@ -4384,6 +4384,8 @@ def test_messages_have_image_helper():
 
 
 def test_anthropic_request_has_image_helper():
+    from models.inference import AnthropicImageBlock
+
     f = inference_route._anthropic_request_has_image
     text = SimpleNamespace(messages = [SimpleNamespace(content = "hi")])
     assert f(text) is False
@@ -4393,7 +4395,18 @@ def test_anthropic_request_has_image_helper():
     assert f(text_block) is False
     dict_img = SimpleNamespace(messages = [SimpleNamespace(content = [{"type": "image"}])])
     assert f(dict_img) is True
-    typed_img = SimpleNamespace(messages = [SimpleNamespace(content = [SimpleNamespace(type = "image")])])
+    typed_img = SimpleNamespace(
+        messages = [
+            SimpleNamespace(
+                content = [
+                    AnthropicImageBlock(
+                        type = "image",
+                        source = {"type": "base64", "media_type": "image/png", "data": "AAAA"},
+                    )
+                ]
+            )
+        ]
+    )
     assert f(typed_img) is True
 
 
@@ -4408,10 +4421,6 @@ def test_responses_and_anthropic_wire_require_vision_from_images():
     anthropic_src = inspect.getsource(inference_route.anthropic_messages)
     assert "_anthropic_has_image = _anthropic_request_has_image(" in anthropic_src
     assert "require_vision = _anthropic_has_image" in anthropic_src
-    # /messages/count_tokens shares the /messages translation, so it needs the same
-    # guard: an image count must not evict a vision model for a text-only target.
-    count_src = inspect.getsource(inference_route.anthropic_count_tokens)
-    assert "require_vision = _anthropic_request_has_image(" in count_src
 
 
 # ── codex review (round 5): count_tokens tools, tool_choice, process-wide gate ──
@@ -4429,10 +4438,7 @@ def test_count_tokens_rejects_malformed_tool_before_switch(monkeypatch):
     assert rec.calls == []
 
 
-def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
-    # Codex P2: an image /v1/messages/count_tokens naming a text-only GGUF must
-    # carry the same require_vision guard as /messages, so it can't evict a loaded
-    # vision model for a swap that can't serve the request.
+def test_count_tokens_refuses_images_before_switch(monkeypatch):
     captured = {}
 
     async def _capture(
@@ -4453,12 +4459,11 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
     monkeypatch.setattr(inference_route, "_anthropic_request_has_image", lambda p: True)
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
     payload = _anthropic_payload_with_tools(None)  # no tools -> tool validation passes
-    with pytest.raises(_Reached):
+    with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.anthropic_count_tokens(payload, object(), "tester"))
-    assert captured["require_vision"] is True
-    assert captured["claim_resident"] is False
-    # llama.cpp serves this endpoint alone, so a non-GGUF swap must not be attempted.
-    assert captured["gguf_only"] is True
+    assert exc.value.status_code == 503
+    assert "containing images" in exc.value.detail
+    assert captured == {}
 
 
 # ── /chat/count_tokens: what the recount prices ───────────────────

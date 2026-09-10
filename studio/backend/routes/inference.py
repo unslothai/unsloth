@@ -30677,22 +30677,21 @@ async def anthropic_count_tokens(
     # Reject malformed tools before the switch, like /messages, so an invalid
     # count request can't evict the loaded model.
     _validate_anthropic_client_tools(payload.tools)
-    image_b64s = _anthropic_local_image_payloads(payload)
+    # /apply-template renders media markers, not projector embedding tokens.
+    if _anthropic_request_has_image(payload):
+        raise HTTPException(
+            status_code = 503,
+            detail = "Cannot count tokens for messages containing images.",
+        )
     # Count with the requested model's tokenizer, like the sibling /messages.
-    # Carry the vision guard too: an image count naming a text-only GGUF must not
-    # evict a loaded vision model for a swap that can't serve the request.
     await _maybe_auto_switch_model(
         _switch_model_for_payload(payload),
         request,
         current_subject,
-        require_vision = _anthropic_request_has_image(payload),
         # count_tokens only tokenizes (no generation), so it must not adopt the resident
         # model; the middleware likewise excludes count_tokens from its claim.
         claim_resident = False,
         gguf_only = True,
-        image_preflight = (
-            {"b64": image_b64s[0], "b64s": image_b64s, "multiple": False} if image_b64s else None
-        ),
     )
 
     llama_backend = get_llama_cpp_backend()
@@ -30716,9 +30715,6 @@ async def anthropic_count_tokens(
     # matches the prompt the real request would build (otherwise empty-assistant
     # sentinels / synthetic tool history inflate the count or hit the fallback).
     openai_messages = _sanitize_anthropic_openai_messages(openai_messages, llama_backend)
-    await asyncio.to_thread(
-        _normalize_anthropic_openai_images, openai_messages, llama_backend.is_vision
-    )
     openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
     # Only the client-tool passthrough is forwarded verbatim, so reproduce /messages' own
     # routing rather than "any tools": a Studio server-tool alias, or a template without

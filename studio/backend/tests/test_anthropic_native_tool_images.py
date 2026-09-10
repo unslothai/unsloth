@@ -92,7 +92,7 @@ def test_native_images_keep_order_and_tool_identity(order):
 
 
 @pytest.mark.parametrize("vision", [True, False])
-def test_native_image_http_generation_and_count_parity(monkeypatch, vision):
+def test_native_image_http_generation_and_count_refusal(monkeypatch, vision):
     seen = {}
 
     async def switch(*args, **kwargs):
@@ -141,17 +141,46 @@ def test_native_image_http_generation_and_count_parity(monkeypatch, vision):
         response = client.post("/v1/messages", json = body)
         counted = client.post("/v1/messages/count_tokens", json = body)
     assert response.status_code == (200 if vision else 400), response.text
-    assert counted.status_code == (200 if vision else 400), counted.text
-    assert len(seen["preflight"]) == 2
+    assert counted.status_code == 503, counted.text
+    assert "containing images" in counted.text
+    assert "count" not in seen
+    assert len(seen["preflight"]) == 1
     assert all(
         p["require_vision"] and len(p["image_preflight"]["b64s"]) == 1 for p in seen["preflight"]
     )
     if vision:
         assert response.json()["content"][0]["text"] == "The image is red."
-        assert counted.json()["input_tokens"] == 42
-        assert seen["wire"]["messages"] == seen["count"]
         url = seen["wire"]["messages"][2]["content"][1]["image_url"]["url"]
         assert url.startswith("data:image/png;base64,")
         assert Image.open(BytesIO(base64.b64decode(url.split(",", 1)[1]))).size == (2, 2)
     else:
         assert "wire" not in seen and "count" not in seen
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("source_type", ["base64", "url"])
+def test_image_counts_refuse_before_switching_or_tokenizing(monkeypatch, nested, source_type):
+    from unittest.mock import AsyncMock, Mock
+
+    switch = AsyncMock()
+    count = Mock(return_value = 42)
+    _mock_backend(monkeypatch, is_vision = True, count_chat_tokens = count)
+    monkeypatch.setattr(inf, "_maybe_auto_switch_model", switch)
+    block = image_block()
+    if source_type == "url":
+        block["source"] = {
+            "type": "url",
+            "url": f"data:image/webp;base64,{block['source']['data']}",
+        }
+    body = payload([block])
+    if not nested:
+        body["messages"] = [{"role": "user", "content": [block]}]
+    app = FastAPI()
+    app.include_router(inf.router, prefix = "/v1")
+    app.dependency_overrides[inf.get_current_subject] = lambda: "test"
+    with TestClient(app) as client:
+        response = client.post("/v1/messages/count_tokens", json = body)
+    assert response.status_code == 503, response.text
+    assert "containing images" in response.text
+    switch.assert_not_awaited()
+    count.assert_not_called()
