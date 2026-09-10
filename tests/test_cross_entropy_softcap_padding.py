@@ -64,7 +64,10 @@ def test_cross_entropy_softcap_padding_with_logit_scaling(vocab_size, logit_scal
     expected.backward()
 
     actual = fast_cross_entropy_loss(
-        logits, labels, logit_softcapping = softcap, logit_scaling = logit_scaling,
+        logits,
+        labels,
+        logit_softcapping = softcap,
+        logit_scaling = logit_scaling,
     )
     actual.backward()
 
@@ -90,7 +93,10 @@ def test_negative_logit_scaling_does_not_nan(vocab_size, softcap):
     expected = F.cross_entropy(transformed.flatten(0, 1), labels.flatten())
 
     actual = fast_cross_entropy_loss(
-        logits, labels, logit_softcapping = softcap, logit_scaling = -1.0,
+        logits,
+        labels,
+        logit_softcapping = softcap,
+        logit_scaling = -1.0,
     )
 
     assert torch.isfinite(actual), f"loss is {actual}"
@@ -108,7 +114,9 @@ def test_softcapped_probabilities_sum_to_one(vocab_size):
     inputs = (torch.randn(1, 1, vocab_size, device = "cuda") - 100.0).float()
     labels = torch.tensor([[0]], device = "cuda")
 
-    loss = fast_cross_entropy_loss(inputs.clone().requires_grad_(), labels, logit_softcapping = softcap)
+    loss = fast_cross_entropy_loss(
+        inputs.clone().requires_grad_(), labels, logit_softcapping = softcap
+    )
     transformed = softcap * torch.tanh(inputs.double() / softcap)
     # A single supervised token means loss == logsumexp - transformed[label].
     logsumexp = loss.double() + transformed[0, 0, 0]
