@@ -70,7 +70,9 @@ def test_a_failed_optional_install_leaves_no_partial_payload(tmp_path, monkeypat
             (Path(target) / "tiktoken").mkdir()
             (Path(target) / "tiktoken" / "__init__.py").write_text("", encoding = "utf-8")
             (Path(target) / "tiktoken-0.9.0.dist-info").mkdir()
-            (Path(target) / "tiktoken-0.9.0.dist-info" / "METADATA").write_text("", encoding = "utf-8")
+            (Path(target) / "tiktoken-0.9.0.dist-info" / "METADATA").write_text(
+                "", encoding = "utf-8"
+            )
             return False
         return True
 
