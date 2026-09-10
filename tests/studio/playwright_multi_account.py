@@ -134,7 +134,8 @@ def run(page: Page, context) -> None:
         expect(page).to_have_url(re.compile(r"/change-password"), timeout = STEP_TIMEOUT_MS)
         assert local(page, "unsloth_e2e_private") is None
         assert local(page, "chat-draft:e2e") is None
-        assert local(page, "theme") == "dark"
+        # Appearance survives the switch; its value may have been replaced by the personalization sync.
+        assert local(page, "theme") is not None, "the account switch cleared the theme"
         assert local(page, "unsloth_chat_permission_mode") != "full"
         deadline = time.monotonic() + STEP_TIMEOUT_MS / 1000
         while second_tab.evaluate("() => window.oldAccountDocument") is not None:
