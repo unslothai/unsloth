@@ -5,12 +5,10 @@
 Unsloth becomes reachable: a public Cloudflare URL (``--secure`` / ``--cloudflare``)
 or a raw non-loopback bind such as ``-H 0.0.0.0``.
 
-Masked input echoes one ``*`` per keystroke (unlike ``getpass``). Works on
-Windows (``msvcrt``) and Linux/macOS (``termios``). All output goes to stderr so
-redirected stdout never swallows the prompt.
-
-Mirrored for the CLI at ``unsloth_cli/commands/_password_prompt.py`` (the CLI
-cannot import the Unsloth backend package); keep the two in sync.
+Masked input echoes one ``*`` per keystroke (unlike ``getpass``). Works on Windows (``msvcrt``) and Linux/macOS
+(``termios``). All output goes to stderr so redirected stdout never swallows the prompt. Mirrored for the CLI at
+``unsloth_cli/commands/_password_prompt.py`` (the CLI cannot import the Unsloth backend package); keep the two
+in sync.
 """
 
 from __future__ import annotations
@@ -41,11 +39,9 @@ def _getch_windows() -> str:  # pragma: no cover - exercised via fake on Linux C
 
 
 class _RestoreTtyOnSignals:
-    """Restore terminal attrs if SIGTERM/SIGHUP kills the prompt mid-read.
-
-    A finally block can't run when a signal terminates the process, leaving the
-    shared terminal in cbreak/no-echo. Best-effort: no-op off the main thread or
-    where the signals are absent.
+    """Restore terminal attrs if SIGTERM/SIGHUP kills the prompt mid-read. A finally block can't run when a
+    signal terminates the process, leaving the shared terminal in cbreak/no-echo. Best-effort: no-op off the
+    main thread or where the signals are absent.
     """
 
     def __init__(self, fd: int, old_attrs) -> None:
@@ -356,13 +352,10 @@ def prompt_for_password_change(
 
 
 def resolve_supplied_password(cli_value: "str | None", out: "TextIO | None" = None) -> "str | None":
-    """Resolve a non-interactive initial admin password, or None if unset.
-
-    Precedence: an explicit ``--password`` (literal ``-`` reads a line from
-    stdin), then the ``UNSLOTH_STUDIO_PASSWORD`` env var; empty/omitted means off.
-    A literal argv value is visible in the process list, so a note points at the
-    env var or stdin instead. Mirror of the CLI helper -- keep the two in sync.
-    """
+    """Resolve a non-interactive initial admin password, or None if unset. Precedence: an explicit
+    ``--password`` (literal ``-`` reads a line from stdin), then the ``UNSLOTH_STUDIO_PASSWORD`` env
+    var; empty/omitted means off. A literal argv value is visible in the process list, so a note
+    points at the env var or stdin instead. Mirror of the CLI helper -- keep the two in sync."""
     if out is None:
         out = sys.stderr
     if cli_value == "-":

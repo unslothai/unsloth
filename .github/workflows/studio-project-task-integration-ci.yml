@@ -80,8 +80,8 @@ jobs:
         shell: bash
         env:
           LIFECYCLE_REVISION: 10eec87e411ee03fed1999fd3df3971bf0c8d632
-          EDIT_REVISION: c6118ec5a653e94158bd637bc59bc18656ca6257
-          GIT_REVISION: 016da23650c227ccfb99d8e3fca16473143f5bb9
+          EDIT_REVISION: a85723e1cc245a6d286fc0f3521eee8a21c869d3
+          GIT_REVISION: 9d86e2547b9ce03b89910912e095c80aae23e719
         run: |
           for revision in "$LIFECYCLE_REVISION" "$EDIT_REVISION" "$GIT_REVISION"; do
             if ! git cat-file -e "$revision^{commit}" 2>/dev/null; then

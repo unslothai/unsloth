@@ -1,22 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Profile usage statistics derived from studio.db.
+"""Profile usage statistics derived from studio.db.
 
-Read-only aggregation over chat threads/messages (with their per-message
-``metadata_json``), content-free API usage receipts, and training runs/metrics.
-The numbers are only as complete as the local history retained after each
-feature was introduced.
+Read-only aggregation over chat threads/messages (with their per-message ``metadata_json``), content-free API
+usage receipts, and training runs/metrics. The numbers are only as complete as the local history retained after
+each feature was introduced. Chat and training tables predate authenticated subjects and therefore remain
+install-wide; API usage receipts are filtered to the requesting subject.
 
-Chat and training tables predate authenticated subjects and therefore remain
-install-wide. API usage receipts are filtered to the requesting subject.
-
-Token counts live inside each message's metadata blob, so they cannot be summed
-in SQL portably (JSON1 is not guaranteed on every bundled SQLite). Rows are
-streamed once in (thread, time) order and every metric is folded in that single
-pass, then memoised against per-source count/timestamp fingerprints so reopening
-the Profile tab is free until history changes.
+Token counts live inside each message's metadata blob, so they cannot be summed in SQL portably (JSON1 is not
+guaranteed on every bundled SQLite). Rows are streamed once in (thread, time) order and every metric is folded
+in that single pass, then memoised against per-source count/timestamp fingerprints so reopening the Profile tab
+is free until history changes.
 """
 
 import json
@@ -52,10 +47,8 @@ _cache: dict[str, Any] = {"fingerprint": None, "expires_at": 0.0, "payload": Non
 
 
 def _as_float(value: Any) -> Optional[float]:
-    """Coerce JSON numbers defensively; metadata is written by the client.
-
-    json accepts integers of any width, and float() raises OverflowError past
-    ~1e308, so one oversized counter would 500 the whole panel.
+    """Coerce JSON numbers defensively; metadata is written by the client. json accepts integers of any width,
+    and float() raises OverflowError past ~1e308, so one oversized counter would 500 the whole panel.
     """
     if isinstance(value, bool) or value is None:
         return None
@@ -84,13 +77,10 @@ def _clean_str(value: Any) -> str:
 
 
 def _resolve_zone(tz_name: str, tz_offset_minutes: int):
-    """The caller's zone, preferring an IANA name over a single offset.
-
-    A fixed offset is only correct for the half of the year the caller happens
-    to be in, so a winter message read during summer lands an hour out and can
-    cross midnight. An IANA name carries each date's own offset. The offset
-    stays as the fallback for callers that send no name, or hosts with no tzdata.
-    """
+    """The caller's zone, preferring an IANA name over a single offset. A fixed offset is only correct
+    for the half of the year the caller happens to be in, so a winter message read during summer
+    lands an hour out and can cross midnight. An IANA name carries each date's own offset. The
+    offset stays as the fallback for callers that send no name, or hosts with no tzdata."""
     if tz_name:
         try:
             return ZoneInfo(tz_name)
@@ -100,12 +90,9 @@ def _resolve_zone(tz_name: str, tz_offset_minutes: int):
 
 
 def _local_stamp(created_at_ms: int, zone) -> Optional[datetime]:
-    """Wall-clock time in the caller's timezone, not the server's.
-
-    created_at is a client-supplied integer that SQLite stores unchecked, so a
-    value outside datetime's range is possible. Drop that row rather than let
-    one bad import take down the whole panel.
-    """
+    """Wall-clock time in the caller's timezone, not the server's. created_at is a client-supplied
+    integer that SQLite stores unchecked, so a value outside datetime's range is possible. Drop that
+    row rather than let one bad import take down the whole panel."""
     if created_at_ms <= 0:
         return None
     try:
@@ -115,15 +102,10 @@ def _local_stamp(created_at_ms: int, zone) -> Optional[datetime]:
 
 
 def _streaks(days: set[date], today: date) -> dict[str, Any]:
-    """Current and longest run of consecutive active days.
-
-    The current streak survives a day that has not been used yet: a streak that
-    ended yesterday is still "live" until today is over.
-
-    Imported history or a skewed client clock can date rows in the future.
-    Those are dropped up front so they cannot pad the longest streak or be
-    reported as the last active day either.
-    """
+    """Current and longest run of consecutive active days. The current streak survives a day that has
+    not been used yet: a streak that ended yesterday is still "live" until today is over. Imported
+    history or a skewed client clock can date rows in the future; those are dropped up front so they
+    cannot pad the longest streak or be reported as the last active day either."""
     days = {day for day in days if day <= today}
     if not days:
         return {"current": 0, "longest": 0, "lastActiveDay": None}
@@ -262,18 +244,13 @@ def _merge_api_activity(chat: _MessageFold, api: _ApiUsageFold) -> None:
 
 
 def _fork_keepers(conn) -> dict[tuple[str, int, str], str]:
-    """For each original message, the one clone elected to stand in for it.
-
-    A clone is normally ignored because the original is counted instead. Once
-    the original is gone, whether its thread was deleted or just that row was
-    pruned, the clones become the only record. Letting every sibling count them
-    would multiply the usage, so exactly one may.
-
-    Electing per message rather than per fork matters because fork_chat_thread
-    copies one parent_id branch, not the whole thread: sibling forks taken from
-    a retry and a regeneration hold different rows, and a per-fork winner would
-    silently drop whatever only the loser carries.
-    """
+    """For each original message, the one clone elected to stand in for it. A clone is normally ignored
+    because the original is counted instead. Once the original is gone, whether its thread was
+    deleted or just that row was pruned, the clones become the only record. Letting every sibling
+    count them would multiply the usage, so exactly one may. Electing per message rather than per
+    fork matters because fork_chat_thread copies one parent_id branch, not the whole thread: sibling
+    forks taken from a retry and a regeneration hold different rows, and a per-fork winner would
+    silently drop whatever only the loser carries."""
     rows = conn.execute(
         """
         SELECT m.thread_id, m.created_at, m.role,
@@ -297,11 +274,9 @@ def _fork_keepers(conn) -> dict[tuple[str, int, str], str]:
 
 
 def _surviving_original_keys(conn) -> set[tuple[str, int, str]]:
-    """Identity of every message still living in a thread that has been forked.
-
-    Clones get fresh ids, so there is nothing to join on. Within one thread the
-    timestamp and role are enough to recognise the row a clone was taken from.
-    """
+    """Identity of every message still living in a thread that has been forked. Clones get fresh ids,
+    so there is nothing to join on. Within one thread the timestamp and role are enough to recognise
+    the row a clone was taken from."""
     rows = conn.execute(
         """
         SELECT m.thread_id, m.created_at, m.role
@@ -489,28 +464,18 @@ def _daily_series(fold: _MessageFold, today: date, days: int) -> list[dict[str, 
 
 
 def _superseded(prefix: str = "r.") -> str:
-    """SQL for "a later run resumed from this one, so its counters live there".
-
-    ``prefix`` must qualify the outer row: the EXISTS subquery selects from the
-    same table, so a bare column name would bind to the subquery instead.
-
-    ``create_run``'s resume claim sets ``resume_blocked`` and leaves
-    ``output_dir`` alone. Cancelling clears ``output_dir`` while setting the
-    same flag, so the flag alone cannot tell the two apart.
-
-    ``delete_run`` never clears the flag, so the continuation has to still be
-    there. Otherwise deleting it would strand the source at zero while its row
-    and metrics stay visible in history.
-
-    The continuation also has to have reached the source's step. ``create_run``
-    claims the source the moment a resume starts, but ``final_step`` is only
-    written on the first metric flush, so a continuation that fails before then
-    would take the source's completed work down with it.
-
-    ``resumed_from_run_id`` records the lineage outright. Runs written before
-    that column existed fall back to matching ``output_dir``, which is weaker:
-    cancelling a continuation nulls its ``output_dir`` and breaks the match.
-    """
+    """SQL for "a later run resumed from this one, so its counters live there". ``prefix`` must qualify
+    the outer row: the EXISTS subquery selects from the same table, so a bare column name would bind
+    to the subquery instead. ``create_run``'s resume claim sets ``resume_blocked`` and leaves
+    ``output_dir`` alone. Cancelling clears ``output_dir`` while setting the same flag, so the flag
+    alone cannot tell the two apart. ``delete_run`` never clears the flag, so the continuation has
+    to still be there; otherwise deleting it would strand the source at zero while its row and
+    metrics stay visible in history. The continuation also has to have reached the source's step.
+    ``create_run`` claims the source the moment a resume starts, but ``final_step`` is only written
+    on the first metric flush, so a continuation that fails before then would take the source's
+    completed work down with it. ``resumed_from_run_id`` records the lineage outright. Runs written
+    before that column existed fall back to matching ``output_dir``, which is weaker: cancelling a
+    continuation nulls its ``output_dir`` and breaks the match."""
     return f"""
         {prefix}resume_blocked = 1
         AND EXISTS (
@@ -544,16 +509,15 @@ def _training_stats(conn) -> dict[str, Any]:
         """
     ).fetchone()
 
-    # A resumed run continues its source's counters, so only a run superseded by a resume is dropped:
-    # create_run's claim sets resume_blocked while leaving output_dir intact, whereas cancelling
-    # clears it, so a cancelled run keeps the work it did do.
+    # A resumed run continues its source's counters, so only a run superseded by a resume is dropped: create_run's
+    # claim sets resume_blocked while leaving output_dir intact, whereas cancelling clears it, so a cancelled run
+    # keeps the work it did do.
     steps = conn.execute(
         f"SELECT COALESCE(SUM(r.final_step), 0) FROM training_runs r WHERE NOT ({_superseded()})"
     ).fetchone()[0]
 
-    # num_tokens is state.num_input_tokens_seen, a running total logged at each step, so summing the
-    # samples multiplies the real figure; take each run's final counter, the value get_run_metrics
-    # reports.
+    # num_tokens is state.num_input_tokens_seen, a running total logged at each step, so summing the samples
+    # multiplies the real figure; take each run's final counter, the value get_run_metrics reports.
     tokens = conn.execute(
         f"""
         SELECT COALESCE(SUM(run_tokens), 0) FROM (
@@ -638,12 +602,9 @@ def compute_profile_stats(
     *,
     subject: str = "",
 ) -> dict[str, Any]:
-    """Aggregate profile statistics, subject-scoping only external API usage.
-
-    Legacy Unsloth chat and training history is install-wide because those rows
-    have no authenticated owner. An empty subject intentionally sees no API
-    receipts, keeping non-route callers fail-closed.
-    """
+    """Aggregate profile statistics, subject-scoping only external API usage. Legacy Unsloth chat and
+    training history is install-wide because those rows have no authenticated owner. An empty
+    subject intentionally sees no API receipts, keeping non-route callers fail-closed."""
     days = max(1, min(int(days), MAX_DAILY_DAYS))
     tz_offset_minutes = max(
         -MAX_TZ_OFFSET_MINUTES, min(int(tz_offset_minutes), MAX_TZ_OFFSET_MINUTES)
