@@ -2163,7 +2163,10 @@ _SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$", re.IGNORECASE)
 
 # ── Sliding-window-pattern resolver ───────────────────────────
 # Resolves the per-layer SWA mask when a GGUF reports a sliding window but
-# no `sliding_window_pattern` field. Tier order in `_resolve_swa_pattern`:
+# no `sliding_window_pattern` field. Keyed by GGUF `general.architecture`, which
+# spells what the HF model_type hyphenates the other way (`gpt-oss` against
+# `gpt_oss`); the lookup folds both, so neither spelling misses. Tier order in
+# `_resolve_swa_pattern`:
 # GGUF metadata, on-disk cache, bootstrap dict below, transformers
 # introspection, HF Hub config.json, legacy 1/4 fallback. Period N means
 # layer i is SWA iff `(i + 1) % N != 0`, matching transformers. Skipped on
@@ -2174,7 +2177,7 @@ _BOOTSTRAP_SWA_DEFAULTS: dict[str, int] = {
     "gemma2": 2,  # Gemma2Config.sliding_window_pattern
     "gemma3": 6,  # Gemma3TextConfig.sliding_window_pattern
     "gemma3n": 5,  # text_config.layer_types: SWA*4 + FULL
-    "gpt_oss": 2,  # text_config.layer_types: alternating
+    "gpt-oss": 2,  # text_config.layer_types: alternating
     "cohere2": 4,  # Cohere2Config.sliding_window_pattern
 }
 
@@ -2489,8 +2492,9 @@ def _resolve_swa_pattern(
         if (mask := _entry_to_mask(entry)) is not None:
             return mask
 
-    if (entry := _BOOTSTRAP_SWA_DEFAULTS.get(arch)) is not None:
-        return _entry_to_mask(entry)
+    for alias in _arch_aliases(arch):
+        if (entry := _BOOTSTRAP_SWA_DEFAULTS.get(alias)) is not None:
+            return _entry_to_mask(entry)
 
     entry = _resolve_swa_entry_from_transformers(arch)
     if entry is not None:

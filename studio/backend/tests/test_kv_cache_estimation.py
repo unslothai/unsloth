@@ -270,6 +270,7 @@ class TestArchSwaPatternDefaults:
             ("gemma3", 18, 6),
             ("gemma3n", 35, 5),
             ("gpt_oss", 24, 2),
+            ("gpt-oss", 24, 2),
             ("cohere2", 32, 4),
         ],
     )
@@ -660,6 +661,40 @@ class TestTransformersIntrospection:
             if k.startswith("transformers"):
                 monkeypatch.delitem(sys.modules, k, raising = False)
         assert lc._resolve_swa_entry_from_transformers("gemma3") is None
+
+    def test_the_bootstrap_answers_the_gguf_spelling_without_transformers(
+        self, monkeypatch, tmp_path
+    ):
+        """The table is keyed by GGUF general.architecture, and unsloth/gpt-oss-20b-GGUF
+        spells it `gpt-oss` while the HF model_type is `gpt_oss`. Keyed the HF way the
+        bootstrap tier missed; on a box with transformers the next tier rescued it, but
+        with transformers absent, an empty cache and this GGUF's useless repo hints
+        (general.repo_url = https://huggingface.co/unsloth, which _hf_repo_from_url
+        rejects for having no owner/name) the estimator fell to the n_layers // 4
+        heuristic: 6 full-context layers instead of 12, 41% short at 8192."""
+        import sys
+
+        self._isolate_cache(monkeypatch, tmp_path)
+        monkeypatch.setenv("UNSLOTH_STUDIO_OFFLINE", "1")
+        orig_import = (
+            __builtins__["__import__"]
+            if isinstance(__builtins__, dict)
+            else __builtins__.__import__
+        )
+
+        def fake_import(name, *a, **kw):
+            if name.startswith("transformers"):
+                raise ImportError("transformers not installed")
+            return orig_import(name, *a, **kw)
+
+        monkeypatch.setattr("builtins.__import__", fake_import)
+        for k in list(sys.modules):
+            if k.startswith("transformers"):
+                monkeypatch.delitem(sys.modules, k, raising = False)
+
+        assert lc._resolve_swa_pattern("gpt-oss", 24) == [(i + 1) % 2 != 0 for i in range(24)]
+        # And the HF spelling still resolves, so folding costs the old key nothing.
+        assert lc._resolve_swa_pattern("gpt_oss", 24) == [(i + 1) % 2 != 0 for i in range(24)]
 
     def test_returns_none_for_arch_unknown_to_transformers(self):
         from core.inference.llama_cpp import _resolve_swa_entry_from_transformers
