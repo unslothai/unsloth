@@ -25,6 +25,8 @@ on:
       - 'install.ps1'
       - '.github/actions/frontend-dist-restore/action.yml'
       - '.github/actions/frontend-dist-save/action.yml'
+      - '.github/actions/uv-cache-restore/action.yml'
+      - '.github/actions/uv-cache-save/action.yml'
       - 'scripts/uninstall.ps1'
       - 'tests/studio/test_uninstall_*.ps1'
       - 'tests/studio/test_psmodulepath_normalization.ps1'
@@ -171,6 +173,16 @@ jobs:
       # inputs are byte-identical; the action's own reasoning, and the assertion that
       # a hit was actually REUSED rather than rebuilt, live in
       # .github/actions/frontend-dist-restore and -save.
+      # The uv download cache, the other half of what install-unsloth-local restores
+      # for the Linux and macOS jobs and the half this job never had: the same
+      # install took 2.5 to 4.3 min here against 0.6 to 0.7 min on Linux, all of it
+      # uv downloading wheels a cache would have supplied. install.ps1 preserves the
+      # UV_CACHE_DIR the action exports. Key and reasoning live in
+      # .github/actions/uv-cache-restore.
+      - name: Restore the uv download cache
+        id: uv-cache
+        uses: ./.github/actions/uv-cache-restore
+
       - name: Restore the built frontend
         id: fe-dist
         uses: ./.github/actions/frontend-dist-restore
@@ -212,6 +224,13 @@ jobs:
         with:
           cache-hit: ${{ steps.fe-dist.outputs.cache-hit }}
           key: ${{ steps.fe-dist.outputs.key }}
+
+      # Paired with the uv restore above: pruned to built wheels, saved on main only.
+      - name: Save the uv download cache
+        uses: ./.github/actions/uv-cache-save
+        with:
+          cache-hit: ${{ steps.uv-cache.outputs.cache-hit }}
+          key: ${{ steps.uv-cache.outputs.key }}
 
       - name: Assert install.ps1 used the Windows llama.cpp prebuilt
         run: |
