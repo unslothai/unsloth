@@ -22,6 +22,7 @@ from utils.process_lifetime import (
     child_popen_kwargs,
     forget_pid,
     initialize_parent_lifetime,
+    is_process_shutting_down,
     spawn_on_lifetime_thread,
 )
 
@@ -177,6 +178,8 @@ def run_bounded(
         options["start_new_session"] = True
         options.update(child_popen_kwargs())
     initialize_parent_lifetime()
+    if is_process_shutting_down():
+        raise AgentWorkspaceError("Studio is shutting down; not starting a workspace command.")
     process = spawn_on_lifetime_thread(lambda: subprocess.Popen(list(argv), **options))
     adopt_pid(process.pid)
     group_id = process.pid if os.name != "nt" else None
@@ -196,6 +199,13 @@ def run_bounded(
     reader = threading.Thread(target = drain, daemon = True)
     reader.start()
     try:
+        # Shutdown can sweep between the pre-launch check and adoption. Reap
+        # this child ourselves if that sweep could have missed it.
+        if is_process_shutting_down():
+            _terminate_bounded_process(process, group_id)
+            process.wait(timeout = 3)
+            reader.join(timeout = 2)
+            raise AgentWorkspaceError("Studio is shutting down; workspace command stopped.")
         try:
             code = process.wait(timeout = timeout_seconds)
         except subprocess.TimeoutExpired as exc:

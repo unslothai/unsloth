@@ -16,6 +16,7 @@ from utils.process_lifetime import (
     child_popen_kwargs,
     forget_pid,
     initialize_parent_lifetime,
+    is_process_shutting_down,
     spawn_on_lifetime_thread,
 )
 
@@ -206,6 +207,8 @@ def execute_check(
     try:
         argv = boundary.wrap_argv(_shell_argv(command))
         initialize_parent_lifetime()
+        if is_process_shutting_down():
+            raise AgentWorkspaceError("Studio is shutting down; not starting verification.")
         process = spawn_on_lifetime_thread(lambda: subprocess.Popen(argv, **popen_options))
     except ProjectExecutionUnavailable as exc:
         boundary.close()
@@ -228,6 +231,10 @@ def execute_check(
     deadline = time.monotonic() + timeout_seconds
     result_status = "failed"
     try:
+        # A shutdown sweep may already have taken its snapshot before adopt_pid.
+        if is_process_shutting_down():
+            result_status = "cancelled"
+            _terminate_bounded_process(process, group_id)
         while process.poll() is None:
             if cancel_event.wait(timeout = 0.05):
                 result_status = "cancelled"

@@ -548,7 +548,8 @@ def test_windows_bounded_termination_kills_descendant_tree(tmp_path):
     child_source = (
         "import pathlib,subprocess,sys,time; "
         "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(120)']); "
-        "pathlib.Path(sys.argv[1]).write_text(str(child.pid), encoding='ascii'); "
+        "pid_file=pathlib.Path(sys.argv[1]); pending=pid_file.with_suffix('.tmp'); "
+        "pending.write_text(str(child.pid), encoding='ascii'); pending.replace(pid_file); "
         "time.sleep(120)"
     )
     process = subprocess.Popen(

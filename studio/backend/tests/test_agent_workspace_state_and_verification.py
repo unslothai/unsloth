@@ -1314,3 +1314,104 @@ def test_empty_mandatory_verification_policy_is_rejected_without_mutation(tmp_pa
     )
     assert optional["checks"] == []
     assert optional["revision"] == before["revision"] + 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX verification process boundary")
+@pytest.mark.parametrize("verification", [False, True])
+def test_workspace_spawn_refuses_shutdown_before_launch(
+    tmp_path, monkeypatch, local_verification_execution_boundary, verification
+):
+    from core.agent_workspace import common
+
+    module = verification_module if verification else common
+    monkeypatch.setattr(module, "is_process_shutting_down", lambda: True, raising = False)
+    monkeypatch.setattr(
+        module,
+        "spawn_on_lifetime_thread",
+        lambda *_args, **_kwargs: pytest.fail("shutdown must refuse the launch"),
+    )
+    boundaries = []
+    original_open = verification_module.ProjectExecutionBoundary.open
+
+    def track_open(*args, **kwargs):
+        boundary = original_open(*args, **kwargs)
+        boundaries.append(boundary)
+        return boundary
+
+    monkeypatch.setattr(verification_module.ProjectExecutionBoundary, "open", track_open)
+    with pytest.raises(AgentWorkspaceError, match = "shutting down"):
+        if verification:
+            execute_check(
+                _required_check(),
+                root = tmp_path,
+                cancel_event = threading.Event(),
+                run_id = "shutdown-before-launch",
+            )
+        else:
+            run_bounded([sys.executable, "-c", "pass"], cwd = tmp_path)
+    assert all(boundary._closed for boundary in boundaries)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX verification process boundary")
+@pytest.mark.parametrize("verification", [False, True])
+def test_workspace_spawn_reaps_child_when_shutdown_races_adoption(
+    tmp_path, monkeypatch, local_verification_execution_boundary, verification
+):
+    from core.agent_workspace import common
+    from utils.process_lifetime import _group_has_members
+
+    module = verification_module if verification else common
+    shutting_down = threading.Event()
+    monkeypatch.setattr(module, "is_process_shutting_down", shutting_down.is_set, raising = False)
+    original_spawn = module.spawn_on_lifetime_thread
+    original_adopt = module.adopt_pid
+    original_forget = module.forget_pid
+    processes = []
+    forgotten = []
+
+    def spawn(factory):
+        process = original_spawn(factory)
+        processes.append(process)
+        return process
+
+    def adopt_then_shutdown(pid):
+        original_adopt(pid)
+        shutting_down.set()
+
+    def forget(pid):
+        forgotten.append(pid)
+        original_forget(pid)
+
+    monkeypatch.setattr(module, "spawn_on_lifetime_thread", spawn)
+    monkeypatch.setattr(module, "adopt_pid", adopt_then_shutdown)
+    monkeypatch.setattr(module, "forget_pid", forget)
+    try:
+        if verification:
+            result = execute_check(
+                {
+                    "name": "shutdown-race",
+                    "command": _python_command("import time; time.sleep(30)"),
+                    "timeoutSeconds": 1,
+                },
+                root = tmp_path,
+                cancel_event = threading.Event(),
+                run_id = "shutdown-race",
+            )
+            assert result["status"] == "cancelled"
+            assert "shutdown-race" not in verification_module._ACTIVE_PROCESSES
+        else:
+            with pytest.raises(AgentWorkspaceError, match = "shutting down"):
+                run_bounded(
+                    [sys.executable, "-c", "import time; time.sleep(30)"],
+                    cwd = tmp_path,
+                    timeout_seconds = 1,
+                )
+        assert len(processes) == 1
+        process = processes[0]
+        assert process.poll() is not None
+        assert not _group_has_members(process.pid)
+        assert forgotten == [process.pid]
+    finally:
+        for process in processes:
+            common._terminate_bounded_process(process, process.pid)
+            process.wait(timeout = 3)

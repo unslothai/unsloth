@@ -45,6 +45,7 @@ on:
       - 'studio/backend/tests/test_edit_file_tool.py'
       - 'studio/backend/tests/test_log_filter_no_truncation.py'
       - 'studio/backend/tests/test_mcp_stdio_api_key_gate.py'
+      - 'studio/backend/tests/test_orchestrator_unload_cancel.py'
       - 'studio/backend/tests/test_native_path_lease_replay.py'
       - 'studio/backend/tests/fixtures/native_path_lease_v2_rust.json'
       - 'studio/backend/tests/test_project_context_transport.py'
@@ -110,6 +111,7 @@ on:
       - 'studio/backend/tests/test_edit_file_tool.py'
       - 'studio/backend/tests/test_log_filter_no_truncation.py'
       - 'studio/backend/tests/test_mcp_stdio_api_key_gate.py'
+      - 'studio/backend/tests/test_orchestrator_unload_cancel.py'
       - 'studio/backend/tests/test_native_path_lease_replay.py'
       - 'studio/backend/tests/fixtures/native_path_lease_v2_rust.json'
       - 'studio/backend/tests/test_project_context_transport.py'
@@ -202,7 +204,10 @@ jobs:
       - name: Guard the complete agent workspace matrix
         if: runner.os == 'Linux'
         shell: bash
-        run: python -m pytest -q tests/studio/test_codex_agent_workspace_ci_matrix.py
+        run: >-
+          python -m pytest -q
+          tests/studio/test_codex_agent_workspace_ci_matrix.py
+          studio/backend/tests/test_orchestrator_unload_cancel.py::test_every_long_lived_spawner_consults_the_shutdown_latch
 
       - name: Install Linux project sandbox
         if: runner.os == 'Linux'

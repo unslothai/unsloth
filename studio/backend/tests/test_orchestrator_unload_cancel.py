@@ -3424,6 +3424,8 @@ def test_every_long_lived_spawner_consults_the_shutdown_latch():
 
     backend = Path(__file__).resolve().parent.parent
     guarded = {
+        "core/agent_workspace/common.py",
+        "core/agent_workspace/verification.py",
         "core/export/orchestrator.py",
         "core/inference/llama_cpp.py",
         "core/inference/orchestrator.py",
