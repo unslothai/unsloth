@@ -2140,12 +2140,14 @@ _SIDECAR_COMMON_PINS="huggingface_hub==1.8.0 hf_xet==1.4.2"
 _sidecar_top_up_tiktoken() {
     _stt_dir="$1"
     _stt_label="$2"
-    # The payload, not the dist-info alone, as Repair-SidecarTiktoken checks: an
-    # interrupted install can leave the dist-info with no package beside it, the sidecar
-    # predicate accepts the sidecar (tiktoken is unpinned and optional), and a
-    # dist-info-only check would skip this top-up forever while Qwen tokenizers fail.
+    # The payload AND a complete dist-info (RECORD is written last), as
+    # Repair-SidecarTiktoken and the runtime's _optional_package_absent check: an
+    # interrupted install can leave the dist-info with no package beside it, or METADATA
+    # and the package without the native extension and RECORD; the sidecar predicate
+    # accepts the sidecar either way (tiktoken is unpinned and optional), and a weaker
+    # check would skip this top-up forever while Qwen tokenizers fail.
     for _stt_meta in "$_stt_dir"/tiktoken-*.dist-info/METADATA; do
-        if [ -f "$_stt_meta" ] && [ -f "$_stt_dir/tiktoken/__init__.py" ]; then
+        if [ -f "$_stt_meta" ] && [ -f "${_stt_meta%METADATA}RECORD" ] && [ -f "$_stt_dir/tiktoken/__init__.py" ]; then
             unset _stt_meta
             return 0
         fi
@@ -2203,23 +2205,33 @@ _sidecar_current() {
     if [ "$_sc_rc" -eq 124 ] || [ "$_sc_rc" -eq 137 ]; then
         _sc_out="sidecar: audit did not answer within 60 seconds"
     fi
-    unset _sc_python _sc_rc
+    unset _sc_python
     # The marker, not the exit code alone. An install_manifest.py predating the shim has
     # no __main__ block at all, so running it exits 0 with no output -- and reading that
     # silence as "current" would retire the sidecar rebuild entirely.
     case "$_sc_out" in
         "sidecar: current")
-            unset _sc_out
+            unset _sc_out _sc_rc
             return 0
             ;;
         sidecar:*)
             verbose_substep "sidecar $_sc_dir: ${_sc_out#sidecar: }"
-            unset _sc_out
+            unset _sc_out _sc_rc
             return 1
             ;;
     esac
     unset _sc_out
-    # An old or unusable tree: fall back to the version grep this replaced.
+    # No marker and a failure: the audit started and died (an exception in the shim, an
+    # interpreter that cannot run it). That is not the legacy silent exit 0 the version
+    # grep below stands in for, and reading it as current would retire the audit for
+    # exactly the trees it could not read. Stale, and the rebuild follows.
+    if [ "$_sc_rc" -ne 0 ]; then
+        verbose_substep "sidecar $_sc_dir: audit failed (exit $_sc_rc)"
+        unset _sc_rc
+        return 1
+    fi
+    unset _sc_rc
+    # An old shim (clean, silent exit 0): fall back to the version grep this replaced.
     _target_has_pkg_version "$_sc_dir" "transformers" "$_sc_ver"
 }
 
