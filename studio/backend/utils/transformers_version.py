@@ -2452,6 +2452,24 @@ def _optional_package_absent(venv_dir: str, pkg_spec: str) -> bool:
     )
 
 
+def _remove_optional_remnants(venv_dir: str, pkg_spec: str) -> None:
+    """Drop what a failed optional install left: the payload directory and every dist-info.
+
+    An installer that exits nonzero part-way (a full disk, an interrupted copy) can leave
+    the package directory without its native extension, or metadata without the package;
+    with both gone, _optional_package_absent reads the package as absent and the next
+    top-up tries again instead of the sidecar shadowing a working ambient copy.
+    """
+    name = pkg_spec.split("==")[0]
+    root = Path(venv_dir)
+    for candidate in {name, name.replace("-", "_"), name.replace("_", "-")}:
+        payload = root / candidate
+        if payload.is_dir() and not payload.is_symlink():
+            shutil.rmtree(payload, ignore_errors = True)
+    for entry in _dist_info_entries(venv_dir, name):
+        shutil.rmtree(root / entry, ignore_errors = True)
+
+
 def _remove_recordless_dist_infos(venv_dir: str, pkg_spec: str) -> None:
     """Drop every `<pkg>-*.dist-info` with no RECORD: metadata uv cannot uninstall."""
     name = pkg_spec.split("==")[0]
@@ -2701,6 +2719,10 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
                     pkg,
                     venv_dir,
                 )
+                # Only an absent optional package is safe to continue without: this
+                # directory goes ahead of site-packages, and a half-copied payload
+                # would shadow the ambient one and fail at tokenization.
+                _remove_optional_remnants(venv_dir, pkg)
                 continue
             return False
     logger.info("Installed %s to %s", label, venv_dir)
