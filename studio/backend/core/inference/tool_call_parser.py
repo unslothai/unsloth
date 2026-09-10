@@ -2328,6 +2328,32 @@ def _signal_inside_leading_wrapperless_gemma(
         return enabled_tool_names is not None and end < first
 
 
+def _inside_leading_markerless_body(
+    content: str, signal: int, enabled_tool_names: Optional[set]
+) -> bool:
+    """True when ``signal`` sits inside the balanced body of a LEADING promotable markerless
+    call, bare Gemma or rehearsal, so it is that call's ARGUMENT text.
+
+    Inside only, unlike ``_signal_inside_leading_wrapperless_gemma``: a promotable call that
+    CLOSES before the signal leaves a real wrapped call behind it, and claiming the turn there
+    would drop it."""
+    cursor = 0
+    while True:
+        gem = _GEMMA_BARE_TC_RE.search(content, cursor)
+        reh = _tool_healing._REHEARSAL_RE.search(content, cursor)
+        m = min((x for x in (gem, reh) if x is not None), key = lambda x: x.start(), default = None)
+        if m is None or m.start() > signal:
+            return False
+        if not _markerless_promotable(m.group(1), enabled_tool_names):
+            cursor = m.end()
+            continue
+        if m is gem:
+            body, end = m.end() - 1, _gemma_body_brace_end(content, m.end() - 1)
+        else:
+            body, end = m.end(), _tool_healing._balanced_json_span(content, m.end())
+        return end is not None and body < signal <= end
+
+
 def _disabled_gemma_call_end_containing_signal(
     content: str, enabled_tool_names: Optional[set]
 ) -> int | None:
@@ -2506,6 +2532,19 @@ def parse_tool_calls_from_text(
             )
             if calls:
                 return calls
+
+    # A leading promotable rehearsal owns the turn like the envelopes above: a wrapper quoted in
+    # its arguments is that call's data. tool_healing dispatches by opener, so a quoted
+    # ``<|tool_call>`` or ``<function=`` beat the outer call and ran terminal instead.
+    _reh_signal = _first_foreign_tool_signal(content)
+    if _reh_signal is not None and _inside_leading_markerless_body(
+        content, _reh_signal, enabled_tool_names
+    ):
+        calls = _parse_bare_rehearsals(
+            content, id_offset = id_offset, enabled_tool_names = enabled_tool_names
+        )
+        if calls:
+            return calls
 
     # Qwen/Hermes, Qwen3.5 XML, Gemma 4, plus Mistral [TOOL_CALLS] / bare rehearsal ``name[ARGS]{json}`` use the shared
     # tool_healing parser (strict/Auto-Heal contract + nested-marker, trailing-prose, and ``<|"|>`` quoted-string
@@ -3226,7 +3265,12 @@ def _parse_gemma_tool_calls(
     # The WRAPPED form (strict + nested-marker handling) is tool_healing's, which runs first: defer content with a
     # wrapped opener. A marker literal alone is not enough -- a wrapper-less call mentioning ``<|tool_call>`` would be
     # lost if deferred.
-    if _GEMMA_TC_RE.search(content):
+    _wrapped = _GEMMA_TC_RE.search(content)
+    # Not when it sits INSIDE a leading promotable call's body: that is the outer call's own
+    # argument text, and deferring handed the turn to a wrapper the model was only quoting.
+    if _wrapped is not None and not _inside_leading_markerless_body(
+        content, _wrapped.start(), enabled_tool_names
+    ):
         return out
     # A whole-content JSON value is a structured answer: quoted examples must not become calls
     if _whole_content_is_json_value(content):

@@ -309,6 +309,9 @@ _ARG_FIXTURES = {
     # input and pins nothing.
     "first": lambda text: _parser_first_sentinel(text),
     "found": lambda text: max(_parser_first_sentinel(text), 0),
+    # An ownership check wants the offset of the first FOREIGN signal, which is what its
+    # callers pass; 0 would sit before every outer call and pin nothing.
+    "signal": lambda text: max(_parser_first_foreign_signal(text) or 0, 0),
     "out": lambda text: [],
     # The model-facing notices added for a small window: each takes the tool name first
     # (which gets the corpus text) and then the result it is appended to.
@@ -362,6 +365,12 @@ def _gemma_argument_body(text: str) -> str:
 def _parser_first_sentinel(text: str):
     from core.inference import tool_call_parser
     return tool_call_parser._first_sentinel(text, 0)
+
+
+def _parser_first_foreign_signal(text: str):
+    from core.inference import tool_call_parser
+
+    return tool_call_parser._first_foreign_tool_signal(text)
 
 
 def _tool_healing_build_markers(text: str):
