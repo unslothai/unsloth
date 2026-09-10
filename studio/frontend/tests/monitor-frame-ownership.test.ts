@@ -188,65 +188,16 @@ test("the publish hook drops an unmeasurable box rather than publishing it", () 
   );
 });
 
-test("closed lazy settings surfaces cannot leave load failures on screen", () => {
-  const mount = readSrc("features/settings/settings-dialog-mount.tsx");
-  // Keep rejected boundaries mounted for a later retry, but only show their errors while the user is
-  // still asking for that surface. A slow rejected chunk must not outlive a quick Open -> Close.
-  for (const [open, testId] of [
-    ["settingsOpen", "settings-dialog-load-failure"],
-    ["monitorOpen", "floating-monitor-load-failure"],
-  ]) {
-    assert.match(
-      mount,
-      new RegExp(
-        `fallback=\\{\\s*${open}\\s*\\?\\s*\\(\\s*<LazyImportFailure[\\s\\S]*?testId="${testId}"[\\s\\S]*?\\)\\s*:\\s*null\\s*\\}`,
-      ),
-    );
-  }
+test("settings and monitor are eagerly imported and mounted without outer loading UI", () => {
+  assert.match(SETTINGS_MOUNT_SOURCE, /import \{ SettingsDialog \} from "\.\/settings-dialog"/);
+  assert.match(SETTINGS_MOUNT_SOURCE, /import \{ FloatingMonitor \} from "@\/components\/floating-monitor"/);
+  assert.match(SETTINGS_MOUNT_SOURCE, /<SettingsDialog \/>/);
+  assert.match(SETTINGS_MOUNT_SOURCE, /<FloatingMonitor \/>/);
+  assert.doesNotMatch(SETTINGS_MOUNT_SOURCE, /lazy\(|Suspense|LazyImport|settingsMounted|monitorMounted|settingsOpen|monitorOpen|settings-dialog-loading/);
 });
 
-// Once either surface has loaded, an auth-route round trip must not forget its lazy-entry latch.
-// Both surfaces stay dormant there, then resume independently after authentication.
-test("the lazy Settings mount survives an auth-route round trip", () => {
-  assert.match(
-    ROOT_SOURCE,
-    /<CredentialBootstrapGate active=\{!isAuthFlowRoute\}>/,
-  );
-  assert.match(
-    ROOT_SOURCE,
-    /<SettingsDialogMount active=\{active && ready\} \/>/,
-  );
-  assert.match(
-    SETTINGS_MOUNT_SOURCE,
-    /if \(!active \|\| !\(settingsMounted \|\| monitorMounted\)\) return null;/,
-  );
-  assert.match(
-    SETTINGS_MOUNT_SOURCE,
-    /const \[settingsMounted, setSettingsMounted\] = useState\(settingsOpen\)/,
-  );
-  assert.match(
-    SETTINGS_MOUNT_SOURCE,
-    /const \[monitorMounted, setMonitorMounted\] = useState\(monitorOpen\)/,
-  );
-
-  assert.equal(
-    (
-      SETTINGS_MOUNT_SOURCE.match(/dismissLabel=\{t\("common\.close"\)\}/g) ??
-      []
-    ).length,
-    2,
-  );
-  assert.match(SETTINGS_MOUNT_SOURCE, /data-testid="settings-dialog-loading"/);
-  assert.match(SETTINGS_MOUNT_SOURCE, /dialog\.showModal\(\)/);
-  assert.match(SETTINGS_MOUNT_SOURCE, /tabIndex=\{-1\}/);
-  assert.match(SETTINGS_MOUNT_SOURCE, /onCancel=\{\(event\) =>/);
-  assert.match(SETTINGS_MOUNT_SOURCE, /event\.target === event\.currentTarget/);
-  assert.match(
-    SETTINGS_MOUNT_SOURCE,
-    /onDismiss=\{\(\) => \{\s*closeDialog\(\);\s*restoreSettingsOpener\(opener, openerFallback\);/,
-  );
-  assert.match(
-    SETTINGS_MOUNT_SOURCE,
-    /onDismiss=\{\(\) => setMonitorOpen\(false\)\}/,
-  );
+test("eager settings surfaces remain gated on auth and credential readiness", () => {
+  assert.match(ROOT_SOURCE, /<CredentialBootstrapGate active=\{!isAuthFlowRoute\}>/);
+  assert.match(ROOT_SOURCE, /<SettingsDialogMount active=\{active && ready\} \/>/);
+  assert.match(SETTINGS_MOUNT_SOURCE, /if \(!active\) return null;/);
 });

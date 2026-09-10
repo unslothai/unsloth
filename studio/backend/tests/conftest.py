@@ -967,3 +967,66 @@ def _no_carried_over_hardware_measurements():
     _clear()
     yield
     _clear()
+
+
+@pytest.fixture(autouse = True)
+def _process_shutdown_latch_is_clear():
+    """Clear the process-wide shutdown latch around every test.
+
+    The latch is deliberately sticky in production: quitting is terminal, and only an
+    embedded host calling run_server again clears it. In a suite that makes it a
+    global one test can leave set for the rest of the file, and any test that tears a
+    backend down sets it, so a later spawn test sees a stale "quitting" and fails in
+    whatever order pytest happens to pick.
+    """
+    from utils import process_lifetime
+
+    def _reopen():
+        process_lifetime.begin_process_lifecycle()
+        # The ROUTE latch too. Any test that exercises _graceful_shutdown reaches
+        # cancel_pending_loads, which sets it, and only run_server clears it -- so one
+        # such test cancels every load admitted by every test that follows it. That is
+        # how four tunnel-safe tests came to fail in a full run and pass alone.
+        # Only if it is ALREADY imported. Importing it here would drag a heavy module
+        # into every test that never asked for it, which perturbed source-contract and
+        # import-order tests elsewhere; and the latch cannot have been set without the
+        # module being loaded, so there is nothing to miss.
+        mod = sys.modules.get("routes.inference")
+        if mod is not None:
+            try:
+                mod.begin_load_lifecycle()
+            except Exception:
+                pass
+
+    _reopen()
+    try:
+        yield
+    finally:
+        _reopen()
+
+
+@pytest.fixture(autouse = True)
+def _admitted_inference_count_is_balanced():
+    """Restore the admitted-inference tally around every test.
+
+    In a request it is balanced by the keep-warm middleware's finally; a test that calls a
+    route helper directly hands it a fabricated scope no middleware ever wraps, so the
+    increment stays on a module global for the rest of the process. Four of this branch's
+    tool-loop tests do exactly that, and `load_model_for_preview`'s busy guard reads the
+    tally, so `test_preview_chat_waits_for_a_slow_checkpoint_load` began 503-ing in a full
+    run while passing alone. Same shape as the shutdown latch above, and the same reason:
+    a process-wide counter needs a per-test boundary.
+    """
+    mod = sys.modules.get("core.inference.llama_keepwarm")
+
+    def _restore(to):
+        live = sys.modules.get("core.inference.llama_keepwarm")
+        if live is not None:
+            with live._lock:
+                live._admitted_inference = to
+
+    before = 0 if mod is None else mod._admitted_inference
+    try:
+        yield
+    finally:
+        _restore(before)

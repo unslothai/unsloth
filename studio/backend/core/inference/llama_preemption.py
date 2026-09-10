@@ -146,15 +146,6 @@ def _int_env(name: str, default: int) -> int:
 DEFAULT_PREEMPT_BUFFER_PER_SLOT = 192
 DEFAULT_PREEMPT_BUFFER_MIN_TOKENS = 256
 
-# Escape hatch restoring the permanent batch term, the dynamic one needing every prefill announced.
-STATIC_BATCH_ENV = "UNSLOTH_LLAMA_PREEMPT_STATIC_BATCH"
-DEFAULT_PREEMPT_STATIC_BATCH = False
-
-# Drop the batch term for a prefill `_committed_locked` already booked, the chunk being a
-# SUBSET of those cells. A measured holder still needs it: other chats can mask its growth.
-CHARGED_PREFILL_ENV = "UNSLOTH_LLAMA_PREEMPT_BATCH_ONLY_UNCHARGED"
-DEFAULT_PREEMPT_BATCH_ONLY_UNCHARGED = False
-
 # Backstop for an announcement that no first token, pause or departure ever clears. The
 # stream's first-token wait (`_DEFAULT_FIRST_TOKEN_TIMEOUT_S`): shorter dropped the reserve
 # under a prompt still going in.
@@ -163,16 +154,13 @@ PENDING_PREFILL_TTL_S = 1200.0
 # Far above _MAX_LENGTH_CONTINUATIONS: that caps answer quality, this caps churn.
 DEFAULT_MAX_PREEMPT_RESUMES = 32
 
-# A chat preempted this many times in a row outranks longest-wins for the next epoch.
+# A chat preempted this many times in a row outranks newest-first, so repeatedly losing
+# does not become never finishing.
 PROMOTE_AFTER_CONSECUTIVE_PREEMPTIONS = 3
 
 # What a chat running ALONE must leave clear. Without it a chat that outgrew the shared ceiling
 # can never be admitted OR resumed.
 SOLO_MARGIN_DIVISOR = 200
-
-# A server without --metrics never answers the barrier, so it gives up and admits anyway.
-DEFAULT_RECLAIM_BARRIER_TIMEOUT_S = 10.0
-DEFAULT_RECLAIM_BARRIER_POLL_S = 0.05
 
 # An unbounded await_resume() turned three paused chats into a 33-minute hang with nothing
 # decoding. On expiry the turn finishes with what it has.
@@ -274,7 +262,6 @@ class StreamCheckpoint:
     visible_text: str = ""
     reasoning_text: str = ""
     # Carried rather than re-derived: the `context_truncated` SSE event is not idempotent.
-    pending_truncations: list = field(default_factory = list)
     charged_tokens: int = 0
     resumes: int = 0
     reason: Optional[str] = None
@@ -318,7 +305,10 @@ class PreemptionPolicy(Protocol):
 
 class DeferredPreemptionPolicy:
     """A policy handed to the stream before the real one can exist: the tool-loop generator is
-    BUILT before admission returns, and nothing can pause before it is iterated."""
+    BUILT before admission returns, and nothing can pause before it is iterated. NOT
+    ``NullPreemptionPolicy``: unbound, `await_resume` answers False, a wait with no policy behind
+    it being a turn that has to end, while Null answers True, being installed only where no pause
+    can be raised at all."""
 
     __slots__ = ("_inner",)
 
@@ -440,6 +430,14 @@ _PREEMPTABLE = frozenset(
         ParticipantState.PARKED_ON_TOOL,
     }
 )
+
+# Holding an IDLE slot: nothing is decoding, so an idle-slot erase takes these cells.
+_PARKED_ON_A_TOOL = frozenset(
+    {
+        ParticipantState.PARKED_ON_TOOL,
+        ParticipantState.TOOLS_RUNNING,
+    }
+)
 # PREEMPTING is absent on purpose: asking twice double-counts the room its pause will free.
 
 # States a generated token contradicts; `observe` moves such a holder to DECODING.
@@ -491,11 +489,7 @@ def preemption_buffer_tokens(
     # Room for the batch llama.cpp is processing: the cache fails when the next BATCH does not fit,
     # not when it is full. ONLY WHILE PREFILLING; permanent, it held a quarter of an 8192 cache.
     n_batch = max(0, int(batch_tokens or 0))
-    if _bool_env(STATIC_BATCH_ENV, DEFAULT_PREEMPT_STATIC_BATCH):
-        batch_reserve = n_batch
-    else:
-        batch_reserve = min(n_batch, max(0, int(pending_prefill or 0)))
-    reserve = max(reserve, batch_reserve)
+    reserve = max(reserve, min(n_batch, max(0, int(pending_prefill or 0))))
     # Drafts are additional: cells the drafter puts in before acceptance, unseen by admission.
     reserve += max(0, int(draft_tokens or 0)) * slot_count
     # Never the whole cache: a large draft window on a small -c degrades to a tight buffer.
@@ -548,6 +542,9 @@ class Participant:
     # (the next of `n` choices) can be put back to them.
     charged_tokens: int = 0
     charged_prompt_tokens: int = 0
+    # The state this holder was in when the sweep chose it. Only read while PREEMPTING, so
+    # a value left behind by an earlier round is never consulted.
+    preempted_from: str = ""
 
     def replay_tokens(self) -> int:
         """What a resume sends back as prompt: the prompt, with every paused partial folded
@@ -599,6 +596,24 @@ class Participant:
     @property
     def preemptable(self) -> bool:
         return self.state in _PREEMPTABLE
+
+    @property
+    def parked_on_a_tool(self) -> bool:
+        """Whether an idle-slot erase takes THIS holder's cells.
+
+        The state alone is not enough once it has been chosen. `observe()` runs the sweep
+        and the reclaim reads the ledger after it, so a victim picked while parked is
+        already PREEMPTING when `parked_holders()` is taken; and an approval has no
+        upstream stream to abort, so its pause may not land until the user answers.
+        Invisible to the erase that took its cells, it would keep a phantom charge and a
+        commitment nobody can use for as long as the approval sits, and its next prefill
+        would be announced as the round's growth rather than the full replay it is.
+        """
+        if self.state in _PARKED_ON_A_TOOL:
+            return True
+        return (
+            self.state == ParticipantState.PREEMPTING and self.preempted_from in _PARKED_ON_A_TOOL
+        )
 
 
 @dataclass(frozen = True, **_SLOTS)
@@ -783,7 +798,8 @@ class PreemptionController:
             self._resume_tickets.pop(gen_id, None)
 
     def resume_queue_depth(self) -> int:
-        """How many waits are in the resume line."""
+        """How many waits are in the resume line. Read by the tests; the mechanism itself
+        works off `_resume_reserved_locked`."""
         with self._lock:
             return len(self._resume_tickets)
 
@@ -1092,8 +1108,7 @@ class PreemptionController:
             return {
                 gen_id: participant.park_seq
                 for gen_id, participant in self._participants.items()
-                if participant.state
-                in (ParticipantState.PARKED_ON_TOOL, ParticipantState.TOOLS_RUNNING)
+                if participant.parked_on_a_tool
             }
 
     def note_cells_reclaimed(self, only: Optional[Dict[str, int]] = None) -> int:
@@ -1113,10 +1128,7 @@ class PreemptionController:
         released = []
         with self._lock:
             for participant in self._participants.values():
-                if participant.state not in (
-                    ParticipantState.PARKED_ON_TOOL,
-                    ParticipantState.TOOLS_RUNNING,
-                ):
+                if not participant.parked_on_a_tool:
                     continue
                 if only is not None and only.get(participant.gen_id) != participant.park_seq:
                     # Parked after the reading, or parked again since: its cells are the
@@ -1264,6 +1276,8 @@ class PreemptionController:
             return not self._participants
 
     def committed_tokens(self) -> int:
+        """What the watermark compares against the ceiling. `snapshot().committed` for
+        callers that want the rest of it; this is the figure on its own."""
         with self._lock:
             return self._committed_locked()
 
@@ -1288,13 +1302,10 @@ class PreemptionController:
         """Prompt tokens announced but not yet in the cache, across every holder. `exclude` drops
         one participant so a caller asking "room for ME" can substitute its own figure."""
         now = time.monotonic()
-        # See CHARGED_PREFILL_ENV: an unmeasured holder's chunk comes out of cells
-        # `_committed_locked` already adds on top of the resident figure.
-        skip_charged = _bool_env(CHARGED_PREFILL_ENV, DEFAULT_PREEMPT_BATCH_ONLY_UNCHARGED)
         return sum(
             p.prefill_pending(now)
             for gen_id, p in self._participants.items()
-            if (exclude is None or gen_id != exclude) and not (skip_charged and not p.measured)
+            if exclude is None or gen_id != exclude
         )
 
     def _buffer_locked(self, *, pending: Optional[int] = None) -> int:
@@ -1451,6 +1462,9 @@ class PreemptionController:
                 # participant's own state stays KV-holding until on_preempted says so.
                 total -= victim.tokens
                 victim.consecutive_preemptions += 1
+                # Before the state goes: PREEMPTING erases the only record that this
+                # holder's cells are an idle slot's, which is what the reclaim keys on.
+                victim.preempted_from = victim.state
                 victim.state = ParticipantState.PREEMPTING
                 victim.preempt_chosen_at = time.monotonic()
                 victim.preempt_event.set()
@@ -1475,32 +1489,6 @@ class PreemptionController:
                 exact = self._exact,
                 holders = sum(1 for p in self._participants.values() if p.holds_kv),
             )
-
-
-def wait_for_reclaim(
-    scrape: Callable[[], Optional[dict]],
-    *,
-    target_processing: int,
-    timeout_s: float = DEFAULT_RECLAIM_BARRIER_TIMEOUT_S,
-    poll_s: float = DEFAULT_RECLAIM_BARRIER_POLL_S,
-    sleep: Callable[[float], None] = time.sleep,
-    monotonic: Callable[[], float] = time.monotonic,
-) -> bool:
-    """Block until llama-server reports at most ``target_processing`` requests in flight, socket
-    teardown not being evidence the cells are free. A BARRIER, never an attribution: the gauge cannot
-    say which generation owns a slot. False means unconfirmed, and the caller proceeds anyway."""
-    deadline = monotonic() + max(0.0, float(timeout_s))
-    while True:
-        metrics = scrape()
-        if metrics is not None:
-            processing = metrics.get("requests_processing")
-            if processing is None:
-                return False
-            if int(processing) <= max(0, int(target_processing)):
-                return True
-        if monotonic() >= deadline:
-            return False
-        sleep(poll_s)
 
 
 class ControllerPreemptionPolicy:
@@ -1706,7 +1694,12 @@ class ControllerPreemptionPolicy:
             )
             return got
         except Exception as exc:
-            # Includes the future timing out. Either way the room did not come back.
+            # Includes the future timing out. Either way the room did not come back, and
+            # the grant above already moved this holder to RESUMING, raised its charge and
+            # announced a prefill: without the same rollback the `got == False` branch
+            # does, it is a phantom no sweep can choose, holding room nothing will fill
+            # until the outer stream finishes tearing down.
+            self._controller.note_resume_failed(self._gen_id)
             _log.warning(
                 "llama preemption resume-failed: gen_id=%s want=%s error=%s",
                 self._gen_id,

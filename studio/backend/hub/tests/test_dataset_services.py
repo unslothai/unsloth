@@ -27,6 +27,59 @@ from hub.utils import (
 )
 
 
+def _shared_setup_1(monkeypatch, tmp_path):
+    repo_id = "Org/Data"
+    first = _app_cache_entry(
+        monkeypatch,
+        tmp_path / "first" / "hub",
+        repo_id,
+        "commit-a",
+    )
+    second = _app_cache_entry(
+        monkeypatch,
+        tmp_path / "second" / "hub",
+        repo_id,
+        "commit-b",
+    )
+    return first, repo_id, second
+
+
+def _shared_setup_2(monkeypatch):
+    monkeypatch.setattr(
+        cache_inventory,
+        "_collect_hf_cache_scans",
+        lambda: ([SimpleNamespace(repos = [_metadata_only_raw_repo()])], {"/cache/hub"}),
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan,
+        "is_snapshot_partial",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(cache_inventory, "_raw_dataset_cache_has_data", lambda *_args: False)
+    monkeypatch.setattr(cache_inventory, "_scan_hub_dataset_cache_dirs", lambda: [])
+
+
+def _shared_setup_3(monkeypatch):
+    monkeypatch.setattr(
+        cache_inventory,
+        "purge_partial_repo",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        cache_inventory.download_manifest,
+        "purge_all_state_for_repo",
+        lambda *_args, **_kwargs: 0,
+    )
+
+
+def _shared_setup_4(monkeypatch):
+    monkeypatch.setattr(
+        cache_inventory,
+        "_delete_processed_dataset_cache",
+        lambda _repo_id, **_kwargs: (False, []),
+    )
+
+
 @pytest.fixture(autouse = True)
 def _app_dataset_cache_root(monkeypatch, tmp_path):
     monkeypatch.setattr(
@@ -163,74 +216,79 @@ def _dataset_snapshot(monkeypatch, tmp_path: Path, filenames: tuple[str, ...]) -
     return repo_root
 
 
-def test_raw_dataset_cache_has_data_rejects_a_metadata_only_snapshot(monkeypatch, tmp_path):
-    repo_root = _dataset_snapshot(
-        monkeypatch,
-        tmp_path,
-        (".gitattributes", "README.md", "dataset_infos.json", "LICENSE"),
-    )
-
+@pytest.mark.parametrize(
+    "file_a, file_b, file_c, file_d",
+    [
+        pytest.param(
+            ".gitattributes",
+            "README.md",
+            "dataset_infos.json",
+            "LICENSE",
+            id = "raw_dataset_cache_has_data_rejects_a_metadata_only_snapshot",
+        ),
+        # Neither suffix is in `datasets`' extension map, and `datasets>=4` dropped
+        # `trust_remote_code`, which no load path here passes anyway.
+        pytest.param(
+            "README.md",
+            "CITATION.cff",
+            "data.py",
+            "docs/usage.md",
+            id = "raw_dataset_cache_has_data_ignores_a_citation_and_a_loading_script",
+        ),
+        # `datasets` skips every dotted name when resolving data files, so none supply rows.
+        pytest.param(
+            "README.md",
+            ".gitignore",
+            ".gitattributes",
+            ".hidden/notes.txt",
+            id = "raw_dataset_cache_has_data_ignores_any_dotfile",
+        ),
+    ],
+)
+def test_raw_dataset_cache_has_data_rejects_payload_free_snapshots(
+    monkeypatch, tmp_path, file_a, file_b, file_c, file_d
+):
+    repo_root = _dataset_snapshot(monkeypatch, tmp_path, (file_a, file_b, file_c, file_d))
     assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
 
 
-def test_raw_dataset_cache_has_data_ignores_os_clutter(monkeypatch, tmp_path):
-    """Opening the cache dir in Finder or Explorer drops a `.DS_Store`/`Thumbs.db` beside the
-    card, which must not read as payload."""
-    repo_root = _dataset_snapshot(
-        monkeypatch,
-        tmp_path,
-        ("README.md", ".DS_Store", "Thumbs.db"),
-    )
-
-    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
-
-
-def test_raw_dataset_cache_has_data_finds_nested_payload_of_any_format(monkeypatch, tmp_path):
-    """Image and audio repos ship no extension the app keeps a format list for, so the check
-    asks whether anything beyond metadata is present rather than matching known formats."""
-    repo_root = _dataset_snapshot(
-        monkeypatch,
-        tmp_path,
-        ("README.md", "data/train-00000-of-00001.parquet", "data/train/0001.png"),
-    )
-
-    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is True
-
-
-def test_raw_dataset_cache_has_data_ignores_appledouble_sidecars(monkeypatch, tmp_path):
-    """A snapshot carried through a Mac zip picks up `._name` sidecars and a `__MACOSX`
-    tree. `datasets` skips dotted names and `__`-prefixed dirs when it resolves data files,
-    so counting them as payload offered a card-only snapshot On Device again."""
-    repo_root = _dataset_snapshot(
-        monkeypatch,
-        tmp_path,
-        ("README.md", "._README.md", "__MACOSX/._README.md"),
-    )
-
-    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
-
-
-def test_raw_dataset_cache_has_data_ignores_a_citation_and_a_loading_script(monkeypatch, tmp_path):
-    """Neither suffix is in `datasets`' extension map, and a script also needs
-    `trust_remote_code`, which no load path here passes and `datasets>=4` removed."""
-    repo_root = _dataset_snapshot(
-        monkeypatch,
-        tmp_path,
-        ("README.md", "CITATION.cff", "data.py", "docs/usage.md"),
-    )
-
-    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
-
-
-def test_raw_dataset_cache_has_data_counts_payload_beside_a_loading_script(monkeypatch, tmp_path):
-    """The suffix rule is for files only: a script beside real data is still payload."""
-    repo_root = _dataset_snapshot(
-        monkeypatch,
-        tmp_path,
-        ("README.md", "data.py", "data/train.parquet"),
-    )
-
-    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is True
+@pytest.mark.parametrize(
+    "file_a, file_b, expected",
+    [
+        # Finder and Explorer drop `.DS_Store`/`Thumbs.db`, which must not read as payload.
+        pytest.param(
+            ".DS_Store", "Thumbs.db", False, id = "raw_dataset_cache_has_data_ignores_os_clutter"
+        ),
+        # Image and audio repos match no known format, so the check asks whether anything
+        # beyond metadata is present.
+        pytest.param(
+            "data/train-00000-of-00001.parquet",
+            "data/train/0001.png",
+            True,
+            id = "raw_dataset_cache_has_data_finds_nested_payload_of_any_format",
+        ),
+        # A Mac zip adds `._name` sidecars and `__MACOSX`; `datasets` skips both, so counting
+        # them as payload offered a card-only snapshot On Device.
+        pytest.param(
+            "._README.md",
+            "__MACOSX/._README.md",
+            False,
+            id = "raw_dataset_cache_has_data_ignores_appledouble_sidecars",
+        ),
+        # The suffix rule is for files only: a script beside real data is still payload.
+        pytest.param(
+            "data.py",
+            "data/train.parquet",
+            True,
+            id = "raw_dataset_cache_has_data_counts_payload_beside_a_loading_script",
+        ),
+    ],
+)
+def test_raw_dataset_cache_has_data_counts_only_real_payload(
+    monkeypatch, tmp_path, file_a, file_b, expected
+):
+    repo_root = _dataset_snapshot(monkeypatch, tmp_path, ("README.md", file_a, file_b))
+    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is expected
 
 
 def test_raw_dataset_cache_has_data_counts_payload_under_a_metadata_named_dir(
@@ -419,18 +477,6 @@ def test_raw_dataset_cache_has_data_ignores_payload_in_an_unpinned_revision(monk
     assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
 
 
-def test_raw_dataset_cache_has_data_ignores_any_dotfile(monkeypatch, tmp_path):
-    """`.gitignore` and friends are not in the enumerated list, but `datasets` skips every
-    dotted name when resolving data files, so none of them can supply rows."""
-    repo_root = _dataset_snapshot(
-        monkeypatch,
-        tmp_path,
-        ("README.md", ".gitignore", ".gitattributes", ".hidden/notes.txt"),
-    )
-
-    assert cache_inventory._raw_dataset_cache_has_data("Org/Data", repo_root) is False
-
-
 def test_raw_dataset_cache_has_data_never_walks_outside_the_snapshot(monkeypatch, tmp_path):
     """The prune is a containment test, not a link-type test.
 
@@ -477,18 +523,7 @@ def _metadata_only_raw_repo() -> SimpleNamespace:
 def test_dataset_cache_without_data_files_is_partial(monkeypatch):
     """A snapshot holding only the dataset card passes every structural check but
     cannot be loaded, so it must not be offered as usable On Device."""
-    monkeypatch.setattr(
-        cache_inventory,
-        "_collect_hf_cache_scans",
-        lambda: ([SimpleNamespace(repos = [_metadata_only_raw_repo()])], {"/cache/hub"}),
-    )
-    monkeypatch.setattr(
-        cache_inventory.hf_cache_scan,
-        "is_snapshot_partial",
-        lambda *_args, **_kwargs: False,
-    )
-    monkeypatch.setattr(cache_inventory, "_raw_dataset_cache_has_data", lambda *_args: False)
-    monkeypatch.setattr(cache_inventory, "_scan_hub_dataset_cache_dirs", lambda: [])
+    _shared_setup_2(monkeypatch)
     monkeypatch.setattr(cache_inventory, "_scan_processed_dataset_caches", lambda: [])
     monkeypatch.setattr(cache_inventory, "_scan_app_processed_dataset_caches", lambda: [])
 
@@ -502,18 +537,7 @@ def test_processed_cache_settles_a_partial_raw_row_without_losing_its_path(monke
     """The Arrow cache loads on its own, so it clears `partial`. The row must keep the hub
     `cache_path`, which is the only handle `delete_cached_dataset_response` can scope a
     hub-dir purge to."""
-    monkeypatch.setattr(
-        cache_inventory,
-        "_collect_hf_cache_scans",
-        lambda: ([SimpleNamespace(repos = [_metadata_only_raw_repo()])], {"/cache/hub"}),
-    )
-    monkeypatch.setattr(
-        cache_inventory.hf_cache_scan,
-        "is_snapshot_partial",
-        lambda *_args, **_kwargs: False,
-    )
-    monkeypatch.setattr(cache_inventory, "_raw_dataset_cache_has_data", lambda *_args: False)
-    monkeypatch.setattr(cache_inventory, "_scan_hub_dataset_cache_dirs", lambda: [])
+    _shared_setup_2(monkeypatch)
     monkeypatch.setattr(
         cache_inventory,
         "_scan_processed_dataset_caches",
@@ -541,18 +565,7 @@ def test_processed_cache_settles_a_partial_raw_row_without_losing_its_path(monke
 def test_app_processed_cache_never_settles_a_partial_raw_row(monkeypatch):
     """App caches are written per snapshot commit but grouped without one, so a finished
     cache proves nothing about the snapshot the loader will resolve."""
-    monkeypatch.setattr(
-        cache_inventory,
-        "_collect_hf_cache_scans",
-        lambda: ([SimpleNamespace(repos = [_metadata_only_raw_repo()])], {"/cache/hub"}),
-    )
-    monkeypatch.setattr(
-        cache_inventory.hf_cache_scan,
-        "is_snapshot_partial",
-        lambda *_args, **_kwargs: False,
-    )
-    monkeypatch.setattr(cache_inventory, "_raw_dataset_cache_has_data", lambda *_args: False)
-    monkeypatch.setattr(cache_inventory, "_scan_hub_dataset_cache_dirs", lambda: [])
+    _shared_setup_2(monkeypatch)
     monkeypatch.setattr(cache_inventory, "_scan_processed_dataset_caches", lambda: [])
     monkeypatch.setattr(
         cache_inventory,
@@ -633,11 +646,7 @@ def test_delete_cached_dataset_scopes_delete_to_selected_root(monkeypatch, tmp_p
         "_collect_hf_cache_scans",
         lambda: ([_cache("active", target_hub), _cache("previous", other_hub)], set()),
     )
-    monkeypatch.setattr(
-        cache_inventory,
-        "_delete_processed_dataset_cache",
-        lambda _repo_id, **_kwargs: (False, []),
-    )
+    _shared_setup_4(monkeypatch)
     monkeypatch.setattr(
         cache_inventory.download_manifest,
         "purge_all_state_for_repo",
@@ -726,19 +735,7 @@ def _app_cache_entry(monkeypatch, hub_cache: Path, repo_id: str, commit_hash: st
 
 
 def test_delete_app_processed_cache_isolated_by_hub_root(monkeypatch, tmp_path):
-    repo_id = "Org/Data"
-    first = _app_cache_entry(
-        monkeypatch,
-        tmp_path / "first" / "hub",
-        repo_id,
-        "commit-a",
-    )
-    second = _app_cache_entry(
-        monkeypatch,
-        tmp_path / "second" / "hub",
-        repo_id,
-        "commit-b",
-    )
+    first, repo_id, second = _shared_setup_1(monkeypatch, tmp_path)
     external = tmp_path / "external"
     external.mkdir()
     (external / "keep.txt").write_text("keep")
@@ -779,19 +776,7 @@ def test_delete_raw_scope_purges_corrupt_app_cache_entry(monkeypatch, tmp_path):
 
 
 def test_delete_app_only_cache_path_isolated_by_hub_root(monkeypatch, tmp_path):
-    repo_id = "Org/Data"
-    first = _app_cache_entry(
-        monkeypatch,
-        tmp_path / "first" / "hub",
-        repo_id,
-        "commit-a",
-    )
-    second = _app_cache_entry(
-        monkeypatch,
-        tmp_path / "second" / "hub",
-        repo_id,
-        "commit-b",
-    )
+    first, repo_id, second = _shared_setup_1(monkeypatch, tmp_path)
     monkeypatch.setattr(cache_inventory, "_collect_hf_cache_scans", lambda: ([], set()))
     monkeypatch.setattr(
         cache_inventory,
@@ -813,19 +798,7 @@ def test_delete_app_only_cache_path_isolated_by_hub_root(monkeypatch, tmp_path):
 
 
 def test_delete_raw_path_removes_only_same_scope_app_cache(monkeypatch, tmp_path):
-    repo_id = "Org/Data"
-    first = _app_cache_entry(
-        monkeypatch,
-        tmp_path / "first" / "hub",
-        repo_id,
-        "commit-a",
-    )
-    second = _app_cache_entry(
-        monkeypatch,
-        tmp_path / "second" / "hub",
-        repo_id,
-        "commit-b",
-    )
+    first, repo_id, second = _shared_setup_1(monkeypatch, tmp_path)
 
     class _Strategy:
         def execute(self):
@@ -862,16 +835,7 @@ def test_delete_raw_path_removes_only_same_scope_app_cache(monkeypatch, tmp_path
         "purge_repo_cache_dirs",
         lambda *_args, **_kwargs: False,
     )
-    monkeypatch.setattr(
-        cache_inventory,
-        "purge_partial_repo",
-        lambda *_args, **_kwargs: False,
-    )
-    monkeypatch.setattr(
-        cache_inventory.download_manifest,
-        "purge_all_state_for_repo",
-        lambda *_args, **_kwargs: 0,
-    )
+    _shared_setup_3(monkeypatch)
 
     result = cache_inventory._delete_cached_dataset_blocking(
         repo_id,
@@ -928,26 +892,13 @@ def test_delete_cached_dataset_purges_blob_only_repo_dir(monkeypatch):
         "_collect_hf_cache_scans",
         lambda: ([], set()),
     )
-    monkeypatch.setattr(
-        cache_inventory,
-        "_delete_processed_dataset_cache",
-        lambda _repo_id, **_kwargs: (False, []),
-    )
+    _shared_setup_4(monkeypatch)
     monkeypatch.setattr(
         cache_inventory,
         "purge_repo_cache_dirs",
         lambda _repo_type, repo_id, **_kwargs: purged_dirs.append(repo_id) or True,
     )
-    monkeypatch.setattr(
-        cache_inventory,
-        "purge_partial_repo",
-        lambda *_args, **_kwargs: False,
-    )
-    monkeypatch.setattr(
-        cache_inventory.download_manifest,
-        "purge_all_state_for_repo",
-        lambda *_args, **_kwargs: 0,
-    )
+    _shared_setup_3(monkeypatch)
 
     result = cache_inventory._delete_cached_dataset_blocking("Org/Data")
 
@@ -961,26 +912,13 @@ def test_delete_cached_dataset_absent_everywhere_raises_404(monkeypatch):
         "_collect_hf_cache_scans",
         lambda: ([], set()),
     )
-    monkeypatch.setattr(
-        cache_inventory,
-        "_delete_processed_dataset_cache",
-        lambda _repo_id, **_kwargs: (False, []),
-    )
+    _shared_setup_4(monkeypatch)
     monkeypatch.setattr(
         cache_inventory,
         "purge_repo_cache_dirs",
         lambda *_args, **_kwargs: False,
     )
-    monkeypatch.setattr(
-        cache_inventory,
-        "purge_partial_repo",
-        lambda *_args, **_kwargs: False,
-    )
-    monkeypatch.setattr(
-        cache_inventory.download_manifest,
-        "purge_all_state_for_repo",
-        lambda *_args, **_kwargs: 0,
-    )
+    _shared_setup_3(monkeypatch)
 
     with pytest.raises(HTTPException) as exc_info:
         cache_inventory._delete_cached_dataset_blocking("Org/Missing")

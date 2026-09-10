@@ -36,6 +36,68 @@ from state.tool_approvals import resolve_tool_decision
 from utils.datasets import is_gpt_oss_model_name
 
 
+def _shared_setup_1():
+    exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
+    turn_iter = iter(
+        [
+            [
+                "<function=render_html>",
+                "<parameter=code><!doctype html><html>",
+                "<body>Hi</body></html></parameter></function>",
+            ],
+            ["Done."],
+        ]
+    )
+    return exec_fn, turn_iter
+
+
+def _shared_setup_2():
+    from types import SimpleNamespace
+
+    from core.inference.chat_template_helpers import render_with_native_template_fallback
+
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [{"type": "function", "function": {"name": "web_search"}}]
+    return SimpleNamespace, messages, render_with_native_template_fallback, tools
+
+
+def _shared_setup_3(_gen, exec_fn):
+    loop = run_safetensors_tool_loop(
+        single_turn = _gen,
+        messages = [{"role": "user", "content": "make html"}],
+        tools = [{"type": "function", "function": {"name": "render_html"}}],
+        execute_tool = exec_fn,
+    )
+    return loop
+
+
+def _shared_setup_4(exec_fn, loop):
+    events = _collect_events(loop)
+
+    assert exec_fn.calls == [("web_search", {"query": "cats"})]
+    contents = [e["text"] for e in events if e["type"] == "content"]
+    assert contents[-1] == "Here is the answer."
+
+
+def _shared_setup_5(exec_fn, loop):
+    events = _collect_events(loop)
+    assert exec_fn.calls == []
+    texts = [e["text"] for e in events if e["type"] == "content"]
+    assert any("I'll search the web for that." in t for t in texts)
+    assert not any("SHOULD NOT APPEAR" in t for t in texts)
+
+
+def _shared_setup_6(args, name, text):
+    result = parse_tool_calls_from_text(text)
+    assert len(result) == 1
+    assert result[0]["function"]["name"] == name
+    assert json.loads(result[0]["function"]["arguments"]) == args
+
+
+def _shared_setup_7(exec_fn):
+    assert exec_fn.calls == [("web_search", {"query": "x"}), ("python", {"code": "print(1)"})]
+
+
 # ────────────────────────────────────────────────────────────────────
 # parse_tool_calls_from_text
 # ────────────────────────────────────────────────────────────────────
@@ -53,114 +115,268 @@ class TestParser:
         assert isinstance(tc["function"]["arguments"], str)
         assert "hello" in tc["function"]["arguments"]
 
-    def test_json_tool_call_unclosed(self):
-        # No </tool_call>; balanced-brace extractor must still close it.
-        text = '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "python"
-
     def test_json_tool_call_unclosed_requires_healing(self):
         text = '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}'
         assert parse_tool_calls_from_text(text)[0]["function"]["name"] == "python"
         assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
-
-    def test_gemma_native_tool_call(self):
-        text = '<|tool_call>call:terminal{command:"ls -la",workdir:"."}<tool_call|>'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "terminal"
-        args = json.loads(result[0]["function"]["arguments"])
-        assert args == {"command": "ls -la", "workdir": "."}
-
-    def test_gemma_native_tool_call_template_quotes(self):
-        text = '<|tool_call>call:web_search{query:<|"|>openai news<|"|>}<tool_call|>'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "web_search"
-        assert json.loads(result[0]["function"]["arguments"]) == {"query": "openai news"}
-
-    def test_gemma_native_tool_call_template_quotes_escape_backslashes(self):
-        text = r'<|tool_call>call:ls{path:<|"|>C:\Users\wasim\repo<|"|>}<tool_call|>'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "ls"
-        assert json.loads(result[0]["function"]["arguments"]) == {"path": r"C:\Users\wasim\repo"}
-
-    def test_gemma_native_tool_call_hyphenated_argument_name(self):
-        text = '<|tool_call>call:mcp__srv__create-issue{issue-title:"Bug report"}<tool_call|>'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "mcp__srv__create-issue"
-        assert json.loads(result[0]["function"]["arguments"]) == {"issue-title": "Bug report"}
-
-    def test_gemma_native_tool_call_keeps_braces_inside_string_value(self):
-        text = '<|tool_call>call:terminal{command:"echo {foo:bar}"}<tool_call|>'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "terminal"
-        assert json.loads(result[0]["function"]["arguments"]) == {"command": "echo {foo:bar}"}
-
-    def test_gemma_native_tool_call_bare_string_values(self):
-        text = "<|tool_call>call:get_weather{location:Tokyo,unit:celsius}<tool_call|>"
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert json.loads(result[0]["function"]["arguments"]) == {
-            "location": "Tokyo",
-            "unit": "celsius",
-        }
-
-    def test_xml_function_call(self):
-        text = "<function=python><parameter=code>print('hi')</parameter></function>"
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "python"
-        assert "print('hi')" in result[0]["function"]["arguments"]
-
-    def test_xml_unclosed(self):
-        # Closing tags omitted; parser must still extract the value.
-        text = "<function=terminal><parameter=command>ls -la"
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "terminal"
-        assert "ls -la" in result[0]["function"]["arguments"]
 
     def test_xml_unclosed_requires_healing(self):
         text = "<function=terminal><parameter=command>ls -la"
         assert parse_tool_calls_from_text(text)[0]["function"]["name"] == "terminal"
         assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
 
-    def test_code_with_embedded_xml(self):
-        # A code parameter with a literal </parameter> must not truncate: the
-        # parser uses end-of-body as the only boundary for single-param calls.
-        text = (
-            "<function=python><parameter=code>html = '<a></a>'\nprint('hi')</parameter></function>"
-        )
+    @pytest.mark.parametrize(
+        "text, name, args",
+        [
+            pytest.param(
+                '<|tool_call>call:terminal{command:"ls -la",workdir:"."}<tool_call|>',
+                "terminal",
+                {"command": "ls -la", "workdir": "."},
+                id = "gemma_native_tool_call",
+            ),
+            pytest.param(
+                '<|tool_call>call:web_search{query:<|"|>openai news<|"|>}<tool_call|>',
+                "web_search",
+                {"query": "openai news"},
+                id = "gemma_native_tool_call_template_quotes",
+            ),
+            pytest.param(
+                r'<|tool_call>call:ls{path:<|"|>C:\Users\wasim\repo<|"|>}<tool_call|>',
+                "ls",
+                {"path": r"C:\Users\wasim\repo"},
+                id = "gemma_native_tool_call_template_quotes_escape_backslashes",
+            ),
+            pytest.param(
+                '<|tool_call>call:mcp__srv__create-issue{issue-title:"Bug report"}<tool_call|>',
+                "mcp__srv__create-issue",
+                {"issue-title": "Bug report"},
+                id = "gemma_native_tool_call_hyphenated_argument_name",
+            ),
+            pytest.param(
+                '<|tool_call>call:terminal{command:"echo {foo:bar}"}<tool_call|>',
+                "terminal",
+                {"command": "echo {foo:bar}"},
+                id = "gemma_native_tool_call_keeps_braces_inside_string_value",
+            ),
+            pytest.param(
+                "<|tool_call>call:get_weather{location:Tokyo,unit:celsius}<tool_call|>",
+                "get_weather",
+                {"location": "Tokyo", "unit": "celsius"},
+                id = "gemma_native_tool_call_bare_string_values",
+            ),
+            # Only the wrapping newline is trimmed; str.strip() destroyed code indentation.
+            pytest.param(
+                "<function=python><parameter=code>\n    indented = 1\n    more\n</parameter></function>",
+                "python",
+                {"code": "    indented = 1\n    more"},
+                id = "xml_param_preserves_leading_indentation",
+            ),
+            pytest.param(
+                '[TOOL_CALLS]search{"q":"explain [THINK] blocks"}',
+                "search",
+                {"q": "explain [THINK] blocks"},
+                id = "bracket_tag_argument_with_think_literal_is_preserved",
+            ),
+            # A rehearsal inside <think> is skipped, but the real call after the close tag parses.
+            pytest.param(
+                '<think>plan: search[ARGS]{"q":"x"}</think>search[ARGS]{"q":"real"}',
+                "search",
+                {"q": "real"},
+                id = "real_call_after_think_with_rehearsal_inside",
+            ),
+            # A real call whose argument contains a literal think tag must not be corrupted.
+            pytest.param(
+                '<tool_call>{"name":"write","arguments":{"text":"compare <think> and </think> tags"}}</tool_call>',
+                "write",
+                {"text": "compare <think> and </think> tags"},
+                id = "think_literal_inside_real_tool_argument_is_preserved",
+            ),
+        ],
+    )
+    def test_call_parses_to_name_and_args(self, text, name, args):
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
-        assert "print('hi')" in result[0]["function"]["arguments"]
+        assert result[0]["function"]["name"] == name
+        assert isinstance(result[0]["function"]["arguments"], str)
+        assert json.loads(result[0]["function"]["arguments"]) == args
 
-    def test_xml_param_preserves_leading_indentation(self):
-        # Only the wrapping newline is trimmed, so code-argument indentation survives (str.strip() destroyed it).
-        text = (
-            "<function=python><parameter=code>\n    indented = 1\n    more\n</parameter></function>"
-        )
+    @pytest.mark.parametrize(
+        "text, name, fragment",
+        [
+            pytest.param(
+                "<function=python><parameter=code>print('hi')</parameter></function>",
+                "python",
+                "print('hi')",
+                id = "xml_function_call",
+            ),
+            # Closing tags omitted; parser must still extract the value.
+            pytest.param(
+                "<function=terminal><parameter=command>ls -la",
+                "terminal",
+                "ls -la",
+                id = "xml_unclosed",
+            ),
+            # Literal </parameter> in code must not truncate: single-param calls end at end-of-body.
+            pytest.param(
+                "<function=python><parameter=code>html = '<a></a>'\nprint('hi')</parameter></function>",
+                "python",
+                "print('hi')",
+                id = "code_with_embedded_xml",
+            ),
+            pytest.param(
+                "<function=python><parameter=code>print('<function=render_html>')</parameter></function>",
+                "python",
+                "<function=render_html>",
+                id = "function_signal_inside_parameter_is_literal",
+            ),
+            # Devstral / Mistral-Small fallback when bypassing native FC.
+            pytest.param(
+                '[TOOL_CALLS]web_search{"query":"weather"}',
+                "web_search",
+                "weather",
+                id = "mistral_bracket_basic",
+            ),
+            # Optional whitespace (incl. newlines) between the name and the opening brace.
+            pytest.param(
+                '[TOOL_CALLS]python  \n  {"code":"print(1)"}',
+                "python",
+                "print(1)",
+                id = "mistral_bracket_with_whitespace",
+            ),
+            pytest.param(
+                'python[ARGS]{"code":"print(1)"}', "python", "print(1)", id = "rehearsal_basic"
+            ),
+        ],
+    )
+    def test_call_parses_to_name_and_argument_fragment(self, text, name, fragment):
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
-        assert json.loads(result[0]["function"]["arguments"]) == {
-            "code": "    indented = 1\n    more"
-        }
+        assert result[0]["function"]["name"] == name
+        assert isinstance(result[0]["function"]["arguments"], str)
+        assert fragment in result[0]["function"]["arguments"]
 
-    def test_function_signal_inside_parameter_is_literal(self):
-        text = (
-            "<function=python>"
-            "<parameter=code>print('<function=render_html>')</parameter>"
-            "</function>"
-        )
+    @pytest.mark.parametrize(
+        "text, name",
+        [
+            # No </tool_call>; balanced-brace extractor must still close it.
+            pytest.param(
+                '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}',
+                "python",
+                id = "json_tool_call_unclosed",
+            ),
+            # Bracket-tag surrounded by prose is still recognised.
+            pytest.param(
+                'Sure, I will look that up.\n[TOOL_CALLS]web_search{"query":"weather"}\nCalling now.',
+                "web_search",
+                id = "mistral_bracket_with_prose",
+            ),
+            # Args must be a JSON object; a dict wrapping an array value is accepted.
+            pytest.param(
+                '[TOOL_CALLS]web_search{"opts":[1,2,3]}',
+                "web_search",
+                id = "mistral_bracket_object_with_array_value",
+            ),
+            pytest.param(
+                'I should call the python tool. Like this: python[ARGS]{"code":"x = 1"}',
+                "python",
+                id = "rehearsal_with_prose",
+            ),
+            # Dashed MCP names must be captured whole, not truncated at the first dash.
+            pytest.param(
+                '[TOOL_CALLS]mcp__srv__list-issues{"q":"x"}',
+                "mcp__srv__list-issues",
+                id = "mistral_bracket_hyphenated_mcp_name",
+            ),
+            pytest.param(
+                'mcp__srv__list-issues[ARGS]{"q":"x"}',
+                "mcp__srv__list-issues",
+                id = "rehearsal_hyphenated_mcp_name",
+            ),
+            pytest.param(
+                '<think>planning</think>python[ARGS]{"code":"print(1)"}',
+                "python",
+                id = "rehearsal_after_closed_think_still_parsed",
+            ),
+            # Reasoning models open <think> in the PROMPT, so content starts inside the thought:
+            # a call rehearsed before the lone </think> is skipped, one after it fires.
+            pytest.param(
+                'planning web_search[ARGS]{"query":"draft"}</think>python[ARGS]{"code":"print(1)"}',
+                "python",
+                id = "rehearsal_inside_prefilled_think_is_ignored",
+            ),
+            # A </think> literal inside a leading call's arguments is not a prefill close.
+            pytest.param(
+                'web_search[ARGS]{"query":"what is </think>"}',
+                "web_search",
+                id = "literal_close_think_in_leading_argument_not_prefill",
+            ),
+            # Stray </think> after a real leading call is a normal answer: the virtual prefill
+            # span only applies when a real call follows the close.
+            pytest.param(
+                'Now web_search[ARGS]{"query":"x"}</think> answer',
+                "web_search",
+                id = "stray_close_after_real_call_not_treated_as_prefill",
+            ),
+            # The think block is stripped before matching so the post-thinking call is recognised.
+            pytest.param(
+                "<think>I will use web_search to find the weather.</think>"
+                '<tool_call>{"name":"web_search","arguments":{"query":"sf"}}</tool_call>',
+                "web_search",
+                id = "think_block_stripped_before_xml",
+            ),
+            pytest.param(
+                '<think>Let me search for that.</think>\n[TOOL_CALLS]web_search{"query":"weather"}',
+                "web_search",
+                id = "think_block_stripped_before_bracket_tag",
+            ),
+            # Some templates use [THINK]...[/THINK] instead of <think>.
+            pytest.param(
+                '[THINK]planning my next call[/THINK][TOOL_CALLS]python{"code":"print(1)"}',
+                "python",
+                id = "uppercase_think_tag_stripped",
+            ),
+            # When a model emits both forms in one message, the XML form is canonical and wins.
+            pytest.param(
+                '<tool_call>{"name":"primary","arguments":{}}</tool_call>[TOOL_CALLS]secondary{"k":"v"}',
+                "primary",
+                id = "xml_wins_over_bracket",
+            ),
+        ],
+    )
+    def test_call_parses_to_single_named_call(self, text, name):
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
-        assert result[0]["function"]["name"] == "python"
-        assert "<function=render_html>" in result[0]["function"]["arguments"]
+        assert result[0]["function"]["name"] == name
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # Bad JSON is dropped silently; caller can fall back to text.
+            pytest.param("<tool_call>{not valid json}</tool_call>", id = "bad_json_does_not_raise"),
+            pytest.param(
+                "[TOOL_CALLS]web_search{not valid}", id = "mistral_bracket_bad_json_dropped"
+            ),
+            pytest.param("python[ARGS]{not valid json}", id = "rehearsal_bad_json_dropped"),
+            # Rehearsal inside an UNCLOSED <think> is not a call: mid-stream </think> has not
+            # arrived, so the strip regex must accept end-of-string as a terminator.
+            pytest.param(
+                '<think>I should call web_search[ARGS]{"query":"weather"} next to find the answer.',
+                id = "rehearsal_inside_unclosed_think_is_ignored",
+            ),
+            pytest.param(
+                '[THINK]planning to use python[ARGS]{"code":"print(1)"} but not yet.',
+                id = "rehearsal_inside_unclosed_bracket_think_is_ignored",
+            ),
+            # A call mentioned inside think is a rehearsal; the wrapper strip removes the markup.
+            pytest.param(
+                '<think>I might call <tool_call>{"name":"web_search","arguments":{}}</tool_call> '
+                "but I am not sure</think>\nLet me just answer directly.",
+                id = "think_block_hides_inner_tool_call",
+            ),
+        ],
+    )
+    def test_text_yields_no_tool_calls(self, text):
+        assert parse_tool_calls_from_text(text) == []
 
     def test_multiple_calls(self):
         text = (
@@ -171,12 +387,6 @@ class TestParser:
         assert len(result) == 2
         assert result[0]["function"]["name"] == "web_search"
         assert result[1]["function"]["name"] == "web_search"
-
-    def test_bad_json_does_not_raise(self):
-        text = "<tool_call>{not valid json}</tool_call>"
-        result = parse_tool_calls_from_text(text)
-        # Bad JSON is dropped silently; caller can fall back to text.
-        assert result == []
 
     def test_has_tool_signal(self):
         assert has_tool_signal("blah <tool_call> x")
@@ -276,74 +486,6 @@ class TestParser:
             == "before "
         )
 
-    # Mistral [TOOL_CALLS] bracket-tag.
-
-    def test_mistral_bracket_basic(self):
-        # Devstral / Mistral-Small fallback when bypassing native FC.
-        text = '[TOOL_CALLS]web_search{"query":"weather"}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "web_search"
-        assert isinstance(result[0]["function"]["arguments"], str)
-        assert "weather" in result[0]["function"]["arguments"]
-
-    def test_rehearsal_inside_unclosed_think_is_ignored(self):
-        """Rehearsal-shaped markup inside an unclosed <think> block must
-        not be executed as a real tool call. Mid-stream the </think>
-        tag has not arrived yet, so the strip regex has to accept
-        end-of-string as a terminator. Regression for the Gemini
-        high-severity flag on this PR."""
-        text = '<think>I should call web_search[ARGS]{"query":"weather"} next to find the answer.'
-        result = parse_tool_calls_from_text(text)
-        # Inside an unclosed think block no calls are yielded.
-        assert result == []
-
-    def test_rehearsal_inside_unclosed_bracket_think_is_ignored(self):
-        text = '[THINK]planning to use python[ARGS]{"code":"print(1)"} but not yet.'
-        result = parse_tool_calls_from_text(text)
-        assert result == []
-
-    def test_rehearsal_after_closed_think_still_parsed(self):
-        text = '<think>planning</think>python[ARGS]{"code":"print(1)"}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "python"
-
-    def test_rehearsal_inside_prefilled_think_is_ignored(self):
-        """Reasoning models (Qwen3.5 enable_thinking) open <think> in the PROMPT,
-        so generated content starts inside the thought and carries only a closing
-        </think>. A call rehearsed in that leading thought must be skipped, while a
-        real call after the close still fires."""
-        text = 'planning web_search[ARGS]{"query":"draft"}</think>python[ARGS]{"code":"print(1)"}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "python"
-
-    def test_literal_close_think_in_leading_argument_not_prefill(self):
-        """A </think> literal inside a real leading call's arguments must not be
-        read as a prefilled-reasoning close (which would skip the call)."""
-        text = 'web_search[ARGS]{"query":"what is </think>"}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "web_search"
-
-    def test_stray_close_after_real_call_not_treated_as_prefill(self):
-        """A real leading call followed by a stray </think> and no further call is
-        a normal answer, not prefilled reasoning; the call must still fire (the
-        virtual span only applies when a real call follows the close)."""
-        text = 'Now web_search[ARGS]{"query":"x"}</think> answer'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "web_search"
-
-    def test_mistral_bracket_with_whitespace(self):
-        # Optional whitespace (incl. newlines) between the name and the opening brace.
-        text = '[TOOL_CALLS]python  \n  {"code":"print(1)"}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "python"
-        assert "print(1)" in result[0]["function"]["arguments"]
-
     def test_mistral_bracket_nested_json(self):
         # Brace-balance scan handles nested objects and braces inside string literals.
         text = '[TOOL_CALLS]web_search{"query":"a {nested} brace","opts":{"limit":5}}'
@@ -354,59 +496,6 @@ class TestParser:
         args = _json.loads(result[0]["function"]["arguments"])
         assert args["query"] == "a {nested} brace"
         assert args["opts"] == {"limit": 5}
-
-    def test_mistral_bracket_with_prose(self):
-        # Bracket-tag surrounded by prose is still recognised.
-        text = 'Sure, I will look that up.\n[TOOL_CALLS]web_search{"query":"weather"}\nCalling now.'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "web_search"
-
-    def test_mistral_bracket_bad_json_dropped(self):
-        text = "[TOOL_CALLS]web_search{not valid}"
-        result = parse_tool_calls_from_text(text)
-        # No usable tool call; callers fall back to text.
-        assert result == []
-
-    def test_mistral_bracket_object_with_array_value(self):
-        # Args must be a JSON object; a dict wrapping an array value is accepted.
-        text = '[TOOL_CALLS]web_search{"opts":[1,2,3]}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "web_search"
-
-    # Rehearsal syntax name[ARGS]{json}.
-
-    def test_rehearsal_basic(self):
-        text = 'python[ARGS]{"code":"print(1)"}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "python"
-        assert "print(1)" in result[0]["function"]["arguments"]
-
-    def test_rehearsal_with_prose(self):
-        text = 'I should call the python tool. Like this: python[ARGS]{"code":"x = 1"}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "python"
-
-    def test_rehearsal_bad_json_dropped(self):
-        text = "python[ARGS]{not valid json}"
-        result = parse_tool_calls_from_text(text)
-        assert result == []
-
-    def test_mistral_bracket_hyphenated_mcp_name(self):
-        # Dashed MCP names must be captured whole, not truncated at the first dash.
-        text = '[TOOL_CALLS]mcp__srv__list-issues{"q":"x"}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "mcp__srv__list-issues"
-
-    def test_rehearsal_hyphenated_mcp_name(self):
-        text = 'mcp__srv__list-issues[ARGS]{"q":"x"}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "mcp__srv__list-issues"
 
     def test_streaming_strip_removes_partial_bracket_marker(self):
         # A bracket tag streamed before its opening brace must strip on the final pass, not leak.
@@ -452,80 +541,6 @@ class TestParser:
         out = strip_tool_markup_streaming(raw)
         assert "[TOOL_CALLS]" not in out and "[CALL_ID]" not in out and "[ARGS]" not in out
         assert "before" in out and "after" in out
-
-    # <think> pre-strip.
-
-    def test_think_block_stripped_before_xml(self):
-        # The think block is stripped before matching so the post-thinking call is recognised.
-        text = (
-            "<think>I will use web_search to find the weather.</think>"
-            '<tool_call>{"name":"web_search","arguments":{"query":"sf"}}</tool_call>'
-        )
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "web_search"
-
-    def test_think_block_stripped_before_bracket_tag(self):
-        text = '<think>Let me search for that.</think>\n[TOOL_CALLS]web_search{"query":"weather"}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "web_search"
-
-    def test_uppercase_think_tag_stripped(self):
-        # Some templates use [THINK]...[/THINK] instead of <think>.
-        text = '[THINK]planning my next call[/THINK][TOOL_CALLS]python{"code":"print(1)"}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "python"
-
-    def test_think_block_hides_inner_tool_call(self):
-        # A call mentioned inside think is a rehearsal; the wrapper strip removes the inner markup.
-        text = (
-            "<think>I might call "
-            '<tool_call>{"name":"web_search","arguments":{}}</tool_call> '
-            "but I am not sure</think>\n"
-            "Let me just answer directly."
-        )
-        result = parse_tool_calls_from_text(text)
-        assert result == []
-
-    def test_think_literal_inside_real_tool_argument_is_preserved(self):
-        # A real call whose argument contains a literal think tag must not be corrupted.
-        text = (
-            '<tool_call>{"name":"write","arguments":'
-            '{"text":"compare <think> and </think> tags"}}</tool_call>'
-        )
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert json.loads(result[0]["function"]["arguments"])["text"] == (
-            "compare <think> and </think> tags"
-        )
-
-    def test_bracket_tag_argument_with_think_literal_is_preserved(self):
-        text = '[TOOL_CALLS]search{"q":"explain [THINK] blocks"}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert json.loads(result[0]["function"]["arguments"])["q"] == "explain [THINK] blocks"
-
-    def test_real_call_after_think_with_rehearsal_inside(self):
-        # A rehearsal inside <think> is skipped, but the real call after the close tag parses.
-        text = '<think>plan: search[ARGS]{"q":"x"}</think>search[ARGS]{"q":"real"}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert json.loads(result[0]["function"]["arguments"])["q"] == "real"
-
-    # XML takes precedence over bracket-tag.
-
-    def test_xml_wins_over_bracket(self):
-        # When a model emits both forms in one message, the XML form is canonical and wins.
-        text = (
-            '<tool_call>{"name":"primary","arguments":{}}</tool_call>[TOOL_CALLS]secondary{"k":"v"}'
-        )
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "primary"
-
-    # Strip patterns include bracket-tag and rehearsal.
 
     def test_strip_bracket_tag_closed(self):
         text = 'before [TOOL_CALLS]web_search{"q":"hi"} after'
@@ -689,50 +704,256 @@ class TestParser:
 class TestParserMultiFormat:
     """Shared-parser coverage: every family's emission maps to the same OpenAI shape."""
 
-    # Llama-3
+    @pytest.mark.parametrize(
+        "text, name, args",
+        [
+            # Llama-3 built-in tools: <|python_tag|>NAME.call(k="v", ...).
+            pytest.param(
+                '<|python_tag|>brave_search.call(query="weather in Tokyo")',
+                "brave_search",
+                {"query": "weather in Tokyo"},
+                id = "llama3_python_tag_dot_call",
+            ),
+            pytest.param(
+                '<|python_tag|>get_weather.call(location="Tokyo", units="celsius", days=5)',
+                "get_weather",
+                {"location": "Tokyo", "units": "celsius", "days": 5},
+                id = "llama3_python_tag_dot_call_multi_arg",
+            ),
+            pytest.param(
+                '<|python_tag|>{"name":"web_search","parameters":{"query":"hi","n":5}}',
+                "web_search",
+                {"query": "hi", "n": 5},
+                id = "llama3_python_tag_json_form",
+            ),
+            # Llama-3 emits ``<|eom_id|>`` after the JSON; must not break parsing.
+            pytest.param(
+                '<|python_tag|>{"name":"python","parameters":{"code":"print(2+2)"}}<|eom_id|>',
+                "python",
+                {"code": "print(2+2)"},
+                id = "llama3_python_tag_json_form_with_eom",
+            ),
+            # Llama-3.2-Instruct emits bare JSON as content, no <|python_tag|>, per its template.
+            pytest.param(
+                '{"name":"web_search","parameters":{"query":"Tokyo weather"}}',
+                "web_search",
+                {"query": "Tokyo weather"},
+                id = "llama3_2_bare_json_parameters",
+            ),
+            pytest.param(
+                '{"name":"add","arguments":{"a":1,"b":2}}',
+                "add",
+                {"a": 1, "b": 2},
+                id = "llama3_2_bare_json_arguments_key",
+            ),
+            # Keyed on ``parameters`` not ``arguments``: payload survives, as in SGLang's detector.
+            pytest.param(
+                '[TOOL_CALLS] [{"name":"get_weather","parameters":{"city":"Paris"}}]',
+                "get_weather",
+                {"city": "Paris"},
+                id = "mistral_array_parameters_key_alias",
+            ),
+            # Magistral / Mistral Small 3.1: bare ``name{json}`` after trigger.
+            pytest.param(
+                '[TOOL_CALLS]add{"a":3.5,"b":4}', "add", {"a": 3.5, "b": 4}, id = "mistral_v11_single"
+            ),
+            # Ministral / Mistral Large 3: ``[TOOL_CALLS]name[ARGS]{json}``.
+            pytest.param(
+                '[TOOL_CALLS]add[ARGS]{"a":1,"b":2}',
+                "add",
+                {"a": 1, "b": 2},
+                id = "mistral_v11_with_args_marker",
+            ),
+            # Mistral Small 3.2 [CALL_ID] is skipped, not a stop (llama.cpp test-chat.cpp:4785).
+            pytest.param(
+                '[TOOL_CALLS]special_function[CALL_ID]123456789[ARGS]{"arg1": 1}',
+                "special_function",
+                {"arg1": 1},
+                id = "mistral_call_id_form",
+            ),
+            # Magistral [THINK]...[/THINK]: only a call after [/THINK] counts, the one inside is
+            # chain-of-thought (llama.cpp test-chat.cpp:2285).
+            pytest.param(
+                '[THINK]Let me think about [TOOL_CALLS]fake[ARGS]{"x":1} '
+                'and more[/THINK][TOOL_CALLS]real_fn[ARGS]{"y":2}',
+                "real_fn",
+                {"y": 2},
+                id = "mistral_think_reasoning_ignored",
+            ),
+            # A literal ``[THINK]`` inside a real tool argument must not be stripped.
+            pytest.param(
+                '[TOOL_CALLS]search[ARGS]{"q":"explain the [THINK] token"}',
+                "search",
+                {"q": "explain the [THINK] token"},
+                id = "mistral_think_literal_in_argument_preserved",
+            ),
+            pytest.param(
+                '<|tool_call>call:get_weather{location:<|"|>Tokyo<|"|>,units:<|"|>celsius<|"|>}<tool_call|>',
+                "get_weather",
+                {"location": "Tokyo", "units": "celsius"},
+                id = "gemma4_simple_call",
+            ),
+            pytest.param(
+                "<|tool_call>call:set_pref{enabled:true,attempts:5,threshold:1.5,nickname:null}<tool_call|>",
+                "set_pref",
+                {"enabled": True, "attempts": 5, "threshold": 1.5, "nickname": None},
+                id = "gemma4_with_primitives",
+            ),
+            # Gemma 4 nests dicts / lists with bare keys and ``<|"|>`` strings.
+            pytest.param(
+                '<|tool_call>call:search{query:<|"|>foo<|"|>,'
+                'filters:{site:<|"|>example.com<|"|>,recent:true},tags:[<|"|>a<|"|>,<|"|>b<|"|>]}<tool_call|>',
+                "search",
+                {
+                    "query": "foo",
+                    "filters": {"site": "example.com", "recent": True},
+                    "tags": ["a", "b"],
+                },
+                id = "gemma4_nested_args",
+            ),
+            # skip_special_tokens strips the envelope, leaving bare call:NAME{...}, unquoted value.
+            pytest.param(
+                "call:web_search{query:weather in San Francisco right now}",
+                "web_search",
+                {"query": "weather in San Francisco right now"},
+                id = "gemma4_bare_stripped_call",
+            ),
+            pytest.param(
+                "call:web_search{query:pytorch latest, url:https://pytorch.org}",
+                "web_search",
+                {"query": "pytorch latest", "url": "https://pytorch.org"},
+                id = "gemma4_bare_multi_arg",
+            ),
+        ],
+    )
+    def test_family_call_parses_to_name_and_args(self, text, name, args):
+        _shared_setup_6(args, name, text)
 
-    def test_llama3_python_tag_dot_call(self):
-        # Llama-3 built-in tools: <|python_tag|>NAME.call(k="v", ...).
-        import json
+    @pytest.mark.parametrize(
+        "text, names",
+        [
+            # Llama-3 may chain calls with ``; `` per training template.
+            pytest.param(
+                '{"name":"a","parameters":{}}; {"name":"b","parameters":{}}',
+                ["a", "b"],
+                id = "llama3_2_bare_json_multi_call",
+            ),
+            pytest.param(
+                '[TOOL_CALLS] [{"name":"a","arguments":{"x":1},"id":"id1"},'
+                '{"name":"b","arguments":{"y":2},"id":"id2"}]',
+                ["a", "b"],
+                id = "mistral_pre_v11_array_multi",
+            ),
+            # v11+ parallel: ``[TOOL_CALLS]a{...}[TOOL_CALLS]b{...}``.
+            pytest.param(
+                '[TOOL_CALLS]add{"a":1}[TOOL_CALLS]sub{"b":2}',
+                ["add", "sub"],
+                id = "mistral_v11_parallel",
+            ),
+            pytest.param(
+                '[TOOL_CALLS]special_function[CALL_ID]000000001[ARGS]{"arg1": 1}'
+                '[TOOL_CALLS]special_function_with_opt[CALL_ID]000000002[ARGS]{"arg1": 1, "arg2": 2}',
+                ["special_function", "special_function_with_opt"],
+                id = "mistral_call_id_form_parallel",
+            ),
+            pytest.param(
+                "<|tool_call>call:a{x:1}<tool_call|><|tool_call>call:b{y:2}<tool_call|>",
+                ["a", "b"],
+                id = "gemma4_multi_call",
+            ),
+        ],
+    )
+    def test_family_parallel_calls_parse_in_order(self, text, names):
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == len(names)
+        assert [c["function"]["name"] for c in result] == names
 
-        text = '<|python_tag|>brave_search.call(query="weather in Tokyo")'
+    @pytest.mark.parametrize(
+        "text, name",
+        [
+            pytest.param(
+                '{"name":"x","parameters":{"y":1}}<|eom_id|>',
+                "x",
+                id = "llama3_2_bare_json_with_eom_sentinel",
+            ),
+            # Sometimes a prior <|eot_id|> leaks into the next turn.
+            pytest.param(
+                '<|eot_id|>{"name":"x","parameters":{}}',
+                "x",
+                id = "llama3_2_bare_json_leading_sentinel_skipped",
+            ),
+            # Closing ``]`` truncated -- parser must heal off individual objects.
+            pytest.param(
+                '[TOOL_CALLS] [{"name":"web_search","arguments":{"q":"x"},"id":"id"}',
+                "web_search",
+                id = "mistral_pre_v11_unclosed_array",
+            ),
+        ],
+    )
+    def test_family_call_parses_to_single_named_call(self, text, name):
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
-        assert result[0]["function"]["name"] == "brave_search"
-        args = json.loads(result[0]["function"]["arguments"])
-        assert args == {"query": "weather in Tokyo"}
+        assert result[0]["function"]["name"] == name
 
-    def test_llama3_python_tag_dot_call_multi_arg(self):
-        import json
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # Defensive: must NOT fire on plain assistant prose.
+            pytest.param(
+                "Hello world, how are you today?", id = "llama3_2_bare_json_plain_prose_does_not_fire"
+            ),
+            # JSON embedded in prose must NOT fire: content has to START with `{`.
+            pytest.param(
+                'The tool result was: {"name":"foo"}',
+                id = "llama3_2_bare_json_embedded_in_prose_does_not_fire",
+            ),
+            pytest.param(
+                '{"result":"ok","data":[1,2,3]}', id = "llama3_2_bare_json_missing_name_does_not_fire"
+            ),
+            pytest.param('{"name":"x"}', id = "llama3_2_bare_json_missing_args_does_not_fire"),
+            pytest.param(
+                '{"name":"x","parameters":42}', id = "llama3_2_bare_json_args_not_dict_does_not_fire"
+            ),
+            # Llama-3 spec: parameters must be a dict, so prose in it must NOT trigger.
+            pytest.param(
+                '{"name":"foo","parameters":"this is a sentence"}',
+                id = "llama3_2_bare_json_string_parameters_does_not_fire",
+            ),
+            # OpenAI ``arguments`` may be a JSON-string of a dict, but plain prose must not pass.
+            pytest.param(
+                '{"name":"foo","arguments":"not json"}',
+                id = "llama3_2_bare_json_string_arguments_not_json_does_not_fire",
+            ),
+            # A call only mentioned in reasoning, with none after ``[/THINK]``, yields nothing.
+            pytest.param(
+                '[THINK]I might call [TOOL_CALLS]fake[ARGS]{"x":1}[/THINK]Done.',
+                id = "mistral_think_reasoning_no_real_call",
+            ),
+            # A word ending in "call:" must not trigger a bare tool call.
+            pytest.param(
+                "I will recall:that the function{ } is helpful.",
+                id = "gemma4_bare_not_matched_in_prose",
+            ),
+        ],
+    )
+    def test_family_text_yields_no_tool_calls(self, text):
+        assert parse_tool_calls_from_text(text) == []
 
-        text = '<|python_tag|>get_weather.call(location="Tokyo", units="celsius", days=5)'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        args = json.loads(result[0]["function"]["arguments"])
-        assert args == {"location": "Tokyo", "units": "celsius", "days": 5}
-
-    def test_llama3_python_tag_json_form(self):
-        import json
-
-        text = '<|python_tag|>{"name":"web_search","parameters":{"query":"hi","n":5}}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "web_search"
-        args = json.loads(result[0]["function"]["arguments"])
-        assert args == {"query": "hi", "n": 5}
-
-    def test_llama3_python_tag_json_form_with_eom(self):
-        # Llama-3 emits ``<|eom_id|>`` after the JSON; must not break parsing.
-        import json
-
-        text = '<|python_tag|>{"name":"python","parameters":{"code":"print(2+2)"}}<|eom_id|>'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        args = json.loads(result[0]["function"]["arguments"])
-        assert args == {"code": "print(2+2)"}
-
-    def test_llama3_strip_markup_final(self):
-        text = '<|python_tag|>brave_search.call(query="x")'
+    @pytest.mark.parametrize(
+        "text",
+        [
+            pytest.param(
+                '<|python_tag|>brave_search.call(query="x")', id = "llama3_strip_markup_final"
+            ),
+            pytest.param('[TOOL_CALLS]add{"a":1}', id = "mistral_strip_markup_v11"),
+            pytest.param(
+                '[TOOL_CALLS]special_function[CALL_ID]123456789[ARGS]{"arg1": 1}',
+                id = "mistral_call_id_form_stripped",
+            ),
+            pytest.param("<|tool_call>call:foo{x:1}<tool_call|>", id = "gemma4_strip_markup_final"),
+        ],
+    )
+    def test_family_call_strips_to_nothing(self, text):
         assert strip_tool_markup(text, final = True) == ""
 
     def test_llama3_python_tag_json_form_non_scalar_args_skipped(self):
@@ -745,85 +966,6 @@ class TestParserMultiFormat:
             '<|python_tag|>{"name":"foo","arguments":true}',
         ):
             assert parse_tool_calls_from_text(bad) == [], bad
-
-    # ── Llama-3.2 bare JSON ``custom_tools`` ─────────────────────
-
-    def test_llama3_2_bare_json_parameters(self):
-        # Llama-3.2-Instruct emits bare JSON directly as content; no
-        # <|python_tag|> prefix per its training template.
-        import json
-
-        text = '{"name":"web_search","parameters":{"query":"Tokyo weather"}}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "web_search"
-        args = json.loads(result[0]["function"]["arguments"])
-        assert args == {"query": "Tokyo weather"}
-
-    def test_llama3_2_bare_json_arguments_key(self):
-        import json
-
-        text = '{"name":"add","arguments":{"a":1,"b":2}}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        args = json.loads(result[0]["function"]["arguments"])
-        assert args == {"a": 1, "b": 2}
-
-    def test_llama3_2_bare_json_multi_call(self):
-        # Llama-3 may chain calls with ``; `` per training template.
-        text = '{"name":"a","parameters":{}}; {"name":"b","parameters":{}}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 2
-        assert result[0]["function"]["name"] == "a"
-        assert result[1]["function"]["name"] == "b"
-
-    def test_llama3_2_bare_json_with_eom_sentinel(self):
-        text = '{"name":"x","parameters":{"y":1}}<|eom_id|>'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "x"
-
-    def test_llama3_2_bare_json_leading_sentinel_skipped(self):
-        # Sometimes prior <|eot_id|> leaks into the next turn.
-        text = '<|eot_id|>{"name":"x","parameters":{}}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "x"
-
-    def test_llama3_2_bare_json_plain_prose_does_not_fire(self):
-        # Defensive: must NOT fire on plain assistant prose.
-        text = "Hello world, how are you today?"
-        assert parse_tool_calls_from_text(text) == []
-
-    def test_llama3_2_bare_json_embedded_in_prose_does_not_fire(self):
-        # Defensive: JSON embedded in prose must NOT fire (parser is
-        # strict about content STARTING with `{`).
-        text = 'The tool result was: {"name":"foo"}'
-        assert parse_tool_calls_from_text(text) == []
-
-    def test_llama3_2_bare_json_missing_name_does_not_fire(self):
-        text = '{"result":"ok","data":[1,2,3]}'
-        assert parse_tool_calls_from_text(text) == []
-
-    def test_llama3_2_bare_json_missing_args_does_not_fire(self):
-        text = '{"name":"x"}'
-        assert parse_tool_calls_from_text(text) == []
-
-    def test_llama3_2_bare_json_args_not_dict_does_not_fire(self):
-        text = '{"name":"x","parameters":42}'
-        assert parse_tool_calls_from_text(text) == []
-
-    def test_llama3_2_bare_json_string_parameters_does_not_fire(self):
-        # Llama-3 spec: parameters must be a dict. Prose like
-        # ``{"name":"foo","parameters":"a sentence"}`` must NOT trigger.
-        text = '{"name":"foo","parameters":"this is a sentence"}'
-        assert parse_tool_calls_from_text(text) == []
-
-    def test_llama3_2_bare_json_string_arguments_not_json_does_not_fire(self):
-        # OpenAI ``arguments`` may be a JSON-string of a dict, but a
-        # plain non-JSON string must not pass the guard.
-        text = '{"name":"foo","arguments":"not json"}'
-        assert parse_tool_calls_from_text(text) == []
 
     def test_llama3_2_bare_json_string_arguments_json_dict_fires(self):
         # OpenAI shape: arguments is a JSON-encoded string of a dict.
@@ -857,202 +999,14 @@ class TestParserMultiFormat:
         assert result[0]["id"] == "abc"
         assert json.loads(result[0]["function"]["arguments"]) == {"query": "hello"}
 
-    def test_mistral_array_parameters_key_alias(self):
-        import json
-
-        # Array object keyed on ``parameters`` (not ``arguments``) must keep its
-        # payload, matching the JSON/XML paths and SGLang's base detector.
-        text = '[TOOL_CALLS] [{"name":"get_weather","parameters":{"city":"Paris"}}]'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "get_weather"
-        assert json.loads(result[0]["function"]["arguments"]) == {"city": "Paris"}
-
-    def test_mistral_pre_v11_array_multi(self):
-        text = (
-            '[TOOL_CALLS] [{"name":"a","arguments":{"x":1},"id":"id1"},'
-            '{"name":"b","arguments":{"y":2},"id":"id2"}]'
-        )
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 2
-        assert result[0]["function"]["name"] == "a"
-        assert result[1]["function"]["name"] == "b"
-
-    def test_mistral_pre_v11_unclosed_array(self):
-        # Closing ``]`` truncated -- parser must heal off individual objects.
-        text = '[TOOL_CALLS] [{"name":"web_search","arguments":{"q":"x"},"id":"id"}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "web_search"
-
-    # Mistral v11+
-
-    def test_mistral_v11_single(self):
-        # Magistral / Mistral Small 3.1: bare ``name{json}`` after trigger.
-        import json
-
-        text = '[TOOL_CALLS]add{"a":3.5,"b":4}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "add"
-        assert json.loads(result[0]["function"]["arguments"]) == {"a": 3.5, "b": 4}
-
-    def test_mistral_v11_parallel(self):
-        # v11+ parallel: ``[TOOL_CALLS]a{...}[TOOL_CALLS]b{...}``.
-        text = '[TOOL_CALLS]add{"a":1}[TOOL_CALLS]sub{"b":2}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 2
-        assert result[0]["function"]["name"] == "add"
-        assert result[1]["function"]["name"] == "sub"
-
-    def test_mistral_v11_with_args_marker(self):
-        # Ministral / Mistral Large 3: ``[TOOL_CALLS]name[ARGS]{json}``.
-        import json
-
-        text = '[TOOL_CALLS]add[ARGS]{"a":1,"b":2}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "add"
-        assert json.loads(result[0]["function"]["arguments"]) == {"a": 1, "b": 2}
-
-    def test_mistral_strip_markup_v11(self):
-        text = '[TOOL_CALLS]add{"a":1}'
-        assert strip_tool_markup(text, final = True) == ""
-
-    def test_mistral_call_id_form(self):
-        # Mistral Small 3.2: ``[TOOL_CALLS]name[CALL_ID]<id>[ARGS]{json}``.
-        # The ``[CALL_ID]`` segment must be skipped, not treated as a stop
-        # (llama.cpp test-chat.cpp:4785 parses this to one call).
-        import json
-
-        text = '[TOOL_CALLS]special_function[CALL_ID]123456789[ARGS]{"arg1": 1}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "special_function"
-        assert json.loads(result[0]["function"]["arguments"]) == {"arg1": 1}
-
-    def test_mistral_call_id_form_parallel(self):
-        text = (
-            '[TOOL_CALLS]special_function[CALL_ID]000000001[ARGS]{"arg1": 1}'
-            "[TOOL_CALLS]special_function_with_opt[CALL_ID]000000002"
-            '[ARGS]{"arg1": 1, "arg2": 2}'
-        )
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 2
-        assert result[0]["function"]["name"] == "special_function"
-        assert result[1]["function"]["name"] == "special_function_with_opt"
-
-    def test_mistral_call_id_form_stripped(self):
-        text = '[TOOL_CALLS]special_function[CALL_ID]123456789[ARGS]{"arg1": 1}'
-        assert strip_tool_markup(text, final = True) == ""
-
-    def test_mistral_think_reasoning_ignored(self):
-        # Magistral wraps reasoning in ``[THINK]...[/THINK]``. A ``[TOOL_CALLS]``
-        # inside the reasoning is chain-of-thought, not a real call; only the
-        # call after ``[/THINK]`` counts (llama.cpp test-chat.cpp:2285).
-        import json
-
-        text = (
-            '[THINK]Let me think about [TOOL_CALLS]fake[ARGS]{"x":1} '
-            'and more[/THINK][TOOL_CALLS]real_fn[ARGS]{"y":2}'
-        )
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "real_fn"
-        assert json.loads(result[0]["function"]["arguments"]) == {"y": 2}
-
-    def test_mistral_think_reasoning_no_real_call(self):
-        # Reasoning that merely mentions a tool call but does not emit one
-        # after ``[/THINK]`` yields no calls.
-        text = '[THINK]I might call [TOOL_CALLS]fake[ARGS]{"x":1}[/THINK]Done.'
-        assert parse_tool_calls_from_text(text) == []
-
-    def test_mistral_think_literal_in_argument_preserved(self):
-        # A literal ``[THINK]`` inside a real tool argument (after the call)
-        # must not be stripped or corrupt the parse.
-        import json
-
-        text = '[TOOL_CALLS]search[ARGS]{"q":"explain the [THINK] token"}'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert json.loads(result[0]["function"]["arguments"]) == {"q": "explain the [THINK] token"}
-
-    # Gemma 4
-
-    def test_gemma4_simple_call(self):
-        import json
-
-        text = (
-            "<|tool_call>call:get_weather{"
-            'location:<|"|>Tokyo<|"|>,units:<|"|>celsius<|"|>}<tool_call|>'
-        )
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "get_weather"
-        args = json.loads(result[0]["function"]["arguments"])
-        assert args == {"location": "Tokyo", "units": "celsius"}
-
-    def test_gemma4_with_primitives(self):
-        import json
-
-        text = (
-            "<|tool_call>call:set_pref{"
-            "enabled:true,attempts:5,threshold:1.5,nickname:null}<tool_call|>"
-        )
-        result = parse_tool_calls_from_text(text)
-        args = json.loads(result[0]["function"]["arguments"])
-        assert args == {"enabled": True, "attempts": 5, "threshold": 1.5, "nickname": None}
-
-    def test_gemma4_nested_args(self):
-        # Gemma 4 nests dicts / lists with bare keys and ``<|"|>`` strings.
-        import json
-
-        text = (
-            "<|tool_call>call:search{"
-            'query:<|"|>foo<|"|>,filters:{site:<|"|>example.com<|"|>,recent:true},'
-            'tags:[<|"|>a<|"|>,<|"|>b<|"|>]}<tool_call|>'
-        )
-        result = parse_tool_calls_from_text(text)
-        args = json.loads(result[0]["function"]["arguments"])
-        assert args["query"] == "foo"
-        assert args["filters"] == {"site": "example.com", "recent": True}
-        assert args["tags"] == ["a", "b"]
-
-    def test_gemma4_multi_call(self):
-        text = "<|tool_call>call:a{x:1}<tool_call|><|tool_call>call:b{y:2}<tool_call|>"
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 2
-        assert result[0]["function"]["name"] == "a"
-        assert result[1]["function"]["name"] == "b"
-
     def test_gemma4_unclosed_does_not_raise(self):
         # Truncated mid-stream; must not raise.
         text = '<|tool_call>call:foo{x:<|"|>bar<|"|>'
         result = parse_tool_calls_from_text(text)
         assert isinstance(result, list)
 
-    def test_gemma4_strip_markup_final(self):
-        text = "<|tool_call>call:foo{x:1}<tool_call|>"
-        assert strip_tool_markup(text, final = True) == ""
-
-    # ── Gemma 4 wrapper-less (skip_special_tokens stripped) ───────────
-
-    def test_gemma4_bare_stripped_call(self):
-        # skip_special_tokens removes <|tool_call>/<tool_call|> and <|"|>,
-        # leaving a bare call:NAME{...} with an unquoted value.
-        import json
-
-        text = "call:web_search{query:weather in San Francisco right now}"
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "web_search"
-        args = json.loads(result[0]["function"]["arguments"])
-        assert args == {"query": "weather in San Francisco right now"}
-
     def test_gemma4_bare_code_with_commas(self):
         # A code value with commas must not truncate at the first comma.
-        import json
-
         text = (
             "call:python{code:def f(n):\n    a, b = 0, 1\n"
             "    for _ in range(2, n+1):\n        a, b = b, a + b\n"
@@ -1066,28 +1020,12 @@ class TestParserMultiFormat:
     def test_gemma4_bare_quotes_normalized(self):
         # The same value quoted vs unquoted must parse identically so the
         # agentic loop can collapse a looping model's repeated calls.
-        import json
-
         a = parse_tool_calls_from_text('call:web_search{query:"foo bar"}')
         b = parse_tool_calls_from_text("call:web_search{query:foo bar}")
         assert json.loads(a[0]["function"]["arguments"]) == {"query": "foo bar"}
         assert json.loads(a[0]["function"]["arguments"]) == json.loads(
             b[0]["function"]["arguments"]
         )
-
-    def test_gemma4_bare_multi_arg(self):
-        import json
-
-        text = "call:web_search{query:pytorch latest, url:https://pytorch.org}"
-        result = parse_tool_calls_from_text(text)
-        args = json.loads(result[0]["function"]["arguments"])
-        assert args == {"query": "pytorch latest", "url": "https://pytorch.org"}
-
-    def test_gemma4_bare_not_matched_in_prose(self):
-        # A word ending in "call:" must not trigger a bare tool call.
-        text = "I will recall:that the function{ } is helpful."
-        result = parse_tool_calls_from_text(text)
-        assert result == []
 
     def test_gemma4_bare_strip_markup_final(self):
         text = "Here you go:\ncall:web_search{query:weather today}"
@@ -1215,136 +1153,131 @@ def _make_loop(
     ), exec_fn
 
 
+_DS_OPEN = "<｜tool▁calls▁begin｜>"
+_DS_SHORT_OPEN = "<｜tool▁calls｜>"
+_DS_END = "<｜tool▁calls▁end｜>"
+_DS_CALL_BEGIN = "<｜tool▁call▁begin｜>"
+_DS_CALL_END = "<｜tool▁call▁end｜>"
+_DS_SEP = "<｜tool▁sep｜>"
+
+
+def _ds_call(
+    name,
+    args,
+    *,
+    closed = True,
+):
+    """One DeepSeek V3 / V3.1 inner call: bare name, separator, bare JSON args."""
+    return _DS_CALL_BEGIN + name + _DS_SEP + args + (_DS_CALL_END if closed else "")
+
+
+def _ds_r1_call(
+    name,
+    args,
+    *,
+    begin = True,
+):
+    """One DeepSeek R1 inner call: ``function`` prefix, then a Markdown ```json fence."""
+    return (
+        (_DS_CALL_BEGIN if begin else "")
+        + f"function{_DS_SEP}{name}\n```json\n{args}\n```"
+        + _DS_CALL_END
+    )
+
+
+def _ds_section(
+    *calls,
+    opener = _DS_OPEN,
+    closed = True,
+):
+    """The DeepSeek outer envelope around already-built inner calls."""
+    return opener + "".join(calls) + (_DS_END if closed else "")
+
+
 class TestParserDeepSeek:
     """DeepSeek R1 / V3 / V3.1 coverage. Markers use full-width pipes
     (U+FF5C) and lower-one-eighth-block (U+2581). R1 wraps args in a
     Markdown ``` ```json ``` ``` fence; V3 / V3.1 emit bare JSON."""
 
-    def test_r1_simple_call_with_code_fence(self):
-        import json as _json
+    @pytest.mark.parametrize(
+        "text, name, args",
+        [
+            pytest.param(
+                _ds_section(_ds_r1_call("special_function", '{"arg1": 1}')),
+                "special_function",
+                {"arg1": 1},
+                id = "r1_simple_call_with_code_fence",
+            ),
+            # V3 / V3.1 omit the ``function`` prefix and the code fence.
+            pytest.param(
+                _ds_section(_ds_call("get_time", '{"city": "Tokyo"}')),
+                "get_time",
+                {"city": "Tokyo"},
+                id = "v3_1_bare_json",
+            ),
+        ],
+    )
+    def test_deepseek_call_parses_to_name_and_args(self, text, name, args):
+        _shared_setup_6(args, name, text)
 
-        text = (
-            "<｜tool▁calls▁begin｜>"
-            "<｜tool▁call▁begin｜>function"
-            "<｜tool▁sep｜>special_function\n"
-            "```json\n"
-            '{"arg1": 1}\n'
-            "```"
-            "<｜tool▁call▁end｜>"
-            "<｜tool▁calls▁end｜>"
-        )
+    @pytest.mark.parametrize(
+        "text, name",
+        [
+            # llama.cpp accepts the short-form opener too.
+            pytest.param(
+                _ds_section(
+                    _ds_r1_call("get_time", '{"city": "Paris"}', begin = False), opener = _DS_SHORT_OPEN
+                ),
+                "get_time",
+                id = "r1_short_form_outer_marker",
+            ),
+            # Reasoning <think>...</think> precedes the tool block.
+            pytest.param(
+                "<think>I'm thinking</think>\n"
+                + _ds_section(_ds_call("get_time", '{"city": "Tokyo"}')),
+                "get_time",
+                id = "v3_1_with_reasoning",
+            ),
+        ],
+    )
+    def test_deepseek_call_parses_to_single_named_call(self, text, name):
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
-        assert result[0]["function"]["name"] == "special_function"
-        assert _json.loads(result[0]["function"]["arguments"]) == {"arg1": 1}
-
-    def test_r1_short_form_outer_marker(self):
-        # llama.cpp accepts ``<｜tool▁calls｜>`` as the short-form opener.
-        import json as _json
-
-        text = (
-            "<｜tool▁calls｜>function"
-            "<｜tool▁sep｜>get_time\n"
-            "```json\n"
-            '{"city": "Paris"}\n'
-            "```"
-            "<｜tool▁call▁end｜>"
-            "<｜tool▁calls▁end｜>"
-        )
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "get_time"
-
-    def test_v3_1_bare_json(self):
-        # V3 / V3.1 omit the ``function`` prefix and the code fence.
-        import json as _json
-
-        text = (
-            "<｜tool▁calls▁begin｜>"
-            "<｜tool▁call▁begin｜>get_time"
-            "<｜tool▁sep｜>"
-            '{"city": "Tokyo"}'
-            "<｜tool▁call▁end｜>"
-            "<｜tool▁calls▁end｜>"
-        )
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "get_time"
-        assert _json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
+        assert result[0]["function"]["name"] == name
 
     def test_v3_1_multi_call_shares_envelope(self):
-        # Parallel calls share one outer envelope; each inner call has
-        # its own ``<｜tool▁call▁begin｜>...<｜tool▁call▁end｜>``.
-        text = (
-            "<｜tool▁calls▁begin｜>"
-            "<｜tool▁call▁begin｜>get_time"
-            "<｜tool▁sep｜>"
-            '{"city": "Paris"}'
-            "<｜tool▁call▁end｜>"
-            "<｜tool▁call▁begin｜>get_weather"
-            "<｜tool▁sep｜>"
-            '{"city": "Paris"}'
-            "<｜tool▁call▁end｜>"
-            "<｜tool▁calls▁end｜>"
+        # Parallel calls share one outer envelope; each inner call carries its own begin/end pair.
+        result = parse_tool_calls_from_text(
+            _ds_section(
+                _ds_call("get_time", '{"city": "Paris"}'),
+                _ds_call("get_weather", '{"city": "Paris"}'),
+            )
         )
-        result = parse_tool_calls_from_text(text)
         assert len(result) == 2
         assert result[0]["function"]["name"] == "get_time"
         assert result[1]["function"]["name"] == "get_weather"
 
-    def test_v3_1_with_reasoning(self):
-        # Reasoning <think>...</think> precedes the tool block.
-        text = (
-            "<think>I'm thinking</think>\n"
-            "<｜tool▁calls▁begin｜>"
-            "<｜tool▁call▁begin｜>get_time"
-            "<｜tool▁sep｜>"
-            '{"city": "Tokyo"}'
-            "<｜tool▁call▁end｜>"
-            "<｜tool▁calls▁end｜>"
-        )
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "get_time"
-
     def test_v3_1_strict_rejects_unclosed_envelope(self):
-        # Envelope truncated mid-stream (no <｜tool▁calls▁end｜>): healed by
-        # default, rejected with Auto-Heal off.
-        text = '<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>get_time<｜tool▁sep｜>{"city": "Tokyo"}'
+        # Envelope truncated mid-stream: healed by default, rejected with Auto-Heal off.
+        text = _ds_section(_ds_call("get_time", '{"city": "Tokyo"}', closed = False), closed = False)
         assert len(parse_tool_calls_from_text(text)) == 1
         assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
 
     def test_v3_1_multi_call_recovers_when_first_end_marker_missing(self):
-        # First inner call omits its <｜tool▁call▁end｜>; the second must still be parsed.
-        text = (
-            "<｜tool▁calls▁begin｜>"
-            "<｜tool▁call▁begin｜>get_time"
-            "<｜tool▁sep｜>"
-            '{"city": "Paris"}'
-            "<｜tool▁call▁begin｜>get_weather"
-            "<｜tool▁sep｜>"
-            '{"city": "Paris"}'
-            "<｜tool▁call▁end｜>"
-            "<｜tool▁calls▁end｜>"
+        result = parse_tool_calls_from_text(
+            _ds_section(
+                _ds_call("get_time", '{"city": "Paris"}', closed = False),
+                _ds_call("get_weather", '{"city": "Paris"}'),
+            )
         )
-        result = parse_tool_calls_from_text(text)
         assert [c["function"]["name"] for c in result] == ["get_time", "get_weather"]
 
     def test_v3_1_strict_recovers_after_missing_call_end(self):
-        # Strict mode (Auto-Heal off): the FIRST inner call is missing its <｜tool▁call▁end｜>
-        # terminator, so it is skipped -- but the parser must keep scanning and still return the ...
-        text = (
-            "<｜tool▁calls▁begin｜>"
-            "<｜tool▁call▁begin｜>get_weather"
-            "<｜tool▁sep｜>"
-            '{"city": "SF"}'
-            "<｜tool▁call▁begin｜>get_time"
-            "<｜tool▁sep｜>"
-            '{"tz": "PST"}'
-            "<｜tool▁call▁end｜>"
-            "<｜tool▁calls▁end｜>"
+        # Strict skips the unterminated FIRST call but keeps scanning; Auto-Heal keeps both.
+        text = _ds_section(
+            _ds_call("get_weather", '{"city": "SF"}', closed = False),
+            _ds_call("get_time", '{"tz": "PST"}'),
         )
-        # Auto-Heal keeps both; strict skips the truncated first, keeps the second.
         assert [c["function"]["name"] for c in parse_tool_calls_from_text(text)] == [
             "get_weather",
             "get_time",
@@ -1353,52 +1286,36 @@ class TestParserDeepSeek:
         assert [c["function"]["name"] for c in strict] == ["get_time"]
 
     def test_r1_strict_recovers_after_missing_close_fence(self):
-        # R1 form.
+        # Same recovery for the R1 fenced form: the first call never closes its ```json fence.
         text = (
-            "<｜tool▁calls▁begin｜>"
-            "function<｜tool▁sep｜>get_weather\n```json\n"
-            '{"city": "SF"}'
-            "function<｜tool▁sep｜>get_time\n```json\n"
-            '{"tz": "PST"}'
-            "\n```<｜tool▁call▁end｜>"
-            "<｜tool▁calls▁end｜>"
+            _DS_OPEN
+            + f"function{_DS_SEP}get_weather\n```json\n"
+            + '{"city": "SF"}'
+            + f"function{_DS_SEP}get_time\n```json\n"
+            + '{"tz": "PST"}'
+            + "\n```"
+            + _DS_CALL_END
+            + _DS_END
         )
         strict = parse_tool_calls_from_text(text, allow_incomplete = False)
         assert [c["function"]["name"] for c in strict] == ["get_time"]
 
-    def test_deepseek_strip_markup(self):
-        text = (
-            "before "
-            "<｜tool▁calls▁begin｜>"
-            "<｜tool▁call▁begin｜>foo"
-            "<｜tool▁sep｜>"
-            "{}"
-            "<｜tool▁call▁end｜>"
-            "<｜tool▁calls▁end｜>"
-            " after"
-        )
+    @pytest.mark.parametrize(
+        "opener",
+        [
+            pytest.param(_DS_OPEN, id = "deepseek_strip_markup"),
+            # Strip patterns once required the long opener and leaked the short one's markup.
+            pytest.param(_DS_SHORT_OPEN, id = "deepseek_short_opener_is_stripped"),
+        ],
+    )
+    def test_deepseek_section_strips_out_of_visible_text(self, opener):
+        text = "before " + _ds_section(_ds_call("foo", "{}"), opener = opener) + " after"
         assert strip_tool_markup(text, final = True) == "before  after"
 
     def test_deepseek_signal_wakes_streaming(self):
         # The streaming buffer state machine must wake on the DeepSeek opener so the rest of the
         # section is drained instead of leaked.
-        text = "<｜tool▁calls▁begin｜>..."
-        assert has_tool_signal(text)
-
-    def test_deepseek_short_opener_is_stripped(self):
-        # The short ``<｜tool▁calls｜>`` opener is parsed, so its markup must also be stripped (the
-        # strip patterns used to require ...calls_begin and left the short-opener markup leaking to ...
-        text = (
-            "before "
-            "<｜tool▁calls｜>"
-            "<｜tool▁call▁begin｜>foo"
-            "<｜tool▁sep｜>"
-            "{}"
-            "<｜tool▁call▁end｜>"
-            "<｜tool▁calls▁end｜>"
-            " after"
-        )
-        assert strip_tool_markup(text, final = True) == "before  after"
+        assert has_tool_signal(_DS_OPEN + "...")
 
 
 class TestParserGLM:
@@ -1512,6 +1429,27 @@ class TestParserGLM:
         assert args == {"code": "    indented code    "}
 
 
+def _kimi_call(
+    call_id,
+    args = "{}",
+    *,
+    closed = True,
+):
+    """One Kimi K2 inner call; ``closed = False`` omits the ``<|tool_call_end|>`` terminator."""
+    return f"<|tool_call_begin|>{call_id}<|tool_call_argument_begin|>{args}" + (
+        "<|tool_call_end|>" if closed else ""
+    )
+
+
+def _kimi_section(*calls, closed = True):
+    """The Kimi section envelope wrapped around already-built inner calls."""
+    return (
+        "<|tool_calls_section_begin|>"
+        + "".join(calls)
+        + ("<|tool_calls_section_end|>" if closed else "")
+    )
+
+
 class TestParserKimi:
     """Kimi K2 / Moonshot coverage. ASCII pipes only (NOT full-width).
     Name arrives as ``functions.NAME:IDX``; the parser strips the
@@ -1519,182 +1457,107 @@ class TestParserKimi:
     preserving the full id for round-trip rendering."""
 
     def test_kimi_simple_call(self):
-        import json as _json
-
-        text = (
-            "<|tool_calls_section_begin|>"
-            "<|tool_call_begin|>functions.special_function:0"
-            "<|tool_call_argument_begin|>"
-            '{"arg1": 1}'
-            "<|tool_call_end|>"
-            "<|tool_calls_section_end|>"
+        result = parse_tool_calls_from_text(
+            _kimi_section(_kimi_call("functions.special_function:0", '{"arg1": 1}'))
         )
-        result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         # Bare name recovered; full id preserved verbatim.
         assert result[0]["function"]["name"] == "special_function"
         assert result[0]["id"] == "functions.special_function:0"
-        assert _json.loads(result[0]["function"]["arguments"]) == {"arg1": 1}
+        assert json.loads(result[0]["function"]["arguments"]) == {"arg1": 1}
 
-    def test_outer_tool_call_with_embedded_kimi_marker_parses_outer(self):
-        # A Qwen/Hermes <tool_call> whose argument contains literal Kimi markup (a user asking
-        # about that syntax) must execute the OUTER call, not the embedded marker via the ...
-        text = (
-            '<tool_call>{"name":"web_search","arguments":{"query":'
-            '"explain <|tool_call_begin|>functions.evil:0'
-            '<|tool_call_argument_begin|>{}<|tool_call_end|>"}}'
-            "</tool_call>"
-        )
+    @pytest.mark.parametrize(
+        "text, name",
+        [
+            # Literal Kimi markup inside a Hermes argument: run the OUTER call, not the marker.
+            pytest.param(
+                '<tool_call>{"name":"web_search","arguments":{"query":'
+                '"explain <|tool_call_begin|>functions.evil:0'
+                '<|tool_call_argument_begin|>{}<|tool_call_end|>"}}</tool_call>',
+                "web_search",
+                id = "outer_tool_call_with_embedded_kimi_marker_parses_outer",
+            ),
+            # Control: a real Kimi call with no <tool_call> envelope still hits the pre-pass.
+            pytest.param(
+                _kimi_section(_kimi_call("functions.web_search:0", '{"query":"x"}')),
+                "web_search",
+                id = "genuine_kimi_call_without_envelope_still_parses",
+            ),
+            # Only the ``functions.`` prefix and ``:idx`` suffix are stripped, matching vLLM.
+            pytest.param(
+                _kimi_section(_kimi_call("a.b.c:2")),
+                "a.b.c",
+                id = "kimi_dotted_name_keeps_full_dotted_name",
+            ),
+            pytest.param(
+                _kimi_section(_kimi_call("functions.mcp.server-list:0")),
+                "mcp.server-list",
+                id = "kimi_dotted_mcp_name_with_functions_prefix",
+            ),
+            # End marker missing -- the parser must still extract the call.
+            pytest.param(
+                _kimi_section(_kimi_call("functions.foo:0", '{"a":1}'), closed = False),
+                "foo",
+                id = "kimi_handles_unclosed_section",
+            ),
+        ],
+    )
+    def test_kimi_call_parses_to_single_named_call(self, text, name):
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
-        assert result[0]["function"]["name"] == "web_search"
-
-    def test_genuine_kimi_call_without_envelope_still_parses(self):
-        # Control: a real Kimi call with no leading <tool_call> envelope must
-        # still go through the pre-pass.
-        text = (
-            "<|tool_calls_section_begin|>"
-            "<|tool_call_begin|>functions.web_search:0"
-            '<|tool_call_argument_begin|>{"query":"x"}<|tool_call_end|>'
-            "<|tool_calls_section_end|>"
-        )
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "web_search"
+        assert result[0]["function"]["name"] == name
 
     def test_kimi_multi_call_with_index(self):
-        # Multiple consecutive calls inside a single section, each
-        # with its own monotonically incrementing ``:IDX``.
-        text = (
-            "<|tool_calls_section_begin|>"
-            "<|tool_call_begin|>functions.read_file:0"
-            "<|tool_call_argument_begin|>"
-            '{"path":"a"}'
-            "<|tool_call_end|>"
-            "<|tool_call_begin|>functions.web_search:1"
-            "<|tool_call_argument_begin|>"
-            '{"query":"x"}'
-            "<|tool_call_end|>"
-            "<|tool_calls_section_end|>"
+        # Consecutive calls in one section, each with its own incrementing ``:IDX``.
+        result = parse_tool_calls_from_text(
+            _kimi_section(
+                _kimi_call("functions.read_file:0", '{"path":"a"}'),
+                _kimi_call("functions.web_search:1", '{"query":"x"}'),
+            )
         )
-        result = parse_tool_calls_from_text(text)
         assert len(result) == 2
         assert result[0]["function"]["name"] == "read_file"
         assert result[0]["id"].endswith(":0")
         assert result[1]["function"]["name"] == "web_search"
         assert result[1]["id"].endswith(":1")
 
-    def test_kimi_dotted_name_keeps_full_dotted_name(self):
-        # A dotted Kimi id keeps its FULL name after stripping only the ``functions.`` prefix and
-        # ``:idx`` suffix -- matching current vLLM ...
-        text = (
-            "<|tool_calls_section_begin|>"
-            "<|tool_call_begin|>a.b.c:2"
-            "<|tool_call_argument_begin|>"
-            "{}"
-            "<|tool_call_end|>"
-            "<|tool_calls_section_end|>"
-        )
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "a.b.c"
-
-    def test_kimi_dotted_mcp_name_with_functions_prefix(self):
-        # ``functions.mcp.server-list:0`` must resolve to ``mcp.server-list``
-        # (only the ``functions.`` prefix and ``:idx`` are removed).
-        text = (
-            "<|tool_calls_section_begin|>"
-            "<|tool_call_begin|>functions.mcp.server-list:0"
-            "<|tool_call_argument_begin|>"
-            "{}"
-            "<|tool_call_end|>"
-            "<|tool_calls_section_end|>"
-        )
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "mcp.server-list"
-
     def test_kimi_multi_call_recovers_when_first_end_marker_missing(self):
-        # First call omits its <|tool_call_end|>; the second must still parse.
-        text = (
-            "<|tool_calls_section_begin|>"
-            "<|tool_call_begin|>functions.read_file:0"
-            "<|tool_call_argument_begin|>"
-            '{"path":"a"}'
-            "<|tool_call_begin|>functions.web_search:1"
-            "<|tool_call_argument_begin|>"
-            '{"query":"x"}'
-            "<|tool_call_end|>"
-            "<|tool_calls_section_end|>"
+        result = parse_tool_calls_from_text(
+            _kimi_section(
+                _kimi_call("functions.read_file:0", '{"path":"a"}', closed = False),
+                _kimi_call("functions.web_search:1", '{"query":"x"}'),
+            )
         )
-        result = parse_tool_calls_from_text(text)
         assert [c["function"]["name"] for c in result] == ["read_file", "web_search"]
 
-    def test_kimi_handles_unclosed_section(self):
-        # End marker missing -- the parser must still extract the call.
-        text = (
-            "<|tool_calls_section_begin|>"
-            "<|tool_call_begin|>functions.foo:0"
-            "<|tool_call_argument_begin|>"
-            '{"a":1}'
-            "<|tool_call_end|>"
-        )
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "foo"
-
     def test_kimi_strip_markup(self):
-        text = (
-            "before "
-            "<|tool_calls_section_begin|>"
-            "<|tool_call_begin|>functions.x:0"
-            "<|tool_call_argument_begin|>"
-            "{}"
-            "<|tool_call_end|>"
-            "<|tool_calls_section_end|>"
-            " after"
-        )
+        text = "before " + _kimi_section(_kimi_call("functions.x:0")) + " after"
         assert strip_tool_markup(text, final = True) == "before  after"
 
     def test_kimi_signal_wakes_streaming(self):
-        text = "<|tool_calls_section_begin|>..."
-        assert has_tool_signal(text)
+        assert has_tool_signal("<|tool_calls_section_begin|>...")
 
     def test_kimi_call_without_section_wrapper(self):
-        # llama.cpp makes the ``<|tool_calls_section_begin|>`` wrapper optional -- Kimi K2 can emit
-        # a bare ``<|tool_call_begin|>`` call.
-        import json as _json
-
-        text = (
-            "<|tool_call_begin|>functions.execute_command:0"
-            "<|tool_call_argument_begin|>"
-            '{"cmd":"ls"}'
-            "<|tool_call_end|>"
+        # llama.cpp makes the section wrapper optional: Kimi K2 can emit a bare call.
+        result = parse_tool_calls_from_text(
+            _kimi_call("functions.execute_command:0", '{"cmd":"ls"}')
         )
-        result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "execute_command"
-        assert _json.loads(result[0]["function"]["arguments"]) == {"cmd": "ls"}
+        assert json.loads(result[0]["function"]["arguments"]) == {"cmd": "ls"}
 
     def test_kimi_malformed_json_recovers_later_calls(self):
         # A call with malformed / truncated JSON must not drop the valid calls that follow it in
         # the same section (the bad call is skipped, the good one is recovered).
-        import json as _json
-
-        text = (
-            "<|tool_calls_section_begin|>"
-            "<|tool_call_begin|>functions.a:0"
-            '<|tool_call_argument_begin|>{"city":"Beijing"'  # missing closing brace
-            "<|tool_call_end|>"
-            "<|tool_call_begin|>functions.b:1"
-            '<|tool_call_argument_begin|>{"city":"Shanghai"}'
-            "<|tool_call_end|>"
-            "<|tool_calls_section_end|>"
+        result = parse_tool_calls_from_text(
+            _kimi_section(
+                _kimi_call("functions.a:0", '{"city":"Beijing"'),  # missing closing brace
+                _kimi_call("functions.b:1", '{"city":"Shanghai"}'),
+            )
         )
-        result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "b"
-        assert _json.loads(result[0]["function"]["arguments"]) == {"city": "Shanghai"}
+        assert json.loads(result[0]["function"]["arguments"]) == {"city": "Shanghai"}
 
 
 class TestParserCrossFormatRouting:
@@ -1838,30 +1701,96 @@ def test_spent_one_shot_rehearsal_repeat_is_detected_not_blank_continuation():
     assert not any("render_html[ARGS]" in t for t in contents), contents
 
 
-def test_rehearsal_call_name_is_not_streamed_before_args():
-    # A rehearsal whose name and [ARGS] arrive together must drain, not stream the bare name.
-    loop, exec_fn = _make_loop(
-        turns = [['web_search[ARGS]{"query":"cats"}'], ["Found."]],
-        exec_results = ["RESULT"],
-        max_tool_iterations = 3,
-    )
+@pytest.mark.parametrize(
+    "turns, expected_calls, hidden, visible",
+    [
+        # A rehearsal whose name and [ARGS] arrive together must drain, not stream the bare name.
+        pytest.param(
+            [['web_search[ARGS]{"query":"cats"}'], ["Found."]],
+            [("web_search", {"query": "cats"})],
+            ["web_search"],
+            None,
+            id = "rehearsal_call_name_is_not_streamed_before_args",
+        ),
+        # Name and [ARGS] in separate chunks: the bare name is held until [ARGS] arrives.
+        pytest.param(
+            [["web_search", '[ARGS]{"query":"cats"}'], ["Found."]],
+            [("web_search", {"query": "cats"})],
+            ["web_search"],
+            None,
+            id = "rehearsal_call_name_split_before_args_is_not_streamed",
+        ),
+        # After prose has streamed (STREAMING state), a split rehearsal name must still be held.
+        # _make_loop accumulates these deltas into cumulative snapshots.
+        pytest.param(
+            [
+                ["Let me think. ", "I will search ", "web_search", '[ARGS]{"query":"cats"}'],
+                ["Found."],
+            ],
+            [("web_search", {"query": "cats"})],
+            ["web_search"],
+            None,
+            id = "rehearsal_name_after_prose_in_streaming_is_not_streamed",
+        ),
+        # Prose then ``web_search[ARGS]{...}`` in one chunk: the boundary is pulled back over the name.
+        pytest.param(
+            [["Sure. ", 'now web_search[ARGS]{"query":"cats"}'], ["Found."]],
+            [("web_search", {"query": "cats"})],
+            ["web_search"],
+            None,
+            id = "rehearsal_name_after_prose_same_chunk_in_streaming_is_not_streamed",
+        ),
+        # First flush out of BUFFERING applies the same trailing-name hold as STREAMING.
+        pytest.param(
+            [["I will use python", '[ARGS]{"code":"print(1)"}'], ["done"]],
+            [("python", {"code": "print(1)"})],
+            ["python"],
+            None,
+            id = "initial_buffer_flush_holds_split_rehearsal_name",
+        ),
+        # Llama-3.2 bare form has no XML signal: BUFFER until the object closes and fire via
+        # the safety net, never streaming the raw JSON as content.
+        pytest.param(
+            [['{"name":"web_search","parameters":{"query":"cats"}}'], ["Here are the results."]],
+            [("web_search", {"query": "cats"})],
+            ['"name"', "web_search"],
+            "Here are the results.",
+            id = "bare_json_tool_call_is_not_streamed_as_content",
+        ),
+        # Same, split mid-key, so the buffer stays open across chunks until it balances.
+        pytest.param(
+            [['{"name":"web_', 'search","parameters":{"query":"cats"}}'], ["Done."]],
+            [("web_search", {"query": "cats"})],
+            ['"name"', "web_search"],
+            None,
+            id = "bare_json_tool_call_split_across_chunks_is_not_streamed",
+        ),
+        # Gemma 4 wrapper-less ``call:NAME{...}`` has no XML signal: buffer, never stream it.
+        pytest.param(
+            [["call:web_search{query:cats}"], ["Found."]],
+            [("web_search", {"query": "cats"})],
+            ["call:web_search"],
+            None,
+            id = "gemma_wrapperless_call_is_not_streamed_as_content",
+        ),
+        # Gemma may emit ``call : NAME{...}`` with whitespace around the colon, split across chunks.
+        pytest.param(
+            [["call", " : ", "web_search", "{query:cats}"], ["Found."]],
+            [("web_search", {"query": "cats"})],
+            ["call"],
+            None,
+            id = "gemma_wrapperless_call_with_whitespace_is_suppressed_when_streamed",
+        ),
+    ],
+)
+def test_tool_markup_is_not_streamed_as_content(turns, expected_calls, hidden, visible):
+    loop, exec_fn = _make_loop(turns = turns, exec_results = ["RESULT"], max_tool_iterations = 3)
     events = _collect_events(loop)
-    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
+    assert exec_fn.calls == expected_calls, exec_fn.calls
     contents = [e["text"] for e in events if e["type"] == "content"]
-    assert not any("web_search" in t for t in contents), contents
-
-
-def test_rehearsal_call_name_split_before_args_is_not_streamed():
-    # Finding 5: name and [ARGS] in separate chunks -- the bare name is held until [ARGS] arrives.
-    loop, exec_fn = _make_loop(
-        turns = [["web_search", '[ARGS]{"query":"cats"}'], ["Found."]],
-        exec_results = ["RESULT"],
-        max_tool_iterations = 3,
-    )
-    events = _collect_events(loop)
-    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
-    contents = [e["text"] for e in events if e["type"] == "content"]
-    assert not any("web_search" in t for t in contents), contents
+    assert not any(h in t for t in contents for h in hidden), contents
+    if visible is not None:
+        assert any(visible in t for t in contents)
 
 
 def test_plain_word_matching_no_tool_still_streams():
@@ -1873,52 +1802,6 @@ def test_plain_word_matching_no_tool_still_streams():
     events = _collect_events(loop)
     contents = "".join(e["text"] for e in events if e["type"] == "content")
     assert "weather is nice today." in contents, contents
-
-
-def test_rehearsal_name_after_prose_in_streaming_is_not_streamed():
-    # After prose has streamed (STREAMING state), a split rehearsal name must still be held.
-    loop, exec_fn = _make_loop(
-        turns = [
-            # _make_loop accumulates these deltas into cumulative snapshots.
-            ["Let me think. ", "I will search ", "web_search", '[ARGS]{"query":"cats"}'],
-            ["Found."],
-        ],
-        exec_results = ["RESULT"],
-        max_tool_iterations = 3,
-    )
-    events = _collect_events(loop)
-    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
-    contents = [e["text"] for e in events if e["type"] == "content"]
-    assert not any("web_search" in t for t in contents), contents
-
-
-def test_rehearsal_name_after_prose_same_chunk_in_streaming_is_not_streamed():
-    # Prose then ``web_search[ARGS]{...}`` in one chunk: the boundary is pulled back over the name.
-    loop, exec_fn = _make_loop(
-        turns = [
-            ["Sure. ", 'now web_search[ARGS]{"query":"cats"}'],
-            ["Found."],
-        ],
-        exec_results = ["RESULT"],
-        max_tool_iterations = 3,
-    )
-    events = _collect_events(loop)
-    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
-    contents = [e["text"] for e in events if e["type"] == "content"]
-    assert not any("web_search" in t for t in contents), contents
-
-
-def test_initial_buffer_flush_holds_split_rehearsal_name():
-    # First flush out of BUFFERING applies the same trailing-name hold as STREAMING.
-    loop, exec_fn = _make_loop(
-        turns = [["I will use python", '[ARGS]{"code":"print(1)"}'], ["done"]],
-        exec_results = ["RESULT"],
-        max_tool_iterations = 3,
-    )
-    events = _collect_events(loop)
-    assert exec_fn.calls == [("python", {"code": "print(1)"})], exec_fn.calls
-    contents = [e["text"] for e in events if e["type"] == "content"]
-    assert not any("python" in t for t in contents), contents
 
 
 def test_think_rehearsal_streams_monotonically_and_keeps_reasoning():
@@ -2066,23 +1949,6 @@ def test_safety_net_honors_disabled_auto_heal_for_late_incomplete_call():
     assert exec_on.calls == [("web_search", {"query": "weather in Sydney"})], exec_on.calls
 
 
-def test_bare_json_tool_call_is_not_streamed_as_content():
-    # Llama-3.2 ``custom_tools`` bare form ``{"name":..,"parameters":..}`` carries no
-    # XML signal. The loop must BUFFER it until the object closes and execute it via
-    # the safety net, never leaking the raw JSON to streaming clients as content.
-    bare = '{"name":"web_search","parameters":{"query":"cats"}}'
-    loop, exec_fn = _make_loop(
-        turns = [[bare], ["Here are the results."]],
-        exec_results = ["RESULT"],
-        max_tool_iterations = 3,
-    )
-    events = _collect_events(loop)
-    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
-    contents = [e["text"] for e in events if e["type"] == "content"]
-    assert not any('"name"' in t or "web_search" in t for t in contents), contents
-    assert any("Here are the results." in t for t in contents)
-
-
 def test_ordinary_json_with_name_key_is_shown_not_treated_as_tool_call():
     # Markerless JSON whose "name" is not an enabled tool (e.g. a person record
     # ``{"name":"Alice",...}``) must be shown as the answer, not misread as a call
@@ -2093,51 +1959,6 @@ def test_ordinary_json_with_name_key_is_shown_not_treated_as_tool_call():
     assert exec_fn.calls == [], exec_fn.calls
     contents = "".join(e["text"] for e in events if e["type"] == "content")
     assert "Alice" in contents, contents
-
-
-def test_bare_json_tool_call_split_across_chunks_is_not_streamed():
-    # Same as above but the bare object arrives split mid-key, so the buffer is
-    # held open across chunks before it balances.
-    loop, exec_fn = _make_loop(
-        turns = [
-            ['{"name":"web_', 'search","parameters":{"query":"cats"}}'],
-            ["Done."],
-        ],
-        exec_results = ["RESULT"],
-        max_tool_iterations = 3,
-    )
-    events = _collect_events(loop)
-    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
-    contents = [e["text"] for e in events if e["type"] == "content"]
-    assert not any('"name"' in t or "web_search" in t for t in contents), contents
-
-
-def test_gemma_wrapperless_call_is_not_streamed_as_content():
-    # Gemma 4 wrapper-less ``call:NAME{...}`` has no XML signal; the loop must hold
-    # it (BUFFERING) and execute it, never streaming the raw call text.
-    loop, exec_fn = _make_loop(
-        turns = [["call:web_search{query:cats}"], ["Found."]],
-        exec_results = ["RESULT"],
-        max_tool_iterations = 3,
-    )
-    events = _collect_events(loop)
-    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
-    contents = [e["text"] for e in events if e["type"] == "content"]
-    assert not any("call:web_search" in t for t in contents), contents
-
-
-def test_gemma_wrapperless_call_with_whitespace_is_suppressed_when_streamed():
-    # Gemma may emit ``call : NAME{...}`` with whitespace around the colon, split across stream
-    # chunks.
-    loop, exec_fn = _make_loop(
-        turns = [["call", " : ", "web_search", "{query:cats}"], ["Found."]],
-        exec_results = ["RESULT"],
-        max_tool_iterations = 3,
-    )
-    events = _collect_events(loop)
-    assert exec_fn.calls == [("web_search", {"query": "cats"})], exec_fn.calls
-    contents = [e["text"] for e in events if e["type"] == "content"]
-    assert not any("call" in t for t in contents), contents
 
 
 def test_long_gemma_tool_name_is_not_streamed_as_content():
@@ -2326,146 +2147,104 @@ class TestLoopBasic:
         contents = [e for e in events if e["type"] == "content"]
         assert contents and "sunny" in contents[-1]["text"].lower()
 
-    def test_function_xml_form(self):
-        loop, exec_fn = _make_loop(
-            turns = [
+    @pytest.mark.parametrize(
+        "chunks, answer, exec_result, expected_call, reply_fragment, tool_call_id",
+        [
+            pytest.param(
                 ["<function=python><parameter=code>print(1)</parameter></function>"],
-                ["Result: 1"],
-            ],
-            exec_results = ["1\n"],
-        )
-        events = _collect_events(loop)
-        assert exec_fn.calls == [("python", {"code": "print(1)"})]
-        contents = [e for e in events if e["type"] == "content"]
-        assert "Result: 1" in contents[-1]["text"]
-
-    def test_llama3_python_tag_form(self):
-        # The agentic loop must recognise Llama-3's <|python_tag|>
-        # marker, drain the rest of the turn, and execute the call.
-        loop, exec_fn = _make_loop(
-            turns = [
-                [
-                    "<|python_tag|>web_search.call(",
-                    'query="weather in Tokyo"',
-                    ")",
-                ],
-                ["The weather is sunny."],
-            ],
-            exec_results = ["Sunny, 22C"],
-        )
-        events = _collect_events(loop)
-        assert exec_fn.calls == [("web_search", {"query": "weather in Tokyo"})]
-        contents = [e for e in events if e["type"] == "content"]
-        assert "sunny" in contents[-1]["text"].lower()
-
-    def test_llama3_bare_json_form_fires_tool(self):
-        # Llama-3.1 / 3.2 emit a bare-JSON tool call
-        # ``{"name":..,"parameters":..}`` with NO XML signal. The loop's
-        # safety-net parse must still fire the tool instead of treating the
-        # turn as "planned without calling tools" and re-prompting the model
-        # into giving up. Regression for the has_tool_signal gate that
-        # dropped these; GGUF's llama-server parses them natively.
-        loop, exec_fn = _make_loop(
-            turns = [
+                "Result: 1",
+                "1\n",
+                ("python", {"code": "print(1)"}),
+                "Result: 1",
+                None,
+                id = "function_xml_form",
+            ),
+            # <|python_tag|> marker: drain the rest of the turn, then execute the call.
+            pytest.param(
+                ["<|python_tag|>web_search.call(", 'query="weather in Tokyo"', ")"],
+                "The weather is sunny.",
+                "Sunny, 22C",
+                ("web_search", {"query": "weather in Tokyo"}),
+                "sunny",
+                None,
+                id = "llama3_python_tag_form",
+            ),
+            # Llama-3.1/3.2 bare JSON has NO XML signal; regression for the has_tool_signal gate
+            # that dropped it and re-prompted instead of firing the tool.
+            pytest.param(
                 ['{"name": "web_search", "parameters": {"query": "weather in SF"}}'],
-                ["The weather is sunny."],
-            ],
-            exec_results = ["Sunny, 18C"],
-        )
-        events = _collect_events(loop)
-        assert exec_fn.calls == [("web_search", {"query": "weather in SF"})]
-        contents = [e for e in events if e["type"] == "content"]
-        assert "sunny" in contents[-1]["text"].lower()
-
-    def test_mistral_pre_v11_form(self):
-        # Pre-v11 Mistral emission: ``[TOOL_CALLS] [{...}]``.
-        loop, exec_fn = _make_loop(
-            turns = [
-                [
-                    '[TOOL_CALLS] [{"name":"web_search",',
-                    '"arguments":{"query":"hi"},"id":"abc"}]',
-                ],
-                ["done"],
-            ],
-            exec_results = ["ok"],
-        )
-        events = _collect_events(loop)
-        assert exec_fn.calls == [("web_search", {"query": "hi"})]
-        # Mistral-provided ids must propagate to tool_start events.
-        tool_start = next(e for e in events if e["type"] == "tool_start")
-        assert tool_start["tool_call_id"] == "abc"
-
-    def test_mistral_v11_form(self):
-        # v11+ Mistral emission: bare ``name{json}`` after the trigger.
-        loop, exec_fn = _make_loop(
-            turns = [
+                "The weather is sunny.",
+                "Sunny, 18C",
+                ("web_search", {"query": "weather in SF"}),
+                "sunny",
+                None,
+                id = "llama3_bare_json_form_fires_tool",
+            ),
+            # Pre-v11 Mistral ``[TOOL_CALLS] [{...}]``: ids must reach tool_start events.
+            pytest.param(
+                ['[TOOL_CALLS] [{"name":"web_search",', '"arguments":{"query":"hi"},"id":"abc"}]'],
+                "done",
+                "ok",
+                ("web_search", {"query": "hi"}),
+                None,
+                "abc",
+                id = "mistral_pre_v11_form",
+            ),
+            # v11+ Mistral emission: bare ``name{json}`` after the trigger.
+            pytest.param(
                 ['[TOOL_CALLS]web_search{"query":"hi"}'],
-                ["done"],
-            ],
-            exec_results = ["ok"],
-        )
-        events = _collect_events(loop)
-        assert exec_fn.calls == [("web_search", {"query": "hi"})]
-
-    def test_gemma4_form(self):
-        # Gemma 4 emission: ``<|tool_call>call:NAME{...}<tool_call|>``.
-        loop, exec_fn = _make_loop(
-            turns = [
+                "done",
+                "ok",
+                ("web_search", {"query": "hi"}),
+                None,
+                None,
+                id = "mistral_v11_form",
+            ),
+            # Gemma 4 emission: ``<|tool_call>call:NAME{...}<tool_call|>``.
+            pytest.param(
+                ["<|tool_call>call:web_search{", 'query:<|"|>weather<|"|>', "}<tool_call|>"],
+                "sunny",
+                "Sunny, 22C",
+                ("web_search", {"query": "weather"}),
+                None,
+                None,
+                id = "gemma4_form",
+            ),
+            # DeepSeek V3.1: the buffer wakes on the opener, the parser takes the bare-JSON body.
+            pytest.param(
                 [
-                    "<|tool_call>call:web_search{",
-                    'query:<|"|>weather<|"|>',
-                    "}<tool_call|>",
-                ],
-                ["sunny"],
-            ],
-            exec_results = ["Sunny, 22C"],
-        )
-        events = _collect_events(loop)
-        assert exec_fn.calls == [("web_search", {"query": "weather"})]
-
-    def test_deepseek_v3_1_form(self):
-        # DeepSeek V3.1 emission inside the agentic loop -- the buffer state machine must wake on
-        # ``<｜tool▁calls▁begin｜>`` and the parser must extract the V3.1 bare-JSON body.
-        loop, exec_fn = _make_loop(
-            turns = [
-                [
-                    "<｜tool▁calls▁begin｜>",
-                    "<｜tool▁call▁begin｜>web_search",
-                    "<｜tool▁sep｜>",
+                    _DS_OPEN,
+                    _DS_CALL_BEGIN + "web_search",
+                    _DS_SEP,
                     '{"query":"Tokyo weather"}',
-                    "<｜tool▁call▁end｜>",
-                    "<｜tool▁calls▁end｜>",
+                    _DS_CALL_END,
+                    _DS_END,
                 ],
-                ["The weather is sunny."],
-            ],
-            exec_results = ["Sunny, 22C"],
-        )
-        events = _collect_events(loop)
-        assert exec_fn.calls == [("web_search", {"query": "Tokyo weather"})]
-        contents = [e for e in events if e["type"] == "content"]
-        assert contents and "sunny" in contents[-1]["text"].lower()
-
-    def test_glm_form(self):
-        # GLM 4.x emission: ``<tool_call>NAME\n<arg_key>...``.
-        loop, exec_fn = _make_loop(
-            turns = [
+                "The weather is sunny.",
+                "Sunny, 22C",
+                ("web_search", {"query": "Tokyo weather"}),
+                "sunny",
+                None,
+                id = "deepseek_v3_1_form",
+            ),
+            # GLM 4.x emission: ``<tool_call>NAME\n<arg_key>...``.
+            pytest.param(
                 [
                     "<tool_call>web_search\n",
                     "<arg_key>query</arg_key>\n",
                     "<arg_value>Tokyo</arg_value>\n",
                     "</tool_call>",
                 ],
-                ["found"],
-            ],
-            exec_results = ["..."],
-        )
-        events = _collect_events(loop)
-        assert exec_fn.calls == [("web_search", {"query": "Tokyo"})]
-
-    def test_kimi_form(self):
-        # Kimi K2 emission ``<|tool_calls_section_begin|>...``.
-        loop, exec_fn = _make_loop(
-            turns = [
+                "found",
+                "...",
+                ("web_search", {"query": "Tokyo"}),
+                None,
+                None,
+                id = "glm_form",
+            ),
+            # Kimi K2: execute_tool gets the BARE name, tool_start the full id so a roundtrip
+            # replays verbatim.
+            pytest.param(
                 [
                     "<|tool_calls_section_begin|>",
                     "<|tool_call_begin|>functions.web_search:0",
@@ -2474,31 +2253,30 @@ class TestLoopBasic:
                     "<|tool_call_end|>",
                     "<|tool_calls_section_end|>",
                 ],
-                ["done"],
-            ],
-            exec_results = ["..."],
-        )
+                "done",
+                "...",
+                ("web_search", {"query": "Tokyo"}),
+                None,
+                "functions.web_search:0",
+                id = "kimi_form",
+            ),
+        ],
+    )
+    def test_emission_form_reaches_execute_tool(
+        self, chunks, answer, exec_result, expected_call, reply_fragment, tool_call_id
+    ):
+        loop, exec_fn = _make_loop(turns = [chunks, [answer]], exec_results = [exec_result])
         events = _collect_events(loop)
-        # The bare name must reach execute_tool, even though the model
-        # emitted ``functions.web_search:0`` as the formatted id.
-        assert exec_fn.calls == [("web_search", {"query": "Tokyo"})]
-        # tool_start carries the original full id so the conversation
-        # roundtrip can replay it verbatim.
-        tool_start = next(e for e in events if e["type"] == "tool_start")
-        assert tool_start["tool_call_id"] == "functions.web_search:0"
+        assert exec_fn.calls == [expected_call]
+        contents = [e for e in events if e["type"] == "content"]
+        if reply_fragment is not None:
+            assert contents and reply_fragment in contents[-1]["text"]
+        if tool_call_id is not None:
+            tool_start = next(e for e in events if e["type"] == "tool_start")
+            assert tool_start["tool_call_id"] == tool_call_id
 
     def test_render_html_emits_provisional_tool_start(self):
-        exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
-        turn_iter = iter(
-            [
-                [
-                    "<function=render_html>",
-                    "<parameter=code><!doctype html><html>",
-                    "<body>Hi</body></html></parameter></function>",
-                ],
-                ["Done."],
-            ]
-        )
+        exec_fn, turn_iter = _shared_setup_1()
 
         def _gen(_messages):
             chunks = next(turn_iter)
@@ -2507,12 +2285,7 @@ class TestLoopBasic:
                 acc += chunk
                 yield acc
 
-        loop = run_safetensors_tool_loop(
-            single_turn = _gen,
-            messages = [{"role": "user", "content": "make html"}],
-            tools = [{"type": "function", "function": {"name": "render_html"}}],
-            execute_tool = exec_fn,
-        )
+        loop = _shared_setup_3(_gen, exec_fn)
         events = _collect_events(loop)
         tool_starts = [e for e in events if e["type"] == "tool_start"]
 
@@ -2533,17 +2306,7 @@ class TestLoopBasic:
         monkeypatch.setattr(safetensors_agentic, "begin_tool_decision", lambda *_a, **_k: object())
         monkeypatch.setattr(safetensors_agentic, "wait_tool_decision", lambda *_a, **_k: "allow")
 
-        exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
-        turn_iter = iter(
-            [
-                [
-                    "<function=render_html>",
-                    "<parameter=code><!doctype html><html>",
-                    "<body>Hi</body></html></parameter></function>",
-                ],
-                ["Done."],
-            ]
-        )
+        exec_fn, turn_iter = _shared_setup_1()
 
         def _gen(_messages):
             chunks = next(turn_iter)
@@ -2579,17 +2342,7 @@ class TestLoopBasic:
     def test_render_html_bypass_permissions_keeps_early_provisional(self, monkeypatch):
         """bypass_permissions wins over the confirm gate, so the early provisional
         card is preserved (no human approval is required)."""
-        exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
-        turn_iter = iter(
-            [
-                [
-                    "<function=render_html>",
-                    "<parameter=code><!doctype html><html>",
-                    "<body>Hi</body></html></parameter></function>",
-                ],
-                ["Done."],
-            ]
-        )
+        exec_fn, turn_iter = _shared_setup_1()
 
         def _gen(_messages):
             chunks = next(turn_iter)
@@ -2620,17 +2373,7 @@ class TestLoopBasic:
         longer unconditionally safe (a networked canvas must ask), so its early
         provisional card is suppressed under the confirm gate; a static canvas is
         still classified safe and runs without an approval prompt."""
-        exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
-        turn_iter = iter(
-            [
-                [
-                    "<function=render_html>",
-                    "<parameter=code><!doctype html><html>",
-                    "<body>Hi</body></html></parameter></function>",
-                ],
-                ["Done."],
-            ]
-        )
+        exec_fn, turn_iter = _shared_setup_1()
 
         def _gen(_messages):
             chunks = next(turn_iter)
@@ -2672,12 +2415,7 @@ class TestLoopBasic:
                 yield acc
             raise RuntimeError("model pipeline exploded")
 
-        loop = run_safetensors_tool_loop(
-            single_turn = _gen,
-            messages = [{"role": "user", "content": "make html"}],
-            tools = [{"type": "function", "function": {"name": "render_html"}}],
-            execute_tool = exec_fn,
-        )
+        loop = _shared_setup_3(_gen, exec_fn)
 
         collected: list[dict] = []
         raised = False
@@ -2781,12 +2519,7 @@ class TestLoopBasic:
                 acc += chunk
                 yield acc
 
-        loop = run_safetensors_tool_loop(
-            single_turn = _gen,
-            messages = [{"role": "user", "content": "make html"}],
-            tools = [{"type": "function", "function": {"name": "render_html"}}],
-            execute_tool = exec_fn,
-        )
+        loop = _shared_setup_3(_gen, exec_fn)
         events = _collect_events(loop)
         tool_starts = [e for e in events if e["type"] == "tool_start"]
 
@@ -2905,10 +2638,7 @@ class TestLoopBehaviour:
         )
 
         # Turn-1 search and turn-2 python both ran; the turn-2 duplicate search did not.
-        assert exec_fn.calls == [
-            ("web_search", {"query": "x"}),
-            ("python", {"code": "print(1)"}),
-        ]
+        _shared_setup_7(exec_fn)
 
         conv = captured_messages[-1]
         turn2 = [m for m in conv if m.get("role") == "assistant" and m.get("tool_calls")][-1]
@@ -2962,10 +2692,7 @@ class TestLoopBehaviour:
             )
         )
 
-        assert exec_fn.calls == [
-            ("web_search", {"query": "x"}),
-            ("python", {"code": "print(1)"}),
-        ]
+        _shared_setup_7(exec_fn)
         assert [e["tool_call_id"] for e in events if e["type"] == "tool_end"] == [
             "call_0",
             "call_2",
@@ -3030,10 +2757,7 @@ class TestLoopBehaviour:
         )
 
         # Both distinct tools execute; the repeated call in between did not cost a slot.
-        assert exec_fn.calls == [
-            ("web_search", {"query": "x"}),
-            ("python", {"code": "print(1)"}),
-        ]
+        _shared_setup_7(exec_fn)
         # The turn after the duplicate still offered tools (budget not yet spent).
         assert captured_tool_names[2] == ["web_search", "python"]
 
@@ -3255,70 +2979,33 @@ class TestLoopRePrompt:
         contents = [e["text"] for e in events if e["type"] == "content"]
         assert contents[-1].endswith("This is the final visible answer.")
 
-    def test_prefilled_reasoning_intent_does_not_reprompt_a_visible_answer(self):
-        generations = 0
-
-        def _gen(_messages, active_tools = None):
-            nonlocal generations
-            generations += 1
-            yield "Let me prepare the requested summary carefully.</think>This is the final visible answer."
-
-        exec_fn = FakeExecuteTool([])
-        events = _collect_events(
-            run_safetensors_tool_loop(
-                single_turn = _gen,
-                messages = [{"role": "user", "content": "summarize this"}],
-                tools = [{"type": "function", "function": {"name": "web_search"}}],
-                execute_tool = exec_fn,
-                nudge_tool_calls = True,
-                reasoning_prefilled = True,
-            )
-        )
-
-        assert generations == 1
-        assert exec_fn.calls == []
-        contents = [e["text"] for e in events if e["type"] == "content"]
-        assert contents[-1].endswith("This is the final visible answer.")
-
-    def test_prefilled_reasoning_with_reemitted_think_does_not_reprompt(self):
-        generations = 0
-
-        def _gen(_messages, active_tools = None):
-            nonlocal generations
-            generations += 1
-            yield (
+    @pytest.mark.parametrize(
+        "chunk",
+        [
+            pytest.param(
+                "Let me prepare the requested summary carefully.</think>This is the final visible answer.",
+                id = "prefilled_reasoning_intent_does_not_reprompt_a_visible_answer",
+            ),
+            pytest.param(
                 "Let me prepare the requested summary carefully."
-                "<think>more private planning</think>This is the final visible answer."
-            )
-
-        exec_fn = FakeExecuteTool([])
-        events = _collect_events(
-            run_safetensors_tool_loop(
-                single_turn = _gen,
-                messages = [{"role": "user", "content": "summarize this"}],
-                tools = [{"type": "function", "function": {"name": "web_search"}}],
-                execute_tool = exec_fn,
-                nudge_tool_calls = True,
-                reasoning_prefilled = True,
-            )
-        )
-
-        assert generations == 1
-        assert exec_fn.calls == []
-        contents = [e["text"] for e in events if e["type"] == "content"]
-        assert contents[-1].endswith("This is the final visible answer.")
-
-    def test_prefilled_reasoning_with_later_think_does_not_reprompt(self):
-        generations = 0
-
-        def _gen(_messages, active_tools = None):
-            nonlocal generations
-            generations += 1
-            yield (
+                "<think>more private planning</think>This is the final visible answer.",
+                id = "prefilled_reasoning_with_reemitted_think_does_not_reprompt",
+            ),
+            pytest.param(
                 "private prefilled planning</think>"
                 "<think>Let me prepare the requested summary carefully.</think>"
-                "This is the final visible answer."
-            )
+                "This is the final visible answer.",
+                id = "prefilled_reasoning_with_later_think_does_not_reprompt",
+            ),
+        ],
+    )
+    def test_loop_does_not_re_prompt_on_prefilled_reasoning(self, chunk):
+        generations = 0
+
+        def _gen(_messages, active_tools = None):
+            nonlocal generations
+            generations += 1
+            yield chunk
 
         exec_fn = FakeExecuteTool([])
         events = _collect_events(
@@ -3331,7 +3018,6 @@ class TestLoopRePrompt:
                 reasoning_prefilled = True,
             )
         )
-
         assert generations == 1
         assert exec_fn.calls == []
         contents = [e["text"] for e in events if e["type"] == "content"]
@@ -3348,11 +3034,7 @@ class TestLoopRePrompt:
             nudge_tool_calls = True,
         )
 
-        events = _collect_events(loop)
-
-        assert exec_fn.calls == [("web_search", {"query": "cats"})]
-        contents = [e["text"] for e in events if e["type"] == "content"]
-        assert contents[-1] == "Here is the answer."
+        _shared_setup_4(exec_fn, loop)
 
     def test_prefilled_no_close_reasoning_intent_still_reprompts(self):
         loop, exec_fn = _make_loop(
@@ -3366,11 +3048,7 @@ class TestLoopRePrompt:
             reasoning_prefilled = True,
         )
 
-        events = _collect_events(loop)
-
-        assert exec_fn.calls == [("web_search", {"query": "cats"})]
-        contents = [e["text"] for e in events if e["type"] == "content"]
-        assert contents[-1] == "Here is the answer."
+        _shared_setup_4(exec_fn, loop)
 
     def test_prefilled_reasoning_prefix_is_kept_for_reasoning_only_reprompt(self):
         loop, exec_fn = _make_loop(
@@ -3384,11 +3062,7 @@ class TestLoopRePrompt:
             reasoning_prefilled = True,
         )
 
-        events = _collect_events(loop)
-
-        assert exec_fn.calls == [("web_search", {"query": "cats"})]
-        contents = [e["text"] for e in events if e["type"] == "content"]
-        assert contents[-1] == "Here is the answer."
+        _shared_setup_4(exec_fn, loop)
 
     def test_reprompt_history_uses_visible_intent_text(self):
         captured: list[list[dict]] = []
@@ -3530,40 +3204,46 @@ class TestLoopRePrompt:
 class TestLoopCanonicalHealKey:
     """Per-tool canonical heal key (``code``/``command``/``query``), mirroring GGUF."""
 
-    def test_python_bare_string_heals_to_code(self):
-        loop, exec_fn = _make_loop(
-            turns = [
-                ['<tool_call>{"name":"python","arguments":"print(1)"}</tool_call>'],
-                ["done"],
-            ],
-            exec_results = ["1\n"],
-        )
+    @pytest.mark.parametrize(
+        "chunk, answer, exec_result, expected_name, expected_key, expected_value",
+        [
+            # The bare string must heal to {"code": "print(1)"}, not
+            # {"query": ...}, so the python sandbox actually executes it.
+            pytest.param(
+                '<tool_call>{"name":"python","arguments":"print(1)"}</tool_call>',
+                "done",
+                "1\n",
+                "python",
+                "code",
+                "print(1)",
+                id = "python_bare_string_heals_to_code",
+            ),
+            pytest.param(
+                '<tool_call>{"name":"terminal","arguments":"ls -la"}</tool_call>',
+                "done",
+                "...",
+                "terminal",
+                "command",
+                "ls -la",
+                id = "terminal_bare_string_heals_to_command",
+            ),
+            pytest.param(
+                '<tool_call>{"name":"web_search","arguments":"hello"}</tool_call>',
+                "ok",
+                "...",
+                "web_search",
+                "query",
+                "hello",
+                id = "unknown_tool_bare_string_heals_to_query",
+            ),
+        ],
+    )
+    def test_loop_heals_the_call_to_its_canonical_key(
+        self, chunk, answer, exec_result, expected_name, expected_key, expected_value
+    ):
+        loop, exec_fn = _make_loop(turns = [[chunk], [answer]], exec_results = [exec_result])
         events = _collect_events(loop)
-        # The bare string must heal to {"code": "print(1)"}, not
-        # {"query": ...}, so the python sandbox actually executes it.
-        assert exec_fn.calls == [("python", {"code": "print(1)"})]
-
-    def test_terminal_bare_string_heals_to_command(self):
-        loop, exec_fn = _make_loop(
-            turns = [
-                ['<tool_call>{"name":"terminal","arguments":"ls -la"}</tool_call>'],
-                ["done"],
-            ],
-            exec_results = ["..."],
-        )
-        events = _collect_events(loop)
-        assert exec_fn.calls == [("terminal", {"command": "ls -la"})]
-
-    def test_unknown_tool_bare_string_heals_to_query(self):
-        loop, exec_fn = _make_loop(
-            turns = [
-                ['<tool_call>{"name":"web_search","arguments":"hello"}</tool_call>'],
-                ["ok"],
-            ],
-            exec_results = ["..."],
-        )
-        events = _collect_events(loop)
-        assert exec_fn.calls == [("web_search", {"query": "hello"})]
+        assert exec_fn.calls == [(expected_name, {expected_key: expected_value})]
 
 
 class TestGGUFSafetensorsHealingParity:
@@ -4401,11 +4081,7 @@ class TestPlanWithoutActionReprompt:
             auto_heal_tool_calls = False,
             nudge_tool_calls = True,
         )
-        events = _collect_events(loop)
-        assert exec_fn.calls == []
-        texts = [e["text"] for e in events if e["type"] == "content"]
-        assert any("I'll search the web for that." in t for t in texts)
-        assert not any("SHOULD NOT APPEAR" in t for t in texts)
+        _shared_setup_5(exec_fn, loop)
 
     def test_explicit_nudge_off_is_not_reprompted(self, monkeypatch):
         from core.inference import passthrough_healing
@@ -4418,11 +4094,7 @@ class TestPlanWithoutActionReprompt:
             ],
             nudge_tool_calls = False,
         )
-        events = _collect_events(loop)
-        assert exec_fn.calls == []
-        texts = [e["text"] for e in events if e["type"] == "content"]
-        assert any("I'll search the web for that." in t for t in texts)
-        assert not any("SHOULD NOT APPEAR" in t for t in texts)
+        _shared_setup_5(exec_fn, loop)
 
     def test_omitted_nudge_flag_follows_disabled_process_default(self, monkeypatch):
         from core.inference import passthrough_healing
@@ -4434,11 +4106,7 @@ class TestPlanWithoutActionReprompt:
                 ["SHOULD NOT APPEAR"],
             ],
         )
-        events = _collect_events(loop)
-        assert exec_fn.calls == []
-        texts = [e["text"] for e in events if e["type"] == "content"]
-        assert any("I'll search the web for that." in t for t in texts)
-        assert not any("SHOULD NOT APPEAR" in t for t in texts)
+        _shared_setup_5(exec_fn, loop)
 
     def test_omitted_nudge_flag_follows_enabled_process_default(self, monkeypatch):
         from core.inference import passthrough_healing
@@ -4534,107 +4202,127 @@ class TestRoutesPythonTagStrip:
         from routes.inference import _strip_tool_xml
         return _strip_tool_xml(text)
 
-    def test_single_line_python_tag_stripped(self):
-        # Floor: the original 5620 single-line behaviour still works.
-        text = '<|python_tag|>brave_search.call(query="weather")'
-        assert self._strip(text) == ""
-
-    def test_python_tag_with_less_than_in_code(self):
-        # 5615 regression: literal ``<`` inside code must NOT terminate
-        # the strip early.
-        text = '<|python_tag|>python.call(code="if x < 10: pass")'
-        assert self._strip(text) == ""
-
-    def test_python_tag_multiline_code_stripped(self):
-        # 5620 round-1 regression: multi-line code's second line leaked.
-        text = '<|python_tag|>python.call(code="line1\nline2\nline3")'
-        assert self._strip(text) == ""
-
-    def test_python_tag_multiline_with_less_than(self):
-        # Combined: multi-line code AND literal ``<`` in code.
-        text = (
-            '<|python_tag|>python.call(code="for i in range(10):\n    if i < 5:\n        print(i)")'
-        )
-        assert self._strip(text) == ""
-
-    def test_python_tag_stops_at_eom_sentinel(self):
-        # Strip stops at the next Llama-3 ``<|`` sentinel so any
-        # trailing assistant content survives.
-        text = '<|python_tag|>python.call(code="multi\nline")<|eom_id|>final answer text'
-        assert self._strip(text) == "<|eom_id|>final answer text"
-
-    def test_python_tag_stops_at_eot_sentinel(self):
-        text = '<|python_tag|>brave_search.call(query="x")<|eot_id|>after'
-        assert self._strip(text) == "<|eot_id|>after"
-
-    def test_python_tag_json_form_multiline_stripped(self):
-        # The JSON form of python_tag with newlines inside string args.
-        text = '<|python_tag|>{"name":"python","parameters":{"code":"a = 1\nb = 2\nprint(a+b)"}}'
-        assert self._strip(text) == ""
-
-    def test_python_tag_with_eom_then_trailing_python_tag(self):
-        # Two python_tag emissions back-to-back across a sentinel: both
-        # should strip independently.
-        text = (
-            '<|python_tag|>brave_search.call(query="a")'
-            "<|eom_id|>"
-            '<|python_tag|>python.call(code="x=1")'
-        )
-        # ``<|eom_id|>`` between the two strips remains; both
-        # python_tag blocks are fully consumed.
-        assert self._strip(text) == "<|eom_id|>"
+    @pytest.mark.parametrize(
+        "text, expected",
+        [
+            # Floor: the original 5620 single-line behaviour still works.
+            pytest.param(
+                '<|python_tag|>brave_search.call(query="weather")',
+                "",
+                id = "single_line_python_tag_stripped",
+            ),
+            # 5615 regression: literal ``<`` inside code must NOT terminate the strip early.
+            pytest.param(
+                '<|python_tag|>python.call(code="if x < 10: pass")',
+                "",
+                id = "python_tag_with_less_than_in_code",
+            ),
+            # 5620 round-1 regression: multi-line code's second line leaked.
+            pytest.param(
+                '<|python_tag|>python.call(code="line1\nline2\nline3")',
+                "",
+                id = "python_tag_multiline_code_stripped",
+            ),
+            # Combined: multi-line code AND literal ``<`` in code.
+            pytest.param(
+                '<|python_tag|>python.call(code="for i in range(10):\n    if i < 5:\n        print(i)")',
+                "",
+                id = "python_tag_multiline_with_less_than",
+            ),
+            # Strip stops at the next Llama-3 ``<|`` sentinel so trailing assistant content survives.
+            pytest.param(
+                '<|python_tag|>python.call(code="multi\nline")<|eom_id|>final answer text',
+                "<|eom_id|>final answer text",
+                id = "python_tag_stops_at_eom_sentinel",
+            ),
+            pytest.param(
+                '<|python_tag|>brave_search.call(query="x")<|eot_id|>after',
+                "<|eot_id|>after",
+                id = "python_tag_stops_at_eot_sentinel",
+            ),
+            # The JSON form of python_tag with newlines inside string args.
+            pytest.param(
+                '<|python_tag|>{"name":"python","parameters":{"code":"a = 1\nb = 2\nprint(a+b)"}}',
+                "",
+                id = "python_tag_json_form_multiline_stripped",
+            ),
+            # Back-to-back python_tag emissions strip independently; the ``<|eom_id|>`` remains.
+            pytest.param(
+                '<|python_tag|>brave_search.call(query="a")<|eom_id|><|python_tag|>python.call(code="x=1")',
+                "<|eom_id|>",
+                id = "python_tag_with_eom_then_trailing_python_tag",
+            ),
+        ],
+    )
+    def test_python_tag_strip(self, text, expected):
+        assert self._strip(text) == expected
 
 
 # Robustness fixes uncovered while validating against vLLM / sglang.
 class TestParserRobustness:
-    def test_tool_call_json_accepts_parameters_key(self):
-        # Hermes wrapper around a Llama-3.2 bare-JSON object that uses
-        # ``parameters`` instead of ``arguments``. The bare-JSON and
-        # python_tag paths already accept both keys; this path now does
-        # too. Was extracting name only and silently dropping the args.
-        import json
-
-        text = '<tool_call>\n{"name": "search", "parameters": {"q": "ramen"}}\n</tool_call>'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "search"
-        assert json.loads(result[0]["function"]["arguments"]) == {"q": "ramen"}
-
-    def test_function_xml_attribute_form(self):
-        # MiniCPM-5 / MiniMax-M2 attribute syntax:
-        # ``<function name="..."><param name="...">v</param></function>``.
-        import json
-
-        text = '<function name="get_weather"><param name="city">Tokyo</param></function>'
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "get_weather"
-        assert json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
-
-    def test_function_xml_attribute_form_multi_param(self):
-        import json
-
-        text = (
-            '<function name="get_weather">'
-            '<param name="city">Tokyo</param>'
-            '<param name="unit">celsius</param>'
-            "</function>"
-        )
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        args = json.loads(result[0]["function"]["arguments"])
-        assert args == {"city": "Tokyo", "unit": "celsius"}
-
-    def test_function_xml_legacy_equals_form_still_works(self):
-        # Regression guard: the old ``<function=name><parameter=k>v``
-        # syntax must keep parsing after the regex broadening.
-        import json
-
-        text = "<function=get_weather><parameter=city>Tokyo</parameter></function>"
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "get_weather"
-        assert json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
+    @pytest.mark.parametrize(
+        "text, name, args",
+        [
+            # Hermes wrapper around a bare-JSON object keyed ``parameters``: was extracting the
+            # name only and silently dropping the args.
+            pytest.param(
+                '<tool_call>\n{"name": "search", "parameters": {"q": "ramen"}}\n</tool_call>',
+                "search",
+                {"q": "ramen"},
+                id = "tool_call_json_accepts_parameters_key",
+            ),
+            # MiniCPM-5 / MiniMax-M2 attribute syntax:
+            # ``<function name="..."><param name="...">v</param></function>``.
+            pytest.param(
+                '<function name="get_weather"><param name="city">Tokyo</param></function>',
+                "get_weather",
+                {"city": "Tokyo"},
+                id = "function_xml_attribute_form",
+            ),
+            pytest.param(
+                '<function name="get_weather"><param name="city">Tokyo</param>'
+                '<param name="unit">celsius</param></function>',
+                "get_weather",
+                {"city": "Tokyo", "unit": "celsius"},
+                id = "function_xml_attribute_form_multi_param",
+            ),
+            # The old ``<function=name><parameter=k>v`` syntax must survive the regex broadening.
+            pytest.param(
+                "<function=get_weather><parameter=city>Tokyo</parameter></function>",
+                "get_weather",
+                {"city": "Tokyo"},
+                id = "function_xml_legacy_equals_form_still_works",
+            ),
+            # Meta's Llama-3.x template prefixes every assistant turn with a role header; the
+            # sentinel-strip must reach past it or round-tripped calls in history silently drop.
+            pytest.param(
+                "<|start_header_id|>assistant<|end_header_id|>\n\n"
+                '{"name": "get_weather", "parameters": {"city": "Tokyo"}}',
+                "get_weather",
+                {"city": "Tokyo"},
+                id = "llama3_chat_template_round_trip",
+            ),
+            # The body must end at ``</function>`` even with no ``</tool_call>`` wrapper, else
+            # trailing prose leaks into the last parameter value.
+            pytest.param(
+                "<function=get_weather><parameter=city>Tokyo</parameter>"
+                "</function>\n\nHere is what I found.",
+                "get_weather",
+                {"city": "Tokyo"},
+                id = "function_xml_followed_by_prose",
+            ),
+            # Same expectation for the MiniCPM-5 attribute form.
+            pytest.param(
+                '<function name="get_weather"><param name="city">Tokyo</param>'
+                "</function>\n\nLet me know if you need anything else.",
+                "get_weather",
+                {"city": "Tokyo"},
+                id = "function_attribute_xml_followed_by_prose",
+            ),
+        ],
+    )
+    def test_robust_form_parses_to_name_and_args(self, text, name, args):
+        _shared_setup_6(args, name, text)
 
     def test_function_attribute_form_has_tool_signal(self):
         # The standalone ``<function name="...">`` attribute form must flip
@@ -4647,24 +4335,6 @@ class TestParserRobustness:
         # the legacy ``<function=...>`` form.
         text = 'result <function name="g"><param name="c">X</param></function>'
         assert strip_tool_markup(text, final = True) == "result"
-
-    def test_llama3_chat_template_round_trip(self):
-        # Meta's official Llama-3.x chat template prefixes every
-        # assistant turn with
-        # ``<|start_header_id|>assistant<|end_header_id|>\n\n``. The
-        # sentinel-strip in ``_parse_llama3_bare_json`` must reach past
-        # the role label to the JSON body, else every round-tripped
-        # tool call in history silently drops.
-        import json
-
-        text = (
-            "<|start_header_id|>assistant<|end_header_id|>\n\n"
-            '{"name": "get_weather", "parameters": {"city": "Tokyo"}}'
-        )
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert result[0]["function"]["name"] == "get_weather"
-        assert json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
 
     def test_llama3_round_trip_all_roles(self):
         # Same logic must work for every role the chat template inserts.
@@ -4690,35 +4360,6 @@ class TestParserRobustness:
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "f"
-
-    def test_function_xml_followed_by_prose(self):
-        # Models routinely follow a tool call with explanatory prose.
-        # Body must terminate at ``</function>`` even without a
-        # ``</tool_call>`` wrapper, else trailing prose leaks into the
-        # last parameter value.
-        import json
-
-        text = (
-            "<function=get_weather>"
-            "<parameter=city>Tokyo</parameter>"
-            "</function>\n\nHere is what I found."
-        )
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
-
-    def test_function_attribute_xml_followed_by_prose(self):
-        # Same expectation for the MiniCPM-5 attribute form.
-        import json
-
-        text = (
-            '<function name="get_weather">'
-            '<param name="city">Tokyo</param>'
-            "</function>\n\nLet me know if you need anything else."
-        )
-        result = parse_tool_calls_from_text(text)
-        assert len(result) == 1
-        assert json.loads(result[0]["function"]["arguments"]) == {"city": "Tokyo"}
 
 
 def test_render_with_native_template_returns_render_only_when_tools_emitted():
@@ -4847,12 +4488,7 @@ def test_native_template_loads_from_base_model_for_lora(monkeypatch):
 def test_render_with_native_template_fallback_swaps_when_override_drops_tools():
     # The shared gate (used by the transformers and MLX backends): when the live render is
     # identical with and without tools, re-render with the native template and return it.
-    from types import SimpleNamespace
-
-    from core.inference.chat_template_helpers import render_with_native_template_fallback
-
-    messages = [{"role": "user", "content": "hi"}]
-    tools = [{"type": "function", "function": {"name": "web_search"}}]
+    SimpleNamespace, messages, render_with_native_template_fallback, tools = _shared_setup_2()
 
     # apply_fn that IGNORES tools -> live render drops the schema.
     def ignoring(tokenizer, msgs, *, tools, **_kw):
@@ -4887,12 +4523,7 @@ def test_render_with_native_template_fallback_swaps_when_override_drops_tools():
 def test_render_with_native_template_fallback_keeps_prompt_when_tools_emitted():
     # Live render already differs with vs without tools -> no fallback, returned
     # unchanged. Also a no-tools call is a passthrough.
-    from types import SimpleNamespace
-
-    from core.inference.chat_template_helpers import render_with_native_template_fallback
-
-    messages = [{"role": "user", "content": "hi"}]
-    tools = [{"type": "function", "function": {"name": "web_search"}}]
+    SimpleNamespace, messages, render_with_native_template_fallback, tools = _shared_setup_2()
 
     def emitting(tokenizer, msgs, *, tools, **_kw):
         body = "".join(m["content"] for m in msgs)
@@ -4924,12 +4555,7 @@ def test_render_with_native_template_fallback_keeps_prompt_when_tools_emitted():
 
 def test_render_with_native_template_fallback_keeps_prompt_when_no_tools_probe_raises():
     # A template that REQUIRES tools can raise on the no-tools probe.
-    from types import SimpleNamespace
-
-    from core.inference.chat_template_helpers import render_with_native_template_fallback
-
-    messages = [{"role": "user", "content": "hi"}]
-    tools = [{"type": "function", "function": {"name": "web_search"}}]
+    SimpleNamespace, messages, render_with_native_template_fallback, tools = _shared_setup_2()
 
     def raises_without_tools(tokenizer, msgs, *, tools, **_kw):
         if not tools:

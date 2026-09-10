@@ -12,6 +12,60 @@ from storage import research_runs_db as research_db
 from storage import studio_db
 
 
+def _shared_setup_1():
+    from core import research_runs as worker
+
+    _create()
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    return supervisor, worker
+
+
+def _shared_setup_2():
+    _create()
+    plan = research_db.set_plan("run-1", _plan())
+    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
+    research_db.claim_next("worker-1")
+    return plan
+
+
+def _shared_setup_3():
+    conn = studio_db.get_connection()
+    try:
+        conn.execute("UPDATE research_runs SET lease_expires_at=0 WHERE id='run-1'")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _shared_setup_4(supervisor, worker):
+    research_db.request_cancel("run-1")
+    claimed = research_db.claim_next(supervisor.worker_id)
+    assert claimed is not None
+
+    async def cancelled_plan(run):
+        raise worker.RunCancelled()
+
+    original_update = worker._update_assistant
+    return cancelled_plan, claimed, original_update
+
+
+def _shared_setup_5():
+    _create()
+    plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
+    research_db.approve("run-1", 1, plan["planHash"])
+    research_db.claim_next("worker-1")
+
+
+def _shared_setup_6():
+    cancelled: list[str] = []
+    request = SimpleNamespace(
+        app = SimpleNamespace(
+            state = SimpleNamespace(research_supervisor = SimpleNamespace(cancel = cancelled.append))
+        )
+    )
+    return cancelled, request
+
+
 @pytest.fixture
 def research_home(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
@@ -663,10 +717,7 @@ def test_pruning_messages_preserves_runs_whose_user_message_survives(research_ho
 
 @pytest.mark.parametrize("removed_id", ["user-1", "assistant-1"])
 def test_pruning_skips_research_turn_messages(research_home, removed_id):
-    _create()
-    plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
-    research_db.approve("run-1", 1, plan["planHash"])
-    research_db.claim_next("worker-1")
+    _shared_setup_5()
     research_db.finish("run-1", "worker-1", "completed")
     survivors = [
         message
@@ -683,10 +734,7 @@ def test_pruning_skips_research_turn_messages(research_home, removed_id):
 
 @pytest.mark.parametrize("removed_id", ["user-1", "assistant-1"])
 def test_pruning_exempts_research_messages_even_when_updates_allowed(research_home, removed_id):
-    _create()
-    plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
-    research_db.approve("run-1", 1, plan["planHash"])
-    research_db.claim_next("worker-1")
+    _shared_setup_5()
     research_db.finish("run-1", "worker-1", "completed")
     survivors = [
         message
@@ -805,18 +853,10 @@ def test_delete_thread_cancels_active_research_run(research_home):
 
     from routes import chat_history
 
-    _create()
-    plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
-    research_db.approve("run-1", 1, plan["planHash"])
-    research_db.claim_next("worker-1")
+    _shared_setup_5()
     assert research_db.get_run("run-1")["status"] == "running"
 
-    cancelled: list[str] = []
-    request = SimpleNamespace(
-        app = SimpleNamespace(
-            state = SimpleNamespace(research_supervisor = SimpleNamespace(cancel = cancelled.append))
-        )
-    )
+    cancelled, request = _shared_setup_6()
     asyncio.run(
         chat_history.delete_threads(
             chat_history.ChatDeleteRequest(ids = ["thread-1"]),
@@ -841,17 +881,9 @@ def test_project_delete_cancels_runs_captured_by_delete_transaction(research_hom
         }
     )
     studio_db.update_chat_thread("thread-1", {"projectId": "project-1"})
-    _create()
-    plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
-    research_db.approve("run-1", 1, plan["planHash"])
-    research_db.claim_next("worker-1")
+    _shared_setup_5()
 
-    cancelled: list[str] = []
-    request = SimpleNamespace(
-        app = SimpleNamespace(
-            state = SimpleNamespace(research_supervisor = SimpleNamespace(cancel = cancelled.append))
-        )
-    )
+    cancelled, request = _shared_setup_6()
 
     deleted = asyncio.run(
         chat_history.delete_project(
@@ -868,17 +900,9 @@ def test_project_delete_cancels_runs_captured_by_delete_transaction(research_hom
 def test_clear_history_cancels_runs_captured_by_delete_transaction(research_home):
     from routes import chat_history
 
-    _create()
-    plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
-    research_db.approve("run-1", 1, plan["planHash"])
-    research_db.claim_next("worker-1")
+    _shared_setup_5()
 
-    cancelled: list[str] = []
-    request = SimpleNamespace(
-        app = SimpleNamespace(
-            state = SimpleNamespace(research_supervisor = SimpleNamespace(cancel = cancelled.append))
-        )
-    )
+    cancelled, request = _shared_setup_6()
 
     asyncio.run(chat_history.clear_history(request, current_subject = "alice"))
 
@@ -910,12 +934,7 @@ def test_revision_hash_conflicts_and_idempotent_approval(research_home):
 def test_planner_cannot_finalize_after_its_lease_timestamp_expires(research_home):
     _create()
     assert research_db.claim_next("planner-1") is not None
-    conn = studio_db.get_connection()
-    try:
-        conn.execute("UPDATE research_runs SET lease_expires_at=0 WHERE id='run-1'")
-        conn.commit()
-    finally:
-        conn.close()
+    _shared_setup_3()
 
     with pytest.raises(research_db.ResearchConflictError, match = "no longer owns"):
         research_db.set_plan("run-1", _plan(), worker_id = "planner-1")
@@ -927,12 +946,7 @@ def test_expired_worker_cannot_write_progress_or_execution_state(research_home):
     plan = research_db.set_plan("run-1", _plan())
     research_db.approve("run-1", plan["planRevision"], plan["planHash"])
     assert research_db.claim_next("worker-1") is not None
-    conn = studio_db.get_connection()
-    try:
-        conn.execute("UPDATE research_runs SET lease_expires_at=0 WHERE id='run-1'")
-        conn.commit()
-    finally:
-        conn.close()
+    _shared_setup_3()
 
     assert (
         research_db.append_worker_event(
@@ -984,12 +998,7 @@ def test_expired_worker_cannot_write_progress_or_execution_state(research_home):
 def test_stale_planner_cannot_overwrite_new_lease_owner(research_home):
     _create()
     assert research_db.claim_next("planner-1") is not None
-    conn = studio_db.get_connection()
-    try:
-        conn.execute("UPDATE research_runs SET lease_expires_at=0 WHERE id='run-1'")
-        conn.commit()
-    finally:
-        conn.close()
+    _shared_setup_3()
     assert research_db.claim_next("planner-2") is not None
 
     with pytest.raises(research_db.ResearchConflictError, match = "no longer owns"):
@@ -1049,10 +1058,7 @@ def test_recovery_releases_expired_leases(research_home, status):
 
 
 def test_execution_reset_clears_steps_and_sources(research_home):
-    _create()
-    plan = research_db.set_plan("run-1", _plan())
-    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
-    research_db.claim_next("worker-1")
+    plan = _shared_setup_2()
     research_db.upsert_execution_step(
         "run-1", 0, "Old step", "old query", "completed", worker_id = "worker-1"
     )
@@ -1135,10 +1141,7 @@ def test_sources_are_normalized_by_url(research_home):
 
 
 def test_partial_report_is_persisted_and_emits_an_event(research_home):
-    _create()
-    plan = research_db.set_plan("run-1", _plan())
-    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
-    research_db.claim_next("worker-1")
+    plan = _shared_setup_2()
     before = research_db.get_run("run-1")["lastEventSeq"]
 
     assert research_db.set_report_progress("run-1", "Partial report", " report") is True
@@ -1496,10 +1499,7 @@ def test_research_budget_limits_allow_unlimited_model_requests():
 
 
 def test_retry_is_bounded_and_resumes_from_saved_plan(research_home):
-    _create()
-    plan = research_db.set_plan("run-1", _plan())
-    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
-    research_db.claim_next("worker-1")
+    plan = _shared_setup_2()
     research_db.upsert_execution_step("run-1", 0, "Old step", "old", "completed")
     research_db.upsert_source("run-1", 0, "https://old.example", "Old", "Old evidence")
     research_db.append_event("run-1", "reasoning.updated", {"reasoningDelta": "old reasoning"})
@@ -2401,12 +2401,7 @@ def test_recovered_running_research_resumes_durable_progress(research_home, monk
         "Must be discarded",
         "old-worker",
     )
-    conn = studio_db.get_connection()
-    try:
-        conn.execute("UPDATE research_runs SET lease_expires_at=0 WHERE id='run-1'")
-        conn.commit()
-    finally:
-        conn.close()
+    _shared_setup_3()
     assert research_db.recover_expired() == 1
 
     supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
@@ -2821,10 +2816,7 @@ def test_list_active_returns_complete_snapshots(research_home):
 def test_terminal_sse_event_contains_report_and_complete_snapshot(research_home):
     from routes.research_runs import research_events
 
-    _create()
-    plan = research_db.set_plan("run-1", _plan())
-    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
-    research_db.claim_next("worker-1")
+    plan = _shared_setup_2()
     research_db.upsert_source(
         "run-1", 0, "https://example.com/final", "Final source", "Final evidence"
     )
@@ -3026,10 +3018,7 @@ def test_update_assistant_replaces_report_parts_without_duplication(research_hom
 
 @pytest.mark.parametrize("requested", ["completed", "failed"])
 def test_cancel_requested_wins_finish_cas(research_home, requested):
-    _create()
-    plan = research_db.set_plan("run-1", _plan())
-    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
-    research_db.claim_next("worker-1")
+    plan = _shared_setup_2()
     assert research_db.request_cancel("run-1") == "cancelling"
 
     actual = research_db.finish(
@@ -3075,10 +3064,7 @@ def test_lost_lease_stops_worker_before_more_writes(research_home):
 
 
 def test_owned_run_is_failed_instead_of_replanned_after_lease_loss(research_home, monkeypatch):
-    from core import research_runs as worker
-
-    _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor, worker = _shared_setup_1()
     run = research_db.claim_next(supervisor.worker_id)
 
     async def lose_lease(_run_id):
@@ -3092,10 +3078,7 @@ def test_owned_run_is_failed_instead_of_replanned_after_lease_loss(research_home
 
 
 def test_lease_loss_terminalization_retries_database_lock(research_home, monkeypatch):
-    from core import research_runs as worker
-
-    _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor, worker = _shared_setup_1()
     research_db.claim_next(supervisor.worker_id)
     real_finish = worker.db.finish
     calls = 0
@@ -3120,10 +3103,7 @@ def test_lease_loss_terminalization_retries_database_lock(research_home, monkeyp
 
 
 def test_error_after_lease_expiry_is_failed_instead_of_replanned(research_home, monkeypatch):
-    from core import research_runs as worker
-
-    _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor, worker = _shared_setup_1()
     run = research_db.claim_next(supervisor.worker_id)
 
     async def fail_after_expiry(_run):
@@ -3144,10 +3124,7 @@ def test_error_after_lease_expiry_is_failed_instead_of_replanned(research_home, 
 
 
 def test_error_terminalization_retries_database_lock(research_home, monkeypatch):
-    from core import research_runs as worker
-
-    _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor, worker = _shared_setup_1()
     run = research_db.claim_next(supervisor.worker_id)
     real_finish = worker.db.finish
     calls = 0
@@ -3181,10 +3158,7 @@ def test_planning_cancel_wins_failed_finish(research_home):
 
 
 def test_failed_heartbeat_signals_stale_worker(research_home, monkeypatch):
-    from core import research_runs as worker
-
-    _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor, worker = _shared_setup_1()
     research_db.claim_next(supervisor.worker_id)
 
     async def no_wait(_seconds):
@@ -3198,10 +3172,7 @@ def test_failed_heartbeat_signals_stale_worker(research_home, monkeypatch):
 
 
 def test_transient_heartbeat_error_does_not_signal_lease_loss(research_home, monkeypatch):
-    from core import research_runs as worker
-
-    _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor, worker = _shared_setup_1()
     research_db.claim_next(supervisor.worker_id)
     calls = 0
 
@@ -3225,10 +3196,7 @@ def test_transient_heartbeat_error_does_not_signal_lease_loss(research_home, mon
 
 
 def test_sustained_heartbeat_errors_stop_before_lease_expiry(research_home, monkeypatch):
-    from core import research_runs as worker
-
-    _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor, worker = _shared_setup_1()
     research_db.claim_next(supervisor.worker_id)
     calls = 0
 
@@ -3259,10 +3227,7 @@ _CANCEL_TIMEOUT_S = 30.0
 
 
 def test_completion_cancellation_closes_loopback_request(research_home, monkeypatch):
-    from core import research_runs as worker
-
-    _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor, worker = _shared_setup_1()
     run = research_db.claim_next(supervisor.worker_id)
     request_cancelled = {"value": False}
     in_flight = asyncio.Event()
@@ -3311,10 +3276,7 @@ def test_completion_cancellation_closes_loopback_request(research_home, monkeypa
 
 
 def test_stream_line_wait_is_interruptible_by_cancellation(research_home):
-    from core import research_runs as worker
-
-    _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor, worker = _shared_setup_1()
     research_db.claim_next(supervisor.worker_id)
     iterator_cancelled = {"value": False}
     in_flight = asyncio.Event()
@@ -3349,10 +3311,7 @@ def test_stream_line_wait_is_interruptible_by_cancellation(research_home):
 
 
 def test_stream_open_wait_is_interruptible_by_cancellation(research_home, monkeypatch):
-    from core import research_runs as worker
-
-    _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor, worker = _shared_setup_1()
     run = research_db.claim_next(supervisor.worker_id)
     request_cancelled = {"value": False}
     in_flight = asyncio.Event()
@@ -3911,10 +3870,7 @@ def test_repointed_run_starts_a_fresh_attempt_clock(research_home, monkeypatch):
 
 
 def test_repointing_clears_the_stopped_run_of_its_old_question(research_home):
-    _create()
-    plan = research_db.set_plan("run-1", _plan())
-    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
-    research_db.claim_next("worker-1")
+    plan = _shared_setup_2()
     research_db.upsert_source("run-1", 0, "https://example.com/a", "A", "snippet")
     research_db.request_cancel("run-1")
     research_db.finish("run-1", "worker-1", "cancelled")
@@ -4071,10 +4027,7 @@ def test_research_is_spent_by_a_finished_run_but_not_by_a_stopped_one(research_h
 
 
 def test_research_stays_spent_after_a_completed_run(research_home):
-    _create()
-    plan = research_db.set_plan("run-1", _plan())
-    research_db.approve("run-1", plan["planRevision"], plan["planHash"])
-    research_db.claim_next("worker-1")
+    plan = _shared_setup_2()
     research_db.finish("run-1", "worker-1", "completed")
     assert research_db.research_spent("thread-1") is True
 
@@ -4153,10 +4106,7 @@ def test_a_stopped_worker_does_not_stamp_cancelled_on_the_next_question(research
     Both replies are resolved by the same reused run id, so without the attempt guard the new
     question's placeholder is written "Research cancelled." and stays that way.
     """
-    from core import research_runs as worker
-
-    _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    supervisor, worker = _shared_setup_1()
     research_db.request_cancel("run-1")
     claimed = research_db.claim_next(supervisor.worker_id)
 
@@ -4198,18 +4148,8 @@ def test_a_stopped_worker_does_not_stamp_cancelled_on_the_next_question(research
 
 
 def test_terminal_write_cannot_cross_a_rebind_after_the_worker_guard(research_home, monkeypatch):
-    from core import research_runs as worker
-
-    _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
-    research_db.request_cancel("run-1")
-    claimed = research_db.claim_next(supervisor.worker_id)
-    assert claimed is not None
-
-    async def cancelled_plan(run):
-        raise worker.RunCancelled()
-
-    original_update = worker._update_assistant
+    supervisor, worker = _shared_setup_1()
+    cancelled_plan, claimed, original_update = _shared_setup_4(supervisor, worker)
     rebound = False
 
     def rebind_after_guard(*args, **kwargs):
@@ -4246,14 +4186,7 @@ def test_terminal_fallback_cannot_cross_a_no_placeholder_rebind(research_home, m
 
     _create(assistant_message_id = None)
     supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
-    research_db.request_cancel("run-1")
-    claimed = research_db.claim_next(supervisor.worker_id)
-    assert claimed is not None
-
-    async def cancelled_plan(run):
-        raise worker.RunCancelled()
-
-    original_update = worker._update_assistant
+    cancelled_plan, claimed, original_update = _shared_setup_4(supervisor, worker)
     rebound = False
 
     def rebind_after_guard(*args, **kwargs):
@@ -4275,18 +4208,8 @@ def test_terminal_fallback_cannot_cross_a_no_placeholder_rebind(research_home, m
 
 
 def test_terminal_write_cannot_cross_a_retry_after_the_worker_guard(research_home, monkeypatch):
-    from core import research_runs as worker
-
-    _create()
-    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
-    research_db.request_cancel("run-1")
-    claimed = research_db.claim_next(supervisor.worker_id)
-    assert claimed is not None
-
-    async def cancelled_plan(run):
-        raise worker.RunCancelled()
-
-    original_update = worker._update_assistant
+    supervisor, worker = _shared_setup_1()
+    cancelled_plan, claimed, original_update = _shared_setup_4(supervisor, worker)
     retried = False
 
     def retry_after_guard(*args, **kwargs):

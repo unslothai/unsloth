@@ -71,7 +71,12 @@ from core.inference.stt_sidecar import (
 from utils.prebuilt.child_env import isolate_home, scrub_env, wsl_system_rocm_lib_dirs
 from utils.prebuilt.runtime_libs import dedupe_existing_dirs
 from utils.prebuilt.whisper_layout import lookup_marker
-from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
+from utils.process_lifetime import (
+    adopt_pid,
+    child_popen_kwargs,
+    forget_pid,
+    is_process_shutting_down,
+)
 
 logger = get_logger(__name__)
 
@@ -1000,6 +1005,13 @@ class GgmlSttSidecar:
                 self._release_locked()
                 # release the reservation as late as possible: whisper-server binds the port moments after this close
                 reservation.close()
+                # One flag at every spawn. No _graceful_shutdown step stops this
+                # sidecar, so a load still downloading or in preflight as the app quits
+                # would otherwise start whisper-server after the sweep had run.
+                if is_process_shutting_down():
+                    raise SttLoadCancelledError(
+                        "Studio is shutting down; not starting whisper-server."
+                    )
                 process = subprocess.Popen(
                     command,
                     stdout = subprocess.DEVNULL,
@@ -1015,6 +1027,18 @@ class GgmlSttSidecar:
                 with self._load_state_lock:
                     self._starting_process = process
                 adopt_pid(process.pid)  # terminate_all backstop for graceful exits
+                # Recheck once the pid is recorded: the latch can be set between the
+                # gate above and this record, and the child would then sit outside a
+                # sweep that has already finished. Adoption runs first either way, so a
+                # child killed here is still in the sweep record.
+                if is_process_shutting_down():
+                    if process.poll() is None:
+                        process.kill()
+                        process.wait(timeout = 10)
+                    forget_pid(process.pid)
+                    raise SttLoadCancelledError(
+                        "Studio is shutting down; not starting whisper-server."
+                    )
                 try:
                     self._wait_for_server(process, port, cancel_event)
                 except Exception:

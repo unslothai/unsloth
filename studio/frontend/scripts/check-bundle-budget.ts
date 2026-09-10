@@ -41,7 +41,9 @@ export const BUDGET = {
   // Raised for the audio placement control: same build both sides, merge base
   // 1,560.9 KB transfer against branch 1,562.6 KB, so it crossed the old 1,562.5 KB
   // ceiling by a tenth of a kilobyte.
-  transferBytes: 1_620_000,
+  // Merging main's eager Settings restoration with KV pause recovery measures
+  // 1,582.6 KB transfer, versus 1,582.0 KB on main and 1,575.2 KB on the PR head.
+  transferBytes: 1_622_000,
   rawBytes: 5_500_000,
 };
 

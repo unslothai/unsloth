@@ -440,6 +440,15 @@ class InferenceOrchestrator:
             raise SidecarSwapInProgress(
                 "A transformers repair is replacing the latest sidecar; retry when it completes."
             )
+        # Last gate before Popen. A preview or auto-switch load is not a
+        # _ScopedLoadAttempt, so the route's shutdown sweep cannot cancel it; it can
+        # clear the load's own checks and only then reach here, after the shutdown
+        # already stopped this subprocess. Checked at the spawn itself so the answer
+        # cannot go stale between the check and the child.
+        from utils.process_lifetime import is_process_shutting_down
+
+        if is_process_shutting_down():
+            raise RuntimeError("Studio is shutting down; not starting an inference subprocess")
         from utils.native_path_leases import (
             native_path_secret_removed_for_child_start,
             run_without_native_path_secret,
@@ -461,7 +470,13 @@ class InferenceOrchestrator:
             self._cancel_event = _CTX.Event()
             self._drain_event = _CTX.Event()
 
-            self._proc = _CTX.Process(
+            # Built into a local FIRST, and started through that local. A shutdown can
+            # observe a not-yet-alive child, clear self._proc and finish its sweep while
+            # start() is still returning, so the attribute is not a handle this code can
+            # rely on from here on: snapshotting it after start() would capture the None
+            # and lose the only reference to a live child, which is the orphan this
+            # change exists to prevent.
+            _spawned_proc = _CTX.Process(
                 target = run_without_native_path_secret,
                 args = ("core.inference.worker", "run_inference_process", cache_env),
                 kwargs = {
@@ -473,11 +488,49 @@ class InferenceOrchestrator:
                 },
                 daemon = True,
             )
-            self._proc.start()
+            self._proc = _spawned_proc
+            _spawned_proc.start()
         from utils.process_lifetime import adopt_pid
 
-        adopt_pid(self._proc.pid)  # bind to parent lifetime (Windows job / sweep)
-        logger.info("Inference subprocess started (pid=%s)", self._proc.pid)
+        adopt_pid(_spawned_proc.pid)  # bind to parent lifetime (Windows job / sweep)
+
+        # The gate above is 30-odd lines and a process start away from here, so a
+        # shutdown can begin in between, see no live _proc, and finish its sweep
+        # while this child is still being born. Recheck now it exists and reap it,
+        # the same shape as the cancel_load recheck below the caller's spawn.
+        # A lock across the spawn would close it too, but _shutdown_subprocess holds
+        # that lock for its whole teardown, so quitting would then queue behind a
+        # spawn it is about to undo. adopt_pid runs first either way: a child that
+        # dies here must still be in the sweep record.
+        if is_process_shutting_down() or self._proc is not _spawned_proc:
+            logger.info("Shutdown began during spawn; tearing the new inference worker down")
+            self._shutdown_subprocess(timeout = 5)
+            # If shutdown already dropped the mirror, that call cannot see this child.
+            # The local handle is the only one left, so reap it here -- and escalate the
+            # way _shutdown_subprocess_locked does, rather than abandoning a worker that
+            # ignores SIGTERM. The step-7 snapshot has already been taken by this point,
+            # so a child left alive here survives until a later startup reaps its record.
+            try:
+                if _spawned_proc.is_alive():
+                    _spawned_proc.terminate()
+                    _spawned_proc.join(5)
+                if _spawned_proc.is_alive():
+                    from utils.process_lifetime import terminate_pid
+                    terminate_pid(_spawned_proc.pid, timeout = 5)
+                    _spawned_proc.join(5)
+                if _spawned_proc.is_alive():
+                    _spawned_proc.kill()
+                    _spawned_proc.join(5)
+                if _spawned_proc.is_alive():
+                    logger.warning(
+                        "Raced inference worker (pid=%s) survived terminate and kill; "
+                        "leaving it in the lifetime record for the startup sweep",
+                        _spawned_proc.pid,
+                    )
+            except Exception as exc:
+                logger.debug("Could not reap the raced inference worker: %s", exc)
+            raise RuntimeError("Studio is shutting down; not starting an inference subprocess")
+        logger.info("Inference subprocess started (pid=%s)", _spawned_proc.pid)
 
     def _cancel_generation(self) -> None:
         """Cancel any ongoing generation in the subprocess (instant)."""
@@ -1733,29 +1786,46 @@ class InferenceOrchestrator:
                         self.active_model_name = None
                         self.models.clear()
                         return False
+                    from utils.process_lifetime import is_process_shutting_down
+
                     model_info = resp.get("model_info", {})
-                    self.active_model_name = model_info.get("identifier", model_name)
-                    self.load_generation += 1
-                    # A load always spawns a fresh subprocess holding only this model, so mirror that. A lingering stale
-                    # name would pass unload_model's "not in self.models" guard, and the worker's absent-name fallback
-                    # would unload its *active* model, not the already-gone one.
-                    self.models = {}
-                    self.models[self.active_model_name] = _mirrored_model_entry(
-                        model_info, model_name
-                    )
-                    # Lets the already-loaded shortcut tell a CPU request from the GPU
-                    # model it would otherwise report as satisfied. Native audio only:
-                    # marking anything else tells training a GPU model holds no VRAM.
-                    self.models[self.active_model_name]["audio_cpu"] = model_info.get(
-                        "audio_type"
-                    ) in NATIVE_AUDIO_TYPES and audio_device_forces_cpu(audio_device)
-                    self.models[self.active_model_name].update(
-                        _mlx_runtime_mirror_fields(model_info)
-                    )
-                    # Mirror chat_template_info so routes can classify caps without re-entering the subprocess
-                    _tpl_info = model_info.get("chat_template_info")
-                    if isinstance(_tpl_info, dict):
-                        self.models[self.active_model_name]["chat_template_info"] = _tpl_info
+                    # A "loaded" reply dequeued just as shutdown kills the worker would
+                    # otherwise be published here, and active_model_name is what the
+                    # already-loaded fast path trusts without testing liveness. Held
+                    # under the lock shutdown kills with, so the check and the
+                    # publication are one step rather than a race.
+                    with self._subprocess_shutdown_lock:
+                        if is_process_shutting_down():
+                            logger.info(
+                                "Shutdown overtook the load of '%s'; not publishing it as resident",
+                                model_name,
+                            )
+                            self.loading_models.discard(model_name)
+                            self.active_model_name = None
+                            self.models.clear()
+                            return False
+                        self.active_model_name = model_info.get("identifier", model_name)
+                        self.load_generation += 1
+                        # A load always spawns a fresh subprocess holding only this model, so mirror that. A lingering stale
+                        # name would pass unload_model's "not in self.models" guard, and the worker's absent-name fallback
+                        # would unload its *active* model, not the already-gone one.
+                        self.models = {}
+                        self.models[self.active_model_name] = _mirrored_model_entry(
+                            model_info, model_name
+                        )
+                        # Lets the already-loaded shortcut tell a CPU request from the GPU
+                        # model it would otherwise report as satisfied. Native audio only:
+                        # marking anything else tells training a GPU model holds no VRAM.
+                        self.models[self.active_model_name]["audio_cpu"] = model_info.get(
+                            "audio_type"
+                        ) in NATIVE_AUDIO_TYPES and audio_device_forces_cpu(audio_device)
+                        self.models[self.active_model_name].update(
+                            _mlx_runtime_mirror_fields(model_info)
+                        )
+                        # Mirror chat_template_info so routes can classify caps without re-entering the subprocess
+                        _tpl_info = model_info.get("chat_template_info")
+                        if isinstance(_tpl_info, dict):
+                            self.models[self.active_model_name]["chat_template_info"] = _tpl_info
                     self.loading_models.discard(model_name)
                     logger.info("Model '%s' loaded successfully in subprocess", model_name)
                     return True

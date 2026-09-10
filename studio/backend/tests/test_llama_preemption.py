@@ -32,7 +32,6 @@ from core.inference.llama_preemption import (
     preemption_buffer_tokens,
     read_slot_occupancy,
     reclaim_idle_slots,
-    wait_for_reclaim,
 )
 from core.inference.llama_stats import erase_llama_slot, fetch_llama_slots
 
@@ -356,6 +355,22 @@ class TestTheBatchReserveIsOnlyHeldWhileSomethingPrefills:
         assert self._buffer(pending_prefill = 300) == self.IDLE, "under the reaction headroom"
         assert self._buffer(pending_prefill = 1200) == 1200 + self.DRAFTS * self.SLOTS
         assert self._buffer(pending_prefill = 5000) == self.PREFILL
+
+    def test_an_arrival_reserves_for_its_own_prompt_and_a_round_boundary_for_its_growth(self):
+        """The knobs that used to switch this off are gone, so the default is the whole rule."""
+        arriving = self._c("test://arrival")
+        arriving.register("arriving", tokens = 3499, signal = PreemptSignal())
+        assert arriving.snapshot().prefilling == 3499
+        assert arriving.snapshot().buffer == self.PREFILL
+        assert arriving.committed_tokens() == 3499, "the charge is reserved on top of the chunk"
+
+        growing = self._c("test://arrival-growth")
+        growing.register("chat", tokens = 1000, signal = PreemptSignal())
+        growing.observe("chat", 20)
+        assert growing.snapshot().buffer == self.IDLE, "measured, so nothing is in flight"
+        growing.note_tokens("chat", 4000)
+        assert growing.snapshot().prefilling == 2980
+        assert growing.snapshot().buffer == self.PREFILL
 
     def test_the_lower_ceiling_really_hands_the_cells_out(self):
         c = self._c()
@@ -1010,20 +1025,6 @@ class TestTheAdmissionLeaseGivesItsCommitmentBack:
         assert await lease.resume_async(9999) is True
         assert queue.snapshot().committed == 4000, "an unpreempted lease must not be re-costed"
 
-    # ============================================================ the barrier and the registry
-
-    def test_an_unreadable_metrics_endpoint_times_out_rather_than_blocking(self):
-        clock = iter([0.0, 0.0, 1.0, 99.0])
-        assert (
-            wait_for_reclaim(
-                lambda: None,
-                target_processing = 0,
-                timeout_s = 1.0,
-                sleep = lambda _s: None,
-                monotonic = lambda: next(clock),
-            )
-            is False
-        )
 
 
 class TestTheRegistry:

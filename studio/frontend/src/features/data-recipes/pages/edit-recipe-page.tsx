@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { Button } from "@/components/ui/button";
 import { RecipeStudioPage, type RecipePayload } from "@/features/recipe-studio";
 import { useNavigate } from "@tanstack/react-router";
@@ -43,6 +44,7 @@ function RecipeLoadState({
 }
 
 export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement {
+  const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
   const reloadReadySent = useRef(false);
   const [loadState, setLoadState] = useState<LoadState>(() => {
@@ -83,8 +85,8 @@ export function EditRecipePage({ recipeId }: EditRecipePageProps): ReactElement 
       return;
     }
     reloadReadySent.current = true;
-    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
-  }, [loadState.status]);
+    signalReady();
+  }, [loadState.status, signalReady]);
 
   const handlePersist = useCallback(
     async (input: { id: string | null; name: string; payload: RecipePayload }) => {

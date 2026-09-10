@@ -467,6 +467,9 @@
       "_TOKEN_REPORT_EVERY": {
         "kind": "assign"
       },
+      "_TOOL_CALL_REFUSED": {
+        "kind": "assign"
+      },
       "_TOOL_PRIME_PENDING": {
         "kind": "assign"
       },
@@ -555,6 +558,9 @@
         "kind": "def"
       },
       "_auto_mode_drops_mtp": {
+        "kind": "def"
+      },
+      "_available_host_memory_mib": {
         "kind": "def"
       },
       "_await_resume": {
@@ -695,6 +701,9 @@
       "_exact_auto_blocker": {
         "kind": "def"
       },
+      "_exact_host_shortfall_after_load": {
+        "kind": "def"
+      },
       "_exact_parking_budget_mib": {
         "kind": "def"
       },
@@ -702,6 +711,9 @@
         "kind": "def"
       },
       "_exact_parking_shortfall_mib": {
+        "kind": "def"
+      },
+      "_exact_preflight_env": {
         "kind": "def"
       },
       "_extra_args_device": {
@@ -1023,6 +1035,9 @@
         "kind": "def"
       },
       "_preempt_ram_disabled_in": {
+        "kind": "def"
+      },
+      "_preempt_ram_value_is_zero": {
         "kind": "def"
       },
       "_prefix_user_text": {
