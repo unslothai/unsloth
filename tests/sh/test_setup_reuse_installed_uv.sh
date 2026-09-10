@@ -33,9 +33,26 @@ PROBE="$WORK/probe.sh"
 {
     printf '%s\n' "$HELPER"
     cat <<'BODY'
-if _dir=$(_setup_find_installed_uv); then printf 'found=%s' "$_dir"; else printf 'none'; fi
+if _setup_find_installed_uv; then printf 'found=%s' "$_SETUP_UV_DIR"; else printf 'none'; fi
 BODY
 } > "$PROBE"
+# The diagnostics a miss leaves for the download branch, which only survive when the
+# finder runs in the caller's shell rather than a command substitution.
+DIAG="$WORK/diag.sh"
+{
+    printf '%s\n' "$HELPER"
+    cat <<'BODY'
+if _setup_find_installed_uv; then printf 'found'; else printf 'looked=%s miss=%s' "$_SETUP_UV_LOOKED" "$_SETUP_UV_PROBE_MISS"; fi
+BODY
+} > "$DIAG"
+# setup.ps1's finder, whole, so the checks below do not depend on its line count.
+PS_FINDER=$(awk '
+    /^function Find-InstalledUv \{/ { grab = 1 }
+    grab { print }
+    grab && /^\}/ { grab = 0 }
+' "$SETUP_PS1")
+printf '%s\n' "$PS_FINDER" | grep -q '^function Find-InstalledUv {' || {
+    echo "FATAL: could not extract Find-InstalledUv from setup.ps1" >&2; exit 1; }
 
 fake_uv() {  # fake_uv <dir> [exit code]
     mkdir -p "$1"
@@ -54,6 +71,10 @@ for shell in sh bash; do
 
     assert_eq "$shell: nothing installed anywhere is a miss" \
         "none" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" "$shell" "$PROBE")"
+    case "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" "$shell" "$DIAG")" in
+        "looked=$HOME_DIR/.local/bin/uv miss=") ok "$shell: a miss names the destinations it looked at" ;;
+        *) bad "$shell: a miss names the destinations it looked at ($(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" "$shell" "$DIAG"))" ;;
+    esac
 
     fake_uv "$HOME_DIR/.local/bin"
     assert_eq "$shell: astral's default destination is found" \
@@ -103,7 +124,7 @@ done
 
 # ── source contract: the reuse sits between the PATH probe and the download, in both shells ──
 _probe_at=$(grep -n '^if command -v uv &>/dev/null; then$' "$SETUP_SH" | head -1 | cut -d: -f1)
-_reuse_at=$(grep -n '^elif _setup_uv_dir=\$(_setup_find_installed_uv); then$' "$SETUP_SH" | head -1 | cut -d: -f1)
+_reuse_at=$(grep -n '^elif _setup_find_installed_uv; then$' "$SETUP_SH" | head -1 | cut -d: -f1)
 _install_at=$(grep -n 'if _setup_install_uv_pinned; then' "$SETUP_SH" | head -1 | cut -d: -f1)
 if [ -n "$_probe_at" ] && [ -n "$_reuse_at" ] && [ -n "$_install_at" ] \
    && [ "$_probe_at" -lt "$_reuse_at" ] && [ "$_reuse_at" -lt "$_install_at" ]; then
@@ -122,12 +143,25 @@ else
 fi
 # The same destinations, in the same order, on both sides.
 for _name in UV_INSTALL_DIR UV_UNMANAGED_INSTALL XDG_BIN_HOME XDG_DATA_HOME; do
-    if printf '%s\n' "$HELPER" | grep -q "$_name" && grep -A12 '^function Find-InstalledUv {' "$SETUP_PS1" | grep -q "env:$_name"; then
+    if printf '%s\n' "$HELPER" | grep -q "$_name" && printf '%s\n' "$PS_FINDER" | grep -q "env:$_name"; then
         ok "both shells consult $_name"
     else
         bad "both shells consult $_name"
     fi
 done
+
+# The reused directory goes to the END of PATH in both shells: a python beside uv
+# (~/.local/bin often has one) must not step in front of the staged interpreter.
+if grep -q '^    export PATH="\$PATH:\$_setup_uv_dir"$' "$SETUP_SH"; then
+    ok "setup.sh appends the reused uv directory to PATH"
+else
+    bad "setup.sh appends the reused uv directory to PATH"
+fi
+if grep -qF '$env:PATH = "$env:PATH;$installedUvDir"' "$SETUP_PS1"; then
+    ok "setup.ps1 appends the reused uv directory to PATH"
+else
+    bad "setup.ps1 appends the reused uv directory to PATH"
+fi
 
 # Only a uv that answered counts, on both sides: the bounded probe here, and an "ok"
 # verdict (not merely "not failed") in setup.ps1.
@@ -136,7 +170,7 @@ if printf '%s\n' "$HELPER" | grep -q '_setup_uv_probe_exec "\$_sfu_dir/uv"'; the
 else
     bad "setup.sh probes the candidate through the bounded helper"
 fi
-if grep -A30 '^function Find-InstalledUv {' "$SETUP_PS1" | grep -q -- '-ne "ok") { continue }'; then
+if printf '%s\n' "$PS_FINDER" | grep -q -- '-ne "ok") { continue }'; then
     ok "setup.ps1 reuses only a uv with an ok verdict"
 else
     bad "setup.ps1 reuses only a uv with an ok verdict"

@@ -1793,6 +1793,10 @@ _setup_persist_uv_path() {
 
 _SETUP_UV_PROBE_MISS=""
 _SETUP_UV_LOOKED=""
+_SETUP_UV_DIR=""
+# Answers in _SETUP_UV_DIR and returns 0, rather than printing the directory: called
+# through command substitution it would run in a subshell, and the two diagnostics above,
+# which explain the download that follows a miss, would never reach the caller.
 _setup_find_installed_uv() {
     # The uv a previous run put at astral's destination, when it is not on PATH: a desktop
     # shell launched before the install and never relaunched from Explorer, a CI step with
@@ -1813,7 +1817,7 @@ _setup_find_installed_uv() {
         # and moved the manifest's uv_version on the next pass (observed on the staging
         # matrix under fault injection on Windows).
         if _setup_uv_probe_exec "$_sfu_dir/uv" || { sleep 2; _setup_uv_probe_exec "$_sfu_dir/uv"; }; then
-            printf '%s' "$_sfu_dir"
+            _SETUP_UV_DIR="$_sfu_dir"
             unset _sfu_dir
             return 0
         fi
@@ -1826,9 +1830,13 @@ _setup_find_installed_uv() {
 USE_UV=false
 if command -v uv &>/dev/null; then
     USE_UV=true
-elif _setup_uv_dir=$(_setup_find_installed_uv); then
-    # Read-only reuse, so it is right under a stage root too.
-    export PATH="$_setup_uv_dir:$PATH"
+elif _setup_find_installed_uv; then
+    _setup_uv_dir="$_SETUP_UV_DIR"
+    # Read-only reuse, so it is right under a stage root too. Appended, not prepended:
+    # nothing on PATH answered to uv, so the end of it is where uv is found, and a
+    # python beside it (~/.local/bin often has one) must not step in front of the staged
+    # $VENV_DIR/bin/python that fast_install and every bare python call rely on.
+    export PATH="$PATH:$_setup_uv_dir"
     step "uv" "reusing the uv installed at $_setup_uv_dir (it was not on PATH)"
     USE_UV=true
     unset _setup_uv_dir

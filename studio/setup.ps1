@@ -4847,6 +4847,10 @@ function Find-InstalledUv {
     # (observed on the staging matrix: a manifest uv_version that moved once per install).
     if ($env:LOCALAPPDATA) { $candidates += [System.IO.Path]::Combine($env:LOCALAPPDATA, "Microsoft", "WinGet", "Links") }
     $script:InstalledUvLooked = @()
+    # Assigned here too, not only by a probe that missed: read after a search that found
+    # no uv.exe at all, an unassigned script variable is a terminating error under a
+    # caller's Set-StrictMode.
+    $script:InstalledUvProbeMiss = $null
     foreach ($dir in $candidates) {
         if (-not $dir) { continue }
         $exe = [System.IO.Path]::Combine($dir, "uv.exe")
@@ -4882,8 +4886,10 @@ $installedUvDir = $null
 if (Get-Command uv -ErrorAction SilentlyContinue) {
     $UseUv = $true
 } elseif (($installedUvDir = Find-InstalledUv)) {
-    # Read-only reuse, so it is right under a stage root too.
-    $env:PATH = "$installedUvDir;$env:PATH"
+    # Read-only reuse, so it is right under a stage root too. Appended, not prepended:
+    # nothing on PATH answered to uv, so the end of it is where uv is found, and a
+    # python.exe beside it must not step in front of the staged interpreter.
+    $env:PATH = "$env:PATH;$installedUvDir"
     substep "reusing the uv installed at $installedUvDir (it was not on PATH)"
     $UseUv = $true
 } elseif (-not $StageRoot) {
