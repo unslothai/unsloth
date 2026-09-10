@@ -6287,8 +6287,20 @@ class VideoBackend:
             del state
             clear_gpu_cache()
 
-    def unload(self) -> dict[str, Any]:
+    def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
         with self._lock:
+            if expected_account is not None:
+                from .gpu_arbiter import VIDEO, GpuBusyForAnotherAccountError
+                from hub.services.models.account_access import require_resident_control
+
+                if (
+                    self._active_generate_cancel is not None
+                    and self._generate_job_account != expected_account
+                ):
+                    raise GpuBusyForAnotherAccountError(VIDEO, 1)
+                require_resident_control(
+                    VIDEO, self._state.repo_id if self._state is not None else None
+                )
             self._load_token += 1
             self._cancel_event.set()
             self._loading = None

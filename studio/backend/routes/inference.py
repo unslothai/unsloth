@@ -17370,11 +17370,19 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         _latest_tag = _freshness.get("latest_tag")
 
         with _scoped_load_attempts_lock:
+
+            def visible_attempt(attempt):
+                return attempt is not None and (
+                    not account_access.managed_account() or attempt.subject == current_account_id()
+                )
+
             _tracked_loading_id = (
-                _running_load_attempt.model_path if _running_load_attempt is not None else ""
+                _running_load_attempt.model_path if visible_attempt(_running_load_attempt) else ""
             )
             if not _tracked_loading_id:
-                _queued = next(iter(_pending_load_attempts.values()), None)
+                _queued = next(
+                    (a for a in _pending_load_attempts.values() if visible_attempt(a)), None
+                )
                 _tracked_loading_id = _queued.model_path if _queued is not None else ""
         # The attempt holds what the client sent, which for an on-device model is a path.
         _tracked_loading_id = _loading_public_id(_tracked_loading_id) or ""
@@ -36450,7 +36458,10 @@ async def unload_diffusion_model(current_subject: str = Depends(get_current_subj
         account_access.require_resident_control(
             "diffusion", get_active_diffusion_engine().status().get("repo_id")
         )
-    status_dict = await asyncio.to_thread(get_active_diffusion_engine().unload)
+    unload = get_active_diffusion_engine().unload
+    if account_access.account_scope() is not None:
+        unload = functools.partial(unload, expected_account = current_account_id())
+    status_dict = await asyncio.to_thread(unload)
     # Drop DIFFUSION ownership only if nothing is resident AND no load is in flight, or a later chat load skips eviction and
     # OOMs the new pipeline. An in-flight load reads is_loaded False, so gate on loading_repo_ids() and use release_if.
     engine = get_active_diffusion_engine()

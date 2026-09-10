@@ -708,7 +708,10 @@ async def unload_video_model(current_subject: str = Depends(get_current_subject)
     backend = get_video_backend()
     if account_access.managed_account():
         account_access.require_resident_control("video", backend.status().get("repo_id"))
-    status_dict = await asyncio.to_thread(backend.unload)
+    unload_kwargs = {}
+    if account_access.account_scope() is not None:
+        unload_kwargs["expected_account"] = current_account_id()
+    status_dict = await asyncio.to_thread(backend.unload, **unload_kwargs)
     # Drop VIDEO ownership only if nothing is resident AND no load is in flight; the check and release must be ATOMIC
     # (release_if). Mirrors images.
     await asyncio.to_thread(

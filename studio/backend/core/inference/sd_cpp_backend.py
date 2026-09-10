@@ -2660,8 +2660,20 @@ class SdCppDiffusionBackend:
 
     # ── Unload / status ──────────────────────────────────────────────────────
 
-    def unload(self) -> dict[str, Any]:
+    def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
         with self._lock:
+            if expected_account is not None:
+                from .gpu_arbiter import DIFFUSION, GpuBusyForAnotherAccountError
+                from hub.services.models.account_access import require_resident_control
+
+                if (
+                    self._active_generate_cancel is not None
+                    and self._active_generate_account != expected_account
+                ):
+                    raise GpuBusyForAnotherAccountError(DIFFUSION, 1)
+                require_resident_control(
+                    DIFFUSION, self._state.repo_id if self._state is not None else None
+                )
             # Under the lock: begin_load rebinds this attribute, so an unlocked read could set an event the current load
             # no longer watches.
             self._cancel_event.set()
