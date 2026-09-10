@@ -46,6 +46,8 @@ export interface SystemGpuInfo {
 export { aggregateGpuMemoryTotalGb } from "./gpu-vram";
 
 export interface SystemInfoResponse {
+  /** The server bypassed its GPU cache for this snapshot. */
+  memory_refreshed?: boolean;
   /** Client-side, not sent by the backend. Readers rendering a host verdict -- "no GPU",
    * "CPU only" -- must check it, or they state the placeholder below as fact. */
   status: SystemInfoStatus;
@@ -151,13 +153,21 @@ function scheduleVulkanRetry(): void {
 
 export async function fetchSystemInfo({
   force = false,
-}: { force?: boolean } = {}): Promise<SystemInfoResponse | null> {
-  if (systemFetchPromise) return systemFetchPromise;
-  if (!force && cachedSystem) return cachedSystem;
+  refreshMemory = false,
+}: { force?: boolean; refreshMemory?: boolean } = {}): Promise<SystemInfoResponse | null> {
+  if (systemFetchPromise) {
+    if (!refreshMemory) return systemFetchPromise;
+    // An in-flight snapshot may predate the resident model.
+    await systemFetchPromise;
+    return fetchSystemInfo({ force, refreshMemory });
+  }
+  if (!force && !refreshMemory && cachedSystem) return cachedSystem;
 
   systemFetchPromise = (async () => {
     try {
-      const res = await authFetch("/api/system");
+      const res = await authFetch(
+        refreshMemory ? "/api/system?refresh_memory=true" : "/api/system",
+      );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
 

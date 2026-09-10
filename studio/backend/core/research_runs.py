@@ -119,6 +119,7 @@ _MODEL_WAIT_POLL_SECONDS = 2.0
 # A model that keeps disappearing would re-send forever, so cap how many times one call may wait.
 _MAX_MODEL_WAITS = 3
 _NO_MODEL_LOADED_DETAIL = "No model loaded"
+_NO_GRAMMAR_ENGINE_DETAIL = "needs the llama.cpp grammar engine"
 # routes.inference reports the same unloaded state this way when auto-switch finds no local match.
 _MODEL_NOT_FOUND_CODE = "model_not_found"
 # routes.inference 503s with this while an auto-switch to the run's model is still loading.
@@ -580,6 +581,25 @@ def _synthesis_length_limit_error(
     return "Local model report reached its output limit before completion"
 
 
+async def _response_format_unsupported(response: httpx.Response) -> bool:
+    """Only the API's explicit guided-decoding refusal permits a prompt-only retry."""
+    if response.status_code != 400:
+        return False
+    try:
+        await response.aread()
+        body = response.json()
+    except Exception:
+        return False
+    error = body.get("error") if isinstance(body, dict) else None
+    return (
+        isinstance(error, dict)
+        and error.get("code") == "unsupported_parameter"
+        and error.get("param") == "response_format"
+        # Code and param alone also match the audio and tool-loop refusals, which no re-send fixes.
+        and _NO_GRAMMAR_ENGINE_DETAIL in str(error.get("message") or "")
+    )
+
+
 async def _model_unloaded(response: httpx.Response) -> str | None:
     """Which "not servable right now" refusal this is, or None for any other failure.
 
@@ -962,6 +982,19 @@ def _research_step_failed(web_result: str, rag_sources: list[dict]) -> bool:
     if rag_sources:
         return False
     return is_tool_error(web_result) or web_result.strip() in EMPTY_SEARCH_RESULTS
+
+
+def _preferred_step_error(current: str, candidate: str) -> str:
+    """The failure to report when several steps failed differently.
+
+    An engine failure tells the user to wait and retry, an empty sweep tells them to ask
+    something else, so a later "No results found." must not bury an earlier rate limit.
+    """
+    if not candidate:
+        return current
+    if is_tool_error(current) and not is_tool_error(candidate):
+        return current
+    return candidate
 
 
 def _run_moved_on(fresh: dict | None, attempt: int) -> bool:
@@ -1670,7 +1703,11 @@ class ResearchSupervisor:
                             "POST",
                             self._endpoint(),
                             json = payload,
-                            headers = {"Authorization": f"Bearer {token}"},
+                            headers = {
+                                "Authorization": f"Bearer {token}",
+                                # Keep text-only intent across retries and model switches.
+                                "X-Unsloth-Require-Text": "1",
+                            },
                         )
                         try:
                             send_task = asyncio.create_task(client.send(request, stream = True))
@@ -1687,6 +1724,19 @@ class ResearchSupervisor:
                             first_output_deadline = loop.time() + first_output_budget
                         except (httpx.TransportError, httpx.HTTPStatusError) as exc:
                             # Only reachable before a body byte is touched, so a re-send cannot duplicate report text.
+                            if (
+                                not _external_provider_run(inference)
+                                and payload.get("response_format") == {"type": "json_object"}
+                                and isinstance(exc, httpx.HTTPStatusError)
+                                and await _response_format_unsupported(exc.response)
+                            ):
+                                # No grammar engine here, but the prompts ask for JSON and the
+                                # output is validated. Retry once without it, after routing.
+                                del payload["response_format"]
+                                await exc.response.aclose()
+                                response = None
+                                await self._check_active(run["id"])
+                                continue
                             unloaded = (
                                 await _model_unloaded(exc.response)
                                 if isinstance(exc, httpx.HTTPStatusError)
@@ -2128,6 +2178,8 @@ class ResearchSupervisor:
         document_sources: list[dict] = []
         used_queries: set[str] = set()
         fetched_urls: set[str] = set()
+        completed_steps = 0
+        step_error = ""
         question, conversation_context = await asyncio.to_thread(
             _research_question_context,
             run["threadId"],
@@ -2154,6 +2206,7 @@ class ResearchSupervisor:
             elif argument:
                 used_queries.add(argument)
             if step.get("status") != "completed":
+                step_error = _preferred_step_error(step_error, str(result.get("error") or ""))
                 continue
             restored_state = _normalize_research_state(result.get("researchState"))
             if restored_state:
@@ -2206,6 +2259,9 @@ class ResearchSupervisor:
                 f"{item.get('text') or item.get('snippet') or ''}"
                 for item in accepted_rag_sources
             )
+            # An unscraped search persists no excerpt, so a completed step can come back with nothing in it.
+            if web_evidence or rag_evidence:
+                completed_steps += 1
             title = str(step.get("title") or "Recovered research step")
             notes.append(
                 f"### {title} ({action})\nInput: {argument}\nResult:\n{web_evidence}\n\n"
@@ -2516,6 +2572,10 @@ class ResearchSupervisor:
                 f"Input: {argument}\nResult:\n{result[:12000]}"
             )
             clean_result = strip_result_for_model(result, "web_search")
+            if step_failed:
+                step_error = _preferred_step_error(step_error, clean_result[:500])
+            else:
+                completed_steps += 1
             step_result = {
                 "action": action["action"],
                 "input": argument,
@@ -2560,6 +2620,8 @@ class ResearchSupervisor:
             )
             await self._check_worker_write(run["id"], seq is not None)
         await self._check_active(run["id"])
+        if not completed_steps and not sources and not document_sources:
+            raise ValueError(f"No research step gathered any evidence. {step_error}".rstrip())
         source_catalog = "\n".join(
             f"{index}. Title: {_citation_title(source, source['url'])}\n   URL: {source['url']}"
             for index, source in enumerate(sources, 1)

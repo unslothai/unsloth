@@ -5046,24 +5046,47 @@ class TestGgufVisionToolRouting:
         [entry] = result.monitor.snapshot()
         assert entry["reply"] == "visible"
 
-    def test_reasoning_capable_gguf_stream_sanitizes_think_tags_when_disabled(self, monkeypatch):
+    def test_reasoning_capable_gguf_stream_keeps_think_tags_visible_when_disabled(
+        self, monkeypatch
+    ):
+        answer = "Use <think>hi</think> in your prompt."
+
         def _generate(**_kwargs):
-            yield "<think>leaked</think>visible"
+            yield answer
             yield _stop_metadata()
 
         result = self._run_gguf_case(
             monkeypatch,
             generate = _generate,
-            payload_kwargs = {"stream": True, "enable_thinking": False},
+            # The shape Studio's own composer sends for an enable_thinking template
+            # once the Thinking toggle is off.
+            payload_kwargs = {"stream": True, "thinking": {"type": "disabled"}},
             backend_kwargs = {"reasoning_always_on": False},
         )
         deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
 
-        assert "".join(d.get("reasoning_content", "") for d in deltas) == "leaked"
-        assert "".join(d.get("content", "") for d in deltas) == "visible"
-        assert all("<think>" not in d.get("content", "") for d in deltas)
+        assert "".join(d.get("reasoning_content", "") for d in deltas) == ""
+        assert "".join(d.get("content", "") for d in deltas) == answer
         [entry] = result.monitor.snapshot()
-        assert entry["reply"] == "visible"
+        assert entry["reply"] == answer
+
+    def test_reasoning_capable_gguf_keeps_think_tags_visible_when_disabled(self, monkeypatch):
+        answer = "Use <think>hi</think> in your prompt."
+
+        def _generate(**_kwargs):
+            yield answer
+            yield _stop_metadata()
+
+        result = self._run_gguf_case(
+            monkeypatch,
+            generate = _generate,
+            payload_kwargs = {"enable_thinking": False},
+            backend_kwargs = {"reasoning_always_on": False},
+        )
+        message = result.body["choices"][0]["message"]
+
+        assert message["content"] == answer
+        assert message.get("reasoning_content") is None
 
     def test_gguf_tool_stream_splits_reasoning_and_strips_gemma_tool_marker(self, monkeypatch):
         def _tools(**_kwargs):
