@@ -3110,7 +3110,6 @@ def _cuda_props_are_integrated(props: Any, backend: Optional[str] = "cuda") -> b
         return False
     try:
         import torch
-
         if getattr(torch.version, "hip", None):
             return False
     except Exception as e:  # noqa: BLE001 - no torch to ask: IS_ROCM alone then
@@ -5177,9 +5176,7 @@ def _reconcile_cuda_integrated_memory(
 
     Writes only what the CLI could not answer, only on a confirmed integrated device.
     """
-    missing = [
-        dev for dev in utilization.get("devices", []) if dev.get("vram_total_gb") is None
-    ]
+    missing = [dev for dev in utilization.get("devices", []) if dev.get("vram_total_gb") is None]
     if not missing:
         return
     try:
@@ -5193,7 +5190,6 @@ def _reconcile_cuda_integrated_memory(
     used_gb = None
     try:
         import psutil
-
         vm = psutil.virtual_memory()
         used_gb = round((int(vm.total) - int(vm.available)) / (1024**3), 2)
     except Exception as e:  # noqa: BLE001 - a total alone still beats Unknown / 0.00
@@ -7087,9 +7083,7 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
                     "visible_ordinal": td["visible_ordinal"],
                     "name": td["name"],
                     "memory_total_gb": td["total_gb"],
-                    "shared_memory": bool(
-                        td.get("shared_memory") or td.get("_cuda_integrated")
-                    ),
+                    "shared_memory": bool(td.get("shared_memory") or td.get("_cuda_integrated")),
                     # An integrated part's total IS host memory; publishing it here is
                     # what stops a consumer adding the two pools together.
                     "shared_memory_host_backed_gb": (
@@ -7112,9 +7106,8 @@ def get_backend_visible_gpu_info() -> Dict[str, Any]:
             # A per-device probe failure leaves this list SHORT rather than empty, and
             # a shorter list drops cards nvidia-smi could see. The repair's guarantee is
             # that it never reports fewer devices than before it existed.
-            if (
-                unrepaired_smi_result is not None
-                and len(devices) < len(unrepaired_smi_result.get("devices") or [])
+            if unrepaired_smi_result is not None and len(devices) < len(
+                unrepaired_smi_result.get("devices") or []
             ):
                 unrepaired_smi_result["backend"] = _backend_label(device)
                 return unrepaired_smi_result

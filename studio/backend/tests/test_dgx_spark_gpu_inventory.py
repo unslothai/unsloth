@@ -42,6 +42,8 @@ class _DiscreteProps:
     total_memory = 183 * GIB
     is_integrated = 0
     gcnArchName = ""
+
+
 def _torch_module(props) -> types.SimpleNamespace:
     return types.SimpleNamespace(get_device_properties = lambda ordinal: props)
 
@@ -205,7 +207,11 @@ def test_an_unsizeable_card_is_still_reported_when_torch_cannot_answer(monkeypat
 # ── the live monitor ─────────────────────────────────────────────────────────
 
 
-def _smi_utilization(monkeypatch, vram_total_gb, vram_used_gb = None) -> dict:
+def _smi_utilization(
+    monkeypatch,
+    vram_total_gb,
+    vram_used_gb = None,
+) -> dict:
     """nvidia-smi's utilization rows, whose [N/A] memory columns are already None."""
     payload = {
         "available": True,
@@ -293,8 +299,6 @@ def test_monitor_reconciliation_creates_no_driver_context(monkeypatch):
     assert hw.get_gpu_utilization()["devices"][0]["vram_total_gb"] == SPARK_TOTAL_GB
 
 
-
-
 def test_a_hip_torch_is_never_read_with_the_cuda_rule(monkeypatch):
     """HIP reuses this namespace and a real APU sets the same flag.
 
@@ -322,7 +326,11 @@ def _smi_visible_utilization(monkeypatch, rows) -> dict:
     return payload
 
 
-def _unsized_row(index = 0, ordinal = 0, index_kind = "physical") -> dict:
+def _unsized_row(
+    index = 0,
+    ordinal = 0,
+    index_kind = "physical",
+) -> dict:
     return {
         "index": index,
         "index_kind": index_kind,
@@ -348,7 +356,8 @@ def test_the_system_poll_function_is_the_one_that_gets_repaired(monkeypatch):
     _cuda_host(monkeypatch, _SparkProps())
     _smi_visible_utilization(monkeypatch, [_unsized_row()])
     monkeypatch.setattr(
-        psutil, "virtual_memory",
+        psutil,
+        "virtual_memory",
         lambda: types.SimpleNamespace(total = 121 * GIB, available = 100 * GIB),
     )
 
@@ -366,7 +375,8 @@ def test_a_uuid_mask_still_reaches_the_reconciliation(monkeypatch):
     """
     _cuda_host(monkeypatch, _SparkProps())
     monkeypatch.setattr(
-        hw, "_get_parent_visible_gpu_spec",
+        hw,
+        "_get_parent_visible_gpu_spec",
         lambda: {"raw": "GPU-9254a6cb", "numeric_ids": None, "supports_explicit_gpu_ids": False},
     )
     monkeypatch.setattr(hw, "_torch_get_physical_gpu_count", lambda: 1)
@@ -409,12 +419,14 @@ def test_a_partial_torch_inventory_never_drops_an_smi_card(monkeypatch):
     """
     _cuda_host(monkeypatch, _SparkProps())
     monkeypatch.setattr(
-        hw, "_get_parent_visible_gpu_spec",
+        hw,
+        "_get_parent_visible_gpu_spec",
         lambda: {"raw": "0,1", "numeric_ids": [0, 1], "supports_explicit_gpu_ids": True},
     )
     monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: [0, 1])
     monkeypatch.setattr(
-        nvidia, "_query_gpu_inventory",
+        nvidia,
+        "_query_gpu_inventory",
         lambda caller: [
             {"index": 0, "name": "NVIDIA GB10", "memory_total_gb": None},
             {"index": 1, "name": "NVIDIA GB10", "memory_total_gb": None},
@@ -422,12 +434,21 @@ def test_a_partial_torch_inventory_never_drops_an_smi_card(monkeypatch):
     )
     # Only ordinal 0 answers, the shape a fallen-off-the-bus card produces.
     monkeypatch.setattr(
-        hw, "_torch_get_device_inventory",
+        hw,
+        "_torch_get_device_inventory",
         lambda indices: [
-            {"index": 0, "visible_ordinal": 0, "name": "NVIDIA GB10",
-             "total_gb": SPARK_TOTAL_GB, "used_gb": None, "shared_memory": False,
-             "shared_memory_host_backed_gb": None, "_rocm_known_unified": False,
-             "_rocm_gfx": "", "_cuda_integrated": True}
+            {
+                "index": 0,
+                "visible_ordinal": 0,
+                "name": "NVIDIA GB10",
+                "total_gb": SPARK_TOTAL_GB,
+                "used_gb": None,
+                "shared_memory": False,
+                "shared_memory_host_backed_gb": None,
+                "_rocm_known_unified": False,
+                "_rocm_gfx": "",
+                "_cuda_integrated": True,
+            }
         ],
     )
 
