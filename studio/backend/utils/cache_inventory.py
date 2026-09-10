@@ -61,6 +61,8 @@ class CacheDefinition:
     custom_purge: Optional[Callable[[], "PurgeOutcome"]] = None
     # Sized by its own rule, when a walk would not match what a clear removes.
     custom_measure: Optional[Callable[[], "tuple[int, int]"]] = None
+    # Its own gate, for a cache whose roots the standard one cannot check.
+    custom_block: Optional[Callable[[], Optional[str]]] = None
 
 
 @dataclass
@@ -428,6 +430,30 @@ def _measure_unsloth_compiled() -> tuple[int, int]:
     return total, entries
 
 
+def _compiled_cache_refusal() -> Optional[str]:
+    """Why the compiled cache cannot be emptied, or None.
+
+    Its own gate, because the clear runs through cache_cleanup rather than by
+    emptying a root, and it is all-or-nothing across the directories it owns, so
+    one of them failing stops the whole clear. describe_cache asks too: a row
+    that offers a button this will refuse is worse than one that says why.
+    """
+    from utils.cache_cleanup import _cleanable_cache_dirs
+
+    protected = protected_paths()
+    trees = protected_trees()
+    keep = sheltered_roots("unsloth_compiled")
+    for directory, dedicated in _cleanable_cache_dirs():
+        # Only the generated module files are ever touched in a shared one.
+        if not dedicated:
+            continue
+        try:
+            assert_purgeable_root(directory, protected = protected, trees = trees, keep = keep)
+        except CachePurgeRefused as exc:
+            return str(exc)
+    return None
+
+
 def _purge_unsloth_compiled() -> PurgeOutcome:
     """Clear the compiled cache through the module that owns it.
 
@@ -450,20 +476,10 @@ def _purge_unsloth_compiled() -> PurgeOutcome:
                 "Another Unsloth backend is using the compiled cache, so it was left in place."
             )
             return outcome
-        # clear_unsloth_compiled_cache is all-or-nothing across the directories
-        # it owns, so one of them failing the guard stops the whole clear rather
-        # than letting the others carry it through.
-        protected = protected_paths()
-        trees = protected_trees()
-        keep = sheltered_roots("unsloth_compiled")
-        for directory, dedicated in _cleanable_cache_dirs():
-            if not dedicated:
-                continue
-            try:
-                assert_purgeable_root(directory, protected = protected, trees = trees, keep = keep)
-            except CachePurgeRefused as exc:
-                outcome.errors.append(str(exc))
-                return outcome
+        refusal = _compiled_cache_refusal()
+        if refusal is not None:
+            outcome.errors.append(refusal)
+            return outcome
         before, entries = _measure_unsloth_compiled()
         clear_unsloth_compiled_cache()
         after, remaining = _measure_unsloth_compiled()
@@ -504,6 +520,7 @@ CACHE_DEFINITIONS: tuple[CacheDefinition, ...] = (
         _unsloth_compiled_dirs,
         custom_purge = _purge_unsloth_compiled,
         custom_measure = _measure_unsloth_compiled,
+        custom_block = _compiled_cache_refusal,
     ),
     CacheDefinition("hf_xet", GROUP_MODELS, False, _hf_xet_dirs),
     CacheDefinition("hf_assets", GROUP_MODELS, False, _hf_assets_dirs),
@@ -885,7 +902,10 @@ def describe_cache(definition: CacheDefinition) -> dict:
     # Gate first, then measure: a root the gate refuses would otherwise be walked
     # recursively on every open of the tab, for bytes nothing can reclaim.
     measurable = list(roots)
-    if roots and definition.custom_purge is None:
+    if roots and definition.custom_block is not None:
+        blocked_reason = definition.custom_block()
+        purgeable = blocked_reason is None
+    elif roots and definition.custom_purge is None:
         protected = protected_paths()
         trees = protected_trees()
         keep = sheltered_roots(definition.key)
@@ -902,7 +922,7 @@ def describe_cache(definition: CacheDefinition) -> dict:
         # so one bad root does not put the others out of reach.
         purgeable = bool(measurable)
     if definition.custom_measure is not None:
-        total, entries = definition.custom_measure()
+        total, entries = (0, 0) if blocked_reason is not None else definition.custom_measure()
     else:
         total = 0
         entries = 0
@@ -934,7 +954,10 @@ def _patterns_for(definition: CacheDefinition) -> Optional[tuple[str, ...]]:
 # A walk is seconds on a large uv or triton cache, so a repeat read inside this
 # window reuses the last answer.
 _INVENTORY_TTL_SECONDS = 60.0
-_size_cache: dict[str, tuple[float, dict]] = {}
+# (when the walk began, when it was stored, the entry). Both times: the store
+# time is what the TTL is about, and the start time is what tells a forced read
+# whether the walk it waited for saw the cache before the request was made.
+_size_cache: dict[str, tuple[float, float, dict]] = {}
 # Bumped by every invalidation, so a walk that began before one cannot store its
 # answer after it. Dropping the entry is not enough: a scan started in one tab
 # before a purge in another would install the pre-purge size for the window.
@@ -961,22 +984,29 @@ def _described(definition: CacheDefinition, *, refresh: bool) -> dict:
     started = time.monotonic()
     with _size_cache_lock:
         remembered = None if refresh else _size_cache.get(definition.key)
-    if remembered is not None and started - remembered[0] < _INVENTORY_TTL_SECONDS:
-        return remembered[1]
+    if remembered is not None and started - remembered[1] < _INVENTORY_TTL_SECONDS:
+        return remembered[2]
     # One walk per cache at a time: simultaneous misses would each pay a cold
     # walk for the same answer, and two open tabs are enough to cause it.
     with _flight_for(definition.key):
         with _size_cache_lock:
-            began_at = _size_epochs.get(definition.key, 0)
+            epoch = _size_epochs.get(definition.key, 0)
             remembered = _size_cache.get(definition.key)
-        # One that finished during the wait began after this call did, so it is
-        # fresh enough for it whether or not it asked to force.
-        if remembered is not None and remembered[0] >= started:
-            return remembered[1]
+        # A read that waited takes the walk it waited for, on the terms it asked
+        # for: an ordinary one wants a fresh enough answer, a forced one wants a
+        # walk that BEGAN after the request, or it gets the very figures it
+        # asked to replace.
+        if remembered is not None:
+            if refresh:
+                if remembered[0] >= started:
+                    return remembered[2]
+            elif time.monotonic() - remembered[1] < _INVENTORY_TTL_SECONDS:
+                return remembered[2]
+        begun = time.monotonic()
         entry = describe_cache(definition)
         with _size_cache_lock:
-            if _size_epochs.get(definition.key, 0) == began_at:
-                _size_cache[definition.key] = (time.monotonic(), entry)
+            if _size_epochs.get(definition.key, 0) == epoch:
+                _size_cache[definition.key] = (begun, time.monotonic(), entry)
         return entry
 
 
@@ -1126,16 +1156,30 @@ def _release_downloads(reserved: Iterable) -> None:
 _WORKER_SENSITIVE_KEYS = frozenset({"hf_hub", "hf_xet", "hf_datasets"})
 
 
-def _training_refusal(key: str) -> Optional[str]:
-    if key not in _WORKER_SENSITIVE_KEYS:
-        return None
+def _any_training_active() -> bool:
+    """Either trainer. They are tracked separately and both spawn a worker that
+    loads from the Hugging Face cache directly, the LLM one through
+    snapshot_download and the diffusion one through from_pretrained."""
+    active = False
     try:
         from core.training import get_training_backend
         active = bool(get_training_backend().is_training_active())
     except Exception as exc:  # noqa: BLE001 - a broken import must not block a purge
         logger.debug(f"Could not read the training state: {exc}")
+    if active:
+        return True
+    try:
+        from core.training.diffusion_training_service import get_diffusion_training_service
+        return bool(get_diffusion_training_service().is_active())
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"Could not read the diffusion training state: {exc}")
+        return False
+
+
+def _training_refusal(key: str) -> Optional[str]:
+    if key not in _WORKER_SENSITIVE_KEYS:
         return None
-    return "Stop the training run before clearing this cache." if active else None
+    return "Stop the training run before clearing this cache." if _any_training_active() else None
 
 
 def purge_cache(key: str) -> dict:

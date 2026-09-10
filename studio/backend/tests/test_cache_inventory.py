@@ -1172,12 +1172,12 @@ def test_two_cold_reads_of_one_cache_walk_it_once(tmp_path, monkeypatch, isolate
     monkeypatch.setattr(cache_inventory, "describe_cache", slow)
     answers: list = []
     first = threading.Thread(
-        target = lambda: answers.append(module._described(definition, refresh = True))
+        target = lambda: answers.append(module._described(definition, refresh = False))
     )
     first.start()
     assert started.wait(5)
     second = threading.Thread(
-        target = lambda: answers.append(module._described(definition, refresh = True))
+        target = lambda: answers.append(module._described(definition, refresh = False))
     )
     second.start()
     release.set()
@@ -1186,6 +1186,52 @@ def test_two_cold_reads_of_one_cache_walk_it_once(tmp_path, monkeypatch, isolate
 
     assert walks == ["uv"]
     assert [answer["size_bytes"] for answer in answers] == [10, 10]
+
+
+def test_a_forced_read_does_not_take_a_walk_that_began_before_it(
+    tmp_path, monkeypatch, isolated_caches
+):
+    """Recheck asks for a fresh look, and a walk already running when the request
+    arrived read the cache before whatever the user changed."""
+    import threading
+
+    from utils import cache_inventory as module
+
+    root = tmp_path / "uv"
+    _write(root / "wheel.whl", "w" * 100)
+    definition = definition_for("uv")
+    walks: list = []
+    started = threading.Event()
+    release = threading.Event()
+    real_describe = cache_inventory.describe_cache
+
+    def slow(target):
+        walks.append(len(walks))
+        if not walks[-1]:
+            started.set()
+            release.wait(5)
+        return real_describe(target)
+
+    monkeypatch.setattr(cache_inventory, "describe_cache", slow)
+    sizes: list = []
+    first = threading.Thread(
+        target = lambda: sizes.append(module._described(definition, refresh = False))
+    )
+    first.start()
+    assert started.wait(5)
+    # The cache changes under the walk that is already running.
+    for child in root.iterdir():
+        child.unlink()
+    forced = threading.Thread(
+        target = lambda: sizes.append(module._described(definition, refresh = True))
+    )
+    forced.start()
+    release.set()
+    first.join(10)
+    forced.join(10)
+
+    assert len(walks) == 2
+    assert sizes[-1]["size_bytes"] == 0
 
 
 def test_the_child_caches_ignore_a_studio_selected_models_folder(
@@ -1348,3 +1394,53 @@ def test_the_torch_extensions_cache_repeats_the_name_on_windows(
     monkeypatch.setattr(module, "_is_windows", lambda: False)
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
     assert module._torch_extensions_dirs() == [tmp_path / "xdg" / "torch_extensions"]
+
+
+def test_a_diffusion_run_holds_off_the_model_cache_clears(monkeypatch):
+    """Diffusion jobs are tracked apart from the LLM trainer, and their worker
+    loads the base model from the same hub and xet caches."""
+    import core.training as training_module
+    from core.training import diffusion_training_service
+    from utils import cache_inventory as module
+
+    class _Idle:
+        def is_training_active(self):
+            return False
+
+    class _Busy:
+        def is_active(self):
+            return True
+
+    monkeypatch.setattr(training_module, "get_training_backend", lambda: _Idle(), raising = False)
+    monkeypatch.setattr(
+        diffusion_training_service, "get_diffusion_training_service", lambda: _Busy()
+    )
+    for key in ("hf_hub", "hf_xet", "hf_datasets"):
+        assert module._training_refusal(key) is not None
+    assert module._training_refusal("uv") is None
+
+
+def test_a_compiled_cache_the_clear_would_refuse_says_so_on_the_row(
+    tmp_path, monkeypatch, only_the_configured_compiled_cache
+):
+    """It is cleared through its own module, so the standard gate never saw it:
+    the row offered a button that _purge_unsloth_compiled always refused, and
+    walked a protected tree the ordinary path is careful not to."""
+    from utils import cache_cleanup
+    from utils.paths import storage_roots
+
+    documents = tmp_path / "Documents"
+    compiled = documents / "checkout" / "unsloth_compiled_cache"
+    compiled.mkdir(parents = True)
+    (compiled / cache_cleanup.CACHE_MARKER).touch()
+    generated = _write(compiled / "unsloth_compiled_module_llama.py", "compiled" * 10)
+    monkeypatch.setattr(storage_roots, "documents_root", lambda: documents)
+    monkeypatch.setenv("UNSLOTH_COMPILE_LOCATION", str(compiled))
+
+    entry = describe_cache(definition_for("unsloth_compiled"))
+    assert entry["purgeable"] is False
+    assert "protected folder" in (entry["blocked_reason"] or "")
+    assert entry["size_bytes"] == 0
+    result = purge_caches(["unsloth_compiled"])["results"][0]
+    assert generated.exists()
+    assert result["errors"]
