@@ -43,15 +43,24 @@ def _code_lines(name: str):
     for number, line in enumerate(_text(name).splitlines(), start = 1):
         stripped = line.strip()
         if in_here_string:
-            if stripped in ("'@", '"@'):
+            # PowerShell wants the terminator in column 0, and install.ps1 has
+            # indented `"@echo off",` array entries that a stripped comparison
+            # closes on.
+            if line.startswith(("'@", '"@')):
                 in_here_string = False
             continue
-        if re.search(r"@[\"']$", stripped):
+        # Quoted literals first. Both install.ps1 and studio/setup.ps1 redact
+        # credentials with `-replace ..., '$1<redacted>@'`, whose raw line ends
+        # in `@'`; opening a here-string there swallowed everything up to the
+        # next terminator -- 780 lines of setup.ps1, 740 of install.ps1 -- and
+        # every check below silently stopped looking at them.
+        blanked = _QUOTED.sub('""', line)
+        if re.search(r"@[\"']$", blanked.strip()):
             in_here_string = True
             continue
         if stripped.startswith("#"):
             continue
-        yield number, _QUOTED.sub('""', line)
+        yield number, blanked
 
 
 @pytest.mark.parametrize("name", ALL_SCRIPTS)
@@ -362,6 +371,106 @@ def test_the_watcher_scores_the_image_that_ran_not_the_words_in_the_message(
     )
     assert result.returncode == 0, result.stderr + result.stdout
     assert f"HITS:{expected}" in result.stdout, result.stdout
+
+
+_FAKE_WINEVENT = r"""
+function Get-WinEvent {
+    # Off Windows there is no such cmdlet, so this resolves the call. Empty rather than
+    # throwing: this exercises the artefact half, and the 4688 half has its own tests.
+    param([Parameter(ValueFromRemainingArguments = $true)]$Rest)
+    return @()
+}
+"""
+
+
+def _run_watch(tmp_path, action: str) -> tuple[str, list[str]]:
+    """Drive the real Invoke-WithCompilerWatch over $Action, with TEMP pointed at tmp_path."""
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir()
+    evidence = tmp_path / "evidence"
+    script = tmp_path / "probe.ps1"
+    script.write_text(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                f'$env:TEMP = "{temp_root.as_posix()}"',
+                f'$env:TMP = "{temp_root.as_posix()}"',
+                _FAKE_WINEVENT,
+                f'. "{_WATCHER}"',
+                f"$action = {{ {action} }}",
+                "$seen = Invoke-WithCompilerWatch -Name 'probe' -Action $action "
+                f'-EvidenceRoot "{evidence.as_posix()}"',
+                'foreach ($lib in $seen.TempLibraries) { Write-Output "LIB:$lib" }',
+                'Write-Output "COUNT:$($seen.TempLibraries.Count)"',
+            ]
+        ),
+        encoding = "utf-8",
+    )
+    result = subprocess.run(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-File", str(script)],
+        capture_output = True,
+        text = True,
+        timeout = 300,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    libraries = [
+        line[len("LIB:") :] for line in result.stdout.splitlines() if line.startswith("LIB:")
+    ]
+    return result.stdout, libraries
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+def test_the_watcher_sees_intermediates_the_compiler_cleaned_up(tmp_path) -> None:
+    """The failure this replaces: the positive control compiled a type, 4688 recorded
+
+        csc.exe /noconfig /fullpaths @"...\\Temp\\vpmyd5eq\\vpmyd5eq.cmdline"
+
+    and the artefact half reported nothing, because CodeDom deletes its intermediate
+    directory once the assembly is loaded. Comparing a listing taken before against one
+    taken after cannot see a file that no longer exists, so the job failed as a broken
+    detector on every run since it was added.
+    """
+    action = (
+        '$dir = Join-Path $env:TEMP "abcd1234"; '
+        "New-Item -ItemType Directory -Force -Path $dir | Out-Null; "
+        'Set-Content -LiteralPath (Join-Path $dir "abcd1234.cmdline") -Value "/noconfig"; '
+        'Set-Content -LiteralPath (Join-Path $dir "abcd1234.dll") -Value "MZ"; '
+        "Start-Sleep -Milliseconds 400; "
+        # The whole point: gone before the action returns, exactly as CodeDom leaves it.
+        "Remove-Item -LiteralPath $dir -Recurse -Force"
+    )
+    stdout, libraries = _run_watch(tmp_path, action)
+    assert libraries, f"a compile that cleaned up after itself was missed again: {stdout}"
+    assert any(lib.endswith(".cmdline") for lib in libraries), libraries
+    assert any(lib.endswith(".dll") for lib in libraries), libraries
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+def test_the_watcher_still_reports_intermediates_that_were_left_behind(tmp_path) -> None:
+    """The listing half must keep working; the watcher is added to it, not swapped for it."""
+    action = (
+        '$dir = Join-Path $env:TEMP "leftover"; '
+        "New-Item -ItemType Directory -Force -Path $dir | Out-Null; "
+        'Set-Content -LiteralPath (Join-Path $dir "leftover.dll") -Value "MZ"'
+    )
+    _, libraries = _run_watch(tmp_path, action)
+    assert any(lib.endswith("leftover.dll") for lib in libraries), libraries
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+def test_an_action_that_compiles_nothing_reports_nothing(tmp_path) -> None:
+    """Otherwise the real measurement, which requires neither detector to fire, can never pass.
+
+    A text file is written so the action is not a no-op: the watcher sees the creation and
+    must still discard it, because the extension is not one a compiler writes.
+    """
+    action = (
+        'Set-Content -LiteralPath (Join-Path $env:TEMP "notes.txt") -Value "hello"; '
+        "Start-Sleep -Milliseconds 400"
+    )
+    stdout, libraries = _run_watch(tmp_path, action)
+    assert "COUNT:0" in stdout, stdout
+    assert not libraries, libraries
 
 
 def test_an_unreadable_security_log_is_void_rather_than_clean() -> None:
