@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 import json
+import os
 import struct
 from contextlib import ExitStack
 from pathlib import Path
@@ -65,6 +66,34 @@ def test_catalog_and_resolver_are_read_only_and_share_the_public_id(store, monke
     assert len(models_route.collect_local_models(Path("models").resolve())) == 1
 
 
+def test_cached_ollama_row_requires_its_manifest(store):
+    row = models_route._scan_ollama_dir(store)[0]
+    manifest = store / "manifests/registry.ollama.ai/library/llama3/latest"
+    manifest.with_name("copy").write_bytes(manifest.read_bytes())
+    manifest.unlink()
+    assert Path(row.path).is_file()
+    assert resolver.local_servable_model(row) is None
+
+
+def test_ollama_catalog_and_resolver_share_root_precedence(store, tmp_path, monkeypatch):
+    second = tmp_path / "second"
+    _write_ollama_store(second)
+    roots = [store, second]
+    for root, timestamp, model_type in ((store, 100, "8B"), (second, 200, "70B")):
+        manifest = root / "manifests/registry.ollama.ai/library/llama3/latest"
+        data = json.loads(manifest.read_text())
+        data["config"] = {"digest": "sha256:" + "c" * 64}
+        (root / "blobs" / ("sha256-" + "c" * 64)).write_text(json.dumps({"model_type": model_type}))
+        manifest.write_text(json.dumps(data))
+        os.utime(manifest, (timestamp, timestamp))
+    monkeypatch.setattr(paths, "ollama_model_dirs", lambda: roots)
+    monkeypatch.setattr(ollama, "ollama_model_dirs", lambda: roots)
+    rows = models_route.collect_local_models(Path("models").resolve())
+    assert len(rows) == 1
+    assert "8B" in rows[0].display_name
+    assert resolver.resolve_local_gguf(rows[0].model_id)[0] == rows[0].id
+
+
 @pytest.mark.parametrize("broken", ["runtime_layer", "missing_blob"])
 def test_unsupported_ollama_models_are_withheld(store, broken):
     tag = store / "manifests/registry.ollama.ai/library/llama3/latest"
@@ -80,7 +109,14 @@ def test_unsupported_ollama_models_are_withheld(store, broken):
     assert resolver.resolve_local_gguf("ollama/llama3:latest") is None
 
 
-def test_http_catalog_id_autoloads_without_prior_ui_load(store, monkeypatch):
+@pytest.mark.parametrize("hardlinks", [False, True])
+def test_http_catalog_id_autoloads_without_prior_ui_load(store, monkeypatch, hardlinks):
+    if hardlinks:
+
+        def no_symlinks(*args, **kwargs):
+            raise OSError("Symlinks unavailable")
+
+        monkeypatch.setattr(Path, "symlink_to", no_symlinks)
     backend = _FakeBackend()
     backend.is_vision = False
     backend.supports_tools = False
@@ -98,9 +134,12 @@ def test_http_catalog_id_autoloads_without_prior_ui_load(store, monkeypatch):
                 request, operation = "load", resolved_ollama_path = linked
             )
             assert Path(resolved).suffix == ".gguf"
-            assert Path(resolved).read_bytes() == b"GGUF-not-really"
-            seen.append((request.model_path, resolved))
-            return await recorder(request, *args, **kwargs)
+            seen.append((request.model_path, resolved, Path(resolved).read_bytes()))
+            result = await recorder(request, *args, **kwargs)
+            from core.inference.llama_cpp import LlamaCppBackend
+
+            backend._gguf_load_identity = LlamaCppBackend._gguf_load_source_identity(resolved)
+            return result
 
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: backend)
     monkeypatch.setattr(inf, "_load_model_impl", load)
@@ -129,7 +168,32 @@ def test_http_catalog_id_autoloads_without_prior_ui_load(store, monkeypatch):
         assert response.status_code == 200, response.text
         assert response.json()["choices"][0]["message"]["content"] == "Fixture response."
         assert response.json()["model"] == model["id"]
-    assert len(seen) == 1
+        repeated = client.post(
+            "/v1/chat/completions",
+            json = {
+                "model": model["id"],
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "Say hello again."}],
+            },
+        )
+        assert repeated.status_code == 200, repeated.text
+        assert len(seen) == 1
+        manifest = store / "manifests/registry.ollama.ai/library/llama3/latest"
+        data = json.loads(manifest.read_text())
+        data["layers"][0]["digest"] = "sha256:" + "c" * 64
+        (store / "blobs" / ("sha256-" + "c" * 64)).write_bytes(b"GGUF-updated")
+        manifest.write_text(json.dumps(data))
+        retagged = client.post(
+            "/v1/chat/completions",
+            json = {
+                "model": model["id"],
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "Say hello again."}],
+            },
+        )
+        assert retagged.status_code == 200, retagged.text
+    assert len(seen) == 2
+    assert [item[2] for item in seen] == [b"GGUF-not-really", b"GGUF-updated"]
     assert seen[0][0].startswith("ollama-manifest:")
     assert backend._openai_advertised_id == "ollama/llama3:latest"
 

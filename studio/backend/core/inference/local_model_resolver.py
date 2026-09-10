@@ -576,16 +576,17 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
 
 def _local_servable_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
     """Entry for whichever backend can serve *info* from disk, GGUF first."""
-    from hub.services.models.ollama import is_ollama_manifest_ref
+    from hub.services.models.ollama import is_ollama_manifest_ref, ollama_model_ref_files
 
     raw_id = getattr(info, "id", None)
     if isinstance(raw_id, str) and is_ollama_manifest_ref(raw_id):
-        from pathlib import Path
-
-        path = getattr(info, "path", None)
-        if path and Path(path).is_file() and getattr(info, "source", None) == "ollama":
-            return _LocalGgufEntry(loader_id, raw_id, ())
-        return None
+        if getattr(info, "source", None) != "ollama":
+            return None
+        try:
+            ollama_model_ref_files(raw_id)
+        except (OSError, ValueError):
+            return None
+        return _LocalGgufEntry(loader_id, raw_id, ())
     return _local_gguf_entry(loader_id, info) or _local_weights_entry(loader_id, info)
 
 

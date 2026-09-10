@@ -8880,6 +8880,24 @@ async def _maybe_auto_switch_model(
         _, _requested_variant = split_model_ref(requested_model)
         bare = not looks_like_quant(_requested_variant)
 
+        from hub.services.models.ollama import is_ollama_manifest_ref, ollama_model_ref_files
+
+        ollama_target = target_is_gguf and is_ollama_manifest_ref(target_id)
+        ollama_source_identity = None
+        if ollama_target:
+
+            def _read_ollama_source_identity():
+                from core.inference.llama_cpp import LlamaCppBackend
+                try:
+                    model_path, projector_path = ollama_model_ref_files(target_id)
+                    if getattr(backend, "_disable_vision", False):
+                        projector_path = None
+                    return LlamaCppBackend._gguf_load_source_identity(model_path, projector_path)
+                except (OSError, ValueError):
+                    return None
+
+            ollama_source_identity = await asyncio.to_thread(_read_ollama_source_identity)
+
         def _already_serving() -> bool:
             # Match against both the concrete load path and the advertised repo id,
             # so a model loaded manually by repo id (identifier = repo id) and one
@@ -8907,6 +8925,16 @@ async def _maybe_auto_switch_model(
                 loaded_keys.add(advertised.lower())
             if loaded_keys.isdisjoint({target_id.lower(), override_id.lower()}):
                 return False
+            if ollama_target:
+                loaded_source = getattr(backend, "_gguf_load_identity", None)
+                # Materialized hardlinks have different paths but share the blob's inode.
+                if (
+                    not ollama_source_identity
+                    or not loaded_source
+                    or tuple(part[-4:] for part in loaded_source)
+                    != tuple(part[-4:] for part in ollama_source_identity)
+                ):
+                    return False
             loaded_companion_roots = tuple(
                 getattr(backend, "_openai_gguf_companion_roots", ()) or ()
             )

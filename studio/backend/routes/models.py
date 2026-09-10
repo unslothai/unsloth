@@ -966,7 +966,11 @@ def collect_local_models(
     # "Custom Folders" UI section even when the model is also in the HF cache.
     deduped: dict[str, LocalModelInfo] = {}
     for model in local_models:
-        semantic_id = model.model_id if model.source == "hf_cache" and model.model_id else model.id
+        semantic_id = (
+            model.model_id
+            if model.source in ("hf_cache", "ollama") and model.model_id
+            else model.id
+        )
         if model.source == "custom":
             physical_identity = gguf_utils.local_path_physical_identity(model.path)
             if (
