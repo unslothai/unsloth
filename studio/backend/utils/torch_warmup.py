@@ -249,6 +249,13 @@ def _prime_nvlink_topology() -> None:
     topology became readable (#10613)."""
     try:
         from core.inference.llama_cpp import LlamaCppBackend
+        # Opted out, so the answer could never be used. The load path skips the probe
+        # for the same reason rather than pay its timeout to decide something the user
+        # already decided.
+        if os.environ.get("UNSLOTH_DISABLE_DC_TUNING") == "1":
+            return
+        if LlamaCppBackend._p2p_user_opted_out():
+            return
         if LlamaCppBackend._effective_gpu_count() < 2:
             return
         if not LlamaCppBackend._all_selected_gpus_match(

@@ -1385,3 +1385,77 @@ def test_an_explicit_pick_keeps_its_pci_provenance(monkeypatch):
     assert LlamaCppBackend._p2p_veto_reason(
         [0, 1], True, ids_are_pci_indices = False
     ) is not None
+
+
+def test_a_stalled_nvml_call_cannot_hang_the_load(monkeypatch):
+    """ctypes has no timeout and the shell-out it replaced had one, so a wedged
+    driver must cost a fallback rather than the load."""
+    import threading as _threading
+    release = _threading.Event()
+
+    def _hang(cls):
+        release.wait(30)
+        return {(0, 1): "NVLINK", (1, 0): "NVLINK"}
+
+    monkeypatch.setattr(
+        LlamaCppBackend, "_probe_nvml_nvlink_topology_inner", classmethod(_hang)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_NVML_PROBE_TIMEOUT_SECONDS", 0.2)
+    try:
+        assert LlamaCppBackend._probe_nvml_nvlink_topology() is None
+        # And the caller still reaches the shell-out.
+        _use_topo(monkeypatch, TOPO_NVLINK_8X)
+        matrix = LlamaCppBackend._probe_interconnect_matrix()
+        assert matrix and not LlamaCppBackend._matrix_is_nvml(matrix)
+    finally:
+        release.set()
+
+
+def test_a_racing_failure_does_not_erase_a_published_matrix(monkeypatch):
+    """The prime publishes a good matrix; a load whose own probe fails transiently
+    must not overwrite it with a miss and disable P2P for every later load."""
+    good = {(0, 1): "NVLINK", (1, 0): "NVLINK"}
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    monkeypatch.setattr(
+        LlamaCppBackend, "_probe_interconnect_matrix", classmethod(lambda cls: good)
+    )
+    assert LlamaCppBackend._nvlink_topology() == good
+
+    # Now a pass that probes and fails while the good matrix is already published.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_probe_interconnect_matrix", classmethod(lambda cls: None)
+    )
+    assert LlamaCppBackend._nvlink_topology(refresh = True) == good
+    assert LlamaCppBackend._NVLINK_TOPO_CACHE == (good,)
+
+
+def test_the_prime_skips_work_the_opt_outs_make_useless(monkeypatch):
+    """UNSLOTH_DISABLE_DC_TUNING=1, UNSLOTH_DISABLE_DC_P2P=1 or a falsy GGML_CUDA_P2P
+    all mean the answer can never be used, so the prime must not pay for it."""
+    from utils import torch_warmup
+
+    probed = []
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_probe_interconnect_matrix",
+        classmethod(lambda cls: (probed.append(1), {(0, 1): "NVLINK", (1, 0): "NVLINK"})[1]),
+    )
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 8))
+
+    for var, value in (
+        ("UNSLOTH_DISABLE_DC_TUNING", "1"),
+        ("UNSLOTH_DISABLE_DC_P2P", "1"),
+        ("GGML_CUDA_P2P", "0"),
+    ):
+        monkeypatch.setenv(var, value)
+        LlamaCppBackend._NVLINK_TOPO_CACHE = None
+        probed.clear()
+        torch_warmup._prime_nvlink_topology()
+        assert probed == [], f"{var}={value} still primed"
+        monkeypatch.delenv(var, raising = False)
+
+    # Without an opt-out it still primes.
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    probed.clear()
+    torch_warmup._prime_nvlink_topology()
+    assert probed == [1]

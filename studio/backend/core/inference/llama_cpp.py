@@ -9179,8 +9179,34 @@ class LlamaCppBackend:
                 continue
         return None
 
+    # `nvidia-smi topo -m` runs under subprocess timeout; ctypes has no equivalent,
+    # and a wedged driver can block nvmlInit_v2 forever. Bound the whole walk so a
+    # stalled call costs a fallback instead of the load.
+    _NVML_PROBE_TIMEOUT_SECONDS = 10
+
     @classmethod
     def _probe_nvml_nvlink_topology(cls) -> Optional[dict]:
+        """_probe_nvml_nvlink_topology_inner under a wall-clock bound. A stalled NVML
+        call cannot be cancelled, so the thread is abandoned as a daemon and the caller
+        falls through to the shell-out, which has a timeout of its own."""
+        box = {}
+
+        def _run():
+            box["matrix"] = cls._probe_nvml_nvlink_topology_inner()
+
+        worker = threading.Thread(target = _run, daemon = True, name = "nvml-nvlink-probe")
+        worker.start()
+        worker.join(cls._NVML_PROBE_TIMEOUT_SECONDS)
+        if worker.is_alive():
+            logger.debug(
+                f"NVML NVLink probe still running after "
+                f"{cls._NVML_PROBE_TIMEOUT_SECONDS}s; abandoning it"
+            )
+            return None
+        return box.get("matrix")
+
+    @classmethod
+    def _probe_nvml_nvlink_topology_inner(cls) -> Optional[dict]:
         """Same matrix as _probe_nvlink_topology, from NVML instead of a shell-out:
         ~85 ms against ~1200 ms on an 8x B200. Keyed by the NVML device index, which
         is the nvidia-smi index (both enumerate in PCI order and both ignore
@@ -9419,6 +9445,13 @@ class LlamaCppBackend:
                     # Caching the miss would keep P2P off for the life of the process
                     # even once the topology becomes readable, so leave the cache cold.
                     return None
+                existing = cls._NVLINK_TOPO_CACHE
+                if probed is None and existing is not None and existing[0] is not None:
+                    # A concurrent pass (typically the startup prime) already published
+                    # a good matrix. The generation only guards against a refresh, so
+                    # without this a racing transient failure would erase it and keep
+                    # P2P off for every later load.
+                    return existing[0]
                 cls._NVLINK_TOPO_CACHE = (probed,)
                 return probed
             # A refresh started mid-pass owns the current answer; discard this one
