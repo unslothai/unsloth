@@ -291,7 +291,11 @@ class TestServerParkingSwitchedOffThroughTheEnvironment:
 
     def test_a_nonzero_environment_budget_leaves_parking_on(self):
         assert not _preempt_ram_disabled_in(["--kv-unified"], env = {"LLAMA_ARG_PREEMPT_RAM": "8192"})
-        assert not _preempt_ram_disabled_in(["--kv-unified"], env = {})
+
+    def test_naming_no_budget_at_all_is_parking_off(self):
+        # unslothai/llama.cpp#197 defaults --preempt-ram to 0, so a launch that names nothing
+        # gets a server that parks nothing and behaves exactly like upstream.
+        assert _preempt_ram_disabled_in(["--kv-unified"], env = {})
 
     @pytest.mark.parametrize("zero", ["00", "+0", " 0 ", "-0"])
     def test_every_numeric_zero_switches_parking_off(self, zero):
@@ -721,13 +725,15 @@ class TestTheAnthropicPassthroughIsSentTheCapItWasChargedFor:
 
 
 class TestOneSwitchStandsTheChildsParkingDown:
-    def test_preemption_off_puts_a_zero_budget_in_the_child_environment(self, monkeypatch):
+    def test_preemption_off_leaves_a_clean_launch_exactly_as_upstream_ships_it(self, monkeypatch):
         from core.inference.llama_cpp import _stand_down_child_parking
 
         monkeypatch.setenv(PREEMPT_ENV, "0")
         env: dict = {}
         assert _stand_down_child_parking(env, ["llama-server", "--kv-unified"]) == []
-        assert env["LLAMA_ARG_PREEMPT_RAM"] == "0"
+        # Nothing named a budget, and the server parks only when told, so there is nothing to
+        # override and nothing to write: the child is a stock llama-server.
+        assert env == {}
         assert _preempt_ram_disabled_in(["llama-server", "--kv-unified"], env = env)
 
     def test_preemption_on_leaves_the_child_alone(self):
@@ -806,7 +812,9 @@ class TestAnInconclusiveProbeStandsTheChildDown:
 
     def test_the_child_is_told_not_to_park(self, monkeypatch):
         monkeypatch.delenv("UNSLOTH_LLAMA_PREEMPT_MODE", raising = False)
-        monkeypatch.delenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", raising = False)
+        # Preemption explicitly on, so the probe's answer is the only thing standing the child
+        # down here and the zero is written because Studio's own preemptor is armed.
+        monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "1")
         from core.inference import llama_cpp as llama_mod
 
         env: dict = {}

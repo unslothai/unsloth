@@ -85,7 +85,8 @@ class TestMode:
     @pytest.mark.parametrize(
         "args, disabled",
         [
-            ([], False),
+            # Nothing named is parking off: unslothai/llama.cpp#197 defaults the budget to 0.
+            ([], True),
             (["--preempt-ram", "8192"], False),
             (["--preempt-ram", "0"], True),
             (["--preempt-ram=0"], True),
@@ -93,7 +94,7 @@ class TestMode:
             (["--preempt-ram"], False),
         ],
     )
-    def test_a_hand_typed_zero_switches_parking_off(self, args, disabled):
+    def test_a_hand_typed_zero_or_no_budget_at_all_is_parking_off(self, args, disabled):
         assert _preempt_ram_disabled_in(["llama-server", "-m", "x.gguf", *args]) is disabled
 
 

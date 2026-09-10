@@ -2050,21 +2050,38 @@ _PREEMPT_KEEPALIVE_S = 2.0
 
 
 def _preempt_ram_disabled_in(args, env: Optional[Mapping[str, str]] = None) -> bool:
-    """True when this launch switches the server's parking off with a zero RAM budget.
+    """True when this launch leaves the server parking nothing: a zero RAM budget, or no budget
+    named at all.
 
+    Naming nothing is off since unslothai/llama.cpp#197 defaulted ``--preempt-ram`` to 0. A server
+    launched without the flag parks nothing and behaves exactly like upstream, so a launch that
+    means the server to pause chats has to say so, and one that says nothing is a stock server.
     Read in llama.cpp's order (environment first, then argv last-wins), since ``--preempt-ram``
     carries ``set_env("LLAMA_ARG_PREEMPT_RAM")``: a zero in the environment disables parking with
-    nothing on the launch line, and a Studio-managed budget still beats an inherited zero."""
+    nothing on the launch line, and a Studio-managed budget still beats an inherited zero.
+    ``_preempt_ram_switched_off_in`` is the narrower question, for a launch still being built."""
     value = (os.environ if env is None else env).get("LLAMA_ARG_PREEMPT_RAM")
-    disabled = value is not None and _preempt_ram_value_is_zero(value)
+    named = value is not None
+    disabled = named and _preempt_ram_value_is_zero(value)
     tokens = [str(a) for a in (args or ())]
     for i, tok in enumerate(tokens):
         if tok == "--preempt-ram":
             value = tokens[i + 1] if i + 1 < len(tokens) else ""
             disabled = _preempt_ram_value_is_zero(value)
+            named = True
         elif tok.startswith("--preempt-ram="):
             disabled = _preempt_ram_value_is_zero(tok.split("=", 1)[1])
-    return disabled
+            named = True
+    return disabled or not named
+
+
+def _preempt_ram_switched_off_in(args, env: Optional[Mapping[str, str]] = None) -> bool:
+    """True when this launch NAMES a zero budget, switching the server's parking off by hand.
+
+    The narrower half of ``_preempt_ram_disabled_in``, asked before Studio has decided on a budget
+    of its own: an argv naming nothing there is a launch still being built, not one that parks
+    nothing, and reading it as off would refuse a mode the finished launch can run."""
+    return _named_preempt_ram_mib(args, os.environ if env is None else env) == 0
 
 
 def _preempt_ram_value_is_zero(text) -> bool:
@@ -2075,8 +2092,15 @@ def _preempt_ram_value_is_zero(text) -> bool:
         return False
 
 
-# llama-server's own default for --preempt-ram, in MiB.
-_PREEMPT_RAM_DEFAULT_MIB = 8192
+# llama-server's own default for --preempt-ram, in MiB: zero since unslothai/llama.cpp#197, which
+# parks nothing unless the launch tells it to. So "nothing named a budget" reads as parking off
+# wherever a budget is judged below, and a default install runs a stock upstream server.
+_PREEMPT_RAM_DEFAULT_MIB = 0
+
+# What Studio names when it wants the server to park but cannot size the pool (an auto-fit context,
+# or draft state with no dimensions): the figure llama-server itself defaulted to before parking
+# became opt-in, judged after launch against the context the server chose.
+_PREEMPT_RAM_UNSIZED_MIB = 8192
 
 
 # Per-park slack over the sequence state itself: page rounding, sampler and slot metadata.
@@ -2120,14 +2144,51 @@ def _exact_parking_budget_mib(
     draft_bytes: int = 0,
     parallel: int = 1,
 ) -> Optional[int]:
-    """The ``--preempt-ram`` an exact launch names so every park fits host RAM. None when the
-    default holds it, the estimate is unknown, or a budget is named."""
-    if kv_bytes <= 0 or "LLAMA_ARG_PREEMPT_RAM" in env:
+    """The ``--preempt-ram`` a launch names so the server parks chats at all and every park fits
+    host RAM. None only when a budget is already named, whoever named it keeping its say.
+
+    Always a positive figure otherwise, because there is no default left to fall back on: the
+    server parks nothing unless it is told to (unslothai/llama.cpp#197), so naming nothing is
+    asking for no parking rather than for the old 8192 MiB. A pool that cannot be sized is named
+    the unsized figure and judged after launch, not left silent."""
+    if "LLAMA_ARG_PREEMPT_RAM" in env:
         return None
     if any(str(a).startswith("--preempt-ram") for a in (args or ())):
         return None
-    need = _exact_parking_need_mib(kv_bytes, draft_bytes = draft_bytes, parallel = parallel)
-    return need if need > _PREEMPT_RAM_DEFAULT_MIB else None
+    if kv_bytes <= 0:
+        return _PREEMPT_RAM_UNSIZED_MIB
+    return _exact_parking_need_mib(kv_bytes, draft_bytes = draft_bytes, parallel = parallel)
+
+
+def _server_owned_parking_budget_mib(
+    kv_bytes: int,
+    *,
+    args,
+    env: Mapping[str, str],
+    server_supports: bool,
+    kv_unified: bool,
+    draft_bytes: int = 0,
+    parallel: int = 1,
+) -> Optional[int]:
+    """The ``--preempt-ram`` Studio names so the SERVER is the one pausing chats, else None.
+
+    Server-owned parking is asked for, never inherited: since unslothai/llama.cpp#197 a
+    llama-server launched without the flag parks nothing and behaves exactly like upstream, so a
+    launch that means it to park has to name a budget. None is a child that parks nothing of
+    Studio's doing: a build without the flag, a cache that is not unified (the only one a sequence
+    can be parked out of, and half of what ``server_preempts_kv`` reports), the switches handing
+    the pausing to Studio or to nobody, or a budget somebody already named, whose say is kept."""
+    if not server_supports or not kv_unified:
+        return None
+    if _child_parking_stands_down(server_supports):
+        return None
+    return _exact_parking_budget_mib(
+        kv_bytes,
+        args = args,
+        env = env,
+        draft_bytes = draft_bytes,
+        parallel = parallel,
+    )
 
 
 def _named_preempt_ram_mib(args, env: Mapping[str, str]) -> Optional[int]:
@@ -2161,8 +2222,9 @@ def _exact_parking_shortfall_mib(
     """``(named, saved, need)`` when the budget in force cannot hold every park, else None: a park
     that outgrows it is re-prefilled, which is not byte-identical on CUDA. ``saved`` is the target
     plus draft state one park writes. ``-1`` is unlimited and ``0`` is parking off, which
-    ``server_preempts_kv`` already reports. ``default_mib`` is judged when nothing named a budget
-    (an auto-fit pool is judged after launch instead)."""
+    ``server_preempts_kv`` already reports. ``default_mib`` is what is in force when nothing named
+    a budget, and with the server parking only when told that is ``_PREEMPT_RAM_DEFAULT_MIB``, zero:
+    a launch naming no budget parks nothing, so it has no park to fall short."""
     if kv_bytes <= 0:
         return None
     named = _named_preempt_ram_mib(args, env)
@@ -2208,7 +2270,9 @@ def _exact_auto_blocker(setting: str, args, env: Mapping[str, str]) -> Optional[
             "UNSLOTH_LLAMA_PREEMPT_MODE=studio makes Studio the one pausing chats, and a "
             "chat Studio resumes is re-prefilled rather than restored"
         )
-    if _preempt_ram_disabled_in(args, env = env):
+    # The narrow predicate: this runs before the launch names the budget Studio sizes below, so
+    # an argv with no --preempt-ram yet is undecided, not parking off.
+    if _preempt_ram_switched_off_in(args, env = env):
         return "the server's parking is switched off (--preempt-ram 0)"
     conflicts = _exact.contradicting_args(args) + _exact.contradicting_env(env)
     if conflicts:
@@ -2233,7 +2297,14 @@ def _child_parking_stand_down_reason(server_supports: Optional[bool] = None) -> 
     if _preemption.preempt_mode_setting() == _preemption.PREEMPT_MODE_STUDIO:
         return f"{_preemption.PREEMPT_MODE_ENV}=studio"
     if not _preemption.preemption_enabled():
-        return f"{_preemption.PREEMPT_ENV}=0"
+        setting = (os.environ.get(_preemption.PREEMPT_ENV) or "").strip()
+        # As the user set it, and an unset switch is not spelled as a zero: preemption is off
+        # until it is asked for, so "=0" would name a variable nobody wrote.
+        return (
+            f"{_preemption.PREEMPT_ENV}={setting}"
+            if setting
+            else f"{_preemption.PREEMPT_ENV} is not set"
+        )
     if server_supports is False:
         return "the llama-server probe did not confirm --preempt-ram"
     return None
@@ -2251,32 +2322,42 @@ def _stand_down_child_parking(
     args: Optional[list] = None,
     server_supports: Optional[bool] = None,
 ) -> Optional[list[str]]:
-    """One switch means no preemption anywhere: with Studio's off, the child would still park on its
-    own default budget. ``UNSLOTH_LLAMA_PREEMPT_MODE=studio`` stands it down too, a park the child
-    made on its own racing Studio's pause with no relay excusing the silence.
+    """One owner pauses chats: a budget somebody named must not buy the child a park beside Studio's
+    own pause, which no relay excuses. ``UNSLOTH_LLAMA_PREEMPT_MODE=studio`` stands the child down
+    for the same reason, and so does a probe that never confirmed the flag.
 
-    Writes ``LLAMA_ARG_PREEMPT_RAM=0`` and zeroes any ``--preempt-ram`` in ``args`` IN PLACE, since
-    llama.cpp applies argv after the environment. Returns the budgets it overrode, empty when the
-    line named none, and None when the child keeps its parking."""
+    Zeroes any ``--preempt-ram`` in ``args`` IN PLACE and writes ``LLAMA_ARG_PREEMPT_RAM=0`` beside
+    it, since llama.cpp applies argv after the environment. With preemption switched off and no
+    budget named anywhere, it writes nothing at all: the server parks nothing unless it is told to
+    (unslothai/llama.cpp#197), so a default install's child is left exactly as upstream ships it.
+    Returns the budgets it overrode, empty when the line named none, and None when the child keeps
+    its parking."""
     if not _child_parking_stands_down(server_supports):
         return None
     overridden: list[str] = []
     inherited = env.get("LLAMA_ARG_PREEMPT_RAM")
+    named_anywhere = inherited is not None
     if inherited is not None and str(inherited).strip() != "0":
         overridden.append(f"LLAMA_ARG_PREEMPT_RAM={inherited}")
-    env["LLAMA_ARG_PREEMPT_RAM"] = "0"
     for i in range(len(args or ())):
         token = str(args[i])
         if token == "--preempt-ram" and i + 1 < len(args):
+            named_anywhere = True
             value = str(args[i + 1])
             if value.strip() != "0":
                 overridden.append(f"--preempt-ram {value}")
             args[i + 1] = "0"
         elif token.startswith("--preempt-ram="):
+            named_anywhere = True
             value = token.split("=", 1)[1]
             if value.strip() != "0":
                 overridden.append(f"--preempt-ram={value}")
             args[i] = "--preempt-ram=0"
+    if named_anywhere or _preemption.preemption_enabled():
+        # Somebody named a budget the child would park on, or Studio's own preemptor is armed
+        # (``studio`` mode, or a probe that could not confirm the flag) and a build that parks
+        # after all must not park beside it. Otherwise nothing is written: nothing would park.
+        env["LLAMA_ARG_PREEMPT_RAM"] = "0"
     return overridden
 
 
@@ -8763,8 +8844,9 @@ class LlamaCppBackend:
             supports_ctx_checkpoints = ctx_checkpoints_flag is not None
             supports_no_cache_prompt = _is_real("--no-cache-prompt")
             supports_metrics = _is_real("--metrics")
-            # Server-side preemption (unslothai/llama.cpp#184): the server parks a slot in host
-            # RAM instead of failing every slot, and Studio stands down.
+            # Server-side preemption (unslothai/llama.cpp#184): the server can park a slot in host
+            # RAM instead of failing every slot. Can, not does: since unslothai/llama.cpp#197 the
+            # budget defaults to 0, so the launch has to name one before Studio stands down.
             supports_preempt_ram = _is_real("--preempt-ram")
             supports_slot_save = _is_real("--slot-save-path")
             supports_no_mmproj_offload = _is_real("--no-mmproj-offload")
@@ -20171,7 +20253,9 @@ class LlamaCppBackend:
                 raise LlamaServerNotFoundError(LLAMA_SERVER_NOT_FOUND_DETAIL)
 
             server_caps = _launch_caps(binary)
-            self._server_preempts_kv = bool(server_caps.get("supports_preempt_ram"))
+            # Nothing parks until a launch names a budget (unslothai/llama.cpp#197), so the
+            # capability alone sets nothing; the launch below records what it turned on.
+            self._server_preempts_kv = False
 
             # Outside ``self._lock`` so /unload, /cancel, /status aren't
             # blocked. ``unload_model`` also records the kill, so the
@@ -23142,7 +23226,7 @@ class LlamaCppBackend:
                     cmd.extend(["--ubatch-size", str(n_ubatch)])
 
                 server_caps = _launch_caps(binary)
-                self._server_preempts_kv = bool(server_caps.get("supports_preempt_ram"))
+                self._server_preempts_kv = False
 
                 # Before the extras, like the batch pair: a hand-typed flag still
                 # last-wins over the control. Each is gated on the capability
@@ -24133,38 +24217,54 @@ class LlamaCppBackend:
                             "Exact concurrency: added %s, which the paged KV pool requires.",
                             " ".join(_exact_added),
                         )
-                    # A park that outgrows the host budget is re-prefilled, which is not
-                    # byte-identical on CUDA, so the budget has to hold every park's target AND
-                    # draft state. Only when nothing named one, and not when the stand-down below
-                    # switches parking off.
-                    if server_caps.get("supports_preempt_ram") and not _child_parking_stands_down():
-                        try:
-                            _exact_kv_bytes = _kv_bytes(effective_ctx)
-                            _exact_draft_bytes = _draft_kv_state_bytes(effective_ctx)
-                        except Exception:
-                            _exact_kv_bytes, _exact_draft_bytes = 0, 0
-                        if _exact_draft_bytes is None:
-                            # Draft state a park saves that cannot be priced is a pool that
-                            # cannot be sized: judged after launch rather than certified here.
-                            _exact_kv_bytes, _exact_draft_bytes = 0, 0
-                        _exact_budget = _exact_parking_budget_mib(
-                            _exact_kv_bytes,
-                            args = list(cmd) + [str(a) for a in (extra_args or ())],
-                            env = os.environ,
-                            draft_bytes = _exact_draft_bytes,
-                            parallel = n_parallel,
+                # Server-side parking is asked for, never inherited: since unslothai/llama.cpp#197
+                # a llama-server launched without --preempt-ram parks nothing and behaves exactly
+                # like upstream, so the launch names the budget itself whenever Studio means the
+                # server to be the one pausing chats. Outside the exact block because a plain load
+                # with preemption on wants that too. A park that outgrows the budget is
+                # re-prefilled, which is not byte-identical on CUDA, so the figure has to hold
+                # every park's target AND draft state. Not when the stand-down below switches
+                # parking off, and never over a budget somebody named.
+                _park_supported = bool(server_caps.get("supports_preempt_ram"))
+                _park_owned = _park_supported and not _child_parking_stands_down(_park_supported)
+                _exact_kv_bytes, _exact_draft_bytes = 0, 0
+                _exact_budget = None
+                if _park_owned:
+                    try:
+                        _exact_kv_bytes = _kv_bytes(effective_ctx)
+                        _exact_draft_bytes = _draft_kv_state_bytes(effective_ctx)
+                    except Exception:
+                        _exact_kv_bytes, _exact_draft_bytes = 0, 0
+                    if _exact_draft_bytes is None:
+                        # Draft state a park saves that cannot be priced is a pool that
+                        # cannot be sized: named the unsized budget and judged after launch
+                        # rather than certified here.
+                        _exact_kv_bytes, _exact_draft_bytes = 0, 0
+                    # `_park_owned` is the cheap half of the same question, kept because the
+                    # exact checks below read it; the helper holds the whole rule so nobody has
+                    # to reassemble it, the unified cache included.
+                    _exact_budget = _server_owned_parking_budget_mib(
+                        _exact_kv_bytes,
+                        args = list(cmd) + [str(a) for a in (extra_args or ())],
+                        env = os.environ,
+                        server_supports = _park_supported,
+                        kv_unified = _kv_unified_from_args(cmd),
+                        draft_bytes = _exact_draft_bytes,
+                        parallel = n_parallel,
+                    )
+                    if _exact_budget is not None:
+                        cmd.extend(["--preempt-ram", str(_exact_budget)])
+                        logger.info(
+                            "Server-side preemption: --preempt-ram %d holds every park of the "
+                            "%d MiB pool and its %d MiB of draft state across %d slots, so no "
+                            "park has to be re-prefilled.",
+                            _exact_budget,
+                            _exact_kv_bytes // (1024 * 1024),
+                            _exact_draft_bytes // (1024 * 1024),
+                            n_parallel,
                         )
-                        if _exact_budget is not None:
-                            cmd.extend(["--preempt-ram", str(_exact_budget)])
-                            logger.info(
-                                "Exact concurrency: --preempt-ram %d holds every park of the "
-                                "%d MiB pool and its %d MiB of draft state across %d slots, so no "
-                                "park has to be re-prefilled.",
-                                _exact_budget,
-                                _exact_kv_bytes // (1024 * 1024),
-                                _exact_draft_bytes // (1024 * 1024),
-                                n_parallel,
-                            )
+                if _exact_wanted:
+                    if _park_owned:
                         # A cap, not an allocation: a park past what the host can give fails
                         # its allocation and is re-prefilled, so the budget in force, named or
                         # sized here, is judged against the host like one too small. What the
@@ -24176,6 +24276,9 @@ class LlamaCppBackend:
                                     list(cmd) + [str(a) for a in (extra_args or ())], os.environ
                                 )
                             if _exact_cap is None:
+                                # Nothing named a budget, so the server parks nothing and the
+                                # parks write nothing; the mode is unavailable for that, not
+                                # for the host being short.
                                 _exact_cap = _PREEMPT_RAM_DEFAULT_MIB
                             _exact_writes = _exact_parking_need_mib(
                                 _exact_kv_bytes,
@@ -24198,9 +24301,10 @@ class LlamaCppBackend:
                                 )
                                 if _exact_setting == _exact.EXACT_AUTO:
                                     _exact_wanted = False
-                        # An auto-fit context leaves the pool unknown, so no budget is sized: the
-                        # server's default is judged after launch off the context it chose. A
-                        # budget guessed here survives every abandoned attempt, parking unlimited.
+                        # An auto-fit context leaves the pool unknown, so the budget named above is
+                        # the unsized figure rather than one measured: it is judged after launch
+                        # off the context the server chose. Never an unlimited budget guessed
+                        # here, which would survive every abandoned attempt.
                         self._exact_pool_unknown = _exact_kv_bytes <= 0
                         # A budget somebody named is kept, and judged: below the state a park
                         # saves the guarantee is gone.
@@ -24235,6 +24339,16 @@ class LlamaCppBackend:
                             "concurrency cannot run with. The load will run without exact "
                             "concurrency, or fail, depending on the setting."
                         )
+
+                # What this launch actually turned on, not what the build could do: a nonzero
+                # budget in force, named just above or by the user, on a build carrying the flag.
+                # A build with --preempt-ram and no budget named parks nothing, so reading the
+                # capability alone would have Studio stand its own preemptor down for nobody.
+                # The property adds the unified cache and the mode; the post-launch read below
+                # judges the argv that actually spawned, which a retry can rewrite.
+                self._server_preempts_kv = _park_owned and not _preempt_ram_disabled_in(
+                    list(cmd) + [str(a) for a in (extra_args or ())], env = os.environ
+                )
 
                 kv_cache_unified = _kv_unified_from_args(cmd)
 
@@ -24271,14 +24385,11 @@ class LlamaCppBackend:
                         bool(server_caps.get("supports_preempt_ram"))
                     )
                     logger.info(
-                        "%s, so the server's own parking is off as well and Studio is the only "
-                        "one pausing chats",
-                        _stand_down_why,
+                        "%s, so the server's own parking is off as well", _stand_down_why
                     )
                     if _parking_overridden:
                         self._record_load_warning(
-                            f"{_stand_down_why} makes Studio the one pausing chats, so the "
-                            "server's own parking is switched off and "
+                            f"{_stand_down_why} switches the server's own parking off, so "
                             + ", ".join(_parking_overridden)
                             + " is overridden. Unset it to have the server park chats instead."
                         )
@@ -26567,7 +26678,8 @@ class LlamaCppBackend:
                 self._swa_full = swa_full
                 self._kv_cache_unified = kv_cache_unified
                 # A `--preempt-ram 0` on the launch line or in the child's environment switches the
-                # server's parking off, and then the build's flag alone is no reason to stand down.
+                # server's parking off, and so does naming no budget at all: judged on the argv
+                # that actually spawned, which the retries can rewrite under the decision above.
                 if _preempt_ram_disabled_in(_last_spawn_cmd or cmd, env = env):
                     self._server_preempts_kv = False
                 # Read off the argv that LAUNCHED and the env it launched with, not the intent: respawns rewrite them.
@@ -26643,7 +26755,10 @@ class LlamaCppBackend:
                             parallel = n_parallel,
                         )
                     else:
-                        _exact_short = (_PREEMPT_RAM_DEFAULT_MIB, 0, 0)
+                        # Named by the launch or by the user; zero only if nothing parks, and
+                        # then `server_preempts_kv` is what reports it.
+                        _named_now = _named_preempt_ram_mib(_last_spawn_cmd or cmd, env)
+                        _exact_short = (_named_now or 0, 0, 0)
                     self._exact_parking_short = _exact_short
                 # The server's own answer, not the launch's intent. See the helper.
                 _server_props = self._query_server_props() or {}

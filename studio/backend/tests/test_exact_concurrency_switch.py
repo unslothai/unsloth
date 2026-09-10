@@ -424,9 +424,10 @@ class TestThePreemptionSnapshotReportsItAndNeverActsOnIt:
 
 class TestTheParkingBudgetHoldsTheWholePool:
     """A park that outgrows --preempt-ram is re-prefilled, and a re-prefill is not byte-identical
-    on CUDA, so an exact launch sizes the budget to the pool when the default would not hold it."""
+    on CUDA, so the launch sizes the budget to the pool. There is no default to fall back on since
+    unslothai/llama.cpp#197: a server told no budget parks nothing at all."""
 
-    def test_a_pool_past_the_default_gets_a_budget_that_holds_it(self):
+    def test_a_pool_past_the_old_default_gets_a_budget_that_holds_it(self):
         from core.inference.llama_cpp import _PREEMPT_RAM_DEFAULT_MIB, _exact_parking_budget_mib
 
         pool = 12 * 1024 * 1024 * 1024
@@ -435,13 +436,16 @@ class TestTheParkingBudgetHoldsTheWholePool:
         assert budget * 1024 * 1024 >= pool
         assert budget > _PREEMPT_RAM_DEFAULT_MIB
 
-    def test_a_pool_the_default_holds_needs_no_flag(self):
-        from core.inference.llama_cpp import _exact_parking_budget_mib
-        assert _exact_parking_budget_mib(2 * 1024 * 1024 * 1024, args = [], env = {}) is None
+    def test_a_pool_the_old_default_would_have_held_is_named_too(self):
+        from core.inference.llama_cpp import _exact_parking_budget_mib, _exact_parking_need_mib
 
-    def test_an_unknown_pool_needs_no_flag(self):
-        from core.inference.llama_cpp import _exact_parking_budget_mib
-        assert _exact_parking_budget_mib(0, args = [], env = {}) is None
+        pool = 2 * 1024 * 1024 * 1024
+        assert _exact_parking_budget_mib(pool, args = [], env = {}) == _exact_parking_need_mib(pool)
+
+    def test_an_unknown_pool_is_named_the_unsized_budget(self):
+        from core.inference.llama_cpp import _PREEMPT_RAM_UNSIZED_MIB, _exact_parking_budget_mib
+
+        assert _exact_parking_budget_mib(0, args = [], env = {}) == _PREEMPT_RAM_UNSIZED_MIB
 
     @pytest.mark.parametrize(
         ("args", "env"),
