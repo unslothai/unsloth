@@ -10262,7 +10262,9 @@ def test_a_pipeline_pick_does_not_quantise_under_offload(fake_runtime, tmp_path,
     backend.unload()
 
 
-def test_an_offloaded_pipeline_replans_against_the_quantised_size(fake_runtime, tmp_path, monkeypatch):
+def test_an_offloaded_pipeline_replans_against_the_quantised_size(
+    fake_runtime, tmp_path, monkeypatch
+):
     """An offloaded bf16 plan is dropped once the quantised size fits resident."""
     from core.inference.diffusion_memory import OFFLOAD_NONE
 
