@@ -52,6 +52,20 @@ EXPECTED = {
     ),
 }
 
+# Keys every leg of a job must carry, stated here rather than derived from the legs: a
+# leg that drops `overlay` renders `${{ matrix.overlay }}` empty and quietly tests the
+# released package, so the list that catches that cannot be computed from the legs.
+# Anything else a job reads (`nonroot`, `wget_only`, `allow_working`, ...) is an optional
+# flag read with a truthiness test.
+REQUIRED_KEYS = {
+    "macos": {"os", "mode", "delivery", "flags", "experimental", "overlay"},
+    "linux": {"label", "image", "runner", "experimental", "overlay"},
+    "windows": {"os", "winget", "experimental", "overlay"},
+    "windows_container_install": {"overlay"},
+    "interrupt": {"os", "label", "marker"},
+    "interrupt-windows": {"label", "marker", "installArgs"},
+}
+
 _SELECTED = re.compile(r"^\$\{\{\s*fromJSON\(needs\.select\.outputs\.([\w-]+)\)\s*\}\}$")
 _MATRIX_KEY = re.compile(r"matrix\.([\w-]+)")
 
@@ -134,17 +148,16 @@ def test_every_leg_has_the_keys_its_job_reads(name):
     for jid in jobs:
         job = doc["jobs"][jid]
         read = set(_MATRIX_KEY.findall(json.dumps(job)))
-        # Keys every leg of the job declares; the rest are read as optional flags.
+        required = REQUIRED_KEYS[jid]
+        assert required <= read, f"{name}:{jid} never reads {sorted(required - read)}"
         declared = [set(leg) - {"pr"} for leg in legs[_key(jid)]]
-        common = set.intersection(*declared)
-        required = {k for k in read if k in common}
         for leg in legs[_key(jid)]:
             assert "pr" in leg and isinstance(
                 leg["pr"], bool
             ), f"{matrix_file}:{jid}: {leg} has no bool `pr`"
             missing = required - set(leg)
             assert not missing, f"{matrix_file}:{jid}: {leg} lacks {sorted(missing)}"
-        unknown = read - common - {k for leg in declared for k in leg}
+        unknown = read - {k for leg in declared for k in leg}
         assert not unknown, f"{name}:{jid} reads matrix keys no leg declares: {sorted(unknown)}"
 
 

@@ -20,6 +20,8 @@ on:
       - 'studio/frontend/**'
       - 'studio/setup.ps1'
       - 'studio/install_*.py'
+      # install_node_prebuilt.py trusts the archives pinned here (setup.sh:1243).
+      - 'studio/node_prebuilt_pins.json'
       - 'studio/prebuilt_core.py'
       - 'studio/install_manifest.py'
       - 'unsloth_cli/**'
