@@ -9953,24 +9953,25 @@ def _launch_vision_mmproj(
     llama_extra_args: Optional[list[str]] = None,
     disable_vision: bool = False,
 ) -> Optional[str]:
-    """The vision projector this launch really opens, or None.
+    """The projector this launch really opens, or None.
 
     What ``_batch_ubatch_for_mmproj`` needs so a panel and the admission guard price
-    the micro-batch the child runs at. Vision off drops it: the loader keeps only an
-    audio-only projector past the switch, and that one produces no image tokens. An
-    inherited ``LLAMA_ARG_MMPROJ(_URL)`` counts even under ``--no-mmproj``, which
-    empties the command line without clearing ``mmproj.path``.
+    the micro-batch the child runs at, resolved exactly as ``load_model`` resolves it:
+    the configured projector only when it is on disk and matches the family, the switch
+    and ``--no-mmproj`` suppressing that one and the switch scrubbing the environment
+    pair, and a pass-through ``--mmproj`` or an inherited variable surviving both.
     """
     from core.inference.llama_cpp import _child_effective_mmproj, extra_args_disable_mmproj
 
-    if not getattr(config, "is_vision", False) or disable_vision:
-        return None
-    own = (
-        None
-        if extra_args_disable_mmproj(llama_extra_args)
-        else (getattr(config, "gguf_mmproj_file", None))
-    )
-    return _child_effective_mmproj(str(own) if own else None, llama_extra_args)
+    own = getattr(config, "gguf_mmproj_file", None)
+    emitted = None
+    if own and getattr(config, "is_vision", False) and not disable_vision:
+        if not extra_args_disable_mmproj(llama_extra_args):
+            emitted = _probe_backend()._resolve_launch_mmproj_path(
+                model_path = str(getattr(config, "gguf_file", "") or ""),
+                mmproj_path = str(own),
+            )
+    return _child_effective_mmproj(emitted, llama_extra_args, {} if disable_vision else None)
 
 
 def _remote_opens_vision_mmproj(
@@ -9991,14 +9992,16 @@ def _remote_opens_vision_mmproj(
         extra_args_disable_mmproj,
     )
 
-    if not getattr(config, "is_vision", False) or disable_vision:
-        return False
-    # --no-mmproj suppresses only the repo's own projector; an inherited one still
-    # opens, exactly as it does once the files are local, and a local one can be
-    # classified from disk instead of assumed.
-    if not extra_args_disable_mmproj(llama_extra_args):
-        return True
-    return _mmproj_opens_images(_child_effective_mmproj(None, llama_extra_args))
+    # A pass-through or inherited projector is on this disk (or is a URL), so it
+    # answers for itself and outranks the repo's own, exactly as at launch.
+    override = _child_effective_mmproj(None, llama_extra_args, {} if disable_vision else None)
+    if override:
+        return _mmproj_opens_images(override)
+    return (
+        bool(getattr(config, "is_vision", False))
+        and not disable_vision
+        and not extra_args_disable_mmproj(llama_extra_args)
+    )
 
 
 def _gguf_runtime_bytes(

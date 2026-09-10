@@ -5723,26 +5723,26 @@ def _extra_args_n_parallel(
     return found
 
 
-def _extra_args_n_ubatch(
+def _named_batch_sizes(
     extra_args: Optional[Iterable[str]],
     env: Optional[Mapping[str, str]] = None,
-    n_ctx: Optional[int] = None,
-    *,
     n_batch: Optional[int] = None,
     n_ubatch: Optional[int] = None,
-) -> Optional[int]:
-    """Effective ubatch after llama.cpp normalizes it, or None at defaults.
+) -> tuple[int, int, bool, bool]:
+    """``(batch, ubatch, batch_named, ubatch_named)`` for the launch these describe.
 
     Precedence mirrors the launched command line: env, then the first-class
     n_batch / n_ubatch fields (emitted as flags, so they beat env), then user
-    extra_args (appended last, so they last-wins-override the emitted flags).
+    extra_args (appended last, so they last-wins-override the emitted flags). The two
+    ``named`` flags say whether anything at all set that half, which is what separates
+    a size the user chose from the llama.cpp default.
     """
     values = {
         "batch": _DEFAULT_LLAMA_N_BATCH,
         "ubatch": _DEFAULT_LLAMA_N_UBATCH,
     }
+    named = {"batch": False, "ubatch": False}
     source_env = os.environ if env is None else env
-    overridden = False
     for key, env_name in (
         ("batch", "LLAMA_ARG_BATCH"),
         ("ubatch", "LLAMA_ARG_UBATCH"),
@@ -5751,16 +5751,16 @@ def _extra_args_n_ubatch(
         if raw:
             try:
                 values[key] = int(raw)
-                overridden = True
+                named[key] = True
             except (TypeError, ValueError):
                 pass
 
     if n_batch is not None:
         values["batch"] = int(n_batch)
-        overridden = True
+        named["batch"] = True
     if n_ubatch is not None:
         values["ubatch"] = int(n_ubatch)
-        overridden = True
+        named["ubatch"] = True
 
     args = [str(a) for a in extra_args] if extra_args else []
     flags = {
@@ -5778,10 +5778,26 @@ def _extra_args_n_ubatch(
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
         try:
             values[key] = int(value)
-            overridden = True
+            named[key] = True
         except (TypeError, ValueError):
             continue
-    if not overridden:
+    return values["batch"], values["ubatch"], named["batch"], named["ubatch"]
+
+
+def _extra_args_n_ubatch(
+    extra_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
+    n_ctx: Optional[int] = None,
+    *,
+    n_batch: Optional[int] = None,
+    n_ubatch: Optional[int] = None,
+) -> Optional[int]:
+    """Effective ubatch after llama.cpp normalizes it, or None at defaults."""
+    _batch, _ubatch, _batch_named, _ubatch_named = _named_batch_sizes(
+        extra_args, env, n_batch, n_ubatch
+    )
+    values = {"batch": _batch, "ubatch": _ubatch}
+    if not (_batch_named or _ubatch_named):
         return None
 
     # common_params stores signed values, then llama_context_params converts
@@ -5846,24 +5862,32 @@ def _batch_ubatch_for_mmproj(
     n_batch: Optional[int],
     n_ubatch: Optional[int],
     extra_args: Optional[Iterable[str]],
+    env: Optional[Mapping[str, str]] = None,
 ) -> tuple[Optional[int], Optional[int]]:
     """Raise the default batch/ubatch for a launch that opens an image projector.
 
-    See ``_MMPROJ_DEFAULT_N_BATCH_UBATCH`` for why the pair has to be equal. Keyed on
-    the projector the child will really open, not the one the request named: a
-    suppressed, missing or family-mismatched file launches a text-only server, which
+    See ``_MMPROJ_DEFAULT_N_BATCH_UBATCH`` for why the chunk has to fit the ubatch.
+    Keyed on the projector the child will really open, not the one the request named:
+    a suppressed, missing or family-mismatched file launches a text-only server, which
     must not pay the bigger compute buffer, while an inherited one launches a vision
-    server nothing in the request mentions. Only when the caller named neither size and
-    nothing else already sets one: an env var or an extra_arg is the user sizing the
-    child, and this must not undo it.
+    server nothing in the request mentions.
+
+    The micro-batch is the half that aborts, so it is the half this raises, and only
+    while nobody has named one. A named BATCH is respected and caps the raise instead,
+    since it also caps the chunk mtmd cuts: at ``-b 256`` the chunk is 256 and the
+    default 512 already holds it.
     """
     if not opens_vision_mmproj:
         return n_batch, n_ubatch
-    if n_batch is not None or n_ubatch is not None:
+    batch, ubatch, batch_named, ubatch_named = _named_batch_sizes(
+        extra_args, env, n_batch, n_ubatch
+    )
+    if ubatch_named:
         return n_batch, n_ubatch
-    if _extra_args_n_ubatch(extra_args) is not None:
+    target = min(_MMPROJ_DEFAULT_N_BATCH_UBATCH, batch)
+    if target <= ubatch:
         return n_batch, n_ubatch
-    return _MMPROJ_DEFAULT_N_BATCH_UBATCH, _MMPROJ_DEFAULT_N_BATCH_UBATCH
+    return (n_batch if batch_named else _MMPROJ_DEFAULT_N_BATCH_UBATCH), target
 
 
 def _build_ngram_mod_flags(
@@ -20000,17 +20024,22 @@ class LlamaCppBackend:
             # must price the micro-batch the child will actually launch with. Resolved
             # as the launch block resolves it, so a suppressed or family-mismatched
             # file leaves the text-only server it produces at the llama.cpp defaults.
-            _fit_vision_mmproj = None
-            if is_vision and not disable_vision:
-                _fit_vision_mmproj = _child_effective_mmproj(
-                    None
-                    if extra_args_disable_mmproj(extra_args)
-                    else self._resolve_launch_mmproj_path(
-                        model_path = model_path,
-                        mmproj_path = mmproj_path,
-                    ),
-                    extra_args,
+            _fit_emitted_mmproj = (
+                None
+                if (disable_vision or not is_vision or extra_args_disable_mmproj(extra_args))
+                else self._resolve_launch_mmproj_path(
+                    model_path = model_path,
+                    mmproj_path = mmproj_path,
                 )
+            )
+            # The switch suppresses Unsloth's own projector and scrubs the env pair, but
+            # a pass-through --mmproj is still appended to the command line, so it can
+            # open an image tower on a load that reports vision off.
+            _fit_vision_mmproj = _child_effective_mmproj(
+                _fit_emitted_mmproj,
+                extra_args,
+                {} if disable_vision else None,
+            )
             n_batch, n_ubatch = _batch_ubatch_for_mmproj(
                 _mmproj_opens_images(_fit_vision_mmproj),
                 n_batch,
