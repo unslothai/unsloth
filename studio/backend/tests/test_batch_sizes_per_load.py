@@ -351,7 +351,16 @@ def test_guard_floors_a_header_with_no_dimensions_at_all():
 
     from routes import inference as route
 
-    blind = dict(_QWEN3_8B, vocab_size = None, embedding_length = None, kv_lora_rank = 512)
+    # The latent cache keeps the KV term alive; it is keyed on both MLA head lengths
+    # (llama-hparams.cpp:llama_hparams::is_mla), not on the LoRA rank.
+    blind = dict(
+        _QWEN3_8B,
+        vocab_size = None,
+        embedding_length = None,
+        kv_lora_rank = 512,
+        key_length_mla = 192,
+        value_length_mla = 128,
+    )
     reserve_gb = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB / 1024
     with patch.object(LlamaCppBackend, "_read_gguf_metadata", _header_reader(**blind)):
         one = route._estimate_gguf_kv_gb("/x.gguf", 8192, n_parallel = 1)

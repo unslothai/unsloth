@@ -31,6 +31,11 @@ from core.inference.llama_cpp import _linux_math_core_count
 import core.inference.llama_cpp as llama_mod
 import inspect
 import sys
+from pathlib import Path
+
+_TESTS_DIR = str(Path(__file__).resolve().parent)
+if _TESTS_DIR not in sys.path:
+    sys.path.insert(0, _TESTS_DIR)
 
 
 class _SmtHost:
@@ -1593,7 +1598,7 @@ def test_the_vector_refuses_a_cache_the_estimator_prices_on_another_path():
     a window-shaped vector is a different model of the cache, so it must answer []
     and let the planner abstain.
 
-    Not hypothetical for path 1: dots3note reads KV_LORA_RANK and
+    Not hypothetical for path 1: dots3note reads the MLA head lengths and
     ATTENTION_SLIDING_WINDOW(_PATTERN) in the same loader. Path 2 is the
     recurrent-hybrid hole -- the abstain is `uneven_cache and not weights`, so a
     hybrid that ever produced a vector would walk past it and the device loop
@@ -1603,6 +1608,8 @@ def test_the_vector_refuses_a_cache_the_estimator_prices_on_another_path():
 
     mla = _swa_backend()
     mla._kv_lora_rank = 512
+    mla._key_length_mla = 192
+    mla._value_length_mla = 128
     assert mla._kv_layer_weights(131072) == []
 
     hybrid = _swa_backend()
@@ -3007,3 +3014,257 @@ def test_a_model_with_no_per_layer_embeddings_is_unaffected(monkeypatch):
     """Every non-PLE model plans exactly as it did: no bucket, nothing to excuse."""
     assert _ple_lazily(monkeypatch, _Stub()) is False
     assert _ple_lazily(monkeypatch, _ple_stub(ple_bytes = 0)) is False
+
+
+def _deepseek_backend(**extra):
+    """unsloth/DeepSeek-R1-GGUF's metadata as _load_gguf_metadata populates it."""
+    b = LlamaCppBackend.__new__(LlamaCppBackend)
+    b._n_layers = 61
+    b._n_kv_heads = 128
+    b._n_heads = 128
+    b._embedding_length = 7168
+    b._kv_key_length = 192
+    b._kv_value_length = 128
+    b._kv_key_length_swa = None
+    b._kv_value_length_swa = None
+    b._sliding_window = None
+    b._sliding_window_pattern = None
+    b._n_kv_heads_by_layer = None
+    b._shared_kv_layers = None
+    b._nextn_predict_layers = None
+    b._architecture = "deepseek2"
+    b._kv_lora_rank = 512
+    b._key_length_mla = None
+    b._value_length_mla = None
+    b._ssm_inner_size = None
+    b._ssm_state_size = None
+    b._ssm_group_count = None
+    b._ssm_conv_kernel = None
+    b._kda_head_dim = None
+    b._full_attention_interval = None
+    for key, value in extra.items():
+        setattr(b, key, value)
+    return b
+
+
+def test_the_lora_rank_alone_does_not_take_the_latent_path():
+    """llama_hparams::is_mla (llama-hparams.cpp) needs BOTH MLA head lengths, and
+    deepseek2.cpp reads them optionally. DeepSeek-R1 / V3-0324 carry the rank alone
+    with head_count_kv 128, so llama.cpp allocates the full per-head K+V cache and
+    path 1's K-only latent under-books it by 40% at every context."""
+    plain = _deepseek_backend()
+    full = plain._estimate_kv_cache_bytes(
+        8192, "f16", n_parallel = 1, kv_unified = False, flash_attn = False
+    )
+    # Path 4, 128 heads of K and of V over 61 layers: what llama-server allocates.
+    assert full == 39040 * MIB
+
+    latent = _deepseek_backend(_key_length_mla = 192, _value_length_mla = 128)
+    assert (
+        latent._estimate_kv_cache_bytes(
+            8192, "f16", n_parallel = 1, kv_unified = False, flash_attn = False
+        )
+        == 23424 * MIB
+    )
+
+    # One of the two alone is not is_mla(), so it must not flip the path either.
+    half = _deepseek_backend(_key_length_mla = 192)
+    assert (
+        half._estimate_kv_cache_bytes(8192, "f16", n_parallel = 1, kv_unified = False, flash_attn = False)
+        == full
+    )
+
+
+def _qwen3next_backend(**extra):
+    """unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF: hybrid, and no interval key."""
+    b = LlamaCppBackend.__new__(LlamaCppBackend)
+    b._architecture = "qwen3next"
+    b._n_layers = 48
+    b._n_kv_heads = 2
+    b._n_heads = 16
+    b._embedding_length = 2048
+    b._kv_key_length = 256
+    b._kv_value_length = 256
+    b._kv_key_length_swa = None
+    b._kv_value_length_swa = None
+    b._sliding_window = None
+    b._sliding_window_pattern = None
+    b._n_kv_heads_by_layer = None
+    b._recurrent_layers = None
+    b._feed_forward_length_by_layer = None
+    b._shared_kv_layers = None
+    b._nextn_predict_layers = None
+    b._kv_lora_rank = None
+    b._key_length_mla = None
+    b._value_length_mla = None
+    b._kda_head_dim = None
+    b._ssm_inner_size = 4096
+    b._ssm_state_size = 128
+    b._ssm_group_count = 16
+    b._ssm_conv_kernel = 4
+    b._full_attention_interval = None
+    for key, value in extra.items():
+        setattr(b, key, value)
+    return b
+
+
+def test_a_hybrid_without_the_interval_key_is_still_a_hybrid_to_the_estimator():
+    """llama.cpp does not need the key: models/qwen3next.cpp falls back to the
+    ARCHITECTURE's own default, and nemotron-h.cpp / falcon-h1.cpp derive the mask
+    from the head counts. Reading its absence as "not a hybrid" charged Qwen3-Next-80B
+    an attention cache on all 48 rows instead of 12 and priced the recurrent state at
+    0 -- +187%, an over-count hiding an under-count, and the layout read the same file
+    exactly. Both readers now take one derivation, so they cannot disagree."""
+    from test_offload_planner import (
+        _StubReader,
+        _StubTensor,
+        _layout_from_reader,
+        _qwen3next_fields,
+    )
+
+    b = _qwen3next_backend()
+    total = b._estimate_kv_cache_bytes(
+        8192, "f16", n_parallel = 1, kv_unified = False, flash_attn = False
+    )
+    # 12 attention layers of 2 heads x (256 + 256) f16, plus 36 rows of Mamba state.
+    assert total == 12 * 8192 * 2 * (256 + 256) * 2 + 36 * (24576 + 524288) * 4
+    assert b._mamba_recurrent_state_bytes(1) == 36 * (24576 + 524288) * 4
+
+    layout = _layout_from_reader(
+        _StubReader(
+            _qwen3next_fields(**{"qwen3next.attention.head_count": 16}),
+            [_StubTensor(f"blk.{i}.attn_q.weight", MIB) for i in range(48)],
+        )
+    )
+    assert layout.n_attention_layers == 12
+    assert total == layout.kv_bytes(8192) + layout.recurrent_bytes
+
+    # Spelling the key out changes nothing.
+    spelled = _qwen3next_backend(_full_attention_interval = 4)
+    assert (
+        spelled._estimate_kv_cache_bytes(
+            8192, "f16", n_parallel = 1, kv_unified = False, flash_attn = False
+        )
+        == total
+    )
+
+
+def test_the_hybrid_attention_count_divides_the_way_llama_cpp_does():
+    """llama.cpp marks row il attention iff (il + 1) % full_attention_interval == 0
+    over il < n_layer() (models/qwen3next.cpp, and the identical loop in qwen35,
+    qwen35moe and qwen4exp), which is FLOOR division. Both readers used ceiling, so a
+    30-layer hybrid at interval 4 was charged 8 attention layers where llama.cpp
+    allocates 7 -- +14%, and one recurrent state too few. Every hybrid shipped so far
+    has a layer count divisible by 4, which is the only reason it never showed up as a
+    byte; the arithmetic is still wrong until it does."""
+    from test_offload_planner import (
+        _StubReader,
+        _StubTensor,
+        _layout_from_reader,
+        _qwen3next_fields,
+    )
+
+    b = _qwen3next_backend(_n_layers = 30)
+    total = b._estimate_kv_cache_bytes(
+        8192, "f16", n_parallel = 1, kv_unified = False, flash_attn = False
+    )
+    assert total == 7 * 8192 * 2 * (256 + 256) * 2 + 23 * (24576 + 524288) * 4
+
+    layout = _layout_from_reader(
+        _StubReader(
+            _qwen3next_fields(
+                **{"qwen3next.block_count": 30, "qwen3next.attention.head_count": 16}
+            ),
+            [_StubTensor(f"blk.{i}.attn_q.weight", MIB) for i in range(30)],
+        )
+    )
+    assert layout.n_attention_layers == 7
+    assert total == layout.kv_bytes(8192) + layout.recurrent_bytes
+
+
+_QWEN4EXP_FIELDS = {
+    "general.architecture": "qwen4exp",
+    "qwen4exp.block_count": 48,
+    "qwen4exp.attention.head_count_kv": 2,
+    "qwen4exp.attention.head_count": 24,
+    "qwen4exp.embedding_length": 2560,
+    "qwen4exp.attention.key_length": 256,
+    "qwen4exp.attention.value_length": 256,
+    "qwen4exp.attention.indexer.key_length": 128,
+    "qwen4exp.full_attention_interval": 4,
+    "qwen4exp.ssm.inner_size": 6144,
+    "qwen4exp.ssm.state_size": 128,
+    "qwen4exp.ssm.group_count": 16,
+    "qwen4exp.ssm.conv_kernel": 4,
+    "qwen4exp.hyper_connection.count": 4,
+    "qwen4exp.ple.layers": [1],
+    "qwen4exp.ple.ngram_size": 3,
+    "qwen4exp.ple.conv_kernel": 4,
+    "qwen4exp.expert_count": 512,
+    "qwen4exp.expert_used_count": 10,
+    "qwen4exp.context_length": 262144,
+}
+
+
+def _qwen4exp_backend(**extra):
+    """unsloth/Qwen3.8-Flash-Next-GGUF: hybrid plus a lightning-indexer cache."""
+    b = _qwen3next_backend(
+        _architecture = "qwen4exp",
+        _n_heads = 24,
+        _embedding_length = 2560,
+        _ssm_inner_size = 6144,
+        _full_attention_interval = 4,
+    )
+    b._indexer_key_length = 128
+    b._hyper_connection_count = 4
+    b._ple_layers = [1]
+    b._ple_ngram_size = 3
+    b._ple_conv_kernel = 4
+    for key, value in extra.items():
+        setattr(b, key, value)
+    return b
+
+
+@pytest.mark.parametrize("n_ctx,before_mib,after_mib", [(8192, 304, 377), (65536, 1648, 2225)])
+def test_the_indexer_cache_is_charged_on_the_architecture_that_builds_one(
+    n_ctx, before_mib, after_mib
+):
+    """llama-model.cpp:create_memory routes qwen4exp to llama_memory_hybrid_idx, which
+    allocates a THIRD cache over the dense-attention rows: one head of
+    attention.indexer.key_length for K and one of attention.value_length for V, at the
+    full context (llama-memory-hybrid-idx.cpp fills n_head_kv_arr with 1 and overrides
+    n_embd_head_k_full, leaving n_embd_head_v alone). Neither reader knew the key
+    existed, so Qwen3.8-Flash-Next was 19% short at 8k and 26% short at 64k -- an
+    under-count, which loses the load. The PLE conv history is a row of the recurrent
+    cache in its own right (llama-memory-recurrent.cpp allocates cache_ple_r_l,
+    llama-hparams.cpp:ple_conv_state sizes it) and was missing too."""
+    from test_offload_planner import _StubReader, _StubTensor, _layout_from_reader
+
+    b = _qwen4exp_backend()
+    total = b._estimate_kv_cache_bytes(
+        n_ctx, "f16", n_parallel = 1, kv_unified = False, flash_attn = False
+    )
+    attention = 12 * n_ctx * 2 * (256 + 256) * 2
+    indexer = 12 * n_ctx * (128 + 256) * 2
+    mamba = 36 * (30720 + 786432) * 4
+    ple = 1 * (3 * 3 * 4 * 2560) * 4
+    assert total == attention + indexer + mamba + ple
+    assert round(total / MIB) == after_mib
+    assert round((total - indexer - ple) / MIB) == before_mib
+
+    layout = _layout_from_reader(
+        _StubReader(
+            _QWEN4EXP_FIELDS,
+            [_StubTensor(f"blk.{i}.attn_q.weight", MIB) for i in range(48)],
+        )
+    )
+    assert total == layout.kv_bytes(n_ctx) + layout.recurrent_bytes
+
+    # Only that architecture: the same shape under any other arch keeps two caches.
+    plain = _qwen4exp_backend(_architecture = "qwen3next")
+    assert (
+        plain._estimate_kv_cache_bytes(
+            n_ctx, "f16", n_parallel = 1, kv_unified = False, flash_attn = False
+        )
+        == total - indexer
+    )
