@@ -360,6 +360,38 @@ def test_the_offline_fast_path_never_wipes_a_sidecar():
     assert "if ($script:OfflineFastPath) { return }" in repair[:600]
 
 
+def test_uv_offline_without_the_fast_path_still_keeps_an_existing_sidecar():
+    """UV_OFFLINE with the core not verified (or PyPI still answering) takes the ordinary
+    path, whose sidecar rebuild is a wipe followed by four fetches from a cache that may
+    be cold. Both shells defer an EXISTING stale tier under the offline request itself,
+    ahead of the fast-path guard, and leave an absent tier to be built from the cache."""
+    sh = SETUP_SH.read_text(encoding = "utf-8")
+    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    offline_sh = sh.index('if [ "${_OFFLINE_FAST_PATH:-false}" != true ] && _uv_offline_requested; then')
+    assert (
+        sh.index('_sidecar_current "$VENV_T5_510_DIR"')
+        < offline_sh
+        < sh.index('if [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then')
+    )
+    block_sh = sh[offline_sh : offline_sh + 900]
+    assert '&& [ -d "$3" ]; then' in block_sh
+    assert 'eval "_NEED_T5_$1=false"' in block_sh and 'eval "_DEFER_T5_$1=true"' in block_sh
+    offline_ps1 = ps1.index("if (-not $script:OfflineFastPath -and (Test-UvOfflineRequested)) {")
+    assert (
+        ps1.index("Test-SidecarCurrent -TargetDir $VenvT5_510Dir")
+        < offline_ps1
+        < ps1.index("if ($script:OfflineFastPath) {\n    foreach ($tier in")
+    )
+    block_ps1 = ps1[offline_ps1 : offline_ps1 + 1100]
+    assert "Test-Path -LiteralPath $tier[2] -PathType Container" in block_ps1
+    assert "Set-Variable -Name $flag -Value $false" in block_ps1
+    # The tiktoken top-up stays home under the offline request too.
+    top_up = sh[sh.index("_sidecar_top_up_tiktoken() {") :]
+    assert "_uv_offline_requested && return 0" in top_up[:900]
+    repair = ps1[ps1.index("function Repair-SidecarTiktoken {") :]
+    assert "if (Test-UvOfflineRequested) { return }" in repair[:900]
+
+
 def test_the_ps1_offline_flag_is_initialised_before_its_unconditional_reads():
     """Only the offline keep assigns the flag, and the sidecar block reads it on every
     update. Under a caller's Set-StrictMode an unassigned script variable is a

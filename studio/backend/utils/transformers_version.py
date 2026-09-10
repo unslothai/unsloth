@@ -2814,11 +2814,25 @@ _UV_OFFLINE_TRUE_VALUES = _OFFLINE_TRUE_VALUES | {"t", "y"}
 
 
 def _pip_is_configured_offline() -> bool:
-    """pip told to ignore the index and read a local wheelhouse (`--no-index` with
-    `--find-links`, through the environment pip reads them from)."""
+    """pip told to ignore the index and read a LOCAL wheelhouse: `--no-index` with
+    `--find-links` naming only local directories or file:// URLs, through the
+    environment pip reads them from. --find-links takes URLs too, and one of those
+    would be fetched under UV_OFFLINE."""
     no_index = os.environ.get("PIP_NO_INDEX", "").strip().lower() in _OFFLINE_TRUE_VALUES
-    links = os.environ.get("PIP_FIND_LINKS", "").strip()
-    return no_index and bool(links)
+    if not no_index:
+        return False
+    entries = os.environ.get("PIP_FIND_LINKS", "").split()
+    if not entries:
+        return False
+    for entry in entries:
+        lowered = entry.lower()
+        if lowered.startswith("file://"):
+            continue
+        if "://" in lowered:
+            return False
+        if not os.path.exists(entry):
+            return False
+    return True
 
 
 def _runtime_repair_is_offline() -> bool:
@@ -2938,11 +2952,19 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
     # in the window between that check and its cleanup, could delete it. Under the
     # lock the second one waits and, if the first finished, takes the tree as it is.
     with _file_lock(venv_dir.rstrip("/\\") + _REBUILD_LOCK_SUFFIX, _REBUILD_WAIT_SECONDS) as held:
-        if held and _venv_dir_is_valid_and_undamaged(venv_dir, packages):
+        if not held:
+            # Another process is still building it (or the lock cannot be taken at
+            # all): a rebuild now would be the unserialised one the lock exists to
+            # prevent. Deferred; this activation goes without the sidecar and the
+            # next one asks again.
+            logger.warning(
+                "%s: the rebuild lock was not obtained; leaving the repair to the process holding it",
+                venv_dir,
+            )
+            return False
+        if _venv_dir_is_valid_and_undamaged(venv_dir, packages):
             logger.info("%s at %s was completed by another process", label, venv_dir)
             return _top_up_optional_packages(venv_dir, packages)
-        if not held:
-            logger.warning("%s: the rebuild lock was not obtained; rebuilding unguarded", venv_dir)
         return _rebuild_venv_dir(venv_dir, packages, label)
 
 

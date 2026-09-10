@@ -2280,6 +2280,8 @@ _sidecar_top_up_tiktoken() {
     # fallback, and for a tier whose rebuild was deferred it would create a directory
     # holding tiktoken alone.
     [ "${_OFFLINE_FAST_PATH:-false}" = true ] && return 0
+    # And under UV_OFFLINE without the fast path: the pip fallback would reach for the network.
+    _uv_offline_requested && return 0
     # The payload AND a complete dist-info (RECORD is written last), as
     # Repair-SidecarTiktoken and the runtime's _optional_package_absent check: an
     # interrupted install can leave the dist-info with no package beside it, or METADATA
@@ -2463,6 +2465,22 @@ _sidecar_current "$VENV_T5_510_DIR" "5.10.2" || _NEED_T5_510=true
 _DEFER_T5_530=false
 _DEFER_T5_550=false
 _DEFER_T5_510=false
+# UV_OFFLINE without the fast path (the core was not verified, or PyPI still answered):
+# the same wipe followed by four fetches for a sidecar that exists, from a cache that
+# may be cold, with the pip fallback reaching for the network the caller declared
+# absent. An existing stale tier is left for the next online update; an absent tier
+# has nothing to lose and is built from the cache if the cache can.
+if [ "${_OFFLINE_FAST_PATH:-false}" != true ] && _uv_offline_requested; then
+    for _ofp in "530 5.3.0 $VENV_T5_530_DIR" "550 5.5.0 $VENV_T5_550_DIR" "510 5.10.2 $VENV_T5_510_DIR"; do
+        set -- $_ofp
+        if eval "[ \"\$_NEED_T5_$1\" = true ]" && [ -d "$3" ]; then
+            substep "transformers $2 sidecar is stale but UV_OFFLINE is set -- left for the next online update"
+            eval "_NEED_T5_$1=false"
+            eval "_DEFER_T5_$1=true"
+        fi
+    done
+    unset _ofp
+fi
 if [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then
     for _ofp in "530 5.3.0" "550 5.5.0" "510 5.10.2"; do
         set -- $_ofp

@@ -808,6 +808,19 @@ def test_a_rebuild_takes_the_tiers_lock_and_keeps_a_tree_finished_under_it(tmp_p
     monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: False)
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
     assert installed == list(tv._VENV_T5_550_PACKAGES)
+    # The lock not obtained (another process past the bound, or a lock that cannot be
+    # taken): no unguarded rebuild, the repair is deferred and this activation goes
+    # without the sidecar.
+    installed.clear()
+    (root / "half").write_text("", encoding = "utf-8")
+
+    @contextlib.contextmanager
+    def not_held(path, wait):
+        yield False
+
+    monkeypatch.setattr(tv, "_file_lock", not_held)
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is False
+    assert installed == [] and (root / "half").is_file()
 
 
 def test_a_wheelhouse_pip_is_allowed_offline(tmp_path, monkeypatch):
@@ -829,6 +842,13 @@ def test_a_wheelhouse_pip_is_allowed_offline(tmp_path, monkeypatch):
     assert tv._pip_is_configured_offline() is False
     monkeypatch.setenv("PIP_FIND_LINKS", str(tmp_path))
     assert tv._pip_is_configured_offline() is True
+    monkeypatch.setenv("PIP_FIND_LINKS", f"{tmp_path} file://{tmp_path}")
+    assert tv._pip_is_configured_offline() is True
+    # --find-links takes URLs too, and one of those is the network.
+    monkeypatch.setenv("PIP_FIND_LINKS", f"{tmp_path} https://wheels.example/simple")
+    assert tv._pip_is_configured_offline() is False
+    monkeypatch.setenv("PIP_FIND_LINKS", str(tmp_path / "missing"))
+    assert tv._pip_is_configured_offline() is False
     source = open(tv.__file__, encoding = "utf-8").read()
     assert "if _runtime_repair_is_offline() and not _pip_is_configured_offline():" in source
 

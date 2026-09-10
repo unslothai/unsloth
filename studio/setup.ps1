@@ -6041,6 +6041,8 @@ function Repair-SidecarTiktoken {
     # fallback, and for a tier whose rebuild was deferred it would create a directory
     # holding tiktoken alone.
     if ($script:OfflineFastPath) { return }
+    # And under UV_OFFLINE without the fast path: the pip fallback would reach for the network.
+    if (Test-UvOfflineRequested) { return }
     # The payload AND a complete dist-info (RECORD is written last), as
     # _sidecar_top_up_tiktoken and the runtime's _optional_package_absent check: an
     # interrupted install can leave the dist-info with no package beside it, or METADATA
@@ -6220,6 +6222,21 @@ if (-not (Test-SidecarCurrent -TargetDir $VenvT5_510Dir -Version "5.10.2")) { $_
 $_DeferT5_530 = $false
 $_DeferT5_550 = $false
 $_DeferT5_510 = $false
+# UV_OFFLINE without the fast path (the core was not verified, or PyPI still answered):
+# the same wipe followed by four fetches for a sidecar that exists, from a cache that
+# may be cold, with the pip fallback reaching for the network the caller declared
+# absent. An existing stale tier is left for the next online update; an absent tier
+# has nothing to lose and is built from the cache if the cache can.
+if (-not $script:OfflineFastPath -and (Test-UvOfflineRequested)) {
+    foreach ($tier in @(@("530", "5.3.0", $VenvT5_530Dir), @("550", "5.5.0", $VenvT5_550Dir), @("510", "5.10.2", $VenvT5_510Dir))) {
+        $flag = "_NeedT5_$($tier[0])"
+        if ((Get-Variable -Name $flag -ValueOnly) -and (Test-Path -LiteralPath $tier[2] -PathType Container)) {
+            substep "transformers $($tier[1]) sidecar is stale but UV_OFFLINE is set -- left for the next online update" "Yellow"
+            Set-Variable -Name $flag -Value $false
+            Set-Variable -Name "_DeferT5_$($tier[0])" -Value $true
+        }
+    }
+}
 if ($script:OfflineFastPath) {
     foreach ($tier in @(@("530", "5.3.0"), @("550", "5.5.0"), @("510", "5.10.2"))) {
         $flag = "_NeedT5_$($tier[0])"
