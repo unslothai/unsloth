@@ -50,6 +50,20 @@ export function hostRunsDenseQuant(host: HostClass): boolean {
 /** Auto selects FP8 or INT8 according to backend capability. */
 export const DENSE_QUANT_PRECISION_CHIP = "FP8 / INT8";
 
+/** The transformer precision the page will request for the next load. `undefined` means the caller
+ *  has no control to report, in which case the row describes the default (auto) request. */
+export type RequestedPrecision = string | null | undefined;
+
+/** The runtime-precision chip for a dense-quant row under `precision`, or null when the load will
+ *  run the checkpoint as-is. A row that promises a precision the request cannot produce sends the
+ *  user to the wrong row, which is exactly what the label is here to prevent. */
+export function denseQuantPrecisionChip(precision: RequestedPrecision): string | null {
+  const value = (precision ?? "auto").trim().toLowerCase();
+  if (value === "" || value === "auto") return DENSE_QUANT_PRECISION_CHIP;
+  if (value === "none" || value === "off") return null;
+  return value.toUpperCase();
+}
+
 /** The H3 group, whose two rows differ by roughly 10x in throughput. */
 const H3_PIPELINE_ID = "minimaxai/minimax-h3";
 

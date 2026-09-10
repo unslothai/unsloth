@@ -1742,3 +1742,40 @@ def test_the_ideogram_fp8_loader_stamps_what_it_widened():
 
     source = pathlib.Path(ideo.__file__).read_text(encoding = "utf-8")
     assert 'mark_source_precision(model, "fp8")' in source
+
+
+# Advertised host capability.
+
+
+def _capable_host(monkeypatch, *, torchao_reason = None):
+    """A CUDA host past the arch floor, with torchao's import verdict pinned."""
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(tq, "_capability", lambda: (9, 0))
+    monkeypatch.setattr(tq, "_TORCHAO_UNAVAILABLE", (torchao_reason,))
+
+
+def test_a_capable_host_advertises_dense_quant(monkeypatch):
+    _capable_host(monkeypatch)
+    assert tq.dense_quant_host_capable(_target()) is True
+
+
+def test_a_host_whose_torchao_cannot_import_advertises_nothing(monkeypatch):
+    """An unimportable torchao makes every scheme decline, so the capability must be false.
+
+    dense_transformer_supported only catches the Windows-ROCm stub, and _capability reads the
+    card; without this the picker would label rows Fast while every load fell back to bf16.
+    """
+    _capable_host(monkeypatch, torchao_reason = "ImportError: cannot import name 'ScalingType'")
+    assert tq.dense_quant_host_capable(_target()) is False
+
+
+def test_a_host_below_the_arch_floor_advertises_nothing(monkeypatch):
+    _capable_host(monkeypatch)
+    monkeypatch.setattr(tq, "_capability", lambda: (7, 0))
+    assert tq.dense_quant_host_capable(_target()) is False
+
+
+def test_an_unsupported_device_advertises_nothing(monkeypatch):
+    _capable_host(monkeypatch)
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: False)
+    assert tq.dense_quant_host_capable(_target(device = "cpu")) is False

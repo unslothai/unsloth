@@ -384,6 +384,54 @@ for (const id of [
   assert.deepEqual(curatedRowLabelFor(id, IMAGE_CATALOG, "accelerated")?.tags, [], id);
 }
 
+// The row names the precision the request will actually run, not the one the host could run.
+{
+  const id = "Tongyi-MAI/Z-Image-Turbo";
+  // Precision=Off runs the released bf16 weights, so the row must show the stored precision.
+  for (const off of ["none", "off", "None", " OFF "]) {
+    assert.deepEqual(
+      curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant", off),
+      { name: "Z-Image-Turbo", tags: ["BF16"] },
+      off,
+    );
+    // Closed and open must agree, and both must read as they do on a host without the path.
+    assert.equal(
+      curatedDisplayNameFor(id, IMAGE_CATALOG, "dense-quant", off),
+      curatedDisplayNameFor(id, IMAGE_CATALOG, "accelerated"),
+      off,
+    );
+  }
+  // An explicit scheme names itself; auto stays the two the ladder chooses between.
+  for (const [precision, chip] of [
+    ["nvfp4", "NVFP4"],
+    ["mxfp8", "MXFP8"],
+    ["fp8", "FP8"],
+    ["int8", "INT8"],
+  ] as const) {
+    assert.deepEqual(curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant", precision), {
+      name: "Z-Image-Turbo (Fast)",
+      tags: [chip],
+    });
+  }
+  for (const auto of [undefined, null, "auto", ""]) {
+    assert.deepEqual(
+      curatedRowLabelFor(id, IMAGE_CATALOG, "dense-quant", auto),
+      { name: "Z-Image-Turbo (Fast)", tags: ["FP8 / INT8"] },
+      String(auto),
+    );
+  }
+  // Single-artifact groups follow the same rule.
+  assert.deepEqual(
+    curatedRowLabelFor("krea/Krea-2-Turbo", IMAGE_CATALOG, "dense-quant", "none")?.tags,
+    [],
+  );
+  // The flat option list the trigger reads carries the same answer.
+  const off = catalogToModelOptions(IMAGE_CATALOG, "dense-quant", "none");
+  assert.equal(off.find((o) => o.id === id)?.name, "Z-Image-Turbo (BF16)");
+  const auto = catalogToModelOptions(IMAGE_CATALOG, "dense-quant");
+  assert.equal(auto.find((o) => o.id === id)?.name, "Z-Image-Turbo (Fast)");
+}
+
 // Do not duplicate a qualifier already present in the variant name.
 assert.deepEqual(
   curatedRowLabelFor("HiDream-ai/HiDream-I1-Fast", IMAGE_CATALOG, "dense-quant"),

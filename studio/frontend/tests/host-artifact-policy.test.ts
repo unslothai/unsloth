@@ -5,8 +5,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  DENSE_QUANT_PRECISION_CHIP,
   classifyHost,
   curatedArtifactIsOfferable,
+  denseQuantPrecisionChip,
   h3PerfSuffix,
   hostIsAccelerated,
   hostRunsDenseQuant,
@@ -56,6 +58,27 @@ test("the dense-quant class follows the backend's capability answer, not its nam
     }),
     "gguf-only",
   );
+});
+
+// The chip has to answer for the request, not only for the host.
+test("the precision chip names what the request will run", () => {
+  // Auto is the default and the only case where the ladder picks between the two.
+  for (const auto of [undefined, null, "auto", "", "  AUTO  "]) {
+    assert.equal(denseQuantPrecisionChip(auto), DENSE_QUANT_PRECISION_CHIP, String(auto));
+  }
+  // Precision=Off runs the checkpoint as-is, so there is no runtime precision to name.
+  for (const off of ["none", "off", "None", " OFF "]) {
+    assert.equal(denseQuantPrecisionChip(off), null, off);
+  }
+  // An explicit scheme names itself; "FP8 / INT8" would be wrong for all four.
+  for (const [scheme, chip] of [
+    ["fp8", "FP8"],
+    ["int8", "INT8"],
+    ["nvfp4", "NVFP4"],
+    ["mxfp8", "MXFP8"],
+  ] as const) {
+    assert.equal(denseQuantPrecisionChip(scheme), chip, scheme);
+  }
 });
 
 test("the backends that only run the native engine are gguf-only", () => {

@@ -154,7 +154,10 @@ import {
   curatedTotalParamsFor,
   groupForRepoId,
 } from "./model-catalog";
-import { curatedArtifactIsOfferable } from "./host-artifact-policy";
+import {
+  type RequestedPrecision,
+  curatedArtifactIsOfferable,
+} from "./host-artifact-policy";
 import { localGgufKindFor } from "./local-gguf-policy";
 import { ModelDeleteAction } from "./model-delete-action";
 import { ModelLoadSettingsAction } from "./model-load-settings-action";
@@ -2601,6 +2604,7 @@ export function HubModelPicker({
   onEject,
   task,
   catalog,
+  requestedPrecision,
   communityModelPolicy = "none",
 }: {
   models: ModelOption[];
@@ -2630,6 +2634,9 @@ export function HubModelPicker({
   task?: HfTaskFilter;
   /** Curated catalog for a task-scoped picker: one canonical row per model, formats as the second level. */
   catalog?: CatalogGroup[];
+  /** The transformer precision this page will request, so a row names the precision that will run
+   *  rather than the one the host could run. Undefined leaves the rows on the auto request. */
+  requestedPrecision?: RequestedPrecision;
   /** Also surface community models carrying `task`'s pipeline tags, below the unsloth rows.
    *  Opt-in, since the runtime has to load an arbitrary publisher's checkpoint: true of audio. */
   communityModelPolicy?: CommunityModelPolicy;
@@ -3283,11 +3290,11 @@ export function HubModelPicker({
   // A curated row's name and its chips; ids outside the catalog have neither and show the raw repo id.
   const curatedRow = useCallback(
     (id: string) =>
-      (catalog && curatedRowLabelFor(id, catalog, hostClass)) ?? {
+      (catalog && curatedRowLabelFor(id, catalog, hostClass, requestedPrecision)) ?? {
         name: id,
         tags: [] as string[],
       },
-    [catalog, hostClass],
+    [catalog, hostClass, requestedPrecision],
   );
 
   /** Whether this host can run a curated id at all, as opposed to whether it has room for it. Browse rows only. */

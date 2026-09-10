@@ -5339,7 +5339,9 @@ class DiffusionBackend:
         top of transformer_resident_override_mib (a double-count of the transformer);
         ``text_encoder_override_mib`` carries that override's TEXT-ENCODER share, which the
         planner needs to price the streamed-text-encoder group tier. Both come from the same
-        family component table, so they cannot disagree about what the companions are.
+        family component table, so they cannot disagree about what the companions are. The three
+        apply to EVERY kind: a pipeline re-plans against the same estimate when its loaded bf16
+        denoisers are about to be quantised in place.
 
         ``base_local_dir`` is the snapshot the load will actually read, carried into the size lookups
         as an extra source alongside the cache roots. A prefetch split across roots hands back no
@@ -5353,7 +5355,14 @@ class DiffusionBackend:
         family/variant checks."""
         # Settled (max-over-reads) on cuda: a transient foreign allocation would make an empty card look full
         device_memory = settled_snapshot_device_memory(target)
-        if kind == "pipeline":
+        if kind == "pipeline" and transformer_resident_override_mib is not None:
+            # Re-planning an assembled pipeline against its dense-quant candidate. The family estimate already splits
+            # transformer from companions, and the cache scan below prices the bf16 transformer this re-plan replaces,
+            # so reading it would size the candidate at the footprint it is meant to shrink.
+            companion_mib = companion_override_mib
+            text_encoder_mib = text_encoder_override_mib
+            model_dense_mib = transformer_resident_override_mib + (companion_mib or 0)
+        elif kind == "pipeline":
             # The whole repo is one cached download, so cached bytes are the resident estimate; a LOCAL path is not
             # cached, so sum its on-disk weights.
             local_repo = Path(repo_id).expanduser() if repo_id else None

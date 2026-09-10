@@ -53,6 +53,7 @@ import {
   missingExternalModel,
 } from "./model-selector/missing-external-model";
 import type { CommunityModelPolicy } from "./model-selector/audio-picker-policy";
+import type { RequestedPrecision } from "./model-selector/host-artifact-policy";
 import type { CatalogGroup } from "./model-selector/model-catalog";
 import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
 import { PillTabs } from "./model-selector/pill-tabs";
@@ -125,6 +126,9 @@ interface ModelSelectorProps {
   /** Canonical model groups (Images / Video pages): collapses a model's artifact repos into one
    *  row with a format second level and device-aware routing. Undefined (chat) changes nothing. */
   catalog?: CatalogGroup[];
+  /** The transformer precision this page will request, so a curated row names the precision that
+   *  will run rather than the one the host could run. */
+  requestedPrecision?: RequestedPrecision;
   /** Also list community (non-unsloth) models for `task`. Opt-in: only pages whose runtime loads
    *  arbitrary publishers. */
   communityModelPolicy?: CommunityModelPolicy;
@@ -326,6 +330,7 @@ function ModelSelectorContent({
   dataTour,
   task,
   catalog,
+  requestedPrecision,
   communityModelPolicy,
 }: {
   open: boolean;
@@ -354,6 +359,7 @@ function ModelSelectorContent({
   dataTour?: string;
   task?: HfTaskFilter;
   catalog?: CatalogGroup[];
+  requestedPrecision?: RequestedPrecision;
   communityModelPolicy?: CommunityModelPolicy;
 }) {
   const t = useT();
@@ -616,6 +622,7 @@ function ModelSelectorContent({
               onEject={hasSelection && onEject ? onEject : undefined}
               task={task}
               catalog={catalog}
+              requestedPrecision={requestedPrecision}
               communityModelPolicy={communityModelPolicy}
               section={effectiveHubSection}
               sectionToggle={
@@ -676,6 +683,7 @@ export function ModelSelector({
   showCloudIndicator = false,
   task,
   catalog,
+  requestedPrecision,
   communityModelPolicy = "none",
   placeholder,
   loaded,
@@ -847,6 +855,7 @@ export function ModelSelector({
         dataTour={contentDataTour}
         task={task}
         catalog={catalog}
+        requestedPrecision={requestedPrecision}
         communityModelPolicy={communityModelPolicy}
       />
     </Popover>

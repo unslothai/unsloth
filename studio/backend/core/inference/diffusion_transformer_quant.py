@@ -639,8 +639,14 @@ def select_transformer_quant_scheme(
 
 
 def dense_quant_host_capable(target: Any) -> bool:
-    """Whether hardware could run an ``auto`` scheme, without the allocating smoke probe."""
+    """Whether an ``auto`` scheme could run here, without the allocating smoke probe.
+
+    The torchao check is not redundant with the arch floor: ``_scheme_supported`` imports torchao
+    and rejects every scheme when that import fails, so a torch/torchao ABI skew on an otherwise
+    capable card would advertise a fast path that every load then falls back from."""
     if not dense_transformer_supported(target):
+        return False
+    if torchao_unavailable_reason() is not None:
         return False
     cap = _capability()
     if cap is None:

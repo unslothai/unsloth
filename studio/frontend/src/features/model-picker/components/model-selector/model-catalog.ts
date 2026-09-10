@@ -10,9 +10,10 @@ import {
   classifyGgufFit as classifyGgufFitForDevice,
 } from "../../../../lib/gguf-fit.ts";
 import {
-  DENSE_QUANT_PRECISION_CHIP,
   type HostClass,
+  type RequestedPrecision,
   curatedArtifactIsOfferable,
+  denseQuantPrecisionChip,
   h3PerfSuffix,
   hostRunsDenseQuant,
 } from "./host-artifact-policy.ts";
@@ -824,14 +825,15 @@ export function curatedDisplayNameFor(
   repoId: string,
   catalog: CatalogGroup[],
   host: HostClass = "unknown",
+  precision?: RequestedPrecision,
 ): string | null {
   const hit = artifactForRepoId(repoId, catalog);
   if (!hit) return null;
   // A row that earns a speed qualifier must read the same closed as open: this helper names the
   // trigger and curatedRowLabelFor names the row, so a divergence would rename the model as
   // the popover opens.
-  if (curatedPerfSuffix(hit, host)) {
-    return curatedRowLabelFor(repoId, catalog, host)?.name ?? hit.group.displayName;
+  if (curatedPerfSuffix(hit, host, precision)) {
+    return curatedRowLabelFor(repoId, catalog, host, precision)?.name ?? hit.group.displayName;
   }
   return hit.group.artifacts.length > 1
     ? `${hit.group.displayName} (${hit.artifact.label})`
@@ -862,27 +864,36 @@ export function curatedArtifactTakesDenseQuant(
   );
 }
 
-/** Whether this row will use dense quantisation on the current host. */
-function artifactTakesDenseQuant(
+/** The runtime-precision chip for this row, or null when it will not be dense-quantised. Reads the
+ *  requested precision as well as the host: Precision=Off runs the released bf16 weights, so a row
+ *  claiming the fast path there would point the user away from the row they actually want. */
+function artifactDenseQuantChip(
   group: CatalogGroup,
   artifact: ModelArtifact,
   host: HostClass,
-): boolean {
-  return (
-    hostRunsDenseQuant(host) &&
-    group.scope === "image" &&
-    artifact.format === "bf16" &&
-    artifact.loadKind === "pipeline" &&
-    artifact.denseQuantable === true
-  );
+  precision: RequestedPrecision,
+): string | null {
+  if (
+    !(
+      hostRunsDenseQuant(host) &&
+      group.scope === "image" &&
+      artifact.format === "bf16" &&
+      artifact.loadKind === "pipeline" &&
+      artifact.denseQuantable === true
+    )
+  ) {
+    return null;
+  }
+  return denseQuantPrecisionChip(precision);
 }
 
 /** Speed qualifier from the dense-quant path or an artifact-specific rule. */
 function curatedPerfSuffix(
   hit: { group: CatalogGroup; artifact: ModelArtifact },
   host: HostClass,
+  precision: RequestedPrecision,
 ): string | null {
-  if (artifactTakesDenseQuant(hit.group, hit.artifact, host)) return "Fast";
+  if (artifactDenseQuantChip(hit.group, hit.artifact, host, precision)) return "Fast";
   return h3PerfSuffix(hit.artifact.repoId, host);
 }
 
@@ -893,12 +904,13 @@ export function curatedRowLabelFor(
   repoId: string,
   catalog: CatalogGroup[],
   host: HostClass = "unknown",
+  precision?: RequestedPrecision,
 ): { name: string; tags: string[] } | null {
   const hit = artifactForRepoId(repoId, catalog);
   if (!hit) return null;
   // Only where the host can run both rows, so the qualifier compares things the user can pick
   // between rather than advertising a speed they cannot have.
-  const perf = curatedPerfSuffix(hit, host);
+  const perf = curatedPerfSuffix(hit, host, precision);
   // Avoid duplicating variant names such as "Fast (distilled)".
   const qualify = (name: string) =>
     perf && !new RegExp(`\\b${perf}\\b`, "i").test(name) ? `${name} (${perf})` : name;
@@ -908,16 +920,16 @@ export function curatedRowLabelFor(
     return { name: qualify(GGUF_SUFFIX_RE.test(leaf) ? leaf : `${leaf}-GGUF`), tags: [] };
   }
   // Single-artifact groups omit format chips but retain the runtime precision chip.
-  const denseQuant = artifactTakesDenseQuant(hit.group, hit.artifact, host);
+  const denseQuantChip = artifactDenseQuantChip(hit.group, hit.artifact, host, precision);
   if (hit.group.artifacts.length <= 1) {
     return {
       name: qualify(hit.group.displayName),
-      tags: denseQuant ? [DENSE_QUANT_PRECISION_CHIP] : [],
+      tags: denseQuantChip ? [denseQuantChip] : [],
     };
   }
   const [format, ...rest] = hit.artifact.label.split(LABEL_PART_SEPARATOR);
   // Show runtime precision for dense-quant rows and stored precision otherwise.
-  const tags = [denseQuant ? DENSE_QUANT_PRECISION_CHIP : format.trim()].filter(Boolean);
+  const tags = [denseQuantChip ?? format.trim()].filter(Boolean);
   const kept: string[] = [];
   for (const part of rest) {
     if (RESOLUTION_RE.test(part.trim())) tags.push(part.trim());
@@ -934,6 +946,7 @@ export function curatedRowLabelFor(
 export function catalogToModelOptions(
   catalog: CatalogGroup[],
   host: HostClass = "unknown",
+  precision?: RequestedPrecision,
 ): ModelOption[] {
   const options: ModelOption[] = [];
   for (const group of catalog) {
@@ -944,7 +957,9 @@ export function catalogToModelOptions(
       if (!curatedArtifactIsOfferable(artifact.repoId, host)) continue;
       options.push({
         id: artifact.repoId,
-        name: curatedDisplayNameFor(artifact.repoId, catalog, host) ?? group.displayName,
+        name:
+          curatedDisplayNameFor(artifact.repoId, catalog, host, precision) ??
+          group.displayName,
         description: `${group.description} - ${artifact.label}`,
         isGguf: artifact.format === "gguf",
         deviceQuant: artifact.deviceQuant,
