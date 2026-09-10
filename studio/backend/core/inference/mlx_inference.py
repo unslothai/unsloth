@@ -16,6 +16,12 @@ from collections import OrderedDict
 from contextlib import contextmanager, nullcontext
 from typing import Optional, Generator
 from core.inference.message_content import content_to_text
+from core.inference.native_tool_tokens import (
+    NativeToolTokenDecoder,
+    closes_an_open_envelope,
+    decoder_preserves_token,
+    reasoning_control_tokens,
+)
 from core.inference.runtime_context import (
     MAX_REQUESTABLE_CONTEXT,
     UNSET_GENERATION_BUDGET,
@@ -2847,6 +2853,9 @@ class MLXInferenceBackend:
         logit_bias = None,
         stop = None,
         _adapter_state = None,
+        # Unrestricted mode runs the tool protocol with an EMPTY tools list, so bool(tools)
+        # cannot tell that the wrappers below still have to survive decoding.
+        tool_protocol_active = None,
     ) -> Generator[str, None, None]:
         if self._model is None:
             raise RuntimeError("No model loaded")
@@ -2894,6 +2903,7 @@ class MLXInferenceBackend:
                 logit_bias = logit_bias,
                 _adapter_state = _adapter_state,
                 stop = stop,
+                tool_protocol_active = tool_protocol_active,
             )
         else:
             stream = self._generate_text(
@@ -2916,6 +2926,7 @@ class MLXInferenceBackend:
                 logit_bias = logit_bias,
                 _adapter_state = _adapter_state,
                 stop = stop,
+                tool_protocol_active = tool_protocol_active,
             )
         yield from stream
 
@@ -2945,6 +2956,7 @@ class MLXInferenceBackend:
         frequency_penalty = 0.0,
         logit_bias = None,
         _adapter_state = None,
+        tool_protocol_active = None,
         stop = None,
     ):
         from mlx_lm import stream_generate
@@ -2969,7 +2981,16 @@ class MLXInferenceBackend:
         # An open <think> prefilled by the template lives in the prompt, not
         # the generated tokens; re-emit it so the frontend renders the block.
         think_prefix = detect_think_prefill(
-            prompt, getattr(self._tokenizer, "all_special_tokens", None)
+            prompt,
+            getattr(self._tokenizer, "all_special_tokens", None),
+            # Matches native_token_decoder below: when it runs </think> survives, so the
+            # prefilled opener has to be re-emitted with it.
+            preserves_think_close = (
+                bool(tools) or tool_protocol_active or reasoning_channel_markers is not None
+            )
+            and decoder_preserves_token(
+                self._tokenizer, "</think>", reasoning_control_tokens(reasoning_channel_markers)
+            ),
         )
         if seed is None:
             sampler = make_sampler(
@@ -2995,6 +3016,20 @@ class MLXInferenceBackend:
         )
 
         preserve_native_channels = reasoning_channel_markers is not None
+        native_token_decoder = (
+            NativeToolTokenDecoder(
+                self._tokenizer,
+                preserved_tokens = reasoning_control_tokens(reasoning_channel_markers),
+            )
+            if tools or preserve_native_channels or tool_protocol_active
+            else None
+        )
+        # Consulted per token on the reasoning path below, so resolved once here.
+        stop_token_ids = (
+            _mlx_stop_token_ids(self._tokenizer, self._model)
+            if native_token_decoder is not None
+            else ()
+        )
         token_ids = []
         normalizer = (
             make_reasoning_normalizer(
@@ -3059,7 +3094,18 @@ class MLXInferenceBackend:
                     final_response = response
                     token_ids.append(response.token)
                     if preserve_native_channels:
-                        sampled += getattr(response, "text", None) or ""
+                        _tok = native_token_decoder.decode_stream_token(
+                            response.token, getattr(response, "text", None) or ""
+                        )
+                        # Generation ends on a stop id, so this one is trailing. Same rule as
+                        # the non-reasoning branch: drop it unless it closes a tool envelope.
+                        if (
+                            _tok
+                            and response.token in stop_token_ids
+                            and not closes_an_open_envelope(sampled + _tok, _tok)
+                        ):
+                            _tok = ""
+                        sampled += _tok
                         if sequences:
                             cut, stopped = _mlx_stop_cut(sampled, sequences)
                         else:
@@ -3075,10 +3121,29 @@ class MLXInferenceBackend:
                         # Re-decoding every id rebuilds rather than extends, so an
                         # invalid byte sequence can revise characters already shown.
                         # Predates stop handling and affects plain replies too.
-                        sampled = self._tokenizer.decode(
-                            token_ids,
-                            skip_special_tokens = True,
-                        )
+                        if native_token_decoder is not None:
+                            # Some runtimes stop on an allowlisted control (TML Inkling's
+                            # <|end_message|>). Drop only the TRAILING stop id, so the marker
+                            # still closes a real tool envelope.
+                            _ids = list(token_ids)
+                            if _ids and _ids[-1] in _mlx_stop_token_ids(
+                                self._tokenizer, self._model
+                            ):
+                                # Only when the turn has no tool markup: the same marker can
+                                # be the closer strict parsing needs.
+                                _whole = native_token_decoder.decode(_ids)
+                                _closer = _whole[len(native_token_decoder.decode(_ids[:-1])) :]
+                                # With the prefill: a restored ``<think>`` opener lives in the
+                                # PROMPT, so judging the closer on generated ids alone dropped
+                                # the ``</think>`` and left the block open over the answer.
+                                if not closes_an_open_envelope(think_prefix + _whole, _closer):
+                                    _ids = _ids[:-1]
+                            sampled = native_token_decoder.decode(_ids)
+                        else:
+                            sampled = self._tokenizer.decode(
+                                token_ids,
+                                skip_special_tokens = True,
+                            )
                         if not sequences:
                             yield think_prefix + sampled
                         else:
@@ -3281,6 +3346,7 @@ class MLXInferenceBackend:
         frequency_penalty = 0.0,
         logit_bias = None,
         _adapter_state = None,
+        tool_protocol_active = None,
         stop = None,
     ):
         from mlx_vlm import stream_generate as vlm_stream
@@ -3298,8 +3364,21 @@ class MLXInferenceBackend:
 
         from core.inference.chat_template_helpers import detect_think_prefill
 
+        # Detected once: the decoder keeps the delimiters the normalizer below consumes.
+        vlm_reasoning_markers = detect_reasoning_channel_markers(chat_target, tools = tools)
         # Re-emit an open <think> prefill from the prompt (see _generate_text).
-        prefill = detect_think_prefill(prompt, getattr(chat_target, "all_special_tokens", None))
+        prefill = detect_think_prefill(
+            prompt,
+            getattr(chat_target, "all_special_tokens", None),
+            # The same activation the decoder below uses: in unrestricted mode ``tools`` is
+            # empty while the protocol is live, so ``bool(tools)`` said the closer would be
+            # stripped, the opener was suppressed, and the stream ran on to an orphan
+            # ``</think>``. Mirrors the text path.
+            preserves_think_close = (
+                bool(tools) or tool_protocol_active or vlm_reasoning_markers is not None
+            )
+            and decoder_preserves_token(self._tokenizer, "</think>"),
+        )
         vlm_continued = bool(continue_final_message and trailing_assistant_text(messages))
         # Matched on the sampled text, for the reason _generate_text gives.
         sequences = _mlx_stop_sequences(stop)
@@ -3355,6 +3434,31 @@ class MLXInferenceBackend:
         elif _rep_active:
             vlm_kwargs["repetition_penalty"] = float(repetition_penalty)
 
+        # Same provenance the text path recovers: mlx-vlm's ``response.text`` has dropped the
+        # native tool controls, so a genuine wrapped call would reach the parser markerless and
+        # be refused. Text-only requests on a VLM come here too, and reasoning delimiters that
+        # are special ids need preserving as well.
+        vlm_token_decoder = (
+            NativeToolTokenDecoder(
+                self._tokenizer,
+                preserved_tokens = reasoning_control_tokens(vlm_reasoning_markers),
+            )
+            # ``vlm_reasoning_markers`` too, matching the text path: mlx-vlm has already
+            # dropped those controls from ``response.text``, so without the decoder the
+            # snapshot normaliser never sees the opener or closer and the reasoning surfaces
+            # as ordinary answer text on a no-tools request.
+            if (tools or tool_protocol_active or vlm_reasoning_markers is not None)
+            and self._tokenizer
+            else None
+        )
+        # The runtime EOS can itself be an allowlisted control, and this path appends every
+        # decoded token to the snapshot, so it would trail each answer. As in _generate_text.
+        vlm_stop_ids = (
+            _mlx_stop_token_ids(self._tokenizer, self._model)
+            if vlm_token_decoder is not None
+            else ()
+        )
+
         session = self._vlm_prompt_cache_session(_adapter_state, images, prompt)
         if session is not None:
             vlm_kwargs["prompt_cache"] = session.cache
@@ -3397,6 +3501,17 @@ class MLXInferenceBackend:
                     ):
                         final_response = response
                         token_text = response.text if hasattr(response, "text") else str(response)
+                        token_id = getattr(response, "token", None)
+                        if vlm_token_decoder is not None and token_id is not None:
+                            # Only a special id is re-decoded; ordinary ids keep mlx-vlm's text.
+                            _decoded = vlm_token_decoder.decode_stream_token(token_id, token_text)
+                            # A stop token is dropped unless it closes an open envelope.
+                            token_text = (
+                                ""
+                                if int(token_id) in vlm_stop_ids
+                                and not closes_an_open_envelope(sampled + _decoded, _decoded)
+                                else _decoded
+                            )
                         sampled += token_text
                         if not sequences:
                             yield prefill + sampled
@@ -3457,6 +3572,7 @@ class MLXInferenceBackend:
             _stream_vlm_snapshots(),
             chat_target,
             cancel_event,
+            markers = vlm_reasoning_markers,
             tools = tools,
             prompt = prompt,
             continued = vlm_continued,
