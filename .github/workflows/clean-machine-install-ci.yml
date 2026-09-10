@@ -146,7 +146,10 @@ jobs:
   # ── Which legs: the PR subset or all of them ───────────────────────────────
   select:
     name: select legs
-    runs-on: ubuntu-latest
+    # arm64, not ubuntu-latest: this job stands in front of every leg, so its queue
+    # wait is added to all of them. Over the last 20 PRs ubuntu-latest jobs waited
+    # p50 128 min for a runner while ubuntu-24.04-arm started in about 2 min.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     outputs:
       macos: ${{ steps.pick.outputs.macos }}
