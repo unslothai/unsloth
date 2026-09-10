@@ -58,6 +58,10 @@ def saving(monkeypatch):
         records["directories"].append(directory)
         for filename, content in artifacts.items():
             (directory / filename).write_text(content)
+        for filename, content in records.get("extra_files", {}).items():
+            path = directory / filename
+            path.parent.mkdir(parents = True, exist_ok = True)
+            path.write_text(content)
         if records.get("fail_merge"):
             raise OSError("merge failed")
         if records.get("existing_card"):
@@ -232,3 +236,15 @@ def test_local_base_model_card_uses_hub_identifier(saving, tmp_path, original_id
     env["unsloth_generic_push_to_hub_merged"](model, "owner/model", revision = "candidate")
     card = ModelCard(records["uploads"][0]["files"]["README.md"])
     assert card.data.base_model == (original_id or "owner/model")
+
+
+def test_staged_cache_metadata_is_excluded_but_nested_artifacts_survive(saving):
+    env, records, artifacts = saving
+    records["extra_files"] = {
+        ".cache/huggingface/download/model.metadata": "download metadata",
+        ".git/config": "local git metadata",
+        "nested/.cache/huggingface/download/model.lock": "lock",
+        "nested/tokenizer.json": "nested tokenizer",
+    }
+    env["unsloth_generic_push_to_hub_merged"](PeftModel(), "owner/model", create_pr = True)
+    assert set(records["uploads"][0]["files"]) == {*artifacts, "README.md", "nested/tokenizer.json"}

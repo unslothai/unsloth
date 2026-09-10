@@ -5443,6 +5443,7 @@ def _push_merged_to_hub_revision(save_kwargs):
                 )
                 for path in sorted(Path(directory).rglob("*"))
                 if path.is_file()
+                and not {".cache", ".git"}.intersection(path.relative_to(directory).parts)
             ],
             revision = save_kwargs["revision"],
             create_pr = save_kwargs["create_pr"],
