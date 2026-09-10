@@ -72,23 +72,20 @@ export const normalizeLanguage = (language: string): BundledLanguage => {
   return alias ?? (key as BundledLanguage);
 };
 
-// A streaming fence re-enters highlight() every frame with the whole block, so
-// Shiki re-tokenizes it in full ~60x/sec. Past MIN_INCREMENTAL_CHARS, cache the
-// completed lines and their grammar state so each refresh tokenizes only new
-// text, keeping the 250 ms plain-tail cadence.
+// A streaming fence re-enters highlight() every frame with the whole block, so Shiki re-tokenizes
+// it in full ~60x/sec. Past MIN_INCREMENTAL_CHARS, cache the completed lines and their grammar
+// state so each refresh tokenizes only new text, keeping the 250 ms plain-tail cadence.
 export const MIN_INCREMENTAL_CHARS = 2000;
 const REFRESH_MS = 250;
-// Shiki's own tokenizer guard is a wall clock: a line that takes longer than
-// `tokenizeTimeLimit` (default 500 ms) is abandoned part-way and the rest of it
-// is emitted as one uncoloured token. Dual themes are two passes with two
-// separate budgets, and only the first pays to compile the grammar's regexes,
-// so a loaded machine drops the light theme to plain and keeps the dark one
-// correct -- for the same line, in the same result. Committed lines are never
-// re-tokenized, so that half-plain line is then cached for the life of the
-// fence. Bound the work by line length instead: same protection against a
-// minified blob (~120 ms at this length, growing quadratically past it, which
-// is VS Code's `editor.maxTokenizationLineLength` default for the same reason),
-// but the output depends on the source rather than on the host.
+// Shiki's own tokenizer guard is a wall clock: a line that takes longer than `tokenizeTimeLimit`
+// (default 500 ms) is abandoned part-way and the rest of it is emitted as one uncoloured token.
+// Dual themes are two passes with two separate budgets, and only the first pays to compile the
+// grammar's regexes, so a loaded machine drops the light theme to plain and keeps the dark one
+// correct -- for the same line, in the same result. Committed lines are never re-tokenized, so that
+// half-plain line is then cached for the life of the fence. Bound the work by line length instead:
+// same protection against a minified blob (~120 ms at this length, growing quadratically past it,
+// which is VS Code's `editor.maxTokenizationLineLength` default for the same reason), but the
+// output depends on the source rather than on the host.
 export const TOKENIZE_LIMITS = {
   tokenizeTimeLimit: 0,
   tokenizeMaxLineLength: 20_000,
@@ -169,37 +166,31 @@ const shiftLine = (line: TokenLine, offset: number): TokenLine =>
     : line.map((token) => ({ ...token, offset: token.offset + offset }));
 
 // ADJACENT-TOKEN COALESCING: TRIED, MEASURED AT ZERO, REMOVED.
-//
 // The renderer emits one <span> per themed token, so a fence's span census is
 // its token census, and Shiki splits on GRAMMAR boundaries rather than on
 // rendered appearance. Merging runs of adjacent tokens whose rendered style is
 // byte-identical looked like a pure reduction with no gating at all: no
 // viewport state machine, nothing a reader could do to push a fence back into a
 // more expensive shape.
-//
 // It buys exactly nothing. Running the whole studiobench corpus, 728 fences and
 // 1,335,897 code characters, through this component's own Shiki configuration:
-//
 //   dual        tokens 537013 -> merged 537013   0.0% fewer
 //   darkonly    tokens 535981 -> merged 535981   0.0% fewer
-//
 // and the 100K rung's 99 assembled fences, 180,902 characters, 72550 -> 72550
 // dual, 72408 -> 72408 dark only, 62098 -> 62098 light only. Not one adjacent
 // pair in half a million shares a rendered style, in any theme mode. Shiki
 // already emits maximally coalesced tokens. No timing was run on it, because a
 // mechanism that removes no spans cannot make anything faster.
-//
 // The implementation is not kept. Carrying a runtime-flippable flag through the
 // fence cache for a measured-zero benefit only adds a way for a cached result
 // to disagree with the flag that produced it. Run
 // `node scripts/coal-span-census.mjs <markdown>` from studio/frontend to check
 // the census on any thread rather than taking these numbers on trust.
 
-// Markdown reports a closing fence as body until it recognizes it, so that
-// line is all a fence can lose: up to three spaces, one run of backticks or
-// tildes, then spaces. It also starts a line, so the body it leaves behind ends
-// at a newline. The run can be short, because the cached code is the last text
-// tokenized and the run may still have been arriving then.
+// Markdown reports a closing fence as body until it recognizes it, so that line is all a fence can
+// lose: up to three spaces, one run of backticks or tildes, then spaces. It also starts a line, so
+// the body it leaves behind ends at a newline. The run can be short, because the cached code is the
+// last text tokenized and the run may still have been arriving then.
 const CLOSING_FENCE = /^ {0,3}(?:`+|~+)[ \t]*$/;
 
 /** Whether `longer` is one fence's body, `shorter`, plus its closing line. */

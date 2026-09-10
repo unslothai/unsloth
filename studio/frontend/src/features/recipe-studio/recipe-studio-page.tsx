@@ -226,10 +226,9 @@ export function RecipeStudioPage({
     },
     [viewModeStorageKey],
   );
-  // Easy mode has no canvas overlay/progress island, so a started run would
-  // leave the Run button stuck on "Running..." with nothing else changing.
-  // Flip to the Runs pane where progress is rendered. Advanced (editor) keeps
-  // its island and stays put.
+  // Easy mode has no canvas overlay/progress island, so a started run would leave the Run button
+  // stuck on "Running..." with nothing else changing. Flip to the Runs pane where progress is
+  // rendered. Advanced (editor) keeps its island and stays put.
   const handleExecutionStart = useCallback(() => {
     setActiveView((currentView) =>
       currentView === "easy" ? "executions" : currentView,
@@ -571,10 +570,9 @@ export function RecipeStudioPage({
   );
 
   const toggleMaximize = useCallback(() => {
-    // The maximized surface is a fixed z-50 overlay that already covers the
-    // app sidebar (z-10/z-20), so we don't touch the sidebar's own state — that
-    // state is persisted in pin mode and mutating it here would leak the
-    // temporary collapse into the next page/session.
+    // The maximized surface is a fixed z-50 overlay that already covers the app sidebar
+    // (z-10/z-20), so we don't touch the sidebar's own state — that state is persisted in pin mode
+    // and mutating it here would leak the temporary collapse into the next page/session.
     setMaximized((prev) => !prev);
     // Container size changes; refit once the layout settles.
     scheduleFitView({ delayMs: TAB_SWITCH_FIT_DELAY_MS });
@@ -598,9 +596,8 @@ export function RecipeStudioPage({
     }
   }, [activeView, reactFlowInstance]);
 
-  // The "Exit full view" control lives inside the editor canvas, which unmounts
-  // on other tabs. Drop full-view mode when leaving the editor so Easy/Runs
-  // aren't left under the fixed overlay.
+  // The "Exit full view" control lives inside the editor canvas, which unmounts on other tabs. Drop
+  // full-view mode when leaving the editor so Easy/Runs aren't left under the fixed overlay.
   useEffect(() => {
     if (activeView !== "editor" && maximized) {
       setMaximized(false);
@@ -841,10 +838,9 @@ export function RecipeStudioPage({
                 setRows={setFullRows}
                 updateConfig={updateConfig}
                 onRun={() => {
-                  // Easy mode is a full run (artifact persisted, tracked in
-                  // Runs) capped at the user's row count. runFull requires a
-                  // non-empty fullRunName; the effect above populates one on
-                  // mount so runFull's closure is current by click time.
+                  // Easy mode is a full run (artifact persisted, tracked in Runs) capped at the
+                  // user's row count. runFull requires a non-empty fullRunName; the effect above
+                  // populates one on mount so runFull's closure is current by click time.
                   void runFull();
                 }}
                 runLoading={fullLoading || executionLocked}

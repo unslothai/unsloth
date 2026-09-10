@@ -365,7 +365,6 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
     from diffusers.hooks import apply_layerwise_casting
     from diffusers.hooks.layerwise_casting import DEFAULT_SKIP_MODULES_PATTERN
 
-    # idempotent, keyed on the completion marker NOT hook presence
     # Idempotent: a pre-cast encoder arrives with the layerwise hooks installed and re-registering a hook name raises,
     # which would report an engaged cast as failed. Keyed on the completion marker, NOT hook presence, so a mid-pass
     # failure still fails closed.
@@ -398,7 +397,6 @@ def _cast_fp8(encoder: Any, target: Any) -> None:
         storage_dtype = torch.float8_e4m3fn,
         compute_dtype = target.dtype,
         skip_modules_pattern = skip,
-        # fp8-ing nn.Embedding would put every prompt token on the coarse fp8 grid
         # Keep token-embedding tables full precision: the diffusers default only skips vision pos/patch embeds, and
         # fp8-ing nn.Embedding puts every prompt token on the coarse fp8 grid.
         skip_modules_classes = (torch.nn.Embedding,),
