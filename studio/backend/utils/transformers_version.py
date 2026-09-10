@@ -2437,10 +2437,88 @@ _OPTIONAL_TOP_UP_ATTEMPTED: set[tuple[str, str]] = set()
 
 
 def _optional_package_absent(venv_dir: str, pkg_spec: str) -> bool:
+    """Whether *pkg_spec* is missing from the sidecar, or only partly there.
+
+    The top-up moves a package in entry by entry with its dist-info last, so a package
+    counts as present only when its dist-info has landed: a payload directory on its
+    own is an interrupted top-up, which nothing else would ever finish.
+    """
     name = pkg_spec.split("==")[0].replace("-", "_")
+    root = Path(venv_dir)
+    if not any((root / d / "__init__.py").is_file() for d in (name, name.replace("_", "-"))):
+        return True
     return not any(
-        (Path(venv_dir) / d / "__init__.py").is_file() for d in (name, name.replace("_", "-"))
+        (root / entry / "RECORD").is_file()
+        for entry in _dist_info_entries(venv_dir, name)
     )
+
+
+def _dist_info_entries(venv_dir: str, name: str) -> list[str]:
+    wanted = name.lower().replace("-", "_")
+    try:
+        entries = os.listdir(venv_dir)
+    except OSError:
+        return []
+    return [
+        entry
+        for entry in entries
+        if entry.endswith(".dist-info")
+        and entry[: -len(".dist-info")].rsplit("-", 1)[0].lower().replace("-", "_") == wanted
+    ]
+
+
+# Failed top-ups, recorded beside the sidecar so every worker process sees them: each
+# job spawns its own workers, and a wheel that is not there for one of them is not
+# there for the next either. Retried after a while, in case it was the network.
+_OPTIONAL_TOP_UP_FAILED = ".optional-top-up-failed.json"
+_OPTIONAL_TOP_UP_RETRY_SECONDS = 6 * 60 * 60.0
+
+
+def _top_up_failure_path(venv_dir: str) -> str:
+    return os.path.join(venv_dir, _OPTIONAL_TOP_UP_FAILED)
+
+
+def _read_top_up_failures(venv_dir: str) -> dict:
+    try:
+        with open(_top_up_failure_path(venv_dir), encoding = "utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_top_up_failures(venv_dir: str, failures: dict) -> None:
+    path = _top_up_failure_path(venv_dir)
+    try:
+        if not failures:
+            if os.path.exists(path):
+                os.unlink(path)
+            return
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding = "utf-8") as fh:
+            json.dump(failures, fh)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _top_up_failed_recently(venv_dir: str, pkg: str) -> bool:
+    when = _read_top_up_failures(venv_dir).get(pkg)
+    if not isinstance(when, (int, float)):
+        return False
+    age = time.time() - when
+    return 0 <= age < _OPTIONAL_TOP_UP_RETRY_SECONDS
+
+
+def _record_top_up_outcome(venv_dir: str, pkg: str, ok: bool) -> None:
+    failures = _read_top_up_failures(venv_dir)
+    if ok:
+        if pkg not in failures:
+            return
+        failures.pop(pkg, None)
+    else:
+        failures[pkg] = time.time()
+    _write_top_up_failures(venv_dir, failures)
 
 
 def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> None:
@@ -2449,9 +2527,11 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> None:
     _venv_dir_is_valid accepts a sidecar without tiktoken, so a transient failure while
     the sidecar was built (the latest sidecar in particular, which no setup top-up
     visits) left Qwen tokenizers broken until the user deleted the directory. Best
-    effort and non-destructive: a failure is logged and not retried in this process,
-    and nothing is attempted while the session is offline (a worker would otherwise
-    sit through network retries for a model that may not even need the package).
+    effort and non-destructive: a failure is logged, recorded beside the sidecar and
+    not retried by any worker process for a while (each job spawns its own workers,
+    which would otherwise each sit through the same doomed install), and nothing is
+    attempted while the session is offline (a worker would otherwise sit through
+    network retries for a model that may not even need the package).
 
     Workers activate tiers independently and share the sidecar, so the add is staged:
     the package is installed into a scratch directory beside the sidecar and its
@@ -2477,8 +2557,15 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> None:
                 continue
             if not _optional_package_absent(venv_dir, pkg):
                 continue
+            if _top_up_failed_recently(venv_dir, pkg):
+                logger.info(
+                    "%s: a recent attempt to add %s failed; not retrying yet", venv_dir, pkg
+                )
+                continue
             logger.info("Adding %s to %s (optional package missing) ...", pkg, venv_dir)
-            if not _stage_optional_package(pkg, venv_dir):
+            ok = _stage_optional_package(pkg, venv_dir)
+            _record_top_up_outcome(venv_dir, pkg, ok)
+            if not ok:
                 logger.warning(
                     "%s could not be added to %s; continuing without it (Qwen tokenizers may fail)",
                     pkg,
