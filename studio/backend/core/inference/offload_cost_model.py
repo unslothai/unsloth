@@ -101,7 +101,8 @@ _RATE_RATIOS: dict[Access, float] = {
 
 # bracketed by the two measurements (dense 49.4, MoE 66.9)
 # Prefill streaming bandwidth, GiB/s. Bracketed by the two measurements (dense 49.4, MoE 66.9); that spread is why this
-# is a coarse constant, not a curve.
+# is a coarse constant, not a curve. Measured on PCIe 5 x16 hosts, so it is only the DEFAULT for
+# ``HostProfile.link_gib_s``: a caller that can read the device's link passes its own rate.
 PREFILL_STREAM_GIB_S = 55.0
 
 # Spilling several groups costs MORE than the sum of each alone -- contention, not amortisation. Measured 6% for the
@@ -138,6 +139,10 @@ class HostProfile:
     # : Set for unified-memory hosts (Apple Silicon, AMD APU, Vulkan iGPU) where : "spilling" moves nothing, because the
     # two pools are one pool.
     unified_memory: bool = False
+    # : Host-to-device stream rate the PREFILL transfer runs at. The default is the reference host's PCIe 5 x16 rate, so
+    # a caller that cannot read the link keeps every number this module was calibrated on. Generation is unaffected: it
+    # reads host weights on the CPU backend and never crosses the link.
+    link_gib_s: float = PREFILL_STREAM_GIB_S
 
     @property
     def generation_slowdown(self) -> float:
@@ -217,10 +222,10 @@ def prefill_penalty_ms_per_token(
     so the per-token cost falls as ``n_ubatch`` rises -- the amortisation that
     makes prefill so much cheaper than generation per byte moved.
 
-    ``host`` is accepted and used only for ``unified_memory``: this regime runs
-    on the GPU with the weights copied in, so it is bound by the link and NOT by
-    host cores. That asymmetry against generation is the point, so callers pass
-    the same profile to both and let each use what applies.
+    ``host`` is read for ``unified_memory`` and ``link_gib_s`` only: this regime
+    runs on the GPU with the weights copied in, so it is bound by the link and
+    NOT by host cores. That asymmetry against generation is the point, so callers
+    pass the same profile to both and let each use what applies.
     """
     host = host or HostProfile()
     if host.unified_memory:
@@ -232,15 +237,18 @@ def prefill_penalty_ms_per_token(
     host_bytes = sum(g.bytes_total for g in placement.host_groups) + placement.kv_host_bytes
     if host_bytes <= 0 or n_ubatch <= 0:
         return 0.0
-    return _prefill_per_ubatch_ms(placement) / float(n_ubatch)
+    return _prefill_per_ubatch_ms(placement, host) / float(n_ubatch)
 
 
-def _prefill_per_ubatch_ms(placement: Placement) -> float:
+def _prefill_per_ubatch_ms(placement: Placement, host: HostProfile | None = None) -> float:
     """Milliseconds to stream every host-side byte once, i.e. per micro-batch."""
     host_bytes = sum(g.bytes_total for g in placement.host_groups) + placement.kv_host_bytes
     if host_bytes <= 0:
         return 0.0
-    return (host_bytes / GIB) / PREFILL_STREAM_GIB_S * 1000.0
+    host = host or HostProfile()
+    # A non-positive rate is not a free transfer, so fall back to the calibrated default.
+    link_gib_s = host.link_gib_s if host.link_gib_s > 0.0 else PREFILL_STREAM_GIB_S
+    return (host_bytes / GIB) / link_gib_s * 1000.0
 
 
 def prefill_penalty_ms(
@@ -254,7 +262,7 @@ def prefill_penalty_ms(
     if host.unified_memory or n_prompt <= 0 or n_ubatch <= 0:
         return 0.0
     batches = -(-int(n_prompt) // int(n_ubatch))
-    return batches * _prefill_per_ubatch_ms(placement)
+    return batches * _prefill_per_ubatch_ms(placement, host)
 
 
 def rank(

@@ -9338,6 +9338,75 @@ class LlamaCppBackend:
             logger.debug(f"compute_cap probe failed: {e}")
             return {}
 
+    # Per-lane one-direction PCIe payload rate, GB/s, by link generation.
+    _PCIE_GB_S_PER_LANE = {1: 0.25, 2: 0.5, 3: 0.985, 4: 1.969, 5: 3.938, 6: 7.877}
+    # Measured fraction of that ceiling a real H2D stream reaches (a B200 moved 54.4 of a gen5 x16 63 GB/s link).
+    _PCIE_LINK_EFFICIENCY = 0.85
+
+    @staticmethod
+    def _nvidia_link_gib_s(gpu_indices = None, *, runner = None) -> Optional[float]:
+        """Slowest host-to-device PCIe rate in GiB/s over ``gpu_indices`` (PHYSICAL ids, every
+        reported device when None), or None when it cannot be read. Never raises.
+
+        ``runner`` returns nvidia-smi's stdout, or None on failure; injected by the tests so this
+        is checkable without a driver.
+        """
+        run = runner or LlamaCppBackend._nvidia_link_query
+        try:
+            out = run()
+        except Exception as e:
+            logger.debug(f"pcie link probe failed: {e}")
+            return None
+        if not out:
+            return None
+        rates: dict[int, float] = {}
+        for line in str(out).strip().splitlines():
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) < 3:
+                continue
+            try:
+                idx, gen, lanes = int(parts[0]), int(parts[1]), int(parts[2])
+            except ValueError:
+                # "[N/A]" on a vGPU or a passthrough guest, and any other unparsable row.
+                continue
+            per_lane = LlamaCppBackend._PCIE_GB_S_PER_LANE.get(gen)
+            if per_lane is None or lanes <= 0:
+                continue
+            gb_s = lanes * per_lane * LlamaCppBackend._PCIE_LINK_EFFICIENCY
+            rates[idx] = gb_s * 1e9 / float(1024**3)
+        if not rates:
+            return None
+        wanted = None if gpu_indices is None else {int(i) for i in gpu_indices}
+        # Devices this plan cannot credit do not bound it; a credited one that reported nothing
+        # leaves the others speaking for it, which still beats quoting the PCIe 5 default.
+        credited = [v for idx, v in rates.items() if wanted is None or idx in wanted]
+        return min(credited) if credited else None
+
+    @staticmethod
+    def _nvidia_link_query() -> Optional[str]:
+        """nvidia-smi's index,gen,width rows, or None when the tool is absent or fails."""
+        try:
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=index,pcie.link.gen.current,pcie.link.width.current",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 10,
+                env = child_env_without_native_path_secret(),
+                **_windows_hidden_subprocess_kwargs(),
+            )
+            if result.returncode != 0:
+                return None
+            return result.stdout
+        except Exception as e:
+            logger.debug(f"pcie link probe failed: {e}")
+            return None
+
     @classmethod
     def _cuda_sm_gate_error(cls, binary: Optional[str] = None) -> Optional[str]:
         """Error message when every visible GPU is OLDER than the oldest arch the
@@ -22148,6 +22217,18 @@ class LlamaCppBackend:
                         # An iGPU or APU reports host RAM as VRAM: crediting it and
                         # then "spilling" into that pool counts one memory twice.
                         "shared_gpu_ids": set(_shared_gpu_ids or ()),
+                        # The PCIe rate a spill's prefill stream will actually run at, over the
+                        # devices this plan may credit. None on a Vulkan or ROCm host, where the
+                        # cost model's PCIe 5 default stands: nvidia-smi has no answer there.
+                        "link_gib_s": (
+                            None
+                            if is_vulkan_backend
+                            else self._nvidia_link_gib_s(
+                                gpu_indices
+                                if gpu_indices is not None
+                                else [_idx for _idx, _free in (gpus or ())]
+                            )
+                        ),
                     }
                     mmproj_note = (
                         f"mmproj: {mmproj_size / (1024**3):.1f} GB, " if mmproj_size else ""
@@ -27898,7 +27979,7 @@ class LlamaCppBackend:
         env: Optional[Mapping[str, str]] = None,
     ) -> "Optional[SpillPlan]":
         """A ``-ot`` spill plan for a load Unsloth could not fit, or None to abstain."""
-        from core.inference.offload_cost_model import HostProfile
+        from core.inference.offload_cost_model import PREFILL_STREAM_GIB_S, HostProfile
         from core.inference.offload_planner import ContextPolicy, PlanOptions, plan_placement
 
         source_env = os.environ if env is None else env
@@ -28284,6 +28365,10 @@ class LlamaCppBackend:
                 # tracks core count. Read the real one, not a default.
                 host = HostProfile(
                     threads = decode_threads,
+                    # Prefill streams the spilled weights over the link, so it is priced at THIS
+                    # host's PCIe rate. The default was measured on PCIe 5 x16 and under-prices a
+                    # Colab L4 or a desktop x4 slot several fold, which is where a spill loses.
+                    link_gib_s = float(inputs.get("link_gib_s") or PREFILL_STREAM_GIB_S),
                     # Wired, not defaulted. On a unified-memory APU the credited
                     # "VRAM" IS system RAM, so an -ot spill frees no device memory
                     # and only buys the CPU backend's slower read path. The planner

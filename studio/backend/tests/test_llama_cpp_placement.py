@@ -3377,3 +3377,86 @@ def test_a_restored_cpu_fallback_the_host_can_hold_says_nothing(tmp_path, monkey
     _launch_with_vulkan_cpu_replay(backend, gguf, crash = False, cpu_fallback = True)
 
     assert backend.last_load_warning is None
+
+
+# ------------------------------------------------- the PCIe link the cost model prices prefill at
+
+
+def _link(rows, indices = None):
+    return LlamaCppBackend._nvidia_link_gib_s(indices, runner = lambda: rows)
+
+
+def test_the_link_rate_follows_the_reported_generation_and_width():
+    """gen x width is the ceiling; 0.85 of it is what an H2D stream reaches (a B200 moved
+    54.4 GB/s of a gen5 x16 link's 63). Converted to GiB/s, the unit the cost model uses."""
+    gen5 = 16 * 3.938 * 0.85 * 1e9 / float(1024**3)
+    gen4 = 16 * 1.969 * 0.85 * 1e9 / float(1024**3)
+    assert _link("0, 5, 16") == pytest.approx(gen5, rel = 1e-6)
+    assert _link("0, 4, 16") == pytest.approx(gen4, rel = 1e-6)
+    assert _link("0, 4, 4") == pytest.approx(gen4 / 4.0, rel = 1e-6)
+    assert gen4 < 30.0, "a gen4 x16 host is nowhere near the 55 GiB/s default"
+
+
+def test_the_slowest_credited_device_sets_the_rate():
+    """The plan spills across every device it credits, so its prefill runs at the worst
+    link among them; a card the plan cannot use does not bound anything."""
+    rows = "0, 5, 16\n1, 3, 4\n"
+    assert _link(rows) == pytest.approx(_link("1, 3, 4"))
+    assert _link(rows, [0]) == pytest.approx(_link("0, 5, 16"))
+    assert _link(rows, [0, 1]) == pytest.approx(_link("1, 3, 4"))
+    assert _link(rows, [7]) is None, "no credited device reported a link"
+
+
+def test_an_unreadable_link_is_unknown_rather_than_guessed():
+    """Every one of these leaves the cost model on its calibrated default, which is the
+    behaviour that existed before the link was read at all."""
+    assert _link("0, [N/A], [N/A]") is None
+    assert _link("0, unknown, 16") is None
+    assert _link("0, 9, 16") is None, "a generation with no published rate"
+    assert _link("0, 4, 0") is None
+    assert _link("0, 4") is None
+    assert _link("") is None
+    assert _link(None) is None
+    assert LlamaCppBackend._nvidia_link_gib_s(runner = lambda: 1 / 0) is None
+
+
+def test_a_readable_device_still_answers_beside_a_broken_row():
+    """A malformed row is skipped, not fatal: the surviving devices are still better
+    evidence than the PCIe 5 default."""
+    assert _link("0, [N/A], [N/A]\n1, 4, 16\n") == pytest.approx(_link("1, 4, 16"))
+
+
+def test_the_link_query_asks_nvidia_smi_for_the_current_link():
+    """The negotiated width, not the maximum: a card idles at x1 but trains up under
+    load, and gen.current is what the driver reports for the active link."""
+    seen = {}
+
+    class _Result:
+        returncode = 0
+        stdout = "0, 5, 16\n"
+
+    def _run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        seen["timeout"] = kwargs.get("timeout")
+        return _Result()
+
+    with patch("subprocess.run", _run):
+        assert LlamaCppBackend._nvidia_link_query() == "0, 5, 16\n"
+    assert seen["cmd"][0] == "nvidia-smi"
+    assert "--query-gpu=index,pcie.link.gen.current,pcie.link.width.current" in seen["cmd"]
+    assert "--format=csv,noheader,nounits" in seen["cmd"]
+    assert seen["timeout"] == 10
+
+
+def test_the_link_query_never_raises_and_never_guesses():
+    """Same contract as the compute_cap probe beside it: a missing tool, a non-zero exit
+    or anything else is None, and no exception reaches a load."""
+
+    class _Failed:
+        returncode = 9
+        stdout = "0, 5, 16\n"
+
+    with patch("subprocess.run", lambda *a, **k: _Failed()):
+        assert LlamaCppBackend._nvidia_link_query() is None
+    with patch("subprocess.run", side_effect = FileNotFoundError("nvidia-smi")):
+        assert LlamaCppBackend._nvidia_link_query() is None
