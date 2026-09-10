@@ -1438,6 +1438,12 @@ class TestTheOpeningLeaseIsPricedOnTheProfiledPrompt:
         )
         assert wire(profile) > wire(None), "the profile is what makes the marker cost words"
         assert charge(profile) - charge(None) == wire(profile) - wire(None)
+        # The raw surfaces reserve from the payload alone, and their builders neutralise on
+        # the same profile.
+        raw = lambda markup: _openai_llama_admission_tokens(
+            payload, budget = 65536, capacity = 1, context_window = 65536, markup = markup
+        )
+        assert raw(profile) > raw(None)
 
     def test_the_reservation_hands_the_backends_profile_over(self):
         import inspect

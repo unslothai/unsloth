@@ -2468,7 +2468,7 @@ def _openai_llama_admission_charged_prompt_tokens(
             markup = markup,
         ) + _openai_llama_admission_transport_tokens(payload)
     return _openai_llama_admission_prompt_tokens(
-        payload, image_tokens = image_tokens, injected_tools = injected_tools
+        payload, image_tokens = image_tokens, injected_tools = injected_tools, markup = markup
     )
 
 
@@ -35846,13 +35846,15 @@ async def _openai_passthrough_stream_admitted(
         _respawn_retried = False
 
         def _repriced_passthrough_cap(fitted):
-            """The bound for what survives the drop, not for the history it removed."""
+            """The bound for what survives the drop, not for the history it removed. Raw, as the
+            first bound was: a retry priced as preemptable would take the whole window back."""
             return _openai_llama_admission_enforced_max_tokens(
                 payload,
                 request = request,
                 llama_backend = llama_backend,
                 conversation = fitted,
                 injected_tools = body.get("tools"),
+                preemptable = False,
             )
 
         def _apply_passthrough_truncation(err_text: str) -> bool:
@@ -36823,13 +36825,15 @@ async def _openai_passthrough_non_streaming_upstream(
     _respawn_retried = False
 
     def _repriced_passthrough_cap(fitted):
-        """The bound for what survives the drop, not for the history it removed."""
+        """The bound for what survives the drop, not for the history it removed. Raw, as the
+        first bound was: a retry priced as preemptable would take the whole window back."""
         return _openai_llama_admission_enforced_max_tokens(
             payload,
             request = request,
             llama_backend = llama_backend,
             conversation = fitted,
             injected_tools = body.get("tools"),
+            preemptable = False,
         )
 
     def _apply_nonstream_truncation(err_text: str) -> bool:

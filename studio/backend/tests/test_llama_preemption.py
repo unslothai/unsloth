@@ -737,10 +737,19 @@ class TestTheCacheHoldsMoreThanTheLedgerKnows:
     def test_a_chat_that_has_not_prefilled_is_added_to_what_the_cache_holds(self):
         controller = _controller(key = "resident")
         controller.register("a", tokens = 2000, signal = PreemptSignal())
+        clock = [100.0]
+        controller._clock = lambda: clock[0]
         controller.note_resident(16383)
         # "a" has not decoded a token, so its 2000 are NOT among the 16383 already held:
         # they are a prefill still to come, and both have to fit.
         assert controller.committed_tokens() == 18383
+        controller.note_resident(None)
+        assert (
+            controller.committed_tokens() == 18383
+        ), "one failed read must not turn a full cache into an estimate"
+        from core.inference import llama_preemption
+
+        clock[0] += llama_preemption._RESIDENT_HOLD_S + 1
         controller.note_resident(None)
         assert controller.committed_tokens() == 2000, "a failed read falls back, not to zero"
 

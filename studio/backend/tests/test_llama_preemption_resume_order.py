@@ -269,6 +269,35 @@ class TestAResidencySampleIsOrderedAgainstTheMark:
         controller.note_resident(2000, started_at_seq = later)
         assert controller.snapshot().committed == 2000
 
+    def test_a_failed_read_within_the_hold_keeps_the_count_and_drops_the_residue(self):
+        clock = [50.0]
+
+        def fresh():
+            controller = _controller()
+            controller._clock = lambda: clock[0]
+            controller.register(
+                "raw", lease = _Lease(1000), tokens = 1000, state = ParticipantState.STREAMING_RAW
+            )
+            controller.note_measured("raw")
+            controller.note_resident(12000, reclaimable = 4000)
+            return controller
+
+        held = fresh()
+        assert held.try_grant_resume("raw", 8000) is True, "the confirmed residue is room"
+        failed = fresh()
+        clock[0] += 1.0
+        failed.note_resident(None)
+        assert failed.snapshot().committed == 12000, "one failed read lost the count"
+        assert (
+            failed.try_grant_resume("raw", 8000) is False
+        ), "residue a failed read cannot confirm is not room"
+        gone = fresh()
+        from core.inference import llama_preemption
+
+        clock[0] += llama_preemption._RESIDENT_HOLD_S + 1
+        gone.note_resident(None)
+        assert gone.snapshot().committed == 1000, "past the hold the ledger is all there is"
+
     def test_a_caller_that_states_no_epoch_keeps_the_old_behaviour(self):
         controller = _controller()
         controller.register(

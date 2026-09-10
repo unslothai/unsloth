@@ -109,13 +109,19 @@ class TestARawHolderIsAddedOnTopUntilItsPrefillLands:
 
     def test_a_failed_reading_does_not_fold_the_raw_charge(self):
         controller = _controller("http://raw-holder-unread")
+        clock = [100.0]
+        controller._clock = lambda: clock[0]
         controller.register("chat", tokens = 6000)
         controller.note_measured("chat")
         controller.note_resident(10000, reclaimable = 0)
         controller.register("raw", tokens = 3000, state = ParticipantState.STREAMING_RAW)
         controller.note_measured("raw")
         controller.note_resident(None)
-        # No reading at all: the ledger is the only figure, and it has every holder.
+        # One failed read keeps the last count, and the raw holder is still added on top.
+        assert controller.committed_tokens() == 13000
+        clock[0] += preemption._RESIDENT_HOLD_S + 1
+        controller.note_resident(None)
+        # The probe is gone: the ledger is the only figure, and it has every holder.
         assert controller.committed_tokens() == 9000
         controller.note_resident(13000, reclaimable = 0)
         assert controller.committed_tokens() == 13000
