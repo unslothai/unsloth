@@ -340,9 +340,8 @@ def test_a_host_cache_is_not_free_during_prefill():
 
 
 def test_a_partial_prefill_batch_still_copies_every_spilled_tensor():
-    """The weights cross once per micro-batch and a partial batch pays the same
-    copy, so a 512-token prompt at --ubatch-size 2048 is one transfer, not a
-    quarter of one, and 513 tokens at 512 are two."""
+    """The weights cross once per micro-batch and a partial batch pays the same copy, so a
+    512-token prompt at --ubatch-size 2048 is one transfer and 513 tokens at 512 are two."""
     from core.inference.offload_cost_model import prefill_penalty_ms
 
     p = Placement([DENSE_FFN_G])
@@ -362,9 +361,8 @@ def test_a_partial_prefill_batch_still_copies_every_spilled_tensor():
 
 
 def test_prefill_is_priced_at_the_hosts_own_link():
-    """The 55 GiB/s default was measured on PCIe 5 x16. A Colab L4 moves 12.3 GiB/s and a
-    desktop x4 slot about 6.5, so pricing every host at the reference rate under-prices a
-    spill's prefill several fold on exactly the machines that need the planner most."""
+    """The 55 GiB/s default was measured on PCIe 5 x16. A Colab L4 moves 12.3 GiB/s and a desktop
+    x4 slot about 6.5, so the reference rate under-prices a spill's prefill several fold."""
     from core.inference.offload_cost_model import PREFILL_STREAM_GIB_S, prefill_penalty_ms
 
     p = Placement([DENSE_FFN_G])
@@ -384,9 +382,8 @@ def test_prefill_is_priced_at_the_hosts_own_link():
 
 
 def test_a_slower_link_only_moves_the_prefill_term_of_rank():
-    """Generation reads host weights on the CPU backend and never crosses the link
-    (measured: spilled generation tracks thread count, not PCIe generation), so a pure-decode
-    ranking must not move while a pure-prefill one must."""
+    """Generation reads host weights on the CPU backend and never crosses the link (measured:
+    spilled generation tracks thread count, not PCIe generation), so only prefill may move."""
     p = Placement([DENSE_FFN_G])
     fast = HostProfile(threads = 6)
     slow = HostProfile(threads = 6, link_gib_s = 6.0)

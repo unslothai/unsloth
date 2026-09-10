@@ -30,10 +30,8 @@ def test_two_cells_are_worth_keeping():
 
 
 def test_most_cells_no_generation_length_can_rescue():
-    """The short-sequence caveat on the issue does not reach these: it only helps a
-    cell whose generation is already faster, and in 27 of 31 the planner is slower
-    to prefill AND slower per output token.
-    """
+    """The short-sequence caveat only helps a cell whose generation is already faster, and in 27
+    of 31 the planner is slower to prefill AND slower per output token."""
     hopeless = [c for c in REPORTED_CELLS if c.breakeven_generated_tokens is None]
     assert len(hopeless) == 27
 
@@ -52,10 +50,8 @@ def test_the_surviving_cells_break_even_at_plausible_lengths():
 
 
 def test_the_worst_cells_are_the_ones_that_barely_needed_to_spill():
-    """The damage is concentrated where the model nearly fit: both Qwen3-8B cells had
-    11008 MiB free for roughly 5 GB of weights, spilled anyway, and landed at 0.19x
-    and 0.21x, the two worst results in the table.
-    """
+    """The damage is concentrated where the model nearly fit: both Qwen3-8B cells had 11008 MiB
+    free for roughly 5 GB of weights, spilled anyway, and landed at 0.19x and 0.21x."""
     worst = sorted(REPORTED_CELLS, key = lambda cell: cell.speedup())[:2]
     assert {cell.model for cell in worst} == {"Qwen3-8B Q4"}
     assert all(cell.speedup() < 0.25 for cell in worst)

@@ -34,8 +34,8 @@ class ReportedCell:
         n_prompt: float = WORKLOAD_PROMPT_TOKENS,
         n_generated: float = WORKLOAD_GENERATED_TOKENS,
     ) -> tuple[float, float]:
-        """(planner, fit) wall seconds for one request of this shape, so the label
-        below is not an artefact of picking a favourite throughput column.
+        """(planner, fit) wall seconds for one request of this shape, so the label below is not an
+        artefact of picking a favourite throughput column.
         """
         planner = n_prompt / self.pp_planner + n_generated / self.tg_planner
         fit = n_prompt / self.pp_fit + n_generated / self.tg_fit
@@ -53,7 +53,7 @@ class ReportedCell:
     @property
     def breakeven_generated_tokens(self) -> float | None:
         """Generated tokens needed before the generation win repays the prefill loss, or ``None``
-        when the planner is slower per output token too and decoding longer only widens the gap.
+        when the planner is slower per output token too.
         """
         per_token_saved = 1.0 / self.tg_planner - 1.0 / self.tg_fit
         if per_token_saved >= 0.0:
@@ -99,8 +99,8 @@ REPORTED_CELLS: tuple[ReportedCell, ...] = (
     ReportedCell("Qwen3-8B Q4", "Ada", 11008, 29, 36, 1818.2, 6194.0, 101.81, 858.68),
 )
 
-# The two cells a gate must not throw away; every other cell here is a loss at the
-# published workload, so declining all 31 would score well and still be wrong.
+# The two cells a gate must not throw away: every other cell is a loss at the published workload,
+# so declining all 31 would score well and still be wrong.
 WINNING_CELLS: tuple[ReportedCell, ...] = tuple(
     cell for cell in REPORTED_CELLS if cell.speedup() > 1.0
 )

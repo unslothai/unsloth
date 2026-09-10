@@ -99,14 +99,13 @@ _RATE_RATIOS: dict[Access, float] = {
     Access.KV_CACHE: 20.1,
 }
 
-# bracketed by the two measurements (dense 49.4, MoE 66.9)
-# Prefill streaming bandwidth, GiB/s. Bracketed by the two measurements (dense 49.4, MoE 66.9); that spread is why this
-# is a coarse constant, not a curve. Measured on PCIe 5 x16 hosts, so it is only the DEFAULT for
-# ``HostProfile.link_gib_s``: a caller that can read the device's link passes its own rate.
+# Prefill streaming bandwidth, GiB/s, bracketed by the two measurements (dense 49.4, MoE 66.9); that
+# spread is why it is a coarse constant, not a curve. Measured on PCIe 5 x16, so it is only the
+# DEFAULT for ``HostProfile.link_gib_s``: a caller that can read the device's link passes its own.
 PREFILL_STREAM_GIB_S = 55.0
 
-# Spilling several groups costs MORE than the sum of each alone -- contention, not amortisation. Measured 6% for the
-# dense FFN + lm_head pair. The "costs are sub-additive" reading compares throughput percentages instead of times.
+# Spilling several groups costs MORE than the sum of each alone: contention, not amortisation.
+# Measured 6% for the dense FFN + lm_head pair.
 MULTI_GROUP_CONTENTION = 0.06
 
 
@@ -117,8 +116,8 @@ class TensorGroup:
     name: str
     bytes_total: int
     access: Access
-    # : Fraction of ``bytes_total`` read per token during GENERATION. 1.0 for : dense weights; ``n_expert_used /
-    # n_expert`` for MoE experts.
+    # Fraction of ``bytes_total`` read per token during GENERATION. 1.0 for dense weights,
+    # ``n_expert_used / n_expert`` for MoE experts.
     activation_fraction: float = 1.0
 
     @property
@@ -136,12 +135,11 @@ class HostProfile:
     """
 
     threads: int = REFERENCE_HOST_THREADS
-    # : Set for unified-memory hosts (Apple Silicon, AMD APU, Vulkan iGPU) where : "spilling" moves nothing, because the
-    # two pools are one pool.
+    # Set for unified-memory hosts (Apple Silicon, AMD APU, Vulkan iGPU), where "spilling" moves
+    # nothing because the two pools are one pool.
     unified_memory: bool = False
-    # : Host-to-device stream rate the PREFILL transfer runs at. The default is the reference host's PCIe 5 x16 rate, so
-    # a caller that cannot read the link keeps every number this module was calibrated on. Generation is unaffected: it
-    # reads host weights on the CPU backend and never crosses the link.
+    # Host-to-device rate the PREFILL transfer runs at; the default keeps the reference host's PCIe 5
+    # x16 rate this module was calibrated on. Generation never crosses the link, so it is unaffected.
     link_gib_s: float = PREFILL_STREAM_GIB_S
 
     @property
@@ -213,19 +211,13 @@ def prefill_penalty_ms_per_token(
 ) -> float:
     """Extra milliseconds per PROMPT token during prefill.
 
-    Uses FULL bytes, not activated bytes: a 512-token ubatch selects
-    essentially every expert at least once, so sparsity buys nothing here. This
-    is the term that makes MoE's prefill penalty WORSE than a dense model's even
-    though its generation penalty is much better.
+    Uses FULL bytes, not activated bytes: a 512-token ubatch selects essentially every expert at
+    least once, so sparsity buys nothing here, which is why MoE prefill is worse than dense even
+    though MoE generation is much better. Weights are copied once per ubatch and reused across it,
+    so the per-token cost falls as ``n_ubatch`` rises.
 
-    The weights are copied once per ubatch and reused across every token in it,
-    so the per-token cost falls as ``n_ubatch`` rises -- the amortisation that
-    makes prefill so much cheaper than generation per byte moved.
-
-    ``host`` is read for ``unified_memory`` and ``link_gib_s`` only: this regime
-    runs on the GPU with the weights copied in, so it is bound by the link and
-    NOT by host cores. That asymmetry against generation is the point, so callers
-    pass the same profile to both and let each use what applies.
+    ``host`` is read for ``unified_memory`` and ``link_gib_s`` only: this regime runs on the GPU
+    with the weights copied in, so it is bound by the link and NOT by host cores.
     """
     host = host or HostProfile()
     if host.unified_memory:

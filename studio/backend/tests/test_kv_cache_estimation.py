@@ -665,13 +665,10 @@ class TestTransformersIntrospection:
     def test_the_bootstrap_answers_the_gguf_spelling_without_transformers(
         self, monkeypatch, tmp_path
     ):
-        """The table is keyed by GGUF general.architecture, and unsloth/gpt-oss-20b-GGUF
-        spells it `gpt-oss` while the HF model_type is `gpt_oss`. Keyed the HF way the
-        bootstrap tier missed; on a box with transformers the next tier rescued it, but
-        with transformers absent, an empty cache and this GGUF's useless repo hints
-        (general.repo_url = https://huggingface.co/unsloth, which _hf_repo_from_url
-        rejects for having no owner/name) the estimator fell to the n_layers // 4
-        heuristic: 6 full-context layers instead of 12, 41% short at 8192."""
+        """The table is keyed by GGUF general.architecture, and unsloth/gpt-oss-20b-GGUF spells
+        it `gpt-oss` while the HF model_type is `gpt_oss`. Keyed the HF way, with transformers
+        absent, an empty cache and this GGUF's useless repo hints, the estimator fell to the
+        n_layers // 4 heuristic: 6 full-context layers instead of 12, 41% short at 8192."""
         import sys
 
         self._isolate_cache(monkeypatch, tmp_path)
@@ -803,8 +800,8 @@ class TestCanEstimateKV:
         assert b._can_estimate_kv()
 
     def test_the_lora_rank_alone_is_not_sufficient(self):
-        # llama_hparams::is_mla needs both MLA head lengths, so a header with the
-        # rank and no dimensions at all has no cache shape to price.
+        # llama_hparams::is_mla needs both MLA head lengths, so a header with the rank and no
+        # dimensions has no cache shape to price.
         b = LlamaCppBackend()
         b._n_layers = 61
         b._kv_lora_rank = 512
@@ -883,9 +880,8 @@ class TestMLAEstimation:
         assert result == expected
 
     def test_no_mla_head_lengths_leaves_the_latent_path(self):
-        """llama_hparams::is_mla is keyed on the two MLA head lengths, so a GGUF
-        carrying only kv_lora_rank gets the ordinary per-head K+V cache from
-        llama.cpp (unsloth/DeepSeek-R1-GGUF) and must be priced on path 4."""
+        """llama_hparams::is_mla is keyed on the two MLA head lengths, so a GGUF carrying only
+        kv_lora_rank gets the ordinary per-head K+V cache (unsloth/DeepSeek-R1-GGUF), path 4."""
         b = self._mla_backend(_key_length_mla = None, _value_length_mla = None)
         cells = _runtime_kv_cells(1000)
         assert b._estimate_kv_cache_bytes(1000, "f16") == 61 * cells * 1 * (576 + 512) * 2
@@ -1259,8 +1255,7 @@ class TestPathPriority:
     """Confirm: MLA > Hybrid Mamba > SWA > GQA > Legacy."""
 
     def test_mla_takes_priority_over_all(self):
-        """If the MLA head lengths are set, the latent path wins even with other
-        fields present."""
+        """The latent path wins even with other fields present."""
         b = LlamaCppBackend()
         b._n_layers = 61
         b._n_kv_heads = 1

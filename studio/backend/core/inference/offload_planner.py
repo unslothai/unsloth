@@ -48,12 +48,11 @@ from core.inference.offload_layout import (
 GIB = 1024**3
 MIB = 1024**2
 
-# Ceiling for the context probe in :func:`max_context_for` when no reserve slope and
-# no training window bound the search. Far above any window llama.cpp serves.
+# Ceiling for the :func:`max_context_for` probe when no reserve slope and no training window bound
+# the search. Far above any window llama.cpp serves.
 _MAX_CTX_SEARCH = 1 << 24
 
-# Nominal ggml bits-per-weight, by quant type: a type's block size divided by its bytes per
-# block.
+# Nominal ggml bits-per-weight by quant type: block size divided by bytes per block.
 _NOMINAL_BPW: dict[str, float] = {
     "Q2_K": 2.5625,
     "Q3_K": 3.4375,
@@ -77,8 +76,8 @@ _NOMINAL_BPW: dict[str, float] = {
     "F32": 32.0,
 }
 
-# Above this ratio the every-block ladder beat the whole-FFN planner on every MoE
-# measured; below it, it lost or went flat.
+# Above this ratio the every-block ladder beat the whole-FFN planner on every MoE measured; below
+# it, it lost or went flat.
 _LADDER_BPW_THRESHOLD = 1.40
 
 
@@ -95,8 +94,7 @@ def moe_down_up_bpw_ratio(layout) -> Optional[float]:
             ups.append(u)
     if not downs:
         return None
-    # Mean over blocks: a mixed quant gives different types to different blocks, and
-    # the decision is about the model, not about one layer.
+    # Mean over blocks: a mixed quant types blocks differently, and this decides about the model.
     mean_down = sum(downs) / len(downs)
     mean_up = sum(ups) / len(ups)
     return (mean_down / mean_up) if mean_up else None
@@ -137,76 +135,72 @@ class FfnGranularity(Enum):
 @dataclass(frozen = True)
 class PlanOptions:
     overhead_bytes_per_device: int = (3 * GIB) // 2
-    # The part of that reserve that is NOT flat, in KiB per token of TOTAL context, not of
-    # prompt length.
+    # The non-flat part of that reserve, per token of TOTAL context, not of prompt length.
     overhead_bytes_per_token: int = 23961
-    # Below this the term is zero, so the flat reserve is unchanged and no existing placement
-    # moves.
+    # Below this the term is zero, so the flat reserve is unchanged and no placement moves.
     overhead_free_ctx: int = 32768
     extra_resident_bytes: int = 0
     pipeline_overhead_bytes: int = 0
     # Host RAM this planner refuses to spend, so a spill does not push the box into swap.
     host_ram_headroom_bytes: int = 2 * GIB
-    # True when THIS launch will read layout.per_layer_embd_bytes from the mapping rather than hold it resident, which
-    # takes it out of the mmap branch's host RAM. The seam decides it: the arch, the build's --lazy-mode and the
-    # resolved mode all have to agree (llama-model-loader.cpp:llama_model_loader::lazy_read::add). Default False keeps
-    # the old full charge for every caller that does not price it.
+    # True when THIS launch reads layout.per_layer_embd_bytes from the mapping rather than holding
+    # it resident, which takes it out of the mmap branch's host RAM. The seam decides it: the arch,
+    # the build's --lazy-mode and the resolved mode must agree
+    # (llama-model-loader.cpp:llama_model_loader::lazy_read::add). Default False keeps the full
+    # charge for every caller that does not price it.
     ple_read_lazily: bool = False
     context_policy: ContextPolicy = ContextPolicy.NEVER_REDUCE
     min_ctx: int = 4096
     spill_order: SpillOrder = SpillOrder.BACK_FIRST
-    # How finely a block's FFN may be broken up. BOUNDARY is what llama.cpp does
-    # (``fit.cpp:490`` applies its graded fraction to the boundary layer ``il0`` and
-    # ``LAYER_FRACTION_MOE`` to every layer past it).
+    # How finely a block's FFN may be broken up. BOUNDARY is what llama.cpp does (``fit.cpp:490``
+    # grades the boundary layer ``il0`` and applies ``LAYER_FRACTION_MOE`` to every layer past it).
     ffn_granularity: FfnGranularity = FfnGranularity.BOUNDARY
-    # Pick the granularity from the model's quant types instead of taking ``ffn_granularity`` as
-    # given.
+    # Pick the granularity from the model's quant types instead of taking ``ffn_granularity``.
     granularity_from_quant: bool = False
     # Which matrix goes first. llama.cpp's order (common/fit.cpp:407-440), and UNMEASURED by us.
     ffn_rung_order: tuple[SpillClass, ...] = FFN_SPILL_CLASSES
     allow_lm_head_spill: bool = True
     allow_attention_spill: bool = False
     allow_kv_host_fallback: bool = False
-    # Let a PARTIAL spill through the multi-device check instead of abstaining. Lifting it rests
-    # on one unvalidated thing: ``_device_slots`` reproducing llama.cpp's row assignment (free
-    # memory per device at llama-model.cpp:1425-1433, prefix-summed at :1439-1447, upper_bound
-    # on the normalised layer index at :1457).
+    # Let a PARTIAL spill through the multi-device check instead of abstaining. Rests on one
+    # unvalidated thing: ``_device_slots`` reproducing llama.cpp's row assignment (free memory per
+    # device at llama-model.cpp:1425-1433, prefix-summed at :1439-1447, upper_bound on the
+    # normalised layer index at :1457).
     trust_device_row_model: bool = False
     host: HostProfile = field(default_factory = HostProfile)
-    # q8_0 measured slower generation, and without GGML_CUDA_FA_ALL_QUANTS only four
-    # MATCHED K/V combinations are compiled (a mismatched pair falls to CPU and stalls).
+    # q8_0 measured slower generation, and without GGML_CUDA_FA_ALL_QUANTS only four MATCHED K/V
+    # combinations are compiled (a mismatched pair falls to CPU and stalls).
     allow_kv_quant: bool = False
     kv_quant_type: str = "q8_0"
-    # The launch's cache is ALREADY quantised (its element is under two bytes), so the first,
-    # and normally only, mode is priced as such and ``kv_quant_type`` names the type in force.
+    # The launch's cache is ALREADY quantised (element under two bytes), so the first and normally
+    # only mode is priced as such and ``kv_quant_type`` names the type in force.
     cache_quantised: bool = False
     # The user set ``--cache-ram -1``, so no figure charged for the cache is a ceiling.
     prompt_cache_unbounded: bool = False
-    # The caller passed -nkvo, so llama.cpp puts the WHOLE cache on the host: offload is one
-    # scalar and the buffer type falls back to the CPU one for every layer
-    # (llama-kv-cache.cpp:210-219), same branch in the recurrent and DSV4 caches.
+    # The caller passed -nkvo, so llama.cpp puts the WHOLE cache on the host: offload is one scalar
+    # and every layer falls back to the CPU buffer type (llama-kv-cache.cpp:210-219), same branch
+    # in the recurrent and DSV4 caches.
     kv_on_host: bool = False
     workload_prompt_tokens: int = 2048
     workload_generated_tokens: int = 256
     n_ubatch: int = 512
-    # How much of llama.cpp's own predicted penalty a plan must remove before it is worth
-    # deviating from ``--fit on`` at all.
+    # How much of llama.cpp's own predicted penalty a plan must remove to be worth deviating from
+    # ``--fit on`` at all.
     min_penalty_reduction: float = 0.10
     require_cost_win: bool = False
 
-    # Every default below means "not supplied", so a call that sets none of them is
-    # byte-identical to the planner before they existed.
+    # Every default below means "not supplied", so a call that sets none of them plans as before.
     mmproj_bytes: int = 0
     mmproj_movable: bool = False
     n_parallel: int = 1
     min_parallel: int = 1
     kv_bytes_floor_by_parallel: Mapping[int, int] = field(default_factory = dict)
-    # The window-bound part of ``kv_bytes_floor`` at the requested context and slot count.
-    # 0 means "unknown", which keeps the whole floor charged as live.
+    # The window-bound part of ``kv_bytes_floor`` at the requested context and slot count; 0 means
+    # unknown, which keeps the whole floor charged as live.
     kv_swa_bytes_floor: int = 0
     kv_bytes_at: Optional[Callable[[int, int], int]] = None
-    # The same window-bound half at any (context, slot count): compact SWA storage is per
-    # stream, so rung 1 shrinks it with the slots and the scalar above goes stale.
+    # The same half at any (context, slot count): compact SWA storage is per stream, so rung 1
+    # shrinks it with the slots and the scalar above goes stale.
     kv_swa_bytes_at: Optional[Callable[[int, int], int]] = None
     overhead_bytes_at: Optional[Callable[[int], int]] = None
     n_ubatch_by_parallel: Mapping[int, int] = field(default_factory = dict)
@@ -214,8 +208,7 @@ class PlanOptions:
     draft_droppable: bool = False
     draft_drop_penalty_frac: float = 0.05
     cache_ram_default_mib: int = 8192
-    # MoE at a long prompt is the one operating point where -ot measured WORSE than llama.cpp's
-    # own layerwise fit.
+    # The one operating point where -ot measured WORSE than llama.cpp's own layerwise fit.
     moe_long_prompt_ctx: int = 32768
     kv_unified: bool = False
     ctx_step: int = 1024
@@ -237,11 +230,11 @@ class Plan:
     insufficient: bool = False
     vram_bytes: int = 0
     host_bytes: int = 0
-    # Predicted extra ms per generated token versus fully resident, on the host this was
-    # planned for. 0.0 when nothing is spilled.
+    # Extra ms per generated token versus fully resident on the host planned for; 0.0 when nothing
+    # is spilled.
     predicted_gen_penalty_ms: float = 0.0
-    # The two sides of the cost gate, in ms for a whole request of ``PlanOptions``'s workload
-    # shape: this placement, and what llama.cpp's own fitter would have cost.
+    # The two sides of the cost gate, in ms per request of ``PlanOptions``'s workload shape: this
+    # placement, and what llama.cpp's own fitter would have cost.
     predicted_request_ms: float = 0.0
     predicted_fit_request_ms: float = 0.0
     reason: str = ""
@@ -250,17 +243,16 @@ class Plan:
     draft_dropped: bool = False
     cache_ram_mib: int = -1
     declined_by_gate: bool = False
-    # Whether host_bytes above includes the per-layer embeddings (False when llama.cpp reads them lazily from the mapping).
+    # Whether host_bytes includes the per-layer embeddings (False when read lazily from the map).
     ple_charged_to_host: bool = True
-    # The decline is a MEASUREMENT rather than a comparison, and it does not move with the
-    # context, so FIT_ONLY must not retry smaller.
+    # The decline is a MEASUREMENT, not a comparison, and does not move with the context, so
+    # FIT_ONLY must not retry smaller.
     veto: bool = False
     priced: bool = False
-    # Layer rows per device under the split this plan was budgeted against, in the
-    # caller's device order, or () when there is only one device or the split could
-    # not be modelled. Emitted as ``-ts``: the plan pins the launch with ``--fit
-    # off``, so without it llama.cpp re-derives the split from the free VRAM its own
-    # child reads, which is not the number this was planned on.
+    # Layer rows per device under the split this plan was budgeted against, in the caller's device
+    # order, or () for one device or an unmodellable split. Emitted as ``-ts``: the plan pins the
+    # launch with ``--fit off``, so without it llama.cpp re-derives the split from the free VRAM
+    # its own child reads, which is not what this was planned on.
     device_layer_counts: tuple[int, ...] = field(default_factory = tuple)
 
     @property
@@ -269,8 +261,7 @@ class Plan:
 
     @property
     def reshapes_launch(self) -> bool:
-        """A rung above the first weight spill fired, so the launch changes even
-        when no pattern is emitted."""
+        """A rung above the first weight spill fired, so the launch changes with no pattern."""
         return self.n_parallel > 0 or self.mmproj_to_host or self.draft_dropped
 
 
@@ -315,8 +306,8 @@ class _Knobs:
 
 
 def _outside_layout_bytes(opts: PlanOptions, knobs: Optional[_Knobs] = None) -> int:
-    """Device bytes the layout cannot see: the caller's scalar, the projector unless
-    rung 0 moved it, and the draft unless rung 2 dropped it."""
+    """Device bytes the layout cannot see: the caller's scalar, the projector unless rung 0 moved
+    it, and the draft unless rung 2 dropped it."""
     total = max(0, opts.extra_resident_bytes)
     if not (knobs and knobs.mmproj_to_host):
         total += max(0, opts.mmproj_bytes)
@@ -344,10 +335,10 @@ def _kv_floor_at(
     """The caller's cache floor re-priced for ``(n_ctx, n_parallel)``; ``None`` when it cannot be."""
     at = max(1, opts.n_parallel)
     asked = max(1, n_parallel)
-    # A unified cache is not slot-flat: the estimator prices ``swa * slots + ubatch`` window
-    # cells per stream, so the windowed half DOES shrink with the count. Ask whatever priced
-    # this geometry; only the linear fallback below cannot tell the two halves apart, and it
-    # keeps the count the caller priced.
+    # A unified cache is not slot-flat: the estimator prices ``swa * slots + ubatch`` window cells
+    # per stream, so the windowed half DOES shrink with the count. Ask whatever priced this
+    # geometry; only the linear fallback below cannot tell the halves apart, so it keeps the
+    # caller's count.
     exact = opts.kv_bytes_at is not None or asked in opts.kv_bytes_floor_by_parallel
     want = asked if (exact or not opts.kv_unified) else at
     if opts.kv_bytes_at is not None:
@@ -362,9 +353,8 @@ def _kv_floor_at(
         else:
             base = base * want // at
     if requested_ctx > 0 and n_ctx != requested_ctx and base > 0 and not layout.has_swa:
-        # A hybrid's floor is part fixed state, and the state does not shrink with the context:
-        # scaling the whole scalar prices away memory llama.cpp still allocates and the load
-        # then OOMs.
+        # A hybrid's floor is part fixed state, which does not shrink with the context: scaling
+        # the whole scalar prices away memory llama.cpp still allocates, and the load OOMs.
         state = min(base, max(0, layout.recurrent_bytes) * want)
         base = state + (base - state) * n_ctx // requested_ctx
     return base
@@ -410,8 +400,7 @@ def _select_units(
         while freed < deficit and remaining:
             if how is SpillOrder.LARGEST_FIRST:
                 residual = deficit - freed
-                # Prefer the SMALLEST unit that closes the gap: the last pick must
-                # not overshoot by a whole large one.
+                # Prefer the SMALLEST unit that closes the gap, so the last pick cannot overshoot.
                 covering = [u for u in remaining if u.nbytes >= residual]
                 pick = min(covering, key = lambda u: u.nbytes) if covering else remaining[0]
             else:
@@ -449,12 +438,11 @@ def _grade_the_boundary_block(
     if not coarse:
         return taken, freed
     by_index = {b.index: b for b in layout.blocks}
-    # The last coarse unit taken IS the boundary: selection appends in the order
-    # it closed the gap, so everything before it was still short of the deficit.
+    # The last coarse unit taken IS the boundary: selection appends in the order it closed the
+    # gap, so everything before it was still short of the deficit.
     boundary = coarse[-1]
     if taken[-1] is not boundary:
-        # A LATER rung closed the gap: the coarse rung ran out and dense or shared-FFN units
-        # followed it.
+        # A LATER rung closed the gap: dense or shared-FFN units followed the coarse rung.
         return taken, freed
     block = by_index.get(boundary.index)
     if block is None or not block.graded:
@@ -473,8 +461,8 @@ def _grade_the_boundary_block(
         kept.append(SpillUnit(block.index, cls, nbytes))
         running += nbytes
     if running < deficit or len(kept) >= len(rungs):
-        # Either the graded rungs cannot cover what the whole block covered, or they add
-        # up to it anyway. Keep the coarse unit: one pattern, one split fewer.
+        # The graded rungs either cannot cover the whole block or add up to it anyway. Keep the
+        # coarse unit: one pattern, one split fewer.
         return taken, freed
     return [u for u in taken if u is not boundary] + kept, running
 
@@ -565,8 +553,7 @@ def _spill_placement(
     if routed:
         groups.append(_ffn_group(layout, routed))
     if dense_ffn:
-        # Shared experts and dense FFN: read in full every token, unlike the
-        # routed experts above, so no activation fraction applies.
+        # Read in full every token, unlike the routed experts, so no activation fraction applies.
         groups.append(TensorGroup("dense_ffn", dense_ffn, Access.CONTIGUOUS))
     if attention:
         groups.append(TensorGroup("attention", attention, Access.CONTIGUOUS))
@@ -594,8 +581,8 @@ def _fit_boundary_overflow(block: BlockLayout, deficit: int) -> Optional[int]:
     when even the whole FFN of it does not.
     """
     if deficit <= 0:
-        # Nothing is short, so the fitter overflows nothing: a rung that "covers" a
-        # non-positive deficit would be a spill llama.cpp never makes.
+        # Nothing is short, so the fitter overflows nothing: a rung "covering" a non-positive
+        # deficit would be a spill llama.cpp never makes.
         return None
     down = block.class_bytes(SpillClass.FFN_DOWN)
     for nbytes in (down, down + block.class_bytes(SpillClass.FFN_GATE), block.spillable_bytes):
@@ -607,10 +594,10 @@ def _fit_boundary_overflow(block: BlockLayout, deficit: int) -> Optional[int]:
 def _swa_floor_at(opts: PlanOptions, n_ctx: int, n_seq: int) -> int:
     """The window-bound half of the cache at ``(n_ctx, n_seq)``; 0 when unknown.
 
-    The scalar was measured at the caller's slot count, and a window is stored per stream
-    (``swa * slots + ubatch`` cells under a unified cache, ``swa + ubatch`` per stream
-    otherwise), so after rung 1 it is stale in the direction that makes the fitter look
-    dearer: ``min(stale, kv_total)`` reads most of a smaller cache as fully live.
+    The scalar was measured at the caller's slot count and a window is stored per stream
+    (``swa * slots + ubatch`` cells under a unified cache, ``swa + ubatch`` per stream otherwise),
+    so after rung 1 it is stale in the direction that makes the fitter look dearer:
+    ``min(stale, kv_total)`` reads most of a smaller cache as fully live.
     """
     slots = max(1, n_seq)
     if opts.kv_swa_bytes_at is not None:
@@ -634,17 +621,18 @@ def _fit_fallback_placement(
     n_seq: int = 1,
     kv_layer_weights: Sequence[int] = (),
 ) -> Optional[Placement]:
-    """What llama.cpp's own fitter would place here, priced the same way. The output tensor rides
-    the layer list at ``n_layer_all`` and is the LAST row to leave, not the first: llama.cpp
-    keeps rows ``[i_gpu_start, i_gpu_start + act_gpu_layers)`` with ``i_gpu_start =
-    max(n_layer_all + 1 - n_gpu_layers, 0)`` (llama-model.cpp:1467-1492), so lm_head is resident
-    in every placement this loop can return.
+    """What llama.cpp's own fitter would place here, priced the same way.
+
+    The output tensor rides the layer list at ``n_layer_all`` and is the LAST row to leave, not the
+    first: llama.cpp keeps rows ``[i_gpu_start, i_gpu_start + act_gpu_layers)`` with
+    ``i_gpu_start = max(n_layer_all + 1 - n_gpu_layers, 0)`` (llama-model.cpp:1467-1492), so
+    lm_head is resident in every placement this loop can return.
     """
     blocks = list(layout.blocks)
     if not blocks:
         return None
-    # Both arms size ONE cache: the planner's arm trusts the exact size, so the
-    # fitter must too (the product charges a q4_0 cache 1.78x its real bytes).
+    # Both arms size ONE cache: the planner's arm trusts the exact size, so the fitter must too
+    # (the product charges a q4_0 cache 1.78x its real bytes).
     trust = opts.kv_bytes_at is not None
     resident = all_resident_bytes(
         layout,
@@ -656,8 +644,8 @@ def _fit_fallback_placement(
         trust_floor = trust,
     )
     if resident <= budget:
-        # --fit on keeps every layer on the device when the load already fits, so the
-        # fallback moves nothing and the gate must rank the spill against a free launch.
+        # --fit on keeps every layer on the device when the load already fits, so the fallback
+        # moves nothing and the gate must rank the spill against a free launch.
         return Placement(host_groups = [])
     kv_total = (
         0
@@ -673,10 +661,9 @@ def _fit_fallback_placement(
     weights = [max(0, int(w)) for w in kv_layer_weights]
     if len(weights) != layout.n_layers or not any(weights):
         weights = []
-    # The recurrent state sits on the rows that hold no cache, and the fitter moves a LEADING
-    # prefix, so an interleaved hybrid's prefix carries whatever share of those rows it
-    # spans, not ``moved / n_layers`` of the state. Uniform only when no vector says which
-    # rows they are.
+    # The recurrent state sits on the rows that hold no cache and the fitter moves a LEADING
+    # prefix, so an interleaved hybrid's prefix carries the share of those rows it spans, not
+    # ``moved / n_layers`` of the state. Uniform only when no vector says which rows they are.
     state_total = 0 if kv_on_host else layout.recurrent_bytes * max(1, n_seq)
     recurrent_rows = {b.index for b in blocks if weights and weights[b.index] == 0}
     if state_total > 0 and recurrent_rows:
@@ -696,8 +683,8 @@ def _fit_fallback_placement(
             return 0
         return recurrent_prefix[min(moved, len(recurrent_prefix)) - 1]
 
-    # Running weight over the blocks the fitter walks, so a cache total can be
-    # apportioned over any PREFIX of them. Uniform when the caller cannot say.
+    # Running weight over the blocks the fitter walks, so a cache total can be apportioned over
+    # any PREFIX of them. Uniform when the caller cannot say.
     shares: list[int] = []
     running = 0
     for block in blocks:
@@ -711,22 +698,21 @@ def _fit_fallback_placement(
             return 0
         return int(total * shares[min(moved, len(shares)) - 1] / total_share)
 
-    # The cache is RESERVED at n_ctx but only the live prefix is ever read, and reading is what
-    # costs.
+    # The cache is RESERVED at n_ctx but only the live prefix is read, and reading is what costs.
     slot_window = n_ctx if opts.kv_unified else n_ctx // max(1, n_seq)
     swa_floor = _swa_floor_at(opts, n_ctx, n_seq)
     live_tokens = min(
         max(1, slot_window), max(1, opts.workload_prompt_tokens + opts.workload_generated_tokens)
     )
-    # Scaled by whatever correction ``kv_bytes_floor`` applied to the RESERVED size, so both
-    # sides of this function describe one cache.
+    # Scaled by whatever correction ``kv_bytes_floor`` applied to the RESERVED size, so both sides
+    # of this function describe one cache.
     reserved_product = cache_bytes(layout, n_ctx, kv_quantised = quantised)
     floor_scale = (kv_total / reserved_product) if reserved_product > 0 else 1.0
     if kv_on_host:
         kv_live_total = 0
     elif layout.has_swa and kv_bytes_floor > 0 and swa_floor > 0:
-        # A saturated window is read in full, but the full-context layers are RESERVED at
-        # n_ctx and only their live prefix is ever read.
+        # A saturated window is read in full, but the full-context layers are RESERVED at n_ctx
+        # and only their live prefix is read.
         swa_part = min(swa_floor, kv_total)
         kv_live_total = swa_part + int((kv_total - swa_part) * live_tokens / max(1, n_ctx))
     elif layout.has_swa and kv_bytes_floor > 0:
@@ -736,21 +722,21 @@ def _fit_fallback_placement(
         kv_live_total = int(cache_bytes(layout, live_tokens, kv_quantised = quantised) * floor_scale)
 
     if layout.is_moe:
-        # MEASURED, not assumed. On an MoE model ``--fit on`` keeps EVERY layer on the
-        # device and moves only the trailing layers' expert tensors, through the same kind
-        # of tensor override the planner emits (fit.cpp:434-440), so the cache stays
-        # resident and it moves close to the MINIMUM it needs, same as the planner.
+        # MEASURED, not assumed. On MoE, ``--fit on`` keeps EVERY layer on the device and moves
+        # only the trailing layers' expert tensors through the same kind of tensor override the
+        # planner emits (fit.cpp:434-440), so the cache stays resident and it moves close to the
+        # MINIMUM it needs, same as the planner.
         host_experts = 0
         for block in reversed(blocks):
             # fit.cpp grades only the FIRST partial layer it reaches (``ngl_t.overflow_type``,
-            # common/fit.cpp:486-560) and moves LAYER_FRACTION_MOE of every layer past it, so
-            # the boundary block gives up a rung and not its whole expert set.
+            # common/fit.cpp:486-560) and moves LAYER_FRACTION_MOE of every layer past it, so the
+            # boundary block gives up a rung and not its whole expert set.
             overflow = _fit_boundary_overflow(block, resident - host_experts - budget)
             if overflow is not None:
                 return Placement(host_groups = [_ffn_group(layout, host_experts + overflow)])
             host_experts += block.spillable_bytes
-        # Every expert on the host and still short. common/fit.cpp does not fail here: it
-        # lowers n_gpu_layers and moves whole LEADING layers with their cache share.
+        # Every expert on the host and still short: common/fit.cpp lowers n_gpu_layers instead of
+        # failing, moving whole LEADING layers with their cache share.
         host_layers = 0
         for moved, block in enumerate(blocks, start = 1):
             host_layers += block.resident_bytes
@@ -767,9 +753,9 @@ def _fit_fallback_placement(
                 return Placement(host_groups = groups, kv_host_bytes = kv_freed(kv_live_total, moved))
         return None
 
-    # Dense, where the whole-layer model IS what happens: the fitter only lowers
-    # n_gpu_layers (common/fit.cpp:551-559) and ``i_gpu_start`` sends every row BELOW it
-    # to the CPU (llama-model.cpp:1479-1484), so the host takes the LEADING blocks.
+    # Dense, where the whole-layer model IS what happens: the fitter only lowers n_gpu_layers
+    # (common/fit.cpp:551-559) and ``i_gpu_start`` sends every row BELOW it to the CPU
+    # (llama-model.cpp:1479-1484), so the host takes the LEADING blocks.
     def dense_placement(moved: int, spilled_ffn: int, attention: int) -> Placement:
         """``moved`` whole layers off the device, plus ``spilled_ffn`` FFN bytes."""
         groups: list[TensorGroup] = []
@@ -779,23 +765,23 @@ def _fit_fallback_placement(
             groups.append(TensorGroup("layers", attention, Access.CONTIGUOUS))
         host_recurrent = recurrent_moved(moved)
         if host_recurrent:
-            # CONTIGUOUS, not the cache rate: this is a small fixed-size conv and SSM state read
-            # straight through by the scan, not attention over a growing prefix.
+            # CONTIGUOUS, not the cache rate: a small fixed-size conv and SSM state read straight
+            # through by the scan, not attention over a growing prefix.
             groups.append(
                 TensorGroup("recurrent (moved layers)", host_recurrent, Access.CONTIGUOUS)
             )
         live_kv = kv_freed(kv_live_total, moved)
-        # ``kv_host_bytes``, so this is charged at ``Access.KV_CACHE``'s calibrated 20.1x
-        # and not at the contiguous weight rate: a host layer's cache is a host buffer
-        # (llama-kv-cache.cpp:214-225), but batch-1 attention over it is a strided GEMV,
-        # not the contiguous quantised GEMM 1.00x was measured on.
+        # ``kv_host_bytes``, so this is charged at ``Access.KV_CACHE``'s calibrated 20.1x and not
+        # at the contiguous weight rate: a host layer's cache is a host buffer
+        # (llama-kv-cache.cpp:214-225), but batch-1 attention over it is a strided GEMV, not the
+        # contiguous quantised GEMM 1.00x was measured on.
         return Placement(host_groups = groups, kv_host_bytes = live_kv)
 
     host_weights = 0
     host_spillable = 0
     for moved, block in enumerate(blocks, start = 1):
-        # fit.cpp's step 4 first: rather than lower ngl again it keeps this layer on the
-        # device and overrides part of its FFN, so its cache and state stay resident.
+        # fit.cpp's step 4 first: rather than lower ngl again it keeps this layer on the device
+        # and overrides part of its FFN, so its cache and state stay resident.
         short = resident - (
             host_weights + kv_freed(kv_total, moved - 1) + recurrent_moved(moved - 1)
         )
@@ -806,8 +792,8 @@ def _fit_fallback_placement(
             )
         host_weights += block.spillable_bytes + block.resident_bytes
         host_spillable += block.spillable_bytes
-        # lm_head is NOT in here: the output row stays on the device for any n_gpu_layers
-        # >= 1, so charging it both freed and billed bytes llama.cpp never moves.
+        # lm_head is NOT in here: the output row stays on the device for any n_gpu_layers >= 1, so
+        # charging it would credit bytes llama.cpp never moves.
         freed = host_weights + kv_freed(kv_total, moved) + recurrent_moved(moved)
         if resident - freed <= budget:
             return dense_placement(moved, host_spillable, host_weights - host_spillable)
@@ -830,12 +816,12 @@ def cache_bytes(
     naive = layout.kv_bytes(n_ctx, _kv_elem_bytes(kv_quantised))
     floor = max(0, kv_bytes_floor)
     if trust_floor:
-        # ``PlanOptions.kv_bytes_at`` priced THIS context and slot count, so there is nothing
-        # left for the product to correct at any architecture.
+        # ``PlanOptions.kv_bytes_at`` priced THIS context and slot count, so the product has
+        # nothing left to correct at any architecture.
         return floor
     if layout.has_swa and floor:
-        # Sliding-window attention breaks the product in the UP direction by construction:
-        # a window-sized cache, narrower heads, and one cache shared across 20 layers.
+        # Sliding-window attention breaks the product upward by construction: a window-sized
+        # cache, narrower heads, and one cache shared across 20 layers.
         return floor
     if layout.has_mla and floor:
         return floor
@@ -921,8 +907,8 @@ def max_context_for(
         + (0 if kv_on_host else layout.recurrent_bytes * max(1, n_seq))
         + (0 if spill_lm_head else layout.lm_head_bytes)
         + (0 if spill_all_ffn else layout.spillable_bytes)
-        # Shared and dense FFN inside a MoE block sit in resident_bytes and are a
-        # rung of their own, so "every FFN spilled" has to release them too.
+        # Shared and dense FFN inside a MoE block sit in resident_bytes and are a rung of their
+        # own, so "every FFN spilled" has to release them too.
         - (sum(b.dense_ffn_bytes for b in layout.blocks) if spill_all_ffn else 0)
     )
     per_token = layout.kv_bytes_per_token_f16 * _kv_elem_bytes(kv_quantised) // 2
@@ -940,13 +926,13 @@ def max_context_for(
         if floor <= 0:
             return naive
         if layout.has_swa:
-            # Flat for the WHOLE floor, and only because one scalar cannot say which layers hold
-            # the full-context half. ``kv_bytes_at`` splits it.
+            # Flat for the WHOLE floor, only because one scalar cannot say which layers hold the
+            # full-context half. ``kv_bytes_at`` splits it.
             return floor
         scaled = floor * ctx // floor_at if floor_at > 0 else floor
         if layout.has_mla:
             # ``cache_bytes`` trusts the floor outright on MLA, so taking the max here refused
-            # every MLA model that needed a shrink at a context this budget holds.
+            # every MLA model needing a shrink at a context this budget holds.
             return scaled
         return max(naive, scaled)
 
@@ -972,8 +958,8 @@ def max_context_for(
         elif layout.n_ctx_train:
             hi = layout.n_ctx_train
         elif priced:
-            # No reserve slope and no window: double until the priced cache alone is
-            # over budget, since the product would cut the search off far below it.
+            # No reserve slope and no window: double until the priced cache alone is over budget,
+            # since the product would cut the search off far below it.
             hi = 256
             while hi < _MAX_CTX_SEARCH and cache_at(hi) <= top:
                 hi *= 2
@@ -1009,9 +995,9 @@ def plan_placement(
 ) -> Plan:
     """Decide the placement for one launch, and record the split it was decided on.
 
-    Everything below is :func:`_plan_placement`; this only attaches the per-device
-    layer counts the plan was budgeted against, so the launch can pin them with
-    ``-ts`` instead of letting the child guess the split again.
+    Everything below is :func:`_plan_placement`; this only attaches the per-device layer counts the
+    plan was budgeted against, so the launch can pin them with ``-ts`` instead of letting the child
+    guess the split again.
     """
     plan = _plan_placement(
         layout,
@@ -1023,8 +1009,8 @@ def plan_placement(
         split_weights_per_device = split_weights_per_device,
         kv_layer_weights = kv_layer_weights,
     )
-    # Only a plan that will really be emitted: an abstention leaves llama.cpp's own
-    # placement alone, and pinning a split onto it would be a launch of its own.
+    # Only a plan that will really be emitted: an abstention leaves llama.cpp's own placement
+    # alone, and pinning a split onto it would be a launch of its own.
     if not plan.priced or plan.insufficient or plan.declined_by_gate:
         return plan
     counts = _modelled_device_layers(layout, vram_bytes_per_device, split_weights_per_device)
@@ -1038,13 +1024,11 @@ def _modelled_device_layers(
 ) -> tuple[int, ...]:
     """Rows per device under llama.cpp's own split, or () for one device.
 
-    The rows are the ones :func:`_device_slots` hands out, which is
-    ``n_layers + 1``: the last is the output row, which goes to the last device
-    (llama-model.cpp:1517). Handed back as ``-ts``, integer counts per device the
-    way ``common/fit.cpp:555`` writes them (``tensor_split[id] =
-    ngl_per_device[id].n_layer``), and they reproduce this assignment exactly --
-    llama.cpp prefix-sums the shares and normalises, so a device whose count is
-    ``c`` owns exactly ``c`` rows.
+    The rows are the ``n_layers + 1`` :func:`_device_slots` hands out, the last being the output
+    row, which goes to the last device (llama-model.cpp:1517). Handed back as ``-ts``, integer
+    counts per device the way ``common/fit.cpp:555`` writes them (``tensor_split[id] =
+    ngl_per_device[id].n_layer``), and they reproduce this assignment exactly: llama.cpp
+    prefix-sums the shares and normalises, so a device whose count is ``c`` owns ``c`` rows.
     """
     if len(vram_bytes_per_device) <= 1:
         return ()
@@ -1054,8 +1038,8 @@ def _modelled_device_layers(
     try:
         slots = _device_slots(n_slots, split_weights_per_device or vram_bytes_per_device)
     except ValueError:
-        # All-zero weights: llama.cpp errors on that split rather than producing
-        # one, and the planner has already declined for the same reason.
+        # All-zero weights: llama.cpp errors on that split rather than producing one, and the
+        # planner has already declined for the same reason.
         return ()
     return tuple(len(rows) for rows in slots)
 
@@ -1107,8 +1091,8 @@ def _plan_placement(
         return Plan(reason = "layout or device inventory incomplete, leaving llama.cpp defaults")
     if opts.host.unified_memory:
         return Plan(reason = "unified memory host, spilling frees no device memory")
-    # Settle the context first: the per-device reserve has a context-linear term, so the budget
-    # is a function of n_ctx and cannot be computed above it.
+    # Settle the context first: the reserve has a context-linear term, so the budget is a function
+    # of n_ctx and cannot be computed above it.
     n_ctx = requested_ctx if requested_ctx > 0 else layout.n_ctx_train
     if n_ctx <= 0:
         return Plan(reason = "no usable context length")
@@ -1118,8 +1102,8 @@ def _plan_placement(
             _kv_floor_at(layout, opts, kv_bytes_floor, n_ctx, n_ctx, max(1, opts.n_parallel)) or 0
         )
 
-    # A policy that may shrink prices the budget again at every candidate context: the
-    # reserve is context-linear, so a card asked at 131072 can be left with nothing.
+    # A policy that may shrink prices the budget again at every candidate context: the reserve is
+    # context-linear, so a card asked at 131072 can be left with nothing.
     may_shrink = opts.context_policy in (ContextPolicy.FIT_ONLY, ContextPolicy.PREFER_RESIDENT)
     budget = _usable_vram(vram_bytes_per_device, opts, n_ctx)
     if budget <= 0 and not may_shrink:
@@ -1134,8 +1118,8 @@ def _plan_placement(
             ),
         )
 
-    # PREFER_RESIDENT gets its say before the ladder: a smaller fully resident context outruns a
-    # larger spilled one.
+    # PREFER_RESIDENT gets its say before the ladder: a smaller resident context outruns a larger
+    # spilled one.
     resident_quantised = opts.cache_quantised
     if (
         opts.context_policy is ContextPolicy.PREFER_RESIDENT
@@ -1161,7 +1145,7 @@ def _plan_placement(
             kv_on_host = opts.kv_on_host,
         )
         if shrunk >= opts.min_ctx:
-            # The feasibility above charged one recurrent state per slot, so the plan has to be
+            # The feasibility above charged one recurrent state per slot, so the plan must be
             # assembled at the same count or vram_bytes under-reports by (slots - 1) states.
             resident_ctx = min(shrunk, n_ctx)
             resident_knobs = _Knobs(n_parallel = max(1, opts.n_parallel))
@@ -1218,8 +1202,8 @@ def _plan_placement(
             )
     if may_shrink:
         step = max(256, opts.ctx_step // 256 * 256)
-        # The bound has to assume every rung above the first weight spill is applied, or it is
-        # not an upper bound for what _plan_at will retry, and the ladder then never looks.
+        # The bound must assume every rung above the first weight spill is applied, or it is not
+        # an upper bound for what _plan_at will retry and the ladder never looks.
         relieved = _Knobs(
             n_parallel = max(1, min(opts.min_parallel, opts.n_parallel)),
             mmproj_to_host = bool(opts.mmproj_movable),
@@ -1251,8 +1235,8 @@ def _plan_placement(
             while ctx >= opts.min_ctx:
                 rungs.append(ctx)
                 ctx -= step
-            # The lattice steps down from the top and lands on min_ctx only by coincidence, so
-            # the minimum is the last rung whenever it is feasible and not the refused request.
+            # The lattice steps down from the top and lands on min_ctx only by coincidence, so the
+            # minimum is the last rung whenever it is feasible.
             if (
                 opts.min_ctx <= top
                 and opts.min_ctx < n_ctx
@@ -1303,17 +1287,19 @@ def _plan_placement(
 
 
 def _kv_modes(opts: PlanOptions) -> tuple[bool, ...]:
-    """f16 first, then q8_0 only if the caller opted in; a cache already quantised
-    at launch is priced as quantised and never as f16."""
+    """f16 first, then q8_0 only if the caller opted in; a cache already quantised at launch is
+    priced as quantised and never as f16."""
     if opts.cache_quantised:
         return (True,)
     return (False, True) if opts.allow_kv_quant else (False,)
 
 
 def _device_slots(n_slots: int, split_weights: Sequence[float]) -> list[list[int]]:
-    """Which of the ``n_slots`` layer rows land on which device. Mirrors llama.cpp's default tensor
-    split exactly: free VRAM per device (llama-model.cpp:1420-1433), prefix-summed and
-    normalised (:1439-1447), then ``upper_bound`` on the normalised row index (:1457).
+    """Which of the ``n_slots`` layer rows land on which device.
+
+    Mirrors llama.cpp's default tensor split exactly: free VRAM per device
+    (llama-model.cpp:1420-1433), prefix-summed and normalised (:1439-1447), then ``upper_bound``
+    on the normalised row index (:1457).
     """
 
     def f32(value: float) -> float:
@@ -1323,7 +1309,7 @@ def _device_slots(n_slots: int, split_weights: Sequence[float]) -> list[list[int
     total = sum(weights)
     if total <= 0:
         # llama.cpp prefix-sums the split and divides by the total, so an all-zero one is not a
-        # placement it produces: it errors.
+        # placement it produces, it errors.
         raise ValueError("split weights are all zero for the selected devices")
     cumulative: list[float] = []
     running = f32(0.0)
@@ -1341,9 +1327,9 @@ def _device_slots(n_slots: int, split_weights: Sequence[float]) -> list[list[int
 
 
 def _fixed_device_reserve(opts: PlanOptions, n_ctx: int, device: int) -> int:
-    """What a device must keep free before a single weight lands on it: the
-    per-device reserve (flat plus context term) and, on every device after the
-    first, the pipeline buffers a layer split allocates there."""
+    """What a device must keep free before a weight lands on it: the per-device reserve (flat plus
+    context term) and, on every device after the first, the pipeline buffers a layer split
+    allocates there."""
     reserve = _device_reserve(opts, n_ctx)
     if device > 0:
         reserve += max(0, opts.pipeline_overhead_bytes)
@@ -1368,8 +1354,8 @@ def _per_device_usage(
     """Bytes each device would hold under this spill, and the rows it owns."""
     if len(vram_bytes_per_device) <= 1:
         return None, [], []
-    # These three shapes are only a problem when the cache has to be spread evenly for
-    # want of anything better. A vector removes that guess; without one they abstain.
+    # These three shapes are only a problem when the cache has to be spread evenly for want of
+    # anything better. A vector removes that guess; without one they abstain.
     uneven_cache = (
         layout.recurrent_bytes > 0 or layout.n_attention_layers != layout.n_layers or layout.has_swa
     )
@@ -1409,16 +1395,16 @@ def _per_device_usage(
             trust_floor = opts.kv_bytes_at is not None,
         )
     )
-    # Scaled without under-booking the caller's total (ceiling, not floor: a
-    # per-device shortfall is a hard throw). Uniform when unsupplied.
+    # Scaled without under-booking the caller's total (ceiling, not floor: a per-device shortfall
+    # is a hard throw). Uniform when unsupplied.
     total_weight = sum(weights)
     if weights and total_weight > 0:
         kv_by_layer = [(cache * w + total_weight - 1) // total_weight for w in weights]
     else:
         per = (cache + layout.n_layers - 1) // layout.n_layers if layout.n_layers else 0
         kv_by_layer = [per] * layout.n_layers
-    # The recurrent state is one copy per slot on the rows that hold no cache, and the pooled
-    # fit charges it in full.
+    # The recurrent state is one copy per slot on the rows that hold no cache, and the pooled fit
+    # charges it in full.
     if layout.recurrent_bytes > 0 and not opts.kv_on_host:
         recurrent_rows = [i for i, w in enumerate(weights) if w == 0]
         if not recurrent_rows:
@@ -1452,8 +1438,7 @@ def _per_device_usage(
             used += max(0, block.resident_bytes + block.spillable_bytes - moved_off(block))
             if row < len(kv_by_layer):
                 used += kv_by_layer[row]
-        # Everything outside the layout sits on the main device, which is
-        # devices[0] once -sm none has already pruned the list.
+        # Everything outside the layout sits on the main device, devices[0] once -sm none pruned.
         if device == 0:
             used += (
                 _outside_layout_bytes(opts)
@@ -1479,9 +1464,10 @@ def _per_device_shortfall(
     extra_on_device0: Optional[int] = None,
     n_seq: int = 1,
 ) -> Optional[str]:
-    """``None`` when every device provably fits, else why it cannot be shown to. A per-device
-    shortfall is a hard throw (llama-model.cpp:1731) and ``--fit off`` means common/fit.cpp
-    never runs to catch it.
+    """``None`` when every device provably fits, else why it cannot be shown to.
+
+    A per-device shortfall is a hard throw (llama-model.cpp:1731) and ``--fit off`` means
+    common/fit.cpp never runs to catch it.
     """
     error, usage, slots = _per_device_usage(
         layout,
@@ -1568,8 +1554,8 @@ def _select_units_per_device(
             freed += got
         if freed < deficit:
             return None
-        # The same grading the pooled ladder applies, per device: each device's last whole
-        # block is its own boundary, and left whole it is host traffic nothing needed.
+        # The same grading the pooled ladder applies, per device: each device's last whole block
+        # is its own boundary, and left whole it is host traffic nothing needed.
         taken, freed = _grade_the_boundary_block(layout, opts, taken, freed, deficit)
         chosen.extend(taken)
     if (
@@ -1792,9 +1778,9 @@ def _plan_at(
     )
 
     def head_rescue() -> Optional[Plan]:
-        """The output device may be short by more than its FFN rows can give:
-        the output row holds lm_head, which is its own rung. Re-select per
-        device with the head off the card; None when that does not fit either."""
+        """The output device may be short by more than its FFN rows can give, since the output row
+        holds lm_head, its own rung. Re-select per device with the head off the card; None when
+        that does not fit either."""
         if not (n_devices > 1 and opts.allow_lm_head_spill and layout.lm_head_bytes):
             return None
         with_head = _select_units_per_device(
@@ -1841,10 +1827,10 @@ def _plan_at(
             and not per_device_selected
             and not opts.trust_device_row_model
         ):
-            # A pooled budget is not a per-device fit test for a PARTIAL spill. llama.cpp fixes
-            # the split before any override exists (llama-model.cpp:1425-1457), and -ot only
-            # swaps a tensor's buffer type (llama-model-loader.cpp:1177-1203), leaving
-            # dev_layer(il) untouched (llama-model.cpp:1467-1474).
+            # A pooled budget is not a per-device fit test for a PARTIAL spill: llama.cpp fixes
+            # the split before any override exists (llama-model.cpp:1425-1457), and -ot only swaps
+            # a tensor's buffer type (llama-model-loader.cpp:1177-1203), leaving dev_layer(il)
+            # untouched (llama-model.cpp:1467-1474).
             return Plan(
                 n_ctx = n_ctx,
                 reason = (
@@ -1896,8 +1882,8 @@ def _plan_at(
             reason = reason,
         )
 
-    # Walk the ladder: the MINIMAL set of units from the cheapest rung, stepping down
-    # only when that rung is exhausted.
+    # Walk the ladder: the MINIMAL set of units from the cheapest rung, stepping down only when
+    # that rung is exhausted.
     taken: list[SpillUnit] = []
     freed = 0
     for cls in _rung_classes(layout, opts):
@@ -1928,8 +1914,8 @@ def _plan_at(
                 rescued = head_rescue()
                 if rescued is not None:
                     return rescued
-            # Otherwise attempt() abstains: the pooled pick is partial and cannot
-            # be shown to fit device by device.
+            # Otherwise attempt() abstains: the pooled pick is partial and cannot be shown to fit
+            # device by device.
         else:
             taken, freed = _grade_the_boundary_block(layout, opts, taken, freed, deficit)
         described = _rung_description(taken, layout)
@@ -1947,9 +1933,8 @@ def _plan_at(
             per_device_selected = per_device_selected,
         )
 
-    # Every spillable weight is on the host and it is still short: lm_head is the next
-    # rung, and it costs less here because FFN offload already made generation
-    # host-bandwidth-bound.
+    # Every spillable weight is on the host and it is still short: lm_head is the next rung, and
+    # it costs less here because FFN offload already made generation host-bandwidth-bound.
     if opts.allow_lm_head_spill and layout.lm_head_bytes:
         if freed + layout.lm_head_bytes >= deficit:
             return attempt(
@@ -2045,14 +2030,14 @@ def _cost_gate(
     if not plan.host_groups:
         return None, 0.0, 0.0
 
-    # A spill the host cannot hold in RAM is the one configuration measured to be
-    # unambiguously worse than the fitter, so it is refused before any comparison.
+    # A spill the host cannot hold in RAM is the one configuration measured unambiguously worse
+    # than the fitter, so it is refused before any comparison.
     refused = _host_ram_refusal(opts, n_ctx, host_bytes, host_ram_bytes)
     if refused is not None:
         return refused, 0.0, 0.0
     if opts.prompt_cache_unbounded:
-        # --cache-ram -1 bounds the prompt cache by nothing, so the host side can never be
-        # proved resident and an accepted spill launches under mmap.
+        # --cache-ram -1 bounds the prompt cache by nothing, so the host side can never be proved
+        # resident and an accepted spill launches under mmap.
         return (
             Plan(
                 n_ctx = n_ctx,
@@ -2067,12 +2052,12 @@ def _cost_gate(
             0.0,
         )
     n_slots = max(1, knobs.n_parallel if knobs is not None else opts.n_parallel)
-    # One shared stream under --kv-unified, so the window a single request may fill is
-    # the whole n_ctx however many slots are served; N private windows without it.
+    # One shared stream under --kv-unified, so a single request may fill the whole n_ctx however
+    # many slots are served; N private windows without it.
     per_slot_ctx = n_ctx if opts.kv_unified else n_ctx // n_slots
     if layout.is_moe and opts.moe_long_prompt_ctx > 0 and per_slot_ctx >= opts.moe_long_prompt_ctx:
-        # MEASURED, and the cost model cannot see it: -ot on an MoE loses to llama.cpp's
-        # layerwise fit at a 32K prompt while winning at 2K.
+        # MEASURED, and the cost model cannot see it: -ot on an MoE loses to llama.cpp's layerwise
+        # fit at a 32K prompt while winning at 2K.
         return (
             Plan(
                 n_ctx = n_ctx,
@@ -2100,8 +2085,8 @@ def _cost_gate(
         kv_layer_weights = kv_layer_weights,
     )
     if fallback is None:
-        # Nothing to COMPARE to, which is not the same as "the fitter cannot place this":
-        # common/fit.cpp stops after step 3 instead of failing, and that is not modelled here.
+        # Nothing to COMPARE to, which is not "the fitter cannot place this": common/fit.cpp stops
+        # after step 3 instead of failing, and that is not modelled here.
         return (
             Plan(
                 n_ctx = n_ctx,
@@ -2115,8 +2100,8 @@ def _cost_gate(
             0.0,
         )
 
-    # The workload is a request, and a request does not get longer because the server takes
-    # fewer of them at once: rung 1 lowering the slot count leaves it alone.
+    # A request does not get longer because the server takes fewer of them at once, so rung 1
+    # lowering the slot count leaves it alone.
     window = n_ctx if opts.kv_unified else n_ctx // n_slots
     n_prompt = min(max(1, opts.workload_prompt_tokens), max(1, window))
     scored = rank(
@@ -2262,20 +2247,19 @@ def _finish(
     reason: str = "",
 ) -> Plan:
     """Assemble patterns, decide the load mode, and account for both sides."""
-    # The bottom rung moved the cache, so from here on this load behaves exactly
-    # like one the caller had passed -nkvo for.
+    # The bottom rung moved the cache, so from here this load behaves like a -nkvo one.
     kv_on_host = opts.kv_on_host or kv_on_host_rung
     spilled_weight_bytes = sum(u.nbytes for u in units) + (
         layout.lm_head_bytes if spill_lm_head else 0
     )
-    # Rung 0 did not make the projector disappear, it moved it: clip.cpp allocates it in
-    # a CPU backend buffer, so those bytes are HOST RAM for the life of the server.
+    # Rung 0 moved the projector, it did not remove it: clip.cpp allocates it in a CPU backend
+    # buffer, so those bytes are HOST RAM for the life of the server.
     mmproj_host_bytes = opts.mmproj_bytes if (knobs is not None and knobs.mmproj_to_host) else 0
-    # -nkvo puts the cache and the recurrent state in host RAM for the life of the server, so
-    # they are part of the host side every decision below spends.
-    # The same reserved cache at the same n_ctx the feasibility and fitter arms priced, so the
-    # caller's exact size is the one to charge: the product reads a q4_0 cache at one byte per
-    # element, 1.78x its bytes, and that inflation refused plans and kept mmap on hosts with room.
+    # -nkvo puts the cache and the recurrent state in host RAM for the life of the server, so they
+    # are part of the host side every decision below spends. Charged at the caller's exact size,
+    # the same reserved cache at the same n_ctx the feasibility and fitter arms priced: the product
+    # reads a q4_0 cache at one byte per element, 1.78x its bytes, and that inflation refused plans
+    # and kept mmap on hosts with room.
     kv_host_bytes = (
         cache_bytes(
             layout,
@@ -2289,9 +2273,9 @@ def _finish(
         if kv_on_host
         else 0
     )
-    # Lazily-read per-layer embeddings are paged out of the mapping, so under mmap they are page cache the OS can
-    # evict, not a resident cost: charging 26.82 GiB of Qwen3.8-Flash-Next's PLE flipped this plan to pageable and
-    # refused it on machines that had the room.
+    # Lazily-read per-layer embeddings are paged out of the mapping, so under mmap they are page
+    # cache the OS can evict, not a resident cost: charging 26.82 GiB of Qwen3.8-Flash-Next's PLE
+    # flipped this plan to pageable and refused it on machines that had the room.
     ple_lazy_bytes = layout.per_layer_embd_bytes if opts.ple_read_lazily else 0
     host_side = (
         layout.token_embd_bytes
@@ -2302,14 +2286,14 @@ def _finish(
     )
 
     # A projector alone can close the deficit, and then nothing below scores the plan: the cost
-    # gate is skipped, and with it the only refusal that keeps a host side out of swap.
+    # gate is skipped, and with it the only refusal keeping a host side out of swap.
     if mmproj_host_bytes:
         refused = _host_ram_refusal(opts, n_ctx, host_side, host_ram_bytes)
         if refused is not None:
             return refused
 
-    # A plan can give something up without moving a weight, and those were never ranked:
-    # the fallback arm of a no-spill plan is the launch as the caller typed it.
+    # A plan can give something up without moving a weight, and those were never ranked: the
+    # fallback arm of a no-spill plan is the launch as the caller typed it.
     gave_up_a_knob = knobs is not None and (
         knobs.mmproj_to_host or knobs.draft_dropped or knobs.n_parallel < max(1, opts.n_parallel)
     )
@@ -2351,9 +2335,8 @@ def _finish(
     indices = sorted({u.index for u in units})
 
     spilled_bytes = spilled_weight_bytes
-    # token_embd is host-resident on every launch, so it is host RAM this plan has to be
-    # able to pay for even when nothing is spilled; the -nkvo cache is in there too, and
-    # a lazily-read PLE is not, until the load mode below asks for it.
+    # token_embd is host-resident on every launch, so it is host RAM this plan must pay for even
+    # when nothing is spilled; the -nkvo cache is in there too, and a lazily-read PLE is not.
     host_bytes = host_side
     vram_bytes = (
         all_resident_bytes(
@@ -2367,10 +2350,11 @@ def _finish(
         - spilled_bytes
     )
 
-    # mmap costs 2 to 4.6x on host-resident weight reads, so turn it off -- but only
-    # when host RAM holds the host side; otherwise mmap keeps an over-commit pageable.
-    # The lazy PLE stays out on BOTH branches: llama.cpp maps a lazy context whatever the load mode
-    # (llama-model-loader.cpp:llama_model_loader::init_mappings maps whenever lazy.any()), so "none" does not fault it in.
+    # mmap costs 2 to 4.6x on host-resident weight reads, so turn it off, but only when host RAM
+    # holds the host side; otherwise mmap keeps an over-commit pageable. The lazy PLE stays out on
+    # BOTH branches: llama.cpp maps a lazy context whatever the load mode
+    # (llama-model-loader.cpp:llama_model_loader::init_mappings maps whenever lazy.any()), so
+    # "none" does not fault it in.
     if host_ram_bytes is None or opts.prompt_cache_unbounded:
         load_mode_none = False
     else:
@@ -2400,8 +2384,8 @@ def _finish(
         or n_parallel > 0
         or mmproj_to_host
         or draft_dropped
-        # A resident fit found by the context ladder emits no pattern and no knob, and is
-        # still a different launch: the planner proved a context the fallback had capped.
+        # A resident fit found by the context ladder emits no pattern and no knob and is still a
+        # different launch: the planner proved a context the fallback had capped.
         or (0 < n_ctx < requested_ctx)
     )
     return Plan(
@@ -2414,8 +2398,8 @@ def _finish(
         cache_ram_mib = cache_ram_mib,
         ot_patterns = tuple(patterns),
         load_mode_none = load_mode_none,
-        # Matched pairs only: an unmatched K/V combination is not compiled
-        # without GGML_CUDA_FA_ALL_QUANTS and silently falls back to CPU.
+        # Matched pairs only: an unmatched K/V combination is not compiled without
+        # GGML_CUDA_FA_ALL_QUANTS and silently falls back to CPU.
         cache_type_k = cache_type,
         cache_type_v = cache_type,
         spilled_blocks = tuple(indices),
@@ -2459,11 +2443,10 @@ def plan_to_args(plan: Plan) -> list[str]:
         args.extend(["--parallel", str(plan.n_parallel)])
     if plan.cache_ram_mib >= 0:
         args.extend(["--cache-ram", str(plan.cache_ram_mib)])
-    # The plan is pinned with --fit off, so nothing downstream re-fits it: without
-    # the split it was budgeted against, llama.cpp sizes the rows from the free
-    # VRAM its own child reads (llama-model.cpp:1462-1477), which has already
-    # moved by at least a CUDA primary context per card. On unequal cards that
-    # shifts a layer boundary the plan assumed.
+    # The plan is pinned with --fit off, so nothing downstream re-fits it: without the split it was
+    # budgeted against, llama.cpp sizes the rows from the free VRAM its own child reads
+    # (llama-model.cpp:1462-1477), which has already moved by at least a CUDA primary context per
+    # card. On unequal cards that shifts a layer boundary the plan assumed.
     if len(plan.device_layer_counts) > 1:
         args.extend(["--tensor-split", ",".join(str(n) for n in plan.device_layer_counts)])
     return args

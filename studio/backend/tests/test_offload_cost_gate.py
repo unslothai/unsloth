@@ -47,8 +47,7 @@ def gated(**kwargs) -> PlanOptions:
 
 
 def test_the_gate_is_off_unless_the_caller_has_an_alternative():
-    """A bare PlanOptions still answers the old question, unchanged: only the launch seam
-    has somewhere to fall through to, so only the launch seam asks."""
+    """Only the launch seam has somewhere to fall through to, so only it asks."""
     assert PlanOptions().require_cost_win is False
     layout = dense_layout()
     plan = plan_placement(layout, [14848 * 1024 * 1024], 94 * GIB, 32768)
@@ -56,8 +55,8 @@ def test_the_gate_is_off_unless_the_caller_has_an_alternative():
 
 
 def test_a_spill_that_barely_beats_the_fitter_is_declined():
-    """A near-tie is not worth taking, because the two errors are not symmetric: a decline
-    measured nearly free and a wrong plan measured up to 8x slower."""
+    """The two errors are not symmetric: a decline measured nearly free, a wrong plan up to
+    8x slower."""
     layout = dense_layout()
     plan = plan_placement(
         layout, [14848 * 1024 * 1024], 94 * GIB, 32768, opts = gated(host = HostProfile(threads = 6))
@@ -80,8 +79,7 @@ def test_declining_says_what_it_compared():
 
 
 def test_a_load_the_fitter_cannot_place_either_is_never_declined():
-    """The gate only ever chooses between two viable placements: with no fallback to lose
-    to, declining would trade a slow launch for a failed one."""
+    """With no fallback to lose to, declining would trade a slow launch for a failed one."""
     layout = dense_layout()
     tiny = 3 * GIB
     plan = plan_placement(layout, [tiny], 94 * GIB, 32768, opts = gated(host = HostProfile(threads = 6)))
@@ -89,9 +87,8 @@ def test_a_load_the_fitter_cannot_place_either_is_never_declined():
 
 
 def test_the_workload_shape_moves_the_trade():
-    """rank() needs a request shape and the answer depends on it: a spill is worst during
-    prefill and best during a long decode. Every shape below carries the same TOTAL, so
-    the split is isolated from the fallback's live-cache term."""
+    """A spill is worst during prefill and best during a long decode. Every shape below carries
+    the same TOTAL, so the split is isolated from the fallback's live-cache term."""
     layout = dense_layout()
     card = [14848 * 1024 * 1024]
     ratios = []
@@ -114,9 +111,8 @@ def test_the_workload_shape_moves_the_trade():
 
 
 def test_the_margin_is_what_decides_a_near_tie():
-    """Set the margin to zero and the same cell is planned again, which confirms the
-    decline above is the MARGIN talking: at this budget the spill really is cheaper, by
-    less than the margin. Do not re-anchor to a budget where the spill is dearer."""
+    """At zero margin the same cell is planned again, so the decline above is the MARGIN talking:
+    the spill really is cheaper here, by less than the margin."""
     layout = dense_layout()
     card = [17584 * 1024 * 1024]
     strict = plan_placement(layout, card, 94 * GIB, 32768, opts = gated(host = HostProfile(threads = 6)))
@@ -152,9 +148,8 @@ def moe_layout(n_blocks: int = 40) -> ModelLayout:
 
 
 def test_the_moe_fallback_places_about_what_the_planner_places():
-    """Measured from the fitter's own trace, not from a buffer report: the fitter and the
-    planner arrive at nearly the same placement on MoE, so the gate should usually find
-    them equivalent and decline."""
+    """Measured from the fitter's own trace: on MoE it and the planner arrive at nearly the same
+    placement, so the gate should usually find them equivalent and decline."""
     layout = moe_layout()
     small = _fit_fallback_placement(
         layout,
@@ -254,9 +249,8 @@ def test_the_recurrent_state_is_not_freed_twice_under_no_kv_offload():
 
 
 def test_a_spill_larger_than_host_ram_is_refused_outright():
-    """The one configuration measured to be unambiguously worse than the fitter, refused
-    before any cost comparison: the cost model prices host bytes at host bandwidth, which
-    holds only while they are IN host memory, and the plan also loses ``--load-mode none``."""
+    """The one configuration measured unambiguously worse than the fitter: the cost model prices
+    host bytes at host bandwidth, which holds only while they are IN host memory."""
     layout = dense_layout()
     card = [18688 * 1024 * 1024]
     roomy = plan_placement(
@@ -325,9 +319,8 @@ def test_the_moe_gate_boundary_is_inclusive():
 
 
 def test_a_declined_moe_keeps_its_first_refusal_when_no_context_is_accepted():
-    """What comes back is the refusal at the REQUESTED context, not the last one tried:
-    the long-prompt veto is a measurement the context does not move, so FIT_ONLY never
-    walks down at all."""
+    """The long-prompt veto is a measurement the context does not move, so FIT_ONLY never walks
+    down and the refusal is the one at the REQUESTED context."""
     got = _moe_cell(context_policy = ContextPolicy.FIT_ONLY)
     assert got.declined_by_gate and got.veto and got.n_ctx == 32768
     assert "tokens per slot" in got.reason, got.reason
@@ -440,9 +433,8 @@ def graded_moe_layout(n_blocks: int = 8, ffn_gib: float = 3.0) -> ModelLayout:
 def test_a_unified_cache_gives_every_slot_the_whole_prompt_window():
     """--kv-unified is one shared stream, so n_ctx / slots is not the window.
 
-    Re-anchored at ``min_penalty_reduction = 0``: now that the fitter grades its boundary
-    block the same way the planner does, the two arms place the same bytes on this layout
-    and the default margin declines the tie, which would hide the window this pins.
+    At ``min_penalty_reduction = 0`` because the fitter grades its boundary block the way the
+    planner does, so the two arms tie here and the default margin would hide the window.
     """
     layout = graded_moe_layout()
     host = HostProfile(threads = 12)
@@ -491,8 +483,8 @@ def test_the_measured_moe_veto_still_applies_when_the_fallback_cannot_be_modelle
 
 
 def mixed_quant_layout(n_blocks: int = 64) -> ModelLayout:
-    """A dense layout whose blocks are NOT all the same size, as real GGUFs are: the uniform
-    layouts above cannot see which END of the block list a placement takes."""
+    """A dense layout with unequal blocks, as real GGUFs are: the uniform layouts above cannot
+    see which END of the block list a placement takes."""
     blocks = tuple(
         BlockLayout(i, int((0.30 if i < 8 else 0.20) * GIB), int(0.045 * GIB))
         for i in range(n_blocks)
@@ -537,9 +529,8 @@ def test_the_dense_fallback_moves_the_fitters_leading_block_prefix():
 
 
 def test_the_fallback_charges_the_recurrent_state_once_per_slot():
-    """The state is one copy per sequence, resident and moved alike, so a fitter modelled at
-    one copy on a four-slot hybrid stops at the wrong layer count and the gate scores an
-    arm the child never runs."""
+    """The state is one copy per sequence, so a fitter modelled at one copy on a four-slot hybrid
+    stops at the wrong layer count and the gate scores an arm the child never runs."""
     import dataclasses
 
     hybrid = dataclasses.replace(dense_layout(), recurrent_bytes = GIB)
@@ -558,9 +549,8 @@ def test_the_fallback_charges_the_recurrent_state_once_per_slot():
 
 
 def test_the_moe_fallback_lowers_layers_once_every_expert_is_on_the_host():
-    """When the deficit outruns every expert, common/fit.cpp does not fail: it
-    lowers n_gpu_layers and moves whole leading layers with their cache. Modelled
-    as None, the planner's lm_head rung went through with no comparison at all."""
+    """When the deficit outruns every expert, common/fit.cpp lowers n_gpu_layers and moves whole
+    leading layers with their cache; modelled as None, the lm_head rung went unranked."""
     layout = moe_layout()
     tight = int(1.5 * GIB)
     placement = _fit_fallback_placement(
@@ -589,9 +579,8 @@ def test_the_moe_fallback_lowers_layers_once_every_expert_is_on_the_host():
 
 
 def test_a_saturated_windowed_cache_is_charged_flat_when_the_fitter_moves_it():
-    """A windowed model's measured floor is context-flat once its window is
-    saturated; scaling it by the live fraction charged the fitter a fraction of a
-    cache it reads in full, and the gate declined spills the hardware wins."""
+    """A windowed model's measured floor is context-flat once saturated, so scaling it by the
+    live fraction charged the fitter a fraction of a cache it reads in full."""
     layout = replace(dense_layout(), arch = "gemma3", has_swa = True)
     floor = 4 * GIB
     n_ctx = 32768
@@ -615,9 +604,8 @@ def test_a_saturated_windowed_cache_is_charged_flat_when_the_fitter_moves_it():
 
 
 def test_an_unbounded_prompt_cache_declines_a_weight_spill():
-    """--cache-ram -1 keeps an accepted spill pageable, and the gate scored it with
-    host-side numbers measured unmapped, where mapped reads run 2 to 4.6x slower;
-    a spill that won on paper could lose on the launch it got."""
+    """--cache-ram -1 keeps an accepted spill pageable, and the gate scored it with host-side
+    numbers measured unmapped, where mapped reads run 2 to 4.6x slower."""
     layout = dense_layout()
     budget = 14848 * 1024 * 1024
     lenient = dict(host = HostProfile(threads = 6), min_penalty_reduction = 0.0)
@@ -658,9 +646,8 @@ def test_the_fallbacks_live_cache_is_capped_at_the_slot_window():
 
 
 def test_the_moe_long_prompt_veto_falls_through_at_the_context_asked_for():
-    """A veto is a measurement, and a smaller context does not change it: ``declined_by_gate``
-    would invite FIT_ONLY to walk down and accept the SAME spill at a slightly shorter
-    context, so the fall-through is llama.cpp's fit at the context the caller asked for."""
+    """A veto is a measurement a smaller context does not change: ``declined_by_gate`` would
+    invite FIT_ONLY to accept the SAME spill one step down."""
     opts = gated(host = HostProfile(threads = 12), context_policy = ContextPolicy.FIT_ONLY)
     got = plan_placement(graded_moe_layout(), [20 * GIB], 200 * GIB, 65536, opts = opts)
     assert got.declined_by_gate and got.veto
@@ -670,10 +657,8 @@ def test_the_moe_long_prompt_veto_falls_through_at_the_context_asked_for():
 
 
 def big_head_layout(n_blocks: int = 8) -> ModelLayout:
-    """A layout whose output head outweighs everything the fitter can move: with every layer
-    moved the head is still resident, so the loop answers None, while the planner has a rung
-    the fitter does not.
-    """
+    """A layout whose output head outweighs everything the fitter can move, so its loop answers
+    None while the planner still has a rung."""
     blocks = tuple(BlockLayout(i, int(0.1 * GIB), int(0.05 * GIB)) for i in range(n_blocks))
     return ModelLayout(
         arch = "qwen3",
@@ -690,9 +675,8 @@ def big_head_layout(n_blocks: int = 8) -> ModelLayout:
 
 
 def test_a_fallback_that_cannot_be_modelled_declines_rather_than_waves_the_spill_through():
-    """An unranked spill is what the gate exists to stop: ``fallback is None`` was an ACCEPT,
-    so the layouts whose arithmetic is least trustworthy were passed through the check meant
-    to catch them."""
+    """An unranked spill is what the gate exists to stop: ``fallback is None`` as an ACCEPT
+    passed exactly the least trustworthy layouts through it."""
     layout = big_head_layout()
     opts = gated(
         host = HostProfile(threads = 6),
@@ -719,9 +703,8 @@ def test_a_fallback_that_cannot_be_modelled_declines_rather_than_waves_the_spill
 
 
 def test_a_knob_only_plan_is_ranked_against_the_launch_the_caller_typed():
-    """A plan that spills nothing but drops the draft was never scored at all: ``_cost_gate``
-    ran only for a plan with host bytes, so ``draft_drop_penalty_frac`` multiplied a spill
-    cost that did not exist."""
+    """``_cost_gate`` ran only for a plan with host bytes, so a plan that only drops the draft
+    was never scored and ``draft_drop_penalty_frac`` multiplied a cost that did not exist."""
     from core.inference.offload_planner import _device_reserve, all_resident_bytes
 
     layout = dense_layout()
@@ -745,9 +728,8 @@ def test_a_knob_only_plan_is_ranked_against_the_launch_the_caller_typed():
 
 
 def test_a_caller_nkvo_cache_is_host_ram_the_refusal_has_to_see():
-    """-nkvo puts the WHOLE cache in host RAM, and the refusal counted only the spilled
-    weights, the embedding and a pinned projector, so a spill was admitted onto a box the
-    cache had already filled."""
+    """-nkvo puts the WHOLE cache in host RAM, and the refusal counted only the spilled weights,
+    the embedding and a pinned projector, so a spill was admitted onto a box already full."""
     from core.inference.offload_planner import _device_reserve, all_resident_bytes, cache_bytes
 
     layout = dense_layout()
@@ -792,7 +774,7 @@ def test_the_fallback_places_the_cache_by_the_per_layer_vector():
 
 
 def graded_dense_layout(n_blocks: int = 64) -> ModelLayout:
-    """A dense model with its FFN broken out per matrix, so the boundary layer has fractions to give."""
+    """A dense model with its FFN broken out per matrix, so the boundary layer can be graded."""
     d, u, g, a = int(0.08 * GIB), int(0.07 * GIB), int(0.05 * GIB), int(0.045 * GIB)
     blocks = tuple(
         BlockLayout(
@@ -810,9 +792,8 @@ def graded_dense_layout(n_blocks: int = 64) -> ModelLayout:
 
 
 def test_the_fallback_grades_its_boundary_layer_the_way_fit_cpp_does():
-    """common/fit.cpp does not lower ngl one more time when a fraction of a layer would do:
-    step 4 keeps that layer on the device and overrides part of its FFN, so its attention
-    and cache stay resident."""
+    """fit.cpp step 4 keeps the boundary layer on the device and overrides part of its FFN rather
+    than lowering ngl again, so its attention and cache stay resident."""
     graded = graded_dense_layout()
     whole = replace(
         graded,
@@ -836,9 +817,8 @@ def test_the_fallback_grades_its_boundary_layer_the_way_fit_cpp_does():
 
 
 def test_the_per_layer_vector_reaches_the_gate_from_plan_placement():
-    """The vector is a plan_placement argument and the fallback is built two
-    calls below it, so the end-to-end path is worth pinning: without the
-    threading the gate scores an arm that ignores what the caller measured."""
+    """The vector is a plan_placement argument and the fallback is built two calls below it, so
+    without the threading the gate scores an arm that ignores what the caller measured."""
     layout = dense_layout()
     card = [14848 * 1024 * 1024]
     hybrid = [1 if i % 5 == 4 else 0 for i in range(layout.n_layers)]
@@ -850,9 +830,8 @@ def test_the_per_layer_vector_reaches_the_gate_from_plan_placement():
 
 
 def test_the_fitter_is_modelled_on_the_cache_size_the_caller_measured():
-    """Both arms have to describe ONE cache, and only one of them did: the fitter model went
-    back through ``cache_bytes`` without ``trust_floor``, and that product charges a
-    quantised cache ONE byte per element, so it was modelled on a cache 1.78x its real size."""
+    """Both arms have to describe ONE cache: without ``trust_floor`` the fitter model went back
+    through ``cache_bytes``, which charges a quantised cache one byte per element, 1.78x."""
     layout = dense_layout(kv_gib_at_32k = 6.0)
     exact = int(layout.kv_bytes(32768, 1) * 0.5625)
 
@@ -877,10 +856,8 @@ def test_the_fitter_is_modelled_on_the_cache_size_the_caller_measured():
 
 
 def test_a_slow_pcie_link_declines_the_spill_a_fast_one_takes():
-    """The gate's own end of the link. 55 GiB/s is a PCIe 5 x16 host, 6 a desktop x4 slot;
-    the spill is identical and only its prefill stream got eight times slower, which is
-    enough to lose to llama.cpp's own fit. Before the link was an input, every host was
-    quoted the reference machine's rate and took this spill."""
+    """55 GiB/s is a PCIe 5 x16 host, 6 a desktop x4 slot; the spill is identical and only its
+    prefill stream is eight times slower, which is enough to lose to llama.cpp's own fit."""
     layout = dense_layout()
     card = [11500 * MIB]
     fast = plan_placement(
@@ -896,9 +873,8 @@ def test_a_slow_pcie_link_declines_the_spill_a_fast_one_takes():
 
 
 def test_a_load_that_already_fits_gives_the_fitter_nothing_to_move():
-    """--fit on only moves what does not fit, so a load inside the budget is placed whole.
-    Modelling it as a spill invented a cost for the fitter and let the gate accept a spill
-    it should have ranked against a free launch."""
+    """--fit on only moves what does not fit, so a load inside the budget is placed whole;
+    modelling it as a spill invented a cost for the fitter."""
     from core.inference.offload_planner import (
         SpillClass,
         SpillUnit,
@@ -957,10 +933,9 @@ def per_matrix_moe_layout(n_blocks: int = 40) -> ModelLayout:
 
 
 def test_the_moe_fallback_grades_its_boundary_block_like_the_dense_arm():
-    """fit.cpp grades the first partial layer it reaches and moves LAYER_FRACTION_MOE of
-    every layer past it. Adding the boundary block's whole expert set over-moved by up to
-    one block, made the fitter look costlier than it is, and biased the gate toward
-    accepting the planner's spill."""
+    """fit.cpp grades the first partial layer it reaches and moves LAYER_FRACTION_MOE of every
+    layer past it, so adding the boundary block's whole expert set made the fitter look costlier
+    by up to one block."""
     from core.inference.offload_planner import all_resident_bytes
 
     layout = per_matrix_moe_layout()
@@ -989,10 +964,9 @@ def swa_split_layout() -> ModelLayout:
 
 
 def test_the_windowed_fallback_charges_only_the_live_prefix_of_the_global_layers():
-    """A windowed cache is two caches. Charging the whole reservation as decode traffic
-    priced the full-attention layers' entire n_ctx at Access.KV_CACHE's 20.1x although only
-    the live prefix is ever read, and that overcharge flipped the gate toward accepting a
-    losing spill."""
+    """A windowed cache is two caches: charging the whole reservation as decode traffic priced
+    the full-attention layers' entire n_ctx at Access.KV_CACHE's 20.1x, though only the live
+    prefix is read."""
     layout = swa_split_layout()
     n_ctx, floor, windowed = 131072, 5 * GIB, 4 * GIB
     shape = dict(workload_prompt_tokens = 2048, workload_generated_tokens = 0)
@@ -1034,10 +1008,9 @@ def test_the_windowed_split_moves_the_gate_verdict():
 
 
 def test_the_windowed_split_is_repriced_for_the_slots_rung_1_leaves():
-    """The window half was measured at the launched slot count and a window is stored per
-    stream, so at one slot the stale 4-slot part covered the whole of the smaller cache and the
-    fitter's every moved layer was charged as fully live: an overcharge that biased the gate
-    toward a spill the repriced fitter beats."""
+    """The window half was measured at the launched slot count and a window is stored per stream,
+    so at one slot the stale 4-slot part covers the whole of the smaller cache and every moved
+    layer is charged as fully live."""
     layout = swa_split_layout()
     n_ctx, floor_at_one, windowed_at_four = 131072, 2 * GIB, 4 * GIB
     shape = dict(workload_prompt_tokens = 2048, workload_generated_tokens = 0, n_parallel = 4)
@@ -1069,9 +1042,8 @@ def test_the_windowed_split_is_repriced_for_the_slots_rung_1_leaves():
 
 
 def test_the_nkvo_host_side_is_the_cache_size_the_caller_measured():
-    """Same reserved cache, same n_ctx, so the exact size is the one to charge: the product
-    reads a q4_0 cache at one byte per element and that 1.78x refused a spill the host had
-    room for and kept mmap on."""
+    """Same reserved cache at the same n_ctx, so the exact size is the one to charge: the product
+    reads a q4_0 cache at one byte per element, and that 1.78x refused spills the host held."""
     from core.inference.offload_planner import _device_reserve, all_resident_bytes
 
     layout = dense_layout(kv_gib_at_32k = 6.0)
@@ -1120,9 +1092,8 @@ def test_the_nkvo_host_side_is_the_cache_size_the_caller_measured():
 
 def test_the_moved_prefix_carries_the_recurrent_state_of_the_rows_it_spans():
     """The state lives on the cache-free rows and the fitter moves a LEADING prefix, so an
-    interleaved hybrid's prefix carries the share of those rows it spans. Divided uniformly,
-    a prefix of attention rows was charged state it never held and a prefix of recurrent
-    rows was credited only a fraction of what it frees, on both sides of the gate."""
+    interleaved hybrid's prefix carries the share of those rows it spans. Divided uniformly, a
+    prefix of attention rows is charged state it never held, and one of recurrent rows too little."""
     import dataclasses
 
     hybrid = dataclasses.replace(dense_layout(), recurrent_bytes = 4 * GIB)
@@ -1149,7 +1120,7 @@ def test_the_moved_prefix_carries_the_recurrent_state_of_the_rows_it_spans():
     trail_state, trail_moved = state_and_layers(trailing)
     assert trail_moved < 3 * n // 4
     assert trail_state == 0, trail_state
-    # And the uniform split, the only reading with no vector, sits between the two: a prefix
-    # that frees the whole state early has fewer layers left to move, one that frees none has more.
+    # The uniform split, the only reading with no vector, sits between the two: a prefix that
+    # frees the whole state early has fewer layers left to move, one that frees none has more.
     assert trail_state < uniform_state < lead_state
     assert lead_moved <= uniform_moved <= trail_moved

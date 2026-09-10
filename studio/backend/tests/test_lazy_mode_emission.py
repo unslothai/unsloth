@@ -1,15 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Studio emits --lazy-mode for the two architectures whose per-layer embedding table
-llama.cpp creates TENSOR_READ_LAZY, instead of leaving it to ``auto``.
+"""Studio emits --lazy-mode for the two architectures whose per-layer embedding table llama.cpp
+creates TENSOR_READ_LAZY, instead of leaving it to ``auto``.
 
-``auto`` resolves inside the child from two facts Studio already holds: the table has to
-clear 4 GiB (src/llama-model-loader.cpp:llama_model_loader::lazy_read::add), and every
-selected device has to report mmap support or the mode silently becomes OFF
-(src/llama-model.cpp:llama_model_base::load_tensors). A planner that priced the table as
-paged and got a resident one over-commits by the whole table, so the mode is spelled out
-and the planner is told which one was spelled.
+``auto`` resolves inside the child from two facts Studio already holds: the table has to clear
+4 GiB (src/llama-model-loader.cpp:llama_model_loader::lazy_read::add), and every selected device
+has to report mmap support or the mode silently becomes OFF
+(src/llama-model.cpp:llama_model_base::load_tensors). A planner that priced the table as paged and
+got a resident one over-commits by the whole table.
 """
 
 import inspect
@@ -90,16 +89,15 @@ def test_emitted_on_for_the_two_lazy_archs(arch):
 
 @pytest.mark.parametrize("arch", ["gemma3n", "llama", "qwen3moe", ""])
 def test_not_emitted_for_any_other_arch(arch):
-    """gemma3n has a per-layer table too and llama.cpp passes it flag 0, so it is resident
-    whatever the mode says. Emitting there would move nothing and change the argv."""
+    """gemma3n has a per-layer table too and llama.cpp passes it flag 0, so it stays resident
+    whatever the mode says."""
     assert _mode(_architecture = arch) is None
 
 
 def test_off_on_a_vulkan_igpu():
     """ggml-vulkan.cpp:ggml_backend_vk_device_get_props sets mmap_support =
-    !ctx->is_integrated_gpu, and llama-model-loader's AUTO turns OFF on the first device
-    without it, so ``on`` here would be a mode the child refuses and ``auto`` a price the
-    planner gets wrong."""
+    !ctx->is_integrated_gpu, and AUTO turns OFF on the first device without it, so ``on`` here
+    would be a mode the child refuses."""
     assert _mode(is_vulkan_backend = True, vulkan_igpu = True) == "off"
     assert _mode(is_vulkan_backend = True, vulkan_igpu = False) == "on"
 
@@ -136,9 +134,8 @@ def test_a_build_without_the_flag_gets_nothing():
 
 def test_a_table_at_or_under_the_auto_threshold_is_left_to_auto():
     """llama.cpp's auto keeps a table at or under 4 GiB resident
-    (llama_model_loader::lazy_read::add), so emitting on for it would turn a small
-    table lazy on every launch, flag on or off. Nothing is emitted there; the planner's
-    pricing already says resident below the threshold."""
+    (llama_model_loader::lazy_read::add), so emitting on would turn a small table lazy on every
+    launch. Nothing is emitted there, and the planner's pricing already says resident."""
     from core.inference.llama_cpp import _LAZY_MODE_AUTO_MIN_BYTES
 
     assert _mode(ple_bytes = _LAZY_MODE_AUTO_MIN_BYTES) is None
@@ -194,9 +191,8 @@ def test_load_model_emits_the_mode_it_priced():
     ],
 )
 def test_a_pass_through_device_selection_leaves_the_mode_to_auto(extra_args, env):
-    """The extras are appended after Studio's flags and win for placement, so the devices
-    whose mmap support decides the mode are theirs, not gpu_indices'. Forcing ``on`` against
-    an iGPU they name is a mode the child refuses (test_off_on_a_vulkan_igpu); auto resolves
-    against the devices it actually gets."""
+    """The extras are appended after Studio's flags and win for placement, so the devices whose
+    mmap support decides the mode are theirs, not gpu_indices'. Forcing ``on`` against an iGPU
+    they name is a mode the child refuses; auto resolves against the devices it gets."""
     assert _mode(extra_args = extra_args, env = env) is None
     assert _mode() == "on", "the same launch without the selection still says the mode"

@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The Windows CUDA sysmem-fallback detector: warn-only, once, and only on the full
-fingerprint (VRAM pegged, no OOM, generation an order of magnitude slow).
+"""The Windows CUDA sysmem-fallback detector: warn-only, once, and only on the full fingerprint
+(VRAM pegged, no OOM, generation an order of magnitude slow).
 
-Every sample here is fabricated. The policy cannot be queried per process, so the only
-thing there is to test is the decision made from the samples.
+Every sample is fabricated: the policy cannot be queried per process, so all there is to test is
+the decision made from the samples.
 """
 
 import sys
@@ -232,10 +232,9 @@ def test_factory_builds_a_watch_on_windows_cuda(monkeypatch):
 
 
 def test_nvidia_smi_probe_gives_no_sample_when_the_mask_is_in_cuda_ordinals(monkeypatch):
-    """A numeric CUDA_VISIBLE_DEVICES without CUDA_DEVICE_ORDER=PCI_BUS_ID names CUDA
-    ordinals, and nvidia-smi rows are PCI indices; filtering one by the other can drop the
-    launch's own card and the watch then never starts. No sample instead, the rule
-    _cuda_compute_caps already applies; with the shared order the filter is exact."""
+    """A numeric CUDA_VISIBLE_DEVICES without CUDA_DEVICE_ORDER=PCI_BUS_ID names CUDA ordinals
+    and nvidia-smi rows are PCI indices, so filtering one by the other can drop the launch's own
+    card and the watch never starts. No sample instead, the rule _cuda_compute_caps applies."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     out = "0, 160, 16303\n1, 200, 24564\n"

@@ -45,8 +45,8 @@ def _launch_with(
     n_parallel = 4,
     caps = None,
     avail_mib = 64 * 1024,
-    # 30 GiB on the 12 GiB card is the default shape here: nothing fits, so the fit
-    # arm is reached. Named so a case can state its own spill instead.
+    # 30 GiB on the 12 GiB card: nothing fits, so the fit arm is reached. Named so a case can
+    # state its own spill instead.
     model_mib = 30 * 1024,
     speculative_type = "off",
     **load_kwargs,
@@ -133,9 +133,8 @@ def test_a_plan_that_keeps_the_slots_records_nothing(tmp_path, monkeypatch):
 
 
 def test_a_plan_at_a_larger_context_raises_c_and_the_published_ceiling(tmp_path, monkeypatch):
-    """Auto settled for 8192 before the planner was asked at the context it
-    wanted; a plan that serves the larger one is launched at it, and /status
-    publishes it, with the fitter's own value kept for the revocation."""
+    """Auto settled for 8192 before the planner was asked at the context it wanted; a plan that
+    serves the larger one is launched at it, with the fitter's value kept for the revocation."""
     plan = Plan(changed = True, n_ctx = 65536, ot_patterns = ("x",), spilled_blocks = (1,))
     cmd, backend, seen = _launch_with(tmp_path, monkeypatch, plan)
     assert _flag(cmd, "-c") == "65536"
@@ -219,8 +218,8 @@ def test_the_cache_ram_clamp_is_emitted_on_the_fallback_and_rewritten_by_the_pla
 
 
 def test_the_cache_ram_clamp_is_emitted_on_the_fallback_only_when_it_binds(tmp_path, monkeypatch):
-    """A host with too little RAM for the model's spill plus the 8 GiB default
-    gets the bound; the flag then carries the value the load-mode rule priced."""
+    """A host with too little RAM for the spill plus the 8 GiB default gets the bound, and the
+    flag carries the value the load-mode rule priced."""
     declined_cmd, _b, seen = _launch_with(
         tmp_path, monkeypatch, Plan(reason = "declined"), avail_mib = 12 * 1024
     )
@@ -230,8 +229,8 @@ def test_the_cache_ram_clamp_is_emitted_on_the_fallback_only_when_it_binds(tmp_p
 
 
 def test_a_load_mode_the_plan_chose_rides_the_fit_record(tmp_path, monkeypatch):
-    """The pair reaches the argv only through _fit_load_mode_flags, so every
-    retry that strips the fit's load mode strips the plan's too."""
+    """The pair reaches the argv only through _fit_load_mode_flags, so every retry that strips
+    the fit's load mode strips the plan's too."""
     plan = Plan(
         changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,), load_mode_none = True
     )
@@ -251,8 +250,7 @@ def test_a_load_mode_the_plan_chose_rides_the_fit_record(tmp_path, monkeypatch):
 
 def test_a_launch_the_planner_does_not_own_is_untouched(tmp_path, monkeypatch):
     """Flag off: no clamp, no floor map, nothing priced for the rungs, and the fitter's argv
-    verbatim. The planner method itself declines on the flag (covered in the seam suite); here
-    it is patched to a decline so that what load_model prices AROUND it is under test."""
+    verbatim. The planner is patched to a decline so what load_model prices AROUND it is tested."""
     plan = Plan(reason = "declined")
     cmd, backend, seen = _launch_with(tmp_path, monkeypatch, plan, owns = False)
     assert _flag(cmd, "--fit") == "on"
@@ -294,9 +292,8 @@ def _launch_crash_then_ok(
     caps = None,
     **load_kwargs,
 ):
-    """The planned launch crashes at startup; the revocation retry comes up healthy, mirroring
-    the real recovery in _spawn_and_wait where _revoke_spill_plan hands placement back to
-    llama.cpp and the second child is the one the session serves."""
+    """The planned launch crashes at startup and the revocation retry comes up healthy, mirroring
+    _spawn_and_wait, where _revoke_spill_plan hands placement back to llama.cpp."""
     import subprocess
     from unittest.mock import patch
 
@@ -365,9 +362,8 @@ def _launch_crash_then_ok(
 def test_a_revoked_plan_commits_the_slots_the_child_that_answered_launched_with(
     tmp_path, monkeypatch
 ):
-    """The revocation puts the fitter's --parallel back in the argv, so the state committed
-    after the retry has to follow it: nothing re-reads the slot count from the server the way
-    _reconcile_effective_ctx_with_server re-reads the context."""
+    """The revocation puts the fitter's --parallel back in the argv, so the state committed after
+    the retry has to follow it: nothing re-reads the slot count from the server."""
     plan = Plan(changed = True, n_ctx = 8192, n_parallel = 1)
     cmds, backend = _launch_crash_then_ok(tmp_path, monkeypatch, plan)
 
@@ -378,10 +374,9 @@ def test_a_revoked_plan_commits_the_slots_the_child_that_answered_launched_with(
 
 
 def test_the_planner_admits_against_ram_the_launch_has_already_spent(tmp_path, monkeypatch):
-    """Plan.host_bytes is the embeddings plus the spilled weights and nothing else, yet the
-    seam replaces the fit-derived load mode with the plan's. Host RAM spent outside that figure
-    has to reach the planner, or --load-mode none is decided against RAM that is not free. A
-    --cache-ram the USER typed is the sharpest of the three, since the rewrite refuses to clamp it."""
+    """Plan.host_bytes is the embeddings plus the spilled weights and nothing else, yet the seam
+    replaces the fit-derived load mode with the plan's. Host RAM spent outside that figure has to
+    reach the planner, or --load-mode none is decided against RAM that is not free."""
     plan = Plan(changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,))
     _cmd, _backend, seen = _launch_with(tmp_path, monkeypatch, plan)
     assert seen["inputs"]["host_ram_unpriced_bytes"] == 0
@@ -391,9 +386,8 @@ def test_the_planner_admits_against_ram_the_launch_has_already_spent(tmp_path, m
 
 
 def test_the_batch_floor_follows_the_slots_the_plan_lowered(tmp_path, monkeypatch):
-    """--batch-size is raised to max(slots, 2) when it is emitted and llama.cpp derives the
-    micro-batch from the emitted value, so the flag has to follow rung 1's reduced slot count or
-    the child runs a larger micro-batch than the pinned plan reserved for."""
+    """--batch-size is raised to max(slots, 2) when emitted and llama.cpp derives the micro-batch
+    from the emitted value, so the flag must follow rung 1's reduced slot count."""
     plan = Plan(changed = True, n_ctx = 8192, n_parallel = 1)
     cmd, backend, _ = _launch_with(tmp_path, monkeypatch, plan, n_batch = 1)
     assert _flag(cmd, "--parallel") == "1"
@@ -426,8 +420,8 @@ def test_a_context_only_shrink_plan_is_launched_at_the_context_it_proved(tmp_pat
 
 def test_a_plan_that_moves_no_weight_is_all_on_the_gpu_for_the_mlock_gate(tmp_path, monkeypatch):
     """A plan that fits by lowering the slots, moving the projector or dropping the draft emits
-    -ngl -1 --fit off with every layer on the card, but the Model Memory gate was told the
-    weights sit in host RAM and would page-lock a full host copy of a model that fits."""
+    -ngl -1 --fit off with every layer on the card, but the Model Memory gate was told the weights
+    sit in host RAM and would page-lock a full host copy of a model that fits."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     seen = []
@@ -450,9 +444,8 @@ def test_a_plan_that_moves_no_weight_is_all_on_the_gpu_for_the_mlock_gate(tmp_pa
 
 
 def test_the_layout_cache_identity_covers_every_shard(tmp_path, monkeypatch):
-    """The layout of a split GGUF is read from every shard, so a sibling shard
-    replaced while shard 1 is untouched has to invalidate the cached layout, or a
-    stale complete one undercounts most of the model."""
+    """The layout of a split GGUF is read from every shard, so a sibling shard replaced while
+    shard 1 is untouched has to invalidate the cached layout."""
     import types
 
     from core.inference import offload_layout
@@ -476,9 +469,8 @@ def test_the_layout_cache_identity_covers_every_shard(tmp_path, monkeypatch):
 
 
 def test_a_plan_does_not_outlive_the_load_that_made_it(tmp_path, monkeypatch):
-    """A knob-only plan leaves -ngl -1 --fit off on record, and the next load's fits branch
-    emits the same four tokens, so a retry there would write the previous model's --parallel
-    into a command that never had one."""
+    """A knob-only plan leaves -ngl -1 --fit off on record and the next load's fits branch emits
+    the same four tokens, so a retry there would write the previous model's --parallel in."""
     plan = Plan(changed = True, n_ctx = 8192, n_parallel = 1)
     _cmd, backend, _ = _launch_with(tmp_path, monkeypatch, plan)
     assert backend._spill_plan_flags and backend._spill_plan_restore
@@ -493,8 +485,7 @@ def test_a_plan_does_not_outlive_the_load_that_made_it(tmp_path, monkeypatch):
 
 def test_a_clamp_the_plan_appended_leaves_with_the_plan(tmp_path, monkeypatch):
     """On a roomy host the fallback carries no --cache-ram, so the plan's clamp is appended
-    rather than rewritten. The revocation restored only values that were there before, so the
-    clamp survived the plan it belonged to."""
+    rather than rewritten and the revocation, which restores only prior values, left it."""
     plan = Plan(
         changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,), cache_ram_mib = 1024
     )
@@ -513,9 +504,9 @@ def test_a_clamp_the_plan_appended_leaves_with_the_plan(tmp_path, monkeypatch):
 
 
 def test_the_workload_prompt_is_the_whole_window_under_a_unified_cache(tmp_path, monkeypatch):
-    """Studio appends --kv-unified on every multi-slot launch the build supports it on, and
-    under a unified cache a single request may fill all of n_ctx, so pricing the prompt at
-    n_ctx / slots under-charged the spill's prefill on exactly the loads Studio starts."""
+    """Studio appends --kv-unified on every multi-slot launch the build supports it on, and under
+    a unified cache a single request may fill all of n_ctx, so pricing the prompt at n_ctx / slots
+    under-charged the spill's prefill."""
     plan = Plan(changed = True, n_ctx = 4096, ot_patterns = ("x",), spilled_blocks = (1,))
     _cmd, _b, seen = _launch_with(tmp_path, monkeypatch, plan, n_ctx = 4096)
     assert seen["inputs"]["kv_unified"] is True
@@ -529,9 +520,9 @@ def test_the_workload_prompt_is_the_whole_window_under_a_unified_cache(tmp_path,
 
 
 def test_a_revoked_plan_takes_its_load_mode_with_it(tmp_path, monkeypatch):
-    """Once a plan is taken the fit's --load-mode is replaced by the plan's. The revocation
-    hands placement back to the fitter, which can put far more on the host, so leaving "none"
-    in the retry argv turned a pageable fallback into a host-RAM OOM."""
+    """Once a plan is taken the fit's --load-mode is replaced by the plan's. The revocation hands
+    placement back to the fitter, which can put far more on the host, so leaving "none" in the
+    retry argv turned a pageable fallback into a host-RAM OOM."""
     plan = Plan(
         changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,), load_mode_none = True
     )
@@ -546,8 +537,7 @@ def test_a_revoked_plan_takes_its_load_mode_with_it(tmp_path, monkeypatch):
 
 def test_a_cache_ram_typed_into_the_extras_is_the_one_the_launch_prices(tmp_path, monkeypatch):
     """Extras are appended after every emitted flag and llama.cpp is last-wins, so a typed
-    --cache-ram is what the child runs with. Priced as unset, the launch charged nothing for it
-    and appended a clamp the extras then overrode."""
+    --cache-ram is what the child runs with; priced as unset, the launch charged nothing."""
     plan = Plan(
         changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,), cache_ram_mib = 1024
     )
@@ -562,10 +552,8 @@ def test_a_cache_ram_typed_into_the_extras_is_the_one_the_launch_prices(tmp_path
 
 
 def test_the_fit_footprint_prices_the_cache_ram_the_extras_carry(tmp_path, monkeypatch):
-    """The fit's own load-mode footprint charged the panel's --cache-ram or the
-    auto bound, never one typed into the extras, so a ceiling above the default
-    was under-counted and --load-mode none could be chosen for a footprint the
-    host does not have."""
+    """The fit's own load-mode footprint charged the panel's --cache-ram or the auto bound, never
+    one typed into the extras, so a ceiling above the default was under-counted."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     seen_kw = {}
@@ -589,9 +577,8 @@ def test_the_fit_footprint_prices_the_cache_ram_the_extras_carry(tmp_path, monke
 
 
 def test_the_flag_off_fit_footprint_carries_no_prompt_cache_term(tmp_path, monkeypatch):
-    """origin/main has no prompt_cache_bytes term at all, and the PR states flag-off
-    is byte-identical to it. The term arrives with the clamp that pays for it, so it
-    is charged on the planner's path and nowhere else."""
+    """Flag-off is byte-identical to a tree with no prompt_cache_bytes term: the term arrives
+    with the clamp that pays for it, so it is charged on the planner's path and nowhere else."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     seen_kw = {}
@@ -619,9 +606,8 @@ def test_the_flag_off_fit_footprint_carries_no_prompt_cache_term(tmp_path, monke
 
 
 def test_the_flag_off_load_mode_matches_main_on_a_spill_the_host_holds(tmp_path, monkeypatch):
-    """A 22 GiB model on the 12 GiB card is a 10 GiB spill that 18 GiB of free RAM holds, and
-    main proved that fit and emitted --load-mode none. Charging the default prompt cache on top
-    pushed the same load back to mmap, an unannounced flag-off change."""
+    """A 22 GiB model on the 12 GiB card is a 10 GiB spill that 18 GiB of free RAM holds, and the
+    fit emits --load-mode none. Charging the default prompt cache on top pushed it back to mmap."""
     caps = {"supports_load_mode": True}
     off, _backend_off, _s = _launch_with(
         tmp_path,
@@ -647,9 +633,8 @@ def test_the_flag_off_load_mode_matches_main_on_a_spill_the_host_holds(tmp_path,
 
 
 def test_the_snapshot_carries_the_cache_estimator_as_a_callable(tmp_path, monkeypatch):
-    """The floor map is one measurement per slot count at ONE context, and the ladder also walks
-    the context, which the planner's re-pricing rules cannot follow. Hand it the estimator
-    instead, and pin that the callable agrees with the map where the two overlap."""
+    """The floor map is one measurement per slot count at ONE context and the ladder also walks
+    the context, so the estimator itself is handed over; it must agree with the map."""
     _cmd, _b, seen = _launch_with(tmp_path, monkeypatch, Plan(reason = "declined"))
     at = seen["inputs"]["kv_bytes_at"]
     assert callable(at)
@@ -668,9 +653,8 @@ def test_the_snapshot_carries_the_cache_estimator_as_a_callable(tmp_path, monkey
 
 
 def test_a_caller_nkvo_cache_is_charged_once_on_the_plans_host_side(tmp_path, monkeypatch):
-    """-nkvo puts the WHOLE cache in host RAM, and the planner already charges it on the plan's
-    host side, so the seam must not also take it off the pool: taken twice, a viable spill was
-    refused."""
+    """-nkvo puts the WHOLE cache in host RAM and the planner already charges it on the plan's
+    host side, so the seam must not also take it off the pool: taken twice, a spill was refused."""
     _cmd, _b, plain = _launch_with(tmp_path, monkeypatch, Plan(reason = "declined"))
     _cmd, _b, forced = _launch_with(
         tmp_path, monkeypatch, Plan(reason = "declined"), extra_args = ["-nkvo"]
@@ -683,8 +667,7 @@ def test_a_projector_already_on_the_cpu_is_host_ram_the_planner_admits_against(
     tmp_path, monkeypatch
 ):
     """--no-mmproj-offload takes the projector out of model_size and the plan's host side never
-    held it, yet clip.cpp keeps it resident in a CPU backend buffer.
-    """
+    held it, yet clip.cpp keeps it resident in a CPU backend buffer."""
     plan = Plan(changed = True, n_ctx = 8192, ot_patterns = ("x",), spilled_blocks = (1,))
     proj = tmp_path / "proj.gguf"
     proj.write_bytes(b"GGUF")
@@ -703,9 +686,8 @@ def test_a_projector_already_on_the_cpu_is_host_ram_the_planner_admits_against(
 
 
 def test_every_cache_ram_spelling_the_child_accepts_is_priced():
-    """-cram is the short form and llama.cpp folds --cache_ram to --cache-ram, so
-    both select the bound in the child; read as unset, the launch priced the 8 GiB
-    default for a cache the extras had disabled and appended a clamp they override."""
+    """-cram is the short form and llama.cpp folds --cache_ram to --cache-ram, so both select the
+    bound in the child; read as unset, the launch priced the 8 GiB default for a disabled cache."""
     from core.inference.llama_cpp import _extra_args_cache_ram
 
     assert _extra_args_cache_ram(["-cram", "0"], {}) == 0
@@ -716,9 +698,9 @@ def test_every_cache_ram_spelling_the_child_accepts_is_priced():
 
 
 def test_a_typed_cache_ram_outranks_the_field_and_the_field_outranks_the_env(tmp_path, monkeypatch):
-    """The field's flag is emitted before the extras and llama.cpp is last-wins, so
-    a typed --cache-ram is what the child allocates; priced from the field, the RAM
-    rule reserved 1 GiB for a cache the child grows to 16."""
+    """The field's flag is emitted before the extras and llama.cpp is last-wins, so a typed
+    --cache-ram is what the child allocates; priced from the field, the RAM rule reserved 1 GiB
+    for a cache the child grows to 16."""
     plan = Plan(changed = False, n_ctx = 8192)
     _cmd, _backend, seen = _launch_with(
         tmp_path, monkeypatch, plan, cache_ram = 1024, extra_args = ["--cache-ram", "16384"]
@@ -744,9 +726,8 @@ def test_a_pass_through_zero_context_pins_the_native_window_the_plan_is_priced_a
 
 
 def test_the_micro_batch_map_follows_the_slots_rung_1_may_lower(tmp_path, monkeypatch):
-    """The batch floor is max(slots, 2), so a first-class batch of 1 launches at
-    micro-batch 4 with four slots and 2 with one. The gate is handed the value
-    for every count rung 1 may step to, keyed like the cache floor map."""
+    """The batch floor is max(slots, 2), so a batch of 1 launches at micro-batch 4 with four
+    slots and 2 with one. The gate is handed the value for every count rung 1 may step to."""
     plan = Plan(reason = "declined")
     _cmd, _backend, seen = _launch_with(tmp_path, monkeypatch, plan, n_batch = 1)
     ub = seen["inputs"]["n_ubatch_by_parallel"]
@@ -758,9 +739,8 @@ def test_the_micro_batch_map_follows_the_slots_rung_1_may_lower(tmp_path, monkey
 def test_a_cpu_pinned_drafter_is_priced_at_the_context_the_planner_is_asked_at(
     tmp_path, monkeypatch
 ):
-    """Auto caps the fallback context and the fit priced the -ngld 0 drafter's host KV there, while
-    the planner is asked at the context Auto wanted and an accepted plan launches at it.
-    """
+    """Auto caps the fallback context and the fit priced the -ngld 0 drafter's host KV there,
+    while the planner is asked at the context Auto wanted and launches at it."""
     seen_ctx = []
     orig = _backend
 
@@ -793,10 +773,9 @@ def test_a_cpu_pinned_drafter_is_priced_at_the_context_the_planner_is_asked_at(
 
 
 def test_the_auto_cache_ram_clamp_charges_the_host_only_allocations(tmp_path, monkeypatch):
-    """The automatic --cache-ram was bounded by the GPU shortfall alone, so a
-    CPU-pinned projector, a -ngld 0 drafter or the checkpoint snapshots left the
-    ceiling at the default on a host they had already filled; a declined plan has
-    no clamp of its own to correct it."""
+    """The automatic --cache-ram was bounded by the GPU shortfall alone, so a CPU-pinned
+    projector, a -ngld 0 drafter or the checkpoint snapshots left the ceiling at the default on a
+    host they had already filled."""
     plan = Plan(reason = "declined")
     _cmd, _backend_, base = _launch_with(tmp_path, monkeypatch, plan, avail_mib = 26 * 1024)
     bound = base["inputs"]["cache_ram_default_mib"]
@@ -819,8 +798,8 @@ def test_the_auto_cache_ram_clamp_charges_the_host_only_allocations(tmp_path, mo
 
 def test_the_single_slot_retry_keeps_one_slot_after_the_plan_is_revoked(tmp_path, monkeypatch):
     """A plan that lowered --parallel launches, the server refuses the unified cache above one
-    sequence, and the retry is rewritten to one slot. Revoking the plan first keeps that rewrite
-    on top, instead of restoring the slot count the server just refused."""
+    sequence, and the retry is rewritten to one slot. Revoking the plan first keeps that rewrite,
+    instead of restoring the slot count the server just refused."""
     import subprocess
     from unittest.mock import patch
 
@@ -895,9 +874,8 @@ def test_the_single_slot_retry_keeps_one_slot_after_the_plan_is_revoked(tmp_path
 
 
 def test_a_plan_below_an_explicit_context_is_not_emitted(tmp_path, monkeypatch):
-    """An explicit context is the user's. A plan that came back below it priced a
-    cache the launch will not run at; it is dropped rather than rewriting -c, and
-    the child gets --fit on at the context asked for."""
+    """An explicit context is the user's, so a plan that came back below it priced a cache the
+    launch will not run at and is dropped rather than rewriting -c."""
     asked = 2 * NATIVE_CTX
     plan = Plan(changed = True, n_ctx = NATIVE_CTX, ot_patterns = ("x",), spilled_blocks = (1,))
     cmd, backend, seen = _launch_with(tmp_path, monkeypatch, plan, n_ctx = asked)
@@ -935,8 +913,7 @@ def test_a_priced_fit_above_the_auto_cap_restores_the_context_the_coarse_fit_gav
 
 def test_a_revoked_plan_restores_the_context_locals_with_the_argv(tmp_path, monkeypatch):
     """A plan that raised Auto's cap rewrote -c and rebound the locals the post-launch commit and
-    the ceiling are read from.
-    """
+    the ceiling are read from."""
     plan = Plan(priced = True, changed = True, n_ctx = 12288)
     cmds, backend = _launch_crash_then_ok(tmp_path, monkeypatch, plan, n_ctx = 0)
     assert len(cmds) == 2, cmds
@@ -947,10 +924,8 @@ def test_a_revoked_plan_restores_the_context_locals_with_the_argv(tmp_path, monk
 
 
 def test_a_revoked_one_slot_plan_restores_the_shared_cache_with_the_slots(tmp_path, monkeypatch):
-    """The integrity flags emit --kv-unified only above one slot and run after the plan
-    lowered them, so the revocation that restores --parallel 4 must restore the shared
-    pool too, or the recovered server splits -c four ways per request.
-    """
+    """The integrity flags emit --kv-unified only above one slot and run after the plan lowered
+    them, so the revocation that restores --parallel 4 must restore the shared pool too."""
     plan = Plan(changed = True, n_ctx = 8192, n_parallel = 1)
     cmds, _backend = _launch_crash_then_ok(tmp_path, monkeypatch, plan)
     assert len(cmds) == 2, cmds
@@ -959,9 +934,8 @@ def test_a_revoked_one_slot_plan_restores_the_shared_cache_with_the_slots(tmp_pa
 
 
 def test_a_per_model_loader_mode_keeps_the_planner_off_the_launch(tmp_path, monkeypatch):
-    """The per-model Mmap pick wins over the plan's --load-mode none, so the
-    launch does not hand the planner the pre-cap context or its rungs, and the
-    pick reaches the seam's own gate with the snapshot."""
+    """The per-model Mmap pick wins over the plan's --load-mode none, so the launch does not hand
+    the planner the pre-cap context or its rungs."""
     plan = Plan(reason = "declined")
     _cmd, _backend, seen = _launch_with(tmp_path, monkeypatch, plan, load_mode = "mmap")
     assert seen["inputs"]["load_mode"] == "mmap"
@@ -988,9 +962,8 @@ def test_an_unbounded_prompt_cache_abstains_from_the_fits_own_none_and_reaches_t
 
 
 def test_the_snapshot_carries_the_windowed_half_of_the_cache(tmp_path, monkeypatch):
-    """The planner reads a saturated window in full but the full-context layers only over
-    their live prefix, so the snapshot has to price the two halves apart: summed, they cannot
-    be told back apart at any context."""
+    """The planner reads a saturated window in full but the full-context layers only over their
+    live prefix, so the snapshot has to price the two halves apart."""
     monkeypatch.setitem(DENSE, "_sliding_window", 1024)
     monkeypatch.setitem(DENSE, "_sliding_window_pattern", tuple(i % 6 != 5 for i in range(64)))
     _cmd, backend, seen = _launch_with(tmp_path, monkeypatch, Plan(reason = "declined"))
@@ -1012,9 +985,8 @@ def test_the_snapshot_carries_the_windowed_half_of_the_cache(tmp_path, monkeypat
 
 
 def test_the_snapshot_carries_the_windowed_half_as_a_callable(tmp_path, monkeypatch):
-    """A window is stored per stream, so rung 1 shrinks it with the slots; the scalar half is
-    the launched count's and went stale the moment the planner priced a smaller one, in the
-    direction that read most of the smaller cache as fully live and overcharged the fitter."""
+    """A window is stored per stream, so rung 1 shrinks it with the slots; the scalar half is the
+    launched count's and goes stale, reading most of a smaller cache as fully live."""
     monkeypatch.setitem(DENSE, "_sliding_window", 1024)
     monkeypatch.setitem(DENSE, "_sliding_window_pattern", tuple(i % 6 != 5 for i in range(64)))
     _cmd, backend, seen = _launch_with(tmp_path, monkeypatch, Plan(reason = "declined"))
@@ -1042,10 +1014,9 @@ def test_the_snapshot_carries_the_windowed_half_as_a_callable(tmp_path, monkeypa
 
 
 def test_a_plan_that_moves_no_weight_is_watched_for_sysmem_fallback(tmp_path, monkeypatch):
-    """On Windows CUDA a knob-only plan launches -ngl -1 --fit off with every layer on the
-    card, which is exactly the placement WDDM pages silently, but the watch was keyed on the
-    coarse fit's flag alone and stayed off for it. A plan with -ot spills stays unwatched:
-    slow with VRAM full is what a spill legitimately looks like."""
+    """On Windows CUDA a knob-only plan launches -ngl -1 --fit off with every layer on the card,
+    exactly the placement WDDM pages silently, but the watch was keyed on the coarse fit's flag
+    alone. A plan with -ot spills stays unwatched: slow with VRAM full is what a spill is."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     seen = []
@@ -1070,9 +1041,8 @@ def test_a_plan_that_moves_no_weight_is_watched_for_sysmem_fallback(tmp_path, mo
 
 def test_a_launch_recovered_under_fit_on_is_not_watched_for_sysmem_fallback(tmp_path, monkeypatch):
     """A forced full-offload launch that crashed and came back under --fit on is the fitter's
-    placement, which may hold layers in host RAM. Watching it would read a legitimately slow
-    partial placement with VRAM full as the driver paging, and tell the user to change a
-    policy that is not in play."""
+    placement, which may hold layers in host RAM, so watching it would read a legitimately slow
+    partial placement as the driver paging."""
     import subprocess
     from unittest.mock import patch
 

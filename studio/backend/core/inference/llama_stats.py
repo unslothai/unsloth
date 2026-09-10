@@ -24,22 +24,20 @@ _OFF = {"0", "false", "no", "off"}
 class SysmemFallbackWatch:
     """Windows CUDA only: warn once when a resident placement is silently paging to system RAM.
 
-    Since driver 536.40 a Windows CUDA allocation that no longer fits in VRAM does not fail;
-    the WDDM driver demand-pages it between the device and system memory, ``cudaMalloc``
-    returns success, and nothing in CUDA, NVML or nvidia-smi reports that it happened
-    (NVIDIA KB 5490, https://nvidia.custhelp.com/app/answers/detail/a_id/5490, and
+    Since driver 536.40 an oversized Windows CUDA allocation does not fail; WDDM demand-pages it,
+    ``cudaMalloc`` returns success, and nothing in CUDA, NVML or nvidia-smi reports it (NVIDIA KB
+    5490, https://nvidia.custhelp.com/app/answers/detail/a_id/5490, and
     https://forums.developer.nvidia.com/t/cudamalloc-with-sysmem-fallback/347791). There is no
     per-process query and no per-process way to turn it off, so this only ever reports.
 
     The fingerprint, from https://github.com/ollama/ollama/issues/16725: nvidia-smi free memory
     pinned at 0 to 2 percent of total, no out-of-memory anywhere, and generation an order of
     magnitude below what a resident placement should give. ``floor_gen_tok_s`` is the caller's
-    expectation for the third part; the launch path derives it from the host-to-device link
-    rate and the weight bytes a token reads, so it is the ceiling the paging path could reach,
-    far under the rate a placement Studio proved resident would run at.
+    expectation for the third part, derived from the host-to-device link rate and the weight bytes
+    a token reads, so it is the ceiling the paging path could reach.
 
-    Sampling is ordered cheapest first: the throughput half comes free from the /metrics scrape
-    that is already running, and the VRAM probe only runs once generation is already slow.
+    Sampling is cheapest first: throughput rides the /metrics scrape already running, and the VRAM
+    probe only runs once generation is already slow.
     """
 
     def __init__(
@@ -132,8 +130,7 @@ class LlamaServerStatsLogger:
         self._stall_since = None
         self._stall_reported = False
         self._unmeasurable_reported = False
-        # Windows CUDA only, and None everywhere else, so every other platform runs the
-        # loop it ran before.
+        # Windows CUDA only and None everywhere else, so every other platform runs the loop it did.
         self._sysmem_watch = sysmem_watch
 
     def start(self):

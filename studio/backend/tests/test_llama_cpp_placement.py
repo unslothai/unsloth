@@ -3388,7 +3388,7 @@ def _link(rows, indices = None):
 
 def test_the_link_rate_follows_the_reported_generation_and_width():
     """gen x width is the ceiling; 0.85 of it is what an H2D stream reaches (a B200 moved
-    54.4 GB/s of a gen5 x16 link's 63). Converted to GiB/s, the unit the cost model uses."""
+    54.4 GB/s of a gen5 x16 link's 63). In GiB/s, the unit the cost model uses."""
     gen5 = 16 * 3.938 * 0.85 * 1e9 / float(1024**3)
     gen4 = 16 * 1.969 * 0.85 * 1e9 / float(1024**3)
     assert _link("0, 5, 16") == pytest.approx(gen5, rel = 1e-6)
@@ -3427,9 +3427,8 @@ def test_a_readable_device_still_answers_beside_a_broken_row():
 
 
 def test_the_link_query_asks_nvidia_smi_for_the_negotiated_maximum_link():
-    """gen.max and width.max, never the current state: the probe runs before the load,
-    when a consumer card idles at gen 1 x1, and that would price a PCIe 4 x16 slot as
-    a 0.2 GiB/s link and decline every spill it would win."""
+    """gen.max and width.max, never the current state: the probe runs before the load, when a
+    consumer card idles at gen 1 x1, which would price a PCIe 4 x16 slot as 0.2 GiB/s."""
     seen = {}
 
     class _Result:
@@ -3450,8 +3449,8 @@ def test_the_link_query_asks_nvidia_smi_for_the_negotiated_maximum_link():
 
 
 def test_the_link_query_never_raises_and_never_guesses():
-    """Same contract as the compute_cap probe beside it: a missing tool, a non-zero exit
-    or anything else is None, and no exception reaches a load."""
+    """Same contract as the compute_cap probe beside it: a missing tool or a non-zero exit is
+    None, and no exception reaches a load."""
 
     class _Failed:
         returncode = 9
@@ -3475,8 +3474,8 @@ def _flash_attn_priced(
     """Every ``flash_attn`` the launch hands the KV estimator, plus the argv.
 
     The floors and ``kv_bytes_at`` the seam gives the planner all come out of
-    ``_estimate_kv_cache_bytes``, so what that call is told about flash attention IS
-    what the plan is priced at.
+    ``_estimate_kv_cache_bytes``, so what that call is told about flash attention IS what the plan
+    is priced at.
     """
     gb = 1024**3
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_576, 24_576)])
@@ -3492,8 +3491,8 @@ def _flash_attn_priced(
         **kwargs,
     ):
         seen.append(flash_attn)
-        # Distinguishable, and in llama.cpp's direction: FA off pads V to the model
-        # max, so the FA-off arm is the larger number.
+        # Distinguishable, and in llama.cpp's direction: FA off pads V to the model max, so the
+        # FA-off arm is the larger number.
         return (1 if flash_attn else 2) * gb
 
     backend._estimate_kv_cache_bytes = record_kv
@@ -3512,10 +3511,8 @@ def _flash_attn_priced(
 def test_the_planner_is_priced_at_the_flash_attention_the_launch_runs(tmp_path):
     """Default launch: --flash-attn on is emitted, so the cache is priced FA ON.
 
-    It used to be pinned off to survive the hard-crash recovery, but that retry now
-    revokes the plan and re-fits, so the pin only over-charged: +17% to +102% against
-    what llama-server allocates on every iSWA model measured, because the FA-off arm
-    pads every layer's V to n_embd_v_gqa_max over the whole model.
+    Pinning it off over-charged by +17% to +102% against what llama-server allocates on every iSWA
+    model measured, because the FA-off arm pads every layer's V to n_embd_v_gqa_max.
     """
     seen, cmd = _flash_attn_priced(tmp_path)
 
@@ -3542,10 +3539,9 @@ def test_a_build_without_the_flag_is_priced_off(tmp_path):
 def test_the_flash_attention_off_retry_still_gives_the_placement_back(tmp_path):
     """Why the pin is not needed: the FA-off respawn does not relaunch the plan.
 
-    Every labelled respawn goes through _revoke_spill_plan inside _spawn_and_wait,
-    which strips the -ot / --load-mode / --parallel the plan wrote and appends
-    ``--fit on``; the FA-off rung passes ``label = "-noflash"``, so the launch that
-    runs without flash attention is fitted by llama.cpp, not priced by the planner.
+    Every labelled respawn goes through _revoke_spill_plan inside _spawn_and_wait, which strips
+    the -ot / --load-mode / --parallel the plan wrote and appends ``--fit on``, so the launch that
+    runs without flash attention is fitted by llama.cpp.
     """
     import ast
     import inspect

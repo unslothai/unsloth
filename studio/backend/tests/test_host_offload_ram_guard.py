@@ -160,8 +160,7 @@ def _cache_bytes(cache_ram, caps = None):
 
 
 def test_the_prompt_cache_defaults_to_llama_cpps_own_8192_mib():
-    """Unset means llama-server's default applies, and that default is 8 GiB of
-    host RAM (common/common.h:632) that no footprint term used to charge."""
+    """Unset means llama-server's default applies: 8 GiB of host RAM (common/common.h:632)."""
     assert _cache_bytes(None) == 8192 * 1024 * 1024
 
 
@@ -179,8 +178,8 @@ def test_no_limit_is_charged_as_the_default_not_as_infinity():
 
 
 def test_a_build_without_the_flag_has_no_prompt_cache_to_charge():
-    """--cache-ram predates nothing here: a server that does not accept it has no
-    prompt cache, so charging one would refuse fits that are real."""
+    """A server that does not accept --cache-ram has no prompt cache, so charging one would
+    refuse fits that are real."""
     assert _cache_bytes(None, {"supports_cache_ram": False}) == 0
     assert _cache_bytes(None, {"supports_cache_ram": True}) == 8192 * 1024 * 1024
 
