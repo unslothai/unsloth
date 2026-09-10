@@ -70,12 +70,15 @@ run_case() {  # $1 = TIMEOUT, rest = command
 set -uo pipefail
 AGENT=testagent
 TIMEOUT=$_t
+TURN_DONE_RE='${TURN_DONE_RE:-}'
+EXIT_GRACE=${EXIT_GRACE:-30}
 redact() { :; }
 guide_fail() { echo "GUIDE_FAIL: \$*"; exit 9; }
 $(cat "$WORK/${RT:-run_timed}.sh")
 run_timed "$WORK/out.txt" "\$@"
 echo "RC=\$?"
 echo "TIMED_OUT=\${TIMED_OUT:-unset}"
+echo "TURN_DONE=\${TURN_DONE:-unset}"
 EOF
     bash "$WORK/case.sh" "$@" 2>&1 || true
 }
@@ -89,12 +92,15 @@ run_case_bounded() {  # $1 = outer bound, $2 = TIMEOUT, rest = command
 set -uo pipefail
 AGENT=testagent
 TIMEOUT=$_t
+TURN_DONE_RE='${TURN_DONE_RE:-}'
+EXIT_GRACE=${EXIT_GRACE:-30}
 redact() { :; }
 guide_fail() { echo "GUIDE_FAIL: \$*"; exit 9; }
 $(cat "$WORK/${RT:-run_timed}.sh")
 run_timed "$WORK/out.txt" "\$@"
 echo "RC=\$?"
 echo "TIMED_OUT=\${TIMED_OUT:-unset}"
+echo "TURN_DONE=\${TURN_DONE:-unset}"
 EOF
     timeout --kill-after=5 "$_outer" bash "$WORK/case.sh" "$@" 2>&1 || true
 }
@@ -196,15 +202,32 @@ assert_eq "attribution-ab keeps a hang fatal" \
 assert_eq "and all four of its invokes go through that guard" \
     "$(grep -c 'ab_invoke "\$LOGS_DIR/claude-ab-' "$DRIVE_SH" || true)" 4
 
-# The connection guard must stay a bare rc test: assert_reply cannot tell a
-# completed reply from a startup banner, so it cannot adjudicate a cap. Read the
-# whole statement, not one line of it -- a one-line rewrite is the easy mistake.
+# The connection guard still refuses a bare cap. What changed on 2026-09-06 is
+# that it no longer has to: openclaw answered `pong` and logged
+# `ended with stopReason=stop`, then held its session write lock for the rest of
+# the 1200s cap, and the job reported "never completed a turn" over a transcript
+# that showed the turn completing. The old reasoning stands -- assert_reply
+# cannot tell a completed reply from a startup banner -- so the fix is not to
+# waive the cap but to give connection the assertion it was missing: a line the
+# agent prints only when a run ends. A banner carries no such line and still
+# fails. Read the whole statement, not one line of it.
 CONN_LINE="$(grep -n 'documented launch command exited non-zero' "$DRIVE_SH" | cut -d: -f1)"
 CONN_STMT="$(sed -n "$((CONN_LINE - 2)),${CONN_LINE}p" "$DRIVE_SH")"
 assert_eq "connection guard has no TIMED_OUT escape" \
     "$(echo "$CONN_STMT" | grep -c 'TIMED_OUT' || true)" 0
 assert_eq "connection guard still fails on a bare rc" \
     "$(echo "$CONN_STMT" | grep -c '\[ "\$rc" -eq 0 \] || guide_fail' || true)" 1
+assert_eq "a cap with no end-of-run marker is still fatal for connection" \
+    "$(grep -c 'TIMED_OUT:-0}" = 1 \] && \[ "${TURN_DONE:-0}" != 1 \]' "$DRIVE_SH" || true)" 1
+# TURN_DONE is only ever set where the marker was actually seen, so the guard
+# above cannot be satisfied by a hang that printed nothing but a banner.
+assert_eq "TURN_DONE is set only behind a marker match" \
+    "$(grep -c 'TURN_DONE=1' "$WORK/run_timed.sh")" 2
+assert_eq "and both sites grep the transcript for it" \
+    "$(grep -c 'grep -qF -- "$TURN_DONE_RE"' "$WORK/run_timed.sh")" 2
+# Only openclaw opts in today, and only to its own end-of-run line.
+assert_eq "openclaw declares the marker" \
+    "$(grep -c "TURN_DONE_RE='ended with stopReason='" "$DRIVE_SH" || true)" 1
 
 echo "7. file-edit turn 2 keeps a cap fatal, and asks one thing"
 # The two-part T2 that would have made a waived turn 2 verifiable degraded the
@@ -226,14 +249,92 @@ assert_eq "turn 2 still fails on a bare rc" \
 echo "8. the cap keeps a finite kill fallback, but expiry comes from the clock"
 # Cases 3b/3c/3d prove the behaviour; these pin the shape, so a refactor cannot
 # quietly go back to trusting an exit status.
-assert_eq "kill-after restored" \
-    "$(grep -c 'kill-after=30' "$WORK/run_timed.sh")" 1
+# Both invocations carry it -- the plain blocking one and the watched one. A
+# marker-watching run that dropped the fallback would leave a TERM-resistant CLI
+# unbounded exactly where the watcher is meant to bound it.
+assert_eq "kill-after restored on both call sites" \
+    "$(grep -c 'kill-after=30' "$WORK/run_timed.sh")" 2
 assert_eq "neither status alone decides" \
     "$(grep -c 'rc" -eq 124 \] || \[ "$rc" -eq 137 \]' "$WORK/run_timed.sh")" 1
 assert_eq "the clock decides, with 1s of slack for truncation" \
     "$(grep -c 'elapsed" -ge \$(( TIMEOUT - 1 ))' "$WORK/run_timed.sh")" 1
 assert_eq "a suffixed cap falls back to 124 alone" \
     "$(grep -c '\*\[!0-9\]\*) \[ "$rc" -eq 124 \] && expired=1' "$WORK/run_timed.sh")" 1
+
+echo "9. an agent that finishes its run and then will not exit is released early"
+# The openclaw case: the marker lands, the CLI keeps running, and without this
+# the job burns the whole cap and then calls a completed turn a hang. The stand-in
+# ignores TERM so the escalation to KILL is exercised too. Cap 60 with a 2s grace:
+# a pass has to come back in seconds, so a regression here shows up as a slow
+# test, not a green one.
+OUT="$(TURN_DONE_RE='ended with stopReason=' EXIT_GRACE=2 \
+    run_case_bounded 45 60 bash -c 'trap "" TERM; echo pong; echo run 1 ended with stopReason=stop; while true; do sleep 1; done')"
+assert_eq "TURN_DONE set"                "$(field "$OUT" TURN_DONE)" 1
+assert_eq "not reported as a cap"        "$(field "$OUT" TIMED_OUT)" 0
+assert_eq "no guide_fail"                "$(count "$OUT" 'GUIDE_FAIL')" 0
+assert_eq "says the run ended but the CLI would not exit" \
+    "$(count "$OUT" 'would not exit')" 1
+assert_eq "the transcript survived the kill" \
+    "$(grep -c '^pong$' "$WORK/out.txt" || true)" 1
+
+echo "9f. the agent under the wrapper is killed too, not orphaned"
+# invoke_via_connect runs the CLI from a generated bash script, so timeout(1)'s
+# direct child is that wrapper and the agent is a grandchild. Signalling the
+# wrapper alone would leave the CLI running for the rest of the job with the
+# transcript's fd still open. The stand-in records the grandchild's pid and
+# ignores TERM, so a surviving process is visible after run_timed returns.
+rm -f "$WORK/kid.pid"
+# Two statements, so bash cannot exec-optimize the wrapper away and the agent is
+# a real grandchild -- the shape invoke_via_connect produces. A one-liner wrapper
+# collapses into a single process and the case silently stops testing anything.
+cat > "$WORK/agent.sh" <<AGENT
+trap "" TERM
+echo \$\$ > "$WORK/kid.pid"
+echo pong
+echo run 1 ended with stopReason=stop
+while true; do sleep 1; done
+AGENT
+cat > "$WORK/wrapper.sh" <<WRAP
+export STANDIN=1
+bash "$WORK/agent.sh"
+WRAP
+OUT="$(TURN_DONE_RE='ended with stopReason=' EXIT_GRACE=2 run_case_bounded 60 90 \
+    bash "$WORK/wrapper.sh")"
+assert_eq "TURN_DONE set"                "$(field "$OUT" TURN_DONE)" 1
+KID="$(cat "$WORK/kid.pid" 2>/dev/null || echo 0)"
+assert_eq "the grandchild recorded its pid" "$([ "$KID" -gt 0 ] && echo yes || echo no)" yes
+sleep 1
+assert_eq "and no descendant survived"   "$(kill -0 "$KID" 2>/dev/null && echo alive || echo gone)" gone
+
+echo "9b. a banner-then-hang carries no marker and stays a cap"
+# The failure the connection guard exists to catch. Same watcher, same grace:
+# the only difference is that nothing ever printed the end-of-run line.
+OUT="$(TURN_DONE_RE='ended with stopReason=' EXIT_GRACE=2 \
+    run_case_bounded 45 3 bash -c 'echo Welcome to the agent; sleep 30')"
+assert_eq "TURN_DONE stays clear"        "$(field "$OUT" TURN_DONE)" 0
+assert_eq "still a cap"                  "$(field "$OUT" TIMED_OUT)" 1
+assert_eq "no early-release warning"     "$(count "$OUT" 'would not exit')" 0
+
+echo "9c. a marker that lands inside the last poll interval still counts"
+# The watcher samples; a run that ends just before the cap can expire before the
+# next look. Reading the transcript after the fact keeps the two paths agreeing.
+OUT="$(TURN_DONE_RE='ended with stopReason=' EXIT_GRACE=600 \
+    run_case_bounded 45 3 bash -c 'echo pong; echo run 1 ended with stopReason=stop; sleep 30')"
+assert_eq "cap was hit"                  "$(field "$OUT" TIMED_OUT)" 1
+assert_eq "and the finished turn is still recognized" "$(field "$OUT" TURN_DONE)" 1
+
+echo "9d. declaring a marker does not change a CLI that exits on its own"
+OUT="$(TURN_DONE_RE='ended with stopReason=' run_case 10 bash -c 'echo pong; echo run 1 ended with stopReason=stop')"
+assert_eq "rc 0"                         "$(field "$OUT" RC)" 0
+assert_eq "TIMED_OUT cleared"            "$(field "$OUT" TIMED_OUT)" 0
+assert_eq "TURN_DONE cleared"            "$(field "$OUT" TURN_DONE)" 0
+assert_eq "no warning"                   "$(count "$OUT" '::warning::')" 0
+
+echo "9e. with no marker declared, every path is byte-for-byte the old one"
+OUT="$(run_case 1 bash -c 'echo did the work; sleep 5')"
+assert_eq "still a cap"                  "$(field "$OUT" TIMED_OUT)" 1
+assert_eq "TURN_DONE never set"          "$(field "$OUT" TURN_DONE)" 0
+assert_eq "rc is still the timeout"      "$(field "$OUT" RC)" 124
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

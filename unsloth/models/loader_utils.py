@@ -240,7 +240,8 @@ def planner_quantization_kwargs(
             from unsloth_zoo.peft_utils import SKIP_QUANTIZATION_MODULES
         except Exception:
             # Built on every quantized load, planning or not, so an older unsloth_zoo must not turn a 4bit load
-            # into an ImportError. One without the shared list predates the planner that consumes it.
+            # into an ImportError. One without the shared list predates the planner that consumes it, so this
+            # plan was going to decline anyway.
             return kwargs
         kwargs["llm_int8_skip_modules"] = SKIP_QUANTIZATION_MODULES + list(extra_skip_modules or [])
     return kwargs

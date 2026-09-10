@@ -25,6 +25,30 @@ from core.inference.studio_tool_loop import (
 )
 
 
+def _shared_setup_1():
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "function": {"name": "python", "arguments": "{}"},
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    return transport
+
+
 def _sse(
     delta = None,
     finish = None,
@@ -575,52 +599,14 @@ def test_auto_mode_prompts_only_for_high_risk_calls(executed, monkeypatch):
 
 
 def test_full_access_disables_the_sandbox_at_execution(executed):
-    transport = FakeTransport(
-        [
-            [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "python", "arguments": "{}"},
-                            }
-                        ]
-                    }
-                ),
-                _sse(finish = "tool_calls"),
-                _DONE,
-            ],
-            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
-        ]
-    )
+    transport = _shared_setup_1()
     _run(transport, tools = [PY], bypass_permissions = True)
 
     assert executed[0]["disable_sandbox"] is True
 
 
 def test_sandbox_stays_on_by_default(executed):
-    transport = FakeTransport(
-        [
-            [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "python", "arguments": "{}"},
-                            }
-                        ]
-                    }
-                ),
-                _sse(finish = "tool_calls"),
-                _DONE,
-            ],
-            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
-        ]
-    )
+    transport = _shared_setup_1()
     _run(transport, tools = [PY])
 
     assert executed[0]["disable_sandbox"] is False
@@ -863,26 +849,7 @@ def test_tool_stdout_streams_while_the_call_runs(executed, monkeypatch):
         return "final"
 
     monkeypatch.setattr(loop_mod, "execute_tool", _execute)
-    transport = FakeTransport(
-        [
-            [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "python", "arguments": "{}"},
-                            }
-                        ]
-                    }
-                ),
-                _sse(finish = "tool_calls"),
-                _DONE,
-            ],
-            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
-        ]
-    )
+    transport = _shared_setup_1()
     lines = _run(transport, tools = [PY])
 
     progress = [line for line in lines if line.startswith("data: ") and "partial line" in line]
@@ -986,6 +953,77 @@ def _call_delta(index, call_id, name, arguments):
         "id": call_id,
         "function": {"name": name, "arguments": arguments},
     }
+
+
+def test_a_decoded_object_arguments_delta_reaches_the_tool(executed):
+    """A string-only accumulator ran the tool with ``{}``, and the backend's authoritative
+    tool_start then overwrote the payload the frontend had recovered, so both ends are pinned.
+    """
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {"tool_calls": [_call_delta(0, "call_obj", "web_search", {"query": "value"})]}
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "done"}), _sse(finish = "stop"), _DONE],
+        ],
+        heals = False,
+    )
+    lines = _run(transport)
+
+    assert [call["arguments"] for call in executed] == [{"query": "value"}]
+    assert _events(lines, "tool_start")[0]["arguments"] == {"query": "value"}
+
+
+def test_a_decoded_object_lands_where_its_string_spelling_would():
+    """Serializing puts the object on the path the accumulator already has for text, so the
+    object-boundary fork and the id that holds a snapshot to its own call read it the same
+    either way. Pinned as a pair: the one way this helper can mislead is by giving the two
+    dialects different answers.
+    """
+    streams = [
+        (
+            "one payload",
+            [[_call_delta(0, "c1", "s", {"query": "v"})]],
+            [[_call_delta(0, "c1", "s", '{"query":"v"}')]],
+        ),
+        (
+            "an empty opening, then the rest as fragments",
+            [
+                [_call_delta(0, "c1", "s", {})],
+                [{"index": 0, "function": {"arguments": '{"query":'}}],
+                [{"index": 0, "function": {"arguments": '"v"}'}}],
+            ],
+            [
+                [_call_delta(0, "c1", "s", "{}")],
+                [{"index": 0, "function": {"arguments": '{"query":'}}],
+                [{"index": 0, "function": {"arguments": '"v"}'}}],
+            ],
+        ),
+        (
+            "two snapshots under one id",
+            [
+                [_call_delta(0, "c1", "s", {"query": "a"})],
+                [_call_delta(0, "c1", "s", {"query": "ab"})],
+            ],
+            [
+                [_call_delta(0, "c1", "s", '{"query":"a"}')],
+                [_call_delta(0, "c1", "s", '{"query":"ab"}')],
+            ],
+        ),
+    ]
+
+    def _shape(batches):
+        turn = loop_mod._Turn(round = 1)
+        for batch in batches:
+            turn.merge_structured(batch)
+        return [(c["function"]["name"], c["function"]["arguments"]) for c in turn.calls()]
+
+    for label, as_object, as_string in streams:
+        assert _shape(as_object) == _shape(as_string), label
 
 
 def test_budget_exhausted_parallel_call_is_replayed_with_its_call(executed):

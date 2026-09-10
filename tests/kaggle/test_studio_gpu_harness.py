@@ -807,12 +807,10 @@ def test_the_two_kaggle_legs_fit_the_account_side_by_side():
     which is why this asserts the sum rather than the group names.
     """
     yaml = pytest.importorskip("yaml")
-    # Read the cap out of gate.py's SOURCE rather than importing it. Both
-    # .github/scripts/kaggle_studio_ci and .github/scripts/kaggle_t4_ci ship a
-    # module called `report`, so putting either on sys.path here decides which
-    # one `import report` resolves to for every test that runs afterwards in
-    # the same process. An earlier draft of this test did exactly that and took
-    # nine unrelated summary tests down with it.
+    # Read the cap out of gate.py's SOURCE rather than importing it. Both .github/scripts/kaggle_studio_ci and
+    # .github/scripts/kaggle_t4_ci ship a module called `report`, so putting either on sys.path here decides which one
+    # `import report` resolves to for every test that runs afterwards in the same process. An earlier draft of this test
+    # did exactly that and took nine unrelated summary tests down with it.
     gate_src = (REPO_ROOT / ".github" / "scripts" / "kaggle_t4_ci" / "gate.py").read_text(
         encoding = "utf-8"
     )
@@ -831,8 +829,8 @@ def test_the_two_kaggle_legs_fit_the_account_side_by_side():
         "the two legs share a concurrency group again, so Unsloth waits out the "
         "whole notebook job for a Kaggle session that is free"
     )
-    # Neither may be keyed on the ref: one account, so two branches of the SAME
-    # workflow still must not overlap even though the two workflows may.
+    # Neither may be keyed on the ref: one account, so two branches of the SAME workflow still must not overlap even
+    # though the two workflows may.
     for group in (studio_group, notebook_group):
         assert "github.ref" not in group, group
 
@@ -909,22 +907,18 @@ def test_studio_is_sampled_harder_than_the_notebook_leg():
         "0.75 GPU-h" in studio and "TOTAL, expected                             ~0.25 h" in notebook
     )
 
-    # Share of the shared 50h CI allowance, and the stand-down floor that
-    # enforces the priority: the cheap leg stops first so the expensive one
-    # gets the tail of the week.
+    # Share of the shared 50h CI allowance, and the stand-down floor that enforces the priority: the cheap leg stops
+    # first so the expensive one gets the tail of the week.
     assert "The split is Unsloth 35, this leg 15" in notebook
     assert "--reserve-hours 20" in notebook and "--reserve-hours 10" in studio
 
-    # The Unsloth block states the notebook leg's reserve in PROSE, so the number
-    # lives in two files and one of them is not executable. Raising the notebook
-    # reserve without touching that sentence leaves the Unsloth budget arguing from
-    # a figure that is no longer true, which is exactly how the "cheap leg yields
-    # first" priority gets documented backwards. Assert the sentence agrees.
+    # The Unsloth block states the notebook leg's reserve in PROSE, so the number lives in two files and one of them is
+    # not executable. Raising the notebook reserve without touching that sentence leaves the Unsloth budget arguing from
+    # a figure that is no longer true, which is exactly how the "cheap leg yields first" priority gets documented
+    # backwards. Assert the sentence agrees.
     assert "reserve-hours is 10 rather than the notebook leg's 20" in studio
 
-    # Both budget blocks must name the other leg. Two independently-tuned
-    # rates against one account is how the 50h ceiling gets exceeded by
-    # accident.
+    # Both budget blocks must name the other leg.
     assert "kaggle-t4-studio-gpu-ci.yml" in notebook
     assert "kaggle-t4-notebook-ci.yml" in studio
 
@@ -948,24 +942,28 @@ def test_the_two_legs_together_fit_inside_the_ci_allowance():
     notebook_spend = 231 * rate(notebook) * 0.25  # busy week, the pessimistic end
     assert studio_spend > notebook_spend
     assert studio_spend + notebook_spend <= 50.0
-    # And with margin, because the ceiling is enforced by a quota read that
-    # only sees the account AFTER the hours are gone.
+    # And with margin, because the ceiling is enforced by a quota read that only sees the account AFTER the hours are
+    # gone.
     assert studio_spend + notebook_spend <= 40.0
 
 
 def test_the_reserve_leaves_ci_the_fifty_hours_it_is_allowed():
     source = WORKFLOW.read_text(encoding = "utf-8")
     assert "--reserve-hours 10" in source
-    assert "--budget-hours 2" in source
+    assert "--budget-hours 4" in source
+    assert "--budget-hours 2" not in source
 
 
-def test_the_budget_hours_flag_covers_the_kernel_ceiling():
-    """budget-hours is the worst case one invocation can cost, and the
-    kernel ceiling is what enforces that worst case."""
+def test_the_budget_hours_flag_covers_the_reaper_window():
+    """budget-hours is the worst case one invocation can cost. Nothing waits on
+    the kernel now, so a kernel that ignores its own timeout is left to the
+    collector's reaper window rather than to the kernel ceiling."""
     source = WORKFLOW.read_text(encoding = "utf-8")
     assert "--kernel-timeout-sec 4200" in source
     ceiling_hours = 4200 / 3600
-    assert ceiling_hours <= 2.0
+    budgets = {int(b) for b in re.findall(r"--budget-hours (\d+)", source)}
+    assert len(budgets) == 1, budgets
+    assert budgets.pop() >= ceiling_hours
 
 
 def test_the_opt_in_label_the_summary_names_is_the_one_the_gate_reads():
@@ -990,13 +988,13 @@ def test_the_gate_and_launcher_are_the_shared_ones():
     assert not (CI_DIR / "launch.py").exists()
 
 
-# ------------------------------------------------------------------ report
-
-
 _PASSING = [{"label": "studio-gpu", "passed": True, "assertions": []}]
 _FAILING = [{"label": "studio-gpu", "passed": False, "failures": ["x"], "assertions": []}]
 # A training leg from the merged kernel. Not this reporter's payload.
 _LEG = [{"label": "control", "passed": False, "steps": []}]
+
+
+# ------------------------------------------------------------------ report
 
 
 @pytest.mark.parametrize(
@@ -1218,13 +1216,18 @@ def test_the_ui_driver_gets_a_freshly_seeded_account():
     ), "the password must be read after the restart, or it is the old one"
 
 
+# The llama.cpp install step.
+# Four hardware runs reported install_kind=None and failed the export assertion for it, because nothing had ever
+# installed a llama.cpp under STUDIO_HOME.
+# install_llama_prebuilt.py resolves a real "linux-cuda" kind on an x64 CUDA host, so the bundle was available the whole
+# time and simply never fetched.
+
+
 # The llama.cpp install step. Four hardware runs reported install_kind=None and
 # failed the export assertion for it, because nothing had ever installed a
 # llama.cpp under STUDIO_HOME. install_llama_prebuilt.py resolves a real
 # "linux-cuda" kind on an x64 CUDA host, so the bundle was available the whole
 # time and simply never fetched.
-
-
 def _load_payload():
     """Import run_studio_gpu under a private name.
 
@@ -1307,10 +1310,7 @@ def test_the_llama_cpp_install_actually_invokes_the_installer(tmp_path, monkeypa
     recorded = [entry for entry in session.assertions if entry["name"] == "llama_cpp_install"]
     assert len(recorded) == 1
     assert recorded[0]["llama_cpp_install_kind"] == "cuda13"
-    # install.sh --local claims to put a llama.cpp on disk. Recording what
-    # was there first is what keeps "install.sh installed nothing" and
-    # "install.sh installed a CPU bundle" distinguishable once this step
-    # fixes both.
+    # install.sh --local claims to put a llama.cpp on disk.
     assert "install_kind_before" in recorded[0]
 
 
@@ -1354,8 +1354,7 @@ def test_a_failed_llama_cpp_install_does_not_stop_the_run():
         "a llama.cpp install failure now aborts the run, so a box that cannot "
         "install the bundle reports nothing about inference, training or the UI"
     )
-    # And it must happen before the server, so the export route never sees a
-    # llama.cpp appear underneath it.
+    # And it must happen before the server, so the export route never sees a llama.cpp appear underneath it.
     assert body.index("self.install_llama_cpp()") < body.index("self.start_server()")
 
 
@@ -1635,11 +1634,8 @@ def test_a_loaded_list_alone_is_enough_to_unload(tmp_path, monkeypatch):
 
 # ------------------------------------------------- the evidence the launcher left
 #
-# The launcher collects each kernel into its own subdirectory, and the
-# workflow hands collect_evidence.py the parent. A non-recursive walk of that
-# parent finds nothing at all.
-
-
+# The launcher collects each kernel into its own subdirectory and the workflow hands collect_evidence.py the parent, so
+# a non-recursive walk of that parent finds nothing at all.
 def test_the_bundle_is_found_in_the_per_kernel_directory_the_launcher_writes(tmp_path):
     """launch.py::fetch_evidence writes kaggle_evidence/<slug>/..., and the
     workflow passes kaggle_evidence. A top-level glob reported every real run
@@ -1677,6 +1673,44 @@ def test_a_nested_executed_notebook_is_read_too(tmp_path):
         collect_evidence.iter_text(tmp_path / "evidence")
     )
     assert total and len(chunks) == total
+
+
+def test_evidence_that_is_json_but_not_a_notebook_does_not_raise(tmp_path):
+    """`[]`, a string cell, a numeric output: all valid JSON, all seen back from
+    a kernel. The reader used to raise on the first `.get`, failing the job
+    after its verdict was already posted."""
+    evidence = tmp_path / "evidence" / "unsloth-t4-ci-1234"
+    evidence.mkdir(parents = True)
+    (evidence / "a_output.ipynb").write_text("[]", encoding = "utf-8")
+    (evidence / "b_output.ipynb").write_text(
+        json.dumps({"cells": ["not a cell", {"outputs": [7, {"text": ["x", 1]}]}]}),
+        encoding = "utf-8",
+    )
+    blob = _bundle({"studio.log": b"a log"})
+    (evidence / "c_output.ipynb").write_text(
+        json.dumps({"cells": [{"outputs": [{"text": "\n".join(_chunk_lines(blob))}]}]}),
+        encoding = "utf-8",
+    )
+    streams = list(collect_evidence.iter_text(tmp_path / "evidence"))
+    assert "x1" in streams
+    chunks, total = collect_evidence.collect_chunks(iter(streams))
+    assert total and len(chunks) == total
+
+
+def test_the_evidence_unpack_is_best_effort_on_the_gpu_job():
+    """The notebook and scheduled unpacks already are; this one decided the
+    colour of a job whose verdict had already been posted."""
+    yaml = pytest.importorskip("yaml")
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+    steps = [
+        s
+        for job in workflow["jobs"].values()
+        for s in job.get("steps", [])
+        if "collect_evidence.py" in (s.get("run") or "")
+    ]
+    assert steps, "no unpack step"
+    for step in steps:
+        assert step.get("continue-on-error") is True, step.get("name")
 
 
 # ------------------------------------------------------- a diverged training run
@@ -1804,8 +1838,7 @@ def test_the_payload_can_find_a_llama_server_in_the_process_table(tmp_path):
         executable = sys.executable,
     )
     try:
-        # Only the discovery mechanism is exercised here; the name match is
-        # what the real llama-server supplies.
+        # Only the discovery mechanism is exercised here; the name match is what the real llama-server supplies.
         assert isinstance(module.llama_server_pids(), list)
     finally:
         proc.kill()
@@ -1833,7 +1866,6 @@ def test_an_earlier_loads_offload_line_is_not_evidence_for_the_next(tmp_path):
     scoped = module.studio_log_text(server_log, home, since = marks)
     assert "offloaded" not in scoped
     assert gpu_assert.offloaded_layers(scoped) is None
-    # And the whole file still reads back when nothing is scoped away.
     assert "offloaded" in module.studio_log_text(server_log, home)
 
 

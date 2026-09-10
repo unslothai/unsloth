@@ -158,7 +158,8 @@ export const CHAT_RAG_OCR_KEY = "unsloth_chat_rag_ocr_scanned";
 export const CHAT_RAG_CAPTION_KEY = "unsloth_chat_rag_caption_figures";
 // Only the model-agnostic intents (auto/ngram/off) persist: a saved drafter mode no-ops on a
 // model with no MTP head or DSpark sidecar.
-// The model-specific drafter modes and spec_draft_n_max stay session-only.
+// The model-specific drafter modes (mtp/mtp+ngram/dspark/dflash) and spec_draft_n_max stay
+// session-only. Unknown -> auto.
 const PERSISTED_SPEC_MODES = new Set(["auto", "ngram", "off"]);
 
 export type RagSource = { type: "thread" } | { type: "kb"; kbId: string };
@@ -186,7 +187,7 @@ export const DEFAULT_RAG_AUTOINJECT_MIN_SCORE = 0.7;
 // OCR scanned/image-only PDF pages at ingest; off skips the extra vision pass (only matters with a vision chat model).
 export const DEFAULT_RAG_OCR = true;
 // Describe figures/charts in PDFs at ingest so they become searchable; no-op without a vision model.
-export const DEFAULT_RAG_CAPTION = true;
+export const DEFAULT_RAG_CAPTION = false;
 export const DEFAULT_RESEARCH_WEBSITE_POLICY: ResearchWebsitePolicy = {
   allowedDomains: [],
   blockedDomains: [],
@@ -313,7 +314,8 @@ function loadRagNumber(
 }
 
 // External picks ride in `params.checkpoint` as `external::<providerId>::<modelId>`.
-// PersistedChatSettings omits `checkpoint`: only the local side is mirrored by /status.
+// PersistedChatSettings omits `checkpoint`: only the local side is mirrored by the backend's
+// /api/inference/status.active_model.
 const LAST_EXTERNAL_CHECKPOINT_KEY = "unsloth_chat_last_external_checkpoint";
 
 function loadLastExternalCheckpoint(): string | null {
@@ -4358,7 +4360,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         options?.persist !== false && state.settingsHydrated;
       // A sampling key moved with a chat open belongs to that chat, so it reaches neither the
       // defaults nor the model's memory. NOT gated on hydration, unlike the global write: the
-      // composer is live while the initial request is out, and an uncaptured edit leaked.
+      // composer is live while the initial /api/chat/settings request is out, and an uncaptured
+      // edit leaked.
       const sharedParams =
         options?.persist !== false
           ? withoutCapturedThreadEdits(changedParams, fromModelDefaults)

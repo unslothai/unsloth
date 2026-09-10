@@ -113,6 +113,20 @@ class LlamaUpdateStatusResponse(BaseModel):
     update_size_bytes: Optional[int] = Field(
         None, description = "Download size of the prebuilt Update would fetch, in bytes."
     )
+    backend_migration_available: bool = Field(
+        False,
+        description = (
+            "True when the install recorded an AUTOMATIC backend choice and detection "
+            "now resolves elsewhere, so Update would move it. Independent of "
+            "update_available: the release can be current while the backend has drifted."
+        ),
+    )
+    from_backend: Optional[str] = Field(
+        None, description = "Installed backend, when a migration is available."
+    )
+    to_backend: Optional[str] = Field(
+        None, description = "Backend a re-applied automatic selection would install."
+    )
     whisper: Optional[WhisperSubStatus] = Field(
         None, description = "Whisper piggyback sub-status; None when the probe is unavailable."
     )

@@ -34,9 +34,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-# Known IOC strings (case-sensitive substring match). Each is tied to a
-# public advisory; speculative/generic patterns would false-positive on
-# upgrades.
+# Known IOC strings (case-sensitive substring match).
 NPM_IOC_STRINGS: tuple[str, ...] = (
     # Shai-Hulud TanStack wave -- May 11, 2026 (GHSA-g7cv-rxg3-hmpx).
     "router_init.js",
@@ -61,8 +59,7 @@ NPM_IOC_STRINGS: tuple[str, ...] = (
     "We've been online over 2 hours",
 )
 
-# Hard pin-blocks for publicly confirmed malicious versions.
-# keep in sync with scripts/scan_npm_packages.py
+# Hard pin-blocks for publicly confirmed malicious versions; keep in sync with scripts/scan_npm_packages.py.
 BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     # GHSA-g7cv-rxg3-hmpx -- TanStack May-11 2026 (84 versions).
     "@tanstack/arktype-adapter": {"1.166.12", "1.166.15"},
@@ -206,8 +203,7 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@mistralai/mistralai": {"2.2.2", "2.2.3", "2.2.4"},
     "@mistralai/mistralai-gcp": {"1.7.1", "1.7.2", "1.7.3"},
     "@mistralai/mistralai-azure": {"1.7.1", "1.7.2", "1.7.3"},
-    # Mini Shai-Hulud May-12 wave: @tallyui/* (30 entries, 10 packages)
-    # (Aikido enumeration).
+    # Mini Shai-Hulud May-12 wave: @tallyui/* (30 entries, 10 packages) (Aikido enumeration).
     "@tallyui/components": {"1.0.1", "1.0.2", "1.0.3"},
     "@tallyui/connector-medusa": {"1.0.1", "1.0.2", "1.0.3"},
     "@tallyui/connector-shopify": {"1.0.1", "1.0.2", "1.0.3"},
@@ -218,8 +214,7 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@tallyui/pos": {"0.1.1", "0.1.2", "0.1.3"},
     "@tallyui/storage-sqlite": {"0.2.1", "0.2.2", "0.2.3"},
     "@tallyui/theme": {"0.2.1", "0.2.2", "0.2.3"},
-    # Mini Shai-Hulud May-12 wave: @beproduct/nestjs-auth (18 versions)
-    # (Aikido enumeration).
+    # Mini Shai-Hulud May-12 wave: @beproduct/nestjs-auth (18 versions) (Aikido enumeration).
     "@beproduct/nestjs-auth": {
         "0.1.2",
         "0.1.3",
@@ -240,15 +235,13 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
         "0.1.18",
         "0.1.19",
     },
-    # Mini Shai-Hulud May-12 wave: @draftlab/* + @draftauth/*
-    # (Aikido enumeration).
+    # Mini Shai-Hulud May-12 wave: @draftlab/* + @draftauth/* (Aikido enumeration).
     "@draftauth/client": {"0.2.1", "0.2.2"},
     "@draftauth/core": {"0.13.1", "0.13.2"},
     "@draftlab/auth": {"0.24.1", "0.24.2"},
     "@draftlab/auth-router": {"0.5.1", "0.5.2"},
     "@draftlab/db": {"0.16.1"},
-    # Mini Shai-Hulud May-12 wave: @taskflow-corp/cli + @tolka/cli
-    # (Aikido enumeration).
+    # Mini Shai-Hulud May-12 wave: @taskflow-corp/cli + @tolka/cli (Aikido enumeration).
     "@taskflow-corp/cli": {"0.1.24", "0.1.25", "0.1.26", "0.1.27", "0.1.28", "0.1.29"},
     "@tolka/cli": {"1.0.2", "1.0.3", "1.0.4", "1.0.5", "1.0.6"},
     # Mini Shai-Hulud May-12 wave: @ml-toolkit-ts/* + @mesadev/* + @dirigible-ai/sdk + @supersurkhet/*
@@ -261,8 +254,7 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "@ml-toolkit-ts/xgboost": {"1.0.3", "1.0.4"},
     "@supersurkhet/cli": {"0.0.2", "0.0.3", "0.0.4", "0.0.5", "0.0.6", "0.0.7"},
     "@supersurkhet/sdk": {"0.0.2", "0.0.3", "0.0.4", "0.0.5", "0.0.6", "0.0.7"},
-    # Mini Shai-Hulud May-12 wave: Unscoped packages (10 entries)
-    # (Aikido enumeration).
+    # Mini Shai-Hulud May-12 wave: unscoped packages (10 entries) (Aikido enumeration).
     "safe-action": {"0.8.3", "0.8.4"},
     "ts-dna": {"3.0.1", "3.0.2", "3.0.3", "3.0.4"},
     "cross-stitch": {"1.1.3", "1.1.4", "1.1.5", "1.1.6"},
@@ -273,19 +265,16 @@ BLOCKED_NPM_VERSIONS: dict[str, set[str]] = {
     "git-git-git": {"1.0.8", "1.0.9", "1.0.10", "1.0.11", "1.0.12"},
     "nextmove-mcp": {"0.1.3", "0.1.4", "0.1.5", "0.1.6", "0.1.7"},
     "ml-toolkit-ts": {"1.0.4", "1.0.5"},
-    # Cross-ecosystem Mini Shai-Hulud (Apr-30 wave): npm counterpart of
-    # PyPI lightning 2.6.2/2.6.3. Same threat actor (TeamPCP) per Semgrep,
-    # Aikido, OX Security, Resecurity. Safe version: 7.0.3 and earlier.
+    # Cross-ecosystem Mini Shai-Hulud (Apr-30 wave): npm counterpart of PyPI lightning 2.6.2/2.6.3.
+    # Safe version: 7.0.3 and earlier.
     "intercom-client": {"7.0.4"},
 }
 
 CARGO_IOC_STRINGS: tuple[str, ...] = (
-    # Empty by default; the `source` origin check catches the structural
-    # pattern. Reserved for future cargo-side incidents.
+    # Empty by default; the `source` origin check catches the structural pattern.
 )
 
 
-# Allowed lockfile origins.
 NPM_REGISTRY_PREFIX = "https://registry.npmjs.org/"
 NPM_REGISTRY_PREFIXES_ALLOWED: tuple[str, ...] = (NPM_REGISTRY_PREFIX,)
 
@@ -293,9 +282,8 @@ CARGO_REGISTRY_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
 
 
 # Cargo non-registry source allowlist: `(crate_name, exact_source_string)`.
-# Both must match verbatim; bumping the pinned SHA forces a re-review.
-# Unsloth's Tauri shell pulls `fix-path-env` from git because it is not
-# published to crates.io; commit c4c45d5 was reviewed when it landed.
+# Both must match verbatim; bumping the pinned SHA forces a re-review. Unsloth's Tauri shell pulls `fix-path-env`
+# from git because it is not published to crates.io; commit c4c45d5 was reviewed when it landed.
 CARGO_SOURCE_ALLOWLIST: tuple[tuple[str, str], ...] = (
     (
         "fix-path-env",
@@ -396,14 +384,12 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
             continue
 
         resolved = entry.get("resolved")
-        # Entries nested in another package's node_modules are bundled
-        # fold-ins covered by the parent's integrity; treat as transparent.
+        # Entries nested in another package's node_modules are bundled fold-ins covered by the parent's integrity; treat
+        # as transparent.
         nested = key.count("/node_modules/") >= 1
 
-        # 1. resolved-URL origin.
         if resolved is None:
             if nested or entry.get("bundled"):
-                # Bundled / fold-in entry; covered by parent integrity.
                 pass
             elif entry.get("version"):
                 # Top-level entry without a resolved URL is suspicious.
@@ -434,7 +420,6 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
                     )
                 )
 
-        # 2. integrity-hash presence.
         if resolved is not None and not entry.get("integrity"):
             findings.append(
                 Finding(
@@ -448,7 +433,6 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
                 )
             )
 
-        # 3. Blocked malicious version list.
         nm_prefix = "node_modules/"
         pkg_name = key[len(nm_prefix) :] if key.startswith(nm_prefix) else key
         version = entry.get("version")
@@ -463,8 +447,8 @@ def audit_npm_lockfile(path: Path) -> list[Finding]:
                 )
             )
 
-    # 4. Known IOC strings: scan the raw body to catch fields the
-    #    structural pass doesn't enumerate (scripts, optional deps, etc.).
+    # Known IOC strings: scan the raw body to catch fields the structural pass doesn't enumerate
+    # (scripts, optional deps, etc.).
     for ioc in NPM_IOC_STRINGS:
         if ioc in raw:
             line_no = _first_line_containing(raw, ioc)
@@ -616,16 +600,11 @@ def audit_cargo_lockfile(path: Path) -> list[Finding]:
 
 
 # Finding kinds split into BLOCKING vs ADVISORY for the default run mode.
-# Blocking = public attack indicators (known-malicious version, IOC
-# string) plus the provenance/integrity checks this gate must enforce
-# before `npm ci` / `cargo fetch` runs lifecycle scripts. Advisory =
-# incomplete-but-not-fetchable anomalies. --strict blocks everything.
 BLOCKING_KINDS: frozenset[str] = frozenset(
     {
         "blocked-known-malicious",
         "known-ioc-string",
-        # A non-registry URL or an unverifiable tarball is the exact
-        # pre-install fetch this gate exists to stop.
+        # A non-registry URL or an unverifiable tarball is the exact pre-install fetch this gate exists to stop.
         "non-registry-resolved-url",
         "missing-integrity-hash",
         "non-registry-cargo-source",
@@ -696,19 +675,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    # Require a real justification (>=5 chars, not a boolean-shaped token)
-    # for the skip env var. An invalid value warns and falls through to
-    # run the audit (fail-safe); a valid one warns and skips with rc=0.
+    # Require a real justification (>=5 chars, not a boolean-shaped token) for the skip env var.
     _skip_raw = os.environ.get("UNSLOTH_LOCKFILE_AUDIT_SKIP")
     if _skip_raw is not None:
         _skip = _skip_raw.strip()
         _invalid_tokens = {"", "1", "0", "true", "false", "yes", "no", "on", "off"}
-        # Both branches echo the user-supplied env var inside a
-        # ``::warning::`` GH Actions workflow command. The raw value can
-        # contain ``%``, ``\r``, ``\n`` or even another ``::error::``
-        # line (workflow-command injection); _gha_escape collapses each
-        # message onto a single annotation line per the GH workflow-
-        # commands spec.
+        # Both branches echo the user-supplied env var inside a ``::warning::`` GH Actions workflow command. The raw
+        # value can contain ``%``, ``\r``, ``\n`` or even another ``::error::`` line (workflow-command injection);
+        # _gha_escape collapses each message onto a single annotation line per the GH workflow-commands spec.
         if _skip.lower() in _invalid_tokens or len(_skip) < 5:
             print(
                 "::warning::"
@@ -754,9 +728,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    # Split into blocking (known-malicious / IOC / structurally broken)
-    # and advisory (everything else). Default mode prints advisories
-    # without changing the exit code; --strict makes all blocking.
+    # Split into blocking (known-malicious / IOC / structurally broken) and advisory (everything else).
     blocking = [f for f in all_findings if f.kind in BLOCKING_KINDS]
     advisory = [f for f in all_findings if f.kind not in BLOCKING_KINDS]
 
@@ -771,8 +743,8 @@ def main(argv: list[str] | None = None) -> int:
             file = sys.stderr,
         )
         for f in advisory:
-            # GH Actions warning annotation; _gha_escape collapses the
-            # multi-line Finding onto one line so it renders fully in the UI.
+            # GH Actions warning annotation; _gha_escape collapses the multi-line Finding onto one
+            # line so it renders fully in the UI.
             print(f"::warning::{_gha_escape(str(f))}", file = sys.stderr)
             print(file = sys.stderr)
 

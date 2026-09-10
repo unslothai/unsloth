@@ -3,7 +3,11 @@
 
 "use client";
 
-import { ArtifactCard, useChatRuntimeStore } from "@/features/chat";
+import {
+  ArtifactCard,
+  useChatProjectScope,
+  useChatRuntimeStore,
+} from "@/features/chat";
 import {
   getCodeFence,
   isFullHtmlDocument,
@@ -26,6 +30,7 @@ import {
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { normalizeEscapedInlineMath } from "@/lib/escaped-inline-math";
 import { preprocessLaTeX } from "@/lib/latex";
+import { withDataImageSupport } from "@/lib/markdown-data-images";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 import { openLink } from "@/lib/open-link";
 import { safeMarkdownUrl } from "@/lib/safe-markdown-url";
@@ -74,7 +79,12 @@ import {
 } from "./markdown-block-boundary";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
+import {
+  decodeSegment,
+  markdownSandboxImageSrc,
+} from "./sandbox-files";
 import { SearchImageElement, SearchImagesContext } from "./search-image";
+import { useSandboxImage } from "./use-sandbox-image";
 import { unslothDarkTheme, unslothLightTheme } from "./code-themes";
 import { stabilizeStreamingMarkdown } from "./streaming-markdown";
 import {
@@ -123,6 +133,133 @@ const STREAMDOWN_IMMEDIATE_UPDATES = {
   stagger: 0,
 } satisfies NonNullable<StreamdownProps["animated"]>;
 
+/*
+ * Registering `img` replaces Streamdown's own renderer WHOLESALE (its `Components` map is keyed by
+ * tag, so the default `img` is only a default), so everything that renderer did for a `data:` image
+ * is restated here: wrapper, hidden-when-failed, fallback text, hover download. What it could not do
+ * is the reason this exists -- an on-disk answer image arrives as
+ * `![plot](/api/inference/sandbox/<sid>/plot.png)`, survives sanitize() because it carries no scheme,
+ * and then reaches the DOM as a plain same-origin <img src>, with no Authorization header, 401s, and
+ * renders as "Image not available". That case is rewritten into an authed fetch -> object URL first
+ * (see `use-sandbox-image`); a `data:` URI keeps going straight through, untouched.
+ */
+const MarkdownImage = memo(function MarkdownImage(props: ComponentProps<"img">) {
+  // `node` is Streamdown's ExtraProps; it must not reach the DOM.
+  const {
+    src,
+    alt = "",
+    className,
+    onLoad,
+    onError,
+    node: _node,
+    ...dom
+  } = props as ComponentProps<"img"> & { node?: unknown };
+  // The fallback scope, for a src that records no session of its own (a bare `plot.png`): the same
+  // pair the adapter resolves a run's session from (`unstable_threadId ?? activeThreadId`). A src
+  // that DOES record one keeps it -- the folder its files were written to is where they still are.
+  const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
+  const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const projectId = useChatProjectScope();
+  const file = src
+    ? markdownSandboxImageSrc(src, {
+        threadId: remoteId ?? activeThreadId ?? undefined,
+        projectId,
+      })
+    : null;
+  const sandbox = useSandboxImage(file);
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  // A sandbox src is renderable only once the authed fetch has produced a blob: until then it is
+  // absent, never raw. `data:`/`blob:` keep going through exactly as they were.
+  const resolved =
+    file === null
+      ? src
+      : sandbox.state.status === "loaded"
+        ? sandbox.state.url
+        : undefined;
+  const failedNow =
+    (resolved != null && failedSrc === resolved) ||
+    (file !== null && sandbox.state.status === "failed");
+  // Hidden when it failed and has no intrinsic size to fall back on, as Streamdown's own renderer does.
+  const sized = dom.width != null || dom.height != null;
+  // Download naming follows the replaced renderer: a real extension on the path wins whole (alt must
+  // never override a real filename); otherwise any extension in alt is STRIPPED and one inferred from the
+  // blob's type is appended -- so alt="plot" downloads "plot.png", not "plot". Split before DECODING,
+  // so a raw `#`/`?` keeps its delimiter meaning, then decode: `loss curve #1.png` must save under its
+  // real name, not as `loss%20curve%20%231.png`.
+  const downloadName = (blobType: string): string => {
+    const tail =
+      decodeSegment((file ?? src ?? "").split(/[?#]/)[0].split("/").pop() ?? "") || "";
+    const dot = tail.lastIndexOf(".");
+    if (dot > -1 && tail.length - dot - 1 <= 4) return tail;
+    const ext = /jpe?g/.test(blobType)
+      ? "jpg"
+      : blobType.includes("svg")
+        ? "svg"
+        : blobType.includes("gif")
+          ? "gif"
+          : blobType.includes("webp")
+            ? "webp"
+            : "png";
+    return `${(alt || tail || "image").replace(/\.[^/.]+$/, "")}.${ext}`;
+  };
+  return (
+    <span
+      data-streamdown="image-wrapper"
+      className="group relative my-4 inline-block"
+    >
+      <img
+        ref={file === null ? undefined : sandbox.ref}
+        data-streamdown="image"
+        src={resolved}
+        alt={alt}
+        decoding="async"
+        onLoad={(event) => {
+          setFailedSrc(null);
+          onLoad?.(event);
+        }}
+        onError={(event) => {
+          setFailedSrc(resolved ?? null);
+          onError?.(event);
+        }}
+        className={`max-w-full rounded-lg ${failedNow && !sized ? "hidden" : ""} ${className ?? ""}`}
+        {...dom}
+      />
+      {failedNow && (
+        <span
+          data-streamdown="image-fallback"
+          className="text-muted-foreground text-xs italic"
+        >
+          Image not available
+        </span>
+      )}
+      {/* Kept from the replaced renderer: the hover tint over the image. */}
+      <div className="pointer-events-none absolute inset-0 hidden rounded-lg bg-black/10 group-hover:block" />
+      {!failedNow && resolved ? (
+        <button
+          type="button"
+          title="Download image"
+          className="absolute right-2 bottom-2 flex h-8 w-8 cursor-pointer items-center justify-center rounded-md border border-border bg-background/90 opacity-0 backdrop-blur-sm transition-all duration-200 group-hover:opacity-100"
+          onClick={async () => {
+            // By now the src is always blob:/data:, so a plain fetch carries it.
+            try {
+              const blob = await (await fetch(resolved)).blob();
+              await downloadFile(blob, downloadName(blob.type), blob.type);
+            } catch (error) {
+              if (!isDownloadCancelled(error)) toast.error("Could not save file.");
+            }
+          }}
+        >
+          <HugeiconsIcon
+            icon={Download01Icon}
+            strokeWidth={1.75}
+            className="size-icon"
+          />
+        </button>
+      ) : null}
+    </span>
+  );
+});
+
 const STREAMDOWN_COMPONENTS = {
   a: ({ href, children, ...props }: ComponentProps<"a">) => (
     <a
@@ -141,11 +278,16 @@ const STREAMDOWN_COMPONENTS = {
   ),
   // Module-scoped: Streamdown's memo comparator ignores `components`.
   [SEARCH_IMAGE_TAG]: SearchImageElement,
+  img: MarkdownImage,
 };
 // Through the sanitizer; the component drops tokens it cannot resolve.
 const STREAMDOWN_ALLOWED_TAGS = {
   [SEARCH_IMAGE_TAG]: ["token"],
 } satisfies NonNullable<StreamdownProps["allowedTags"]>;
+
+// Module-scoped: Streamdown extends its sanitize schema only for its default pipeline, so the
+// allowed-tag merge and the data-image protocol ride on a pipeline we pass ourselves (see lib).
+const STREAMDOWN_REHYPE_PLUGINS = withDataImageSupport(STREAMDOWN_ALLOWED_TAGS);
 const COPY_RESET_MS = 2000;
 const MERMAID_SOURCE_RE = /```mermaid\s*([\s\S]*?)```/i;
 const ACTION_PANEL_CLASS =
@@ -810,6 +952,7 @@ const MarkdownTextImpl = () => {
             plugins={STREAMDOWN_PLUGINS}
             components={STREAMDOWN_COMPONENTS}
             allowedTags={STREAMDOWN_ALLOWED_TAGS}
+            rehypePlugins={STREAMDOWN_REHYPE_PLUGINS}
             urlTransform={safeMarkdownUrl}
             controls={STREAMDOWN_CONTROLS}
             shikiTheme={STREAMDOWN_SHIKI_THEME}

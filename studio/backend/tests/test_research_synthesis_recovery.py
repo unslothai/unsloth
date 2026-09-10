@@ -43,7 +43,7 @@ def research_home(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _claimed_run(supervisor) -> dict:
+def _claimed_run(supervisor, external: bool = False) -> dict:
     research_db.create_run(
         run_id = "run-1",
         owner_subject = "alice",
@@ -52,14 +52,24 @@ def _claimed_run(supervisor) -> dict:
         assistant_message_id = None,
         config = {
             "model": "local-model",
-            "inferenceRequest": {"model": "local-model"},
+            "inferenceRequest": (
+                {
+                    "model": "local-model",
+                    "providerType": "gemini",
+                    "providerId": "p1",
+                    "externalModel": "gemini-3.6-flash",
+                    "maxOutputTokens": 32_768,
+                }
+                if external
+                else {"model": "local-model"}
+            ),
             "ragScope": None,
             "instructions": "",
             "question": "what happened?",
             "budgets": {
                 "maxSteps": 1,
                 "maxSources": 5,
-                "modelTimeoutSeconds": 30,
+                "modelTimeoutSeconds": 900,
                 "toolTimeoutSeconds": 10,
             },
         },
@@ -283,3 +293,111 @@ def test_a_recovery_padded_with_invented_citations_does_not_win_on_length(
     assert len(SHORTER_DRAFT + "\n\n" + invented) > len(FIRST_DRAFT)
     assert finished["status"] == "completed"
     assert FIRST_DRAFT in finished["report"]
+
+
+def test_a_refused_report_budget_falls_back_rather_than_losing_the_run(research_home, monkeypatch):
+    """None of the ways a connection can refuse are knowable when the budget is resolved, so
+    the last attempt is made at the budget every run had before the ceiling was read."""
+    from core import research_runs as worker
+
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    monkeypatch.setattr(
+        worker.providers_db, "get_provider", lambda _id: {"max_output_tokens": 32_768}
+    )
+    claimed = _claimed_run(supervisor, external = True)
+    asked: list[int | None] = []
+
+    async def refuse_the_raised_budget(run, messages, **kwargs):
+        if kwargs.get("phase") != "synthesis":
+            return "not json", "", "stop", None
+        budget = kwargs.get("max_tokens")
+        asked.append(budget)
+        if budget and budget > worker._SYNTHESIS_MAX_TOKENS:
+            raise ValueError("max_tokens is too large for this model")
+        return FIRST_DRAFT, "", "stop", None
+
+    monkeypatch.setattr(supervisor, "_stream_completion", refuse_the_raised_budget)
+    asyncio.run(supervisor._research(claimed))
+
+    assert asked == [32_768, worker._SYNTHESIS_MAX_TOKENS]
+    finished = research_db.get_run("run-1")
+    assert finished["status"] == "completed"
+    assert FIRST_DRAFT in finished["report"]
+
+
+def test_a_cancelled_run_is_not_retried_at_the_old_budget(research_home, monkeypatch):
+    """The fallback covers a refused budget, not a run the user stopped."""
+    from core import research_runs as worker
+
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    monkeypatch.setattr(
+        worker.providers_db, "get_provider", lambda _id: {"max_output_tokens": 32_768}
+    )
+    claimed = _claimed_run(supervisor, external = True)
+    calls = {"n": 0}
+
+    async def cancel_during_synthesis(run, messages, **kwargs):
+        if kwargs.get("phase") != "synthesis":
+            return "not json", "", "stop", None
+        calls["n"] += 1
+        raise worker.RunCancelled()
+
+    monkeypatch.setattr(supervisor, "_stream_completion", cancel_during_synthesis)
+    with pytest.raises(worker.RunCancelled):
+        asyncio.run(supervisor._research(claimed))
+
+    assert calls["n"] == 1
+
+
+def test_a_failed_recovery_keeps_the_draft_it_was_called_to_rescue(research_home, monkeypatch):
+    """Its prompt carries instructions the first did not, so an endpoint counting prompt plus
+    output against one window can refuse it at a budget the first request fit inside."""
+    from core import research_runs as worker
+
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    monkeypatch.setattr(
+        worker.providers_db, "get_provider", lambda _id: {"max_output_tokens": 32_768}
+    )
+    claimed = _claimed_run(supervisor, external = True)
+    phases: list[str] = []
+
+    async def refuse_only_the_recovery(run, messages, **kwargs):
+        phase = kwargs.get("phase")
+        phases.append(phase)
+        if phase == "synthesis":
+            return FIRST_DRAFT, "", "length", {"completion_tokens": 32_768}
+        if phase == "synthesis_recovery":
+            raise ValueError("max_tokens plus prompt exceeds the model's context window")
+        return "not json", "", "stop", None
+
+    monkeypatch.setattr(supervisor, "_stream_completion", refuse_only_the_recovery)
+    asyncio.run(supervisor._research(claimed))
+
+    assert "synthesis_recovery" in phases
+    finished = research_db.get_run("run-1")
+    assert finished["status"] == "completed"
+    assert FIRST_DRAFT in finished["report"]
+    assert "Incomplete report." in finished["report"]
+
+
+def test_a_cancel_during_recovery_still_stops_the_run(research_home, monkeypatch):
+    """The rescue covers a refused request, not a run the user stopped."""
+    from core import research_runs as worker
+
+    supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
+    monkeypatch.setattr(
+        worker.providers_db, "get_provider", lambda _id: {"max_output_tokens": 32_768}
+    )
+    claimed = _claimed_run(supervisor, external = True)
+
+    async def cancel_during_recovery(run, messages, **kwargs):
+        phase = kwargs.get("phase")
+        if phase == "synthesis":
+            return FIRST_DRAFT, "", "length", {"completion_tokens": 32_768}
+        if phase == "synthesis_recovery":
+            raise worker.RunCancelled()
+        return "not json", "", "stop", None
+
+    monkeypatch.setattr(supervisor, "_stream_completion", cancel_during_recovery)
+    with pytest.raises(worker.RunCancelled):
+        asyncio.run(supervisor._research(claimed))

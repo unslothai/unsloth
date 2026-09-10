@@ -138,9 +138,10 @@ QUICK = Scene(
             ("reasoning_toggle", 26_500, 4_500),
             # 1,500 rather than 4,000, because of the gap AFTER it rather than the cost of the send:
             # `send_turn` is a sub-100 ms action, so a 4,000 ms window is permission to begin the follow-up
-            # four seconds late without recording a miss, and every one of those seconds comes off
-            # `message_menu`'s window. Measured from the latest legal send, this film left 3,500 ms for a
-            # 4,562 ms drain; the fast film had the same shape and CI failed on it.
+            # four seconds late without recording a miss. The drain runs from when the send actually fires,
+            # so every one of those seconds comes off `message_menu`'s window: measured from the latest
+            # legal send, this film left 3,500 ms for a 4,562 ms drain; the fast film had the same shape
+            # and CI failed on it.
             ("send_turn", 31_500, 1_500),
             ("message_menu", 36_000, 3_000),
             ("copy_markdown", 39_500, 2_500),

@@ -2,10 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, readText, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
@@ -26,6 +25,9 @@ Object.assign(globalThis, {
 const { nativeDropTargetAt, registerNativeDropTarget } = await import(
   "../src/features/native-intents/native-drop-targets.ts"
 );
+
+const IMAGE_DROPZONE = readSrc("components/image-dropzone.tsx");
+const USE_NATIVE_DROP = readSrc("features/native-intents/use-native-drop.ts");
 
 const asElement = (value: FakeElement) => value as unknown as HTMLElement;
 
@@ -143,54 +145,36 @@ for (const ratio of [3, 1.5]) {
 // The chat-wide handler has to ask before acting, or a drop aimed at a dialog's
 // own zone lands as a chat attachment behind it.
 test("the chat drop handler defers to a registered target", async () => {
-  const source = await readFile(
-    new URL(
-      "../src/features/native-intents/use-native-drop.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   assert.match(
-    source,
+    USE_NATIVE_DROP,
     /if \(nativeDropTargetAt\(event\.payload\.position\)\) \{\s*publish\(\{ status: "idle" \}\);\s*return;/,
   );
 });
 
 test("the shared image picker owns native drops and ignores stale reads", async () => {
-  const source = await readFile(
-    new URL("../src/components/image-dropzone.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(source, /const nativeDropRef = useNativeDropTarget\(\{/);
-  assert.match(source, /ref=\{nativeDropRef\}/);
-  assert.match(source, /registerNativeAttachmentPath\(path\)/);
-  assert.match(source, /readNativeAttachmentFile\(intent\.path\.token\)/);
+  assert.match(IMAGE_DROPZONE, /const nativeDropRef = useNativeDropTarget\(\{/);
+  assert.match(IMAGE_DROPZONE, /ref=\{nativeDropRef\}/);
+  assert.match(IMAGE_DROPZONE, /registerNativeAttachmentPath\(path\)/);
+  assert.match(IMAGE_DROPZONE, /readNativeAttachmentFile\(intent\.path\.token\)/);
   // A read outliving the picker would land on whoever holds `onChange` now, and
   // the native policy takes fewer formats than the picker's own image/*.
-  assert.match(source, /if \(!mounted\.current \|\| claimed !== selection\.current\) return;/);
-  assert.match(source, /NATIVE_IMAGE_EXTS\.includes\(/);
+  assert.match(IMAGE_DROPZONE, /if \(!mounted\.current \|\| claimed !== selection\.current\) return;/);
+  assert.match(IMAGE_DROPZONE, /NATIVE_IMAGE_EXTS\.includes\(/);
   // Index-keyed reference slots keep the picker mounted when one is removed.
-  assert.match(source, /if \(seen\.current === value\) return;\s*seen\.current = value;\s*selection\.current \+= 1;/);
+  assert.match(IMAGE_DROPZONE, /if \(seen\.current === value\) return;\s*seen\.current = value;\s*selection\.current \+= 1;/);
 });
 
 // The picker rejects a format the native side would refuse anyway, so the two
 // lists have to stay in step or a droppable image starts being turned away.
 test("the picker's droppable formats match the native path policy", async () => {
-  const picker = await readFile(
-    new URL("../src/components/image-dropzone.tsx", import.meta.url),
-    "utf8",
-  );
-  const rust = await readFile(
-    new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
-    "utf8",
-  );
+  const rust = readText("../../src-tauri/src/native_path_policy.rs");
   const listed = (source: string, pattern: RegExp) =>
     [...(source.match(pattern)?.[1].matchAll(/"([a-z0-9]+)"/g) ?? [])]
       .map((match) => match[1])
       .sort();
 
   assert.deepEqual(
-    listed(picker, /NATIVE_IMAGE_EXTS\s*=\s*\[([^\]]+)\]/),
+    listed(IMAGE_DROPZONE, /NATIVE_IMAGE_EXTS\s*=\s*\[([^\]]+)\]/),
     listed(rust, /IMAGE_ATTACHMENT_EXTS:\s*&\[&str\]\s*=\s*&\[([^\]]+)\]/),
   );
 });
@@ -198,16 +182,9 @@ test("the picker's droppable formats match the native path policy", async () => 
 // Tauri repeats "over" for every cursor move, and useNativeModelDrop sits in
 // ChatPage, so an unconditional setState there rerenders the page per event.
 test("the chat drop overlay only publishes a changed state", async () => {
-  const source = await readFile(
-    new URL(
-      "../src/features/native-intents/use-native-drop.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   assert.match(
-    source,
+    USE_NATIVE_DROP,
     /setDropState\(\(prev\) => \(sameDropState\(prev, next\) \? prev : next\)\)/,
   );
-  assert.doesNotMatch(source, /payload\.type !== "drop"\) \{\s*setDropState\(/);
+  assert.doesNotMatch(USE_NATIVE_DROP, /payload\.type !== "drop"\) \{\s*setDropState\(/);
 });

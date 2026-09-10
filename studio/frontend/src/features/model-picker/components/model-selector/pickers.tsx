@@ -1769,8 +1769,9 @@ function GgufVariantExpander({
     }
     return recommended;
   }, [variantGroups, preferredByGroup, anyBudgetGb, budgetKnown, getGgufFit]);
-  // `effectiveRecommendedByGroup` is keyed by PRESENTATION group while the footprint pass
-  // buckets by the backend's dependency_key, so that pass asks through the variant itself.
+  // `effectiveRecommendedByGroup` is keyed by PRESENTATION group ("quantizations", "text-frames",
+  // "reference-media") while the footprint pass buckets by the backend's dependency_key
+  // ("flux.2-klein:<digest>"), so that pass asks through the variant itself.
   const recommendedQuantForVariant = useMemo(() => {
     const byVariant = new Map<GgufVariantDetail, string>();
     for (const group of variantGroups) {
@@ -2923,10 +2924,14 @@ export function HubModelPicker({
   );
   // Ollama rows list alongside custom folders: both are user-managed stores outside ./models,
   // and an Ollama root added as a custom folder is where the rows were expected (#9226).
+  // Hermes' one-click downloads are the same kind of store; a source in no bucket never renders.
   const customFolderModels = useMemo(
     () =>
       pickerInventory.localModels.filter(
-        (m) => m.source === "custom" || m.source === "ollama",
+        (m) =>
+          m.source === "custom" ||
+          m.source === "ollama" ||
+          m.source === "hermes",
       ),
     [pickerInventory.localModels],
   );
@@ -3729,7 +3734,9 @@ export function HubModelPicker({
     catalogSeedRows,
   ]);
 
-  // Ordered by the On Device dropdown. The gate keeps diffusion GGUFs in the Images/Video picker and out of chat.
+  // Ordered by the On Device dropdown (Recent / Size / Name / Downloaded). The gate keeps a
+  // supported diffusion GGUF listed here so picking one routes to Images or Video; only the
+  // never-loadable tag is dropped.
   const sortedCachedGguf = useMemo(
     () =>
       sortCachedRepos(

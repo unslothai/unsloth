@@ -112,9 +112,9 @@ HARNESS = _load_harness()
 
 # ── the node side: the harness's own JS on a virtual clock ────────────
 
-# performance.now() is the fake clock, requestAnimationFrame is a queue this file pumps, and
-# setTimeout is a queue too -- the recorder's stall loop reschedules itself forever, so a real
-# timer would keep the process alive past the end of the test.
+# performance.now() is the fake clock, requestAnimationFrame is a queue this file pumps, and setTimeout is a queue too
+# -- the recorder's stall loop reschedules itself forever, so a real timer would keep the process alive past the end of
+# the test.
 FAKE_ENV = """
 let now = 0;
 let rafs = [];
@@ -191,17 +191,17 @@ say({ first_frames: first.frames, second_frames: second.frames,
 
 
 def test_the_recorder_starts_the_next_action_with_one_loop() -> None:
-    # Two frames pumped, two frames recorded. A stale callback that survived into this action
-    # would be recording alongside the real one, so every frame is counted twice -- and it
-    # compounds, because each begin() can leave another behind.
+    # Two frames pumped, two frames recorded. A stale callback that survived into this action would be recording
+    # alongside the real one, so every frame is counted twice -- and it compounds, because each begin() can leave
+    # another behind.
     got = run_node(LEAK_BODY, RECORDER_SOURCES)
     assert got["second_frames"] == 2, got
 
 
 def test_the_recorder_does_not_charge_the_between_action_gap_as_a_frame() -> None:
-    # The stale callback's own `lastFrame` is from the PREVIOUS action, so the interval it pushes
-    # spans the gap between the two actions. It lands in worst_frame_ms and, once the gap is over
-    # 33ms, in frames_over_33 as well: both growth axes.
+    # The stale callback's own `lastFrame` is from the PREVIOUS action, so the interval it pushes spans the gap between
+    # the two actions.
+    # It lands in worst_frame_ms and, once the gap is over 33ms, in frames_over_33 as well: both growth axes.
     got = run_node(LEAK_BODY, RECORDER_SOURCES)
     assert got["second_worst"] == 16, got
 
@@ -210,8 +210,8 @@ def test_the_recorder_does_not_charge_the_between_action_gap_as_a_frame() -> Non
 
 REOPEN_SOURCES = {"RECORDER_INIT": HARNESS.RECORDER_INIT, "REOPEN_JS": HARNESS.REOPEN_JS}
 
-# A thread that remounts instantly and then highlights for 40 frames, which is the shape re-open
-# actually has: the message roots are back long before the fences inside them are coloured.
+# A thread that remounts instantly and then highlights for 40 frames, which is the shape re-open actually has: the
+# message roots are back long before the fences inside them are coloured.
 REOPEN_BODY = """
 eval(RECORDER_INIT);
 let mounted = true;
@@ -245,25 +245,19 @@ say({
 
 
 def test_reopen_keeps_the_clock_running_until_the_highlighter_stops() -> None:
-    # quiet() settles on three sub-33ms frames, and the lull between two Shiki batches is longer
-    # than three frames -- the same lull wait_for_highlighting_settled() needs five stable reads to
-    # see through. Settling on frames alone stops the re-open clock partway through the rebuild.
+    # quiet() settles on three sub-33ms frames, and the lull between two Shiki batches is longer than three frames --
+    # the same lull wait_for_highlighting_settled() needs five stable reads to see through. Settling on frames alone
+    # stops the re-open clock partway through the rebuild.
     got = run_node(REOPEN_BODY, REOPEN_SOURCES)
     assert got["settleMs"] >= got["lastChangeAt"] - 20, got
 
 
 def test_reopen_does_not_charge_the_grace_window_to_the_action() -> None:
-    # The grace is a fixed cost every size pays equally, and a constant on both ends of a ratio
-    # drags it towards 1. The reported settle is the time of the LAST activity, so the 1000ms of
-    # watching that confirmed it is not in the number.
     got = run_node(REOPEN_BODY, REOPEN_SOURCES)
     assert got["settleMs"] <= got["lastChangeAt"] + 120, got
 
 
 def test_reopen_counts_no_frames_from_the_grace_window() -> None:
-    # The grace window watches an idle page, so every frame in it is a fast one. Left in the
-    # arrays they inflate `frames`, drag `median_frame_ms` down towards the idle rate, and do it
-    # by the same fixed amount at every size -- a constant offset on a growth axis.
     got = run_node(REOPEN_BODY, REOPEN_SOURCES)
     # 640ms of highlighting at 16ms a frame, and nothing past it.
     assert got["frames"] <= 45, got
@@ -287,7 +281,6 @@ def test_reopen_closes_its_recorder_window_at_the_last_activity() -> None:
 # 0.105ms at 300000). Swap one of them for the full census, or move any of them inside the poll
 # loop, and the harness starts adding size-dependent work to the number it publishes. These pin
 # the count.
-
 SCAN_BUDGET_BODY = """
 eval(RECORDER_INIT);
 let mounted = true;
@@ -326,21 +319,11 @@ say({
 
 
 def test_the_reopen_window_never_runs_the_document_census() -> None:
-    # GUARD. counts() is a dozen document-wide queries including getElementsByTagName("*"), and it
-    # is 25 times the cost of messageCount() at 25000 chars and 24 times at 300000 (measured
-    # 0.15ms/0.01ms and 2.51ms/0.105ms on Chromium). One of those per frame inside the re-open
-    # window is the harness measuring itself.
     got = run_node(SCAN_BUDGET_BODY, REOPEN_SOURCES)
     assert got["censuses"] == 0, got
 
 
 def test_the_reopen_window_scans_no_more_than_once_per_frame_of_the_rebuild() -> None:
-    # GUARD. Six [data-role] passes for this rebuild on the virtual clock, and the six are
-    # enumerable: `before` sizes the thread, one closes the unmount loop, three run the re-open
-    # loop while the stub rebuild is still blocked, and `after` proves the thread came back. Only
-    # the middle four are inside the recorder window and only one of them is inside the reported
-    # `ms`. A second pass per iteration doubles the size-dependent work in the number, and at
-    # 300000 characters each pass is 0.105ms against 0.01ms at 25000.
     got = run_node(SCAN_BUDGET_BODY, REOPEN_SOURCES)
     assert got["scans"] <= 6, got
 
@@ -395,20 +378,17 @@ say({ notifications, querySelectorCalls, querySelectorAllCalls, openMs: done.ope
 
 
 def test_the_menu_reads_its_open_flag_from_the_mutation_and_not_from_a_scan() -> None:
-    # GUARD. The menu content is portaled to the END of document.body, so a querySelector for it
-    # walks the whole message list -- and for the entire open latency it walks it and finds
-    # nothing. Measured on Chromium at 300000 chars that query is 0.25ms a call against 0.025ms at
-    # 25000. One per mutation is 2 in the window; one per frame would be one per 16ms of the very
-    # latency being measured, on a cost that grows with the thread.
+    # GUARD. The menu content is portaled to the END of document.body, so a querySelector for it walks the whole
+    # message list, and for the entire open latency it walks it and finds nothing. Measured on Chromium at 300000
+    # chars that query is 0.25ms a call against 0.025ms at 25000.
     got = run_node(MENU_SCAN_BODY, MENU_SOURCES)
     assert got["querySelectorCalls"] <= got["notifications"] + 1, got
 
 
 def test_the_menu_window_takes_one_census_and_not_one_per_frame() -> None:
-    # GUARD. The tooltip-trigger census is the only querySelectorAll the menu window runs
-    # (measured 0.13ms at 300000 chars against 0.005ms at 25000). It is taken once, under the
-    # pointer, because an action bar that never mounts and one that is autohidden at rest are
-    # otherwise indistinguishable.
+    # GUARD. The tooltip-trigger census is the only querySelectorAll the menu window runs (measured 0.13ms at 300000
+    # chars against 0.005ms at 25000). It is taken once, under the pointer, because an action bar that never mounts
+    # and one that is autohidden at rest are otherwise indistinguishable.
     got = run_node(MENU_SCAN_BODY, MENU_SOURCES)
     assert got["querySelectorAllCalls"] <= 1, got
 
@@ -417,8 +397,8 @@ def test_the_menu_window_takes_one_census_and_not_one_per_frame() -> None:
 
 MENU_SOURCES = {"RECORDER_INIT": HARNESS.RECORDER_INIT, "MENU_JS": HARNESS.MENU_JS}
 
-# A menu that opens and closes with NO work at all: the flag flips inside the dispatch. Whatever
-# this reports is therefore pure floor.
+# A menu that opens and closes with NO work at all: the flag flips inside the dispatch. Whatever this reports is
+# therefore pure floor.
 MENU_BODY = """
 eval(RECORDER_INIT);
 let menuOpen = false;
@@ -457,10 +437,10 @@ say({ openMs: done.openMs, closeMs: done.closeMs, total: done.open_close_ms });
 
 
 def test_opening_the_menu_costs_a_whole_double_raf_even_when_it_is_free() -> None:
-    # settle() reads `open` before the MutationObserver callback that would have updated it has
-    # been delivered, so its first true comparison is on the far side of an __nextPaint(). Nothing
-    # is wrong with that -- it is what makes the number a wall-clock one -- but it means the metric
-    # carries a floor, and the floor has to be subtracted before a ratio.
+    # settle() reads `open` before the MutationObserver callback that would have updated it has been delivered, so its
+    # first true comparison is on the far side of an __nextPaint(). Nothing is wrong with that -- it is what makes the
+    # number a wall-clock one -- but it means the metric carries a floor, and the floor has to be subtracted before a
+    # ratio.
     got = run_node(MENU_BODY, MENU_SOURCES)
     assert got["openMs"] >= 32, got
 
@@ -624,9 +604,9 @@ def test_a_clean_cell_produces_no_harness_failure() -> None:
 
 
 def test_deferred_fences_are_not_a_harness_failure() -> None:
-    # THE POINT OF MEASURING CHARACTERS. A real, complete thread now holds far fewer highlighted
-    # tokens than before the default moved: 1,322 against 3,216 for one cycle, measured, with the
-    # fixture untouched. The harness must not call that broken.
+    # THE POINT OF MEASURING CHARACTERS.
+    # A real, complete thread now holds far fewer highlighted tokens than before the default moved: 1,322 against 3,216
+    # for one cycle, measured, with the fixture untouched.
     cell = copy.deepcopy(clean_cell())
     cell["counts"]["deferredFences"] = 4
     cell["counts"]["highlightedTokens"] = 300
@@ -634,9 +614,9 @@ def test_deferred_fences_are_not_a_harness_failure() -> None:
 
 
 def test_a_fixture_that_lost_its_code_is_still_a_harness_failure() -> None:
-    # The replaced check caught a fixture that is not the heavy thread it claims to be, and this
-    # still does. Tokens are left HIGH so only the character floor can fail: a thread whose code
-    # blocks quietly emptied still renders, still scrolls and still curves, of something else.
+    # The replaced check caught a fixture that is not the heavy thread it claims to be, and this still does. Tokens
+    # are left HIGH so only the character floor can fail: a thread whose code blocks quietly emptied still renders,
+    # still scrolls and still curves, of something else.
     cell = copy.deepcopy(clean_cell())
     cell["counts"]["codeChars"] = 6000
     cell["counts"]["highlightedTokens"] = 99999
@@ -645,8 +625,6 @@ def test_a_fixture_that_lost_its_code_is_still_a_harness_failure() -> None:
 
 
 def test_a_fence_that_is_neither_deferred_nor_highlighted_is_a_harness_failure() -> None:
-    # The other half of the old token floor, per block: one block stuck on streamdown's
-    # unhighlighted fallback passed the total as long as the rest made it up.
     cell = copy.deepcopy(clean_cell())
     cell["counts"]["unhighlightedMountedFences"] = 1
     failures = HARNESS.harness_failures(results_with(cell), discriminating_report())
@@ -761,10 +739,9 @@ def repetition_log() -> list:
 
 
 def test_the_highlighter_gate_runs_after_the_tool_panes_are_mounted() -> None:
-    # The tool result panes ARE code -- two of the seven fences a content cycle produces -- and
-    # Radix does not mount them until they are expanded. Gating on the highlighter first and
-    # expanding second leaves a fresh batch of unhighlighted fences building inside the keystroke
-    # measurement, which is the very next thing timed.
+    # The tool result panes ARE code -- two of the seven fences a content cycle produces -- and Radix does not mount
+    # them until they are expanded. Gating on the highlighter first and expanding second leaves a fresh batch of
+    # unhighlighted fences building inside the keystroke measurement, which is the very next thing timed.
     log = repetition_log()
     expand = log.index(("evaluate", "expandTools"))
     highlight = log.index(("wait", "highlighting"))
@@ -778,10 +755,9 @@ def test_the_highlighter_gate_runs_before_the_first_measured_action() -> None:
 
 
 def test_the_deleted_message_is_restored_before_anything_else_is_measured() -> None:
-    # The delete removes a message from the repository, permanently. At the smallest size the
-    # whole thread is one ten-kind cycle, so three repetitions take the json fence, then both
-    # inline images, then the svg -- and the fixture census that would have caught it was taken
-    # before any repetition ran.
+    # The delete removes a message from the repository, permanently. At the smallest size the whole thread is one
+    # ten-kind cycle, so three repetitions take the json fence, then both inline images, then the svg -- and the
+    # fixture census that would have caught it was taken before any repetition ran.
     log = repetition_log()
     assert ("evaluate", "restore") in log, log
     assert (
@@ -792,8 +768,8 @@ def test_the_deleted_message_is_restored_before_anything_else_is_measured() -> N
 
 
 def test_the_restored_thread_is_re_expanded_and_re_highlighted_before_re_open() -> None:
-    # Restoring re-imports the thread, which unmounts every tool card and throws away every
-    # highlighted fence. Re-opening straight afterwards would time that rebuild as well as its own.
+    # Restoring re-imports the thread, which unmounts every tool card and throws away every highlighted fence.
+    # Re-opening straight afterwards would time that rebuild as well as its own.
     log = repetition_log()
     restore = log.index(("evaluate", "restore"))
     reopen = log.index(("action", "REOPEN_JS"))
@@ -802,13 +778,12 @@ def test_the_restored_thread_is_re_expanded_and_re_highlighted_before_re_open() 
 
 
 def test_the_tool_expand_gate_is_not_satisfied_by_a_thread_of_closed_cards() -> None:
-    # `collapsibleOutputs` is the CollapsibleContent element itself, and Radix keeps that element
-    # in the tree for its collapse animation, so it is there while the card is shut. Measured on
-    # this tree at 300000 characters, straight after seeding and before any expandTools() call:
-    # collapsibleOutputs 22 of the 22 expected, codeExecutionPanes 0. A `collapsibleOutputs >= n`
-    # gate is therefore satisfied by the closed thread, which is a wait that cannot fail -- and it
-    # released the highlighter gate below it before the two fences per cycle it exists to sequence
-    # had mounted. The pane's <pre> is a CHILD of that element: 0 collapsed, 22 expanded.
+    # `collapsibleOutputs` is the CollapsibleContent element itself, and Radix keeps that element in the tree for its
+    # collapse animation, so it is there while the card is shut. Measured on this tree at 300000 characters, straight
+    # after seeding and before any expandTools() call: collapsibleOutputs 22 of the 22 expected, codeExecutionPanes 0.
+    # A `collapsibleOutputs >= n` gate is therefore satisfied by the closed thread, which is a wait that cannot fail,
+    # and it released the highlighter gate below it before the two fences per cycle it exists to sequence had mounted.
+    # The pane's <pre> is a CHILD of that element: 0 collapsed, 22 expanded.
     gates = [line for line in HARNESS_SOURCE.splitlines() if "counts()." in line]
     assert gates, "the fixture no longer gates on a count at all"
     for line in gates:
@@ -830,8 +805,6 @@ def test_the_smoke_page_can_restore_the_thread_it_seeded() -> None:
 # both ends, which drags the ratio towards 1 and can report a real curve as flat; declaring it too
 # high subtracts time the action never spent. REOPEN_JS now counts the waits it actually pays, so
 # the constant is checked against the run rather than trusted.
-
-
 def floor_row(
     observed,
     engine = "chromium",
@@ -1060,9 +1033,8 @@ def test_warnings_and_errors_are_captured_into_separate_lists() -> None:
     assert 'page.on("pageerror", lambda e: console_errors.append' in HARNESS_SOURCE
     assert 'if m.type == "error"' in HARNESS_SOURCE, "errors are no longer routed by severity"
     assert 'if m.type == "warning"' in HARNESS_SOURCE, "warnings are no longer routed by severity"
-    # Keyed on the predicate alone, not on the whole expression around it: the first version of
-    # this assertion pinned an exact one-line form and stayed green when the predicate was put
-    # back on a line of its own.
+    # Keyed on the predicate alone, not on the whole expression around it: the first version of this assertion pinned
+    # an exact one-line form and stayed green when the predicate was put back on a line of its own.
     assert 'm.type in ("warning", "error")' not in HARNESS_SOURCE, (
         "one predicate captures both severities again, so an application exception is filed as "
         "chatter and absorbed by the warning allowance"
@@ -1085,8 +1057,6 @@ def test_the_recorder_zeroes_its_wait_counter_at_the_start_of_each_window() -> N
 # `large > small` was the whole test. The CI workflow runs one repetition on Chromium, so there is
 # no median to smooth a stray dropped frame, and `harness_failures` accepts any ONE discriminating
 # axis: 0 at 25K and 1 at 100K could carry the entire verdict while every latency axis was flat.
-
-
 def counter_cells(
     small,
     large,
@@ -1159,8 +1129,6 @@ def test_the_threshold_is_absolute_because_no_ratio_exists() -> None:
 # subtracted. An UNFLOORED timing reads zero at the smallest size whenever the action resolves
 # before the recorder produces a sample, and was then treated as a dropped-frame counter, so a
 # noisy 5ms at the largest size read as a rise of 5 and discriminated.
-
-
 def timing_cells(
     small,
     large,
@@ -1230,11 +1198,9 @@ def test_the_counter_set_is_stated_and_non_empty() -> None:
 # that report to `results` and json.dumps it, so every complete run raised "Object of type
 # function is not JSON serializable" AFTER taking all its measurements. No unit test caught it
 # because none of them serialised the report, which is the gap this section closes.
-
-
 def test_the_growth_report_is_json_serializable() -> None:
     report = HARNESS.report_growth(counter_cells(0, 9))
-    json.dumps(report)  # raises if any value is a function
+    json.dumps(report)
 
 
 def test_the_report_is_serializable_for_a_callable_floor_axis() -> None:
@@ -1340,8 +1306,6 @@ def test_a_timing_with_a_small_nonzero_baseline_is_untouched() -> None:
 # took, and `gestureMs` is computed from `startedAt` too. All three therefore span the entire
 # recorder window and contain every double-rAF wait in it. They declared zero, which left roughly
 # twenty vsync floors in both ends of the scroll ratios.
-
-
 def axis_floor(name):
     for axis, _pick, floored in HARNESS.GROWTH_AXES:
         if axis == name:

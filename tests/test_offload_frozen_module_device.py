@@ -44,8 +44,8 @@ def _load_helper():
         for node in tree.body
         if isinstance(node, ast.FunctionDef) and node.name == "_offload_frozen_module_for_training"
     )
-    # The annotations are evaluated when the def executes, so the names they
-    # mention have to be real here, not placeholders.
+    # The annotations are evaluated when the def executes, so the names they mention have to be real here, not
+    # placeholders.
     from typing import Optional
 
     ns = {"torch": torch, "Optional": Optional, "ModulesToSaveWrapper": object}
@@ -198,13 +198,11 @@ def test_on_real_hardware_a_module_on_the_current_card_is_unchanged():
     assert not w.original_module.weight.requires_grad
 
 
-# The DEFAULT path. `use_gradient_checkpointing = "unsloth"` offloads the trained
-# embedding and head to disk BEFORE `_get_peft_model` runs, so PEFT builds
-# `modules_to_save.default` on CPU and the copy has no index left to preserve.
-# llama.py records the real placement first (`input_embeddings_device` /
-# `output_embeddings_device`, captured just above that offload) and hands it over.
-
-
+# The DEFAULT path.
+# `use_gradient_checkpointing = "unsloth"` offloads the trained embedding and head to disk BEFORE `_get_peft_model`
+# runs, so PEFT builds `modules_to_save.default` on CPU and the copy has no index left to preserve.
+# llama.py records the real placement first (`input_embeddings_device` / `output_embeddings_device`, captured just above
+# that offload) and hands it over.
 def test_a_copy_rebuilt_on_cpu_by_the_disk_offload_uses_the_recorded_device():
     """The default-path regression: without this the copy lands on cuda:0."""
     w = _Wrapper("cpu")

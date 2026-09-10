@@ -108,19 +108,9 @@ export interface JobListeners {
   onError?: (variant: string | null) => unknown;
 }
 
-export type ConflictOwner = "caller" | "downloads";
-
 export interface ConflictEntry {
-  owner: ConflictOwner;
   info: TransportConflictInfo;
   pending: DownloadRequest;
-}
-
-export function conflictInfoForOwner(
-  entry: ConflictEntry | undefined,
-  owner: ConflictOwner,
-): TransportConflictInfo | null {
-  return entry?.owner === owner ? entry.info : null;
 }
 
 export interface DownloadManagerState {

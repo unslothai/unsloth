@@ -1401,17 +1401,17 @@ def test_a_capture_that_saw_no_thread_at_all_falls_back_on_the_declaration(tmp_p
     assert all(mode == U.WINDOWED for mode, _why in U.decide_modes([shard]).values())
 
 
-# A cell that failed its own completeness gate carries no UI verdict. `probe_thread_completeness`
-# runs before the film and `record_completeness_gate` writes the verdict against the cell, so a
-# windowed arm that kept its first and last page and lost the middle says so in its own payload,
-# and `report/payload.py::excluded_from_rows` drops it from the PERFORMANCE score. `ui_parity.py`
-# read no gate row except the windowed declaration, so the same cell's eighteen action rows were
-# still scored, and the visible region is a window on the END of the thread, which such a store
-# still fills, so the pairs matched and `--mode auto` exited 0 over a payload that had already
-# recorded the loss.
-
-
 # ── a cell that failed its own completeness gate carries no UI verdict ──
+#
+# `probe_thread_completeness` runs before the film and `record_completeness_gate` writes the
+# verdict against the cell, so a windowed arm that kept its first page and its last one and lost
+# everything between them says so in its own payload, and `report/payload.py::excluded_from_rows`
+# drops that cell from the PERFORMANCE score. `ui_parity.py` read no gate row except the windowed
+# declaration, so the same cell's eighteen action rows were still scored for UI parity, and the
+# visible region is a window on the END of the thread, which such a store still fills, so the
+# pairs matched and `--mode auto` exited 0 over a payload that had already recorded the loss.
+
+
 def _completeness_gate(
     cell_id,
     passed,

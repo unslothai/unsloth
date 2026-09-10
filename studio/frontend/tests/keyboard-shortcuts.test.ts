@@ -30,6 +30,15 @@ import {
 } from "../src/features/settings/stores/keyboard-shortcuts-store.ts";
 import { SETTINGS_TABS } from "../src/features/settings/stores/settings-dialog-store.ts";
 
+import { readSrc, readSrcAsync } from "./helpers/kit.ts";
+
+const SRC__ROOT = readSrc("app/routes/__root.tsx");
+const APP_SIDEBAR = readSrc("components/app-sidebar.tsx");
+const THREAD = readSrc("components/assistant-ui/thread.tsx");
+const CHAT_PAGE = readSrc("features/chat/chat-page.tsx");
+const KEYBOARD_SHORTCUTS_TAB = readSrc("features/settings/tabs/keyboard-shortcuts-tab.tsx");
+const EN = readSrc("i18n/locales/en.ts");
+
 function keyEvent(
   code: string,
   mods: Partial<{
@@ -298,13 +307,9 @@ test("the tab-search chord counts as browser-owned on both platforms", () => {
 // The walk is the one chord whose end is a key coming up rather than going
 // down, so it is the one that a window losing focus can strand.
 test("the recent walk ends on losing the window, not just on keyup", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
-  const at = sidebar.indexOf("const end = () =>");
+  const at = APP_SIDEBAR.indexOf("const end = () =>");
   assert.ok(at !== -1, "the traversal listener moved");
-  const body = sidebar.slice(at, sidebar.indexOf("}, []);", at));
+  const body = APP_SIDEBAR.slice(at, APP_SIDEBAR.indexOf("}, []);", at));
   // Both signals reach the same end, and both are torn down again.
   assert.match(body, /window\.addEventListener\("keyup", onKeyUp\);/);
   assert.match(body, /window\.addEventListener\("blur", end\);/);
@@ -337,42 +342,34 @@ test("the private-window chord is reserved and carries no default", () => {
 // verdict, so they are the two workspace chords that can put a gate where the
 // user's workspace was.
 test("the workspace chords land where the guard lets them", async () => {
-  const root = await readFile(
-    new URL("../src/app/routes/__root.tsx", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    root,
+    SRC__ROOT,
     /const chatOnlyMeasured = usePlatformStore\(\n\s*\(s\) => s\.isChatOnly\(\) && !s\.capabilitiesUnknown\(\),/,
   );
   assert.match(
-    root,
+    SRC__ROOT,
     /const routeShortcutEnabled = !isAuthFlowRoute && !settingsDialogOpen;/,
   );
   assert.match(
-    root,
+    SRC__ROOT,
     /useShortcut\("switchToTrain", goTo\("\/studio"\), \{\n\s*enabled: routeShortcutEnabled && !chatOnlyMeasured,/,
   );
   // Video has its own predicate rather than the chat-only one: /video checks
   // auth and nothing else, so the chord would land on the unsupported-hardware
   // gate. Read through the same helper the disabled row reads.
   assert.match(
-    root,
+    SRC__ROOT,
     /const videoDisabled =\n\s*videoNavHint\(chatOnlyMeasured, chatOnlyReason\) !== undefined;/,
   );
   assert.match(
-    root,
+    SRC__ROOT,
     /useShortcut\("switchToVideo", goTo\("\/video"\), \{\n\s*enabled: routeShortcutEnabled && !videoDisabled,/,
   );
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /const videoDisabledHint = videoNavHint\(chatOnlyMeasured, chatOnlyReason\);/,
   );
-  assert.match(sidebar, /disabled: videoDisabled,/);
+  assert.match(APP_SIDEBAR, /disabled: videoDisabled,/);
 
   // The rest are on the allowlist, so they stay reachable and ungated: gating
   // them would take away a page the guard is happy to serve.
@@ -381,13 +378,13 @@ test("the workspace chords land where the guard lets them", async () => {
     ["switchToHub", "/hub"],
     ["switchToExport", "/export"],
   ] as const) {
-    const at = root.indexOf(`useShortcut("${id}"`);
+    const at = SRC__ROOT.indexOf(`useShortcut("${id}"`);
     assert.ok(at !== -1, `${id} lost its call site`);
     assert.ok(
-      !root.slice(at, root.indexOf(");", at)).includes("chatOnlyMeasured"),
+      !SRC__ROOT.slice(at, SRC__ROOT.indexOf(");", at)).includes("chatOnlyMeasured"),
       `${id} gated on a verdict its route does not answer to`,
     );
-    assert.match(root, new RegExp(`goTo\\("${path.replace("/", "\\/")}"\\)`));
+    assert.match(SRC__ROOT, new RegExp(`goTo\\("${path.replace("/", "\\/")}"\\)`));
   }
 });
 
@@ -616,15 +613,8 @@ test("bare Escape is the recorder's own exit, so only a prompt-gated row takes i
 
   // The recorder swallows every keydown, so bare Escape has to stay its way
   // out, except on the rows whose own chord it is.
-  const tab = await readFile(
-    new URL(
-      "../src/features/settings/tabs/keyboard-shortcuts-tab.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   assert.match(
-    tab,
+    KEYBOARD_SHORTCUTS_TAB,
     /event\.code === "Escape" &&\n(?:\s*![a-zA-Z.]+ &&\n)+\s*!def\?\.allowBareKey\n\s*\) \{\n\s*setRecording\(null\);/,
   );
 
@@ -903,10 +893,7 @@ test("an unbound or unclaimed chord has no owner", () => {
 // browser eats leaves the Shortcuts tab itself hard to reach, so the General
 // reset has to cover this key or the user is stuck with it.
 test("Reset all local preferences clears the rebound chords", async () => {
-  const source = await readFile(
-    new URL("../src/features/settings/tabs/general-tab.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/settings/tabs/general-tab.tsx");
   const keys = source.slice(
     source.indexOf("const PREFS_KEYS"),
     source.indexOf("];", source.indexOf("const PREFS_KEYS")),
@@ -959,14 +946,10 @@ test("every locale overlay carries the shortcut strings", async () => {
 });
 
 test("a cleared alternate keeps its row, so it can be restored", async () => {
-  const source = await readFile(
-    new URL("../src/features/settings/tabs/keyboard-shortcuts-tab.tsx", import.meta.url),
-    "utf8",
-  );
   // Clearing a slot stores null, so a row that keys off the resolved value
   // alone would hide the slot's own restore control along with the chord.
   assert.match(
-    source,
+    KEYBOARD_SHORTCUTS_TAB,
     /hasAlternate =\s*\n\s*defaultBindingFor\(def, "alternate", mac\) !== null/,
   );
 });
@@ -1037,13 +1020,9 @@ test("a chord's surface does not come back open on the next visit", async () => 
 // registry, so nothing stops another chord built on Escape from reaching it.
 // Clear all unreads ships one on macOS.
 test("only bare Escape drops the selection", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
-  const at = sidebar.indexOf('if (event.key !== "Escape"');
+  const at = APP_SIDEBAR.indexOf('if (event.key !== "Escape"');
   assert.notEqual(at, -1, "the selection listener moved");
-  const block = sidebar.slice(at, sidebar.indexOf("clearSelection();", at));
+  const block = APP_SIDEBAR.slice(at, APP_SIDEBAR.indexOf("clearSelection();", at));
   // Every modifier, so ⇧Esc goes to Clear all unreads alone.
   for (const modifier of ["metaKey", "ctrlKey", "altKey", "shiftKey"]) {
     assert.ok(
@@ -1092,21 +1071,17 @@ test("the workspace chords do not leave the mobile drawer over the workspace", a
 // gone unless the message is hovered. The assistant bar never mounted the fork
 // button, so any thread ending in a reply had no listener at all.
 test("the fork chord is registered where it mounts, not from an action bar", async () => {
-  const thread = await readFile(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
 
   // The registration is its own component, rendering nothing.
-  const start = thread.indexOf("const ForkChatShortcut: FC = () => {");
+  const start = THREAD.indexOf("const ForkChatShortcut: FC = () => {");
   assert.notEqual(start, -1, "the fork registration moved");
-  const block = thread.slice(start, thread.indexOf("\n};", start));
+  const block = THREAD.slice(start, THREAD.indexOf("\n};", start));
   assert.match(block, /useShortcut\(\n\s*"forkChat",/);
   assert.match(block, /return null;/);
 
   // The button keeps the click and takes no part in the chord.
-  const buttonAt = thread.indexOf("const ForkMessageButton: FC = () => {");
-  const button = thread.slice(buttonAt, thread.indexOf("\n};", buttonAt));
+  const buttonAt = THREAD.indexOf("const ForkMessageButton: FC = () => {");
+  const button = THREAD.slice(buttonAt, THREAD.indexOf("\n};", buttonAt));
   assert.ok(
     !button.includes("useShortcut"),
     "an autohidden bar cannot hold the registration",
@@ -1116,30 +1091,30 @@ test("the fork chord is registered where it mounts, not from an action bar", asy
   // the button's, so the in-flight flag cannot be either one's own state: the
   // chord followed by a click would post two forks with two thread ids.
   assert.match(
-    thread,
+    THREAD,
     /const useForkInFlight = create<\{\n\s*forking: boolean;/,
   );
-  assert.match(thread, /const pending = useForkInFlight\(\(s\) => s\.forking\);/);
+  assert.match(THREAD, /const pending = useForkInFlight\(\(s\) => s\.forking\);/);
   assert.match(
-    thread,
+    THREAD,
     /if \(useForkInFlight\.getState\(\)\.forking\) return;/,
   );
   assert.ok(
-    !thread.includes("const [pending, setPending] = useState(false);"),
+    !THREAD.includes("const [pending, setPending] = useState(false);"),
     "the per-instance flag is what let two forks run",
   );
 
   // Mounted from both roles, since either can be the last message, and only
   // for the last one, which is the message a fork may be taken from.
-  const mounts = thread.match(
+  const mounts = THREAD.match(
     /<MessagePrimitive\.If last=\{true\}>\n\s*<ForkChatShortcut \/>\n\s*<\/MessagePrimitive\.If>/g,
   );
   assert.equal(mounts?.length, 2);
   for (const role of ["const AssistantMessage", "const UserMessage: FC"]) {
-    const at = thread.indexOf(role);
+    const at = THREAD.indexOf(role);
     assert.notEqual(at, -1, `${role} moved`);
     assert.ok(
-      thread.slice(at, thread.indexOf("\n};", at)).includes("<ForkChatShortcut />"),
+      THREAD.slice(at, THREAD.indexOf("\n};", at)).includes("<ForkChatShortcut />"),
       `${role} does not mount the fork chord`,
     );
   }
@@ -1149,66 +1124,58 @@ test("the fork chord is registered where it mounts, not from an action bar", asy
 // pinned while no tour is running. A chord routed through it would open the
 // picker and lose it on the next tick.
 test("the model picker chord opens without the tour's pin", async () => {
-  const chatPage = await readFile(
-    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-    "utf8",
-  );
 
   // The pin, and the effect that keys on it.
   assert.match(
-    chatPage,
+    CHAT_PAGE,
     /const openModelSelector = useCallback\(\(\) => \{\n\s*setModelSelectorLocked\(true\);/,
   );
   assert.match(
-    chatPage,
+    CHAT_PAGE,
     /if \(tour\.open\) return;\n\s*if \(!modelSelectorLocked\) return;[\s\S]{0,200}?setModelSelectorOpen\(false\);/,
   );
 
   // So the chord takes its own door, and stands aside while a step is on it.
   assert.match(
-    chatPage,
+    CHAT_PAGE,
     /const toggleModelSelector = useCallback\(\(\) => \{\n(?:\s*\/\/[^\n]*\n)*\s*if \(modelSelectorLocked\) return;\n\s*setModelSelectorOpen\(\(open\) => !open\);/,
   );
-  assert.match(chatPage, /useShortcut\(\n\s*"openModelPicker",[\s\S]*?toggleModelSelector\(\);/);
+  assert.match(CHAT_PAGE, /useShortcut\(\n\s*"openModelPicker",[\s\S]*?toggleModelSelector\(\);/);
 
   // Three mentions left, all the tour's: the declaration, the step builder's
   // argument, and that memo's dependency. Nothing else may pin it open.
-  assert.equal((chatPage.match(/openModelSelector/g) ?? []).length, 3);
+  assert.equal((CHAT_PAGE.match(/openModelSelector/g) ?? []).length, 3);
 });
 
 // The inline rename pill is rendered by the row, so it needs the row to be on
 // screen. A chord has no row under the cursor, and the open chat may be behind
 // a collapsed section, past a folder's limit, or on a route with no chat list.
 test("the rename chord does not land in a surface only a row can show", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
   // The chord asks for the dialog; the context menu, which has a row under the
   // cursor by definition, keeps the pill.
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /useShortcut\("renameChat", \(\) => \{[\s\S]*?withActiveChat\(\(item\) => openRenameChat\(item, false\)\);/,
   );
-  assert.match(sidebar, /onSelect=\{\(\) => openRenameChat\(item\)\}/);
+  assert.match(APP_SIDEBAR, /onSelect=\{\(\) => openRenameChat\(item\)\}/);
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /function openRenameChat\(item: SidebarItem, inline = true\)/,
   );
 
   // The pill is gated on it, so a dialog rename cannot also arm a row that is
   // off screen and surprise the user when it comes back.
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /const isRenamingThis =\n\s*renamingTarget\?\.kind === "chat" &&\n\s*renamingTarget\.inline &&/,
   );
   // And the dialog takes chats now, which is what its chat strings were always
   // written for.
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /\(renamingTarget\.kind !== "chat" \|\| !renamingTarget\.inline\)/,
   );
-  assert.ok(sidebar.includes('t("shell.dialog.renameChat.title")'));
+  assert.ok(APP_SIDEBAR.includes('t("shell.dialog.renameChat.title")'));
 });
 
 // Bare Escape has more than one owner. The sidebar answers it while rows are
@@ -1262,17 +1229,13 @@ test("one Escape does not both drop a selection and deny a tool call", async () 
 });
 
 test("the composer chords outlive the recording bar", async () => {
-  const thread = await readFile(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
   // Dictation swaps ComposerRightControls out for the recording bar, so a
   // chord registered in there could start dictation and never stop it.
-  const controls = thread.indexOf("const ComposerRightControls:");
+  const controls = THREAD.indexOf("const ComposerRightControls:");
   assert.ok(controls !== -1, "the controls component moved");
   for (const id of ["startDictation", "sendMessage"]) {
-    const at = thread.indexOf(`useShortcut(\n    "${id}"`);
-    const inline = thread.indexOf(`useShortcut("${id}"`);
+    const at = THREAD.indexOf(`useShortcut(\n    "${id}"`);
+    const inline = THREAD.indexOf(`useShortcut("${id}"`);
     const found = at === -1 ? inline : at;
     assert.ok(found !== -1, `${id} lost its call site`);
     assert.ok(found < controls, `${id} registers inside the recording swap`);
@@ -1280,43 +1243,32 @@ test("the composer chords outlive the recording bar", async () => {
   // Send goes through the form, which runs the parking, queueing and refusing
   // that the runtime's own send knows nothing about, and through the recording
   // bar's own path while dictation is running.
-  assert.match(thread, /formRef\.current\?\.requestSubmit\(\);/);
+  assert.match(THREAD, /formRef\.current\?\.requestSubmit\(\);/);
   assert.match(
-    thread,
+    THREAD,
     /if \(isDictating\) \{\n\s*if \(!dictationBlocked\) sendAfterDictation\(\);/,
   );
 });
 
 test("a collapsed sidebar section is not published for the chords", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
   // Navigation and Select all walk what is on screen, so a section the user
   // closed counts as gone, the same as a closed project folder.
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /chatListsOnScreen && pinnedOpen \? sortedPinnedChatItems/,
   );
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /chatListsOnScreen && chatOpen \? sortedRecentChatItems/,
   );
-  assert.match(sidebar, /organizeBy !== "project" \|\| !projectsOpen/);
+  assert.match(APP_SIDEBAR, /organizeBy !== "project" \|\| !projectsOpen/);
   // And the published lists are the filtered ones.
-  assert.match(sidebar, /pinnedItems: visiblePinnedItems,/);
-  assert.match(sidebar, /recentItems: visibleRecentItems,/);
+  assert.match(APP_SIDEBAR, /pinnedItems: visiblePinnedItems,/);
+  assert.match(APP_SIDEBAR, /recentItems: visibleRecentItems,/);
 });
 
 test("the MCP chord does not live behind the MCP pill", async () => {
-  const button = await readFile(
-    new URL("../src/features/chat/mcp-composer-button.tsx", import.meta.url),
-    "utf8",
-  );
-  const page = await readFile(
-    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-    "utf8",
-  );
+  const button = await readSrcAsync("features/chat/mcp-composer-button.tsx");
   // MCP ships off for a chat and the pill only renders once it is on, so a
   // chord registered inside the pill would do nothing until it was found by
   // hand. The dialog and its chord mount for the chat instead.
@@ -1330,28 +1282,21 @@ test("the MCP chord does not live behind the MCP pill", async () => {
   // Mounted through the route change, not gated on `active`: the flag lives in
   // a store, so a dialog left open has to be closed on the way out rather than
   // unmounted with it still set.
-  assert.match(page, /\n\s*<McpServersDialogMount \/>/);
+  assert.match(CHAT_PAGE, /\n\s*<McpServersDialogMount \/>/);
   assert.match(button, /if \(!chatActive && open\) setOpen\(false\);/);
   assert.match(button, /open=\{chatActive && open\}/);
 });
 
 test("the copy chords keep their gesture across the read", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
-  const clipboard = await readFile(
-    new URL("../src/lib/copy-to-clipboard.ts", import.meta.url),
-    "utf8",
-  );
+  const clipboard = await readSrcAsync("lib/copy-to-clipboard.ts");
   // Both copies read storage first, and a strict engine drops the gesture
   // across that await, leaving writeText and its execCommand fallback with
   // nothing to run inside. The write starts with a promised payload instead.
   assert.match(clipboard, /"text\/plain": payload\.then\(/);
   for (const fn of ["copyChatItemAsMarkdown", "copyChatSessionId"]) {
-    const at = sidebar.indexOf(`async function ${fn}(`);
+    const at = APP_SIDEBAR.indexOf(`async function ${fn}(`);
     assert.ok(at !== -1, `${fn} moved`);
-    const body = sidebar.slice(at, sidebar.indexOf("\n  }", at));
+    const body = APP_SIDEBAR.slice(at, APP_SIDEBAR.indexOf("\n  }", at));
     assert.ok(
       body.includes("copyToClipboardFrom(async () =>"),
       `${fn} awaits its read before starting the write`,
@@ -1360,82 +1305,58 @@ test("the copy chords keep their gesture across the read", async () => {
 });
 
 test("the project picker chord is described by what it does", async () => {
-  const page = await readFile(
-    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-    "utf8",
-  );
   // The header switcher navigates to the chosen project's landing; moving a
   // chat between projects is a different flow, on the chat row's own menu.
-  assert.match(page, /onSelectProject=\{openProjectLanding\}/);
-  const strings = await readFile(
-    new URL("../src/i18n/locales/en.ts", import.meta.url),
-    "utf8",
-  );
-  const at = strings.indexOf("openProjectPicker: {");
-  const entry = strings.slice(at, strings.indexOf("},", at));
+  assert.match(CHAT_PAGE, /onSelectProject=\{openProjectLanding\}/);
+  const at = EN.indexOf("openProjectPicker: {");
+  const entry = EN.slice(at, EN.indexOf("},", at));
   assert.ok(!/move/i.test(entry), "no move-to-project promise");
   assert.ok(entry.includes("project"));
 });
 
 test("the new-chat chords stay out of the auth flow", async () => {
-  const root = await readFile(
-    new URL("../src/app/routes/__root.tsx", import.meta.url),
-    "utf8",
-  );
   // /login has no shell, and requireAuth bounces /chat straight back, so these
   // are gated like the workspace chords beside them.
   for (const id of ["newChat", "newTemporaryChat", "newStandaloneChat"]) {
     // The id, not the whole call: two of the three wrap onto their own line.
-    const at = root.indexOf(`"${id}"`);
+    const at = SRC__ROOT.indexOf(`"${id}"`);
     assert.ok(at !== -1, `${id} is registered`);
-    const call = root.slice(at, root.indexOf("\n  );", at) + 5);
+    const call = SRC__ROOT.slice(at, SRC__ROOT.indexOf("\n  );", at) + 5);
     assert.match(call, /enabled: routeShortcutEnabled/, `${id} is gated`);
   }
 });
 
 test("switching back to Chat lands on the view the user left", async () => {
-  const root = await readFile(
-    new URL("../src/app/routes/__root.tsx", import.meta.url),
-    "utf8",
-  );
   // ChatPage renders the frozen search while off-route, and a bare /chat is a
   // fresh chat, so the chord has to hand that search back to the router.
-  const at = root.indexOf('"switchToChat"');
+  const at = SRC__ROOT.indexOf('"switchToChat"');
   assert.ok(at !== -1, "switchToChat is registered");
-  const call = root.slice(at, root.indexOf("\n  );", at) + 5);
+  const call = SRC__ROOT.slice(at, SRC__ROOT.indexOf("\n  );", at) + 5);
   assert.match(call, /navigate\(\{ to: "\/chat", search: chatSearch \}\)/);
   assert.match(call, /enabled: routeShortcutEnabled/);
   // The other workspaces keep the bare helper; only chat carries a search.
-  assert.match(root, /useShortcut\("switchToImages", goTo\("\/images"\)/);
+  assert.match(SRC__ROOT, /useShortcut\("switchToImages", goTo\("\/images"\)/);
   // location.search is the raw URL's, not the matched route's, so a seeded
   // freeze would hand /images?project=x to the chord as a chat never opened.
-  assert.match(root, /useState<ChatSearch>\(\{\}\)/);
+  assert.match(SRC__ROOT, /useState<ChatSearch>\(\{\}\)/);
 });
 
 test("opening a chat by chord drops the selection, as clicking a row does", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
   // Archive, pin and mark-unread prefer the selection when there is one, so a
   // stale one sends them to rows that are no longer on screen.
-  const at = sidebar.indexOf("function openChatItem(");
-  const body = sidebar.slice(at, sidebar.indexOf("\n  }", at));
+  const at = APP_SIDEBAR.indexOf("function openChatItem(");
+  const body = APP_SIDEBAR.slice(at, APP_SIDEBAR.indexOf("\n  }", at));
   assert.ok(body.includes("clearSelection()"), "the shared opener clears it");
   // One path only: the row reaches it through the same function.
   assert.ok(
-    !sidebar.includes("clearSelection();\n                openChatItem(item);"),
+    !APP_SIDEBAR.includes("clearSelection();\n                openChatItem(item);"),
     "the row no longer clears it separately",
   );
 });
 
 test("effort chords only run for a model whose effort is read", async () => {
-  const page = await readFile(
-    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-    "utf8",
-  );
-  const at = page.indexOf("const shiftReasoningEffort");
-  const body = page.slice(at, page.indexOf("useShortcut(\"cycleReasoningEffort\"", at));
+  const at = CHAT_PAGE.indexOf("const shiftReasoningEffort");
+  const body = CHAT_PAGE.slice(at, CHAT_PAGE.indexOf("useShortcut(\"cycleReasoningEffort\"", at));
   // enable_thinking models still list levels, but the request drops the effort.
   assert.match(body, /state\.reasoningStyle === "reasoning_effort"/);
   assert.match(body, /state\.reasoningStyle === "enable_thinking_effort"/);
@@ -1443,33 +1364,25 @@ test("effort chords only run for a model whose effort is read", async () => {
 });
 
 test("New chat inherits the project on screen, inferred or not", async () => {
-  const root = await readFile(
-    new URL("../src/app/routes/__root.tsx", import.meta.url),
-    "utf8",
-  );
-  const page = await readFile(
-    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-    "utf8",
-  );
   // On Chat the runtime's project is the visible one, inferred ones included:
   // the page resolves it from the thread or the compare pair when the URL
   // carries no ?project=, so a chat in a project stays in it.
-  assert.match(root, /isChatRoute \? chatRuntime\.activeProjectId : null/);
-  assert.match(page, /const projectId = thread\?\.projectId \?\? null;/);
-  assert.match(page, /const projectId = threads\[0\]\?\.projectId \?\? null;/);
-  assert.match(page, /setCurrentProjectId\(projectId\);\n\s*useChatRuntimeStore\.getState\(\)\.setActiveProjectId\(projectId\);/);
+  assert.match(SRC__ROOT, /isChatRoute \? chatRuntime\.activeProjectId : null/);
+  assert.match(CHAT_PAGE, /const projectId = thread\?\.projectId \?\? null;/);
+  assert.match(CHAT_PAGE, /const projectId = threads\[0\]\?\.projectId \?\? null;/);
+  assert.match(CHAT_PAGE, /setCurrentProjectId\(projectId\);\n\s*useChatRuntimeStore\.getState\(\)\.setActiveProjectId\(projectId\);/);
   // The page's own New chat button starts from the same value, so the chord
   // and the button cannot disagree about which project a new chat is in.
-  assert.match(page, /runtime\.setActiveProjectId\(currentProjectId\);/);
+  assert.match(CHAT_PAGE, /runtime\.setActiveProjectId\(currentProjectId\);/);
   // Off Chat the page is hidden rather than unmounted, so the runtime still
   // names a project the user is not looking at. That one stays excluded.
-  assert.match(root, /isChatRoute \? chatRuntime\.activeProjectId : null/);
+  assert.match(SRC__ROOT, /isChatRoute \? chatRuntime\.activeProjectId : null/);
   // Leaving the project is its own action, so this one must not also do it.
   assert.match(
-    root,
+    SRC__ROOT,
     /useShortcut\("newStandaloneChat", \(\) => startNewChat\(\{ standalone: true \}\)/,
   );
-  assert.match(root, /const projectId = options\?\.standalone \? null : openProjectId;/);
+  assert.match(SRC__ROOT, /const projectId = options\?\.standalone \? null : openProjectId;/);
 });
 
 test("every settings tab survives a reload", () => {
@@ -1509,21 +1422,17 @@ test("a Super chord off macOS records nothing rather than a different chord", ()
 // user sees outside the shortcuts tab. Hard-coded, they keep advertising the
 // shipped chord after a rebind, and a dead one after a clear.
 test("the sidebar hints render the bound chord, not the shipped default", async () => {
-  const source = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
   for (const literal of ['"⌘K"', '"Ctrl+K"', "<DropdownMenuShortcut>⌘,"]) {
     assert.ok(
-      !source.includes(literal),
+      !APP_SIDEBAR.includes(literal),
       `app-sidebar still hard-codes ${literal}`,
     );
   }
-  assert.ok(source.includes('useShortcutLabel("searchChats")'));
-  assert.ok(source.includes('useShortcutLabel("openSettings")'));
+  assert.ok(APP_SIDEBAR.includes('useShortcutLabel("searchChats")'));
+  assert.ok(APP_SIDEBAR.includes('useShortcutLabel("openSettings")'));
   // Unassigned actions must drop the hint rather than render an empty key cap.
-  assert.ok(source.includes("{searchShortcutLabel && ("));
-  assert.ok(source.includes("{settingsShortcutLabel && ("));
+  assert.ok(APP_SIDEBAR.includes("{searchShortcutLabel && ("));
+  assert.ok(APP_SIDEBAR.includes("{settingsShortcutLabel && ("));
 });
 
 test("a hint label follows the override and disappears when cleared", () => {
@@ -1546,13 +1455,9 @@ test("a hint label follows the override and disappears when cleared", () => {
 // A row with no i18n keys renders a raw key path, and one missing from the
 // search index cannot be found from the settings search box.
 test("every action is translated and indexed for settings search", async () => {
-  const en = await readFile(
-    new URL("../src/i18n/locales/en.ts", import.meta.url),
-    "utf8",
-  );
-  const at = en.indexOf("    keyboardShortcuts: {");
+  const at = EN.indexOf("    keyboardShortcuts: {");
   assert.notEqual(at, -1);
-  const subtree = en.slice(at, en.indexOf("\n    },", at));
+  const subtree = EN.slice(at, EN.indexOf("\n    },", at));
   for (const def of SHORTCUT_DEFS) {
     assert.ok(
       subtree.includes(`${def.id}: {`),
@@ -1568,10 +1473,7 @@ test("every action is translated and indexed for settings search", async () => {
     );
   }
 
-  const index = await readFile(
-    new URL("../src/features/settings/settings-search.ts", import.meta.url),
-    "utf8",
-  );
+  const index = await readSrcAsync("features/settings/settings-search.ts");
   for (const def of SHORTCUT_DEFS) {
     assert.ok(
       index.includes(`"${def.labelKey}"`),
@@ -1657,14 +1559,10 @@ test("auto-repeat only reaches the actions that walk a list", async () => {
 // The chords read the published lists, so those have to end where the screen
 // does: whole-sidebar gates included, not just each section's disclosure.
 test("the published chat lists stop where the sidebar stops", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
   // The same two conditions the three chat groups render behind, plus the
   // icon rail, which hides them in CSS rather than dropping them.
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /const chatListsOnScreen =\n\s*!isStudioRoute &&\n\s*!showTrainingRecents &&\n\s*\(isMobile \|\| sidebarState !== "collapsed"\);/,
   );
   for (const group of [
@@ -1672,18 +1570,18 @@ test("the published chat lists stop where the sidebar stops", async () => {
     /\(chatListsOnScreen && pinnedOpen \? sortedPinnedChatItems : \[\]\)/,
     /\(chatListsOnScreen && chatOpen \? sortedRecentChatItems : \[\]\)/,
   ]) {
-    assert.match(sidebar, group);
+    assert.match(APP_SIDEBAR, group);
   }
   // Select All reads the same three arrays, so it cannot reach further than
   // the walk does.
-  const selectAll = sidebar.indexOf("const selectAllChats = useCallback(");
+  const selectAll = APP_SIDEBAR.indexOf("const selectAllChats = useCallback(");
   assert.ok(selectAll !== -1, "selectAllChats moved");
   assert.match(
-    sidebar.slice(selectAll, sidebar.indexOf("\n  }, [", selectAll)),
+    APP_SIDEBAR.slice(selectAll, APP_SIDEBAR.indexOf("\n  }, [", selectAll)),
     /\.\.\.visiblePinnedItems,\n\s*\.\.\.renderedProjectChatItems,\n\s*\.\.\.visibleRecentItems,/,
   );
   // Gating the arrays is enough because nothing renders from them.
-  const rendered = sidebar.slice(sidebar.indexOf("return (", selectAll));
+  const rendered = APP_SIDEBAR.slice(APP_SIDEBAR.indexOf("return (", selectAll));
   for (const name of [
     "visiblePinnedItems",
     "visibleRecentItems",
@@ -1697,71 +1595,67 @@ test("the published chat lists stop where the sidebar stops", async () => {
 // no presence outside the rows, so one carried off screen is invisible and
 // still live.
 test("a selection does not outlive the rows it was made on", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
   // The whole sidebar going takes the whole selection with it.
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /if \(!chatRowsOnScreen\) \{\n\s*clearSelection\(\);\n\s*return;\n\s*\}/,
   );
   // Which is the stricter of the two: the lists can exist while their rows do
   // not, because a closed mobile sheet unmounts them the way the rail does.
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /const chatRowsOnScreen = chatListsOnScreen && \(!isMobile \|\| openMobile\);/,
   );
   // Select All is the one that builds a selection out of nothing, so it takes
   // the same gate rather than waiting for the cleanup to undo it.
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /const selectAllChats = useCallback\(\(\) => \{\n\s*if \(!chatRowsOnScreen\) return;/,
   );
   // Navigation is deliberately left on the looser one.
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /\(chatListsOnScreen && chatOpen \? sortedRecentChatItems : \[\]\)/,
   );
   // A single section closing takes only its own rows: the rest are still on
   // screen, so the selection is held to what is rendered rather than dropped.
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /for \(const id of prev\) \{\n\s*if \(renderedChatIds\.has\(id\)\) kept\.add\(id\);/,
   );
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /return kept\.size === prev\.size \? prev : kept;/,
   );
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /\}, \[chatRowsOnScreen, clearSelection, renderedChatIds, renderedProjectIds\]\);/,
   );
   // Folder rows are selectable too, and selectionActive counts them, so one
   // left behind by a closed section keeps the tool card's Escape standing
   // aside for a selection with nothing on screen to show for it.
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /for \(const id of prev\) \{\n\s*if \(renderedProjectIds\.has\(id\)\) kept\.add\(id\);/,
   );
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /if \(projectAnchor && !renderedProjectIds\.has\(projectAnchor\)\) \{\n\s*projectAnchorRef\.current = null;/,
   );
   // The three ways a folder row leaves without the sidebar going with it.
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /const renderedProjectIds = useMemo\(\(\) => \{\n\s*if \(!chatListsOnScreen \|\| organizeBy !== "project" \|\| !projectsOpen\) \{\n\s*return new Set<string>\(\);\n\s*\}\n\s*return new Set\(visibleProjectRecords\.map\(\(project\) => project\.id\)\);/,
   );
   // Both counts feed the flag, which is why both have to be pruned.
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /const selectionActive =\n?\s*selectionCount > 0 \|\| projectSelectionCount > 0;/,
   );
   // Built from the three arrays that already carry every disclosure state, so
   // a collapse or a "show less" needs nothing restated here.
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /const renderedChatIds = useMemo\(\(\) => \{[\s\S]*?visiblePinnedItems[\s\S]*?renderedProjectChatItems[\s\S]*?visibleRecentItems/,
   );
   // Which is what makes the four bulk branches safe to leave as they are.
@@ -1771,10 +1665,10 @@ test("a selection does not outlive the rows it was made on", async () => {
     "togglePinChat",
     "deleteSelectedChats",
   ]) {
-    const at = sidebar.indexOf(`useShortcut("${id}"`);
+    const at = APP_SIDEBAR.indexOf(`useShortcut("${id}"`);
     assert.ok(at !== -1, `${id} lost its call site`);
     assert.match(
-      sidebar.slice(at, sidebar.indexOf("\n  });", at)),
+      APP_SIDEBAR.slice(at, APP_SIDEBAR.indexOf("\n  });", at)),
       /selectionCount > 0/,
       `${id} no longer prefers the selection`,
     );
@@ -1782,7 +1676,7 @@ test("a selection does not outlive the rows it was made on", async () => {
   // The anchor goes with its row, so a later shift-click cannot reach back to
   // one that is no longer there.
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /if \(anchor && !renderedChatIds\.has\(anchor\.id\)\) \{\n\s*selectionAnchorRef\.current = null;/,
   );
 });
@@ -1791,15 +1685,11 @@ test("a selection does not outlive the rows it was made on", async () => {
 // selectionCount as 0. Without a latch it archives the open chat, which was
 // never selected, and says nothing about it.
 test("a selection chord does not fall through to the open chat", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
-  assert.match(sidebar, /const SELECTION_ACTION_GRACE_MS = \d+;/);
+  assert.match(APP_SIDEBAR, /const SELECTION_ACTION_GRACE_MS = \d+;/);
   for (const id of ["archiveChat", "markChatUnread", "togglePinChat"]) {
-    const body = sidebar.slice(
-      sidebar.indexOf(`useShortcut("${id}"`),
-      sidebar.indexOf("\n  });", sidebar.indexOf(`useShortcut("${id}"`)),
+    const body = APP_SIDEBAR.slice(
+      APP_SIDEBAR.indexOf(`useShortcut("${id}"`),
+      APP_SIDEBAR.indexOf("\n  });", APP_SIDEBAR.indexOf(`useShortcut("${id}"`)),
     );
     // Both halves name the action. A shared latch would hold back Archive
     // after Pin took the selection, and that is a different command the user
@@ -1818,9 +1708,9 @@ test("a selection chord does not fall through to the open chat", async () => {
     );
   }
   // deleteSelectedChats needs none of this: it has no open-chat branch.
-  const del = sidebar.slice(
-    sidebar.indexOf('useShortcut("deleteSelectedChats"'),
-    sidebar.indexOf("\n  });", sidebar.indexOf('useShortcut("deleteSelectedChats"')),
+  const del = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf('useShortcut("deleteSelectedChats"'),
+    APP_SIDEBAR.indexOf("\n  });", APP_SIDEBAR.indexOf('useShortcut("deleteSelectedChats"')),
   );
   assert.doesNotMatch(del, /withActiveChat\(/);
 });
@@ -1828,13 +1718,9 @@ test("a selection chord does not fall through to the open chat", async () => {
 // The only action with no menu item anywhere and no undo, so a silent wipe
 // leaves the user nothing to tell it apart from a dead key.
 test("clearing every unread says what it cleared", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
-  const body = sidebar.slice(
-    sidebar.indexOf('useShortcut("clearAllUnreads"'),
-    sidebar.indexOf("\n  });", sidebar.indexOf('useShortcut("clearAllUnreads"')),
+  const body = APP_SIDEBAR.slice(
+    APP_SIDEBAR.indexOf('useShortcut("clearAllUnreads"'),
+    APP_SIDEBAR.indexOf("\n  });", APP_SIDEBAR.indexOf('useShortcut("clearAllUnreads"')),
   );
   // Counted before the wipe, or the toast reports zero every time. Rows, not
   // threads: a Compare row is backed by two and would be cleared as two chats.
@@ -1847,10 +1733,7 @@ test("clearing every unread says what it cleared", async () => {
 // order picks the winner. Compare panes make that easy to get wrong: the
 // backend reuses "call_0" per response, so the store key cannot be it.
 test("a parked tool request is keyed by its own approval, not call_0", async () => {
-  const adapter = await readFile(
-    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-    "utf8",
-  );
+  const adapter = await readSrcAsync("features/chat/api/chat-adapter.ts");
   // Scope first, so two panes differ even before the approval token does.
   assert.match(
     adapter,
@@ -1892,10 +1775,6 @@ test("a parked tool request is keyed by its own approval, not call_0", async () 
 // effect again, without end. React error #185, which took down the whole chat
 // route rather than just the sidebar.
 test("the rows the selection guard reads keep their identity", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
   for (const name of [
     "visibleProjectRecords",
     "visiblePinnedItems",
@@ -1903,10 +1782,10 @@ test("the rows the selection guard reads keep their identity", async () => {
     "renderedProjectChatItems",
     "renderedChatIds",
   ]) {
-    const at = sidebar.indexOf(`const ${name} = `);
+    const at = APP_SIDEBAR.indexOf(`const ${name} = `);
     assert.notEqual(at, -1, `${name} is gone`);
     assert.match(
-      sidebar.slice(at, at + name.length + 40),
+      APP_SIDEBAR.slice(at, at + name.length + 40),
       /= useMemo\(/,
       `${name} is rebuilt every render and feeds a selection effect`,
     );
@@ -1918,10 +1797,7 @@ test("the rows the selection guard reads keep their identity", async () => {
 // identity on every render, which is what made the selection guard's effect
 // re-run without end.
 test("the sidebar item lists are built once per change, not per render", async () => {
-  const hook = await readFile(
-    new URL("../src/features/chat/hooks/use-chat-sidebar-items.ts", import.meta.url),
-    "utf8",
-  );
+  const hook = await readSrcAsync("features/chat/hooks/use-chat-sidebar-items.ts");
   for (const name of ["items", "archivedItems"]) {
     const at = hook.indexOf(`const ${name} = `);
     assert.notEqual(at, -1, `${name} is gone`);
@@ -1937,14 +1813,10 @@ test("the sidebar item lists are built once per change, not per render", async (
 // chat-only chords used to read that as "no selection" and act on the open
 // chat, so Archive archived a chat the user had not pointed at.
 test("the chat-only chords stand aside for a project selection", async () => {
-  const sidebar = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
   for (const id of ["archiveChat", "markChatUnread", "togglePinChat"]) {
-    const at = sidebar.indexOf(`useShortcut("${id}", () => {`);
+    const at = APP_SIDEBAR.indexOf(`useShortcut("${id}", () => {`);
     assert.notEqual(at, -1, `${id} is gone`);
-    const body = sidebar.slice(at, sidebar.indexOf("\n  });", at));
+    const body = APP_SIDEBAR.slice(at, APP_SIDEBAR.indexOf("\n  });", at));
     const stand = body.indexOf("projectsOnlySelected()");
     assert.notEqual(stand, -1, `${id} acts on the open chat under a project selection`);
     assert.ok(
@@ -1954,7 +1826,7 @@ test("the chat-only chords stand aside for a project selection", async () => {
   }
   // Only when no chat is selected: a mixed selection still has chats to act on.
   assert.match(
-    sidebar,
+    APP_SIDEBAR,
     /const projectsOnlySelected = \(\) =>\n\s*selectionCount === 0 && projectSelectionCount > 0;/,
   );
 });
@@ -1991,12 +1863,5 @@ test("the logout row is not offered on the desktop build", async () => {
     SHORTCUT_DEFS.filter((def) => def.webOnly).map((def) => def.id),
     ["logOut"],
   );
-  const tab = await readFile(
-    new URL(
-      "../src/features/settings/tabs/keyboard-shortcuts-tab.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(tab, /!\(isTauri && def\.webOnly\)/);
+  assert.match(KEYBOARD_SHORTCUTS_TAB, /!\(isTauri && def\.webOnly\)/);
 });

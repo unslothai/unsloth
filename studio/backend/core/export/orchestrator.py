@@ -21,6 +21,7 @@ import queue
 import threading
 import time
 from pathlib import Path
+from hub.utils.hf_tokens import HfTokenArg
 from typing import Any, Deque, Dict, List, Optional, Tuple
 from utils.paths import outputs_root
 
@@ -229,8 +230,15 @@ class ExportOrchestrator:
             run_without_native_path_secret,
         )
         from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
+        from utils.process_lifetime import is_process_shutting_down
 
         cache_env = get_hf_cache_paths().child_env({})
+
+        # An export admitted before the quit can still reach this line after the shutdown
+        # sweep has taken its snapshot, and the worker adopted below would then outlive
+        # Studio holding the model in memory.
+        if is_process_shutting_down():
+            raise RuntimeError("Studio is shutting down; not starting an export subprocess")
 
         with (
             child_environment_for_spawn(cache_env),
@@ -239,7 +247,11 @@ class ExportOrchestrator:
             self._cmd_queue = _CTX.Queue()
             self._resp_queue = _CTX.Queue()
 
-            self._proc = _CTX.Process(
+            # Kept in a local as well as on self: a concurrent _shutdown_subprocess can
+            # see a process that has not finished starting, decide it is not alive and
+            # clear self._proc, and every read below would then be off a None while the
+            # worker is alive and unadopted.
+            _spawned_proc = _CTX.Process(
                 target = run_without_native_path_secret,
                 args = ("core.export.worker", "run_export_process", cache_env),
                 kwargs = {
@@ -249,11 +261,39 @@ class ExportOrchestrator:
                 },
                 daemon = True,
             )
-            self._proc.start()
-        from utils.process_lifetime import adopt_pid
+            self._proc = _spawned_proc
+            _spawned_proc.start()
+        from utils.process_lifetime import adopt_pid, forget_pid
 
-        adopt_pid(self._proc.pid)
-        logger.info("Export subprocess started (pid=%s)", self._proc.pid)
+        adopt_pid(_spawned_proc.pid)
+        # Recheck once the pid is recorded, for the window between the gate above and
+        # this record. Adoption runs first, so a worker torn down here was in the sweep
+        # record for as long as it existed. The handle check catches the other half of
+        # the race: a teardown that already cleared or replaced self._proc leaves this
+        # worker with no owner, so reap it here rather than let it run on.
+        if is_process_shutting_down() or self._proc is not _spawned_proc:
+            logger.info("shutdown began during the spawn; stopping the new export subprocess")
+            if self._proc is _spawned_proc:
+                self._shutdown_subprocess(timeout = 5)
+            else:
+                try:
+                    if _spawned_proc.is_alive():
+                        _spawned_proc.terminate()
+                    _spawned_proc.join(timeout = 5)
+                    if _spawned_proc.is_alive():
+                        _spawned_proc.kill()
+                        _spawned_proc.join(timeout = 3)
+                except Exception:  # noqa: BLE001 - the reap is best-effort
+                    logger.warning("could not reap the orphaned export worker", exc_info = True)
+                if _spawned_proc.exitcode is not None:
+                    forget_pid(_spawned_proc.pid)
+                else:
+                    logger.warning(
+                        "export worker (pid %s) survived the reap; leaving it adopted",
+                        _spawned_proc.pid,
+                    )
+            raise RuntimeError("Studio is shutting down; not starting an export subprocess")
+        logger.info("Export subprocess started (pid=%s)", _spawned_proc.pid)
 
     def _shutdown_subprocess(self, timeout: float = 10.0) -> bool:
         """Gracefully shut down the export subprocess.
@@ -439,7 +479,8 @@ class ExportOrchestrator:
         load_in_4bit: bool = True,
         trust_remote_code: bool = False,
         approved_remote_code_fingerprint: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
+        allow_ambient: bool = True,
         subject: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Load a checkpoint for export.
@@ -454,6 +495,7 @@ class ExportOrchestrator:
             "approved_remote_code_fingerprint": approved_remote_code_fingerprint,
             "subject": subject,
             "hf_token": hf_token,
+            "allow_ambient": allow_ambient,
         }
 
         with self._lock:
@@ -493,8 +535,8 @@ class ExportOrchestrator:
                 try:
                     self._spawn_subprocess(sub_config)
                 except Exception:
-                    # A stale current_checkpoint would make the Export page claim a loaded checkpoint the next op then
-                    # fails on.
+                    # The old worker is already gone; a stale current_checkpoint would make the Export page claim a
+                    # loaded checkpoint that the next op then fails on with "No export subprocess running".
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
@@ -536,7 +578,7 @@ class ExportOrchestrator:
         format_type: str = "16-bit (FP16)",
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         private: bool = False,
         compressed_method: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
@@ -559,7 +601,7 @@ class ExportOrchestrator:
         save_directory: str,
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         private: bool = False,
         base_model_id: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
@@ -582,7 +624,7 @@ class ExportOrchestrator:
         quantization_method = "Q4_K_M",
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         imatrix_file = None,
         private: bool = False,
         gguf_shard_size: Optional[str] = None,
@@ -607,7 +649,7 @@ class ExportOrchestrator:
         save_directory: str,
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
-        hf_token: Optional[str] = None,
+        hf_token: HfTokenArg = None,
         private: bool = False,
         gguf: bool = False,
         gguf_outtype: str = "q8_0",

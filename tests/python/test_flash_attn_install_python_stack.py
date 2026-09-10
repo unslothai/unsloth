@@ -8,6 +8,39 @@ import sys
 from pathlib import Path
 from unittest import mock
 
+
+def _shared_setup_1(fake_run, step_messages):
+    with (
+        mock.patch.object(ips, "NO_TORCH", False),
+        mock.patch.object(ips, "IS_WINDOWS", False),
+        mock.patch.object(ips, "IS_MACOS", False),
+        mock.patch.object(
+            ips,
+            "probe_torch_wheel_env",
+            return_value = {
+                "python_tag": "cp313",
+                "torch_mm": "2.10",
+                "cuda_major": "13",
+                "cxx11abi": "TRUE",
+                "platform_tag": "linux_x86_64",
+            },
+        ),
+        mock.patch.object(ips, "url_exists", return_value = True),
+        mock.patch.object(
+            ips,
+            "install_wheel",
+            return_value = [("uv", subprocess.CompletedProcess(["uv"], 0, ""))],
+        ),
+        mock.patch.object(
+            ips,
+            "_step",
+            side_effect = lambda label, value, color_fn = None: step_messages.append((label, value)),
+        ),
+        mock.patch("subprocess.run", side_effect = fake_run),
+    ):
+        ips._ensure_flash_attn()
+
+
 STUDIO_DIR = Path(__file__).resolve().parents[2] / "studio"
 sys.path.insert(0, str(STUDIO_DIR))
 sys.path.insert(0, str(STUDIO_DIR / "backend"))
@@ -24,19 +57,18 @@ class TestPrebuiltWheelTorchMapping:
         assert wheel_utils.prebuilt_wheel_torch_mm("2.12") == "2.10"
 
     def test_other_versions_pass_through(self):
-        # 2.13 stays unmapped on purpose: a torch minor only joins the reuse
-        # table once its wheels have actually been measured.
+        # 2.13 stays unmapped on purpose: a torch minor only joins the reuse table once its wheels have actually been
+        # measured.
         for torch_mm in ("2.9", "2.10", "2.13"):
             assert wheel_utils.prebuilt_wheel_torch_mm(torch_mm) == torch_mm
 
     def test_reuse_never_targets_a_pre_210_wheel(self):
-        # torch broke extension ABI between 2.9 and 2.10, so the torch2.9 .so
-        # raises "undefined symbol" on 2.10+. Reuse may only point at torch2.10.
+        # torch broke extension ABI between 2.9 and 2.10, so the torch2.9 .so raises "undefined symbol" on 2.10+.
         assert set(wheel_utils._PREBUILT_WHEEL_TORCH_MM.values()) == {"2.10"}
 
     def test_direct_wheel_url_reuses_torch210_on_211(self):
-        # causal-conv1d / mamba go through direct_wheel_url; torch 2.11 reuses the
-        # torch2.10 wheel filename just like flash-attn does.
+        # causal-conv1d / mamba go through direct_wheel_url; torch 2.11 reuses the torch2.10 wheel filename just like
+        # flash-attn does.
         url = wheel_utils.direct_wheel_url(
             filename_prefix = "causal_conv1d",
             package_version = "1.6.1",
@@ -73,14 +105,13 @@ class TestPrebuiltWheelTorchMapping:
 
 class TestFlashAttnWheelSelection:
     def test_torch_210_maps_to_v281(self):
-        # v2.8.1 is the newest release still publishing the full torch2.10 asset
-        # matrix (cu12 + cu13, cp312 + cp313, x86_64 + aarch64).
+        # v2.8.1 is the newest release still publishing the full torch2.10 asset matrix (cu12 + cu13, cp312 + cp313,
+        # x86_64 + aarch64).
         assert ips._select_flash_attn_version("2.10") == "2.8.1"
 
     def test_selected_version_is_never_a_post_release(self):
-        # The v2.8.3.post1 respin dropped every torch2.10 asset and stops at
-        # torch2.9, whose .so will not load on torch 2.10+. A future "just take
-        # the newest release" bump must fail here instead of shipping that.
+        # The v2.8.3.post1 respin dropped every torch2.10 asset and stops at torch2.9, whose .so will not load on
+        # torch 2.10+. A future "just take the newest release" bump must fail here instead of shipping that.
         for torch_mm in ("2.4", "2.7", "2.9", "2.10"):
             version = ips._select_flash_attn_version(torch_mm)
             assert version is not None
@@ -90,8 +121,8 @@ class TestFlashAttnWheelSelection:
         assert ips._select_flash_attn_version("2.9") == "2.8.3"
 
     def test_torch_211_has_no_native_version_entry(self):
-        # The raw version table has no torch2.11-tagged wheel; the URL builder
-        # reuses the torch2.10 wheel instead (see test_torch_211_reuses_torch210_wheel).
+        # The raw version table has no torch2.11-tagged wheel;
+        # the URL builder reuses the torch2.10 wheel instead (see test_torch_211_reuses_torch210_wheel).
         assert ips._select_flash_attn_version("2.11") is None
 
     def test_torch_211_reuses_torch210_wheel(self):
@@ -328,37 +359,7 @@ class TestEnsureFlashAttn:
                 return subprocess.CompletedProcess(cmd, 0)
             return self._import_check()
 
-        with (
-            mock.patch.object(ips, "NO_TORCH", False),
-            mock.patch.object(ips, "IS_WINDOWS", False),
-            mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(
-                ips,
-                "probe_torch_wheel_env",
-                return_value = {
-                    "python_tag": "cp313",
-                    "torch_mm": "2.10",
-                    "cuda_major": "13",
-                    "cxx11abi": "TRUE",
-                    "platform_tag": "linux_x86_64",
-                },
-            ),
-            mock.patch.object(ips, "url_exists", return_value = True),
-            mock.patch.object(
-                ips,
-                "install_wheel",
-                return_value = [("uv", subprocess.CompletedProcess(["uv"], 0, ""))],
-            ),
-            mock.patch.object(
-                ips,
-                "_step",
-                side_effect = lambda label, value, color_fn = None: step_messages.append(
-                    (label, value)
-                ),
-            ),
-            mock.patch("subprocess.run", side_effect = fake_run),
-        ):
-            ips._ensure_flash_attn()
+        _shared_setup_1(fake_run, step_messages)
 
         assert removals, "the rejected wheel must be uninstalled, not left in site-packages"
         assert any("flash-attn" in cmd for cmd in removals), removals
@@ -411,37 +412,7 @@ class TestEnsureFlashAttn:
                 return subprocess.CompletedProcess(cmd, 1)
             return self._import_check()
 
-        with (
-            mock.patch.object(ips, "NO_TORCH", False),
-            mock.patch.object(ips, "IS_WINDOWS", False),
-            mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(
-                ips,
-                "probe_torch_wheel_env",
-                return_value = {
-                    "python_tag": "cp313",
-                    "torch_mm": "2.10",
-                    "cuda_major": "13",
-                    "cxx11abi": "TRUE",
-                    "platform_tag": "linux_x86_64",
-                },
-            ),
-            mock.patch.object(ips, "url_exists", return_value = True),
-            mock.patch.object(
-                ips,
-                "install_wheel",
-                return_value = [("uv", subprocess.CompletedProcess(["uv"], 0, ""))],
-            ),
-            mock.patch.object(
-                ips,
-                "_step",
-                side_effect = lambda label, value, color_fn = None: step_messages.append(
-                    (label, value)
-                ),
-            ),
-            mock.patch("subprocess.run", side_effect = fake_run),
-        ):
-            ips._ensure_flash_attn()
+        _shared_setup_1(fake_run, step_messages)
 
         warnings = [value for _, value in step_messages]
         assert any("could not be removed" in value for value in warnings), warnings
@@ -457,37 +428,7 @@ class TestEnsureFlashAttn:
             import_calls.append(1)
             return self._import_check(1 if len(import_calls) == 1 else 0)
 
-        with (
-            mock.patch.object(ips, "NO_TORCH", False),
-            mock.patch.object(ips, "IS_WINDOWS", False),
-            mock.patch.object(ips, "IS_MACOS", False),
-            mock.patch.object(
-                ips,
-                "probe_torch_wheel_env",
-                return_value = {
-                    "python_tag": "cp313",
-                    "torch_mm": "2.10",
-                    "cuda_major": "13",
-                    "cxx11abi": "TRUE",
-                    "platform_tag": "linux_x86_64",
-                },
-            ),
-            mock.patch.object(ips, "url_exists", return_value = True),
-            mock.patch.object(
-                ips,
-                "install_wheel",
-                return_value = [("uv", subprocess.CompletedProcess(["uv"], 0, ""))],
-            ),
-            mock.patch.object(
-                ips,
-                "_step",
-                side_effect = lambda label, value, color_fn = None: step_messages.append(
-                    (label, value)
-                ),
-            ),
-            mock.patch("subprocess.run", side_effect = fake_run),
-        ):
-            ips._ensure_flash_attn()
+        _shared_setup_1(fake_run, step_messages)
 
         assert step_messages == []
         assert len(import_calls) == 2, "expected a verification import after the install"
@@ -599,9 +540,8 @@ class TestEnsureFlashAttn:
         mock_install_wheel.assert_not_called()
 
     def test_windows_skips_install_without_probing(self):
-        # flash-attn is Linux-only: on Windows the installer returns before
-        # probing the torch env or resolving a wheel (no Windows wheels are
-        # published upstream).
+        # flash-attn is Linux-only: on Windows the installer returns before probing the torch env or resolving a
+        # wheel (no Windows wheels are published upstream).
         with (
             mock.patch.object(ips, "NO_TORCH", False),
             mock.patch.object(ips, "IS_WINDOWS", True),

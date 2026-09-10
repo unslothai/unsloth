@@ -27,6 +27,7 @@ from types import ModuleType
 
 from filelock import FileLock, Timeout
 
+from hub.utils.hf_tokens import HfTokenArg
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.paths.storage_roots import cache_root
 from utils.subprocess_compat import (
@@ -877,12 +878,17 @@ def _default_legacy_dac_weights_path() -> Path | None:
     return Path.home() / ".cache" / "outeai" / "dac" / _DAC_FILENAME
 
 
-def ensure_dac_speech_weights(legacy_path: Path | str | None = None) -> Path:
+def ensure_dac_speech_weights(
+    legacy_path: Path | str | None = None,
+    *,
+    hub_cache: Path | str | None = None,
+    hf_token: HfTokenArg = None,
+) -> Path:
     from huggingface_hub import hf_hub_download
     from utils.hf_cache_settings import active_hf_hub_cache
     from utils.utils import hf_env_offline
 
-    hub_cache = Path(active_hf_hub_cache())
+    hub_cache = Path(hub_cache) if hub_cache is not None else Path(active_hf_hub_cache())
     destination = (
         hub_cache
         / "studio-pinned-artifacts"
@@ -951,6 +957,7 @@ def ensure_dac_speech_weights(legacy_path: Path | str | None = None) -> Path:
                         repo_id = _DAC_REPOSITORY,
                         filename = _DAC_FILENAME,
                         revision = _DAC_REVISION,
+                        token = hf_token,
                         cache_dir = str(hub_cache),
                         local_files_only = offline,
                     )

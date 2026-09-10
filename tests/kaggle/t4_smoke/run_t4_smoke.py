@@ -817,12 +817,22 @@ def batched_generation(model, tokenizer, prompts, *, max_new_tokens) -> dict:
         "agrees": {},
         "empty_outputs": [i for i, text in enumerate(singles) if not text.strip()],
     }
+    # Per batch size, the rows that came back empty INSIDE the batch. The
+    # singles check above cannot see these, and the agreement check excuses
+    # them for a model listed in KNOWN_BATCHED_GENERATION_BREAKAGE, so without
+    # this an empty batched row on gemma-4 was a pass. That is the #9848 shape
+    # exactly: a left-padded row that attends to nothing decodes to "".
+    empty_batched: dict = {}
     for size in BATCH_SIZES:
         outs: list = []
         for start in range(0, len(prompts), size):
             outs.extend(_gen(prompts[start : start + size]))
         result["batched"][str(size)] = outs
         result["agrees"][str(size)] = outs == singles
+        rows = [i for i, text in enumerate(outs) if not text.strip()]
+        if rows:
+            empty_batched[str(size)] = rows
+    result["empty_batched_outputs"] = empty_batched
     # Read AGAIN, after all the generating. #2138 was a silent override applied
     # inside the inference path, so the value set at the top of this function is
     # not evidence of the value that was used.
@@ -830,17 +840,26 @@ def batched_generation(model, tokenizer, prompts, *, max_new_tokens) -> dict:
     return result
 
 
-# Models where batched greedy generation is CONFIRMED broken upstream, filed,
-# and not this repo's to fix. See unsloth #9708: on both of these, batch sizes
-# 2/4/8 fail to reproduce one-at-a-time output with real left padding and
+# Models where batched greedy generation is EXPECTED to disagree with
+# one-at-a-time output, and why. See unsloth #9708: on both of these, batch
+# sizes 2/4/8 fail to reproduce batch-1 greedy text with real left padding and
 # demonstrably distinct prompt lengths, on both repeats.
 #
-# This is a STRICT expectation, not a mute. A model listed here that starts
-# AGREEING fails the leg, with a message saying to delete the entry -- so the
-# day #9708 is fixed, CI says so instead of quietly keeping a stale excuse.
-# Every other rule in this function stays live for these models: the padding
-# side, the distinct lengths and the empty-output check are what make the
-# disagreement a real finding rather than an unpadded batch.
+# This is NOT a bug awaiting a fix, in unsloth or anywhere else. It is bf16 /
+# fp16 rounding that depends on the shape of the batch: a padded batch takes a
+# different SDPA kernel from a lone prompt, the prefill projections run at a
+# different GEMM shape, and RMSNorm rounds differently on the result. Plain
+# transformers with unsloth never imported shows the same thing, every
+# transformers release from 4.57.0 to 5.16.1 shows it, and float32 makes every
+# batch size agree. The measurements and a standalone repro are on #9708.
+#
+# So the entry is a STRICT expectation, not a mute. A model listed here that
+# starts AGREEING fails the leg, with a message saying to delete the entry:
+# agreement in bf16 means a kernel or a stack changed under us, and that is
+# worth hearing about rather than quietly keeping a stale excuse. Every other
+# rule in this function stays live for these models: the padding side, the
+# distinct lengths and the empty-output checks are what make the disagreement
+# a shape effect rather than an unpadded batch or a #9848 empty row.
 KNOWN_BATCHED_GENERATION_BREAKAGE = {
     "unsloth/gemma-4-E2B-it": "unsloth#9708",
     "unsloth/Qwen3.5-2B": "unsloth#9708",
@@ -872,6 +891,13 @@ def batched_generation_failures(batch: dict | None, model: str | None = None) ->
             )
     if batch.get("empty_outputs"):
         out.append(f"prompts {batch['empty_outputs']} generated nothing at all")
+    # Never excused by the known-breakage entry: an empty row is not a
+    # disagreement, it is #9848, and the entry only covers #9708.
+    for size, rows in sorted((batch.get("empty_batched_outputs") or {}).items()):
+        out.append(
+            f"batch size {size}: prompts {rows} generated nothing at all inside "
+            f"the batch while their one-at-a-time output was not empty (#9848)"
+        )
     agrees = batch.get("agrees") or {}
     for size, agreed in agrees.items():
         if not agreed and not known:
@@ -885,9 +911,10 @@ def batched_generation_failures(batch: dict | None, model: str | None = None) ->
         # a mute outlives the bug it was written for.
         out.append(
             f"{model} is listed in KNOWN_BATCHED_GENERATION_BREAKAGE for "
-            f"{known}, and every batch size AGREED. If the upstream fix has "
-            f"landed, delete the entry; the leg must not carry an excuse for a "
-            f"bug that is gone"
+            f"{known}, and every batch size AGREED. That disagreement is bf16 "
+            f"rounding that depends on batch shape, so agreement means a kernel "
+            f"or the stack changed; work out what, then delete the entry rather "
+            f"than carry a stale expectation"
         )
     return out
 

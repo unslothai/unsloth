@@ -9,6 +9,15 @@ from pathlib import Path
 
 import pytest
 
+
+def _shared_setup_1(controller):
+    assert not controller.force_final_answer
+    assert [tool["function"]["name"] for tool in controller.active_tools()] == [
+        "web_search",
+        "python",
+    ]
+
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -19,11 +28,12 @@ from core.inference.tool_loop_controller import (
     canonical_tool_call_key,
     coerce_arguments_by_schema,
     coerce_tool_arguments,
+    is_tool_error,
     status_for_tool,
     strip_result_for_model,
     tool_event_provenance,
 )
-from core.inference.tool_call_parser import parse_tool_calls_from_text
+from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, parse_tool_calls_from_text
 from core.inference.tools import ALL_TOOLS, _mcp_specs_for_server
 
 
@@ -163,11 +173,7 @@ def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():
     assert "already completed successfully" in duplicate_nudge
     assert "different enabled tool" in duplicate_nudge
     assert completion.model_message()["role"] == "user"
-    assert not controller.force_final_answer
-    assert [tool["function"]["name"] for tool in controller.active_tools()] == [
-        "web_search",
-        "python",
-    ]
+    _shared_setup_1(controller)
 
 
 def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge():
@@ -180,11 +186,7 @@ def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge
 
     assert duplicate_one.action == "duplicate"
     assert "already completed successfully" in completion_one.model_message()["content"]
-    assert not controller.force_final_answer
-    assert [tool["function"]["name"] for tool in controller.active_tools()] == [
-        "web_search",
-        "python",
-    ]
+    _shared_setup_1(controller)
 
     duplicate_two = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_c"))
     completion_two = controller.record_noop(duplicate_two)
@@ -247,11 +249,7 @@ def test_forced_mismatch_keeps_the_required_tool_active():
 
     assert decision.action == "forced_mismatch"
     assert "required tool choice" in completion.model_message()["content"]
-    assert not controller.force_final_answer
-    assert [tool["function"]["name"] for tool in controller.active_tools()] == [
-        "web_search",
-        "python",
-    ]
+    _shared_setup_1(controller)
 
 
 def test_render_html_success_filters_active_tools_and_repeat_is_internal():
@@ -444,3 +442,30 @@ def test_a_declared_type_nested_in_a_container_is_read_too():
     # An already-typed container is descended into too: its elements can still be text.
     call = {"path": "app.py", "edits": json.loads(edits)}
     assert coerce_arguments_by_schema(call, props) == {"path": "app.py", "edits": typed}
+
+
+@pytest.mark.parametrize(
+    "result, failed",
+    [
+        ("Error: boom", True),
+        ("  Error: boom", True),
+        ("Error executing tool remote_thing: disk full", True),
+        ("Error running command `git push`: permission denied", True),
+        ("Errors: 0", False),
+        ("Errors: none found", False),
+        ("Errored, then recovered", False),
+        ("Error-free run", False),
+    ],
+)
+def test_only_a_delimited_error_marks_a_result_failed(result, failed):
+    assert is_tool_error(result) is failed
+
+
+def test_a_success_that_opens_with_error_is_not_nudged_as_a_failure():
+    controller = ToolLoopController(tools = [_tool("web_search")])
+    decision = controller.prepare_call(_call("web_search", {"url": "https://example.com/log"}))
+
+    completion = controller.record_result(decision, "Errors: 0 across 128 files")
+
+    assert not completion.is_error
+    assert TOOL_ERROR_NUDGE not in completion.model_message()["content"]

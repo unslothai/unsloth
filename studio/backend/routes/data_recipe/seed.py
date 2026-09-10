@@ -16,12 +16,13 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from anyio import CapacityLimiter, to_process
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File as FastAPIFile, Form
 
 from auth.authentication import allow_ambient_hf_token
 from core.data_recipe.jsonable import to_preview_jsonable
-from hub.utils.hf_tokens import HfTokenArg, hf_token_arg, is_anonymous
-from utils.utils import hf_env_offline
+from hub.utils.dataset_cache import refuse_unauthorized_dataset_preview
+from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 from loggers import get_logger
 from utils.paths import ensure_dir, seed_uploads_root, unstructured_uploads_root
 from utils.utils import log_and_http_error
@@ -329,6 +330,16 @@ def inspect_seed_dataset(
             detail = "dataset_name must be a Hugging Face repo id like org/repo",
         )
 
+    split = _normalize_optional_text(payload.split) or DEFAULT_SPLIT
+    subset = _normalize_optional_text(payload.subset)
+    # From the caller: a hardcoded False takes the ambient fallback from UI sessions too.
+    token = hf_token_arg(
+        _normalize_optional_text(payload.hf_token),
+        allow_ambient_token = allow_ambient_token,
+    )
+    preview_size = int(payload.preview_size)
+    refuse_unauthorized_dataset_preview(token, dataset_name)
+
     try:
         from datasets import load_dataset
     except ImportError as exc:
@@ -339,24 +350,6 @@ def inspect_seed_dataset(
             event = "data_recipe.seed.dependencies_unavailable",
             log = logger,
         ) from exc
-
-    split = _normalize_optional_text(payload.split) or DEFAULT_SPLIT
-    subset = _normalize_optional_text(payload.subset)
-    # From the caller, like every other Hub-reaching route: a hardcoded False would take
-    # the ambient fallback from UI sessions too.
-    token = hf_token_arg(
-        _normalize_optional_text(payload.hf_token),
-        allow_ambient_token = allow_ambient_token,
-    )
-    preview_size = int(payload.preview_size)
-    if is_anonymous(token) and hf_env_offline():
-        # Offline, `datasets` satisfies a streaming load from its own cache and the sentinel
-        # never reaches an authorization check, so a previously cached private dataset would
-        # come back as rows. The check-format path refuses the same way.
-        raise HTTPException(
-            status_code = 404,
-            detail = "Dataset preview is not available without Hub authorization.",
-        )
 
     preview_rows: list[dict[str, Any]] = []
     data_files = _list_hf_data_files(dataset_name = dataset_name, token = token)
@@ -428,10 +421,8 @@ def _extract_text_from_file(file_path: Path, ext: str) -> str:
     if ext in {".txt", ".md"}:
         raw = file_path.read_text(encoding = "utf-8", errors = "ignore")
     elif ext == ".pdf":
-        import pymupdf4llm
-        raw = pymupdf4llm.to_markdown(
-            str(file_path), write_images = False, show_progress = False, use_ocr = False
-        )
+        from core.rag import config, pdf_ocr
+        raw = pdf_ocr.extract_text(str(file_path), config.OCR_SCANNED, config.OCR_MAX_PAGES)
     elif ext == ".docx":
         import mammoth
         with open(str(file_path), "rb") as f:
@@ -444,6 +435,27 @@ def _extract_text_from_file(file_path: Path, ext: str) -> str:
     if chunking is None:
         return raw
     return chunking.normalize_unstructured_text(raw)
+
+
+_pdf_extraction_limiter = CapacityLimiter(2)
+
+
+async def _extract_text_from_file_async(file_path: Path, ext: str) -> str:
+    if ext != ".pdf":
+        return _extract_text_from_file(file_path, ext)
+    from core.rag import config, pdf_ocr
+
+    # MuPDF is not thread-safe; each worker owns its document and OCR state.
+    raw = await to_process.run_sync(
+        pdf_ocr.extract_text,
+        str(file_path),
+        config.OCR_SCANNED,
+        config.OCR_MAX_PAGES,
+        cancellable = True,
+        limiter = _pdf_extraction_limiter,
+    )
+    chunking = _chunking()
+    return chunking.normalize_unstructured_text(raw) if chunking is not None else raw
 
 
 def _get_block_total_size(block_dir: Path) -> int:
@@ -571,7 +583,7 @@ async def upload_unstructured_file(
 
     extracted_path = block_dir / f"{file_id}.extracted.txt"
     try:
-        extracted_text = _extract_text_from_file(raw_path, ext)
+        extracted_text = await _extract_text_from_file_async(raw_path, ext)
         if not extracted_text or not extracted_text.strip():
             raw_path.unlink(missing_ok = True)
             return UnstructuredFileUploadResponse(
@@ -614,6 +626,8 @@ async def upload_unstructured_file(
             error = "Text extraction failed.",
         )
     except Exception as e:
+        from core.rag.pdf_ocr import PDFOCRError
+
         raw_path.unlink(missing_ok = True)
         extracted_path.unlink(missing_ok = True)
         logger.error(
@@ -626,8 +640,14 @@ async def upload_unstructured_file(
             filename = original_filename,
             size_bytes = size_bytes,
             status = "error",
-            error = "Text extraction failed.",
+            error = str(e) if isinstance(e, PDFOCRError) else "Text extraction failed.",
         )
+
+    except BaseException:
+        # Cancellation kills the OCR worker before its input can be removed.
+        raw_path.unlink(missing_ok = True)
+        extracted_path.unlink(missing_ok = True)
+        raise
 
     try:
         meta_path = block_dir / f"{file_id}.meta.json"

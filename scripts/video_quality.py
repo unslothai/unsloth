@@ -158,7 +158,8 @@ def clip_metrics(
     """All frame metrics for one candidate clip vs the reference clip."""
     import numpy as np
 
-    # A truncated candidate is gated FAIL, not prefix-compared: good early frames would mask the missing tail.
+    # A truncated candidate is gated FAIL, not prefix-compared: good early frames would mask the
+    # missing tail.
     ref_count, cand_count = len(ref_frames), len(cand_frames)
     frame_count_mismatch = ref_count != cand_count
     n = min(ref_count, cand_count)
@@ -295,8 +296,8 @@ def run_config(
         "attention_backend": spec.get("attention_backend"),
         "transformer_cache": spec.get("transformer_cache"),
         "transformer_quant": spec.get("transformer_quant"),
-        # On MiniMax-H3 the conditioner precision is a backend default, so "the released bfloat16
-        # encoder" is a spec value rather than the absence of one.
+        # On MiniMax-H3 the conditioner precision is a backend default, so "the released bfloat16 encoder" is a spec
+        # value rather than the absence of one.
         "text_encoder_quant": spec.get("text_encoder_quant"),
     }
     t0 = time.monotonic()

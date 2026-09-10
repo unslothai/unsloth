@@ -25,8 +25,8 @@ from pathlib import Path
 import pytest
 
 try:
-    # Import before the dnp fixture spoofs sys.platform: multiprocess picks its
-    # contexts at import time, so a Windows runner would get POSIX fork contexts.
+    # Import before the dnp fixture spoofs sys.platform: multiprocess picks its contexts at import time, so a Windows
+    # runner would get POSIX fork contexts.
     import multiprocess  # noqa: F401
 except ImportError:
     pass
@@ -36,9 +36,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = REPO_ROOT / "unsloth" / "dataset_num_proc.py"
 RL_PATH = REPO_ROOT / "unsloth" / "models" / "rl.py"
 
-# The dotted paths unsloth/models/rl.py bakes into every generated trainer: the
-# zoo first, so generated source does not import back into unsloth, then this
-# package as the fallback for a zoo that predates the module.
+# The dotted paths unsloth/models/rl.py bakes into every generated trainer: the zoo first, so generated source does
+# not import back into unsloth, then this package as the fallback for a zoo that predates the module.
 GENERATED_IMPORT_MODULE = "unsloth_zoo.dataset_num_proc"
 GENERATED_FALLBACK_MODULE = "unsloth.dataset_num_proc"
 GENERATED_IMPORT_NAME = "get_dataset_num_proc"
@@ -58,16 +57,13 @@ def dnp(monkeypatch):
     module = _load_module()
     module.reset_warning_state()
     monkeypatch.delenv(module.NUM_PROC_ENV_VAR, raising = False)
-    # Pin the platform: macOS is refused by policy whatever the start method says,
-    # so every assertion expecting a worker count is really about a forking
-    # platform. Platform tests set their own value afterwards, which wins.
+    # Pin the platform: macOS is refused by policy whatever the start method says, so every assertion expecting a worker
+    # count is really about a forking platform. Platform tests set their own value afterwards, which wins.
     monkeypatch.setattr(module.sys, "platform", "linux")
-    # Pin the memory ceiling too, at its two sources rather than at the reader,
-    # so the memory tests can still patch either and win. Every count this
-    # module returns is clamped by free RAM and by the cgroup budget, so on a
-    # memory-limited runner a test about the start method or about an explicit
-    # value silently becomes a test of the clamp instead:
-    # `get_dataset_num_proc(6) == 6` returns 4 in a small container.
+    # Pin the memory ceiling too, at its two sources rather than at the reader, so the memory tests can still patch
+    # either and win. Every count this module returns is clamped by free RAM and by the cgroup budget, so on a
+    # memory-limited runner a test about the start method or about an explicit value silently becomes a test of the
+    # clamp instead: `get_dataset_num_proc(6) == 6` returns 4 in a small container.
     try:
         import psutil
         monkeypatch.setattr(
@@ -75,28 +71,23 @@ def dnp(monkeypatch):
         )
     except ImportError:
         pass
-    # Point this module's cgroup reader at a path that does not exist rather than
-    # stubbing the reader itself, so the tests that are about it can still
-    # install a fixture tree and win.
+    # Point this module's cgroup reader at a path that does not exist rather than stubbing the reader itself, so the
+    # tests that are about it can still install a fixture tree and win.
     monkeypatch.setattr(module, "CGROUP_ROOT", "/nonexistent-cgroup-root-for-tests")
-    # unsloth_zoo's readers are neutralised by name instead, and without
-    # requiring the name to be there: pinning hf_xet_tuning.CGROUP_ROOT alone
-    # only works on a zoo that has that global. An older zoo still exposes the
-    # private dir helpers this module prefers, monkeypatch finds no attribute to
-    # pin, and the policy reads the runner's real cgroup -- which in a
-    # memory-limited container turns a test about the start method into a test
-    # of the clamp. The tests that are about these readers install their own
-    # unsloth_zoo.hf_xet_tuning in sys.modules, so they are unaffected.
+    # unsloth_zoo's readers are neutralised by name instead, and without requiring the name to be there: pinning
+    # hf_xet_tuning.CGROUP_ROOT alone only works on a zoo that has that global. An older zoo still exposes the private
+    # dir helpers this module prefers, monkeypatch finds no attribute to pin, and the policy reads the runner's real
+    # cgroup -- which in a memory-limited container turns a test about the start method into a test of the clamp. The
+    # tests that are about these readers install their own unsloth_zoo.hf_xet_tuning in sys.modules, so they are
+    # unaffected.
     try:
         from unsloth_zoo import hf_xet_tuning
     except Exception:
-        # Importing the package can fail long after it has imported this
-        # submodule (__init__ pulls in hf_xet_tuning near the top and only
-        # raises "Please install Unsloth" at the end), and the failure removes
-        # unsloth_zoo from sys.modules while leaving unsloth_zoo.hf_xet_tuning
-        # behind. The module under test reaches it through exactly that cache
-        # entry, so treating the failure as absence would leave the real readers
-        # live on the runner's own /sys/fs/cgroup.
+        # Importing the package can fail long after it has imported this submodule (__init__ pulls in hf_xet_tuning
+        # near the top and only raises "Please install Unsloth" at the end), and the failure removes unsloth_zoo from
+        # sys.modules while leaving unsloth_zoo.hf_xet_tuning behind. The module under test reaches it through exactly
+        # that cache entry, so treating the failure as absence would leave the real readers live on the runner's own
+        # /sys/fs/cgroup.
         hf_xet_tuning = sys.modules.get("unsloth_zoo.hf_xet_tuning")
     if hf_xet_tuning is not None:
         for name, neutral in (
@@ -137,8 +128,8 @@ def test_non_fork_start_method_disables_multiprocessing(monkeypatch, dnp, method
 
 
 def test_non_fork_start_method_warns_once(monkeypatch, dnp, capsys):
-    # Regression for eeffa4c065: an explicit value used to sail through the
-    # guard. It must be vetoed, and the veto must be visible.
+    # Regression for eeffa4c065: an explicit value used to sail through the guard. It must be vetoed, and the veto
+    # must be visible.
     _force_start_method(monkeypatch, dnp, "spawn")
     dnp.get_dataset_num_proc(8)
     dnp.get_dataset_num_proc(8)
@@ -170,8 +161,8 @@ def test_serial_as_none_false_preserves_an_explicit_one(monkeypatch, dnp):
     """
     _force_start_method(monkeypatch, dnp, "fork")
     assert dnp.get_dataset_num_proc(1, serial_as_none = False) == 1
-    # 0 and negatives are incoherent requests but still mean "not parallel", so
-    # they land on the config serial sentinel (1), not on None.
+    # 0 and negatives are incoherent requests but still mean "not parallel", so they land on the config serial
+    # sentinel (1), not on None.
     assert dnp.get_dataset_num_proc(0, serial_as_none = False) == 1
     assert dnp.get_dataset_num_proc(-4, serial_as_none = False) == 1
 
@@ -350,10 +341,9 @@ def test_env_override_can_force_in_process(monkeypatch, dnp, raw):
 
 @pytest.mark.parametrize("raw", ["0", "none", "None", "false", "", "1"])
 def test_env_override_in_process_is_encoded_for_the_config_layer(monkeypatch, dnp, raw):
-    # Regression: the env override used to return before _serial(), writing None
-    # into the *config*, which unsloth_zoo.sft_prepare_dataset reads as
-    # "auto-size me" -- so the hatch the dead-worker message recommends raised
-    # the worker count instead of removing it. Config serial is 1, never None.
+    # Regression: the env override used to return before _serial(), writing None into the *config*, which
+    # unsloth_zoo.sft_prepare_dataset reads as "auto-size me" -- so the hatch the dead-worker message recommends
+    # raised the worker count instead of removing it. Config serial is 1, never None.
     _force_start_method(monkeypatch, dnp, "fork")
     monkeypatch.setenv(dnp.NUM_PROC_ENV_VAR, raw)
     assert dnp.get_dataset_num_proc(16, serial_as_none = False) == 1
@@ -363,10 +353,10 @@ def test_env_override_is_uncapped(monkeypatch, dnp):
     _force_start_method(monkeypatch, dnp, "fork")
     monkeypatch.setenv(dnp.NUM_PROC_ENV_VAR, "100")
     assert dnp.get_dataset_num_proc(None) == 100
-    # Above the auto cap is the easy half. The memory clamp is the one that
-    # matters: the fixture leaves room for 512 workers, so without pinning it
-    # this asserts nothing about the exemption. map_failure_diagnostics points
-    # users at this hatch on exactly the host where the clamp would bite.
+    # Above the auto cap is the easy half.
+    # The memory clamp is the one that matters: the fixture leaves room for 512 workers, so without pinning it this
+    # asserts nothing about the exemption.
+    # map_failure_diagnostics points users at this hatch on exactly the host where the clamp would bite.
     monkeypatch.setattr(dnp, "_affordable_workers", lambda: 2)
     assert dnp.get_dataset_num_proc(None) == 100
     assert dnp.get_dataset_num_proc(4) == 100
@@ -394,9 +384,8 @@ def test_start_method_probe_prefers_multiprocess_and_has_no_side_effects(dnp):
 
     method = dnp.multiprocessing_start_method()
 
-    # Must name a method this host offers. The private default-context chain has
-    # answered "fork" on Windows, which offers only spawn; believing it would
-    # read Windows as forkable and let workers through.
+    # Must name a method this host offers. The private default-context chain has answered "fork" on Windows, which
+    # offers only spawn; believing it would read Windows as forkable and let workers through.
     assert method in multiprocess.get_all_start_methods()
     assert multiprocess.get_start_method(allow_none = True) == before_mp
     assert multiprocessing.get_start_method(allow_none = True) == before_std
@@ -462,8 +451,8 @@ def test_macos_stays_in_process_even_though_multiprocess_forks(monkeypatch, dnp,
     monkeypatch.setattr(dnp, "_affordable_workers", lambda: 1000)
     monkeypatch.setattr(dnp.sys, "platform", "darwin")
 
-    # Serial at a map() call site, None -- not 1 -- at the config layer, so no
-    # Pool is built on datasets >= 4.1 either way.
+    # Serial at a map() call site, None -- not 1 -- at the config layer, so no Pool is built on datasets >= 4.1 either
+    # way.
     assert dnp.get_dataset_num_proc(8) is None
     assert dnp.get_dataset_num_proc(8, serial_as_none = False) is None
     assert dnp.get_dataset_num_proc(None) is None
@@ -511,9 +500,8 @@ def _rl_serial_as_none(tree, source, trainer_file):
     """
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "_serial_as_none":
-            # Parenthesised for the same reason as the sibling below: a
-            # formatter may reflow the ternary, and the segment's continuation
-            # lines are an IndentationError on their own.
+            # Parenthesised for the same reason as the sibling below: a formatter may reflow the ternary, and the
+            # segment's continuation lines are an IndentationError on their own.
             return eval(  # noqa: S307
                 "(" + ast.get_source_segment(source, node.value) + ")",
                 {"trainer_file": trainer_file},
@@ -532,8 +520,8 @@ def _rl_num_proc_snippet(trainer_file = "sft_trainer"):
     tree = ast.parse(source)
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "num_proc_check":
-            # Parenthesised: the segment starts at the first literal, so its
-            # continuation lines are an IndentationError on their own.
+            # Parenthesised: the segment starts at the first literal, so its continuation lines are an IndentationError
+            # on their own.
             expression = "(" + ast.get_source_segment(source, node.value) + ")"
             return eval(  # noqa: S307
                 expression, {"_serial_as_none": _rl_serial_as_none(tree, source, trainer_file)}
@@ -570,12 +558,12 @@ def test_rl_codegen_only_sft_gets_the_config_sentinel():
 
 # ---------- the map-site rewrite and the anchors it hangs on ----------
 
-# The tag rl_replacements.py gives the num_proc edit; both anchors share it, so a
-# rename shows up as a missing call rather than a silently unpinned anchor.
+# The tag rl_replacements.py gives the num_proc edit; both anchors share it, so a rename shows up as a missing call
+# rather than a silently unpinned anchor.
 NUM_PROC_WHERE = "sft_prepare_dataset dataset_num_proc selection"
 
-# The helpers that decide whether a source edit lands. Named here so the tests
-# below fail loudly if they are renamed rather than quietly testing nothing.
+# The helpers that decide whether a source edit lands. Named here so the tests below fail loudly if they are renamed
+# rather than quietly testing nothing.
 ANCHOR_HELPERS = ("_require_replace", "_replace_or_fallback", "_same_source")
 
 # The module-level regex the narrow fallback anchor uses.
@@ -659,8 +647,8 @@ def test_zoo_sft_prepare_dataset_anchor_has_not_drifted():
     lines makes _require_replace raise at import time, so catch drift here."""
     source = _zoo_dataset_utils_source()
 
-    # _require_replace raises on a missing anchor but cannot notice a count = 2
-    # anchor dropping to one occurrence, so assert the counts here.
+    # _require_replace raises on a missing anchor but cannot notice a count = 2 anchor dropping to one occurrence, so
+    # assert the counts here.
     for where in (
         NUM_PROC_WHERE,
         "sft_prepare_dataset tokenizing map() calls",
@@ -787,8 +775,7 @@ def test_the_narrow_anchor_takes_over_when_the_block_drifts():
     result, warnings = _apply_num_proc_edit(drifted)
     assert "_unsloth_get_dataset_num_proc" in result, "the fallback anchor did not apply"
     assert 'map_kwargs["num_proc"] = dataset_num_proc' not in result
-    # Only the assignment was rewritten, so the Zoo's own sizing is still there,
-    # computing a value nothing reads. That is the price of the narrow anchor.
+    # Only the assignment was rewritten, so the Zoo's own sizing is still there, computing a value nothing reads.
     assert "if _mp.get_start_method() != 'fork':" in result
     assert len(warnings) == 1 and "moved in this unsloth_zoo" in warnings[0]
     ast.parse(result)
@@ -830,8 +817,8 @@ def test_the_narrow_anchor_keeps_indentation_and_yields_none(monkeypatch):
     module = _load_module()
     module.reset_warning_state()
     monkeypatch.delenv(module.NUM_PROC_ENV_VAR, raising = False)
-    # The injected snippet imports the zoo copy first; point that name at the
-    # copy under test so this stays a torch-free, offline assertion.
+    # The injected snippet imports the zoo copy first; point that name at the copy under test so this stays a
+    # torch-free, offline assertion.
     if "unsloth_zoo" not in sys.modules:
         monkeypatch.setitem(sys.modules, "unsloth_zoo", types.ModuleType("unsloth_zoo"))
     monkeypatch.setitem(sys.modules, "unsloth_zoo.dataset_num_proc", module)
@@ -855,8 +842,8 @@ def test_the_narrow_anchor_keeps_indentation_and_yields_none(monkeypatch):
 
 
 def test_rl_codegen_imports_the_module_that_exists():
-    # The snippet is spliced into generated source as text, so a rename would
-    # otherwise surface only at trainer-construction time in production.
+    # The snippet is spliced into generated source as text, so a rename would otherwise surface only at
+    # trainer-construction time in production.
     snippet = _rl_num_proc_snippet()
     assert f"from {GENERATED_IMPORT_MODULE} import {GENERATED_IMPORT_NAME}" in snippet
     assert f"from {GENERATED_FALLBACK_MODULE} import {GENERATED_IMPORT_NAME}" in snippet
@@ -971,7 +958,6 @@ def test_rl_codegen_snippet_survives_an_unimportable_helper():
 
 # ---------- worker-death diagnostics ----------
 
-
 _DATASETS_MESSAGE = (
     "One of the subprocesses has abruptly died during map operation."
     "To debug the error, disable multiprocessing."
@@ -979,8 +965,8 @@ _DATASETS_MESSAGE = (
 
 
 def test_worker_death_is_reraised_with_context(dnp):
-    # datasets discards the child's exit status, so the original message cannot
-    # distinguish an OOM kill from anything else.
+    # datasets discards the child's exit status, so the original message cannot distinguish an OOM kill from
+    # anything else.
     with pytest.raises(RuntimeError) as caught:
         with dnp.map_failure_diagnostics(8):
             raise RuntimeError(_DATASETS_MESSAGE)
@@ -1006,8 +992,7 @@ def test_worker_death_diagnostics_handles_in_process_runs(dnp):
 
 
 def test_unrelated_errors_pass_through_untouched(dnp):
-    # Only the dead-worker message is rewritten, and non-RuntimeError types are
-    # not caught at all.
+    # Only the dead-worker message is rewritten, and non-RuntimeError types are not caught at all.
     original = RuntimeError("CUDA out of memory")
     with pytest.raises(RuntimeError) as caught:
         with dnp.map_failure_diagnostics(4):
@@ -1020,9 +1005,8 @@ def test_unrelated_errors_pass_through_untouched(dnp):
             raise key
     assert caught_key.value is key
 
-    # The identity assertions above hold under `except Exception` as well, since
-    # the guard re-raises the same object. This one does not: it carries the
-    # dead-worker text, so a widened clause would rewrite it into a RuntimeError.
+    # The identity assertions above hold under `except Exception` as well, since the guard re-raises the same object.
+    # This one does not: it carries the dead-worker text, so a widened clause would rewrite it into a RuntimeError.
     lookalike = ValueError("One of the subprocesses has abruptly died during map operation.")
     with pytest.raises(ValueError) as caught_other:
         with dnp.map_failure_diagnostics(4):
@@ -1207,8 +1191,7 @@ def test_memory_budget_follows_the_cgroup_not_the_host(monkeypatch, dnp):
 
 
 def test_memory_already_spent_in_the_container_is_not_counted_as_free(monkeypatch, dnp):
-    # Otherwise a container that has already spent most of its limit still reads
-    # as having the whole thing available.
+    # Otherwise a container that has already spent most of its limit still reads as having the whole thing available.
     psutil = pytest.importorskip("psutil")
     _force_start_method(monkeypatch, dnp, "fork")
     _force_cpus(monkeypatch, dnp, 64)
@@ -1224,8 +1207,8 @@ def test_memory_already_spent_in_the_container_is_not_counted_as_free(monkeypatc
 
 
 def test_cpu_count_follows_the_affinity_mask(monkeypatch, dnp):
-    # Under taskset or Slurm pinning the host count is not what this process can
-    # run on, and workers would only contend for the cores it does have.
+    # Under taskset or Slurm pinning the host count is not what this process can run on, and workers would only
+    # contend for the cores it does have.
     psutil = pytest.importorskip("psutil")
     monkeypatch.setattr(psutil, "cpu_count", lambda *a, **k: 128)
     monkeypatch.setattr(dnp, "_cgroup_cpu_quota", lambda: None)
@@ -1234,9 +1217,8 @@ def test_cpu_count_follows_the_affinity_mask(monkeypatch, dnp):
 
 
 def test_cpu_count_follows_a_fractional_cgroup_quota(monkeypatch, dnp):
-    # Kubernetes "cpu: 500m" is cpu.max "50000 100000" = 0.5 cores. Requiring a
-    # whole core would fall back to the host count, so a half-core pod would size
-    # workers from every core on the machine.
+    # Kubernetes "cpu: 500m" is cpu.max "50000 100000" = 0.5 cores. Requiring a whole core would fall back to the
+    # host count, so a half-core pod would size workers from every core on the machine.
     psutil = pytest.importorskip("psutil")
     monkeypatch.setattr(psutil, "cpu_count", lambda *a, **k: 128)
     monkeypatch.setattr(dnp.os, "sched_getaffinity", lambda pid: set(range(128)), raising = False)
@@ -1288,8 +1270,8 @@ def test_serial_is_one_when_the_two_modules_disagree(monkeypatch, dnp, capsys):
 
 
 def test_serial_stays_none_when_the_zoo_would_refuse_workers_too(monkeypatch, dnp):
-    # macOS: multiprocess forks, stdlib spawns. Its own veto fires, so None is
-    # genuinely in-process there and 1 would be a pool it did not need.
+    # macOS: multiprocess forks, stdlib spawns. Its own veto fires, so None is genuinely in-process there and 1 would
+    # be a pool it did not need.
     _force_start_method(monkeypatch, dnp, "fork")
     monkeypatch.setattr(dnp.sys, "platform", "darwin")
     _force_stdlib_start_method(monkeypatch, dnp, "spawn")
@@ -1355,8 +1337,8 @@ def test_free_memory_pairs_each_limit_with_its_own_usage(monkeypatch, dnp, tmp_p
     leaf = slice_dir / "session.scope"
     leaf.mkdir(parents = True)
 
-    # The slice caps 32GB and 30 of them are spent, mostly by a sibling; this
-    # leaf has a 16GB cap of its own and has spent 1.
+    # The slice caps 32GB and 30 of them are spent, mostly by a sibling; this leaf has a 16GB cap of its own and has
+    # spent 1.
     (slice_dir / "memory.max").write_text("34359738368\n")
     (slice_dir / "memory.current").write_text("32212254720\n")
     (leaf / "memory.max").write_text("17179869184\n")
@@ -1517,9 +1499,8 @@ def _no_hf_xet_tuning(monkeypatch):
 
 
 def test_no_unsloth_zoo_and_no_cgroup_is_not_a_ceiling(monkeypatch, dnp, tmp_path):
-    # The cgroup tree is pointed away from the host's on purpose: the unaided
-    # reader needs no unsloth_zoo, so leaving it on the real /sys/fs/cgroup would
-    # make the assertion depend on whether the runner is itself in a limited
+    # The cgroup tree is pointed away from the host's on purpose: the unaided reader needs no unsloth_zoo, so leaving
+    # it on the real /sys/fs/cgroup would make the assertion depend on whether the runner is itself in a limited
     # container, which is how this test would fail on CI and pass on a laptop.
     _no_hf_xet_tuning(monkeypatch)
     monkeypatch.setattr(dnp, "CGROUP_ROOT", str(tmp_path / "absent"))
@@ -1564,8 +1545,8 @@ def test_env_forced_serial_is_in_process_on_a_small_split(monkeypatch, dnp):
 
 
 def test_a_memory_starved_explicit_count_is_in_process_on_a_small_split(monkeypatch, dnp):
-    # Same shape without the env var: the memory clamp resolves to serial, and
-    # under the threshold that has an exact encoding.
+    # Same shape without the env var: the memory clamp resolves to serial, and under the threshold that has an exact
+    # encoding.
     _force_start_method(monkeypatch, dnp, "fork")
     _force_stdlib_start_method(monkeypatch, dnp, "fork")
     monkeypatch.setattr(dnp, "_affordable_workers", lambda: 0)

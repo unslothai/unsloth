@@ -389,7 +389,7 @@ def _append_metric(
     steps.append(istep)
     for key in _METRIC_SERIES:
         # setdefault, not [key]: a run resumed from a record written before a series existed carries a state
-        # dict without it.
+        # dict without it, and a short tail on the new series beats a KeyError that drops the whole update.
         state.setdefault(key, []).append(values[key])
 
 

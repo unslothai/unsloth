@@ -52,6 +52,9 @@ _CONTINUATION_FLAG_PROVIDERS = frozenset({"vllm", "llama_cpp"})
 # which reports usage on its own.
 _USAGE_STREAM_OPTION_PROVIDERS = frozenset({"vllm", "openrouter", "kimi"})
 
+# llama-server reads repeat_penalty, not repetition_penalty (as routes/inference does).
+_REPETITION_PENALTY_BODY_KEY = {"llama_cpp": "repeat_penalty"}
+
 # structlog so INFO diagnostics reach the backend's JSON log stream (the
 # stdlib root logger defaults to WARNING with no handlers). It accepts the
 # existing printf-style positional args.
@@ -180,6 +183,13 @@ _OPENAI_REASONING_SUMMARY_UNSUPPORTED = re.compile(r"^o3(?:[-.]|$)")
 # Gemini 3.x, dotted minor optional: gemini-3-, gemini-3.1-, gemini-3.6- ...
 _GEMINI3_FAMILY = re.compile(r"^gemini-3(?:\.\d+)?-")
 _GEMINI3_PRO = re.compile(r"^gemini-3(?:\.\d+)?-pro")
+
+
+def _anthropic_text_is_sendable(value: Any) -> bool:
+    """Anthropic rejects empty and whitespace-only text; the composer joins with "\\n"."""
+    if isinstance(value, str):
+        return bool(value.strip())
+    return bool(value)
 
 
 def _anthropic_sampling_params_removed(model: str) -> bool:
@@ -805,7 +815,9 @@ def _safe_fetch_image_for_gemini_sync(
 
     # Reuse tools.py's pinned-IP hardening: validate-once-then-pin.
     from .tools import (
+        _explicit_proxy_applies,
         _NoRedirect,
+        _pinned_netloc,
         _SNIHTTPSHandler,
         _validate_and_resolve_host,
     )
@@ -842,7 +854,7 @@ def _safe_fetch_image_for_gemini_sync(
         return None
     parsed, current_host, current_port = parsed_info
     current_url = url
-    ok, reason, pinned_ip = _validate_and_resolve_host(current_host, current_port)
+    ok, reason, pinned_ips = _validate_and_resolve_host(current_host, current_port)
     if not ok:
         logger.warning(
             "Gemini image fetch: refusing host=%s reason=%s",
@@ -857,14 +869,15 @@ def _safe_fetch_image_for_gemini_sync(
         if cp_info is None:
             return None
         cp, _cp_host, _cp_port = cp_info
-        ip_str = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
-        ip_netloc = f"{ip_str}:{cp.port}" if cp.port else ip_str
-        pinned_url = urlunparse(cp._replace(netloc = ip_netloc))
+        pinned_url = urlunparse(cp._replace(netloc = _pinned_netloc(pinned_ips[0], cp.port)))
 
-        opener = urllib.request.build_opener(
-            _NoRedirect,
-            _SNIHTTPSHandler(current_host),
-        )
+        # Route on the hostname, as _fetch_url_raw does: no NO_PROXY entry matches the
+        # pinned URL's IP. A proxied request reaches the origin through the proxy.
+        proxied = _explicit_proxy_applies("https", _pinned_netloc(current_host, cp.port))
+        handlers = [_NoRedirect, _SNIHTTPSHandler(current_host, () if proxied else pinned_ips)]
+        if not proxied:
+            handlers.append(urllib.request.ProxyHandler({}))
+        opener = urllib.request.build_opener(*handlers)
         req = urllib.request.Request(
             pinned_url,
             headers = {"Host": current_host},
@@ -896,7 +909,7 @@ def _safe_fetch_image_for_gemini_sync(
             if rp_info is None:
                 return None
             _rp, current_host, current_port = rp_info
-            ok2, reason2, pinned_ip = _validate_and_resolve_host(current_host, current_port)
+            ok2, reason2, pinned_ips = _validate_and_resolve_host(current_host, current_port)
             if not ok2:
                 logger.warning(
                     "Gemini image fetch: refusing redirect host=%s reason=%s",
@@ -1111,6 +1124,8 @@ class ExternalProviderClient:
         max_tokens: Optional[int] = None,
         presence_penalty: float = 0.0,
         top_k: Optional[int] = None,
+        min_p: Optional[float] = None,
+        repetition_penalty: Optional[float] = None,
         enable_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
         enabled_tools: Optional[list[str]] = None,
@@ -1132,10 +1147,9 @@ class ExternalProviderClient:
         OpenAI-compatible providers forward lines verbatim. For Anthropic, the
         native Messages API SSE is translated to OpenAI format.
 
-        ``top_k`` and ``presence_penalty`` are forwarded only when the caller
-        supplies a value the provider accepts; the frontend's
-        provider-capability map already filters these per provider, so they're
-        opt-in here.
+        ``top_k``, ``min_p``, ``repetition_penalty`` and ``presence_penalty``
+        are opt-in: forwarded only when supplied, since the frontend's
+        capability map already filters them per provider.
 
         ``fast_mode`` only applies to Anthropic Opus 5 / Opus 4.8 (silently
         dropped elsewhere); adds the beta header and ``speed: "fast"``.
@@ -1287,6 +1301,14 @@ class ExternalProviderClient:
                 body["max_completion_tokens"] = max_tokens
             else:
                 body["max_tokens"] = max_tokens
+        if top_k is not None:
+            body["top_k"] = top_k
+        if min_p is not None:
+            body["min_p"] = min_p
+        if repetition_penalty is not None:
+            body[_REPETITION_PENALTY_BODY_KEY.get(self.provider_type, "repetition_penalty")] = (
+                repetition_penalty
+            )
 
         # Drop fields the registry flags as unusable so reasoning-class models
         # with fixed defaults (Kimi k2.6 etc) don't 400 on pydantic defaults
@@ -2084,7 +2106,7 @@ class ExternalProviderClient:
                 #   https://platform.claude.com/docs/en/build-with-claude/vision)
                 anthropic_parts: list[dict[str, Any]] = []
                 for part in content:
-                    if part.get("type") == "text":
+                    if part.get("type") == "text" and _anthropic_text_is_sendable(part.get("text")):
                         anthropic_parts.append({"type": "text", "text": part["text"]})
                     elif part.get("type") == "compaction":
                         # Round-trip a prior turn's compaction block back onto this
@@ -2238,7 +2260,9 @@ class ExternalProviderClient:
                 ):
                     _text_content = msg.get("content")
                     _blocks: list[dict[str, Any]] = []
-                    if isinstance(_text_content, str) and _text_content:
+                    if isinstance(_text_content, str) and _anthropic_text_is_sendable(
+                        _text_content
+                    ):
                         _blocks.append({"type": "text", "text": _text_content})
                     for _tc in msg["tool_calls"]:
                         if not isinstance(_tc, dict):
@@ -2263,6 +2287,9 @@ class ExternalProviderClient:
                         )
                     if _blocks:
                         filtered.append({"role": "assistant", "content": _blocks})
+                    continue
+                # A plain string is one text block, so an empty one 400s too.
+                if isinstance(content, str) and not content.strip():
                     continue
                 filtered.append(msg)
 
@@ -2511,6 +2538,7 @@ class ExternalProviderClient:
             "stop_sequence": "stop",
             "tool_use": "tool_calls",
             "refusal": "content_filter",
+            "model_context_window_exceeded": "length",
             "pause_turn": None,
         }
 
@@ -3172,6 +3200,15 @@ class ExternalProviderClient:
                                 # message_stop but we skip emitting a
                                 # finish_reason="stop" chunk that would truncate
                                 # the rendered message in the UI.
+                                # The `stop` default below reports an unmapped reason as a
+                                # finished answer, hiding a truncating one added upstream.
+                                if stop_reason not in _finish_reason_map:
+                                    logger.warning(
+                                        "Unmapped Anthropic stop_reason %r (model=%s); "
+                                        "reporting the turn as finished",
+                                        stop_reason,
+                                        model,
+                                    )
                                 mapped = _finish_reason_map.get(stop_reason, "stop")
                                 # Streaming refusal: emit a visible notice plus an
                                 # out-of-band _toolEvent so the frontend can prune
@@ -3193,6 +3230,12 @@ class ExternalProviderClient:
                                         "again._"
                                     )
                                     yield _emit_tool_event({"type": "anthropic_refusal"})
+                                if stop_reason == "model_context_window_exceeded":
+                                    logger.warning(
+                                        "Anthropic context window exhausted (model=%s)",
+                                        model,
+                                    )
+                                    yield _emit_tool_event({"type": "context_window_exceeded"})
                                 if mapped is not None:
                                     chunk = {
                                         "id": completion_id,

@@ -23,6 +23,7 @@ import {
 } from "@/features/hub/inventory/api";
 import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
 import {
+  isServedByLlamaCpp,
   isServedByMlx,
   loadedContextFields,
   resolveInitialConfig,
@@ -114,6 +115,7 @@ import {
   createBoundaryScan,
   mergedToolCallArgumentsText,
   splitTopLevelJsonObjects,
+  streamedToolCallArguments,
   toolCallArgumentsText,
   toolCallReplayArguments,
 } from "../tool-call-arguments";
@@ -139,7 +141,10 @@ import {
 import { syncModelCapabilities } from "../hooks/use-chat-model-runtime";
 import {
   clampReasoningEffortToLevels,
+  externalMaxOutputTokensNeedsConnectionCap,
   getExternalMaxOutputTokens,
+  getPublishedExternalMaxOutputTokens,
+  getGroundedExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
   getProviderCapabilities,
@@ -253,6 +258,7 @@ import {
   createContinuationMerger,
   type IncompleteReason,
   readIncompleteInfo,
+  resolveIncompleteReason,
   readContinuationRequest,
   rejectsAssistantPrefill,
   resumesExactly,
@@ -407,7 +413,8 @@ type OpenAIStreamAdapterOptions = {
 /** Tracks which user messages were sent with an audio file (messageId → filename). */
 export const sentAudioNames = new Map<string, string>();
 
-// Synthetic provider-side tool names; mirror of backend _SERVER_SIDE_BUILTIN_TOOL_NAMES.
+// Synthetic provider-side tool names; the backend stamps args._server_tool so user functions with
+// the same name aren't dropped. Mirror of backend _SERVER_SIDE_BUILTIN_TOOL_NAMES.
 const SERVER_SIDE_BUILTIN_TOOL_NAMES = new Set<string>([
   "web_search",
   "web_fetch",
@@ -1129,8 +1136,8 @@ function serializeToolResultPart(
     isSearchImagesToolResult(result) ||
     isSandboxWrapper(result, tc.toolName ?? "")
   ) {
-    // Replay the stdout the model saw, not the wrapper; image tokens go with it, since a token
-    // resolves only against the message whose search produced it.
+    // Replay the stdout the model saw, not the card's sessionId/images/files; image tokens go with
+    // it, since a token resolves only against the message whose search produced it.
     const replayText = isSearchImagesToolResult(result)
       ? stripSearchImageTokens(result.text)
       : result.text;
@@ -1189,9 +1196,12 @@ function buildReplayContent(
   textContent: string,
   imageParts: Array<{ type: "image_url"; image_url: { url: string } }>,
 ): OpenAIMessageContent {
-  return imageParts.length > 0
+  if (imageParts.length === 0) return textContent;
+  // Anthropic rejects whitespace-only text, and collectTextParts joins with "\n".
+  // Spread: the caller's array must not become the message content.
+  return textContent.trim()
     ? [{ type: "text", text: textContent }, ...imageParts]
-    : textContent;
+    : [...imageParts];
 }
 
 function collectAssistantTextThoughtSignature(
@@ -2075,6 +2085,13 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
  *  first, then cached safetensors. */
 // Cap cascade so broken cached repos can't spam /api/inference/load.
 const MAX_AUTO_LOAD_ATTEMPTS = 3;
+// A refused preflight costs no load attempt, so without its own cap a device holding many blocked
+// repos (trust-remote-code, security review) POSTs /validate once per cached repo and never stops.
+// Counted are the preflights that do NOT go on to spend a load attempt: a refusal, and a rejection
+// (dead backend, dismissed token dialog). A preflight that PASSES is deliberately not counted, since
+// it reaches loadAttempts on the very next statement and MAX_AUTO_LOAD_ATTEMPTS already bounds it;
+// charging it here would only cut the sweep short before it reached a model it can actually load.
+const MAX_AUTO_VALIDATE_FAILURES = 12;
 const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|[-_])be(?:[._-]|$)/gi;
 const GGUF_KNOWN_QUANT_RE =
   /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|Q[0-9]+_[0-9]+|Q[0-9]+_K|BF16|F16|F32)/i;
@@ -2153,6 +2170,7 @@ type QueuedResolvedModelRuntime = {
   supportsPreserveThinking: boolean;
   preserveThinking: boolean;
   loadedContextLength: number | null;
+  loadedIsGguf: boolean | null;
   loadedIsMultimodal: boolean;
   modelCapabilities: QueuedModelCapabilities | null;
 };
@@ -2300,6 +2318,7 @@ function queuedResolvedModelFromStore(
     supportsPreserveThinking: state.supportsPreserveThinking,
     preserveThinking: state.preserveThinking,
     loadedContextLength: state.loadedContextLength,
+    loadedIsGguf: state.loadedIsGguf,
     loadedIsMultimodal: state.loadedIsMultimodal,
     modelCapabilities: activeModel
       ? {
@@ -2374,10 +2393,12 @@ const NON_CHAT_TASKS: ReadonlySet<string> = new Set([
 ]);
 
 // ollama stays out by policy: local_model_resolver.py skips its scanner, so auto-loading one
-// promises an API identity that cannot be reached.
+// promises an API identity that cannot be reached. hermes is in: its scan is read-only, so the
+// resolver indexes it like LM Studio, and the name Hermes asks for resolves.
 const AUTO_LOAD_LOCAL_SOURCES: ReadonlySet<string> = new Set([
   "models_dir",
   "lmstudio",
+  "hermes",
   "custom",
 ]);
 
@@ -2942,6 +2963,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   let blockedByTrustRemoteCode = false;
   let hadNonTrustFailure = false;
   let loadAttempts = 0;
+  // Per cascade, like loadAttempts: a module-level counter would leave the second auto-load of the
+  // session with a spent budget.
+  let validateFailures = 0;
   const skippedAutoLoadCandidates = new Set<string>();
   // Why the last load attempt failed. Boxed: a `let` set only in a nested fn narrows to `null`.
   const loadFailure: {
@@ -2994,12 +3018,19 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     speculative_type?: string | null;
     spec_draft_n_max?: number | null;
   }): Promise<boolean> {
+    // Before the POST, so an abort costs nothing: no request was sent.
     options?.abortSignal?.throwIfAborted();
     const validation = await validateModel({
       ...payload,
       hf_token: hfToken,
       load_in_4bit: true,
       trust_remote_code: trustRemoteCode,
+    }).catch((error: unknown) => {
+      // A rejection is a spent /validate that never reaches loadAttempts, so nothing else bounds it.
+      // The sweep keeps going after a transport failure on purpose, so without this a dead backend
+      // POSTs /validate once per cached repo, which is the runaway this budget exists to stop.
+      validateFailures += 1;
+      throw error;
     });
     options?.abortSignal?.throwIfAborted();
     // A background auto-load never runs custom code or Hub-flagged unsafe files; both need the
@@ -3009,11 +3040,13 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       validation.requires_security_review
     ) {
       blockedByTrustRemoteCode = true;
+      validateFailures += 1;
       return false;
     }
     // Never install packages from a background load; explicit loads raise the upgrade dialog.
     if (validation.requires_transformers_upgrade) {
       hadNonTrustFailure = true;
+      validateFailures += 1;
       return false;
     }
     return true;
@@ -3048,7 +3081,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
   async function loadAutoLoadCandidate(
     candidate: AutoLoadCandidate,
   ): Promise<boolean> {
-    if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) {
+    if (
+      autoLoadCancelled ||
+      loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS ||
+      validateFailures >= MAX_AUTO_VALIDATE_FAILURES
+    ) {
       return false;
     }
     const currentStore = useChatRuntimeStore.getState();
@@ -3517,7 +3554,13 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     // row resolved nothing at all.
     const candidateResolvedFor = new Set<string>();
     for (const source of sources) {
-      if (autoLoadCancelled || loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS) break;
+      if (
+        autoLoadCancelled ||
+        loadAttempts >= MAX_AUTO_LOAD_ATTEMPTS ||
+        validateFailures >= MAX_AUTO_VALIDATE_FAILURES
+      ) {
+        break;
+      }
       const sourceKey = autoLoadSourceKey(source);
       if (candidateResolvedFor.has(sourceKey)) continue;
       const isRemembered = lastLoaded
@@ -3534,7 +3577,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       try {
         // A repo can hold several downloaded quants: each failure marks that quant tried, so one
         // corrupt file does not cost the whole repo.
-        while (!autoLoadCancelled && loadAttempts < MAX_AUTO_LOAD_ATTEMPTS) {
+        while (
+          !autoLoadCancelled &&
+          loadAttempts < MAX_AUTO_LOAD_ATTEMPTS &&
+          validateFailures < MAX_AUTO_VALIDATE_FAILURES
+        ) {
           const candidate = await resolveAutoLoadCandidate(
             source,
             isRemembered ? (lastLoaded?.ggufVariant ?? null) : null,
@@ -3856,6 +3903,7 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
               status.supports_preserve_thinking ?? false,
             preserveThinking: resolvePreserveThinkingOnLoad(status),
             loadedContextLength: loadedContextFields(status).loadedContextLength,
+            loadedIsGguf: loadedContextFields(status).loadedIsGguf,
             loadedIsMultimodal: isMultimodalResponse(status),
             modelCapabilities: {
               isVision: status.is_vision ?? false,
@@ -4087,6 +4135,7 @@ export function createOpenAIStreamAdapter(
                   queuedEmptyModelRuntime.supportsPreserveThinking,
                 preserveThinking: queuedEmptyModelRuntime.preserveThinking,
                 loadedContextLength: queuedEmptyModelRuntime.loadedContextLength,
+                loadedIsGguf: queuedEmptyModelRuntime.loadedIsGguf,
                 models: mergeQueuedModelCapabilities(
                   base.models,
                   queuedEmptyModelRuntime.checkpoint,
@@ -4156,6 +4205,19 @@ export function createOpenAIStreamAdapter(
                   providerId: researchExternalProvider.id,
                   providerType: researchExternalProvider.providerType,
                   modelId: researchExternalSelection.modelId,
+                  maxOutputTokens: getGroundedExternalMaxOutputTokens(
+                    researchExternalProvider.providerType,
+                    researchExternalSelection.modelId,
+                    researchExternalProvider.maxOutputTokens,
+                  ),
+                  maxOutputTokensFromSavedCap: externalMaxOutputTokensNeedsConnectionCap(
+                    researchExternalProvider.providerType,
+                    researchExternalSelection.modelId,
+                  ),
+                  maxOutputTokensPublished: getPublishedExternalMaxOutputTokens(
+                    researchExternalProvider.providerType,
+                    researchExternalSelection.modelId,
+                  ),
                 }
               : undefined,
           temperature: params.temperature,
@@ -4469,6 +4531,10 @@ export function createOpenAIStreamAdapter(
                 queuedEmptyModelRuntime !== null
                   ? queuedEmptyModelRuntime.loadedContextLength
                   : liveRuntime.loadedContextLength,
+              loadedIsGguf:
+                queuedEmptyModelRuntime !== null
+                  ? queuedEmptyModelRuntime.loadedIsGguf
+                  : liveRuntime.loadedIsGguf,
               loadedIsMultimodal:
                 queuedEmptyModelRuntime?.loadedIsMultimodal ??
                 liveRuntime.loadedIsMultimodal,
@@ -4935,6 +5001,16 @@ export function createOpenAIStreamAdapter(
       const activeModel = runtime.models.find(
         (m) => m.id === params.checkpoint,
       );
+      // The same owner the settings panel asks, so the body and the panel cannot disagree
+      // about the model they both describe. A catalog row would: /api/models/list can
+      // replace the row a load minted, and the variant / native path token still classify
+      // a GGUF the backend has not answered for yet.
+      const isGgufForCompaction = isServedByLlamaCpp({
+        loadedIsGguf: runtime.loadedIsGguf,
+        activeGgufVariant: runtime.activeGgufVariant,
+        activeNativePathToken: runtime.activeNativePathToken,
+        checkpoint: params.checkpoint,
+      });
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");
@@ -5133,13 +5209,17 @@ export function createOpenAIStreamAdapter(
 
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
+      // Declared above the live metadata that reads it, or it is in its temporal dead zone.
+      let contextWindowExceeded = false;
       // Provisional reason on every streamed yield: an abort skips the terminal yields and a reload
-      // rebuilds messages as "complete".
+      // rebuilds messages as "complete". Stop is only the guess; a reported window outranks it.
       const liveCustom = () => ({
         ...reasoningDurationTracker.metadata(),
         openaiCodexReasoning: codexReasoningLedger,
         contextTruncation,
-        incomplete: { reason: "cancelled" as const },
+        incomplete: {
+          reason: resolveIncompleteReason("cancelled" as const, contextWindowExceeded),
+        },
         ...generationCustom(),
       });
       // Why this turn stopped early. Drives the Continue affordance.
@@ -5409,7 +5489,8 @@ export function createOpenAIStreamAdapter(
         });
       // Backend tool ids ("call_0", ...) restart every response, so a bare id as store key lets a
       // later turn's stream overwrite a finished card's output. Mint one run-unique part id per
-      // backend id, resolved through this map and dropped at tool_end.
+      // backend id; every tool_start/output/args/end resolves the same id through this map, which
+      // is dropped at tool_end.
       const toolPartIdByBackendId = new Map<string, string>();
       const resolveToolPartId = (backendToolCallId: string): string =>
         resolveToolCallPartId(
@@ -5836,6 +5917,10 @@ export function createOpenAIStreamAdapter(
                 ? { thread_id: resolvedThreadId }
                 : {}),
               ...(externalCapabilities?.topK ? { top_k: params.topK } : {}),
+              ...(externalCapabilities?.minP ? { min_p: params.minP } : {}),
+              ...(externalCapabilities?.repetitionPenalty
+                ? { repetition_penalty: params.repetitionPenalty }
+                : {}),
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
@@ -6022,7 +6107,7 @@ export function createOpenAIStreamAdapter(
             // Opt into the trailing usage chunk so the context bar and tok/s populate (backend gates it).
             stream_options: { include_usage: true },
             ...ggufCompactionRequestFields({
-              isGguf: activeModel?.isGguf === true,
+              isGguf: isGgufForCompaction,
               autoCompactEnabled: runtime.autoCompactEnabled,
               contextPolicy: runtime.contextPolicy,
               compactionHeadroomRatio: runtime.compactionHeadroomRatio,
@@ -6472,6 +6557,25 @@ export function createOpenAIStreamAdapter(
                   anthropicRefusalSeen = true;
                   continue;
                 }
+                if (toolEvent.type === "context_window_exceeded") {
+                  contextWindowExceeded = true;
+                  // assistant-ui saves the last STREAMED yield and drops everything after an
+                  // abort, and the finish chunk that follows carries no delta, so nothing
+                  // between here and `[DONE]` need yield. Unconditional because redacted
+                  // thinking renders as no text: this publishes why the turn ended, not a body.
+                  yield {
+                    content: liveAssistantContent(),
+                    metadata: {
+                      timing: buildTiming(
+                        streamStartTime,
+                        totalChunks,
+                        firstTokenTime,
+                      ),
+                      custom: liveCustom(),
+                    },
+                  };
+                  continue;
+                }
                 if (toolEvent.type === "tool_output") {
                   // Incremental stdout from a running tool: append to the live store so the card renders it.
                   // The final result arrives via tool_end.
@@ -6716,7 +6820,8 @@ export function createOpenAIStreamAdapter(
                       parsedResult = mcpImages;
                     } else if (imgIdx !== -1) {
                       const text = rawResult.slice(0, imgIdx);
-                      // Fall back to "_default", the backend sandbox dir used when there is no session_id.
+                      // Fall back to "_default", the backend sandbox dir used when there is no
+                      // session_id (see tools.py _get_workdir).
                       const sessionId = sandboxSessionId || "_default";
                       try {
                         const images = JSON.parse(
@@ -6996,10 +7101,9 @@ export function createOpenAIStreamAdapter(
                     typeof call.index === "number" ? call.index : undefined;
                   const stableId = call.id;
                   // The chunk is cast, not validated, and llama-server has shipped `arguments` as a decoded object.
-                  const deltaArgs =
-                    typeof call.function?.arguments === "string"
-                      ? call.function.arguments
-                      : "";
+                  const deltaArgs = streamedToolCallArguments(
+                    call.function?.arguments,
+                  );
                   // Unsloth's local Codex loop follows the OpenAI tool-call delta with tool_start/tool_end, so
                   // resolve the backend id now to keep all three shapes on one card. Before resolving, since
                   // a provider claiming a minted spelling would merge two calls.
@@ -7709,6 +7813,10 @@ export function createOpenAIStreamAdapter(
         );
 
         reasoningDurationTracker.finishGroup();
+        const finalIncompleteReason = resolveIncompleteReason(
+          incompleteReason,
+          contextWindowExceeded,
+        );
         yield {
           content: [
             ...buildAssistantContent(mergeContinuation(cumulativeText, { final: true })),
@@ -7723,8 +7831,8 @@ export function createOpenAIStreamAdapter(
 
               openaiCodexReasoning: codexReasoningLedger,
               contextTruncation,
-              incomplete: incompleteReason
-                ? { reason: incompleteReason }
+              incomplete: finalIncompleteReason
+                ? { reason: finalIncompleteReason }
                 : undefined,
               // Persisted refusal flag driving the two-pass prune.
               anthropicRefusal: anthropicRefusalSeen || undefined,
@@ -7856,15 +7964,18 @@ export function createOpenAIStreamAdapter(
                 custom: {
                   ...reasoningDurationTracker.metadata(),
                   contextTruncation,
-                  // This partial is unfinished too, so it also offers Continue.
+                  // Unfinished too, so it also offers Continue -- unless the provider already
+                  // said why the model stopped.
                   incomplete: {
-                    reason:
+                    reason: resolveIncompleteReason(
                       err instanceof GenerationLengthError
-                        ? "length"
+                        ? ("length" as const)
                         : err instanceof ChatGenerationTerminalError &&
                             err.generationStatus === "cancelled"
-                          ? "cancelled"
-                          : "interrupted",
+                          ? ("cancelled" as const)
+                          : ("interrupted" as const),
+                      contextWindowExceeded,
+                    ),
                   },
                   timing: partialTiming,
                   ...generationCustom(),

@@ -48,7 +48,7 @@ const DOCX_MIME =
 // may be called anything and still be parsed as XML, while an .xml part nothing points at
 // is never opened. The bound therefore follows docx-reader.js: the two package parts it
 // always reads plus the five resolved out of those relationships, each with mammoth's own
-// "word/<name>.xml" fallback. Image targets stay lazy.
+// "word/<name>.xml" fallback. Image targets stay lazy and are never read by extractRawText.
 const DOCX_CONTENT_TYPES_PART = "[Content_Types].xml";
 const DOCX_PACKAGE_RELATIONSHIPS = "_rels/.rels";
 const DOCX_RELATIONSHIP_NAMESPACE =

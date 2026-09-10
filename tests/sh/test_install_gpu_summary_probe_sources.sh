@@ -5,12 +5,10 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-PASS=0
-FAIL=0
-
 {
     sed -n '/^_rocminfo_gpu_records()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_amd_smi_gpu_records()/,/^}/p' "$INSTALL_SH"
@@ -53,15 +51,6 @@ case "$1 $2" in
 esac
 STUB
 chmod +x "$WORK/roc/rocminfo" "$WORK/smi/amd-smi"
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"; PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"; FAIL=$((FAIL + 1))
-    fi
-}
 
 # $1 rocminfo fixture ("-" = the tool is not installed, empty file = installed but silent)
 # $2 amd-smi fixture, same convention. $3 visible-device mask. Prints "gfx|name".

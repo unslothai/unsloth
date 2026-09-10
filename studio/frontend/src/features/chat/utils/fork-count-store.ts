@@ -47,7 +47,8 @@ async function refresh(threadId: string): Promise<void> {
   // returns without a row. The row decides that, not the id, since a `__LOCALID_` prefix belongs
   // to every chat the app creates. Skipped because the answer is already the empty map the entry
   // holds, not to dodge a failure: fork_counts_for_thread GROUPs without looking the source up,
-  // so an unknown thread gets 200 and an empty map.
+  // so an unknown thread gets 200 and an empty map here, unlike the per-thread routes, which
+  // reject a missing thread.
   if (isThreadIncognito(threadId)) return;
   const seq = ++entry.seq;
   let counts: Counts;
@@ -82,8 +83,8 @@ function onHistoryUpdated(): void {
   // Clear and reschedule, as the sidebar refresh does. Returning while a timer exists would make
   // this a leading-edge throttle: streaming fires this event per chunk, so the timer would
   // expire mid-stream and the next chunk would start another window, costing one whole-thread
-  // fetch per debounce window for as long as the reply runs. Fork counts cannot change during
-  // generation, so every one of those is wasted.
+  // fetch every FORK_COUNT_REFRESH_DEBOUNCE_MS for as long as the reply runs. Fork counts cannot
+  // change during generation, so every one of those is wasted.
   if (pendingRefresh) clearTimeout(pendingRefresh);
   pendingRefresh = setTimeout(runRefresh, FORK_COUNT_REFRESH_DEBOUNCE_MS);
   // The bound. Deliberately not restarted while it is already running, or a per-chunk event stream

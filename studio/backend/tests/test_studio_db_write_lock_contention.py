@@ -25,6 +25,14 @@ import pytest
 import storage.research_runs_db as research_runs_db
 import storage.studio_db as studio_db
 
+
+def _shared_setup_1(threads):
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+
 FULL, NORMAL = 2, 1
 
 
@@ -179,10 +187,7 @@ def test_concurrent_openers_all_get_normal(db):
             errors.append(exc)
 
     threads = [threading.Thread(target = worker) for _ in range(16)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    _shared_setup_1(threads)
     assert not errors, errors
     assert results == [NORMAL] * 16
 
@@ -344,10 +349,7 @@ def test_eight_processes_upgrading_at_once_all_succeed(db):
             conn.close()
 
     threads = [threading.Thread(target = worker) for _ in range(8)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    _shared_setup_1(threads)
 
     assert not errors, errors
     assert len(seen) == 8
@@ -601,10 +603,7 @@ def test_concurrent_workers_claim_a_run_exactly_once(db):
             errors.append(exc)
 
     threads = [threading.Thread(target = worker, args = (f"w{i}",)) for i in range(8)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    _shared_setup_1(threads)
     assert not errors, errors
     assert len(claims) == 1, f"the read-first probe must not let two workers claim: {claims}"
 
