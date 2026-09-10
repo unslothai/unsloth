@@ -92,10 +92,92 @@ function isCodeBlock(block: string): boolean {
 }
 const LINK_REFERENCE_RE =
   /!?\[(?:\\.|[^\]\n\\]){1,200}\]\[(?:\\.|[^\]\n\\]){0,200}\]/;
-// Still the first line of a single block, for `updateLinkDefinitionParity` below.
-const FENCED_CODE_BLOCK_RE = /^ {0,3}(?:```|~~~)/;
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
 const HTML_TAG_START_RE = /[a-zA-Z/]/;
+// A list item or a quote, which is the only block shape that can hide a fence
+// behind a marker `isCodeBlock` never sees. HTML blocks also contain ``` runs
+// as literal content, so they are not walked.
+const CONTAINER_BLOCK_START_RE =
+  /^[ \t]*(?:>|(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$))/;
+// The same container prefixes `LINK_DEFINITION_LINE_RE` allows, so a fence that
+// sits behind a list marker or a quote is visible to the line walk. Leading
+// whitespace is consumed here too: a continuation line of a list item carries
+// indent and not the marker, and that indent is often past column three.
+const CONTAINER_PREFIX_RE =
+  /^[ \t]*(?:(?:>[ \t]*)|(?:(?:[-*+]|\d{1,9}[.)])[ \t]+))*/;
+
+// A fence opener or closer after the container prefixes the block may still
+// carry. Backtick info strings may not contain a backtick, matching the opener
+// rule `isCodeBlock` already uses; tilde fences have no such restriction.
+function fenceMarkerOnLine(
+  line: string,
+): { char: "`" | "~"; length: number; info: string } | null {
+  const prefix = CONTAINER_PREFIX_RE.exec(line)?.[0] ?? "";
+  const match = /^(```+|~~~+)(.*)$/.exec(line.slice(prefix.length));
+  if (match === null) {
+    return null;
+  }
+  const marker = match[1];
+  const info = match[2];
+  if (marker[0] === "`" && info.includes("`")) {
+    return null;
+  }
+  return {
+    char: marker[0] as "`" | "~",
+    length: marker.length,
+    info,
+  };
+}
+
+// Drop the body of every fenced region this list or quote block contains. Those
+// blocks start with the container marker, so `isCodeBlock` never sees the fence.
+// Restricted to container blocks so an HTML block that happens to hold a ```
+// keeps a definition that sits after it: marked treats that run as content, not
+// an opener. Walks one block of a live tail, never the whole reply.
+function withoutNestedFenceRegions(text: string): string {
+  if (!text.includes("```") && !text.includes("~~~")) {
+    return text;
+  }
+  const lines: string[] = [];
+  let fence: { char: "`" | "~"; length: number } | null = null;
+  for (const line of text.split("\n")) {
+    const marker = fenceMarkerOnLine(line);
+    if (fence !== null) {
+      if (
+        marker !== null &&
+        marker.char === fence.char &&
+        marker.length >= fence.length &&
+        /^[ \t]*$/.test(marker.info)
+      ) {
+        fence = null;
+      }
+      continue;
+    }
+    if (marker !== null) {
+      fence = { char: marker.char, length: marker.length };
+      continue;
+    }
+    lines.push(line);
+  }
+  return lines.join("\n");
+}
+
+// The hold-set question, not the document-scope one. An unanchored `[...]:`
+// match is what used to stall an ordinary reply into `renderFullDocument`:
+// `list[str]:` inside a list-nested fence is code, `d["key"]: int` is a
+// subscript, and neither is a definition Marked registers. A definition line
+// outside any fence this block contains still counts, including the container
+// shapes (`- [foo]: /url`, `> [foo]: /url`) that an indent-anchored probe
+// would drop.
+function hasLinkDefinitionOutsideFence(text: string): boolean {
+  if (isCodeBlock(text) || !LINK_DEFINITION_RE.test(text)) {
+    return false;
+  }
+  const prose = CONTAINER_BLOCK_START_RE.test(text)
+    ? withoutNestedFenceRegions(text)
+    : text;
+  return LINK_DEFINITION_LINE_RE.test(prose);
+}
 
 // One split per reply, shared by all three exported entry points. markdown-text.tsx asks for
 // the key and then hands `parseMarkdownIntoRenderableBlocks` to Streamdown, which calls it with
@@ -256,10 +338,12 @@ const createRepairParity = (
 // no token for a label it has already seen, so a definition that is retained
 // while its twin is still live would be lexed apart and shown as a literal
 // line. Keeping every definition in the live tail makes the two lexes agree.
-// Marked reads a fenced block as code, so those do not count; anything else
-// that merely looks like a definition costs retention, never correctness.
+// The hold-set is still the broader of the two probes: a false negative splits
+// a real pair and loses content. What it no longer does is treat a lookalike
+// `[...]:` as a definition, because that false positive used to grow the live
+// tail past `STALLED_TAIL_CHARACTERS` and force the sticky full-document path.
 function updateLinkDefinitionParity(parity: RepairParity, text: string): void {
-  if (!FENCED_CODE_BLOCK_RE.test(text) && LINK_DEFINITION_RE.test(text)) {
+  if (hasLinkDefinitionOutsideFence(text)) {
     parity.linkDefinition = true;
   }
 }
@@ -1421,10 +1505,21 @@ export class IncrementalMarkdownCache {
     // full-document mode -- answer without it, and the precise scope costs a lex of everything
     // received so far. Reaching this point means the reply is still a retention candidate,
     // which is the only case where the answer is used.
+    //
+    // Scope is read off the repaired document, not the unrepaired source. remend
+    // synthesises the closing bracket of a mid-stream `[label][ref`, and the
+    // suite invariant evaluates `parseMarkdownIntoRenderableBlocks` on that
+    // repaired text. Using the source instead kept a prefix committed across
+    // those frames, so the incremental split was `[committed, tail]` while the
+    // repaired split was already one document.
+    const repairedDocument =
+      this.committedLength === 0
+        ? repaired
+        : markdown.slice(0, this.committedLength) + repaired;
     if (
       FOOTNOTE_REFERENCE_RE.test(repaired) ||
       FOOTNOTE_DEFINITION_RE.test(repaired) ||
-      markdownRenderScope(markdown) === "document"
+      markdownRenderScope(repairedDocument) === "document"
     ) {
       return this.renderFullDocument(markdown);
     }

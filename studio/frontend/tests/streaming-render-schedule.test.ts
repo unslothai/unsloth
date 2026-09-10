@@ -98,6 +98,9 @@ const MARKDOWN_CASES = [
   `a \`\`\` b\n\nc \\\`\`\` d${SHORT_GAP}- >= 4 GB`,
   `[x]: https://e.test\n\n${paragraphs(12)}[x]: https://e.test\n\nq\n\n`,
   `\`\`\`md\n[x]: https://e.test\n\`\`\`\n\n${paragraphs(12)}[x]: https://e.test\n\nq\n\n`,
+  // A Python return annotation inside a list-nested fence is code, not a
+  // definition, so the incremental path has to keep retaining past it.
+  `See [a][ref].\n\n1. item\n   \`\`\`python\n   def f() -> list[str]:\n       return []\n   \`\`\`\n\n${paragraphs(12)}end`,
   // A label may contain an escaped bracket, and Marked registers it.
   `[foo\\]bar]: /url\n\n${paragraphs(12)}[foo\\]bar]: /url\n\nq\n\n`,
   // Retained-prefix contexts that nothing else reaches: a balanced single
@@ -492,7 +495,11 @@ test("a definition shown inside a fenced example still retains", () => {
 
   // A real definition is never retained, whatever block it sits in, so Marked
   // always lexes it together with a later twin and absorbs the duplicate.
-  for (const first of ["[x]: https://e.test", "> [x]: https://e.test"]) {
+  for (const first of [
+    "[x]: https://e.test",
+    "> [x]: https://e.test",
+    "- [x]: https://e.test",
+  ]) {
     const repeated = `${first}\n\n${paragraphs(30)}[x]: https://e.test\n\nend`;
     const cache = new IncrementalMarkdownCache();
     let repeatedRender = cache.update("");
@@ -618,4 +625,76 @@ test("a fenced block larger than the budget keeps retaining", () => {
     render.parseMarkdownIntoBlocks(render.markdown),
     parseMarkdownIntoBlocks(remend(input)),
   );
+});
+
+const STREAM_CHUNK = 24;
+const LOOKALIKE_PROSE = paragraphs(1_200);
+
+const streamInChunks = (
+  source: string,
+  cache = new IncrementalMarkdownCache(),
+) => {
+  let render = cache.update("");
+  for (
+    let length = STREAM_CHUNK;
+    length < source.length;
+    length += STREAM_CHUNK
+  ) {
+    render = cache.update(source.slice(0, length));
+  }
+  return { cache, render: cache.update(source) };
+};
+
+const isFullDocumentMode = (cache: IncrementalMarkdownCache): boolean =>
+  (cache as unknown as { fullDocumentMode: boolean }).fullDocumentMode;
+
+test("a list-nested Python annotation does not stick to the full-document path", () => {
+  // Streamed in 24-character chunks, matching the issue 10529 tables. The
+  // annotation sits in a fence that is itself inside a list item, so the block
+  // starts with the list marker rather than the fence. An unanchored `[...]:`
+  // probe used to set `parity.linkDefinition`, stall the tail, and leave
+  // `fullDocumentMode` sticky for the rest of an ordinary reply.
+  for (const block of [
+    "1. item\n   ```python\n   def f() -> list[str]:\n       return []\n   ```",
+    "- item\n  ```python\n  def f() -> list[str]:\n      return []\n  ```",
+    "10. item\n    ```python\n    def f() -> list[str]:\n        return []\n    ```",
+  ]) {
+    const source = `See [a][ref].\n\n${block}\n\n${LOOKALIKE_PROSE}`;
+    const { cache, render } = streamInChunks(source);
+    assert.equal(markdownRenderScope(source), "blocks", block);
+    assert.equal(isFullDocumentMode(cache), false, block);
+    assert.ok(render.markdown.length < source.length / 4, block);
+  }
+});
+
+test("wrapped and unfenced lookalikes do not force the document path", () => {
+  for (const block of [
+    "```python\nlist[\n str\n]:\n```",
+    'd[\n "key"\n]: int',
+    'd["key"]: int',
+  ]) {
+    const source = `See [a][ref].\n\n${block}\n\n${LOOKALIKE_PROSE}`;
+    const { cache, render } = streamInChunks(source);
+    assert.equal(markdownRenderScope(source), "blocks", block);
+    assert.equal(isFullDocumentMode(cache), false, block);
+    assert.ok(render.markdown.length < source.length / 4, block);
+  }
+});
+
+test("a mid-stream reference is scoped from the repaired document", () => {
+  // remend synthesises the closing `]` of `[docs][ref` four characters before
+  // the real one arrives. Scope on the unrepaired source stayed `blocks` across
+  // those frames, so a prefix committed earlier survived into a reply whose
+  // repaired split was already one document.
+  const source = `${paragraphs(20, "lead")}[ref]: /docs\n\n${paragraphs(5, "mid")}See [docs][ref] for more.`;
+  const cache = new IncrementalMarkdownCache();
+  for (let length = 0; length <= source.length; length += 1) {
+    const input = source.slice(0, length);
+    const render = cache.update(input);
+    assert.deepEqual(
+      render.parseMarkdownIntoBlocks(render.markdown),
+      parseMarkdownIntoRenderableBlocks(remend(input)),
+      `block mismatch at prefix ${length}`,
+    );
+  }
 });
