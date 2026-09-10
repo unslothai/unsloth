@@ -2875,19 +2875,21 @@ def create_stopping_criteria(tokenizer, stop_word = "eos_token"):
     class StoppingCriteriaSub(StoppingCriteria):
         __slots__ = "stop_token", "single_match", "length",
 
-        def __init__(self, stops = "eos_token", device = "cuda", encounters = 1):
+        def __init__(self, stops = "eos_token", encounters = 1):
             super().__init__()
             if stops == "eos_token":
-                self.stop_token = torch.tensor(tokenizer.eos_token_id, device = "cuda")
+                self.stop_token = torch.tensor(tokenizer.eos_token_id)
                 self.length = 1
             else:
                 self.stop_token = tokenizer(["\n" + stops], add_special_tokens = False, return_tensors = "pt")
-                self.stop_token = self.stop_token.input_ids.ravel()[1:].to("cuda")
+                self.stop_token = self.stop_token.input_ids.ravel()[1:]
                 self.length = self.stop_token.shape[0]
             self.single_match = self.length == 1
 
         def __call__(self, input_ids: LongTensor, scores: FloatTensor) -> bool:
             input_ids = input_ids.ravel()
+            if self.stop_token.device != input_ids.device:
+                self.stop_token = self.stop_token.to(input_ids.device)
             last_token = input_ids[-1]
             if self.single_match and (last_token == self.stop_token): return True
 
