@@ -7424,13 +7424,13 @@ def _target_is_vision(
     # invariant (the resolver only yields local paths, where the token is unused,
     # but the rule requires it regardless).
     from utils.models.model_config import is_vision_model
-    if is_ollama_manifest_ref(load_path):
-        from hub.services.models.ollama import ollama_model_ref_files
-        from utils.models.gguf_metadata import mmproj_accepts_image
-
-        _, projector = ollama_model_ref_files(load_path)
-        return projector is not None and (not need_image or mmproj_accepts_image(projector))
     try:
+        if is_ollama_manifest_ref(load_path):
+            from hub.services.models.ollama import ollama_model_ref_files
+            from utils.models.gguf_metadata import mmproj_accepts_image
+
+            _, projector = ollama_model_ref_files(load_path)
+            return projector is not None and (not need_image or mmproj_accepts_image(projector))
         # Deliberately unguarded: the resolver only yields local paths, so this returns
         # from the mmproj filesystem branch without touching the hub. A reachability
         # probe here would add seconds per request and prevent nothing.
@@ -8220,6 +8220,9 @@ def _loaded_satisfies(requested: str) -> bool:
             )
             if candidate
         ]
+        if requested.strip().lower().startswith("ollama/"):
+            # Ollama tags identify manifests, even when they look like GGUF quants.
+            return _matches_any(requested, candidates)
         if not _matches_any(base, candidates):
             return False
         if not looks_like_quant(variant):
@@ -8255,6 +8258,8 @@ def _loaded_identity_satisfies(requested: str) -> bool:
     if getattr(llama_backend, "is_loaded", False):
         identifier = getattr(llama_backend, "model_identifier", None)
         advertised = getattr(llama_backend, "_openai_advertised_id", None)
+        if requested.strip().lower().startswith("ollama/"):
+            base = requested
         # A manual load of a local path advertises nothing, so only the path could match
         # and answering from it would skip the recording: /v1/models and every response
         # would report the filename. One request pays the resolver, the rest match the
