@@ -293,14 +293,42 @@ def _without_folded_retrieval(message: dict, names: frozenset):
     already merged with the question the user asked after it, and dropping the message would take
     that question with it. ``json.dumps(..., indent = 2)`` never emits a blank line, so the
     ``"\\n\\n"`` the coalesce joins on cannot occur inside one folded block.
+
+    Both content shapes, because the merge decides which one: coalescing a folded passage with a
+    plain question leaves a string, but with an image-bearing question it leaves a part list, and
+    reading only strings would archive the passage on exactly the turns that carry an image.
     """
     if str(message.get("role") or "") != "user":
         return message
     content = message.get("content")
-    if not isinstance(content, str) or '"tool_response"' not in content:
+    if isinstance(content, str):
+        kept = _text_without_folded_retrieval(content, names)
+        if kept is None:
+            return None
+        return {**message, "content": kept}
+    if not isinstance(content, list):
         return message
+    parts = []
+    for part in content:
+        text = part.get("text") if isinstance(part, dict) and part.get("type") == "text" else None
+        if not isinstance(text, str):
+            parts.append(part)
+            continue
+        kept = _text_without_folded_retrieval(text, names)
+        if kept is None:
+            continue
+        parts.append({**part, "text": kept})
+    if not parts:
+        return None
+    return {**message, "content": parts}
+
+
+def _text_without_folded_retrieval(text: str, names: frozenset):
+    """``text`` with folded retrieval blocks removed, or None if that was all of it."""
+    if '"tool_response"' not in text:
+        return text
     kept = []
-    for segment in content.split("\n\n"):
+    for segment in text.split("\n\n"):
         try:
             payload = json.loads(segment)
         except (ValueError, TypeError):
@@ -315,7 +343,7 @@ def _without_folded_retrieval(message: dict, names: frozenset):
         kept.append(segment)
     if not kept:
         return None
-    return {**message, "content": "\n\n".join(kept)}
+    return "\n\n".join(kept)
 
 
 def enabled() -> bool:

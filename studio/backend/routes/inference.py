@@ -28402,6 +28402,13 @@ def _build_chat_request(
         # turn opens a fresh one and restarts the answer.
         if isinstance(_extra.get("continue_final_message"), bool):
             chat_kwargs["continue_final_message"] = _extra["continue_final_message"]
+        # And for the ownership marker, or every fold below this reads a Studio thread as a
+        # client's. Without it only the legacy search_conversation arm can claim one, so a
+        # thread that ran terminal / python / search_knowledge_base is refused outright when
+        # the client asks non-streaming and has role="tool" forwarded to a template that
+        # advertises no tools when it streams.
+        if isinstance(_extra.get("studio_tool_history"), bool):
+            chat_kwargs["studio_tool_history"] = _extra["studio_tool_history"]
 
     if isinstance(payload.reasoning, dict):
         effort = payload.reasoning.get("effort")

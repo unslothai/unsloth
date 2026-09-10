@@ -635,6 +635,39 @@ def test_a_folded_retrieval_result_is_still_kept_out_of_the_archive():
     assert "ASKEDAFTERWARDS?" in rendered
     assert "ZQXVARA123" in rendered
 
+    # An image on the next question makes the coalesce produce a part list, not a string, and
+    # reading only strings archived the passage on exactly the turns that carry an image.
+    with_image = [
+        {"role": "user", "content": "what did we say?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_0", "function": {"name": "search_conversation", "arguments": "{}"}}
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_0",
+            "name": "search_conversation",
+            "content": "<chunk>RETRIEVEDPASSAGE</chunk>",
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "ASKEDWITHIMAGE?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            ],
+        },
+    ]
+    folded_image = _coalesce_consecutive_user_turns(fold_tool_results_into_user(with_image))
+    assert isinstance(folded_image[-1]["content"], list), folded_image[-1]
+    kept_image = archive._archivable(folded_image)
+    dumped = json.dumps(kept_image)
+    assert "RETRIEVEDPASSAGE" not in dumped
+    assert "ASKEDWITHIMAGE?" in dumped
+    assert "image_url" in dumped
+
     # A tool whose result IS conversation keeps it, folded or not.
     kept = fold_tool_results_into_user(
         [

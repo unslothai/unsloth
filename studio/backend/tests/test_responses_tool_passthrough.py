@@ -2720,6 +2720,29 @@ class TestResponsesStreamAdapter:
         assert done[0]["item"]["type"] == "function_call"
         assert self._payloads(lines, "response.function_call_arguments.done")
 
+    def test_studio_ownership_marker_reaches_the_chat_request(self):
+        """ResponsesRequest takes the marker as an extra field, and every fold downstream reads
+        it off the ChatCompletionRequest. Dropped in translation, only the legacy
+        search_conversation arm can claim a Studio thread, so one that ran terminal or
+        search_knowledge_base is refused non-streaming and forwarded raw when streamed."""
+        from routes.inference import _build_chat_request
+
+        payload = ResponsesRequest.model_validate(
+            {"input": "hi", "stream": True, "model": "org/M-GGUF", "studio_tool_history": True}
+        )
+        chat_req = _build_chat_request(
+            payload, [ChatMessage(role = "user", content = "hi")], stream = True
+        )
+        assert chat_req.studio_tool_history is True
+
+        # Absent stays absent: a plain client must not be read as Studio's.
+        plain = _build_chat_request(
+            ResponsesRequest.model_validate({"input": "hi", "model": "org/M-GGUF"}),
+            [ChatMessage(role = "user", content = "hi")],
+            stream = False,
+        )
+        assert not plain.studio_tool_history
+
     def test_studio_tool_history_is_folded_on_the_direct_stream(self, monkeypatch):
         """This half of /v1/responses builds the passthrough body itself, so it has to fold the
         way openai_chat_completions does. Otherwise the same thread on the same model answers
@@ -2742,9 +2765,7 @@ class TestResponsesStreamAdapter:
         monkeypatch.setattr(
             inf_mod.httpx,
             "AsyncClient",
-            lambda *a, **kw: real_async_client(
-                transport = transport, timeout = kw.get("timeout", 600)
-            ),
+            lambda *a, **kw: real_async_client(transport = transport, timeout = kw.get("timeout", 600)),
         )
         monkeypatch.setattr(
             inf_mod,
