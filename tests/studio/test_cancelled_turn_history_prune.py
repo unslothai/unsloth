@@ -226,8 +226,7 @@ def test_the_defect_is_two_user_turns_touching_on_the_wire():
 
 
 def test_a_stop_before_any_output_keeps_its_prompt_on_the_wire():
-    """#10428: the interrupted prompt must still transmit; #9484 wanted alternating roles, not
-    deletion."""
+    """#10428: the prompt must still transmit; #9484 wanted alternating roles, not deletion."""
     out = _run(_script(f"[{_user('first')}, {CANCELLED}, {_user('second')}]"))
     assert out["kept"] == ["user", "assistant", "user"]
     assert out["keptText"] == ["first", "second"]
@@ -289,7 +288,6 @@ def test_refusals_are_still_pruned_with_their_prompt():
 
 
 def test_back_to_back_stops_keep_every_interrupted_prompt():
-    """Stop twice and both prompts stay, separated by the placeholder rather than dropped."""
     history = f"[{_user('first')}, {CANCELLED}, {_user('second')}, {CANCELLED}, {_user('third')}]"
     out = _run(_script(history))
     assert out["kept"] == ["user", "assistant", "user", "assistant", "user"]
