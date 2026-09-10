@@ -180,12 +180,17 @@ def _artifact_image_files(dataset_path: Path) -> list[Path]:
 
 
 def download_filename(*, artifact_path: str, export_format: ExportFormat, stem: str) -> str:
-    """The name the export will actually have. Whether the JSONL comes back zipped depends on the
-    artifact, so the server settles it and the client is told rather than guessing."""
+    """The name the export will actually have, and the same checks the export itself makes.
+
+    Whether the JSONL comes back zipped depends on the artifact, so the server settles that rather
+    than the client guessing. It also walks the artifact the way ``build_dataset_download`` will,
+    so a run whose shards have since been deleted is refused while the caller can still be told,
+    instead of failing later inside a download the browser has already been handed."""
     try:
         dataset_path = _resolve_recipe_artifact_path(artifact_path)
     except RecipeDatasetPublishError as exc:
         raise RecipeDatasetExportError(str(exc)) from exc
+    _parquet_dir(dataset_path)
     if export_format == "parquet":
         return f"{stem}.parquet.zip"
     return f"{stem}.jsonl.zip" if _artifact_image_files(dataset_path) else f"{stem}.jsonl"

@@ -351,10 +351,12 @@ export async function downloadRecipeJobDataset(
   // that cannot be exported before the save dialog opens. The link carries a signed capability
   // for this one export, so the session bearer never reaches the URL, and the server names the
   // file: whether a JSONL export comes back zipped depends on the artifact having images.
-  const { url, filename } = await getJson<{ url: string; filename: string }>(
+  const { path, filename } = await getJson<{ path: string; filename: string }>(
     `/jobs/${jobId}/download-url?${params.toString()}`,
   );
-  return { url: apiUrl(url), filename };
+  // Same base every other call in this file goes through, so a build that repoints
+  // VITE_DATA_DESIGNER_API downloads from the service it actually configured.
+  return { url: apiUrl(`${DATA_DESIGNER_API_BASE}${path}`), filename };
 }
 
 export async function cancelRecipeJob(

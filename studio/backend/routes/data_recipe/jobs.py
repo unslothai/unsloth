@@ -724,10 +724,9 @@ def create_job_dataset_download_url(
         query["artifact_path"] = artifact_path
     if filename:
         query["filename"] = filename
-    return {
-        "url": f"/api/data-recipe/jobs/{job_id}/download?{urlencode(query)}",
-        "filename": name,
-    }
+    # Relative to this router, not to the app: the frontend's data-recipe base is configurable,
+    # and a path built here could not know what it was set to.
+    return {"path": f"/jobs/{job_id}/download?{urlencode(query)}", "filename": name}
 
 
 @download_router.get("/jobs/{job_id}/download")

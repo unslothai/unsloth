@@ -412,7 +412,7 @@ def test_download_link_is_minted_over_the_bearer_and_used_without_one(monkeypatc
         headers = {"Authorization": f"Bearer {token}"},
     )
     assert minted.status_code == 200
-    url = minted.json()["url"]
+    url = "/api/data-recipe" + minted.json()["path"]
     assert token not in url
 
     # No Authorization header at all, the way the browser fetches it.
@@ -467,7 +467,7 @@ def test_download_route_refuses_an_unsigned_or_repointed_link(monkeypatch, tmp_p
         "/api/data-recipe/jobs/job-1/download-url",
         params = {"artifact_path": "/recipes/mine"},
         headers = {"Authorization": f"Bearer {token}"},
-    ).json()["url"]
+    ).json()["path"]
     signed = parse_qs(urlparse(url).query)["token"][0]
     # Every parameter the export reads is signed, so the artifact cannot be swapped for another.
     assert (
@@ -487,10 +487,13 @@ def test_download_link_expires(monkeypatch, tmp_path: Path):
     app, token = _download_app(monkeypatch, tmp_path, jobs_route)
     client = TestClient(app)
 
-    url = client.get(
-        "/api/data-recipe/jobs/job-1/download-url",
-        headers = {"Authorization": f"Bearer {token}"},
-    ).json()["url"]
+    url = (
+        "/api/data-recipe"
+        + client.get(
+            "/api/data-recipe/jobs/job-1/download-url",
+            headers = {"Authorization": f"Bearer {token}"},
+        ).json()["path"]
+    )
     assert client.get(url).status_code == 200
 
     real_time = jobs_route.time.time
@@ -733,3 +736,20 @@ def test_pandas_fallback_exports_a_schema_duckdb_will_not_take(tmp_path: Path):
     destination = tmp_path / "out.jsonl"
     _write_jsonl_from_parquet(parquet_dir, destination)
     assert json.loads(destination.read_text().strip()) == {"filename": "a.png", "text": "x"}
+
+
+def test_minting_refuses_a_run_whose_shards_are_gone(tmp_path: Path, monkeypatch):
+    """A historical run is not the manager's current job, so its artifact path comes from the
+    client and nothing had confirmed it still held anything. The link minted fine and the browser
+    then failed invisibly against it."""
+    dataset_path = tmp_path / "recipe-datasets" / "job-swept"
+    (dataset_path / "parquet-files").mkdir(parents = True)
+    monkeypatch.setattr(
+        "core.data_recipe.export._resolve_recipe_artifact_path",
+        lambda artifact_path: dataset_path,
+    )
+
+    from core.data_recipe.export import download_filename
+
+    with pytest.raises(RecipeDatasetExportError, match = "parquet"):
+        download_filename(artifact_path = str(dataset_path), export_format = "jsonl", stem = "swept")
