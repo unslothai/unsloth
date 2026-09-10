@@ -11,6 +11,32 @@ import pytest
 import torch
 
 
+def _shared_setup_1(monkeypatch, tmp_path):
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+
+    studio_db.create_run(
+        id = "r",
+        model_name = "m",
+        dataset_name = "d",
+        config_json = "{}",
+        started_at = "2026-01-01T00:00:00Z",
+        total_steps = 10,
+    )
+    studio_db.update_run_output_dir("r", "/out/x")
+    return studio_db
+
+
+def _shared_setup_2(monkeypatch, tmp_path):
+    from storage import studio_db
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    return studio_db
+
+
 _BACKEND = Path(__file__).resolve().parents[1]
 
 
@@ -130,10 +156,7 @@ def test_can_resume_run_rejects_s3_metadata_marker(monkeypatch):
 
 
 def test_list_runs_includes_config_json_for_resume_policy(monkeypatch, tmp_path):
-    from storage import studio_db
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    studio_db = _shared_setup_2(monkeypatch, tmp_path)
     config_json = json.dumps({"dataset_source": "s3", "s3_dataset": {"bucket": "training-data"}})
 
     studio_db.create_run(
@@ -151,10 +174,7 @@ def test_list_runs_includes_config_json_for_resume_policy(monkeypatch, tmp_path)
 
 
 def test_crashed_run_with_persisted_output_dir_is_resumable(monkeypatch, tmp_path):
-    from storage import studio_db
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    studio_db = _shared_setup_2(monkeypatch, tmp_path)
 
     out = tmp_path / "outputs" / "run_x"
     _write_checkpoint(out, 10)
@@ -193,20 +213,7 @@ def test_checkpoint_discovery_skips_malformed_newest(monkeypatch, tmp_path):
 
 
 def test_completed_run_keeps_output_dir_and_rejects_stale_cancel(monkeypatch, tmp_path):
-    from storage import studio_db
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
-
-    studio_db.create_run(
-        id = "r",
-        model_name = "m",
-        dataset_name = "d",
-        config_json = "{}",
-        started_at = "2026-01-01T00:00:00Z",
-        total_steps = 10,
-    )
-    studio_db.update_run_output_dir("r", "/out/x")
+    studio_db = _shared_setup_1(monkeypatch, tmp_path)
     studio_db.finish_run(
         id = "r",
         status = "completed",
@@ -226,20 +233,7 @@ def test_completed_run_keeps_output_dir_and_rejects_stale_cancel(monkeypatch, tm
 
 
 def test_finish_run_clears_output_dir_for_stop_without_save(monkeypatch, tmp_path):
-    from storage import studio_db
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
-
-    studio_db.create_run(
-        id = "r",
-        model_name = "m",
-        dataset_name = "d",
-        config_json = "{}",
-        started_at = "2026-01-01T00:00:00Z",
-        total_steps = 10,
-    )
-    studio_db.update_run_output_dir("r", "/out/x")
+    studio_db = _shared_setup_1(monkeypatch, tmp_path)
     studio_db.finish_run(
         id = "r",
         status = "stopped",
@@ -267,20 +261,7 @@ def test_finish_run_clears_output_dir_for_stop_without_save(monkeypatch, tmp_pat
 
 
 def test_finish_run_clears_output_dir_on_cancel_error_finalize(monkeypatch, tmp_path):
-    from storage import studio_db
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
-
-    studio_db.create_run(
-        id = "r",
-        model_name = "m",
-        dataset_name = "d",
-        config_json = "{}",
-        started_at = "2026-01-01T00:00:00Z",
-        total_steps = 10,
-    )
-    studio_db.update_run_output_dir("r", "/out/x")
+    studio_db = _shared_setup_1(monkeypatch, tmp_path)
     studio_db.finish_run(
         id = "r",
         status = "stopped",
@@ -298,20 +279,7 @@ def test_finish_run_clears_output_dir_on_cancel_error_finalize(monkeypatch, tmp_
 
 
 def test_finish_run_preserves_output_dir_for_interrupted_stop_and_save(monkeypatch, tmp_path):
-    from storage import studio_db
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
-
-    studio_db.create_run(
-        id = "r",
-        model_name = "m",
-        dataset_name = "d",
-        config_json = "{}",
-        started_at = "2026-01-01T00:00:00Z",
-        total_steps = 10,
-    )
-    studio_db.update_run_output_dir("r", "/out/x")
+    studio_db = _shared_setup_1(monkeypatch, tmp_path)
     studio_db.finish_run(
         id = "r",
         status = "stopped",
@@ -328,10 +296,7 @@ def test_finish_run_preserves_output_dir_for_interrupted_stop_and_save(monkeypat
 
 
 def test_resumed_errored_run_is_not_offered_again(monkeypatch, tmp_path):
-    from storage import studio_db
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    studio_db = _shared_setup_2(monkeypatch, tmp_path)
 
     out = tmp_path / "outputs" / "run_x"
     _write_checkpoint(out, 10)
@@ -400,10 +365,7 @@ def test_resumed_errored_run_is_not_offered_again(monkeypatch, tmp_path):
 
 
 def test_running_continuation_blocks_older_resume(monkeypatch, tmp_path):
-    from storage import studio_db
-
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    studio_db = _shared_setup_2(monkeypatch, tmp_path)
 
     out = tmp_path / "outputs" / "run_x"
     _write_checkpoint(out, 10)
@@ -449,10 +411,8 @@ def test_stop_save_checkpoint_failure_keeps_error_status(monkeypatch, tmp_path):
     # A stop-and-save whose checkpoint write failed must finalize as an error so
     # history explains the missing resume state (keep_error_status flag).
     from core.training.training import TrainingBackend
-    from storage import studio_db
 
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    studio_db = _shared_setup_2(monkeypatch, tmp_path)
 
     studio_db.create_run(
         id = "run-failed-save",
@@ -489,10 +449,8 @@ def test_stop_save_checkpoint_failure_with_stale_checkpoint_is_not_resumable(mon
     # A failed stop-and-save must not offer Resume from an older periodic checkpoint;
     # that would roll back past the recorded final step.
     from core.training.training import TrainingBackend
-    from storage import studio_db
 
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    studio_db = _shared_setup_2(monkeypatch, tmp_path)
 
     out = tmp_path / "outputs" / "run_x"
     _write_checkpoint(out, 10)
@@ -529,10 +487,8 @@ def test_stop_save_checkpoint_failure_with_stale_checkpoint_is_not_resumable(mon
 
 def test_user_stop_error_without_checkpoint_ack_is_blocked(monkeypatch, tmp_path):
     from core.training.training import TrainingBackend
-    from storage import studio_db
 
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    studio_db = _shared_setup_2(monkeypatch, tmp_path)
 
     studio_db.create_run(
         id = "run-user-stop",

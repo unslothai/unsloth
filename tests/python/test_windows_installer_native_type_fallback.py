@@ -40,6 +40,26 @@ import pytest
 from unsloth_pwsh_runner import run_pwsh
 
 
+def _shared_setup_1(root):
+    result = _run_powershell(
+        _script(
+            f"Remove-StudioStalePrivateTempDirectories -Root '{root}'",
+            sabotage = False,
+            names = ("Remove-StudioStalePrivateTempDirectories",),
+        )
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def _shared_setup_2():
+    uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
+    block = _extract(r"    function _RemoveStudioPrivateTempTrees \{.*?\n    \}\n", uninstall)
+    preamble = (
+        '$ErrorActionPreference = "Stop"\nfunction _Substep { param([string]$Msg, [string]$Color) }'
+    )
+    return block, preamble, uninstall
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
@@ -846,14 +866,7 @@ def test_the_recorded_owner_outranks_the_name(tmp_path: Path):
     for d in (keep, drop):
         os.utime(d, (aged, aged))
 
-    result = _run_powershell(
-        _script(
-            f"Remove-StudioStalePrivateTempDirectories -Root '{root}'",
-            sabotage = False,
-            names = ("Remove-StudioStalePrivateTempDirectories",),
-        )
-    )
-    assert result.returncode == 0, result.stderr
+    _shared_setup_1(root)
     assert keep.exists()
     assert not drop.exists()
 
@@ -879,14 +892,7 @@ def test_the_sweep_keeps_a_directory_whose_owner_is_still_running(tmp_path: Path
     os.utime(live, (aged, aged))
     os.utime(abandoned, (aged, aged))
 
-    result = _run_powershell(
-        _script(
-            f"Remove-StudioStalePrivateTempDirectories -Root '{root}'",
-            sabotage = False,
-            names = ("Remove-StudioStalePrivateTempDirectories",),
-        )
-    )
-    assert result.returncode == 0, result.stderr
+    _shared_setup_1(root)
     assert (live / "in-use.txt").exists()
     assert not abandoned.exists()
 
@@ -1101,14 +1107,7 @@ def test_the_sweep_only_takes_directories_the_allocator_could_have_made(tmp_path
     for path in [ours, upper] + keep:
         os.utime(path, (aged, aged))
 
-    result = _run_powershell(
-        _script(
-            f"Remove-StudioStalePrivateTempDirectories -Root '{root}'",
-            sabotage = False,
-            names = ("Remove-StudioStalePrivateTempDirectories",),
-        )
-    )
-    assert result.returncode == 0, result.stderr
+    _shared_setup_1(root)
     assert not ours.exists()
     assert not upper.exists()
     for victim in keep:
@@ -1197,14 +1196,7 @@ def test_an_unrecorded_owner_is_unknown_rather_than_abandoned(tmp_path: Path):
     (recorded / "owner.pid").write_text(str(_DEAD_PID), encoding = "utf-8")
     os.utime(recorded, (two_days, two_days))
 
-    result = _run_powershell(
-        _script(
-            f"Remove-StudioStalePrivateTempDirectories -Root '{root}'",
-            sabotage = False,
-            names = ("Remove-StudioStalePrivateTempDirectories",),
-        )
-    )
-    assert result.returncode == 0, result.stderr
+    _shared_setup_1(root)
     assert (unknown / "in-use.txt").exists(), "an unrecorded owner was read as abandoned"
     assert not ancient.exists(), "an unrecorded owner is never collected at all"
     assert not recorded.exists(), "a recorded dead owner should still go at one day"
@@ -1242,14 +1234,7 @@ def test_the_stale_sweep_never_deletes_through_a_link(tmp_path: Path):
         # The 5.1 staging probe ages the reparse point via a FILE_FLAG_OPEN_REPARSE_POINT handle instead.
         pytest.skip("this host cannot age a link without writing through it")
 
-    result = _run_powershell(
-        _script(
-            f"Remove-StudioStalePrivateTempDirectories -Root '{root}'",
-            sabotage = False,
-            names = ("Remove-StudioStalePrivateTempDirectories",),
-        )
-    )
-    assert result.returncode == 0, result.stderr
+    _shared_setup_1(root)
     assert not stale.exists()
     assert fresh.exists()
     assert not link.is_symlink()
@@ -1340,11 +1325,7 @@ def test_the_uninstall_sweep_leaves_a_live_owner_and_never_follows_a_link(tmp_pa
     the target's children carry no ReparsePoint attribute, so a recursive delete
     would take an unrelated tree.
     """
-    uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
-    block = _extract(r"    function _RemoveStudioPrivateTempTrees \{.*?\n    \}\n", uninstall)
-    preamble = (
-        '$ErrorActionPreference = "Stop"\nfunction _Substep { param([string]$Msg, [string]$Color) }'
-    )
+    block, preamble, uninstall = _shared_setup_2()
 
     temp = tmp_path / "Unsloth Studio" / "temp"
     temp.mkdir(parents = True)
@@ -1489,11 +1470,7 @@ def test_a_link_high_above_another_profile_is_still_a_link(tmp_path: Path):
     if os.path.realpath(tmp_path) != str(tmp_path):
         pytest.skip("the temp root itself is a link, which is what this test plants")
 
-    uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
-    block = _extract(r"    function _RemoveStudioPrivateTempTrees \{.*?\n    \}\n", uninstall)
-    preamble = (
-        '$ErrorActionPreference = "Stop"\nfunction _Substep { param([string]$Msg, [string]$Color) }'
-    )
+    block, preamble, uninstall = _shared_setup_2()
 
     # The real profile, with an Unsloth temp tree in it that belongs to a dead owner: nothing about the entries
     # themselves protects them.
@@ -1600,11 +1577,7 @@ def test_the_uninstall_sweep_needs_a_recorded_owner_outside_its_own_profile(tmp_
     uninstall's business. Under our own profile the shape is enough, since that
     is what is being removed.
     """
-    uninstall = (REPO_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
-    block = _extract(r"    function _RemoveStudioPrivateTempTrees \{.*?\n    \}\n", uninstall)
-    preamble = (
-        '$ErrorActionPreference = "Stop"\nfunction _Substep { param([string]$Msg, [string]$Color) }'
-    )
+    block, preamble, uninstall = _shared_setup_2()
 
     mine = tmp_path / "mine" / "Unsloth Studio" / "temp"
     theirs = tmp_path / "theirs" / "Unsloth Studio" / "temp"
