@@ -75,7 +75,7 @@ def resolve_build_family(
     modality: str = "auto",
 ) -> Optional[Any]:
     """The registry row this build quantises against: a ``DiffusionFamily`` or a ``VideoFamily``.
-    
+
     Asked image-first, and ``modality`` pins one registry when the answer must not drift: the two
     name spaces are disjoint today, and a later family named in both would otherwise build against
     whichever is asked first."""
@@ -154,7 +154,7 @@ def gptq_sources(
     exists = os.path.exists,
 ) -> dict:
     """Where one component's GPTQ weights, Hessian meta and do-no-harm scores live.
-    
+
     A MoE family writes per-component paths and a single-denoiser family does not; both layouts are
     probed rather than declared, so the same --gptq-dir serves either."""
     root = str(gptq_dir).rstrip("/")
@@ -188,7 +188,7 @@ def plan_gptq(
     has_weight = lambda fqn: True,
 ) -> dict:
     """Which admitted linears take their GPTQ weight, and why each of the rest does not.
-    
+
     Do no harm, per layer: a correction is applied only where it is MEASURED to help. ``missing``
     must never pass silently, or a layer whose file the pass never wrote is indistinguishable from
     a layer that was corrected."""
@@ -232,9 +232,14 @@ def plan_gptq(
     return {"apply": apply, "layers": layers, "counts": counts, "mode": mode}
 
 
-def verify_gptq_idempotency(modules: dict, load_weight, *, sample: int = 0) -> dict:
+def verify_gptq_idempotency(
+    modules: dict,
+    load_weight,
+    *,
+    sample: int = 0,
+) -> dict:
     """Did ``quantize_`` keep the GPTQ weights it was handed, or re-round them?
-    
+
     GPTQ writes a weight that already lies on the NVFP4 grid, so re-quantising it should reproduce
     it; anything else means the quantiser and the pass disagree about the grid. Reported, never
     asserted away."""
@@ -248,7 +253,11 @@ def verify_gptq_idempotency(modules: dict, load_weight, *, sample: int = 0) -> d
         layers = layers[:: max(1, len(layers) // sample)]
     for fqn, module in layers:
         weight = module.weight
-        packed = weight.dequantize(torch.float32) if hasattr(weight, "dequantize") else weight.detach().float()
+        packed = (
+            weight.dequantize(torch.float32)
+            if hasattr(weight, "dequantize")
+            else weight.detach().float()
+        )
         want = load_weight(fqn).to(packed.device, torch.float32)
         delta = (packed - want).abs()
         max_abs = float(delta.max())
@@ -267,7 +276,7 @@ def verify_gptq_idempotency(modules: dict, load_weight, *, sample: int = 0) -> d
 
 def parse_key(key: str) -> tuple:
     """``'transformer_2/blocks.12.attn1.to_q.weight'`` -> ``(component, block or None, role)``.
-    
+
     WHERE two builds differ discriminates between mechanisms that a count cannot. A bare
     state-dict fqn carries no component prefix, so that half is None."""
     component, sep, field = key.partition("/")
@@ -289,7 +298,7 @@ def describe_key(key: str) -> str:
 
 def fingerprint_mismatches(mine: Any, other: Any) -> list:
     """The fqns whose packed payload differs between two builds of one artifact, sorted.
-    
+
     A fqn present in one build and absent from the other counts as differing: a build that
     quantised a different SET of linears is not the artifact the other verified either."""
     a = (mine or {}).get("modules") or {}
@@ -310,7 +319,7 @@ def verify_against(
     out: Any = print,
 ) -> int:
     """Diff this build's fingerprint against ``other_path``'s. 0 when identical, 3 otherwise.
-    
+
     Two independent quantise passes over the same weights are deterministic, so any difference is
     a defect in one of them. It cannot see corruption that happens AFTER the compare, which is what
     the loader's own fingerprint check is for."""
@@ -343,7 +352,7 @@ def verify_against(
 
 def verify_target_refusal(out_path: str, verify_path: Optional[str]) -> Optional[str]:
     """Why ``--verify-against`` cannot answer the question it exists for, or None.
-    
+
     One file compared with itself matches by construction, so a gate that accepts it reports a
     verified build and publishes it."""
     if not verify_path:
@@ -363,7 +372,7 @@ def verify_target_refusal(out_path: str, verify_path: Optional[str]) -> Optional
 
 def upload_gate_refusal(upload_repo: Optional[str], verify_path: Optional[str]) -> Optional[str]:
     """Why this build may not publish, or None. No escape hatch by design.
-    
+
     An unverified artifact is indistinguishable from a verified one once it is hosted, and it is
     then loaded by every auto pick that resolves the repo."""
     if not upload_repo:
@@ -500,7 +509,9 @@ def main(argv = None) -> int:
         if refusal:
             print(f"error: {refusal}", flush = True)
             return 2
-    fam = resolve_build_family(args.base_id or args.base, override = args.family, modality = args.modality)
+    fam = resolve_build_family(
+        args.base_id or args.base, override = args.family, modality = args.modality
+    )
     if fam is None:
         print(
             f"error: unknown family '{args.family}' (modality {args.modality})",
@@ -575,7 +586,9 @@ def main(argv = None) -> int:
                 with open(gptq_where["score"]) as handle:
                     score_layers = (json.load(handle) or {}).get("layers") or {}
             except Exception as exc:  # noqa: BLE001
-                print(f"error: cannot read the GPTQ scores {gptq_where['score']}: {exc}", flush = True)
+                print(
+                    f"error: cannot read the GPTQ scores {gptq_where['score']}: {exc}", flush = True
+                )
                 return 2
         elif args.gptq_score_mode == "check":
             print(

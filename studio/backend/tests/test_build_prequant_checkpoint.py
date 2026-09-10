@@ -459,14 +459,19 @@ def test_a_calibrated_build_stamps_which_weights_are_corrected(monkeypatch, tmp_
                 "steps_sampled": [0, 12, 25, 37],
                 "base_damp": 0.01,
                 "grid": "832x480x49f_50s",
-                "layers": {"blocks.0.attn1.to_q": {"err_rtn": 0.09, "err_gptq": 0.12, "damp": 0.01}},
+                "layers": {
+                    "blocks.0.attn1.to_q": {"err_rtn": 0.09, "err_gptq": 0.12, "damp": 0.01}
+                },
             }
         )
     )
     (gptq / "gptq_check.json").write_text(
-        _json.dumps({"layers": {"blocks.0.attn1.to_q": {"out_err_rtn": 0.03, "out_err_gptq": 0.01}}})
+        _json.dumps(
+            {"layers": {"blocks.0.attn1.to_q": {"out_err_rtn": 0.03, "out_err_gptq": 0.01}}}
+        )
     )
     (gptq / "weights" / "blocks_0_attn1_to_q.pt").write_bytes(b"w")
+
     class _Linear:
         def __init__(self):
             self.in_features = 1024
