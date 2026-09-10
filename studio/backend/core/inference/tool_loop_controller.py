@@ -869,10 +869,12 @@ def _is_file_entry(entry: object) -> bool:
     )
 
 
-# A real envelope is a short list: the filenames a call wrote, a source map, or one
-# plot's data URI. Past this it is not one of ours, and `json.loads` on unbounded MCP
-# text turns a few megabytes of "[{},{},...]" into hundreds of megabytes of objects.
-_MAX_SENTINEL_PAYLOAD_CHARS = 8 << 20
+# `json.loads` on a payload this side of the gate below is our own tool's or the
+# provider's, never an MCP server's, but a few megabytes of "[{},{},...]" still decodes
+# into hundreds of megabytes of objects, so each marker is bounded by what it can really
+# carry: one plot's data URI for the image envelope, our own source map for the other.
+_MAX_IMAGE_PAYLOAD_CHARS = 8 << 20
+_MAX_SOURCE_MAP_CHARS = 1 << 20
 
 
 def _strip_images_sentinel(result: str) -> str:
@@ -899,7 +901,7 @@ def _strip_images_sentinel(result: str) -> str:
         start = result.rfind(marker, 0, end)
         if start == -1:
             break
-        if end - start - len(marker) > _MAX_SENTINEL_PAYLOAD_CHARS:
+        if end - start - len(marker) > _MAX_IMAGE_PAYLOAD_CHARS:
             break
         try:
             images = json.loads(result[start + len(marker) : end])
@@ -921,7 +923,7 @@ def _strip_rag_sources_sentinel(result: str) -> str:
     result that merely mentions the marker is text.
     """
     head, sep, payload = result.rpartition("\n__RAG_SOURCES__:")
-    if not sep or len(payload) > _MAX_SENTINEL_PAYLOAD_CHARS:
+    if not sep or len(payload) > _MAX_SOURCE_MAP_CHARS:
         return result
     try:
         sources = json.loads(payload)
@@ -936,6 +938,15 @@ def _strip_rag_sources_sentinel(result: str) -> str:
 # well-formed __FILES__ line is content, not an envelope, and stripping it would take that line away from the model.
 _SANDBOX_TOOLS = frozenset({"python", "terminal"})
 
+# Same rule for the other two envelopes. The image one is emitted by the sandbox tools
+# through `_created_file_sentinels` and by Gemini's hosted code_execution through the
+# provider; the source map by the retrieval tools that append `RAG_SOURCES_SENTINEL`. A
+# document an MCP tool read, or a page that was fetched, ending in a well-formed one of
+# either is content the model needs, and cutting it leaves the model reasoning over less
+# than the card the user is looking at.
+_IMAGE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"code_execution"}
+_SOURCE_MAP_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
+
 
 def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
     """Remove frontend-only sentinels (image paths, RAG source map) before
@@ -946,8 +957,10 @@ def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
     result = _strip_mcp_image_suffix(result)
     if tool_name is None or tool_name in _SANDBOX_TOOLS:
         result = _strip_files_sentinel(result)
-    result = _strip_images_sentinel(result)
-    result = _strip_rag_sources_sentinel(result)
+    if tool_name is None or tool_name in _IMAGE_SENTINEL_TOOLS:
+        result = _strip_images_sentinel(result)
+    if tool_name is None or tool_name in _SOURCE_MAP_TOOLS:
+        result = _strip_rag_sources_sentinel(result)
     return result
 
 

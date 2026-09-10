@@ -134,9 +134,10 @@ def test_prepare_execute_builds_visible_events_and_model_tool_message():
     assert decision.tool_start_event()["type"] == "tool_start"
     assert decision.as_assistant_tool_call()["function"]["arguments"] == '{"query":"gpu prices"}'
 
-    completion = controller.record_result(decision, 'Search result\n__IMAGES__:["a.png"]')
+    envelope = 'Search result\n__WEB_IMAGES__:[{"id": "a1b2c3d4e5f6", "title": "A chart", "domain": "example.com", "source": "https://example.com/a.png"}]'
+    completion = controller.record_result(decision, envelope)
 
-    assert completion.tool_end_payload()["result"] == 'Search result\n__IMAGES__:["a.png"]'
+    assert completion.tool_end_payload()["result"] == envelope
     assert completion.tool_end_event()["type"] == "tool_end"
     assert completion.tool_message() == {
         "role": "tool",
@@ -296,14 +297,16 @@ def test_a_result_that_only_quotes_the_image_or_source_marker_is_kept_whole():
     assert strip_result_for_model(defused, "python") == defused
 
     sources = 'line one\nRAG_SOURCES_SENTINEL = "\\n__RAG_SOURCES__:"\nline three'
-    assert strip_result_for_model(sources, "rag_search") == sources
+    assert strip_result_for_model(sources, "search_knowledge_base") == sources
 
     assert (
         strip_result_for_model('text\n__IMAGES__:{"paths":[]}') == 'text\n__IMAGES__:{"paths":[]}'
     )
     assert strip_result_for_model('output\n__IMAGES__:["a.png"]', "python") == "output"
     assert (
-        strip_result_for_model('answer\n__RAG_SOURCES__:[{"filename": "a.pdf"}]', "rag_search")
+        strip_result_for_model(
+            'answer\n__RAG_SOURCES__:[{"filename": "a.pdf"}]', "search_knowledge_base"
+        )
         == "answer"
     )
 
@@ -336,7 +339,7 @@ def test_a_flood_of_stacked_image_markers_stays_linear():
     def elapsed(markers: int) -> float:
         flood = '\n__IMAGES__:["x"]' * markers
         started = time.perf_counter()
-        assert strip_result_for_model(flood, "mcp__server__read") == ""
+        assert strip_result_for_model(flood, "code_execution") == ""
         return time.perf_counter() - started
 
     small = max(elapsed(20_000), 1e-4)
@@ -346,21 +349,44 @@ def test_a_flood_of_stacked_image_markers_stays_linear():
 
 
 def test_an_oversized_sentinel_payload_is_left_unparsed():
-    """`json.loads` on unbounded MCP text is the allocation, not the marker count: a
-    few megabytes of tiny items decode into hundreds of megabytes of objects. Both
-    payloads below are the shape the validators accept, so without the cap they strip;
-    past it the text is not one of ours and reaches the model as written."""
+    """`json.loads` on a big payload is the allocation, not the marker count: a few
+    megabytes of tiny items decode into hundreds of megabytes of objects. Both payloads
+    below are the shape their validator accepts and reach it through a tool that really
+    emits that envelope, so without the cap they strip."""
     images = "answer\n__IMAGES__:[" + '"x",' * 2_500_000 + '"x"]'
     assert len(images) > 8 << 20
-    assert strip_result_for_model(images, "mcp__server__read") == images
+    assert strip_result_for_model(images, "code_execution") == images
 
-    sources = "answer\n__RAG_SOURCES__:[" + "{}," * 3_000_000 + "{}]"
-    assert len(sources) > 8 << 20
-    assert strip_result_for_model(sources, "mcp__server__read") == sources
+    sources = "answer\n__RAG_SOURCES__:[" + "{}," * 400_000 + "{}]"
+    assert len(sources) > 1 << 20
+    assert strip_result_for_model(sources, "search_knowledge_base") == sources
 
     # A plot's data URI is the largest thing a real envelope carries, and it still goes.
     big_but_real = 'output\n__IMAGES__:["data:image/png;base64,' + "A" * 500_000 + '"]'
     assert strip_result_for_model(big_but_real, "code_execution") == "output"
+
+
+def test_only_the_tools_that_emit_an_envelope_have_one_taken_off():
+    """`_strip_files_sentinel` is already scoped this way. A document an MCP tool read,
+    or a page that was fetched, can end in a well-formed line of either kind, and it is
+    content: the card keeps it, so cutting it leaves the model with less than the user
+    is looking at."""
+    manifest = 'icons/\n__IMAGES__:["icon.png"]'
+    citation = 'notes\n__RAG_SOURCES__:[{"filename": "a.pdf"}]'
+
+    for reader in ("mcp__fs__read_file", "web_search", "fetch_url"):
+        assert strip_result_for_model(manifest, reader) == manifest
+        assert strip_result_for_model(citation, reader) == citation
+
+    # The tools that do emit them are unaffected.
+    for emitter in ("python", "terminal", "code_execution"):
+        assert strip_result_for_model(manifest, emitter) == "icons/"
+    for emitter in ("search_knowledge_base", "search_conversation"):
+        assert strip_result_for_model(citation, emitter) == "notes"
+
+    # An unnamed caller still gets everything stripped, as it did before.
+    assert strip_result_for_model(manifest) == "icons/"
+    assert strip_result_for_model(citation) == "notes"
 
 
 def test_the_card_text_keeps_digits_the_browser_would_round():
