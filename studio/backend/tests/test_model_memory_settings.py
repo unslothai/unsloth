@@ -3087,7 +3087,8 @@ class TestALoadableGpuPluginIsRequired:
 
         (tmp_path / "ggml-cuda.dll").write_text("")
         a, b = tmp_path / "a", tmp_path / "b"
-        a.mkdir(); b.mkdir()
+        a.mkdir()
+        b.mkdir()
         (a / "cudart64_12.dll").write_text("")
         (b / "cublas64_12.dll").write_text("")
         assert not LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [str(a), str(b)])
@@ -3241,7 +3242,9 @@ class TestASaveDuringPlacementIsAnswered:
         import routes.settings as rs
         import utils.model_memory_settings as mm
 
-        monkeypatch.setattr(rs, "_active_launch_placement", lambda: (None, False, True, None, False))
+        monkeypatch.setattr(
+            rs, "_active_launch_placement", lambda: (None, False, True, None, False)
+        )
         monkeypatch.setattr(rs, "_pending_launch_settings", lambda: (False, False))
         monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))
         assert rs._model_memory_reload_required() is True
@@ -3250,7 +3253,9 @@ class TestASaveDuringPlacementIsAnswered:
         import routes.settings as rs
         import utils.model_memory_settings as mm
 
-        monkeypatch.setattr(rs, "_active_launch_placement", lambda: (None, False, True, None, False))
+        monkeypatch.setattr(
+            rs, "_active_launch_placement", lambda: (None, False, True, None, False)
+        )
         monkeypatch.setattr(rs, "_pending_launch_settings", lambda: (False, True))
         monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))
         assert rs._model_memory_reload_required() is False

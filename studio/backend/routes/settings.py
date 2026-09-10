@@ -965,7 +965,6 @@ def _model_memory_reload_required() -> bool:
     pending = _pending_launch_settings()
     if state is None and pending is not None:
         from utils.model_memory_settings import get_model_memory_settings
-
         return get_model_memory_settings() != pending
 
     # Same predicate the duplicate-load comparator uses.
