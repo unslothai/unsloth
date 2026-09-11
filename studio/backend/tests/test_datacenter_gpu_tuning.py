@@ -1448,7 +1448,7 @@ def test_the_prime_skips_work_the_opt_outs_make_useless(monkeypatch):
     probed = []
     monkeypatch.setattr(
         LlamaCppBackend,
-        "_probe_interconnect_matrix",
+        "_probe_nvml_nvlink_topology",
         classmethod(lambda cls: (probed.append(1), {(0, 1): "NVLINK", (1, 0): "NVLINK"})[1]),
     )
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 8))
@@ -1547,3 +1547,37 @@ def test_explicitness_is_not_evidence_of_pci_indexing(monkeypatch):
     LlamaCppBackend._NVLINK_TOPO_CACHE = None
     monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
     assert LlamaCppBackend._p2p_veto_reason([0, 1], True, ids_are_pci_indices = True) is None
+
+
+def test_the_prime_never_spawns_the_shell_out(monkeypatch):
+    """A prime may pay the cheap path and nothing else. A subprocess that can run for
+    its full timeout, on a background thread, perturbs whatever else shares the
+    process, and that is how an earlier version of this tipped unrelated
+    timing-sensitive tests over in CI."""
+    calls = []
+    monkeypatch.setattr(
+        subprocess, "run",
+        lambda *a, **k: calls.append(a) or types.SimpleNamespace(
+            returncode = 0, stdout = TOPO_NVLINK_8X, stderr = ""),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_probe_nvml_nvlink_topology", classmethod(lambda cls: None)
+    )
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    LlamaCppBackend.prime_nvlink_topology()
+    assert calls == [], "the prime reached the nvidia-smi fallback"
+    assert LlamaCppBackend._NVLINK_TOPO_CACHE is None, "a failed prime cached its miss"
+
+    # The load path still gets its fallback.
+    assert LlamaCppBackend._nvlink_topology() is not None
+    assert calls
+
+
+def test_the_prime_publishes_an_nvml_success(monkeypatch):
+    good = {(0, 1): "NVLINK", (1, 0): "NVLINK"}
+    monkeypatch.setattr(
+        LlamaCppBackend, "_probe_nvml_nvlink_topology", classmethod(lambda cls: good)
+    )
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    LlamaCppBackend.prime_nvlink_topology()
+    assert LlamaCppBackend._NVLINK_TOPO_CACHE == (good,)

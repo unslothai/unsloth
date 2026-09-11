@@ -9413,6 +9413,27 @@ class LlamaCppBackend:
         return cls._probe_nvlink_topology()
 
     @classmethod
+    def prime_nvlink_topology(cls) -> None:
+        """Warm the cache with NVML only, for a speculative caller off the load path.
+
+        Deliberately skips the `nvidia-smi` fallback. A prime is an optimisation, so
+        it may pay the cheap path and nothing else: spawning a subprocess that can run
+        for its full timeout, on a background thread, perturbs whatever else shares
+        the process. If NVML cannot answer the cache stays cold and the load path does
+        the slow probe inline, exactly as it would have without a prime.
+
+        Publishes only a success, for the reason cache_failure documents below: a miss
+        cached this early would outlive the condition that caused it."""
+        if cls._NVLINK_TOPO_CACHE is not None:
+            return
+        matrix = cls._probe_nvml_nvlink_topology()
+        if matrix is None:
+            return
+        with cls._NVLINK_TOPO_LOCK:
+            if cls._NVLINK_TOPO_CACHE is None:
+                cls._NVLINK_TOPO_CACHE = (matrix,)
+
+    @classmethod
     def _nvlink_topology(
         cls,
         refresh = False,

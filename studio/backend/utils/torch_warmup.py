@@ -249,9 +249,10 @@ def _prime_nvlink_topology() -> Optional[threading.Thread]:
     demand, so a prime that never finishes costs one load its head start and nothing
     else.
 
-    cache_failure=False: this runs early, possibly mid driver initialisation, and a
-    miss cached here would keep P2P off for the life of the process even once the
-    topology became readable (#10613)."""
+    prime_nvlink_topology is NVML-only and publishes only a success: it must not
+    spawn the `nvidia-smi` fallback here, since a subprocess that can run for its
+    full timeout perturbs whatever else shares the process, and a miss cached this
+    early would keep P2P off for the life of it (#10613)."""
 
     def _probe() -> None:
         try:
@@ -270,7 +271,7 @@ def _prime_nvlink_topology() -> Optional[threading.Thread]:
                 LlamaCppBackend._NVLINK_FABRIC_GPU_RE, None
             ):
                 return
-            LlamaCppBackend._nvlink_topology(cache_failure = False)
+            LlamaCppBackend.prime_nvlink_topology()
         except Exception as e:  # noqa: BLE001 -- a warm miss costs latency, never correctness
             logger.debug("NVLink topology prime skipped: %r", e)
 
