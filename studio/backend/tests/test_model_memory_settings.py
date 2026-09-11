@@ -2988,10 +2988,15 @@ class TestASaveDuringPlacementIsAnswered:
         src = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         # Capture and publication are ONE act, so there is no window between them for
         # a save to fall through, and no ordering to get wrong.
-        assert 'capture_model_memory_settings(lambdapair:setattr(self,"_memory_pending_launch",pair))' in src
+        assert (
+            'capture_model_memory_settings(lambdapair:setattr(self,"_memory_pending_launch",pair))'
+            in src
+        )
         # and nothing re-publishes it between the capture and the placement work; the
         # recovery rungs further down legitimately re-arm it after a failed attempt
-        head = src[src.index("capture_model_memory_settings(") : src.index("_arm_load_probe_memo()")]
+        head = src[
+            src.index("capture_model_memory_settings(") : src.index("_arm_load_probe_memo()")
+        ]
         assert "self._memory_pending_launch=" not in head
 
     def test_a_save_that_changes_a_toggle_asks_for_a_reload(self, monkeypatch):
@@ -3650,7 +3655,6 @@ class TestTheCaptureAndThePublicationAreOneAct:
 
     def _mod(self):
         import utils.model_memory_settings as mm
-
         return mm
 
     def test_it_publishes_the_pair_it_read(self, monkeypatch):
@@ -3706,7 +3710,8 @@ class TestTheProbeSeesWhatTheChildWillSee:
 
         seen = {}
         monkeypatch.setattr(
-            m.LlamaCppBackend, "_llama_server_env_for_binary",
+            m.LlamaCppBackend,
+            "_llama_server_env_for_binary",
             staticmethod(lambda b, **kw: {"PATH": "/venv/torch/lib", "KEEP": "1"}),
         )
 
@@ -3725,10 +3730,9 @@ class TestTheProbeSeesWhatTheChildWillSee:
 
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
         monkeypatch.setattr(
-            m.LlamaCppBackend, "_llama_server_env_for_binary",
-            staticmethod(
-                lambda b, **kw: {"PATH": "/venv/torch/lib", "CUDA_VISIBLE_DEVICES": "1"}
-            ),
+            m.LlamaCppBackend,
+            "_llama_server_env_for_binary",
+            staticmethod(lambda b, **kw: {"PATH": "/venv/torch/lib", "CUDA_VISIBLE_DEVICES": "1"}),
         )
         seen = {}
 
@@ -3763,15 +3767,22 @@ class TestOnlyAClassifiableDeviceConfirms:
     on an integrated Intel GPU enumerates `SYCL0` happily, and nothing here can tell
     its VRAM is system RAM."""
 
-    def _confirm(self, monkeypatch, devices, discrete = True):
+    def _confirm(
+        self,
+        monkeypatch,
+        devices,
+        discrete = True,
+    ):
         from core.inference.llama_cpp import LlamaCppBackend
 
         monkeypatch.setattr(
-            LlamaCppBackend, "_enumerated_gpu_devices",
+            LlamaCppBackend,
+            "_enumerated_gpu_devices",
             classmethod(lambda cls, binary = None, env = None: devices),
         )
         monkeypatch.setattr(
-            LlamaCppBackend, "_vulkan_offload_is_discrete",
+            LlamaCppBackend,
+            "_vulkan_offload_is_discrete",
             staticmethod(lambda binary, idx = None: discrete),
         )
         return LlamaCppBackend._gpu_offload_confirmed("llama-server", {}, None, False, True)

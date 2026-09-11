@@ -8659,8 +8659,7 @@ class LlamaCppBackend:
     def _devices_are_vulkan(cls, devices: Optional[list[str]], gpu_indices) -> bool:
         """Whether any device in play is a Vulkan one, read off the build's own ids."""
         return any(
-            cls._device_backend(d) == "vulkan"
-            for d in cls._selected_devices(devices, gpu_indices)
+            cls._device_backend(d) == "vulkan" for d in cls._selected_devices(devices, gpu_indices)
         )
 
     @classmethod
