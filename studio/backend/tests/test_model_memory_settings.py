@@ -4125,11 +4125,18 @@ class TestOneEffectiveDeviceSetFeedsEveryConsumer:
     devices. Resolved apart, an override onto a unified-memory APU was priced against
     the discrete card it replaced, and DirectIO went to weights in host RAM."""
 
-    def _resolve(self, monkeypatch, devices, gpu_indices, extra_args = None, env = None):
+    def _resolve(
+        self,
+        monkeypatch,
+        devices,
+        gpu_indices,
+        extra_args = None,
+        env = None,
+    ):
         from core.inference.llama_cpp import LlamaCppBackend
-
         monkeypatch.setattr(
-            LlamaCppBackend, "_enumerated_gpu_devices",
+            LlamaCppBackend,
+            "_enumerated_gpu_devices",
             classmethod(lambda cls, binary = None, e = None: devices),
         )
         return LlamaCppBackend._effective_gpu_indices(
@@ -4137,9 +4144,7 @@ class TestOneEffectiveDeviceSetFeedsEveryConsumer:
         )
 
     def test_an_override_replaces_the_auto_selection(self, monkeypatch):
-        assert self._resolve(
-            monkeypatch, ["CUDA0", "ROCm1"], [0], ["--device", "ROCm1"]
-        ) == [1]
+        assert self._resolve(monkeypatch, ["CUDA0", "ROCm1"], [0], ["--device", "ROCm1"]) == [1]
 
     def test_the_env_twin_counts(self, monkeypatch):
         assert self._resolve(
@@ -4150,14 +4155,10 @@ class TestOneEffectiveDeviceSetFeedsEveryConsumer:
         assert self._resolve(monkeypatch, ["CUDA0", "ROCm1"], [0]) == [0]
 
     def test_a_cpu_override_leaves_it_for_the_confirmation_to_decline(self, monkeypatch):
-        assert self._resolve(
-            monkeypatch, ["CUDA0"], [0], ["--device", "none"]
-        ) == [0]
+        assert self._resolve(monkeypatch, ["CUDA0"], [0], ["--device", "none"]) == [0]
 
     def test_an_unlisted_override_leaves_it_for_the_confirmation_to_decline(self, monkeypatch):
-        assert self._resolve(
-            monkeypatch, ["CUDA0"], [0], ["--device", "CUDA7"]
-        ) == [0]
+        assert self._resolve(monkeypatch, ["CUDA0"], [0], ["--device", "CUDA7"]) == [0]
 
     def test_both_consumers_get_the_resolved_set(self):
         import inspect
@@ -4169,7 +4170,10 @@ class TestOneEffectiveDeviceSetFeedsEveryConsumer:
         assert "gpu_indices=_mem_effective_indices," in flat
         assert "binary,_mem_env,_mem_effective_indices,_mem_host_resident," in flat
         # the rung resolves its own narrowed set the same way
-        assert "devices=self._effective_gpu_indices(binary,_rung_env,devices,_mem_extra_args,_mem_dio_possible)" in flat
+        assert (
+            "devices=self._effective_gpu_indices(binary,_rung_env,devices,_mem_extra_args,_mem_dio_possible)"
+            in flat
+        )
 
 
 class TestTheSnapshotIsRetakenAfterEveryCmdMutation:
@@ -4181,7 +4185,6 @@ class TestTheSnapshotIsRetakenAfterEveryCmdMutation:
     def _src(self):
         import inspect
         from core.inference.llama_cpp import LlamaCppBackend
-
         return inspect.getsource(LlamaCppBackend.load_model)
 
     def test_the_snapshot_comes_from_one_helper(self):

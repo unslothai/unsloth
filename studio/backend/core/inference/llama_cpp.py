@@ -8687,7 +8687,14 @@ class LlamaCppBackend:
         return int(match.group(1)) if match else None
 
     @classmethod
-    def _effective_gpu_indices(cls, binary, env, gpu_indices, extra_args, dio_possible = True):
+    def _effective_gpu_indices(
+        cls,
+        binary,
+        env,
+        gpu_indices,
+        extra_args,
+        dio_possible = True,
+    ):
         """The ordinals the child will really use.
 
         A pass-through ``--device`` is appended last, so it beats the auto selection.
@@ -24661,6 +24668,7 @@ class LlamaCppBackend:
                 )
                 self._memory_policy_active = _mem_managed_is_effective or _mem_policy_touched_extras
                 self._memory_policy_extras_touched = _mem_policy_touched_extras
+
                 # What `cmd` itself means, snapshotted before any respawn edits it.
                 # The dio TOKENS are in it, not just the applicability: the fit-off
                 # retry appends the pair to its OWN run_cmd and records it while `cmd`
