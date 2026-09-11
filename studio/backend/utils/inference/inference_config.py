@@ -204,8 +204,15 @@ def resolve_effective_sampling(
     explicit: Dict[str, Any],
     *,
     fill_defaults: bool = True,
+    preset_defaults: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Resolve the effective sampling params for a request. ``explicit`` maps each field in :data:`SAMPLING_FIELD_NAMES` to the client-sent value, or ``None`` when the client omitted it. Precedence, highest first: an operator ``UNSLOTH_SAMPLING_*`` pin, the client's explicit value, the per-model recommendation, then the static schema default. When ``fill_defaults`` is False a field with none of the first three is omitted rather than set to the static default, so a raw proxy body (``/v1/completions``) keeps llama-server's own default for that field."""
+    """Resolve sampling from operator pins, explicit values, custom preset defaults,
+    model recommendations, then schema defaults, in that order.
+
+    ``explicit`` maps each sampling field to the client value or ``None`` when
+    omitted. With ``fill_defaults=False``, omit unresolved fields so a raw
+    completions proxy retains the native server's defaults.
+    """
     recommended = _recommended_sampling(model_id or "")
     effective: Dict[str, Any] = {}
     for field, (_env, default, _lo, _hi, _int) in _SAMPLING_FIELDS.items():
@@ -214,6 +221,8 @@ def resolve_effective_sampling(
             effective[field] = override
         elif explicit.get(field) is not None:
             effective[field] = explicit[field]
+        elif preset_defaults and field in preset_defaults:
+            effective[field] = preset_defaults[field]
         elif field in recommended:
             effective[field] = recommended[field]
         elif fill_defaults:

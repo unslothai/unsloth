@@ -31,6 +31,7 @@ type ResidentRuntime = Pick<
   | "disable_vision"
   | "chat_template_override"
   | "requested_llama_extra_args"
+  | "requested_llama_cpp_config"
   | "gpu_memory_mode"
   | "gpu_layers"
   | "n_cpu_moe"
@@ -535,6 +536,10 @@ export function residentRuntimeMatchesConfig(
   // the live runtime, which was hydrated from the resident model.
   if (!config) {
     return true;
+  }
+  if (config.llamaCppConfig?.mode === "custom" || status.requested_llama_cpp_config?.mode === "custom") {
+    // The server must revalidate capabilities and resource identity before deduplicating.
+    return false;
   }
   const placementPreserved =
     // A virtualised Metal device pins every GGUF request to the CPU before either comparator runs, so

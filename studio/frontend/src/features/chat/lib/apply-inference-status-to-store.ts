@@ -555,6 +555,11 @@ export function applyActiveModelStatusToStore(
     // status, not just the first: another client can reload the SAME model with different
     // arguments, and a pinned baseline would resurrect arguments that are not running.
     // seedLoadParams still guards it, so a mid-switch poll cannot overwrite performLoad.
+    ...(status.requested_llama_cpp_config !== undefined && seedLoadParams ? {
+      llamaCppConfig: status.requested_llama_cpp_config ?? undefined,
+      loadedLlamaCppConfig: status.requested_llama_cpp_config ?? null,
+      llamaCppConfigSummary: status.llama_cpp_config_summary ?? null,
+    } : {}),
     ...(status.requested_llama_extra_args !== undefined &&
       (status.is_gguf ?? true) &&
       seedLoadParams && {

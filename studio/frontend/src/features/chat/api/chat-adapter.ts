@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// eslint-disable-next-line no-restricted-imports -- The picker barrel imports chat; auto-load needs only its API leaf.
+import { fetchLoadModelOverride } from "@/features/model-picker/api/model-overrides";
+// eslint-disable-next-line no-restricted-imports -- Keep the import-free config helpers independent of the picker UI.
+import {
+  llamaCppConfigPayload,
+  customSamplingPayload,
+} from "@/features/model-picker/model-config/llama-cpp-config";
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import {
   clearedServerTuningState,
@@ -3051,6 +3058,19 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     // The stored override can live only on the server while this config is local, and nothing is
     // resident at startup for /load's omission path to inherit from. Sanitized like every
     // hydration, so it becomes an EXPLICIT list /load validates strictly.
+    if (
+      candidate.kind === "gguf" &&
+      !isDiffusion &&
+      config.llamaCppConfig === undefined
+    ) {
+      config.llamaCppConfig = (
+        await fetchLoadModelOverride(
+          modelPath,
+          candidate.id,
+          candidate.ggufVariant ?? null,
+        )
+      )?.llama_cpp_config;
+    }
     let resolvedExtraArgs = config.llamaExtraArgs;
     if (candidate.kind === "gguf" && !isDiffusion) {
       try {
@@ -3142,6 +3162,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               // it disagrees with the launch.
               ...serverTuningLoadPayload(config),
               // Checked with the same arguments the load sends, or a list the backend refuses would pass this gate.
+              ...llamaCppConfigPayload(config.llamaCppConfig),
               ...(resolvedExtraArgs !== undefined
                 ? { llama_extra_args: resolvedExtraArgs ?? [] }
                 : {}),
@@ -3201,6 +3222,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             ...serverTuningLoadPayload(config),
             // Remembered pass-through args: nothing is resident at startup to inherit them from.
             // Undefined predates the field; a cleared list is an explicit none.
+            ...llamaCppConfigPayload(config.llamaCppConfig),
             ...(resolvedExtraArgs !== undefined
               ? { llama_extra_args: resolvedExtraArgs ?? [] }
               : {}),
@@ -3310,6 +3332,11 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ...committedServerTuningState(config, loadResp.is_diffusion ?? false),
           // What this launch is running, for a later rollback: the status applier cannot seed it while
           // the model-loading lease is held, and a failed switch would restore the wrong args.
+          loadedLlamaCppConfig:
+            loadResp.requested_llama_cpp_config ?? config.llamaCppConfig ?? null,
+          llamaCppConfig:
+            loadResp.requested_llama_cpp_config ?? config.llamaCppConfig,
+          llamaCppConfigSummary: loadResp.llama_cpp_config_summary ?? null,
           loadedLlamaExtraArgs:
             loadResp.requested_llama_extra_args !== undefined
               ? (loadResp.requested_llama_extra_args ?? [])
@@ -3359,6 +3386,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           // Same reason, and the baseline must clear so a rollback to THIS model does not resend a
           // GGUF's arguments.
           loadedLlamaExtraArgs: null,
+          llamaCppConfig: undefined,
+          loadedLlamaCppConfig: null,
+          llamaCppConfigSummary: null,
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
           loadedDisableVision: loadResp.disable_vision ?? false,
@@ -4043,6 +4073,8 @@ export function createOpenAIStreamAdapter(
             : withResolvedModel({
                 ...sendTimeRuntime,
                 ...queuedRunSettings,
+                loadedLlamaCppConfig: sendTimeRuntime.loadedLlamaCppConfig,
+                llamaCppConfigSummary: sendTimeRuntime.llamaCppConfigSummary,
                 // The queued snapshot carries no model of its own.
                 params: {
                   ...queuedRunSettings.params,
@@ -4387,6 +4419,8 @@ export function createOpenAIStreamAdapter(
           : {
               ...liveRuntime,
               ...queuedRunSettings,
+              loadedLlamaCppConfig: liveRuntime.loadedLlamaCppConfig,
+              llamaCppConfigSummary: liveRuntime.llamaCppConfigSummary,
               params: {
                 ...queuedRunSettings.params,
                 checkpoint:
@@ -4970,6 +5004,10 @@ export function createOpenAIStreamAdapter(
               // stop-chats prompt counts one run as two.
               ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
               stream: false,
+              ...customSamplingPayload(
+                runtime.loadedLlamaCppConfig,
+                params.samplingFieldsExplicit,
+              ),
               temperature: params.temperature,
               top_p: params.topP,
               max_tokens: params.maxTokens,
@@ -6009,6 +6047,10 @@ export function createOpenAIStreamAdapter(
               contextPolicy: runtime.contextPolicy,
               compactionHeadroomRatio: runtime.compactionHeadroomRatio,
             }),
+            ...customSamplingPayload(
+              runtime.loadedLlamaCppConfig,
+              params.samplingFieldsExplicit,
+            ),
             temperature: params.temperature,
             top_p: params.topP,
             max_tokens: params.maxTokens,

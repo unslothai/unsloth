@@ -50,6 +50,7 @@ function estimateKey(request: MemoryEstimateRequest | null): string | null {
     request.nCpuMoe ?? null,
     request.selectedGpuIds ?? null,
     request.llamaExtraArgs ?? null,
+    request.llamaCppConfig ?? null,
   ]);
 }
 

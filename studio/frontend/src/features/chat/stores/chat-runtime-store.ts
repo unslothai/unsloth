@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// eslint-disable-next-line no-restricted-imports -- The picker barrel imports this store; provenance helpers are import-free.
+import {
+  explicitSamplingFields,
+  markSamplingFields,
+  SAMPLING_WIRE_FIELDS,
+} from "@/features/model-picker/model-config/llama-cpp-config";
+// eslint-disable-next-line no-restricted-imports -- These wire types belong to the same import-free config leaf.
+import type {
+  LlamaCppConfig,
+  LlamaCppConfigSummary,
+} from "@/features/model-picker/model-config/llama-cpp-config";
 import { authFetch } from "@/features/auth";
 import {
   mirrorHfTokenInto,
@@ -2345,6 +2356,9 @@ type ChatRuntimeStore = {
   /** Pass-through args the resident model is running, as far as this client knows. A rollback
    *  resends them: by then the target load has replaced the backend's inheritance source. */
   loadedLlamaExtraArgs: string[] | null;
+  llamaCppConfig?: LlamaCppConfig;
+  loadedLlamaCppConfig: LlamaCppConfig | null;
+  llamaCppConfigSummary: LlamaCppConfigSummary | null;
   /** user --ubatch-size override for gguf loads (null = llama.cpp default 512) */
   nUbatch: number | null;
   loadedNUbatch: number | null;
@@ -2990,6 +3004,9 @@ function getHydratedCustomPresets(
         params: {
           ...DEFAULT_INFERENCE_PARAMS,
           ...preset.params,
+          samplingFieldsExplicit: explicitSamplingFields(
+            preset.params as Record<string, unknown>,
+          ),
         },
         ...(loadConfig ? { loadConfig } : {}),
       };
@@ -3151,6 +3168,16 @@ function getHydratedSettingsState(
     loadedBeforeHydration &&
     settings.inferenceParamsByModel?.[checkpoint] === undefined;
   const params = { ...state.params };
+  if (
+    settings.inferenceParams &&
+    !keepModelDefaults &&
+    inferenceParamMutationVersions.samplingFieldsExplicit ===
+      versions.inferenceParams.samplingFieldsExplicit
+  ) {
+    params.samplingFieldsExplicit = explicitSamplingFields(
+      settings.inferenceParams as Record<string, unknown>,
+    );
+  }
   for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
     const value = settings.inferenceParams?.[key];
     // A slider moved before this response landed is held for the open chat. The edit wins in the
@@ -3982,6 +4009,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   nBatch: null,
   loadedNBatch: null,
   loadedLlamaExtraArgs: null,
+  loadedLlamaCppConfig: null,
+  llamaCppConfigSummary: null,
   nUbatch: null,
   loadedNUbatch: null,
   specDraftCacheDtype: null,
@@ -4258,6 +4287,32 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // first, leaving stale per-turn counters under the new checkpoint.
       const checkpointChanged = state.params.checkpoint !== params.checkpoint;
       const fromModelDefaults = options?.fromModelDefaults === true;
+      if (fromModelDefaults) {
+        const explicit =
+          !checkpointChanged && state.llamaCppConfig?.mode === "custom"
+            ? explicitSamplingFields(
+                state.params as unknown as Record<string, unknown>,
+              )
+            : [];
+        params = { ...params, samplingFieldsExplicit: explicit };
+        for (const [key, wire] of Object.entries(SAMPLING_WIRE_FIELDS)) {
+          if (explicit.includes(wire) && key in state.params) {
+            (params as unknown as Record<string, unknown>)[key] =
+              state.params[key as keyof InferenceParams];
+          }
+        }
+      } else if (!checkpointChanged && options?.persist !== false) {
+        const changedSampling = Object.entries(SAMPLING_WIRE_FIELDS)
+          .filter(
+            ([key]) =>
+              key in params &&
+              params[key as keyof InferenceParams] !==
+                state.params[key as keyof InferenceParams],
+          )
+          .map(([, wire]) => wire);
+        if (changedSampling.length)
+          params = markSamplingFields(params, ...changedSampling);
+      }
       // Remember what the outgoing model was running with before replacing it.
       const outgoing = checkpointChanged
         ? rememberOutgoingModel(state, state.params)
@@ -4703,7 +4758,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // will say so again if it still holds.
       constraintSuppressedThreadFields.clear();
       const stored = hasThreadScopedSettings(settings)
-        ? (settings as ThreadScopedSettings)
+        ? {
+            ...settings,
+            samplingFieldsExplicit: explicitSamplingFields(
+              settings as Record<string, unknown>,
+            ),
+          }
         : null;
       activeThreadScopedSettings = stored;
       const nextState: Partial<ChatRuntimeStore> = {};
@@ -4871,6 +4931,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       nBatch: null,
       loadedNBatch: null,
       loadedLlamaExtraArgs: null,
+      loadedLlamaCppConfig: null,
+      llamaCppConfigSummary: null,
       nUbatch: null,
       loadedNUbatch: null,
       specDraftCacheDtype: null,
@@ -4912,7 +4974,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       pendingImageEditReference: null,
     }));
   },
-  setReasoningEnabled: (reasoningEnabled, options) =>
+  setReasoningEnabled: (reasoningEnabled, options) => {
+    if (options?.persist !== false) {
+      const live = get();
+      live.setParams(markSamplingFields(live.params, "enable_thinking"));
+    }
     set((state) => {
       if (options?.persist !== false) {
         saveBool(CHAT_REASONING_ENABLED_KEY, reasoningEnabled);
@@ -4923,7 +4989,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         reasoningEnabled,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
-    }),
+    });
+  },
   setLastOpenRouterChosenModel: (lastOpenRouterChosenModel) =>
     set({ lastOpenRouterChosenModel }),
   setReasoningStyle: (reasoningStyle) =>
@@ -4931,7 +4998,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       reasoningStyle,
       queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
     })),
-  setReasoningEffort: (reasoningEffort) =>
+  setReasoningEffort: (reasoningEffort) => {
+    const live = get();
+    live.setParams(markSamplingFields(live.params, "reasoning_effort"));
     set((state) => {
       setScalarSettingVersion(
         "reasoningEffort",
@@ -4942,8 +5011,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         reasoningEffort,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
-    }),
-  setPreserveThinking: (preserveThinking) =>
+    });
+  },
+  setPreserveThinking: (preserveThinking) => {
+    const live = get();
+    live.setParams(markSamplingFields(live.params, "preserve_thinking"));
     set((state) => {
       setScalarSettingVersion(
         "preserveThinking",
@@ -4955,7 +5027,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         preserveThinking,
         queuedSettingsEpoch: state.queuedSettingsEpoch + 1,
       };
-    }),
+    });
+  },
   setToolsEnabled: (toolsEnabled, options) =>
     set((state) => {
       if (options?.persist !== false) {
