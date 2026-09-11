@@ -81,6 +81,7 @@ def loader():
         {"load_in_16bit": True},
         {"load_in_4bit": True, "load_in_16bit": True},
         {"load_in_16bit": True, "quantization_config": {"load_in_4bit": True}},
+        {"load_in_fp8": True},
     ],
 )
 def test_conflicts_fail_before_model_loading(loader, kwargs):

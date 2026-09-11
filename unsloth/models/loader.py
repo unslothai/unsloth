@@ -806,7 +806,8 @@ class FastLanguageModel(FastLlamaModel):
             raise RuntimeError(
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!\n"
                 "Also, we by default set `load_in_4bit = True`.\n"
-                "If you want to load in 16bit, set `load_in_4bit = False` and `load_in_16bit = True`."
+                "If you want to load in 16bit or fp8, set `load_in_4bit = False` and only one of "
+                "`load_in_16bit = True` or `load_in_fp8 = True`."
             )
 
         if modelscope_pending_download is not None:
