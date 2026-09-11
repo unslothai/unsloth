@@ -293,11 +293,7 @@ def test_smart_chunk_text_single_chunk_no_eos_returns_plain_list():
 
 
 def test_smart_chunk_text_no_eos_on_intermediate_full_chunks():
-    """A full-size chunk produced mid-stride still has real continuation tokens in
-    the very next chunk (that is the point of the stride overlap), so it must not
-    get an EOS appended. Only the chunk that actually reaches the end of the text
-    may end with EOS, and every other chunk must stay exactly chunk_size long.
-    Covers both the tokenized and text output branches of the same loop."""
+    """Only the final chunk gets EOS; mid-stride chunks stay exactly chunk_size long."""
 
     class WordTokenizer:
         def __init__(self):
