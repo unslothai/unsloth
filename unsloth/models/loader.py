@@ -146,6 +146,12 @@ def _strip_unsloth_bnb_4bit_suffix(model_name: str) -> str:
     return s
 
 
+def _precision_flags_conflict(load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8):
+    return (
+        int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) + int(load_in_fp8 != False) >= 2
+    )
+
+
 def _revision_for_resolved_repo(
     revision,
     model_name,
@@ -598,9 +604,19 @@ class FastLanguageModel(FastLlamaModel):
             load_in_fp8 = False
             load_in_16bit = True
 
+        # Only check the flags when no non-bitsandbytes quantization_config sets the precision.
+        check_precision_flags = quantization_config is None or q_load_in_4bit or q_load_in_8bit
+        modelscope_pending_download = None
         if USE_MODELSCOPE and not os.path.exists(model_name):
             from modelscope import snapshot_download
-            model_name = snapshot_download(model_name)
+            if check_precision_flags and _precision_flags_conflict(
+                load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8
+            ):
+                # Resolve adapter/base precision before committing to a weight download.
+                modelscope_pending_download = model_name
+                model_name = snapshot_download(model_name, allow_file_pattern = ["*.json", "*.py"])
+            else:
+                model_name = snapshot_download(model_name)
 
         # Gate before the probe below, or a pinned 4bit load fails against the mirror.
         base_revision = _revision_for_resolved_repo(
@@ -783,6 +799,19 @@ class FastLanguageModel(FastLlamaModel):
 
         if not was_disabled:
             enable_progress_bars()
+
+        if check_precision_flags and _precision_flags_conflict(
+            load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8
+        ):
+            raise RuntimeError(
+                "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!\n"
+                "Also, we by default set `load_in_4bit = True`.\n"
+                "If you want to load in 16bit or fp8, set `load_in_4bit = False` and only one of "
+                "`load_in_16bit = True` or `load_in_fp8 = True`."
+            )
+
+        if modelscope_pending_download is not None:
+            snapshot_download(modelscope_pending_download)
 
         if model_type == "llama":
             scaling_type = None
@@ -1254,10 +1283,7 @@ class FastModel(FastBaseModel):
             if _wants_bnb:
                 kwargs.pop("quantization_config", None)
 
-        if (
-            int(load_in_4bit) + int(load_in_8bit) + int(load_in_16bit) + int(load_in_fp8 != False)
-            >= 2
-        ):
+        if _precision_flags_conflict(load_in_4bit, load_in_8bit, load_in_16bit, load_in_fp8):
             raise RuntimeError(
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!\n"
                 "Also, we by default set `load_in_4bit = True`.\n"
