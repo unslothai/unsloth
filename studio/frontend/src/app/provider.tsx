@@ -684,18 +684,34 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         /* swallow; window may still be functional */
       }
     });
+  }, [status, windowRevealRevision]);
 
-    // The setup window has no constraints to keep current.
-    if (nextMode !== "app") return;
+  // Mounted once, deliberately: the layout effect above returns early on a
+  // status change that keeps the window mode, so a listener living there would
+  // be disposed on the first one and never armed again.
+  useEffect(() => {
+    if (!isTauri) return;
     const ratioSource = windowPixelRatioSource();
     if (!ratioSource) return;
-    return observeDevicePixelRatio(ratioSource, () => {
-      if (!isCurrent()) return;
-      reapplyWindowSizeConstraints(isCurrent).catch(() => {
-        /* swallow; the launch-time floor stands */
+
+    let disposed = false;
+    const stop = observeDevicePixelRatio(ratioSource, () => {
+      // The setup window has no constraints to keep current.
+      if (disposed || appliedWindowModeRef.current !== "app") return;
+      // Read on the change, not on mount: a layout pass that starts after this
+      // one owns the constraints, and this one stands down.
+      const generation = windowLayoutGenerationRef.current;
+      reapplyWindowSizeConstraints(
+        () => !disposed && windowLayoutGenerationRef.current === generation,
+      ).catch(() => {
+        /* swallow; the floor in force stands */
       });
     });
-  }, [status, windowRevealRevision]);
+    return () => {
+      disposed = true;
+      stop();
+    };
+  }, []);
 
   useEffect(() => {
     if (!isTauri) {
