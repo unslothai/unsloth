@@ -230,10 +230,8 @@ def test_raw_text_loader():
         print("✅ All tests passed!")
         return True
 
-    except Exception as e:
-        print(f"❌ Test failed: {e}")
-        return False
-
+    # No `except`: catching the assertions here reported a pass to pytest no matter what
+    # failed inside, because pytest looks at the exception, not the return value.
     finally:
         os.unlink(test_file)
 
@@ -668,14 +666,25 @@ def test_validate_dataset_reports_zero_min_length_when_nothing_has_content():
 
 
 if __name__ == "__main__":
-    success = test_raw_text_loader()
-    success = test_smart_chunk_text_single_chunk_no_eos_returns_plain_list() and success
-    success = test_load_from_file_skips_non_object_json_lines() and success
-    success = test_smart_chunk_text_empty_input_returns_no_chunks() and success
-    success = test_load_from_files_all_empty_raises() and success
-    success = test_negative_stride_is_rejected() and success
-    success = test_validate_dataset_handles_tokenized_and_text_columns() and success
-    success = test_validate_dataset_accepts_objects_without_column_names() and success
-    success = test_validate_dataset_streams_instead_of_materialising_columns() and success
-    success = test_validate_dataset_reports_zero_min_length_when_nothing_has_content() and success
-    sys.exit(0 if success else 1)
+    # Run every test and report all failures, which is what the old `and success` chain did.
+    # The catch lives here rather than inside a test so pytest still sees the assertion.
+    TESTS = [
+        test_raw_text_loader,
+        test_smart_chunk_text_single_chunk_no_eos_returns_plain_list,
+        test_load_from_file_skips_non_object_json_lines,
+        test_smart_chunk_text_empty_input_returns_no_chunks,
+        test_load_from_files_all_empty_raises,
+        test_negative_stride_is_rejected,
+        test_validate_dataset_handles_tokenized_and_text_columns,
+        test_validate_dataset_accepts_objects_without_column_names,
+        test_validate_dataset_streams_instead_of_materialising_columns,
+        test_validate_dataset_reports_zero_min_length_when_nothing_has_content,
+    ]
+    failures = 0
+    for test in TESTS:
+        try:
+            test()
+        except Exception as error:
+            failures += 1
+            print(f"❌ {test.__name__} failed: {error}")
+    sys.exit(1 if failures else 0)
