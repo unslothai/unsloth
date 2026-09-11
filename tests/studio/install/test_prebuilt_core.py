@@ -998,3 +998,18 @@ def test_a_kept_install_that_changes_under_the_lock_is_re_validated(tmp_path):
     assert rc == 0
     assert "settled" not in events
     assert "installed" in events
+
+
+def test_a_live_marker_rewrite_keeps_the_group_without_asking_for_the_owner(tmp_path, monkeypatch):
+    """A non-root member of a group-shared install can hand the temp file to the
+    marker's group, but not to its owner; asking for both refuses the call before the
+    group is applied and os.replace installs the member's primary group instead."""
+    marker = tmp_path / "MARKER.json"
+    marker.write_text('{"a": 1}', encoding = "utf-8")
+    original = marker.stat()
+    calls = []
+    monkeypatch.setattr(core.os, "chown", lambda path, uid, gid: calls.append((uid, gid)))
+    core.write_live_marker(marker, {"a": 1, "b": 2})
+    assert json.loads(marker.read_text(encoding = "utf-8")) == {"a": 1, "b": 2}
+    assert calls == [(-1, original.st_gid)]
+    assert not list(tmp_path.glob("MARKER.json.tmp-*"))

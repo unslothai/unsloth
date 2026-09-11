@@ -497,10 +497,12 @@ def write_live_marker(marker_path: Path, marker: dict[str, Any]) -> None:
             os.fsync(handle.fileno())
         if original is not None:
             os.chmod(tmp_path, stat.S_IMODE(original.st_mode))
-            # Best effort: a no-op for a non-root user, and the mode above is what
-            # keeps the marker readable.
+            # The group only (uid -1), as the Node marker writer does: a non-root member
+            # of a shared install may hand a file to a group it belongs to, while asking
+            # for the original owner as well refuses the whole call before the group
+            # is applied, and os.replace would then install the member's primary group.
             try:
-                os.chown(tmp_path, original.st_uid, original.st_gid)
+                os.chown(tmp_path, -1, original.st_gid)
             except (OSError, AttributeError):
                 pass
         atomic_replace_from_tempfile(tmp_path, marker_path)
