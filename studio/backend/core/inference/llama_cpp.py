@@ -8576,11 +8576,10 @@ class LlamaCppBackend:
         if not self._memory_dio_flags:
             self._memory_dio_applicable = False
             return argv
-        # The record says a managed pair exists SOMEWHERE, not that it is in THIS argv.
-        # A rung that strips a copy keeps the record for `cmd`, so a later argv built
-        # from that copy still matched -- and with a user-authored `--load-mode dio` in
-        # the command, the first occurrence removed would be theirs. Strip only while
-        # this argv holds more of the pair than the user wrote.
+        # The record says a managed pair exists SOMEWHERE, not that it is in THIS argv:
+        # a rung that strips a copy keeps the record for `cmd`, so an argv built from
+        # that copy matched again and took the user's own pair. Strip only while this
+        # argv holds more of it than the user wrote.
         if _count_subsequence(list(argv), self._memory_dio_flags) <= _count_subsequence(
             list(getattr(self, "_memory_dio_user_tokens", []) or []), self._memory_dio_flags
         ):
@@ -24330,10 +24329,9 @@ class LlamaCppBackend:
                 scrub_memory_env(_off_view, (False, False))
 
                 def _mem_env_for(child_env):
-                    """`_mem_env`'s placement scrubbing, with the CHILD's current
-                    visibility. A rung that masks an adapter changes what the child
-                    enumerates, and `_mem_env` is the snapshot from before the gate, so
-                    probing with it reused the unnarrowed set's verdict."""
+                    """`_mem_env`'s placement scrubbing with the CHILD's current
+                    visibility. `_mem_env` predates the gate, so probing with it reused
+                    the unnarrowed set's verdict."""
                     if child_env is None:
                         return _mem_env
                     view = dict(_mem_env)
