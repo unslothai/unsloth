@@ -4155,7 +4155,7 @@ export function ImagesPage({
             <div className="pt-2">
               <SliderField
                 label="Steps"
-                hint="9 is the recommended setting for Z-Image-Turbo. More steps rarely help."
+                hint="Number of denoising steps. Start with the selected model's default; more steps take longer and may not improve quality."
                 value={steps}
                 min={1}
                 max={50}
@@ -4165,7 +4165,7 @@ export function ImagesPage({
             </div>
             <SliderField
               label="Guidance"
-              hint="Keep this at 0 for Z-Image-Turbo. Higher values make its output worse. Other models use guidance."
+              hint="Controls how strongly the model follows the prompt. Start with the selected model's default; distilled models may require low or zero guidance."
               value={guidance}
               min={0}
               max={15}
