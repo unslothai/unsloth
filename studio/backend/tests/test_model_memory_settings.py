@@ -3545,8 +3545,8 @@ class TestThePendingCompareIsByEffect:
     @pytest.mark.parametrize(
         "live,pending,reload_required",
         [
-            ((True, True), (False, True), False),   # residency flip under no-reserve
-            ((False, True), (True, True), False),   # ...either direction
+            ((True, True), (False, True), False),  # residency flip under no-reserve
+            ((False, True), (True, True), False),  # ...either direction
             ((False, True), (False, False), True),  # no-reserve itself changed
             ((True, False), (False, False), True),  # the page-lock changed
             ((False, False), (False, False), False),
@@ -3559,7 +3559,8 @@ class TestThePendingCompareIsByEffect:
         import utils.model_memory_settings as mm
 
         monkeypatch.setattr(
-            rs, "_active_launch_placement",
+            rs,
+            "_active_launch_placement",
             lambda: (None, False, True, None, False, pending),
         )
         monkeypatch.setattr(mm, "get_model_memory_settings", lambda: live)
@@ -3567,7 +3568,6 @@ class TestThePendingCompareIsByEffect:
 
     def test_the_effect_mirrors_should_mlock(self):
         import routes.settings as rs
-
         for keep in (True, False):
             for no_res in (True, False):
                 mlock_bit, _ = rs._launch_effect_of((keep, no_res))
@@ -3607,6 +3607,6 @@ class TestADeviceMustActuallyExist:
         assert devices_are_real([0], detected)
         assert devices_are_real([0, 1], detected)
         assert devices_are_real(None, detected)
-        assert not devices_are_real([99], detected)      # the stale pin
-        assert not devices_are_real([0, 99], detected)   # partially stale
-        assert not devices_are_real([0], [])             # nothing probed at all
+        assert not devices_are_real([99], detected)  # the stale pin
+        assert not devices_are_real([0, 99], detected)  # partially stale
+        assert not devices_are_real([0], [])  # nothing probed at all
