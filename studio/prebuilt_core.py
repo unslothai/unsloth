@@ -2159,8 +2159,12 @@ def _backfill_fingerprint_inputs(
     if metadata.get("install_fingerprint") != selection.fingerprint():
         return
     metadata["fingerprint_coverage"] = selection.coverage
-    ops.metadata_path(install_dir).write_text(
-        json.dumps(metadata, indent = 2) + "\n", encoding = "utf-8"
+    # Over a LIVE marker, so temp-and-replace: a write that fails part-way (a full
+    # disk, an interrupted process) must leave the valid marker it found, not a
+    # truncated one the next run cannot recognise.
+    atomic_write_bytes(
+        ops.metadata_path(install_dir),
+        (json.dumps(metadata, indent = 2) + "\n").encode("utf-8"),
     )
 
 

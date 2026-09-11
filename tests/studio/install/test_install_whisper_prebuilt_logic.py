@@ -2401,6 +2401,8 @@ def test_whisper_marker_fields_edited_under_a_kept_fingerprint_take_the_full_pat
     assert calls["n"] == downloads
     settled = json.loads(marker_path.read_text(encoding = "utf-8"))
     assert settled.get("fingerprint_coverage") == payload["fingerprint_coverage"]
+    # Written by temp-and-replace: nothing of the write is left beside the marker.
+    assert not list(install_dir.glob(M.METADATA_FILENAME + ".tmp-*"))
     assert settled["install_fingerprint"] == payload["install_fingerprint"]
     assert _whisper_check(install_dir, host) is True
 
