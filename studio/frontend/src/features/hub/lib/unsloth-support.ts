@@ -182,7 +182,13 @@ function detectFormatKey(
   modelId: string | null | undefined,
   lowerTags: ReadonlySet<string>,
 ): string | null {
+  // Hub format tags describe every artifact in a repository. Native checkpoints
+  // can coexist with ONNX/OpenVINO exports (for example all-MiniLM-L6-v2).
+  // Only ignore those export tags: safetensors also stores unsupported quants,
+  // and an explicitly named export repository must still be rejected below.
+  const hasNativeWeights = lowerTags.has("pytorch") || lowerTags.has("safetensors");
   for (const tag of lowerTags) {
+    if (hasNativeWeights && (tag === "onnx" || tag === "openvino")) continue;
     if (FORMAT_TAG_LABEL[tag]) return tag;
     const alias = FORMAT_ALIAS_TAGS[tag];
     if (alias) return alias;
