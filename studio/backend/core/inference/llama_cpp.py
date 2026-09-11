@@ -24523,12 +24523,16 @@ class LlamaCppBackend:
                     os.environ.get("CUDA_VISIBLE_DEVICES") is None
                     and LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is True
                 )
-                # Whether THESE ids are nvidia-smi indices, which is not the same
-                # question as where _get_gpu_memory last got its ids. An explicit pick
-                # is PCI-ordered by construction, so a torch fallback in the unrelated
-                # memory query must not demote it and cost a verified fabric its P2P.
-                _p2p_ids_are_pci = bool(gpu_ids) or (
+                # Whether THESE ids live in the matrix's index space. Explicitness is
+                # not evidence of that: with nvidia-smi unavailable the picker lists
+                # what torch enumerated, so an explicit pick is PCI-indexed only
+                # because hardware.py setdefaults CUDA_DEVICE_ORDER=PCI_BUS_ID, which
+                # a user can override. Ask the two things that actually answer it:
+                # nvidia-smi produced the ids, or this process pins PCI order so
+                # torch's ordinals coincide with it.
+                _p2p_ids_are_pci = (
                     LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is True
+                    or os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID"
                 )
 
                 # Only when the fabric is NOT confirmed: on a verified NV# pair the

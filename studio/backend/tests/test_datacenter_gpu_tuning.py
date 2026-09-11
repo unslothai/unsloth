@@ -1526,3 +1526,28 @@ def test_ids_outside_a_uniform_matrix_still_veto(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 8))
     LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
     assert LlamaCppBackend._p2p_veto_reason([0, 5]) is not None
+
+
+def test_explicitness_is_not_evidence_of_pci_indexing(monkeypatch):
+    """An explicit pick is PCI-indexed only because hardware.py setdefaults
+    CUDA_DEVICE_ORDER=PCI_BUS_ID. Under a user override to FASTEST_FIRST with
+    nvidia-smi unavailable, the picker lists torch's ordinals, and on a partially
+    bridged host the same numbers can name different cards. Trusting explicitness
+    there would approve the wrong pair and enable P2P on a PCIe path."""
+    linked = {(0, 1), (1, 0), (2, 3), (3, 2)}
+    _use_nvml(monkeypatch, _FakeNvml(count = 4, linked_pairs = linked))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 4))
+    LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
+
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
+    assert LlamaCppBackend._p2p_veto_reason(
+        [0, 1], True, ids_are_pci_indices = False
+    ) is not None
+
+    # Pinned order: torch's ordinals and nvidia-smi's indices coincide, so the
+    # explicit pick is usable again. This is the default the backend sets.
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    assert LlamaCppBackend._p2p_veto_reason(
+        [0, 1], True, ids_are_pci_indices = True
+    ) is None
