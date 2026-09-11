@@ -79,6 +79,18 @@ def catalog():
     return parse_option_catalog(HELP)
 
 
+@pytest.mark.parametrize("value", ["1e100", "-1e100", "1e-100", "-1e-100", "1e-1000"])
+def test_native_float_domain_rejects_overflow_and_underflow(catalog, value):
+    with pytest.raises(CustomConfigError, match = "native float domain"):
+        compile_custom_config(source(f"[*]\nnp=1\ntemp={value}"), catalog)
+
+
+@pytest.mark.parametrize("value", ["0", "-0.0", "0.25", "-0.5", "1e-40", "3.4028234663852886e38"])
+def test_native_float_domain_preserves_representable_values(catalog, value):
+    compiled = compile_custom_config(source(f"[*]\nnp=1\ntemp={value}"), catalog)
+    assert compiled.summary()["request_defaults"]["temperature"] == float(value)
+
+
 def source(ini, section = None):
     return {"version": 1, "mode": "custom", "ini": ini, "section": section}
 

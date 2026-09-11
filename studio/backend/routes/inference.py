@@ -14867,6 +14867,17 @@ async def _load_model_impl(
                 request.speculative_type,
             )
         )
+        if custom_compiled is not None:
+            # Custom mode ignores managed placement, including a saved CPU-only
+            # choice. Only explicit native CPU placement can skip the handoff.
+            chat_load_needs_gpu = not (
+                custom_compiled.explicit_cpu_only
+                and not (
+                    _load_keeps_a_projector(config, disable_vision = request.disable_vision)
+                    if config.is_vision
+                    else bool(getattr(config, "gguf_mmproj_file", None))
+                )
+            )
         # Ahead of the arbiter: acquire_for evicts a resident Images/Video pipeline and the
         # confirmation below cancels the running generations, both before load_model's own
         # copy of this check runs. A header-sized read spares them. Fails open into that copy.
@@ -15070,13 +15081,18 @@ async def _load_model_impl(
             # loading; the response reports the backend's actual tensor_parallel
             # state so the UI toggle reflects the fallback.
             try:
-                success = await load_with_tensor_fallback(
-                    _attempt_gguf_load,
-                    requested_tensor = request.tensor_parallel,
-                    extra_args = extra_llama_args,
-                    label = config.identifier,
-                    cancelled = lambda: _gguf_load_cancelled(llama_backend, load_cancel_event),
-                )
+                if custom_compiled is not None:
+                    success = await _run_gguf_load_attempt(
+                        llama_backend, load_intent, load_cancel_event
+                    )
+                else:
+                    success = await load_with_tensor_fallback(
+                        _attempt_gguf_load,
+                        requested_tensor = request.tensor_parallel,
+                        extra_args = extra_llama_args,
+                        label = config.identifier,
+                        cancelled = lambda: _gguf_load_cancelled(llama_backend, load_cancel_event),
+                    )
             except Exception:
                 # A GGUF load can raise before tearing down the old llama-server (e.g. an
                 # update-in-progress guard fires before _kill_process), leaving the prior

@@ -42,8 +42,9 @@ def launch(monkeypatch, tmp_path):
     monkeypatch.setattr(backend, "_non_chat_gguf_refusal_for_path", lambda *args: None)
     monkeypatch.setattr(backend, "_gguf_path_is_diffusion", lambda *args: False)
     monkeypatch.setattr(llama, "_metal_device_is_paravirtual", lambda: False)
-    monkeypatch.setattr("utils.model_memory_settings.get_keep_resident", lambda: False)
-    monkeypatch.setattr("utils.model_memory_settings.get_no_ram_reserve", lambda: False)
+    monkeypatch.setattr(
+        "utils.model_memory_settings.get_model_memory_settings", lambda: (False, False)
+    )
     monkeypatch.setattr(backend, "_spawn_is_stale", lambda: False)
     monkeypatch.setattr(
         backend,
@@ -141,7 +142,19 @@ def test_custom_dispatch_precedes_managed_mutation_and_preserves_tuning(launch, 
     assert backend._mtp_runtime_fallback_active is False
 
 
-@pytest.mark.parametrize("text", ["host=evil", "c=bad", "np=99", "unknown=1", "config=second.ini"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "host=evil",
+        "c=bad",
+        "np=99",
+        "unknown=1",
+        "config=second.ini",
+        "temp=1e100",
+        "temp=1e-100",
+        "temp=1e-1000",
+    ],
+)
 def test_invalid_config_does_not_replace_healthy_resident(launch, text):
     backend = launch.backend
     resident = backend._process = object()
@@ -152,11 +165,48 @@ def test_invalid_config_does_not_replace_healthy_resident(launch, text):
     assert not launch.kills and not launch.captured
 
 
+@pytest.mark.parametrize(
+    "keep,no_reserve", [(False, False), (True, False), (False, True), (True, True)]
+)
+@pytest.mark.parametrize("mlock", [False, True])
+def test_custom_memory_policy_respects_no_reserve_precedence(
+    launch, monkeypatch, keep, no_reserve, mlock
+):
+    monkeypatch.setattr(
+        "utils.model_memory_settings.get_model_memory_settings", lambda: (keep, no_reserve)
+    )
+    intent = replace(
+        launch.intent, llama_cpp_config = source(f"[*]\nnp=2\nmlock={str(mlock).lower()}")
+    )
+    allowed = (not no_reserve or not mlock) and (not keep or no_reserve or mlock)
+    if allowed:
+        launch.backend.prepare_custom_config(intent)
+    else:
+        with pytest.raises(CustomConfigError, match = "memory settings"):
+            launch.backend.prepare_custom_config(intent)
+    assert not launch.kills and not launch.captured
+
+
 def test_incomplete_help_does_not_unload(launch):
     launch.caps["help_probe_ok"] = False
     with pytest.raises(CustomConfigError, match = "complete successful help"):
         launch.backend.load_model(launch.intent)
     assert not launch.kills
+
+
+def test_explicit_custom_cpu_placement_reports_no_vram(launch):
+    launch.caps["option_catalog"] = parse_option_catalog(
+        HELP + "\n--device DEVICES                       device selection\n"
+        "--alias NAME                            public model id\n"
+        "--jinja                                 Jinja templates\n"
+    )
+    intent = replace(
+        launch.intent,
+        llama_cpp_config = source("[*]\nnp=2\nc=56000\nngl=0\ndevice=none\nfit=off"),
+    )
+    assert launch.backend.load_model(intent)
+    assert launch.backend.holds_no_vram
+    assert "--device" in launch.captured[0][0]
 
 
 def test_start_failure_is_terminal_and_does_not_commit_intent(launch, monkeypatch):

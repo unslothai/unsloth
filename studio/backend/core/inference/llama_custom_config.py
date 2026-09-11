@@ -12,12 +12,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 import hashlib
 import json
 import math
 import ntpath
 import os
 import re
+import struct
 import sys
 
 from . import llama_server_args as policy
@@ -189,6 +191,17 @@ class CompiledCustomConfig:
     request_defaults: tuple[tuple[str, object], ...]
     diagnostics: tuple[str, ...]
 
+    @property
+    def explicit_cpu_only(self) -> bool:
+        """Main-model placement is explicitly CPU-only; callers still check companions."""
+        tuning = dict(self.tuning)
+        return (
+            tuning.get("gpu_layers") == 0
+            and tuning.get("device") == "none"
+            and tuning.get("spec_type") in (None, "none", "off")
+            and not tuning.get("tensor_parallel", False)
+        )
+
     def summary(self) -> dict:
         return {
             "mode": "custom",
@@ -324,6 +337,16 @@ def _typed(name: str, value: str, descriptor: Mapping, section: str, key: str):
             raise _error(section, key, "requires a finite numeric value") from None
         if not math.isfinite(number):
             raise _error(section, key, "requires a finite numeric value")
+        # Native sampling callbacks parse float32, not Python's float64. Check
+        # both overflow and nonzero values that would silently round to zero.
+        try:
+            native_number = struct.unpack("f", struct.pack("f", number))[0]
+        except OverflowError:
+            raise _error(section, key, "number is outside the native float domain") from None
+        if not math.isfinite(native_number) or (
+            native_number == 0 and not Decimal(value).is_zero()
+        ):
+            raise _error(section, key, "number is outside the native float domain")
         return _FLOAT_FIELDS[name], number
     if name == "chat-template-kwargs":
         try:

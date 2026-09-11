@@ -19395,14 +19395,15 @@ class LlamaCppBackend:
                 raise CustomConfigError(
                     "The selected runtime requires a GPU compatibility mask; set an administrative device visibility mask before using custom mode"
                 )
-        from utils.model_memory_settings import get_keep_resident, get_no_ram_reserve
+        from utils.model_memory_settings import get_model_memory_settings
 
         memory = resolve_effective_memory_state(compiled.argv, {})
-        if get_no_ram_reserve() and any(memory):
+        keep_resident, no_ram_reserve = get_model_memory_settings()
+        if no_ram_reserve and any(memory):
             raise CustomConfigError(
                 "Custom memory settings conflict with the operator's no RAM reservation policy"
             )
-        if get_keep_resident() and not memory[0]:
+        if keep_resident and not no_ram_reserve and not memory[0]:
             raise CustomConfigError(
                 "Custom memory settings must enable mlock under the operator's keep resident policy"
             )
@@ -19745,7 +19746,9 @@ class LlamaCppBackend:
                 self._prompt_cache_disabled = bool(tuning.get("no_cache_prompt", False))
                 self._has_video_input = bool((props.get("modalities") or {}).get("video"))
                 self._gpu_offload_active = classify_gpu_offload_lines(self._stdout_lines)
-                if tuning.get("gpu_layers") == 0 and not projector:
+                if compiled.explicit_cpu_only and not projector:
+                    self._gpu_offload_active = False
+                elif tuning.get("gpu_layers") == 0 and not projector:
                     self._gpu_offload_active = self._zero_offload_gpu_flag(cmd, [], env)
                 self._is_audio = False
                 self._audio_type = None
