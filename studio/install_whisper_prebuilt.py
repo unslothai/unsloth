@@ -1274,9 +1274,10 @@ class WhisperReleasePlan:
     artifact: dict[str, Any]
     resolved_backend: str
     used_fallback: bool
-    # The newest published release skipped for this host before the plan settled on
-    # bundle (a macOS artifact above the host's OS floor); None when bundle is newest.
-    walked_back_from: str | None = None
+    # The macOS release walk-back behind bundle (core.WalkBack: the newest published
+    # release skipped for this host's OS floor and the host version that skipped it);
+    # None when bundle is the newest.
+    walk_back: core.WalkBack | None = None
 
 
 def _normalized_upstream_tag(value: str) -> str:
@@ -1459,14 +1460,20 @@ def _release_plan_for_host(
             f"selected compatible published release {bundle.release_tag} "
             f"(upstream {bundle.manifest.get('upstream_tag')})"
         )
-        if first_bundle is not None and not requested_specific_tag:
+        walk_back = (
+            core.walk_back_for(host, first_bundle.release_tag)
+            if first_bundle is not None and not requested_specific_tag
+            else None
+        )
+        if walk_back is not None:
             # A walk-back from the newest release: recorded so the marker-only check
-            # can hold the install current while that release is still the newest.
+            # can hold the install current while that release is still the newest and
+            # this is still the macOS version that could not take it.
             plan = replace(
                 plan,
-                walked_back_from = first_bundle.release_tag,
+                walk_back = walk_back,
                 selection = (
-                    replace(plan.selection, walked_back_from = first_bundle.release_tag)
+                    replace(plan.selection, walk_back = walk_back)
                     if plan.selection is not None
                     else None
                 ),
@@ -1540,15 +1547,25 @@ def _existing_install_is_intact(
         return None
     if marker.get("backend") != requested_backend:
         return None
-    # The marker names its asset, and the asset name carries the platform tokens the
-    # selector would use for this host; a bundle for another architecture (a home
-    # directory carried between machines, an emulated interpreter) is not intact here
-    # whatever the tree looks like. Whisper assets are named
-    # whisper-<tag>-<os>-<arch>-<accel><ext>, see asset_name_for.
+    # The platform the bundle was selected for has to be this host's: a bundle for
+    # another architecture (a home directory carried between machines, an emulated
+    # interpreter) is not intact here whatever the tree looks like. The marker records
+    # the manifest's os/arch (prebuilt_core.write_prebuilt_metadata); a marker written
+    # before it did is read from its asset name, which the fork spells
+    # whisper-<tag>-<os>-<arch>-<accel><ext> (asset_name_for). A custom repository's
+    # manifest may name its assets freely, so only the recorded platform answers there.
     os_token, arch_token = host_platform_tokens(host)
-    recorded_asset = marker.get("asset")
-    if not isinstance(recorded_asset, str) or f"-{os_token}-{arch_token}-" not in recorded_asset:
-        return None
+    recorded_os, recorded_arch = marker.get("os"), marker.get("arch")
+    if isinstance(recorded_os, str) and isinstance(recorded_arch, str):
+        if (recorded_os, recorded_arch) != (os_token, arch_token):
+            return None
+    else:
+        recorded_asset = marker.get("asset")
+        if (
+            not isinstance(recorded_asset, str)
+            or f"-{os_token}-{arch_token}-" not in recorded_asset
+        ):
+            return None
     # The bundle's macOS floor, which the selector applies (_macos_min_os_ok) and
     # write_prebuilt_metadata records at the marker's top level as min_os: an install
     # restored onto an older same-architecture Mac has the right tokens and the execute
@@ -1707,18 +1724,12 @@ def existing_install_current_without_plan(
             return False
         if not latest:
             return False
-        if latest != recorded_release:
+        if latest != recorded_release and not core.walk_back_stands(marker, host, latest):
             # A macOS walk-back: the planner skipped the newest release for this host's
-            # OS floor and recorded it; while the newest is still that one, the
-            # walk-back stands. Anything newer takes the full path, which re-decides it.
-            walked_back_from = marker.get("walked_back_from")
-            if not (
-                host.is_macos
-                and isinstance(walked_back_from, str)
-                and walked_back_from
-                and latest == walked_back_from
-            ):
-                return False
+            # OS floor and recorded it with the host version; while the newest is still
+            # that one on that version, the walk-back stands. A newer release or an OS
+            # upgrade takes the full path, which re-decides it.
+            return False
     # "already matches" is the substring setup.sh:3635 and setup.ps1:6109 grep for.
     log(
         f"existing {COMPONENT} install already matches {recorded_release} "

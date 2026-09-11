@@ -168,6 +168,13 @@ _OPS_FIRST_NAMES = {
     "load_prebuilt_metadata",
     "existing_install_matches",
     "marker_install_fingerprint",
+    "WalkBack",
+    "WALK_BACK_KEYS",
+    "macos_version_label",
+    "walk_back_for",
+    "marker_walk_back",
+    "walk_back_stands",
+    "walk_back_patch",
     "metadata_path",
     "selection_from_artifact",
     "plan_selection",
@@ -2057,10 +2064,16 @@ class InstallSelection:
     linked_libraries: tuple[str, ...] | None = None
     runtime_wiring_version: int | None = None
     linked_runtime_directories: tuple[str, ...] | None = None
-    # The newest published release the planner skipped for this host (a macOS bundle
-    # above its OS floor) before settling on release_tag; None when release_tag is the
-    # newest. Describes the choice, not the bundle, so never part of the fingerprint.
-    walked_back_from: str | None = None
+    # The macOS release walk-back behind this choice (WalkBack), None when release_tag
+    # is the newest. Describes the choice, not the bundle, so never part of the
+    # fingerprint.
+    walk_back: "WalkBack | None" = None
+    # The platform the artifact was selected for, from the manifest's os/arch fields.
+    # Recorded on the marker (os, arch) so a keep decision can check the platform
+    # without inferring it from the asset name, which a custom repository need not
+    # follow. Outside the fingerprint: the fields it hashes already name the asset.
+    platform_os: str | None = None
+    platform_arch: str | None = None
 
     def fingerprint(self) -> str:
         return compute_install_fingerprint(
@@ -2074,6 +2087,90 @@ class InstallSelection:
             runtime_line = self.runtime_line,
             coverage = self.coverage,
         )
+
+
+@dataclass(frozen = True)
+class WalkBack:
+    """A macOS release walk-back: the newest published release the planner skipped
+    because the host was below its OS floor, and the host version that decided it.
+
+    Recorded on the marker as walk_back and walked_back_on_macos, outside the
+    fingerprint (it describes the choice, not the bundle). The marker-only re-check
+    holds an install current while BOTH still stand: the newest published release is
+    the one skipped, and the host is the macOS version that skipped it. A newer release
+    or an OS upgrade takes the full path, which re-decides the walk-back.
+    """
+
+    release_tag: str
+    macos_version: str
+
+    def marker_fields(self) -> dict[str, str]:
+        return {
+            "walked_back_from": self.release_tag,
+            "walked_back_on_macos": self.macos_version,
+        }
+
+
+WALK_BACK_KEYS = ("walked_back_from", "walked_back_on_macos")
+
+
+def macos_version_label(host: Any) -> str | None:
+    """The host's macOS version as recorded beside a walk-back ("14.7"); None off
+    macOS or when the version is unknown."""
+    if not getattr(host, "is_macos", False):
+        return None
+    version = getattr(host, "macos_version", None)
+    if not version:
+        return None
+    return ".".join(str(part) for part in version)
+
+
+def walk_back_for(host: Any, skipped_release_tag: str | None) -> WalkBack | None:
+    """The walk-back to record when the planner settled below *skipped_release_tag*
+    on this host; None when there is nothing to record (no skipped release, not
+    macOS, or a host version the marker-only re-check could not compare)."""
+    if not skipped_release_tag:
+        return None
+    label = macos_version_label(host)
+    if label is None:
+        return None
+    return WalkBack(release_tag = skipped_release_tag, macos_version = label)
+
+
+def marker_walk_back(marker: dict[str, Any]) -> WalkBack | None:
+    """The walk-back a marker records, or None when it records none or only half of
+    one (a marker written before the host version was kept beside the tag)."""
+    release_tag = marker.get("walked_back_from")
+    macos_version = marker.get("walked_back_on_macos")
+    if not (isinstance(release_tag, str) and release_tag):
+        return None
+    if not (isinstance(macos_version, str) and macos_version):
+        return None
+    return WalkBack(release_tag = release_tag, macos_version = macos_version)
+
+
+def walk_back_stands(marker: dict[str, Any], host: Any, expected_release: str | None) -> bool:
+    """Whether the marker's walk-back still explains why *expected_release*, the newest
+    published release, is not the installed one: same skipped release, same host
+    macOS version."""
+    recorded = marker_walk_back(marker)
+    if recorded is None or not expected_release:
+        return False
+    return (
+        recorded.release_tag == expected_release
+        and recorded.macos_version == macos_version_label(host)
+    )
+
+
+def walk_back_patch(marker: dict[str, Any], walk_back: WalkBack | None) -> dict[str, Any]:
+    """The marker keys a reused install must take from this run's walk-back: both
+    fields when the plan walked back and the marker says otherwise, None for each
+    one present when the plan no longer walks back."""
+    if walk_back is None:
+        return {key: None for key in WALK_BACK_KEYS if marker.get(key) is not None}
+    return {
+        key: value for key, value in walk_back.marker_fields().items() if marker.get(key) != value
+    }
 
 
 def selection_from_artifact(
@@ -2099,6 +2196,8 @@ def selection_from_artifact(
         else None,
         coverage = ops.artifact_coverage(artifact),
         studio_protocol = manifest.get("studio_protocol"),
+        platform_os = artifact.get("os") if isinstance(artifact.get("os"), str) else None,
+        platform_arch = artifact.get("arch") if isinstance(artifact.get("arch"), str) else None,
     )
 
 
@@ -2131,8 +2230,11 @@ def write_prebuilt_metadata(ops: ModuleOps, install_dir: Path, selection: Instal
         "fingerprint_coverage": coverage,
         "installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
-    if selection.walked_back_from:
-        payload["walked_back_from"] = selection.walked_back_from
+    if selection.walk_back is not None:
+        payload.update(selection.walk_back.marker_fields())
+    if selection.platform_os and selection.platform_arch:
+        payload["os"] = selection.platform_os
+        payload["arch"] = selection.platform_arch
     if selection.install_kind == "slim":
         # Additive slim fields; fat markers keep the legacy payload exactly.
         payload["install_kind"] = "slim"
@@ -2192,9 +2294,10 @@ def _kept_marker_patch(
 ) -> dict[str, Any] | None:
     """What a kept install's marker still has to take from this run's selection.
 
-    fingerprint_coverage on a marker written before the key existed, and the
-    walk-back this run's plan made (or retired). None when nothing is owed, or when
-    the component has no marker readers (optional, like the settle hooks).
+    fingerprint_coverage and the platform on a marker written before those keys
+    existed, and the walk-back this run's plan made (or retired). None when nothing
+    is owed, or when the component has no marker readers (optional, like the settle
+    hooks).
     """
     load = getattr(ops, "load_prebuilt_metadata", None)
     if load is None or getattr(ops, "metadata_path", None) is None:
@@ -2205,11 +2308,15 @@ def _kept_marker_patch(
     patch: dict[str, Any] = {}
     if not isinstance(metadata.get("fingerprint_coverage"), dict):
         patch["fingerprint_coverage"] = selection.coverage
-    if selection.walked_back_from:
-        if metadata.get("walked_back_from") != selection.walked_back_from:
-            patch["walked_back_from"] = selection.walked_back_from
-    elif metadata.get("walked_back_from"):
-        patch["walked_back_from"] = None
+    patch.update(walk_back_patch(metadata, selection.walk_back))
+    # Added only: a platform already recorded was written by the run that selected it.
+    if (
+        selection.platform_os
+        and selection.platform_arch
+        and not (isinstance(metadata.get("os"), str) and isinstance(metadata.get("arch"), str))
+    ):
+        patch["os"] = selection.platform_os
+        patch["arch"] = selection.platform_arch
     return patch or None
 
 
@@ -2222,8 +2329,8 @@ def _kept_marker_needs_settle(
 def _backfill_fingerprint_inputs(
     ops: ModuleOps, install_dir: Path, selection: InstallSelection
 ) -> None:
-    """Catch a kept marker up to this run: fingerprint_coverage where it predates the
-    key, and the walk-back the plan made or retired.
+    """Catch a kept marker up to this run: fingerprint_coverage and the platform where
+    the marker predates those keys, and the walk-back the plan made or retired.
 
     Only for a marker whose fingerprint this run's selection reproduces, so the
     coverage written is the one it was computed from; anything else is left for the

@@ -1013,3 +1013,42 @@ def test_a_live_marker_rewrite_keeps_the_group_without_asking_for_the_owner(tmp_
     assert json.loads(marker.read_text(encoding = "utf-8")) == {"a": 1, "b": 2}
     assert calls == [(-1, original.st_gid)]
     assert not list(tmp_path.glob("MARKER.json.tmp-*"))
+
+
+def test_a_walk_back_is_recorded_with_the_host_version_that_decided_it():
+    """prebuilt_core.WalkBack: the marker-only re-check may hold an install on a Mac
+    below the newest release's floor current only while the newest release is the one
+    skipped AND the host is the macOS version that skipped it."""
+    mac = SimpleNamespace(is_macos = True, macos_version = (14, 7))
+    assert core.macos_version_label(mac) == "14.7"
+    assert core.macos_version_label(SimpleNamespace(is_macos = True, macos_version = None)) is None
+    assert core.macos_version_label(SimpleNamespace(is_macos = False, macos_version = (14, 7))) is None
+    walk_back = core.walk_back_for(mac, "r2")
+    assert walk_back == core.WalkBack(release_tag = "r2", macos_version = "14.7")
+    assert core.walk_back_for(mac, None) is None
+    assert core.walk_back_for(SimpleNamespace(is_macos = False, macos_version = None), "r2") is None
+    marker = {"release_tag": "r1", **walk_back.marker_fields()}
+    assert core.marker_walk_back(marker) == walk_back
+    assert core.marker_walk_back({"release_tag": "r1", "walked_back_from": "r2"}) is None
+    assert core.walk_back_stands(marker, mac, "r2") is True
+    assert core.walk_back_stands(marker, mac, "r3") is False
+    assert core.walk_back_stands(marker, mac, None) is False
+    assert (
+        core.walk_back_stands(marker, SimpleNamespace(is_macos = True, macos_version = (15, 0)), "r2")
+        is False
+    )
+    assert (
+        core.walk_back_stands(marker, SimpleNamespace(is_macos = False, macos_version = None), "r2")
+        is False
+    )
+    # What a kept marker owes this run's plan.
+    assert core.walk_back_patch({}, walk_back) == walk_back.marker_fields()
+    assert core.walk_back_patch(marker, walk_back) == {}
+    assert core.walk_back_patch({"walked_back_from": "r2"}, walk_back) == {
+        "walked_back_on_macos": "14.7"
+    }
+    assert core.walk_back_patch(marker, None) == {
+        "walked_back_from": None,
+        "walked_back_on_macos": None,
+    }
+    assert core.walk_back_patch({}, None) == {}

@@ -2190,9 +2190,10 @@ def test_macos_walks_back_to_newest_compatible_release(monkeypatch):
         requested_backend = "cpu",
     )
     assert plan.bundle.release_tag == compatible.release_tag
-    assert plan.walked_back_from == latest.release_tag
+    walk_back = M.core.WalkBack(release_tag = latest.release_tag, macos_version = "14.7")
+    assert plan.walk_back == walk_back
     assert plan.selection is not None
-    assert plan.selection.walked_back_from == latest.release_tag
+    assert plan.selection.walk_back == walk_back
     assert "walked_back_from" not in plan.selection.coverage
 
 
@@ -3053,9 +3054,15 @@ def test_whisper_fast_path_accepts_a_recorded_macos_walk_back(tmp_path, monkeypa
     """A Mac below the newest release's OS floor installs an older release; the
     marker-only re-check asks the download host for the newest and must recognise the
     recorded walk-back rather than send every such install down the full path. A
-    release newer than the recorded one, or any other OS, still does."""
+    release newer than the recorded one, a macOS upgrade since the walk-back (the
+    newest release may fit now), or any other OS still does."""
     install_dir, _, _ = _installed_cpu_tree(tmp_path, monkeypatch)
-    marker = {"release_tag": "old", "walked_back_from": "new", "backend": "cpu"}
+    marker = {
+        "release_tag": "old",
+        "walked_back_from": "new",
+        "walked_back_on_macos": "14.7",
+        "backend": "cpu",
+    }
     monkeypatch.setattr(M, "_existing_install_is_intact", lambda *a, **k: dict(marker))
     monkeypatch.setattr(M.llama, "_download_host_resolve_enabled", lambda: True, raising = False)
     monkeypatch.setattr(
@@ -3063,6 +3070,7 @@ def test_whisper_fast_path_accepts_a_recorded_macos_walk_back(tmp_path, monkeypa
     )
     mac = _host("macos", "arm64", macos_version = (14, 7))
     assert _whisper_check(install_dir, mac) is True
+    assert _whisper_check(install_dir, _host("macos", "arm64", macos_version = (15, 0))) is False
     assert _whisper_check(install_dir, _host("linux", "x64")) is False
     monkeypatch.setattr(
         M.llama, "_download_host_latest_release_tag", lambda _repo: "newer", raising = False
@@ -3072,3 +3080,55 @@ def test_whisper_fast_path_accepts_a_recorded_macos_walk_back(tmp_path, monkeypa
         M.llama, "_download_host_latest_release_tag", lambda _repo: "old", raising = False
     )
     assert _whisper_check(install_dir, mac) is True
+    # A marker from before the host version was recorded beside the tag takes the
+    # full path once, which settles it.
+    del marker["walked_back_on_macos"]
+    monkeypatch.setattr(
+        M.llama, "_download_host_latest_release_tag", lambda _repo: "new", raising = False
+    )
+    assert _whisper_check(install_dir, mac) is False
+
+
+def _rewrite_marker(install_dir: Path, **overrides) -> dict:
+    marker_path = install_dir / M.METADATA_FILENAME
+    payload = json.loads(marker_path.read_text(encoding = "utf-8"))
+    for key, value in overrides.items():
+        if value is None:
+            payload.pop(key, None)
+        else:
+            payload[key] = value
+    # The marker stays self-consistent: the fast path recomputes the fingerprint from
+    # the fields it records, asset name included.
+    payload["install_fingerprint"] = M.core.marker_install_fingerprint(payload)
+    marker_path.write_text(json.dumps(payload, indent = 2), encoding = "utf-8")
+    return payload
+
+
+def test_the_marker_records_the_platform_it_was_selected_for(tmp_path, monkeypatch):
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    marker = json.loads((install_dir / M.METADATA_FILENAME).read_text(encoding = "utf-8"))
+    assert (marker["os"], marker["arch"]) == M.host_platform_tokens(host)
+
+
+def test_a_custom_repository_asset_name_is_judged_by_the_recorded_platform(tmp_path, monkeypatch):
+    """A custom --published-repo's manifest may name its assets freely; the platform
+    check reads the os/arch the marker records and only falls back to the fork's
+    asset naming for a marker written before they were recorded. Otherwise every such
+    install took the full path on every update, and the keep-existing path (which runs
+    when the newest release cannot be looked up) dropped a valid install."""
+    install_dir, host, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    os_token, arch_token = M.host_platform_tokens(host)
+    _rewrite_marker(install_dir, asset = "server-bundle.tar.gz")
+    assert _whisper_check(install_dir, host) is True
+    # ...and the recorded platform is what is checked: another one is not intact here.
+    _rewrite_marker(
+        install_dir, asset = "server-bundle.tar.gz", arch = "arm64" if arch_token != "arm64" else "x64"
+    )
+    assert _whisper_check(install_dir, host) is False
+    # No recorded platform: the fork's naming is the only evidence, and this has none.
+    _rewrite_marker(install_dir, asset = "server-bundle.tar.gz", os = None, arch = None)
+    assert _whisper_check(install_dir, host) is False
+    _rewrite_marker(
+        install_dir, asset = f"whisper-v1.9.1-{os_token}-{arch_token}-cpu.tar.gz", os = None, arch = None
+    )
+    assert _whisper_check(install_dir, host) is True

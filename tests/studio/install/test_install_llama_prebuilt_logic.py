@@ -2297,7 +2297,7 @@ def test_install_prebuilt_falls_back_to_older_release_plan(
         llama_backend = None,
         backend_request = None,
         rocm_gfx = None,
-        walked_back_from = None,
+        walk_back = None,
     ):
         call_log.append((llama_tag, initial_fallback_used))
         if llama_tag == "b9002":
@@ -3328,7 +3328,7 @@ def test_install_prebuilt_skips_when_older_release_fallback_matches_existing_ins
         llama_backend = None,
         backend_request = None,
         rocm_gfx = None,
-        walked_back_from = None,
+        walk_back = None,
     ):
         call_log.append(llama_tag)
         raise PrebuiltFallback("validation failed for latest release")
@@ -3418,7 +3418,7 @@ def test_install_prebuilt_skips_same_release_fallback_attempt_when_installed(
         llama_backend = None,
         backend_request = None,
         rocm_gfx = None,
-        walked_back_from = None,
+        walk_back = None,
     ):
         attempted_names.append(choice.name)
         if choice.name == first_choice.name:
@@ -3504,7 +3504,7 @@ def test_install_prebuilt_same_tag_upstream_failure_uses_older_unsloth_release_p
         llama_backend = None,
         backend_request = None,
         rocm_gfx = None,
-        walked_back_from = None,
+        walk_back = None,
     ):
         attempted.append((llama_tag, release_tag, attempts[0].source_label))
         if llama_tag == "b9002":
@@ -5707,7 +5707,7 @@ _VALIDATOR_KEYWORD_ONLY = {
         "llama_backend",
         "backend_request",
         "rocm_gfx",
-        "walked_back_from",
+        "walk_back",
     ),
     "validate_prebuilt_choice": (
         "requested_tag",
@@ -5720,7 +5720,7 @@ _VALIDATOR_KEYWORD_ONLY = {
         "llama_backend",
         "backend_request",
         "rocm_gfx",
-        "walked_back_from",
+        "walk_back",
     ),
 }
 
@@ -6958,16 +6958,26 @@ def test_the_marker_fast_path_accepts_a_recorded_macos_walk_back():
     newest release, so it must read that record rather than fail every such install
     into the full path; a newer release than the recorded one still does."""
     met = INSTALL_LLAMA_PREBUILT._release_expectation_met
-    marker = {"release_tag": "r1", "walked_back_from": "r2"}
+    marker = {"release_tag": "r1", "walked_back_from": "r2", "walked_back_on_macos": "14.7"}
     mac = macos_host(macos_version = (14, 7))
     assert met(marker, "r1", mac) is True
     assert met(marker, "r2", mac) is True
     assert met(marker, "r3", mac) is False
     assert met(marker, None, mac) is False
+    # An OS upgrade may satisfy the skipped release's floor: the walk-back was decided
+    # on 14.7 and does not stand on 15.0, so the full path re-decides it.
+    assert met(marker, "r2", macos_host(macos_version = (15, 0))) is False
+    assert met(marker, "r2", macos_host(macos_version = None)) is False
     # Only macOS walks back; anywhere else a release mismatch is a release mismatch.
     assert met(marker, "r2", linux_host()) is False
     assert met({"release_tag": "r1"}, "r2", mac) is False
-    assert met({"release_tag": "r1", "walked_back_from": ""}, "", mac) is False
+    # A marker that recorded the tag without the host version (written before the
+    # version was kept beside it) is not trusted: the full path settles it once.
+    assert met({"release_tag": "r1", "walked_back_from": "r2"}, "r2", mac) is False
+    assert (
+        met({"release_tag": "r1", "walked_back_from": "", "walked_back_on_macos": "14.7"}, "", mac)
+        is False
+    )
 
 
 def test_the_planner_records_the_newest_release_a_mac_walked_past(monkeypatch):
@@ -7003,7 +7013,7 @@ def test_the_planner_records_the_newest_release_a_mac_walked_past(monkeypatch):
     host = macos_host(macos_version = (14, 7))
     _, plans = module._fork_manifest_release_plans("latest", host, "unslothai/llama.cpp", "")
     assert [plan.release_tag for plan in plans] == ["r1"]
-    assert plans[0].walked_back_from == "r2"
+    assert plans[0].walk_back == module._core.WalkBack(release_tag = "r2", macos_version = "14.7")
 
     # A host the newest release fits records no walk-back.
     monkeypatch.setattr(
@@ -7013,18 +7023,19 @@ def test_the_planner_records_the_newest_release_a_mac_walked_past(monkeypatch):
     )
     _, plans = module._fork_manifest_release_plans("latest", host, "unslothai/llama.cpp", "")
     assert plans[0].release_tag == "r2"
-    assert plans[0].walked_back_from is None
+    assert plans[0].walk_back is None
 
 
 def test_a_reused_marker_takes_the_walk_back_this_run_made():
     """sync_marker_selection: a kept install on a Mac gains the walk-back record a
-    marker written before it existed lacks, and a plan that no longer walks back
-    retires a stale one."""
+    marker written before it existed lacks (both keys), and a plan that no longer
+    walks back retires a stale one."""
     choice = asset_choice(
         name = "llama-b9001-bin-macos-arm64.tar.gz", tag = "r1", source_label = "published"
     )
+    walk_back = INSTALL_LLAMA_PREBUILT._core.WalkBack(release_tag = "r2", macos_version = "14.7")
 
-    def patch(marker, walked_back_from):
+    def patch(marker, walk_back):
         return INSTALL_LLAMA_PREBUILT._marker_selection_patch(
             marker,
             choice = choice,
@@ -7033,12 +7044,26 @@ def test_a_reused_marker_takes_the_walk_back_this_run_made():
             persist_llama_backend = None,
             ggml_tree = None,
             rocm_gfx = None,
-            walked_back_from = walked_back_from,
+            walk_back = walk_back,
         )
 
     marker = {"release_tag": "r1", "runtime_sha256": None}
-    assert patch(marker, "r2").get("walked_back_from") == "r2"
-    assert "walked_back_from" not in patch({**marker, "walked_back_from": "r2"}, "r2")
-    assert "walked_back_from" not in patch(marker, None)
-    retired = patch({**marker, "walked_back_from": "r2"}, None)
-    assert "walked_back_from" in retired and retired["walked_back_from"] is None
+    gained = patch(marker, walk_back)
+    assert gained["walked_back_from"] == "r2" and gained["walked_back_on_macos"] == "14.7"
+    recorded = {**marker, **walk_back.marker_fields()}
+    assert not set(patch(recorded, walk_back)) & {"walked_back_from", "walked_back_on_macos"}
+    keys = {"walked_back_from", "walked_back_on_macos"}
+
+    def walk_back_part(result):
+        return {key: value for key, value in result.items() if key in keys}
+
+    # A half record (tag without host version) is completed, not left alone.
+    assert walk_back_part(patch({**marker, "walked_back_from": "r2"}, walk_back)) == {
+        "walked_back_on_macos": "14.7"
+    }
+    # An OS upgrade re-decides the same walk-back on the new version.
+    upgraded = INSTALL_LLAMA_PREBUILT._core.WalkBack(release_tag = "r2", macos_version = "15.0")
+    assert walk_back_part(patch(recorded, upgraded)) == {"walked_back_on_macos": "15.0"}
+    assert not set(patch(marker, None)) & {"walked_back_from", "walked_back_on_macos"}
+    retired = patch(recorded, None)
+    assert retired["walked_back_from"] is None and retired["walked_back_on_macos"] is None
