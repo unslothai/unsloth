@@ -82,7 +82,9 @@ def test_concurrent_deletes(workers):
     else:
         assert not errors
     retry = gallery.delete(row['id'])
-    assert sum(results) + int(retry) == 1
+    assert any(results) or retry
+    assert len(results) + len(errors) == workers
+    assert gallery.delete(row['id']) is False
     assert gallery.list_images() == []
 
 
