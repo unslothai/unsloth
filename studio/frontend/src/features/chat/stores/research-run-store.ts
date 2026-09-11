@@ -958,6 +958,16 @@ export function beginExternalResearchFollow(
   };
 }
 
+/** Open a run already carried by message metadata. Hydrate first so the chat layout can resolve
+ *  the panel's thread immediately; opening a bare id leaves the panel unmounted when the run store
+ *  missed the server-created run. A click also clears a stale follower error and retries it. */
+export function openResearchRun(run: ResearchRun): void {
+  ingestResearchUpdate(run);
+  useResearchRunStore.getState().setConnectionError(run.id, null);
+  ensureResearchRunFollowed(run.id, run);
+  useResearchRunStore.getState().openPanel(run.id);
+}
+
 /** Yield the run each time the store applies something to it, until it settles or *signal*
  *  aborts. Independent of the event stream, so a slow consumer cannot stall ingestion. */
 export async function* watchResearchRun(
