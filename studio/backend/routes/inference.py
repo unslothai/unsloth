@@ -2083,6 +2083,7 @@ def _openai_llama_admission_tokens(
     image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
     injected_tools = None,
     context_window: Optional[int] = None,
+    counted_prompt_tokens: Optional[int] = None,
 ) -> Optional[int]:
     """KV a request will occupy: what is sent, plus what it may generate.
 
@@ -2097,7 +2098,9 @@ def _openai_llama_admission_tokens(
     if not budget:
         return None
     messages = getattr(payload, "messages", None)
-    if isinstance(messages, list) and messages:
+    if counted_prompt_tokens is not None:
+        prompt_tokens = counted_prompt_tokens
+    elif isinstance(messages, list) and messages:
         try:
             estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
                 messages
@@ -2175,6 +2178,7 @@ def _openai_llama_admission_reserve(
     payload = None,
     tool_loop: bool = False,
     injected_tools = None,
+    counted_prompt_tokens: Optional[int] = None,
 ) -> tuple[LlamaAdmissionReservation, LlamaAdmissionConfig]:
     config = llama_admission_config_from_env()
     capacity = _openai_llama_admission_capacity(request, llama_backend)
@@ -2186,6 +2190,7 @@ def _openai_llama_admission_reserve(
         budget = budget,
         tokens = _openai_llama_admission_tokens(
             payload,
+            counted_prompt_tokens = counted_prompt_tokens,
             budget = budget,
             capacity = capacity,
             tool_loop = tool_loop,
@@ -2199,6 +2204,75 @@ def _openai_llama_admission_reserve(
     return reservation, config
 
 
+def _count_gguf_admission_prompt(
+    llama_backend,
+    payload,
+    messages,
+    tools = None,
+) -> int:
+    """Count the prepared chat, retaining the existing allowance for media embeddings.
+
+    A tokenizer failure reserves the pool instead of admitting overlapping requests
+    on the character estimate that undercounts numeric and other dense ASCII text.
+    """
+    budget = _openai_llama_admission_budget(llama_backend) or 0
+    try:
+        text_messages, images = _openai_llama_admission_messages_for_estimate(messages)
+        count = llama_backend.count_chat_tokens(
+            text_messages,
+            tools = tools,
+            strict = True,
+            chat_template_kwargs = llama_backend._request_reasoning_kwargs(
+                payload.enable_thinking, payload.reasoning_effort, payload.preserve_thinking
+            ),
+            continue_final_message = _continue_final_message(payload),
+        )
+        if type(count) is not int or count <= 0:
+            raise ValueError("Invalid prompt token count")
+        return count + _openai_llama_admission_media_tokens(
+            payload,
+            message_image_parts = images,
+            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+        )
+    except Exception:
+        logger.debug("Prompt count unavailable; reserving the context pool", exc_info = True)
+        return budget
+
+
+async def _reserve_counted_gguf_chat(
+    *,
+    request,
+    llama_backend,
+    payload,
+    messages,
+    injected_tools = None,
+    tool_loop: bool = False,
+):
+    config = llama_admission_config_from_env()
+    counted = None
+    if config.enabled and config.kv_budget:
+        identity = (
+            getattr(llama_backend, "base_url", None),
+            _openai_llama_admission_budget(llama_backend),
+        )
+        counted = await asyncio.to_thread(
+            _count_gguf_admission_prompt, llama_backend, payload, messages, injected_tools
+        )
+        if identity != (
+            getattr(llama_backend, "base_url", None),
+            _openai_llama_admission_budget(llama_backend),
+        ):
+            counted = _openai_llama_admission_budget(llama_backend)
+    return _openai_llama_admission_reserve(
+        request = request,
+        llama_backend = llama_backend,
+        payload = payload,
+        tool_loop = tool_loop,
+        injected_tools = injected_tools,
+        counted_prompt_tokens = counted,
+    )
+
+
 def _openai_llama_admission_recost(
     reservation,
     conversation,
@@ -2209,6 +2283,7 @@ def _openai_llama_admission_recost(
     output_tokens: Optional[int] = None,
     cancel_event = None,
     injected_tools = None,
+    count_prepared_prompt: bool = False,
 ) -> None:
     """Charge a tool loop for what its conversation now is, not what it opened as.
 
@@ -2257,6 +2332,10 @@ def _openai_llama_admission_recost(
             message_image_parts = message_image_parts,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
         )
+        if count_prepared_prompt:
+            prompt_tokens = _count_gguf_admission_prompt(
+                llama_backend, payload, conversation, injected_tools
+            )
         # Reading "Max" literally here would put the run back on the whole cache at its
         # first round boundary.
         share = max(1, budget // max(1, capacity))
@@ -22779,6 +22858,7 @@ async def produce_openai_chat_completions(
                     # loop down to its share on its very first round.
                     output_tokens = effective_max_tokens,
                     injected_tools = tools_to_use,
+                    count_prepared_prompt = True,
                     # A round waiting for cache room must still answer Stop. Same event
                     # the loop polls each iteration, so a wait ends where a cancel would.
                     cancel_event = cancel_event,
@@ -22854,7 +22934,8 @@ async def produce_openai_chat_completions(
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
             try:
-                reservation, admission_config = _openai_llama_admission_reserve(
+                reservation, admission_config = await _reserve_counted_gguf_chat(
+                    messages = gguf_messages,
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
@@ -23613,7 +23694,8 @@ async def produce_openai_chat_completions(
             _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
             _tracker.__enter__()
             try:
-                reservation, admission_config = _openai_llama_admission_reserve(
+                reservation, admission_config = await _reserve_counted_gguf_chat(
+                    messages = gguf_messages,
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
@@ -23957,7 +24039,8 @@ async def produce_openai_chat_completions(
             )
         else:
             try:
-                reservation, admission_config = _openai_llama_admission_reserve(
+                reservation, admission_config = await _reserve_counted_gguf_chat(
+                    messages = gguf_messages,
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
