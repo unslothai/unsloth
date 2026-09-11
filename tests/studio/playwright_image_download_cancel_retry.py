@@ -90,6 +90,7 @@ def _open_quant(page, *, navigate: bool) -> None:
         page.goto(f"{BASE_URL}/images", wait_until = "domcontentloaded")
     trigger = page.get_by_role("button", name = "Select image model")
     trigger.wait_for(state = "visible", timeout = 30_000)
+    trigger.scroll_into_view_if_needed()
     # Finish input scrolling before opening the dismiss-on-scroll picker.
     page.evaluate("""async () => {
         const scrollers = [...document.querySelectorAll('*')]
@@ -131,6 +132,8 @@ def main() -> None:
     }
     page_errors: list[str] = []
     unload_calls = []
+    held_plans = []
+    hold_plan = DOWNLOAD_ONLY
 
     def download_plan() -> dict[str, object]:
         entries = [_entry(COMPANION_REPO)]
@@ -241,6 +244,9 @@ def main() -> None:
                 _json(route, variants)
                 return
             if path == "/api/inference/images/download-plan":
+                if hold_plan:
+                    held_plans.append(route)
+                    return
                 _json(route, download_plan())
                 return
             if path == "/api/studio/download-transport-capabilities":
@@ -346,6 +352,16 @@ def main() -> None:
             page.get_by_role("textbox", name = "Steps", exact = True).fill("17")
             page.get_by_role("textbox", name = "Guidance", exact = True).fill("2.5")
         _open_quant(page, navigate = not DOWNLOAD_ONLY)
+        if DOWNLOAD_ONLY:
+            page.get_by_test_id("nav-row-hub").click()
+            expect(page).to_have_url(f"{BASE_URL}/hub")
+            assert held_plans, "No pending plan to exercise"
+            hold_plan = False
+            for route in held_plans:
+                _json(route, download_plan())
+            held_plans.clear()
+            page.get_by_test_id("nav-row-images").click()
+            expect(page).to_have_url(f"{BASE_URL}/images")
         if EXPECT == "before":
             deadline = time.monotonic() + 20
             while int(state["load_calls"]) < 1 and time.monotonic() < deadline:

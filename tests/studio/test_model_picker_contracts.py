@@ -1649,7 +1649,7 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
         assert seq < first_await, f"{rel}: the sequence is taken after the plan await"
         # Before the non-hub return, so a local pick invalidates an in-flight hub plan.
         assert seq < text.index(
-            'if (source !== "hub")'
+            'if (source !== "hub"'
         ), f"{rel}: a non-hub pick returns without invalidating an in-flight hub plan"
         guards = re.findall(
             r"if \(pick !== pickSeq\.current(?: \|\| !owns\(\))?\) return (\w+);", text
@@ -1659,7 +1659,7 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
             set(guards) == {"true"}
         ), f"{rel}: a superseded pick reports failure, so its rollback fires at the newer pick's label"
         # The fallback load after a rejected plan is guarded too.
-        tail = text[text.rindex("} catch {") :]
+        tail = text[text.rindex("} catch") :]
         assert re.search(
             r"if \(pick !== pickSeq\.current(?: \|\| !owns\(\))?\) return true;.*?return handleLoadRef",
             tail,
@@ -1797,11 +1797,11 @@ def test_a_new_pick_drops_the_previous_staged_intent():
         text = body.group(1)
         cleared = text.index("pendingStagedLoad.current = null;")
         assert cleared < text.index(
-            'if (source !== "hub")'
+            'if (source !== "hub"'
         ), f"{rel}: a non-hub pick returns while the previous staged intent is still armed"
         assert cleared < text.index("await "), f"{rel}: the intent survives until the plan resolves"
         # The deferred re-fire and the rollback owner belong to that dead intent too.
-        head = text[: text.index('if (source !== "hub")')]
+        head = text[: text.index('if (source !== "hub"')]
         assert (
             "stagedLoadDeferred.current = false;" in head
         ), f"{rel}: a deferred staged load can still fire for the abandoned pick"

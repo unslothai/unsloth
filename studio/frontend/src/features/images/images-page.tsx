@@ -2611,7 +2611,8 @@ export function ImagesPage({
       pendingStagedLoad.current = null;
       stagedLoadDeferred.current = false;
       stagedQuantRevert.current = null;
-      const owns = () => token === undefined || pickGuard.holds(token);
+      const owns = () => token === undefined ||
+        (downloadOnly ? pickGuard.isLatest(token) : pickGuard.holds(token));
       if (!owns()) return true;
       if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts);
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
@@ -2619,6 +2620,11 @@ export function ImagesPage({
       // Read before the await: a pick made while the plan resolves replaces quantRevert, and this
       // job must not revert it.
       const ownRevert = quantRevert.current;
+      // Download-only picks never replace the resident model or its recipe.
+      if (downloadOnly && ownRevert) {
+        revertPick(ownRevert);
+        quantRevert.current = null;
+      }
       // Read inside the try, acted on outside it: refusing from in there would fall through to the
       // load if the refusal itself threw.
       let incompatible: string | null = null;
@@ -2626,6 +2632,9 @@ export function ImagesPage({
         const plan = await requestDownloadPlan(repoId, opts, advanced);
         // Superseded. Report started so this pick's `.then` leaves the newer label alone.
         if (pick !== pickSeq.current || !owns()) return true;
+        if (downloadOnly && plan.plan_failed) {
+          throw new Error("Required asset metadata is incomplete. Retry when it is available.");
+        }
         incompatible = plan.incompatible_reason ?? null;
         if (!incompatible && plan.entries.length > 0) {
           if (!downloadOnly) {
@@ -2654,8 +2663,7 @@ export function ImagesPage({
                   : e.repo_id === repoId),
             })),
           );
-          // Restore the resident selection while a download-only job runs.
-          return !downloadOnly;
+          return true;
         }
       } catch (error) {
         if (downloadOnly) {
@@ -2663,7 +2671,6 @@ export function ImagesPage({
             toast.error("Could not plan the download", {
               description: error instanceof Error ? error.message : "Try selecting the model again.",
             });
-            return false;
           }
           return true;
         }
@@ -2673,15 +2680,15 @@ export function ImagesPage({
       if (pick !== pickSeq.current || !owns()) return true;
       if (incompatible) {
         toast.error(incompatible);
-        return false;
+        return downloadOnly;
       }
       if (downloadOnly) {
-        toast.info("No files need downloading for this selection");
-        return false;
+        toast.info("No downloads were planned for this selection");
+        return true;
       }
       return handleLoadRef.current(repoId, opts, advanced);
     },
-    [stage, currentLoadAdvanced, requestDownloadPlan, modelSelectionAction],
+    [stage, currentLoadAdvanced, requestDownloadPlan, modelSelectionAction, pickGuard, revertPick],
   );
 
   const resolveDownloadFootprint = useCallback(
@@ -2714,7 +2721,9 @@ export function ImagesPage({
     ): Promise<boolean> => {
       // Claimed here so every entry point is covered; the next pick's claim makes this one inert.
       const token = pickGuard.claim();
-      const isCurrent = () => isMounted.current && pickGuard.holds(token);
+      const downloadOnly = modelSelectionAction === "download";
+      const isCurrent = () => isMounted.current &&
+        (downloadOnly ? pickGuard.isLatest(token) : pickGuard.holds(token));
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       return runGgufRepoPick({
         isCurrent,
@@ -2743,7 +2752,7 @@ export function ImagesPage({
           loadOrStage(repoId, { kind: "gguf", filename }, source, token),
       });
     },
-    [applyImageModelDefaults, loadOrStage, pickGuard, quant, revertPick],
+    [applyImageModelDefaults, loadOrStage, modelSelectionAction, pickGuard, quant, revertPick],
   );
 
   // A hidden page owns nothing: both stay mounted, so a resolution started here must not load after the user switched.
