@@ -2876,8 +2876,8 @@ class TestEveryDeviceSetChangeReAsks:
         # the rung probes its OWN visibility rather than the pre-gate snapshot
         assert "_rung_env=_mem_env_for(child_env)" in flat
         assert (
-            "self._gpu_offload_confirmed(binary,_rung_env,devices,host_resident,_mem_dio_possible)"
-            in flat
+            "self._gpu_offload_confirmed(binary,_rung_env,devices,host_resident,"
+            "_mem_dio_possible,_mem_extra_args,)" in flat
         )
         assert "fully_gpu_offloaded=fully_offloaded," in flat
 
@@ -3988,3 +3988,120 @@ class TestTheStripNeverEatsAUserAuthoredPair:
         assert _count_subsequence(["a", "a", "a", "a"], ["a", "a"]) == 2
         assert _count_subsequence(["x"], ["a"]) == 0
         assert _count_subsequence(["a"], []) == 0
+
+
+class TestTheProbeSeesTheNarrowedVisibility:
+    """Removals alone left a narrowing rung's new mask out of the probe, so it
+    re-enumerated the original adapter set and repeated the failure the narrowing
+    existed to clear."""
+
+    def test_a_new_mask_reaches_the_probe(self, monkeypatch):
+        import core.inference.llama_cpp as m
+
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+        monkeypatch.setattr(
+            m.LlamaCppBackend, "_llama_server_env_for_binary",
+            staticmethod(lambda b, **kw: {"PATH": "/venv/lib"}),
+        )
+        seen = {}
+
+        class _R:
+            returncode = 0
+            stdout = "Available devices:\n  CUDA0: x (1 MiB, 1 MiB free)\n"
+
+        monkeypatch.setattr(m.subprocess, "run", lambda *a, **kw: seen.update(kw) or _R())
+        m.LlamaCppBackend._run_list_devices("b", {"CUDA_VISIBLE_DEVICES": "1", "PATH": "x"})
+        assert seen["env"]["CUDA_VISIBLE_DEVICES"] == "1"
+        assert seen["env"]["PATH"] == "/venv/lib"
+
+    def test_a_changed_mask_overrides_the_inherited_one(self, monkeypatch):
+        import core.inference.llama_cpp as m
+
+        monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "0,1")
+        monkeypatch.setattr(
+            m.LlamaCppBackend, "_llama_server_env_for_binary",
+            staticmethod(lambda b, **kw: {"ROCR_VISIBLE_DEVICES": "0,1"}),
+        )
+        seen = {}
+
+        class _R:
+            returncode = 0
+            stdout = "Available devices:\n"
+
+        monkeypatch.setattr(m.subprocess, "run", lambda *a, **kw: seen.update(kw) or _R())
+        m.LlamaCppBackend._run_list_devices("b", {"ROCR_VISIBLE_DEVICES": "1"})
+        assert seen["env"]["ROCR_VISIBLE_DEVICES"] == "1"
+
+
+class TestLivenessCountsOrdinalsNotIds:
+    """A multi-backend build can enumerate one ordinal twice, as CUDA0 and Vulkan0.
+    Counting ids rejected a pinned launch whose devices were all live."""
+
+    def test_one_ordinal_under_two_backends_is_still_covered(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        assert B._offload_devices_are_live(["CUDA0", "Vulkan0"], [0]) is True
+
+    def test_a_missing_ordinal_still_declines(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        assert B._offload_devices_are_live(["CUDA0", "Vulkan0"], [0, 1]) is False
+
+    def test_every_requested_ordinal_must_appear(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        assert B._offload_devices_are_live(["CUDA0", "CUDA1"], [0, 1]) is True
+
+
+class TestAPassThroughDeviceOverrideDecidesPlacement:
+    """`--device` is appended last and decides where the child really puts the
+    weights, so confirming against the auto-selected ordinals could emit DirectIO for
+    a host-backed device the user pinned."""
+
+    def _confirm(self, monkeypatch, devices, gpu_indices, extra_args = None, env = None,
+                 discrete = True):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        monkeypatch.setattr(
+            LlamaCppBackend, "_enumerated_gpu_devices",
+            classmethod(lambda cls, binary = None, e = None: devices),
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_vulkan_offload_is_discrete",
+            staticmethod(lambda binary, idx = None: discrete),
+        )
+        return LlamaCppBackend._gpu_offload_confirmed(
+            "llama-server", env or {}, gpu_indices, False, True, extra_args
+        )
+
+    def test_an_override_onto_an_unclassifiable_device_declines(self, monkeypatch):
+        assert self._confirm(
+            monkeypatch, ["CUDA0", "SYCL1"], [0], ["--device", "SYCL1"]
+        ) is False
+
+    def test_an_override_onto_a_discrete_device_confirms(self, monkeypatch):
+        assert self._confirm(
+            monkeypatch, ["CUDA0", "SYCL1"], [1], ["--device", "CUDA0"]
+        ) is True
+
+    def test_an_override_naming_a_device_the_build_lacks_declines(self, monkeypatch):
+        assert self._confirm(
+            monkeypatch, ["CUDA0"], [0], ["--device", "CUDA3"]
+        ) is False
+
+    def test_a_cpu_override_declines(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["CUDA0"], [0], ["--device", "none"]) is False
+
+    def test_the_env_twin_is_honoured(self, monkeypatch):
+        assert self._confirm(
+            monkeypatch, ["CUDA0", "SYCL1"], [0], None, {"LLAMA_ARG_DEVICE": "SYCL1"}
+        ) is False
+
+    def test_argv_beats_the_env_twin(self, monkeypatch):
+        assert self._confirm(
+            monkeypatch, ["CUDA0", "SYCL1"], [1], ["--device", "CUDA0"],
+            {"LLAMA_ARG_DEVICE": "SYCL1"},
+        ) is True
+
+    def test_no_override_still_uses_the_auto_selection(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["CUDA0", "SYCL1"], [0]) is True

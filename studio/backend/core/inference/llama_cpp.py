@@ -8628,6 +8628,7 @@ class LlamaCppBackend:
         gpu_indices,
         host_resident: bool,
         dio_possible: bool,
+        extra_args = None,
     ) -> bool:
         """Whether this launch really puts the weights on a discrete GPU.
 
@@ -8651,6 +8652,23 @@ class LlamaCppBackend:
         if not dio_possible or host_resident:
             return False
         devices = cls._enumerated_gpu_devices(binary, env)
+        # A pass-through `--device` is appended last and decides where the child really
+        # puts the weights, so the auto-selected ordinals are not what runs. Its values
+        # are ggml ids, the namespace `--list-devices` prints, so they are checked
+        # directly against what the build enumerated.
+        override = cls._effective_device_ids(extra_args, env)
+        if override is not None:
+            if any(d.lower() in _CPU_DEVICE_VALUES for d in override):
+                return False
+            listed = {d.lower() for d in (devices or [])}
+            if not override or not {d.lower() for d in override} <= listed:
+                return False
+            gpu_indices = [
+                cls._device_ordinal(d)
+                for d in override
+                if cls._device_ordinal(d) is not None
+            ]
+            devices = [d for d in (devices or []) if d.lower() in {o.lower() for o in override}]
         if not cls._offload_devices_are_live(devices, gpu_indices):
             return False
         # EVERY selected device, not whichever kind was found first. A multi-backend
@@ -8664,6 +8682,27 @@ class LlamaCppBackend:
         if "vulkan" in backends:
             return cls._vulkan_offload_is_discrete(binary, gpu_indices)
         return True
+
+    @staticmethod
+    def _device_ordinal(device: str) -> Optional[int]:
+        """The trailing ordinal of a ggml device id, or None."""
+        match = re.search(r"(\d+)$", device)
+        return int(match.group(1)) if match else None
+
+    @classmethod
+    def _effective_device_ids(cls, extra_args, env) -> Optional[list[str]]:
+        """The explicit ``--device`` selection, or None when there is none.
+
+        Same precedence llama.cpp uses and `_device_selection_is_cpu` already mirrors:
+        the last argv value, then ``LLAMA_ARG_DEVICE``. The values are ggml device ids,
+        the same namespace ``--list-devices`` prints, so they compare directly.
+        """
+        value = _extra_args_main_device(extra_args)
+        if value is None and env:
+            value = env.get("LLAMA_ARG_DEVICE")
+        if value is None:
+            return None
+        return [d.strip() for d in str(value).split(",") if d.strip()]
 
     @staticmethod
     def _selected_devices(devices: Optional[list[str]], gpu_indices) -> list[str]:
@@ -8689,13 +8728,18 @@ class LlamaCppBackend:
 
         Replaces "do the host's GPUs exist": a device the host reports but the child
         cannot open is the case that confirmed an offload which never happened.
+
+        By ORDINAL COVERAGE, not device count: a multi-backend build can enumerate the
+        same ordinal twice (``CUDA0`` and ``Vulkan0``), and counting ids rejected a
+        pinned launch whose devices were all live.
         """
         selected = cls._selected_devices(devices, gpu_indices)
         if not selected:
             return False
         if not gpu_indices:
             return True
-        return len(selected) == len({int(i) for i in gpu_indices})
+        covered = {cls._device_ordinal(d) for d in selected}
+        return {int(i) for i in gpu_indices} <= covered
 
     @staticmethod
     def _device_backend(device: str) -> str:
@@ -8759,6 +8803,14 @@ class LlamaCppBackend:
         # environment with placement variables REMOVED, so its removals are replayed
         # rather than its whole mapping, which would drop the native paths again.
         if env is not None:
+            # BOTH directions. Removals alone left a narrowing rung's new mask out of
+            # the probe, so it re-enumerated the original adapter set and repeated the
+            # failure the narrowing existed to clear.
+            for name in _DEVICE_VISIBILITY_ENV:
+                if name in env:
+                    probe_env[name] = env[name]
+                else:
+                    probe_env.pop(name, None)
             for name in list(probe_env):
                 if name not in env and name in os.environ:
                     probe_env.pop(name, None)
@@ -24232,7 +24284,8 @@ class LlamaCppBackend:
                 # this resolves to. Gating on it only withheld dio from the multi-GB
                 # weights that DO respond to it.
                 _mem_gpu_offload_confirmed = self._gpu_offload_confirmed(
-                    binary, _mem_env, gpu_indices, _mem_host_resident, _mem_dio_possible
+                    binary, _mem_env, gpu_indices, _mem_host_resident, _mem_dio_possible,
+                    _mem_extra_args,
                 )
                 _mem_managed, _mem_extras = apply_model_memory_policy(
                     extra_args,
@@ -24374,7 +24427,8 @@ class LlamaCppBackend:
                         ),
                     )
                     confirmed = self._gpu_offload_confirmed(
-                        binary, _rung_env, devices, host_resident, _mem_dio_possible
+                        binary, _rung_env, devices, host_resident, _mem_dio_possible,
+                        _mem_extra_args,
                     )
 
                     def _for(pair, env_view):
