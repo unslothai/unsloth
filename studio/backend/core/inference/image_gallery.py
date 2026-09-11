@@ -14,6 +14,7 @@ sorts files.
 from __future__ import annotations
 
 import base64
+import errno
 import json
 import os
 import re
@@ -125,12 +126,16 @@ def image_b64(image_id: str) -> Optional[str]:
 _REQUIRED_META = ("prompt", "width", "height", "steps", "guidance", "seed", "created_at")
 
 
-def _read_meta(path: Path) -> Optional[dict[str, Any]]:
+def _read_meta(path: Path, *, strict_io: bool = False) -> Optional[dict[str, Any]]:
     from PIL import Image
 
     try:
         with Image.open(path) as im:
             raw = im.text.get(_META_KEY)  # type: ignore[attr-defined]
+    except OSError as exc:
+        if strict_io and exc.errno not in (None, errno.ENOENT):
+            raise
+        return None
     except Exception:
         return None
     if not raw:
@@ -237,7 +242,7 @@ def delete(image_id: str) -> bool:
     if path is None:
         return False
     # a hand-dropped foreign PNG is invisible to list_images, so a guessed id must not destroy it
-    if _read_meta(path) is None:
+    if _read_meta(path, strict_io = True) is None:
         return False
     try:
         path.unlink()
