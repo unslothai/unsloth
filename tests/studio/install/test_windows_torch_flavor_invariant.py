@@ -617,9 +617,12 @@ def test_the_rocm_arm_forces_a_reinstall_only_when_the_other_arms_would():
     assert "if ($script:TorchImportDefinitivelyFailed) { $rocmForce" in arm
     # torch alone names the family: a companion re-resolved from PyPI satisfies its pin
     # without linking ROCm, and only a forced reinstall replaces a satisfied package.
-    companion = arm[arm.index("$_companionProbe = Invoke-BoundedPythonProbe") :]
+    companion = arm[arm.index("$_companionNames = ") :]
     companion = companion[: companion.index("while ($true)")]
+    # Both spellings: Windows on ARM installs no torchaudio, so it is not probed there.
     assert "('torchvision', 'torchaudio')" in companion
+    assert "('torchvision',)" in companion
+    assert "$WinArm64NoAudio" in companion
     # +cpu, +cuNNN and +xpu companions beside a ROCm torch all force the trio.
     assert "t.startswith('cpu') or t.startswith('cu') or t.startswith('xpu')" in companion
     assert '$rocmForce = @("--force-reinstall")' in companion
