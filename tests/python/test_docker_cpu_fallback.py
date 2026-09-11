@@ -119,12 +119,17 @@ class TestRunShDegradesWithoutNvidia:
     def test_amd_host_gets_the_render_nodes_with_numeric_gids(self, tmp_path):
         """--group-add by NAME resolves inside the container, where the host's
         video/render groups do not exist, so the gids must be numeric."""
-        argv, _ = _invoke_run_sh(tmp_path, nvidia = False, amd = True)
+        argv, stderr = _invoke_run_sh(tmp_path, nvidia = False, amd = True)
         assert "--gpus" not in argv
         assert "--device" in argv
         assert "/dev/kfd" in argv and "/dev/dri" in argv
         gids = [argv[i + 1] for i, a in enumerate(argv) if a == "--group-add"]
         assert all(g.isdigit() for g in gids), f"non-numeric --group-add: {gids}"
+        # the devices go through, but no part of the image can drive them: torch is
+        # cu128 and the bundled llama.cpp has neither a HIP nor a Vulkan backend
+        assert "HIP" in stderr and "CPU" in stderr, (
+            "an AMD host must be told the container still runs on the CPU:\n" + stderr
+        )
 
     def test_the_group_lookup_is_guarded_on_getent_existing(self):
         """A host with no getent at all (busybox, some slim images) must skip the

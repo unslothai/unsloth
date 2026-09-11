@@ -19,6 +19,14 @@
 set -euo pipefail
 
 export JUPYTER_PORT="${JUPYTER_PORT:-8888}"
+# Studio's port is fixed at 8000 (studio_run.sh). JupyterLab starts first and wins the
+# bind, so Studio falls back to an unpublished 8001 while the summary below still sends
+# the user to 8000: Studio is simply gone, with no error.
+if [[ "${JUPYTER_PORT}" == "8000" ]]; then
+    printf "\033[1;31mERROR:\033[0m JUPYTER_PORT=8000 is Unsloth Studio's port inside the container.\n" >&2
+    printf "       Leave JupyterLab on 8888 and map the host side instead: -p 9000:8888\n" >&2
+    exit 1
+fi
 export UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"
 export UNSLOTH_JUPYTER_CLOUDFLARE="${UNSLOTH_JUPYTER_CLOUDFLARE:-0}"
 

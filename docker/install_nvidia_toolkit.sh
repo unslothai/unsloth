@@ -24,14 +24,18 @@ command -v docker >/dev/null 2>&1 \
 # Measured on `docker info` with a 50ms pause mid-output: status 141, the Docker Desktop guard skipped,
 # and the script elevating to install on the one daemon it exists to leave alone.
 
+# No Mac takes an NVIDIA GPU, whatever runs the daemon. Before the endpoint check below,
+# which sent colima and Rancher Desktop users off to configure a socket by hand.
+if [[ "$(uname -s)" == Darwin ]]; then
+    say "macOS: no NVIDIA GPU can be attached on a Mac, so there is nothing to install."
+    say "The image runs CPU-only there: drop --gpus and set UNSLOTH_ALLOW_CPU=1."
+    exit 0
+fi
+
 # Docker Desktop ships its own GPU integration; installing here would configure a daemon it does not use. Checked before elevating.
 docker_info="$(docker info 2>/dev/null || true)"
 if grep -qi 'Operating System: Docker Desktop' <<<"$docker_info"; then
-    if [[ "$(uname -s)" == Darwin ]]; then
-        say "Docker Desktop on macOS: no NVIDIA GPU can be attached on a Mac, so there is nothing to install."
-        say "The image runs CPU-only there: drop --gpus and set UNSLOTH_ALLOW_CPU=1."
-        exit 0
-    elif grep -qi microsoft "$PROC_VERSION" 2>/dev/null; then
+    if grep -qi microsoft "$PROC_VERSION" 2>/dev/null; then
         say "Docker Desktop with the WSL 2 backend: GPU support comes with it, nothing to install here."
         say "Keep a current NVIDIA Windows driver installed (from nvidia.com; wsl --update updates WSL itself, not the driver)."
         exit 0
