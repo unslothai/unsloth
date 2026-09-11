@@ -43,6 +43,16 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { WorkspaceFilesPanel } from "./components/workspace-files-panel";
+import { sandboxSessionIdFor } from "@/components/assistant-ui/sandbox-files";
+import { useChatProjectScope } from "./chat-project-scope";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -340,6 +350,13 @@ const SingleContent = memo(function SingleContent({
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const isMobile = useIsMobile();
   const chatActive = useChatActive();
+  const projectScope = useChatProjectScope();
+  const filesSession = sandboxSessionIdFor(
+    threadId ?? activeThreadId ?? undefined,
+    projectScope,
+  );
+  const [filesSessionOpen, setFilesSessionOpen] = useState<string | null>(null);
+  const filesOpen = Boolean(filesSession && filesSessionOpen === filesSession);
   const openResearchRunId = useResearchRunStore((state) => state.openRunId);
   const closeResearchPanel = useResearchRunStore((state) => state.closePanel);
   useEffect(() => {
@@ -375,7 +392,10 @@ const SingleContent = memo(function SingleContent({
         ? !artifact.threadId || artifact.threadId === threadId
         : Boolean(artifact.threadId && artifact.threadId === activeThreadId)),
   );
-  const showContextPanel = showResearchPanel || showArtifactPanel;
+  const showFilesPanel =
+    filesOpen && !isMobile && !showResearchPanel && !showArtifactPanel;
+  const showContextPanel =
+    showResearchPanel || showArtifactPanel || showFilesPanel;
 
   const artifactLayoutActive = showContextPanel || isArtifactPanelLayoutActive;
   const artifactPanelSettledOpen =
@@ -436,6 +456,27 @@ const SingleContent = memo(function SingleContent({
 
   const threadPane = (
     <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+      {filesSession && (
+        <div className="flex justify-end px-4 py-1">
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label="Browse workspace files"
+            aria-pressed={filesOpen}
+            onClick={() => {
+              if (filesOpen) setFilesSessionOpen(null);
+              else {
+                onCloseArtifact();
+                closeResearchPanel();
+                useChatRuntimeStore.getState().setSettingsPanelOpen(false);
+                setFilesSessionOpen(filesSession);
+              }
+            }}
+          >
+            Files
+          </Button>
+        </div>
+      )}
       <Thread hideWelcome={Boolean(threadId)} targetThreadId={threadId} />
     </div>
   );
@@ -516,10 +557,42 @@ const SingleContent = memo(function SingleContent({
                   openArtifact(artifact, { surface: "overlay" })
                 }
               />
+            ) : showFilesPanel && filesSession ? (
+              <WorkspaceFilesPanel
+                key={filesSession}
+                session={filesSession}
+                onClose={() => setFilesSessionOpen(null)}
+              />
             ) : null}
           </div>
         </ResizablePanel>
       </ResizablePanelGroup>
+      {isMobile && filesSession && (
+        <Sheet
+          open={chatActive && filesOpen && !researchMatchesThread}
+          onOpenChange={(open) => {
+            if (!open) setFilesSessionOpen(null);
+          }}
+        >
+          <SheetContent
+            showCloseButton={false}
+            className="gap-0 p-0"
+            style={{ width: "100vw", maxWidth: "100vw" }}
+          >
+            <SheetHeader className="sr-only">
+              <SheetTitle>Workspace files</SheetTitle>
+              <SheetDescription>
+                Browse and preview files in this chat’s workspace.
+              </SheetDescription>
+            </SheetHeader>
+            <WorkspaceFilesPanel
+              key={filesSession}
+              session={filesSession}
+              onClose={() => setFilesSessionOpen(null)}
+            />
+          </SheetContent>
+        </Sheet>
+      )}
       {openResearchRunId && researchMatchesThread ? (
         <ResearchActivitySheet
           runId={openResearchRunId}
