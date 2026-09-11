@@ -3051,9 +3051,7 @@ class TestThePlacementWindowIsPublished:
             (libs / name).write_text("")
         assert not LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [str(libs)])
 
-    @pytest.mark.parametrize(
-        "present", ["cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll"]
-    )
+    @pytest.mark.parametrize("present", ["cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll"])
     def test_only_one_of_the_three_is_still_missing(self, tmp_path, present):
         from core.inference.llama_cpp import LlamaCppBackend
 
@@ -3534,7 +3532,6 @@ class TestARetryKeepsThePlacementWindowOpen:
     def test_the_lock_still_owns_the_release(self):
         from core.inference.llama_cpp import LlamaCppBackend
         import inspect
-
         assert "self._memory_launch_pending = False" in inspect.getsource(
             LlamaCppBackend._serial_load_scope
         )
