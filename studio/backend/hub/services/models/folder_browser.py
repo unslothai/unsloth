@@ -21,7 +21,7 @@ from hub.utils.paths import (
     well_known_model_dirs,
 )
 from utils.paths.external_media import (
-    linux_run_media_mount_roots,
+    linux_external_mount_roots,
     macos_volume_roots,
     windows_drive_roots,
 )
@@ -56,7 +56,7 @@ def _build_browse_allowlist(
 
     _add(Path.home())
     if media_roots is None:
-        media_roots = [*linux_run_media_mount_roots(), *macos_volume_roots()]
+        media_roots = [*linux_external_mount_roots(), *macos_volume_roots()]
     if drive_roots is None:
         drive_roots = windows_drive_roots()
     for p in media_roots:

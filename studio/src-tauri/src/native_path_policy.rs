@@ -994,8 +994,15 @@ pub(crate) fn reject_sensitive_document_folder(path: &Path) -> Result<(), String
 
 #[cfg(target_os = "linux")]
 fn is_linux_removable_media_path(path: &Path) -> bool {
-    let media_root = Path::new("/run/media");
-    path != media_root && path.starts_with(media_root)
+    // udisks: /run/media/<user>/<volume>, Ubuntu udev: /media/<user>/<volume>
+    // or /media/<volume>, and ad-hoc mounts under /mnt/<name>.
+    for media_root in ["/run/media", "/media", "/mnt"] {
+        let media_root = Path::new(media_root);
+        if path != media_root && path.starts_with(media_root) {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1408,6 +1415,10 @@ mod tests {
         assert!(
             reject_sensitive_document_folder(Path::new("/run/media/user/USB/Documents")).is_ok()
         );
+        assert!(
+            reject_sensitive_document_folder(Path::new("/media/user/USB/Documents")).is_ok()
+        );
+        assert!(reject_sensitive_document_folder(Path::new("/mnt/ssd/Documents")).is_ok());
         assert!(reject_sensitive_document_folder(Path::new("/run/media")).is_err());
         assert!(reject_sensitive_document_folder(Path::new("/run/secrets")).is_err());
     }
