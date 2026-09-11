@@ -98,7 +98,6 @@ from core.inference.llama_server_args import (
     MANAGED_DIO_FLAGS,
     no_reserve_requires_dio,
     resolve_launch_load_mode,
-    resolve_effective_direct_io,
     resolve_effective_load_state,
     resolve_effective_memory_state,
     scrub_denied_env,
@@ -12535,9 +12534,6 @@ class LlamaCppBackend:
     # Binary dirs already reported by _warn_missing_windows_cuda_runtime. The env is rebuilt
     # for every launch and every --list-devices probe, so one line per binary is enough.
     _missing_cuda_runtime_warned: set[str] = set()
-    # binary_dir -> whether its CUDA backend has no cudart to load. See
-    # _windows_cuda_runtime_missing; consumed by the DirectIO confirmation.
-    _cuda_runtime_missing_by_dir: dict[str, bool] = {}
 
     @classmethod
     def _binary_key(cls, binary: Optional[str]) -> Optional[tuple[str, int]]:
@@ -12699,17 +12695,14 @@ class LlamaCppBackend:
 
     @classmethod
     def _cuda_runtime_missing_for(
-        cls,
-        binary: Optional[str],
-        env: Optional[Mapping[str, str]] = None,
+        cls, binary: Optional[str], env: Optional[Mapping[str, str]] = None
     ) -> bool:
         """Whether this install's CUDA plugin has no runtime to load.
 
-        Computes on demand rather than reading a value some later step fills in:
-        the DirectIO guard runs well before `_llama_server_env_for_binary`, so a
-        cache-only read answered "nothing missing" on every first load and a build
-        that cannot load its CUDA backend was confirmed as fully offloaded.
-        Memoised per binary dir, which is all the old dict was good for.
+        Computed every time, deliberately. The answer depends on PATH, CUDA_PATH,
+        GGML_BACKEND_PATH and the files themselves, so anything keyed on the binary
+        directory alone goes stale the moment one of those changes -- and the cost is
+        a handful of `os.listdir` calls, unlike the Vulkan probe this briefly copied.
         """
         if sys.platform != "win32":
             return False
@@ -12717,9 +12710,6 @@ class LlamaCppBackend:
             binary_dir = str(_llama_lib_dir(binary))
         except Exception:
             return False
-        cached = cls._cuda_runtime_missing_by_dir.get(binary_dir)
-        if cached is not None:
-            return cached
         source = os.environ if env is None else env
         try:
             path_dirs = cls._build_windows_path_dirs(
@@ -12730,9 +12720,7 @@ class LlamaCppBackend:
         # The FULL search path the child gets, inherited entries included: a
         # hand-installed toolkit puts the runtime on PATH without the venv knowing.
         path_dirs = path_dirs + [d for d in str(source.get("PATH", "")).split(";") if d]
-        answer = cls._windows_cuda_runtime_missing(binary_dir, path_dirs, env)
-        cls._cuda_runtime_missing_by_dir[binary_dir] = answer
-        return answer
+        return cls._windows_cuda_runtime_missing(binary_dir, path_dirs, env)
 
     @staticmethod
     def _ggml_plugin_roots(binary_dir: str, env: Optional[Mapping[str, str]] = None):
@@ -12873,13 +12861,6 @@ class LlamaCppBackend:
             # on the prepended directories alone told working custom setups to repair a fine install.
             _full_search_path = path_dirs + [d for d in existing_path.split(";") if d]
             LlamaCppBackend._warn_missing_windows_cuda_runtime(binary_dir, _full_search_path)
-            # A placement fact, not just a diagnostic: without cudart the backend does
-            # not load and the child runs on the CPU while host probes still see the
-            # card. Recorded against the search path the CHILD gets, which is richer
-            # than what the on-demand accessor can rebuild, so this overwrites its memo.
-            LlamaCppBackend._cuda_runtime_missing_by_dir[binary_dir] = (
-                LlamaCppBackend._windows_cuda_runtime_missing(binary_dir, _full_search_path, env)
-            )
 
             # ROCm: the prebuilt bundles rocblas.dll but NOT the Tensile
             # kernel files (rocblas/library/*.dat + *.hsaco); the DLL searches
@@ -25107,7 +25088,19 @@ class LlamaCppBackend:
                             _survivors, fully_offloaded = False
                         )
                         self._memory_dio_applicable = _gate_applicable
-                        if _gate_dio and not self._memory_dio_flags:
+                        # BOTH directions, like the reactive rung: narrowing can also
+                        # take the offload away, and leaving the pair on a child that
+                        # now partially offloads reads its CPU-resident layers into
+                        # allocated buffers instead of pageable mappings.
+                        if self._memory_dio_flags and not _gate_dio:
+                            cmd = self._drop_managed_dio(
+                                cmd,
+                                "the arch gate's surviving GPU(s) no longer confirm a "
+                                "full offload",
+                            )
+                            self._memory_dio_applicable = _gate_applicable
+                            self._record_memory_state(cmd, env)
+                        elif _gate_dio and not self._memory_dio_flags:
                             cmd = [*cmd, *_gate_dio]
                             self._memory_dio_flags = list(_gate_dio)
                             self._memory_policy_active = _gate_active or self._memory_policy_active

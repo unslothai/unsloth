@@ -2730,8 +2730,10 @@ class TestTheLaunchWithdrawsTheDio:
             self._src(),
             inspect.getsource(LlamaCppBackend._prepare_cpu_fallback_launch),
         )
-        # --fit on retry and arch-crash retry here, CPU replay in the builder.
-        assert launch.count("self._drop_managed_dio(") == 2
+        # --fit on retry, arch-crash retry and the proactive arch gate here; the CPU
+        # replay is in the builder. The gate strips as well as adds, like the reactive
+        # rung, or a narrowed set that loses the offload keeps the pair.
+        assert launch.count("self._drop_managed_dio(") == 3
         assert replay.count("self._drop_managed_dio(") == 1
         # Only the rung that strips `cmd` itself may forget the tokens.
         assert launch.count("clear_record = False") == 1
@@ -3209,9 +3211,9 @@ class TestASaveDuringPlacementIsAnswered:
         import utils.model_memory_settings as mm
 
         monkeypatch.setattr(
-            rs, "_active_launch_placement", lambda: (None, False, True, None, False)
+            rs, "_active_launch_placement",
+            lambda: (None, False, True, None, False, (False, False)),
         )
-        monkeypatch.setattr(rs, "_pending_launch_settings", lambda: (False, False))
         monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))
         assert rs._model_memory_reload_required() is True
 
@@ -3220,9 +3222,9 @@ class TestASaveDuringPlacementIsAnswered:
         import utils.model_memory_settings as mm
 
         monkeypatch.setattr(
-            rs, "_active_launch_placement", lambda: (None, False, True, None, False)
+            rs, "_active_launch_placement",
+            lambda: (None, False, True, None, False, (False, True)),
         )
-        monkeypatch.setattr(rs, "_pending_launch_settings", lambda: (False, True))
         monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))
         assert rs._model_memory_reload_required() is False
 
@@ -3370,9 +3372,9 @@ class TestAReplacementLoadIsNotAnsweredByTheOldChild:
 
         # the killed child's state is still present and non-None
         monkeypatch.setattr(
-            rs, "_active_launch_placement", lambda: ((False, False), False, True, False, False)
+            rs, "_active_launch_placement",
+            lambda: ((False, False), False, True, False, False, (False, False)),
         )
-        monkeypatch.setattr(rs, "_pending_launch_settings", lambda: (False, False))
         monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))
         assert rs._model_memory_reload_required() is True
 
@@ -3383,6 +3385,9 @@ class TestAReplacementLoadIsNotAnsweredByTheOldChild:
         src = inspect.getsource(rs._model_memory_reload_required)
         assert "if pending is not None:" in src
         assert "if state is None and pending is not None:" not in src
+        # one read, so the two cannot straddle the marker clear
+        assert "_pending_launch_settings" not in src
+        assert src.count("_active_launch_placement()") == 1
 
 
 class TestLoadabilityIsComputedNotAwaited:
@@ -3393,7 +3398,6 @@ class TestLoadabilityIsComputedNotAwaited:
     def test_the_guard_computes_on_demand(self, monkeypatch, tmp_path):
         import core.inference.llama_cpp as m
 
-        m.LlamaCppBackend._cuda_runtime_missing_by_dir.clear()
         monkeypatch.setattr(m.sys, "platform", "win32")
         monkeypatch.setattr(m, "_llama_lib_dir", lambda b: tmp_path)
         monkeypatch.setattr(
@@ -3408,7 +3412,6 @@ class TestLoadabilityIsComputedNotAwaited:
     def test_a_complete_runtime_clears_it(self, monkeypatch, tmp_path):
         import core.inference.llama_cpp as m
 
-        m.LlamaCppBackend._cuda_runtime_missing_by_dir.clear()
         libs = tmp_path / "libs"
         libs.mkdir()
         (libs / "cudart64_12.dll").write_text("")

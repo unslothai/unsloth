@@ -902,8 +902,8 @@ _NO_LAUNCH = object()
 
 
 def _active_launch_placement():
-    """``(state, policy_active, mlock_applicable, direct_io, dio_applicable)``
-    for the running child.
+    """``(state, policy_active, mlock_applicable, direct_io, dio_applicable,
+    pending_settings)`` for the running child.
 
     ``state`` is ``_NO_LAUNCH`` when nothing is running or coming up, so the
     caller can tell "no process" apart from "a process with no load-mode".
@@ -912,32 +912,23 @@ def _active_launch_placement():
         from routes.inference import get_llama_cpp_backend
 
         backend = get_llama_cpp_backend()
+        # Read ONCE, in one pass: two separate reads of the backend can straddle the
+        # marker clear, and a replacement load finishing in between left the killed
+        # child's placement answering for the launch that replaced it.
         pending = bool(getattr(backend, "_memory_launch_pending", False))
+        pending_settings = getattr(backend, "_memory_pending_settings", None)
         if not backend.is_active and not pending:
-            return _NO_LAUNCH, False, True, None, False
+            return _NO_LAUNCH, False, True, None, False, None
         return (
             getattr(backend, "_memory_state", None),
             bool(getattr(backend, "_memory_policy_active", False)),
             bool(getattr(backend, "_memory_mlock_applicable", True)),
             getattr(backend, "_memory_direct_io", None),
             bool(getattr(backend, "_memory_dio_applicable", False)),
+            pending_settings if pending else None,
         )
     except Exception:
-        return _NO_LAUNCH, False, True, None, False
-
-
-def _pending_launch_settings():
-    """The ``(keep_resident, no_ram_reserve)`` a launch in flight is committed to, or
-    None when nothing is mid-placement."""
-    try:
-        from routes.inference import get_llama_cpp_backend
-
-        backend = get_llama_cpp_backend()
-        if not bool(getattr(backend, "_memory_launch_pending", False)):
-            return None
-        return getattr(backend, "_memory_pending_settings", None)
-    except Exception:
-        return None
+        return _NO_LAUNCH, False, True, None, False, None
 
 
 def _model_memory_reload_required() -> bool:
@@ -954,7 +945,9 @@ def _model_memory_reload_required() -> bool:
     same window before Popen, where the placement is decided but _process is
     still None.
     """
-    state, policy_active, mlock_applicable, direct_io, dio_applicable = _active_launch_placement()
+    state, policy_active, mlock_applicable, direct_io, dio_applicable, pending = (
+        _active_launch_placement()
+    )
     if state is _NO_LAUNCH:
         return False
 
@@ -965,7 +958,6 @@ def _model_memory_reload_required() -> bool:
     # Whenever one is pending, NOT only when `state` is None: replacing a model kills
     # the old process without clearing its `_memory_state`, so the stale placement of
     # a child that is already gone would otherwise answer for the launch replacing it.
-    pending = _pending_launch_settings()
     if pending is not None:
         from utils.model_memory_settings import get_model_memory_settings
         return get_model_memory_settings() != pending
@@ -986,7 +978,9 @@ def _model_memory_mlock_active(want_mlock: bool) -> bool:
     user's own --mlock counts, since the resolver reads the launched argv."""
     if not want_mlock:
         return False
-    state, _policy_active, _applicable, _direct_io, _dio_applicable = _active_launch_placement()
+    state, _policy_active, _applicable, _direct_io, _dio_applicable, _pending = (
+        _active_launch_placement()
+    )
     if state is _NO_LAUNCH:
         return True
     return bool(state and state[0])
