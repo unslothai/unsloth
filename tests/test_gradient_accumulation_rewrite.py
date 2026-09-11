@@ -10,7 +10,7 @@ import pytest
 # The shape patch_gradient_accumulation_fix rewrites: backward() runs on the undivided loss and
 # the division only reaches the returned value, so the gradients keep the wrong scale. It is what
 # transformers had before huggingface/transformers#35808 reordered the two.
-OLD_TRAINING_STEP = '''\
+OLD_TRAINING_STEP = """\
 def _unsloth_training_step(self, model, inputs, num_items_in_batch = None):
     loss = self.compute_loss(model, inputs, num_items_in_batch = num_items_in_batch)
     if self.use_apex:
@@ -21,7 +21,7 @@ def _unsloth_training_step(self, model, inputs, num_items_in_batch = None):
         if num_items_in_batch is None:
             return loss.detach() / self.args.gradient_accumulation_steps
     return loss.detach()
-'''
+"""
 
 
 @pytest.fixture
@@ -71,5 +71,7 @@ def test_rewrite_keeps_the_source_parseable(rewrite):
     body = rewritten.splitlines()
     indent = {line: len(line) - len(line.lstrip()) for line in body if line.strip()}
     division = next(line for line in body if "loss = loss /" in line)
-    backward = next(line for line in body if "accelerator.backward" in line and "scaled" not in line)
+    backward = next(
+        line for line in body if "accelerator.backward" in line and "scaled" not in line
+    )
     assert indent[division] == indent[backward] + 4
