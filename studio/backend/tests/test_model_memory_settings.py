@@ -3844,9 +3844,8 @@ class TestEverySelectedBackendMustBeClassifiable:
 
 class TestTheDeviceMemoFollowsVisibility:
     """The child enumerates what the environment lets it see, so the memo is keyed on
-    that too. A recovery rung that masks an unsupported adapter has a different answer
-    coming; keyed on the binary alone it kept the original set's failure and could
-    never gain DirectIO on the very path meant to."""
+    that too. Keyed on the binary alone, a rung that masks an unsupported adapter kept
+    the original set's failure and could never gain DirectIO."""
 
     def test_a_changed_mask_re_probes(self, monkeypatch):
         import core.inference.llama_cpp as m

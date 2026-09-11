@@ -6193,8 +6193,7 @@ _MISSING = object()
 # integrated GPU nothing here recognises, so it declines.
 _SELF_EVIDENTLY_DISCRETE = frozenset({"cuda", "rocm", "hip"})
 
-# What the child enumerates depends on these as much as on the binary: a visibility
-# mask hides adapters, and GGML_BACKEND_PATH decides which plugins load at all. The
+# What the child enumerates depends on these as much as on the binary, and the
 # recovery rungs narrow exactly these, so a memo keyed on the binary alone answered a
 # narrowed set with the original set's verdict.
 _DEVICE_VISIBILITY_ENV = (
@@ -8708,12 +8707,9 @@ class LlamaCppBackend:
 
     @staticmethod
     def _device_visibility_key(env: Optional[Mapping[str, str]]):
-        """What this environment lets the child see, as a memo key.
-
-        The probe is memoised per load, but a recovery rung that masks an adapter has
-        a different answer coming: without this, a rung that narrows onto a usable
-        discrete GPU kept the original set's failure and could never gain DirectIO.
-        """
+        """What this environment lets the child see, as a memo key. A rung that masks
+        an adapter has a different answer coming, and without this a narrowing onto a
+        usable discrete GPU kept the original set's failure."""
         source = os.environ if env is None else env
         return tuple((name, source.get(name)) for name in _DEVICE_VISIBILITY_ENV)
 
