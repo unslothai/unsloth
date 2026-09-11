@@ -748,6 +748,21 @@ def read_mmproj_projector_type(path: str) -> Optional[str]:
     return _read_gguf_string(path, "clip.projector_type")
 
 
+def read_mmproj_vision_projector_type(path: str) -> Optional[str]:
+    """The IMAGE tower's projector family, or None if absent or unreadable.
+
+    Separate from :func:`read_mmproj_projector_type` because a projector carrying both
+    towers spells it per-modality instead: Gemma 4 writes ``clip.vision.projector_type
+    = gemma4uv`` next to ``clip.audio.projector_type = gemma4ua`` and no bare
+    ``clip.projector_type`` at all. Reads the per-modality key first so a unified
+    projector answers with its vision tower rather than nothing, and falls back to the
+    bare key that single-tower converts (qwen3vl_merger, gemma3, pixtral) still use.
+    """
+    return _read_gguf_string(path, "clip.vision.projector_type") or _read_gguf_string(
+        path, "clip.projector_type"
+    )
+
+
 def read_mmproj_vision_capability(path: str) -> Optional[bool]:
     """``clip.has_vision_encoder`` from an mmproj GGUF: ``True``/``False`` if
     present, ``None`` if absent/unreadable."""

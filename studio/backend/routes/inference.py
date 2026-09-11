@@ -9988,10 +9988,14 @@ def _remote_opens_vision_mmproj(
 ) -> bool:
     """``_launch_vision_mmproj`` for a repository nothing has downloaded yet.
 
-    No file to ask, so a vision repo is charged as if its projector opens images, as
-    ``include_mmproj`` already does. Off the config, not a Hub listing, because
-    ``_gguf_resident_file_gb`` subtracts this term and pairs with it on every settings
-    change.
+    Deliberately coarser than the local path, which reads the projector family and
+    raises only for the Gemma 4 towers: no file to ask here, so a vision repo is
+    charged as if its projector opens images, as ``include_mmproj`` already does. Only
+    the training-admission guard reads this -- the layer fit runs in load_model after
+    the download, off the real file -- so the cost is a conservative reserve for one
+    pre-download estimate rather than a smaller offload. Off the config, not a Hub
+    listing, because ``_gguf_resident_file_gb`` subtracts this term and pairs with it
+    on every settings change.
     """
     from core.inference.llama_cpp import (
         _child_effective_mmproj,
@@ -10043,26 +10047,32 @@ def _gguf_runtime_bytes(
     over-reserves on purpose; a panel quoting a number to a user wants the other
     one, since a smaller ``-c`` in the extras is the context the user gets."""
     try:
-        from core.inference.llama_cpp import _batch_ubatch_for_mmproj, _mmproj_opens_images
+        from core.inference.llama_cpp import (
+            _batch_ubatch_for_mmproj,
+            _mmproj_needs_bigger_ubatch,
+        )
         from core.inference.llama_server_args import (
             parse_ctx_override,
             resolve_ctx_checkpoints,
             resolve_requested_ctx,
         )
 
-        # load_model raises the pair for an image-projector launch, so price that pair
-        # here too, or the panel quotes and admission approves a micro-batch the child
-        # does not run at.
+        probe = _probe_backend()
+        probe._model_identifier = model_identifier
+        probe._read_gguf_metadata(gguf_path)
+        # load_model raises the pair for a projector that can abort the server, so price
+        # that pair here too, or the panel quotes and admission approves a micro-batch
+        # the child does not run at. After the header read: the Gemma 4 test needs this
+        # model's text n_embd to tell E2B/E4B, which decode causally, from the rest.
         n_batch, n_ubatch = _batch_ubatch_for_mmproj(
-            not is_diffusion and _mmproj_opens_images(launch_vision_mmproj),
+            not is_diffusion
+            and _mmproj_needs_bigger_ubatch(
+                launch_vision_mmproj, getattr(probe, "_embedding_length", None)
+            ),
             n_batch,
             n_ubatch,
             llama_extra_args,
         )
-
-        probe = _probe_backend()
-        probe._model_identifier = model_identifier
-        probe._read_gguf_metadata(gguf_path)
         # Carried out even when the cache cannot be sized: block_count is a separate
         # key and is usually there, and a caller that loses it prices a manual offload
         # split as fully GPU-resident (_gguf_offloaded_layer_fraction has nothing to

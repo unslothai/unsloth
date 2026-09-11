@@ -4292,14 +4292,25 @@ def _strip_flag_pairs(args: Iterable[str], flags: frozenset[str]) -> list[str]:
 _DEFAULT_LLAMA_N_BATCH = 2048
 _DEFAULT_LLAMA_N_UBATCH = 512
 # mtmd cuts an image into chunks of min(n_batch, its tokens) and asserts n_ubatch >=
-# the chunk while attention is non-causal (llama-context.cpp): 1120 against a 512
-# ubatch on Gemma 4, and the server aborts. 2048 is a bound, not a guess --
-# mtmd_decode_use_non_causal is True only for gemma4v (outside E2B/E4B), gemma4uv,
-# gemma3 and deepseek4v, which clip.cpp caps at 1120, 1120, 256 and 384 tokens per
-# image, while qwen3vl (4096) and youtuvl (62500) decode causally and never reach the
-# assert. Only a hand-raised --image-max-tokens gets past it, and that flag documents
-# raising -ub alongside.
+# the chunk while attention is non-causal (llama-context.cpp:1749): a measured 862
+# against a 512 ubatch on Gemma 4 12B, and the server aborts. 2048 is a bound, not a
+# guess: clip.cpp caps one Gemma 4 image at set_limit_image_tokens(70, 1120). Only a
+# hand-raised --image-max-tokens gets past it, and that flag documents raising -ub
+# alongside.
 _MMPROJ_DEFAULT_N_BATCH_UBATCH = 2048
+# Which projectors can actually reach that assert. mtmd_decode_use_non_causal is True
+# for exactly gemma4v (outside E2B/E4B, identified by the TEXT n_embd), gemma4uv,
+# gemma3 and deepseek4v, and of those only the two Gemma 4 towers exceed 512 tokens
+# per image: gemma3 is capped at 256 and deepseek4v at 384, both of which the stock
+# ubatch already holds. Everything else -- qwen3vl at 4096, youtuvl at 62500 -- decodes
+# causally and never reaches it however big its images are.
+#
+# Raising for them anyway is not free: the fit adds the flat compute buffer straight
+# into model_size_fit, and _estimate_compute_buffer_bytes scales it with the ubatch, so
+# a blanket raise costs ~5 GiB of budget on a four-slot default and pushes layers of a
+# model like Qwen3-VL onto the CPU for an assert it cannot hit.
+_MMPROJ_NON_CAUSAL_OVER_UBATCH = frozenset({"gemma4v", "gemma4uv"})
+_GEMMA4V_CAUSAL_TEXT_N_EMBD = frozenset({1536, 2560})  # E2B and E4B
 _LLAMA_ARG_TRUE_VALUES = frozenset({"on", "enabled", "true", "1"})
 _LLAMA_ARG_FALSE_VALUES = frozenset({"off", "disabled", "false", "0"})
 _LLAMA_ARG_AUTO_VALUES = frozenset({"auto", "-1"})
@@ -5856,6 +5867,35 @@ def _mmproj_opens_images(mmproj_path: Optional[str]) -> bool:
     except Exception as e:
         logger.debug(f"mmproj capability read failed: {e}")
         return True
+
+
+def _mmproj_needs_bigger_ubatch(
+    mmproj_path: Optional[str], n_embd_text: Optional[int] = None
+) -> bool:
+    """Whether this projector can hand llama.cpp an image chunk the 512 default aborts on.
+
+    Read off ``clip.vision.projector_type`` rather than assumed, so the raise reaches
+    the two Gemma 4 towers that assert and nothing else; see
+    ``_MMPROJ_NON_CAUSAL_OVER_UBATCH`` for why a blanket raise is the expensive answer.
+    A projector nothing can read -- a URL, or a header without the key -- keeps the
+    raise, since being wrong there is a crashed server rather than a smaller offload.
+    """
+    if not mmproj_path:
+        return False
+    try:
+        from utils.models.gguf_metadata import read_mmproj_vision_projector_type
+        projector = read_mmproj_vision_projector_type(mmproj_path)
+    except Exception as e:
+        logger.debug(f"mmproj projector type read failed: {e}")
+        return _mmproj_opens_images(mmproj_path)
+    if not projector:
+        return _mmproj_opens_images(mmproj_path)
+    projector = projector.strip().lower()
+    if projector not in _MMPROJ_NON_CAUSAL_OVER_UBATCH:
+        return False
+    if projector == "gemma4v" and n_embd_text in _GEMMA4V_CAUSAL_TEXT_N_EMBD:
+        return False
+    return True
 
 
 def _batch_ubatch_for_mmproj(
@@ -20038,7 +20078,7 @@ class LlamaCppBackend:
                 {} if disable_vision else None,
             )
             n_batch, n_ubatch = _batch_ubatch_for_mmproj(
-                _mmproj_opens_images(_fit_vision_mmproj),
+                _mmproj_needs_bigger_ubatch(_fit_vision_mmproj, self._embedding_length),
                 n_batch,
                 n_ubatch,
                 extra_args,

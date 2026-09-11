@@ -13,6 +13,7 @@ from studio.backend.core.inference.llama_cpp import (
     LlamaCppBackend,
     _batch_ubatch_for_mmproj,
     _child_effective_mmproj,
+    _mmproj_needs_bigger_ubatch,
     _mmproj_opens_images,
     _MMPROJ_DEFAULT_N_BATCH_UBATCH,
 )
@@ -139,6 +140,59 @@ class TestMmprojOpensImages:
 
         monkeypatch.setattr(meta, "mmproj_accepts_image", _boom)
         assert _mmproj_opens_images("/m/mmproj-F16.gguf") is True
+
+
+class TestMmprojNeedsBiggerUbatch:
+    """Only the projectors that can actually abort the server pay for the raise."""
+
+    @staticmethod
+    def _projector(monkeypatch, tmp_path, value):
+        import utils.models.gguf_metadata as meta
+
+        path = tmp_path / "mmproj.gguf"
+        path.write_bytes(b"")
+        monkeypatch.setattr(meta, "read_mmproj_vision_projector_type", lambda p: value)
+        return str(path)
+
+    @pytest.mark.parametrize(
+        "projector, n_embd, expected",
+        [
+            # gemma4uv is non-causal for every text size; 1120 tokens clears 512.
+            ("gemma4uv", 3840, True),
+            # gemma4v is non-causal EXCEPT on E2B (1536) and E4B (2560).
+            ("gemma4v", 3840, True),
+            ("gemma4v", 2560, False),
+            ("gemma4v", 1536, False),
+            # Non-causal but capped under the stock ubatch: 256 and 384 tokens.
+            ("gemma3", 2560, False),
+            ("deepseek4v", 4096, False),
+            # Causal, so no image size reaches the assert.
+            ("qwen3vl_merger", 2048, False),
+            ("youtuvl", 4096, False),
+            ("pixtral", 4096, False),
+        ],
+    )
+    def test_projector_families(self, monkeypatch, tmp_path, projector, n_embd, expected):
+        path = self._projector(monkeypatch, tmp_path, projector)
+        assert _mmproj_needs_bigger_ubatch(path, n_embd) is expected
+
+    def test_no_projector(self):
+        assert _mmproj_needs_bigger_ubatch(None, 4096) is False
+
+    def test_an_unnamed_family_keeps_the_raise(self, monkeypatch, tmp_path):
+        # A header without the key could still be a Gemma 4, and guessing wrong there
+        # crashes the server rather than costing an offload.
+        path = self._projector(monkeypatch, tmp_path, None)
+        assert _mmproj_needs_bigger_ubatch(path, 3840) is True
+
+    def test_an_unfetched_url_keeps_the_raise(self, monkeypatch):
+        import utils.models.gguf_metadata as meta
+        monkeypatch.setattr(meta, "read_mmproj_vision_projector_type", lambda p: None)
+        assert _mmproj_needs_bigger_ubatch("https://example.invalid/mmproj.gguf", 3840) is True
+
+    def test_an_audio_only_projector_does_not_pay(self, monkeypatch, tmp_path):
+        path = self._projector(monkeypatch, tmp_path, "ultravox")
+        assert _mmproj_needs_bigger_ubatch(path, 4096) is False
 
 
 class TestRemoteOpensVisionMmproj:
