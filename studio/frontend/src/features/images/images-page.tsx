@@ -682,7 +682,7 @@ function AdvancedSelect({
           {badge}
         </span>
         <Select value={value} onValueChange={onValueChange}>
-          <SelectTrigger className="h-8 w-[160px] text-xs">
+          <SelectTrigger aria-label={label} className="h-8 w-[160px] text-xs">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -1145,6 +1145,7 @@ type LoadAdvanced = Pick<
   | "cpu_offload"
   | "speed_mode"
   | "transformer_quant"
+  | "text_encoder_quant"
   | "attention_backend"
   | "memory_mode"
   | "transformer_cache"
@@ -1268,6 +1269,9 @@ export function ImagesPage({
   const [speedMode, setSpeedMode] = useState<"auto" | "off" | "eager" | "default" | "max">("auto");
   const [transformerQuant, setTransformerQuant] = useState<
     "none" | "auto" | "int8" | "fp8" | "nvfp4" | "mxfp8"
+  >("auto");
+  const [textEncoderQuant, setTextEncoderQuant] = useState<
+    "auto" | NonNullable<DiffusionLoadRequest["text_encoder_quant"]>
   >("auto");
   const [attentionBackend, setAttentionBackend] = useState<"auto" | "native" | "cudnn" | "flash3" | "sage">(
     "auto",
@@ -2315,7 +2319,9 @@ export function ImagesPage({
   // engaged and Precision never advertises a scheme the model is not running. Keyed on the
   // LOAD-TIME half of the record: the backend rewrites the speed/attention/cache entries at
   // GENERATION time, and the whole record threw away a Precision picked but not yet loaded.
-  const resolvedKey = status?.loaded ? resolvedSeedKey(status.resolved) : null;
+  const resolvedKey = status?.loaded
+    ? JSON.stringify([resolvedSeedKey(status.resolved), status.resolved?.text_encoder_quant])
+    : null;
   useEffect(() => {
     const record = status?.loaded ? status.resolved : null;
     if (!record) return;
@@ -2326,6 +2332,12 @@ export function ImagesPage({
       ) ?? null,
     );
     if (quant) setTransformerQuant(quant);
+    const encoder = resolvedSelectValue(record.text_encoder_quant, (v) =>
+      (["auto", "fp8", "fp8_dynamic", "int8", "nvfp4"] as const).find(
+        (o) => o === v || (o === "auto" && (v === "none" || v === "off")),
+      ) ?? null,
+    );
+    if (encoder) setTextEncoderQuant(encoder);
     const memory = resolvedSelectValue(record.memory_mode, (v) =>
       (["auto", "fast", "balanced", "low_vram"] as const).find((o) => o === v) ?? null,
     );
@@ -2359,6 +2371,7 @@ export function ImagesPage({
         cpu_offload: cpuOffload,
         speed_mode: speedMode === "auto" ? undefined : speedMode,
         transformer_quant: transformerQuant === "auto" ? undefined : transformerQuant,
+        text_encoder_quant: textEncoderQuant === "auto" ? undefined : textEncoderQuant,
         attention_backend: attentionBackend === "auto" ? undefined : attentionBackend,
         memory_mode: memoryMode === "auto" ? undefined : memoryMode,
         transformer_cache: transformerCache === "auto" ? undefined : transformerCache,
@@ -2376,6 +2389,7 @@ export function ImagesPage({
       cpuOffload,
       speedMode,
       transformerQuant,
+      textEncoderQuant,
       attentionBackend,
       memoryMode,
       transformerCache,
@@ -2446,6 +2460,7 @@ export function ImagesPage({
           // its checkpoint's own precision. The control is hidden there but the state persists across
           // picks, so a stale scheme would reach a load that can only decline it.
           transformer_quant: opts.kind === "gguf" ? advanced.transformer_quant : undefined,
+          text_encoder_quant: advanced.text_encoder_quant,
           attention_backend: advanced.attention_backend,
           memory_mode: advanced.memory_mode,
           transformer_cache: advanced.transformer_cache,
@@ -2581,6 +2596,7 @@ export function ImagesPage({
         speed_mode: advanced.speed_mode,
         // Non-GGUF loads ignore this control; the plan must describe the same request as handleLoad.
         transformer_quant: opts.kind === "gguf" ? advanced.transformer_quant : undefined,
+        text_encoder_quant: advanced.text_encoder_quant,
         memory_mode: advanced.memory_mode,
         // The backend prefetch decision reads the adapter selection too: a baked LoRA always runs the
         // dense build path, and omitting it staged too little.
@@ -3438,6 +3454,20 @@ export function ImagesPage({
           <span className="text-xs text-muted-foreground/60">GGUF models only</span>
         </div>
       )}
+      <AdvancedSelect
+        label="Text encoder precision"
+        hint="Lower precision reduces text-encoder memory but can change image quality. Supported modes depend on the GPU and model. Default keeps the existing encoder precision; the loaded build below reports what was applied."
+        badge={<ResolvedBadge status={status} controlKey="text_encoder_quant" />}
+        value={textEncoderQuant}
+        onValueChange={(v) => setTextEncoderQuant(v as typeof textEncoderQuant)}
+        options={[
+          ["auto", "Default"],
+          ["fp8", "FP8 (storage)"],
+          ["fp8_dynamic", "FP8 (compute)"],
+          ["int8", "INT8"],
+          ["nvfp4", "NVFP4 (Blackwell)"],
+        ]}
+      />
       <AdvancedSelect
         label="Attention"
         hint="Attention kernel. Auto upgrades to cuDNN fused attention on NVIDIA when a speed profile is active. sage is INT8 attention: fast (10-40%) but can black-frame some families (Qwen, Wan), so it never engages automatically."
