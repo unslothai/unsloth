@@ -9613,10 +9613,11 @@ class LlamaCppBackend:
             # NVLink for a pair that is not the one about to run (#10613).
             # Unless the whole box is NVLinked, where the mapping cannot matter and
             # vetoing would lose P2P on every auto-fit NVSwitch launch (#6098).
+            uniformly_nvlinked = all(cls._label_is_nvlink(v) for v in matrix.values())
             if not (
                 launch_order_pinned
                 or os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID"
-                or all(cls._label_is_nvlink(v) for v in matrix.values())
+                or uniformly_nvlinked
             ):
                 return _pcie(
                     "the child's device order is not pinned to PCI_BUS_ID and the "
@@ -9633,7 +9634,10 @@ class LlamaCppBackend:
                 if ids_are_pci_indices is None
                 else ids_are_pci_indices
             )
-            if cls._matrix_is_nvml(matrix) and not pci_ids:
+            # Same escape as the ordering check above, for the same reason: on a
+            # uniformly NVLinked box every mapping gives the same verdict, and ids
+            # that fall outside the matrix still veto on the lookup below.
+            if cls._matrix_is_nvml(matrix) and not pci_ids and not uniformly_nvlinked:
                 return _pcie(
                     "the GPU selection came from torch rather than nvidia-smi, so "
                     "its ids are CUDA ordinals and cannot be matched against the "

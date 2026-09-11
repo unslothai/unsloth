@@ -1273,8 +1273,13 @@ def test_nvml_unlinked_pair_vetoes_p2p(monkeypatch):
 
 def test_nvml_matrix_needs_nvidia_smi_provenance(monkeypatch):
     """`topo -m` answering proves nvidia-smi enumerated the selection; NVML does not,
-    so torch-ordinal ids must not be matched against an NVML matrix."""
-    _use_nvml(monkeypatch, _FakeNvml(count = 4))
+    so torch-ordinal ids must not be matched against an NVML matrix. Partially
+    bridged, since on a uniform fabric the mapping cannot change the verdict and
+    provenance is deliberately not required."""
+    _use_nvml(
+        monkeypatch,
+        _FakeNvml(count = 4, linked_pairs = {(0, 1), (1, 0), (2, 3), (3, 2)}),
+    )
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 4))
     LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
     assert LlamaCppBackend._p2p_veto_reason([0, 1]) is not None
@@ -1373,8 +1378,12 @@ def test_windows_nvml_candidates_include_the_nvsmi_directory(monkeypatch):
 def test_an_explicit_pick_keeps_its_pci_provenance(monkeypatch):
     """The UI's picker hands back PCI-ordered ids. A torch fallback in the unrelated
     memory query sets _GPU_IDS_ARE_PCI_INDICES False process-wide, and that must not
-    cost an explicitly selected NVLinked pair its P2P."""
-    _use_nvml(monkeypatch, _FakeNvml(count = 4))
+    cost an explicitly selected NVLinked pair its P2P. Partially bridged, so the
+    mapping matters and provenance is load-bearing."""
+    _use_nvml(
+        monkeypatch,
+        _FakeNvml(count = 4, linked_pairs = {(0, 1), (1, 0), (2, 3), (3, 2)}),
+    )
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 4))
     LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
 
@@ -1488,3 +1497,34 @@ def test_the_prime_never_blocks_the_warm_sequence(monkeypatch):
     finally:
         release.set()
         worker.join(10)
+
+
+def test_a_uniform_fabric_does_not_need_pci_provenance(monkeypatch):
+    """On a box where every pair is NVLinked, which ids name which cards cannot
+    change the verdict, so torch-ordinal provenance must not veto. Same argument the
+    ordering check above already makes for an unpinned device order."""
+    _use_nvml(monkeypatch, _FakeNvml(count = 4))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 4))
+    LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
+    assert LlamaCppBackend._p2p_veto_reason([0, 1]) is None
+
+    # Partially bridged, so the mapping DOES matter: provenance is required again.
+    linked = {(0, 1), (1, 0), (2, 3), (3, 2)}
+    _use_nvml(monkeypatch, _FakeNvml(count = 4, linked_pairs = linked))
+    LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
+    assert LlamaCppBackend._p2p_veto_reason([0, 1]) is not None
+
+    # And with provenance it is allowed on the bridged pair.
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    assert LlamaCppBackend._p2p_veto_reason(
+        [0, 1], True, ids_are_pci_indices = True
+    ) is None
+
+
+def test_ids_outside_a_uniform_matrix_still_veto(monkeypatch):
+    """The uniform escape must not become a blanket pass: ids the matrix does not
+    cover are still unknown."""
+    _use_nvml(monkeypatch, _FakeNvml(count = 2))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 8))
+    LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
+    assert LlamaCppBackend._p2p_veto_reason([0, 5]) is not None
