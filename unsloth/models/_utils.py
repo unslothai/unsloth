@@ -3017,10 +3017,13 @@ def patch_gradient_accumulation_fix(Trainer):
             r"([\s]{4,})self\.accelerator\.backward\(loss, \*\*kwargs\)\n"
             r"(.+?)if num_items_in_batch is None\:\n"
             r"(.+?)return loss\.detach\(\) \/ self\.args\.gradient_accumulation_steps",
-            "else:\n"
-            "\2if num_items_in_batch is None:\n"
-            "\3loss = loss / self.args.gradient_accumulation_steps\n"
-            "\1self.accelerator.backward(loss, **kwargs)",
+            # Raw, and \g<n> rather than \n: in a plain string "\1" is already the byte 0x01 long
+            # before re.sub sees it, so the three captured indents were written out as control
+            # characters and the exec below could not parse what came back.
+            r"else:\n"
+            r"\g<2>if num_items_in_batch is None:\n"
+            r"\g<3>loss = loss / self.args.gradient_accumulation_steps\n"
+            r"\g<1>self.accelerator.backward(loss, **kwargs)",
             function,
         )
 
