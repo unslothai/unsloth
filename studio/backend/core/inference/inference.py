@@ -319,21 +319,35 @@ class _StopSequenceStreamer:
                 )
         self._publish(cut)
 
-    def _decode_new_tokens(self):
+    def _decode(self, token_ids):
         decode_kwargs = (
             {"skip_special_tokens": False} if self.is_harmony else self.streamer.decode_kwargs
         )
-        decode = self.streamer.tokenizer.decode
+        return self.streamer.tokenizer.decode(token_ids, **decode_kwargs)
+
+    def _decode_new_tokens(self):
         # Re-decoding the whole reply each token is quadratic; decode a short window
         # and settle its text once it no longer ends in unresolved bytes.
-        prefix = decode(self.token_ids[self.prefix_offset : self.read_offset], **decode_kwargs)
-        tail = decode(self.token_ids[self.prefix_offset :], **decode_kwargs)[len(prefix) :]
-        if tail and not tail.endswith("\ufffd"):
-            self.settled += tail
+        prefix = self._decode(self.token_ids[self.prefix_offset : self.read_offset])
+        window = self._decode(self.token_ids[self.prefix_offset :])
+        if window.endswith("\ufffd"):
+            # Bytes still arriving can rewrite the whole window (byte-fallback tokenizers
+            # show an unfinished emoji as replacement characters), so wait for them.
+            tail = window[len(prefix) :] if window.startswith(prefix) else ""
+            self.text = self.settled + tail
+            return
+        if not window.startswith(prefix):
+            # The new tokens rewrote settled text (e.g. space cleanup turning " ." into
+            # "."), so rebuild it once from every token and rescan it for stops.
+            self.settled = self._decode(self.token_ids)
+            self.prefix_offset = max(0, len(self.token_ids) - 4)
+            self.read_offset = len(self.token_ids)
+            self.scan_from = 0
+        elif len(window) > len(prefix):
+            self.settled += window[len(prefix) :]
             self.prefix_offset = self.read_offset
             self.read_offset = len(self.token_ids)
-            tail = ""
-        self.text = self.settled + tail
+        self.text = self.settled
 
     def _publish(self, cut):
         if cut <= self.released:
@@ -352,6 +366,9 @@ class _StopSequenceStreamer:
         if self.finished:
             return
         self.finished = True
+        if not self.matched.is_set() and self.read_offset < len(self.token_ids):
+            # Bytes that never resolved still belong to the reply, as a full decode shows.
+            self.text = self._decode(self.token_ids)
         # A natural end releases a partial unmatched stop and unresolved bytes.
         self._publish(self.cut if self.matched.is_set() else len(self.text))
         # Their token caches are empty: put() above feeds raw decoded text, so

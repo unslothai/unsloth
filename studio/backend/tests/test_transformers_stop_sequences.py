@@ -284,6 +284,62 @@ def test_stop_matching_decodes_split_unicode_without_leaking_partial_bytes():
     assert "".join(wrapped) == "Hello "
 
 
+def test_a_stop_created_by_decode_cleanup_of_settled_text_still_matches():
+    inf = pytest.importorskip("core.inference.inference")
+    torch = pytest.importorskip("torch")
+
+    class Tokenizer(_Tokenizer):
+        pieces = {2: "Hello world", 3: " ", 4: ".", 5: " More"}
+
+        def decode(self, ids, **kwargs):
+            # Mirrors clean_up_tokenization_spaces, which rewrites " ." as ".".
+            return super().decode(ids, **kwargs).replace(" .", ".")
+
+    streamer = inf.TextIteratorStreamer(Tokenizer(), skip_prompt = False)
+    wrapped = inf._StopSequenceStreamer(streamer, ["."])
+    for token in (2, 3, 4):
+        wrapped.put(torch.tensor([token]))
+    assert wrapped.matched.is_set()
+    wrapped.end()
+    # The space was already streamed before "." rewrote it, as with a full decode.
+    assert "".join(wrapped) == "Hello world "
+
+
+def test_an_unfinished_byte_run_is_not_settled_before_it_completes():
+    inf = pytest.importorskip("core.inference.inference")
+    torch = pytest.importorskip("torch")
+
+    class Tokenizer(_Tokenizer):
+        pieces = {2: "Hi ", 3: b"\xf0", 4: b"\x9f", 5: b"\x99", 6: b"\x82"}
+        pieces.update({7: b"\xf0", 8: b"\x9f", 9: b"\x99", 10: b"\x83", 11: " done"})
+
+        def decode(self, ids, **kwargs):
+            # Like SentencePiece byte fallback: an unfinished byte run is all replacements.
+            out, run = [], b""
+            for token in ids:
+                piece = self.pieces[int(token)]
+                if isinstance(piece, bytes):
+                    run += piece
+                    continue
+                out += [self._flush(run), piece]
+                run = b""
+            return "".join(out + [self._flush(run)])
+
+        @staticmethod
+        def _flush(run):
+            try:
+                return run.decode("utf-8")
+            except UnicodeDecodeError:
+                return "\ufffd" * len(run)
+
+    streamer = inf.TextIteratorStreamer(Tokenizer(), skip_prompt = False)
+    wrapped = inf._StopSequenceStreamer(streamer, ["never"])
+    for token in range(2, 12):
+        wrapped.put(torch.tensor([token]))
+    wrapped.end()
+    assert "".join(wrapped) == "Hi \U0001f642\U0001f643 done"
+
+
 def test_stop_matching_decodes_a_bounded_window_per_token():
     inf = pytest.importorskip("core.inference.inference")
     torch = pytest.importorskip("torch")
