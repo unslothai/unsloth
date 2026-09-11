@@ -3743,12 +3743,8 @@ class TestOneLaunchReadsOneSettingsSnapshot:
         from utils import model_memory_settings
 
         def _live(keep_resident, no_ram_reserve):
-            monkeypatch.setattr(
-                model_memory_settings, "get_keep_resident", lambda: keep_resident
-            )
-            monkeypatch.setattr(
-                model_memory_settings, "get_no_ram_reserve", lambda: no_ram_reserve
-            )
+            monkeypatch.setattr(model_memory_settings, "get_keep_resident", lambda: keep_resident)
+            monkeypatch.setattr(model_memory_settings, "get_no_ram_reserve", lambda: no_ram_reserve)
 
         # Live settings own placement; the snapshot says neither toggle was on, so
         # the launch that snapshotted must leave the inherited value alone.
