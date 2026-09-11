@@ -468,6 +468,14 @@ test("B3: leaving mid-read sends the held edit to its own chat, not the next one
     .filter((write) => write.settingsPatch !== undefined);
   assert.equal(merged.length, 1);
   assert.deepEqual(merged[0].settingsPatch, {
+    samplingFieldsExplicit: [
+      "temperature",
+      "top_p",
+      "top_k",
+      "min_p",
+      "repetition_penalty",
+      "presence_penalty",
+    ],
     temperature: 1.37,
     systemPrompt: "HELD EDIT 5f3a",
   });
@@ -654,6 +662,14 @@ test("B7: a tab closing with a held edit beacons it to the chat it was made in",
     localStorageFake.get("unsloth_chat_thread_settings_replay") ?? "{}",
   ) as Record<string, { settingsPatch?: Record<string, unknown> }>;
   assert.deepEqual(beaconed.A?.settingsPatch, {
+    samplingFieldsExplicit: [
+      "temperature",
+      "top_p",
+      "top_k",
+      "min_p",
+      "repetition_penalty",
+      "presence_penalty",
+    ],
     temperature: 1.37,
     systemPrompt: "HELD EDIT 5f3a",
   });

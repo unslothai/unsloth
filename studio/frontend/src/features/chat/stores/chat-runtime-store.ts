@@ -54,15 +54,17 @@ import {
 } from "../utils/project-attachment-target";
 import { getExternalMaxOutputTokens } from "../provider-capabilities";
 import {
-  PERSISTED_INFERENCE_PARAM_KEYS,
-  REMEMBERED_INFERENCE_PARAM_KEYS,
-  type PersistedInferenceParamKey,
   getRememberedParamsPatch,
   getReplayedParams,
   pickRememberedChanges,
   pickRememberedParams,
   setInferenceParam,
 } from "../lib/per-model-params";
+import {
+  PERSISTED_INFERENCE_PARAM_KEYS,
+  REMEMBERED_INFERENCE_PARAM_KEYS,
+  type PersistedInferenceParamKey,
+} from "../lib/persisted-inference-param-keys";
 import {
   type ChatLoraSummary,
   type ChatModelRow,
@@ -3168,15 +3170,24 @@ function getHydratedSettingsState(
     loadedBeforeHydration &&
     settings.inferenceParamsByModel?.[checkpoint] === undefined;
   const params = { ...state.params };
+  const samplingSnapshot = {
+    ...settings.inferenceParams,
+    reasoningEnabled: settings.reasoningEnabled,
+    reasoningEffort: settings.reasoningEffort,
+    preserveThinking: settings.preserveThinking,
+  };
+  const hasPersistedSamplingState =
+    settings.inferenceParams !== undefined ||
+    settings.reasoningEnabled !== undefined ||
+    settings.reasoningEffort !== undefined ||
+    settings.preserveThinking !== undefined;
   if (
-    settings.inferenceParams &&
+    hasPersistedSamplingState &&
     !keepModelDefaults &&
     inferenceParamMutationVersions.samplingFieldsExplicit ===
       versions.inferenceParams.samplingFieldsExplicit
   ) {
-    params.samplingFieldsExplicit = explicitSamplingFields(
-      settings.inferenceParams as Record<string, unknown>,
-    );
+    params.samplingFieldsExplicit = explicitSamplingFields(samplingSnapshot);
   }
   for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
     const value = settings.inferenceParams?.[key];
