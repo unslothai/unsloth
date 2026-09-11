@@ -60,9 +60,11 @@ import {
 } from "./window-layout";
 import {
   type MeasuredWindowLayout,
+  type PixelRatioSource,
   type WindowLayoutGuard,
   finalizeAppWindowLayout,
   measureWindowLayout,
+  observeDevicePixelRatio,
   shouldFinishWindowLayoutWait,
 } from "./window-layout-lifecycle";
 
@@ -199,6 +201,47 @@ async function placeWindow(
     height: Math.round(size.height * scaleFactor) + frameSize.height,
   });
   await win.setPosition(new PhysicalPosition(position.x, position.y));
+}
+
+function windowPixelRatioSource(): PixelRatioSource | null {
+  if (
+    typeof window === "undefined" ||
+    typeof window.matchMedia !== "function"
+  ) {
+    return null;
+  }
+  return {
+    devicePixelRatio: () => window.devicePixelRatio,
+    matchResolution: (dppx) => window.matchMedia(`(resolution: ${dppx}dppx)`),
+  };
+}
+
+/**
+ * Reapplies the floor after a zoom change, which Windows text scaling is. The
+ * floor is a CSS-pixel floor scaled into logical pixels, so the ratio it was
+ * scaled by at launch goes stale.
+ */
+async function reapplyWindowSizeConstraints(
+  isCurrent: WindowLayoutGuard,
+): Promise<void> {
+  const windowModule = await import("@tauri-apps/api/window");
+  if (!isCurrent()) return;
+
+  const win = windowModule.getCurrentWindow();
+  const measured = await measureTauriWindowLayout(windowModule, win, isCurrent);
+  if (!measured || !isCurrent()) return;
+
+  const { minimum } = measured.bounds;
+  await win.setSizeConstraints({
+    minWidth: minimum.width,
+    minHeight: minimum.height,
+  });
+  if (!isCurrent()) return;
+  // Grows a window now under the floor. No maximum: the work area has not
+  // changed, and capping here would fight a user's own larger size.
+  await enforceWindowSizeBounds(win, windowModule.LogicalSize, isCurrent, {
+    minimum,
+  });
 }
 
 async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
@@ -640,6 +683,17 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       } catch {
         /* swallow; window may still be functional */
       }
+    });
+
+    // The setup window has no constraints to keep current.
+    if (nextMode !== "app") return;
+    const ratioSource = windowPixelRatioSource();
+    if (!ratioSource) return;
+    return observeDevicePixelRatio(ratioSource, () => {
+      if (!isCurrent()) return;
+      reapplyWindowSizeConstraints(isCurrent).catch(() => {
+        /* swallow; the launch-time floor stands */
+      });
     });
   }, [status, windowRevealRevision]);
 

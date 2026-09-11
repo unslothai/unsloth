@@ -18,6 +18,7 @@ import {
   finalizeAppWindowLayout,
   shouldFinishWindowLayoutWait,
   measureWindowLayout,
+  observeDevicePixelRatio,
 } from "../src/app/window-layout-lifecycle.ts";
 
 // A work area is the panel minus the taskbar, in logical pixels.
@@ -57,6 +58,56 @@ test("lets a window stay squeezed to a companion width", () => {
     constrainWindowSize(squeezed, bounds.minimum, bounds),
     squeezed,
   );
+});
+
+function pixelRatioHarness(initial: number) {
+  const queries: { dppx: number; listeners: Array<() => void> }[] = [];
+  let ratio = initial;
+  const source = {
+    devicePixelRatio: () => ratio,
+    matchResolution: (dppx: number) => {
+      const entry = { dppx, listeners: [] as Array<() => void> };
+      queries.push(entry);
+      return {
+        addEventListener: (_type: "change", listener: () => void) => {
+          entry.listeners.push(listener);
+        },
+        removeEventListener: (_type: "change", listener: () => void) => {
+          entry.listeners = entry.listeners.filter((l) => l !== listener);
+        },
+      };
+    },
+  };
+  const change = (next: number) => {
+    ratio = next;
+    for (const listener of [...queries[queries.length - 1].listeners]) {
+      listener();
+    }
+  };
+  return { source, queries, change };
+}
+
+test("rearms the resolution query on every pixel ratio change", () => {
+  const { source, queries, change } = pixelRatioHarness(1);
+  let changes = 0;
+  const dispose = observeDevicePixelRatio(source, () => {
+    changes += 1;
+  });
+
+  // The query that reports a change is the one that stopped matching, so the
+  // next change has to come off a query for the ratio now in force.
+  change(1.5);
+  assert.equal(changes, 1);
+  change(2);
+  assert.equal(changes, 2);
+  assert.deepEqual(
+    queries.map((query) => query.dppx),
+    [1, 1.5, 2],
+  );
+
+  dispose();
+  change(1);
+  assert.equal(changes, 2);
 });
 
 test("never opens a first window below the resize floor", () => {

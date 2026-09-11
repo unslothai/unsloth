@@ -95,6 +95,45 @@ export function shouldFinishWindowLayoutWait(
 ): boolean {
   return sawPostShowChange;
 }
+
+type ResolutionQuery = {
+  addEventListener: (type: "change", listener: () => void) => void;
+  removeEventListener: (type: "change", listener: () => void) => void;
+};
+
+export type PixelRatioSource = {
+  devicePixelRatio: () => number;
+  matchResolution: (dppx: number) => ResolutionQuery | null;
+};
+
+/**
+ * Reports a change in the webview's device pixel ratio, which moves the
+ * CSS-pixel resize floor and is otherwise only read at launch. There is no
+ * event for the ratio itself, so a query for the ratio in force stands in: it
+ * stops matching, and a fresh query for the new one takes over.
+ */
+export function observeDevicePixelRatio(
+  source: PixelRatioSource,
+  onChange: () => void,
+): () => void {
+  let query: ResolutionQuery | null = null;
+  let disposed = false;
+  const listen = () => {
+    query?.removeEventListener("change", handle);
+    query = disposed ? null : source.matchResolution(source.devicePixelRatio());
+    query?.addEventListener("change", handle);
+  };
+  function handle() {
+    listen();
+    if (!disposed) onChange();
+  }
+  listen();
+  return () => {
+    disposed = true;
+    query?.removeEventListener("change", handle);
+    query = null;
+  };
+}
 type FinalizeAppWindowLayoutOptions<Monitor extends WorkAreaMonitor> = {
   restored: boolean;
   measured: MeasuredWindowLayout<Monitor>;
