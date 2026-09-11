@@ -1166,16 +1166,18 @@ class DiffusionBackend:
     """Holds at most one loaded diffusers pipeline. All mutations are serialised."""
 
     def __init__(self) -> None:
-        # _lock serialises the small state mutations; the status/progress readers stay lock-free.
+        # _lock serialises pipeline mutations; the status/progress readers stay lock-free.
         self._lock = threading.Lock()
+        # Protect load metadata without waiting for construction.
+        # Never acquire pipeline locks while holding this lock.
+        self._load_cancel_lock = threading.Lock()
         # _generate_lock serialises generations and is the ONLY lock the denoise holds.
         self._generate_lock = threading.Lock()
         self._state: Optional[_LoadState] = None
         self._loading: Optional[_LoadingState] = None
         # Bumped on begin_load/unload so a superseded worker neither commits nor stamps progress
         self._load_token = 0
-        # Set by unload() to abort an in-flight download. Replaced, never cleared, so a cancelled worker stays
-        # cancelled.
+        # Replaced per load so cancelled workers stay cancelled.
         self._cancel_event = threading.Event()
         # Keep Stop responsive while a replacement holds _lock.
         self._generation_cancel_lock = threading.Lock()
@@ -1212,6 +1214,10 @@ class DiffusionBackend:
         target = resolve_diffusion_device_target(ordinal = ordinal)
         # The INDEXED string, so _resolve_device_target can rebuild a selection an override would erase.
         return target.torch_device, target.dtype
+
+    def _raise_if_load_cancelled(self, token: int) -> None:
+        if token != self._load_token:
+            raise RuntimeError("Diffusion load was cancelled.")
 
     def _reserve_teardown_locked(self) -> None:
         """Fence queued generations off the pipeline this teardown is about to free. Call only while
@@ -1989,7 +1995,7 @@ class DiffusionBackend:
             gpu_ordinal = gpu_ordinal,
         )
 
-        with self._lock:
+        with self._lock, self._load_cancel_lock:
             # Allow starting over a previously-failed load, but not over a live one.
             if self._loading is not None and self._loading.error is None:
                 raise RuntimeError("A diffusion load is already in progress.")
@@ -2145,7 +2151,7 @@ class DiffusionBackend:
                     shortfall,
                 )
                 raise RuntimeError(shortfall)
-            with self._lock:
+            with self._load_cancel_lock:
                 if self._load_token == token and self._loading is not None:
                     self._loading.base_repo = base
                     self._loading.fetch_repo = fetch_base
@@ -2168,7 +2174,7 @@ class DiffusionBackend:
                 or base_snapshot
             )
             self.load_pipeline(**kwargs)
-            with self._lock:
+            with self._load_cancel_lock:
                 # Only clear the marker if this load is still current (a superseder has its own token).
                 if self._load_token == token:
                     self._loading = None
@@ -2192,7 +2198,7 @@ class DiffusionBackend:
                 ) or str(exc)
             except Exception:  # noqa: BLE001
                 text = str(exc)
-            with self._lock:
+            with self._load_cancel_lock:
                 if self._load_token == token and self._loading is not None:
                     self._loading.error = redact_native_paths(text)
 
@@ -2231,7 +2237,7 @@ class DiffusionBackend:
         target repo (or its companion base) would yank blobs and snapshot files from under the
         download/assembly. Includes the mirror when one was swapped in: that is where the
         companion bytes land."""
-        with self._lock:
+        with self._lock, self._load_cancel_lock:
             loading = self._loading
             if loading is None or loading.error is not None:
                 return ()
@@ -3379,9 +3385,12 @@ class DiffusionBackend:
         except Exception:  # noqa: BLE001 - the locked path re-resolves and validates
             pass
 
+        with self._load_cancel_lock:
+            # Give direct loads a cancellation token too.
+            if _load_token is None:
+                _load_token = self._load_token
         with self._lock:
-            if _load_token is not None and _load_token != self._load_token:
-                raise RuntimeError("Diffusion load was cancelled.")
+            self._raise_if_load_cancelled(_load_token)
             with self._generation_cancel_lock:
                 if self._active_generate_cancel is not None:
                     self._active_generate_cancel.set()
@@ -3389,8 +3398,7 @@ class DiffusionBackend:
         with self._model_transition_slot():
             with self._lock:
                 try:
-                    if _load_token is not None and _load_token != self._load_token:
-                        raise RuntimeError("Diffusion load was cancelled.")
+                    self._raise_if_load_cancelled(_load_token)
 
                     self._unload_locked()
                 finally:
@@ -4166,6 +4174,7 @@ class DiffusionBackend:
                         transformer = transformer_cls.from_single_file(
                             single_file_path, **sf_kwargs
                         )
+                        self._raise_if_load_cancelled(_load_token)
 
                         if fam.name == KREA2_FAMILY_NAME:
                             pipe = load_krea2_pipeline(
@@ -4225,6 +4234,9 @@ class DiffusionBackend:
                             pipe = pipeline_cls.from_pretrained(
                                 _base_local_dir or fetch_base, **pipe_kwargs
                             )
+
+                # Stop after construction, before optimization and placement.
+                self._raise_if_load_cancelled(_load_token)
 
                 # Effective speed: GGUF defaults to `default` (~2.2x, below the quant noise floor); dense stays
                 # bit-identical `off`.
@@ -4380,6 +4392,7 @@ class DiffusionBackend:
                         offload_active = plan.offload_policy != OFFLOAD_NONE,
                         logger = logger,
                     )
+                    self._raise_if_load_cancelled(_load_token)
                     te_quant = te_outcome.mode
                     # Same contract for the other half of the requested precision: an explicit encoder mode that
                     # engaged NOTHING leaves a dense bf16 encoder the caller did not ask for, and a PARTIAL cast
@@ -4536,7 +4549,7 @@ class DiffusionBackend:
                         }
                     )
 
-                    self._state = _LoadState(
+                    state = _LoadState(
                         pipe = pipe,
                         family = fam,
                         repo_id = repo_id,
@@ -4575,7 +4588,11 @@ class DiffusionBackend:
                             base,
                         ),
                     )
-                    state_committed = True
+                    # Serialize publication with cancellation.
+                    with self._load_cancel_lock:
+                        self._raise_if_load_cancelled(_load_token)
+                        self._state = state
+                        state_committed = True
                 finally:
                     # Pre-commit failure: roll back the process-wide mutations (symmetric with _unload_locked).
                     if not state_committed:
@@ -6219,19 +6236,18 @@ class DiffusionBackend:
             return True
 
     def unload(self) -> dict[str, Any]:
-        with self._lock:
-            # Abort an in-flight (lock-free) download so unload returns promptly. Under the lock, like video.py:
-            # begin_load rebinds this attribute, so an unlocked read could set an event the current load no longer
-            # watches.
+        with self._load_cancel_lock:
+            # Signal cancellation before waiting for pipeline teardown.
             self._cancel_event.set()
+            self._load_token += 1
+            self._loading = None
+        with self._lock:
             with self._generation_cancel_lock:
                 if self._active_generate_cancel is not None:
                     self._active_generate_cancel.set()
             # Fence queued generations too: they are intentionally not cancelled by model lifecycle changes, so they
             # must wait and observe the post-teardown state.
             self._reserve_teardown_locked()
-            self._load_token += 1
-            self._loading = None
         # Wait for the signalled denoise to exit BEFORE tearing down: _unload_locked uninstalls process-wide state
         # (attention patches, GGUF compile hooks, backend flags, compile cache) the denoise still depends on.
         with self._model_transition_slot():

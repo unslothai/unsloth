@@ -2502,6 +2502,79 @@ def test_unload_sets_cancel_event(fake_runtime):
     assert backend._cancel_event.is_set()
 
 
+@pytest.mark.parametrize("phase", ["transformer", "pipeline", "placement"])
+def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatch, phase):
+    from core.inference import diffusion as diff_mod
+    from core.inference import diffusion_eager_patches as ep
+
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    entered, release = threading.Event(), threading.Event()
+    outcome = {}
+
+    def load():
+        try:
+            outcome["loaded"] = _load_into(backend, tmp_path, speed_mode = "eager")
+        except Exception as exc:
+            outcome["error"] = str(exc)
+
+    with monkeypatch.context() as mp:
+        if phase == "placement":
+            original = diff_mod.apply_memory_plan
+
+            def parked(*args, **kwargs):
+                entered.set()
+                assert release.wait(5)
+                return original(*args, **kwargs)
+
+            mp.setattr(diff_mod, "apply_memory_plan", parked)
+        else:
+            cls, method = (
+                (_FakeTransformer, "from_single_file")
+                if phase == "transformer"
+                else (_FakePipeline, "from_pretrained")
+            )
+            original = getattr(cls, method).__func__
+
+            def parked(cls, *args, **kwargs):
+                entered.set()
+                assert release.wait(5)
+                return original(cls, *args, **kwargs)
+
+            mp.setattr(cls, method, classmethod(parked))
+
+        loader = threading.Thread(target = load, daemon = True)
+        ejector = threading.Thread(target = backend.unload, daemon = True)
+        loader.start()
+        try:
+            assert entered.wait(5), "load did not reach the blocked construction stage"
+            ejector.start()
+            assert backend._cancel_event.wait(2), "eject could not signal during construction"
+            assert ejector.is_alive(), "teardown must wait for the constructor to unwind"
+        finally:
+            release.set()
+            loader.join(5)
+            if ejector.ident is not None:
+                ejector.join(5)
+
+    assert not loader.is_alive() and not ejector.is_alive()
+    assert "loaded" not in outcome, "a cancelled pipeline was published as ready"
+    assert "cancelled" in outcome["error"]
+    assert not backend.is_loaded
+    assert not ep.is_installed()
+    assert backend._teardown_waiters == 0
+    if phase == "transformer":
+        assert not _FakePipeline.last, "cancelled load still constructed its companions"
+
+    # A fresh load still serves consecutive generations.
+    _load_into(backend, tmp_path)
+    pipe = backend._state.pipe
+    for _ in range(2):
+        assert len(backend.generate(prompt = "a sloth", steps = 2)["images"]) == 1
+        assert backend._state.pipe is pipe
+    backend.unload()
+
+
 def test_prefetch_aborts_when_cancelled(tmp_path):
     # A prefetch interrupted by unload raises instead of pulling the whole base, so the load can be preempted.
     backend = DiffusionBackend()
