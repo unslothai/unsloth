@@ -1540,14 +1540,10 @@ def test_explicitness_is_not_evidence_of_pci_indexing(monkeypatch):
     LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
 
     monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
-    assert LlamaCppBackend._p2p_veto_reason(
-        [0, 1], True, ids_are_pci_indices = False
-    ) is not None
+    assert LlamaCppBackend._p2p_veto_reason([0, 1], True, ids_are_pci_indices = False) is not None
 
     # Pinned order: torch's ordinals and nvidia-smi's indices coincide, so the
     # explicit pick is usable again. This is the default the backend sets.
     LlamaCppBackend._NVLINK_TOPO_CACHE = None
     monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
-    assert LlamaCppBackend._p2p_veto_reason(
-        [0, 1], True, ids_are_pci_indices = True
-    ) is None
+    assert LlamaCppBackend._p2p_veto_reason([0, 1], True, ids_are_pci_indices = True) is None
