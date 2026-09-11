@@ -147,11 +147,32 @@ def _is_guard(node: ast.AST) -> bool:
     return name.endswith("torch.cuda.device") or name.endswith("_device_guard")
 
 
+# FlashInfer's PRIVATE dispatch entry points: imported by name, so a "flashinfer." prefix check
+# cannot see them, and each one launches or allocates on the current device.
+_PRIVATE_LAUNCHES = frozenset(
+    {
+        "choose_one",
+        "cutlass_fp4_gemm_runner",
+        "get_cutlass_fp4_gemm_module",
+        "_get_cache_buf",
+        "fp4_quantize_sm100",
+        "get_fp4_quantization_module",
+    }
+)
+
+
 def _is_launch(node: ast.Call) -> str:
+    # A Triton launch is a Call on a SUBSCRIPT (``kernel[grid](...)``) rather than on a name, and
+    # needs the guard just as much: Triton takes its device from the CURRENT context.
+    if isinstance(node.func, ast.Subscript):
+        name = _dotted(node.func.value)
+        return name if name.endswith("_kernel") else ""
     name = _dotted(node.func)
     if name.startswith("flashinfer.") or name.startswith("_fi."):
         return name
     if "torch.ops.unsloth_nvfp4" in name:
+        return name
+    if name.rsplit(".", 1)[-1] in _PRIVATE_LAUNCHES:
         return name
     return ""
 
@@ -196,12 +217,18 @@ def test_the_guard_visitor_catches_an_unguarded_launch():
         "        flashinfer.mm_fp4(x)\n"
         "    flashinfer.nvfp4_quantize(x)\n"
         "    torch.ops.unsloth_nvfp4.mm(x)\n"
+        "    _bias_add_kernel[grid](x)\n"
+        "    with torch.cuda.device(x.device):\n"
+        "        _bias_add_kernel[grid](x)\n"
+        "    _get_cache_buf('ws', 1, x.device)\n"
     )
     visitor = _LaunchVisitor()
     visitor.visit(tree)
     assert [name for _, name in visitor.unguarded] == [
         "flashinfer.nvfp4_quantize",
         "torch.ops.unsloth_nvfp4.mm",
+        "_bias_add_kernel",
+        "_get_cache_buf",
     ]
 
 
@@ -219,9 +246,35 @@ def test_every_flashinfer_launch_in_the_nvfp4_modules_sits_inside_a_device_guard
     assert not offences, "\n".join(offences)
 
 
-def test_the_modules_never_set_the_current_stream():
+_STREAM_BANNED = ("set_stream", "set_device", "setDevice")
+
+
+def _banned_stream_calls(source: str) -> list[tuple[int, str]]:
+    """Lines that switch the current device or stream behind the guard's back: ``set_stream``
+    silently sets the current DEVICE as well, and ``set_device`` moves what the guard restores."""
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Attribute) and node.attr in _STREAM_BANNED:
+            found.append((node.lineno, _dotted(node) or node.attr))
+        elif isinstance(node, ast.Name) and node.id in _STREAM_BANNED:
+            found.append((node.lineno, node.id))
+    return found
+
+
+def test_the_banned_call_detector_sees_an_aliased_set_stream():
+    assert _banned_stream_calls("import torch\ncuda = torch.cuda\ncuda.set_stream(s)\n")
+    assert _banned_stream_calls("from torch.cuda import set_device\nset_device(1)\n")
+    assert not _banned_stream_calls("def reset_stream_cache():\n    return None\n")
+
+
+def test_the_modules_never_set_the_current_stream_or_device():
+    offences: list[str] = []
     for path in _nvfp4_sources():
-        assert "set_stream" not in path.read_text(encoding = "utf-8"), path.name
+        offences += [
+            f"{path.name}:{line}: {name} switches the current device behind the guard"
+            for line, name in _banned_stream_calls(path.read_text(encoding = "utf-8"))
+        ]
+    assert not offences, "\n".join(offences)
 
 
 @pytest.mark.parametrize(

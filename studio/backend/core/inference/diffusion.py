@@ -4074,6 +4074,12 @@ class DiffusionBackend:
                         # Drop the exception before clearing the cache: its traceback pins the dense transformer's
                         # VRAM.
                         del exc
+                        # The NVFP4 transposed-weight cache holds VIEWS of the failed transformer; clear_gpu_cache() cannot free what a view pins.
+                        try:
+                            from .diffusion_nvfp4_linear import reset_nvfp4_state
+                            reset_nvfp4_state()
+                        except Exception:  # noqa: BLE001 - cleanup is best effort
+                            pass
                         try:
                             clear_gpu_cache()
                         except Exception:  # noqa: BLE001
@@ -4641,6 +4647,12 @@ class DiffusionBackend:
                         compile_cache.restore(compile_ctx)
                         gguf_compile.uninstall_all()  # idempotent
                         cuda_graph.uninstall_all(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
+                        # After the graphs, as in _unload_locked: the NVFP4 caches hold views that would pin the aborted transformer.
+                        try:
+                            from .diffusion_nvfp4_linear import reset_nvfp4_state
+                            reset_nvfp4_state()
+                        except Exception:  # noqa: BLE001 - teardown is best effort
+                            pass
                         if eager_patched:
                             uninstall_patches()
                             uninstall_arch_patches()
@@ -6329,6 +6341,13 @@ class DiffusionBackend:
         # Before clear_gpu_cache(), or the graph pool stays reserved for the life of the process.
         cuda_graph.uninstall_all(state.cuda_graphs)
         gguf_compile.uninstall_all()
+        # The PDL barrier is allocated under this model's allocator state and must not be
+        # inherited by the next model's capture.
+        try:
+            from .diffusion_nvfp4_linear import reset_nvfp4_state
+            reset_nvfp4_state()
+        except Exception:  # noqa: BLE001 - teardown is best effort
+            pass
         if state.eager_patched:
             # Lazy import to keep diffusion.py torch-free to import.
             from .diffusion_eager_patches import uninstall_patches

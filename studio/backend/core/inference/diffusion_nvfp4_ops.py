@@ -40,6 +40,10 @@ _PREFLIGHT_LOCK = threading.Lock()
 _PREFLIGHT: dict[int, dict] = {}
 _WARNED: set = set()
 
+# The PDL ordering barrier (see ``_fire_barrier``), one bf16 element per device index.
+_BARRIER_LOCK = threading.Lock()
+_BARRIERS: dict[int, Any] = {}
+
 
 def _swizzled_sf_numel(
     rows: int,
@@ -53,13 +57,62 @@ def _swizzled_sf_numel(
 
 def _device_guard(t: Any):
     """``torch.cuda.device`` for the tensor's own device. EVERY flashinfer call must sit inside
-    one: FlashInfer installs no device guard, and a foreign current device bricks the card."""
+    one: FlashInfer installs no device guard, and a foreign current device bricks the card.
+    ``_mm_impl`` spans the barrier AND the GEMM so the barrier fires on the device the GEMM reads."""
     import torch
     return torch.cuda.device(t.device)
 
 
 def _zero_buffer_enabled() -> bool:
     return os.environ.get(NVFP4_ZERO_BUFFER_ENV, "").strip().lower() in _TRUE_TOKENS
+
+
+def _device_index(device: Any) -> int:
+    """The integer index of ``device``, resolving a bare ``cuda`` to the current one."""
+    import torch
+
+    index = getattr(device, "index", None)
+    return torch.cuda.current_device() if index is None else int(index)
+
+
+def _is_capturing() -> bool:
+    """Whether the current stream is capturing a CUDA graph."""
+    try:
+        import torch
+        return bool(torch.cuda.is_current_stream_capturing())
+    except Exception:  # noqa: BLE001 - a torch without the query is a torch without capture here
+        return False
+
+
+def _barrier(device: Any):
+    """The process-wide 1-element bf16 buffer for ``device``, UNCACHED while the stream is
+    capturing: an allocation made inside a capture dies with the graph."""
+    import torch
+
+    index = _device_index(device)
+    buf = _BARRIERS.get(index)
+    if buf is not None:
+        return buf
+    fresh = torch.empty(1, device = device, dtype = torch.bfloat16)
+    if _is_capturing():
+        return fresh
+    with _BARRIER_LOCK:
+        return _BARRIERS.setdefault(index, fresh)
+
+
+def _fire_barrier(device: Any):
+    """Launch the ordering kernel that has to sit between the quantiser and the GEMM. What
+    protects the GEMM is a kernel EXISTING there, not that kernel writing M x N bytes."""
+    buf = _barrier(device)
+    buf.zero_()
+    return buf
+
+
+def reset_barriers() -> None:
+    """Drop every cached barrier: one allocated under a model's allocator state must not be handed
+    to the next model's graph pool."""
+    with _BARRIER_LOCK:
+        _BARRIERS.clear()
 
 
 def global_scale(t: Any):
@@ -74,7 +127,14 @@ def global_scale(t: Any):
 def _quantize_impl(x: Any, global_sf: Any):
     """2D bf16 in, ``(packed e2m1x2, swizzled block scales)`` out."""
     import flashinfer
+
+    from . import diffusion_nvfp4_dispatch as dispatch
+
     with _device_guard(x):
+        # Both branches inside the SAME guard: the fast one reaches the same pybind entry point.
+        xq, sf = dispatch._fast_quantize(x, global_sf)
+        if xq is not None:
+            return xq, sf
         return flashinfer.nvfp4_quantize(x, global_sf, do_shuffle = False)
 
 
@@ -86,12 +146,15 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
     operands the quantiser has not finished writing (cutlass is launched with PDL while the
     ``griddepcontrol`` instructions that make PDL safe are compiled out of its build, and
     ``enable_pdl = False`` is plumbed only to the cute-dsl runner). What protects it is a kernel
-    EXISTING, so ``torch.zeros(1)`` is as good as the memset while ``torch.empty`` alone is NOT.
-    The barrier buffer is allocated per call, never cached: a reused one turns one transient NaN
-    into a permanent one for every later call at the same token count.
+    EXISTING, so a one-element fill is as good as the memset while ``torch.empty`` alone is NOT.
+    The barrier buffer is persistent per device (``_fire_barrier``); only the fill is per call, and
+    nothing ever reads the buffer, so a cached one cannot carry a stale NaN into a later output.
+    ``UNSLOTH_NVFP4_ZERO_BUFFER=1`` restores the full memset (slower, bounds an unknown fault to garbage).
     """
     import flashinfer
     import torch
+
+    from . import diffusion_nvfp4_dispatch as dispatch
 
     with _device_guard(xq):
         m = xq.shape[0]
@@ -99,7 +162,30 @@ def _mm_impl(xq: Any, wq: Any, x_sf: Any, w_sf: Any, alpha: Any, n: int, backend
             out = torch.zeros(m, n, device = xq.device, dtype = torch.bfloat16)
         else:
             out = torch.empty(m, n, device = xq.device, dtype = torch.bfloat16)
-            torch.zeros(1, device = xq.device, dtype = torch.bfloat16)
+            _fire_barrier(xq.device)
+        # The cached dispatch: same tactic the AutoTuner would choose, minus the per-call runner
+        # rebuild. Anything unverified returns None and the public entry point runs.
+        if dispatch.enabled(xq.device):
+            wq_t, w_sf_t = dispatch.transposed(wq), dispatch.transposed(w_sf)
+            plan = dispatch.gemm_plan(xq, wq_t, x_sf, w_sf_t, alpha, out, n, backend)
+            if plan is not None:
+                runner, tactic, workspace = plan
+                runner(
+                    inputs = [
+                        xq,
+                        wq_t,
+                        x_sf,
+                        w_sf_t,
+                        alpha,
+                        torch.bfloat16,
+                        out,
+                        16,
+                        True,
+                        workspace,
+                    ],
+                    tactic = tactic,
+                )
+                return out
         return flashinfer.mm_fp4(
             xq, wq.T, x_sf, w_sf.T, alpha, torch.bfloat16, out = out, backend = backend
         )
@@ -298,6 +384,13 @@ def nvfp4_preflight(device: Any = None, *, refresh: bool = False) -> dict:
         finite = _preflight_probe(dev)
         rec["ok"] = finite
         rec["reason"] = "ok" if finite else "mm_fp4 produced a non-finite result"
+        if finite:
+            # One-shot bit-identity check unlocking the cached dispatch, off the request path.
+            from . import diffusion_nvfp4_dispatch as dispatch
+
+            fast_ok, fast_reason = dispatch.verify(dev)
+            rec["fast_dispatch"] = fast_ok
+            rec["fast_dispatch_reason"] = fast_reason
     except Exception as exc:  # noqa: BLE001 - every failure mode here means "use torchao"
         rec["reason"] = f"{type(exc).__name__}: {str(exc)[:200]}"
         if _transient_preflight_failure(exc):

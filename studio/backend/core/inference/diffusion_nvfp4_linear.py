@@ -40,6 +40,19 @@ def reset_tuned_shapes() -> None:
     _TUNED_SHAPES.clear()
 
 
+def reset_nvfp4_state() -> None:
+    """Drop every piece of process-wide NVFP4 state a loaded model left behind."""
+    from . import diffusion_nvfp4_dispatch as _dispatch
+    from . import diffusion_nvfp4_ops as _ops
+
+    reset_tuned_shapes()
+    _ops.reset_barriers()
+    # Also holds transposed VIEWS of the weight buffers, so keeping it would pin a freed model.
+    _dispatch.reset()
+    # verify() runs only inside the preflight; a memoised preflight would leave the next load with _VERIFIED empty.
+    _ops.reset_preflight_cache()
+
+
 @lru_cache(maxsize = 1)
 def nvfp4_linear_class():
     """The ``NVFP4FlashInferLinear`` class, defined on first use so this module imports torch-free
@@ -47,6 +60,8 @@ def nvfp4_linear_class():
     import torch
     from torch import nn
     from torch.nn import functional as F
+
+    from .diffusion_nvfp4_bias import fused_bias_add_
 
     class NVFP4FlashInferLinear(nn.Module):
         """A Linear whose weight is already NVFP4 and whose activation is quantized per call. The
@@ -113,6 +128,8 @@ def nvfp4_linear_class():
                 )
                 out = F.linear(flat, weight)
             else:
+                # The guard stays under torch.compile (measured: zero graph breaks); without it a
+                # flashinfer launch can reach the card the process is not currently on.
                 with _device_guard(flat):
                     xq, x_sf = torch.ops.unsloth_nvfp4.quantize(flat, self.a_gsf)
                     out = torch.ops.unsloth_nvfp4.mm(
@@ -122,7 +139,7 @@ def nvfp4_linear_class():
             out = out.to(out_dtype)
             if self.bias is not None:
                 # mm_fp4 has no bias epilogue, so the add is a separate in-place pass.
-                out.add_(self.bias)
+                fused_bias_add_(out, self.bias)
             return out.reshape(*shape[:-1], self.out_features)
 
         def extra_repr(self) -> str:  # pragma: no cover - debug aid

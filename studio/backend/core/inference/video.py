@@ -1851,6 +1851,12 @@ class VideoBackend:
                 return
             logger.error("video.load_failed: %s", exc)
             # Free the debris of a failed construction: nothing was committed, so nothing else releases the VRAM.
+            # NVFP4 first: its transposed-weight cache holds VIEWS of the denoiser, which clear_gpu_cache() cannot free.
+            try:
+                from .diffusion_nvfp4_linear import reset_nvfp4_state
+                reset_nvfp4_state()
+            except Exception:  # noqa: BLE001 -- cleanup is best-effort
+                pass
             try:
                 clear_gpu_cache()
             except Exception:  # noqa: BLE001 -- cleanup is best-effort
@@ -6746,6 +6752,13 @@ class VideoBackend:
             diffusion_cuda_graph.uninstall_all(
                 getattr(getattr(state, "pipe", None), "_unsloth_cuda_graphs", ()) or ()
             )
+            # The PDL barrier is allocated under this model's allocator state and must not be
+            # inherited by the next model's capture.
+            try:
+                from .diffusion_nvfp4_linear import reset_nvfp4_state
+                reset_nvfp4_state()
+            except Exception:  # noqa: BLE001 - teardown is best effort
+                pass
             del state
             clear_gpu_cache()
 
