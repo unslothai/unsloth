@@ -1556,9 +1556,10 @@ def test_the_prime_never_spawns_the_shell_out(monkeypatch):
     timing-sensitive tests over in CI."""
     calls = []
     monkeypatch.setattr(
-        subprocess, "run",
-        lambda *a, **k: calls.append(a) or types.SimpleNamespace(
-            returncode = 0, stdout = TOPO_NVLINK_8X, stderr = ""),
+        subprocess,
+        "run",
+        lambda *a, **k: calls.append(a)
+        or types.SimpleNamespace(returncode = 0, stdout = TOPO_NVLINK_8X, stderr = ""),
     )
     monkeypatch.setattr(
         LlamaCppBackend, "_probe_nvml_nvlink_topology", classmethod(lambda cls: None)
