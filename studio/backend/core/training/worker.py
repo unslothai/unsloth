@@ -4035,6 +4035,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 local_files_only = model_local_only,
                 actual_model_repo_id = config.get("actual_model_repo_id"),
                 model_revision = model_revision,
+                use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
             )
             fallback_error = (
                 _model_cache_fallback_error(config, trainer.model_load_error)
@@ -4099,6 +4100,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         local_files_only = model_local_only,
                         actual_model_repo_id = config.get("actual_model_repo_id"),
                         model_revision = model_revision,
+                        use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
                     )
         finally:
             _load_watchdog_stop.set()
@@ -4189,7 +4191,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
         else:
             _send_status(event_queue, "Preparing model for full finetuning...")
-            success = trainer.prepare_model_for_training(use_lora = False)
+            success = trainer.prepare_model_for_training(
+                use_lora = False,
+                use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
+            )
 
         if not success or trainer.should_stop:
             if trainer.should_stop:
