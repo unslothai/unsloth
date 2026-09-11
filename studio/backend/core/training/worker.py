@@ -3207,6 +3207,14 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     )
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
 
+    if not config.get("allow_ambient", True):
+        from hub.utils.hf_tokens import apply_token_to_child_env, hf_token_arg, is_anonymous
+
+        hf_token = hf_token_arg(config.get("hf_token"), allow_ambient_token = False)
+        apply_token_to_child_env(os.environ, hf_token)
+        if is_anonymous(hf_token):
+            os.environ["HF_TOKEN_PATH"] = os.devnull
+
     # HTTP-fallback respawn: disable Xet before any huggingface_hub import (read at import time).
     from utils.hf_xet_fallback import child_should_disable_xet
 

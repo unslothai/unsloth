@@ -258,6 +258,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "trust_remote_code": values.get("trust_remote_code", False),
         "approved_remote_code_fingerprint": values.get("approved_remote_code_fingerprint"),
         "subject": values.get("subject"),
+        "allow_ambient": values.get("allow_ambient", True),
         "gpu_ids": values.get("gpu_ids"),
         "s3_config": values.get("s3_config"),
         "disable_xet": values.get("disable_xet", False),

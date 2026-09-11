@@ -72,6 +72,7 @@ except ImportError:
     from utils.paths import is_local_path, normalize_path, resolve_dataset_path
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
+from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 
 from utils.utils import (
     canonical_model_repo_id,
@@ -438,7 +439,7 @@ def _has_adapter_metadata(path: Path) -> bool:
     return path.is_dir() and (path / "adapter_config.json").is_file()
 
 
-def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -> Optional[str]:
+def _remote_untrainable_model_format(model_name: str, hf_token: HfTokenArg) -> Optional[str]:
     from huggingface_hub import model_info as hf_model_info
     from hub.utils.hf_errors import hf_error_status
     from utils.security import load_scan_target
@@ -691,7 +692,9 @@ def _detect_local_gguf(path: Path) -> Optional[str]:
 
 
 def _reject_untrainable_model_request(
-    request: TrainingStartRequest, actual_model_repo_id: Optional[str] = None
+    request: TrainingStartRequest,
+    actual_model_repo_id: Optional[str] = None,
+    hf_token: HfTokenArg = None,
 ) -> _ModelPreflightResult:
     model_format = (request.model_format or "").strip().lower()
     if model_format == "gguf":
@@ -782,10 +785,7 @@ def _reject_untrainable_model_request(
                         "Retry before starting training."
                     ),
                 )
-            remote_format = _remote_untrainable_model_format(
-                request.model_name,
-                request.hf_token or None,
-            )
+            remote_format = _remote_untrainable_model_format(request.model_name, hf_token)
         except HTTPException as error:
             metadata_error = error
             from core.training.training import _resolve_model_snapshot
@@ -1388,10 +1388,13 @@ async def start_training(
                         "dataset cache; disable streaming to train from the cached copy."
                     ),
                 )
+        allow_ambient = not via_api_key
+        hf_token = hf_token_arg(request.hf_token, allow_ambient_token = allow_ambient)
         model_preflight = await asyncio.to_thread(
             _reject_untrainable_model_request,
             request,
             resume_actual_model_repo_id,
+            hf_token,
         )
         cached_model_pin = model_preflight.cached_model_pin
         training_actual_model_repo_id = resume_actual_model_repo_id
@@ -1407,6 +1410,7 @@ async def start_training(
             "project_name": request.project_name,
             "training_type": request.training_type,
             "hf_token": request.hf_token or "",
+            "allow_ambient": allow_ambient,
             "load_in_4bit": request.load_in_4bit,
             "max_seq_length": request.max_seq_length,
             "vision_image_size": request.vision_image_size,
