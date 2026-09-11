@@ -3535,3 +3535,78 @@ class TestARetryKeepsThePlacementWindowOpen:
         assert "self._memory_launch_pending = False" in inspect.getsource(
             LlamaCppBackend._serial_load_scope
         )
+
+
+class TestThePendingCompareIsByEffect:
+    """no-reserve wins over keep-resident for every loader flag, so flipping
+    residency while no-reserve is on changes nothing the child launches with. Only
+    the idle-unload veto moves, and the loop re-reads that each poll."""
+
+    @pytest.mark.parametrize(
+        "live,pending,reload_required",
+        [
+            ((True, True), (False, True), False),   # residency flip under no-reserve
+            ((False, True), (True, True), False),   # ...either direction
+            ((False, True), (False, False), True),  # no-reserve itself changed
+            ((True, False), (False, False), True),  # the page-lock changed
+            ((False, False), (False, False), False),
+        ],
+    )
+    def test_only_a_change_the_launch_can_express_asks_for_a_reload(
+        self, monkeypatch, live, pending, reload_required
+    ):
+        import routes.settings as rs
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(
+            rs, "_active_launch_placement",
+            lambda: (None, False, True, None, False, pending),
+        )
+        monkeypatch.setattr(mm, "get_model_memory_settings", lambda: live)
+        assert rs._model_memory_reload_required() is reload_required
+
+    def test_the_effect_mirrors_should_mlock(self):
+        import routes.settings as rs
+
+        for keep in (True, False):
+            for no_res in (True, False):
+                mlock_bit, _ = rs._launch_effect_of((keep, no_res))
+                assert mlock_bit == (keep and not no_res)
+
+
+class TestADeviceMustActuallyExist:
+    """A requested index is a REQUEST, not evidence: a stale explicit pin is
+    filtered out of `_detected_gpus` and restored into `gpu_indices`, so accepting a
+    nonempty list confirmed an offload to a device that is not there."""
+
+    def test_the_launch_checks_membership_not_emptiness(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        assert "def _devices_are_real(devices)" in src
+        # the old "either list is nonempty" form is gone from both confirmations
+        assert "(_detected_gpus or devices)" not in src
+        assert "(_detected_gpus or gpu_indices)" not in src
+        flat = "".join(src.split())
+        assert flat.count("and_devices_are_real(") == 2
+
+    def test_a_stale_pin_is_not_evidence(self):
+        """The predicate's logic, exercised directly: nothing detected, or a pin the
+        probe never found, is not a confirmed placement."""
+        detected = [(0, 1024), (1, 2048)]
+
+        def devices_are_real(devices, found_rows):
+            found = {idx for idx, *_rest in (found_rows or ())}
+            if not found:
+                return False
+            if not devices:
+                return True
+            return all(int(idx) in found for idx in devices)
+
+        assert devices_are_real([0], detected)
+        assert devices_are_real([0, 1], detected)
+        assert devices_are_real(None, detected)
+        assert not devices_are_real([99], detected)      # the stale pin
+        assert not devices_are_real([0, 99], detected)   # partially stale
+        assert not devices_are_real([0], [])             # nothing probed at all

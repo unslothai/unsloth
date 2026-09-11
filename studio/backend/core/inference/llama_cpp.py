@@ -24186,7 +24186,7 @@ class LlamaCppBackend:
                     not _mem_host_resident
                     and self._build_offers_gpu_backend(binary, _mem_env)
                     and not self._cuda_runtime_missing_for(binary, _mem_env)
-                    and (_detected_gpus or gpu_indices)
+                    and _devices_are_real(gpu_indices)
                     # A probe that did not answer declines rather than confirms; see
                     # _vulkan_offload_is_discrete.
                     and self._offload_target_is_classifiable(binary, _mem_env)
@@ -24294,6 +24294,22 @@ class LlamaCppBackend:
                 _off_view = dict(_mem_env)
                 scrub_memory_env(_off_view, (False, False))
 
+                def _devices_are_real(devices) -> bool:
+                    """Whether the placement targets devices the probe actually found.
+
+                    A requested index is a REQUEST, not evidence: a stale explicit pin
+                    is filtered out of `_detected_gpus` and then restored into
+                    `gpu_indices`, so accepting a nonempty list confirmed an offload to
+                    a device that does not exist and llama.cpp kept the model on the
+                    CPU, where DirectIO buffers the whole GGUF.
+                    """
+                    found = {idx for idx, *_rest in (_detected_gpus or ())}
+                    if not found:
+                        return False
+                    if not devices:
+                        return True
+                    return all(int(idx) in found for idx in devices)
+
                 def _dio_decision_for(devices, *, fully_offloaded):
                     """``(pair, applicable, active)`` for a CHANGED device set.
 
@@ -24325,7 +24341,7 @@ class LlamaCppBackend:
                         # Present is not loadable: a CUDA build with no cudart on the
                         # child's search path reports no devices and runs on the CPU.
                         and not self._cuda_runtime_missing_for(binary, _mem_env)
-                        and (_detected_gpus or devices)
+                        and _devices_are_real(devices)
                         # No classifier, no confirmation: see
                         # _offload_target_is_classifiable.
                         and self._offload_target_is_classifiable(binary, _mem_env)

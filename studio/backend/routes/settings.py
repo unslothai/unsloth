@@ -931,6 +931,16 @@ def _active_launch_placement():
         return _NO_LAUNCH, False, True, None, False, None
 
 
+def _launch_effect_of(settings):
+    """The part of ``(keep_resident, no_ram_reserve)`` a launch can express.
+
+    Mirrors ``should_mlock``: the page-lock is emitted only when residency is on and
+    no-reserve is off, so with no-reserve on the residency toggle reaches no flag.
+    """
+    keep_resident, no_ram_reserve = settings
+    return (keep_resident and not no_ram_reserve, no_ram_reserve)
+
+
 def _model_memory_reload_required() -> bool:
     """True when the loaded process's memory placement contradicts the settings.
 
@@ -960,7 +970,13 @@ def _model_memory_reload_required() -> bool:
     # a child that is already gone would otherwise answer for the launch replacing it.
     if pending is not None:
         from utils.model_memory_settings import get_model_memory_settings
-        return get_model_memory_settings() != pending
+
+        # By EFFECT, not by the literal pair. no-reserve wins over keep-resident for
+        # every loader flag, so flipping keep-resident while no-reserve is on changes
+        # nothing the child launches with -- only the idle-unload veto, which the loop
+        # re-reads each poll and which no reload is needed to apply. Comparing the raw
+        # tuple asked the user to reload for a change the launch cannot express.
+        return _launch_effect_of(get_model_memory_settings()) != _launch_effect_of(pending)
 
     # Same predicate the duplicate-load comparator uses.
     from core.inference.llama_server_args import memory_state_satisfies_settings
