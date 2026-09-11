@@ -4,20 +4,37 @@
 #
 # Usage:
 #   ./build.sh                 # builds unsloth-blackwell:latest pinned to unsloth main
+#   ./build.sh --rocm          # builds unsloth-rocm:latest for AMD GPUs
 #   TAG=2026.05.1 ./build.sh   # custom tag
 #   UNSLOTH_REF=v2026.5.6 UNSLOTH_ZOO_REF=v2026.5.4 ./build.sh   # pin git refs
+#
+# ROCm: RDNA4 / Strix (gfx1150/1151/1200/1201) need a 7.x base and the matching
+# wheel index; the 6.x default only covers RDNA2/RDNA3 and CDNA:
+#   ROCM_VERSION=7.2.4 TORCH_INDEX_URL=https://download.pytorch.org/whl/rocm7.2 \
+#       ./build.sh --rocm
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
-IMAGE_NAME="${IMAGE_NAME:-unsloth-blackwell}"
+ROCM=0
+for arg in "$@"; do
+    [[ "$arg" == "--rocm" ]] && ROCM=1
+done
+
 TAG="${TAG:-latest}"
-CUDA_VERSION="${CUDA_VERSION:-12.8.1}"
-UBUNTU_VERSION="${UBUNTU_VERSION:-24.04}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.12}"
 UNSLOTH_REF="${UNSLOTH_REF:-main}"
 UNSLOTH_ZOO_REF="${UNSLOTH_ZOO_REF:-main}"
 UNSLOTH_NOTEBOOKS_REF="${UNSLOTH_NOTEBOOKS_REF:-main}"
+if [[ $ROCM -eq 1 ]]; then
+    IMAGE_NAME="${IMAGE_NAME:-unsloth-rocm}"
+    ROCM_VERSION="${ROCM_VERSION:-6.4.4}"
+    TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/rocm6.4}"
+else
+    IMAGE_NAME="${IMAGE_NAME:-unsloth-blackwell}"
+    CUDA_VERSION="${CUDA_VERSION:-12.8.1}"
+    UBUNTU_VERSION="${UBUNTU_VERSION:-24.04}"
+fi
 
 # Frozen to a commit here, for the same reason LLAMA_PREBUILT_TAG is resolved below and
 # the publish workflow freezes both refs with git ls-remote: docker matches a RUN layer
@@ -46,6 +63,9 @@ UNSLOTH_ZOO_REF="$(resolve_git_ref https://github.com/unslothai/unsloth-zoo "$UN
 # workflow already freezes this one; leaving it out here meant a rebuild after
 # unslothai/notebooks moved silently kept the old set, and stamped the old commit
 # into .unsloth_template_commit so the image misreported which set it carried.
+# Dockerfile.rocm carries neither the notebooks nor the llama.cpp prebuilt, so the
+# ROCm build skips both lookups rather than printing a tag it never passes.
+if [[ $ROCM -eq 0 ]]; then
 UNSLOTH_NOTEBOOKS_REF="$(resolve_git_ref https://github.com/unslothai/notebooks "$UNSLOTH_NOTEBOOKS_REF")"
 
 # Resolved to a concrete tag here, so the build-arg changes only on a new release and
@@ -63,6 +83,33 @@ if [ -z "${LLAMA_PREBUILT_TAG:-}" ]; then
         LLAMA_PREBUILT_TAG="latest"
         echo "Could not resolve latest llama.cpp tag here; passing 'latest' (resolved inside the build)"
     fi
+fi
+fi
+
+if [[ $ROCM -eq 1 ]]; then
+    echo "Building ${IMAGE_NAME}:${TAG}  [AMD ROCm]"
+    echo "  ROCm           ${ROCM_VERSION}"
+    echo "  torch index    ${TORCH_INDEX_URL}"
+    echo "  unsloth        @${UNSLOTH_REF}"
+    echo "  unsloth-zoo    @${UNSLOTH_ZOO_REF}"
+    echo
+
+    DOCKER_BUILDKIT=1 docker build \
+        --progress=plain \
+        -f Dockerfile.rocm \
+        --build-arg ROCM_VERSION="${ROCM_VERSION}" \
+        --build-arg TORCH_INDEX_URL="${TORCH_INDEX_URL}" \
+        --build-arg UNSLOTH_REF="${UNSLOTH_REF}" \
+        --build-arg UNSLOTH_ZOO_REF="${UNSLOTH_ZOO_REF}" \
+        -t "${IMAGE_NAME}:${TAG}" \
+        .
+
+    echo
+    echo "Built ${IMAGE_NAME}:${TAG}"
+    echo
+    echo "Smoke test on an AMD host:"
+    echo "  bash run.sh --rocm python /workspace/smoke_test_rocm.py"
+    exit 0
 fi
 
 echo "Building ${IMAGE_NAME}:${TAG}"
