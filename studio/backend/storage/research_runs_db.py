@@ -174,14 +174,27 @@ def _bind_assistant_locked(
     )
     # Only bind to an empty placeholder or this run's own message: an untagged reply carries parts
     # _update_assistant drops on completion, so binding one silently overwrites an existing answer.
+    parts = _loads(message["content_json"], [])
+    # A preamble beside the deep_research call is not a prior answer, so only text WITHOUT the
+    # handoff refuses the bind. Source parts, which only a finished answer carries, still do.
+    has_research_handoff = any(
+        isinstance(part, dict)
+        and part.get("type") == "tool-call"
+        and part.get("toolName") == "deep_research"
+        for part in parts
+    )
     existing_answer = any(
         isinstance(part, dict)
         and (
-            (part.get("type") == "text" and (part.get("text") or "").strip())
+            (
+                part.get("type") == "text"
+                and (part.get("text") or "").strip()
+                and not has_research_handoff
+            )
             or part.get("type") == "source"
         )
         and part.get("researchRunId") is None
-        for part in _loads(message["content_json"], [])
+        for part in parts
     )
     if (
         message["thread_id"] != thread_id
