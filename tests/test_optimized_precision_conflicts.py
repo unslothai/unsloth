@@ -26,6 +26,11 @@ def loader():
         n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained"
     )
     method.decorator_list = []
+    helper = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "_precision_flags_conflict"
+    )
     captured = {"config_calls": 0}
 
     def dispatch(**kwargs):
@@ -66,7 +71,7 @@ def loader():
         _get_dtype = lambda dtype: dtype,
         _revision_for_tokenizer_repo = lambda *args: None,
     )
-    exec(compile(ast.Module(body = [method], type_ignores = []), str(path), "exec"), env)
+    exec(compile(ast.Module(body = [helper, method], type_ignores = []), str(path), "exec"), env)
     return env, captured
 
 
