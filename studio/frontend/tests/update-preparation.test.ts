@@ -107,8 +107,7 @@ test("a running prefetch for an older offer is stopped and started again", () =>
     decide(status({ running: true, runningShellVersion: "1.9.0" })),
     "restart",
   );
-  // A reload that lost the record leaves no version to compare, which is the
-  // same situation: the run in flight is not known to be preparing this offer.
+  // A reload that lost the record: the run in flight is not known to prepare this offer.
   assert.equal(decide(status({ running: true })), "restart");
 });
 

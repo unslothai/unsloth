@@ -34,11 +34,9 @@ export type UpdateStatus =
   | "idle"
   | "checking"
   | "available"
-  // "Update now" was pressed and the app bundle and the wheels are being
-  // fetched in the background. Nothing is installed yet and nothing is stopped.
+  // "Update now" pressed; bundle and wheels fetching in the background, nothing installed or stopped.
   | "preparing"
-  // Everything that could be fetched ahead of time is fetched. Restarting now
-  // runs the ordinary update, which finds its downloads already done.
+  // Everything fetchable ahead of time is fetched; the ordinary update finds it done.
   | "ready"
   | "updating-backend"
   | "downloading"
@@ -147,8 +145,7 @@ export function useTauriUpdate(isExternalServer = false) {
   const [dismissed, setDismissed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastFailure, setLastFailureState] = useState<RetainedUpdateFailure | null>(null);
-  // Mirrored in a ref: installUpdate reads it in the same tick as a click, and a
-  // retained failure decides whether that click prepares or installs.
+  // Mirrored in a ref: installUpdate reads it in the click's tick to decide prepare vs install.
   const lastFailureRef = useRef<RetainedUpdateFailure | null>(null);
   function setLastFailure(next: RetainedUpdateFailure | null) {
     lastFailureRef.current = next;
@@ -157,17 +154,15 @@ export function useTauriUpdate(isExternalServer = false) {
   const [updatePolicy, setUpdatePolicy] = useState<DesktopUpdatePolicy>(DEFAULT_UPDATE_POLICY);
   const [preparation, setPreparation] = useState<UpdatePreparation>(INITIAL_PREPARATION);
   const preparationRef = useRef<UpdatePreparation>(INITIAL_PREPARATION);
-  // The offer the background work belongs to. Every step re-reads it and gives
-  // up when it has moved, so a newer offer cannot be finished by an older run.
+  // The offer the background work belongs to; every step gives up when it has moved.
   const preparingVersionRef = useRef<string | null>(null);
   const updateRef = useRef<DesktopUpdateMetadata | null>(null);
   const checkedRef = useRef(false);
   const lastCheckAtRef = useRef<number | null>(null);
   const checkingRef = useRef(false);
   const updatingRef = useRef(false);
-  // Set only once the classic path has committed, which is later than
-  // `updatingRef`: pressing "Update now" enters installUpdate to START the
-  // background preparation, and that must not read as an install in progress.
+  // Set once the classic path commits, later than `updatingRef`: the press that starts the
+  // preparation must not read as an install in progress.
   const installingRef = useRef(false);
   // Windows kill-on-close: false once a re-arm has failed, and every path that starts a backend must check it.
   // A webview reload resets this ref while the native job may still be disarmed, so the first gate asks natively.
@@ -205,16 +200,13 @@ export function useTauriUpdate(isExternalServer = false) {
       setDismissed(false);
     }
     if (installingRef.current) {
-      // A check that started before Restart was pressed lands here mid-install.
-      // Restoring the preparation status over "updating-backend" would put the
-      // Restart button back while the update is running, and a new offer would
-      // start a second background download beside it.
+      // A check started before Restart lands here mid-install: restoring the preparation
+      // status would put Restart back and start a second download beside the update.
       return;
     }
     if (preparingVersionRef.current === nextInfo.version) {
-      // The hourly recheck re-offers the version already being prepared. Putting
-      // it back to "available" would replace a pill that says "Update ready" with
-      // an Update button, and the second press would prepare it all over again.
+      // The hourly recheck re-offers the version being prepared; "available" would replace
+      // "Update ready" with a button that prepares it all over again.
       updateStatus(preparationStatus(preparationRef.current));
       return;
     }
@@ -240,8 +232,7 @@ export function useTauriUpdate(isExternalServer = false) {
     const next = { ...preparationRef.current, ...patch };
     preparationRef.current = next;
     setPreparation(next);
-    // The status is a function of the preparation, so it is derived here rather
-    // than set by each step, which is how the two used to drift apart.
+    // Derived from the preparation rather than set by each step, which is how they drifted.
     updateStatus(preparationStatus(next));
   }
 
@@ -261,8 +252,7 @@ export function useTauriUpdate(isExternalServer = false) {
     } catch (e) {
       console.warn("Could not stop the background preparation:", e);
     }
-    // The user already asked for an update; the version changing underneath is
-    // not a reason to make them ask again.
+    // The user already asked; a version change is not a reason to ask again.
     void prepareUpdate(version, backendFloor);
   }
 
@@ -461,11 +451,9 @@ export function useTauriUpdate(isExternalServer = false) {
   }
 
   /**
-   * Fetch everything the restart would otherwise fetch, with the app still
-   * running. Both halves are independent and neither can fail the other, so they
-   * settle rather than race: a failed app download puts the offer back to the
-   * ordinary Update button, and a failed prefetch just means the restart
-   * downloads its own wheels.
+   * Fetch everything the restart would otherwise fetch, with the app still running. The
+   * halves settle independently: a failed app download puts the plain Update button back,
+   * a failed prefetch means the restart downloads its own wheels.
    */
   async function prepareUpdate(
     version: string,
@@ -492,8 +480,7 @@ export function useTauriUpdate(isExternalServer = false) {
   }
 
   async function prepareShell(version: string): Promise<void> {
-    // A download already in flight reports on the same event as one this renderer
-    // starts, so the wait below shows real progress instead of a still bar.
+    // An in-flight download reports on the same event, so the wait shows real progress.
     // Attached only when there is something to listen to, released either way.
     let unlisten: (() => void) | null = null;
     const waitUntil = Date.now() + BUNDLE_DOWNLOAD_WAIT_MS;
@@ -510,8 +497,7 @@ export function useTauriUpdate(isExternalServer = false) {
         }
         patchPreparation({ shell: "downloading" });
         if (decision === "wait" && Date.now() < waitUntil) {
-          // A native download this renderer did not start; the shell refuses a
-          // second one, so wait it out rather than fail the preparation on it.
+          // A native download this renderer did not start; the shell refuses a second, so wait it out.
           if (!unlisten) {
             unlisten = await listenDesktopUpdateDownload(version, (percent) => {
               if (preparingVersionRef.current !== version) return;
@@ -523,16 +509,10 @@ export function useTauriUpdate(isExternalServer = false) {
           if (preparingVersionRef.current !== version) return;
           continue;
         }
-        // Either nothing is in flight, or the wait above ran out: a native
-        // download that stalls without ever clearing the flag would otherwise
-        // hold the offer at "preparing" with no Restart button and no way back.
-        // Handing it to download_desktop_update either takes the download over
-        // or refuses, and a refusal puts the plain Update button back.
-        //
-        // downloadDesktopUpdate verifies the bundle it produced and throws when
-        // it is missing or the wrong version, so one successful call is the whole
-        // download. Looping back to re-read the status instead would spin forever
-        // against a native side that keeps reporting nothing downloaded.
+        // Nothing in flight, or the wait ran out (a stalled native download would otherwise
+        // hold "preparing" with no way back): download_desktop_update takes it over or
+        // refuses, and a refusal puts the plain Update button back. It verifies the bundle,
+        // so one successful call is the whole download; re-reading the status would spin forever.
         await downloadDesktopUpdate(version, (percent) => {
           if (preparingVersionRef.current !== version) return;
           patchPreparation({ shellProgress: percent });
@@ -589,19 +569,16 @@ export function useTauriUpdate(isExternalServer = false) {
         if (preparingVersionRef.current !== version) return;
       }
       const outcome = await startPrefetch(version, (line) => {
-        // Every other write in this function is guarded the same way: the old
-        // child keeps printing until its invoke settles, and those lines would
-        // otherwise land in the log the install clears and diagnostics ship.
+        // Guarded like every write here: the old child prints until its invoke settles, into
+        // the log the install clears and diagnostics ship.
         if (preparingVersionRef.current !== version) return;
         appendLog(line);
       }, backendFloor);
       if (preparingVersionRef.current !== version) return;
       if (outcome === "busy" && attempt < 2) {
-        // Another renderer claimed the slot between the status read above and this
-        // start. Settled as "skipped", the offer would read ready while that
-        // download is still running, and Restart would cancel it. Wait for the
-        // winner, then look again: its marker is adopted when it prepared this
-        // offer, and a fresh prefetch starts when it prepared another.
+        // Another renderer claimed the slot since the status read. Settled as "skipped" the
+        // offer would read ready while that download runs; wait for the winner, then adopt
+        // its marker for this offer or start afresh for another.
         await adoptPrefetch(() => preparingVersionRef.current !== version);
         if (preparingVersionRef.current !== version) return;
         return prepareBackend(version, backendFloor, attempt + 1);
@@ -658,8 +635,7 @@ export function useTauriUpdate(isExternalServer = false) {
 
   async function installUpdate() {
     if (updatingRef.current) return;
-    // "preparing" has no install to be in the middle of, and its own press is
-    // ignored by the button being disabled.
+    // "preparing" has no install to be in the middle of; its button is disabled.
     if (statusRef.current === "preparing") return;
     updatingRef.current = true;
 
@@ -686,19 +662,16 @@ export function useTauriUpdate(isExternalServer = false) {
       const update = updateRef.current;
       if (!update) return;
       if (statusRef.current === "available" && !lastFailureRef.current) {
-        // First press: fetch in the background and leave the app running. The
-        // offer becomes "Restart", which is the press that installs. A retained
-        // failure's "Retry update" is not a first press: the banner keeps showing
-        // the retry while a failure is retained, so preparing here would make that
-        // click do nothing visible and demand a second one after the preparation.
+        // First press: fetch in the background; the offer becomes "Restart", the press that
+        // installs. A retained failure's "Retry update" is not a first press: preparing on
+        // it would do nothing visible and demand a second click.
         void prepareUpdate(update.version, rawPypiVersion(update.rawJson));
         return;
       }
 
       const { invoke } = await import("@tauri-apps/api/core");
-      // From here on this IS the update, so nothing may be preparing beside it.
-      // start_backend_update stops a running prefetch too; asking first keeps the
-      // renderer's own record straight and makes the stop deterministic in tests.
+      // From here on this IS the update. start_backend_update stops a prefetch too; asking
+      // first keeps the renderer's record straight and the stop deterministic in tests.
       installingRef.current = true;
       preparingVersionRef.current = null;
       await cancelPrefetch().catch(() => {});

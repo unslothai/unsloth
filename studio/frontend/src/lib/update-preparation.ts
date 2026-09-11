@@ -5,11 +5,7 @@ import { type PrefetchStatus, sameUpdateVersion } from "@/lib/tauri-updater";
 
 export type ShellPreparation = "pending" | "downloading" | "done" | "failed";
 
-/**
- * `skipped` and `failed` are both fine outcomes: the prefetch only warms a cache,
- * so an update that runs without one downloads what it needs at restart, which is
- * exactly what every release before this one did.
- */
+/** `skipped` and `failed` are fine outcomes: the prefetch only warms a cache. */
 export type BackendPreparation =
   | "pending"
   | "prefetching"
@@ -32,11 +28,8 @@ export const INITIAL_PREPARATION: UpdatePreparation = {
 };
 
 /**
- * What the offer looks like right now.
- *
- * The app bundle is the part the restart cannot do without, so a failed download
- * puts the offer back to plain "available" and the ordinary Update button. The
- * backend half never blocks: whatever it settles on, the restart can proceed.
+ * What the offer looks like right now. A failed bundle download puts it back to plain
+ * "available"; the backend half never blocks the restart.
  */
 export function preparationStatus(
   preparation: UpdatePreparation,
@@ -82,8 +75,7 @@ export function prefetchDecision(args: {
   offeredVersion: string;
   prefetch: PrefetchStatus;
 }): PrefetchDecision {
-  // An external server is somebody else's environment, and the manual Linux
-  // package path never runs an in-app update to prepare for.
+  // An external server is someone else's environment; the manual Linux path has no in-app update.
   if (!args.inApp || args.isExternalServer) return "skip";
   const prefetch = args.prefetch;
   if (prefetch.running) {
@@ -91,8 +83,7 @@ export function prefetchDecision(args: {
       ? "adopt"
       : "restart";
   }
-  // `stale` is deliberately not in this list: it is a marker this build will not
-  // act on, so the cache behind it cannot be assumed warm.
+  // Not `stale`: a marker this build will not act on says nothing about the cache.
   const usable =
     prefetch.state === "ready" ||
     prefetch.state === "noop" ||

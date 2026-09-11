@@ -88,7 +88,7 @@ export async function installDesktopUpdate(): Promise<void> {
   await invoke("install_desktop_update");
 }
 
-// ── Background preparation ──
+// Background preparation.
 
 /** `prefetch.rs::PrefetchStatus`. */
 export interface PrefetchStatus {
@@ -106,11 +106,7 @@ export const PREFETCH_UNSUPPORTED = "prefetch-unsupported";
 /** Another prefetch owns the work; whatever it produces is what gets adopted. */
 export const PREFETCH_BUSY = "prefetch-busy";
 
-/**
- * Why a prefetch stopped. Only `failed` is worth a word to the user, and even
- * that one is not fatal: the restart falls back to downloading, exactly as it
- * did before there was a prefetch at all.
- */
+/** Why a prefetch stopped. Only `failed` is worth a word, and the restart downloads regardless. */
 export type PrefetchOutcome = "ready" | "unsupported" | "busy" | "failed";
 
 const PREFETCH_POLL_MS = 1000;
@@ -133,8 +129,7 @@ export async function startPrefetch(
     onLog(event.payload);
   });
   try {
-    // The offered manifest's backend release, so the child resolves against the
-    // floor the new shell will enforce rather than the one this shell was built with.
+    // The offered backend release: the child resolves against the floor the new shell enforces.
     await invoke("start_prefetch_update", {
       shellVersion,
       backendFloor: backendFloor ?? null,
@@ -142,9 +137,8 @@ export async function startPrefetch(
     return "ready";
   } catch (e) {
     const reason = String(e);
-    // A backend that predates this feature exits with click's usage error, which
-    // the shell maps to this token. It is the expected answer on the release that
-    // introduces the prefetch, not a fault.
+    // A backend predating this feature exits with click's usage error, mapped to this token:
+    // expected on the release that introduces the prefetch, not a fault.
     if (reason.includes(PREFETCH_UNSUPPORTED)) return "unsupported";
     if (reason.includes(PREFETCH_BUSY)) return "busy";
     console.warn("Background update preparation failed:", e);
@@ -154,12 +148,7 @@ export async function startPrefetch(
   }
 }
 
-/**
- * Join a prefetch this renderer did not start.
- *
- * A webview reload leaves the native child running with no listener attached and
- * the shell refuses a second one, so the only thing to do is wait it out.
- */
+/** Join a prefetch this renderer did not start: a webview reload leaves the child running and the shell refuses a second. */
 export async function adoptPrefetch(
   cancelled: () => boolean,
 ): Promise<PrefetchStatus> {

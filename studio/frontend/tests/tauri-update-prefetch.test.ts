@@ -25,11 +25,7 @@ interface Controller {
   installUpdate: () => Promise<void>;
 }
 
-/**
- * Enough of a browser for the hook's scheduling effect to mount, with timers that
- * never fire. Without it the effect throws on `window`, leaves a real one-hour
- * interval behind, and the test runner never exits.
- */
+/** Enough browser for the scheduling effect to mount, with timers that never fire (else the runner never exits). */
 function installBrowserStubs() {
   const saved = new Map<PropertyKey, PropertyDescriptor | undefined>();
   const define = (key: PropertyKey, value: unknown) => {
@@ -91,10 +87,7 @@ function createHookReact() {
   };
 }
 
-/**
- * The hook with a native side that answers rather than throws, so both presses
- * of the update button can be driven: the first prepares, the second restarts.
- */
+/** The hook with a native side that answers, so both presses can be driven: prepare, then restart. */
 function harness(
   t: TestContext,
   {
@@ -202,9 +195,8 @@ function harness(
           }
           if (command === "desktop_update_cleanup_armed") return true;
           if (command === "start_backend_update") {
-            // The hook registers its listeners inside the same executor that
-            // calls this, and those registrations are promises, so answering
-            // synchronously would emit into nothing and park the update forever.
+            // Listener registrations are promises in the same executor; a synchronous answer
+            // would emit into nothing.
             await settleUntil(() => listeners.has("update-complete"));
             if (holdUpdate) await holdUpdate();
             if (failUpdateOnce && !failedOnce) {
@@ -321,8 +313,7 @@ test("a backend without the command still gets the offer to ready", async (t) =>
   await settle();
   await settle();
 
-  // The release that introduces the prefetch is running against the previous
-  // backend, which has no such command. That is the expected answer, not a fault.
+  // The previous backend has no such command: expected, not a fault.
   assert.equal(hook.statusUpdates.at(-1), "ready");
 });
 
@@ -335,8 +326,7 @@ test("a failed prefetch still reaches ready", async (t) => {
   await settle();
   await settle();
 
-  // Nothing was warmed, so the restart downloads its own wheels. That is the
-  // behaviour of every release before this one, and it is not an error.
+  // Nothing warmed: the restart downloads its own wheels, as every earlier release did.
   assert.equal(hook.statusUpdates.at(-1), "ready");
 });
 
@@ -380,8 +370,7 @@ test("an offer whose bundle is already on disk prepares without downloading", as
 });
 
 test("a check already in flight cannot reopen the offer mid-install", async (t) => {
-  // Assigned inside the executor, which runs synchronously; the explicit type keeps
-  // TypeScript from narrowing the binding to `never` at the call below.
+  // Assigned inside the synchronous executor; the type stops TypeScript narrowing to `never`.
   let release: () => void = () => {};
   const held = new Promise<void>((resolve) => {
     release = resolve;
@@ -399,8 +388,7 @@ test("a check already in flight cannot reopen the offer mid-install", async (t) 
   await settleUntil(() => hook.calls.includes("start_backend_update"));
   assert.equal(hook.statusUpdates.at(-1), "updating-backend");
 
-  // The hourly check fires while the update child is running. Before this was
-  // guarded it put the status back to "ready" and started a second download.
+  // The hourly check mid-update used to put the status back to "ready" and start a second download.
   const downloads = hook.calls.filter((c) => c === "download_desktop_update").length;
   await hook.controller.checkForUpdate();
   await settle();
@@ -415,10 +403,8 @@ test("a check already in flight cannot reopen the offer mid-install", async (t) 
 });
 
 test("a retained failure's retry installs instead of preparing again", async (t) => {
-  // After a failed install the banner keeps offering "Retry update", and a scheduled
-  // check re-offering the same version puts the status back to "available". That
-  // click is a retry, not a first press: preparing on it would do nothing visible
-  // and demand a second click once the preparation finished.
+  // After a failed install "Retry update" is a retry, not a first press: preparing on it
+  // would do nothing visible and demand a second click.
   const hook = harness(t, { failUpdateOnce: true });
   await hook.controller.checkForUpdate();
   await settle();

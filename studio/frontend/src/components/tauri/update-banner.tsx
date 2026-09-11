@@ -70,8 +70,7 @@ export function UpdateBanner({
   const showFailure = Boolean(lastFailure) && !dismissed;
   const isPreparing = status === "preparing";
   const isReady = status === "ready";
-  // The pill replaces the card once the offer has been accepted: the decision is
-  // made, and what is left is progress and one button.
+  // The pill replaces the card once the offer is accepted: progress and one button.
   const showCompact =
     (isPreparing || isReady) && !dismissed && !showFailure && Boolean(info);
   const showAvailable = status === "available" && !dismissed && !showFailure;

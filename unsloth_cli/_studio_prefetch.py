@@ -34,31 +34,24 @@ from typing import Callable, Dict, Iterable, Iterator, List, Optional, Sequence,
 
 PREFETCH_DIR_NAME = ".update-prefetch"
 MARKER_NAME = "PREFETCHED.json"
-# Same sentinel the installer writes over any tree it may later delete, so a
-# directory somebody else put at this path is refused rather than removed.
+# The installer's sentinel over any tree it may delete: a foreign directory here is refused.
 OWNED_MARKER = ".unsloth-studio-owned"
 LOCK_NAME = ".prefetch.lock"
 SITE_DIR_NAME = "site"
 MARKER_SCHEMA = 1
-# The wheels are ~52 MB today; the floor is for the unpack, the cache copy and
-# whatever the requirement files pull in, not for the two core distributions.
+# The wheels are ~52 MB; the floor covers the unpack, the cache copy and the requirement files.
 MIN_FREE_BYTES = 1024 * 1024 * 1024
-# Distinct from 1 so the desktop can tell "a prefetch is already running" from a
-# prefetch that failed, and offer nothing instead of an error.
+# Distinct from 1 so the desktop can tell "already running" from a failure.
 EXIT_BUSY = 3
 
 SUBPROCESS_TIMEOUT_SECONDS = 1800
-# Wall clock for the whole run, well under update.rs's two-hour cap on the child.
-# Without it, eighteen uv calls at the per-call timeout add up to nine hours, and the
-# desktop shows "Preparing update" with no button for every one of them: the pill only
-# offers Restart once it is ready, and the settings row is disabled while it prepares.
-# Reaching this is not a failure -- the core packages are already cached by then, and
-# whatever is left is what the update downloads, as it always did.
+# Wall clock for the whole run, under update.rs's two-hour cap: eighteen uv calls at the per-call
+# timeout would hold "Preparing update" for nine hours. Reaching it is not a failure; the core
+# packages are cached by then and the update downloads the rest.
 BUDGET_SECONDS = 20 * 60
 
-# Mirror of studio/install_manifest.py:TRACKED_REQUIREMENT_FILES. Duplicated
-# rather than imported: install_manifest lives in the INSTALLED (old) tree and
-# would digest the old files, and the point of this record is the NEW wheel's.
+# Mirror of studio/install_manifest.py:TRACKED_REQUIREMENT_FILES, not imported: the installed
+# install_manifest is the OLD tree's, and this record is the NEW wheel's.
 TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = (
     "studio.txt",
     "base.txt",
@@ -69,9 +62,8 @@ TRACKED_REQUIREMENT_FILES: Tuple[str, ...] = (
     "single-env/data-designer.txt",
 )
 
-# The dependency pass in studio/install_python_stack.py, in its own order, with
-# the `--no-deps` it uses for each. triton-kernels.txt is deliberately absent: it
-# names a git revision, not a wheel, so a dry-run of it is a clone.
+# studio/install_python_stack.py's dependency pass, in its order and with its `--no-deps`. No
+# triton-kernels.txt: it names a git revision, so a dry-run of it is a clone.
 REQUIREMENT_PASS: Tuple[Tuple[str, bool], ...] = (
     ("base.txt", False),
     ("no-torch-runtime.txt", True),
@@ -86,12 +78,9 @@ REQUIREMENT_PASS: Tuple[Tuple[str, bool], ...] = (
 # install_manifest.NO_TORCH_MARKER, for the same reason as the tuple above.
 NO_TORCH_MARKER = ".unsloth-no-torch"
 
-# Mirrors of install_python_stack.py:NO_TORCH_SKIP_PACKAGES and
-# WINDOWS_SKIP_PACKAGES. The installer drops these lines from a requirement file
-# before it installs it (`_filter_requirements`), so resolving the unfiltered file
-# describes an install nobody performs: on a GGUF-only machine openai-whisper and
-# librosa drag the whole CUDA stack into the plan, and prefetching that is gigabytes
-# of downloads the update will never use.
+# Mirrors of install_python_stack.py's NO_TORCH_SKIP_PACKAGES and WINDOWS_SKIP_PACKAGES: the
+# installer drops these lines (`_filter_requirements`), and resolving the unfiltered file on a
+# GGUF-only machine drags the whole CUDA stack into the plan.
 NO_TORCH_SKIP_PACKAGES = frozenset(
     {
         "torch-stoi",
@@ -104,21 +93,16 @@ NO_TORCH_SKIP_PACKAGES = frozenset(
 )
 WINDOWS_SKIP_PACKAGES = frozenset({"triton_kernels"})
 
-# Mirror of install_python_stack.py:SDIST_ONLY_PACKAGES: requirements with no wheel
-# on PyPI at any version, which the installer builds from source
-# (`_sdist_only_build_args`). The prefetch fetches with `--only-binary :all:`, and uv
-# refuses the WHOLE command when one pin has no wheel, so leaving these in the pin
-# list loses the entire file rather than the one package. Building them here would be
-# a compiler run in the background for a wheel the update builds anyway, so they are
-# dropped and left to swap time.
+# Mirror of install_python_stack.py:SDIST_ONLY_PACKAGES. The prefetch uses `--only-binary :all:` and
+# uv refuses the WHOLE command when one pin has no wheel, so these are dropped and left to swap time
+# rather than losing the entire file.
 SDIST_ONLY_PACKAGES = frozenset(
     {
         "openai-whisper",
         "argbind",
         "randomname",
         "antlr4-python3-runtime",
-        # _extras_sdist_only_packages adds this on macOS cp314+; naming it everywhere
-        # costs a pin the update would build in either case.
+        # _extras_sdist_only_packages adds this on macOS cp314+; the update builds it either way.
         "mecab",
     }
 )
@@ -140,7 +124,7 @@ class PrefetchSkipped(RuntimeError):
     """Nothing to prepare on this install. Exit 0 and write no marker."""
 
 
-# ── Layout ──
+# Layout.
 
 
 def prefetch_root(studio_home: Path) -> Path:
@@ -159,7 +143,7 @@ def managed_venv(studio_home: Path) -> Path:
     return studio_home / VENV_NAME
 
 
-# ── Lock ──
+# Lock.
 
 
 @contextlib.contextmanager
@@ -188,8 +172,7 @@ def prefetch_lock(studio_home: Path) -> Iterator[None]:
 
         import msvcrt
 
-        # Byte 0 of a file nobody reads: msvcrt has no whole-file lock, and a
-        # single byte is enough for mutual exclusion between two prefetches.
+        # Byte 0: msvcrt has no whole-file lock, and one byte is enough for mutual exclusion.
         handle.seek(0)
         try:
             msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
@@ -205,7 +188,7 @@ def prefetch_lock(studio_home: Path) -> Iterator[None]:
         handle.close()
 
 
-# ── uv commands ──
+# uv commands.
 
 
 def _uv_safe_path(path: Path) -> str:
@@ -285,8 +268,8 @@ def core_dry_run_command(
     return cmd
 
 
-# A requirement line's distribution name: everything before the first marker,
-# extra, comparison or comment character.
+# A requirement line's distribution name: everything before the first marker, extra, comparison or
+# comment.
 _REQUIREMENT_NAME = re.compile(r"^\s*([A-Za-z0-9._-]+)")
 
 
@@ -315,9 +298,8 @@ def effective_requirements(requirement: Path, skip: Iterable[str], work_dir: Pat
         kept.append(line)
     if not dropped:
         return requirement
-    # Beside the source, as _filter_requirements does and for the same reason: a
-    # relative `-r`/`-c` include is copied through and resolves against the file's own
-    # directory. `work_dir` is the fallback for a tree this process cannot write to.
+    # Beside the source, as _filter_requirements does: a relative `-r`/`-c` include resolves against
+    # the file's directory. `work_dir` is the fallback for an unwritable tree.
     filtered = requirement.with_name(f".{requirement.stem}-filtered.txt")
     try:
         filtered.write_text("".join(kept), encoding = "utf-8")
@@ -329,8 +311,7 @@ def effective_requirements(requirement: Path, skip: Iterable[str], work_dir: Pat
     try:
         filtered.write_text("".join(kept), encoding = "utf-8")
     except OSError:
-        # Resolving the unfiltered file is still better than not preparing at all;
-        # the pins it plans are recorded and whatever cannot be fetched is skipped.
+        # The unfiltered file still beats not preparing; what cannot be fetched is skipped.
         return requirement
     return filtered
 
@@ -385,16 +366,11 @@ def fetch_command(
     return cmd
 
 
-# ── Plan parsing ──
-
-# uv writes its plan on stderr, one entry per line, as ` + name==version` for an
-# install and ` - name==version` for the removal it replaces. A direct URL adds a
-# trailing ` (from ...)`, so only the first token is the pin.
+# Plan parsing. uv writes its plan on stderr as ` + name==version` per install (` - ` for a
+# removal); a direct URL adds ` (from ...)`, so only the first token is the pin.
 _PLAN_LINE = re.compile(r"^\s*\+\s+(?P<pin>\S+)\s*(?:\(.*\))?\s*$")
-# uv prints this immediately above the plan. It is the only way to tell "nothing to
-# do" from "the plan came out in a shape this parser does not know": both leave the
-# dict empty, and one of them is a prefetch that reports a warm cache and warmed
-# nothing.
+# Printed above the plan: the only way to tell "nothing to do" from a plan shape this parser does
+# not know, which would report a warm cache that warmed nothing.
 _PLAN_COUNT = re.compile(r"^\s*Would install (?P<count>\d+) packages?\s*$", re.M)
 
 
@@ -460,7 +436,7 @@ def pins_from_plan(planned: Dict[str, str], *, only_binary: bool = False) -> Lis
     ]
 
 
-# ── Version comparison (PEP 440 release segment only) ──
+# Version comparison (PEP 440 release segment only).
 
 
 def _release_tuple(version: str) -> Tuple[int, ...]:
@@ -512,8 +488,8 @@ def _version_key(version: str) -> Optional[tuple]:
     else:
         post = None
     dev = int(match.group("dev_n") or 0) if match.group("dev_n") is not None else None
-    # The same sentinels packaging uses: a dev release without pre/post sorts before any
-    # pre-release, a final release sorts after every pre-release.
+    # packaging's sentinels: a bare dev release sorts before any pre-release, a final after every
+    # one.
     if pre is None and post is None and dev is not None:
         pre_key: tuple = (-1,)
     elif pre is None:
@@ -534,8 +510,8 @@ def version_meets_floor(version: str, floor: str) -> bool:
     """
     if not floor:
         return True
-    # Full ordering when both parse (a .post2 floor is not met by .post1; a .postN of a
-    # plain floor still is); the release tuple only when one does not.
+    # Full ordering when both parse (.post1 does not meet a .post2 floor); the release tuple
+    # otherwise.
     left_key, right_key = _version_key(version), _version_key(floor)
     if left_key is not None and right_key is not None:
         return left_key >= right_key
@@ -546,7 +522,7 @@ def version_meets_floor(version: str, floor: str) -> bool:
     return left >= right
 
 
-# ── Marker ──
+# Marker.
 
 
 def _digest_bytes(data: bytes) -> str:
@@ -614,10 +590,8 @@ def read_marker(studio_home: Path) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
-# The environment variable through which `unsloth studio update` names the core pins a
-# current prefetch cached. install_python_stack.py reads it when the index cannot be
-# reached during the core step and installs those pins from the uv cache with --offline,
-# instead of falling through to a pip resolution that needs the index it has not got.
+# How `unsloth studio update` names the core pins a current prefetch cached: when the index is
+# unreachable, install_python_stack.py installs them from the uv cache with --offline.
 CORE_PINS_ENV = "UNSLOTH_PREFETCHED_CORE_PINS"
 
 
@@ -700,17 +674,14 @@ def marker_is_current(
         return False
     if cache_dir is not None and marker.get("cache_dir") != cache_dir:
         return False
-    # The same age the shell's status applies: a marker older than this reads as stale
-    # there, and pins the shell no longer offers must not reach the offline retry from
-    # a Studio left open past the week, or from a terminal update.
+    # The shell's own age limit: pins it no longer offers must not reach the offline retry.
     created = marker.get("created_at")
     if isinstance(created, (int, float)) and (time.time() * 1000 - created) > MARKER_MAX_AGE_MS:
         return False
     if floor:
         backend = marker.get("backend_version")
         if not isinstance(backend, str) or not backend:
-            # No unsloth in the plan (nothing planned, or a zoo-only bump): the floor
-            # has to be met by the unsloth that is installed and stays.
+            # No unsloth in the plan (a zoo-only bump): the installed unsloth must meet the floor.
             backend = marker.get("installed_backend_version")
         if not isinstance(backend, str) or not version_meets_floor(backend, floor):
             return False
@@ -735,18 +706,15 @@ def plan_is_not_behind(marker: Optional[dict], installed: Dict[str, Optional[str
         planned, present = version.strip(), current.strip()
         planned_key, present_key = _version_key(planned), _version_key(present)
         if planned_key is not None and present_key is not None:
-            # Full PEP 440 order: 2026.9.5.post2 planned over 2026.9.5.post1 installed is
-            # ahead, 2026.9.5 over 2026.9.5.post1 is behind, 2026.9.5 over 2026.9.5rc1 is
-            # ahead. A post release of the same version is exactly the update a
-            # prefetch was made for and used to be refused as "another spelling".
+            # Full PEP 440 order: a .post2 over an installed .post1 is ahead (the update a prefetch
+            # is made for, once refused as "another spelling"), a plain over .post1 behind.
             if planned_key < present_key:
                 return False
             continue
         if _release_tuple(planned) < _release_tuple(present):
             return False
-        # A spelling this module cannot parse at the same release segment is treated as
-        # behind, since the cost of a wrong yes is a downgrade the offline retry would
-        # report as success.
+        # Unparseable at the same release segment reads as behind: a wrong yes is a downgrade
+        # reported as success.
         if (
             _release_tuple(planned) == _release_tuple(present)
             and planned.lower() != present.lower()
@@ -759,7 +727,7 @@ def _canonical_name(name: str) -> str:
     return name.strip().lower().replace("_", "-")
 
 
-# ── Discard ──
+# Discard.
 
 
 def _is_owned(root: Path) -> bool:
@@ -800,7 +768,7 @@ def discard_after_update(studio_home: Path) -> bool:
         return False
 
 
-# ── Preflight ──
+# Preflight.
 
 
 def _installed_version(name: str) -> Optional[str]:
@@ -910,9 +878,8 @@ def _volumes_to_check(root: Path, cache_dir: Optional[str]) -> list:
     if cache_dir:
         cache = Path(cache_dir)
         if not cache.is_absolute():
-            # uv resolves a relative UV_CACHE_DIR against ITS working directory, which
-            # every uv call here is given (_working_directory) and UV_WORKING_DIR moves;
-            # anchor the check there rather than at this process's.
+            # uv resolves a relative UV_CACHE_DIR against ITS working directory (_working_directory,
+            # moved by UV_WORKING_DIR), not this process's.
             cache = _uv_working_directory() / cache
         root_id, cache_id = _filesystem_id(root), _filesystem_id(cache)
         if root_id is None or cache_id is None or root_id != cache_id:
@@ -920,13 +887,11 @@ def _volumes_to_check(root: Path, cache_dir: Optional[str]) -> list:
     return volumes
 
 
-# ── Runner ──
+# Runner.
 
 
-# The wall-clock deadline of the prefetch in progress, read by _run so every uv call
-# is bounded by what is LEFT of the budget rather than by its own 30 minutes: a stalled
-# index used to hold the UI at "Preparing" for up to an hour across the two core calls
-# before the deadline was so much as looked at.
+# The wall-clock deadline of the prefetch in progress: every uv call is bounded by what is LEFT of
+# the budget, not its own 30 minutes, which once held "Preparing" for an hour.
 _RUN_DEADLINE: Optional[float] = None
 
 
@@ -950,10 +915,8 @@ def _run_timeout(cmd: Sequence[str]) -> float:
     return min(float(SUBPROCESS_TIMEOUT_SECONDS), remaining)
 
 
-# The directory every uv call below runs from, set by `run` for the whole prefetch.
-# uv discovers uv.toml / pyproject.toml from its working directory, and the update runs
-# setup.sh from the script directory: a prefetch resolving from the caller's directory
-# could read a configuration the update never sees and plan against another index.
+# Where every uv call runs from, set by `run`: uv discovers uv.toml / pyproject.toml from its
+# working directory, and a prefetch resolving from the caller's could plan against another index.
 _RUN_CWD: Optional[str] = None
 
 
@@ -981,9 +944,8 @@ def _run(cmd: Sequence[str], env: Optional[dict]) -> subprocess.CompletedProcess
     )
 
 
-# The installer's _redact_install_output, kept in step with it: uv and pip failure text
-# embeds the failing index URL verbatim, which can carry user:token@, ?token= or
-# #token= secrets, and what is raised here reaches the desktop log and the renderer.
+# The installer's _redact_install_output: uv and pip failure text embeds the index URL, which can
+# carry user:token@, ?token= or #token= secrets, and what is raised here reaches the log.
 _URL_USERINFO_RE = re.compile(r"(https?://)[^/@\s`]+@")
 _URL_QUERY_VALUE_RE = re.compile(r"([?&][^=\s&`]+)=[^&#\s`]+")
 _URL_FRAGMENT_RE = re.compile(r"(https?://[^\s`#]+)#[^\s`]+")
@@ -996,8 +958,8 @@ def _redact(text: str) -> str:
 
 
 def _failure_text(result: subprocess.CompletedProcess, limit: int) -> str:
-    # Redacted first, truncated second: a tail cut through a long userinfo token would
-    # keep the token and the @host while losing the scheme the pattern anchors on.
+    # Redacted first: a tail cut through a userinfo token would lose the scheme the pattern anchors
+    # on.
     return _redact(_combined(result)).strip()[-limit:] or f"uv exited {result.returncode}"
 
 
@@ -1010,23 +972,14 @@ def _combined(result: subprocess.CompletedProcess) -> str:
     return f"{result.stdout or ''}\n{result.stderr or ''}"
 
 
-# ── Finding uv ──
+# Finding uv.
 
 
-# The installer scripts run `uv` as a bare token, and get away with it because
-# they prepend the directory they installed it into to PATH before they start
-# python (setup.ps1 `$env:PATH = "$destDir;$env:PATH"`, setup.sh
-# `export PATH="$_siup_dest:$PATH"`). The prefetch is spawned straight from the
-# desktop shell instead, and on Windows that shell can be holding a PATH from
-# before the install wrote HKCU\Environment\Path, so the token resolves to
-# nothing and the whole prefetch skips on a machine that has uv.
-#
-# So look where the installer put it. This is astral's destination priority,
-# which install.ps1 and install.sh both compute the same way and which
-# install.ps1 re-probes verbatim when a fresh uv hides behind an older one.
-# Nothing installs uv into the Studio root or the managed venv, and nothing in
-# this codebase falls back to `python -m uv`, so there is no Studio-owned copy to
-# prefer: these directories are the whole search.
+# The installers prepend uv's directory to PATH before starting python; the prefetch is spawned from
+# the desktop shell, whose Windows PATH can predate the install, so a bare `uv` resolved to nothing
+# on a machine that has it. Look where the installer put it: astral's destination priority, as
+# install.ps1 and install.sh compute it. Nothing installs uv into the Studio root or the venv, so
+# these directories are the whole search.
 def _uv_search_dirs(env: dict) -> List[Path]:
     dirs: List[Path] = []
 
@@ -1074,7 +1027,7 @@ def locate_uv(env: Optional[dict] = None) -> Tuple[Optional[str], List[Path]]:
     """
     environment = dict(env) if env is not None else dict(os.environ)
     searched = _uv_search_dirs(environment)
-    # Bare, one argument, as install_python_stack.py:_bootstrap_uv calls it.
+    # Bare, as install_python_stack.py:_bootstrap_uv calls it.
     found = shutil.which("uv")
     if found:
         return found, searched
@@ -1195,18 +1148,14 @@ def _run_unguarded(
     def step(text: str) -> None:
         echo(f"[TAURI:STEP] {text}")
 
-    # A marker another offer left. Every exit from here that does not end in a new
-    # marker (a preflight skip, uv missing, a full volume, a root that is not ours)
-    # would otherwise leave the old offer's pins on disk for a shell that asked about
-    # this one, and the offline retry does not compare the shell version before it
-    # takes them. Before the skips too: an install that turned editable or set
-    # UV_NO_CACHE exits as "nothing to prepare", which the desktop settles as done.
+    # A marker another offer left: any exit short of a new marker (a preflight skip, uv missing, a
+    # full volume) would leave the old offer's pins for the offline retry, which does not compare
+    # the shell version. Before the skips too, which the desktop settles as done.
     existing = read_marker(studio_home)
     if isinstance(existing, dict) and existing.get("shell_version") != shell_version:
         discard(studio_home)
 
-    # 1. Preflight. Every branch here is "this install prepares nothing", not a
-    #    failure: the classic update still works on all of them.
+    # 1. Preflight. Every branch is "this install prepares nothing", not a failure.
     if not (venv / "pyvenv.cfg").is_file():
         raise PrefetchSkipped("not running from a managed environment")
     expected = managed_venv(studio_home)
@@ -1222,18 +1171,15 @@ def _run_unguarded(
         raise PrefetchSkipped("a local install has no index to prepare from")
     if uv_no_cache_requested():
         raise PrefetchSkipped("UV_NO_CACHE leaves nothing behind to prepare")
-    # Built here rather than after the disk check: the uv search reads the same
-    # environment the child will run under, so it has to exist by now.
+    # Before the disk check: the uv search reads the environment the child runs under.
     child_env = dict(env) if env is not None else dict(os.environ)
-    # The budget starts here, before uv is looked for: a fallback candidate that hangs on
-    # --version is a uv call like any other, and it used to get the full subprocess
-    # timeout per candidate before the deadline existed.
+    # The budget starts before uv is looked for: a candidate that hangs on --version is a uv call
+    # like any other.
     deadline = time.monotonic() + BUDGET_SECONDS
     with _within_budget(deadline):
         uv, searched_for_uv = locate_uv(child_env)
     if uv is None:
-        # Name the places, so a machine that has uv somewhere else says so in one
-        # line instead of leaving the reader to guess what "not available" means.
+        # Name the places searched, so "not available" is not a guess.
         where = ", ".join(str(directory) for directory in searched_for_uv)
         raise PrefetchSkipped(f"uv is not available (looked on PATH and in {where})")
 
@@ -1251,8 +1197,7 @@ def _run_unguarded(
         raise PrefetchError(f"{root} exists and was not created by Unsloth")
     shutil.rmtree(root, ignore_errors = True)
     root.mkdir(parents = True, exist_ok = True)
-    # Written before anything else lands in it, so an interrupted run still
-    # leaves a directory the next prefetch is allowed to remove.
+    # Written first, so an interrupted run leaves a directory the next prefetch may remove.
     (root / OWNED_MARKER).write_text("", encoding = "utf-8")
     target = site_dir(studio_home)
     target.mkdir(parents = True, exist_ok = True)
@@ -1265,13 +1210,10 @@ def _run_unguarded(
     )
     if live_constraints is not None and not live_constraints.is_file():
         live_constraints = None
-    # The installer sets UV_OVERRIDE to the bundled macOS arm64 overrides when it loads
-    # (install_python_stack.py, kept when a caller set one), and uv applies an override
-    # to every resolution. Without it the core dry run answers for a different resolver:
-    # it honoured mlx-vlm's transformers requirement against the constraints and planned
-    # mlx-vlm and mlx-audio DOWNGRADES the update never makes, and the offline swap then
-    # installed them from the cache (observed on the staging matrix). Same file, same
-    # rule: the live tree's, since the live installer is what runs the core step.
+    # The installer sets UV_OVERRIDE to the bundled macOS arm64 overrides (kept when a caller set
+    # one). Without it the core dry run planned mlx-vlm and mlx-audio DOWNGRADES the update never
+    # makes, and the offline swap installed them. The live tree's file: the live installer runs the
+    # core step.
     _applied_live_override = False
     if (
         platform.system() == "Darwin"
@@ -1286,9 +1228,8 @@ def _run_unguarded(
             child_env["UV_OVERRIDE"] = str(overrides)
             _applied_live_override = True
 
-    # 2. Resolve. The plan is what the update's core step would do, asked of the
-    #    live venv so anything already satisfied is absent from it.
-    # The installer's own branch, read from the venv the update will run against.
+    # 2. Resolve: what the update's core step would do, asked of the live venv so anything already
+    # satisfied is absent. The installer's own branch.
     no_torch = _no_torch(venv)
     live_override = child_env.get("UV_OVERRIDE") if _applied_live_override else None
     step("prefetch resolving core packages")
@@ -1377,18 +1318,13 @@ def _run_prefetch(
     }
 
     if not planned:
-        # Nothing to fetch. The desktop still shows "ready": the update it would
-        # run has no downloads left to do.
-        #
-        # Keyed off the whole plan rather than off unsloth alone: the two
-        # distributions release independently, so a zoo-only bump is a real download
-        # that a "noop" marker would tell the desktop it had already prepared.
+        # Nothing to fetch: the desktop still shows "ready". Keyed off the whole plan, not unsloth
+        # alone: a zoo-only bump is a real download a "noop" marker would hide.
         if floor and installed_backend and not version_meets_floor(installed_backend, floor):
             raise PrefetchError(
                 f"the index offers no unsloth>={floor}; installed is {installed_backend}"
             )
-        # The installed versions, so the swap's offline retry has exact pins to audit
-        # against when the index has gone away since (see _core_pin_source).
+        # The installed versions, so the offline retry has exact pins to audit (_core_pin_source).
         payload["installed_core"] = {
             name: version
             for name, version in (
@@ -1404,8 +1340,8 @@ def _run_prefetch(
     if floor and backend_version is not None and not version_meets_floor(backend_version, floor):
         raise PrefetchError(f"the resolved unsloth {backend_version} is below the required {floor}")
 
-    # 3. Fetch the core plan. --target keeps every byte out of the venv; the
-    #    download is what warms archive-v0 in the shared cache.
+    # 3. Fetch the core plan. --target keeps every byte out of the venv; the download warms the
+    # cache.
     pins = pins_from_plan(planned)
     step(f"prefetch downloading {len(pins)} core package(s)")
     fetch_cmd = fetch_command(interpreter, target, pins, uv = uv)
@@ -1419,9 +1355,8 @@ def _run_prefetch(
         raise PrefetchError("could not download the core packages: " + _failure_text(fetched, 800))
     payload["core_records"] = core_record_digests(target, planned)
 
-    # 4. Requirement files, best effort. These come from the NEW wheel, resolved
-    #    against the live venv: a file that will not resolve is recorded and left
-    #    to swap time, which downloads it then. Never a failure of the prefetch.
+    # 4. Requirement files, best effort: the NEW wheel's, resolved against the live venv. One that
+    # will not resolve is recorded and left to swap time, never a failure.
     new_studio = _fetched_studio_root(target)
     state = "ready"
     if new_studio is None:
@@ -1430,9 +1365,8 @@ def _run_prefetch(
     else:
         req_root = new_studio / "backend" / "requirements"
         payload["requirement_digests"] = requirement_digests(req_root)
-        # The override the update's later passes run under is the NEW wheel's: the
-        # core step has installed it by then, at the same path the live one held. The
-        # core plan above kept the live file, since the live installer runs that step.
+        # The later passes run under the NEW wheel's override (installed by the core step at the
+        # same path); the core plan above used the live one.
         requirement_env = child_env
         if live_override is not None:
             new_overrides = req_root / "single-env" / "overrides-darwin-arm64.txt"
@@ -1447,8 +1381,7 @@ def _run_prefetch(
         work_dir = prefetch_root(studio_home) / "req"
         for name, no_deps in REQUIREMENT_PASS:
             if time.monotonic() >= deadline:
-                # Recorded, not raised: the core packages are cached, and the files
-                # left over are the ones the update would have downloaded anyway.
+                # Recorded, not raised: the update downloads what is left anyway.
                 payload["requirements"][name] = {"skipped_reason": "out of time"}
                 state = "partial"
                 continue
@@ -1517,9 +1450,8 @@ def _prefetch_requirement_file(
     if not planned:
         return {"pins": {}}
     pins = pins_from_plan(planned, only_binary = True)
-    # Recorded are the pins that were fetched: the desktop reads the marker as stale
-    # when a recorded pin is not in the cache, and a source-only package never is.
-    # What was left to swap time is named beside them.
+    # Only fetched pins are recorded: the desktop reads a recorded pin missing from the cache as
+    # stale, and a source-only package never is in it.
     wanted = set(pins)
     fetched_plan = {
         name: version for name, version in planned.items() if f"{name}=={version}" in wanted
@@ -1530,9 +1462,8 @@ def _prefetch_requirement_file(
         return {"pins": {}, "source_only": source_only}
     step(f"prefetch downloading {len(pins)} package(s) for {label}")
     try:
-        # --only-binary: a source distribution would be BUILT here, against the
-        # live interpreter, which is real work in the background for a wheel the
-        # update can just as well build itself.
+        # --only-binary: a source distribution would be BUILT here, for a wheel the update builds
+        # anyway.
         fetched = _run(
             fetch_command(interpreter, target, pins, only_binary = True, uv = uv),
             env,

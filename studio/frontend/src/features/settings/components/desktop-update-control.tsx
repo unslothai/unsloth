@@ -36,8 +36,7 @@ export function DesktopUpdateControl(): ReactElement | null {
     update.status === "updating-backend" ||
     update.status === "downloading" ||
     update.status === "installing";
-  // Preparing counts: the offer has already been accepted and the only thing
-  // left to press is Restart, which this row shows once it is ready.
+  // Preparing counts: the offer is accepted and only Restart is left to press.
   const busy = checking || inFlight || preparing;
   const available = update.info !== null && !checking;
   const checkFailed = update.checkError !== null && !available;

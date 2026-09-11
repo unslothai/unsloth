@@ -7464,18 +7464,15 @@ def pip_install(
                     _safe_print(_redact_install_output(result.stdout))
                 return
             if offline_pins:
-                # The pins were resolved against this cache by the prefetch's dry run and
-                # fetched into it, so uv can satisfy them without the index; the
-                # constraints still apply, so a pin that no longer fits is refused
-                # rather than installed.
+                # The prefetch resolved and fetched these pins into this cache, so uv needs no
+                # index; the constraints still refuse a pin that no longer fits.
                 _safe_print(
                     _dim(
                         "   uv could not reach the index; installing the prefetched core packages from the uv cache..."
                     )
                 )
-                # --no-deps travels with the pins: the no-torch core step installs
-                # without dependencies so torch is never resolved, and its retry must not
-                # start resolving them from the cache either.
+                # --no-deps travels with the pins: the no-torch core step must not start resolving
+                # dependencies from the cache.
                 offline_args = ("--no-deps",) if "--no-deps" in args else ()
                 offline_cmd = (
                     _build_uv_cmd(("--offline", *offline_args, *offline_pins)) + constraint_args_uv
@@ -7778,9 +7775,8 @@ def install_python_stack() -> int:
             if (desktop_min_ver and package_name == "unsloth")
             else package_name
         )
-        # The same prefetched pins as the default core step: the prefetch resolves and
-        # fetches the core packages with --no-deps on a no-torch install, and the
-        # offline retry keeps --no-deps, so the cache is read without torch being asked for.
+        # The same prefetched pins as the default core step, with --no-deps kept so torch is never
+        # asked for.
         pip_install(
             f"Updating {package_name} + unsloth-zoo (no-torch mode)",
             "--no-cache-dir",
@@ -7838,9 +7834,8 @@ def install_python_stack() -> int:
             if (desktop_min_ver and package_name == "unsloth")
             else package_name
         )
-        # The cache this step reads, named on stdout so a background prefetch can be
-        # checked against it: a prefetch that warmed a different one is why an update
-        # would still download the wheels it was supposed to already have.
+        # Named on stdout so a background prefetch can be checked against it: warming a different
+        # cache is why an update would still download.
         _uv_cache_dir = (os.environ.get("UV_CACHE_DIR") or "").strip()
         if _uv_cache_dir:
             _safe_print(f"[TAURI:DIAG] uv cache={_uv_cache_dir}")

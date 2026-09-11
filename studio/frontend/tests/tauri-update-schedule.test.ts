@@ -514,15 +514,13 @@ test("scheduled checks leave a failed install in its error state", async (t) => 
   await settle();
   assert.equal(hook.statusUpdates.at(-1), "available");
 
-  // First press prepares in the background; the offer only becomes installable
-  // once both halves have settled.
+  // First press prepares; the offer is installable once both halves settle.
   await hook.controller.installUpdate();
   await settle();
   await settle();
   assert.equal(hook.statusUpdates.at(-1), "ready");
 
-  // Second press is the restart, and start_backend_update itself refuses, which
-  // is the failure the classic path reports.
+  // Second press restarts, and start_backend_update refuses: the classic path's failure.
   await hook.controller.installUpdate();
   await settle();
   assert.equal(hook.statusUpdates.at(-1), "error");
@@ -541,9 +539,8 @@ test("a bundle download the update did not start reports its progress", async (t
     bundleStates: [
       // The first press only prepares, and finds the bundle already retained.
       { version: "2.0.0", downloaded: true, downloading: false },
-      // By Restart the retained bundle is gone and a native download this
-      // renderer did not start is in flight; download_desktop_update would
-      // refuse a second one, so the update watches this one instead.
+      // By Restart the bundle is gone and a foreign native download is in flight; the update
+      // watches it rather than start a second.
       { version: "2.0.0", downloaded: false, downloading: true },
       { version: "2.0.0", downloaded: false, downloading: true },
       { version: "2.0.0", downloaded: true, downloading: false },
@@ -552,8 +549,7 @@ test("a bundle download the update did not start reports its progress", async (t
   hook.browser.fireTimeouts(STARTUP_DELAY_MS);
   await settle();
 
-  // First press prepares; the bundle is already there, so nothing is downloaded
-  // and nothing is watched yet.
+  // First press prepares; the bundle is already there, so nothing is downloaded or watched.
   await hook.controller.installUpdate();
   await settle();
   await settle();
@@ -620,8 +616,7 @@ test("waiting out a bundle download the update did not start is bounded", async 
 
 test("a preparation that watches a download somebody else started shows it", async (t) => {
   const hook = hookHarness(t, {
-    // A webview reload left a native download running, and the press that
-    // prepares runs into it before the press that installs ever happens.
+    // A webview reload left a native download running; the preparing press runs into it.
     bundleStates: [
       { version: "2.0.0", downloaded: false, downloading: true },
       { version: "2.0.0", downloaded: false, downloading: true },
@@ -656,8 +651,7 @@ test("a preparation that watches a download somebody else started shows it", asy
 
 test("a preparation waiting on somebody else's download is bounded", async (t) => {
   const hook = hookHarness(t, {
-    // Stuck: the flag never clears, so without the bound the offer sits at
-    // "preparing" for good and the Restart button never arrives.
+    // Stuck: without the bound the offer sits at "preparing" for good.
     bundleStates: [{ version: "2.0.0", downloaded: false, downloading: true }],
     bundleDownload: "refuses",
   });
@@ -675,8 +669,7 @@ test("a preparation waiting on somebody else's download is bounded", async (t) =
   hook.browser.fireTimeouts(BUNDLE_POLL_MS);
   await settle();
 
-  // Handed back to the real download, and its refusal puts the plain Update
-  // button back rather than leaving the offer stuck on a bar that never moves.
+  // Handed to the real download; its refusal puts the plain Update button back.
   assert.equal(hook.download.started, 1);
   assert.equal(hook.download.released, 1);
   assert.equal(hook.preparationUpdates.at(-1)?.shell, "failed");

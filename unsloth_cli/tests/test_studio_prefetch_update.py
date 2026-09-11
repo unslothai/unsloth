@@ -27,7 +27,7 @@ INSTALL_PYTHON_STACK = _REPO_ROOT / "studio" / "install_python_stack.py"
 NO_TORCH_CORE_LABEL = "f'Updating {package_name} + unsloth-zoo (no-torch mode)'"
 
 
-# ── Dry-run plan parsing ──
+# Dry-run plan parsing.
 
 
 def test_plan_lines_are_read_from_either_stream_and_either_line_ending():
@@ -51,8 +51,7 @@ def test_removals_and_local_tag_pins_are_left_out_of_the_plan():
         [
             " - numpy==2.1.0",
             " + numpy==2.2.0",
-            # A pinned index or a --torch-backend produced this; it cannot be asked
-            # for again as a bare name==version, so it is not prefetchable.
+            # From a pinned index or --torch-backend: not askable as a bare name==version.
             " + torch==2.9.0+cu128",
             " + nvidia-cublas-cu12==12.8.4.1",
         ]
@@ -75,7 +74,7 @@ def test_plan_names_are_normalised_so_the_pin_matches_the_index():
     assert _studio_prefetch.pins_from_plan({"unsloth-zoo": "1.0"}) == ["unsloth-zoo==1.0"]
 
 
-# ── The core command must not drift from the installer's ──
+# The core command must not drift from the installer's.
 
 
 def _installer_core_step_arguments(label: str) -> list[str]:
@@ -97,8 +96,8 @@ def _installer_core_step_arguments(label: str) -> list[str]:
         and node.args
         # The no-torch label is an f-string, so compare the unparsed source form.
         and ast.unparse(node.args[0]) == label
-        # The --local branch passes the literal "unsloth"; the branches the desktop
-        # runs pass the floor-aware spec.
+        # The --local branch passes the literal "unsloth"; the desktop's branches the floor-aware
+        # spec.
         and any(isinstance(arg, ast.Name) and arg.id == "unsloth_spec" for arg in node.args)
     ]
     assert len(calls) == 1, f"the installer's {label!r} core step moved or was duplicated"
@@ -179,8 +178,7 @@ def test_a_requirement_file_is_filtered_the_way_the_installer_filters_it(tmp_pat
     )
 
     assert filtered != requirement
-    # Beside the source, as install_python_stack._filter_requirements does it, so the
-    # `-r base.txt` copied through still resolves.
+    # Beside the source, as _filter_requirements does, so `-r base.txt` still resolves.
     assert filtered.parent == requirement.parent
     assert not work.exists()
     assert filtered.read_text(encoding = "utf-8") == "# audio\n-r base.txt\nsoundfile\n"
@@ -271,7 +269,7 @@ def test_a_plan_uv_announced_but_this_parser_could_not_read_is_not_an_empty_plan
     assert _studio_prefetch.planned_install_count("nothing to say") is None
 
 
-# ── Floors ──
+# Floors.
 
 
 def test_a_post_release_of_the_floor_still_meets_it():
@@ -279,8 +277,7 @@ def test_a_post_release_of_the_floor_still_meets_it():
     assert _studio_prefetch.version_meets_floor("2026.9.2.post1", "2026.9.2")
     assert _studio_prefetch.version_meets_floor("2026.9.3", "2026.9.2")
     assert not _studio_prefetch.version_meets_floor("2026.9.1", "2026.9.2")
-    # Full ordering when both parse: a post-release floor is not met by an earlier
-    # post-release of the same version.
+    # Full ordering when both parse: an earlier post-release does not meet a post-release floor.
     assert not _studio_prefetch.version_meets_floor("2026.9.5.post1", "2026.9.5.post2")
     assert _studio_prefetch.version_meets_floor("2026.9.5.post2", "2026.9.5.post1")
     assert _studio_prefetch.version_meets_floor("2026.9.5.post2", "2026.9.5.post2")
@@ -308,13 +305,12 @@ def test_the_prefetch_decides_no_torch_mode_the_way_the_installer_does(managed, 
     monkeypatch.setenv("UNSLOTH_NO_TORCH", "1")
     marker.unlink()
     assert _studio_prefetch.no_torch_mode(venv) is True
-    # An empty value counts as unset, as it does for the installer (PowerShell cannot
-    # keep a set-but-empty variable).
+    # Empty counts as unset, as for the installer (PowerShell cannot keep a set-but-empty variable).
     monkeypatch.setenv("UNSLOTH_NO_TORCH", "  ")
     assert _studio_prefetch.no_torch_mode(venv) is False
 
 
-# ── run() ──
+# run().
 
 
 class _Recorder:
@@ -587,13 +583,13 @@ def test_a_failing_requirement_file_degrades_to_partial_rather_than_failing(mana
     assert "resolve failed" in payload["requirements"]["studio.txt"]["skipped_reason"]
 
 
-# ── Finding uv ──
+# Finding uv.
 
 
 UV_NAME = "uv.exe" if platform.system() == "Windows" else "uv"
 
-# Every variable the installers read when they choose where to put uv, so a test
-# that means "PATH has no uv" is not answered by the developer's own ~/.local/bin.
+# Every variable the installers read for uv's location, so "PATH has no uv" is not answered by
+# ~/.local/bin.
 _UV_LOCATION_VARS = (
     "UV_INSTALL_DIR",
     "UV_UNMANAGED_INSTALL",
@@ -617,8 +613,7 @@ def _without_uv_on_path(monkeypatch, home: Path) -> None:
         monkeypatch.delenv(name, raising = False)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
-    # locate_uv runs a candidate before believing in it; nothing here is a real
-    # binary, so the probe is what says whether the file counts.
+    # locate_uv runs a candidate before believing in it; the probe decides here.
     monkeypatch.setattr(
         _studio_prefetch,
         "_run",
@@ -699,8 +694,7 @@ def test_the_skip_names_the_places_it_looked(managed, monkeypatch, tmp_path):
             echo = lambda line: None,
         )
 
-    # "uv is not available" on its own leaves the reader guessing on the one
-    # platform where this fires.
+    # "uv is not available" alone leaves the reader guessing.
     reason = str(skipped.value)
     assert "looked on PATH and in" in reason
     assert str(home / ".local" / "bin") in reason
@@ -736,8 +730,7 @@ def test_the_environment_the_prefetch_runs_uv_in_is_the_callers(managed, monkeyp
     )
 
     assert recorder.environments[0]["UV_CACHE_DIR"] == "/cache/uv"
-    # macOS arm64: install_python_stack.py sets UV_OVERRIDE at module load, and the
-    # plan is only the plan the update will run if it resolves under the same one.
+    # macOS arm64: the plan must resolve under the UV_OVERRIDE install_python_stack.py sets.
     assert recorder.environments[0]["UV_OVERRIDE"] == "/live/overrides-darwin-arm64.txt"
 
 
@@ -875,7 +868,7 @@ def test_discard_removes_only_an_owned_directory(tmp_path):
     assert _studio_prefetch.discard_after_update(home) is False
 
 
-# ── Locking ──
+# Locking.
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "the POSIX flock branch is under test")
@@ -923,7 +916,7 @@ def test_a_second_prefetch_is_refused_rather_than_queued(tmp_path):
         pass
 
 
-# ── Markers ──
+# Markers.
 
 
 def test_a_marker_is_only_current_for_the_python_cache_and_floor_it_recorded():
@@ -982,7 +975,7 @@ def test_the_marker_is_replaced_atomically(tmp_path, monkeypatch):
     assert not list(_studio_prefetch.prefetch_root(home).glob("*.tmp"))
 
 
-# ── The CLI wiring ──
+# The CLI wiring.
 
 
 def _command_body(source: str, name: str) -> str:
@@ -1045,7 +1038,7 @@ def test_the_prefetch_module_stays_importable_under_isolated_python():
     assert result.stdout.strip() == "3"
 
 
-# ── the installer's override, the budget inside each call, and redaction ──
+# The installer's override, the budget inside each call, and redaction.
 
 
 def test_requirement_passes_resolve_under_the_fetched_wheels_override(managed, monkeypatch):
@@ -1360,9 +1353,7 @@ def test_a_plan_at_the_same_release_orders_by_its_pre_post_and_dev_parts():
     assert _studio_prefetch.plan_is_not_behind(
         {"core_plan": {"unsloth": "2026.9.6"}}, {"unsloth": "2026.9.5.post1"}
     )
-    # A local version label does not order; an unparseable spelling at the same release
-    # is still treated as behind, since a wrong yes is a downgrade the offline retry would
-    # report as success.
+    # A local version label does not order; unparseable at the same release reads as behind.
     assert _studio_prefetch.plan_is_not_behind(
         {"core_plan": {"unsloth": "2026.9.5+local"}}, {"unsloth": "2026.9.5"}
     )
@@ -1450,8 +1441,7 @@ def test_a_relative_uv_cache_dir_is_recorded_as_uv_resolves_it(tmp_path, monkeyp
     )
     assert _studio_prefetch.resolved_cache_dir("uv-cache", tmp_path) == str(tmp_path / "uv-cache")
     assert _studio_prefetch.resolved_cache_dir("./uv-cache", tmp_path) == str(tmp_path / "uv-cache")
-    # UV_WORKING_DIR moves uv's working directory (itself relative to the process cwd
-    # when relative), and a relative cache follows it, as the installers already read it.
+    # UV_WORKING_DIR moves uv's working directory, and a relative cache follows it.
     monkeypatch.setenv("UV_WORKING_DIR", "work")
     assert _studio_prefetch.resolved_cache_dir("uv-cache", tmp_path) == str(
         tmp_path / "work" / "uv-cache"
