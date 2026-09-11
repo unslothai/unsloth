@@ -3797,7 +3797,6 @@ class TestOnlyALoadablePluginCountsAsAGpuBackend:
 
     def test_the_gpu_backend_pattern_matches_only_loadable_names(self):
         from core.inference.llama_cpp import _GGML_GPU_BACKEND_RE
-
         for name in self.LOADABLE:
             assert _GGML_GPU_BACKEND_RE.match(name), name
         for name in self.NOT_LOADABLE:
@@ -3824,7 +3823,9 @@ class TestOnlyALoadablePluginCountsAsAGpuBackend:
         src = "".join(inspect.getsource(llama_cpp._ggml_plugin_re).split())
         # the one place the loadable-filename rule is written down
         assert r"(?:\.dll|\.so(?:\.\d+)*|(?:\.\d+)*\.dylib)$" in src
-        body = "".join(inspect.getsource(llama_cpp.LlamaCppBackend._offload_target_is_classifiable).split())
+        body = "".join(
+            inspect.getsource(llama_cpp.LlamaCppBackend._offload_target_is_classifiable).split()
+        )
         assert "startswith" not in body, "classifiable check went back to a prefix match"
 
 
@@ -3865,6 +3866,4 @@ class TestRecoveryRungsReadTheLaunchSnapshot:
             and node.func.id == "apply_model_memory_policy"
             and not any(kw.arg == "settings" for kw in node.keywords)
         ]
-        assert not bare, (
-            f"apply_model_memory_policy without the launch snapshot at line(s) {bare}"
-        )
+        assert not bare, f"apply_model_memory_policy without the launch snapshot at line(s) {bare}"
