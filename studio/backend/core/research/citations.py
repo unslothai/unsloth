@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 
+from core.research.parsing import _MARKDOWN_FENCE
 from core.research.redaction import _escape_link_destination
 
 
@@ -28,6 +29,7 @@ _SOURCES_HEADING = re.compile(
 _NUMBERED_CITATION = re.compile(r"(?<!\^)\[(\d+)]")
 _AUTOLINK = re.compile(r"<(https?://[^>\s]+)>")
 _RAW_URL = re.compile(r"https?://[^\s<>]+")
+_INLINE_CODE = re.compile(r"(?<!`)(`+)(?!`).*?(?<!`)\1(?!`)")
 
 
 def _citation_title(source: dict, fallback: str) -> str:
@@ -64,6 +66,42 @@ def _trim_url_tail(raw: str) -> str:
     return raw[:end]
 
 
+def _mask_code(text: str, placeholders: dict[str, str]) -> str:
+    def mask(code: str) -> str:
+        token = f"\x00research-code-{len(placeholders)}\x00"
+        placeholders[token] = code
+        return token
+
+    pieces = []
+    opening = None
+    fence_char = ""
+    fence_length = 0
+    offset = 0
+    for line in text.splitlines(keepends = True):
+        content = line.rstrip("\r\n")
+        fence = _MARKDOWN_FENCE.match(content)
+        if opening is None:
+            if fence is None or (fence.group(1)[0] == "`" and "`" in content[fence.end() :]):
+                pieces.append(_INLINE_CODE.sub(lambda match: mask(match.group(0)), line))
+            else:
+                opening = offset
+                fence_char = fence.group(1)[0]
+                fence_length = len(fence.group(1))
+        elif (
+            fence is not None
+            and fence.group(1)[0] == fence_char
+            and len(fence.group(1)) >= fence_length
+            and not content[fence.end() :].strip()
+        ):
+            pieces.append(mask(text[opening : offset + len(content)]))
+            pieces.append(line[len(content) :])
+            opening = None
+        offset += len(line)
+    if opening is not None:
+        pieces.append(mask(text[opening:]))
+    return "".join(pieces)
+
+
 def _validate_report_sources(report: str, sources: list[dict]) -> str:
     """Canonicalize citations and remove model-authored source lists."""
     source_by_url = {
@@ -72,6 +110,7 @@ def _validate_report_sources(report: str, sources: list[dict]) -> str:
     source_urls = list(source_by_url)
     placeholders: dict[str, str] = {}
 
+    report = _mask_code(report, placeholders)
     heading = _SOURCES_HEADING.search(report)
     if heading:
         report = report[: heading.start()]

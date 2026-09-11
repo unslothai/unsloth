@@ -1146,6 +1146,66 @@ def test_dropped_raw_url_does_not_unbalance_prose():
     assert out == "Claim () here."
 
 
+def test_code_keeps_its_urls_and_brackets():
+    sources = [{"url": "https://a.com", "title": "A"}, {"url": "https://b.com", "title": "B"}]
+    code = (
+        "```bash\n"
+        "git clone https://github.com/unslothai/unsloth\n"
+        "pip install torch --index-url https://download.pytorch.org/whl/cu121\n"
+        "curl http://localhost:8888/api/health\n"
+        "```\n"
+        "~~~python\n"
+        'client = OpenAI(base_url = "http://localhost:8888/v1")\n'
+        "print(x.shape[1], [2](https://nope.com))\n"
+        "~~~"
+    )
+    report = (
+        f"{code}\n\n"
+        'Run `sys.argv[1]` or ``OpenAI(base_url="http://localhost:8888/v1")`` '
+        "as shown [1], not https://nope.com/x."
+    )
+    out = _validate_report_sources(report, sources)
+    assert out == (
+        f"{code}\n\n"
+        'Run `sys.argv[1]` or ``OpenAI(base_url="http://localhost:8888/v1")`` '
+        "as shown [A](https://a.com), not ."
+    )
+
+
+def test_unterminated_code_fence_keeps_its_urls():
+    report = "Install it:\n\n```bash\npip install torch --index-url https://download.pytorch.org/whl/cu121"
+    assert _validate_report_sources(report, []) == report
+
+
+def test_sources_heading_inside_code_does_not_cut_the_report():
+    code = "```markdown\n## Sources\n- https://example.com\n```"
+    report = f"Template:\n\n{code}\n\nMore [1].\n\n## Sources\n- [A](https://a.com)"
+    out = _validate_report_sources(report, [{"url": "https://a.com", "title": "A"}])
+    assert out == f"Template:\n\n{code}\n\nMore [A](https://a.com)."
+
+
+def test_prose_citations_without_code_are_unchanged():
+    sources = [
+        {"url": "https://a.com", "title": "A"},
+        {"url": "https://b.com/x_(y)", "title": "[PDF] B"},
+    ]
+    report = (
+        "## Findings\n\n"
+        "Claim one [1] and two [2], bad [9], footnote [^1].\n"
+        "Linked [label](https://a.com) and [fake](https://nope.example/z).\n"
+        "Auto <https://b.com/x_(y)> and <https://nope.example/q>.\n"
+        "Raw (https://a.com). Raw https://nope.example/r, then https://b.com/x_(y).\n"
+        "\n**Sources**\n- [A](https://a.com)\n"
+    )
+    assert _validate_report_sources(report, sources) == (
+        "## Findings\n\n"
+        "Claim one [A](https://a.com) and two [PDF B](https://b.com/x_(y)), bad [9], footnote [^1].\n"
+        "Linked [A](https://a.com) and fake.\n"
+        "Auto [PDF B](https://b.com/x_(y)) and .\n"
+        "Raw ([A](https://a.com)). Raw , then [PDF B](https://b.com/x_(y))."
+    )
+
+
 def _install_probe_backends(monkeypatch, llama, native) -> None:
     """Stand in for the two backend modules _local_model_ready probes, so the check can be
     exercised without importing the ML stack. Pass an exception to make a probe raise."""
