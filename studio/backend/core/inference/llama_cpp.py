@@ -24342,7 +24342,12 @@ class LlamaCppBackend:
                             view.pop(_name, None)
                     return view
 
-                def _dio_decision_for(devices, *, fully_offloaded, child_env = None):
+                def _dio_decision_for(
+                    devices,
+                    *,
+                    fully_offloaded,
+                    child_env = None,
+                ):
                     """``(pair, applicable, active)`` for a CHANGED device set.
 
                     Everything the launch above asks, asked again for the devices a

@@ -2859,7 +2859,10 @@ class TestEveryDeviceSetChangeReAsks:
         flat = "".join(src.split())
         assert "_dio_decision_for(_survivors,fully_offloaded=False,child_env=env)" in flat
         assert "_dio_decision_for(gpu_indices,fully_offloaded=True,child_env=env)" in flat
-        assert "_dio_decision_for(_remaining,fully_offloaded=fully_gpu_offloaded,child_env=env)" in flat
+        assert (
+            "_dio_decision_for(_remaining,fully_offloaded=fully_gpu_offloaded,child_env=env)"
+            in flat
+        )
 
     def test_the_decision_re_runs_the_placement_check(self):
         """Backend and probe discreteness are not a full offload: the fitter may
@@ -3932,8 +3935,9 @@ class TestANarrowingRungProbesItsOwnVisibility:
             else:
                 view.pop(name, None)
         assert view == {"KEEP": "1", "CUDA_VISIBLE_DEVICES": "1"}
-        assert m.LlamaCppBackend._device_visibility_key(view) != \
-            m.LlamaCppBackend._device_visibility_key(base)
+        assert m.LlamaCppBackend._device_visibility_key(
+            view
+        ) != m.LlamaCppBackend._device_visibility_key(base)
 
 
 class TestTheStripNeverEatsAUserAuthoredPair:
