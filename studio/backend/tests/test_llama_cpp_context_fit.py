@@ -865,6 +865,13 @@ class TestAppleWiredCeiling:
         _install_wired_probes(monkeypatch, sysctl_mb = 0, working_set = 48 * GIB, in_use = 2 * GIB)
         assert _REAL_WIRED_CEILING() == int(46 * GIB * _APPLE_WIRED_CEILING_FRACTION)
 
+    def test_older_mlx_reads_the_legacy_alias(self, monkeypatch):
+        _install_wired_probes(monkeypatch, sysctl_mb = 0, working_set = 48 * GIB, in_use = 2 * GIB)
+        mlx_core = sys.modules["mlx.core"]
+        mlx_core.metal.device_info = mlx_core.device_info
+        monkeypatch.delattr(mlx_core, "device_info")
+        assert _REAL_WIRED_CEILING() == int(46 * GIB * _APPLE_WIRED_CEILING_FRACTION)
+
     def test_a_set_sysctl_limit_wins(self, monkeypatch):
         _install_wired_probes(
             monkeypatch, sysctl_mb = 56 * 1024, working_set = 48 * GIB, in_use = 2 * GIB

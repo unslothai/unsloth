@@ -9994,8 +9994,11 @@ class LlamaCppBackend:
         if cap_bytes <= 0:
             try:
                 import mlx.core as mx
+                from utils.hardware.hardware import _mlx_device_info
                 if mx.metal.is_available():
-                    cap_bytes = int(mx.device_info().get("max_recommended_working_set_size") or 0)
+                    cap_bytes = int(
+                        _mlx_device_info(mx).get("max_recommended_working_set_size") or 0
+                    )
             except Exception:
                 cap_bytes = 0
         if cap_bytes <= 0:
