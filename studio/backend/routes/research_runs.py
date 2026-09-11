@@ -221,6 +221,7 @@ def _sanitize_config(
         "maxOutputTokensPublished",
         "enableThinking",
         "reasoningEffort",
+        "samplingFieldsExplicit",
     }
     unknown = set(request) - allowed
     if unknown:
@@ -262,10 +263,36 @@ def _sanitize_config(
             )
         request["providerType"] = saved_provider_type
 
-    # Mirrors the ragScope guard below. Every allowed field is a scalar, but "model" is stringified, so
+    if "samplingFieldsExplicit" in request:
+        fields = request["samplingFieldsExplicit"]
+        sampling_fields = {
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "repetition_penalty",
+            "presence_penalty",
+            "frequency_penalty",
+            "enable_thinking",
+            "reasoning_effort",
+            "preserve_thinking",
+        }
+        if (
+            not isinstance(fields, list)
+            or len(fields) > 16
+            or any(not isinstance(field, str) or field not in sampling_fields for field in fields)
+        ):
+            raise HTTPException(status_code = 400, detail = "Invalid samplingFieldsExplicit")
+        request["samplingFieldsExplicit"] = list(dict.fromkeys(fields))
+
+    # Mirrors the ragScope guard below. Other allowed fields are scalars, but "model" is stringified, so
     # {"auth": "sk-..."} would slip past the sensitive-key scan (inner key unlisted) into the durable config as the
     # model id.
-    if any(isinstance(value, (dict, list, tuple)) for value in request.values()):
+    if any(
+        isinstance(value, (dict, list, tuple))
+        for key, value in request.items()
+        if key != "samplingFieldsExplicit"
+    ):
         raise HTTPException(status_code = 400, detail = "Invalid inferenceRequest value")
     model = str(request.get("model") or thread.get("modelId") or "").strip()
     if not model:

@@ -2059,6 +2059,8 @@ function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
 }
 
 type QueuedResolvedModelRuntime = {
+  loadedLlamaCppConfig: ChatRuntimeState["loadedLlamaCppConfig"];
+  llamaCppConfigSummary: ChatRuntimeState["llamaCppConfigSummary"];
   checkpoint: string;
   activeGgufVariant: string | null;
   supportsTools: boolean;
@@ -2209,6 +2211,8 @@ function queuedResolvedModelFromStore(
     (model) => model.id === state.params.checkpoint,
   );
   return {
+    loadedLlamaCppConfig: state.loadedLlamaCppConfig,
+    llamaCppConfigSummary: state.llamaCppConfigSummary,
     checkpoint: state.params.checkpoint,
     activeGgufVariant: state.activeGgufVariant,
     supportsTools: state.supportsTools,
@@ -3058,22 +3062,18 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     // The stored override can live only on the server while this config is local, and nothing is
     // resident at startup for /load's omission path to inherit from. Sanitized like every
     // hydration, so it becomes an EXPLICIT list /load validates strictly.
-    if (
-      candidate.kind === "gguf" &&
-      !isDiffusion &&
-      config.llamaCppConfig === undefined
-    ) {
-      config.llamaCppConfig = (
-        await fetchLoadModelOverride(
-          modelPath,
-          candidate.id,
-          candidate.ggufVariant ?? null,
-        )
-      )?.llama_cpp_config;
-    }
     let resolvedExtraArgs = config.llamaExtraArgs;
     if (candidate.kind === "gguf" && !isDiffusion) {
       try {
+        if (config.llamaCppConfig === undefined) {
+          config.llamaCppConfig = (
+            await fetchLoadModelOverride(
+              modelPath,
+              candidate.id,
+              candidate.ggufVariant ?? null,
+            )
+          )?.llama_cpp_config;
+        }
         const managed = await loadManagedLlamaFlags();
         const clean = (tokens: readonly string[]) =>
           sanitizeStoredExtraArgs(tokens, managed?.managed ?? new Set<string>(), {
@@ -3818,6 +3818,8 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
           loaded: true,
           blockedByTrustRemoteCode: false,
           modelRuntime: {
+            loadedLlamaCppConfig: status.requested_llama_cpp_config ?? null,
+            llamaCppConfigSummary: status.llama_cpp_config_summary ?? null,
             checkpoint,
             activeGgufVariant: status.gguf_variant ?? null,
             supportsTools: status.supports_tools ?? false,
@@ -4050,6 +4052,8 @@ export function createOpenAIStreamAdapter(
                   checkpoint: queuedEmptyModelRuntime.checkpoint,
                 },
                 activeGgufVariant: queuedEmptyModelRuntime.activeGgufVariant,
+                loadedLlamaCppConfig: queuedEmptyModelRuntime.loadedLlamaCppConfig,
+                llamaCppConfigSummary: queuedEmptyModelRuntime.llamaCppConfigSummary,
                 supportsTools: queuedEmptyModelRuntime.supportsTools,
                 supportsReasoning: queuedEmptyModelRuntime.supportsReasoning,
                 reasoningAlwaysOn: queuedEmptyModelRuntime.reasoningAlwaysOn,
@@ -4126,6 +4130,10 @@ export function createOpenAIStreamAdapter(
           (runtime.reasoningEnabled && runtime.reasoningEffort !== "none");
         const inferenceRequest = buildResearchInferenceRequest({
           checkpoint: selectedCheckpoint,
+          samplingFieldsExplicit: customSamplingPayload(
+            runtime.loadedLlamaCppConfig,
+            params.samplingFieldsExplicit,
+          ).sampling_fields_explicit,
           external:
             researchExternalSelection && researchExternalProvider
               ? {
@@ -4419,8 +4427,12 @@ export function createOpenAIStreamAdapter(
           : {
               ...liveRuntime,
               ...queuedRunSettings,
-              loadedLlamaCppConfig: liveRuntime.loadedLlamaCppConfig,
-              llamaCppConfigSummary: liveRuntime.llamaCppConfigSummary,
+              loadedLlamaCppConfig: queuedEmptyModelRuntime
+                ? queuedEmptyModelRuntime.loadedLlamaCppConfig
+                : liveRuntime.loadedLlamaCppConfig,
+              llamaCppConfigSummary: queuedEmptyModelRuntime
+                ? queuedEmptyModelRuntime.llamaCppConfigSummary
+                : liveRuntime.llamaCppConfigSummary,
               params: {
                 ...queuedRunSettings.params,
                 checkpoint:
