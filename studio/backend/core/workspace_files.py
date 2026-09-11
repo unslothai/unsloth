@@ -96,7 +96,7 @@ def list_directory(folder: dict, relative_path: str = "") -> dict:
             )
     resolve_path(folder, relative_path)
     entries.sort(
-        key=lambda entry: (not entry["isDirectory"], entry["name"].casefold(), entry["name"])
+        key = lambda entry: (not entry["isDirectory"], entry["name"].casefold(), entry["name"])
     )
     return {"entries": entries, "truncated": truncated}
 
@@ -122,7 +122,7 @@ def preview_file(folder: dict, relative_path: str) -> dict:
         if not stat.S_ISREG(opened.st_mode) or _identity(opened) != _identity(before):
             raise ValueError("File changed, please select it again")
         resolve_path(folder, relative_path)
-        with os.fdopen(fd, "rb", closefd=False) as stream:
+        with os.fdopen(fd, "rb", closefd = False) as stream:
             data = stream.read(limit + 1)
         after = os.fstat(fd)
         resolve_path(folder, relative_path)
@@ -139,8 +139,7 @@ def preview_file(folder: dict, relative_path: str) -> dict:
     try:
         # A truncated UTF-8 sequence at the boundary is not a binary file.
         import codecs
-
-        content = codecs.getincrementaldecoder("utf-8-sig")().decode(data, final=not truncated)
+        content = codecs.getincrementaldecoder("utf-8-sig")().decode(data, final = not truncated)
     except UnicodeDecodeError:
         return {"kind": "unsupported", "message": "No inline preview for this file type"}
     return {"kind": "text", "content": content, "truncated": truncated}
@@ -178,5 +177,5 @@ def search_files(folder: dict, query: str) -> dict:
                 matches.append(entry)
                 if len(matches) == MAX_ENTRIES:
                     return {"entries": matches, "truncated": True}
-    matches.sort(key=lambda entry: entry["path"].casefold())
+    matches.sort(key = lambda entry: entry["path"].casefold())
     return {"entries": matches, "truncated": truncated or bool(pending)}

@@ -10,12 +10,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from auth.authentication import get_current_subject
 from core.workspace_files import list_directory, preview_file, search_files
 
-router = APIRouter(dependencies=[Depends(get_current_subject)])
+router = APIRouter(dependencies = [Depends(get_current_subject)])
 
 
 def workspace_path(session: str) -> Path:
     from core.inference.tools import resolve_sandbox_workdir
-
     return Path(resolve_sandbox_workdir(session))
 
 
@@ -40,9 +39,9 @@ def folder_for(root: Path) -> dict:
 
 @router.get("/files")
 def files(
-    session: str = Query(min_length=1, max_length=4096),
-    path: str = Query(default="", max_length=4096),
-    q: str = Query(default="", max_length=256),
+    session: str = Query(min_length = 1, max_length = 4096),
+    path: str = Query(default = "", max_length = 4096),
+    q: str = Query(default = "", max_length = 256),
 ) -> dict:
     with browse_errors():
         root = workspace_path(session)
@@ -54,8 +53,8 @@ def files(
 
 @router.get("/preview")
 def preview(
-    session: str = Query(min_length=1, max_length=4096),
-    path: str = Query(min_length=1, max_length=4096),
+    session: str = Query(min_length = 1, max_length = 4096),
+    path: str = Query(min_length = 1, max_length = 4096),
 ) -> dict:
     with browse_errors():
         return preview_file(folder_for(workspace_path(session)), path)

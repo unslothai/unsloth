@@ -51,7 +51,7 @@ def test_nested_browsing_and_utf8_preview(folder):
 
     root = Path(folder["path"])
     (root / "src").mkdir()
-    (root / "src" / "main.py").write_text('print("héllo")', encoding="utf-8")
+    (root / "src" / "main.py").write_text('print("héllo")', encoding = "utf-8")
     assert browser.list_directory(folder, "src")["entries"][0]["path"] == "src/main.py"
     assert browser.preview_file(folder, "src/main.py") == {
         "kind": "text",
@@ -62,7 +62,6 @@ def test_nested_browsing_and_utf8_preview(folder):
 
 def test_binary_assets_have_no_text_preview(folder):
     from pathlib import Path
-
     (Path(folder["path"]) / "model.blend").write_bytes(b"BLENDER\x00data")
     assert browser.preview_file(folder, "model.blend")["kind"] == "unsupported"
 
@@ -89,7 +88,6 @@ def test_large_images_not_read(folder, monkeypatch):
 
 def test_image_preview(folder):
     from pathlib import Path
-
     (Path(folder["path"]) / "texture.png").write_bytes(b"png")
     assert browser.preview_file(folder, "texture.png") == {
         "kind": "image",
@@ -111,7 +109,7 @@ def test_listing_cap_is_visible(folder, monkeypatch):
 
 def test_replaced_root_rejected(folder):
     folder["root_inode"] += 1
-    with pytest.raises(ValueError, match="changed"):
+    with pytest.raises(ValueError, match = "changed"):
         browser.list_directory(folder)
 
 
@@ -123,7 +121,7 @@ def test_symlink_cannot_expose_outside_files(folder, tmp_path):
     (outside / "secret.py").write_text("private")
     link = Path(folder["path"]) / "linked"
     try:
-        link.symlink_to(outside, target_is_directory=True)
+        link.symlink_to(outside, target_is_directory = True)
     except OSError:
         pytest.skip("Symlink creation is unavailable")
     assert browser.list_directory(folder)["entries"] == []
@@ -150,7 +148,7 @@ def test_sensitive_folder_not_listed(folder):
         browser.list_directory(folder, ".ssh")
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows junction regression")
+@pytest.mark.skipif(os.name != "nt", reason = "Windows junction regression")
 def test_windows_junction_cannot_expose_outside_files(folder, tmp_path):
     import subprocess
     from pathlib import Path
@@ -160,12 +158,12 @@ def test_windows_junction_cannot_expose_outside_files(folder, tmp_path):
     (outside / "secret.py").write_text("private")
     junction = Path(folder["path"]) / "junction"
     result = subprocess.run(
-        ["cmd", "/c", "mklink", "/J", str(junction), str(outside)], capture_output=True
+        ["cmd", "/c", "mklink", "/J", str(junction), str(outside)], capture_output = True
     )
     assert result.returncode == 0, result.stderr
     try:
         assert browser.list_directory(folder)["entries"] == []
-        with pytest.raises(ValueError, match="junction"):
+        with pytest.raises(ValueError, match = "junction"):
             browser.preview_file(folder, "junction/secret.py")
     finally:
         junction.rmdir()
@@ -186,13 +184,12 @@ def test_file_replaced_before_open_is_rejected(folder, monkeypatch):
         return original_open(path, flags)
 
     monkeypatch.setattr(browser.os, "open", replacing_open)
-    with pytest.raises(ValueError, match="changed"):
+    with pytest.raises(ValueError, match = "changed"):
         browser.preview_file(folder, "main.py")
 
 
 def test_internal_files_hidden_and_unreadable(folder):
     from pathlib import Path
-
     for name in (".unsloth_sandbox", ".unsloth_sandbox_remap.json"):
         (Path(folder["path"]) / name).write_text("internal")
         with pytest.raises(ValueError):
@@ -226,33 +223,33 @@ def test_routes_without_rag(folder, monkeypatch):
         module, "workspace_path", lambda session: root if session == "chat" else missing
     )
     app = FastAPI()
-    app.include_router(module.router, prefix="/api/workspace-files")
+    app.include_router(module.router, prefix = "/api/workspace-files")
     with TestClient(app) as client:
         assert (
-            client.get("/api/workspace-files/files", params={"session": "chat"}).status_code == 401
+            client.get("/api/workspace-files/files", params = {"session": "chat"}).status_code == 401
         )
         app.dependency_overrides[module.get_current_subject] = lambda: "test-user"
         (root / "main.py").write_text("print(42)")
         assert (
-            client.get("/api/workspace-files/files", params={"session": "chat"}).json()["entries"][
+            client.get("/api/workspace-files/files", params = {"session": "chat"}).json()["entries"][
                 0
             ]["name"]
             == "main.py"
         )
         assert (
             client.get(
-                "/api/workspace-files/preview", params={"session": "chat", "path": "main.py"}
+                "/api/workspace-files/preview", params = {"session": "chat", "path": "main.py"}
             ).json()["content"]
             == "print(42)"
         )
         assert (
             client.get(
-                "/api/workspace-files/preview", params={"session": "chat", "path": "../outside"}
+                "/api/workspace-files/preview", params = {"session": "chat", "path": "../outside"}
             ).status_code
             == 400
         )
         assert (
-            client.get("/api/workspace-files/files", params={"session": "other"}).json()["entries"]
+            client.get("/api/workspace-files/files", params = {"session": "other"}).json()["entries"]
             == []
         )
         assert not missing.exists()
