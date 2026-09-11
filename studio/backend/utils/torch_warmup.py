@@ -236,35 +236,6 @@ def _warm_inference_backend() -> None:
     # handlers. Building it here makes the getter a dict read. After hardware, to reuse it.
     from core.inference import get_inference_backend
     get_inference_backend()
-    _prime_nvlink_topology()
-
-
-def _prime_nvlink_topology() -> None:
-    """Build the P2P gate's interconnect matrix so the load path does not pay the
-    probe inline. Rides the inference_backend stage because it imports the same
-    first-party module.
-
-    cache_failure=False: this runs early, possibly mid driver initialisation, and a
-    miss cached here would keep P2P off for the life of the process even once the
-    topology became readable (#10613)."""
-    try:
-        from core.inference.llama_cpp import LlamaCppBackend
-        # Opted out, so the answer could never be used. The load path skips the probe
-        # for the same reason rather than pay its timeout to decide something the user
-        # already decided.
-        if os.environ.get("UNSLOTH_DISABLE_DC_TUNING") == "1":
-            return
-        if LlamaCppBackend._p2p_user_opted_out():
-            return
-        if LlamaCppBackend._effective_gpu_count() < 2:
-            return
-        if not LlamaCppBackend._all_selected_gpus_match(
-            LlamaCppBackend._NVLINK_FABRIC_GPU_RE, None
-        ):
-            return
-        LlamaCppBackend._nvlink_topology(cache_failure = False)
-    except Exception as e:  # noqa: BLE001 -- a warm miss costs latency, never correctness
-        logger.debug("NVLink topology prime skipped: %r", e)
 
 
 _STAGES = (
