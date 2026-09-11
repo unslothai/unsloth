@@ -241,9 +241,12 @@ def delete(image_id: str) -> bool:
         return False
     try:
         path.unlink()
+    except FileNotFoundError:
+        return False
     except OSError as exc:
         logger.warning("image_gallery.delete_failed: %s", exc)
-        return False
+        # Propagate I/O failures instead of reporting a missing image.
+        raise
     # drop the flags with the file, so the id cannot hand out a stale pin and the store cannot grow forever
     gallery_flags.forget(gallery_dir(), [image_id])
     return True

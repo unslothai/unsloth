@@ -105,6 +105,19 @@ def test_delete_and_clear():
     assert gallery.list_images() == []
 
 
+def test_delete_does_not_report_an_io_failure_as_a_missing_image(monkeypatch):
+    record = gallery.save(_img(), _meta())
+    path = gallery.image_path(record["id"])
+
+    def refuse_unlink(self):
+        raise PermissionError("read-only gallery")
+
+    monkeypatch.setattr(type(path), "unlink", refuse_unlink)
+    with pytest.raises(PermissionError, match = "read-only gallery"):
+        gallery.delete(record["id"])
+    assert path.exists()
+
+
 def test_clear_preserves_foreign_png():
     # A hand-dropped PNG with no recipe chunk is invisible to list_images; clear must not destroy it.
     foreign = gallery.gallery_dir() / "family-photo.png"
