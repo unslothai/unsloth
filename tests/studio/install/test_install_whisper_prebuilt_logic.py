@@ -2179,6 +2179,21 @@ def test_macos_walks_back_to_newest_compatible_release(monkeypatch):
     )
     assert payload["prebuilt_available"] is True
     assert payload["release_tag"] == compatible.release_tag
+    # The walk-back is recorded on the plan and its selection (so the marker carries
+    # it): the marker-only re-check reads it to hold this install current while the
+    # skipped release is still the newest.
+    plan = M._release_plan_for_host(
+        _host("macos", "arm64", macos_version = (14, 7)),
+        published_repo = "unslothai/whisper.cpp",
+        published_release_tag = None,
+        whisper_tag = "latest",
+        requested_backend = "cpu",
+    )
+    assert plan.bundle.release_tag == compatible.release_tag
+    assert plan.walked_back_from == latest.release_tag
+    assert plan.selection is not None
+    assert plan.selection.walked_back_from == latest.release_tag
+    assert "walked_back_from" not in plan.selection.coverage
 
 
 def test_macos_walkback_never_masks_checksum_failure(monkeypatch):
@@ -3032,3 +3047,28 @@ def test_force_compile_lets_a_lookup_failure_reach_the_source_build(tmp_path, mo
     rc, output = _cli_install(capsys, install_dir)
     assert rc != M.EXIT_SUCCESS
     assert KEPT_GREP not in output
+
+
+def test_whisper_fast_path_accepts_a_recorded_macos_walk_back(tmp_path, monkeypatch):
+    """A Mac below the newest release's OS floor installs an older release; the
+    marker-only re-check asks the download host for the newest and must recognise the
+    recorded walk-back rather than send every such install down the full path. A
+    release newer than the recorded one, or any other OS, still does."""
+    install_dir, _, _ = _installed_cpu_tree(tmp_path, monkeypatch)
+    marker = {"release_tag": "old", "walked_back_from": "new", "backend": "cpu"}
+    monkeypatch.setattr(M, "_existing_install_is_intact", lambda *a, **k: dict(marker))
+    monkeypatch.setattr(M.llama, "_download_host_resolve_enabled", lambda: True, raising = False)
+    monkeypatch.setattr(
+        M.llama, "_download_host_latest_release_tag", lambda _repo: "new", raising = False
+    )
+    mac = _host("macos", "arm64", macos_version = (14, 7))
+    assert _whisper_check(install_dir, mac) is True
+    assert _whisper_check(install_dir, _host("linux", "x64")) is False
+    monkeypatch.setattr(
+        M.llama, "_download_host_latest_release_tag", lambda _repo: "newer", raising = False
+    )
+    assert _whisper_check(install_dir, mac) is False
+    monkeypatch.setattr(
+        M.llama, "_download_host_latest_release_tag", lambda _repo: "old", raising = False
+    )
+    assert _whisper_check(install_dir, mac) is True

@@ -1274,6 +1274,9 @@ class WhisperReleasePlan:
     artifact: dict[str, Any]
     resolved_backend: str
     used_fallback: bool
+    # The newest published release skipped for this host before the plan settled on
+    # bundle (a macOS artifact above the host's OS floor); None when bundle is newest.
+    walked_back_from: str | None = None
 
 
 def _normalized_upstream_tag(value: str) -> str:
@@ -1456,6 +1459,18 @@ def _release_plan_for_host(
             f"selected compatible published release {bundle.release_tag} "
             f"(upstream {bundle.manifest.get('upstream_tag')})"
         )
+        if first_bundle is not None and not requested_specific_tag:
+            # A walk-back from the newest release: recorded so the marker-only check
+            # can hold the install current while that release is still the newest.
+            plan = replace(
+                plan,
+                walked_back_from = first_bundle.release_tag,
+                selection = (
+                    replace(plan.selection, walked_back_from = first_bundle.release_tag)
+                    if plan.selection is not None
+                    else None
+                ),
+            )
         return plan
 
     if requested_specific_tag:
@@ -1690,8 +1705,20 @@ def existing_install_current_without_plan(
         except Exception as exc:  # noqa: BLE001 - unreachable is a reason to do the work
             log(f"could not resolve the latest {COMPONENT} release without the API ({exc})")
             return False
-        if not latest or latest != recorded_release:
+        if not latest:
             return False
+        if latest != recorded_release:
+            # A macOS walk-back: the planner skipped the newest release for this host's
+            # OS floor and recorded it; while the newest is still that one, the
+            # walk-back stands. Anything newer takes the full path, which re-decides it.
+            walked_back_from = marker.get("walked_back_from")
+            if not (
+                host.is_macos
+                and isinstance(walked_back_from, str)
+                and walked_back_from
+                and latest == walked_back_from
+            ):
+                return False
     # "already matches" is the substring setup.sh:3635 and setup.ps1:6109 grep for.
     log(
         f"existing {COMPONENT} install already matches {recorded_release} "

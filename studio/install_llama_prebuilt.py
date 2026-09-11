@@ -519,6 +519,11 @@ class InstallReleasePlan:
     release_tag: str
     attempts: list[AssetChoice]
     approved_checksums: ApprovedReleaseChecksums
+    # The newest published release the planner skipped for this host before it settled
+    # on release_tag (a macOS bundle above the host's OS floor). None when release_tag
+    # is the newest. Recorded in the marker so the no-network re-check can tell a
+    # deliberate walk-back from an install that fell behind.
+    walked_back_from: str | None = None
 
 
 PrebuiltFallback = _core.PrebuiltFallback
@@ -6466,6 +6471,8 @@ def _fork_manifest_release_plans(
         release_limit = max(release_limit, DEFAULT_MAX_MACOS_RELEASE_FALLBACKS)
     plans: list[InstallReleasePlan] = []
     last_error: PrebuiltFallback | None = None
+    # The newest release this host could not take, if the first plan is an older one.
+    skipped_newest: str | None = None
 
     for resolved_release in iter_resolved_published_releases(
         llama_tag,
@@ -6507,6 +6514,8 @@ def _fork_manifest_release_plans(
                 "published release skipped for install planning: "
                 f"{bundle.repo}@{bundle.release_tag} upstream_tag={resolved_tag} ({exc})"
             )
+            if not plans and skipped_newest is None:
+                skipped_newest = bundle.release_tag
             continue
 
         plans.append(
@@ -6516,6 +6525,7 @@ def _fork_manifest_release_plans(
                 release_tag = bundle.release_tag,
                 attempts = attempts,
                 approved_checksums = checksums,
+                walked_back_from = skipped_newest if not plans else None,
             )
         )
 
@@ -6654,6 +6664,7 @@ def write_prebuilt_metadata(
     llama_backend: str | None = None,
     backend_request: str | None = None,
     rocm_gfx: str | None = None,
+    walked_back_from: str | None = None,
 ) -> None:
     source_asset_name, source_sha256 = selected_source_archive_metadata(
         approved_checksums,
@@ -6742,6 +6753,10 @@ def write_prebuilt_metadata(
         # existing_install_current_without_plan has to do before it reaches the network.
         "runtime_sha256": choice.runtime_sha256,
         "install_fingerprint": fingerprint,
+        # The newest release the planner skipped for this host (a macOS bundle above
+        # its OS floor) before settling on release_tag; absent when release_tag is the
+        # newest. Not part of the fingerprint: it describes the choice, not the bundle.
+        **({"walked_back_from": walked_back_from} if walked_back_from else {}),
         # size + sha256 of the binaries a reuse decision would otherwise have to RUN,
         # plus size + mtime_ns of every other file this bundle's copy allowlist matched.
         # `llama-server --version` loads the CUDA runtime, which on macOS and Windows is
@@ -6848,6 +6863,7 @@ def _marker_selection_patch(
     install_dir: Path | None = None,
     host: HostInfo | None = None,
     prebuilt_fallback_used: bool | None = None,
+    walked_back_from: str | None = None,
 ) -> dict:
     """The fields a reused install must still take from this run.
 
@@ -6924,6 +6940,13 @@ def _marker_selection_patch(
         # is what expected_install_fingerprint hashed, so it must be recorded as null
         # rather than left absent.
         patch["runtime_sha256"] = choice.runtime_sha256
+    # The walk-back this run's plan made, so a kept install on a Mac below the newest
+    # bundle's floor gains the key a marker written before it existed lacks; and a plan
+    # that no longer walks back retires a stale one.
+    if walked_back_from and marker.get("walked_back_from") != walked_back_from:
+        patch["walked_back_from"] = walked_back_from
+    elif not walked_back_from and marker.get("walked_back_from"):
+        patch["walked_back_from"] = None
     # An empty record counts as absent: runtime_file_records answers {} when a binary
     # could not be read (a scanner holding it), and a marker carrying that would fail
     # the no-network check closed on every update with nothing ever retrying it.
@@ -6968,6 +6991,7 @@ def sync_marker_selection(
     rocm_gfx: str | None = None,
     host: HostInfo | None = None,
     prebuilt_fallback_used: bool | None = None,
+    walked_back_from: str | None = None,
 ) -> None:
     """Record this run's selection on a marker whose bundle was reused unchanged.
 
@@ -6995,11 +7019,12 @@ def sync_marker_selection(
         install_dir = install_dir,
         host = host,
         prebuilt_fallback_used = prebuilt_fallback_used,
+        walked_back_from = walked_back_from,
     )
     if not patch:
         return
     for key, value in patch.items():
-        if value is None and key == "llama_backend":
+        if value is None and key in ("llama_backend", "walked_back_from"):
             marker.pop(key, None)
         else:
             marker[key] = value
@@ -7937,7 +7962,7 @@ def existing_install_current_without_plan(
     expected_release = _expected_release_tag_without_plan(
         marker, llama_tag, route.published_repo, route.published_release_tag, host = host
     )
-    if not expected_release or expected_release != marker.get("release_tag"):
+    if not _release_expectation_met(marker, expected_release, host):
         return False
     # (4) the marker was written whole by this installer, so its fields can be trusted.
     if _marker_install_fingerprint(marker) != marker.get("install_fingerprint"):
@@ -7974,6 +7999,29 @@ def existing_install_current_without_plan(
         f"{expected_release} upstream_tag={marker.get('tag')}; skipping download and install"
     )
     return True
+
+
+def _release_expectation_met(
+    marker: "dict[str, Any]", expected_release: "str | None", host: HostInfo
+) -> bool:
+    """Whether the release this run would ask for is the one installed.
+
+    On a Mac below the newest bundle's OS floor the planner walks back to an older
+    release and records the one it skipped (walked_back_from). While the newest
+    published release is still that one, the walk-back stands and the install is
+    current; a newer release takes the full path, which re-decides it.
+    """
+    if not expected_release:
+        return False
+    if expected_release == marker.get("release_tag"):
+        return True
+    walked_back_from = marker.get("walked_back_from")
+    return bool(
+        host.is_macos
+        and isinstance(walked_back_from, str)
+        and walked_back_from
+        and expected_release == walked_back_from
+    )
 
 
 def _kept_install_payload_is_healthy(install_dir: Path, host: HostInfo) -> bool:
@@ -8229,6 +8277,7 @@ def validate_prebuilt_choice(
     llama_backend: str | None = None,
     backend_request: str | None = None,
     rocm_gfx: str | None = None,
+    walked_back_from: str | None = None,
 ) -> tuple[Path, Path]:
     source_repo, source_ref, source_archive, exact_source = preferred_source_archive(
         approved_checksums, llama_tag
@@ -8282,6 +8331,7 @@ def validate_prebuilt_choice(
         llama_backend = llama_backend,
         backend_request = backend_request,
         rocm_gfx = rocm_gfx,
+        walked_back_from = walked_back_from,
     )
     # Hashless external prebuilts are not in the approved-sha256
     # manifest and rely on the functional smoke test as their only integrity gate,
@@ -8374,6 +8424,7 @@ def validate_prebuilt_attempts(
     llama_backend: str | None = None,
     backend_request: str | None = None,
     rocm_gfx: str | None = None,
+    walked_back_from: str | None = None,
 ) -> tuple[AssetChoice, Path, bool]:
     attempt_list = list(attempts)
     if not attempt_list:
@@ -8446,6 +8497,7 @@ def validate_prebuilt_attempts(
                 llama_backend = llama_backend,
                 backend_request = backend_request,
                 rocm_gfx = rocm_gfx,
+                walked_back_from = walked_back_from,
             )
         except Exception as exc:
             remove_tree(staging_dir)
@@ -9791,6 +9843,7 @@ def install_prebuilt(
                     persist_llama_backend = persisted_llama_backend(persist_llama_backend, reused),
                     ggml_tree = recorded_ggml_tree(plan.approved_checksums, reused),
                     rocm_gfx = persist_rocm_gfx,
+                    walked_back_from = plan.walked_back_from,
                     # The routed host this reuse was decided on, so a marker written
                     # before the no-network re-check existed gains its host_profile and
                     # runtime_files here rather than never.
@@ -9873,6 +9926,7 @@ def install_prebuilt(
                             llama_backend = persist_llama_backend,
                             backend_request = persist_backend_request,
                             rocm_gfx = persist_rocm_gfx,
+                            walked_back_from = plan.walked_back_from,
                         )
                     except ExistingInstallSatisfied as satisfied:
                         # Third reuse path: the reinstall was skipped, so

@@ -2057,6 +2057,10 @@ class InstallSelection:
     linked_libraries: tuple[str, ...] | None = None
     runtime_wiring_version: int | None = None
     linked_runtime_directories: tuple[str, ...] | None = None
+    # The newest published release the planner skipped for this host (a macOS bundle
+    # above its OS floor) before settling on release_tag; None when release_tag is the
+    # newest. Describes the choice, not the bundle, so never part of the fingerprint.
+    walked_back_from: str | None = None
 
     def fingerprint(self) -> str:
         return compute_install_fingerprint(
@@ -2127,6 +2131,8 @@ def write_prebuilt_metadata(ops: ModuleOps, install_dir: Path, selection: Instal
         "fingerprint_coverage": coverage,
         "installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+    if selection.walked_back_from:
+        payload["walked_back_from"] = selection.walked_back_from
     if selection.install_kind == "slim":
         # Additive slim fields; fat markers keep the legacy payload exactly.
         payload["install_kind"] = "slim"
@@ -2181,31 +2187,59 @@ def marker_install_fingerprint(metadata: dict[str, Any]) -> str | None:
         return None
 
 
-def _fingerprint_inputs_missing(ops: ModuleOps, install_dir: Path) -> bool:
-    # Optional like the settle hooks: a component without marker readers has no
-    # marker to backfill.
+def _kept_marker_patch(
+    ops: ModuleOps, install_dir: Path, selection: InstallSelection
+) -> dict[str, Any] | None:
+    """What a kept install's marker still has to take from this run's selection.
+
+    fingerprint_coverage on a marker written before the key existed, and the
+    walk-back this run's plan made (or retired). None when nothing is owed, or when
+    the component has no marker readers (optional, like the settle hooks).
+    """
     load = getattr(ops, "load_prebuilt_metadata", None)
     if load is None or getattr(ops, "metadata_path", None) is None:
-        return False
+        return None
     metadata = load(install_dir)
-    return bool(metadata) and not isinstance(metadata.get("fingerprint_coverage"), dict)
+    if not metadata:
+        return None
+    patch: dict[str, Any] = {}
+    if not isinstance(metadata.get("fingerprint_coverage"), dict):
+        patch["fingerprint_coverage"] = selection.coverage
+    if selection.walked_back_from:
+        if metadata.get("walked_back_from") != selection.walked_back_from:
+            patch["walked_back_from"] = selection.walked_back_from
+    elif metadata.get("walked_back_from"):
+        patch["walked_back_from"] = None
+    return patch or None
+
+
+def _kept_marker_needs_settle(
+    ops: ModuleOps, install_dir: Path, selection: InstallSelection
+) -> bool:
+    return _kept_marker_patch(ops, install_dir, selection) is not None
 
 
 def _backfill_fingerprint_inputs(
     ops: ModuleOps, install_dir: Path, selection: InstallSelection
 ) -> None:
-    """Record fingerprint_coverage on a kept marker written before the key existed.
+    """Catch a kept marker up to this run: fingerprint_coverage where it predates the
+    key, and the walk-back the plan made or retired.
 
     Only for a marker whose fingerprint this run's selection reproduces, so the
     coverage written is the one it was computed from; anything else is left for the
     install path to rewrite whole.
     """
-    if not _fingerprint_inputs_missing(ops, install_dir):
+    patch = _kept_marker_patch(ops, install_dir, selection)
+    if not patch:
         return
     metadata = ops.load_prebuilt_metadata(install_dir)
     if metadata.get("install_fingerprint") != selection.fingerprint():
         return
-    metadata["fingerprint_coverage"] = selection.coverage
+    for key, value in patch.items():
+        if value is None:
+            metadata.pop(key, None)
+        else:
+            metadata[key] = value
     # Over a LIVE marker: temp-and-replace with its mode and owner kept, so a write
     # that fails part-way leaves the valid marker it found and a group-shared
     # install's marker stays readable to the other users.
@@ -2531,7 +2565,7 @@ def _settle_kept_install(
             if settle is not None:
                 settle(install_dir)
             return True
-        needs = _fingerprint_inputs_missing(ops, install_dir) or (
+        needs = _kept_marker_needs_settle(ops, install_dir, selection) or (
             needs_settling is not None and needs_settling(install_dir)
         )
         if not needs:

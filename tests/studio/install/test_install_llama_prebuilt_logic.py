@@ -8,6 +8,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import types
 import tarfile
 import urllib.error
 import zipfile
@@ -2296,6 +2297,7 @@ def test_install_prebuilt_falls_back_to_older_release_plan(
         llama_backend = None,
         backend_request = None,
         rocm_gfx = None,
+        walked_back_from = None,
     ):
         call_log.append((llama_tag, initial_fallback_used))
         if llama_tag == "b9002":
@@ -3326,6 +3328,7 @@ def test_install_prebuilt_skips_when_older_release_fallback_matches_existing_ins
         llama_backend = None,
         backend_request = None,
         rocm_gfx = None,
+        walked_back_from = None,
     ):
         call_log.append(llama_tag)
         raise PrebuiltFallback("validation failed for latest release")
@@ -3415,6 +3418,7 @@ def test_install_prebuilt_skips_same_release_fallback_attempt_when_installed(
         llama_backend = None,
         backend_request = None,
         rocm_gfx = None,
+        walked_back_from = None,
     ):
         attempted_names.append(choice.name)
         if choice.name == first_choice.name:
@@ -3500,6 +3504,7 @@ def test_install_prebuilt_same_tag_upstream_failure_uses_older_unsloth_release_p
         llama_backend = None,
         backend_request = None,
         rocm_gfx = None,
+        walked_back_from = None,
     ):
         attempted.append((llama_tag, release_tag, attempts[0].source_label))
         if llama_tag == "b9002":
@@ -5702,6 +5707,7 @@ _VALIDATOR_KEYWORD_ONLY = {
         "llama_backend",
         "backend_request",
         "rocm_gfx",
+        "walked_back_from",
     ),
     "validate_prebuilt_choice": (
         "requested_tag",
@@ -5714,6 +5720,7 @@ _VALIDATOR_KEYWORD_ONLY = {
         "llama_backend",
         "backend_request",
         "rocm_gfx",
+        "walked_back_from",
     ),
 }
 
@@ -6943,3 +6950,95 @@ def test_the_host_profile_records_the_rocm_runtime_the_upstream_selector_reads(m
     # Never probed off ROCm hosts.
     monkeypatch.setattr(M, "_detect_host_rocm_version", lambda: pytest.fail("probed the runtime"))
     assert M.host_profile(host)["rocm_runtime"] is None
+
+
+def test_the_marker_fast_path_accepts_a_recorded_macos_walk_back():
+    """On a Mac below the newest bundle's OS floor the planner installs an older
+    release and records the one it skipped. The no-network re-check asks for the
+    newest release, so it must read that record rather than fail every such install
+    into the full path; a newer release than the recorded one still does."""
+    met = INSTALL_LLAMA_PREBUILT._release_expectation_met
+    marker = {"release_tag": "r1", "walked_back_from": "r2"}
+    mac = macos_host(macos_version = (14, 7))
+    assert met(marker, "r1", mac) is True
+    assert met(marker, "r2", mac) is True
+    assert met(marker, "r3", mac) is False
+    assert met(marker, None, mac) is False
+    # Only macOS walks back; anywhere else a release mismatch is a release mismatch.
+    assert met(marker, "r2", linux_host()) is False
+    assert met({"release_tag": "r1"}, "r2", mac) is False
+    assert met({"release_tag": "r1", "walked_back_from": ""}, "", mac) is False
+
+
+def test_the_planner_records_the_newest_release_a_mac_walked_past(monkeypatch):
+    module = INSTALL_LLAMA_PREBUILT
+    bundles = [
+        module.PublishedReleaseBundle(
+            repo = "unslothai/llama.cpp", release_tag = "r2", upstream_tag = "b9002"
+        ),
+        module.PublishedReleaseBundle(
+            repo = "unslothai/llama.cpp", release_tag = "r1", upstream_tag = "b9001"
+        ),
+    ]
+    monkeypatch.setattr(
+        module,
+        "iter_resolved_published_releases",
+        lambda *args, **kwargs: [
+            module.ResolvedPublishedRelease(
+                bundle = bundle,
+                checksums = release_checksums(
+                    release_tag = bundle.release_tag, upstream_tag = bundle.upstream_tag
+                ),
+            )
+            for bundle in bundles
+        ],
+    )
+
+    def choose(host, resolved_tag, bundle, checksums):
+        if bundle.release_tag == "r2":
+            raise module.PrebuiltFallback("macOS 15.0 or newer required")
+        return [types.SimpleNamespace(selection_log = [])]
+
+    monkeypatch.setattr(module, "resolve_release_asset_choice", choose)
+    host = macos_host(macos_version = (14, 7))
+    _, plans = module._fork_manifest_release_plans("latest", host, "unslothai/llama.cpp", "")
+    assert [plan.release_tag for plan in plans] == ["r1"]
+    assert plans[0].walked_back_from == "r2"
+
+    # A host the newest release fits records no walk-back.
+    monkeypatch.setattr(
+        module,
+        "resolve_release_asset_choice",
+        lambda *args, **kwargs: [types.SimpleNamespace(selection_log = [])],
+    )
+    _, plans = module._fork_manifest_release_plans("latest", host, "unslothai/llama.cpp", "")
+    assert plans[0].release_tag == "r2"
+    assert plans[0].walked_back_from is None
+
+
+def test_a_reused_marker_takes_the_walk_back_this_run_made():
+    """sync_marker_selection: a kept install on a Mac gains the walk-back record a
+    marker written before it existed lacks, and a plan that no longer walks back
+    retires a stale one."""
+    choice = asset_choice(
+        name = "llama-b9001-bin-macos-arm64.tar.gz", tag = "r1", source_label = "published"
+    )
+
+    def patch(marker, walked_back_from):
+        return INSTALL_LLAMA_PREBUILT._marker_selection_patch(
+            marker,
+            choice = choice,
+            backend_request = None,
+            persist_force_cpu = False,
+            persist_llama_backend = None,
+            ggml_tree = None,
+            rocm_gfx = None,
+            walked_back_from = walked_back_from,
+        )
+
+    marker = {"release_tag": "r1", "runtime_sha256": None}
+    assert patch(marker, "r2").get("walked_back_from") == "r2"
+    assert "walked_back_from" not in patch({**marker, "walked_back_from": "r2"}, "r2")
+    assert "walked_back_from" not in patch(marker, None)
+    retired = patch({**marker, "walked_back_from": "r2"}, None)
+    assert "walked_back_from" in retired and retired["walked_back_from"] is None
