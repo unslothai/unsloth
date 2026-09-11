@@ -620,3 +620,14 @@ def test_a_success_that_opens_with_error_is_not_nudged_as_a_failure():
 
     assert not completion.is_error
     assert TOOL_ERROR_NUDGE not in completion.model_message()["content"]
+
+
+@pytest.mark.parametrize("tool_name", ["python", "terminal", "edit_file"])
+def test_failed_workspace_execution_invalidates_previous_reads(tool_name):
+    controller = ToolLoopController(tools = [_tool("terminal"), _tool(tool_name)])
+    read = _call("terminal", {"command": "cat notes.txt"})
+    controller.record_result(controller.prepare_call(read), "before")
+    write = _call(tool_name, {"code": "write_then_fail", "command": "write_then_fail"})
+    controller.record_result(controller.prepare_call(write), "Error: failed after writing")
+    assert controller.prepare_call(read).action == "execute"
+    assert controller.prepare_call(write).action == "execute"

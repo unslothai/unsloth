@@ -54,6 +54,7 @@ from core.tool_healing import (
     strip_outside_think,
 )
 from core.inference.tool_loop_controller import (
+    _WORKSPACE_TOOLS,
     ToolLoopController,
     append_deferred_nudges,
     awaiting_approval_status,
@@ -1309,7 +1310,7 @@ def run_safetensors_tool_loop(
             for _tc in tool_calls:
                 _fn = _tc.get("function", {}) or {}
                 _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
-                if _key in seen_keys:
+                if _key in seen_keys and _fn.get("name") not in _WORKSPACE_TOOLS:
                     continue
                 seen_keys.add(_key)
                 deduped.append(_tc)

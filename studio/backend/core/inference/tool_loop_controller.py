@@ -1122,16 +1122,15 @@ class ToolLoopController:
                 action = decision.action,
             )
         )
+        # Failed commands can still have changed files before they exited.
+        if decision.tool_name in _WORKSPACE_TOOLS:
+            stale = {
+                key for key in self._successful_keys if key.partition(":")[0] in _WORKSPACE_TOOLS
+            }
+            self._successful_keys -= stale
+            for key in stale:
+                self._duplicate_noop_counts.pop(key, None)
         if not failed:
-            if decision.tool_name in _WORKSPACE_TOOLS:
-                stale = {
-                    key
-                    for key in self._successful_keys
-                    if key.partition(":")[0] in _WORKSPACE_TOOLS
-                }
-                self._successful_keys -= stale
-                for key in stale:
-                    self._duplicate_noop_counts.pop(key, None)
             self._successful_keys.add(decision.key)
             if decision.tool_name in self._one_shot_tools:
                 self._completed_one_shot_tools.add(decision.tool_name)

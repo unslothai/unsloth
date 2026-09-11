@@ -438,6 +438,7 @@ from core.inference.tool_call_parser import (
 from core.inference.passthrough_healing import nudge_enabled as _nudge_enabled
 from core.inference.repetition_guard import is_repetition_dominated
 from core.inference.tool_loop_controller import (
+    _WORKSPACE_TOOLS,
     ToolLoopController,
     append_deferred_nudges,
     awaiting_approval_status,
@@ -32361,7 +32362,7 @@ class LlamaCppBackend:
                     for _tc in tool_calls:
                         _fn = _tc.get("function", {}) or {}
                         _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
-                        if _key in _seen_keys:
+                        if _key in _seen_keys and _fn.get("name") not in _WORKSPACE_TOOLS:
                             continue
                         _seen_keys.add(_key)
                         _deduped.append(_tc)
