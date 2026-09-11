@@ -8686,6 +8686,63 @@ class LlamaCppBackend:
         match = re.search(r"(\d+)$", device)
         return int(match.group(1)) if match else None
 
+    @staticmethod
+    def _compact_ordinals(gpu_indices, env: Optional[Mapping[str, str]]):
+        """Physical ordinals translated into the child's COMPACT space.
+
+        A visibility mask reindexes what survives from 0, so the adapter this launch
+        calls physical 1 is ``CUDA0`` to the child. Comparing our physical ordinal
+        against the reported compact one rejected a narrowed launch that was in fact
+        fully offloaded, which is the opposite of what the narrowing is for.
+
+        The mask lists survivors in order, so a physical id's position in it IS its
+        compact ordinal. Unchanged with no mask, or one we cannot map.
+        """
+        if not gpu_indices or not env:
+            return gpu_indices
+        for name in (
+            "HIP_VISIBLE_DEVICES",
+            "ROCR_VISIBLE_DEVICES",
+            "CUDA_VISIBLE_DEVICES",
+            "GGML_VK_VISIBLE_DEVICES",
+        ):
+            raw = env.get(name)
+            if not raw or not str(raw).strip():
+                continue
+            try:
+                order = [int(part.strip()) for part in str(raw).split(",") if part.strip()]
+            except ValueError:
+                return gpu_indices
+            if not order:
+                return gpu_indices
+            try:
+                mapped = [order.index(int(i)) for i in gpu_indices if int(i) in order]
+            except (TypeError, ValueError):
+                return gpu_indices
+            return mapped or gpu_indices
+        return gpu_indices
+
+    @classmethod
+    def _effective_main_gpu(cls, extra_args, env) -> Optional[int]:
+        """The sole device a ``--split-mode none`` launch puts every weight on.
+
+        llama.cpp keeps only ``devices[main_gpu]``, and ``--main-gpu`` can name a device
+        OUTSIDE the automatic plan, so it replaces the selection rather than narrowing
+        it. Missing that confirmed a discrete card while the child put the weights on a
+        shared-memory iGPU.
+        """
+        if not _split_mode_confines_to_one_device(extra_args, env):
+            return None
+        value = _extra_args_device(extra_args, {"--main-gpu", "-mg"})
+        if value is None and env:
+            value = env.get("LLAMA_ARG_MAIN_GPU")
+        if value is None:
+            return None
+        try:
+            return int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+
     @classmethod
     def _effective_gpu_indices(
         cls,
@@ -8712,13 +8769,19 @@ class LlamaCppBackend:
         if not dio_possible:
             return gpu_indices
         override = cls._effective_device_ids(extra_args, env)
-        if not override or any(d.lower() in _CPU_DEVICE_VALUES for d in override):
+        if override and not any(d.lower() in _CPU_DEVICE_VALUES for d in override):
+            listed = {d.lower() for d in (cls._enumerated_gpu_devices(binary, env) or [])}
+            if {d.lower() for d in override} <= listed:
+                # `--device` names compact ids already, so no translation.
+                ordinals = [cls._device_ordinal(d) for d in override]
+                return [o for o in ordinals if o is not None] or gpu_indices
             return gpu_indices
-        listed = {d.lower() for d in (cls._enumerated_gpu_devices(binary, env) or [])}
-        if not {d.lower() for d in override} <= listed:
-            return gpu_indices
-        ordinals = [cls._device_ordinal(d) for d in override]
-        return [o for o in ordinals if o is not None] or gpu_indices
+        # Otherwise the ordinals are PHYSICAL and a mask may have reindexed them, and
+        # `--main-gpu` under `-sm none` replaces the selection outright.
+        main_gpu = cls._effective_main_gpu(extra_args, env)
+        if main_gpu is not None:
+            return cls._compact_ordinals([main_gpu], env)
+        return cls._compact_ordinals(gpu_indices, env)
 
     @classmethod
     def _effective_device_ids(cls, extra_args, env) -> Optional[list[str]]:

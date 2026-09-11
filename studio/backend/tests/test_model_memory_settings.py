@@ -4215,3 +4215,117 @@ class TestTheSnapshotIsRetakenAfterEveryCmdMutation:
                     "_mem_policy_for_cmd = _snapshot_policy_for_cmd()" in w for w in window
                 ), f"no retake after the cmd mutation at offset {i}"
         assert checked >= 4, "expected several pre-restore cmd mutations to guard"
+
+
+class TestMaskedDevicesCompareInCompactSpace:
+    """A visibility mask reindexes survivors from 0, so the adapter this launch calls
+    physical 1 is `CUDA0` to the child. Comparing physical against compact rejected a
+    narrowed launch that was fully offloaded, the opposite of the narrowing's purpose."""
+
+    def test_a_survivor_is_translated_to_its_compact_ordinal(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        assert B._compact_ordinals([1], {"CUDA_VISIBLE_DEVICES": "1"}) == [0]
+
+    def test_the_position_in_the_mask_is_the_ordinal(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        assert B._compact_ordinals([3], {"ROCR_VISIBLE_DEVICES": "2,3"}) == [1]
+        assert B._compact_ordinals([2, 3], {"ROCR_VISIBLE_DEVICES": "2,3"}) == [0, 1]
+
+    def test_no_mask_leaves_the_ordinals_alone(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        assert B._compact_ordinals([1], {}) == [1]
+        assert B._compact_ordinals([1], {"CUDA_VISIBLE_DEVICES": ""}) == [1]
+
+    def test_an_unmappable_mask_leaves_them_alone(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        assert B._compact_ordinals([1], {"CUDA_VISIBLE_DEVICES": "GPU-abc"}) == [1]
+
+    def test_a_masked_survivor_now_reads_as_live(self, monkeypatch):
+        """The end-to-end shape of the bug: mask keeps physical 1, the child reports
+        CUDA0, and the launch must still see its pinned device as enumerated."""
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        monkeypatch.setattr(
+            B, "_enumerated_gpu_devices",
+            classmethod(lambda cls, binary = None, env = None: ["CUDA0"]),
+        )
+        effective = B._effective_gpu_indices(
+            "llama-server", {"CUDA_VISIBLE_DEVICES": "1"}, [1], None, True
+        )
+        assert effective == [0]
+        assert B._offload_devices_are_live(["CUDA0"], effective) is True
+
+
+class TestSplitModeNoneFollowsTheMainGpu:
+    """llama.cpp keeps only `devices[main_gpu]`, and `--main-gpu` can name a device
+    OUTSIDE the automatic plan, so it replaces the selection rather than narrowing it.
+    Confirming the plan's discrete card while the child used a shared-memory iGPU is
+    exactly the case DirectIO must not take."""
+
+    def _eff(self, monkeypatch, gpu_indices, extra_args = None, env = None,
+             devices = ("CUDA0", "Vulkan1")):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        monkeypatch.setattr(
+            B, "_enumerated_gpu_devices",
+            classmethod(lambda cls, binary = None, e = None: list(devices)),
+        )
+        return B._effective_gpu_indices(
+            "llama-server", env or {}, gpu_indices, extra_args, True
+        )
+
+    def test_main_gpu_replaces_the_plan(self, monkeypatch):
+        assert self._eff(
+            monkeypatch, [0], ["--split-mode", "none", "--main-gpu", "1"]
+        ) == [1]
+
+    def test_the_short_flag_counts(self, monkeypatch):
+        assert self._eff(monkeypatch, [0], ["-sm", "none", "-mg", "1"]) == [1]
+
+    def test_the_env_twin_counts(self, monkeypatch):
+        assert self._eff(
+            monkeypatch, [0], ["--split-mode", "none"], {"LLAMA_ARG_MAIN_GPU": "1"}
+        ) == [1]
+
+    def test_without_split_mode_none_it_is_not_a_replacement(self, monkeypatch):
+        """With a layer split the weights spread over the whole selection, so the plan
+        is still what to check."""
+        assert self._eff(monkeypatch, [0], ["--main-gpu", "1"]) == [0]
+
+    def test_an_unparsable_main_gpu_leaves_the_plan(self, monkeypatch):
+        assert self._eff(
+            monkeypatch, [0], ["--split-mode", "none", "--main-gpu", "nope"]
+        ) == [0]
+
+    def test_the_redirected_device_is_what_gets_classified(self, monkeypatch):
+        """The whole point: a Vulkan iGPU target must reach the Vulkan probe rather
+        than being confirmed off the plan's CUDA card."""
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        monkeypatch.setattr(
+            B, "_enumerated_gpu_devices",
+            classmethod(lambda cls, binary = None, e = None: ["CUDA0", "Vulkan1"]),
+        )
+        monkeypatch.setattr(
+            B, "_vulkan_offload_is_discrete", staticmethod(lambda binary, idx = None: False)
+        )
+        effective = B._effective_gpu_indices(
+            "llama-server", {}, [0], ["--split-mode", "none", "--main-gpu", "1"], True
+        )
+        assert effective == [1]
+        assert B._gpu_offload_confirmed(
+            "llama-server", {}, effective, False, True,
+            ["--split-mode", "none", "--main-gpu", "1"],
+        ) is False
+
+    def test_a_main_gpu_override_is_also_gated(self, monkeypatch):
+        """Off the DirectIO path nothing is resolved, so no behaviour changes."""
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        assert B._effective_gpu_indices(
+            "llama-server", {}, [0], ["--split-mode", "none", "--main-gpu", "1"], False
+        ) == [0]
