@@ -4000,7 +4000,8 @@ class TestTheProbeSeesTheNarrowedVisibility:
 
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
         monkeypatch.setattr(
-            m.LlamaCppBackend, "_llama_server_env_for_binary",
+            m.LlamaCppBackend,
+            "_llama_server_env_for_binary",
             staticmethod(lambda b, **kw: {"PATH": "/venv/lib"}),
         )
         seen = {}
@@ -4019,7 +4020,8 @@ class TestTheProbeSeesTheNarrowedVisibility:
 
         monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "0,1")
         monkeypatch.setattr(
-            m.LlamaCppBackend, "_llama_server_env_for_binary",
+            m.LlamaCppBackend,
+            "_llama_server_env_for_binary",
             staticmethod(lambda b, **kw: {"ROCR_VISIBLE_DEVICES": "0,1"}),
         )
         seen = {}
@@ -4039,17 +4041,14 @@ class TestLivenessCountsOrdinalsNotIds:
 
     def test_one_ordinal_under_two_backends_is_still_covered(self):
         from core.inference.llama_cpp import LlamaCppBackend as B
-
         assert B._offload_devices_are_live(["CUDA0", "Vulkan0"], [0]) is True
 
     def test_a_missing_ordinal_still_declines(self):
         from core.inference.llama_cpp import LlamaCppBackend as B
-
         assert B._offload_devices_are_live(["CUDA0", "Vulkan0"], [0, 1]) is False
 
     def test_every_requested_ordinal_must_appear(self):
         from core.inference.llama_cpp import LlamaCppBackend as B
-
         assert B._offload_devices_are_live(["CUDA0", "CUDA1"], [0, 1]) is True
 
 
@@ -4058,16 +4057,25 @@ class TestAPassThroughDeviceOverrideDecidesPlacement:
     weights, so confirming against the auto-selected ordinals could emit DirectIO for
     a host-backed device the user pinned."""
 
-    def _confirm(self, monkeypatch, devices, gpu_indices, extra_args = None, env = None,
-                 discrete = True):
+    def _confirm(
+        self,
+        monkeypatch,
+        devices,
+        gpu_indices,
+        extra_args = None,
+        env = None,
+        discrete = True,
+    ):
         from core.inference.llama_cpp import LlamaCppBackend
 
         monkeypatch.setattr(
-            LlamaCppBackend, "_enumerated_gpu_devices",
+            LlamaCppBackend,
+            "_enumerated_gpu_devices",
             classmethod(lambda cls, binary = None, e = None: devices),
         )
         monkeypatch.setattr(
-            LlamaCppBackend, "_vulkan_offload_is_discrete",
+            LlamaCppBackend,
+            "_vulkan_offload_is_discrete",
             staticmethod(lambda binary, idx = None: discrete),
         )
         return LlamaCppBackend._gpu_offload_confirmed(
@@ -4075,33 +4083,34 @@ class TestAPassThroughDeviceOverrideDecidesPlacement:
         )
 
     def test_an_override_onto_an_unclassifiable_device_declines(self, monkeypatch):
-        assert self._confirm(
-            monkeypatch, ["CUDA0", "SYCL1"], [0], ["--device", "SYCL1"]
-        ) is False
+        assert self._confirm(monkeypatch, ["CUDA0", "SYCL1"], [0], ["--device", "SYCL1"]) is False
 
     def test_an_override_onto_a_discrete_device_confirms(self, monkeypatch):
-        assert self._confirm(
-            monkeypatch, ["CUDA0", "SYCL1"], [1], ["--device", "CUDA0"]
-        ) is True
+        assert self._confirm(monkeypatch, ["CUDA0", "SYCL1"], [1], ["--device", "CUDA0"]) is True
 
     def test_an_override_naming_a_device_the_build_lacks_declines(self, monkeypatch):
-        assert self._confirm(
-            monkeypatch, ["CUDA0"], [0], ["--device", "CUDA3"]
-        ) is False
+        assert self._confirm(monkeypatch, ["CUDA0"], [0], ["--device", "CUDA3"]) is False
 
     def test_a_cpu_override_declines(self, monkeypatch):
         assert self._confirm(monkeypatch, ["CUDA0"], [0], ["--device", "none"]) is False
 
     def test_the_env_twin_is_honoured(self, monkeypatch):
-        assert self._confirm(
-            monkeypatch, ["CUDA0", "SYCL1"], [0], None, {"LLAMA_ARG_DEVICE": "SYCL1"}
-        ) is False
+        assert (
+            self._confirm(monkeypatch, ["CUDA0", "SYCL1"], [0], None, {"LLAMA_ARG_DEVICE": "SYCL1"})
+            is False
+        )
 
     def test_argv_beats_the_env_twin(self, monkeypatch):
-        assert self._confirm(
-            monkeypatch, ["CUDA0", "SYCL1"], [1], ["--device", "CUDA0"],
-            {"LLAMA_ARG_DEVICE": "SYCL1"},
-        ) is True
+        assert (
+            self._confirm(
+                monkeypatch,
+                ["CUDA0", "SYCL1"],
+                [1],
+                ["--device", "CUDA0"],
+                {"LLAMA_ARG_DEVICE": "SYCL1"},
+            )
+            is True
+        )
 
     def test_no_override_still_uses_the_auto_selection(self, monkeypatch):
         assert self._confirm(monkeypatch, ["CUDA0", "SYCL1"], [0]) is True

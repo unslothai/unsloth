@@ -8663,9 +8663,7 @@ class LlamaCppBackend:
             if not override or not {d.lower() for d in override} <= listed:
                 return False
             gpu_indices = [
-                cls._device_ordinal(d)
-                for d in override
-                if cls._device_ordinal(d) is not None
+                cls._device_ordinal(d) for d in override if cls._device_ordinal(d) is not None
             ]
             devices = [d for d in (devices or []) if d.lower() in {o.lower() for o in override}]
         if not cls._offload_devices_are_live(devices, gpu_indices):
@@ -24283,7 +24281,11 @@ class LlamaCppBackend:
                 # this resolves to. Gating on it only withheld dio from the multi-GB
                 # weights that DO respond to it.
                 _mem_gpu_offload_confirmed = self._gpu_offload_confirmed(
-                    binary, _mem_env, gpu_indices, _mem_host_resident, _mem_dio_possible,
+                    binary,
+                    _mem_env,
+                    gpu_indices,
+                    _mem_host_resident,
+                    _mem_dio_possible,
                     _mem_extra_args,
                 )
                 _mem_managed, _mem_extras = apply_model_memory_policy(
@@ -24426,7 +24428,11 @@ class LlamaCppBackend:
                         ),
                     )
                     confirmed = self._gpu_offload_confirmed(
-                        binary, _rung_env, devices, host_resident, _mem_dio_possible,
+                        binary,
+                        _rung_env,
+                        devices,
+                        host_resident,
+                        _mem_dio_possible,
                         _mem_extra_args,
                     )
 
