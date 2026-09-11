@@ -36,7 +36,7 @@ import {
 } from "@/features/settings";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { TransformersUpgradeDialog } from "@/features/transformers-upgrade";
-import { useIsMobile } from "@/hooks/use-mobile";
+import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { type TranslationKey, useT } from "@/i18n";
 import {
@@ -393,7 +393,7 @@ function RootLayout() {
   // Navbar uses, not the `md` breakpoint: a narrowed desktop window keeps the
   // desktop navbar, and a CSS rule would reserve the mobile one's 56px and
   // leave --studio-titlebar-height at 0 for the pages sized off it.
-  const nonChatTopInset = useIsMobile()
+  const nonChatTopInset = useIsMobileShell()
     ? "pt-14"
     : "pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))] [--studio-titlebar-height:var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
 

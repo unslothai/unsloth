@@ -30,7 +30,7 @@ import {
 import { PanelResizeHandle } from "@/components/ui/panel-resize-handle"
 import { PANEL_RESIZE_SCOPED_VARS_ENABLED } from "@/components/ui/panel-resize-recalc-flags"
 import { useT } from "@/i18n"
-import { useIsMobile } from "@/hooks/use-mobile"
+import { useIsMobileShell } from "@/hooks/use-mobile"
 import {
   SIDEBAR_WIDTH_DEFAULT,
   SIDEBAR_WIDTH_MIN,
@@ -97,7 +97,9 @@ function SidebarProvider({
   setPinned?: (value: boolean) => void
   togglePinned?: () => void
 }) {
-  const isMobile = useIsMobile()
+  // The shell decision, not the viewport: a narrowed desktop window keeps the
+  // desktop sidebar. Panels with only room to overlay still read useIsMobile.
+  const isMobile = useIsMobileShell()
   const [openMobile, setOpenMobile] = React.useState(false)
   const {
     width,
