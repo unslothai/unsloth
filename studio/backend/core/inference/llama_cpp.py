@@ -5826,84 +5826,91 @@ def _extra_args_n_ubatch(
     return effective
 
 
-def _child_effective_mmproj(
-    emitted_mmproj: Optional[str],
-    extra_args: Optional[Iterable[str]] = None,
-    env: Optional[Mapping[str, str]] = None,
-) -> Optional[str]:
-    """The projector llama-server ends up with, given the one Unsloth would emit.
+def _mmproj_emits_oversized_chunks(
+    mmproj_path: Optional[str], n_embd_text: Optional[int] = None
+) -> bool:
+    """Whether the projector at *mmproj_path* can emit an image chunk over 512 tokens.
 
-    ``LLAMA_ARG_MMPROJ_URL`` wins outright: its download overwrites ``mmproj.path``
-    after argv is parsed. Then a pass-through ``--mmproj``, appended after the managed
-    flags. Then Unsloth's own. A plain ``LLAMA_ARG_MMPROJ`` only fills a gap, and fills
-    it even under ``--no-mmproj``, which empties the command line without clearing
-    ``mmproj.path``.
-    """
-    source = os.environ if env is None else env
-    url = (source.get("LLAMA_ARG_MMPROJ_URL") or "").strip()
-    if url:
-        return url
-    override = _extra_args_device(extra_args, {"--mmproj", "-mm"})
-    if override and os.path.isfile(str(override)):
-        return str(override)
-    if emitted_mmproj:
-        return emitted_mmproj
-    inherited = (source.get("LLAMA_ARG_MMPROJ") or "").strip()
-    return inherited if inherited and os.path.isfile(inherited) else None
-
-
-def _mmproj_opens_images(mmproj_path: Optional[str]) -> bool:
-    """Whether the projector at *mmproj_path* can turn an image into tokens.
-
-    ``is_vision`` cannot answer it: ModelConfig sets that flag for ANY discovered
-    mmproj, so an audio-only encoder (ultravox, Voxtral, Qwen3-ASR) reads as vision.
-    Unreadable, or a URL nothing has fetched, stays image-capable, as upstream reads it
-    and as a reserve wants it.
+    Keyed on ``clip.vision.projector_type``, not on ``is_vision``: ModelConfig sets
+    that flag for ANY discovered mmproj, so an audio-only encoder (ultravox, Voxtral,
+    Qwen3-ASR) reads as vision while producing no image chunk at all. A vision tower
+    whose family cannot be read stays oversized, since being wrong the other way is a
+    crashed server rather than a smaller offload.
     """
     if not mmproj_path:
         return False
     try:
-        from utils.models.gguf_metadata import mmproj_accepts_image
-        return bool(mmproj_accepts_image(mmproj_path))
+        from utils.models.gguf_metadata import (
+            mmproj_accepts_image,
+            read_mmproj_vision_projector_type,
+        )
+        if not mmproj_accepts_image(mmproj_path):
+            return False
+        family = (read_mmproj_vision_projector_type(mmproj_path) or "").strip().lower()
     except Exception as e:
         logger.debug(f"mmproj capability read failed: {e}")
         return True
+    if not family:
+        return True
+    if family == "gemma4v":
+        return n_embd_text not in _GEMMA4V_CAUSAL_TEXT_N_EMBD
+    return family in _MMPROJ_NON_CAUSAL_OVER_UBATCH
 
 
-def _mmproj_needs_bigger_ubatch(
+def _launch_needs_bigger_ubatch(
     mmproj_path: Optional[str],
     n_embd_text: Optional[int] = None,
     extra_args: Optional[Iterable[str]] = None,
+    *,
     is_vision: bool = True,
+    vision_off: bool = False,
+    env: Optional[Mapping[str, str]] = None,
 ) -> bool:
     """Whether this launch can hand llama.cpp an image chunk the 512 default aborts on.
 
-    Read off ``clip.vision.projector_type`` rather than assumed, so the raise reaches
-    the two Gemma 4 towers that assert and nothing else; see
-    ``_MMPROJ_NON_CAUSAL_OVER_UBATCH`` for why a blanket raise is the expensive answer.
-    A projector nothing can read -- a URL, or a header without the key -- keeps the
-    raise, since being wrong there is a crashed server rather than a smaller offload.
+    One question with one answer, asked with the same arguments by ``load_model`` and
+    by the estimators that price what it launches.
 
-    With no projector at all, a winning ``--mmproj-auto`` in the extras still leaves
-    llama-server discovering an adjacent one on its own, and nothing here can open a
-    file it was never told about; that lands in the same unreadable case.
+    Deliberately "can ANY projector in play do this", not "which one would llama.cpp
+    keep". Modelling that precedence -- a URL download overwriting mmproj.path after
+    argv, a pass-through --mmproj appended after the managed flags, an inherited
+    LLAMA_ARG_MMPROJ filling a gap under --no-mmproj -- is a second copy of llama.cpp's
+    argument handling to keep correct, and it changes no answer worth having: the only
+    case where the winner differs from the union is a user replacing one image tower
+    with another, where the union merely over-reserves.
     """
-    if not mmproj_path:
-        return bool(is_vision) and extra_args_mmproj_auto(extra_args)
-    try:
-        from utils.models.gguf_metadata import read_mmproj_vision_projector_type
-        projector = read_mmproj_vision_projector_type(mmproj_path)
-    except Exception as e:
-        logger.debug(f"mmproj projector type read failed: {e}")
-        return _mmproj_opens_images(mmproj_path)
-    if not projector:
-        return _mmproj_opens_images(mmproj_path)
-    projector = projector.strip().lower()
-    if projector not in _MMPROJ_NON_CAUSAL_OVER_UBATCH:
-        return False
-    if projector == "gemma4v" and n_embd_text in _GEMMA4V_CAUSAL_TEXT_N_EMBD:
-        return False
-    return True
+    sources: list[str] = []
+    unknown = False
+
+    # Appended after the managed flags, and stripped by neither the vision switch nor
+    # --no-mmproj, so it opens an image tower whatever else the request says.
+    override = _extra_args_device(extra_args, {"--mmproj", "-mm"})
+    if override:
+        sources.append(str(override))
+
+    if not vision_off:
+        # The switch scrubs this pair. Without it they open whatever they name even
+        # under --no-mmproj, which empties the command line without clearing
+        # mmproj.path; a URL names a download that has not happened, so it cannot be
+        # read here and counts as unknown.
+        source_env = os.environ if env is None else env
+        if (source_env.get("LLAMA_ARG_MMPROJ_URL") or "").strip():
+            unknown = True
+        inherited = (source_env.get("LLAMA_ARG_MMPROJ") or "").strip()
+        if inherited:
+            sources.append(inherited)
+
+    if is_vision and not vision_off and not extra_args_disable_mmproj(extra_args):
+        if mmproj_path:
+            sources.append(str(mmproj_path))
+        elif extra_args_mmproj_auto(extra_args):
+            # Nothing resolved, but --mmproj-auto leaves llama-server discovering an
+            # adjacent projector this process was never told about.
+            unknown = True
+
+    if unknown:
+        return True
+    return any(_mmproj_emits_oversized_chunks(p, n_embd_text) for p in sources)
 
 
 def _batch_ubatch_for_mmproj(
@@ -20074,32 +20081,18 @@ class LlamaCppBackend:
             # Here, not at the intent unpack: a Hub load carries no mmproj_path of its
             # own until the companion download above, and Phase 3's fit has to price the
             # micro-batch the child launches with.
-            _fit_emitted_mmproj = (
-                None
-                if (disable_vision or not is_vision or extra_args_disable_mmproj(extra_args))
-                else self._resolve_launch_mmproj_path(
-                    model_path = model_path,
-                    mmproj_path = mmproj_path,
-                )
-            )
-            if not _fit_emitted_mmproj and mmproj_path and extra_args_mmproj_auto(extra_args):
-                # Studio's family check dropped it, but --mmproj-auto asks llama-server
-                # to rediscover the adjacent file, and discovery applies no such check.
-                _fit_emitted_mmproj = mmproj_path if not disable_vision and is_vision else None
-            # The switch suppresses Unsloth's own projector and scrubs the env pair, but
-            # never the extras, so a pass-through --mmproj opens an image tower even on
-            # a load that reports vision off.
-            _fit_vision_mmproj = _child_effective_mmproj(
-                _fit_emitted_mmproj,
-                extra_args,
-                {} if disable_vision else None,
-            )
             n_batch, n_ubatch = _batch_ubatch_for_mmproj(
-                _mmproj_needs_bigger_ubatch(
-                    _fit_vision_mmproj,
+                _launch_needs_bigger_ubatch(
+                    None
+                    if (disable_vision or not is_vision)
+                    else self._resolve_launch_mmproj_path(
+                        model_path = model_path,
+                        mmproj_path = mmproj_path,
+                    ),
                     self._embedding_length,
                     extra_args,
-                    is_vision = is_vision and not disable_vision,
+                    is_vision = is_vision,
+                    vision_off = disable_vision,
                 ),
                 n_batch,
                 n_ubatch,
