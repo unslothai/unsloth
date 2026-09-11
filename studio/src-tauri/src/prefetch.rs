@@ -237,7 +237,10 @@ fn same_cache(expected: &Path, recorded: &Path) -> bool {
     if comparable_cache_path(expected) == comparable_cache_path(recorded) {
         return true;
     }
-    if expected.is_relative() && recorded.is_absolute() {
+    // has_root, not is_absolute: on Windows a path that starts at the root of the
+    // current drive (`/tmp/x/uv`) is rooted but not absolute, and the CLI records the
+    // cache with os.path.normpath, which keeps that spelling as it was given.
+    if expected.is_relative() && recorded.has_root() {
         // A leading `..` (which only the setup script's working directory could
         // resolve) is dropped by the fold, so what is left is the tail the recorded
         // absolute path has to end with.
