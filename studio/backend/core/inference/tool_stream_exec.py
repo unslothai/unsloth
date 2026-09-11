@@ -89,7 +89,12 @@ TOOL_OUTPUT_STREAM_MAX_CHARS = 400_000
 _STREAM_CAPPED_NOTICE = "\n... (further live output not streamed)\n"
 
 
-def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> tuple[str, bool]:
+def _drain_queue(
+    q: "queue.Queue",
+    sentinel: object,
+    max_chars: int | None,
+    pending_events: list[dict] | None = None,
+) -> tuple[str, bool]:
     """Pull every currently-queued item, joining chunks in FIFO order.
 
     With ``max_chars`` set, stop concatenating at the budget and discard the
@@ -97,7 +102,8 @@ def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> t
     far more than the cap before the consumer wakes. The crossing chunk is sliced
     to one char past the budget, enough for the caller's truncation to stay
     byte-identical. Returns ``(joined_text, hit_sentinel)``; the surplus is still
-    scanned so completion is detected promptly.
+    scanned so completion is detected promptly. A control event ends the batch
+    and is handed back for dispatch before consuming any subsequent output.
     """
     parts: list[str] = []
     total = 0
@@ -110,6 +116,11 @@ def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> t
             break
         if item is sentinel:
             hit_sentinel = True
+            break
+        if isinstance(item, dict):
+            if pending_events is None:
+                raise TypeError("Control events require a pending-event receiver")
+            pending_events.append(item)
             break
         if dropping:
             continue
@@ -124,19 +135,23 @@ def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> t
 
 
 def stream_tool_execution(
-    invoke: Callable[[Callable[[str], None]], str],
+    invoke: Callable[..., str],
     *,
     tool_name: str,
     tool_call_id: str = "",
     cancel_event: Any = None,
+    launch_event_factory: Callable[[Any], dict[str, Any]] | None = None,
     heartbeat_interval_s: float = TOOL_HEARTBEAT_INTERVAL_S,
     poll_interval_s: float = _POLL_INTERVAL_S,
 ) -> Generator[dict, None, str]:
     """Run ``invoke(output_callback)`` in a thread; yield live events; return the result.
 
     ``invoke`` receives a thread-safe ``callable(str)`` it may call with
-    incremental output chunks (or ignore entirely). Exceptions raised by the
-    tool propagate to the caller unchanged after the worker thread finishes.
+    incremental output chunks (or ignore entirely). When ``launch_event_factory``
+    is supplied, ``invoke`` also receives a second callback. Calling it places the
+    factory-built event in the same FIFO as output, so launch metadata is always
+    yielded before any output produced after launch. Exceptions raised by the tool
+    propagate to the caller unchanged after the worker thread finishes.
 
     ``cancel_event`` is the request-level cancellation signal already handed to
     the tool. If the consumer closes this generator early (an SSE disconnect
@@ -169,9 +184,17 @@ def stream_tool_execution(
             accepted_output_chars += len(accepted)
         output_queue.put(accepted)
 
+    def _on_launch(record: Any) -> None:
+        if launch_event_factory is None:
+            return
+        output_queue.put(launch_event_factory(record))
+
     def _run() -> None:
         try:
-            outcome["result"] = invoke(_on_output)
+            if launch_event_factory is None:
+                outcome["result"] = invoke(_on_output)
+            else:
+                outcome["result"] = invoke(_on_output, _on_launch)
         except BaseException as exc:  # noqa: BLE001 - re-raised on the caller side
             outcome["error"] = exc
         finally:
@@ -193,10 +216,11 @@ def stream_tool_execution(
     streamed_chars = 0
     stream_capped = False
     finished = False
+    pending_events: list[dict] = []
 
     def _drain_pending(max_chars: int | None = None) -> str:
         nonlocal finished
-        text, hit_sentinel = _drain_queue(output_queue, done_sentinel, max_chars)
+        text, hit_sentinel = _drain_queue(output_queue, done_sentinel, max_chars, pending_events)
         if hit_sentinel:
             finished = True
         return text
@@ -216,12 +240,19 @@ def stream_tool_execution(
             if item is done_sentinel:
                 finished = True
                 return
+            if isinstance(item, dict):
+                pending_events.append(item)
+                return
 
     abnormal_exit = False
     try:
         while not finished:
             try:
-                item = output_queue.get(timeout = poll_interval_s)
+                item = (
+                    pending_events.pop()
+                    if pending_events
+                    else output_queue.get(timeout = poll_interval_s)
+                )
             except queue.Empty:
                 # A disconnect sets cancel_event while the worker is silent; surface a heartbeat this poll so the route
                 # regains control and tears down at once, not after a full heartbeat interval.
@@ -236,6 +267,11 @@ def stream_tool_execution(
 
             if item is done_sentinel:
                 break
+
+            if isinstance(item, dict):
+                idle_polls = 0
+                yield item
+                continue
 
             if stream_capped:
                 # Past the cap: drop this chunk and every queued sibling (see _drain_and_drop). Pace with one time.sleep

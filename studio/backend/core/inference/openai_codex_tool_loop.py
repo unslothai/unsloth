@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import threading
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -48,6 +48,7 @@ class CodexToolPolicy:
     bypass_permissions: bool
     rag_scope: dict[str, Any] | None
     nudge_tool_calls: bool | None = None
+    tool_execution_mode: str = field(default = "auto", kw_only = True)
 
 
 class CodexTransport:
@@ -117,6 +118,7 @@ def stream_codex_with_studio_tools(
             rag_scope = policy.rag_scope,
             auto_heal = False,
             nudge_tool_calls = policy.nudge_tool_calls,
+            tool_execution_mode = policy.tool_execution_mode,
         ),
         cancel_event = cancel_event,
     )

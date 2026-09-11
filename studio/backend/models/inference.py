@@ -1976,6 +1976,17 @@ class ChatCompletionRequest(BaseModel):
     Non-OpenAI extension fields are marked with 'x-unsloth'.
     """
 
+    tool_execution_mode: Literal["auto", "required"] = "auto"
+
+    @field_validator("tool_execution_mode", mode = "before")
+    @classmethod
+    def _validate_tool_isolation(cls, value):
+        if value not in ("auto", "required"):
+            raise ValueError(
+                "Choose tool_execution_mode='auto' or 'required'. Obsolete Limited/nested modes are no longer supported; Full access uses permission_mode."
+            )
+        return value
+
     # Accept unknown fields so future OpenAI fields aren't dropped before route
     # code runs. Mirrors AnthropicMessagesRequest and ResponsesRequest.
     model_config = {"extra": "allow"}
@@ -3034,6 +3045,17 @@ class ResponsesFunctionTool(BaseModel):
 class ResponsesRequest(BaseModel):
     """OpenAI Responses API request."""
 
+    tool_execution_mode: Literal["auto", "required"] = "auto"
+
+    @field_validator("tool_execution_mode", mode = "before")
+    @classmethod
+    def _validate_tool_isolation(cls, value):
+        if value not in ("auto", "required"):
+            raise ValueError(
+                "Choose tool_execution_mode='auto' or 'required'. Obsolete Limited/nested modes are no longer supported; Full access uses permission_mode."
+            )
+        return value
+
     model: str = Field("default", description = "Model identifier")
     input: Union[str, list[ResponsesInputItem]] = Field(
         default = [],
@@ -3369,6 +3391,17 @@ _ANTHROPIC_EFFORT_LEVELS = frozenset({"none", "minimal", "low", "medium", "high"
 
 
 class AnthropicMessagesRequest(BaseModel):
+    tool_execution_mode: Literal["auto", "required"] = "auto"
+
+    @field_validator("tool_execution_mode", mode = "before")
+    @classmethod
+    def _validate_tool_isolation(cls, value):
+        if value not in ("auto", "required"):
+            raise ValueError(
+                "Choose tool_execution_mode='auto' or 'required'. Obsolete Limited/nested modes are no longer supported; Full access uses permission_mode."
+            )
+        return value
+
     model: str = "default"
     max_tokens: Optional[int] = None
     messages: list[AnthropicMessage]

@@ -6785,9 +6785,7 @@ def _software_safeguards_launch(plan, fault: str):
 
 
 def _prepare_tool_launch(plan):
-    """``auto`` cannot fail: the sandbox machinery breaking becomes a
-    software-safeguards launch. A backend REFUSING a workdir is not covered by
-    that; see the handler."""
+    """Only an explicit unavailable capability may select software safeguards."""
     try:
         prepared = os_sandbox.prepare_tool_launch(plan)
         if plan.preexec_fn is not None and prepared.preexec_fn is None:
@@ -6803,33 +6801,14 @@ def _prepare_tool_launch(plan):
             # The other door: os_sandbox returns its own fallback through here.
             prepared.env = _with_session_packages(prepared.env, plan.workdir)
         return prepared
-    except (os_sandbox.WorkdirUnsafeError, os_sandbox.SandboxBuildError):
-        # Answering these by running on the host hands model-authored code a
-        # switch for its own boundary. Told apart by TYPE, since a transient
-        # probe failure would re-open the very channel the scan just found.
-        # SandboxBuildError rides along: its errno is reachable from in the jail.
-        raise
     except os_sandbox.SandboxUnavailableError:
-        # Any other refusal means the backend stopped being available.
-        if plan.requested_mode == "required" or (
-            plan.requested_mode not in os_sandbox.TOOL_EXECUTION_MODES
-        ):
-            raise
-        logger.warning(
-            "The sandbox backend is no longer available, running with software safeguards",
-            exc_info = True,
-        )
-        return _software_safeguards_launch(plan, "sandbox_became_unavailable")
-    except Exception as exc:  # noqa: BLE001 - auto never refuses; see the docstring
-        logger.warning("Sandbox planning failed, running with software safeguards", exc_info = True)
-        if plan.requested_mode == "required":
-            raise os_sandbox.SandboxUnavailableError(
-                f"OS_ISOLATION_UNAVAILABLE: the sandbox planner failed: {exc}",
-                remediation = os_sandbox.linux_unavailable_remediation()
-                if sys.platform == "linux"
-                else "This host cannot start an OS sandbox.",
-            ) from exc
-        return _software_safeguards_launch(plan, "sandbox_planner_error")
+        raise
+    except Exception as exc:
+        if plan.requested_mode == "full":
+            return _software_safeguards_launch(plan, "sandbox_planner_error")
+        raise os_sandbox.SandboxBuildError(
+            f"OS_ISOLATION_UNAVAILABLE: Sandbox preparation failed: {exc}"
+        ) from exc
 
 
 def _forget_sandbox_capability_if_the_backend_failed(prepared, output: str) -> None:
@@ -6852,7 +6831,11 @@ def _sandbox_refusal(exc) -> str:
     """The remediation is part of the answer, not a log line: the reader is the
     person who can fix the host."""
     remediation = getattr(exc, "remediation", "") or ""
-    return _truncate(f"Execution error: {exc}{(' ' + remediation) if remediation else ''}")
+    from .tool_loop_controller import ToolIsolationUnavailableResult
+
+    return ToolIsolationUnavailableResult(
+        _truncate(f"Execution error: {exc}{(' ' + remediation) if remediation else ''}")
+    )
 
 
 def _apply_prepared_launch(prepared, popen_kwargs: dict) -> dict:
@@ -9861,6 +9844,7 @@ def execute_tool(
     result_budget_tokens: int | None = None,
     *,
     tool_execution_mode: str = "auto",
+    execution_callback = None,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -10018,6 +10002,7 @@ def execute_tool(
                 output_callback = output_callback,
                 thread_id = thread_id,
                 tool_execution_mode = tool_execution_mode,
+                execution_callback = execution_callback,
             )
     if name == "terminal":
         with _session_in_flight(session_id):
@@ -10030,6 +10015,7 @@ def execute_tool(
                 output_callback = output_callback,
                 thread_id = thread_id,
                 tool_execution_mode = tool_execution_mode,
+                execution_callback = execution_callback,
             )
     # Same in-flight guard as the two above: it writes into the session workdir, so a chat deleted mid-call must not
     # unlink it underneath.
@@ -13769,6 +13755,17 @@ def _forget_tool_pid(proc) -> None:
 
 
 def _capture_process_group(proc):
+    parent = _capture_parent_process_group(proc)
+    launcher = getattr(proc, "_srt_launcher_pid", None)
+    if type(launcher) is int and launcher > 1:
+        # SRT starts its native broker/group before acknowledging launch. A
+        # later Job assignment to Node does not adopt that existing child.
+        identity = _windows_pid_identity(launcher) if os.name == "nt" else None
+        return ("srt-tree", parent, launcher, identity)
+    return parent
+
+
+def _capture_parent_process_group(proc):
     """Return the setsid process-group id, or ``None`` when unavailable.
 
     Captured right after ``Popen`` so a later ``poll()`` / ``wait()`` that reaps the leader cannot
@@ -13779,7 +13776,7 @@ def _capture_process_group(proc):
     outlived its wrapper unsignalled.
     """
     if os.name == "nt":
-        job = _windows_job_capture(proc)
+        job = getattr(proc, "_unsloth_job", None) or _windows_job_capture(proc)
         if job is not None:
             return ("windows-job", job)
         # No job available, so fall back to the pid, carrying its creation-time identity: a posix group id cannot be
@@ -13820,7 +13817,12 @@ class _WindowsToolJob:
         self.close()
 
 
-def _windows_job_capture(proc) -> "_WindowsToolJob | None":
+def _windows_job_capture(
+    proc,
+    *,
+    apply_resource_limits: bool = False,
+    allow_breakaway: bool = False,
+) -> "_WindowsToolJob | None":
     """Put ``proc`` in its own job. ``None`` when that is not possible, leaving the pid-based
     fallback."""
     if os.name != "nt":
@@ -13829,7 +13831,12 @@ def _windows_job_capture(proc) -> "_WindowsToolJob | None":
         import ctypes
         from ctypes import wintypes
 
-        H, BOOL, UINT = wintypes.HANDLE, wintypes.BOOL, wintypes.UINT
+        H, BOOL, DWORD, UINT = (
+            wintypes.HANDLE,
+            wintypes.BOOL,
+            wintypes.DWORD,
+            wintypes.UINT,
+        )
         kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
         # Explicit widths: without them ctypes truncates a 64-bit handle to c_int and every call silently works on a
         # bogus one.
@@ -13837,6 +13844,13 @@ def _windows_job_capture(proc) -> "_WindowsToolJob | None":
         kernel32.CreateJobObjectW.restype = H
         kernel32.AssignProcessToJobObject.argtypes = [H, H]
         kernel32.AssignProcessToJobObject.restype = BOOL
+        kernel32.SetInformationJobObject.argtypes = [
+            H,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            DWORD,
+        ]
+        kernel32.SetInformationJobObject.restype = BOOL
         kernel32.TerminateJobObject.argtypes = [H, UINT]
         kernel32.TerminateJobObject.restype = BOOL
         kernel32.CloseHandle.argtypes = [H]
@@ -13845,9 +13859,96 @@ def _windows_job_capture(proc) -> "_WindowsToolJob | None":
         job = kernel32.CreateJobObjectW(None, None)
         if not job:
             return None
+        if apply_resource_limits or allow_breakaway:
+
+            class _BasicLimits(ctypes.Structure):
+                _fields_ = [
+                    ("PerProcessUserTimeLimit", ctypes.c_int64),
+                    ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", DWORD),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t),
+                    ("ActiveProcessLimit", DWORD),
+                    ("Affinity", ctypes.c_size_t),
+                    ("PriorityClass", DWORD),
+                    ("SchedulingClass", DWORD),
+                ]
+
+            class _IoCounters(ctypes.Structure):
+                _fields_ = [
+                    (name, ctypes.c_uint64)
+                    for name in (
+                        "ReadOperationCount",
+                        "WriteOperationCount",
+                        "OtherOperationCount",
+                        "ReadTransferCount",
+                        "WriteTransferCount",
+                        "OtherTransferCount",
+                    )
+                ]
+
+            class _ExtendedLimits(ctypes.Structure):
+                _fields_ = [
+                    ("BasicLimitInformation", _BasicLimits),
+                    ("IoInfo", _IoCounters),
+                    ("ProcessMemoryLimit", ctypes.c_size_t),
+                    ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                    ("PeakJobMemoryUsed", ctypes.c_size_t),
+                ]
+
+            info = _ExtendedLimits()
+            if apply_resource_limits:
+                try:
+                    nproc = max(
+                        1,
+                        int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_NPROC", "10000")),
+                    )
+                    memory = (
+                        max(
+                            1,
+                            int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_AS_GB", "8")),
+                        )
+                        * 1024
+                        * 1024
+                        * 1024
+                    )
+                    cpu_time = (
+                        max(
+                            1,
+                            int(os.environ.get("UNSLOTH_STUDIO_SANDBOX_CPU_S", "600")),
+                        )
+                        * 10_000_000
+                    )
+                except ValueError:
+                    kernel32.CloseHandle(job)
+                    return None
+                info.BasicLimitInformation.PerProcessUserTimeLimit = cpu_time
+                info.BasicLimitInformation.ActiveProcessLimit = nproc
+                # PROCESS_TIME | ACTIVE_PROCESS | PROCESS_MEMORY | JOB_MEMORY
+                info.BasicLimitInformation.LimitFlags = 0x2 | 0x8 | 0x100 | 0x200
+                info.ProcessMemoryLimit = memory
+                info.JobMemoryLimit = memory
+            # SRT's runner places its workload in its own job. Its containing
+            # helper job must permit that explicit breakaway and own startup.
+            info.BasicLimitInformation.LimitFlags |= 0x2000
+            if allow_breakaway:
+                info.BasicLimitInformation.LimitFlags |= 0x800
+            if not kernel32.SetInformationJobObject(
+                job,
+                9,
+                ctypes.byref(info),
+                ctypes.sizeof(info),
+            ):
+                kernel32.CloseHandle(job)
+                return None
         # The Popen handle, not a fresh OpenProcess: it already refers to this child, so there is no window for the
         # pid to be recycled first.
         if not kernel32.AssignProcessToJobObject(job, int(proc._handle)):
+            kernel32.CloseHandle(job)
+            return None
+        if apply_resource_limits and not _resume_windows_process(kernel32, ctypes, proc):
+            kernel32.TerminateJobObject(job, 1)
             kernel32.CloseHandle(job)
             return None
         return _WindowsToolJob(job, kernel32)
@@ -13931,6 +14032,22 @@ def _killpg_captured(pgid) -> None:
     if pgid is None:
         return
     if isinstance(pgid, tuple):
+        if pgid[0] == "srt-tree":
+            _, parent, launcher, identity = pgid
+            try:
+                if os.name == "nt":
+                    if identity is not None:
+                        _windows_taskkill_tree(launcher, identity)
+                elif hasattr(os, "killpg"):
+                    try:
+                        os.killpg(launcher, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        pass
+            finally:
+                # Kill the workload first: killing Node first prevents its
+                # own shutdown handler from reaching the separate SRT tree.
+                _killpg_captured(parent)
+            return
         if pgid[0] == "windows-job":
             pgid[1].terminate()
             return
@@ -15337,6 +15454,7 @@ def _python_exec(
     thread_id: str | None = None,
     *,
     tool_execution_mode: str = "auto",
+    execution_callback = None,
 ) -> str:
     """Execute Python code in a subprocess sandbox. disable_sandbox (Bypass Permissions): skip the
     safety analysis and rlimit pre-exec, and use the host env minus secrets. output_callback:
@@ -15428,14 +15546,17 @@ def _python_exec(
                 requested_mode = _requested_execution_mode(tool_execution_mode, disable_sandbox),
                 timeout_seconds = timeout,
                 execution_kind = "python",
+                cancel_event = cancel_event,
             )
         )
-        _note_tool_execution(prepared.execution_record)
         proc = os_sandbox.spawn_prepared_launch(
             prepared, **_apply_prepared_launch(prepared, popen_kwargs)
         )
 
         # Capture the group before any watcher can reap the leader (see _capture_process_group); None on Windows.
+        _note_tool_execution(prepared.execution_record)
+        if execution_callback is not None:
+            execution_callback(prepared.execution_record.as_dict())
         pgid = _capture_process_group(proc)
         _adopt_tool_pid(proc.pid)
 
@@ -15470,6 +15591,7 @@ def _python_exec(
                 else ""
             )
 
+        os_sandbox.verify_prepared_success(prepared, proc)
         result = output or ""
         if proc.returncode != 0:
             result = f"Exit code {proc.returncode}:\n{result}"
@@ -15528,6 +15650,7 @@ def _bash_exec(
     thread_id: str | None = None,
     *,
     tool_execution_mode: str = "auto",
+    execution_callback = None,
 ) -> str:
     """Execute a bash command in a subprocess sandbox. disable_sandbox (Bypass Permissions): skip
     the command blocklist and rlimit pre-exec, and use the host env minus secrets.
@@ -15597,14 +15720,17 @@ def _bash_exec(
                 requested_mode = _requested_execution_mode(tool_execution_mode, disable_sandbox),
                 timeout_seconds = timeout,
                 execution_kind = "terminal",
+                cancel_event = cancel_event,
             )
         )
-        _note_tool_execution(prepared.execution_record)
         proc = os_sandbox.spawn_prepared_launch(
             prepared, **_apply_prepared_launch(prepared, popen_kwargs)
         )
 
         # Capture the group before any watcher can poll/reap the leader (see _python_exec); None on Windows.
+        _note_tool_execution(prepared.execution_record)
+        if execution_callback is not None:
+            execution_callback(prepared.execution_record.as_dict())
         pgid = _capture_process_group(proc)
         _adopt_tool_pid(proc.pid)
 
@@ -15634,6 +15760,7 @@ def _bash_exec(
                 _created_file_sentinels(workdir, _before, None, call_token) if session_id else ""
             )
 
+        os_sandbox.verify_prepared_success(prepared, proc)
         result = output or ""
         if proc.returncode != 0:
             result = f"Exit code {proc.returncode}:\n{result}"

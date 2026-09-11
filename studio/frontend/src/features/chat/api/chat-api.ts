@@ -1522,8 +1522,10 @@ export async function* streamChatCompletions(
   /** The window this request is served by, when the caller knows it. Used only to tell a user-chosen
    *  Max Tokens apart from the backend's stand-in for "Max", which is the whole context length. */
   loadedContextLength?: number | null,
+  prepareDispatch?: () => void,
 ): AsyncGenerator<OpenAIChatChunk> {
-  const response = await authFetch("/v1/chat/completions", {
+  prepareDispatch?.();
+  const dispatchInit: RequestInit = {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -1533,6 +1535,10 @@ export async function* streamChatCompletions(
     },
     body: JSON.stringify(payload),
     signal,
+  };
+  const response = await authFetch("/v1/chat/completions", dispatchInit, {
+    retryNetworkErrors: false,
+    beforeRetry: () => { prepareDispatch?.(); dispatchInit.body = JSON.stringify(payload); },
   });
 
   if (!response.ok) {
@@ -1639,6 +1645,7 @@ export async function* streamChatCompletions(
           (parsed.type === "tool_start" ||
             parsed.type === "tool_end" ||
             parsed.type === "tool_output" ||
+            parsed.type === "tool_execution" ||
             parsed.type === "tool_args")
         ) {
           yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;

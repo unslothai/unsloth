@@ -621,6 +621,12 @@ async def lifespan(app: FastAPI):
         except Exception:  # noqa: BLE001 -- never block startup over a discovery route
             _lifespan_log.warning("could not install API-only probe denials", exc_info = True)
 
+    if sys.platform == "win32":
+        from core.inference.os_sandbox import capability_snapshot
+        threading.Thread(
+            target = capability_snapshot, name = "windows-sandbox-check", daemon = True
+        ).start()
+
     # Move the legacy sandbox up here rather than from the first request: the copy can be minutes when the
     # studio home is on another filesystem.
     try:
@@ -769,6 +775,10 @@ async def lifespan(app: FastAPI):
     _api_usage_writer_lease = _acquire_api_usage_writer()
     _api_usage_callback_lease = _api_monitor.acquire_terminal_callback(_enqueue_api_usage)
     yield
+
+    if sys.platform == "win32":
+        from core.inference.srt_windows_read_lease import shutdown as stop_srt_read_grants
+        await asyncio.to_thread(stop_srt_read_grants)
 
     # Remove only this lifespan's callback. A concurrently live sibling keeps both the monitor sink and the
     # shared serialized writer; the final owner drains accepted receipts off the event loop before stopping the

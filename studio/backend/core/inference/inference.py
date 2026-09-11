@@ -916,6 +916,8 @@ class InferenceBackend:
         rag_scope: Optional[dict] = None,
         presence_penalty: float = 0.0,
         reasoning_prefilled: bool = False,
+        *,
+        tool_execution_mode: str = "auto",
     ):
         """Run an agentic tool loop on top of ``generate_chat_response``.
 
@@ -1015,6 +1017,7 @@ class InferenceBackend:
             context_length = _model_info.get("context_length"),
             max_tokens = max_new_tokens,
             generation_stats_holder = _turn_stats,
+            tool_execution_mode = tool_execution_mode,
         )
 
     def generate_chat_response(

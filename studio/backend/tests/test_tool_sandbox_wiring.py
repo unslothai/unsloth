@@ -414,16 +414,16 @@ def test_pass_fds_and_owned_files_reach_the_spawn(monkeypatch):
     assert holder.closed
 
 
-def test_auto_still_runs_when_the_planner_itself_breaks(monkeypatch):
+def test_auto_refuses_when_the_planner_itself_breaks(monkeypatch):
     def explode(plan):
         raise ImportError("no module named sandbox_linux")
 
     monkeypatch.setattr(os_sandbox, "prepare_tool_launch", explode)
     tools._last_tool_execution_record = None
-    assert "5" in tools._python_exec("print(5)", None, 60, _SESSION)
-    record = tools._last_tool_execution_record
-    assert record.effective_mode == "software_safeguards"
-    assert "sandbox_planner_error" in record.limitations
+    result = tools._python_exec("print('PAYLOAD_EXECUTED')", None, 60, _SESSION)
+    assert "PAYLOAD_EXECUTED" not in result
+    assert "Sandbox preparation failed" in result
+    assert tools._last_tool_execution_record is None
 
 
 def test_full_access_keeps_its_own_label_even_when_the_planner_breaks(monkeypatch):
@@ -471,7 +471,7 @@ def test_required_still_refuses_when_the_planner_itself_breaks(monkeypatch):
     assert "OS_ISOLATION_UNAVAILABLE" in out
 
 
-@pytest.mark.parametrize("platform", ["win32", "cygwin", "aix"])
+@pytest.mark.parametrize("platform", ["cygwin", "aix"])
 def test_a_platform_with_no_backend_gets_exactly_the_plan_it_handed_in(monkeypatch, platform):
     monkeypatch.setattr(sys, "platform", platform)
 
@@ -499,7 +499,7 @@ def test_a_platform_with_no_backend_gets_exactly_the_plan_it_handed_in(monkeypat
 
 
 def test_a_platform_with_no_backend_still_refuses_in_required(monkeypatch):
-    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "platform", "aix")
     with pytest.raises(SandboxUnavailableError):
         os_sandbox.prepare_tool_launch(
             ToolLaunchPlan(argv = ("prog",), workdir = "/work", env = {}, requested_mode = "required")
@@ -640,15 +640,15 @@ def test_the_fallback_never_claims_a_descendant_sweep_it_does_not_perform():
     assert not hasattr(os_sandbox, "descendant_sweep_supported")
 
 
-def test_a_backend_that_has_just_stopped_being_available_still_falls_back(monkeypatch):
+def test_a_backend_that_becomes_unavailable_during_preparation_refuses(monkeypatch):
     _declining_backend(
         monkeypatch, "bubblewrap (bwrap) is not installed on this host", unsafe = False
     )
     tools._last_tool_execution_record = None
-    assert "42" in tools._python_exec("print(6 * 7)", None, 60, _SESSION)
-    record = tools._last_tool_execution_record
-    assert record.os_isolation is False
-    assert "sandbox_became_unavailable" in record.limitations
+    result = tools._python_exec("print('PAYLOAD_EXECUTED')", None, 60, _SESSION)
+    assert "PAYLOAD_EXECUTED" not in result
+    assert "not installed" in result
+    assert tools._last_tool_execution_record is None
 
 
 def test_a_backend_that_fails_at_launch_drops_the_cached_verdict(monkeypatch):

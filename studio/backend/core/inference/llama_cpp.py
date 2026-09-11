@@ -30264,6 +30264,7 @@ class LlamaCppBackend:
         # MAY BLOCK: recost_waiting waits for cache room. Safe at the top of a round,
         # where the previous round's request has completed.
         on_conversation_grew: Optional[Callable[[list], None]] = None,
+        tool_execution_mode: str = "auto",
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -32802,7 +32803,11 @@ class LlamaCppBackend:
                         # outlives the closure.
                         _last_result_budget: list = ["<not passed>"]
 
-                        def _invoke_tool(_output_callback, _decision = decision):
+                        def _invoke_tool(
+                            _output_callback,
+                            execution_callback,
+                            _decision = decision,
+                        ):
                             # execute_tool is injectable and may be monkey-patched with the
                             # pre-PR signature; forward output_callback only if it's accepted.
                             kwargs = dict(
@@ -33078,6 +33083,10 @@ class LlamaCppBackend:
                                         _spent,
                                         reply_returns = True,
                                     )
+                            if accepts_kwarg(execute_tool, "tool_execution_mode"):
+                                kwargs["tool_execution_mode"] = tool_execution_mode
+                            if accepts_kwarg(execute_tool, "execution_callback"):
+                                kwargs["execution_callback"] = execution_callback
                             if accepts_output_callback(execute_tool):
                                 kwargs["output_callback"] = _output_callback
                             kwargs.update(search_images_kwargs(execute_tool, _decision.tool_name))
@@ -33095,6 +33104,11 @@ class LlamaCppBackend:
                                 _invoke_tool,
                                 tool_name = decision.tool_name,
                                 tool_call_id = decision.tool_call_id,
+                                launch_event_factory = lambda record: {
+                                    "type": "tool_execution",
+                                    "tool_call_id": decision.tool_call_id,
+                                    "execution": record,
+                                },
                                 cancel_event = cancel_event,
                             )
                         except _LlamaStreamCancelled:

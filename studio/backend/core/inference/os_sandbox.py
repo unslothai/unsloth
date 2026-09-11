@@ -85,6 +85,8 @@ class SandboxCapability:
     probe_generation: str = ""
     environment_fingerprint: str = ""
     remediation: str = ""
+    reason_code: str | None = None
+    diagnostic: dict[str, Any] | None = None
 
 
 @dataclass(frozen = True)
@@ -100,7 +102,7 @@ class ToolExecutionRecord:
     os_isolation: bool
     retained_safeguards: tuple[str, ...]
     limitations: tuple[str, ...] = ()
-    # Always "unrestricted": this confines the filesystem, not the network.
+    # Native Linux/macOS leave networking unrestricted; Windows records SRT policy.
     network_policy: str = "unrestricted"
 
     def as_dict(self) -> dict[str, object]:
@@ -130,6 +132,7 @@ class ToolLaunchPlan:
     terminate_descendants: bool = True
     # Set by the trusted tool owner, never inferred from model args.
     execution_kind: Literal["python", "terminal"] | None = None
+    cancel_event: Any = None
 
 
 @dataclass
@@ -148,6 +151,7 @@ class PreparedSandboxLaunch:
     terminate_descendants: bool = True
     cleanup_callbacks: list[Callable[[], None]] = field(default_factory = list)
     cleanup_diagnostics: list[str] = field(default_factory = list)
+    spawn_callback: Callable | None = None
 
     def cleanup(self) -> None:
         while self.cleanup_callbacks:
@@ -175,6 +179,8 @@ class PreparedSandboxLaunch:
 
 
 def spawn_prepared_launch(prepared: PreparedSandboxLaunch, **popen_kwargs: Any) -> object:
+    if prepared.spawn_callback is not None:
+        return prepared.spawn_callback(prepared, popen_kwargs)
     return subprocess.Popen(prepared.argv, **popen_kwargs)
 
 
@@ -478,7 +484,17 @@ def _unavailable(reason: str, remediation: str, identity: str) -> SandboxCapabil
     )
 
 
-def capability_snapshot(*, force: bool = False) -> SandboxCapability:
+def capability_snapshot(
+    *,
+    force: bool = False,
+    execution_kind = None,
+    selected_executable = None,
+) -> SandboxCapability:
+    if sys.platform == "win32":
+        from .sandbox_windows import capability_snapshot as windows_capability
+        return windows_capability(
+            force = force, execution_kind = execution_kind, selected_executable = selected_executable
+        )
     identity = _runtime_identity()
     if sys.platform == "linux":
         from . import sandbox_linux
@@ -556,7 +572,9 @@ def _software_only_limitations() -> tuple[str, ...]:
 
 
 def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
-    """Only ``required`` on a host without a working sandbox can refuse."""
+    """Select fallback before launch only; preparation and launch failures refuse."""
+    if plan.cancel_event is not None and plan.cancel_event.is_set():
+        raise SandboxBuildError("Execution cancelled before launch")
     if plan.requested_mode not in TOOL_EXECUTION_MODES:
         raise SandboxUnavailableError(f"unknown tool execution mode: {plan.requested_mode!r}")
 
@@ -587,7 +605,11 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             ),
         )
 
-    capability = capability_snapshot()
+    capability = capability_snapshot(
+        execution_kind = plan.execution_kind, selected_executable = plan.argv[0]
+    )
+    if plan.cancel_event is not None and plan.cancel_event.is_set():
+        raise SandboxBuildError("Execution cancelled before launch")
 
     if not capability.available:
         if plan.requested_mode == "required":
@@ -616,6 +638,9 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             ),
         )
 
+    if sys.platform == "win32":
+        from .sandbox_windows import prepare
+        return prepare(plan, capability)
     if sys.platform == "linux":
         from . import sandbox_linux as backend
     else:
@@ -638,3 +663,12 @@ def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         limitations = capability.limitations,
     )
     return prepared
+
+
+def verify_prepared_success(prepared, proc):
+    if prepared.backend == "srt" and proc.returncode == 0:
+        from .srt_adapter import verify_success
+        try:
+            verify_success(proc)
+        except Exception as exc:
+            raise SandboxBuildError(f"SRT completion could not be verified: {exc}") from exc

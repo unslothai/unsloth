@@ -354,6 +354,7 @@ class ToolLoopPolicy:
     auto_heal: bool | None = None
     # None follows UNSLOTH_TOOL_CALL_NUDGE; explicit booleans win.
     nudge_tool_calls: bool | None = None
+    tool_execution_mode: str = "auto"
     # Called before relaying the chunk that ends a turn a text-form call was healed out of. Headerless relay only, to
     # arm its ServerToolCallStripper for a call that never reached the wire as a tool_calls key.
     on_withheld_tool_call: Callable[[], None] | None = None
@@ -1193,6 +1194,7 @@ async def stream_with_studio_tools(
     confirm_tool_calls = policy.confirm_calls
     bypass_permissions = policy.bypass_permissions
     rag_scope = policy.rag_scope
+    tool_execution_mode = policy.tool_execution_mode
 
     # The promotion allowlist is the selected catalog, never None: an unrestricted parse re-opens markerless tool-call
     # promotion.
@@ -1692,7 +1694,11 @@ async def stream_with_studio_tools(
                 reprompts = max_reprompts
                 continue
 
-            def _invoke(output_callback: Any, call = decision) -> str:
+            def _invoke(
+                output_callback: Any,
+                execution_callback,
+                call = decision,
+            ) -> str:
                 kwargs: dict[str, Any] = {
                     "cancel_event": cancel_event,
                     "timeout": None if tool_call_timeout >= 9999 else tool_call_timeout,
@@ -1721,6 +1727,10 @@ async def stream_with_studio_tools(
                         ) * max(1, int(rag_config.CONVERSATION_ARCHIVE_TOP_K))
                     except Exception:
                         pass
+                if accepts_kwarg(execute_tool, "tool_execution_mode"):
+                    kwargs["tool_execution_mode"] = tool_execution_mode
+                if accepts_kwarg(execute_tool, "execution_callback"):
+                    kwargs["execution_callback"] = execution_callback
                 if accepts_output_callback(execute_tool):
                     kwargs["output_callback"] = output_callback
                 kwargs.update(search_images_kwargs(execute_tool, call.tool_name))
@@ -1732,6 +1742,11 @@ async def stream_with_studio_tools(
                 _invoke,
                 tool_name = name,
                 tool_call_id = card_id,
+                launch_event_factory = lambda record: {
+                    "type": "tool_execution",
+                    "tool_call_id": card_id,
+                    "execution": record,
+                },
                 cancel_event = cancel_event,
             )
             outcome: dict[str, Any] = {}

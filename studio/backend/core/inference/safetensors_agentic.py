@@ -597,6 +597,7 @@ def run_safetensors_tool_loop(
     context_length: Optional[int] = None,
     max_tokens: Optional[int] = None,
     generation_stats_holder: Optional[dict] = None,
+    tool_execution_mode: str = "auto",
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -1456,7 +1457,11 @@ def run_safetensors_tool_loop(
                 # stream while the tool blocks (the SSE route turns heartbeats into
                 # keepalives). execute_tool is injectable; pass output_callback
                 # only when it accepts it.
-                def _invoke_tool(_output_callback, _decision = decision):
+                def _invoke_tool(
+                    _output_callback,
+                    execution_callback,
+                    _decision = decision,
+                ):
                     kwargs = dict(
                         cancel_event = cancel_event,
                         timeout = eff_timeout,
@@ -1553,6 +1558,10 @@ def run_safetensors_tool_loop(
                             # nothing on this path can price a string exactly.
                             + 2 * _dense_tokens(pending_args),
                         ) // (len(pending) + 1)
+                    if _accepts_kwarg(execute_tool, "tool_execution_mode"):
+                        kwargs["tool_execution_mode"] = tool_execution_mode
+                    if _accepts_kwarg(execute_tool, "execution_callback"):
+                        kwargs["execution_callback"] = execution_callback
                     if _accepts_output_callback(execute_tool):
                         kwargs["output_callback"] = _output_callback
                     kwargs.update(_search_images_kwargs(execute_tool, _decision.tool_name))
@@ -1563,6 +1572,11 @@ def run_safetensors_tool_loop(
                         _invoke_tool,
                         tool_name = decision.tool_name,
                         tool_call_id = decision.tool_call_id,
+                        launch_event_factory = lambda record: {
+                            "type": "tool_execution",
+                            "tool_call_id": decision.tool_call_id,
+                            "execution": record,
+                        },
                         cancel_event = cancel_event,
                     )
                 except Exception as exc:

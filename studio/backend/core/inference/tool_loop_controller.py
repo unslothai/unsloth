@@ -1010,6 +1010,10 @@ def _noop_result(reason: NoopReason, tool_name: str) -> str:
     )
 
 
+class ToolIsolationUnavailableResult(str):
+    """Trusted isolation failure requiring user recovery rather than model retries."""
+
+
 class ToolLoopController:
     """Per-response ledger for local agentic tool loops."""
 
@@ -1034,6 +1038,7 @@ class ToolLoopController:
         self._duplicate_noop_limit = max(1, duplicate_noop_limit)
         self._history: list[_ToolCallRecord] = []
         self._force_final_answer = False
+        self._isolation_unavailable = False
 
     @property
     def history(self) -> tuple[_ToolCallRecord, ...]:
@@ -1084,7 +1089,10 @@ class ToolLoopController:
         )
         action: ToolAction = "execute"
         noop = ""
-        if tool_name in self._completed_one_shot_tools:
+        if self._isolation_unavailable:
+            action = "disabled"
+            noop = "Python and Terminal isolation failed. Stop retrying tools and explain that the user must repair or change isolation settings."
+        elif tool_name in self._completed_one_shot_tools:
             action = "render_html_repeat"
             noop = _noop_result("render_html_repeat", tool_name)
         elif allowed_tool_names is not None and tool_name not in allowed_tool_names:
@@ -1112,7 +1120,10 @@ class ToolLoopController:
     def record_result(self, decision: ToolCallDecision, result: Any) -> ToolCallCompletion:
         """Record a real tool execution and return model/frontend payload helpers."""
         result_text = result if isinstance(result, str) else str(result)
-        failed = is_tool_error(result_text)
+        if isinstance(result, ToolIsolationUnavailableResult):
+            self._isolation_unavailable = True
+            self._force_final_answer = True
+        failed = isinstance(result, ToolIsolationUnavailableResult) or is_tool_error(result_text)
         self._history.append(
             _ToolCallRecord(
                 key = decision.key,

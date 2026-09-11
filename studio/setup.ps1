@@ -7076,6 +7076,20 @@ if (-not $llamaCppIsLink -and (
 }
 
 # ─────────────────────────────────────────────
+# Windows tool isolation
+# ─────────────────────────────────────────────
+function Install-WindowsSrt {
+    param([string]$PythonExe, [string]$InstallerPath)
+    step "sandbox" "installing Windows SRT isolation (administrator approval may be required)..."
+    & $PythonExe $InstallerPath --windows-install
+    if ($LASTEXITCODE -ne 0) {
+        Exit-SetupFailure "Windows sandbox setup failed or administrator approval was declined. Rerun Studio setup to enable Python and Terminal isolation."
+    }
+    step "sandbox" "Windows SRT installed"
+}
+Install-WindowsSrt -PythonExe (Join-Path $VenvDir "Scripts\python.exe") -InstallerPath (Join-Path $ScriptDir "install_srt_runtime.py")
+
+# ─────────────────────────────────────────────
 # Footer
 # ─────────────────────────────────────────────
 $DoneLabel = if ($env:SKIP_STUDIO_BASE -eq "1") { "Unsloth Studio Setup Complete" } else { "Unsloth Studio Updated" }
@@ -7096,6 +7110,7 @@ if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     }
     Write-StudioLine "  $Rule" -ForegroundColor DarkGray
 }
+substep "Python and Terminal use Windows SRT isolation by default."
 step "launch" "unsloth studio -p 8888"
 substep "(add -H 0.0.0.0 for LAN / cloud access; exposes the raw port only, not a public URL)"
 substep "(add -H 0.0.0.0 --cloudflare for a public Cloudflare HTTPS link, or --secure to keep the raw port private; anyone with the API key can run code)"

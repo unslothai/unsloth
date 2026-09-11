@@ -20730,6 +20730,7 @@ async def _proxy_to_external_provider(
                     permission_mode = payload.permission_mode or "auto",
                     confirm_calls = _permission_mode_confirm(payload),
                     bypass_permissions = bool(payload.bypass_permissions),
+                    tool_execution_mode = payload.tool_execution_mode,
                     rag_scope = payload.rag_scope,
                     nudge_tool_calls = payload.nudge_tool_calls,
                 )
@@ -21090,6 +21091,7 @@ async def _proxy_to_external_provider(
                     permission_mode = payload.permission_mode or "auto",
                     confirm_calls = _permission_mode_confirm(payload),
                     bypass_permissions = bool(payload.bypass_permissions),
+                    tool_execution_mode = payload.tool_execution_mode,
                     rag_scope = payload.rag_scope,
                     auto_heal = payload.auto_heal_tool_calls,
                     nudge_tool_calls = payload.nudge_tool_calls,
@@ -22845,6 +22847,7 @@ async def produce_openai_chat_completions(
                     confirm_tool_calls = _effective_confirm and not bool(payload.bypass_permissions),
                     bypass_permissions = bool(payload.bypass_permissions),
                     permission_mode = payload.permission_mode,
+                    tool_execution_mode = payload.tool_execution_mode,
                     perf_callback = _gguf_perf_callback,
                     on_conversation_grew = _gguf_recost,
                     context_overflow = _rolling_context_policy(payload),
@@ -23016,7 +23019,7 @@ async def produce_openai_chat_completions(
                             yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                             continue
 
-                        if event["type"] in ("tool_output", "tool_args"):
+                        if event["type"] in ("tool_output", "tool_args", "tool_execution"):
                             # Live stdout/stderr or tool-call arguments, forwarded
                             # verbatim for the UI. Final result still arrives in tool_end.
                             if _ui_events:
@@ -24598,6 +24601,7 @@ async def produce_openai_chat_completions(
                 confirm_tool_calls = _sf_effective_confirm and not bool(payload.bypass_permissions),
                 bypass_permissions = bool(payload.bypass_permissions),
                 permission_mode = payload.permission_mode,
+                tool_execution_mode = payload.tool_execution_mode,
                 use_adapter = payload.use_adapter,
                 stats_holder = _sf_stats_holder,
                 reasoning_prefilled = _sf_reasoning_prefilled,
@@ -24693,7 +24697,7 @@ async def produce_openai_chat_completions(
                         yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
 
-                    if event["type"] in ("tool_output", "tool_args"):
+                    if event["type"] in ("tool_output", "tool_args", "tool_execution"):
                         # Live stdout/stderr, or tool-call arguments as the model writes them.
                         if _ui_events:
                             yield f"data: {json.dumps(event)}\n\n"
@@ -28356,6 +28360,7 @@ def _build_chat_request(
     chat_kwargs: dict = dict(
         messages = messages,
         stream = stream,
+        tool_execution_mode = payload.tool_execution_mode,
     )
     # Only forward an explicitly set model so an omitted Responses model stays
     # reload-only when openai_chat_completions re-checks on the non-streaming path.
@@ -31516,6 +31521,7 @@ async def anthropic_messages(
                 disable_parallel_tool_use = _disable_parallel,
                 bypass_permissions = bool(payload.bypass_permissions),
                 permission_mode = getattr(payload, "permission_mode", None),
+                tool_execution_mode = payload.tool_execution_mode,
                 promote_reasoning_only = False,
                 perf_callback = _monitor_perf_callback(
                     monitor_id,
@@ -31713,7 +31719,7 @@ async def _anthropic_tool_stream(
                         # a dropped tool still runs and suppresses the stall keepalive.
                         yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
-                    if etype in ("tool_output", "tool_args"):
+                    if etype in ("tool_output", "tool_args", "tool_execution"):
                         # No Anthropic Messages equivalent (the full call/result follow in tool_use /
                         # tool_result), so drop them. They suppress the stall keepalive, so emit a
                         # rate-limited one instead of going silent past the ~100s proxy cap.
@@ -36407,3 +36413,28 @@ async def _generate_openai_images(
         _diffusion_persist_active -= 1
 
     return ImageGenerationResponse(created = created, data = data)
+
+
+@router.get("/tool-isolation/capability")
+async def tool_isolation_capability(
+    force: bool = False, current_subject = Depends(get_current_subject)
+):
+    from dataclasses import asdict
+    from starlette.concurrency import run_in_threadpool
+    from core.inference.os_sandbox import capability_snapshot
+
+    return asdict(await run_in_threadpool(capability_snapshot, force = force))
+
+
+@router.post("/tool-isolation/windows-setup")
+async def setup_windows_tool_isolation(
+    repair_existing: bool = False, current_subject = Depends(get_current_subject)
+):
+    if sys.platform != "win32":
+        raise HTTPException(
+            status_code = 400, detail = "Windows sandbox setup is available on Windows only."
+        )
+    from core.inference.srt_setup import install_windows_sandbox
+    from starlette.concurrency import run_in_threadpool
+
+    return await run_in_threadpool(install_windows_sandbox, repair_existing = repair_existing)

@@ -76,6 +76,14 @@ studio = [
     "backend/assets/docs_ui/*",
     "backend/core/data_recipe/oxc-validator/*.json",
     "backend/core/data_recipe/oxc-validator/*.mjs",
+    "backend/core/inference/srt_runtime/bridge.mjs",
+    "backend/core/inference/srt_runtime/apply_patch.mjs",
+    "backend/core/inference/srt_runtime/windows-read-lease.mjs",
+    "backend/core/inference/srt_runtime/windows-read-owner.mjs",
+    "backend/core/inference/srt_runtime/windows-read-recover.mjs",
+    "backend/core/inference/srt_runtime/integrity.json",
+    "backend/core/inference/srt_runtime/package.json",
+    "backend/core/inference/srt_runtime/package-lock.json",
 ]
 
 [tool.setuptools.packages.find]

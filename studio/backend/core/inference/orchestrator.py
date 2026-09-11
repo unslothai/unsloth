@@ -2108,6 +2108,8 @@ class InferenceOrchestrator:
         stop: Optional[list] = None,
         reasoning_prefilled: bool = False,
         seed: Optional[int] = None,
+        *,
+        tool_execution_mode: str = "auto",
         **_unused,
     ):
         """Run the safetensors agentic tool loop in the parent process, calling the worker for each
@@ -2236,6 +2238,7 @@ class InferenceOrchestrator:
             context_length = _model_info.get("context_length"),
             max_tokens = max_new_tokens,
             generation_stats_holder = turn_stats,
+            tool_execution_mode = tool_execution_mode,
         )
 
     def generate_with_adapter_control(

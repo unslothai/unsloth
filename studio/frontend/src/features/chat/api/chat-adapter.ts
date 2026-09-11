@@ -1,3 +1,6 @@
+import { recordExecution, clearExecution, executionRecord } from "../tool-execution-record";
+import { useIsolationStore } from "../tool-isolation";
+import { getAuthSessionEpoch } from "@/features/auth";
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
@@ -3878,6 +3881,8 @@ export function createOpenAIStreamAdapter(
       unstable_threadId,
       unstable_assistantMessageId,
     }) {
+      const isolationSessionEpoch = getAuthSessionEpoch();
+      const isolationThread = useChatRuntimeStore.getState().activeThreadId;
       // Before the first await: send() awaits document extraction and initialize() does not await
       // its row write, so the store is no longer a safe reading of the project. Null still wins.
       const creationClaim = unstable_threadId
@@ -4313,6 +4318,9 @@ export function createOpenAIStreamAdapter(
       );
       const scopedToolOutputKey = (id: string) =>
         toolOutputKey(toolOutputPaneScope, id);
+      // Tool part IDs are unique to this run; thread IDs can change during first-save.
+      const executionRecordKey = (id: string) =>
+        toolOutputKey(toolPaneScope(options.modelType, options.pairId), id);
       const runToolLiveOutputKeys = new Set<string>();
       const resolvedThreadKey = resolvedThreadId ?? null;
       // Which conversation was on screen when this run started; a first turn has no id yet.
@@ -5100,6 +5108,7 @@ export function createOpenAIStreamAdapter(
       let codexReasoningLedger: CodexReasoningLedger = { byToolCall: {} };
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
+      let toolExecutions: Record<string, Record<string, unknown>> = {};
 
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
@@ -5108,6 +5117,7 @@ export function createOpenAIStreamAdapter(
       // Provisional reason on every streamed yield: an abort skips the terminal yields and a reload
       // rebuilds messages as "complete". Stop is only the guess; a reported window outranks it.
       const liveCustom = () => ({
+        toolExecutions,
         ...reasoningDurationTracker.metadata(),
         openaiCodexReasoning: codexReasoningLedger,
         contextTruncation,
@@ -6148,6 +6158,17 @@ export function createOpenAIStreamAdapter(
             clearSelectedImageEditReference();
             requestedMaxTokens = requestPayload.max_tokens;
             await ThreadAutosaveHandle.awaitFirstSave(resolvedThreadId);
+            const prepareIsolationDispatch = () => {
+              const live = useChatRuntimeStore.getState();
+              if (getAuthSessionEpoch() !== isolationSessionEpoch || (live.activeThreadId !== isolationThread && live.activeThreadId !== resolvedThreadId)) {
+                throw new Error("The chat or sign-in session changed. Send the message again.");
+              }
+              if (live.permissionMode !== permissionMode || live.bypassPermissions !== bypassPermissions) {
+                throw new Error("Tool permissions changed while waiting. Send the message again.");
+              }
+              requestPayload.tool_execution_mode = useIsolationStore.getState().mode;
+            };
+            prepareIsolationDispatch();
             if (generationDecision === "pending") {
               const clientTools = (
                 requestPayload as unknown as { tools?: unknown }
@@ -6292,6 +6313,7 @@ export function createOpenAIStreamAdapter(
                       : (runtime.loadedCustomContextLength ??
                         runtime.loadedContextLength ??
                         (params.maxSeqLength || null)),
+                    prepareIsolationDispatch,
                   );
             // Per run, not per module: two turns must not share a cycle.
             const canPublish = createStreamPublishGate();
@@ -6454,6 +6476,19 @@ export function createOpenAIStreamAdapter(
                   anthropicRefusalSeen = true;
                   continue;
                 }
+                if (toolEvent.type === "tool_execution") {
+                  const liveId = resolveToolPartId((toolEvent.tool_call_id as string) || "");
+                  const execution = executionRecord(toolEvent.execution);
+                  if (liveId && execution) {
+                    toolExecutions = { ...toolExecutions, [liveId]: execution };
+                    recordExecution(executionRecordKey(liveId), execution);
+                    yield {
+                      content: liveAssistantContent(),
+                      metadata: { custom: liveCustom() },
+                    };
+                  }
+                  continue;
+                }
                 if (toolEvent.type === "context_window_exceeded") {
                   contextWindowExceeded = true;
                   // assistant-ui saves the last STREAMED yield and drops everything after an
@@ -6565,6 +6600,7 @@ export function createOpenAIStreamAdapter(
                   // "call_0" restarts every response: drop stale live/preserved output under this key, else the
                   // card shows the previous call's.
                   const staleKey = scopedToolOutputKey(id);
+                  clearExecution(executionRecordKey(id));
                   useChatRuntimeStore.getState().clearToolLiveOutput(staleKey);
                   useChatRuntimeStore.getState().clearToolFullOutput(staleKey);
                   const toolArgs = (toolEvent.arguments ??
@@ -7667,6 +7703,7 @@ export function createOpenAIStreamAdapter(
           metadata: {
             timing: finalTiming,
             custom: {
+              toolExecutions,
               ...reasoningDurationTracker.metadata(),
               // Persisted so Continue survives a reload; cleared on a normal end.
 
@@ -7803,6 +7840,7 @@ export function createOpenAIStreamAdapter(
               metadata: {
                 timing: partialTiming,
                 custom: {
+                  toolExecutions,
                   ...reasoningDurationTracker.metadata(),
                   contextTruncation,
                   // Unfinished too, so it also offers Continue -- unless the provider already

@@ -559,6 +559,7 @@ export interface OpenAIChatMessage {
 }
 
 export interface OpenAIChatCompletionsRequest {
+  tool_execution_mode?: "auto" | "required";
   model: string;
   messages: OpenAIChatMessage[];
   stream: boolean;

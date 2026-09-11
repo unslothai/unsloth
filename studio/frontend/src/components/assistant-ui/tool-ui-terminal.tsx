@@ -3,6 +3,8 @@
 
 "use client";
 
+import { ToolExecutionDetails } from "@/features/chat";
+
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { useToolArgsStatus } from "@assistant-ui/react";
 import { TerminalIcon } from "lucide-react";
@@ -85,6 +87,7 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
         status={status}
         icon={TerminalIcon}
       />
+      <ToolExecutionDetails toolCallId={toolCallId} />
       <ToolFallbackContent>
         {command && (
           <ToolCodeCell

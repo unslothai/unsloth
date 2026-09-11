@@ -206,6 +206,7 @@ firebase-debug.log
 resources/
 tmp/
 **/node_modules/
+studio/backend/core/inference/srt_runtime/installed-runtime-settings.json
 auth.db
 
 # Tauri local build/generated output
