@@ -761,6 +761,21 @@ def _reject_untrainable_model_request(
                 if request.model_local_path == request.model_name
                 else normalize_path(request.model_local_path)
             )
+        from hub.utils.hf_cache_state import cached_repo_id_for_path
+
+        # A snapshot path inside the Hub cache is still that repository's cached weights.
+        cached_repo = cached_repo_id_for_path(path)
+        if cached_repo is not None and cached_read_refused(
+            hf_token,
+            repo_id = cached_repo,
+            is_cached = lambda: True,
+            offline = hf_env_offline(),
+        ):
+            raise _hf_preflight_error(
+                422,
+                "hf_model_access_denied",
+                "Hugging Face denied access to this cached model. Add a token with repository access.",
+            )
     else:
         model_local_path = (
             normalize_path(request.model_local_path) if request.model_local_path else None

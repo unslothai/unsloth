@@ -223,6 +223,62 @@ def test_dataset_cached_after_the_first_scan_is_not_pinned(monkeypatch, tmp_path
     assert backend.kwargs is None
 
 
+@pytest.mark.parametrize(
+    "inside_cache,token,refused",
+    [
+        (True, False, True),
+        (True, "hf_no_access", True),
+        (True, None, False),
+        (False, False, False),
+    ],
+)
+def test_local_snapshot_path_in_the_hub_cache_requires_caller_authorization(
+    monkeypatch, tmp_path, inside_cache, token, refused
+):
+    from fastapi import HTTPException
+    from hub.utils import hf_cache_state, hf_tokens
+
+    root = tmp_path / "hub"
+    parent = root / "models--org--private-model" / "snapshots" if inside_cache else tmp_path / "local"
+    snapshot = parent / "0123456789abcdef0123456789abcdef01234567"
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text('{"model_type":"llama"}')
+    (snapshot / "model.safetensors").write_bytes(b"cached weights")
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda scan_errors = None: [root])
+    monkeypatch.setattr(tr, "hf_env_offline", lambda: False)
+    monkeypatch.setattr(hf_tokens, "_explicit_token_reaches_repo", lambda *a, **k: False)
+    root.mkdir(exist_ok = True)
+
+    request = TrainingStartRequest(
+        model_name = str(snapshot),
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+    )
+    if refused:
+        with pytest.raises(HTTPException) as error:
+            tr._reject_untrainable_model_request(request, hf_token = token)
+        assert error.value.detail["code"] == "hf_model_access_denied"
+    else:
+        result = tr._reject_untrainable_model_request(request, hf_token = token)
+        assert result.model_name == str(snapshot.resolve())
+
+
+def test_cached_repo_id_for_path(monkeypatch, tmp_path):
+    from hub.utils import hf_cache_state
+
+    root = tmp_path / "hub"
+    snapshot = root / "models--Org--Private-Model" / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    outside = tmp_path / "models--org--lookalike" / "snapshots" / "abc"
+    outside.mkdir(parents = True)
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda scan_errors = None: [root])
+
+    assert hf_cache_state.cached_repo_id_for_path(snapshot) == "Org/Private-Model"
+    assert hf_cache_state.cached_repo_id_for_path(root / "models--Org--Private-Model") == "Org/Private-Model"
+    assert hf_cache_state.cached_repo_id_for_path(outside) is None
+    assert hf_cache_state.cached_repo_id_for_path(root) is None
+
+
 def test_worker_config_carries_the_ambient_policy():
     from core.training.training import _build_training_worker_config
 
