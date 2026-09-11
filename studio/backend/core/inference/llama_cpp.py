@@ -8692,13 +8692,12 @@ class LlamaCppBackend:
 
         A pass-through ``--device`` is appended last, so it beats the auto selection.
         Resolved once and handed to every consumer, because the host-residency verdict
-        and the confirmation have to be about the SAME devices: computed apart, an
-        override onto a unified-memory APU was priced against the discrete card it
-        replaced and took DirectIO over weights that are really in host RAM.
+        and the confirmation must be about the SAME devices: computed apart, an override
+        onto a unified-memory APU was priced against the discrete card it replaced.
 
         Unchanged when there is no override, when it names no GPU, or when it names a
-        device the build never enumerated. The confirmation declines those on their own
-        terms, and answering them here would hide the reason behind an empty selection.
+        device the build never enumerated; the confirmation declines those on their own
+        terms, and answering them here would hide the reason.
         """
         # Gated like the confirmation itself: where no DirectIO decision can follow,
         # nothing here can change an outcome and the enumeration is not worth a
@@ -24674,12 +24673,10 @@ class LlamaCppBackend:
                 def _snapshot_policy_for_cmd():
                     """What `cmd` means RIGHT NOW, for the arch-crash retry to restore.
 
-                    A function, not a one-off tuple: every site that mutates `cmd`'s
-                    managed pair has to retake it, and the proactive gate did not. The
-                    retry then restored a pre-gate snapshot over a post-gate command,
-                    appending a second pair after an addition, or believing an absent
-                    one was still there after a removal.
-                    """
+                    A function because every site that mutates `cmd`'s managed pair has
+                    to retake it, and the proactive gate did not: the retry restored a
+                    pre-gate snapshot over a post-gate command, appending a second pair
+                    after an addition or believing an absent one was still there."""
                     return (
                         _mem_host_resident,
                         self._memory_state,
