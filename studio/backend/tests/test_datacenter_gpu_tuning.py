@@ -1130,6 +1130,7 @@ class _FakeNvml:
         def _shutdown():
             self.shutdown_calls += 1
             return _NVML_OK
+
         return _shutdown
 
     @property
@@ -1137,6 +1138,7 @@ class _FakeNvml:
         def _count(ref):
             ref._obj.value = self.count
             return self.count_rc
+
         return self._fn("nvmlDeviceGetCount_v2", _count)
 
     @property
@@ -1144,6 +1146,7 @@ class _FakeNvml:
         def _handle(index, ref):
             ref._obj.value = 1000 + int(getattr(index, "value", index))
             return self.handle_rc
+
         return self._fn("nvmlDeviceGetHandleByIndex_v2", _handle)
 
     @property
@@ -1155,6 +1158,7 @@ class _FakeNvml:
                 return _NVML_ERROR
             ref._obj.value = 1  # NVML_FEATURE_ENABLED
             return _NVML_OK
+
         return self._fn("nvmlDeviceGetNvLinkState", _state)
 
     @property
@@ -1172,6 +1176,7 @@ class _FakeNvml:
             else:
                 ref._obj.value = 0 if linked else 5  # OK / NOT_SUPPORTED
             return _NVML_OK
+
         return self._fn("nvmlDeviceGetP2PStatus", _status)
 
 
@@ -1193,9 +1198,10 @@ def test_nvml_is_preferred_over_the_shell_out(monkeypatch):
     _use_nvml(monkeypatch, _FakeNvml(count = 2))
     calls = []
     monkeypatch.setattr(
-        subprocess, "run",
-        lambda *a, **k: calls.append(a) or types.SimpleNamespace(
-            returncode = 0, stdout = TOPO_PCIE_2X, stderr = ""),
+        subprocess,
+        "run",
+        lambda *a, **k: calls.append(a)
+        or types.SimpleNamespace(returncode = 0, stdout = TOPO_PCIE_2X, stderr = ""),
     )
     matrix = LlamaCppBackend._nvlink_topology()
     assert LlamaCppBackend._matrix_is_nvml(matrix)
@@ -1233,7 +1239,8 @@ def test_nvml_unknown_falls_through_to_topo(monkeypatch, kwargs):
 def _use_topo_after_nvml(monkeypatch, fake, text):
     monkeypatch.setattr(LlamaCppBackend, "_nvml_library", staticmethod(lambda: fake))
     monkeypatch.setattr(
-        subprocess, "run",
+        subprocess,
+        "run",
         lambda *a, **k: types.SimpleNamespace(returncode = 0, stdout = text, stderr = ""),
     )
     LlamaCppBackend._NVLINK_TOPO_CACHE = None
@@ -1376,30 +1383,25 @@ def test_an_explicit_pick_keeps_its_pci_provenance(monkeypatch):
 
     # Caller knows these ids came from the PCI-ordered picker: no veto.
     LlamaCppBackend._NVLINK_TOPO_CACHE = None
-    assert LlamaCppBackend._p2p_veto_reason(
-        [0, 1], True, ids_are_pci_indices = True
-    ) is None
+    assert LlamaCppBackend._p2p_veto_reason([0, 1], True, ids_are_pci_indices = True) is None
 
     # And an explicit False from the caller still vetoes.
     LlamaCppBackend._NVLINK_TOPO_CACHE = None
-    assert LlamaCppBackend._p2p_veto_reason(
-        [0, 1], True, ids_are_pci_indices = False
-    ) is not None
+    assert LlamaCppBackend._p2p_veto_reason([0, 1], True, ids_are_pci_indices = False) is not None
 
 
 def test_a_stalled_nvml_call_cannot_hang_the_load(monkeypatch):
     """ctypes has no timeout and the shell-out it replaced had one, so a wedged
     driver must cost a fallback rather than the load."""
     import threading as _threading
+
     release = _threading.Event()
 
     def _hang(cls):
         release.wait(30)
         return {(0, 1): "NVLINK", (1, 0): "NVLINK"}
 
-    monkeypatch.setattr(
-        LlamaCppBackend, "_probe_nvml_nvlink_topology_inner", classmethod(_hang)
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_probe_nvml_nvlink_topology_inner", classmethod(_hang))
     monkeypatch.setattr(LlamaCppBackend, "_NVML_PROBE_TIMEOUT_SECONDS", 0.2)
     try:
         assert LlamaCppBackend._probe_nvml_nvlink_topology() is None

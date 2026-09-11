@@ -9144,8 +9144,7 @@ class LlamaCppBackend:
         """Whether this matrix came from NVML, i.e. whether nvidia-smi is known to
         have answered."""
         return any(
-            v in (cls._NVML_NVLINK_LABEL, cls._NVML_NO_NVLINK_LABEL)
-            for v in matrix.values()
+            v in (cls._NVML_NVLINK_LABEL, cls._NVML_NO_NVLINK_LABEL) for v in matrix.values()
         )
 
     @classmethod
@@ -9299,18 +9298,11 @@ class LlamaCppBackend:
                             "treating the topology as unreadable"
                         )
                         return None
-                    matrix[(a, b)] = (
-                        cls._NVML_NVLINK_LABEL if linked else cls._NVML_NO_NVLINK_LABEL
-                    )
+                    matrix[(a, b)] = cls._NVML_NVLINK_LABEL if linked else cls._NVML_NO_NVLINK_LABEL
 
             # By key, not by count: a matrix of the right size built from the wrong
             # keys would still pass a length check.
-            expected = {
-                (a, b)
-                for a in range(count.value)
-                for b in range(count.value)
-                if a != b
-            }
+            expected = {(a, b) for a in range(count.value) for b in range(count.value) if a != b}
             if set(matrix) != expected:
                 return None
             return matrix
@@ -9421,7 +9413,11 @@ class LlamaCppBackend:
         return cls._probe_nvlink_topology()
 
     @classmethod
-    def _nvlink_topology(cls, refresh = False, cache_failure = True) -> Optional[dict]:
+    def _nvlink_topology(
+        cls,
+        refresh = False,
+        cache_failure = True,
+    ) -> Optional[dict]:
         """_probe_interconnect_matrix, cached for the life of the process.
 
         The probe runs outside the lock (slow, and a duplicate pass is harmless), but
@@ -9543,9 +9539,7 @@ class LlamaCppBackend:
         reads as "do not set P2P", since losing the tuning beats an exception
         escaping into load_model and failing the load."""
         try:
-            return cls._p2p_veto_reason_inner(
-                gpu_indices, launch_order_pinned, ids_are_pci_indices
-            )
+            return cls._p2p_veto_reason_inner(gpu_indices, launch_order_pinned, ids_are_pci_indices)
         except Exception as e:
             logger.debug(f"peer-fabric check failed: {e}")
             return f"the peer-fabric check could not complete ({type(e).__name__})"
