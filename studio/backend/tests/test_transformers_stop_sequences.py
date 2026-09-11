@@ -2,7 +2,6 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import importlib
-import queue
 import sys
 import threading
 import types
@@ -65,32 +64,13 @@ class _Tokenizer:
         torch = pytest.importorskip("torch")
         return _Batch({"input_ids": torch.zeros((1, 1), dtype = torch.long)})
 
-    def decode(self, *_args, **_kwargs):
-        return ""
+    def decode(self, ids, **kwargs):
+        return "".join(self.pieces.get(int(i), "") for i in ids)
 
 
 class _Processor:
     chat_template = None
     tokenizer = _Tokenizer()
-
-
-class _Streamer:
-    def __init__(self):
-        self.queue = queue.Queue()
-        self.wanted = threading.Event()
-
-    def send(self, text):
-        self.queue.put(text)
-
-    def end(self):
-        self.queue.put(None)
-
-    def __next__(self):
-        self.wanted.set()
-        text = self.queue.get(timeout = 5)
-        if text is None:
-            raise StopIteration
-        return text
 
 
 class _Model:
@@ -102,23 +82,26 @@ class _Model:
         self.pieces = pieces
         self.sent = []
 
-    def generate(self, streamer, stopping_criteria, **_kwargs):
+    def generate(self, streamer, stopping_criteria, max_new_tokens, **_kwargs):
         torch = pytest.importorskip("torch")
         ids = torch.zeros((1, 1), dtype = torch.long)
-        for piece in self.pieces:
-            streamer.wanted.wait(timeout = 5)
-            streamer.wanted.clear()
-            if bool(stopping_criteria(ids, None).all()):
-                break
-            streamer.send(piece)
+        streamer.put(ids)
+        for index, piece in enumerate(self.pieces[:max_new_tokens], 2):
+            ids = torch.cat([ids, torch.tensor([[index]])], dim = 1)
+            streamer.put(torch.tensor([index]))
             self.sent.append(piece)
-        return torch.zeros((1, 1 + len(self.sent)), dtype = torch.long)
+            if stopping_criteria is not None and bool(stopping_criteria(ids, None).all()):
+                break
+        streamer.end()
+        return ids
 
 
 def _backend(pieces, tokenizer):
     inf = pytest.importorskip("core.inference.inference")
     model = _Model(pieces)
-    streamer = _Streamer()
+    raw_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    raw_tokenizer.pieces = dict(enumerate(pieces, 2))
+    streamer = inf.TextIteratorStreamer(raw_tokenizer, skip_prompt = True, timeout = 0.2)
     backend = inf.InferenceBackend.__new__(inf.InferenceBackend)
     backend.active_model_name = "stop-test"
     backend._generation_lock = threading.Lock()
@@ -185,3 +168,117 @@ def test_a_partial_stop_sequence_is_released_when_the_reply_ends():
     snapshots = list(backend.generate_stream("PROMPT", max_new_tokens = 8, stop = ["STOP"]))
 
     assert snapshots == ["Hello", "Hello ST"]
+
+
+@pytest.mark.parametrize("vision", [False, True])
+def test_compact_json_stops_in_producer_before_word_flush(vision):
+    pieces = ['{"id":1}', ',{"id":2}'] * 100
+    backend, model = _backend(pieces, _Processor() if vision else _Tokenizer())
+    if vision:
+        backend.format_chat_prompt = lambda *a, **k: "PROMPT"
+        output = list(
+            backend._generate_vision_response(
+                messages = [{"role": "user", "content": "hi"}],
+                system_prompt = "",
+                image = None,
+                temperature = 0.0,
+                top_p = 1.0,
+                top_k = 0,
+                min_p = 0.0,
+                max_new_tokens = 200,
+                repetition_penalty = 1.0,
+                stop = ["}"],
+            )
+        )
+    else:
+        output = list(backend.generate_stream("PROMPT", max_new_tokens = 200, stop = ["}"]))
+    assert model.sent == [pieces[0]]
+    assert output == ['{"id":1']
+    assert backend.last_generation_stats["truncated"] is False
+
+
+@pytest.mark.parametrize(
+    "kind,raw,stop",
+    [
+        (
+            "harmony",
+            "<|channel|>analysis<|message|>Reasoning<|channel|>final<|message|>Answer",
+            "<think>",
+        ),
+        ("reasoning", "<|channel>thoughtReasoning <channel|>Answer ", "</think>"),
+    ],
+)
+def test_synthetic_reasoning_tags_do_not_match_stops(kind, raw, stop):
+    inf = pytest.importorskip("core.inference.inference")
+    torch = pytest.importorskip("torch")
+    tokenizer = _Tokenizer()
+    tokenizer.pieces = {2: raw}
+    if kind == "harmony":
+        streamer = inf.HarmonyTextStreamer(tokenizer, skip_prompt = False)
+    else:
+        streamer = inf.ReasoningTextIteratorStreamer(
+            tokenizer,
+            markers = ("<|channel>thought", "<channel|>"),
+            skip_prompt = False,
+        )
+    wrapped = inf._StopSequenceStreamer(streamer, [stop])
+    # Use the production model.generate interface on both sides of the fix.
+    producer = wrapped if hasattr(wrapped, "put") else streamer
+    producer.put(torch.tensor([2]))
+    producer.end()
+    output = []
+    while True:
+        try:
+            output.append(next(wrapped))
+        except StopIteration:
+            break
+    assert not wrapped.matched.is_set()
+    assert "Answer" in "".join(output)
+
+
+@pytest.mark.parametrize("stop", [None, [], ["missing"]])
+def test_requests_without_a_matching_stop_keep_all_text(stop):
+    backend, model = _backend(["Hello ", "world"], _Tokenizer())
+    output = list(backend.generate_stream("PROMPT", max_new_tokens = 8, stop = stop))
+    assert output[-1] == "Hello world"
+    assert model.sent == ["Hello ", "world"]
+
+
+@pytest.mark.parametrize("abort", [False, True])
+def test_stop_wrapper_finishes_reasoning_once(abort):
+    inf = pytest.importorskip("core.inference.inference")
+    torch = pytest.importorskip("torch")
+    tokenizer = _Tokenizer()
+    tokenizer.pieces = {2: "<|channel>thoughtReasoning ST"}
+    streamer = inf.ReasoningTextIteratorStreamer(
+        tokenizer,
+        markers = ("<|channel>thought", "<channel|>"),
+        skip_prompt = False,
+    )
+    wrapped = inf._StopSequenceStreamer(streamer, ["STOP"])
+    wrapped.put(torch.tensor([2]))
+    if abort:
+        wrapped.abort()
+    wrapped.end()
+    wrapped.end()
+    output = "".join(wrapped)
+    assert "Reasoning ST" in output
+    assert output.count("</think>") == (0 if abort else 1)
+
+
+def test_stop_matching_decodes_split_unicode_without_leaking_partial_bytes():
+    inf = pytest.importorskip("core.inference.inference")
+    torch = pytest.importorskip("torch")
+
+    class Tokenizer(_Tokenizer):
+        def decode(self, ids, **kwargs):
+            return "Hello �" if len(ids) == 1 else "Hello éEND"
+
+    streamer = inf.TextIteratorStreamer(Tokenizer(), skip_prompt = False)
+    wrapped = inf._StopSequenceStreamer(streamer, ["éEND"])
+    wrapped.put(torch.tensor([2]))
+    assert not wrapped.matched.is_set()
+    wrapped.put(torch.tensor([3]))
+    assert wrapped.matched.is_set()
+    wrapped.end()
+    assert "".join(wrapped) == "Hello "

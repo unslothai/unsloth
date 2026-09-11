@@ -262,32 +262,78 @@ class _StopSequenceStreamer:
         self.streamer = streamer
         self.sequences = _mlx_stop_sequences(stop)
         self.matched = threading.Event()
+        self.token_ids = []
         self.text = ""
         self.released = 0
+        self.cut = 0
         self.finished = False
+        self.next_tokens_are_prompt = bool(getattr(streamer, "skip_prompt", False))
+        self.is_harmony = isinstance(streamer, HarmonyTextStreamer)
 
     def __next__(self):
+        return next(self.streamer)
+
+    def __iter__(self):
+        return self
+
+    def put(self, value):
         if not self.sequences:
-            return next(self.streamer)
-        if self.finished:
-            raise StopIteration
-        try:
-            new_text = next(self.streamer)
-        except StopIteration:
-            self.finished = True
-            if self.matched.is_set():
-                raise
-            cut = len(self.text)
+            return self.streamer.put(value)
+        if self.finished or self.matched.is_set():
+            return
+        # Matches the supported batch-one TextIteratorStreamer protocol.
+        if len(value.shape) > 1:
+            if value.shape[0] > 1:
+                raise ValueError("TextStreamer only supports batch size 1")
+            value = value[0]
+        if self.next_tokens_are_prompt:
+            self.next_tokens_are_prompt = False
+            return
+        self.token_ids.extend(value.tolist())
+        decode_kwargs = (
+            {"skip_special_tokens": False} if self.is_harmony else self.streamer.decode_kwargs
+        )
+        self.text = self.streamer.tokenizer.decode(self.token_ids, **decode_kwargs)
+        self.cut, matched = _mlx_stop_cut(self.text, self.sequences)
+        if matched:
+            # This runs in the producer, before model.generate checks criteria.
+            self.matched.set()
+        cut = self.cut
+        if not matched and not self.is_harmony and cut:
+            # Keep the word-buffering stability guarantee for displayed text.
+            # Stop detection above must still inspect every decoded token.
+            accepted = self.text[:cut]
+            if not self.streamer._is_chinese_char(ord(accepted[-1])):
+                cut = max(accepted.rfind(" "), accepted.rfind("\n")) + 1
+        self._publish(cut)
+
+    def _publish(self, cut):
+        if cut <= self.released:
+            return
+        if self.is_harmony:
+            # Harmony consumes cumulative raw text and synthesizes tags itself.
+            self.streamer._process_incremental(self.text[:cut])
         else:
-            if self.matched.is_set():
-                return ""
-            self.text += new_text
-            cut, matched = _mlx_stop_cut(self.text, self.sequences)
-            if matched:
-                self.matched.set()
-        delta = self.text[self.released : cut]
+            # The reasoning subclass normalizes here; plain text just queues it.
+            self.streamer.on_finalized_text(self.text[self.released : cut])
         self.released = cut
-        return delta
+
+    def end(self):
+        if not self.sequences:
+            return self.streamer.end()
+        if self.finished:
+            return
+        self.finished = True
+        # A natural end releases a partial unmatched stop and unresolved bytes.
+        self._publish(self.cut if self.matched.is_set() else len(self.text))
+        # Their token caches are empty: put() above feeds raw decoded text, so
+        # end() only finishes reasoning framing and sends the queue sentinel.
+        self.streamer.end()
+
+    def abort(self):
+        abort = getattr(self.streamer, "abort", None)
+        if abort is not None:
+            abort()
 
 
 def _prompt_already_has_bos(tokenizer, prompt):
@@ -1564,6 +1610,8 @@ class InferenceBackend:
             timer = GenerationTimer()
             generation_kwargs["logits_processor"] = with_prefill_boundary_processor(_pp, timer)
             stop_streamer = _StopSequenceStreamer(streamer, stop)
+            if stop_streamer.sequences:
+                generation_kwargs["streamer"] = stop_streamer
             stopping_criteria = self._cancel_stopping_criteria(cancel_event, stop_streamer.matched)
             if stopping_criteria is not None:
                 generation_kwargs["stopping_criteria"] = stopping_criteria
@@ -1582,13 +1630,12 @@ class InferenceBackend:
                         gen_outputs["sequences"] = model.generate(**generation_kwargs)
                     except Exception as e:
                         err["msg"] = str(e)
-                        if hasattr(streamer, "abort"):
-                            streamer.abort()
+                        stop_streamer.abort()
                         logger.error(f"Vision generation error in thread: {e}")
                     finally:
                         timer.finish()
                         try:
-                            streamer.end()
+                            stop_streamer.end()
                         except Exception:
                             pass
 
@@ -2074,6 +2121,8 @@ class InferenceBackend:
             timer = GenerationTimer()
             generation_kwargs["logits_processor"] = with_prefill_boundary_processor(_pp, timer)
             stop_streamer = _StopSequenceStreamer(streamer, stop)
+            if stop_streamer.sequences:
+                generation_kwargs["streamer"] = stop_streamer
             stopping_criteria = self._cancel_stopping_criteria(cancel_event, stop_streamer.matched)
             if stopping_criteria is not None:
                 generation_kwargs["stopping_criteria"] = stopping_criteria
@@ -2090,13 +2139,12 @@ class InferenceBackend:
                         gen_outputs["sequences"] = model.generate(**generation_kwargs)
                     except Exception as e:
                         err["msg"] = str(e)
-                        if hasattr(streamer, "abort"):
-                            streamer.abort()
+                        stop_streamer.abort()
                         logger.error(f"Generation error: {e}")
                     finally:
                         timer.finish()
                         try:
-                            streamer.end()
+                            stop_streamer.end()
                         except Exception:
                             pass
 
