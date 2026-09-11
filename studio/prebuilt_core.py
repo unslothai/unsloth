@@ -32,6 +32,7 @@ import functools
 import hashlib
 import json
 import os
+import stat
 import random
 import re
 import shutil
@@ -466,6 +467,50 @@ def atomic_write_bytes(destination: Path, data: bytes) -> None:
 def atomic_replace_from_tempfile(tmp_path: Path, destination: Path) -> None:
     destination.parent.mkdir(parents = True, exist_ok = True)
     os.replace(tmp_path, destination)
+
+
+def write_live_marker(marker_path: Path, marker: dict[str, Any]) -> None:
+    """Rewrite a marker that is already in service, keeping its mode and owner.
+
+    Temp-and-replace, so a write that fails part-way leaves the valid marker it found;
+    and the mode and owner restored on the temp file BEFORE the swap, since os.replace
+    keeps the source file's, and NamedTemporaryFile's 0600 would leave a group-shared
+    install's marker readable only by whoever ran this update. Mirrors the llama
+    installer's marker writer. Raises on failure; callers decide what a failed
+    refresh costs.
+    """
+    data = (json.dumps(marker, indent = 2) + "\n").encode("utf-8")
+    try:
+        original = marker_path.stat()
+    except OSError:
+        original = None
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix = marker_path.name + ".tmp-",
+            dir = marker_path.parent,
+            delete = False,
+        ) as handle:
+            tmp_path = Path(handle.name)
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if original is not None:
+            os.chmod(tmp_path, stat.S_IMODE(original.st_mode))
+            # Best effort: a no-op for a non-root user, and the mode above is what
+            # keeps the marker readable.
+            try:
+                os.chown(tmp_path, original.st_uid, original.st_gid)
+            except (OSError, AttributeError):
+                pass
+        atomic_replace_from_tempfile(tmp_path, marker_path)
+    except BaseException:
+        if tmp_path is not None:
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+        raise
 
 
 def sha256_file(path: Path) -> str:
@@ -2159,13 +2204,10 @@ def _backfill_fingerprint_inputs(
     if metadata.get("install_fingerprint") != selection.fingerprint():
         return
     metadata["fingerprint_coverage"] = selection.coverage
-    # Over a LIVE marker, so temp-and-replace: a write that fails part-way (a full
-    # disk, an interrupted process) must leave the valid marker it found, not a
-    # truncated one the next run cannot recognise.
-    atomic_write_bytes(
-        ops.metadata_path(install_dir),
-        (json.dumps(metadata, indent = 2) + "\n").encode("utf-8"),
-    )
+    # Over a LIVE marker: temp-and-replace with its mode and owner kept, so a write
+    # that fails part-way leaves the valid marker it found and a group-shared
+    # install's marker stays readable to the other users.
+    write_live_marker(ops.metadata_path(install_dir), metadata)
 
 
 def load_prebuilt_metadata(ops: ModuleOps, install_dir: Path) -> dict[str, Any] | None:

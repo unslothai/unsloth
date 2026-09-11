@@ -6,6 +6,8 @@ import importlib.util
 import io
 import contextlib
 import json
+import stat
+import os
 import sys
 import tarfile
 import zipfile
@@ -2395,14 +2397,20 @@ def test_whisper_marker_fields_edited_under_a_kept_fingerprint_take_the_full_pat
     legacy = dict(payload)
     legacy.pop("fingerprint_coverage")
     marker_path.write_text(json.dumps(legacy), encoding = "utf-8")
+    # A group-shared install's marker: the settle must not narrow its mode.
+    if os.name != "nt":
+        os.chmod(marker_path, 0o664)
     assert _whisper_check(install_dir, host) is False
     downloads = calls["n"]
     assert M.install_prebuilt(install_dir, backend = "cpu") == M.EXIT_SUCCESS
     assert calls["n"] == downloads
     settled = json.loads(marker_path.read_text(encoding = "utf-8"))
     assert settled.get("fingerprint_coverage") == payload["fingerprint_coverage"]
-    # Written by temp-and-replace: nothing of the write is left beside the marker.
+    # Written by temp-and-replace: nothing of the write is left beside the marker,
+    # and the marker kept the mode it had.
     assert not list(install_dir.glob(M.METADATA_FILENAME + ".tmp-*"))
+    if os.name != "nt":
+        assert stat.S_IMODE(marker_path.stat().st_mode) == 0o664
     assert settled["install_fingerprint"] == payload["install_fingerprint"]
     assert _whisper_check(install_dir, host) is True
 
