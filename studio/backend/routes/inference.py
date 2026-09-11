@@ -1938,6 +1938,9 @@ def _openai_llama_admission_image_tokens(llama_backend) -> int:
     Over-reserving is the safe direction; under-reserving hands out a slot the cache
     cannot back.
     """
+    # A text-only model is sent no image embeddings.
+    if getattr(llama_backend, "is_vision", True) is False:
+        return 0
     projector = getattr(llama_backend, "_mmproj_projector_type", None)
     known = _MMPROJ_IMAGE_TOKEN_MAX.get(str(projector).strip().lower()) if projector else None
     cap = max(
@@ -1997,17 +2000,19 @@ def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict],
                     continue
 
                 part_type = part.get("type")
-                # The same filter anthropic_messages_to_openai applies, so the estimate
-                # charges what that sends. The content list is untyped, so a screenshot an
-                # agent's tool returned, a document and a future block type all arrive
-                # here, and none of them reach the wire to earn an allowance.
+                # Match the native tool-result conversion: text and image blocks reach the wire.
                 if part_type == "tool_result" and isinstance(part.get("content"), list):
                     part = dict(part)
-                    part["content"] = [
-                        block
-                        for block in part["content"]
-                        if isinstance(block, dict) and block.get("type") == "text"
-                    ]
+                    tool_content = []
+                    for block in part["content"]:
+                        if not isinstance(block, dict):
+                            continue
+                        if block.get("type") == "text":
+                            tool_content.append(block)
+                        elif block.get("type") == "image":
+                            image_parts += 1
+                            tool_content.append(_openai_llama_admission_compact_image_part(block))
+                    part["content"] = tool_content
                     estimate_content.append(part)
                     continue
 
@@ -7876,39 +7881,42 @@ def _request_has_image(payload) -> bool:
     return _messages_have_image(payload.messages)
 
 
-def _anthropic_request_has_image(payload) -> bool:
-    # Mirror anthropic_messages_to_openai: an Anthropic image block carries
-    # ``type == "image"`` (typed AnthropicImageBlock or a raw dict).
-    for msg in getattr(payload, "messages", None) or []:
-        content = getattr(msg, "content", None)
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            bt = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
-            if bt == "image":
-                return True
-    return False
-
-
-def _anthropic_local_image_payloads(payload) -> list[str]:
-    """Base64 image sources translated by the Anthropic endpoint."""
-    encoded_images = []
+def _anthropic_image_blocks(payload, *, tool_results: bool = True):
     for msg in getattr(payload, "messages", None) or ():
         content = msg.get("content") if isinstance(msg, dict) else msg.content
         if not isinstance(content, list):
             continue
         for block in content:
-            block_type = block.get("type") if isinstance(block, dict) else block.type
-            if block_type != "image":
-                continue
-            source = block.get("source") if isinstance(block, dict) else block.source
-            source_type = source.get("type") if isinstance(source, dict) else source.type
-            data = source.get("data") if isinstance(source, dict) else source.data
-            if source_type == "base64" and isinstance(data, str):
-                encoded_images.append(data)
-            url = source.get("url") if isinstance(source, dict) else source.url
-            if source_type == "url" and isinstance(url, str) and url.startswith("data:"):
-                encoded_images.append(url.partition(",")[2])
+            block = block if isinstance(block, dict) else block.model_dump()
+            if block.get("type") == "image":
+                yield block
+            elif (
+                tool_results
+                and block.get("type") == "tool_result"
+                and isinstance(block.get("content"), list)
+            ):
+                for part in block["content"]:
+                    if isinstance(part, dict) and part.get("type") == "image":
+                        yield part
+
+
+def _anthropic_request_has_image(payload, *, tool_results: bool = True) -> bool:
+    return next(_anthropic_image_blocks(payload, tool_results = tool_results), None) is not None
+
+
+def _anthropic_local_image_payloads(payload) -> list[str]:
+    encoded_images = []
+    for block in _anthropic_image_blocks(payload):
+        source = block.get("source")
+        if not isinstance(source, dict):
+            continue
+        source_type = source.get("type")
+        data = source.get("data")
+        if source_type == "base64" and isinstance(data, str):
+            encoded_images.append(data)
+        url = source.get("url")
+        if source_type == "url" and isinstance(url, str) and url.startswith("data:"):
+            encoded_images.append(url.partition(",")[2])
     return encoded_images
 
 
@@ -29800,6 +29808,17 @@ async def openai_responses(
     internally, and returns a response matching the Responses API schema
     (output array, input_tokens/output_tokens, named SSE events for streaming).
     """
+    for history_param in ("previous_response_id", "conversation"):
+        if getattr(payload, history_param, None) is not None:
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    f"'{history_param}' is not supported. Send the full conversation history in 'input'.",
+                    status = 400,
+                    code = "unsupported_parameter",
+                    param = history_param,
+                ),
+            )
     messages = _normalise_responses_input(payload)
     if not messages:
         raise HTTPException(status_code = 400, detail = "No input provided.")
@@ -30685,7 +30704,7 @@ async def anthropic_count_tokens(
         _switch_model_for_payload(payload),
         request,
         current_subject,
-        require_vision = _anthropic_request_has_image(payload),
+        require_vision = _anthropic_request_has_image(payload, tool_results = False),
         # count_tokens only tokenizes (no generation), so it must not adopt the resident
         # model; the middleware likewise excludes count_tokens from its claim.
         claim_resident = False,
@@ -30708,6 +30727,7 @@ async def anthropic_count_tokens(
         [m.model_dump() for m in payload.messages],
         payload.system,
         preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
+        tool_result_images = llama_backend.is_vision,
     )
     # Apply the same sanitization /messages does before generation, so the count
     # matches the prompt the real request would build (otherwise empty-assistant
@@ -30726,7 +30746,7 @@ async def anthropic_count_tokens(
     _count_server_tools = (
         _anthropic_selects_server_tools(payload, _count_studio_tools, _count_has_client_tool)
         and llama_backend.supports_tools
-        and not _anthropic_request_has_image(payload)
+        and not _anthropic_request_has_image(payload, tool_results = llama_backend.is_vision)
     )
     _count_openai_client_tools = [
         tool
@@ -30776,7 +30796,16 @@ async def anthropic_count_tokens(
             status_code = 503,
             detail = "Unable to count tokens with the loaded model tokenizer.",
         )
-    return JSONResponse(content = {"input_tokens": int(count)})
+    # /apply-template renders an image as a marker, not its projector embeddings, so charge
+    # the same per-image allowance admission reserves.
+    image_parts = sum(
+        isinstance(part, dict) and part.get("type") == "image_url"
+        for message in openai_messages
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+    )
+    image_tokens = image_parts * _openai_llama_admission_image_tokens(llama_backend)
+    return JSONResponse(content = {"input_tokens": int(count) + image_tokens})
 
 
 def _set_or_prepend_system_message(
@@ -30838,6 +30867,9 @@ async def anthropic_messages(
     _validate_anthropic_client_tools(payload.tools)
 
     _anthropic_has_image = _anthropic_request_has_image(payload)
+    # Tool-result images become a note on a text-only model, so until the backend is known
+    # only top-level images require vision or rule out server tools.
+    _anthropic_top_level_image = _anthropic_request_has_image(payload, tool_results = False)
     _anthropic_image_b64s = _anthropic_local_image_payloads(payload)
 
     # Mixing Anthropic server tools with custom client tools is unsupported (the
@@ -30883,7 +30915,7 @@ async def anthropic_messages(
     _selects_server_tools = _anthropic_selects_server_tools(
         payload, requested_studio_tools, _has_client_tool
     )
-    _server_tools_requested_pre = _selects_server_tools and not _anthropic_has_image
+    _server_tools_requested_pre = _selects_server_tools and not _anthropic_top_level_image
     if _server_tools_requested_pre:
         from core.inference.tools import ALL_TOOLS as _ALL_TOOLS_PRE
 
@@ -30923,7 +30955,7 @@ async def anthropic_messages(
         _switch_model_for_payload(payload),
         request,
         current_subject,
-        require_vision = _anthropic_has_image,
+        require_vision = _anthropic_top_level_image,
         # The image normalization below can still 400 after this switch, so defer the claim:
         # the middleware claims on a 2xx, so a rejected request never strands a preview-owned
         # model.
@@ -30958,6 +30990,7 @@ async def anthropic_messages(
         [m.model_dump() for m in payload.messages],
         payload.system,
         preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
+        tool_result_images = llama_backend.is_vision,
     )
     # Strip synthetic provider-side builtin tool history (web_search,
     # web_fetch, code_execution, image_generation cards tagged with

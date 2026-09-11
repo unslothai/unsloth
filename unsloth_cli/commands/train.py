@@ -124,7 +124,9 @@ def train(
         model_name = cfg.model,
         max_seq_length = cfg.training.max_seq_length,
         load_in_4bit = cfg.training.load_in_4bit if use_lora else False,
+        full_finetuning = not use_lora,
         hf_token = hf_token,
+        use_gradient_checkpointing = cfg.training.gradient_checkpointing,
     ):
         typer.echo("Model load failed", err = True)
         raise typer.Exit(code = 1)

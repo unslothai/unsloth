@@ -5384,6 +5384,101 @@ def save_to_gguf_generic(
     return metadata
 
 
+def _push_merged_to_hub_revision(save_kwargs):
+    import tempfile
+    from huggingface_hub import CommitOperationAdd, ModelCard, hf_hub_download
+    from huggingface_hub.errors import EntryNotFoundError, HfHubHTTPError, LocalEntryNotFoundError
+    from unsloth_zoo.saving_utils import get_original_model_id
+
+    if not save_kwargs["is_main_process"]:
+        return
+    token = save_kwargs["token"]
+    if token is None:
+        token = get_token()
+    repo_id, username = _determine_username(save_kwargs["save_directory"], None, token)
+    api = HfApi(token = token)
+    api.create_repo(
+        repo_id = repo_id,
+        repo_type = "model",
+        private = save_kwargs["private"],
+        exist_ok = True,
+    )
+    revision = save_kwargs["revision"]
+    if revision is not None and not revision.startswith("refs/pr/"):
+        try:
+            api.create_branch(repo_id = repo_id, repo_type = "model", branch = revision, exist_ok = True)
+        except HfHubHTTPError as error:
+            # PR contributions do not require branch-write permission.
+            if not save_kwargs["create_pr"] or error.response.status_code != 403:
+                raise
+    with tempfile.TemporaryDirectory(prefix = "unsloth-merged-") as directory:
+        unsloth_generic_save(
+            **{**save_kwargs, "save_directory": directory, "push_to_hub": False, "token": token}
+        )
+        card_path = Path(directory) / "README.md"
+        try:
+            remote_card_path = hf_hub_download(
+                repo_id = repo_id,
+                filename = "README.md",
+                repo_type = "model",
+                revision = revision,
+                token = token,
+            )
+            card = ModelCard.load(remote_card_path)
+        except LocalEntryNotFoundError:
+            raise
+        except EntryNotFoundError:
+            card = ModelCard.load(card_path) if card_path.is_file() else None
+        model = save_kwargs["model"]
+        if card is None or isinstance(model, PeftModel):
+            base_model = model.config._name_or_path
+            if os.path.isdir(base_model):
+                original_model_id = get_original_model_id(base_model)
+                base_model = (
+                    original_model_id
+                    if original_model_id is not None and not os.path.exists(original_model_id)
+                    else repo_id
+                )
+        if card is None:
+            card = ModelCard(
+                MODEL_CARD.format(
+                    username = username,
+                    base_model = base_model,
+                    model_type = model.config.model_type,
+                    method = "",
+                    extra = "unsloth",
+                )
+            )
+        if isinstance(model, PeftModel):
+            card.data.base_model = base_model
+        if save_kwargs["datasets"]:
+            card.data.datasets = save_kwargs["datasets"]
+        card.data.tags = list(
+            dict.fromkeys([*(card.data.tags or []), *(save_kwargs["tags"] or []), "unsloth"])
+        )
+        card.save(card_path)
+        return api.create_commit(
+            repo_id = repo_id,
+            repo_type = "model",
+            operations = [
+                CommitOperationAdd(
+                    path_in_repo = path.relative_to(directory).as_posix(), path_or_fileobj = path
+                )
+                for path in sorted(Path(directory).rglob("*"))
+                if path.is_file()
+                and not {".cache", ".git"}.intersection(path.relative_to(directory).parts)
+            ],
+            revision = save_kwargs["revision"],
+            create_pr = save_kwargs["create_pr"],
+            commit_message = (
+                save_kwargs["commit_message"]
+                if save_kwargs["commit_message"] is not None
+                else "Trained with Unsloth"
+            ),
+            commit_description = save_kwargs["commit_description"],
+        )
+
+
 @_normalize_tied_weights_keys_for_save
 @torch.inference_mode
 def unsloth_generic_save(
@@ -5411,12 +5506,6 @@ def unsloth_generic_save(
     maximum_memory_usage: float = 0.9,
     datasets: Optional[List[str]] = None,
 ):
-    if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
-        tokenizer = patch_saving_functions(tokenizer)
-
-    if token is None and push_to_hub:
-        token = get_token()
-
     if save_method == "merged_4bit":
         raise RuntimeError(
             "Unsloth: Merging into 4bit will cause your model to lose accuracy if you plan\n"
@@ -5424,7 +5513,17 @@ def unsloth_generic_save(
             "if you're planning to do multiple saves.\n"
             "If you are certain, change `save_method` to `merged_4bit_forced`."
         )
-    elif save_method == "merged_4bit_forced":
+
+    if push_to_hub and (create_pr or revision is not None):
+        return _push_merged_to_hub_revision(dict(locals()))
+
+    if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
+        tokenizer = patch_saving_functions(tokenizer)
+
+    if token is None and push_to_hub:
+        token = get_token()
+
+    if save_method == "merged_4bit_forced":
         save_method = "merged_4bit"
 
     # Full-finetuned models have no adapters to merge, so fall back to save_pretrained, mirroring the torchao and GGUF save paths.
