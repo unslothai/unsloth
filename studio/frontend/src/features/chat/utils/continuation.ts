@@ -841,12 +841,29 @@ export type AutoContinueRunSignal = {
   subscribe(onChange: () => void): () => void;
 };
 
+/**
+ * The run a hold was taken for, and the one thing that knows when it is over: its own promise.
+ *
+ * `AutoContinueRunSignal` answers off the STREAM, so it is silent for a preflight the user
+ * STOPPED: the abort raises no failure, on purpose, and the flag never moved in either
+ * direction. `startRun` hands back a promise that settles when THAT run ends however it ends,
+ * and is pending for the whole preflight, so a run that is merely slow settles nothing.
+ *
+ * It must be the run's OWN promise. The next round is claimed while the previous one is still
+ * winding down, and a thread-wide notice cannot say which of the two ended: the predecessor's
+ * would settle the successor's hold mid-preflight and lapse the lease under a live run.
+ */
+export type AutoContinueIssuedRun = {
+  whenSettled(onSettled: () => void): void;
+};
+
 /** Holds the lease of each continuation this tab is running, for as long as its own run runs. A
  *  hold is (message, thread) and arms when THAT thread starts generating; a hold taken while
  *  the thread is busy waits to see it idle first, or it would arm on its predecessor's run. A
  *  hold whose run has not appeared yet is renewed, never timed out: the preflight has no bound
  *  (settings pairing, then waiting while a large local GGUF loads), and a fixed arming timeout
- *  dropped the hold under a run that had since started streaming. */
+ *  dropped the hold under a run that had since started streaming. An unarmed hold is discarded
+ *  when its own run settles or preflight fails; a pending run keeps its renewals. */
 export function createAutoContinueLeaseKeeper({
   signal,
   renew = (messageId, holder, now) => tab.renew(messageId, holder, { now }),
@@ -859,6 +876,11 @@ export function createAutoContinueLeaseKeeper({
   now?: () => number;
 }): {
   hold: (messageId: string, threadId: string) => void;
+  settleOn: (
+    messageId: string,
+    threadId: string,
+    issued: AutoContinueIssuedRun | undefined,
+  ) => void;
   observe: () => void;
   failed: (threadId: string) => void;
   tick: () => void;
@@ -870,8 +892,13 @@ export function createAutoContinueLeaseKeeper({
     threadId: string;
     /** Seen idle since the hold was taken, so the next run to start is this hold's own. */
     idle: boolean;
+    /** The key was free when the hold was taken, so a true reading of it is this hold's own
+     *  run and never somebody else's. Never reassigned, unlike `idle`. */
+    ownsTheKey: boolean;
     /** That run has started. Only an armed hold is ever released. */
     armed: boolean;
+    /** That run has ended, per its own promise. Nothing running after it is that run. */
+    settled: boolean;
   };
   const holds = new Map<string, Hold>();
   let unsubscribe: (() => void) | null = null;
@@ -883,6 +910,29 @@ export function createAutoContinueLeaseKeeper({
   function observe(): void {
     const at = now();
     for (const [id, hold] of [...holds]) {
+      if (hold.settled && !hold.armed && hold.ownsTheKey) {
+        // Its own run is over and the stream never began: Stop during preflight. Discarded as
+        // a failed preflight is, so the lease lapses on its own TTL and no `done` marker
+        // claims a message that produced not one token.
+        //
+        // Ahead of the running check so nothing on the thread now can arm it, and only for an
+        // UNARMED hold: the key can carry a second owner, which says nothing about whether
+        // this hold's own run streamed. Dropping an armed hold there costs a continuation
+        // that did stream its marker, and the next tab pays for it again.
+        //
+        // `ownsTheKey` is the other half of that. Unarmed means "never streamed" only if a
+        // true reading of the key would have belonged to this hold; when the key was ALREADY
+        // busy as the hold was taken, arming cannot happen at all, so a continuation that
+        // streamed the whole way through looks identical to one that was stopped. The bar
+        // reaches that state on its own: its `!isRunning` gate reads the selected branch,
+        // not `runningByThreadId`, so it fires while `scheduleGenerationRecovery` follows a
+        // durable run on the same key, and a continuation keeps the legacy stream rather than
+        // joining that run. Undecidable, so it is left alone and renewed, exactly as before
+        // this signal existed. Never guessed: a wrong `done` here is a continuation charged
+        // for twice.
+        holds.delete(id);
+        continue;
+      }
       if (signal.isRunning(hold.threadId)) {
         // Only a run that started after this hold was taken can be its own.
         hold.armed ||= hold.idle;
@@ -895,7 +945,7 @@ export function createAutoContinueLeaseKeeper({
         release(hold.messageId, hold.threadId, at);
         continue;
       }
-      // Not armed yet, so its run is still in preflight, which has no upper bound. Kept and renewed
+      // Not armed and not settled, so its run is still in preflight, which has no upper bound. Kept and renewed
       // rather than timed out: dropping it stopped the renewals while the run was on its way, and
       // the lease then lapsed under a live continuation.
     }
@@ -918,12 +968,36 @@ export function createAutoContinueLeaseKeeper({
         threadId,
         // Claimed while the thread is between runs, the ordinary case: the bar only fires on a reply that has finished.
         idle: !signal.isRunning(threadId),
+        ownsTheKey: !signal.isRunning(threadId),
         armed: false,
+        settled: false,
       });
       unsubscribe ??= signal.subscribe(observe);
     },
+    /**
+     * Tie an existing hold to the run that was just issued for it.
+     *
+     * Separate from `hold` because the hold is taken on the line BEFORE the run starts: the
+     * bar unmounts as soon as the continuation's sibling becomes the selected branch, so the
+     * promise does not exist yet when the hold does.
+     */
+    settleOn(messageId, threadId, issued) {
+      if (!issued || !messageId || !threadId) {
+        return;
+      }
+      const hold = holds.get(key(messageId, threadId));
+      if (!hold) {
+        return;
+      }
+      issued.whenSettled(() => {
+        // The captured hold, never a fresh lookup: the same key is claimed again as soon as
+        // the next round hits Max Tokens, and this run must not settle that round's preflight.
+        hold.settled = true;
+        observe();
+      });
+    },
     observe,
-    /** `threadId`'s run failed on its way out, before it ever reached the run signal. The one thing
+    /** `threadId`'s run failed on its way out, before it ever reached the run signal. A signal
      *  that can end a hold which never armed, and a fact rather than a deadline: the adapter
      *  threw, so the run is over. Armed holds are left alone, since the thread going idle settles
      *  them with the `done` marker. This one only discards, so the lease lapses on its own TTL. */
