@@ -3816,15 +3816,22 @@ class TestEverySelectedBackendMustBeClassifiable:
     unclassifiable SYCL one. Returning whichever kind was found first confirmed a set
     that still had weights on an integrated GPU."""
 
-    def _confirm(self, monkeypatch, devices, discrete = True):
+    def _confirm(
+        self,
+        monkeypatch,
+        devices,
+        discrete = True,
+    ):
         from core.inference.llama_cpp import LlamaCppBackend
 
         monkeypatch.setattr(
-            LlamaCppBackend, "_enumerated_gpu_devices",
+            LlamaCppBackend,
+            "_enumerated_gpu_devices",
             classmethod(lambda cls, binary = None, env = None: devices),
         )
         monkeypatch.setattr(
-            LlamaCppBackend, "_vulkan_offload_is_discrete",
+            LlamaCppBackend,
+            "_vulkan_offload_is_discrete",
             staticmethod(lambda binary, idx = None: discrete),
         )
         return LlamaCppBackend._gpu_offload_confirmed("llama-server", {}, None, False, True)
@@ -3861,7 +3868,9 @@ class TestTheDeviceMemoFollowsVisibility:
         try:
             assert m.LlamaCppBackend._enumerated_gpu_devices("b", {}) is None
             # the gate masks the bad adapter; the narrowed child is a new question
-            assert m.LlamaCppBackend._enumerated_gpu_devices("b", {"ROCR_VISIBLE_DEVICES": "1"}) == ["CUDA0"]
+            assert m.LlamaCppBackend._enumerated_gpu_devices(
+                "b", {"ROCR_VISIBLE_DEVICES": "1"}
+            ) == ["CUDA0"]
             assert len(calls) == 2
         finally:
             m._LOAD_PROBE_STATE.armed = False
@@ -3872,7 +3881,8 @@ class TestTheDeviceMemoFollowsVisibility:
 
         calls = []
         monkeypatch.setattr(
-            m.LlamaCppBackend, "_run_list_devices",
+            m.LlamaCppBackend,
+            "_run_list_devices",
             staticmethod(lambda binary, env = None: calls.append(1) or ["CUDA0"]),
         )
         m._arm_load_probe_memo()
@@ -3886,6 +3896,10 @@ class TestTheDeviceMemoFollowsVisibility:
 
     def test_the_key_covers_the_masks_that_matter(self):
         from core.inference.llama_cpp import _DEVICE_VISIBILITY_ENV
-
-        assert {"CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES",
-                "GGML_VK_VISIBLE_DEVICES", "GGML_BACKEND_PATH"} <= set(_DEVICE_VISIBILITY_ENV)
+        assert {
+            "CUDA_VISIBLE_DEVICES",
+            "HIP_VISIBLE_DEVICES",
+            "ROCR_VISIBLE_DEVICES",
+            "GGML_VK_VISIBLE_DEVICES",
+            "GGML_BACKEND_PATH",
+        } <= set(_DEVICE_VISIBILITY_ENV)
