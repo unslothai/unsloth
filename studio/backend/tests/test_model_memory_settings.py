@@ -2870,7 +2870,10 @@ class TestEveryDeviceSetChangeReAsks:
         flat = "".join(arm.split())
         assert "host_resident=self._weights_in_host_memory(" in flat
         # host residency is carried INTO the confirmation, which declines on it
-        assert "self._gpu_offload_confirmed(binary,_mem_env,devices,host_resident,_mem_dio_possible)" in flat
+        assert (
+            "self._gpu_offload_confirmed(binary,_mem_env,devices,host_resident,_mem_dio_possible)"
+            in flat
+        )
         assert "fully_gpu_offloaded=fully_offloaded," in flat
 
     def test_the_decision_answers_all_three_questions(self):
@@ -2939,6 +2942,7 @@ class TestTheVulkanProbeMemoIsScopedToThePlacement:
             m.LlamaCppBackend._run_vulkan_probe("llama-server")
         assert len(calls) == 3
 
+
 class TestTheBackendPathIsEvidenceOnlyWhenItHoldsAPlugin:
     """_binary_ships_no_gpu_backend answering False means "I cannot say it ships
     none", not "it ships one": it returns False for a static layout, an unreadable
@@ -2953,6 +2957,7 @@ class TestTheBackendPathIsEvidenceOnlyWhenItHoldsAPlugin:
             "_binary_ships_no_gpu_backend",
             staticmethod(lambda binary = None, env = None: False),
         )
+
 
 class TestTheSnapshotCarriesTheDioTokens:
     def test_the_flags_round_trip_with_the_base_command(self):
@@ -3091,6 +3096,7 @@ class TestAllThreeCudaFamiliesAreRequired:
         libs.mkdir()
         return libs
 
+
 class TestARetryKeepsThePlacementWindowOpen:
     """The marker is dropped after Popen because is_active covers it, but a crashed
     child is not active either, and the retry rungs redo the placement work and
@@ -3186,6 +3192,7 @@ class TestNoNestedHelperIsUsedBeforeItsDef:
                     f"{defined_at[node.func.id]}"
                 )
         assert not offenders, "UnboundLocalError at runtime: " + "; ".join(offenders)
+
 
 class TestThePendingWindowHasNoGaps:
     """Three ways the window closed early, each found in turn: the publish order,
@@ -3359,6 +3366,7 @@ class TestOnlyALoadablePluginCountsAsAGpuBackend:
         for name in self.NOT_LOADABLE:
             assert not _GGML_GPU_BACKEND_RE.match(name), name
 
+
 class TestRecoveryRungsReadTheLaunchSnapshot:
     """Every rung of one launch has to decide from the pair that launch captured. The
     fit-on and architecture-crash recoveries called live `should_mlock()` and passed no
@@ -3416,7 +3424,6 @@ class TestAnyInstalledGpuPluginMustBeLoadable:
         return [str(libs)]
 
 
-
 # Real `llama-server --list-devices` output, captured from installed builds rather
 # than invented: a CUDA build with two cards, and the two ways a build with nothing
 # to offer prints it. The noise above the header is what ggml_cuda_init writes.
@@ -3429,7 +3436,9 @@ Available devices:
 """
 _LIST_DEVICES_NONE = "Available devices:\n  (none)\n"
 _LIST_DEVICES_BARE = "Available devices:\n"
-_LIST_DEVICES_VULKAN = "Available devices:\n  Vulkan0: AMD Radeon 8060S (16384 MiB, 15000 MiB free)\n"
+_LIST_DEVICES_VULKAN = (
+    "Available devices:\n  Vulkan0: AMD Radeon 8060S (16384 MiB, 15000 MiB free)\n"
+)
 
 
 class TestTheBuildsOwnDeviceListIsTheEvidence:
@@ -3443,13 +3452,11 @@ class TestTheBuildsOwnDeviceListIsTheEvidence:
 
     def test_it_parses_a_real_gpu_listing(self):
         from core.inference.llama_cpp import _parse_listed_devices
-
         assert _parse_listed_devices(_LIST_DEVICES_GPU) == ["CUDA0", "CUDA1"]
 
     def test_the_init_noise_above_the_header_is_not_a_device(self):
         """`  Device 0: ...` is indented and has a colon, so only the header keeps it out."""
         from core.inference.llama_cpp import _parse_listed_devices
-
         assert "Device" not in "".join(_parse_listed_devices(_LIST_DEVICES_GPU))
 
     @pytest.mark.parametrize("text", [_LIST_DEVICES_NONE, _LIST_DEVICES_BARE])
@@ -3457,7 +3464,6 @@ class TestTheBuildsOwnDeviceListIsTheEvidence:
         """Different builds print `(none)` or nothing at all. Both mean zero devices,
         which is a real answer and must not collapse into "could not tell"."""
         from core.inference.llama_cpp import _parse_listed_devices
-
         assert _parse_listed_devices(text) == []
 
     @pytest.mark.parametrize(
@@ -3466,21 +3472,29 @@ class TestTheBuildsOwnDeviceListIsTheEvidence:
     def test_no_header_is_no_answer(self, text):
         """An older build that rejects the flag is not evidence of having no devices."""
         from core.inference.llama_cpp import _parse_listed_devices
-
         assert _parse_listed_devices(text) is None
 
 
 class TestOnlyEnumeratedDevicesConfirmAnOffload:
-    def _confirm(self, monkeypatch, devices, gpu_indices = None, host_resident = False,
-                 discrete = True, dio_possible = True):
+    def _confirm(
+        self,
+        monkeypatch,
+        devices,
+        gpu_indices = None,
+        host_resident = False,
+        discrete = True,
+        dio_possible = True,
+    ):
         from core.inference.llama_cpp import LlamaCppBackend
 
         monkeypatch.setattr(
-            LlamaCppBackend, "_enumerated_gpu_devices",
+            LlamaCppBackend,
+            "_enumerated_gpu_devices",
             classmethod(lambda cls, binary = None, env = None: devices),
         )
         monkeypatch.setattr(
-            LlamaCppBackend, "_vulkan_offload_is_discrete",
+            LlamaCppBackend,
+            "_vulkan_offload_is_discrete",
             staticmethod(lambda binary, idx = None: discrete),
         )
         return LlamaCppBackend._gpu_offload_confirmed(
@@ -3506,15 +3520,17 @@ class TestOnlyEnumeratedDevicesConfirmAnOffload:
         subprocess is not worth spawning."""
         from core.inference.llama_cpp import LlamaCppBackend
 
-        def _boom(cls, binary = None, env = None):
+        def _boom(
+            cls,
+            binary = None,
+            env = None,
+        ):
             raise AssertionError("probed when the answer cannot matter")
 
-        monkeypatch.setattr(
-            LlamaCppBackend, "_enumerated_gpu_devices", classmethod(_boom)
+        monkeypatch.setattr(LlamaCppBackend, "_enumerated_gpu_devices", classmethod(_boom))
+        assert (
+            LlamaCppBackend._gpu_offload_confirmed("llama-server", {}, None, False, False) is False
         )
-        assert LlamaCppBackend._gpu_offload_confirmed(
-            "llama-server", {}, None, False, False
-        ) is False
 
     def test_a_cpu_only_listing_is_not_an_offload_target(self, monkeypatch):
         assert self._confirm(monkeypatch, ["CPU"]) is False
@@ -3551,7 +3567,8 @@ class TestTheDeviceListIsProbedOncePerLoad:
 
         calls = []
         monkeypatch.setattr(
-            m.LlamaCppBackend, "_run_list_devices",
+            m.LlamaCppBackend,
+            "_run_list_devices",
             staticmethod(lambda binary, env = None: calls.append(binary) or ["CUDA0"]),
         )
         m._arm_load_probe_memo()
@@ -3569,7 +3586,8 @@ class TestTheDeviceListIsProbedOncePerLoad:
 
         calls = []
         monkeypatch.setattr(
-            m.LlamaCppBackend, "_run_list_devices",
+            m.LlamaCppBackend,
+            "_run_list_devices",
             staticmethod(lambda binary, env = None: calls.append(binary) or None),
         )
         m._arm_load_probe_memo()
@@ -3600,7 +3618,8 @@ class TestTheDeviceListIsProbedOncePerLoad:
 
         calls = []
         monkeypatch.setattr(
-            m.LlamaCppBackend, "_run_list_devices",
+            m.LlamaCppBackend,
+            "_run_list_devices",
             staticmethod(lambda binary, env = None: calls.append(binary) or ["CUDA0"]),
         )
         m._LOAD_PROBE_STATE.armed = False

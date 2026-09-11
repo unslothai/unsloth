@@ -8673,7 +8673,9 @@ class LlamaCppBackend:
 
     @classmethod
     def _enumerated_gpu_devices(
-        cls, binary: Optional[str] = None, env: Optional[Mapping[str, str]] = None
+        cls,
+        binary: Optional[str] = None,
+        env: Optional[Mapping[str, str]] = None,
     ) -> Optional[list[str]]:
         """The ggml device ids ``llama-server --list-devices`` reports, or None when
         the probe had no usable answer.
@@ -12781,7 +12783,6 @@ class LlamaCppBackend:
                     _add(sub)
         _add(site_packages / "torch" / "lib")
         return out
-
 
     @classmethod
     def _warn_missing_windows_cuda_runtime(cls, binary_dir: str, path_dirs: list[str]) -> None:
