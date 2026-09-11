@@ -970,6 +970,79 @@ def test_a_standalone_interpreter_in_the_workdir_is_re_bound_read_only(tmp_path,
         launch.cleanup()
 
 
+def test_an_interpreter_in_a_home_directory_does_not_bind_the_home(tmp_path, monkeypatch):
+    """The candidate was \`dirname(realpath(sys.executable))\`, so a standalone
+    build sitting directly in a user or project directory read-bound that whole
+    directory into a jail whose one claim is that the home is not readable. Every
+    layout that needs the siblings keeps them: venv, conda and uv all put the
+    interpreter in <prefix>/bin, which the prefix loop binds anyway."""
+    home = tmp_path / "alice"
+    (home / ".ssh").mkdir(parents = True)
+    (home / ".ssh" / "id_rsa").write_text("SECRET", encoding = "utf-8")
+    executable = home / "python"
+    executable.write_bytes(b"#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+    monkeypatch.setattr(sys, "executable", str(executable))
+
+    paths = sandbox_linux._runtime_read_paths(str(tmp_path / "session"), ("/usr/lib",))
+    assert str(home) not in paths, paths
+    assert not any(_within_for_test(p, str(home / ".ssh")) for p in paths), paths
+    # The interpreter itself is still reachable, or nothing runs in there.
+    assert str(executable) in paths, paths
+
+
+def _within_for_test(path: str, root: str) -> bool:
+    return path == root or path.startswith(root.rstrip("/") + "/")
+
+
+def test_a_runtime_origin_is_excluded_under_the_workdir_alias_too(tmp_path, monkeypatch):
+    """A venv reached through a symlinked workdir keeps the ALIAS in sys.prefix,
+    which is not lexically beneath the canonical root, so the as-written
+    exclusion missed it and the loop bound whatever it resolved to. With
+    <alias>/venv/lib symlinked at a secret directory that is the secret getting
+    read-bound into the jail, which is the one case the exclusion exists for."""
+    real = tmp_path / "real"
+    real.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real)
+    secret = tmp_path / "secrets"
+    secret.mkdir()
+    (secret / "id_rsa").write_text("SECRET", encoding = "utf-8")
+    venv = real / "venv"
+    (venv / "bin").mkdir(parents = True)
+    (venv / "lib").symlink_to(secret)
+    for attribute in ("prefix", "base_prefix", "exec_prefix", "base_exec_prefix"):
+        monkeypatch.setattr(sys, attribute, str(alias / "venv"))
+
+    paths = sandbox_linux._runtime_read_paths(os.path.realpath(real), ("/usr/lib",), str(alias))
+    assert not any(os.path.realpath(p) == str(secret) for p in paths), paths
+    # And through prepare(), which is what passes the second spelling.
+    launch = sandbox_linux.prepare(_plan(alias))
+    try:
+        argv = list(launch.argv)
+        bound = [
+            argv[i + 1] for i, item in enumerate(argv) if item in ("--ro-bind", "--ro-bind-try")
+        ]
+        assert not any(os.path.realpath(p) == str(secret) for p in bound), bound
+    finally:
+        launch.cleanup()
+
+
+def test_an_editable_source_inside_the_workdir_is_re_bound_read_only(tmp_path, monkeypatch):
+    """_runtime_read_paths drops it, correctly, so it is not bound by name. But
+    dropping alone leaves it under the recursive WRITABLE workdir bind, and it is
+    code Studio itself imports, so a tool call could rewrite what a later host
+    process runs. Same rule the interpreter and the prefix subdirectories get."""
+    workdir = tmp_path / "session"
+    package = workdir / "mypkg"
+    package.mkdir(parents = True)
+    (package / "__init__.py").write_text("", encoding = "utf-8")
+    monkeypatch.setattr(sandbox_linux, "editable_source_roots", lambda: (str(package),))
+
+    assert str(package) in sandbox_linux._runtime_paths_under(str(workdir))
+    assert str(package) not in sandbox_linux._runtime_read_paths(str(workdir), ("/usr/lib",))
+
+
 def test_a_runtime_prefix_contributes_its_certificate_store(tmp_path, monkeypatch):
     prefix = tmp_path / "conda"
     for name in ("bin", "ssl", "lib"):

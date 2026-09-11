@@ -22,7 +22,11 @@ if sys.platform == "win32":
     pytest.skip("the Seatbelt profile generator is POSIX only", allow_module_level = True)
 
 from core.inference import sandbox_macos as backend
-from core.inference.os_sandbox import SandboxUnavailableError, ToolLaunchPlan
+from core.inference.os_sandbox import (
+    SandboxUnavailableError,
+    ToolLaunchPlan,
+    WorkdirUnsafeError,
+)
 
 _WORKDIR = "/tmp/unsloth-session-abc123"
 _PRIVATE_TMP = "/tmp/us-seatbelt-xyz789"
@@ -745,6 +749,48 @@ def test_a_standalone_interpreter_in_the_workdir_is_denied_writes(tmp_path, monk
     )
     deny = _rule(profile, "(deny file-write* ")
     assert f'(literal "{executable}")' in deny, deny
+
+
+def test_a_workdir_this_backend_cannot_name_fails_the_call_rather_than_de_isolating_it(
+    tmp_path, launchable
+):
+    """_validated refuses a path the profile cannot carry, but it raised the BASE
+    SandboxUnavailableError, which is what `auto` answers by running with
+    software safeguards. So a workdir carrying bytes surrogateescape cannot
+    encode bought itself an unisolated launch: the silent loss the refusal was
+    added to prevent. WorkdirUnsafeError is the type tools.py re-raises."""
+    with pytest.raises(WorkdirUnsafeError):
+        backend.prepare(
+            ToolLaunchPlan(argv = ("/usr/bin/true",), workdir = "/tmp/session-\udcff", env = {})
+        )
+
+
+def test_an_interpreter_in_a_home_directory_does_not_grant_the_home(tmp_path, monkeypatch):
+    """The Linux twin's case. The candidate was the executable's PARENT, so a
+    standalone build sitting directly in a user directory turned into a recursive
+    subpath allowance over that whole directory in a profile whose one claim is
+    that $HOME is unreadable."""
+    home = tmp_path / "alice"
+    (home / ".ssh").mkdir(parents = True)
+    executable = home / "python"
+    executable.write_bytes(b"#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+    monkeypatch.setattr(sys, "executable", str(executable))
+    paths = backend.runtime_read_paths(str(tmp_path / "session"))
+    assert str(home) not in paths, paths
+    assert str(executable) in paths, paths
+
+
+def test_an_editable_source_inside_the_workdir_is_denied_writes(tmp_path, monkeypatch):
+    """The Linux twin's case. runtime_read_paths drops it so it is not granted by
+    name, but the workdir-wide file-write* then leaves code Studio itself imports
+    writable by a tool call."""
+    workdir = tmp_path / "session"
+    package = workdir / "mypkg"
+    package.mkdir(parents = True)
+    (package / "__init__.py").write_text("", encoding = "utf-8")
+    monkeypatch.setattr(backend, "editable_source_roots", lambda: (str(package),))
+    assert str(package) in backend.runtime_paths_under(str(workdir))
 
 
 def test_a_runtime_is_denied_when_sys_prefix_carries_the_workdir_alias(tmp_path, monkeypatch):

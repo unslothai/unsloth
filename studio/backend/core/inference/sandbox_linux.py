@@ -256,7 +256,7 @@ def _runtime_paths_under(workdir: str) -> tuple[str, ...]:
     # none of the names below exist and this returned nothing at all. That one
     # is not a cosmetic gap -- sandbox_probe runs sys.executable on the HOST for
     # its positive control, so a replaced one is executed outside the jail.
-    candidates = [os.path.realpath(sys.executable)]
+    candidates = [os.path.realpath(sys.executable), *editable_source_roots()]
     for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
         candidates.extend(
             os.path.join(prefix, name)
@@ -289,14 +289,25 @@ def _validate_workdir(workdir: str) -> str:
     return resolved
 
 
-def _runtime_read_paths(workdir: str, system_roots: tuple[str, ...]) -> tuple[str, ...]:
+def _runtime_read_paths(
+    workdir: str,
+    system_roots: tuple[str, ...],
+    alias: str | None = None,
+) -> tuple[str, ...]:
     """Asked of the interpreter, not ``sys.path``, which carries whatever the
-    caller inherited."""
+    caller inherited.
+
+    *alias* is the caller's spelling of the workdir when it differs from the
+    canonical one. The as-written exclusion below has to see both: a venv reached
+    through a symlinked workdir keeps the ALIAS in sys.prefix, which is not
+    lexically beneath the canonical root, so <alias>/venv/lib was not excluded
+    and the loop then bound whatever it resolved to -- a ~/.ssh behind it
+    included, which is the exact case the exclusion exists to stop.
+    """
     # All four: for a uv-managed interpreter base_prefix and base_exec_prefix are
     # different spellings, and lib-dynload hangs off the alias one alone.
     prefixes = (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
     candidates: list[str] = [
-        os.path.dirname(os.path.realpath(sys.executable)),
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site"),
     ]
     # Subdirectories, never the prefix itself: ``python -m venv .`` at a project
@@ -321,6 +332,14 @@ def _runtime_read_paths(workdir: str, system_roots: tuple[str, ...]) -> tuple[st
     # moment earlier. Added as CANDIDATES, so the workdir exclusion, the
     # filesystem-root refusal and the dual-spelling handling below all apply.
     candidates.extend(editable_source_roots())
+    # LAST, and the file itself rather than its parent. Binding the parent read-
+    # bound a whole home directory, .ssh and all, whenever a standalone build sat
+    # directly in one -- /home/alice/python -- into a jail whose one claim is that
+    # the home is not readable. Last, because a venv, conda or uv interpreter is
+    # already inside the <prefix>/bin selected above and is then skipped by the
+    # containment test below: those layouts keep exactly the binds they had, and
+    # only the standalone one gains a bind of the single file it needs.
+    candidates.append(os.path.realpath(sys.executable))
     try:
         candidates.extend(site.getsitepackages())
     except AttributeError:
@@ -334,8 +353,10 @@ def _runtime_read_paths(workdir: str, system_roots: tuple[str, ...]) -> tuple[st
         if not candidate or not os.path.isabs(candidate):
             continue
         # On the candidate as WRITTEN: checking only the resolved form would skip
-        # <workdir>/venv/lib and then bind the ~/.ssh it was symlinked to.
-        if _within(os.path.abspath(candidate), workdir):
+        # <workdir>/venv/lib and then bind the ~/.ssh it was symlinked to. Both
+        # spellings of the workdir, since sys.prefix may carry either.
+        written = os.path.abspath(candidate)
+        if any(_within(written, root) for root in (workdir, alias) if root):
             continue
         # Both spellings: a venv reached through a symlink needs the link's own
         # path bound as well as the directory it lands on.
@@ -487,7 +508,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     system_roots = tuple(path for path in _SYSTEM_ROOTS if os.path.isdir(path))
     if os.path.isdir(_NIX_STORE) and _within(os.path.realpath(sys.executable), _NIX_STORE):
         system_roots += (_NIX_STORE,)
-    runtime_paths = _runtime_read_paths(workdir, system_roots)
+    runtime_paths = _runtime_read_paths(workdir, system_roots, inner)
     model_cache = _model_cache_binds(workdir)
     # A runtime under /tmp has to be restored after the tmpfs replaces it.
     tmp_runtime_paths = tuple(path for path in runtime_paths if _within(path, "/tmp"))

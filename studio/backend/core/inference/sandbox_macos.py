@@ -422,7 +422,6 @@ def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
     """*workdir* is excluded by ORIGIN: dropping only the resolved form would skip
     ``<workdir>/venv/lib`` and grant file-read* on the ~/.ssh behind it."""
     candidates: list[str] = [
-        os.path.dirname(os.path.realpath(sys.executable)),
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site"),
     ]
     # Subdirectories, never the prefix: ``python -m venv .`` at a project root
@@ -450,6 +449,12 @@ def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
     # Same as the Linux backend: an editable install's source root is outside
     # site-packages, and a candidate here inherits every guard below.
     candidates.extend(editable_source_roots())
+    # LAST, and the file rather than its parent, exactly as the Linux twin does:
+    # the parent of a standalone build is a user or project directory, and
+    # granting recursive file-read* over it hands back the home this profile
+    # exists to hide. Last, so a venv, conda or uv interpreter is already covered
+    # by the <prefix>/bin above and is skipped by the containment test below.
+    candidates.append(os.path.realpath(sys.executable))
     try:
         candidates.extend(site.getsitepackages())
     except AttributeError:
@@ -521,7 +526,7 @@ def runtime_paths_under(workdir: str) -> tuple[str, ...]:
     # "Python" is the framework build's top-level dyld image, which
     # runtime_read_paths already names: omitted here it stayed writable under the
     # workdir allowance, which is the one file a later host subprocess maps.
-    candidates = [os.path.realpath(sys.executable)]
+    candidates = [os.path.realpath(sys.executable), *editable_source_roots()]
     for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
         candidates.extend(
             posixpath.join(prefix, name)
@@ -734,7 +739,15 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         # argv[0] is about to be the launcher; a user-writable one must not reach a
         # Popen even if the probe should have caught it.
         raise SandboxUnavailableError(reason)
-    workdir = _validated(os.path.abspath(plan.workdir))
+    try:
+        workdir = _validated(os.path.abspath(plan.workdir))
+    except SandboxUnavailableError as exc:
+        # As a WORKDIR problem, not a backend one. The base class is what `auto`
+        # answers by running with software safeguards, so a workdir this backend
+        # refuses to name -- a newline, or bytes surrogateescape cannot encode --
+        # bought itself an unisolated launch: the exact silent loss the refusal
+        # was added to prevent. WorkdirUnsafeError is re-raised by tools.py.
+        raise WorkdirUnsafeError(str(exc)) from exc
     if not os.path.isdir(workdir):
         raise WorkdirUnsafeError(f"the session workdir does not exist: {workdir}")
     if posixpath.dirname(workdir) == workdir:
