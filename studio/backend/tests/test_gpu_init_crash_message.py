@@ -107,6 +107,8 @@ def _run_cpu_fallback_load(
     cancel_in_prepare = False,
     platform = None,
     sink = None,
+    gpu_probe_error = None,
+    speculative_flags = None,
 ):
     if platform is not None:
         monkeypatch.setattr(llama_cpp.sys, "platform", platform)
@@ -122,7 +124,14 @@ def _run_cpu_fallback_load(
     mmproj.write_bytes(b"projector")
 
     backend = LlamaCppBackend()
-    backend._get_gpu_memory = lambda _binary = None, **_kw: []
+    if gpu_probe_error is not None:
+
+        def _raise_gpu_probe_error(*_args, **_kwargs):
+            raise gpu_probe_error
+
+        backend._get_gpu_memory = _raise_gpu_probe_error
+    else:
+        backend._get_gpu_memory = lambda _binary = None, **_kw: []
     backend._get_gpu_free_memory = lambda _binary = None, **_kw: []
     backend._read_gguf_metadata = lambda _path: None
     backend._can_estimate_kv = lambda: False
@@ -157,6 +166,16 @@ def _run_cpu_fallback_load(
     }
     backend._is_projector_incompatibility = lambda output: "projector-incompatible" in output
 
+    if speculative_flags is not None:
+
+        def _speculative_flags(**_kwargs):
+            backend._requested_spec_mode = "auto"
+            backend._speculative_type = "mtp"
+            backend._spec_draft_n_max = None
+            backend._spec_fallback_reason = None
+            return list(speculative_flags)
+
+        backend._build_speculative_flags = _speculative_flags
     launches = []
     fallback_sources = []
 
@@ -231,6 +250,87 @@ def _run_cpu_fallback_load(
         )
     )
     return backend, loaded, launches, fallback_sources
+
+
+_SHARED_MTP_FIT_OOM = """
+llama_model_load: error loading model: borrow_shared_tensor: this model is a draft head
+without its own 'token_embd.weight'; load it as a draft of its target model, not on its own
+operator(): failed to measure the memory of the extra model, fitting without it
+common_speculative_init_result: loading draft model 'mtp-model-shared-Q8_0.gguf'
+ggml_backend_cuda_buffer_type_alloc_buffer: cudaMalloc failed: out of memory
+common_speculative_init_result: failed to load draft model, 'mtp-model-shared-Q8_0.gguf'
+"""
+
+
+def test_a_fit_probe_failure_still_retries_a_shared_mtp_oom(monkeypatch, tmp_path):
+    backend, loaded, launches, _fallback_sources = _run_cpu_fallback_load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [1, None],
+        first_output = _SHARED_MTP_FIT_OOM,
+        gpu_probe_error = RuntimeError("probe failed"),
+        speculative_flags = ["--spec-type", "mtp"],
+    )
+
+    assert loaded
+    assert backend._spec_fallback_reason == "drafter_no_vram"
+    assert len(launches) == 2
+    assert "--spec-default" in launches[1][0]
+
+
+def test_a_bare_user_drafter_path_stays_forced_and_is_removed_from_retry(monkeypatch, tmp_path):
+    backend, loaded, launches, _fallback_sources = _run_cpu_fallback_load(
+        monkeypatch,
+        tmp_path,
+        returncodes = [1, None],
+        first_output = _SHARED_MTP_FIT_OOM,
+        gpu_probe_error = RuntimeError("probe failed"),
+        speculative_flags = ["--spec-type", "mtp"],
+        extra_args = ["--model-draft", "user-drafter.gguf"],
+    )
+
+    assert loaded
+    assert backend._spec_fallback_reason == "runtime_error"
+    assert len(launches) == 2
+    assert "--spec-default" in launches[1][0]
+    assert "--model-draft" not in launches[1][0]
+
+
+def test_a_shared_mtp_fit_oom_is_an_auto_vram_downgrade():
+    assert (
+        LlamaCppBackend._spec_start_failure_reason(_SHARED_MTP_FIT_OOM, auto_selected = True)
+        == "drafter_no_vram"
+    )
+
+
+def test_forcing_the_same_shared_mtp_keeps_the_runtime_error():
+    assert (
+        LlamaCppBackend._spec_start_failure_reason(_SHARED_MTP_FIT_OOM, auto_selected = False)
+        == "runtime_error"
+    )
+
+
+def test_a_plain_gpu_oom_is_not_blameshifted_to_the_drafter():
+    output = "ggml_backend_cuda_buffer_type_alloc_buffer: cudaMalloc failed: out of memory"
+    assert LlamaCppBackend._spec_start_failure_reason(output, auto_selected = True) == "runtime_error"
+
+
+def test_unknown_architecture_takes_precedence_over_the_vram_downgrade():
+    output = _SHARED_MTP_FIT_OOM + "\nllama_model_loader: unknown model architecture"
+    assert (
+        LlamaCppBackend._spec_start_failure_reason(output, auto_selected = True) == "binary_outdated"
+    )
+
+
+def test_an_earlier_target_oom_is_not_blameshifted_to_the_drafter():
+    output = """
+llama_model_load: borrow_shared_tensor: draft head lacks token_embd.weight
+operator(): failed to measure the memory of the extra model, fitting without it
+cudaMalloc failed: out of memory on GPU device 0
+common_speculative_init_result: loading draft model 'mtp-shared.gguf'
+common_speculative_init_result: failed to load draft model, 'mtp-shared.gguf'
+"""
+    assert LlamaCppBackend._spec_start_failure_reason(output, auto_selected = True) == "runtime_error"
 
 
 class TestGpuInitCrashMessage:
