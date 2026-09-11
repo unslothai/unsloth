@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Local model, HF cache, LM Studio, and Ollama inventory services.
-
-Ollama logic lives in :mod:`hub.services.models.ollama`; this module
-orchestrates all on-device sources and exposes the route handlers.
-"""
+"""Local model, HF cache, LM Studio and Ollama inventory services. Ollama logic lives in :mod:`hub.services.models.ollama`; this module orchestrates all on-device sources and exposes the route handlers."""
 
 from __future__ import annotations
 
@@ -24,6 +20,7 @@ from hub.storage.scan_folders import (
 )
 from hub.utils import download_manifest, gguf, inventory_scan as hf_cache_scan
 from hub.utils.paths import (
+    hermes_model_dirs,
     hf_default_cache_dir,
     legacy_hf_cache_dir,
     lmstudio_model_dirs,
@@ -34,6 +31,7 @@ from hub.utils.paths import (
     studio_root,
 )
 from hub.services.models import common as model_common
+from hub.services.models.hermes import scan_hermes_dir
 from hub.services.models.ollama import scan_ollama_dir
 from utils.hidden_models import is_hidden_model
 from utils.paths.path_utils import is_appledouble_metadata
@@ -56,6 +54,7 @@ class _LocalInventorySources(NamedTuple):
     hf_default: Path
     lm_dirs: tuple[Path, ...]
     ollama_dirs: tuple[Path, ...]
+    hermes_dirs: tuple[Path, ...]
     known_hf_caches: tuple[Path, ...]
 
 
@@ -72,8 +71,7 @@ _LOCAL_INVENTORY_MAX_ATTEMPTS = 8
 class _LocalCacheChanged(RuntimeError):
     def __init__(self, response: LocalModelListResponse) -> None:
         super().__init__("local inventory sources changed during the scan")
-        # Carried so the attempt cap can serve the freshest scan it has instead of looping forever or
-        # answering with nothing.
+        # Carried so the attempt cap can serve the freshest scan it has instead of looping forever or answering with nothing.
         self.response = response
 
 
@@ -120,8 +118,7 @@ def _has_immediate_model_weight(
                 if entry.is_file() and _is_immediate_model_weight_file(entry):
                     return True
             except OSError:
-                # Skip individual children that are unreadable (permissions, broken symlinks, etc.) rather than
-                # failing the entire scan.
+                # Skip individual children that are unreadable (permissions, broken symlinks) rather than failing the entire scan.
                 continue
     except OSError:
         return False
@@ -166,6 +163,7 @@ def _local_inventory_sources() -> _LocalInventorySources:
         hf_default_cache_dir(),
         tuple(lmstudio_model_dirs()),
         tuple(ollama_model_dirs()),
+        tuple(hermes_model_dirs()),
         tuple(known_hf_hub_caches()),
     )
 
@@ -239,10 +237,7 @@ def _scan_models_dir(
 
 
 def _safe_is_dir(path: Path) -> bool:
-    """``Path.is_dir()`` treating an unreadable path (``PermissionError`` /
-    ``OSError`` on a restricted ``~/.cache/huggingface/hub``) as "not a
-    directory", so the inventory skips that source instead of 500ing the Hub page.
-    """
+    """``Path.is_dir()`` treating an unreadable path (``PermissionError`` / ``OSError`` on a restricted ``~/.cache/huggingface/hub``) as "not a directory", so the inventory skips that source instead of 500ing the Hub page."""
     try:
         return path.is_dir()
     except OSError:
@@ -310,8 +305,7 @@ def _scan_hf_cache(
     if not discovered:
         return []
     if variant_states is None:
-        # Reached precisely when the caller's own guarded build already failed, so leaving this bare handed
-        # the same exception back and undid that guard; degrade to the per-repo reads instead.
+        # Reached precisely when the caller's own guarded build already failed, so leaving this bare handed the same exception back and undid that guard; degrade to the per-repo reads instead.
         try:
             variant_states = download_manifest.build_variant_state_index(
                 [("model", model_id, cache_dir) for _repo, model_id, _updated in discovered],
@@ -362,8 +356,7 @@ def _scan_hf_cache(
         resolved = hf_cache_scan.resolve_hf_cache_realpath(repo_dir)
         scan_path = Path(resolved) if resolved else repo_dir
         load_path = repo_dir if active_cache else scan_path
-        # _apply_format_aware_partial below rewrites per row, so a hybrid repo's gguf row does not taint its
-        # safetensors row.
+        # _apply_format_aware_partial below rewrites per row, so a hybrid repo's gguf row does not taint its safetensors row.
         rows = _classify_local_path(
             scan_path,
             "hf_cache",
@@ -442,8 +435,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
     if not lm_dir.exists() or not lm_dir.is_dir():
         return []
 
-    # A directory that is itself a model dir is not an LM Studio publisher structure, so return it as a
-    # single entry rather than descend.
+    # A directory that is itself a model dir is not an LM Studio publisher structure, so return it as a single entry rather than descend.
     if _is_model_directory(lm_dir) or _is_diffusers_pipeline_dir(lm_dir):
         try:
             updated_at = lm_dir.stat().st_mtime
@@ -491,8 +483,7 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                     )
                 continue
 
-            # A child that is itself a model dir is surfaced directly, not as a publisher; a diffusers pipeline
-            # counts, or its component subdirs are walked as models.
+            # A child that is itself a model dir is surfaced directly, not as a publisher; a diffusers pipeline counts, or its component subdirs are walked as models.
             if _is_model_directory(child) or _is_diffusers_pipeline_dir(child):
                 try:
                     updated_at = child.stat().st_mtime
@@ -649,6 +640,7 @@ async def _collect_models_from_default_sources(
     hf_default: Path,
     lm_dirs: tuple[Path, ...],
     ollama_dirs: tuple[Path, ...],
+    hermes_dirs: tuple[Path, ...],
     known_hf_caches: tuple[Path, ...],
     custom_folders: list[dict],
 ) -> List[LocalModelInfo]:
@@ -692,8 +684,7 @@ async def _collect_models_from_default_sources(
             lambda path: _discover_hf_cache(path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES),
             folder_path,
         )
-        # Carry the registered path: the status registry is keyed on the row, not on the normalized Path
-        # this scan walks.
+        # Carry the registered path: the status registry is keyed on the row, not on the normalized Path this scan walks.
         custom_sources.append((folder_path, discovered, str(folder["path"])))
         state_repositories.extend(
             ("model", model_id, folder_path) for _repo, model_id, _updated in discovered
@@ -726,6 +717,10 @@ async def _collect_models_from_default_sources(
     for ollama_dir in ollama_dirs:
         local_models += await _scan_source("Ollama", scan_ollama_dir, ollama_dir)
 
+    for hermes_dir in hermes_dirs:
+        local_models += await _scan_source("Hermes", scan_hermes_dir, hermes_dir)
+
+    hermes_identities = {_inventory_physical_identity(str(d)) for d in hermes_dirs}
     for folder_path, discovered, row_path in custom_sources:
         try:
             custom_models = await asyncio.to_thread(
@@ -735,14 +730,26 @@ async def _collect_models_from_default_sources(
                 variant_states = variant_states,
                 active_hub_cache = hf_cache_dir,
             )
+            if _inventory_physical_identity(str(folder_path)) in hermes_identities:
+                # Registering ~/.hermes/models was how Hermes downloads were listed before this scan;
+                # the walk lists every download a second time under the same id. Anything else kept
+                # in that folder is still the user's custom row.
+                staged = {
+                    _inventory_physical_identity(row.path)
+                    for row in await asyncio.to_thread(scan_hermes_dir, folder_path)
+                }
+                custom_models = [
+                    model
+                    for model in custom_models
+                    if _inventory_physical_identity(model.path) not in staged
+                ]
         except Exception as e:
             logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
             # Only an OS failure is something the user can fix, so only that is shown.
             if isinstance(e, OSError):
                 record_scan_failure(row_path, e)
             continue
-        # Off the loop, like the scan above it: the probe opens directories, and on a stalled network mount
-        # scandir sits in the kernel with nothing to yield to.
+        # Off the loop, like the scan above it: the probe opens directories, and on a stalled network mount scandir sits in the kernel with nothing to yield to.
         await asyncio.to_thread(note_scan_folder_scanned, row_path, found = bool(custom_models))
         local_models.extend(_promote_to_custom_source(model) for model in custom_models)
 
@@ -761,8 +768,7 @@ def _scan_custom_folder(
     supported_formats: set[ModelFormat] = {"gguf", "safetensors", "adapter"}
 
     def _is_supported(m: LocalModelInfo) -> bool:
-        # A diffusers pipeline keeps its weights in component subdirs, so its root lands as "unknown"; judge
-        # it on its shape rather than on a format the layout cannot report.
+        # A diffusers pipeline keeps its weights in component subdirs, so its root lands as "unknown"; judge it on its shape rather than on a format the layout cannot report.
         if m.model_format in supported_formats:
             return True
         return _is_diffusers_pipeline_dir(Path(m.path))
@@ -812,7 +818,7 @@ def _scan_custom_folder(
 
 
 def _promote_to_custom_source(model: LocalModelInfo) -> LocalModelInfo:
-    if model.source in {"hf_cache", "ollama"}:
+    if model.source in {"hf_cache", "ollama", "hermes"}:
         return model
     return model.model_copy(
         update = {
@@ -829,8 +835,7 @@ def _promote_to_custom_source(model: LocalModelInfo) -> LocalModelInfo:
                 "custom",
                 partial = model.partial,
                 requires_variant = model.capabilities.requires_variant,
-                # Rebuilding from the format alone restored can_chat on rows the classifier had ruled out; the
-                # format is unchanged here, so carrying the old verdict through is idempotent.
+                # Rebuilding from the format alone restored can_chat on rows the classifier had ruled out; the format is unchanged here, so carrying the old verdict through is idempotent.
                 can_chat_override = model.capabilities.can_chat,
             ),
         }
@@ -916,7 +921,9 @@ async def _scan_local_models_response(
     models_dir: str, custom_folders: list[dict], sources: _LocalInventorySources
 ) -> LocalModelListResponse:
     """List local model candidates from every supported on-device source."""
-    hf_cache_dir, legacy_hf, hf_default, lm_dirs, ollama_dirs, known_hf_caches = sources
+    hf_cache_dir, legacy_hf, hf_default, lm_dirs, ollama_dirs, hermes_dirs, known_hf_caches = (
+        sources
+    )
 
     allowed_roots: list[Path] = [Path("./models").resolve(), hf_cache_dir]
     if _safe_is_dir(legacy_hf):
@@ -938,6 +945,7 @@ async def _scan_local_models_response(
             hf_default,
             lm_dirs,
             ollama_dirs,
+            hermes_dirs,
             known_hf_caches,
             custom_folders,
         )
@@ -947,6 +955,7 @@ async def _scan_local_models_response(
             hf_cache_dir = str(hf_cache_dir),
             lmstudio_dirs = [str(d) for d in lm_dirs],
             ollama_dirs = [str(d) for d in ollama_dirs],
+            hermes_dirs = [str(d) for d in hermes_dirs],
             models = models,
         )
     except Exception as e:
@@ -961,8 +970,7 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
     """Coalesce overlapping local inventory requests for the same models root."""
 
     def classify(response: LocalModelListResponse) -> LocalModelListResponse:
-        # Classified inside the shared worker so retrying waiters do not repeat GGUF metadata reads, and off
-        # the event loop, since classification reads GGUF headers.
+        # Classified inside the shared worker so retrying waiters do not repeat GGUF metadata reads, and off the event loop, since classification reads GGUF headers.
         try:
             from hub.services.models import catalog_classification
 
@@ -997,8 +1005,7 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
     # Discard obsolete results and retry their waiters against the current cache epoch.
     superseded: Optional[LocalModelListResponse] = None
     for _attempt in range(_LOCAL_INVENTORY_MAX_ATTEMPTS):
-        # Epoch first: the sources and folders below are read after it, so any change to them lands in a
-        # later epoch and the post-scan check sees it.
+        # Epoch first: the sources and folders below are read after it, so any change to them lands in a later epoch and the post-scan check sees it.
         epoch = hf_cache_scan.hf_cache_scans_epoch()
         custom_folders = await _load_custom_folders()
         sources = _local_inventory_sources()
@@ -1027,14 +1034,9 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
 
 
 def get_models_folder_response() -> dict:
-    """Return the directory where downloaded models are stored.
-
-    This is the active HF hub cache (honors ``HF_HOME`` / ``HF_HUB_CACHE``);
-    the desktop app reveals it in the OS file manager.
-    """
+    """The directory where downloaded models are stored: the active HF hub cache (honors ``HF_HOME`` / ``HF_HUB_CACHE``), which the desktop app reveals in the OS file manager."""
     path = _resolve_hf_cache_dir()
-    # Create it if missing so "Open folder" works before the first download: HF builds the cache
-    # lazily, and studio pre-creates only the default dir, not a user's explicit HF_HOME/HF_HUB_CACHE.
+    # Create it if missing so "Open folder" works before the first download: HF builds the cache lazily, and studio pre-creates only the default dir, not a user's explicit HF_HOME/HF_HUB_CACHE.
     try:
         path.mkdir(parents = True, exist_ok = True)
     except OSError as e:

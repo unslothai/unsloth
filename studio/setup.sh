@@ -12,6 +12,7 @@ RULE=$(printf '\342\224\200%.0s' {1..52})
 # --local: install from the local repo checkout (overlays unsloth as editable
 # and unsloth-zoo from git main). Mirrors install.sh --local for the Colab
 # path that runs setup.sh directly without going through install.sh.
+# ── Parse flags ──
 if [ "$#" -gt 0 ]; then
     for _arg in "$@"; do
         case "$_arg" in
@@ -26,7 +27,6 @@ fi
 # ── Maintainer-editable defaults ──────────────────────────────────────────
 # Change these in the GitHub-hosted script so all users get updated defaults.
 # User environment variables always override these baked-in values.
-#
 #   _DEFAULT_LLAMA_PR_FORCE : PR number to build by default ("" = normal path)
 #   _DEFAULT_LLAMA_SOURCE   : git clone URL for source builds
 #   _DEFAULT_LLAMA_TAG      : llama.cpp ref to build ("latest" = newest release,
@@ -36,7 +36,6 @@ fi
 #                             forces a source build, and causes HTTP 422 errors.
 #                             Only use "master" temporarily when the latest release
 #                             is missing support for a new model architecture.
-#
 #   UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "cuda", "vulkan",
 #                           "hip", or "rocm". Concrete values select and persist a
 #                           backend across updates; "auto" restores detection.
@@ -3748,13 +3747,27 @@ if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${SKIP_STUDIO_BASE:-0}" = "1" ]; then
     # install.sh already emits in full, so an eighth marker renders "Step 8 of 7" and
     # discards the payload. [TAURI:PROGRESS] becomes install-progress-detail, which
     # InstallingContent renders verbatim, so the user actually reads the limitation.
+    #
+    # DIAG as well: progress detail is cleared by the next install-step and is gone
+    # once the install screen closes, so it cannot answer "why is GGUF missing"
+    # afterwards. record_diag_marker keeps this in the support report.
     case "${UNSLOTH_TAURI_MODE:-0}" in
         1|true)
             printf '[TAURI:PROGRESS] %s\n' \
                 "llama.cpp unavailable; GGUF inference is disabled until 'unsloth studio update' succeeds"
+            printf '[TAURI:DIAG] %s\n' "llama_cpp=unavailable"
             ;;
         *)
             setup_fail 1 "llama.cpp setup did not produce a usable server"
             ;;
+    esac
+fi
+
+# A desktop repair runs update.rs, which sets UNSLOTH_TAURI_UPDATE alone, so the
+# block above is skipped and a degraded repair recorded nothing. update.rs parses
+# [TAURI:DIAG] the same way. Marker only: the update contract stays successful.
+if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${SKIP_STUDIO_BASE:-0}" != "1" ]; then
+    case "${UNSLOTH_TAURI_UPDATE:-0}" in
+        1|true) printf '[TAURI:DIAG] %s\n' "llama_cpp=unavailable" ;;
     esac
 fi

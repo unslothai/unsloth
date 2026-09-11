@@ -39,7 +39,12 @@ import {
   useRef,
   useState,
 } from "react";
-import { toolArgText } from "./tool-arg-text";
+import {
+  isToolCallCancelled,
+  isToolCallRunning,
+  toolArgText,
+  toolFallbackLabel,
+} from "./tool-arg-text";
 import { syncToolActivityPreference } from "./tool-activity-open-state";
 
 const ANIMATION_DURATION = 200;
@@ -163,12 +168,11 @@ function ToolFallbackTrigger({
   icon?: ElementType;
 }) {
   const statusType = status?.type ?? "complete";
-  const isRunning = statusType === "running";
-  const isCancelled =
-    status?.type === "incomplete" && status.reason === "cancelled";
+  const isRunning = isToolCallRunning(status);
+  const isCancelled = isToolCallCancelled(status);
 
   const StatusIcon = statusIconMap[statusType];
-  const label = isCancelled ? "Cancelled tool" : "Used tool";
+  const label = toolFallbackLabel(status);
   const name = toolArgText(toolName);
   const displayName = formatMcpToolName(name, mcpServer) ?? name;
 
@@ -329,9 +333,8 @@ function ToolFallbackResult({
   }
 
   const imageResult = isMcpImageResult(result) ? result : null;
-  // Colourised CLIs (ls --color, grep --color, npm, cargo, pytest) emit SGR
-  // escapes that a plain <pre> cannot style; strip them so the pane stays
-  // readable (#7962).
+  // Colourised CLIs (ls --color, grep --color, npm, cargo, pytest) emit SGR escapes that a plain
+  // <pre> cannot style; strip them so the pane stays readable (#7962).
   const resultText = imageResult ? null : stringifyToolResult(result);
 
   return (
@@ -423,8 +426,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   const mcpServer = mcpServerFromProvenance(
     (rest as { provenance?: unknown }).provenance,
   );
-  const isCancelled =
-    status?.type === "incomplete" && status.reason === "cancelled";
+  const isCancelled = isToolCallCancelled(status);
 
   return (
     <ToolFallbackRoot className={cn(isCancelled && "bg-muted/30")}>

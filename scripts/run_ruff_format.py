@@ -16,6 +16,7 @@ CONFIG = HERE.parent / ".pre-commit-config.yaml"
 # Set to run against whatever ruff is installed. For a one-off experiment; a commit
 # made under it will be reformatted by the hook and fail pre-commit.
 ANY_VERSION_ENV = "UNSLOTH_RUFF_FORMAT_ANY_VERSION"
+USAGE = "usage: run_ruff_format.py FILE [FILE ...]  (formats in place; no options)"
 
 # `- ruff==0.6.9` under the hook's additional_dependencies. Read out of the config
 # rather than copied here, because a second copy of the pin is a second thing to
@@ -48,27 +49,98 @@ def installed_ruff_version(python: str = sys.executable) -> str | None:
     return match.group(1) if match else None
 
 
+def ruff_unavailable_reason(python: str = sys.executable) -> str | None:
+    """Why `python -m ruff` cannot run here, or None when it can.
+
+    Separate from the version question because the answers differ. A ruff that
+    runs but reports a version this cannot parse is survivable; a ruff that does
+    not run at all is not, and the pre-pass below has already rewritten every
+    file it was given by the time `ruff format` says so.
+    """
+    try:
+        out = subprocess.run(
+            [python, "-m", "ruff", "--version"], capture_output = True, text = True, timeout = 60
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"{type(exc).__name__}: {exc}"
+    if out.returncode != 0:
+        return (out.stderr or out.stdout).strip() or f"`ruff --version` exited {out.returncode}"
+    return None
+
+
 def version_mismatch(pinned: str | None, installed: str | None) -> bool:
     """Whether running this ruff would produce formatting the hook then undoes.
 
-    An unreadable pin or an unreadable ruff is not a mismatch: the format below
-    fails loudly enough on its own, and refusing on a question we could not ask
-    would break the hook wherever the config moves.
+    An unreadable pin or an unreadable version string is not a mismatch:
+    refusing on a question we could not ask would break the hook wherever the
+    config moves. A ruff that cannot run at all is caught before this, by
+    ruff_unavailable_reason.
     """
     return bool(pinned and installed and pinned != installed)
 
 
-def main(argv: list[str]) -> int:
-    files = [arg for arg in argv if Path(arg).exists()]
-    if not files:
-        return 0
+def parse_files(argv: list[str]) -> tuple[list[str], str | None]:
+    """The paths to format, or an empty list plus a message saying why not.
 
-    # Checked before anything is rewritten. ruff's own formatting is not stable
-    # across releases -- 0.9 changed which half of an `assert cond, "msg"` gets
-    # wrapped -- so running this with a newer ruff silently produces a style the
-    # pinned hook reformats back, and the commit fails pre-commit on files that
-    # are otherwise correct. It reached main twice before this check existed.
+    Every argument is a path to rewrite. Silently dropping the rest was worse
+    than it sounds: `--check FILE` dropped the flag, kept the file, and wrote
+    to it, and a typo'd path formatted nothing while exiting 0, which quietly
+    passes any "the formatter is a fixed point" check.
+    """
+    if not argv:
+        return [], f"no files given.\n{USAGE}"
+
+    options = [arg for arg in argv if arg.startswith("-")]
+    if options:
+        message = f"unsupported option{'s' if len(options) > 1 else ''}: {' '.join(options)}"
+        if any(opt in ("--check", "--diff") for opt in options):
+            message += (
+                "\n  There is no check mode: this script always rewrites the files"
+                " it is given, and `ruff format --check` is not an equivalent."
+                "\n  It checks the middle one of three passes, so a clean ruff says"
+                " nothing about the kwarg-spacing passes either side of it."
+                "\n  To preview a run, copy the file aside, run this script on the"
+                " copy, and diff the two."
+            )
+        return [], f"{message}\n{USAGE}"
+
+    missing = [arg for arg in argv if not Path(arg).exists()]
+    if missing:
+        return [], f"no such file{'s' if len(missing) > 1 else ''}: {' '.join(missing)}\n{USAGE}"
+
+    return list(argv), None
+
+
+def main(argv: list[str]) -> int:
+    files, error = parse_files(argv)
+    if error is not None:
+        print(f"run_ruff_format: {error}", file = sys.stderr)
+        return 2
+
     pinned = pinned_ruff_version(CONFIG.read_text(encoding = "utf-8")) if CONFIG.exists() else None
+
+    # Both checks are made before anything is rewritten, because the pre-pass is
+    # itself a rewrite. Without this first one, a missing or broken ruff let the
+    # pre-pass strip every magic comma it was given and only then die on `ruff
+    # format`, leaving files in a shape the hook rejects -- the opposite of what
+    # a full run produces, and blamed on the next person to touch them. The
+    # override below is deliberately not honoured here: no ruff formats nothing.
+    unavailable = ruff_unavailable_reason()
+    if unavailable is not None:
+        print(
+            f"run_ruff_format: cannot run `python -m ruff` ({unavailable}).\n"
+            f"  Refusing before rewriting anything: the passes either side of ruff would "
+            f"leave the files half-formatted.\n"
+            f"  Fix: pip install ruff=={pinned or '<the pin in .pre-commit-config.yaml>'}",
+            file = sys.stderr,
+        )
+        return 1
+
+    # ruff's own formatting is not stable across releases -- 0.9 changed which
+    # half of an `assert cond, "msg"` gets wrapped -- so running this with a newer
+    # ruff silently produces a style the pinned hook reformats back, and the
+    # commit fails pre-commit on files that are otherwise correct. It reached main
+    # twice before this check existed.
     installed = installed_ruff_version()
     if version_mismatch(pinned, installed) and not os.environ.get(ANY_VERSION_ENV):
         print(

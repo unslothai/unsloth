@@ -144,7 +144,9 @@ import { toolResultModelText } from "@/features/chat/api/chat-adapter";
 import {
   CONTINUATION_RUN_CONFIG_KEY,
   incompleteLabel,
+  incompleteRemedy,
   isContinuableContent,
+  isProviderReportedReason,
   modeAllowsContinuation,
   readIncompleteInfo,
   readTextThoughtSignature,
@@ -2138,7 +2140,9 @@ const ThreadComposerDock: FC<{
             : "top-[10px]",
         )}
       />
-      <div className="relative px-5 pb-2">
+      {/* Narrow panes spend the gutter on the composer instead; index.css
+          trims it off the pane's width, not the window's. */}
+      <div className="unsloth-composer-dock-inner relative px-5 pb-2">
         <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
           <ComposerAnimated
             disabled={disabled}
@@ -2248,14 +2252,15 @@ const ThreadWelcome: FC<{
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5dvh]">
+        {/* Matches the docked composer's gutter; index.css trims both. */}
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
           {/* Center the greeting (sloth + title) over the composer. */}
-          <div className="flex flex-row items-center justify-center gap-[15px]">
+          <div className="unsloth-welcome-greeting flex flex-row items-center justify-center gap-[15px]">
             {/* Temporary chat keeps the title on its own, no mascot. */}
             {showGreetingSloth && !incognito && (
               <MascotImg
                 src={currentEmojiSrc}
-                className="size-[44px] -translate-y-[2px]"
+                className="unsloth-welcome-sloth size-[44px] -translate-y-[2px]"
               />
             )}
             <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
@@ -2300,7 +2305,10 @@ const ComposerAnimated: FC<{
   disableQueue?: boolean;
 }> = ({ disabled, threadId, menuSide, disableQueue }) => {
   return (
-    <div className="relative mx-auto min-w-0 w-full max-w-[46rem]">
+    // unsloth-composer-shell is the size container the tight (mobile) layout
+    // in index.css queries. It sits outside the surface so those rules can
+    // trim the surface's own padding.
+    <div className="unsloth-composer-shell relative mx-auto min-w-0 w-full max-w-[46rem]">
       <div className="relative z-10 w-full">
         <Composer
           disabled={disabled}
@@ -6867,7 +6875,9 @@ const ComposerRightControls: FC<{
         </Button>
       ) : (
         <AuiIf condition={({ thread }) => thread.isRunning}>
-          <div className="ml-1.5 flex items-center">
+          {/* Classed so the narrow-screen rules can treat this like the
+              sibling send/stop buttons; it is the flex item, not the button. */}
+          <div className="aui-composer-run-controls ml-1.5 flex items-center">
             {queueDisabled ? (
             <ComposerPrimitive.Cancel asChild={true}>
               <Button
@@ -7031,11 +7041,15 @@ const ContinueMessageBarForLastMessage: FC = () => {
     return Boolean(activeModel?.isAudio && !activeModel.hasAudioInput);
   });
   // Cancelled comes through status (the adapter yields nothing after an abort); the
-  // other two are stamped on metadata so they survive a reload.
+  // other two are stamped on metadata so they survive a reload. A provider-reported reason
+  // is on the metadata either way, and outranks a cancelled status.
   const stamped = readIncompleteInfo(metadata);
   const cancelled =
     status?.type === "incomplete" && status?.reason === "cancelled";
-  const reason = cancelled ? ("cancelled" as const) : stamped?.reason;
+  const reason =
+    cancelled && !isProviderReportedReason(stamped?.reason)
+      ? ("cancelled" as const)
+      : stamped?.reason;
 
   // Every gate the bar itself answers to. Resuming without asking has to clear the same
   // ones, or it would resume a turn the bar would have refused to offer.
@@ -7051,6 +7065,9 @@ const ContinueMessageBarForLastMessage: FC = () => {
       audioOutputModel,
     }) &&
     Boolean(partial.trim());
+
+  // A cut with a remedy is one resuming cannot undo, so the way out replaces the button.
+  const remedy = reason ? incompleteRemedy(reason) : null;
 
   // The parent is what every round of one logical turn shares; the message id changes
   // each round, because a continuation runs as a sibling.
@@ -7207,7 +7224,8 @@ const ContinueMessageBarForLastMessage: FC = () => {
   // A turn cut mid-thought has no text to resume from, so Retry stays the way out.
   // `reason` is repeated rather than left to `resumable`, which is a boolean and so
   // narrows nothing: the label below needs it proven non-undefined.
-  if (!resumable || !reason) {
+  // The remedy is owed even when nothing can be resumed: a tool-calling turn never can be.
+  if (!reason || (!remedy && !resumable)) {
     return null;
   }
   if (autoContinuing) {
@@ -7242,18 +7260,20 @@ const ContinueMessageBarForLastMessage: FC = () => {
   return (
     <div className="aui-continue-bar mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-border/70 bg-muted/50 p-2.5 text-sm">
       <span className="min-w-0 flex-1 text-muted-foreground">
-        {incompleteLabel(reason)}.
+        {incompleteLabel(reason)}.{remedy ? ` ${remedy}.` : ""}
       </span>
-      <Button
-        type="button"
-        size="sm"
-        variant="secondary"
-        className="h-7 shrink-0 gap-1.5 text-xs"
-        onClick={handleContinue}
-      >
-        <FastForwardIcon strokeWidth={1.75} className="size-3.5" />
-        Continue
-      </Button>
+      {remedy ? null : (
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          className="h-7 shrink-0 gap-1.5 text-xs"
+          onClick={handleContinue}
+        >
+          <FastForwardIcon strokeWidth={1.75} className="size-3.5" />
+          Continue
+        </Button>
+      )}
     </div>
   );
 };

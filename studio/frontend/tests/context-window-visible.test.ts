@@ -6,11 +6,12 @@
 // a build that fell back to 0 instead of null still passed every assertion.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { deriveContextUsageBar } from "../src/features/chat/lib/context-usage-bar-state.ts";
 import { hasKnownContextWindow } from "../src/features/chat/lib/context-window-known.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 const RESIDENT = "unsloth/Qwen3.6-35B-A3B-MTP-GGUF";
 
@@ -145,10 +146,7 @@ test("an uncounted chat reports no per-turn rows", () => {
 });
 
 test("the header renders the bar on the window alone, with usage optional", () => {
-  const page = readFileSync(
-    new URL("../src/features/chat/chat-page.tsx", import.meta.url),
-    "utf8",
-  );
+  const page = readSrc("features/chat/chat-page.tsx");
   assert.match(
     page,
     /view\.mode === "single" && \(contextUsage \|\| contextWindowKnown\)/,

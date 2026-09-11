@@ -2453,6 +2453,27 @@ def test_mcp_classifier(tool, unsafe):
 
 
 @pytest.mark.parametrize(
+    "tool, approval",
+    [
+        ("get_blendfile_summary_datablocks_for_cli", True),
+        ("get_blendfile_summary_missing_files_for_cli", True),
+        ("get_blendfile_summary_of_linked_libraries_for_cli", True),
+        ("get_blendfile_summary_path_info_for_cli", True),
+        ("get_blendfile_summary_usage_guess_for_cli", True),
+        ("get_python_api_docs", False),
+        ("search_api_docs", False),
+        ("search_manual_docs", False),
+    ],
+)
+def test_blender_cli_summaries_require_approval(tool, approval):
+    from core.inference.tools import is_high_risk_tool_call
+
+    name = f"{MCP_TOOL_PREFIX}srv1__{tool}"
+    assert is_potentially_unsafe_tool_call(name, {}) is approval
+    assert is_high_risk_tool_call(name, {}) is approval
+
+
+@pytest.mark.parametrize(
     ("args", "unsafe"),
     [
         ({"path": "/etc/passwd"}, True),  # read-named tool at a credential path
