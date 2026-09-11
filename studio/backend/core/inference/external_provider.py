@@ -3055,6 +3055,20 @@ class ExternalProviderClient:
                             yield "data: [DONE]"
                             await response.aclose()  # set PoolByteStream._closed=True FIRST
                             break
+
+                        elif event_type == "error":
+                            if thinking_open:
+                                yield _content_chunk("</think>")
+                            error = event.get("error")
+                            overloaded = (
+                                isinstance(error, dict) and error.get("type") == "overloaded_error"
+                            )
+                            yield _error_sse_line(
+                                529 if overloaded else 502,
+                                _json.dumps(event),
+                                self.provider_type,
+                            )
+                            break
                 except GeneratorExit:
                     await response.aclose()  # set PoolByteStream._closed=True FIRST
                     await lines_gen.aclose()  # now safe — aclose() is a no-op

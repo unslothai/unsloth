@@ -1819,6 +1819,15 @@ test("a failure on a thread leaves a hold whose run is already streaming alone",
   assert.equal(keeper.held(), 0);
 });
 
+test("a turn that fails before any text is still saved as interrupted", () => {
+  const failure = CHAT_ADAPTER.slice(
+    CHAT_ADAPTER.indexOf("const partialContent = buildAssistantContent(partialText);"),
+  );
+  const saved = failure.slice(0, failure.indexOf("throw err;"));
+  assert.doesNotMatch(saved, /if \(partialContent\.length > 0\)/);
+  assert.match(saved, /yield \{\s*content: partialContent,[\s\S]*incomplete: \{/);
+});
+
 test("the keeper is wired to the failure the adapter already reports", () => {
   // There is exactly one signal for a run that failed on its way out, and it is not a
   // deadline: the adapter wrapper catches everything `adapter.run` throws and announces it
