@@ -2223,7 +2223,7 @@ export const ko = {
         "확인하는 동안 학습 설정이 변경되었습니다. 설정을 검토한 후 학습을 다시 시작하세요.",
       validation: {
         s3MultimodalUnsupported:
-          "비전 또는 오디오 학습에는 아직 S3 데이터셋을 사용할 수 없습니다.",
+          "비전 학습에는 아직 S3 데이터셋을 사용할 수 없습니다.",
         s3BucketRequired: "S3 버킷 이름을 먼저 입력하세요.",
         s3CredentialsRequired:
           "S3 액세스 키를 입력하거나 IAM 역할을 활성화하세요.",

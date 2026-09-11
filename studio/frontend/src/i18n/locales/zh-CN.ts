@@ -2150,7 +2150,7 @@ export const zhCN = {
         "无法验证数据集与此模型是否兼容。请检查网络连接或 Hugging Face token；开始训练时会重试检查。",
       setupChanged: "检查期间，训练设置发生了变化。请确认设置后重新开始训练。",
       validation: {
-        s3MultimodalUnsupported: "S3 数据集暂不支持视觉或音频训练。",
+        s3MultimodalUnsupported: "S3 数据集暂不支持视觉训练。",
         s3BucketRequired: "请先输入 S3 存储桶名称。",
         s3CredentialsRequired: "请提供 S3 访问密钥或启用 IAM 角色。",
         modelRequired: "请先选择基础模型。",
