@@ -2290,6 +2290,13 @@ const Composer: FC<{
 }> = ({ disabled, threadId, menuSide, disableQueue }) => {
   const aui = useAui();
   const isDictating = useAuiState((s) => s.composer.dictation != null);
+  // In voice mode the orb is the entire mic interface. The loop keeps a dictation
+  // session open continuously, so the composer's recording bar would sit there
+  // counting from the moment voice starts -- reading as "recording you" during
+  // every pause and every reply. The session is real and must stay open; only its
+  // UI is wrong here, so hide the presentation and leave the state alone.
+  const voiceEngaged = useChatRuntimeStore((s) => s.voiceMode !== "off");
+  const showDictationUi = isDictating && !voiceEngaged;
   const pageDragging = useContext(PageDragContext);
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
   const setImageToolsEnabled = useChatRuntimeStore(
@@ -4725,7 +4732,7 @@ const Composer: FC<{
 
   const composerContent = (
     <>
-      {!isDictating ? (
+      {!showDictationUi ? (
         <>
           <ComposerAttachments />
           <PendingAudioChip />
@@ -4733,19 +4740,19 @@ const Composer: FC<{
       ) : null}
       {/* Keep indexing state subscribed while dictating, but hide its chips so
           the waveform stays the composer's only status indicator. */}
-      <div className={isDictating ? "hidden" : "contents"}>
+      <div className={showDictationUi ? "hidden" : "contents"}>
         <ThreadDocumentsBar
           threadId={referenceThreadId}
           onIndexingChange={handleIndexingChange}
         />
       </div>
-      {!isDictating ? <ToolStatusDisplay /> : null}
+      {!showDictationUi ? <ToolStatusDisplay /> : null}
       <div
         className="unsloth-composer-line"
         // The permission pill is always visible, so keep the two-row layout
         // expanded whenever not dictating; dictation collapses to the bar.
-        data-expanded={!isDictating ? "true" : "false"}
-        data-dictating={isDictating ? "true" : undefined}
+        data-expanded={!showDictationUi ? "true" : "false"}
+        data-dictating={showDictationUi ? "true" : undefined}
       >
         <div
           ref={pillRowRef}
@@ -4778,7 +4785,7 @@ const Composer: FC<{
             </>
           ) : null}
         </div>
-        {isDictating ? (
+        {showDictationUi ? (
           // The recording UI replaces the input and send controls; only the
           // left plus stays visible alongside it.
           <ChatDictationBar

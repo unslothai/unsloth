@@ -4,55 +4,28 @@
 import { authFetch } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { TTS_AUDIO_TYPES, VOICE_SLOT_AUDIO_TYPES } from "../voice/tts-audio-types.ts";
+import { TTS_AUDIO_TYPES, VOICE_SLOT_AUDIO_TYPES } from "../voice/tts-audio-types";
+import {
+  splitIntoSentences,
+  stripForSpeech,
+} from "../voice/speech-text";
 
-// Defined in ../voice/tts-audio-types (dependency-free, so the pure voice helpers
-// and their tests can read them); re-exported here for this hook's importers.
+// Re-exported for importers that predate the split into a dependency-free module.
+export { splitIntoSentences, stripForSpeech };
+
+// The codec vocabulary lives in its own dependency-free module so the pure voice
+// helpers and their node:test suites can read it without pulling in React and
+// auth. Re-exported here for the importers that predate that split.
 export { TTS_AUDIO_TYPES, VOICE_SLOT_AUDIO_TYPES };
 
-// Split assistant text into sentence-sized chunks so the first one can start
-// speaking while the rest are still synthesizing, instead of waiting for the
-// whole response. Collapses whitespace, breaks on sentence punctuation and
-// newlines, and falls back to the whole text when there's no boundary.
-function splitIntoSentences(text: string): string[] {
-  const chunks = text
-    .replace(/\s+/g, " ")
-    .trim()
-    .match(/[^.!?\n]*[.!?]+|\S[^.!?\n]*$/g);
-  const out = (chunks ?? [text]).map((s) => s.trim()).filter(Boolean);
-  return out;
-}
+// Subset of TTS_AUDIO_TYPES that are standalone TTS voices (Spark/bicodec,
+// Dia/dac) rather than speech-LLMs (Orpheus/snac, Sesame CSM/csm) that speak
+// with their own voice and don't need a separate TTS picker.
+export const STANDALONE_TTS_AUDIO_TYPES = new Set(["bicodec", "dac"]);
 
 // For streaming: while the LLM is still writing, only fully-terminated sentences
 // are safe to synthesize; the trailing chunk is the sentence in progress.
-// Emoji / pictographs / symbol chars a TTS model can't pronounce -- it otherwise
-// voices their raw codepoints as gibberish. Stripped for speech only; the on-
-// screen chat text keeps them. Covers emoji, regional-indicator flags, keycaps,
-// variation selectors and the zero-width joiner.
-const SPEECH_STRIP_RE =
-  /[\p{Extended_Pictographic}\u{1F1E6}-\u{1F1FF}\u{20E3}\u{FE00}-\u{FE0F}\u{200D}]/gu;
-
-// Normalize text for TTS: some characters derail Orpheus (like the colon it reads
-// as a speaker tag) or get voiced literally by any TTS model. Em/en dashes and the
-// single-char ellipsis are the main offenders (an em dash breaks the voice), and
-// markdown/markup symbols get read out ("asterisk asterisk"). All of these are just
-// dropped (replaced with a space, not a comma, so no phantom pauses are inserted);
-// smart quotes are normalized. Speech ONLY -- the on-screen chat text keeps everything.
-function stripForSpeech(text: string): string {
-  return text
-    .replace(SPEECH_STRIP_RE, "")
-    .replace(/\s*[—–―‒−]\s*/g, " ") // — – ― ‒ −  -> drop
-    .replace(/\s*…\s*/g, " ") //                           …  -> drop
-    .replace(/\.{2,}/g, " ") //                                 ... -> drop
-    .replace(/[‐‑]/g, "-") //                          unicode hyphens -> ASCII
-    .replace(/[*_`~^|#<>\\{}[\]]/g, " ") //                      markdown / markup -> space
-    .replace(/[‘’‚‛]/g, "'") //             smart single quotes
-    .replace(/[“”„‟]/g, '"') //             smart double quotes
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function splitStreaming(text: string): {
+export function splitStreaming(text: string): {
   complete: string[];
   partial: string;
 } {
@@ -127,18 +100,12 @@ function streamPlaybackSupported(): boolean {
 // keeps the scheduler ~this many seconds ahead of generation, so a late chunk
 // (GPU jitter) doesn't starve playback into a gap/click. Costs ~this much extra
 // first-audio latency, still far below waiting for the whole clip.
-const STREAM_PREROLL_S = 0.35;
-
-// Sample rate assumed when /audio/speech/stream does not advertise one. The route
-// sends X-Sample-Rate and that is what is used; this is only the floor for a proxy
-// that strips the header.
-const STREAM_FALLBACK_SAMPLE_RATE = 24000;
-
-// One frame of silent 8 kHz mono PCM WAV. Short enough to be inaudible and to
-// finish inside the gesture, real enough that play() resolves instead of
-// rejecting -- which is the whole point of priming (see primeAudio).
-const SILENT_WAV_DATA_URI =
-  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
+// 0.35 was tuned on a box where the voice slot had the GPU to itself. Voice mode
+// now shares it with the chat model and the STT sidecar, and that contention shows
+// up as generation jitter rather than a slower average, so the old cushion drains
+// mid-sentence and playback skips. Buying ~0.65s of first-audio latency here is
+// worth it: a late first word is far less noticeable than a stuttering one.
+const STREAM_PREROLL_S = 1.0;
 
 export function useTtsPlayer(
   audioType: string | null | undefined,
@@ -163,11 +130,11 @@ export function useTtsPlayer(
   const [isPlaying, setIsPlaying] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const objectUrlRef = useRef<string | null>(null);
-  // Bumped on every stop()/new speak()/unmount so an in-flight /api/inference/audio/speech
+  // Bumped on every stop()/new speak()/unmount so an in-flight /api/audio/speech
   // response (or a queued sentence) can detect it was superseded and skip late
   // playback + state updates.
   const requestIdRef = useRef(0);
-  // Aborts in-flight /api/inference/audio/speech synth fetches on stop()/barge-in, so the
+  // Aborts in-flight /api/audio/speech synth fetches on stop()/barge-in, so the
   // backend voice slot stops grinding through stale sentences and is free to
   // synthesize the new turn immediately (llama-server cancels a slot when its
   // request connection closes).
@@ -181,7 +148,16 @@ export function useTtsPlayer(
   // stop() can immediately unwind a sentence that's mid-stream.
   const streamSourcesRef = useRef<Set<AudioBufferSourceNode>>(new Set());
   const streamLevelRafRef = useRef(0);
-  const streamResolveRef = useRef<(() => void) | null>(null);
+  // One unwind callback per sentence currently streaming. A set rather than a
+  // single slot because the lookahead keeps more than one in flight at a time.
+  const streamUnwindRef = useRef<Set<() => void>>(new Set());
+  // Absolute AudioContext time where the next PCM buffer should start. Shared
+  // across sentences so they chain onto ONE continuous timeline: the jitter
+  // buffer is paid once at the start of a reply, not again at every boundary.
+  const streamPlayHeadRef = useRef(0);
+  // Shared analyser for the orb level -- per-sentence ones would fight over
+  // voiceOutputLevel as soon as two sentences overlap.
+  const streamAnalyserRef = useRef<AnalyserNode | null>(null);
   const onPlaybackEndRef = useRef(onPlaybackEnd);
   onPlaybackEndRef.current = onPlaybackEnd;
 
@@ -199,7 +175,7 @@ export function useTtsPlayer(
   } | null>(null);
 
   const isTtsModel = TTS_AUDIO_TYPES.has(audioType ?? "") || voiceSlotLoaded;
-  // Stream PCM straight from /api/inference/audio/speech/stream (SNAC/Orpheus voice slot) and
+  // Stream PCM straight from /api/audio/speech/stream (SNAC/Orpheus voice slot) and
   // play it as it arrives, so first audio lands ~1s in instead of after the whole
   // clip. Only for the loaded voice slot (the streaming endpoint is SNAC-only); if
   // the stream 400s (non-SNAC), playSentenceStream falls back to the blocking blob.
@@ -214,16 +190,7 @@ export function useTtsPlayer(
     if (!audioRef.current) {
       audioRef.current = new Audio();
     }
-    // play() on a sourceless element rejects immediately, so the old call primed
-    // nothing and the catch hid it: the first real clip, arriving later from an
-    // async fetch, was then refused by autoplay policy and treated as finished --
-    // silent TTS. Give it something to actually play inside the gesture. The same
-    // element is reused by playBlob, so this unlocks the path that matters.
-    if (!audioRef.current.src) audioRef.current.src = SILENT_WAV_DATA_URI;
-    audioRef.current
-      .play()
-      .then(() => audioRef.current?.pause())
-      .catch(() => {});
+    audioRef.current.play().then(() => audioRef.current?.pause()).catch(() => {});
     void getPlayCtx()?.resume().catch(() => {});
   }, []);
 
@@ -271,9 +238,10 @@ export function useTtsPlayer(
     if (streamLevelRafRef.current) cancelAnimationFrame(streamLevelRafRef.current);
     streamLevelRafRef.current = 0;
     voiceOutputLevel.current = 0;
-    const resolve = streamResolveRef.current;
-    streamResolveRef.current = null;
-    resolve?.();
+    streamPlayHeadRef.current = 0;
+    const unwinds = [...streamUnwindRef.current];
+    streamUnwindRef.current.clear();
+    for (const unwind of unwinds) unwind();
   }, []);
 
   const stop = useCallback(() => {
@@ -356,13 +324,22 @@ export function useTtsPlayer(
     });
   }, []);
 
-  // Stream ONE sentence from /api/inference/audio/speech/stream and play its 24 kHz int16 PCM
-  // as it arrives (Web Audio, buffer sources scheduled back-to-back), so audio
-  // starts on the first chunk (~1s) instead of after the whole clip. Resolves true
-  // once playback finished or was cut; resolves FALSE without playing if the stream
-  // isn't usable (non-SNAC voice / error) so the caller can fall back to the blob.
+  // Stream ONE sentence from /api/audio/speech/stream as 24 kHz int16 PCM, played
+  // through Web Audio as it arrives.
+  //
+  // The fetch starts immediately, but nothing is scheduled until `gate` resolves
+  // (the previous sentence finished scheduling), so the voice slot can be
+  // generating sentence N+1 while N is still playing and the audio still comes out
+  // in order. That overlap is the whole point: synthesize strictly one at a time
+  // and every sentence boundary costs a full time-to-first-audio plus another
+  // STREAM_PREROLL_S of jitter buffer, which is audible as a break.
+  //
+  // Resolves true once this sentence is fully SCHEDULED -- not when it finishes
+  // playing; the shared playhead is what keeps the order. Resolves false without
+  // scheduling anything if the stream isn't usable (non-SNAC voice / error), so the
+  // caller can fall back to the blocking blob.
   const playSentenceStream = useCallback(
-    (sentence: string, reqId: number): Promise<boolean> => {
+    (sentence: string, reqId: number, gate: Promise<unknown>): Promise<boolean> => {
       return new Promise<boolean>((resolve) => {
         if (requestIdRef.current !== reqId) {
           resolve(true);
@@ -376,9 +353,13 @@ export function useTtsPlayer(
         void ctx.resume().catch(() => {});
         const voice = useChatRuntimeStore.getState().selectedVoiceName || "tara";
 
-        const analyser = ctx.createAnalyser();
-        analyser.fftSize = 256;
-        analyser.connect(ctx.destination);
+        if (!streamAnalyserRef.current) {
+          const node = ctx.createAnalyser();
+          node.fftSize = 256;
+          node.connect(ctx.destination);
+          streamAnalyserRef.current = node;
+        }
+        const analyser = streamAnalyserRef.current;
         const levelBuf = new Float32Array(analyser.fftSize);
         const runLevel = () => {
           analyser.getFloatTimeDomainData(levelBuf);
@@ -388,33 +369,23 @@ export function useTtsPlayer(
           streamLevelRafRef.current = requestAnimationFrame(runLevel);
         };
 
-        let playHead = 0;
-        let started = false;
-        let streamEnded = false;
-        let pending = 0;
         let settled = false;
+        let scheduledAny = false;
         let leftover: Uint8Array | null = null;
-        let sampleRate = STREAM_FALLBACK_SAMPLE_RATE;
+        // Before the gate opens, chunks pile up here instead of being scheduled --
+        // this sentence is generating ahead of its turn.
+        let open = false;
+        const queued: Uint8Array[] = [];
 
         const finish = (played: boolean) => {
           if (settled) return;
           settled = true;
-          streamResolveRef.current = null;
-          try {
-            analyser.disconnect();
-          } catch {
-            /* already gone */
-          }
-          if (streamLevelRafRef.current && streamSourcesRef.current.size === 0) {
-            cancelAnimationFrame(streamLevelRafRef.current);
-            streamLevelRafRef.current = 0;
-            voiceOutputLevel.current = 0;
-          }
-          if (requestIdRef.current === reqId) setIsPlaying(false);
+          streamUnwindRef.current.delete(unwind);
           resolve(played);
         };
-        // stop()/barge-in calls this (via stopStream) to unwind immediately.
-        streamResolveRef.current = () => finish(true);
+        // stop()/barge-in runs this (via stopStream) to unwind immediately.
+        const unwind = () => finish(true);
+        streamUnwindRef.current.add(unwind);
 
         const schedule = (bytes: Uint8Array) => {
           let data = bytes;
@@ -435,52 +406,79 @@ export function useTtsPlayer(
           const view = new DataView(data.buffer, data.byteOffset, usable);
           const f32 = new Float32Array(nSamples);
           for (let i = 0; i < nSamples; i++) f32[i] = view.getInt16(i * 2, true) / 32768;
-          const audioBuf = ctx.createBuffer(1, nSamples, sampleRate);
+          const audioBuf = ctx.createBuffer(1, nSamples, 24000);
           audioBuf.copyToChannel(f32, 0);
           const src = ctx.createBufferSource();
           src.buffer = audioBuf;
           src.connect(analyser);
-          // First buffer starts a jitter-buffer ahead (STREAM_PREROLL_S) so the
-          // scheduler stays ahead of the ~real-time generation; the rest chain
-          // gaplessly off the running playhead. The max() guard means a chunk that
-          // arrived late still schedules just ahead of now instead of in the past.
-          const startAt = !started
-            ? ctx.currentTime + STREAM_PREROLL_S
-            : Math.max(ctx.currentTime + 0.005, playHead);
+          // Chain off the SHARED playhead, so sentence N+1 lands flush against the
+          // tail of N. When the playhead is in the past -- the start of a reply, or
+          // after generation underran -- buy the jitter buffer back instead.
+          const head = streamPlayHeadRef.current;
+          const startAt =
+            head > ctx.currentTime
+              ? head
+              : ctx.currentTime + (scheduledAny ? 0.005 : STREAM_PREROLL_S);
           src.start(startAt);
-          playHead = startAt + audioBuf.duration;
+          streamPlayHeadRef.current = startAt + audioBuf.duration;
+          scheduledAny = true;
+          const wasIdle = streamSourcesRef.current.size === 0;
           streamSourcesRef.current.add(src);
-          pending++;
-          if (!started) {
-            started = true;
-            if (requestIdRef.current === reqId) setIsPlaying(true);
-            if (!streamLevelRafRef.current)
-              streamLevelRafRef.current = requestAnimationFrame(runLevel);
-          }
+          if (wasIdle && requestIdRef.current === reqId) setIsPlaying(true);
+          if (!streamLevelRafRef.current)
+            streamLevelRafRef.current = requestAnimationFrame(runLevel);
           src.onended = () => {
             streamSourcesRef.current.delete(src);
-            pending--;
-            if (streamEnded && pending <= 0) finish(true);
+            // The timeline is only actually idle when no sentence has anything
+            // left scheduled -- not merely when this one runs out.
+            if (streamSourcesRef.current.size === 0) {
+              if (streamLevelRafRef.current) {
+                cancelAnimationFrame(streamLevelRafRef.current);
+                streamLevelRafRef.current = 0;
+              }
+              voiceOutputLevel.current = 0;
+              if (requestIdRef.current === reqId) setIsPlaying(false);
+            }
           };
         };
 
+        const openGate = () => {
+          if (open || settled) return;
+          if (requestIdRef.current !== reqId) return;
+          open = true;
+          for (const chunk of queued) schedule(chunk);
+          queued.length = 0;
+        };
+        void gate.then(openGate, openGate);
+
         void (async () => {
+          let resp: Response;
           try {
-            const resp = await authFetch("/api/inference/audio/speech/stream", {
+            resp = await authFetch("/api/inference/audio/speech/stream", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ input: sentence, voice }),
               signal: synthAbortRef.current?.signal,
             });
-            if (!resp.ok || !resp.body) {
-              finish(false); // let the caller fall back to the blocking blob path
-              return;
-            }
-            // Read the rate the route actually decoded at rather than assuming the
-            // codec's. Every chunk of this response is decoded at one rate, and the
-            // first schedule() call happens below, so setting it here is in time.
-            const advertised = Number(resp.headers.get("X-Sample-Rate"));
-            if (Number.isFinite(advertised) && advertised > 0) sampleRate = advertised;
+          } catch {
+            // Aborted (stop / barge-in) or a network error. Still wait our turn
+            // before resolving, for the same reason as the 400 below.
+            await gate.catch(() => {});
+            finish(scheduledAny);
+            return;
+          }
+          if (!resp.ok || !resp.body) {
+            // Wait our turn even though we have nothing to schedule. The caller
+            // answers a false here by synthesizing and playing a blob on the
+            // shared <audio> element, and a 400 comes back almost instantly -- so
+            // resolving early would let every sentence in the window start its
+            // fallback at once and stamp over each other's playback. This is the
+            // path a Q2 Orpheus quant takes for EVERY sentence.
+            await gate.catch(() => {});
+            finish(false);
+            return;
+          }
+          try {
             const reader = resp.body.getReader();
             for (;;) {
               const { done: rdone, value } = await reader.read();
@@ -493,28 +491,42 @@ export function useTtsPlayer(
                 }
                 break;
               }
-              if (value && value.length) schedule(value);
+              if (!value || !value.length) continue;
+              if (open) schedule(value);
+              else queued.push(value);
             }
           } catch {
-            // aborted (stop / barge-in) or a network error
-          } finally {
-            streamEnded = true;
-            // Nothing scheduled means nothing was spoken: the request failed at the
-            // network layer, or a 200 closed before its first PCM chunk. Report that
-            // as unplayed so the caller falls back to the blob path (and, failing
-            // that, the browser voice) instead of advancing the loop in silence. A
-            // superseded request (stop / barge-in) still reads as played: the caller
-            // drops it on the request-id check either way, and a reply the user just
-            // cut off must not trigger a fallback.
-            if (pending <= 0) finish(started || requestIdRef.current !== reqId);
+            // aborted (stop / barge-in) or a network error mid-stream
           }
+          // Generation finished ahead of our turn: wait for it, flush, and only
+          // then resolve -- the next sentence gates on this, so it starts
+          // scheduling the moment we are done.
+          await gate.catch(() => {});
+          openGate();
+          finish(true);
         })();
       });
     },
     [],
   );
 
-  // POST one sentence to /api/inference/audio/speech and return the audio blob. If the
+  // Wait for the scheduled PCM timeline to actually run out. The sentence
+  // promises resolve once everything is SCHEDULED, so the end of a reply is a
+  // second or more ahead of them; without this the loop would re-arm the mic over
+  // the tail of its own last sentence.
+  const drainStream = useCallback(async (reqId: number): Promise<void> => {
+    const ctx = getPlayCtx();
+    for (;;) {
+      if (requestIdRef.current !== reqId) return;
+      if (streamSourcesRef.current.size === 0) return;
+      // Bound the wait by the timeline itself: a suspended context or a source
+      // that never fires onended must not strand the loop with the mic shut.
+      if (ctx && ctx.currentTime > streamPlayHeadRef.current + 0.5) return;
+      await new Promise<void>((r) => setTimeout(r, 50));
+    }
+  }, []);
+
+  // POST one sentence to /api/audio/speech and return the audio blob. If the
   // backend voice slot is gone (400 -- unloaded by a ChatPage remount, an auth
   // bounce, or a studio relaunch), reload it once via the store hook and retry,
   // so TTS heals itself instead of silently 400ing for the rest of the session.
@@ -547,76 +559,11 @@ export function useTtsPlayer(
     [],
   );
 
-  // Speak with the browser's own voice. Reached either because no backend TTS is
-  // available, or because backend synthesis produced nothing for this reply --
-  // in that second case it is the difference between a spoken answer and silence.
-  const speakWithBrowser = useCallback(
-    (sentences: string[], reqId: number) => {
-      if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-        onPlaybackEndRef.current?.();
-        return;
-      }
-      // Queue one utterance per sentence: gives the same chunked cadence and
-      // sidesteps Chrome's long-utterance cutoff bug. Completion fires on the
-      // last sentence; any error ends the loop.
-      setIsSpeaking(true);
-      let remaining = sentences.length;
-      const finish = () => {
-        // Tied to this speak() call, not merely to "some utterance is recorded".
-        // A cancelled utterance still fires onend/onerror, and after a quick
-        // stop-then-restart that stale event arrives with the NEW utterance
-        // recorded -- clearing its state and resuming the voice loop while the
-        // new speech was still queued.
-        if (requestIdRef.current !== reqId) return;
-        if (utteranceRef.current === null) return;
-        utteranceRef.current = null;
-        setIsSpeaking(false);
-        setIsPlaying(false);
-        onPlaybackEndRef.current?.();
-      };
-      const utterances = sentences.map((sentence) => {
-        const utterance = new SpeechSynthesisUtterance(sentence);
-        utterance.onstart = () => setIsPlaying(true);
-        // Both handlers can fire for a cancelled utterance long after stop():
-        // speechSynthesis.cancel() reports the old utterance's end/error
-        // asynchronously, by which time the replacement reply may already be
-        // queued. Only the current request may touch playback state or the global
-        // queue, or that stale event kills the new reply too; finish() re-checks
-        // the same id for the same reason.
-        utterance.onend = () => {
-          if (requestIdRef.current !== reqId) return;
-          setIsPlaying(false);
-          remaining -= 1;
-          if (remaining <= 0) finish();
-        };
-        utterance.onerror = () => {
-          if (requestIdRef.current !== reqId) return;
-          window.speechSynthesis.cancel();
-          finish();
-        };
-        return utterance;
-      });
-      // Sentinel so stop()/stopSynth() knows synth playback is active.
-      utteranceRef.current = utterances[utterances.length - 1] ?? null;
-      for (const utterance of utterances) window.speechSynthesis.speak(utterance);
-    },
-    // Empty on purpose: everything closed over is a ref or a setState, all stable
-    // for the life of the hook. A dependency here would give speak() a new identity
-    // every render and restart the loop's effects mid-conversation.
-    [],
-  );
-
   const speak = useCallback(
     async (text: string) => {
       stop();
       text = stripForSpeech(text);
-      if (!text) {
-        // Emoji-only or pure markup: nothing to say, but the turn still has to end
-        // like any other, or the loop never resumes listening (beginStream has
-        // already stopped dictation by the time endStream reaches here).
-        onPlaybackEndRef.current?.();
-        return;
-      }
+      if (!text) return;
       // stop() above bumped the counter; this is now our request's id.
       const reqId = requestIdRef.current;
       const sentences = splitIntoSentences(text);
@@ -627,29 +574,40 @@ export function useTtsPlayer(
 
       if (isTtsModel) {
         setIsSpeaking(true);
-        // Whether the backend produced any audio at all for this reply.
-        let playedAnything = false;
 
         if (streamMode) {
           // Stream each sentence's PCM and play it as it generates (first audio in
-          // ~1s). Sequential per sentence: the single voice slot generates one at a
-          // time, so there's nothing to pre-synthesize ahead.
+          // ~1s). Up to voiceParallelN generate at once, gated so they still
+          // schedule in order -- the next sentence is already buffered when the
+          // current one runs out, so the boundary has no synth gap in it.
+          const N = Math.min(
+            sentences.length,
+            Math.max(1, useChatRuntimeStore.getState().voiceParallelN),
+          );
+          let gate: Promise<unknown> = Promise.resolve();
+          const inflight: Array<Promise<void>> = [];
           for (let i = 0; i < sentences.length; i++) {
             if (requestIdRef.current !== reqId) return;
-            const played = await playSentenceStream(sentences[i], reqId);
-            if (requestIdRef.current !== reqId) return;
-            if (played) {
-              playedAnything = true;
-            } else {
-              // Stream not usable (non-SNAC voice) -> blocking blob fallback.
-              const blob = await requestSpeechBlob(sentences[i]);
-              if (requestIdRef.current !== reqId) return;
-              if (blob) {
-                playedAnything = true;
-                await playBlob(blob, reqId);
-              }
+            const sentence = sentences[i] ?? "";
+            const job = playSentenceStream(sentence, reqId, gate).then(
+              async (played) => {
+                if (played || requestIdRef.current !== reqId) return;
+                // Stream not usable (non-SNAC voice) -> blocking blob fallback.
+                const blob = await requestSpeechBlob(sentence);
+                if (requestIdRef.current !== reqId) return;
+                if (blob) await playBlob(blob, reqId);
+              },
+            );
+            gate = job;
+            inflight.push(job);
+            while (inflight.length >= N) {
+              const head = inflight.shift();
+              if (head) await head;
             }
           }
+          for (const job of inflight) await job;
+          if (requestIdRef.current !== reqId) return;
+          await drainStream(reqId);
         } else {
           const synth = (sentence: string): Promise<Blob | null> =>
             requestSpeechBlob(sentence);
@@ -678,34 +636,62 @@ export function useTtsPlayer(
             // Refill the window so N stay in flight ahead of playback.
             launchUpTo(i + 1 + N);
             if (!blob) continue;  // skip a sentence that failed to synthesize
-            playedAnything = true;
             await playBlob(blob, reqId);
           }
         }
 
         if (requestIdRef.current !== reqId) return;
-        if (!playedAnything) {
-          // Every sentence failed to synthesize. That is what a codec the speech
-          // route cannot serve looks like from here -- a GGUF CSM model reports
-          // audio_type "csm" but the llama.cpp decoder only does snac, bicodec and
-          // dac -- and it also covers a slot that went away mid-reply. Either way
-          // the reply must still be spoken, so fall through to browser speech
-          // rather than ending in silence.
-          speakWithBrowser(sentences, reqId);
-          return;
-        }
         setIsSpeaking(false);
         onPlaybackEndRef.current?.();
       } else {
-        speakWithBrowser(sentences, reqId);
+        if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+          onPlaybackEndRef.current?.();
+          return;
+        }
+        // Queue one utterance per sentence: gives the same chunked cadence and
+        // sidesteps Chrome's long-utterance cutoff bug. Completion fires on the
+        // last sentence; any error ends the loop.
+        setIsSpeaking(true);
+        let remaining = sentences.length;
+        const finish = () => {
+          if (utteranceRef.current === null) return;
+          utteranceRef.current = null;
+          setIsSpeaking(false);
+          setIsPlaying(false);
+          onPlaybackEndRef.current?.();
+        };
+        const utterances = sentences.map((sentence) => {
+          const utterance = new SpeechSynthesisUtterance(sentence);
+          utterance.onstart = () => setIsPlaying(true);
+          utterance.onend = () => {
+            setIsPlaying(false);
+            remaining -= 1;
+            if (remaining <= 0) finish();
+          };
+          utterance.onerror = () => {
+            window.speechSynthesis.cancel();
+            finish();
+          };
+          return utterance;
+        });
+        // Sentinel so stop()/stopSynth() knows synth playback is active.
+        utteranceRef.current = utterances[utterances.length - 1] ?? null;
+        for (const utterance of utterances) window.speechSynthesis.speak(utterance);
       }
     },
-    [isTtsModel, streamMode, stop, playBlob, playSentenceStream, requestSpeechBlob, speakWithBrowser],
+    [
+      isTtsModel,
+      streamMode,
+      stop,
+      playBlob,
+      playSentenceStream,
+      requestSpeechBlob,
+      drainStream,
+    ],
   );
 
-
   // ── Streaming TTS ───────────────────────────────────────────────
-  // POST one sentence to /api/inference/audio/speech; null on failure.
+  // POST one sentence to /api/audio/speech; null on failure.
   const synthOne = useCallback(
     (sentence: string): Promise<Blob | null> => {
       // Strip emoji here -- the single synth chokepoint for streaming, hit by both
@@ -756,9 +742,15 @@ export function useTtsPlayer(
     };
     if (!isTtsModel) return;
     setIsSpeaking(true);
-    // Whether the backend produced any audio at all across the whole reply.
-    let playedAnything = false;
     void (async () => {
+      // Stream mode keeps up to voiceParallelN sentences generating at once. They
+      // are chained on `gate` so they schedule in order however they finish, and
+      // `inflight` bounds how far ahead the voice slot may run -- too far and a
+      // barge-in throws away more audio than it saves.
+      let gate: Promise<unknown> = Promise.resolve();
+      const inflight: Array<Promise<void>> = [];
+      const parallelN = () =>
+        Math.max(1, useChatRuntimeStore.getState().voiceParallelN);
       while (true) {
         if (requestIdRef.current !== reqId) return;
         const st = streamRef.current;
@@ -770,17 +762,20 @@ export function useTtsPlayer(
             const sentence = stripForSpeech(st.sentences[st.playIndex] ?? "");
             st.playIndex++;
             if (sentence) {
-              const played = await playSentenceStream(sentence, reqId);
-              if (requestIdRef.current !== reqId) return;
-              if (played) {
-                playedAnything = true;
-              } else {
-                const blob = await synthOne(sentence);
-                if (requestIdRef.current !== reqId) return;
-                if (blob) {
-                  playedAnything = true;
-                  await playBlob(blob, reqId);
-                }
+              const job = playSentenceStream(sentence, reqId, gate).then(
+                async (played) => {
+                  if (played || requestIdRef.current !== reqId) return;
+                  const blob = await synthOne(sentence);
+                  if (requestIdRef.current !== reqId) return;
+                  if (blob) await playBlob(blob, reqId);
+                },
+              );
+              gate = job;
+              inflight.push(job);
+              const limit = parallelN();
+              while (inflight.length >= limit) {
+                const head = inflight.shift();
+                if (head) await head;
               }
             }
           } else {
@@ -789,10 +784,7 @@ export function useTtsPlayer(
             if (requestIdRef.current !== reqId) return;
             st.playIndex++;
             pumpSynth(); // playback advanced -> refill the lookahead window
-            if (blob) {
-              playedAnything = true;
-              await playBlob(blob, reqId);
-            }
+            if (blob) await playBlob(blob, reqId);
           }
         } else if (st.final) {
           break;
@@ -800,20 +792,13 @@ export function useTtsPlayer(
           await new Promise<void>((r) => setTimeout(r, 40));
         }
       }
+      for (const job of inflight) await job;
       if (requestIdRef.current !== reqId) return;
-      const spoken = streamRef.current?.sentences ?? [];
-      streamRef.current = null;
-      if (!playedAnything && spoken.length > 0) {
-        // The backend produced nothing for the entire reply. That is what a codec
-        // the speech route cannot serve looks like from here -- a GGUF CSM model
-        // reports audio_type "csm", but the llama.cpp decoder only does snac,
-        // bicodec and dac -- and it also covers a voice slot that went away
-        // mid-reply. In voice mode silence is indistinguishable from a hung loop,
-        // so say it with the browser voice rather than say nothing.
-        speakWithBrowser(spoken, reqId);
-        return;
-      }
+      // Everything is scheduled, but the tail is still seconds from playing out.
+      if (streamMode) await drainStream(reqId);
+      if (requestIdRef.current !== reqId) return;
       setIsSpeaking(false);
+      streamRef.current = null;
       onPlaybackEndRef.current?.();
     })();
   }, [
@@ -824,7 +809,7 @@ export function useTtsPlayer(
     pumpSynth,
     playSentenceStream,
     synthOne,
-    speakWithBrowser,
+    drainStream,
   ]);
 
   // Feed the growing assistant text; records newly-complete sentences and lets the

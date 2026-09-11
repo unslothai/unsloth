@@ -157,6 +157,8 @@ export type PermissionMode = "ask" | "auto" | "off" | "full";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
 const CHAT_VOICE_MODEL_ID_KEY = "unsloth_chat_voice_model_id";
+const CHAT_STT_MODEL_ID_KEY = "unsloth_chat_stt_model_id";
+const CHAT_MIC_DEVICE_ID_KEY = "unsloth_chat_mic_device_id";
 const CHAT_VOICE_PARALLEL_KEY = "unsloth_chat_voice_parallel";
 const CHAT_VOICE_VARIANT_KEY = "unsloth_chat_voice_variant";
 const CHAT_VOICE_NAME_KEY = "unsloth_chat_voice_name";
@@ -2892,6 +2894,13 @@ type ChatRuntimeStore = {
   voiceMode: "off" | "configuring" | "active";
   /** The LoRA/GGUF model ID chosen for the voice slot. Persisted. */
   selectedVoiceModelId: string | null;
+  /** Whisper checkpoint the loop transcribes with (null = backend default).
+   *  Persisted. */
+  selectedSttModelId: string | null;
+  /** Input device the loop captures from (null = browser default). Pinning it
+   *  matters: a default-communications device or a "Stereo Mix" loopback mixes in
+   *  system audio, so the loop hears the model's own voice. Persisted. */
+  selectedMicDeviceId: string | null;
   /** Named speaker for Orpheus (snac) TTS -- tara/leo/jess/etc. Orpheus randomizes
    *  the voice unless a speaker is pinned, so this is sent with every synth call.
    *  Persisted so the choice sticks across reloads. */
@@ -2948,6 +2957,8 @@ type ChatRuntimeStore = {
   setSelectedVoiceModelId: (id: string | null) => void;
   setSelectedVoiceName: (name: string) => void;
   setVoiceParallelN: (n: number) => void;
+  setSelectedSttModelId: (id: string | null) => void;
+  setSelectedMicDeviceId: (id: string | null) => void;
   setSelectedVoiceVariant: (variant: string | null) => void;
   setVoiceSlotLoading: (loading: boolean) => void;
   setVoiceSlotLoaded: (loaded: boolean) => void;
@@ -4650,6 +4661,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeNativePathExpiresAtMs: null,
   voiceMode: "off" as const,
   selectedVoiceModelId: loadString(CHAT_VOICE_MODEL_ID_KEY, "") || null,
+  selectedSttModelId: loadString(CHAT_STT_MODEL_ID_KEY, "") || null,
+  selectedMicDeviceId: loadString(CHAT_MIC_DEVICE_ID_KEY, "") || null,
   selectedVoiceName: loadString(CHAT_VOICE_NAME_KEY, "tara") || "tara",
   voiceParallelN: Math.min(4, Math.max(1, Number(loadString(CHAT_VOICE_PARALLEL_KEY, "1")) || 1)),
   selectedVoiceVariant: loadString(CHAT_VOICE_VARIANT_KEY, "") || null,
@@ -4901,6 +4914,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set(() => {
       saveString(CHAT_VOICE_MODEL_ID_KEY, selectedVoiceModelId ?? "");
       return { selectedVoiceModelId };
+    }),
+  setSelectedSttModelId: (selectedSttModelId) =>
+    set(() => {
+      saveString(CHAT_STT_MODEL_ID_KEY, selectedSttModelId ?? "");
+      return { selectedSttModelId };
+    }),
+  setSelectedMicDeviceId: (selectedMicDeviceId) =>
+    set(() => {
+      saveString(CHAT_MIC_DEVICE_ID_KEY, selectedMicDeviceId ?? "");
+      return { selectedMicDeviceId };
     }),
   setVoiceParallelN: (n) =>
     set(() => {

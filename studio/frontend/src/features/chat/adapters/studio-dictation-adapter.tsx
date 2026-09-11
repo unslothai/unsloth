@@ -18,6 +18,8 @@ import {
   type StudioDictationSession,
   StudioWebSpeechDictationAdapter,
 } from "./studio-web-speech-dictation-adapter";
+import { StudioWhisperDictationAdapter } from "./studio-whisper-dictation-adapter";
+import { getVoiceMode } from "../voice/voice-loop-bridge";
 
 // The one live dictation session, so Escape can discard it without going
 // through assistant-ui (which only exposes stop, i.e. transcribe). Cancelling
@@ -94,6 +96,16 @@ export class StudioDictationAdapter implements DictationAdapter {
 
   private createSession(): StudioDictationSession {
     const { dictationEngine } = useVoiceSettingsStore.getState();
+    // The conversation loop needs an adapter that owns its own turn: capture,
+    // end-of-utterance, transcribe, submit, re-arm. The dictation adapters here
+    // deliberately do none of that -- they record until told to stop, which is
+    // right for a Dictate button and leaves a continuous loop with nothing to
+    // end a turn on.
+    if (getVoiceMode() === "active" && usesRecordedAudio(dictationEngine)) {
+      if (StudioWhisperDictationAdapter.isSupported()) {
+        return new StudioWhisperDictationAdapter().listen();
+      }
+    }
     if (usesRecordedAudio(dictationEngine)) {
       if (dictationEngine === "custom" && !customSttConfigured()) {
         throw new Error(

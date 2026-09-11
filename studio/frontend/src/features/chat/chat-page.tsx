@@ -25,6 +25,11 @@ import {
 } from "@/features/chat/voice/voice-loop-bridge";
 import { VoiceModelSelector } from "@/components/assistant-ui/voice-model-selector";
 import { VoiceNamePicker } from "@/components/assistant-ui/voice-name-picker";
+import { SttModelSelector } from "@/components/assistant-ui/stt-model-selector";
+import {
+  STT_MODELS,
+  sttModelName,
+} from "@/features/settings/stores/stt-model-catalog";
 import { authFetch } from "@/features/auth";
 import { VOICE_SLOT_AUDIO_TYPES } from "@/features/chat/hooks/use-tts-player";
 import { chatModelOwnsItsVoice } from "./voice/speech-llm.ts";
@@ -2468,6 +2473,10 @@ export function ChatPage({
   const voiceSlotLoading = useChatRuntimeStore((s) => s.voiceSlotLoading);
   const setVoiceSlotLoading = useChatRuntimeStore((s) => s.setVoiceSlotLoading);
   const voiceSlotLoaded = useChatRuntimeStore((s) => s.voiceSlotLoaded);
+  const selectedSttModelId = useChatRuntimeStore((s) => s.selectedSttModelId);
+  const setSelectedSttModelId = useChatRuntimeStore(
+    (s) => s.setSelectedSttModelId,
+  );
   const [cachedGgufs, setCachedGgufs] = useState<LoraModelOption[]>([]);
   const cachedGgufsFetchedRef = useRef(false);
 
@@ -4221,6 +4230,19 @@ export function ChatPage({
   // here uses it purely as the voice for a separate chat model, which is exactly the
   // "hear the voice you fine-tuned" case, and it is what the Orpheus default below
   // already offers.
+  // Listening side of the pair. The PR shipped its own Whisper list; upstream now
+  // curates one (Qwen3-ASR alongside the Whisper sizes), so read that rather than
+  // keep a second list that would drift from Settings > Voice.
+  const sttModels = useMemo<LoraModelOption[]>(
+    () =>
+      STT_MODELS.map((id) => ({
+        id,
+        name: sttModelName(id),
+        isGguf: true,
+      })),
+    [],
+  );
+
   const ttsModels = useMemo<LoraModelOption[]>(() => {
     const fromLoras = loraModels.filter(
       (m) =>
@@ -4539,6 +4561,16 @@ export function ChatPage({
               />
             )}
             {view.mode !== "compare" && voiceMode !== "off" && <VoiceNamePicker />}
+            {view.mode !== "compare" && voiceMode !== "off" && (
+              <SttModelSelector
+                models={sttModels}
+                value={selectedSttModelId}
+                onValueChange={setSelectedSttModelId}
+                disabled={!hasActiveModel}
+                ready={true}
+                className="!h-[34px]"
+              />
+            )}
             {view.mode !== "compare" && currentProjectId && (
               <nav
                 aria-label="Project location"
