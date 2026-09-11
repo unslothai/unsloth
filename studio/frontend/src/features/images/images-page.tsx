@@ -166,7 +166,7 @@ import {
   shouldReportGenerateError,
 } from "./lib/generation-stop";
 import { useNavigate, useSearch } from "@tanstack/react-router";
-import { useStagedDownload } from "@/features/hub/download-manager";
+import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
 import {
   TrainBaseSelector,
@@ -2533,9 +2533,18 @@ export function ImagesPage({
     },
     [pickGuard, revertPick],
   );
+  // Each download-only selection keeps its complete plan until it finishes or is cancelled.
+  const downloadOnlyPlans = useRef<StagedDownloadEntry[][]>([]);
+  const pendingLoadEntries = useRef<StagedDownloadEntry[] | null>(null);
+
   const { stage } = useStagedDownload({
     scopeId: "diffusion",
     onReady: () => {
+      if (downloadOnlyPlans.current.length > 0) {
+        finishDownloadOnlyPlan();
+        return;
+      }
+      pendingLoadEntries.current = null;
       if (!active) {
         stagedLoadDeferred.current = true;
         return;
@@ -2544,6 +2553,11 @@ export function ImagesPage({
       if (pending) runStagedLoad(pending);
     },
     onCancelled: () => {
+      if (downloadOnlyPlans.current.length > 0) {
+        finishDownloadOnlyPlan();
+        return;
+      }
+      pendingLoadEntries.current = null;
       // The selected model is only an intent until every dependency is ready: a cancelled companion
       // must not leave that intent behind for a late completion to load.
       pendingStagedLoad.current = null;
@@ -2557,6 +2571,22 @@ export function ImagesPage({
       stagedQuantRevert.current = null;
     },
   });
+
+  function finishDownloadOnlyPlan() {
+    downloadOnlyPlans.current.shift();
+    const next = downloadOnlyPlans.current[0];
+    if (next) {
+      stage(next);
+      return;
+    }
+    const entries = pendingLoadEntries.current;
+    const pending = pendingStagedLoad.current;
+    if (entries && pending && pickGuard.isLatest(pending.token)) {
+      stage(entries);
+    } else {
+      pendingLoadEntries.current = null;
+    }
+  }
 
   useEffect(() => {
     if (!active || !stagedLoadDeferred.current) return;
@@ -2611,6 +2641,7 @@ export function ImagesPage({
       // The previous pick's staged intent dies with it: a pick that stages nothing never calls
       // stage(), so the queue keeps the older job and its onReady loads the abandoned model.
       pendingStagedLoad.current = null;
+      pendingLoadEntries.current = null;
       stagedLoadDeferred.current = false;
       stagedQuantRevert.current = null;
       const owns = () => token === undefined ||
@@ -2633,8 +2664,8 @@ export function ImagesPage({
       let incompatible: string | null = null;
       try {
         const plan = await requestDownloadPlan(repoId, opts, advanced);
-        // Superseded. Report started so this pick's `.then` leaves the newer label alone.
-        if (pick !== pickSeq.current || !owns()) return true;
+        // Only load intents are superseded; accepted downloads keep their own plans.
+        if (!downloadOnly && (pick !== pickSeq.current || !owns())) return true;
         if (downloadOnly && plan.plan_failed) {
           throw new Error("Required asset metadata is incomplete. Retry when it is available.");
         }
@@ -2649,32 +2680,32 @@ export function ImagesPage({
             };
             stagedQuantRevert.current = ownRevert;
           }
-          stage(
-            plan.entries.map((e) => ({
-              repoId: e.repo_id,
-              files: e.files,
-              bytes: e.bytes,
-              ggufFilename: e.gguf_filename,
-              // The entry carrying the picked checkpoint file, so the panel can label it without guessing:
-              // filenames cannot tell the two apart, and repo identity is not enough when a checkpoint shares
-              // its repo with cached companions. The backend's answer wins, since a gated pipeline is staged
-              // from an ungated MIRROR. Nullish coalescing, not `or`: a planner answering false is still an answer.
-              checkpoint:
-                e.checkpoint ??
-                (opts.filename
-                  ? e.files.includes(opts.filename)
-                  : e.repo_id === repoId),
-            })),
-          );
+          const entries = plan.entries.map((e) => ({
+            repoId: e.repo_id,
+            files: e.files,
+            bytes: e.bytes,
+            ggufFilename: e.gguf_filename,
+            // Keep the planner's checkpoint marker, including explicit false for companions.
+            checkpoint:
+              e.checkpoint ??
+              (opts.filename
+                ? e.files.includes(opts.filename)
+                : e.repo_id === repoId),
+          }));
+          if (downloadOnly) {
+            downloadOnlyPlans.current.push(entries);
+            if (downloadOnlyPlans.current.length === 1) stage(entries);
+          } else {
+            pendingLoadEntries.current = entries;
+            if (downloadOnlyPlans.current.length === 0) stage(entries);
+          }
           return true;
         }
       } catch (error) {
         if (downloadOnly) {
-          if (pick === pickSeq.current && owns()) {
-            toast.error("Could not plan the download", {
-              description: error instanceof Error ? error.message : "Try selecting the model again.",
-            });
-          }
+          toast.error("Could not plan the download", {
+            description: error instanceof Error ? error.message : "Try selecting the model again.",
+          });
           return true;
         }
         // No plan (older backend, metadata hiccup): fall back to the load's own download.
@@ -2682,7 +2713,7 @@ export function ImagesPage({
         if (pendingDownloadPick.current === token) pendingDownloadPick.current = null;
       }
       // Re-checked: a plan that REJECTED after a newer pick would otherwise reach the fallback load.
-      if (pick !== pickSeq.current || !owns()) return true;
+      if (!downloadOnly && (pick !== pickSeq.current || !owns())) return true;
       if (incompatible) {
         toast.error(incompatible);
         return downloadOnly;

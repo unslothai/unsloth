@@ -1625,7 +1625,7 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
     first plan is still in flight. Plans then resolve in RESPONSE order, not pick order: the older
     one would restage over the newer queue, or fall through and load the model the user left.
 
-    So each pick takes a sequence number and gives up if a newer one has been made since. It must
+    Each load pick takes a sequence number and gives up if a newer one has been made since. It must
     report started, not failed: returning false would send this pick's `.then` rollback at a label
     the newer pick now owns. Every exit that acts on the pick is covered, not just the one after a
     successful plan -- a rejected plan falls through to the load, and a pick that never asks for a
@@ -1652,7 +1652,8 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
             'if (source !== "hub"'
         ), f"{rel}: a non-hub pick returns without invalidating an in-flight hub plan"
         guards = re.findall(
-            r"if \(pick !== pickSeq\.current(?: \|\| !owns\(\))?\) return (\w+);", text
+            r"if \((?:!downloadOnly && \()?pick !== pickSeq\.current(?: \|\| !owns\(\))?\){1,2} return (\w+);",
+            text,
         )
         assert guards, f"{rel}: a superseded plan is not dropped"
         assert (
@@ -1661,7 +1662,7 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
         # The fallback load after a rejected plan is guarded too.
         tail = text[text.rindex("} catch") :]
         assert re.search(
-            r"if \(pick !== pickSeq\.current(?: \|\| !owns\(\))?\) return true;.*?return handleLoadRef",
+            r"if \((?:!downloadOnly && \()?pick !== pickSeq\.current(?: \|\| !owns\(\))?\){1,2} return true;.*?return handleLoadRef",
             tail,
             re.S,
         ), f"{rel}: a plan that rejected after a newer pick still reaches the fallback load"
