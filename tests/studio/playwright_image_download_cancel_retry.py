@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from playwright.sync_api import Route, sync_playwright
+from playwright.sync_api import Route, expect, sync_playwright
 
 from playwright_image_model_footprint import (
     BASE_URL,
@@ -40,6 +40,7 @@ ART_DIR.mkdir(parents = True, exist_ok = True)
 EXPECT = os.environ.get("PW_EXPECT", "after").strip().lower()
 if EXPECT not in {"before", "after"}:
     raise ValueError("PW_EXPECT must be 'before' or 'after'")
+DOWNLOAD_ONLY = os.environ.get("PW_DOWNLOAD_ONLY", "0") == "1"
 CHECKPOINT_CACHED = os.environ.get("PW_CHECKPOINT_CACHED", "1").strip() != "0"
 if EXPECT == "before" and not CHECKPOINT_CACHED:
     raise ValueError("The before-state requires PW_CHECKPOINT_CACHED=1")
@@ -89,6 +90,21 @@ def _open_quant(page, *, navigate: bool) -> None:
         page.goto(f"{BASE_URL}/images", wait_until = "domcontentloaded")
     trigger = page.get_by_role("button", name = "Select image model")
     trigger.wait_for(state = "visible", timeout = 30_000)
+    # Finish input scrolling before opening the dismiss-on-scroll picker.
+    page.evaluate("""async () => {
+        const scrollers = [...document.querySelectorAll('*')]
+            .filter(el => el.scrollHeight > el.clientHeight);
+        let last = '', stable = 0;
+        await new Promise(resolve => {
+            function frame() {
+                const positions = scrollers.map(el => el.scrollTop).join(',');
+                stable = positions === last ? stable + 1 : 0;
+                last = positions;
+                if (stable >= 8) resolve(); else requestAnimationFrame(frame);
+            }
+            requestAnimationFrame(frame);
+        });
+    }""")
     trigger.click()
     klein_row(page).click()
     gguf = page.get_by_text("GGUF", exact = True)
@@ -114,6 +130,7 @@ def main() -> None:
         "plan_snapshots": [],
     }
     page_errors: list[str] = []
+    unload_calls = []
 
     def download_plan() -> dict[str, object]:
         entries = [_entry(COMPANION_REPO)]
@@ -188,7 +205,11 @@ def main() -> None:
         }
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless = True)
+        engine = getattr(playwright, os.environ.get("PW_BROWSER", "chromium"))
+        executable = os.environ.get("PW_EXECUTABLE")
+        browser = engine.launch(
+            headless = True, **({"executable_path": executable} if executable else {})
+        )
         context = browser.new_context(
             viewport = {"width": 1440, "height": 900},
             reduced_motion = "reduce",
@@ -261,6 +282,10 @@ def main() -> None:
             if path in {"/api/hub/gguf-download-progress", "/api/hub/download-progress"}:
                 _json(route, job_progress(query["repo_id"][0]))
                 return
+            if path == "/api/inference/images/unload" and request.method == "POST":
+                unload_calls.append(payload)
+                _json(route, _status(loaded = False))
+                return
             if path == "/api/inference/images/load" and request.method == "POST":
                 state["load_calls"] = int(state["load_calls"]) + 1
                 state["load_payloads"].append(payload)
@@ -313,7 +338,14 @@ def main() -> None:
         page = context.new_page()
         page.on("pageerror", lambda exc: page_errors.append(str(exc)))
 
-        _open_quant(page, navigate = True)
+        if DOWNLOAD_ONLY:
+            page.goto(f"{BASE_URL}/images", wait_until = "domcontentloaded")
+            page.get_by_role("button", name = "Advanced", exact = True).click()
+            page.get_by_role("combobox", name = "On model selection").click()
+            page.get_by_role("option", name = "Download only", exact = True).click()
+            page.get_by_role("textbox", name = "Steps", exact = True).fill("17")
+            page.get_by_role("textbox", name = "Guidance", exact = True).fill("2.5")
+        _open_quant(page, navigate = not DOWNLOAD_ONLY)
         if EXPECT == "before":
             deadline = time.monotonic() + 20
             while int(state["load_calls"]) < 1 and time.monotonic() < deadline:
@@ -379,6 +411,21 @@ def main() -> None:
         assert state["load_calls"] == 0, "cancelled staging unexpectedly loaded the model"
 
         _open_quant(page, navigate = False)
+        if DOWNLOAD_ONLY:
+            page.locator(".hub-download-panel li").filter(has_text = COMPANION_REPO).get_by_text(
+                "Downloaded", exact = True
+            ).wait_for(timeout = 20_000)
+            assert state["starts"] == [*expected_initial_starts, COMPANION_REPO], state["starts"]
+            assert state["load_calls"] == 0, "download-only completion loaded the model"
+            assert state["loaded"] is False and not unload_calls
+            expect(page.get_by_role("textbox", name = "Steps", exact = True)).to_have_value("17")
+            expect(page.get_by_role("textbox", name = "Guidance", exact = True)).to_have_value("2.5")
+            assert not page_errors, page_errors
+            browser.close()
+            print(
+                "PASS download-only cancel, retry and completion preserve the generation settings"
+            )
+            return
         page.locator("[data-sonner-toast]").filter(has_text = "Loading to GPU").wait_for(
             state = "visible", timeout = 20_000
         )

@@ -682,7 +682,7 @@ function AdvancedSelect({
           {badge}
         </span>
         <Select value={value} onValueChange={onValueChange}>
-          <SelectTrigger className="h-8 w-[160px] text-xs">
+          <SelectTrigger aria-label={label} className="h-8 w-[160px] text-xs">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -1265,6 +1265,7 @@ export function ImagesPage({
   );
   // Advanced (load-time) options; "auto"/"off"/"none" map to the backend defaults. Changing one
   // while loaded shows "Reapply".
+  const [modelSelectionAction, setModelSelectionAction] = useState<"load" | "download">("load");
   const [speedMode, setSpeedMode] = useState<"auto" | "off" | "eager" | "default" | "max">("auto");
   const [transformerQuant, setTransformerQuant] = useState<
     "none" | "auto" | "int8" | "fp8" | "nvfp4" | "mxfp8"
@@ -1409,7 +1410,8 @@ export function ImagesPage({
   const claimImageRecipe = imagePresets.claimRecipe;
   const imageFormClaimId = imagePresets.formClaimId;
   const applyImageModelDefaults = useCallback(
-    (repoId: string) => {
+    (repoId: string, forceLoad = false) => {
+      if (modelSelectionAction === "download" && !forceLoad) return;
       const revert = quantRevert.current;
       if (revert && !revert.releaseRecipeClaim) {
         const claim = claimImageRecipe();
@@ -1429,7 +1431,7 @@ export function ImagesPage({
         revert.appliedGuidance = recommended.guidance;
       }
     },
-    [claimImageRecipe, imageFormClaimId],
+    [claimImageRecipe, imageFormClaimId, modelSelectionAction],
   );
 
   const dismissLoadToast = useCallback(() => {
@@ -2603,6 +2605,7 @@ export function ImagesPage({
       // plans resolve in response order rather than pick order. Bumped before the non-hub return too, so
       // a local pick invalidates an in-flight hub plan.
       const pick = ++pickSeq.current;
+      const downloadOnly = modelSelectionAction === "download";
       // The previous pick's staged intent dies with it: a pick that stages nothing never calls
       // stage(), so the queue keeps the older job and its onReady loads the abandoned model.
       pendingStagedLoad.current = null;
@@ -2610,7 +2613,7 @@ export function ImagesPage({
       stagedQuantRevert.current = null;
       const owns = () => token === undefined || pickGuard.holds(token);
       if (!owns()) return true;
-      if (source !== "hub") return handleLoadRef.current(repoId, opts);
+      if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts);
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
       const advanced = currentLoadAdvanced(repoId);
       // Read before the await: a pick made while the plan resolves replaces quantRevert, and this
@@ -2625,13 +2628,15 @@ export function ImagesPage({
         if (pick !== pickSeq.current || !owns()) return true;
         incompatible = plan.incompatible_reason ?? null;
         if (!incompatible && plan.entries.length > 0) {
-          pendingStagedLoad.current = {
-            repoId,
-            opts,
-            advanced,
-            token: token ?? pickGuard.claim(),
-          };
-          stagedQuantRevert.current = ownRevert;
+          if (!downloadOnly) {
+            pendingStagedLoad.current = {
+              repoId,
+              opts,
+              advanced,
+              token: token ?? pickGuard.claim(),
+            };
+            stagedQuantRevert.current = ownRevert;
+          }
           stage(
             plan.entries.map((e) => ({
               repoId: e.repo_id,
@@ -2649,9 +2654,19 @@ export function ImagesPage({
                   : e.repo_id === repoId),
             })),
           );
+          // Restore the resident selection while a download-only job runs.
+          return !downloadOnly;
+        }
+      } catch (error) {
+        if (downloadOnly) {
+          if (pick === pickSeq.current && owns()) {
+            toast.error("Could not plan the download", {
+              description: error instanceof Error ? error.message : "Try selecting the model again.",
+            });
+            return false;
+          }
           return true;
         }
-      } catch {
         // No plan (older backend, metadata hiccup): fall back to the load's own download.
       }
       // Re-checked: a plan that REJECTED after a newer pick would otherwise reach the fallback load.
@@ -2660,9 +2675,13 @@ export function ImagesPage({
         toast.error(incompatible);
         return false;
       }
+      if (downloadOnly) {
+        toast.info("No files need downloading for this selection");
+        return false;
+      }
       return handleLoadRef.current(repoId, opts, advanced);
     },
-    [stage, currentLoadAdvanced, requestDownloadPlan],
+    [stage, currentLoadAdvanced, requestDownloadPlan, modelSelectionAction],
   );
 
   const resolveDownloadFootprint = useCallback(
@@ -2907,7 +2926,7 @@ export function ImagesPage({
         quantRevert.current = revert;
         setQuant(filename);
         applyImageModelDefaults(id);
-        void handleLoad(dir, { kind: "gguf", filename }).then((started) => {
+        void loadOrStage(dir, { kind: "gguf", filename }, meta.source, token).then((started) => {
           if (!started) {
             revertPick(revert);
             quantRevert.current = null;
@@ -2926,7 +2945,7 @@ export function ImagesPage({
         quantRevert.current = revert;
         setQuant(filename);
         applyImageModelDefaults(id);
-        void handleLoad(dir, { kind: "single_file", filename }).then((started) => {
+        void loadOrStage(dir, { kind: "single_file", filename }, meta.source, token).then((started) => {
           if (!started) {
             revertPick(revert);
             quantRevert.current = null;
@@ -3001,7 +3020,7 @@ export function ImagesPage({
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
       quantRevert.current = revert;
       setQuant(null);
-      applyImageModelDefaults(args.baseRepo);
+      applyImageModelDefaults(args.baseRepo, true);
       void handleLoad(args.baseRepo, { kind: "pipeline" }).then((started) => {
         if (!started) {
           pendingDeploy.current = null;
@@ -3398,6 +3417,16 @@ export function ImagesPage({
 
   const advancedControls = (
     <>
+      <AdvancedSelect
+        label="On model selection"
+        hint="Choose Download only to prepare the selected model and its required assets without loading it. Applies to the next model you select; progress and cancellation appear in Downloads."
+        value={modelSelectionAction}
+        onValueChange={(v) => setModelSelectionAction(v as typeof modelSelectionAction)}
+        options={[
+          ["load", "Download and load"],
+          ["download", "Download only"],
+        ]}
+      />
       <AdvancedSelect
         label="Speed"
         hint="Auto picks per model: GGUF compiles at load; a dense model keeps the first two images exact and eager, then compiles from the 3rd (~2x from there). eager = fused kernels, no compile. default/max add torch.compile (max also TF32 + fused QKV)."
