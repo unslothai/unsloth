@@ -125,9 +125,7 @@ def _restore_placeholders(text: str, placeholders: dict[str, str]) -> str:
     return text
 
 
-def _validate_masked_sources(
-    report: str, sources: list[dict], placeholders: dict[str, str]
-) -> str:
+def _validate_masked_sources(report: str, sources: list[dict], placeholders: dict[str, str]) -> str:
     source_by_url = {
         str(source.get("url") or ""): source for source in sources if source.get("url")
     }
