@@ -112,6 +112,27 @@ test("a legacy thread snapshot keeps explicit zero and false while new automatic
   assert.deepEqual(live.params.samplingFieldsExplicit, []);
 });
 
+for (const [name, settings, expectedMask] of [
+  ["non-sampling legacy row", { toolsEnabled: true }, ["temperature", "top_p"]],
+  ["partial legacy row", { temperature: 0.2 }, ["temperature", "top_p"]],
+  ["partial automatic row", { temperature: 0.2, samplingFieldsExplicit: [] }, ["top_p"]],
+] as const) {
+  test(`thread restore inherits global provenance for a ${name}`, () => {
+    reset();
+    const live = useChatRuntimeStore.getState();
+    live.setParams({ ...live.params, temperature: 0.4, topP: 0.7 });
+    useChatRuntimeStore.getState().applyThreadScopedSettings(
+      "sparse",
+      "samplingFieldsExplicit" in settings
+        ? { ...settings, samplingFieldsExplicit: [...settings.samplingFieldsExplicit] }
+        : settings,
+    );
+    const restored = useChatRuntimeStore.getState();
+    assert.equal(restored.params.topP, 0.7);
+    assert.deepEqual(restored.params.samplingFieldsExplicit, [...expectedMask]);
+  });
+}
+
 test("explicit reasoning and preserve-thinking choices use their direct wire names", () => {
   reset();
   const live = useChatRuntimeStore.getState();

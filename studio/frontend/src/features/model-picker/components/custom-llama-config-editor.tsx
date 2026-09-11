@@ -159,9 +159,16 @@ export function CustomLlamaConfigEditor({
             spellCheck={false}
             className="min-h-40 w-full resize-y rounded-md border border-input bg-transparent px-3 py-2 font-mono text-ui-11"
             value={ini}
-            onChange={(event) =>
-              onChange({ ...value, ini: event.target.value })
-            }
+            onChange={(event) => {
+              const nextIni = event.target.value;
+              onChange({
+                ...value,
+                ini: nextIni,
+                section: customConfigSections(nextIni).includes(value.section ?? "")
+                  ? value.section
+                  : null,
+              });
+            }}
           />
           {sections.length > 0 && (
             <div className="space-y-1.5">

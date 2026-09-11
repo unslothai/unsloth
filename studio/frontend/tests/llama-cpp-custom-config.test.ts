@@ -49,6 +49,41 @@ const custom = {
 } as const;
 const managed = { version: 1, mode: "managed" } as const;
 
+test("removing a selected section clears the editor's stale selection", async () => {
+  const ts = await import("typescript");
+  const source = ts.createSourceFile(
+    "editor.tsx",
+    readSrc("features/model-picker/components/custom-llama-config-editor.tsx"),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  let callback = "";
+  function visit(node: import("typescript").Node) {
+    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(source) === "textarea") {
+      const change = node.attributes.properties.find(
+        (attr) => ts.isJsxAttribute(attr) && attr.name.getText(source) === "onChange",
+      );
+      if (change && ts.isJsxAttribute(change) && change.initializer && ts.isJsxExpression(change.initializer)) {
+        callback = change.initializer.expression?.getText(source) ?? "";
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(source);
+  assert.ok(callback);
+  let changed: typeof custom | undefined;
+  const onChange = new Function("value", "onChange", "customConfigSections", `return (${callback})`)(
+    custom,
+    (next: typeof custom) => { changed = next; },
+    customConfigSections,
+  );
+  onChange({ target: { value: "[*]\nnp=1" } });
+  assert.equal(changed?.section, null);
+  onChange({ target: { value: custom.ini } });
+  assert.equal(changed?.section, "my-model");
+});
+
 test("custom source and selection round-trip through storage and API without consuming legacy extras", () => {
   store.clear();
   const config = {

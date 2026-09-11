@@ -4,6 +4,7 @@
 // eslint-disable-next-line no-restricted-imports -- The picker barrel imports this store; provenance helpers are import-free.
 import {
   explicitSamplingFields,
+  inheritedSamplingFields,
   markSamplingFields,
   SAMPLING_WIRE_FIELDS,
 } from "@/features/model-picker/model-config/llama-cpp-config";
@@ -4771,8 +4772,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const stored = hasThreadScopedSettings(settings)
         ? {
             ...settings,
-            samplingFieldsExplicit: explicitSamplingFields(
+            samplingFieldsExplicit: inheritedSamplingFields(
               settings as Record<string, unknown>,
+              (globalThreadScopedDefaults ?? {}) as Record<string, unknown>,
             ),
           }
         : null;

@@ -83,6 +83,19 @@ export function explicitSamplingFields(
     .map(([, wire]) => wire);
 }
 
+export function inheritedSamplingFields(
+  snapshot: Record<string, unknown>,
+  fallback: Record<string, unknown>,
+): string[] {
+  const own = new Set(explicitSamplingFields(snapshot));
+  const inherited = new Set(explicitSamplingFields(fallback));
+  return Object.entries(SAMPLING_WIRE_FIELDS)
+    .filter(([key, wire]) =>
+      (snapshot[key] !== undefined ? own : inherited).has(wire),
+    )
+    .map(([, wire]) => wire);
+}
+
 export function markSamplingFields<
   T extends { samplingFieldsExplicit?: string[] },
 >(params: T, ...fields: string[]): T {
