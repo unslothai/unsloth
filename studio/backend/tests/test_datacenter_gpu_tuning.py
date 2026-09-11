@@ -1516,9 +1516,7 @@ def test_a_uniform_fabric_does_not_need_pci_provenance(monkeypatch):
 
     # And with provenance it is allowed on the bridged pair.
     LlamaCppBackend._NVLINK_TOPO_CACHE = None
-    assert LlamaCppBackend._p2p_veto_reason(
-        [0, 1], True, ids_are_pci_indices = True
-    ) is None
+    assert LlamaCppBackend._p2p_veto_reason([0, 1], True, ids_are_pci_indices = True) is None
 
 
 def test_ids_outside_a_uniform_matrix_still_veto(monkeypatch):
