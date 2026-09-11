@@ -39,9 +39,14 @@ is the flow a desktop user gets:
     would legitimately be an upgrade, so those cases skip themselves rather than measure
     an upgrade and call it idempotency.
   * `studio update --local` reinstalls from the checkout, so the dependency pass always
-    runs. That is what exercises the per-step skips, and it is asserted from the LOG:
-    with a warm uv cache a full pass also downloads nothing, so bytes cannot tell a skip
-    from a re-resolve there. Both are checked; neither alone is enough.
+    runs, and it runs WITHOUT last run's evidence: a checkout is a development install
+    shape, and the pass refuses to skip steps on a manifest that may not describe the
+    tree (install_python_stack._plan_pass). What it demonstrates is the rest: the pip
+    bootstrap skip, the sidecars answering "current", the prebuilts answering from their
+    markers, and that a full pass over a settled venv still downloads nothing. It is
+    asserted from the LOG as well as from bytes: with a warm uv cache a full pass also
+    downloads nothing, so bytes cannot tell a skip from a re-resolve there. A full pass
+    has some churn of its own, named in FULL_PASS_CHURN; everything else must hold still.
 
 The fault-injection cases DAMAGE that install and expect the update to repair exactly
 the damaged part. They restore what they broke, but a failure mid-case can leave the
@@ -106,9 +111,28 @@ FRONTEND_CURRENT_MARKER = re.compile(r"frontend\s+up to date")
 # What setup.sh / setup.ps1 print when the version check found a newer release, and when
 # it could not ask PyPI at all (the pass runs on purpose in both cases).
 UPGRADE_MARKER = "available, updating..."
+# What both shells print (step "python", column-padded) when PyPI's latest equals the
+# installed version and the dependency pass is skipped for it.
+UPTODATE_MARKER = re.compile(r"python\s+\S+ \S+ is up to date")
 PYPI_UNREACHABLE_MARKER = "could not reach PyPI, updating to be safe..."
 # What --local installs from the checkout on every pass, so its RECORD moving is expected.
 LOCAL_CORE = frozenset({"unsloth", "unsloth-zoo", "unsloth_zoo"})
+# What a FULL dependency pass (one without last run's evidence: every --local pass, and
+# the pass after a deleted manifest) reinstalls at the same version, so its RECORD
+# moving says nothing about idempotency:
+#   * the two seed plugins are installed from a path inside the checkout, and without
+#     evidence a path install is never "already satisfied";
+#   * click is caught between two pins no resolution holds at once (data-designer-engine
+#     0.5.x wants sqlfluff<4, which pins click<=8.3.0; huggingface-hub 1.23+ needs
+#     click>=8.4.2), so the data designer step takes it down and the diffusers step
+#     brings it back, and the pass records the conflict as known_unmet rather than
+#     re-running the step for it once it has evidence.
+# The desktop path never reaches the dependency pass on a settled install (setup.sh's
+# fast path), so masking these costs it nothing; a version CHANGE is still seen, since
+# the distribution list is compared separately.
+FULL_PASS_CHURN = LOCAL_CORE | frozenset(
+    {"data-designer-github-repo-seed", "data-designer-unstructured-seed", "click"}
+)
 
 DIST_LIST = (
     "import importlib.metadata as m, json; "
@@ -525,11 +549,12 @@ def snapshot(venv_python: pathlib.Path) -> dict:
         text = True,
         timeout = 300,
     )
-    # The two packages --local installs from the checkout are reinstalled on every pass
-    # (a local directory is never "already satisfied"), so their RECORD moving is the
-    # harness's own doing, not the update's; their mtime and size are not compared.
+    # The packages a full pass reinstalls at the same version (FULL_PASS_CHURN: the two
+    # --local overlays, the two path-installed seed plugins, the click conflict) move
+    # their RECORD on every such pass; their mtime and size are not compared, their
+    # name and version still are.
     state["dist_records"] = [
-        [name, version, None, None] if name in LOCAL_CORE else [name, version, mtime, size]
+        [name, version, None, None] if name in FULL_PASS_CHURN else [name, version, mtime, size]
         for name, version, mtime, size in json.loads(records.stdout or "[]")
     ]
 
@@ -630,10 +655,11 @@ def test_a_second_update_downloads_no_payload(install, settled):
 
 
 def test_a_second_local_update_reuses_everything_it_can(install, settled):
-    """--local is the CI and developer path. It always runs the dependency pass on
-    purpose (a checkout can change in ways no requirements digest sees), so what it
-    demonstrates is the rest: the pip bootstrap skip, all three sidecars answering
-    "current" without a rebuild, and both prebuilts answering from their markers."""
+    """--local is the CI and developer path. It always runs the dependency pass, without
+    last run's evidence (a checkout is a development install shape, and a checkout can
+    change in ways no requirements digest sees), so what it demonstrates is the rest:
+    the pip bootstrap skip, all three sidecars answering "current" without a rebuild,
+    and both prebuilts answering from their markers."""
     directory, _ = settled
     run = run_update(directory, "run4-local", local = True)
     assert run.rc == 0, run.log[-8000:]
@@ -684,7 +710,14 @@ def test_the_desktop_update_path_keeps_a_verified_install_offline(install, settl
         "an update with nothing to do failed offline. That is the state a user on a "
         f"plane, or behind a corporate proxy, is in:\n{run.log[-8000:]}"
     )
-    assert "keeping the verified install" in run.log, run.log[-8000:]
+    # Either the offline rule or the ordinary fast path: setup.ps1 asks PyPI with
+    # Invoke-RestMethod, which follows the system proxy settings rather than HTTPS_PROXY,
+    # so on Windows the version check can still reach PyPI past this harness's proxy and
+    # answer "up to date". Both leave the pass unrun; what is asserted regardless is that
+    # nothing got through the proxy and nothing on disk moved.
+    assert "keeping the verified install" in run.log or UPTODATE_MARKER.search(run.log), run.log[
+        -8000:
+    ]
     assert run.connections == run.refused, run.report()
     assert diff(before, snapshot(install)) == []
 
@@ -695,6 +728,12 @@ def test_the_desktop_update_path_keeps_a_verified_install_offline(install, settl
 # venv that dies on `import structlog`. Each case damages one thing and asserts that the
 # update repairs THAT thing -- and, where it is cheap to check, that it does not decide
 # to rebuild everything else while it is there.
+
+
+def _replace_bytes(path: pathlib.Path, data: bytes) -> None:
+    """Write *data* to a NEW inode at *path*, so a hardlinked original is left alone."""
+    path.unlink()
+    path.write_bytes(data)
 
 
 def _sidecar_dirs() -> list[pathlib.Path]:
@@ -719,7 +758,12 @@ def test_a_truncated_sidecar_file_rebuilds_only_that_sidecar(install, settled):
     )
     assert victim is not None, f"no file to damage in {target}"
     saved = victim.read_bytes()
-    victim.write_bytes(b"")
+    # Replaced, not truncated in place: uv installs a --target tree by hardlinking from
+    # its cache where the filesystem allows (NTFS on the hosted Windows runner), so an
+    # in-place truncation would empty the cache's copy and the other sidecars' copies of
+    # the same file with it. The rebuild would then relink the damaged bytes and every
+    # tier would read as damaged; a real corruption of one tree does neither.
+    _replace_bytes(victim, b"")
     try:
         run = run_update(directory, "fault-sidecar", local = True)
         assert run.rc == 0, run.log[-8000:]
@@ -732,7 +776,7 @@ def test_a_truncated_sidecar_file_rebuilds_only_that_sidecar(install, settled):
         ), "the rebuilt sidecar file differs from the bytes the settled install had"
     finally:
         if victim.is_file() and victim.read_bytes() == b"":
-            victim.write_bytes(saved)
+            _replace_bytes(victim, saved)
     after = snapshot(install)
     changed = diff(before, after)
     assert target.name in changed, f"the damaged sidecar was not rebuilt (changed: {changed})"
@@ -776,7 +820,8 @@ def test_a_deleted_manifest_re_runs_the_pass_and_changes_nothing(install, settle
         "a pass with no evidence redid work on already-valid components: " + ", ".join(untouched)
     )
     # Names and versions cannot see a reinstall at the same version; the RECORD mtime can
-    # (the snapshot already leaves out the two packages --local reinstalls by design).
+    # (the snapshot already leaves out what a full pass reinstalls by design, see
+    # FULL_PASS_CHURN).
     was = {tuple(record) for record in before["dist_records"]}
     moved = sorted(record[0] for record in after["dist_records"] if tuple(record) not in was)
     assert moved == [], "a pass with no evidence reinstalled: " + ", ".join(moved)

@@ -2627,7 +2627,11 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> bool:
     usable = True
     # UV_OFFLINE in every spelling uv accepts (_runtime_repair_is_offline): under it the
     # install could only miss, and the miss would be remembered as a failure for hours.
-    offline = _env_offline() or _runtime_repair_is_offline()
+    # Unless pip was told where to look instead (the wheelhouse exception _install_to_dir
+    # makes): an air-gapped host with a local --find-links directory can add the package
+    # without the network, and skipping it here would leave Qwen tokenizers unavailable
+    # on exactly the hosts that never see an online session.
+    offline = _env_offline() or (_runtime_repair_is_offline() and not _pip_is_configured_offline())
     for pkg in packages:
         if not _sidecar_package_is_optional(pkg):
             continue
@@ -2890,7 +2894,14 @@ def _is_local_wheelhouse_dir(entry: str) -> bool:
     if lowered.startswith("file://"):
         from urllib.parse import urlparse
         from urllib.request import url2pathname
-        entry = url2pathname(urlparse(entry).path)
+
+        parsed = urlparse(entry)
+        path = parsed.path
+        # file://server/share is a UNC share on Windows: the host is part of the
+        # path (\\server\share), and dropping it would test \share instead.
+        if parsed.netloc and parsed.netloc.lower() != "localhost":
+            path = "//" + parsed.netloc + path
+        entry = url2pathname(path)
     elif "://" in lowered:
         return False
     return os.path.isdir(os.path.expanduser(entry))

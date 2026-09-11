@@ -25,6 +25,8 @@ import contextlib
 import pathlib
 import shutil
 import sys
+
+import pytest
 import types as _types
 from pathlib import Path
 
@@ -482,6 +484,15 @@ def test_the_top_up_stays_home_offline_and_yields_to_another_process(tmp_path, m
         tv._top_up_optional_packages(str(root), packages)
         assert installed == [], spelling
     assert not (root / tv._OPTIONAL_TOP_UP_FAILED).exists()
+    # ...unless pip has a local wheelhouse to read: the same exception _install_to_dir
+    # makes, so an air-gapped host still gets the package.
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    monkeypatch.setattr(tv, "_pip_is_configured_offline", lambda: True)
+    tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
+    tv._top_up_optional_packages(str(root), packages)
+    assert installed == ["tiktoken"]
+    installed.clear()
+    monkeypatch.setattr(tv, "_pip_is_configured_offline", lambda: False)
     monkeypatch.delenv("UV_OFFLINE")
     # Another process holds the sidecar's top-up lock: this one waits for it, up to the
     # bound, and leaves the package to the holder when the bound passes.
@@ -906,6 +917,17 @@ def test_a_wheelhouse_pip_is_allowed_offline(tmp_path, monkeypatch):
     assert tv._pip_is_configured_offline() is False
     monkeypatch.setenv("PIP_FIND_LINKS", f"file://{index}")
     assert tv._pip_is_configured_offline() is False
+    # A UNC share: file://server/share keeps its host, which is part of the path.
+    seen = []
+
+    def isdir(path):
+        seen.append(path)
+        return True
+
+    monkeypatch.setattr(tv.os.path, "isdir", isdir)
+    monkeypatch.setenv("PIP_FIND_LINKS", "file://wheelserver/share/wheels")
+    assert tv._pip_is_configured_offline() is True
+    assert seen and "wheelserver" in seen[-1] and "share" in seen[-1]
 
 
 def test_the_wheelhouse_is_read_from_pip_config_files_too(tmp_path, monkeypatch):
