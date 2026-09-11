@@ -4293,23 +4293,18 @@ def _strip_flag_pairs(args: Iterable[str], flags: frozenset[str]) -> list[str]:
 _DEFAULT_LLAMA_N_BATCH = 2048
 _DEFAULT_LLAMA_N_UBATCH = 512
 # mtmd cuts an image into chunks of min(n_batch, its tokens) and asserts n_ubatch >=
-# the chunk while attention is non-causal (llama-context.cpp:1749): a measured 862
-# against a 512 ubatch on Gemma 4 12B, and the server aborts. 2048 is a bound, not a
-# guess: clip.cpp caps one Gemma 4 image at set_limit_image_tokens(70, 1120). Only a
-# hand-raised --image-max-tokens gets past it, and that flag documents raising -ub
-# alongside.
+# the chunk while attention is non-causal (llama-context.cpp:1749): 862 against 512 on
+# Gemma 4 12B, and the server aborts. A bound, not a guess: clip.cpp caps one Gemma 4
+# image at set_limit_image_tokens(70, 1120). Only a hand-raised --image-max-tokens gets
+# past it, and that flag documents raising -ub alongside.
 _MMPROJ_DEFAULT_N_BATCH_UBATCH = 2048
-# Which projectors can actually reach that assert. mtmd_decode_use_non_causal is True
-# for exactly gemma4v (outside E2B/E4B, identified by the TEXT n_embd), gemma4uv,
-# gemma3 and deepseek4v, and of those only the two Gemma 4 towers exceed 512 tokens
-# per image: gemma3 is capped at 256 and deepseek4v at 384, both of which the stock
-# ubatch already holds. Everything else -- qwen3vl at 4096, youtuvl at 62500 -- decodes
-# causally and never reaches it however big its images are.
-#
-# Raising for them anyway is not free: the fit adds the flat compute buffer straight
-# into model_size_fit, and _estimate_compute_buffer_bytes scales it with the ubatch, so
-# a blanket raise costs ~5 GiB of budget on a four-slot default and pushes layers of a
-# model like Qwen3-VL onto the CPU for an assert it cannot hit.
+# Which projectors reach that assert. mtmd_decode_use_non_causal is True for exactly
+# gemma4v (outside E2B/E4B, told apart by the TEXT n_embd), gemma4uv, gemma3 and
+# deepseek4v; of those only the Gemma 4 towers exceed 512 tokens per image, gemma3
+# being capped at 256 and deepseek4v at 384. Everything else decodes causally at any
+# image size. Raising for them anyway is not free: _estimate_compute_buffer_bytes
+# scales with the ubatch and feeds model_size_fit, so a blanket raise costs ~5 GiB on a
+# four-slot default and spills a Qwen3-VL onto the CPU for an assert it cannot hit.
 _MMPROJ_NON_CAUSAL_OVER_UBATCH = frozenset({"gemma4v", "gemma4uv"})
 _GEMMA4V_CAUSAL_TEXT_N_EMBD = frozenset({1536, 2560})  # E2B and E4B
 _LLAMA_ARG_TRUE_VALUES = frozenset({"on", "enabled", "true", "1"})
@@ -5747,8 +5742,8 @@ def _named_batch_sizes(
 
     Precedence mirrors the launched command line: env, then the first-class
     n_batch / n_ubatch fields (emitted as flags, so they beat env), then user
-    extra_args (appended last, so they last-wins-override the emitted flags). The two
-    ``named`` flags say whether anything at all set that half, which is what separates
+    extra_args (appended last, so they last-wins-override the emitted flags). The
+    ``named`` flags say whether anything set that half at all, which is what separates
     a size the user chose from the llama.cpp default.
     """
     values = {
@@ -5843,11 +5838,11 @@ def _mmproj_emits_oversized_chunks(
 ) -> bool:
     """Whether the projector at *mmproj_path* can emit an image chunk over 512 tokens.
 
-    Keyed on ``clip.vision.projector_type``, not on ``is_vision``: ModelConfig sets
-    that flag for ANY discovered mmproj, so an audio-only encoder (ultravox, Voxtral,
-    Qwen3-ASR) reads as vision while producing no image chunk at all. A vision tower
-    whose family cannot be read stays oversized, since being wrong the other way is a
-    crashed server rather than a smaller offload.
+    Keyed on ``clip.vision.projector_type``, not ``is_vision``: ModelConfig sets that
+    flag for ANY discovered mmproj, so an audio-only encoder (ultravox, Voxtral,
+    Qwen3-ASR) reads as vision while producing no image chunk. An unreadable family
+    stays oversized, since being wrong that way is a crash rather than a smaller
+    offload.
     """
     if not mmproj_path:
         return False
@@ -5903,8 +5898,7 @@ def _launch_needs_bigger_ubatch(
     if not vision_off:
         # The switch scrubs this pair. Without it they open whatever they name even
         # under --no-mmproj, which empties the command line without clearing
-        # mmproj.path; a URL names a download that has not happened, so it cannot be
-        # read here and counts as unknown.
+        # mmproj.path. A URL names a download that has not happened, so it is unknown.
         source_env = os.environ if env is None else env
         if (source_env.get("LLAMA_ARG_MMPROJ_URL") or "").strip():
             unknown = True
@@ -5916,8 +5910,8 @@ def _launch_needs_bigger_ubatch(
         if mmproj_path:
             sources.append(str(mmproj_path))
         elif extra_args_mmproj_auto(extra_args):
-            # Nothing resolved, but --mmproj-auto leaves llama-server discovering an
-            # adjacent projector this process was never told about.
+            # --mmproj-auto leaves llama-server discovering an adjacent projector
+            # this process was never told about.
             unknown = True
 
     if unknown:
@@ -5935,9 +5929,6 @@ def _batch_ubatch_for_mmproj(
     """Raise the default batch/ubatch for a launch that opens an image projector.
 
     See ``_MMPROJ_DEFAULT_N_BATCH_UBATCH`` for why the chunk has to fit the ubatch.
-    Keyed on the projector the child will really open, not the one the request named,
-    so a text-only server never pays the bigger compute buffer and an inherited
-    projector still gets it.
 
     Only the micro-batch aborts, so only it is raised, and only while nobody has named
     one. A named BATCH caps the raise rather than cancelling it, since it also caps the
@@ -5950,10 +5941,10 @@ def _batch_ubatch_for_mmproj(
     )
     if ubatch_named:
         return n_batch, n_ubatch
-    # Same uint32_t round-trip llama_context_params applies, and the same one
-    # _extra_args_n_ubatch already mirrors: common_params stores the batch signed, so a
-    # "-b -1" reaches the child as 4294967295 and caps nothing. Comparing the raw -1
-    # would read as a batch below the ubatch and skip the raise the image needs.
+    # The uint32_t round-trip llama_context_params applies, which _extra_args_n_ubatch
+    # already mirrors: common_params stores the batch signed, so "-b -1" reaches the
+    # child as 4294967295. Comparing the raw -1 would read as a batch below the ubatch
+    # and skip the raise.
     batch &= 0xFFFFFFFF
     target = min(_MMPROJ_DEFAULT_N_BATCH_UBATCH, batch)
     if target <= ubatch:
@@ -20101,11 +20092,11 @@ class LlamaCppBackend:
                         model_path = model_path,
                         mmproj_path = mmproj_path,
                     ),
-                    # The same order-independent read the estimators use. GGUF does not
-                    # guarantee KV order, and _read_gguf_metadata only starts matching
+                    # The order-independent read the estimators use: GGUF does not
+                    # guarantee KV order, and _read_gguf_metadata only matches
                     # arch-namespaced keys once general.architecture has gone past, so a
-                    # file that writes embedding_length first leaves it unset and the two
-                    # sides would disagree about E2B and E4B.
+                    # file writing embedding_length first would leave it unset here and
+                    # split the two sides on E2B and E4B.
                     _read_gguf_embedding_length(model_path),
                     extra_args,
                     is_vision = is_vision,

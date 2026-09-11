@@ -995,10 +995,9 @@ def extra_args_disable_mmproj(args: Optional[Iterable[str]]) -> bool:
 def extra_args_mmproj_auto(args: Optional[Iterable[str]]) -> bool:
     """True when pass-through args leave llama-server discovering a projector itself.
 
-    The same last-wins boolean :func:`extra_args_disable_mmproj` reads, asked the other
-    way: a winning ``--mmproj-auto`` makes the child look for an adjacent mmproj that
-    Unsloth never resolved and never put on the command line, so a caller sizing the
-    launch has to assume one appears.
+    The last-wins boolean :func:`extra_args_disable_mmproj` reads, asked the other way:
+    a winning ``--mmproj-auto`` makes the child look for an adjacent mmproj Unsloth
+    never put on the command line, so a caller sizing the launch must assume one.
     """
     if not args:
         return False

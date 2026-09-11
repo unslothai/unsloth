@@ -58,8 +58,7 @@ _CLASSIFIER_HEAD_CACHE: Dict[_CacheKey, Optional[bool]] = {}
 
 # GGUF header dims for the staged UI in one cached pass (context_length, layer_count, moe_layer_count) so the staged sheet can size every slider before the model loads. None = unreadable / not a GGUF; the native ``{arch}.context_length`` the UI shows before a load is read from here via read_gguf_context_length.
 _DIMS_CACHE: Dict[_CacheKey, Optional[Dict[str, Optional[int]]]] = {}
-# Text-side embedding_length, read on its own because the only caller wants just that
-# and pays for it on every settings change.
+# Read on its own: the only caller wants just this number, on every settings change.
 _N_EMBD_CACHE: Dict[_CacheKey, Optional[int]] = {}
 
 
@@ -183,9 +182,9 @@ def read_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
 def read_gguf_embedding_length(path: str) -> Optional[int]:
     """``{arch}.embedding_length`` from a GGUF header, or None if absent or unreadable.
 
-    Cached by (path, mtime, size) like the dims above. Separate from
-    ``read_gguf_staged_dims`` so a caller that needs only this one number does not pay
-    a full metadata walk for it: sizing a launch reads it on every settings change.
+    Cached by (path, mtime, size) like the dims above, and separate from
+    ``read_gguf_staged_dims`` so a caller needing only this does not pay a full
+    metadata walk on every settings change.
     """
     key = _cache_key(path)
     if key is None:
@@ -780,11 +779,9 @@ def read_mmproj_vision_projector_type(path: str) -> Optional[str]:
     """The IMAGE tower's projector family, or None if absent or unreadable.
 
     Separate from :func:`read_mmproj_projector_type` because a projector carrying both
-    towers spells it per-modality instead: Gemma 4 writes ``clip.vision.projector_type
-    = gemma4uv`` next to ``clip.audio.projector_type = gemma4ua`` and no bare
-    ``clip.projector_type`` at all. Reads the per-modality key first so a unified
-    projector answers with its vision tower rather than nothing, and falls back to the
-    bare key that single-tower converts (qwen3vl_merger, gemma3, pixtral) still use.
+    towers spells it per-modality: Gemma 4 writes ``clip.vision.projector_type =
+    gemma4uv`` beside ``clip.audio.projector_type`` and no bare ``clip.projector_type``
+    at all. Per-modality key first, then the bare one single-tower converts still use.
     """
     return _read_gguf_string(path, "clip.vision.projector_type") or _read_gguf_string(
         path, "clip.projector_type"

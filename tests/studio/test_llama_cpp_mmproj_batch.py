@@ -3,9 +3,9 @@
 
 """Regression tests for the Gemma 4 micro-batch default.
 
-llama.cpp aborts a non-causal image decode when the chunk mtmd cuts is larger than
-n_ubatch (llama-context.cpp). Only the Gemma 4 towers can produce such a chunk at the
-stock 512, so only they get the raise; see ``_MMPROJ_DEFAULT_N_BATCH_UBATCH``.
+llama.cpp aborts a non-causal image decode when the chunk mtmd cuts exceeds n_ubatch.
+Only the Gemma 4 towers produce such a chunk at the stock 512, so only they get the
+raise; see ``_MMPROJ_DEFAULT_N_BATCH_UBATCH``.
 """
 
 import inspect
@@ -55,13 +55,13 @@ class TestMmprojEmitsOversizedChunks:
     @pytest.mark.parametrize(
         "family, n_embd, expected",
         [
-            # Non-causal for every text size, and 1120 tokens per image clears 512.
+            # Non-causal at every text size, and 1120 tokens per image clears 512.
             ("gemma4uv", 3840, True),
-            # Non-causal EXCEPT on E2B (n_embd 1536) and E4B (2560), which decode causally.
+            # Non-causal EXCEPT on E2B (n_embd 1536) and E4B (2560).
             ("gemma4v", 3840, True),
             ("gemma4v", 2560, False),
             ("gemma4v", 1536, False),
-            # Non-causal but capped under the stock ubatch: 256 and 384 tokens.
+            # Non-causal but capped under the stock ubatch: 256 and 384.
             ("gemma3", 2560, False),
             ("deepseek4v", 4096, False),
             # Causal, so no image size reaches the assert.
@@ -77,14 +77,13 @@ class TestMmprojEmitsOversizedChunks:
         assert _mmproj_emits_oversized_chunks(None) is False
 
     def test_an_audio_only_encoder_makes_no_image_chunk(self, projector):
-        # ModelConfig calls every discovered mmproj vision, so ultravox / Voxtral /
-        # Qwen3-ASR reach here as vision and must still pay nothing.
+        # ModelConfig calls every discovered mmproj vision, so these reach here as
+        # vision and must still pay nothing.
         path = projector("ultravox", accepts_image = False)
         assert _mmproj_emits_oversized_chunks(path, 4096) is False
 
     def test_an_unnamed_family_is_assumed_oversized(self, projector):
-        # A vision tower whose family cannot be read could be a Gemma 4, and guessing
-        # wrong costs a crashed server rather than a smaller offload.
+        # It could be a Gemma 4, and guessing wrong costs a crash, not an offload.
         assert _mmproj_emits_oversized_chunks(projector(None), 3840) is True
 
     def test_an_unreadable_file_is_assumed_oversized(self, monkeypatch):
@@ -117,8 +116,8 @@ class TestLaunchNeedsBiggerUbatch:
         assert _launch_needs_bigger_ubatch(path, 3840, ["--no-mmproj"], env = {}) is False
 
     def test_a_pass_through_projector_survives_both(self, projector):
-        # Extras are appended after the managed flags and stripped by neither the
-        # switch nor --no-mmproj, so this opens an image tower regardless.
+        # Appended after the managed flags and stripped by neither the switch nor
+        # --no-mmproj, so this opens an image tower regardless.
         path = projector("gemma4uv")
         for extra_kwargs in ({}, {"vision_off": True}):
             got = _launch_needs_bigger_ubatch(
@@ -144,8 +143,7 @@ class TestLaunchNeedsBiggerUbatch:
         assert got is False
 
     def test_an_unfetched_url_counts(self, projector):
-        # Nothing has downloaded it, so it cannot be classified and outranks a known
-        # projector of this model's own.
+        # Nothing has downloaded it, so it cannot be classified.
         env = {"LLAMA_ARG_MMPROJ_URL": "https://example.invalid/mmproj.gguf"}
         got = _launch_needs_bigger_ubatch(projector("qwen3vl_merger"), 2048, env = env)
         assert got is True
@@ -206,7 +204,7 @@ class TestBatchUbatchForMmproj:
     )
     def test_a_named_batch_caps_the_raise(self, batch, expected):
         # mtmd cuts the image into n_batch chunks, so the batch caps how big the
-        # micro-batch has to be; it does not cancel the raise.
+        # micro-batch must be; it does not cancel the raise.
         assert _batch_ubatch_for_mmproj(True, batch, None, None, {}) == expected
 
     def test_a_small_batch_already_holds_the_chunk(self):
@@ -220,7 +218,7 @@ class TestBatchUbatchForMmproj:
     @pytest.mark.parametrize("source", ["extras", "env"])
     def test_a_negative_batch_is_read_as_llama_cpp_reads_it(self, source):
         # common_params stores the batch signed and llama_context_params casts it to
-        # uint32_t, so -1 reaches the child as 4294967295 and caps nothing.
+        # uint32_t, so -1 reaches the child as 4294967295.
         args, env = (["-b", "-1"], {}) if source == "extras" else (None, {"LLAMA_ARG_BATCH": "-1"})
         assert _batch_ubatch_for_mmproj(True, None, None, args, env) == (
             None,
@@ -232,10 +230,9 @@ def test_the_decision_lands_after_the_download_and_before_the_fit():
     """Order inside ``load_model``: download, resolve, decide, then price.
 
     ``_resolve_gguf_load_intent`` leaves ``intent.mmproj_path`` unset for a repo id and
-    ``_download_mmproj`` is what assigns it, so deciding at the intent unpack reads None
-    on the ordinary loading path and never raises the sizes at all. The decision also
-    has to land before the fit, which prices the compute buffer off the micro-batch
-    that launches.
+    ``_download_mmproj`` assigns it, so deciding at the intent unpack reads None on the
+    ordinary loading path and never raises at all. The decision also has to land before
+    the fit, which prices the compute buffer off the micro-batch that launches.
     """
     source = inspect.getsource(LlamaCppBackend.load_model)
     download = source.index("self._download_mmproj(")
@@ -251,11 +248,10 @@ def test_the_decision_lands_after_the_download_and_before_the_fit():
 def test_both_sides_read_the_embedding_length_the_same_way():
     """GGUF does not guarantee KV order, and the two readers disagree when it varies.
 
-    ``_read_gguf_metadata`` only starts matching ``{arch}.`` keys once
-    ``general.architecture`` has gone past, so a file writing ``embedding_length``
-    first leaves ``self._embedding_length`` unset. ``read_gguf_embedding_length``
-    buffers instead. Only the E2B/E4B test reads this value, so a split would have the
-    launch raise the micro-batch while the panel priced 512.
+    ``_read_gguf_metadata`` only matches ``{arch}.`` keys once ``general.architecture``
+    has gone past, so a file writing ``embedding_length`` first leaves it unset;
+    ``read_gguf_embedding_length`` buffers instead. Only the E2B/E4B test reads this,
+    so a split would have the launch raise while the panel priced 512.
     """
     source = inspect.getsource(LlamaCppBackend.load_model)
     decision = source[
@@ -271,9 +267,9 @@ def test_the_estimators_ask_the_same_question_as_the_launch():
     """One helper, called with a config on one side and load state on the other.
 
     ``_gguf_resident_file_gb`` reports files as ``_estimate_gguf_required_gb`` minus the
-    context term that function added, and branches on the same local-vs-remote
-    condition to stay paired: a term added at 2048 and taken away at 512 would move the
-    weights figure by the difference.
+    context term that function added, branching on the same local-vs-remote condition
+    to stay paired: a term added at 2048 and taken away at 512 would move the weights
+    figure by the difference.
     """
     from studio.backend.routes import inference as routes
 

@@ -9963,8 +9963,8 @@ def _launch_raises_ubatch(
 ) -> bool:
     """``_launch_needs_bigger_ubatch`` for a local GGUF, from what the panel knows.
 
-    Same question ``load_model`` asks, with the projector resolved the same way, so a
-    panel and the admission guard price the micro-batch the child actually launches at.
+    Same question ``load_model`` asks, projector resolved the same way, so the panel
+    and the admission guard price the micro-batch the child launches at.
     """
     from core.inference.llama_cpp import _launch_needs_bigger_ubatch
     from utils.models.gguf_metadata import read_gguf_embedding_length
@@ -9979,9 +9979,9 @@ def _launch_raises_ubatch(
         )
     return _launch_needs_bigger_ubatch(
         resolved,
-        # Gemma 4 E2B and E4B decode causally, and only the text n_embd tells them
-        # apart. Its own cached read rather than the estimator's full metadata walk,
-        # which this runs ahead of and which costs ~77ms on every settings change.
+        # Only the text n_embd tells Gemma 4 E2B and E4B, which decode causally, from
+        # the rest. Its own cached read: the estimator's full metadata walk runs after
+        # this and costs ~77ms on every settings change.
         read_gguf_embedding_length(gguf_file) if gguf_file else None,
         llama_extra_args,
         is_vision = bool(getattr(config, "is_vision", False)),
@@ -10062,9 +10062,8 @@ def _gguf_runtime_bytes(
         probe = _probe_backend()
         probe._model_identifier = model_identifier
         probe._read_gguf_metadata(gguf_path)
-        # load_model raises the pair for a projector that can abort the server, so price
-        # that pair here too, or the panel quotes and admission approves a micro-batch
-        # the child does not run at.
+        # Price the pair load_model raises, or the panel quotes and admission approves
+        # a micro-batch the child does not run at.
         n_batch, n_ubatch = _batch_ubatch_for_mmproj(
             launch_raises_ubatch and not is_diffusion,
             n_batch,
