@@ -46,8 +46,20 @@ def listener():
         sock.close()
 
 
-def _resolver(port, *, aaaa = 8, with_a = True):
-    def _getaddrinfo(host, _port, family = 0, type = 0, proto = 0, flags = 0):
+def _resolver(
+    port,
+    *,
+    aaaa = 8,
+    with_a = True,
+):
+    def _getaddrinfo(
+        host,
+        _port,
+        family = 0,
+        type = 0,
+        proto = 0,
+        flags = 0,
+    ):
         infos = [
             (socket.AF_INET6, socket.SOCK_STREAM, 6, "", (addr, port, 0, 0))
             for addr in DISCARD[:aaaa]
@@ -68,7 +80,11 @@ def test_families_are_interleaved_not_walked_in_resolver_order():
         (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("5.6.7.8", 443)),
     ]
     assert [i[4][0] for i in he._interleave(infos)] == [
-        "100::1", "1.2.3.4", "100::2", "5.6.7.8", "100::3",
+        "100::1",
+        "1.2.3.4",
+        "100::2",
+        "5.6.7.8",
+        "100::3",
     ], "the second family must get a turn before the first family is exhausted"
 
 
@@ -97,9 +113,9 @@ def test_the_timeout_is_the_whole_connect_not_each_address(monkeypatch):
         he.happy_eyeballs_connection(("hub.invalid", 443), 3)
     elapsed = time.monotonic() - start
 
-    assert elapsed < 5.0, (
-        f"took {elapsed:.1f}s for a 3s budget; the timeout is still applied per address"
-    )
+    assert (
+        elapsed < 5.0
+    ), f"took {elapsed:.1f}s for a 3s budget; the timeout is still applied per address"
 
 
 def test_a_single_address_keeps_stdlib_semantics(listener, monkeypatch):
@@ -185,9 +201,9 @@ def test_every_network_entry_point_activates_it():
     ):
         src = (backend / rel).read_text(encoding = "utf-8")
         assert "activate_native_tls()" in src, f"{rel} moved; update this guard"
-        assert "activate_happy_eyeballs()" in src, (
-            f"{rel} activates native TLS but not happy eyeballs"
-        )
+        assert (
+            "activate_happy_eyeballs()" in src
+        ), f"{rel} activates native TLS but not happy eyeballs"
         # Parsed, not just grepped: an activation inside a function can be misindented
         # and still grep clean.
         ast.parse(src)

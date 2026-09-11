@@ -41,9 +41,7 @@ _DEFAULT_DELAY = 0.25
 
 # connect_ex() results for an attempt still in flight: EINPROGRESS on POSIX,
 # EWOULDBLOCK on Windows, EALREADY on a retry.
-_IN_FLIGHT = frozenset(
-    {errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY}
-)
+_IN_FLIGHT = frozenset({errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY})
 # ExceptionGroup and create_connection's all_errors are both 3.11. Studio supports 3.9.
 _HAS_EXCEPTION_GROUP = sys.version_info >= (3, 11)
 
@@ -118,7 +116,7 @@ def happy_eyeballs_connection(
     ordered = _interleave(infos)
     delay = attempt_delay()
     exceptions: list = []
-    pending: dict = {}          # socket -> sockaddr
+    pending: dict = {}  # socket -> sockaddr
     winner = None
 
     def _settle(sock):

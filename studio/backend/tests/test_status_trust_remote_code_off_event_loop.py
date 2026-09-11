@@ -40,9 +40,7 @@ def test_the_auto_map_fallback_runs_off_the_event_loop_thread(monkeypatch):
 
     # run_until_complete drives the loop on this thread.
     loop_thread = threading.get_ident()
-    asyncio.new_event_loop().run_until_complete(
-        inference_routes.get_status(current_subject = "t")
-    )
+    asyncio.new_event_loop().run_until_complete(inference_routes.get_status(current_subject = "t"))
 
     assert threads, "status never resolved trust_remote_code"
     assert loop_thread not in threads, "trust_remote_code was resolved on the event loop thread"
@@ -63,13 +61,11 @@ def test_the_fallback_runs_inside_the_offline_guard(monkeypatch):
         inference_routes, "_resolve_loaded_trust_remote_code", lambda *a, **k: False
     )
 
-    asyncio.new_event_loop().run_until_complete(
-        inference_routes.get_status(current_subject = "t")
-    )
+    asyncio.new_event_loop().run_until_complete(inference_routes.get_status(current_subject = "t"))
 
-    assert guarded == [("unsloth/Qwen3-8B",)], (
-        "the trust_remote_code read did not go through _offline_guarded"
-    )
+    assert guarded == [
+        ("unsloth/Qwen3-8B",)
+    ], "the trust_remote_code read did not go through _offline_guarded"
 
 
 def test_no_loaded_model_reads_nothing(monkeypatch):
