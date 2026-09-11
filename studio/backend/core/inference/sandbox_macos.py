@@ -55,6 +55,8 @@ LIMITATIONS = (
 
 SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 
+_REJECTED_CONTROLS = frozenset(chr(code) for code in (*range(0x20), 0x7F))
+
 
 _READ_ROOTS = (
     "/Library/Apple/System/Library/Frameworks",
@@ -245,9 +247,14 @@ def _sbpl_string(value: str) -> str:
 
 
 def _validated(path: str) -> str:
-    if not path or not posixpath.isabs(path) or any(c in path for c in "\0\n\r"):
+    if not path or not posixpath.isabs(path) or any(c in path for c in _REJECTED_CONTROLS):
+        # Every C0 control and DEL, not only NUL and the line breaks: json emits
+        # \b, \f and \u00XX for the others, and the TinyScheme grammar above knows
+        # none of those three forms, so the profile either fails to compile or
+        # names a path that is not the one meant -- and `auto` promises those
+        # calls keep working.
         raise SandboxUnavailableError(
-            f"Seatbelt paths must be absolute and free of NUL/newline: {path!r}"
+            f"Seatbelt paths must be absolute and free of control characters: {path!r}"
         )
     try:
         # The profile is handed to sandbox-exec as an argv string, so it has to
@@ -540,7 +547,7 @@ def runtime_paths_under(workdir: str) -> tuple[str, ...]:
     # "Python" is the framework build's top-level dyld image, which
     # runtime_read_paths already names: omitted here it stayed writable under the
     # workdir allowance, which is the one file a later host subprocess maps.
-    candidates = [os.path.realpath(sys.executable), *editable_source_roots()]
+    candidates = [sys.executable, *editable_source_roots()]
     for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
         candidates.extend(
             posixpath.join(prefix, name)
@@ -556,6 +563,18 @@ def runtime_paths_under(workdir: str) -> tuple[str, ...]:
         # invoked through a symlink keeps that alias in sys.prefix.
         resolved = os.path.realpath(candidate)
         if not _within(resolved, canonical_root):
+            if candidate is sys.executable and _within(
+                posixpath.abspath(candidate), canonical_root
+            ):
+                # The Linux twin's guard. Studio's own interpreter reachable
+                # through the tool call's writable directory with its content
+                # outside it: no rule both protects the name and keeps the target
+                # hidden, and leaving it writable means the next probe execs
+                # whatever was put there, on the HOST.
+                raise WorkdirUnsafeError(
+                    "the session workdir holds a link to the Python that runs Studio: "
+                    f"{posixpath.abspath(candidate)}"
+                )
             continue
         # Denied under every spelling of the workdir, since Seatbelt judges
         # the path as written and the allowance covers them all. The candidate's

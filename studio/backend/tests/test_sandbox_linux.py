@@ -37,7 +37,11 @@ from core.inference import (  # noqa: E402
     sandbox_linux,
     sandbox_seccomp,
 )
-from core.inference.os_sandbox import SandboxUnavailableError, ToolLaunchPlan  # noqa: E402
+from core.inference.os_sandbox import (  # noqa: E402
+    SandboxUnavailableError,
+    ToolLaunchPlan,
+    WorkdirUnsafeError,
+)  # noqa: E402
 
 
 def _plan(
@@ -1138,13 +1142,54 @@ def test_a_wedged_cache_path_is_not_re_scanned_by_every_later_launch(tmp_path, m
 
     monkeypatch.setattr(sandbox_linux, "_inspect_cache_component", wedged)
     monkeypatch.setattr(sandbox_linux, "_CACHE_INSPECT_SECONDS", 0.5)
-    monkeypatch.setattr(sandbox_linux, "_cache_scan_backoff", {})
+    monkeypatch.setattr(sandbox_linux, "_cache_scan_pending", {})
     session = str(tmp_path / "session")
     assert sandbox_linux._model_cache_binds(session) == {}
     first = len(started)
     assert first > 0
     assert sandbox_linux._model_cache_binds(session) == {}
     assert len(started) == first, "a second launch started another worker on the same path"
+
+
+def test_a_runtime_entry_whose_target_leaves_the_workdir_gets_no_rule(tmp_path, monkeypatch):
+    """--ro-bind resolves its SOURCE, so binding an alias whose target sits
+    outside mounts that outside directory at the alias path. Protecting the
+    written spelling without requiring the resolved one to stay inside turned the
+    guard into the exposure it exists to prevent: the docstring's own answer is
+    that such a link gets no rule and dangles inside the jail."""
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    private = tmp_path / "private"
+    private.mkdir()
+    (private / "id_rsa").write_text("SECRET", encoding = "utf-8")
+    (workdir / "venv").mkdir()
+    (workdir / "venv" / "lib").symlink_to(private)
+    monkeypatch.setattr(sys, "prefix", str(workdir / "venv"))
+    monkeypatch.setattr(sys, "exec_prefix", str(workdir / "venv"))
+
+    protected = sandbox_linux._runtime_paths_under(str(workdir))
+    assert str(workdir / "venv" / "lib") not in protected, protected
+    assert not any(os.path.realpath(p) == str(private) for p in protected), protected
+
+
+def test_an_interpreter_symlinked_out_of_the_workdir_fails_the_call(tmp_path, monkeypatch):
+    """No rule both protects the alias name and keeps its target hidden, and
+    leaving it writable means the next probe execs whatever a tool call put
+    there: _host_positive_controls runs sys.executable on the HOST. Refused
+    rather than half-protected, which tools.py re-raises."""
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    real = outside / "python"
+    real.write_bytes(b"#!/bin/sh\nexit 0\n")
+    real.chmod(0o755)
+    link = workdir / "python"
+    link.symlink_to(real)
+    monkeypatch.setattr(sys, "executable", str(link))
+
+    with pytest.raises(WorkdirUnsafeError, match = "Python that runs Studio"):
+        sandbox_linux._runtime_paths_under(str(workdir))
 
 
 def test_a_runtime_prefix_contributes_its_certificate_store(tmp_path, monkeypatch):

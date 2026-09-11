@@ -259,27 +259,43 @@ def _runtime_paths_under(workdir: str) -> tuple[str, ...]:
     # none of the names below exist and this returned nothing at all. That one
     # is not a cosmetic gap -- sandbox_probe runs sys.executable on the HOST for
     # its positive control, so a replaced one is executed outside the jail.
-    candidates = [os.path.realpath(sys.executable), *editable_source_roots()]
+    candidates = [sys.executable, *editable_source_roots()]
     for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
         candidates.extend(
             os.path.join(prefix, name)
             for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg", "ssl")
         )
     for candidate in candidates:
-        if os.path.exists(candidate):
-            # The RESOLVED path decides, and it is also what gets bound. Testing
-            # the spelling as written answered a different question -- an
-            # alias-prefixed path is not lexically beneath the canonical root,
-            # and a canonical one is not beneath the alias -- so pairing the two
-            # tests per root rejected every path either way round.
-            # BOTH spellings, when both are inside. Keeping only the resolved one
-            # left a symlinked entry -- an editable package inside the checkout
-            # pointing at a sibling in it -- under the writable workdir mount:
-            # the target was read-only but the NAME was not, so a tool call could
-            # unlink it and put its own package there for a later host import.
-            for path in (os.path.abspath(candidate), os.path.realpath(candidate)):
-                if _within(path, canonical_root) and path not in inside:
-                    inside.append(path)
+        if not os.path.exists(candidate):
+            continue
+        written, resolved = os.path.abspath(candidate), os.path.realpath(candidate)
+        # Both PROTECTED, because keeping only the resolved one left a symlinked
+        # entry -- an editable package pointing at a sibling in the same checkout
+        # -- under the writable mount: its target was read-only but its NAME was
+        # not, so a tool call could unlink it and put its own package there.
+        #
+        # The RESOLVED form is the containment test, because --ro-bind resolves
+        # its source: binding an alias whose target is outside would mount that
+        # outside directory at the alias path, the opposite of what this is for.
+        # One that resolves out gets no rule and dangles inside the jail, which
+        # is the documented answer. The WRITTEN form only ever adds a rule, never
+        # licenses one, so an alias-spelled prefix -- sys.prefix keeps the alias
+        # when the venv was invoked through one -- still protects its target.
+        if _within(written, canonical_root) and not _within(resolved, canonical_root):
+            if candidate is sys.executable:
+                # Studio's own interpreter reachable through the tool call's
+                # writable directory, with its content outside it. There is no
+                # rule that both protects the name and keeps the target hidden,
+                # and leaving it writable means the next probe runs whatever was
+                # put there -- _host_positive_controls execs sys.executable on
+                # the HOST, outside any sandbox.
+                raise WorkdirUnsafeError(
+                    f"the session workdir holds a link to the Python that runs Studio: {written}"
+                )
+            continue
+        for path in (written, resolved):
+            if _within(path, canonical_root) and path not in inside:
+                inside.append(path)
     return tuple(inside)
 
 
@@ -452,18 +468,21 @@ def _inspect_cache_component(name: str, path: str) -> "str | None":
     return cache_share_hazard(path)
 
 
-# path -> when its scan may be attempted again. A thread stuck in scandir on a
-# wedged mount never returns, so without this every later launch started another
-# one against the same path and they accumulated for the life of the process.
-_cache_scan_backoff: "dict[str, float]" = {}
-_CACHE_BACKOFF_SECONDS = 300.0
+# path -> the worker a previous launch gave up on. A thread stuck in scandir on
+# a wedged mount never returns, so without this every later launch started
+# another one against the same path. Keyed on the THREAD rather than a clock:
+# a timed expiry still let one through per interval, which on a permanently
+# wedged mount is an unbounded leak with extra steps. The entry clears when the
+# original worker finally finishes, so a mount that recovers is picked up again.
+_cache_scan_pending: "dict[str, threading.Thread]" = {}
 
 
 def _cache_hazard_within_deadline(name: str, path: str) -> "str | None":
-    now = time.monotonic()
-    retry_at = _cache_scan_backoff.get(path)
-    if retry_at is not None and now < retry_at:
-        return "was still being inspected when a previous launch gave up (a wedged mount?)"
+    pending = _cache_scan_pending.get(path)
+    if pending is not None:
+        if pending.is_alive():
+            return "was still being inspected when a previous launch gave up (a wedged mount?)"
+        del _cache_scan_pending[path]
     answer: list[str | None] = []
 
     def inspect() -> None:
@@ -477,11 +496,10 @@ def _cache_hazard_within_deadline(name: str, path: str) -> "str | None":
     worker.join(_CACHE_INSPECT_SECONDS)
     if not answer:
         # The thread is left behind on purpose -- one blocked in scandir cannot be
-        # killed -- but the PATH is remembered, so the next launch drops the
-        # component without starting another one.
-        _cache_scan_backoff[path] = time.monotonic() + _CACHE_BACKOFF_SECONDS
+        # killed -- and it is remembered, so no later launch starts a second one
+        # against the same path while this one is still stuck.
+        _cache_scan_pending[path] = worker
         return f"could not be inspected within {_CACHE_INSPECT_SECONDS:.0f}s (a wedged mount?)"
-    _cache_scan_backoff.pop(path, None)
     return answer[0]
 
 

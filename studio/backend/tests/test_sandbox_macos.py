@@ -804,6 +804,35 @@ def test_a_runtime_origin_is_excluded_under_either_workdir_spelling(tmp_path, mo
     assert not any(os.path.realpath(p) == str(secret) for p in paths), paths
 
 
+def test_an_interpreter_symlinked_out_of_the_workdir_fails_the_call(tmp_path, monkeypatch):
+    """The Linux twin's guard, on this backend."""
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    real = outside / "python"
+    real.write_bytes(b"#!/bin/sh\nexit 0\n")
+    real.chmod(0o755)
+    link = workdir / "python"
+    link.symlink_to(real)
+    monkeypatch.setattr(sys, "executable", str(link))
+
+    with pytest.raises(WorkdirUnsafeError, match = "Python that runs Studio"):
+        backend.runtime_paths_under(str(workdir))
+
+
+def test_a_path_with_a_control_byte_is_refused(tmp_path):
+    """json emits \\b, \\f and \\u00XX for control bytes other than the ones
+    already rejected, and the TinyScheme grammar knows none of those three, so
+    the profile either fails to compile or names a different path -- while
+    `auto` promises the call keeps working."""
+    for control in ("\x0c", "\x01", "\x7f"):
+        with pytest.raises(SandboxUnavailableError, match = "control characters"):
+            backend._validated(f"/tmp/session{control}x")
+    # The positive control: an ordinary accented path is still accepted.
+    assert backend._validated("/tmp/session-café") == "/tmp/session-café"
+
+
 def test_an_editable_source_inside_the_workdir_is_denied_writes(tmp_path, monkeypatch):
     """The Linux twin's case. runtime_read_paths drops it so it is not granted by
     name, but the workdir-wide file-write* then leaves code Studio itself imports
