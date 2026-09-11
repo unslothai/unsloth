@@ -199,6 +199,32 @@ def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge
     assert controller.active_tools() == []
 
 
+def test_command_can_run_again_after_a_file_edit():
+    controller = ToolLoopController(
+        tools = [_tool("terminal"), _tool("edit_file"), _tool("web_search")]
+    )
+    run = _call("terminal", {"command": "python calc.py"})
+    edit = _call(
+        "edit_file", {"path": "calc.py", "edits": [{"old_string": "a", "new_string": "b"}]}
+    )
+    search = _call("web_search", {"query": "gpu prices"})
+
+    controller.record_result(controller.prepare_call(search), "ok")
+    controller.record_result(controller.prepare_call(run), "3")
+    assert controller.prepare_call(run).action == "duplicate"
+    controller.record_noop(controller.prepare_call(run))
+
+    controller.record_result(controller.prepare_call(edit), "Edited calc.py")
+    rerun = controller.prepare_call(run)
+    assert rerun.action == "execute"
+    controller.record_result(rerun, "-1")
+
+    controller.record_noop(controller.prepare_call(run))
+    assert not controller.force_final_answer
+    assert controller.prepare_call(edit).action == "execute"
+    assert controller.prepare_call(search).action == "duplicate"
+
+
 def test_failed_call_does_not_block_retry():
     controller = ToolLoopController(tools = [_tool("web_search")])
     first = controller.prepare_call(_call("web_search", {"query": "gpu prices"}))

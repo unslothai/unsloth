@@ -935,6 +935,7 @@ _SANDBOX_TOOLS = frozenset({"python", "terminal"})
 # than the card the user is looking at.
 _IMAGE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"code_execution"}
 _SOURCE_MAP_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
+_WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file"}
 
 
 def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
@@ -1122,6 +1123,15 @@ class ToolLoopController:
             )
         )
         if not failed:
+            if decision.tool_name in _WORKSPACE_TOOLS:
+                stale = {
+                    key
+                    for key in self._successful_keys
+                    if key.partition(":")[0] in _WORKSPACE_TOOLS
+                }
+                self._successful_keys -= stale
+                for key in stale:
+                    self._duplicate_noop_counts.pop(key, None)
             self._successful_keys.add(decision.key)
             if decision.tool_name in self._one_shot_tools:
                 self._completed_one_shot_tools.add(decision.tool_name)
