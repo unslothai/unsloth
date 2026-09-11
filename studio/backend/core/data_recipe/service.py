@@ -157,6 +157,33 @@ def _require_public_provider_endpoint(endpoint: str) -> None:
         ) from exc
 
 
+def install_public_egress_guard() -> None:
+    """Managed recipe workers: the engine dials providers itself, so every name resolves through this
+    guard and a host that rebinds to loopback or the LAN after the endpoint check is refused at connect
+    time rather than dialled. Process-wide, so it is installed only in the job subprocess."""
+    if not managed_account():
+        return
+    import ipaddress
+    import socket
+
+    resolve = socket.getaddrinfo
+
+    def guarded_getaddrinfo(host, port, *args, **kwargs):
+        infos = resolve(host, port, *args, **kwargs)
+        for info in infos:
+            if not ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]).is_global:
+                raise socket.gaierror(
+                    f"Managed accounts may only reach public-network addresses: {host!r}"
+                )
+        return infos
+
+    def guarded_gethostbyname(host):
+        return str(guarded_getaddrinfo(host, None, socket.AF_INET)[0][4][0])
+
+    socket.getaddrinfo = guarded_getaddrinfo
+    socket.gethostbyname = guarded_gethostbyname
+
+
 def build_model_providers(recipe: dict[str, Any]):
     from data_designer.config.models import ModelProvider  # pyright: ignore[reportMissingImports]
 

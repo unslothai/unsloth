@@ -791,3 +791,46 @@ def test_privileged_etc_secrets_are_excluded_from_the_system_grant(tmp_path, mon
         assert not any(
             p == f"{resolved}/{private}" or p.startswith(f"{resolved}/{private}/") for p in granted
         ), private
+
+
+def test_landlock_grants_device_nodes_not_the_device_tree(tmp_path):
+    """Same-UID ptys, shm objects and a root deployment's disks live under /dev; tools get the pseudo-devices."""
+    if sys.platform != "linux":
+        pytest.skip("Linux rule builder")
+    run_as(ALICE, tools._get_workdir, "chat")
+    rules = dict(run_as(ALICE, tool_confinement._landlock_rules, 5, tools._SANDBOX_SITE_DIR))
+    granted = [p for p in rules if p == "/dev" or p.startswith("/dev/")]
+    assert "/dev" not in granted
+    assert {"/dev/null", "/dev/urandom"} <= set(granted)
+    assert not any(p.startswith(("/dev/shm", "/dev/pts")) for p in granted)
+    device = (
+        tool_confinement._FS_READ_FILE
+        | tool_confinement._FS_WRITE_FILE
+        | tool_confinement._FS_IOCTL_DEV
+    )
+    assert rules["/dev/null"] == device
+
+
+@pytest.mark.skipif(not LANDLOCK, reason = "Landlock not available on this kernel")
+def test_managed_child_reaches_pseudo_devices_but_not_shared_memory(tmp_path):
+    _seed(tmp_path)
+    out = run_as(
+        BOB,
+        tools._python_exec,
+        "import os\n"
+        "print('urandom', len(open('/dev/urandom', 'rb').read(4)))\n"
+        "open('/dev/null', 'w').write('x'); print('null ok')\n"
+        "try:\n"
+        "    os.listdir('/dev/shm'); print('SHM LISTED')\n"
+        "except OSError as e:\n"
+        "    print('shm denied', e.__class__.__name__)\n",
+        session_id = "chat",
+    )
+    assert "urandom 4" in out and "null ok" in out, out
+    assert "SHM LISTED" not in out and "shm denied" in out, out
+
+
+def test_macos_profile_grants_pseudo_devices_only():
+    profile = tool_confinement.macos_profile(read_roots = [], hidden_roots = [], writable_roots = [])
+    assert '(subpath "/dev")' not in profile
+    assert '(literal "/dev/null")' in profile and '(literal "/dev/urandom")' in profile

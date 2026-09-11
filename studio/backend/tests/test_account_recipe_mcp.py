@@ -145,3 +145,26 @@ def test_owner_recipe_model_provider_endpoints_are_unchanged():
     from core.data_recipe.service import build_model_providers
     built = run_as(OWNER, build_model_providers, _provider_recipe(_PRIVATE_ENDPOINTS[0]))
     assert [provider.endpoint for provider in built] == [_PRIVATE_ENDPOINTS[0]]
+
+
+def test_managed_recipe_worker_refuses_names_that_resolve_privately(monkeypatch):
+    """The endpoint check resolves once; the worker's resolver refuses a later private answer."""
+    import socket
+
+    from core.data_recipe.service import install_public_egress_guard
+
+    answers = {"public.example": "8.8.8.8", "rebind.example": "127.0.0.1"}
+
+    def fake(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (answers[host], port or 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake)
+    monkeypatch.setattr(socket, "gethostbyname", socket.gethostbyname)
+    run_as(OWNER, install_public_egress_guard)
+    assert socket.getaddrinfo is fake
+    run_as(ALICE, install_public_egress_guard)
+    assert socket.getaddrinfo("public.example", 443)[0][4][0] == "8.8.8.8"
+    with pytest.raises(socket.gaierror):
+        socket.getaddrinfo("rebind.example", 443)
+    with pytest.raises(socket.gaierror):
+        socket.gethostbyname("rebind.example")

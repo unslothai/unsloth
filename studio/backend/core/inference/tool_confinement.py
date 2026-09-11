@@ -53,7 +53,18 @@ _SYSTEM_READ_ROOTS = (
     "/proc",
     "/sys",
 )
-_DEVICE_ROOT = "/dev"
+# Pseudo-devices every tool needs, then the accelerator nodes. The rest of /dev stays out: other
+# sessions' ptys, same-UID shm objects and, for a root-run Studio, every block and character device.
+_DEVICE_NODES = ("/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom", "/dev/tty")
+_ACCELERATOR_NODES = (
+    "/dev/nvidiactl",
+    "/dev/nvidia-uvm",
+    "/dev/nvidia-uvm-tools",
+    "/dev/nvidia-modeset",
+    "/dev/nvidia-caps",
+    "/dev/dri",
+    "/dev/kfd",
+)
 
 # Readable by the service user, so DAC alone does not stop a tool. The rest of /run is readable.
 _PRIVATE_RUNTIME_ROOTS = ("/run/user", "/run/secrets", "/run/credentials")
@@ -294,6 +305,11 @@ def _handled_mask(abi: int) -> int:
     return mask
 
 
+def _device_nodes() -> list[str]:
+    import glob
+    return _existing((*_DEVICE_NODES, *_ACCELERATOR_NODES, *sorted(glob.glob("/dev/nvidia[0-9]*"))))
+
+
 def _landlock_rules(abi: int, sandbox_site_dir: str) -> list[tuple[str, int]]:
     handled = _handled_mask(abi)
     read = _FS_READ_FILE | _FS_READ_DIR | _FS_EXECUTE
@@ -301,8 +317,9 @@ def _landlock_rules(abi: int, sandbox_site_dir: str) -> list[tuple[str, int]]:
     rules: list[tuple[str, int]] = []
     writable_roots = _writable_roots()
     protected = _protected_roots()
+    # /dev is protected too, so a system-root link such as /run/shm cannot grant a device tree.
     system_protected = _with_shared_bases(
-        protected, (*_PRIVATE_RUNTIME_ROOTS, *_private_system_paths())
+        protected, (*_PRIVATE_RUNTIME_ROOTS, "/dev", *_private_system_paths())
     )
     for path in _existing(_SYSTEM_READ_ROOTS):
         _grant_excluding(path, read, system_protected, rules)
@@ -312,8 +329,8 @@ def _landlock_rules(abi: int, sandbox_site_dir: str) -> list[tuple[str, int]]:
         _grant_excluding(path, read, protected, rules)
     for path in _readable_account_roots():
         rules.append((path, read))
-    for path in _existing((_DEVICE_ROOT,)):
-        rules.append((path, device))
+    for path in _device_nodes():
+        rules.append((path, device | (_FS_READ_DIR if os.path.isdir(path) else 0)))
     # No symlink creation: the server follows links, so a tool must not plant an escaping one.
     writable = handled & ~_FS_MAKE_SYM
     for path in writable_roots:
@@ -408,7 +425,11 @@ def macos_profile(
         "(allow ipc-posix-shm)",
         "(allow network*)",
         "(allow file-read-metadata)",
-        '(allow file-read* file-write* (subpath "/dev"))',
+        # Pseudo-devices only; the rest of /dev (other sessions' ttys, disks) stays denied.
+        '(allow file-read* file-write* (literal "/dev/null") (literal "/dev/zero") (literal "/dev/random")'
+        ' (literal "/dev/urandom") (literal "/dev/tty") (literal "/dev/dtracehelper"))',
+        '(allow file-ioctl (literal "/dev/tty") (literal "/dev/dtracehelper"))',
+        '(allow file-read* (subpath "/dev/fd"))',
         # No shared /private/tmp: the account tmp root is granted with the writable roots.
         '(allow file-read* (subpath "/private/var/db"))',
         # The per-user darwin tree holds every account tmp root: deny it, keep dyld's cache dir.
