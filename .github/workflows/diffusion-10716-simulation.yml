@@ -1,0 +1,48 @@
+name: Diffusion 10716 simulation
+on:
+  push:
+    branches: [validate/diffusion-10716-simulation]
+permissions:
+  contents: read
+jobs:
+  simulate:
+    name: ${{ matrix.os }} Python 3.12
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      SIM_REPO: .
+      PYTHONDONTWRITEBYTECODE: '1'
+      UV_CACHE_DIR: ${{ github.workspace }}/temp/uv-cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Create isolated environment and run simulations
+        shell: python
+        run: |
+          import os, pathlib, subprocess, sys
+          root = pathlib.Path.cwd()
+          temp = root / 'temp'
+          for name in ('artifacts', 'logs', 'tmp'):
+              (temp / name).mkdir(exist_ok=True)
+          for key in ('TMPDIR', 'TMP', 'TEMP'):
+              os.environ[key] = str(temp / 'tmp')
+          subprocess.run([sys.executable, '-m', 'pip', 'install', '--target', str(temp / 'bootstrap'), 'uv'], check=True)
+          os.environ['PYTHONPATH'] = str(temp / 'bootstrap')
+          def uv(*args):
+              subprocess.run([sys.executable, '-m', 'uv', *args], check=True)
+          uv('venv', str(temp / 'venv'), '--python', sys.executable)
+          python = temp / 'venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+          if sys.platform == 'linux':
+              uv('pip', 'install', '--python', str(python), 'torch==2.14.0', '--index-url', 'https://download.pytorch.org/whl/cpu')
+          uv('pip', 'install', '--python', str(python), '-r', str(temp / 'requirements.txt'), 'pytest-timeout', 'hypothesis')
+          tests = ['test_diffusion_backend.py', 'test_image_gallery.py', 'test_diffusion_routes.py', 'test_diffusion_device.py', 'test_diffusion_engine_router.py', 'test_diffusion_engine_load_contract.py', 'test_diffusion_memory.py', 'test_diffusion_auto_policy.py', 'test_diffusion_lora.py', 'test_diffusion_controlnet.py', 'test_diffusion_prequant.py', 'test_diffusion_te_prequant.py']
+          command = [str(python), 'temp/run.py', str(python), '-m', 'pytest', *['studio/backend/tests/' + name for name in tests], 'temp/sim_tests', '--basetemp=temp/pytest', '-o', 'cache_dir=temp/pytest-cache', '--timeout=30', '-q', '--junitxml=temp/artifacts/simulation.xml']
+          subprocess.run(command, check=True)
