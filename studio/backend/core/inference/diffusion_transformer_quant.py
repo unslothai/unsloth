@@ -304,8 +304,8 @@ class _AutoPrefer:
     Blackwell and the ordering does not carry over untested.
 
     ``gated``: the head applies only where ``nvfp4_gate_passed(family, base_repo)`` covers THIS base
-    at the policy this commit resolves AND the record's own backend is the one serving this device,
-    so image rows can ship ahead of their evidence and stay inert.
+    at the policy this commit resolves AND some passing record's own backend is the one serving
+    this device, so image rows can ship ahead of their evidence and stay inert.
 
     ``backend``: the head applies only where ``select_nvfp4_backend`` picks that backend for THIS
     device; the same bytes are faster than fp8 on flashinfer and slower on torchao."""
@@ -362,15 +362,15 @@ def _nvfp4_gate_passed(family, base_repo) -> bool:
 
 
 def _nvfp4_gate_backend_ok(family, base_repo, device: Any) -> bool:
-    """Whether the passing gate record was measured on the backend ``select_nvfp4_backend`` picks
-    for THIS device. Lazy import as in ``_nvfp4_gate_passed``; never raises, an unanswerable probe
-    KEEPS the deny."""
+    """Whether any passing gate record was measured on the backend ``select_nvfp4_backend`` picks
+    for THIS device; the head must not turn on file order. Lazy import as in
+    ``_nvfp4_gate_passed``; never raises, an unanswerable probe KEEPS the deny."""
     try:
-        from .diffusion_nvfp4_gate import nvfp4_gate_backend
+        from .diffusion_nvfp4_gate import nvfp4_gate_backends
         from .diffusion_nvfp4_ops import select_nvfp4_backend
-
-        recorded = nvfp4_gate_backend(family, base_repo)
-        return bool(recorded) and recorded == str(select_nvfp4_backend(device)).strip().lower()
+        return str(select_nvfp4_backend(device)).strip().lower() in nvfp4_gate_backends(
+            family, base_repo
+        )
     except Exception:  # noqa: BLE001 -- see the docstring: an unanswerable probe keeps the deny
         return False
 

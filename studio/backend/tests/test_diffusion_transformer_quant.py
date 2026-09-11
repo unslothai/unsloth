@@ -2289,6 +2289,32 @@ def test_a_gated_row_is_inert_without_a_record_and_leads_with_one(monkeypatch, t
     )
 
 
+def test_the_gated_head_stands_on_any_backend_a_passing_record_names(monkeypatch, tmp_path):
+    """Record identity carries the checkpoint digest, not the backend, so one policy can hold an
+    RTN artifact gated on flashinfer and a GPTQ one gated on torchao. Both backends are measured,
+    so neither device may lose nvfp4 to the order the rows sit in."""
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    _gate(
+        monkeypatch,
+        tmp_path,
+        _gate_row("z-image", _ZIMAGE_BASE, "zimg_f8mod_toq34_v1"),
+        _gate_row(
+            "z-image",
+            _ZIMAGE_BASE,
+            "zimg_f8mod_toq34_v1",
+            checkpoint_sha256 = "c" * 64,
+            gptq = True,
+            backend = "torchao",
+        ),
+    )
+    for backend in ("flashinfer", "torchao"):
+        _stub_nvfp4_backend(monkeypatch, backend)
+        assert _zimage_candidates(monkeypatch) == (TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8), backend
+    _stub_nvfp4_backend(monkeypatch, "something-else")
+    assert _zimage_candidates(monkeypatch) == (TQ_FP8, TQ_MXFP8, TQ_INT8)
+
+
 @pytest.mark.parametrize(
     "row",
     [
