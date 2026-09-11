@@ -3377,3 +3377,200 @@ def test_a_restored_cpu_fallback_the_host_can_hold_says_nothing(tmp_path, monkey
     _launch_with_vulkan_cpu_replay(backend, gguf, crash = False, cpu_fallback = True)
 
     assert backend.last_load_warning is None
+
+
+# ------------------------------------------------- the PCIe link the cost model prices prefill at
+
+
+def _link(rows, indices = None):
+    return LlamaCppBackend._nvidia_link_gib_s(indices, runner = lambda: rows)
+
+
+def test_the_link_rate_follows_the_reported_generation_and_width():
+    """gen x width is the ceiling; 0.85 of it is what an H2D stream reaches (a B200 moved
+    54.4 GB/s of a gen5 x16 link's 63). In GiB/s, the unit the cost model uses."""
+    gen5 = 16 * 3.938 * 0.85 * 1e9 / float(1024**3)
+    gen4 = 16 * 1.969 * 0.85 * 1e9 / float(1024**3)
+    assert _link("0, 5, 16") == pytest.approx(gen5, rel = 1e-6)
+    assert _link("0, 4, 16") == pytest.approx(gen4, rel = 1e-6)
+    assert _link("0, 4, 4") == pytest.approx(gen4 / 4.0, rel = 1e-6)
+    assert gen4 < 30.0, "a gen4 x16 host is nowhere near the 55 GiB/s default"
+
+
+def test_the_slowest_credited_device_sets_the_rate():
+    """The plan spills across every device it credits, so its prefill runs at the worst
+    link among them; a card the plan cannot use does not bound anything."""
+    rows = "0, 5, 16\n1, 3, 4\n"
+    assert _link(rows) == pytest.approx(_link("1, 3, 4"))
+    assert _link(rows, [0]) == pytest.approx(_link("0, 5, 16"))
+    assert _link(rows, [0, 1]) == pytest.approx(_link("1, 3, 4"))
+    assert _link(rows, [7]) is None, "no credited device reported a link"
+
+
+def test_an_unreadable_link_is_unknown_rather_than_guessed():
+    """Every one of these leaves the cost model on its calibrated default, which is the
+    behaviour that existed before the link was read at all."""
+    assert _link("0, [N/A], [N/A]") is None
+    assert _link("0, unknown, 16") is None
+    assert _link("0, 9, 16") is None, "a generation with no published rate"
+    assert _link("0, 4, 0") is None
+    assert _link("0, 4") is None
+    assert _link("") is None
+    assert _link(None) is None
+    assert LlamaCppBackend._nvidia_link_gib_s(runner = lambda: 1 / 0) is None
+
+
+def test_a_readable_device_still_answers_beside_a_broken_row():
+    """A malformed row is skipped, not fatal: the surviving devices are still better
+    evidence than the PCIe 5 default."""
+    assert _link("0, [N/A], [N/A]\n1, 4, 16\n") == pytest.approx(_link("1, 4, 16"))
+
+
+def test_the_link_query_asks_nvidia_smi_for_the_negotiated_maximum_link():
+    """gen.max and width.max, never the current state: the probe runs before the load, when a
+    consumer card idles at gen 1 x1, which would price a PCIe 4 x16 slot as 0.2 GiB/s."""
+    seen = {}
+
+    class _Result:
+        returncode = 0
+        stdout = "0, 5, 16\n"
+
+    def _run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        seen["timeout"] = kwargs.get("timeout")
+        return _Result()
+
+    with patch("subprocess.run", _run):
+        assert LlamaCppBackend._nvidia_link_query() == "0, 5, 16\n"
+    assert seen["cmd"][0] == "nvidia-smi"
+    assert "--query-gpu=index,pcie.link.gen.max,pcie.link.width.max" in seen["cmd"]
+    assert "--format=csv,noheader,nounits" in seen["cmd"]
+    assert seen["timeout"] == 10
+
+
+def test_the_link_query_never_raises_and_never_guesses():
+    """Same contract as the compute_cap probe beside it: a missing tool or a non-zero exit is
+    None, and no exception reaches a load."""
+
+    class _Failed:
+        returncode = 9
+        stdout = "0, 5, 16\n"
+
+    with patch("subprocess.run", lambda *a, **k: _Failed()):
+        assert LlamaCppBackend._nvidia_link_query() is None
+    with patch("subprocess.run", side_effect = FileNotFoundError("nvidia-smi")):
+        assert LlamaCppBackend._nvidia_link_query() is None
+
+
+# --------------------------------------------------------- flash attention pricing
+
+
+def _flash_attn_priced(
+    tmp_path: Path,
+    *,
+    caps = None,
+    **load_kwargs,
+):
+    """Every ``flash_attn`` the launch hands the KV estimator, plus the argv.
+
+    The floors and ``kv_bytes_at`` the seam gives the planner all come out of
+    ``_estimate_kv_cache_bytes``, so what that call is told about flash attention IS what the plan
+    is priced at.
+    """
+    gb = 1024**3
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_576, 24_576)])
+    backend._get_gguf_size_bytes = lambda _path: 8 * gb
+    backend._can_estimate_kv = lambda: True
+    seen: list = []
+
+    def record_kv(
+        _ctx,
+        _cache_type = None,
+        *args,
+        flash_attn = True,
+        **kwargs,
+    ):
+        seen.append(flash_attn)
+        # Distinguishable, and in llama.cpp's direction: FA off pads V to the model max, so the
+        # FA-off arm is the larger number.
+        return (1 if flash_attn else 2) * gb
+
+    backend._estimate_kv_cache_bytes = record_kv
+    backend._compute_buffer_ctx_bytes = lambda *a, **k: 0
+    backend._estimate_compute_buffer_bytes = lambda **k: 1
+    backend._mtp_draft_kv_bytes = lambda *a, **k: 0
+    backend._select_gpus = lambda *a, **k: ([0], False)
+    backend._select_gpus_split_aware = lambda *a, **k: ([0], False)
+    backend.probe_server_capabilities = lambda _binary = None: dict(caps or {})
+
+    captured = _launch(backend, gguf, n_ctx = 8192, **load_kwargs)
+    assert seen, "the launch priced no KV cache at all"
+    return seen, captured["cmd"]
+
+
+def test_the_planner_is_priced_at_the_flash_attention_the_launch_runs(tmp_path):
+    """Default launch: --flash-attn on is emitted, so the cache is priced FA ON.
+
+    Pinning it off over-charged by +17% to +102% against what llama-server allocates on every iSWA
+    model measured, because the FA-off arm pads every layer's V to n_embd_v_gqa_max.
+    """
+    seen, cmd = _flash_attn_priced(tmp_path)
+
+    assert cmd[cmd.index("--flash-attn") + 1] == "on"
+    assert set(seen) == {True}, f"the launch priced flash attention as {sorted(set(seen))}"
+
+
+def test_a_typed_flash_attention_off_is_priced_off(tmp_path):
+    """User extras go last and llama.cpp is last-wins, so -fa off is what runs."""
+    seen, cmd = _flash_attn_priced(tmp_path, extra_args = ["-fa", "off"])
+
+    assert cmd[-2:] == ["-fa", "off"]
+    assert set(seen) == {False}, f"the launch priced flash attention as {sorted(set(seen))}"
+
+
+def test_a_build_without_the_flag_is_priced_off(tmp_path):
+    """No --flash-attn to emit means the child runs without it, whatever was asked."""
+    seen, cmd = _flash_attn_priced(tmp_path, caps = {"supports_flash_attn": False})
+
+    assert "--flash-attn" not in cmd
+    assert set(seen) == {False}, f"the launch priced flash attention as {sorted(set(seen))}"
+
+
+def test_the_flash_attention_off_retry_still_gives_the_placement_back(tmp_path):
+    """Why the pin is not needed: the FA-off respawn does not relaunch the plan.
+
+    Every labelled respawn goes through _revoke_spill_plan inside _spawn_and_wait, which strips
+    the -ot / --load-mode / --parallel the plan wrote and appends ``--fit on``, so the launch that
+    runs without flash attention is fitted by llama.cpp.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    src = textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model))
+    tree = ast.parse(src)
+    spawn = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_spawn_and_wait"
+    )
+    # The revocation is unconditional on `label`, so any rung added later is covered.
+    guard = next(
+        node
+        for node in ast.walk(spawn)
+        if isinstance(node, ast.If) and isinstance(node.test, ast.Name) and node.test.id == "label"
+    )
+    assert "_revoke_spill_plan" in ast.dump(guard)
+
+    noflash = [
+        call
+        for call in ast.walk(tree)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id == "_spawn_and_wait"
+        and any(
+            kw.arg == "label" and getattr(kw.value, "value", None) == "-noflash"
+            for kw in call.keywords
+        )
+    ]
+    assert noflash, "the flash-attention-off retry no longer labels its respawn"

@@ -334,8 +334,7 @@ def test_a_weights_only_drafter_reserve_counts_as_unsized():
 
     compact = "".join(inspect.getsource(B.load_model).split())
     assert (
-        "mtp_unsized=bool(_flat_mtp_engagesor_cpu_draft_fit_bytesisNone"
-        "or_draft_split_across_host)"
+        "mtp_unsized=bool(_flat_mtp_engagesor_cpu_draft_fit_bytesisNoneor_draft_split_across_host)"
     ) in compact
     assert "_flat_mtp_engagesandmtp_overhead_fnisNone" not in compact
 
@@ -2278,3 +2277,21 @@ def test_the_replayed_cpu_fallback_recomputes_the_memory_record():
     arm = src[src.index("allow_manual_cpu=True") :]
     arm = arm[: arm.index("_apply_cpu_fallback_state")]
     assert "resolve_effective_memory_state(cmd,env)" in arm
+
+
+def test_the_prompt_cache_is_in_the_footprint_it_is_subtracted_from():
+    """The prompt cache is host-only but absent from the footprint, so subtracting it credited
+    VRAM that was never charged and faked a fit."""
+    avail_mib = 16 * 1024
+
+    def _fit(cache):
+        return LlamaCppBackend._fit_derived_load_mode(
+            _Stub(avail_mib),
+            model_size = 20 * GIB,
+            prompt_cache_bytes = cache,
+            gpus = [(0, 12 * 1024)],
+            avail_mib = avail_mib,
+        )
+
+    assert _fit(0) == FIT_MODE
+    assert _fit(8 * GIB) is None
