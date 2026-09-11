@@ -78,6 +78,7 @@ except ImportError:
 from core.inference.llama_cpp import (
     _AUTO_OFFLOAD_CTX,
     _APPLE_UNIFIED_MEMORY_FRACTION,
+    _APPLE_WIRED_CEILING_FRACTION,
     _CTX_FIT_VRAM_FRACTION,
     LlamaCppBackend,
     classify_gpu_offload_lines,
@@ -825,6 +826,82 @@ class TestAppleUnifiedMemoryBudget:
         monkeypatch.setitem(sys.modules, "mlx", None)
         monkeypatch.setitem(sys.modules, "psutil", None)
         assert LlamaCppBackend._apple_metal_memory_budget_bytes() == 0
+
+
+# Unpatched: conftest pins the probe to 0.
+_REAL_WIRED_CEILING = LlamaCppBackend.__dict__["_apple_metal_wired_ceiling_bytes"].__func__
+
+
+def _install_wired_probes(monkeypatch, *, sysctl_mb, working_set, in_use):
+    """``sysctl_mb`` or ``in_use`` of None is an unreadable probe."""
+    from core.inference import llama_cpp as _llama_cpp
+    from utils.hardware import hardware as _hardware
+
+    _force_apple(monkeypatch)
+    _install_fake_mlx(monkeypatch, working_set)
+    sysctl_out = "" if sysctl_mb is None else f"{sysctl_mb}\n"
+    monkeypatch.setattr(
+        _llama_cpp.subprocess,
+        "run",
+        lambda *a, **k: _types.SimpleNamespace(stdout = sysctl_out),
+    )
+    monkeypatch.setattr(
+        _hardware,
+        "_read_apple_gpu_stats",
+        lambda: {} if in_use is None else {"vram_used_bytes": in_use},
+    )
+
+
+class TestAppleWiredCeiling:
+    def test_zero_off_apple_silicon(self, monkeypatch):
+        import platform as _platform
+
+        _install_wired_probes(monkeypatch, sysctl_mb = 0, working_set = 48 * GIB, in_use = 2 * GIB)
+        monkeypatch.setattr(_platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_platform, "machine", lambda: "x86_64")
+        assert _REAL_WIRED_CEILING() == 0
+
+    def test_the_working_set_is_the_limit_by_default(self, monkeypatch):
+        _install_wired_probes(monkeypatch, sysctl_mb = 0, working_set = 48 * GIB, in_use = 2 * GIB)
+        assert _REAL_WIRED_CEILING() == int(46 * GIB * _APPLE_WIRED_CEILING_FRACTION)
+
+    def test_a_set_sysctl_limit_wins(self, monkeypatch):
+        _install_wired_probes(
+            monkeypatch, sysctl_mb = 56 * 1024, working_set = 48 * GIB, in_use = 2 * GIB
+        )
+        assert _REAL_WIRED_CEILING() == int(54 * GIB * _APPLE_WIRED_CEILING_FRACTION)
+
+    def test_unread_gpu_memory_is_unresolved_not_zero(self, monkeypatch):
+        _install_wired_probes(monkeypatch, sysctl_mb = 0, working_set = 48 * GIB, in_use = None)
+        assert _REAL_WIRED_CEILING() == 0
+
+    def test_unread_sysctl_is_unresolved_not_the_default(self, monkeypatch):
+        _install_wired_probes(monkeypatch, sysctl_mb = None, working_set = 48 * GIB, in_use = 2 * GIB)
+        assert _REAL_WIRED_CEILING() == 0
+
+    def test_no_readable_limit_is_unresolved(self, monkeypatch):
+        _install_wired_probes(monkeypatch, sysctl_mb = 0, working_set = 0, in_use = 2 * GIB)
+        assert _REAL_WIRED_CEILING() == 0
+
+    @pytest.mark.parametrize(
+        "counter,expected",
+        [
+            ("", 0),
+            ('"In use system memory"=2147483648,', int(46 * GIB * _APPLE_WIRED_CEILING_FRACTION)),
+        ],
+    )
+    def test_ioreg_resolves_only_with_the_in_use_counter(self, monkeypatch, counter, expected):
+        _force_apple(monkeypatch)
+        _install_fake_mlx(monkeypatch, 48 * GIB)
+        block = f'"PerformanceStatistics" = {{"Device Utilization %"=3,{counter}"Alloc system memory"=1}}'
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "ioreg":
+                return _types.SimpleNamespace(stdout = block.encode())
+            return _types.SimpleNamespace(stdout = "0\n")
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+        assert _REAL_WIRED_CEILING() == expected
 
 
 class TestAppleContextCap:
