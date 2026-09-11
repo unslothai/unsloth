@@ -5532,6 +5532,21 @@ def _without_subsequence(tokens: List[str], run: List[str]) -> List[str]:
     return list(tokens)
 
 
+def _count_subsequence(tokens: List[str], run: List[str]) -> int:
+    """How many non-overlapping contiguous occurrences of ``run`` are in ``tokens``."""
+    if not run:
+        return 0
+    total = 0
+    i = 0
+    while i <= len(tokens) - len(run):
+        if tokens[i : i + len(run)] == run:
+            total += 1
+            i += len(run)
+        else:
+            i += 1
+    return total
+
+
 def _subsequence_index(tokens: List[str], run: List[str], hint: int) -> int:
     """Where ``run`` sits in ``tokens``, given it was appended at ``hint``.
 
@@ -6678,6 +6693,9 @@ class LlamaCppBackend:
         # The managed DirectIO tokens, so a rung that gives up the confirmed full
         # offload can take them back out. _fit_load_mode_flags' role, one setting up.
         self._memory_dio_flags: list[str] = []
+        # The user's own extras for this launch. The managed strip compares against
+        # them so it can never remove a hand-typed `--load-mode dio`.
+        self._memory_dio_user_tokens: list[str] = []
         self._memory_policy_active: bool = False
         # What would still mark this launch with the managed flags removed: a scrubbed
         # env var or a vetoed extra. Recorded so a rung that withdraws the DirectIO pair
@@ -8556,6 +8574,18 @@ class LlamaCppBackend:
         `cmd`'s value for the rung that goes back to it.
         """
         if not self._memory_dio_flags:
+            self._memory_dio_applicable = False
+            return argv
+        # The record says a managed pair exists SOMEWHERE, not that it is in THIS argv.
+        # A rung that strips a copy keeps the record for `cmd`, so a later argv built
+        # from that copy still matched -- and with a user-authored `--load-mode dio` in
+        # the command, the first occurrence removed would be theirs. Strip only while
+        # this argv holds more of the pair than the user wrote.
+        if _count_subsequence(list(argv), self._memory_dio_flags) <= _count_subsequence(
+            list(getattr(self, "_memory_dio_user_tokens", []) or []), self._memory_dio_flags
+        ):
+            if clear_record:
+                self._memory_dio_flags = []
             self._memory_dio_applicable = False
             return argv
         stripped = _without_subsequence(argv, self._memory_dio_flags)
@@ -15427,6 +15457,7 @@ class LlamaCppBackend:
         self._memory_direct_io = None
         self._memory_dio_applicable = False
         self._memory_dio_flags = []
+        self._memory_dio_user_tokens = []
         self._memory_policy_active = False
         self._memory_policy_extras_touched = False
         self._memory_mlock_applicable = True
@@ -24212,6 +24243,8 @@ class LlamaCppBackend:
                     env = _fit_load_mode_env_view,
                     settings = _mem_settings,
                 )
+                # What the user wrote, so the strip can tell their pair from ours.
+                self._memory_dio_user_tokens = list(_mem_extras or [])
                 self._memory_dio_flags = (
                     list(_mem_managed) if tuple(_mem_managed) == MANAGED_DIO_FLAGS else []
                 )
@@ -24296,7 +24329,22 @@ class LlamaCppBackend:
                 _off_view = dict(_mem_env)
                 scrub_memory_env(_off_view, (False, False))
 
-                def _dio_decision_for(devices, *, fully_offloaded):
+                def _mem_env_for(child_env):
+                    """`_mem_env`'s placement scrubbing, with the CHILD's current
+                    visibility. A rung that masks an adapter changes what the child
+                    enumerates, and `_mem_env` is the snapshot from before the gate, so
+                    probing with it reused the unnarrowed set's verdict."""
+                    if child_env is None:
+                        return _mem_env
+                    view = dict(_mem_env)
+                    for _name in _DEVICE_VISIBILITY_ENV:
+                        if _name in child_env:
+                            view[_name] = child_env[_name]
+                        else:
+                            view.pop(_name, None)
+                    return view
+
+                def _dio_decision_for(devices, *, fully_offloaded, child_env = None):
                     """``(pair, applicable, active)`` for a CHANGED device set.
 
                     Everything the launch above asks, asked again for the devices a
@@ -24307,6 +24355,7 @@ class LlamaCppBackend:
                     review round: a partial offload getting the pair, a narrowed set
                     never gaining it, a redundant pair recorded as activity.
                     """
+                    _rung_env = _mem_env_for(child_env)
                     host_resident = self._weights_in_host_memory(
                         fully_gpu_offloaded = fully_offloaded,
                         gpu_memory_mode = gpu_memory_mode,
@@ -24315,14 +24364,14 @@ class LlamaCppBackend:
                         gpu_indices = devices,
                         is_vulkan_backend = is_vulkan_backend,
                         binary = binary,
-                        env = _mem_env,
+                        env = _rung_env,
                         probe_vulkan = _mem_probe_for_dio or _mem_should_mlock,
                         fit_active = fit_is_effectively_on(
-                            [*cmd, *(_mem_extra_args or [])], _mem_env
+                            [*cmd, *(_mem_extra_args or [])], _rung_env
                         ),
                     )
                     confirmed = self._gpu_offload_confirmed(
-                        binary, _mem_env, devices, host_resident, _mem_dio_possible
+                        binary, _rung_env, devices, host_resident, _mem_dio_possible
                     )
 
                     def _for(pair, env_view):
@@ -25073,7 +25122,7 @@ class LlamaCppBackend:
                         # False because the fitter still owns placement here, so the
                         # decision re-runs the host-residency check.
                         _gate_dio, _gate_applicable, _gate_active = _dio_decision_for(
-                            _survivors, fully_offloaded = False
+                            _survivors, fully_offloaded = False, child_env = env
                         )
                         self._memory_dio_applicable = _gate_applicable
                         # BOTH directions, like the reactive rung: narrowing can also
@@ -25637,7 +25686,7 @@ class LlamaCppBackend:
                                 # This rung turned the fitter OFF, so -ngl falls back to
                                 # every layer: that is the full offload to establish.
                                 _retry_dio, _retry_applicable, _retry_active = _dio_decision_for(
-                                    gpu_indices, fully_offloaded = True
+                                    gpu_indices, fully_offloaded = True, child_env = env
                                 )
                                 self._memory_dio_applicable = _retry_applicable
                                 if _retry_dio and not self._memory_dio_flags:
@@ -26227,7 +26276,7 @@ class LlamaCppBackend:
                         # set never had, so guarding on an existing pair left the
                         # successful retry on mmap with nothing to correct it.
                         _arch_dio, _arch_applicable, _arch_active = _dio_decision_for(
-                            _remaining, fully_offloaded = fully_gpu_offloaded
+                            _remaining, fully_offloaded = fully_gpu_offloaded, child_env = env
                         )
                         self._memory_dio_applicable = _arch_applicable
                         _dio_left_cmd = False
@@ -27955,6 +28004,7 @@ class LlamaCppBackend:
             self._memory_direct_io = None
             self._memory_dio_applicable = False
             self._memory_dio_flags = []
+            self._memory_dio_user_tokens = []
             self._memory_policy_active = False
             self._memory_policy_extras_touched = False
             self._memory_mlock_applicable = True

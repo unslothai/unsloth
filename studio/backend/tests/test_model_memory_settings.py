@@ -2857,9 +2857,9 @@ class TestEveryDeviceSetChangeReAsks:
         src = self._src()
         assert src.count("_dio_decision_for(") == 4  # 1 def + 3 rungs
         flat = "".join(src.split())
-        assert "_dio_decision_for(_survivors,fully_offloaded=False)" in flat
-        assert "_dio_decision_for(gpu_indices,fully_offloaded=True)" in flat
-        assert "_dio_decision_for(_remaining,fully_offloaded=fully_gpu_offloaded)" in flat
+        assert "_dio_decision_for(_survivors,fully_offloaded=False,child_env=env)" in flat
+        assert "_dio_decision_for(gpu_indices,fully_offloaded=True,child_env=env)" in flat
+        assert "_dio_decision_for(_remaining,fully_offloaded=fully_gpu_offloaded,child_env=env)" in flat
 
     def test_the_decision_re_runs_the_placement_check(self):
         """Backend and probe discreteness are not a full offload: the fitter may
@@ -2869,9 +2869,11 @@ class TestEveryDeviceSetChangeReAsks:
         arm = arm[: arm.index("return pair,")]
         flat = "".join(arm.split())
         assert "host_resident=self._weights_in_host_memory(" in flat
-        # host residency is carried INTO the confirmation, which declines on it
+        # host residency is carried INTO the confirmation, which declines on it, and
+        # the rung probes its OWN visibility rather than the pre-gate snapshot
+        assert "_rung_env=_mem_env_for(child_env)" in flat
         assert (
-            "self._gpu_offload_confirmed(binary,_mem_env,devices,host_resident,_mem_dio_possible)"
+            "self._gpu_offload_confirmed(binary,_rung_env,devices,host_resident,_mem_dio_possible)"
             in flat
         )
         assert "fully_gpu_offloaded=fully_offloaded," in flat
@@ -3903,3 +3905,82 @@ class TestTheDeviceMemoFollowsVisibility:
             "GGML_VK_VISIBLE_DEVICES",
             "GGML_BACKEND_PATH",
         } <= set(_DEVICE_VISIBILITY_ENV)
+
+
+class TestANarrowingRungProbesItsOwnVisibility:
+    """`_mem_env` is the snapshot from before the gate, so probing with it reused the
+    unnarrowed set's verdict. Keying the memo on visibility only helps if the rung
+    actually passes the narrowed environment in."""
+
+    def test_every_rung_passes_the_child_environment(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert flat.count("child_env=env") == 3
+
+    def test_the_view_takes_visibility_from_the_child(self, monkeypatch):
+        import core.inference.llama_cpp as m
+
+        # the helper is a closure, so exercise its rule directly
+        base = {"KEEP": "1", "CUDA_VISIBLE_DEVICES": "0,1"}
+        child = {"CUDA_VISIBLE_DEVICES": "1"}
+        view = dict(base)
+        for name in m._DEVICE_VISIBILITY_ENV:
+            if name in child:
+                view[name] = child[name]
+            else:
+                view.pop(name, None)
+        assert view == {"KEEP": "1", "CUDA_VISIBLE_DEVICES": "1"}
+        assert m.LlamaCppBackend._device_visibility_key(view) != \
+            m.LlamaCppBackend._device_visibility_key(base)
+
+
+class TestTheStripNeverEatsAUserAuthoredPair:
+    """The record says a managed pair exists somewhere, not that it is in THIS argv.
+    A rung that strips a copy keeps the record for `cmd`, so an argv built from that
+    copy matched again and removed the user's own `--load-mode dio`."""
+
+    def _backend(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        b = LlamaCppBackend.__new__(LlamaCppBackend)
+        b._memory_dio_flags = ["--load-mode", "dio"]
+        b._memory_dio_user_tokens = []
+        b._memory_dio_applicable = True
+        b._memory_policy_active = True
+        b._memory_policy_extras_touched = False
+        return b
+
+    def test_the_managed_pair_is_still_removed(self):
+        b = self._backend()
+        argv = ["llama-server", "--load-mode", "dio"]
+        assert b._drop_managed_dio(argv, "test") == ["llama-server"]
+
+    def test_a_user_pair_alone_survives(self):
+        b = self._backend()
+        b._memory_dio_user_tokens = ["--load-mode", "dio"]
+        argv = ["llama-server", "--load-mode", "dio"]
+        # only the user's occurrence is left, so there is nothing of ours to take
+        assert b._drop_managed_dio(argv, "test") == argv
+
+    def test_ours_goes_and_theirs_stays_when_both_are_present(self):
+        b = self._backend()
+        b._memory_dio_user_tokens = ["--load-mode", "dio"]
+        argv = ["llama-server", "--load-mode", "dio", "--load-mode", "dio"]
+        out = b._drop_managed_dio(argv, "test")
+        assert out == ["llama-server", "--load-mode", "dio"]
+
+    def test_the_applicability_still_clears_either_way(self):
+        b = self._backend()
+        b._memory_dio_user_tokens = ["--load-mode", "dio"]
+        b._drop_managed_dio(["llama-server", "--load-mode", "dio"], "test")
+        assert b._memory_dio_applicable is False
+
+    def test_the_counter_is_non_overlapping(self):
+        from core.inference.llama_cpp import _count_subsequence
+
+        assert _count_subsequence(["a", "a", "a"], ["a", "a"]) == 1
+        assert _count_subsequence(["a", "a", "a", "a"], ["a", "a"]) == 2
+        assert _count_subsequence(["x"], ["a"]) == 0
+        assert _count_subsequence(["a"], []) == 0
