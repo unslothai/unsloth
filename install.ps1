@@ -1592,6 +1592,72 @@ exit 1
         } catch { return $Cache }
     }
 
+    # Claim the root before anything of ours goes into it: the uv cache, the venv and the venv's
+    # own marker all land inside it, so an install that dies in between used to leave a directory
+    # the uninstaller could only identify by guessing at leftovers. Never fatal.
+    # A sentinel this list may trust: a regular file, never a link. Test-Path follows one, and a
+    # planted link would otherwise short-circuit the emptiness test below.
+    function Test-StudioPlainFile {
+        param([string]$Path, [string]$Container)
+        try {
+            # The container too: -L / the ReparsePoint attribute answers for the named file only,
+            # so a linked `share` or `unsloth_studio` holding a genuine marker would otherwise
+            # read as proof that the whole workspace around it is ours.
+            if (-not [string]::IsNullOrWhiteSpace($Container)) {
+                $dir = Get-Item -LiteralPath $Container -Force -ErrorAction SilentlyContinue
+                if ($dir -and (($dir.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) { return $false }
+            }
+            $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+            return (-not $item.PSIsContainer -and
+                (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0))
+        } catch { return $false }
+    }
+
+    # Only a root this run may take over: in env mode $StudioHome is a user-chosen workspace, so
+    # an empty one, or one already carrying an unambiguous marker, and nothing else, or a run
+    # that aborts at the venv-step guard leaves somebody's project marked. Shorter than that
+    # guard's list on purpose: it only refuses to overwrite, this authorizes a delete.
+    #
+    # The emptiness test is inline, not Test-DirectoryHasEntries, which is defined below this
+    # function's first caller: the name error would land in the catch and skip the claim in
+    # silence. An unreadable root counts as occupied, so failure means "do not claim".
+    function Write-StudioRootOwnerMarker {
+        param([Parameter(Mandatory = $true)][string]$Root)
+        try {
+            $marker = Join-Path $Root ".unsloth-studio-owned"
+            # Already ours and the right shape: leave it. This runs twice per install, and a run
+            # killed between the delete and the write would lose the only proof this root is ours.
+            if (Test-StudioPlainFile -Path $marker) { return }
+            if (Test-Path -LiteralPath $Root) {
+                $occupied = $true
+                try {
+                    $occupied = @(Get-ChildItem -LiteralPath $Root -Force -ErrorAction Stop |
+                        Select-Object -First 1).Count -gt 0
+                } catch { $occupied = $true }
+                $claimable = (
+                    $StudioRedirectMode -ne 'env' -or
+                    (Test-StudioPlainFile -Path (Join-Path $Root "unsloth_studio\.unsloth-studio-owned") `
+                        -Container (Join-Path $Root "unsloth_studio")) -or
+                    (Test-StudioPlainFile -Path (Join-Path $Root "share\studio.conf") `
+                        -Container (Join-Path $Root "share")) -or
+                    -not $occupied
+                )
+                if (-not $claimable) { return }
+            } else {
+                # .NET API: New-Item -Path treats brackets as wildcards.
+                [System.IO.Directory]::CreateDirectory($Root) | Out-Null
+            }
+            # Delete first, then confirm it: WriteAllText follows a file link and truncates its
+            # TARGET, and the delete can fail on a root we cannot write while that target stays
+            # writable. No marker is fine; the venv writes its own later.
+            # Get-Item -Force, not Test-Path: the latter follows a dangling link and answers
+            # false, after which WriteAllText follows the link and writes outside the root.
+            Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+            if (Get-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue) { return }
+            [System.IO.File]::WriteAllText($marker, "")
+        } catch { }
+    }
+
     function Write-StudioUvCacheMarker {
         param(
             [Parameter(Mandatory = $true)][string]$StudioRoot,
@@ -4484,6 +4550,12 @@ exit 0
         return (Exit-InstallFailure "uv could not be installed")
     }
 
+    # Ahead of the cache setup, which is the first thing to write inside the root and returns
+    # early for a preset UV_CACHE_DIR. Here rather than inside it: the claim has nothing to do
+    # with the uv cache, and that function is lifted out and run on its own by
+    # tests/python/test_windows_python_venv_hardening.py, where a call into the rest of the
+    # installer is a command-not-found.
+    Write-StudioRootOwnerMarker -Root $StudioHome
     Set-StudioUvCacheEnvironment -StudioRoot $StudioHome -Isolated $IsolateUvCache -UvExecutable $script:UvExe
 
     # Bytecode compilation can exceed uv's 60s default on slow machines ("0" disables).
@@ -4500,10 +4572,7 @@ exit 0
 
     # ── Create the venv; hand uv the resolved exe path so it does not re-resolve back to conda. ──
     Write-TauriLog "STEP" "Creating virtual environment"
-    if (-not (Test-Path -LiteralPath $StudioHome)) {
-        # .NET API: New-Item -Path treats brackets as wildcards.
-        [System.IO.Directory]::CreateDirectory($StudioHome) | Out-Null
-    }
+    Write-StudioRootOwnerMarker -Root $StudioHome
 
     $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
     $_Migrated = $false
@@ -4877,6 +4946,9 @@ exit 0
         # ours. Content-checked, never by name -- this guard gates a recursive delete.
         if (
             $StudioRedirectMode -eq 'env' -and
+            # Test-StudioPlainFile, not Test-Path: the claim refuses to write a marker through a
+            # link, so reading one through a link here would undo that decision.
+            -not (Test-StudioPlainFile -Path (Join-Path $StudioHome ".unsloth-studio-owned")) -and
             -not (Test-Path -LiteralPath (Join-Path $VenvDir ".unsloth-studio-owned") -PathType Leaf) -and
             -not (Test-Path -LiteralPath (Join-Path $StudioHome "share\studio.conf") -PathType Leaf) -and
             -not (Test-Path -LiteralPath (Join-Path $StudioHome "bin\unsloth.exe") -PathType Leaf) -and

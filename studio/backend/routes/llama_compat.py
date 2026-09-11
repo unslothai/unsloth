@@ -3,15 +3,14 @@
 
 """Answer engine discovery probes with JSON, or with a 404, but never with the app.
 
-Probes for engine endpoints used to land on main.py's SPA catch-all, so ``GET /props``
-returned 200 and a page of HTML. That is worse than a 404: a probe reads the status
-before the body. Served here: ``/props``, ``/v1/props``, ``/version``. Everything else
-in llama-server's table gets an explicit 404, on its real method as well as GET.
+Probes for engine endpoints used to land on main.py's SPA catch-all, so ``GET /props`` returned 200 and a page
+of HTML. That is worse than a 404: a probe reads the status before the body. Served here: ``/props``,
+``/v1/props``, ``/version``. Everything else in llama-server's table gets an explicit 404, on its real method as
+well as GET.
 
-Deliberately NOT served: Ollama's ``/api/tags`` and ``/api/show``. Answering them makes
-a client select Ollama and then fail on ``/api/chat``, which Studio does not implement;
-the reporting user's client instead fell back to the OpenAI surface and worked.
-Advertising a protocol we do not have is the HTML 200 again, one layer up.
+Deliberately NOT served: Ollama's ``/api/tags`` and ``/api/show``. Answering them makes a client select Ollama
+and then fail on ``/api/chat``, which Studio does not implement; the reporting user's client instead fell back
+to the OpenAI surface and worked. Advertising a protocol we do not have is the HTML 200 again, one layer up.
 """
 
 from __future__ import annotations
@@ -139,9 +138,9 @@ def _server_props() -> dict:
     if public_id:
         props["model_path"] = public_id
 
-    # These describe the CHILD's route table and web UI, not ours: Studio launches with
-    # --metrics, so endpoint_metrics arrives true while public /metrics 404s here
-    # (tools/server/server-context.cpp puts all three flags in the payload).
+    # These describe the CHILD's route table and web UI, not ours: Studio launches with --metrics, so
+    # endpoint_metrics arrives true while public /metrics 404s here (tools/server/server-context.cpp puts all three
+    # flags in the payload).
     for _child_only in ("ui", "ui_settings", "cors_proxy_enabled"):
         props.pop(_child_only, None)
     props["endpoint_slots"] = False
@@ -169,8 +168,8 @@ def _server_props() -> dict:
     return props
 
 
-# Slash forms too: FastAPI's redirect never fires.
-# The catch-all fully matches "/props/" and returns index.html; routes/inference.py registers "/v1/models/" likewise.
+# Slash forms too: FastAPI's redirect never fires. The catch-all fully matches "/props/" and returns
+# index.html; routes/inference.py registers "/v1/models/" likewise.
 @router.get("/props", include_in_schema = False)
 @router.get("/props/", include_in_schema = False)
 @router.get("/v1/props", include_in_schema = False)
@@ -193,9 +192,9 @@ async def _probe_not_found():
     raise HTTPException(status_code = 404, detail = "API endpoint not found")
 
 
-# Without these a POST hit the GET-only catch-all and returned 405, reading as "exists, wrong method". HEAD is here
-# because Starlette does not admit it on a GET route (measured, fastapi 0.141.1); GET stays with the catch-all so its
-# asset lookup wins, and OPTIONS is untouched for CORS preflight.
+# Without these a POST hit the GET-only catch-all and returned 405, reading as "exists, wrong method". HEAD is
+# here because Starlette does not admit it on a GET route (measured, fastapi 0.141.1); GET stays with the catch-all
+# so its asset lookup wins, and OPTIONS is untouched for CORS preflight.
 _PROBE_DENIED_METHODS = ["HEAD", "POST", "PUT", "PATCH", "DELETE"]
 
 
@@ -233,11 +232,9 @@ for _slots_form in _both_forms("/slots/{id_slot}"):
 
 
 def add_get_denials(app) -> None:
-    """404 the engine paths on GET as well, for an app with no frontend mounted.
-
-    The GET denial normally comes from main.py's SPA catch-all, registered only when
-    setup_frontend() finds a build. In API-only mode there is none, so these paths
-    matched on method alone and answered 405, which a client reads as "endpoint exists".
+    """404 the engine paths on GET as well, for an app with no frontend mounted. The GET denial normally comes
+    from main.py's SPA catch-all, registered only when setup_frontend() finds a build. In API-only mode there is
+    none, so these paths matched on method alone and answered 405, which a client reads as "endpoint exists".
     """
     for path in sorted(_ENGINE_PROBE_PATHS) + sorted(_UNSERVED_V1_PROBE_PATHS):
         for form in _both_forms(f"/{path}"):

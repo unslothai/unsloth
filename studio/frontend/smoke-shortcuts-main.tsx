@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Harness for tests/studio/playwright_keyboard_shortcuts.py: a vite entry with no
-// backend, driving the real registry, the real store and the real useShortcut
-// against a real browser's keyboard. The node suite can reach the pure functions
-// but not the listener, so what a chord does to a focused button, to a text
-// field, on auto-repeat, or under AltGr is only answerable here.
+// Harness for tests/studio/playwright_keyboard_shortcuts.py: a vite entry with no backend, driving
+// the real registry, the real store and the real useShortcut against a real browser's keyboard. The
+// node suite can reach the pure functions but not the listener, so what a chord does to a focused
+// button, to a text field, on auto-repeat, or under AltGr is only answerable here.
 
 /* eslint-disable no-restricted-imports -- a harness entry point, not app code. */
 import { useChatNavigationStore } from "@/features/chat/stores/chat-navigation-store";

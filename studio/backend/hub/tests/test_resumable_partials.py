@@ -22,6 +22,35 @@ import pytest
 from hub.utils import resumable_partials as rp
 
 
+def _shared_setup_1(module, partial, tmp_path):
+    _patched_writer(module)(
+        incomplete_path = partial,
+        destination_path = tmp_path / "abc",
+        url_to_download = "https://example/f",
+        headers = {},
+        expected_size = 50,
+        filename = "f",
+    )
+
+
+def _shared_setup_2(monkeypatch, tmp_path):
+    module, calls = _fake_file_download(monkeypatch)
+    assert rp.restore_resumable_partials() is True
+
+    partial = tmp_path / "abc.incomplete"
+    return calls, module, partial
+
+
+def _shared_setup_3(monkeypatch, tmp_path):
+    module, calls = _fake_file_download(monkeypatch)
+    assert rp.restore_resumable_partials() is True
+
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"keep me")
+    partial = tmp_path / "abc.incomplete"
+    return calls, module, partial, victim
+
+
 @pytest.fixture(autouse = True)
 def _fresh_probe():
     rp.reset_probe_cache_for_tests()
@@ -398,10 +427,7 @@ def test_changing_the_cache_home_invalidates_the_verdict(monkeypatch):
 
 
 def test_it_appends_to_the_stable_name_and_says_how_far_it_got(monkeypatch, tmp_path):
-    module, calls = _fake_file_download(monkeypatch)
-    assert rp.restore_resumable_partials() is True
-
-    partial = tmp_path / "abc.incomplete"
+    calls, module, partial = _shared_setup_2(monkeypatch, tmp_path)
     partial.write_bytes(b"y" * 40)
     destination = tmp_path / "abc"
 
@@ -425,22 +451,10 @@ def test_a_planted_symlink_is_not_appended_to(monkeypatch, tmp_path):
     An unguarded "ab" would follow the link and append the model to whatever it points at, and
     _chmod_and_move would then chmod that file too.
     """
-    module, calls = _fake_file_download(monkeypatch)
-    assert rp.restore_resumable_partials() is True
-
-    victim = tmp_path / "victim"
-    victim.write_bytes(b"keep me")
-    partial = tmp_path / "abc.incomplete"
+    calls, module, partial, victim = _shared_setup_3(monkeypatch, tmp_path)
     partial.symlink_to(victim)
 
-    _patched_writer(module)(
-        incomplete_path = partial,
-        destination_path = tmp_path / "abc",
-        url_to_download = "https://example/f",
-        headers = {},
-        expected_size = 50,
-        filename = "f",
-    )
+    _shared_setup_1(module, partial, tmp_path)
 
     assert victim.read_bytes() == b"keep me", "the download was appended to the symlink target"
     assert not partial.is_symlink(), "the planted link survived"
@@ -456,10 +470,7 @@ def test_a_partial_left_by_another_user_is_not_built_on(monkeypatch, tmp_path):
     the wrong contents. huggingface_hub checks the size afterwards and never the hash
     (huggingface_hub#3643), so no later step would catch it.
     """
-    module, calls = _fake_file_download(monkeypatch)
-    assert rp.restore_resumable_partials() is True
-
-    partial = tmp_path / "abc.incomplete"
+    calls, module, partial = _shared_setup_2(monkeypatch, tmp_path)
     partial.write_bytes(b"poison" * 100)
 
     # Only the planted file reads as somebody else's, and the fresh partial replacing it has to still
@@ -480,14 +491,7 @@ def test_a_partial_left_by_another_user_is_not_built_on(monkeypatch, tmp_path):
 
     monkeypatch.setattr(rp.os, "fstat", fstat)
 
-    _patched_writer(module)(
-        incomplete_path = partial,
-        destination_path = tmp_path / "abc",
-        url_to_download = "https://example/f",
-        headers = {},
-        expected_size = 50,
-        filename = "f",
-    )
+    _shared_setup_1(module, partial, tmp_path)
 
     assert calls["http_get"] == [{"resume_size": 0, "mode": "ab"}], "it resumed on foreign bytes"
     assert partial.read_bytes() == b"x" * 10, "the foreign prefix survived into the blob"
@@ -499,10 +503,7 @@ def test_an_unopenable_partial_defers_instead_of_failing_the_download(monkeypatc
     Stock writes a file of its own and never touches this one, so the download still happens.
     Raising here would fail every attempt at that blob for good, which is worse than not resuming.
     """
-    module, calls = _fake_file_download(monkeypatch)
-    assert rp.restore_resumable_partials() is True
-
-    partial = tmp_path / "abc.incomplete"
+    calls, module, partial = _shared_setup_2(monkeypatch, tmp_path)
     partial.write_bytes(b"someone else's")
     real_open = os.open
 
@@ -513,14 +514,7 @@ def test_an_unopenable_partial_defers_instead_of_failing_the_download(monkeypatc
 
     monkeypatch.setattr(rp.os, "open", refuse)
 
-    _patched_writer(module)(
-        incomplete_path = partial,
-        destination_path = tmp_path / "abc",
-        url_to_download = "https://example/f",
-        headers = {},
-        expected_size = 50,
-        filename = "f",
-    )
+    _shared_setup_1(module, partial, tmp_path)
 
     assert len(calls["stock"]) == 1, "the download was abandoned rather than handed to stock"
     assert calls["http_get"] == []
@@ -533,10 +527,7 @@ def test_a_partial_swapped_after_the_last_write_is_not_published(monkeypatch, tm
     Otherwise a shared cache lets another account replace the partial once writing stops and have
     its file installed as the blob, under a descriptor that passed every check.
     """
-    module, calls = _fake_file_download(monkeypatch)
-    assert rp.restore_resumable_partials() is True
-
-    partial = tmp_path / "abc.incomplete"
+    calls, module, partial = _shared_setup_2(monkeypatch, tmp_path)
     real_http_get = module.http_get
 
     def swap_then_write(url, handle, **kwargs):
@@ -547,14 +538,7 @@ def test_a_partial_swapped_after_the_last_write_is_not_published(monkeypatch, tm
 
     module.http_get = swap_then_write
 
-    _patched_writer(module)(
-        incomplete_path = partial,
-        destination_path = tmp_path / "abc",
-        url_to_download = "https://example/f",
-        headers = {},
-        expected_size = 50,
-        filename = "f",
-    )
+    _shared_setup_1(module, partial, tmp_path)
 
     assert calls["moved"] == [], "the replacement was published as the blob"
     assert partial.read_bytes() == b"attacker's model", "it should be left for the retry to judge"
@@ -602,20 +586,10 @@ def test_an_oversized_partial_is_restarted_rather_than_resumed(monkeypatch, tmp_
     A Range starting past the end answers 416, and it would answer 416 on every later attempt too,
     so the download would be wedged where the stock writer's fresh name recovers.
     """
-    module, calls = _fake_file_download(monkeypatch)
-    assert rp.restore_resumable_partials() is True
-
-    partial = tmp_path / "abc.incomplete"
+    calls, module, partial = _shared_setup_2(monkeypatch, tmp_path)
     partial.write_bytes(b"z" * 80)
 
-    _patched_writer(module)(
-        incomplete_path = partial,
-        destination_path = tmp_path / "abc",
-        url_to_download = "https://example/f",
-        headers = {},
-        expected_size = 50,
-        filename = "f",
-    )
+    _shared_setup_1(module, partial, tmp_path)
 
     assert calls["http_get"] == [{"resume_size": 0, "mode": "ab"}]
     assert partial.read_bytes() == b"x" * 10, "the oversized bytes were kept"
@@ -626,20 +600,10 @@ def test_a_complete_partial_is_left_for_upstream_to_finish(monkeypatch, tmp_path
 
     Restarting here would refetch the whole file for nothing, so the boundary is strictly greater.
     """
-    module, calls = _fake_file_download(monkeypatch)
-    assert rp.restore_resumable_partials() is True
-
-    partial = tmp_path / "abc.incomplete"
+    calls, module, partial = _shared_setup_2(monkeypatch, tmp_path)
     partial.write_bytes(b"z" * 50)
 
-    _patched_writer(module)(
-        incomplete_path = partial,
-        destination_path = tmp_path / "abc",
-        url_to_download = "https://example/f",
-        headers = {},
-        expected_size = 50,
-        filename = "f",
-    )
+    _shared_setup_1(module, partial, tmp_path)
 
     assert calls["http_get"] == [{"resume_size": 50, "mode": "ab"}], "it restarted a finished file"
 
@@ -661,22 +625,10 @@ def test_an_unavailable_probe_does_not_take_the_worker_down(monkeypatch):
 
 def test_a_planted_hard_link_is_not_appended_to(monkeypatch, tmp_path):
     """O_NOFOLLOW cannot see a hard link, so the size check is what catches this one."""
-    module, calls = _fake_file_download(monkeypatch)
-    assert rp.restore_resumable_partials() is True
-
-    victim = tmp_path / "victim"
-    victim.write_bytes(b"keep me")
-    partial = tmp_path / "abc.incomplete"
+    calls, module, partial, victim = _shared_setup_3(monkeypatch, tmp_path)
     os.link(victim, partial)
 
-    _patched_writer(module)(
-        incomplete_path = partial,
-        destination_path = tmp_path / "abc",
-        url_to_download = "https://example/f",
-        headers = {},
-        expected_size = 50,
-        filename = "f",
-    )
+    _shared_setup_1(module, partial, tmp_path)
 
     assert victim.read_bytes() == b"keep me", "the download was appended through the hard link"
     assert calls["http_get"] == [{"resume_size": 0, "mode": "ab"}]
@@ -684,12 +636,7 @@ def test_a_planted_hard_link_is_not_appended_to(monkeypatch, tmp_path):
 
 def test_a_planted_partial_that_cannot_be_removed_defers_to_stock(monkeypatch, tmp_path):
     """Stock invents its own name, so it cannot be steered by a planted one either."""
-    module, calls = _fake_file_download(monkeypatch)
-    assert rp.restore_resumable_partials() is True
-
-    victim = tmp_path / "victim"
-    victim.write_bytes(b"keep me")
-    partial = tmp_path / "abc.incomplete"
+    calls, module, partial, victim = _shared_setup_3(monkeypatch, tmp_path)
     partial.symlink_to(victim)
 
     def refuse(_path):
@@ -697,14 +644,7 @@ def test_a_planted_partial_that_cannot_be_removed_defers_to_stock(monkeypatch, t
 
     monkeypatch.setattr(rp.os, "unlink", refuse)
 
-    _patched_writer(module)(
-        incomplete_path = partial,
-        destination_path = tmp_path / "abc",
-        url_to_download = "https://example/f",
-        headers = {},
-        expected_size = 50,
-        filename = "f",
-    )
+    _shared_setup_1(module, partial, tmp_path)
 
     assert calls["http_get"] == [], "the patched writer wrote anyway"
     assert len(calls["stock"]) == 1

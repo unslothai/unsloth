@@ -76,7 +76,6 @@ def get_public_key_fingerprint() -> str | None:
 
 
 def get_public_key_pem() -> str:
-    """Return the PEM-encoded public key for the frontend."""
     if _public_key_pem is None:
         raise RuntimeError("Key pair not initialized. Call init_key_pair() first.")
     return _public_key_pem
