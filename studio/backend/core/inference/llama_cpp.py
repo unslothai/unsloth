@@ -8654,8 +8654,7 @@ class LlamaCppBackend:
         devices = cls._enumerated_gpu_devices(binary, env)
         # A pass-through `--device` is appended last and decides where the child really
         # puts the weights, so the auto-selected ordinals are not what runs. Its values
-        # are ggml ids, the namespace `--list-devices` prints, so they are checked
-        # directly against what the build enumerated.
+        # are ggml ids, so they check directly against what the build enumerated.
         override = cls._effective_device_ids(extra_args, env)
         if override is not None:
             if any(d.lower() in _CPU_DEVICE_VALUES for d in override):
@@ -8803,9 +8802,9 @@ class LlamaCppBackend:
         # environment with placement variables REMOVED, so its removals are replayed
         # rather than its whole mapping, which would drop the native paths again.
         if env is not None:
-            # BOTH directions. Removals alone left a narrowing rung's new mask out of
-            # the probe, so it re-enumerated the original adapter set and repeated the
-            # failure the narrowing existed to clear.
+            # BOTH directions: removals alone left a narrowing rung's new mask out,
+            # so the probe re-enumerated the original set and repeated the failure the
+            # narrowing existed to clear.
             for name in _DEVICE_VISIBILITY_ENV:
                 if name in env:
                     probe_env[name] = env[name]
