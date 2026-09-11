@@ -454,7 +454,10 @@ def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
     # granting recursive file-read* over it hands back the home this profile
     # exists to hide. Last, so a venv, conda or uv interpreter is already covered
     # by the <prefix>/bin above and is skipped by the containment test below.
-    candidates.append(os.path.realpath(sys.executable))
+    # As WRITTEN: a Studio started through a user-level symlink keeps that
+    # spelling in sys.executable and it is what the launch execs, and
+    # _path_filters emits a literal per spelling rather than the parent.
+    candidates.append(sys.executable)
     try:
         candidates.extend(site.getsitepackages())
     except AttributeError:

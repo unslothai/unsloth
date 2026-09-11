@@ -374,6 +374,12 @@ def _declared_names(dist) -> frozenset[str]:
     return frozenset(name for name in names if name and "/" not in name and name != "..")
 
 
+def _within_root(path: str, root: str) -> bool:
+    """Whether *path* stays under *root* once resolved, by whole components."""
+    resolved, base = os.path.realpath(path), os.path.realpath(root)
+    return resolved == base or resolved.startswith(base.rstrip(os.sep) + os.sep)
+
+
 def _importable_entries(
     project_root: str, declared: frozenset[str] = frozenset()
 ) -> tuple[str, ...]:
@@ -428,6 +434,15 @@ def _importable_entries(
                 continue
             # Declared, or carrying an __init__.py. The second alone missed PEP
             # 420 namespace packages, which have none by design.
+            # A declared name is still only a name. os.path.isdir follows the
+            # link, so a package symlinked at a sibling private tree or at the
+            # home came back as an approved source root, and both backends then
+            # grant the RESOLVED target: Linux binds the alias and its realpath,
+            # macOS emits a recursive rule for the target. Nothing importable
+            # found means nothing granted, which is the honest failure the
+            # docstring above already describes.
+            if not _within_root(entry, project_root):
+                continue
             package = os.path.isdir(entry) and (
                 declared_here or os.path.exists(os.path.join(entry, "__init__.py"))
             )

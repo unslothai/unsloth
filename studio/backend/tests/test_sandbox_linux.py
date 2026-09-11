@@ -1043,6 +1043,68 @@ def test_an_editable_source_inside_the_workdir_is_re_bound_read_only(tmp_path, m
     assert str(package) not in sandbox_linux._runtime_read_paths(str(workdir), ("/usr/lib",))
 
 
+def test_the_interpreter_spelling_the_launch_execs_is_bound(tmp_path, monkeypatch):
+    """Studio started through a user-level symlink keeps THAT spelling in
+    sys.executable, and the plan's argv[0] is that spelling. Binding only the
+    resolved target left argv[0] absent inside the jail, so bwrap died at exec,
+    the probe called a working backend unavailable, and every auto call fell back
+    without isolation. A bind of the FILE creates its parent as an empty
+    directory, so this does not grant the symlink's directory."""
+    target_bin = tmp_path / "opt" / "py" / "bin"
+    target_bin.mkdir(parents = True)
+    target = target_bin / "python3.13"
+    target.write_bytes(b"#!/bin/sh\nexit 0\n")
+    target.chmod(0o755)
+    user_bin = tmp_path / "home" / "bin"
+    user_bin.mkdir(parents = True)
+    link = user_bin / "python"
+    link.symlink_to(target)
+    monkeypatch.setattr(sys, "executable", str(link))
+    for attribute in ("prefix", "base_prefix", "exec_prefix", "base_exec_prefix"):
+        monkeypatch.setattr(sys, attribute, str(tmp_path / "opt" / "py"))
+
+    paths = sandbox_linux._runtime_read_paths(str(tmp_path / "session"), ("/usr/lib",))
+    assert str(link) in paths, paths
+    assert str(target) in paths or str(target_bin) in paths, paths
+    # The symlink's own directory is not granted, only the file in it.
+    assert str(user_bin) not in paths, paths
+
+
+def test_a_wedged_cache_mount_drops_the_cache_instead_of_hanging_the_launch(tmp_path, monkeypatch):
+    """A stale NFS or FUSE mount blocks IN the syscall, so cache_share_hazard's
+    own deadline never runs: the walk, and isdir before it, just never return.
+    The tool timeout only starts after Popen, so preparation hung with nothing
+    bounding it. The wait is bounded now; dropping the component is what a hazard
+    already did, so the launch proceeds and re-downloads."""
+    cache = tmp_path / "hostcache"
+    (cache / "hub").mkdir(parents = True)
+    _share_cache_paths(monkeypatch, cache)
+
+    def wedged(path):
+        time.sleep(30)
+        raise AssertionError("the caller should not have waited for this")
+
+    monkeypatch.setattr(sandbox_linux, "_inspect_cache_component", lambda name, path: wedged(path))
+    monkeypatch.setattr(sandbox_linux, "_CACHE_INSPECT_SECONDS", 1.0)
+    started = time.monotonic()
+    binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
+    assert time.monotonic() - started < 10, "the deadline did not fire"
+    assert binds == {}, binds
+
+
+def _share_cache_paths(monkeypatch, cache):
+    import types
+
+    class _Paths:
+        cache_home = str(cache)
+        hub_cache = str(cache / "hub")
+        xet_cache = str(cache / "xet")
+
+    module = types.ModuleType("utils.hf_cache_settings")
+    module.get_hf_cache_paths = lambda: _Paths()
+    monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", module)
+
+
 def test_a_runtime_prefix_contributes_its_certificate_store(tmp_path, monkeypatch):
     prefix = tmp_path / "conda"
     for name in ("bin", "ssl", "lib"):
@@ -1347,6 +1409,27 @@ def test_a_guessed_editable_import_root_gives_up_what_it_cannot_confirm(tmp_path
     try:
         granted = os_sandbox.editable_source_roots()
         assert granted == (str(package),), granted
+    finally:
+        os_sandbox.editable_source_roots.cache_clear()
+
+
+def test_a_declared_package_symlinked_out_of_the_checkout_is_refused(tmp_path, monkeypatch):
+    """A declared name is still only a name. os.path.isdir follows the link, so a
+    package symlinked at a sibling private tree came back as an approved source
+    root, and the backends then grant the RESOLVED target: this one binds both
+    the alias and its realpath, the Seatbelt one emits a recursive rule for the
+    target. The network is open, so a granted tree is an exportable one."""
+    source = tmp_path / "checkout"
+    source.mkdir()
+    private = tmp_path / "private"
+    private.mkdir()
+    (private / "id_rsa").write_text("SECRET", encoding = "utf-8")
+    (private / "__init__.py").write_text("", encoding = "utf-8")
+    (source / "demo").symlink_to(private)
+    _fake_editable(tmp_path, monkeypatch, str(source), top_level = "demo")
+    try:
+        granted = os_sandbox.editable_source_roots()
+        assert granted == (), granted
     finally:
         os_sandbox.editable_source_roots.cache_clear()
 

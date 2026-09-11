@@ -17,12 +17,14 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import threading
 from functools import lru_cache
 
 from loggers import get_logger
 
 from . import sandbox_landlock, sandbox_seccomp
 from .os_sandbox import (
+    CACHE_SCAN_SECONDS,
     PROFILE_VERSION,
     SESSION_PACKAGES_RELPATH,
     PreparedSandboxLaunch,
@@ -339,7 +341,12 @@ def _runtime_read_paths(
     # already inside the <prefix>/bin selected above and is then skipped by the
     # containment test below: those layouts keep exactly the binds they had, and
     # only the standalone one gains a bind of the single file it needs.
-    candidates.append(os.path.realpath(sys.executable))
+    # As WRITTEN, not resolved: Studio started through a user-level symlink keeps
+    # that spelling in sys.executable and the plan's argv[0] IS that spelling, so
+    # binding only the target left argv[0] absent inside the jail. The loop below
+    # takes both spellings of every candidate, and a bind of the FILE creates its
+    # parent as an empty directory rather than granting it.
+    candidates.append(sys.executable)
     try:
         candidates.extend(site.getsitepackages())
     except AttributeError:
@@ -417,6 +424,45 @@ def _path(plan: ToolLaunchPlan, packages: str) -> str:
     return os.pathsep.join(part for part in (inherited, os.path.join(packages, "bin")) if part)
 
 
+# A wedged NFS or FUSE mount blocks in the syscall, not between syscalls, so
+# cache_share_hazard's own deadline never gets to run and neither does isdir.
+# The whole per-component inspection is therefore done on a worker whose WAIT is
+# bounded rather than its work: a thread stuck in scandir cannot be killed, but
+# it can be left behind. Dropping the component is the documented answer to a
+# hazard anyway, so a mount we cannot inspect in time is simply not shared, and
+# the launch proceeds re-downloading exactly as it did before the cache existed.
+# Not a fork: this runs per launch from a threaded server, which is the shape
+# that made the Landlock probe dangerous.
+_CACHE_INSPECT_SECONDS = CACHE_SCAN_SECONDS + 2.0
+
+
+def _inspect_cache_component(name: str, path: str) -> "str | None":
+    """The hazard for one component, or a reason it could not be inspected."""
+    if not os.path.isdir(path):
+        return "is not a directory"
+    nested = next((m for m in _host_mount_points() if m != path and _within(m, path)), None)
+    if nested is not None:
+        return f"contains a nested host mount: {nested}"
+    return cache_share_hazard(path)
+
+
+def _cache_hazard_within_deadline(name: str, path: str) -> "str | None":
+    answer: list[str | None] = []
+
+    def inspect() -> None:
+        try:
+            answer.append(_inspect_cache_component(name, path))
+        except Exception as exc:  # noqa: BLE001 - a launch never fails over this
+            answer.append(f"could not be inspected: {exc}")
+
+    worker = threading.Thread(target = inspect, name = f"unsloth-cache-scan-{name}", daemon = True)
+    worker.start()
+    worker.join(_CACHE_INSPECT_SECONDS)
+    if not answer:
+        return f"could not be inspected within {_CACHE_INSPECT_SECONDS:.0f}s (a wedged mount?)"
+    return answer[0]
+
+
 def _model_cache_binds(workdir: str) -> dict[str, str]:
     """Inner cache subdirectory -> the host directory to share there.
 
@@ -439,18 +485,16 @@ def _model_cache_binds(workdir: str) -> dict[str, str]:
         resolved = {}
     for name in _MODEL_CACHE_SUBDIRS:
         path = os.path.abspath(resolved.get(name) or os.path.join(home, name))
-        if not os.path.isdir(path) or _within(path, workdir):
+        if _within(path, workdir):
             continue
         # This bind is WRITABLE, so it is held to the workdir's rule: no IPC nodes
         # and no hard link to an inode named outside it. A component that fails is
         # dropped, never refused, so the worst case is the re-download every call
-        # did before the cache was shared.
-        # The mount table, for the same reason _validate_workdir re-reads it: the
-        # shared scan's os.path.ismount compares device numbers and misses a
-        # same-filesystem bind mount, which this recursive WRITABLE bind would
-        # otherwise carry in.
-        nested = next((m for m in _host_mount_points() if m != path and _within(m, path)), None)
-        hazard = f"contains a nested host mount: {nested}" if nested else cache_share_hazard(path)
+        # did before the cache was shared. The mount table is re-read for the same
+        # reason _validate_workdir re-reads it: the shared scan's os.path.ismount
+        # compares device numbers and misses a same-filesystem bind mount, which
+        # this recursive WRITABLE bind would otherwise carry in.
+        hazard = _cache_hazard_within_deadline(name, path)
         if hazard is not None:
             logger.warning("Not sharing the %s cache into the sandbox: it %s", name, hazard)
             continue
