@@ -8,11 +8,13 @@ import ntpath
 import os
 import re
 import sys
+import threading
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Iterable
 import tempfile
 
 from loggers import get_logger
+from utils.account_context import current_account, is_owner_context
 from utils.paths.path_utils import drop_appledouble_metadata, host_normalize_path
 
 logger = get_logger(__name__)
@@ -63,8 +65,17 @@ def studio_root() -> Path:
     return Path.home() / ".unsloth" / "studio"
 
 
+def workspace_root() -> Path:
+    """Private persistent root of the acting account: owner keeps the historical install-root
+    layout, others get ``accounts/<account_id>/``, keyed by id so a reused name inherits nothing."""
+    root = studio_root()
+    if is_owner_context():
+        return root
+    return root / "accounts" / current_account().account_id
+
+
 def cache_root() -> Path:
-    """Central cache dir for all studio downloads (models, datasets, etc.)."""
+    """Central cache dir for all studio downloads (models, datasets, etc.). Shared."""
     return studio_root() / "cache"
 
 
@@ -78,28 +89,37 @@ def studio_bin_root() -> Path:
     return studio_root() / "bin"
 
 
+def account_path(relative: str) -> Path:
+    """``workspace_root() / relative``, checked to really live inside the account's workspace: a
+    directory swapped for a link into another account's tree would carry all its readers there."""
+    path = workspace_root() / relative
+    if not is_owner_context() and not within_account(path):
+        raise ValueError(f"path escapes the account workspace: {path!s}")
+    return path
+
+
 def assets_root() -> Path:
-    return studio_root() / "assets"
+    return account_path("assets")
 
 
 def datasets_root() -> Path:
-    return assets_root() / "datasets"
+    return account_path("assets/datasets")
 
 
 def dataset_uploads_root() -> Path:
-    return datasets_root() / "uploads"
+    return account_path("assets/datasets/uploads")
 
 
 def recipe_datasets_root() -> Path:
-    return datasets_root() / "recipes"
+    return account_path("assets/datasets/recipes")
 
 
 def outputs_root() -> Path:
-    return studio_root() / "outputs"
+    return account_path("outputs")
 
 
 def exports_root() -> Path:
-    return studio_root() / "exports"
+    return account_path("exports")
 
 
 def auth_root() -> Path:
@@ -111,12 +131,12 @@ def auth_db_path() -> Path:
 
 
 def studio_db_path() -> Path:
-    return studio_root() / "studio.db"
+    return account_path("studio.db")
 
 
 def rag_root() -> Path:
     """Root directory for retrieval-augmented-generation state (db + uploads)."""
-    return studio_root() / "rag"
+    return account_path("rag")
 
 
 def rag_db_path() -> Path:
@@ -192,19 +212,33 @@ def documents_root() -> Path:
     )
 
 
+def shared_project_workspaces_root() -> Path:
+    """Base every account's ``project_workspaces_root`` lives under; confinement hides it first."""
+    override = (os.environ.get("UNSLOTH_STUDIO_PROJECTS_HOME") or "").strip()
+    return Path(override).expanduser() if override else documents_root() / "Unsloth Studio"
+
+
 def project_workspaces_root() -> Path:
     override = (os.environ.get("UNSLOTH_STUDIO_PROJECTS_HOME") or "").strip()
-    if override:
-        return Path(override).expanduser()
-    return documents_root() / "Unsloth Studio" / "Projects"
+    base = shared_project_workspaces_root()
+    if is_owner_context():
+        return base if override else base / "Projects"
+    return base / "Accounts" / current_account().account_id / "Projects"
 
 
-def tmp_root() -> Path:
+def shared_tmp_root() -> Path:
     return Path(tempfile.gettempdir()) / "unsloth-studio"
 
 
+def tmp_root() -> Path:
+    root = shared_tmp_root()
+    if is_owner_context():
+        return root
+    return root / "accounts" / current_account().account_id
+
+
 def seed_uploads_root() -> Path:
-    return datasets_root() / "seed-uploads"
+    return account_path("assets/datasets/seed-uploads")
 
 
 def unstructured_seed_cache_root() -> Path:
@@ -212,7 +246,7 @@ def unstructured_seed_cache_root() -> Path:
 
 
 def unstructured_uploads_root() -> Path:
-    return datasets_root() / "unstructured-uploads"
+    return account_path("assets/datasets/unstructured-uploads")
 
 
 def oxc_validator_tmp_root() -> Path:
@@ -220,12 +254,81 @@ def oxc_validator_tmp_root() -> Path:
 
 
 def tensorboard_root() -> Path:
-    return studio_root() / "runs"
+    return account_path("runs")
+
+
+def _mkdir(path: Path) -> Path:
+    path.mkdir(parents = True, exist_ok = True)
+    return path
+
+
+class RetiredAccountError(RuntimeError):
+    """A write arrived for an account whose private roots have already been retired."""
+
+
+# Held across the rename-aside and every guarded directory creation.
+root_retirement_lock = threading.RLock()
+
+
+def external_account_sandbox_root() -> Path | None:
+    """The managed account's tool sandbox when ``UNSLOTH_STUDIO_SANDBOX_HOME`` moves it out of the
+    workspace. A private root like the others, so retirement and ``ensure_dir`` cover it."""
+    override = (os.environ.get("UNSLOTH_STUDIO_SANDBOX_HOME") or "").strip()
+    if is_owner_context() or not override:
+        return None
+    return (
+        Path(os.path.abspath(os.path.expanduser(override)))
+        / "accounts"
+        / current_account().account_id
+    )
+
+
+def managed_account_roots() -> tuple[Path, ...]:
+    """Every private root retirement renames aside for the acting managed account."""
+    roots = [workspace_root(), project_workspaces_root(), tmp_root()]
+    sandbox = external_account_sandbox_root()
+    if sandbox is not None:
+        roots.append(sandbox)
+    return tuple(roots)
+
+
+def _under_managed_workspace(path: Path) -> bool:
+    """Lexically, whether *path* is inside one of the roots retirement renames aside."""
+    if is_owner_context():
+        return False
+    try:
+        absolute = Path(os.path.abspath(path))
+        for root in managed_account_roots():
+            try:
+                absolute.relative_to(os.path.abspath(root))
+                return True
+            except ValueError:
+                continue
+    except (OSError, ValueError):
+        return False
+    return False
 
 
 def ensure_dir(path: Path) -> Path:
-    path.mkdir(parents = True, exist_ok = True)
-    return path
+    """Create *path*; inside a managed workspace this is retirement-aware for every caller."""
+    if _under_managed_workspace(path):
+        return ensure_account_dir(path)
+    return _mkdir(path)
+
+
+def ensure_account_dir(path: Path) -> Path:
+    """``ensure_dir`` inside the acting account's workspace: refuse once the tombstone is set, or a
+    finalizer outliving deletion recreates the renamed-aside roots. Locked against the rename."""
+    with root_retirement_lock:
+        if not is_owner_context():
+            from core.training.account_jobs import account_is_retired
+
+            # Existence is not proof of life: a late request can mkdir the workspace back.
+            if account_is_retired():
+                raise RetiredAccountError(
+                    f"account has been deleted; refusing to recreate {path!s}"
+                )
+        return _mkdir(path)
 
 
 def legacy_hf_cache_dir() -> Path:
@@ -511,6 +614,32 @@ def _assert_contained(resolved: Path, root: Path) -> None:
         ) from exc
 
 
+def within_account(path: Path) -> bool:
+    if is_owner_context():
+        return True
+    try:
+        real = Path(os.path.realpath(path))
+    except OSError:
+        return False
+    for root in (workspace_root(), project_workspaces_root(), tmp_root()):
+        try:
+            real.relative_to(Path(os.path.realpath(root)))
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def own_entry(path: Path) -> bool:
+    return path.exists() and within_account(path)
+
+
+def require_within_account(path: Path) -> Path:
+    if not within_account(path):
+        raise ValueError(f"path escapes the account workspace: {path!s}")
+    return path
+
+
 def resolve_under_root(
     path_value: str | None,
     *,
@@ -597,7 +726,7 @@ def resolve_export_write_dir(path_value: str | None = None) -> Path:
     if _has_parent_segment(raw, path):
         raise ValueError(f"path may not contain '..' segments: {raw!r}")
     if _is_absolute_user_path(path):
-        return path
+        return require_within_account(path)
     return resolve_under_root(
         path_value,
         root = exports_root(),
@@ -641,7 +770,7 @@ def resolve_dataset_path(path_value: str) -> Path:
         for root_fn in (datasets_root, dataset_uploads_root, recipe_datasets_root):
             try:
                 _assert_contained(path, root_fn())
-                return path
+                return require_within_account(path)
             except ValueError:
                 continue
         raise ValueError(f"dataset path must be relative or under a dataset root: {raw!r}")
@@ -651,10 +780,10 @@ def resolve_dataset_path(path_value: str) -> Path:
         parts = parts[2:]
     if parts and parts[0] == "uploads":
         cleaned = Path(*parts[1:]) if len(parts) > 1 else Path()
-        return dataset_uploads_root() / cleaned
+        return require_within_account(dataset_uploads_root() / cleaned)
     if parts and parts[0] == "recipes":
         cleaned = Path(*parts[1:]) if len(parts) > 1 else Path()
-        return recipe_datasets_root() / cleaned
+        return require_within_account(recipe_datasets_root() / cleaned)
 
     cleaned = Path(*parts) if parts else Path()
     candidates = [
@@ -666,5 +795,5 @@ def resolve_dataset_path(path_value: str) -> Path:
     ]
     for candidate in candidates:
         if candidate.exists():
-            return candidate
+            return require_within_account(candidate)
     return candidates[0]

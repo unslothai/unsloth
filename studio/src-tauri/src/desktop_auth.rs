@@ -8,21 +8,51 @@ use std::path::{Path, PathBuf};
 
 static DESKTOP_AUTH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-#[derive(Debug, Serialize)]
-pub struct DesktopAuthResponse {
-    pub access_token: String,
-    pub refresh_token: String,
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DesktopAuthResponse {
+    LoginRequired {
+        login_required: LoginRequired,
+        login_mode: MultiLoginMode,
+    },
+    Tokens {
+        access_token: String,
+        refresh_token: String,
+    },
+}
+
+// Literal values keep malformed successful responses from becoming a session.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(try_from = "bool", into = "bool")]
+pub struct LoginRequired;
+
+impl TryFrom<bool> for LoginRequired {
+    type Error = &'static str;
+
+    fn try_from(value: bool) -> Result<Self, Self::Error> {
+        if value {
+            Ok(Self)
+        } else {
+            Err("login_required must be true")
+        }
+    }
+}
+
+impl From<LoginRequired> for bool {
+    fn from(_: LoginRequired) -> Self {
+        true
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum MultiLoginMode {
+    #[serde(rename = "multi")]
+    Multi,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct DesktopAuthRequest {
     secret: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    refresh_token: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -213,14 +243,9 @@ async fn exchange_desktop_secret(
     }
 
     response
-        .json::<TokenResponse>()
+        .json::<DesktopAuthResponse>()
         .await
-        .map(|tokens| {
-            Some(DesktopAuthResponse {
-                access_token: tokens.access_token,
-                refresh_token: tokens.refresh_token,
-            })
-        })
+        .map(Some)
         .map_err(|e| AuthError::Failed(format!("Desktop auth failed: {}", e)))
 }
 
@@ -379,20 +404,67 @@ mod tests {
     use tokio::net::TcpListener;
 
     async fn login_server(status: &str) -> u16 {
+        login_server_with_body(status, "").await
+    }
+
+    async fn login_server_with_body(status: &str, body: &str) -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let status = status.to_string();
+        let body = body.to_string();
 
         tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let mut buffer = [0; 1024];
             let _ = stream.read(&mut buffer).await.unwrap();
-            let response =
-                format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
             stream.write_all(response.as_bytes()).await.unwrap();
         });
 
         port
+    }
+
+    #[tokio::test]
+    async fn desktop_login_required_is_a_success_without_tokens() {
+        let body = r#"{"login_required":true,"login_mode":"multi"}"#;
+        let port = login_server_with_body("200 OK", body).await;
+        let response = exchange_desktop_secret(&Client::new(), port, "desktop-secret")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(response, DesktopAuthResponse::LoginRequired { .. }));
+        assert_eq!(serde_json::to_string(&response).unwrap(), body);
+    }
+
+    #[tokio::test]
+    async fn desktop_single_account_keeps_the_token_response_bytes() {
+        let body = r#"{"access_token":"access","refresh_token":"refresh","token_type":"bearer","must_change_password":false}"#;
+        let port = login_server_with_body("200 OK", body).await;
+        let response = exchange_desktop_secret(&Client::new(), port, "desktop-secret")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(response, DesktopAuthResponse::Tokens { .. }));
+        assert_eq!(
+            serde_json::to_string(&response).unwrap(),
+            r#"{"access_token":"access","refresh_token":"refresh"}"#
+        );
+    }
+
+    #[test]
+    fn malformed_desktop_success_never_becomes_login_required() {
+        for body in [
+            r#"{}"#,
+            r#"{"login_required":false,"login_mode":"multi"}"#,
+            r#"{"login_required":true,"login_mode":"single"}"#,
+            r#"{"login_required":true}"#,
+            r#"{"access_token":"access"}"#,
+        ] {
+            assert!(serde_json::from_str::<DesktopAuthResponse>(body).is_err());
+        }
     }
 
     #[test]

@@ -58,7 +58,8 @@ def validate_upload_limit_mb(value: Any) -> int:
 def get_upload_limit_mb() -> int:
     try:
         from storage.studio_db import get_app_setting
-        stored = get_app_setting(UPLOAD_LIMIT_SETTING_KEY, None)
+        from utils.account_context import OWNER, run_as
+        stored = run_as(OWNER, get_app_setting, UPLOAD_LIMIT_SETTING_KEY, None)
     except Exception:
         stored = None
     return _coerce_upload_limit_mb(stored) or default_upload_limit_mb()

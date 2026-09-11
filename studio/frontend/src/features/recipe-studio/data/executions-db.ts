@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { accountDatabaseName } from "@/lib/account-transition";
 import Dexie, { type EntityTable } from "dexie";
 import type { RecipeExecutionRecord } from "../execution-types";
 
-const db = new Dexie("unsloth-data-recipe-executions") as Dexie & {
+const db = new Dexie(
+  accountDatabaseName("unsloth-data-recipe-executions"),
+) as Dexie & {
   executions: EntityTable<RecipeExecutionRecord, "id">;
 };
 
@@ -19,7 +22,10 @@ db.version(2).stores({
 export async function listRecipeExecutions(
   recipeId: string,
 ): Promise<RecipeExecutionRecord[]> {
-  const executions = await db.executions.where("recipeId").equals(recipeId).toArray();
+  const executions = await db.executions
+    .where("recipeId")
+    .equals(recipeId)
+    .toArray();
   return executions.sort((a, b) => b.createdAt - a.createdAt);
 }
 

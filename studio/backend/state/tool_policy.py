@@ -28,6 +28,7 @@ passthrough guard are built around.
 
 import contextvars
 from contextlib import contextmanager
+from functools import partial, wraps
 from typing import Iterator, Optional
 
 _tool_policy: Optional[bool] = None
@@ -37,6 +38,51 @@ _tool_policy_default: Optional[bool] = None
 _force_disabled: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "tool_policy_force_disabled", default = False
 )
+
+
+def require_tool_access(
+    permission_mode: Optional[str] = None,
+    *,
+    bypass_permissions: bool = False,
+    disable_sandbox: bool = False,
+) -> None:
+    if permission_mode != "full" and not bypass_permissions and not disable_sandbox:
+        return
+    from auth.policy import full_access_permitted
+    from fastapi import HTTPException
+
+    if not full_access_permitted():
+        raise HTTPException(
+            status_code = 400,
+            detail = "Full access is unavailable while more than one account exists.",
+        )
+
+
+def normalize_tool_permissions(
+    permission_mode: Optional[str], bypass_permissions: bool
+) -> tuple[str, bool]:
+    require_tool_access(permission_mode, bypass_permissions = bypass_permissions)
+    if permission_mode == "full" or bypass_permissions:
+        return "full", True
+    if permission_mode is None:
+        return "auto", False
+    if permission_mode not in ("ask", "auto", "off"):
+        return "ask", False
+    return permission_mode, False
+
+
+def account_tool_stream(stream):
+    from utils.account_context import current_account, is_owner_context, run_as
+
+    if is_owner_context():
+        return stream
+    account = current_account()
+
+    @wraps(stream)
+    def scoped(invoke, *args, **kwargs):
+        return stream(partial(run_as, account, invoke), *args, **kwargs)
+
+    return scoped
 
 
 def get_tool_policy() -> Optional[bool]:

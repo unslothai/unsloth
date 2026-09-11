@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import sys
 import random
 import threading
 from pathlib import Path
@@ -118,7 +119,13 @@ def _load_active_generations():
     path = SOURCE_PATH.parents[1] / "state" / "active_generations.py"
     spec = importlib.util.spec_from_file_location("studio_active_generations", path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # Its one import resolves from studio/backend; expose that only for this load.
+    backend = str(SOURCE_PATH.parents[1])
+    sys.path.insert(0, backend)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(backend)
     return module
 
 
@@ -142,7 +149,8 @@ def _load_registry_module():
             chunks.append(seg)
     mod = {"active_generations": _load_active_generations()}
     exec(
-        "import threading, time\nfrom typing import Optional\n" + "\n\n".join(chunks),
+        "import threading, time\nfrom typing import Optional\n_account_cancel_key = lambda key: key\n"
+        + "\n\n".join(chunks),
         mod,
     )
     return mod

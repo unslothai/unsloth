@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from utils.account_context import current_account
+from core.training.account_jobs import account_event_stream
 import copy
 import time
 from datetime import datetime, timedelta, timezone
@@ -309,7 +311,7 @@ def _inject_local_providers(
         # hidden from the user's key list; the caller revokes it when the job terminates.
         expires_at = (datetime.now(timezone.utc) + timedelta(hours = 24)).isoformat()
         token, row = storage.create_api_key(
-            username = "unsloth",
+            username = current_account().username,
             name = "data-recipe workflow",
             expires_at = expires_at,
             internal = True,
@@ -651,7 +653,7 @@ async def job_events(request: Request, job_id: str):
             mgr.unsubscribe(sub)
 
     return StreamingResponse(
-        gen(),
+        account_event_stream(mgr, gen()),
         media_type = "text/event-stream",
         headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

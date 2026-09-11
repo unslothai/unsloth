@@ -6248,6 +6248,23 @@ def _metal_capable_host() -> bool:
         return sys.platform == "darwin"
 
 
+def _write_direct_stream_key(key: str) -> "Path":
+    """Store the direct-streaming key where only the server user can read it."""
+    from utils.paths.storage_roots import auth_root
+
+    directory = auth_root()
+    directory.mkdir(parents = True, exist_ok = True)
+    path = directory / "llama_api_key"
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding = "utf-8") as handle:
+        handle.write(key)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return path
+
+
 class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
@@ -7056,9 +7073,7 @@ class LlamaCppBackend:
 
     @property
     def reasoning_effort_levels(self) -> list:
-        """Discrete reasoning_effort levels the template offers (e.g. GLM-5.2's
-        ['high', 'max']). Empty unless the style is 'enable_thinking_effort' or
-        'reasoning_effort' over a ladder wider than low/medium/high."""
+        """Discrete reasoning_effort levels the template offers; empty for the plain low/medium/high ladder."""
         return self._reasoning_effort_levels
 
     @property
@@ -7119,8 +7134,6 @@ class LlamaCppBackend:
                 if not thinking_off and effort_on:
                     kwargs["reasoning_effort"] = reasoning_effort
             elif self._reasoning_style == "reasoning_effort":
-                # The advertised ladder widens this list, never replaces it: a template
-                # exposing only ['high', 'max'] must keep gpt-oss's own levels and 'none'.
                 _levels = getattr(self, "_reasoning_effort_levels", None) or ()
                 if reasoning_effort in ("none", "low", "medium", "high") or (
                     reasoning_effort in _levels
@@ -23564,8 +23577,9 @@ class LlamaCppBackend:
 
                 if os.getenv("UNSLOTH_DIRECT_STREAM", "0") == "1":
                     self._api_key = _secrets.token_urlsafe(32)
-                    cmd.extend(["--api-key", self._api_key])
-                    logger.info("llama-server started with --api-key for direct streaming")
+                    # Through a file, not argv: a command line is readable by every process of this Unix user, and the auth directory is not.
+                    cmd.extend(["--api-key-file", str(_write_direct_stream_key(self._api_key))])
+                    logger.info("llama-server started with --api-key-file for direct streaming")
                 else:
                     self._api_key = None
 
@@ -30297,14 +30311,12 @@ class LlamaCppBackend:
         # "auto"; unknown falls back to the stricter "ask". An explicit
         # confirm_tool_calls=True with no mode is already resolved to "ask" at the
         # request layer, so it never arrives here as an ambiguous unset.
-        if permission_mode == "full":
-            bypass_permissions = True
-        elif bypass_permissions:
-            permission_mode = "full"
-        elif permission_mode is None:
-            permission_mode = "auto"
-        elif permission_mode not in ("ask", "auto", "off"):
-            permission_mode = "ask"
+        from state.tool_policy import account_tool_stream, normalize_tool_permissions
+
+        permission_mode, bypass_permissions = normalize_tool_permissions(
+            permission_mode, bypass_permissions
+        )
+        stream_tool_execution = account_tool_stream(stream_tool_execution)
 
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")

@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
-from utils.paths.storage_roots import studio_root
+from utils.paths.storage_roots import account_path
 
 from .diffusion_families import DIFFUSION_CANCELLED_MSG
 from utils.paths.path_utils import is_appledouble_metadata
@@ -91,8 +91,7 @@ _CURATED: tuple[LoraCatalogEntry, ...] = (
 
 
 def loras_dir() -> Path:
-    """Local directory Unsloth scans for user-provided diffusion LoRA files."""
-    d = studio_root() / "loras" / "diffusion"
+    d = account_path("loras/diffusion")
     d.mkdir(parents = True, exist_ok = True)
     return d
 

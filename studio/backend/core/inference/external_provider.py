@@ -713,6 +713,60 @@ def _create_shared_http_client() -> httpx.AsyncClient:
 _http_client = _create_shared_http_client()
 
 
+class _PinnedPublicTransport(httpx.AsyncBaseTransport):
+    """Managed-account egress: re-resolve per connection, dial one validated public address."""
+
+    def __init__(self):
+        # Separate pools retain TLS identity when two names resolve to one IP.
+        self._transports: dict[tuple, httpx.AsyncHTTPTransport] = {}
+
+    def _pool(self, origin: tuple) -> httpx.AsyncHTTPTransport:
+        if origin not in self._transports:
+            self._transports[origin] = httpx.AsyncHTTPTransport(trust_env = False)
+        return self._transports[origin]
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        from core.inference.providers import _public_registry_hostname, public_provider_address
+
+        host = request.url.host
+        if _public_registry_hostname(host):
+            return await self._pool(("registry",)).handle_async_request(request)
+        try:
+            address = await asyncio.to_thread(public_provider_address, str(request.url))
+        except ValueError as exc:
+            raise httpx.ConnectError(str(exc), request = request) from exc
+        pinned = httpx.Request(
+            method = request.method,
+            url = request.url.copy_with(host = address),
+            headers = request.headers,
+            stream = request.stream,
+            extensions = {**request.extensions, "sni_hostname": host},
+        )
+        origin = (request.url.scheme, host, request.url.port)
+        return await self._pool(origin).handle_async_request(pinned)
+
+    async def aclose(self) -> None:
+        for transport in self._transports.values():
+            await transport.aclose()
+
+
+_managed_http_client: Optional[httpx.AsyncClient] = None
+
+
+def _client() -> httpx.AsyncClient:
+    """The shared client for the owner; a pinning client for a managed account."""
+    from utils.account_context import is_owner_context
+
+    if is_owner_context():
+        return _http_client
+    global _managed_http_client
+    if _managed_http_client is None:
+        _managed_http_client = httpx.AsyncClient(
+            transport = _PinnedPublicTransport(), trust_env = False
+        )
+    return _managed_http_client
+
+
 # Cap per-image fetch well below Gemini's ~20 MB total request budget.
 _GEMINI_REMOTE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
 _GEMINI_REMOTE_IMAGE_TIMEOUT_S = 15.0
@@ -1297,7 +1351,7 @@ class ExternalProviderClient:
         )
 
         try:
-            async with _http_client.stream(
+            async with _client().stream(
                 "POST",
                 url,
                 json = body,
@@ -1584,7 +1638,7 @@ class ExternalProviderClient:
 
         tool_calls_acc: dict[int, dict[str, Any]] = {}
         try:
-            async with _http_client.stream(
+            async with _client().stream(
                 "POST",
                 url,
                 json = body,
@@ -1679,7 +1733,7 @@ class ExternalProviderClient:
             # the row has neither tokens nor a speed.
             fallback_body["stream_options"] = {"include_usage": True}
             try:
-                async with _http_client.stream(
+                async with _client().stream(
                     "POST",
                     url,
                     json = fallback_body,
@@ -1787,7 +1841,7 @@ class ExternalProviderClient:
         # Keep the tool on the second call so the model can search again mid-turn.
 
         try:
-            async with _http_client.stream(
+            async with _client().stream(
                 "POST",
                 url,
                 json = followup_body,
@@ -2387,7 +2441,7 @@ class ExternalProviderClient:
             request_headers["anthropic-beta"] = ",".join(beta_parts)
 
         try:
-            async with _http_client.stream(
+            async with _client().stream(
                 "POST",
                 url,
                 json = body,
@@ -4055,7 +4109,7 @@ class ExternalProviderClient:
         last_code_exec_result_text: str = ""
 
         try:
-            async with _http_client.stream(
+            async with _client().stream(
                 "POST",
                 url,
                 json = body,
@@ -5118,7 +5172,7 @@ class ExternalProviderClient:
             attempt_container_id = openai_code_exec_container_id
             while True:
                 attempt_body = _build_body(attempt_container_id)
-                async with _http_client.stream(
+                async with _client().stream(
                     "POST",
                     url,
                     json = attempt_body,
@@ -6114,7 +6168,7 @@ class ExternalProviderClient:
             else:
                 body["max_tokens"] = max_tokens
 
-        response = await _http_client.post(
+        response = await _client().post(
             f"{self.base_url}/chat/completions",
             json = body,
             headers = self._auth_headers(),
@@ -6144,7 +6198,7 @@ class ExternalProviderClient:
             body["speed"] = speed
         if instructions is not None:
             body["instructions"] = instructions
-        response = await _http_client.post(
+        response = await _client().post(
             _append_provider_path(self.base_url, "/audio/speech"),
             headers = self._auth_headers(),
             json = body,
@@ -6198,7 +6252,7 @@ class ExternalProviderClient:
             data["timestamp_granularities[]"] = list(timestamp_granularities)
         headers = self._auth_headers()
         headers.pop("Content-Type", None)
-        response = await _http_client.post(
+        response = await _client().post(
             f"{self.base_url}/audio/transcriptions",
             headers = headers,
             files = {"file": (filename, audio, content_type)},
@@ -6215,7 +6269,7 @@ class ExternalProviderClient:
         """GET /models to discover available models. Returns dicts with at least 'id'. All providers
         expose /models with the OpenAI {"data": [...]} shape, Anthropic included."""
         try:
-            response = await _http_client.get(
+            response = await _client().get(
                 f"{self.base_url}/models",
                 headers = self._auth_headers(),
                 timeout = self._timeout,
@@ -6282,7 +6336,7 @@ class ExternalProviderClient:
     async def _list_ollama_native_models(self) -> list[dict[str, Any]]:
         """Fallback when Ollama's /v1/models returns an empty or null catalog."""
         root = self.base_url.removesuffix("/v1").rstrip("/")
-        response = await _http_client.get(
+        response = await _client().get(
             f"{root}/api/tags",
             headers = self._auth_headers(),
             timeout = self._timeout,
@@ -6306,7 +6360,7 @@ class ExternalProviderClient:
         the full JSON would be prohibitive."""
         url = f"{self.base_url}/models"
         try:
-            async with _http_client.stream(
+            async with _client().stream(
                 "GET",
                 url,
                 headers = self._auth_headers(),
@@ -6332,9 +6386,10 @@ class ExternalProviderClient:
         return headers
 
     async def list_openai_containers(self) -> list[dict[str, Any]]:
-        """GET /v1/containers; returns raw container records (the route reshapes them). Only valid
-        against api.openai.com (caller guards is_openai_cloud)."""
-        response = await _http_client.get(
+        """GET /v1/containers; returns raw container records (the route reshapes
+        them). Only valid against api.openai.com (caller guards is_openai_cloud).
+        """
+        response = await _client().get(
             f"{self.base_url}/containers",
             headers = self._container_headers(),
             timeout = self._timeout,
@@ -6360,7 +6415,7 @@ class ExternalProviderClient:
                 "minutes": ttl_minutes,
             },
         }
-        response = await _http_client.post(
+        response = await _client().post(
             f"{self.base_url}/containers",
             json = body,
             headers = self._container_headers(),

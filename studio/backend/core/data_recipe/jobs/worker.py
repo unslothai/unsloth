@@ -17,7 +17,8 @@ from typing import Any
 
 from ..jsonable import to_jsonable, to_preview_jsonable
 from .constants import EVENT_JOB_COMPLETED, EVENT_JOB_ERROR, EVENT_JOB_STARTED
-from ..service import build_config_builder, create_data_designer
+from ..service import build_config_builder, create_data_designer, install_public_egress_guard
+from utils.paths.lazy import LazyPath
 from utils.paths import ensure_dir, recipe_datasets_root
 
 # Fresh spawned interpreter: re-apply main.py's OS-trust-store injection.
@@ -26,7 +27,7 @@ from utils.paths.path_utils import drop_appledouble_metadata
 
 activate_native_tls()
 
-_ARTIFACT_ROOT = recipe_datasets_root()
+_ARTIFACT_ROOT = LazyPath(recipe_datasets_root)
 _RE_GITHUB_CURSOR = re.compile(r"\bcursor=[^\s,]+")
 _RE_SECRET_TOKEN = re.compile(
     r"\b(?:(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]+|sk-unsloth-[A-Za-z0-9]+)"
@@ -82,6 +83,7 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
     """Subprocess entrypoint. Sends events to `event_queue`."""
     import os
 
+    install_public_egress_guard()
     os.environ["PYTHONWARNINGS"] = "ignore"
 
     import warnings

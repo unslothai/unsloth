@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from hub.services.models import account_access
+
 import asyncio
 import errno
 from pathlib import Path
@@ -726,7 +728,16 @@ async def delete_cached_model_response(
     cache_path: Optional[str] = None,
     only_if_orphan: bool = False,
 ):
-    """Delete a cached model repo (or a specific GGUF variant) from the HF cache. When *variant* is provided, only the GGUF files matching that quant label are removed (e.g. ``UD-Q4_K_XL``); otherwise the entire repo is deleted. Refuses if the model is currently loaded for inference. *only_if_orphan* is Free up space's precondition: 409 rather than delete when the repo has become an installed checkpoint since the list the caller is acting on was built."""
+    """Delete a cached model repo (or a specific GGUF variant) from the HF cache.
+
+    When *variant* is provided, only the GGUF files matching that quant label
+    are removed (e.g. ``UD-Q4_K_XL``).  Otherwise the entire repo is deleted.
+    Refuses if the model is currently loaded for inference.
+
+    *only_if_orphan* is Free up space's precondition: 409 rather than delete when the repo has
+    become an installed checkpoint since the list the caller is acting on was built.
+    """
+    account_access.require_installation_owner()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
     variant = (variant or "").strip() or None

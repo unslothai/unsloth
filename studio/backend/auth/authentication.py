@@ -11,7 +11,11 @@ from fastapi.security.utils import get_authorization_scheme_param
 import jwt
 from starlette.concurrency import run_in_threadpool
 
+from utils.account_context import OWNER, AccountContext, bind_account
+
 from .storage import (
+    get_account,
+    get_user_record,
     API_KEY_PREFIX,
     DEFAULT_ADMIN_USERNAME,
     credential_generation,
@@ -19,6 +23,7 @@ from .storage import (
     get_user_and_secret,
     load_jwt_secret,
     save_refresh_token,
+    validate_api_key_account,
     validate_api_key_with_credential,
     verify_refresh_token,
 )
@@ -185,6 +190,10 @@ class _BearerOrKeyless(HTTPBearer):
 security = _BearerOrKeyless(scheme_name = "HTTPBearer")
 
 
+def _bind_owner() -> None:
+    bind_account(OWNER)
+
+
 def _get_secret_for_subject(subject: str) -> str:
     secret = get_jwt_secret(subject)
     if secret is None:
@@ -251,7 +260,10 @@ def is_desktop_access_token(token: str) -> bool:
     except jwt.InvalidTokenError:
         return False
 
-    return payload.get("sub") == subject and payload.get("desktop") is True
+    if payload.get("sub") != subject or payload.get("desktop") is not True:
+        return False
+    account = get_account(subject)
+    return account is not None and account.is_owner
 
 
 def create_refresh_token(
@@ -338,7 +350,6 @@ async def credentials_for_token(
     that covers them. None means no usable credential and no setting to stand in for one."""
     from utils.keyless_api_access import APPROVED_DUMMY_BEARERS, keyless_request_allowed
 
-    # /api/health slices the bearer out itself, so a blank one arrives as "", not as None.
     if token is not None and not token.strip():
         token = None
     # Settings/listener reads hit SQLite and DNS, so keep them off the event loop.
@@ -438,28 +449,33 @@ async def _get_current_credential(
     credentials must bind their write to it, or a reset landing mid-request would bless what it just
     revoked. Credential reads run in the threadpool so stalled SQLite cannot block the event loop."""
     if credentials.scheme == KEYLESS_SCHEME:
+        _bind_owner()
         return await run_in_threadpool(_admin_credential)
 
     if credentials.scheme == KEYLESS_FALLBACK_SCHEME:
         from utils.keyless_api_access import APPROVED_DUMMY_BEARERS
+
         if credentials.credentials not in APPROVED_DUMMY_BEARERS:
             raise HTTPException(
                 status_code = status.HTTP_401_UNAUTHORIZED,
                 detail = "Invalid authentication credentials",
             )
+        _bind_owner()
         return await run_in_threadpool(_admin_credential)
 
     token = credentials.credentials
 
     if token.startswith(API_KEY_PREFIX):
-        verified = await run_in_threadpool(validate_api_key_with_credential, token)
+        verified = await run_in_threadpool(validate_api_key_account, token)
         if verified is None:
             raise HTTPException(
                 status_code = status.HTTP_401_UNAUTHORIZED,
                 detail = _invalid_api_key_detail(token),
             )
-        username, secret = verified
-        return username, credential_generation(secret)
+        record, secret = verified
+        # A second lookup by username would bind whoever owns that name after a delete and re-create.
+        bind_account(AccountContext(record["account_id"], record["username"], record["role"]))
+        return record["username"], credential_generation(secret)
 
     subject = _decode_subject_without_verification(token)
     if subject is None:
@@ -468,30 +484,33 @@ async def _get_current_credential(
             detail = "Invalid token payload",
         )
 
-    record = await run_in_threadpool(get_user_and_secret, subject)
-    if record is None:
+    record = await run_in_threadpool(get_user_record, subject)
+    if record is None or not record.get("is_active", 1):
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Invalid or expired token",
         )
 
-    _salt, _pwd_hash, jwt_secret, must_change_password = record
+    jwt_secret = record["jwt_secret"]
+    must_change_password = bool(record["must_change_password"])
     try:
         payload = jwt.decode(token, jwt_secret, algorithms = [ALGORITHM])
-        if payload.get("sub") != subject:
-            raise HTTPException(
-                status_code = status.HTTP_401_UNAUTHORIZED,
-                detail = "Invalid token payload",
-            )
-        is_desktop = payload.get("desktop") is True
-        if must_change_password and not allow_password_change and not is_desktop:
-            raise HTTPException(
-                status_code = status.HTTP_403_FORBIDDEN,
-                detail = "Password change required",
-            )
-        return subject, credential_generation(jwt_secret)
     except jwt.InvalidTokenError:
         raise HTTPException(
             status_code = status.HTTP_401_UNAUTHORIZED,
             detail = "Invalid or expired token",
         )
+    if payload.get("sub") != subject:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Invalid token payload",
+        )
+    bind_account(AccountContext(record["account_id"], record["username"], record["role"]))
+    # A managed token carrying the desktop marker gets no owner password-change bypass.
+    is_desktop = payload.get("desktop") is True and record.get("role") == "owner"
+    if must_change_password and not allow_password_change and not is_desktop:
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "Password change required",
+        )
+    return subject, credential_generation(jwt_secret)

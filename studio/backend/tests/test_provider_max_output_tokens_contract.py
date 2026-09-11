@@ -92,9 +92,9 @@ def isolated_providers_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Pa
     db_path = tmp_path / "studio.db"
     monkeypatch.setattr(providers_db, "studio_db_path", lambda: db_path)
     monkeypatch.setattr(providers_db, "ensure_dir", lambda _path: None)
-    providers_db._schema_ready = False
+    providers_db._schema_ready = set()
     yield db_path
-    providers_db._schema_ready = False
+    providers_db._schema_ready = set()
 
 
 @pytest.fixture()
@@ -112,11 +112,11 @@ def provider_routes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "get_or_create_credential_encryption_key",
         auth_storage.get_or_create_credential_encryption_key,
     )
-    providers_db._schema_ready = False
-    credential_secrets._schema_ready = False
+    providers_db._schema_ready = set()
+    credential_secrets._schema_ready = set()
     yield studio_db
-    providers_db._schema_ready = False
-    credential_secrets._schema_ready = False
+    providers_db._schema_ready = set()
+    credential_secrets._schema_ready = set()
     auth_storage._credential_encryption_key_cache = None
 
 
@@ -194,7 +194,7 @@ def test_the_migration_is_idempotent(isolated_providers_db: Path):
     """ALTER TABLE has no IF NOT EXISTS, so a second run must not raise."""
     _write_pre_pr_database(isolated_providers_db)
     for _ in range(3):
-        providers_db._schema_ready = False
+        providers_db._schema_ready = set()
         assert providers_db.get_provider("old-custom")["max_output_tokens"] is None
     assert _columns(isolated_providers_db).count("max_output_tokens") == 1
 

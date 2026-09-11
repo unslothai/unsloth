@@ -3,6 +3,7 @@
 
 """Unsloth training backend: integrates Unsloth training with the FastAPI backend."""
 
+from utils.account_context import account_thread
 import gc
 import os
 import sys
@@ -2350,7 +2351,6 @@ class UnslothTrainer:
         return result_dataset
 
     def _preprocess_audio_eval_split(self, eval_dataset, preprocess, custom_format_mapping):
-        """Preprocess eval data, warning and dropping it on failure."""
         if eval_dataset is None:
             return None
         if self.should_stop:
@@ -2391,7 +2391,6 @@ class UnslothTrainer:
         return formatted
 
     def _audio_eval_config(self, training_args):
-        """Build audio evaluation arguments and return the eval dataset."""
         eval_dataset = training_args.get("eval_dataset", None)
         eval_steps = training_args.get("eval_steps", 0.00)
         if eval_dataset is None:
@@ -3410,7 +3409,7 @@ class UnslothTrainer:
                 Seq2SeqTrainingArguments as _Seq2SeqTrainingArguments,
             )
 
-        self.training_thread = threading.Thread(
+        self.training_thread = account_thread(
             target = self._train_worker,
             args = (dataset,),
             kwargs = {

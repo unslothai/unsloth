@@ -4943,7 +4943,7 @@ def _enabled_mcp_server(
     from storage import mcp_servers_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
     monkeypatch.setattr(tools_mod, "stdio_mcp_enabled", lambda: True)
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
     monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
@@ -7832,7 +7832,6 @@ def test_scan_folder_removal_revokes_additions_only_cache_trust(monkeypatch):
 
 def test_scan_folder_storage_removals_report_if_a_row_changed(monkeypatch):
     from hub.storage import scan_folders
-
     class _Connection:
         def __init__(self, rowcount):
             self.rowcount = rowcount
@@ -7848,7 +7847,6 @@ def test_scan_folder_storage_removals_report_if_a_row_changed(monkeypatch):
         def close(self):
             self.closed = True
 
-    monkeypatch.setattr(scan_folders, "_ensure_schema", lambda _conn: None)
     for storage in (studio_db, scan_folders):
         for rowcount, expected in ((1, True), (0, False)):
             connection = _Connection(rowcount)
@@ -8134,7 +8132,7 @@ def test_map_entry_fill_reads_and_writes_in_one_transaction(tmp_path, monkeypatc
     """The real store, not the in-memory stand-in: the read has to share the write's
     transaction, or a concurrent writer still slips between them."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(db, "_schema_ready", False)
+    monkeypatch.setattr(db, "_schema_ready", set())
 
     key = "test_map_entry_create"
     assert db.upsert_app_setting_map_entry(key, "a", {"v": 1}) == {"a": {"v": 1}}
@@ -8174,7 +8172,7 @@ def test_a_fill_never_relabels_a_stored_gpu_pin_with_this_browser_s_index_space(
     then name devices in a space it was never written in.
     """
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(db, "_schema_ready", False)
+    monkeypatch.setattr(db, "_schema_ready", set())
 
     key = "test_map_entry_coupled"
     coupled = (("gpu_ids", "gpu_index_kind"),)

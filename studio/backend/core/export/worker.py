@@ -13,6 +13,7 @@ Pattern follows core/inference/worker.py and core/training/worker.py.
 
 from __future__ import annotations
 
+from utils.account_context import account_thread
 import contextlib
 import errno
 import structlog
@@ -148,13 +149,13 @@ def _setup_log_capture(resp_queue: Any) -> None:
             except Exception:
                 pass
 
-    t_out = threading.Thread(
+    t_out = account_thread(
         target = _reader,
         args = (r_out, "stdout", saved_out_fd),
         daemon = True,
         name = "export-log-stdout",
     )
-    t_err = threading.Thread(
+    t_err = account_thread(
         target = _reader,
         args = (r_err, "stderr", saved_err_fd),
         daemon = True,
@@ -257,6 +258,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
                 checkpoint_path,
             )
     trust_remote_code = cmd.get("trust_remote_code", False)
+    base_model = cmd.get("base_model") or None
 
     # Auto-enable trust_remote_code for NemotronH/Nano models.
     if not trust_remote_code:
@@ -288,7 +290,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
         from utils.models.model_config import get_base_model_from_lora_identifier
 
         # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
-        _base = get_base_model_from_lora_identifier(checkpoint_path, hf_token)
+        _base = base_model or get_base_model_from_lora_identifier(checkpoint_path, hf_token)
         if _base:
             requested_security_targets.append(_base)
     except Exception as exc:
@@ -373,6 +375,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
             load_in_4bit = load_in_4bit,
             trust_remote_code = trust_remote_code,
             hf_token = hf_token,
+            base_model = base_model,
         )
 
         _send_response(

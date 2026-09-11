@@ -21,7 +21,7 @@ def rag_home(tmp_path, monkeypatch):
 
     db_file = tmp_path / "rag.db"
     monkeypatch.setattr(rag_db, "rag_db_path", lambda: db_file)
-    monkeypatch.setattr(rag_db, "_schema_ready", False, raising = False)
+    monkeypatch.setattr(rag_db, "_schema_ready", set(), raising = False)
     return db_file
 
 

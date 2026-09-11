@@ -10,6 +10,7 @@ from fastapi import APIRouter, Body, Depends, Query
 
 from auth.authentication import get_current_subject
 from hub.dependencies import get_request_hf_token
+from hub.services.models import account_access
 from hub.utils.hf_tokens import HfTokenArg
 
 from ..schemas import (
@@ -38,6 +39,7 @@ async def get_default_chat_template_route(
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),
 ) -> ModelTemplateResponse:
+    await asyncio.to_thread(account_access.require_model_access, model_name)
     # A cache miss falls through to the hub, and offline that costs one retry backoff per candidate template file.
     from core.inference.llama_cpp import _hf_offline_if_unreachable_for
 

@@ -23,7 +23,9 @@ logger = logging.getLogger(__name__)
 from typing import Any, Iterable, Optional
 
 
+from utils.account_context import is_owner_context
 from utils.paths import (
+    ensure_account_dir,
     ensure_dir,
     project_workspaces_root,
     studio_db_path,
@@ -97,7 +99,7 @@ def contains_sensitive_path_component(path: str) -> bool:
 
 
 _schema_lock = threading.Lock()
-_schema_ready = False
+_schema_ready: set[Path] = set()
 _SQLITE_IN_CHUNK_SIZE = 900
 _PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
 _CHAT_ATTACHMENT_INVENTORY_VERSION = 1
@@ -297,7 +299,6 @@ def _replace_inventory_update_trigger(conn: sqlite3.Connection) -> None:
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create tables and indexes if they don't exist. Called once per process."""
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(
         """
@@ -1211,50 +1212,76 @@ def _apply_wal_synchronous(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA synchronous=NORMAL")
 
 
+def reset_schema_state_for_tests() -> None:
+    with _schema_lock:
+        _schema_ready.clear()
+
+
 def get_connection(
-    busy_timeout_seconds: float = _BUSY_TIMEOUT_SECONDS, *, check_same_thread: bool = True
+    busy_timeout_seconds: float = _BUSY_TIMEOUT_SECONDS,
+    *,
+    check_same_thread: bool = True,
+    _manage_keeper: bool = True,
 ) -> sqlite3.Connection:
-    """Open studio.db with WAL mode, create tables once per process, enable foreign keys."""
-    global _schema_ready
     db_path = studio_db_path()
-    ensure_dir(db_path.parent)
+    ensure_account_dir(db_path.parent)
     conn = sqlite3.connect(
         str(db_path), timeout = busy_timeout_seconds, check_same_thread = check_same_thread
     )
     conn.row_factory = sqlite3.Row
     # foreign_keys is session-scoped; set per connection
     conn.execute("PRAGMA foreign_keys=ON")
-    if not _schema_ready:
+    if db_path not in _schema_ready:
         with _schema_lock:
-            if not _schema_ready:
+            schema_path = db_path.resolve()
+            if schema_path not in _schema_ready:
                 try:
                     _ensure_schema(conn)
                     conn.commit()
-                    _schema_ready = True
+                    # Both spellings, so a symlinked path skips the resolve next time.
+                    _schema_ready.update((schema_path, db_path))
                 except Exception:
                     conn.close()
                     raise
     _apply_wal_synchronous(conn)
+    # main.py only keeps the owner's DB open, so a managed account would checkpoint on every close.
+    if (
+        _manage_keeper
+        and not is_owner_context()
+        and db_path not in _wal_keepers
+        and db_path not in _wal_unsupported
+    ):
+        try:
+            open_wal_keeper(replace = False)
+        except Exception:
+            conn.close()
+            raise
     return conn
 
 
 # Every accessor here opens and closes its own connection, so a writer is routinely the last
 # WAL participant, and sqlite checkpoints the WAL back into studio.db on that close. At the
 # durable chat stream's flush cadence that is several rewrites a second (#9934).
-_wal_keeper: sqlite3.Connection | None = None
+_wal_keepers: dict[Path, sqlite3.Connection] = {}
 _wal_keeper_lock = threading.Lock()
+_wal_unsupported: set[Path] = set()
 
 
-def open_wal_keeper() -> bool:
-    """Hold this database's WAL open for the process. Returns whether a keeper is engaged."""
-    # Replace rather than inherit: a keeper from an earlier lifespan can belong to another
-    # database or a dead thread, and reusing it would keep nothing for the current one.
-    close_wal_keeper()
-    global _wal_keeper
+def open_wal_keeper(*, replace: bool = True) -> bool:
+    """Hold this database's WAL open. ``replace = False`` leaves an existing keeper alone."""
+    db_path = studio_db_path().resolve()
     with _wal_keeper_lock:
+        if not replace:
+            if db_path in _wal_keepers:
+                return True
+            if db_path in _wal_unsupported:
+                return False
+        previous = _wal_keepers.pop(db_path, None)
+        if previous is not None:
+            _close_keeper(previous)
         # Only ever runs the pragma below, on this thread. check_same_thread is off so a
         # keeper stranded by an earlier lifespan can still be closed from this one.
-        conn = get_connection(check_same_thread = False)
+        conn = get_connection(check_same_thread = False, _manage_keeper = False)
         try:
             # What is in force, not what was asked for: journal_mode=WAL declines silently
             # on filesystems without shared-memory support and persists in the file. Nothing
@@ -1266,23 +1293,35 @@ def open_wal_keeper() -> bool:
             return False
         if not isinstance(mode, str) or mode.lower() != "wal":
             conn.close()
+            _wal_unsupported.add(db_path)
             logger.info("studio.db is in %s mode, not WAL; WAL keeper not engaged.", mode)
             return False
-        _wal_keeper = conn
+        _wal_unsupported.discard(db_path)
+        _wal_keepers[db_path] = conn
         return True
 
 
-def close_wal_keeper() -> None:
-    """Release the keeper; last-close checkpointing resumes."""
-    global _wal_keeper
-    with _wal_keeper_lock:
-        conn, _wal_keeper = _wal_keeper, None
-    if conn is None:
-        return
+def _close_keeper(conn: sqlite3.Connection) -> None:
     try:
         conn.close()
     except Exception as exc:
         logger.warning("Could not close the studio.db WAL keeper: %s", exc)
+
+
+def close_wal_keeper_for(path: str | Path) -> None:
+    db_path = Path(path).resolve()
+    with _wal_keeper_lock:
+        conn = _wal_keepers.pop(db_path, None)
+        if conn is not None:
+            _close_keeper(conn)
+
+
+def close_wal_keeper() -> None:
+    with _wal_keeper_lock:
+        for conn in _wal_keepers.values():
+            _close_keeper(conn)
+        _wal_keepers.clear()
+        _wal_unsupported.clear()
 
 
 def create_run(
@@ -1788,6 +1827,12 @@ def add_scan_folder_with_status(path: str) -> tuple[dict, bool]:
         raise ValueError("The filesystem root cannot be registered")
     if _contains_sensitive_path_component(normalized):
         raise ValueError("Credential or configuration directories are not allowed")
+    # A registered folder joins the browse allowlist and model index, so it must be the acting
+    # account's own.
+    from utils.paths.storage_roots import within_account
+
+    if not within_account(Path(normalized)):
+        raise ValueError("Path is outside this account's workspace")
 
     # Windows: normcase for the denylist check but store original casing (e.g. C:\Models).
     is_win = platform.system() == "Windows"

@@ -1102,6 +1102,17 @@ def peek_llama_admission_snapshot(key: str) -> Optional[LlamaAdmissionSnapshot]:
     return queue.snapshot() if queue is not None else None
 
 
+def estimate_gpu_retry_after() -> int:
+    with _QUEUES_LOCK:
+        queues = tuple(_QUEUES.values())
+    waves = 1
+    for queue in queues:
+        snapshot = queue.snapshot()
+        capacity = max(1, snapshot.capacity)
+        waves = max(waves, (snapshot.active + snapshot.queued + capacity - 1) // capacity)
+    return min(120, 15 * waves)
+
+
 def reset_llama_admission_queues() -> None:
     global _parked_total
     with _QUEUES_LOCK:

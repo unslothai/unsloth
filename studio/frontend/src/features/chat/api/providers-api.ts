@@ -125,7 +125,6 @@ async function importProviderPublicKey(
 }
 
 const ENVELOPE_VERSION = "v1";
-/** Pins an envelope to this protocol and version; the backend checks the same bytes. */
 const ENVELOPE_AAD = "unsloth-studio-provider-key-v1";
 const AES_KEY_BYTES = 32;
 const NONCE_BYTES = 12;
@@ -136,10 +135,7 @@ function randomBinaryString(byteLength: number): string {
   return String.fromCharCode(...bytes);
 }
 
-/**
- * Produce `v1.<wrapped AES key>.<nonce>.<ciphertext||tag>`, each part base64. RSA-OAEP wraps
- * only the 32-byte content key: encrypting the API key itself would cap it at 190 bytes.
- */
+/** RSA-OAEP wraps only the 32-byte content key: wrapping the API key itself caps it at 190 bytes. */
 export async function encryptProviderApiKey(
   plaintextApiKey: string,
   forceRefresh = false,
@@ -150,8 +146,7 @@ export async function encryptProviderApiKey(
 
   const cipher = forge.cipher.createCipher("AES-GCM", aesKey);
   cipher.start({ iv: nonce, additionalData: ENVELOPE_AAD, tagLength: 128 });
-  // forge ciphers take bytes, so a non-ASCII key would otherwise lose all but the low byte
-  // of each UTF-16 code unit.
+  // forge ciphers take bytes: without encodeUtf8 a non-ASCII key loses all but each low byte.
   cipher.update(forge.util.createBuffer(forge.util.encodeUtf8(plaintextApiKey)));
   if (!cipher.finish()) {
     throw new Error("Failed to encrypt API key.");

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+
 import asyncio
 import os
 from pathlib import Path
@@ -87,6 +88,12 @@ _is_transformers_bin_weight_file = model_common._is_transformers_bin_weight_file
 _prefer_complete_larger = model_common._prefer_complete_larger
 _gguf_variant_state_summary = model_common._gguf_variant_state_summary
 _is_diffusers_pipeline_dir = model_common._is_diffusers_pipeline_dir
+
+
+def _account_access():
+    """Imported on use: the CLI reads this inventory without FastAPI, which account_access needs."""
+    from hub.services.models import account_access
+    return account_access
 
 
 def _http_error(status_code: int, detail: str):
@@ -966,6 +973,13 @@ async def _scan_local_models_response(
         )
 
 
+async def _account_local_response(response):
+    if not _account_access().managed_account():
+        return response
+    models = await asyncio.to_thread(_account_access().filter_model_rows, response.models)
+    return response.model_copy(update = {"models": models})
+
+
 async def list_local_models_response(models_dir: str = "./models") -> LocalModelListResponse:
     """Coalesce overlapping local inventory requests for the same models root."""
 
@@ -1018,19 +1032,20 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
             epoch,
         )
         try:
-            return await hf_cache_scan.shared_scan(
+            response = await hf_cache_scan.shared_scan(
                 _local_inventory_flights,
                 key,
                 lambda expected_epoch = epoch, folders = custom_folders, roots = sources: (
                     scan_and_classify(expected_epoch, folders, roots)
                 ),
             )
+            return await _account_local_response(response)
         except _LocalCacheChanged as changed:
             superseded = changed.response
             continue
     # Invalidations are outpacing the walk, so answer with the freshest scan instead of rescanning forever.
     logger.warning("Local inventory kept racing cache invalidations; serving the last scan")
-    return await asyncio.to_thread(classify, superseded)
+    return await _account_local_response(await asyncio.to_thread(classify, superseded))
 
 
 def get_models_folder_response() -> dict:
@@ -1060,6 +1075,7 @@ def get_scan_folders_response() -> dict:
 
 
 def add_scan_folder_response(path: str) -> dict:
+    path = _account_access().private_directory(path, "")
     try:
         folder, inserted = add_scan_folder_with_status(_coerce_scan_folder_path(path))
     except ValueError as e:

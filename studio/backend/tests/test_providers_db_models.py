@@ -18,9 +18,9 @@ def isolated_providers_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "studio.db"
     monkeypatch.setattr(providers_db, "studio_db_path", lambda: db_path)
     monkeypatch.setattr(providers_db, "ensure_dir", lambda _path: None)
-    providers_db._schema_ready = False
+    providers_db._schema_ready = set()
     yield db_path
-    providers_db._schema_ready = False
+    providers_db._schema_ready = set()
 
 
 def test_create_and_list_provider_models(isolated_providers_db: Path):
