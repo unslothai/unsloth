@@ -1228,8 +1228,9 @@ class ExternalProviderClient:
                 body["thinking"] = {"type": "disabled"}
         elif self.provider_type == "mistral":
             _apply_mistral_reasoning_controls(body, model, enable_thinking, reasoning_effort)
-        elif self.provider_type == "vllm" and enable_thinking is not None:
-            # vLLM gates thinking via chat_template_kwargs.enable_thinking.
+        elif provider_info.get("supports_chat_template_kwargs") and enable_thinking is not None:
+            # chat_template_kwargs is the only route to a template's enable_thinking variable, and a strict gateway
+            # 400s on the unknown key, so it is opt-in per registry entry rather than by provider family.
             tpl_kw = body.get("chat_template_kwargs")
             if not isinstance(tpl_kw, dict):
                 tpl_kw = {}
