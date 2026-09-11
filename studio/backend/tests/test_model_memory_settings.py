@@ -4224,24 +4224,20 @@ class TestMaskedDevicesCompareInCompactSpace:
 
     def test_a_survivor_is_translated_to_its_compact_ordinal(self):
         from core.inference.llama_cpp import LlamaCppBackend as B
-
         assert B._compact_ordinals([1], {"CUDA_VISIBLE_DEVICES": "1"}) == [0]
 
     def test_the_position_in_the_mask_is_the_ordinal(self):
         from core.inference.llama_cpp import LlamaCppBackend as B
-
         assert B._compact_ordinals([3], {"ROCR_VISIBLE_DEVICES": "2,3"}) == [1]
         assert B._compact_ordinals([2, 3], {"ROCR_VISIBLE_DEVICES": "2,3"}) == [0, 1]
 
     def test_no_mask_leaves_the_ordinals_alone(self):
         from core.inference.llama_cpp import LlamaCppBackend as B
-
         assert B._compact_ordinals([1], {}) == [1]
         assert B._compact_ordinals([1], {"CUDA_VISIBLE_DEVICES": ""}) == [1]
 
     def test_an_unmappable_mask_leaves_them_alone(self):
         from core.inference.llama_cpp import LlamaCppBackend as B
-
         assert B._compact_ordinals([1], {"CUDA_VISIBLE_DEVICES": "GPU-abc"}) == [1]
 
     def test_a_masked_survivor_now_reads_as_live(self, monkeypatch):
@@ -4250,7 +4246,8 @@ class TestMaskedDevicesCompareInCompactSpace:
         from core.inference.llama_cpp import LlamaCppBackend as B
 
         monkeypatch.setattr(
-            B, "_enumerated_gpu_devices",
+            B,
+            "_enumerated_gpu_devices",
             classmethod(lambda cls, binary = None, env = None: ["CUDA0"]),
         )
         effective = B._effective_gpu_indices(
@@ -4266,22 +4263,24 @@ class TestSplitModeNoneFollowsTheMainGpu:
     Confirming the plan's discrete card while the child used a shared-memory iGPU is
     exactly the case DirectIO must not take."""
 
-    def _eff(self, monkeypatch, gpu_indices, extra_args = None, env = None,
-             devices = ("CUDA0", "Vulkan1")):
+    def _eff(
+        self,
+        monkeypatch,
+        gpu_indices,
+        extra_args = None,
+        env = None,
+        devices = ("CUDA0", "Vulkan1"),
+    ):
         from core.inference.llama_cpp import LlamaCppBackend as B
-
         monkeypatch.setattr(
-            B, "_enumerated_gpu_devices",
+            B,
+            "_enumerated_gpu_devices",
             classmethod(lambda cls, binary = None, e = None: list(devices)),
         )
-        return B._effective_gpu_indices(
-            "llama-server", env or {}, gpu_indices, extra_args, True
-        )
+        return B._effective_gpu_indices("llama-server", env or {}, gpu_indices, extra_args, True)
 
     def test_main_gpu_replaces_the_plan(self, monkeypatch):
-        assert self._eff(
-            monkeypatch, [0], ["--split-mode", "none", "--main-gpu", "1"]
-        ) == [1]
+        assert self._eff(monkeypatch, [0], ["--split-mode", "none", "--main-gpu", "1"]) == [1]
 
     def test_the_short_flag_counts(self, monkeypatch):
         assert self._eff(monkeypatch, [0], ["-sm", "none", "-mg", "1"]) == [1]
@@ -4297,9 +4296,7 @@ class TestSplitModeNoneFollowsTheMainGpu:
         assert self._eff(monkeypatch, [0], ["--main-gpu", "1"]) == [0]
 
     def test_an_unparsable_main_gpu_leaves_the_plan(self, monkeypatch):
-        assert self._eff(
-            monkeypatch, [0], ["--split-mode", "none", "--main-gpu", "nope"]
-        ) == [0]
+        assert self._eff(monkeypatch, [0], ["--split-mode", "none", "--main-gpu", "nope"]) == [0]
 
     def test_the_redirected_device_is_what_gets_classified(self, monkeypatch):
         """The whole point: a Vulkan iGPU target must reach the Vulkan probe rather
@@ -4307,7 +4304,8 @@ class TestSplitModeNoneFollowsTheMainGpu:
         from core.inference.llama_cpp import LlamaCppBackend as B
 
         monkeypatch.setattr(
-            B, "_enumerated_gpu_devices",
+            B,
+            "_enumerated_gpu_devices",
             classmethod(lambda cls, binary = None, e = None: ["CUDA0", "Vulkan1"]),
         )
         monkeypatch.setattr(
@@ -4317,15 +4315,21 @@ class TestSplitModeNoneFollowsTheMainGpu:
             "llama-server", {}, [0], ["--split-mode", "none", "--main-gpu", "1"], True
         )
         assert effective == [1]
-        assert B._gpu_offload_confirmed(
-            "llama-server", {}, effective, False, True,
-            ["--split-mode", "none", "--main-gpu", "1"],
-        ) is False
+        assert (
+            B._gpu_offload_confirmed(
+                "llama-server",
+                {},
+                effective,
+                False,
+                True,
+                ["--split-mode", "none", "--main-gpu", "1"],
+            )
+            is False
+        )
 
     def test_a_main_gpu_override_is_also_gated(self, monkeypatch):
         """Off the DirectIO path nothing is resolved, so no behaviour changes."""
         from core.inference.llama_cpp import LlamaCppBackend as B
-
         assert B._effective_gpu_indices(
             "llama-server", {}, [0], ["--split-mode", "none", "--main-gpu", "1"], False
         ) == [0]
