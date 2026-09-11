@@ -305,22 +305,20 @@ def _iter_column(dataset, column):
 class _TextCharTable(dict):
     """str.translate table for clean_text, filled in the first time each character is seen."""
 
-    # Keep letters, digits, marks and punctuation from any script: marks carry Devanagari and
-    # Arabic vowels, P carries the CJK full stop. Symbols (\u00a9, emoji) and control chars go.
-    _KEEP_UNICODE_CATEGORIES = ("L", "N", "M", "P")
-    # VS15, VS16 and the keycap mark only style an emoji and would outlive it if kept.
-    _EMOJI_MARKS = frozenset("\ufe0e\ufe0f\u20e3")
+    # Drop only invisible junk: control, format, private-use and surrogate code points. Unassigned (Cn)
+    # code points are kept, since they are characters newer than this interpreter's Unicode database.
+    _DROP_CATEGORIES = frozenset(("Cc", "Cf", "Co", "Cs"))
+    # ZWNJ and ZWJ carry Persian and Indic spelling and join emoji sequences; tags spell subdivision flags.
+    _KEEP_FORMAT_CHARS = frozenset("\u200c\u200d") | frozenset(map(chr, range(0xE0020, 0xE0080)))
 
     def __missing__(self, codepoint):
         char = chr(codepoint)
-        keep = (
-            " " <= char <= "~"
-            or char == "\n"
-            or (
-                char not in self._EMOJI_MARKS
-                and unicodedata.category(char)[0] in self._KEEP_UNICODE_CATEGORIES
-            )
-        )
+        if char == "\n" or char in self._KEEP_FORMAT_CHARS:
+            keep = True
+        elif codepoint == 0xFFFD or 0xFDD0 <= codepoint <= 0xFDEF or (codepoint & 0xFFFE) == 0xFFFE:
+            keep = False  # replacement character and noncharacters
+        else:
+            keep = unicodedata.category(char) not in self._DROP_CATEGORIES
         self[codepoint] = codepoint if keep else None
         return self[codepoint]
 

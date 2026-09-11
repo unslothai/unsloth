@@ -198,16 +198,16 @@ def test_raw_text_loader():
         # Spaces around newlines trimmed on both sides, even across multiple newlines.
         assert preprocessor.clean_text("foo \n\n bar") == "foo\n\nbar"
 
-        # Stripping a non-ASCII symbol between spaces must not leave a double space.
-        assert preprocessor.clean_text("word1 \u00a9 word2") == "word1 word2"
-        assert preprocessor.clean_text("a \u2122 b") == "a b"
-        assert preprocessor.clean_text("prefix \U0001f600 suffix") == "prefix suffix"
+        # Stripping an invisible character between spaces must not leave a double space.
+        assert preprocessor.clean_text("word1 \u200b word2") == "word1 word2"
+        assert preprocessor.clean_text("a \ue000 b") == "a b"
+        assert preprocessor.clean_text("prefix \ufffd suffix") == "prefix suffix"
 
-        # Stripping a non-ASCII symbol adjacent to a newline must not leave a stray space.
-        assert preprocessor.clean_text("foo \u00a9\nbar") == "foo\nbar"
-        assert preprocessor.clean_text("foo\n\u2122 bar") == "foo\nbar"
-        # The double-space collapse must not swallow a paragraph break near a non-ASCII symbol.
-        assert preprocessor.clean_text("a \u00a9\n\nb") == "a\n\nb"
+        # Stripping an invisible character adjacent to a newline must not leave a stray space.
+        assert preprocessor.clean_text("foo \u200b\nbar") == "foo\nbar"
+        assert preprocessor.clean_text("foo\n\ue000 bar") == "foo\nbar"
+        # The double-space collapse must not swallow a paragraph break near an invisible character.
+        assert preprocessor.clean_text("a \u200b\n\nb") == "a\n\nb"
 
         # Idempotence: clean_text twice == once.
         idempotent_inputs = [
@@ -238,7 +238,7 @@ def test_raw_text_loader():
         os.unlink(test_file)
 
 
-def test_clean_text_keeps_letters_marks_and_punctuation():
+def test_clean_text_keeps_text_in_any_script():
     """Top level on purpose: test_raw_text_loader's try/except swallows assertion failures."""
     preprocessor = TextPreprocessor()
     for script_text in [
@@ -252,23 +252,34 @@ def test_clean_text_keeps_letters_marks_and_punctuation():
         "\u0928\u092e\u0938\u094d\u0924\u0947 \u0926\u0941\u0928\u093f\u092f\u093e\u0964",
         "\uc548\ub155\ud558\uc138\uc694.",
         "\u0393\u03b5\u03b9\u03ac \u03c3\u03bf\u03c5",
+        "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645",
+        "\u0dc1\u0dca\u200d\u0dbb\u0dd3",
+        "Price: \u20ac100, x \u2264 4, \u00a9 2026 Acme\u2122",
+        "I \u2764\ufe0f you 1\ufe0f\u20e3 \U0001f468\u200d\U0001f469\u200d\U0001f467",
+        "\U0001f3f4\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f",
+        # Garay (Unicode 16) is unassigned in older interpreters' databases and must survive anyway.
+        "\U00010d50\U00010d51",
     ]:
         assert (
             preprocessor.clean_text(script_text) == script_text
-        ), f"clean_text must not drop letters, marks or punctuation: {script_text!r}"
+        ), f"clean_text must keep text in any script: {script_text!r}"
 
 
-def test_clean_text_still_drops_symbols_and_control_characters():
-    """The control for the test above: what was noise before is still noise."""
+def test_clean_text_drops_invisible_characters():
+    """The control for the test above: invisible characters are still removed."""
     preprocessor = TextPreprocessor()
-    assert preprocessor.clean_text("word1 \u00a9 word2") == "word1 word2"
-    assert preprocessor.clean_text("prefix \U0001f600 suffix") == "prefix suffix"
-    assert preprocessor.clean_text("a\x00b") == "ab"
-    assert preprocessor.clean_text("a\x1bb") == "ab"
-    assert preprocessor.clean_text("\ufeffhello") == "hello"
-    assert preprocessor.clean_text("I \u2764\ufe0f you") == "I you"
-    assert preprocessor.clean_text("\u00a9\ufe0f 2026") == "2026"
-    assert preprocessor.clean_text("1\ufe0f\u20e3 first") == "1 first"
+    for raw, expected in [
+        ("a\x00b", "ab"),
+        ("a\x1bb", "ab"),
+        ("\ufeffhello", "hello"),
+        ("co\u00adop", "coop"),
+        ("a\u200bb", "ab"),
+        ("\u202eabc", "abc"),
+        ("a\ue000b", "ab"),
+        ("a\ufffdb", "ab"),
+        ("a\uffffb", "ab"),
+    ]:
+        assert preprocessor.clean_text(raw) == expected, raw
 
 
 def test_smart_chunk_text_single_chunk_no_eos_returns_plain_list():
