@@ -269,8 +269,10 @@ def test_stop_matching_decodes_split_unicode_without_leaking_partial_bytes():
     torch = pytest.importorskip("torch")
 
     class Tokenizer(_Tokenizer):
+        pieces = {2: b"Hello \xc3", 3: b"\xa9END"}
+
         def decode(self, ids, **kwargs):
-            return "Hello �" if len(ids) == 1 else "Hello éEND"
+            return b"".join(self.pieces[int(i)] for i in ids).decode("utf-8", errors = "replace")
 
     streamer = inf.TextIteratorStreamer(Tokenizer(), skip_prompt = False)
     wrapped = inf._StopSequenceStreamer(streamer, ["éEND"])
@@ -280,3 +282,31 @@ def test_stop_matching_decodes_split_unicode_without_leaking_partial_bytes():
     assert wrapped.matched.is_set()
     wrapped.end()
     assert "".join(wrapped) == "Hello "
+
+
+def test_stop_matching_decodes_a_bounded_window_per_token():
+    inf = pytest.importorskip("core.inference.inference")
+    torch = pytest.importorskip("torch")
+
+    class Tokenizer(_Tokenizer):
+        decoded = 0
+
+        def decode(self, ids, **kwargs):
+            self.decoded += len(ids)
+            return super().decode(ids, **kwargs)
+
+    tokenizer = Tokenizer()
+    words = 2000
+    tokenizer.pieces = {i: "word " for i in range(2, words + 2)}
+    tokenizer.pieces.update({words + 2 + i: ch for i, ch in enumerate("STOP")})
+    streamer = inf.TextIteratorStreamer(tokenizer, skip_prompt = False)
+    wrapped = inf._StopSequenceStreamer(streamer, ["STOP"])
+    for token in range(2, words + 2):
+        wrapped.put(torch.tensor([token]))
+    assert not wrapped.matched.is_set()
+    assert tokenizer.decoded < 10 * words
+    for token in range(words + 2, words + 6):
+        wrapped.put(torch.tensor([token]))
+    assert wrapped.matched.is_set()
+    wrapped.end()
+    assert "".join(wrapped) == "word " * words

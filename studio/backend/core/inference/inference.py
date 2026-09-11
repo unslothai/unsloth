@@ -264,6 +264,11 @@ class _StopSequenceStreamer:
         self.matched = threading.Event()
         self.token_ids = []
         self.text = ""
+        self.settled = ""
+        self.prefix_offset = 0
+        self.read_offset = 0
+        self.scan_from = 0
+        self.longest = max((len(s) for s in self.sequences), default = 0)
         self.released = 0
         self.cut = 0
         self.finished = False
@@ -290,22 +295,45 @@ class _StopSequenceStreamer:
             self.next_tokens_are_prompt = False
             return
         self.token_ids.extend(value.tolist())
-        decode_kwargs = (
-            {"skip_special_tokens": False} if self.is_harmony else self.streamer.decode_kwargs
-        )
-        self.text = self.streamer.tokenizer.decode(self.token_ids, **decode_kwargs)
-        self.cut, matched = _mlx_stop_cut(self.text, self.sequences)
+        self._decode_new_tokens()
+        # Earlier text was already scanned; only a stop overlapping new text can match.
+        start = self.scan_from
+        cut, matched = _mlx_stop_cut(self.text[start:], self.sequences)
+        self.cut = start + cut
         if matched:
             # This runs in the producer, before model.generate checks criteria.
             self.matched.set()
+        else:
+            self.scan_from = max(start, len(self.settled) - self.longest + 1)
         cut = self.cut
-        if not matched and not self.is_harmony and cut:
+        if not matched and not self.is_harmony and cut > self.released:
             # Keep the word-buffering stability guarantee for displayed text.
             # Stop detection above must still inspect every decoded token.
-            accepted = self.text[:cut]
-            if not self.streamer._is_chinese_char(ord(accepted[-1])):
-                cut = max(accepted.rfind(" "), accepted.rfind("\n")) + 1
+            if not self.streamer._is_chinese_char(ord(self.text[cut - 1])):
+                cut = (
+                    max(
+                        self.text.rfind(" ", self.released, cut),
+                        self.text.rfind("\n", self.released, cut),
+                    )
+                    + 1
+                )
         self._publish(cut)
+
+    def _decode_new_tokens(self):
+        decode_kwargs = (
+            {"skip_special_tokens": False} if self.is_harmony else self.streamer.decode_kwargs
+        )
+        decode = self.streamer.tokenizer.decode
+        # Re-decoding the whole reply each token is quadratic; decode a short window
+        # and settle its text once it no longer ends in unresolved bytes.
+        prefix = decode(self.token_ids[self.prefix_offset : self.read_offset], **decode_kwargs)
+        tail = decode(self.token_ids[self.prefix_offset :], **decode_kwargs)[len(prefix) :]
+        if tail and not tail.endswith("\ufffd"):
+            self.settled += tail
+            self.prefix_offset = self.read_offset
+            self.read_offset = len(self.token_ids)
+            tail = ""
+        self.text = self.settled + tail
 
     def _publish(self, cut):
         if cut <= self.released:
