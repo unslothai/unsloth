@@ -159,3 +159,27 @@ def test_repeated_load_generate_eject(fake_runtime, tmp_path, seed):
         assert not backend._queued_generate_cancels
     gc.collect()
     assert all(ref() is None for ref in refs), 'pipeline retained after eject'
+
+
+def test_background_error_is_reported_then_recoverable(fake_runtime, monkeypatch, tmp_path):
+    (tmp_path / 'model.gguf').write_bytes(b'weights')
+    backend = mod.DiffusionBackend()
+    stage_background(monkeypatch, backend)
+    done = threading.Event()
+    run = backend._run_load
+    def tracked(**kwargs):
+        try: run(**kwargs)
+        finally: done.set()
+    def fail(*args, **kwargs): raise OSError('simulation download failure')
+    monkeypatch.setattr(backend, '_run_load', tracked)
+    with monkeypatch.context() as mp:
+        mp.setattr(backend, '_prefetch_files', fail)
+        backend.begin_load(str(tmp_path), gguf_filename='model.gguf', family_override='z-image', base_repo='base/repo', speed_mode='off')
+        assert done.wait(5)
+        assert backend.load_progress()['phase'] == 'error'
+        assert 'simulation download failure' in backend.load_progress()['error']
+        assert not backend.is_loaded
+    backend.unload()
+    _load_into(backend, tmp_path, speed_mode='off')
+    assert backend.is_loaded
+    backend.unload()

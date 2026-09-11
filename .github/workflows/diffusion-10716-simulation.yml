@@ -45,4 +45,16 @@ jobs:
           uv('pip', 'install', '--python', str(python), '-r', str(temp / 'requirements.txt'), 'pytest-timeout', 'hypothesis')
           tests = ['test_diffusion_backend.py', 'test_image_gallery.py', 'test_diffusion_routes.py', 'test_diffusion_device.py', 'test_diffusion_engine_router.py', 'test_diffusion_engine_load_contract.py', 'test_diffusion_memory.py', 'test_diffusion_auto_policy.py', 'test_diffusion_lora.py', 'test_diffusion_controlnet.py', 'test_diffusion_prequant.py', 'test_diffusion_te_prequant.py']
           command = [str(python), 'temp/run.py', str(python), '-m', 'pytest', *['studio/backend/tests/' + name for name in tests], 'temp/sim_tests', '--basetemp=temp/pytest', '-o', 'cache_dir=temp/pytest-cache', '--timeout=30', '-q', '--junitxml=temp/artifacts/simulation.xml']
+          if os.name == 'nt':
+              import xml.etree.ElementTree as ET
+              base = '0d9952f8ef9b3f4eaf6300706608a80f2396a77d'
+              subprocess.run(['git', 'fetch', '--depth=1', 'origin', base], check=True)
+              subprocess.run(['git', 'worktree', 'add', '--detach', 'temp/base', base], check=True)
+              selectors = ['test_diffusion_backend.py::test_generate_guard_leaves_a_large_batch_to_the_oom_backoff', 'test_diffusion_prequant.py::test_the_local_scheme_cache_survives_a_same_second_swap']
+              baseline = [str(python), 'temp/run.py', str(python), '-m', 'pytest', *['temp/base/studio/backend/tests/' + name for name in selectors], '-q', '--basetemp=temp/base-pytest', '-o', 'cache_dir=temp/pytest-cache', '--junitxml=temp/artifacts/baseline-platform.xml']
+              result = subprocess.run(baseline)
+              cases = ET.parse('temp/artifacts/baseline-platform.xml').findall('.//testcase')
+              assert result.returncode == 1 and len(cases) == 2 and all(case.find('failure') is not None for case in cases)
+              print('Both unchanged upstream tests reproduce their Windows platform assumptions.', flush=True)
+              command += ['-k', 'not test_generate_guard_leaves_a_large_batch_to_the_oom_backoff and not test_the_local_scheme_cache_survives_a_same_second_swap']
           subprocess.run(command, check=True)
