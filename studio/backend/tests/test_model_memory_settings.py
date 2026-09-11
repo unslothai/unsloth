@@ -3211,7 +3211,8 @@ class TestASaveDuringPlacementIsAnswered:
         import utils.model_memory_settings as mm
 
         monkeypatch.setattr(
-            rs, "_active_launch_placement",
+            rs,
+            "_active_launch_placement",
             lambda: (None, False, True, None, False, (False, False)),
         )
         monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))
@@ -3222,7 +3223,8 @@ class TestASaveDuringPlacementIsAnswered:
         import utils.model_memory_settings as mm
 
         monkeypatch.setattr(
-            rs, "_active_launch_placement",
+            rs,
+            "_active_launch_placement",
             lambda: (None, False, True, None, False, (False, True)),
         )
         monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))
@@ -3372,7 +3374,8 @@ class TestAReplacementLoadIsNotAnsweredByTheOldChild:
 
         # the killed child's state is still present and non-None
         monkeypatch.setattr(
-            rs, "_active_launch_placement",
+            rs,
+            "_active_launch_placement",
             lambda: ((False, False), False, True, False, False, (False, False)),
         )
         monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))

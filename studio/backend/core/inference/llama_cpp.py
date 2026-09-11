@@ -12695,7 +12695,9 @@ class LlamaCppBackend:
 
     @classmethod
     def _cuda_runtime_missing_for(
-        cls, binary: Optional[str], env: Optional[Mapping[str, str]] = None
+        cls,
+        binary: Optional[str],
+        env: Optional[Mapping[str, str]] = None,
     ) -> bool:
         """Whether this install's CUDA plugin has no runtime to load.
 
