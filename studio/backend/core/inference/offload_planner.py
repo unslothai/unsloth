@@ -900,9 +900,8 @@ def max_context_for(
 ) -> int:
     """Largest context whose cache fits, rounded down to 256 as CUDA wants.
 
-    Bounded by the training window unless ``ctx_cap`` names the context an explicit request
-    asked for: llama-server serves a ``-c`` above the window, and a ladder walking down from
-    such a request must be able to stop between it and the window.
+    Bounded by the training window unless ``ctx_cap`` names an explicitly requested context:
+    llama-server serves a ``-c`` above the window, so the ladder must be able to stop there.
     """
     opts = opts or PlanOptions()
     ctx_top = int(ctx_cap) if ctx_cap and ctx_cap > 0 else int(layout.n_ctx_train or 0)
@@ -1232,8 +1231,7 @@ def _plan_placement(
                 n_seq = relieved.n_parallel,
                 kv_on_host = opts.kv_on_host,
                 outside_layout_bytes = _outside_layout_bytes(opts, relieved),
-                # An explicit request above the window is priced as asked (only the default
-                # reads the window), so the ladder's bound follows the request too.
+                # An explicit request is priced as asked, so the bound follows it, not the window.
                 ctx_cap = requested_ctx if requested_ctx > 0 else 0,
             )
             top = min(hi, n_ctx) // 256 * 256

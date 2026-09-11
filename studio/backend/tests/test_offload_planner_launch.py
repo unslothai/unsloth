@@ -1015,8 +1015,7 @@ def test_the_snapshot_carries_the_windowed_half_as_a_callable(tmp_path, monkeypa
 
 def test_a_rocm_host_leaves_the_link_rate_unset(tmp_path, monkeypatch):
     """nvidia-smi on a mixed host answers for the NVIDIA cards, whose indices share nothing with
-    the ROCm ids the plan credits, so the rate must stay unset there and the cost model's PCIe 5
-    default stands. The same launch on a CUDA host does read the link."""
+    the ROCm ids the plan credits, so the rate stays unset there. A CUDA host still reads it."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     probes = []
@@ -1037,9 +1036,8 @@ def test_a_rocm_host_leaves_the_link_rate_unset(tmp_path, monkeypatch):
 
 
 def test_a_user_split_across_a_multi_device_plan_pins_the_child_order(tmp_path, monkeypatch):
-    """The plan's per-device rows were modelled against the physical-order device list, and a
-    ratio the user typed reaches the child in place of the plan's own split, so the child's
-    enumeration is pinned the way it is for the plan's split or for a manual ratio."""
+    """The plan's per-device rows were modelled against the physical-order device list, and a user
+    ratio reaches the child in place of the plan's own split, so the enumeration is pinned too."""
     from core.inference.llama_cpp import LlamaCppBackend
 
     pins = []

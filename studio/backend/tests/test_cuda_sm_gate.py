@@ -295,9 +295,8 @@ class TestTheGateSparesADeliberateCpuOnlyLoad:
         assert env.get("CUDA_VISIBLE_DEVICES") == "-1"
 
     def test_a_cpu_only_load_runs_no_link_probe(self, tmp_path, monkeypatch):
-        # The spill snapshot's PCIe probe is an nvidia-smi child of its own. A load the
-        # planner cannot own, or one that credits no device, must not spawn it: the
-        # launches above count every child, and a masked-away card has no link to read.
+        # The spill snapshot's PCIe probe spawns an nvidia-smi child of its own; a load the
+        # planner cannot own, or one that credits no device, must not spawn it.
         probes = []
         monkeypatch.setattr(
             LlamaCppBackend,

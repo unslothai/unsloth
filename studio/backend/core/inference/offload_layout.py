@@ -36,13 +36,10 @@ class SpillClass(Enum):
     """One rung's worth of tensors, in the order the ladder gives them up.
 
     The ladder's own order: ``ffn_down``, then ``ffn_up`` (or the fused ``gate_up``), then a
-    separate ``ffn_gate``. It is NOT the fitter's. ``common/fit.cpp`` names its per-layer
-    fractions for what STAYS resident, so ``LAYER_FRACTION_GATE`` moves ``ffn_down`` only and
-    ``LAYER_FRACTION_UP`` moves down plus GATE; the fallback arm the cost gate ranks against is
-    modelled with that sequence in ``_fit_boundary_overflow``, never with this one. Measured on
-    the same type and size, up and gate spill within 1.7% of each other, so the second rung only
-    matters where the two differ, and the ladder keeps its stated order there rather than the
-    fitter's.
+    separate ``ffn_gate``. It is NOT the fitter's: ``common/fit.cpp`` names its per-layer fractions
+    for what STAYS resident, so ``LAYER_FRACTION_GATE`` moves ``ffn_down`` only and ``_UP`` moves
+    down plus gate, and ``_fit_boundary_overflow`` models the fallback arm with that sequence.
+    Measured, up and gate spill within 1.7% of each other, so the two rarely differ.
     """
 
     FFN_DOWN = "ffn_down"
@@ -479,9 +476,8 @@ def _layout_from_readers(readers) -> ModelLayout:
     kda_head_dim = int(_field(reader, f"{arch}.kda.head_dim") or 0)
     if arch not in _KDA_STATE_ARCHS:
         kda_head_dim = 0
-    # LFM2's short convolution keeps (l_cache - 1) rows of n_embd per recurrent layer and no
-    # ssm state at all (llama-hparams.cpp:n_embd_r, the n_shortconv_l_cache branch; n_embd_s
-    # falls through to ssm_d_state * ssm_d_inner, both zero there).
+    # LFM2 short convolution: (l_cache - 1) rows of n_embd per recurrent layer, no ssm state
+    # (llama-hparams.cpp:n_embd_r, the n_shortconv_l_cache branch; n_embd_s is zero there).
     shortconv_l_cache = int(_field(reader, f"{arch}.shortconv.l_cache") or 0)
     recurrent = 0
     if n_recurrent and d_inner and d_state and d_conv:
@@ -514,17 +510,15 @@ def _layout_from_readers(readers) -> ModelLayout:
         )
         recurrent += len(ple_layers) * ple_conv_state * 4
 
-    # ssm.*/kda.*/shortconv.* keys say the model HAS recurrent layers; nothing above could say
-    # which.
+    # ssm.*/kda.*/shortconv.* keys say the model HAS recurrent layers; nothing above says which.
     if not recurrent_known and (
         (d_inner and d_state and d_conv) or kda_head_dim or shortconv_l_cache > 1
     ):
         logger.debug("offload layout: %s has recurrent keys but no recurrent-layer map", arch)
         return ModelLayout()
-    # The map named rows that hold no cache, and none of the branches above could size what they
-    # hold instead (RWKV token shifts, MiniMax linear attention, an unread key). A complete layout
-    # here would let the planner emit --fit off with a per-layer, per-slot allocation missing from
-    # both the pooled and the per-device check; abstain, and the seam reproduces --fit on.
+    # Rows that hold no cache and no branch above could size (RWKV token shifts, MiniMax linear
+    # attention, an unread key). A complete layout would let the planner emit --fit off while a
+    # per-slot allocation is missing from every check, so abstain and the seam keeps --fit on.
     if n_recurrent and not recurrent:
         logger.debug(
             "offload layout: %s has %d recurrent rows of unknown state size", arch, n_recurrent

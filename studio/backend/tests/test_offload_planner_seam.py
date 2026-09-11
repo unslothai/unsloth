@@ -699,8 +699,7 @@ def test_the_launch_path_pins_the_device_order_it_split_against(monkeypatch):
     """
     compact = "".join(_load_model_source().split())
     assert 'if"--tensor-split"in_spill_flagsor(' in compact
-    # Two sites set it now: the manual per-GPU ratio, and the plan's own split (which also
-    # covers a user ratio across a multi-device plan).
+    # Two sites set it now: the manual per-GPU ratio, and the plan's own split.
     assert compact.count("manual_tensor_split_emitted=True") == 2
     # And the predicate really is read from the launch, not defaulted.
     assert "_user_split_in_force=bool(" in compact
@@ -3124,8 +3123,8 @@ def test_a_slower_link_can_turn_a_planned_spill_into_a_decline(monkeypatch):
     """A spill worth taking over a PCIe 5 x16 link is not worth taking over a desktop x4 slot,
     because prefill streams the same bytes eight times slower.
 
-    The six decode threads are priced against a pinned eight-core host: on a four-core CI
-    runner they read as oversubscribed and the seam declines before the link is weighed."""
+    The six decode threads are priced against a pinned eight-core host: on a four-core CI runner
+    they read as oversubscribed and the seam declines before the link is weighed."""
     monkeypatch.setattr(llama_mod, "_linux_math_core_count", lambda: 8)
     monkeypatch.setattr(llama_mod.sys, "platform", "linux")
     monkeypatch.setattr(
