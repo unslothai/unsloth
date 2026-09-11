@@ -40,6 +40,9 @@ def anthropic_tool_use_id(upstream_id = None) -> str:
     return f"toolu_{uuid.uuid4().hex[:24]}"
 
 
+TOOL_RESULT_IMAGE_OMITTED = "[image omitted: this model cannot view images]"
+
+
 def _anthropic_image_block_to_openai_part(block: dict) -> Optional[dict]:
     """Translate one Anthropic ``image`` block to an OpenAI ``image_url`` part.
 
@@ -72,12 +75,16 @@ def anthropic_messages_to_openai(
     messages: list[dict],
     system: Optional[Union[str, list]] = None,
     preserve_thinking: bool = False,
+    tool_result_images: bool = True,
 ) -> list[dict]:
     """Convert Anthropic messages + system to OpenAI-format message dicts.
 
     User messages with ``image`` blocks are emitted as OpenAI multimodal
     content arrays (``[{type: "text", ...}, {type: "image_url", ...}]``) so
     they flow through llama-server's native vision pathway.
+
+    ``tool_result_images=False`` turns tool-result images into a text note for a
+    text-only model; clients resend history, so rejecting would fail every later turn.
 
     ``preserve_thinking`` keeps replayed assistant ``thinking`` blocks as
     ``reasoning_content`` on the converted message, so templates that render
@@ -169,6 +176,11 @@ def anthropic_messages_to_openai(
                             if item.get("type") == "text":
                                 parts.append({"type": "text", "text": item["text"]})
                             elif item.get("type") == "image":
+                                if not tool_result_images:
+                                    parts.append(
+                                        {"type": "text", "text": TOOL_RESULT_IMAGE_OMITTED}
+                                    )
+                                    continue
                                 part = _anthropic_image_block_to_openai_part(item)
                                 if part is not None:
                                     parts.append(part)
@@ -231,7 +243,10 @@ def fold_tool_results_into_user(messages: list[dict]) -> list[dict]:
         if tool_call_id:
             response["tool_call_id"] = tool_call_id
         content = response["content"]
-        if isinstance(content, list):
+        # Only images must stay real parts; other lists keep the JSON block the archive matches.
+        if isinstance(content, list) and any(
+            isinstance(part, dict) and part.get("type") == "image_url" for part in content
+        ):
             response.pop("content")
             folded_content = [
                 {"type": "text", "text": json.dumps({"tool_response": response}, indent = 2)},

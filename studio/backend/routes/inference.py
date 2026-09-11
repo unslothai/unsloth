@@ -1938,6 +1938,9 @@ def _openai_llama_admission_image_tokens(llama_backend) -> int:
     Over-reserving is the safe direction; under-reserving hands out a slot the cache
     cannot back.
     """
+    # A text-only model is sent no image embeddings.
+    if getattr(llama_backend, "is_vision", True) is False:
+        return 0
     projector = getattr(llama_backend, "_mmproj_projector_type", None)
     known = _MMPROJ_IMAGE_TOKEN_MAX.get(str(projector).strip().lower()) if projector else None
     cap = max(
@@ -7878,7 +7881,7 @@ def _request_has_image(payload) -> bool:
     return _messages_have_image(payload.messages)
 
 
-def _anthropic_image_blocks(payload):
+def _anthropic_image_blocks(payload, *, tool_results: bool = True):
     for msg in getattr(payload, "messages", None) or ():
         content = msg.get("content") if isinstance(msg, dict) else msg.content
         if not isinstance(content, list):
@@ -7887,14 +7890,18 @@ def _anthropic_image_blocks(payload):
             block = block if isinstance(block, dict) else block.model_dump()
             if block.get("type") == "image":
                 yield block
-            elif block.get("type") == "tool_result" and isinstance(block.get("content"), list):
+            elif (
+                tool_results
+                and block.get("type") == "tool_result"
+                and isinstance(block.get("content"), list)
+            ):
                 for part in block["content"]:
                     if isinstance(part, dict) and part.get("type") == "image":
                         yield part
 
 
-def _anthropic_request_has_image(payload) -> bool:
-    return next(_anthropic_image_blocks(payload), None) is not None
+def _anthropic_request_has_image(payload, *, tool_results: bool = True) -> bool:
+    return next(_anthropic_image_blocks(payload, tool_results = tool_results), None) is not None
 
 
 def _anthropic_local_image_payloads(payload) -> list[str]:
@@ -30677,17 +30684,14 @@ async def anthropic_count_tokens(
     # Reject malformed tools before the switch, like /messages, so an invalid
     # count request can't evict the loaded model.
     _validate_anthropic_client_tools(payload.tools)
-    # /apply-template renders media markers, not projector embedding tokens.
-    if _anthropic_request_has_image(payload):
-        raise HTTPException(
-            status_code = 503,
-            detail = "Cannot count tokens for messages containing images.",
-        )
     # Count with the requested model's tokenizer, like the sibling /messages.
+    # Carry the vision guard too: an image count naming a text-only GGUF must not
+    # evict a loaded vision model for a swap that can't serve the request.
     await _maybe_auto_switch_model(
         _switch_model_for_payload(payload),
         request,
         current_subject,
+        require_vision = _anthropic_request_has_image(payload, tool_results = False),
         # count_tokens only tokenizes (no generation), so it must not adopt the resident
         # model; the middleware likewise excludes count_tokens from its claim.
         claim_resident = False,
@@ -30710,6 +30714,7 @@ async def anthropic_count_tokens(
         [m.model_dump() for m in payload.messages],
         payload.system,
         preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
+        tool_result_images = llama_backend.is_vision,
     )
     # Apply the same sanitization /messages does before generation, so the count
     # matches the prompt the real request would build (otherwise empty-assistant
@@ -30728,7 +30733,7 @@ async def anthropic_count_tokens(
     _count_server_tools = (
         _anthropic_selects_server_tools(payload, _count_studio_tools, _count_has_client_tool)
         and llama_backend.supports_tools
-        and not _anthropic_request_has_image(payload)
+        and not _anthropic_request_has_image(payload, tool_results = llama_backend.is_vision)
     )
     _count_openai_client_tools = [
         tool
@@ -30840,6 +30845,9 @@ async def anthropic_messages(
     _validate_anthropic_client_tools(payload.tools)
 
     _anthropic_has_image = _anthropic_request_has_image(payload)
+    # Tool-result images become a note on a text-only model, so until the backend is known
+    # only top-level images require vision or rule out server tools.
+    _anthropic_top_level_image = _anthropic_request_has_image(payload, tool_results = False)
     _anthropic_image_b64s = _anthropic_local_image_payloads(payload)
 
     # Mixing Anthropic server tools with custom client tools is unsupported (the
@@ -30885,7 +30893,7 @@ async def anthropic_messages(
     _selects_server_tools = _anthropic_selects_server_tools(
         payload, requested_studio_tools, _has_client_tool
     )
-    _server_tools_requested_pre = _selects_server_tools and not _anthropic_has_image
+    _server_tools_requested_pre = _selects_server_tools and not _anthropic_top_level_image
     if _server_tools_requested_pre:
         from core.inference.tools import ALL_TOOLS as _ALL_TOOLS_PRE
 
@@ -30925,7 +30933,7 @@ async def anthropic_messages(
         _switch_model_for_payload(payload),
         request,
         current_subject,
-        require_vision = _anthropic_has_image,
+        require_vision = _anthropic_top_level_image,
         # The image normalization below can still 400 after this switch, so defer the claim:
         # the middleware claims on a 2xx, so a rejected request never strands a preview-owned
         # model.
@@ -30960,6 +30968,7 @@ async def anthropic_messages(
         [m.model_dump() for m in payload.messages],
         payload.system,
         preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
+        tool_result_images = llama_backend.is_vision,
     )
     # Strip synthetic provider-side builtin tool history (web_search,
     # web_fetch, code_execution, image_generation cards tagged with

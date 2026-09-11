@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from core.inference.anthropic_compat import (
+    TOOL_RESULT_IMAGE_OMITTED,
     anthropic_messages_to_openai,
     fold_tool_results_into_user,
 )
@@ -92,7 +93,7 @@ def test_native_images_keep_order_and_tool_identity(order):
 
 
 @pytest.mark.parametrize("vision", [True, False])
-def test_native_image_http_generation_and_count_refusal(monkeypatch, vision):
+def test_native_image_http_generation_and_count(monkeypatch, vision):
     seen = {}
 
     async def switch(*args, **kwargs):
@@ -140,47 +141,38 @@ def test_native_image_http_generation_and_count_refusal(monkeypatch, vision):
     with TestClient(app) as client:
         response = client.post("/v1/messages", json = body)
         counted = client.post("/v1/messages/count_tokens", json = body)
-    assert response.status_code == (200 if vision else 400), response.text
-    assert counted.status_code == 503, counted.text
-    assert "containing images" in counted.text
-    assert "count" not in seen
-    assert len(seen["preflight"]) == 1
-    assert all(
-        p["require_vision"] and len(p["image_preflight"]["b64s"]) == 1 for p in seen["preflight"]
-    )
+    assert response.status_code == 200, response.text
+    assert counted.status_code == 200, counted.text
+    assert response.json()["content"][0]["text"] == "The image is red."
+    assert [p["require_vision"] for p in seen["preflight"]] == [False, False]
+    assert len(seen["preflight"][0]["image_preflight"]["b64s"]) == 1
+    sent = seen["wire"]["messages"][2]["content"]
+    counted_content = seen["count"][2]["content"]
     if vision:
-        assert response.json()["content"][0]["text"] == "The image is red."
-        url = seen["wire"]["messages"][2]["content"][1]["image_url"]["url"]
+        assert [p["type"] for p in counted_content] == ["text", "image_url"]
+        url = sent[1]["image_url"]["url"]
         assert url.startswith("data:image/png;base64,")
         assert Image.open(BytesIO(base64.b64decode(url.split(",", 1)[1]))).size == (2, 2)
     else:
-        assert "wire" not in seen and "count" not in seen
+        assert sent == counted_content == f"capture {TOOL_RESULT_IMAGE_OMITTED}"
 
 
-@pytest.mark.parametrize("nested", [False, True])
-@pytest.mark.parametrize("source_type", ["base64", "url"])
-def test_image_counts_refuse_before_switching_or_tokenizing(monkeypatch, nested, source_type):
-    from unittest.mock import AsyncMock, Mock
+def test_text_only_tool_image_keeps_the_server_tool_permission_gate(monkeypatch):
+    switched = []
 
-    switch = AsyncMock()
-    count = Mock(return_value = 42)
-    _mock_backend(monkeypatch, is_vision = True, count_chat_tokens = count)
+    async def switch(*args, **kwargs):
+        switched.append(kwargs)
+
+    backend = _mock_backend(monkeypatch, is_vision = False)
     monkeypatch.setattr(inf, "_maybe_auto_switch_model", switch)
-    block = image_block()
-    if source_type == "url":
-        block["source"] = {
-            "type": "url",
-            "url": f"data:image/webp;base64,{block['source']['data']}",
-        }
-    body = payload([block])
-    if not nested:
-        body["messages"] = [{"role": "user", "content": [block]}]
+    body = payload([{"type": "text", "text": "capture"}, image_block()])
+    del body["tools"]
+    body.update(enable_tools = True, permission_mode = "ask")
     app = FastAPI()
     app.include_router(inf.router, prefix = "/v1")
     app.dependency_overrides[inf.get_current_subject] = lambda: "test"
     with TestClient(app) as client:
-        response = client.post("/v1/messages/count_tokens", json = body)
-    assert response.status_code == 503, response.text
-    assert "containing images" in response.text
-    switch.assert_not_awaited()
-    count.assert_not_called()
+        response = client.post("/v1/messages", json = body)
+    assert response.status_code == 400, response.text
+    assert "permission_mode" in response.text
+    assert switched == [] and backend.calls == []

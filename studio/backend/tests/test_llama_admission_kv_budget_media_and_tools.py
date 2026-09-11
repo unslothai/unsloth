@@ -512,6 +512,16 @@ class TestAToolResultScreenshotIsNotPricedByItsBase64:
             f"sends the image (forwarded={forwarded}, image_parts={image_parts})"
         )
 
+        from types import SimpleNamespace
+
+        from routes.inference import _openai_llama_admission_image_tokens
+
+        text_only = anthropic_messages_to_openai(
+            [message.model_dump() for message in payload.messages], None, tool_result_images = False
+        )
+        assert data not in str(text_only)
+        assert _openai_llama_admission_image_tokens(SimpleNamespace(is_vision = False)) == 0
+
     @pytest.mark.parametrize("source_type", ["base64", "url"])
     @pytest.mark.parametrize("with_text", [False, True])
     def test_each_nested_image_is_compacted_and_charged(self, source_type, with_text):
