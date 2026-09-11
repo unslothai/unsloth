@@ -8618,7 +8618,14 @@ class LlamaCppBackend:
             return False
         wanted = set(gpu_indices) if gpu_indices else None
         selected = [r for r in rows if wanted is None or r["index"] in wanted]
-        return bool(selected) and not any(r["is_igpu"] for r in selected)
+        if not selected:
+            return False
+        # The probe reports all-False when the type query fails, so "not integrated"
+        # and "could not read the type" share a value. That default is right for the
+        # page-lock caller and wrong here: an unread type is not discrete evidence.
+        if not all(r.get("type_known") for r in selected):
+            return False
+        return not any(r["is_igpu"] for r in selected)
 
     @classmethod
     def _gpu_offload_confirmed(
@@ -8687,7 +8694,7 @@ class LlamaCppBackend:
         return int(match.group(1)) if match else None
 
     @staticmethod
-    def _compact_ordinals(gpu_indices, env: Optional[Mapping[str, str]]):
+    def _compact_ordinals(gpu_indices, env: Optional[Mapping[str, str]], is_vulkan = False):
         """Physical ordinals translated into the child's COMPACT space.
 
         A mask reindexes survivors from 0, so the adapter this launch calls physical 1
@@ -8696,14 +8703,14 @@ class LlamaCppBackend:
         position in it IS its compact ordinal. Unchanged with no mask, or one we cannot
         map.
         """
-        if not gpu_indices or not env:
+        if not gpu_indices or not env or is_vulkan:
             return gpu_indices
-        for name in (
-            "HIP_VISIBLE_DEVICES",
-            "ROCR_VISIBLE_DEVICES",
-            "CUDA_VISIBLE_DEVICES",
-            "GGML_VK_VISIBLE_DEVICES",
-        ):
+        # GGML_VK_VISIBLE_DEVICES is deliberately absent. ggml passes it through and
+        # enumerates what survives, so a Vulkan ordinal is ALREADY compact -- the same
+        # thing `_run_vulkan_probe` documents about its own rows, and what
+        # `_get_gpu_memory` and `_vulkan_pin_args` work in. Translating one again
+        # pointed the residency and discreteness checks at a different probe row.
+        for name in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
             raw = env.get(name)
             if not raw or not str(raw).strip():
                 continue
@@ -8749,6 +8756,7 @@ class LlamaCppBackend:
         gpu_indices,
         extra_args,
         dio_possible = True,
+        is_vulkan = False,
     ):
         """The ordinals the child will really use.
 
@@ -8778,8 +8786,8 @@ class LlamaCppBackend:
         # `--main-gpu` under `-sm none` replaces the selection outright.
         main_gpu = cls._effective_main_gpu(extra_args, env)
         if main_gpu is not None:
-            return cls._compact_ordinals([main_gpu], env)
-        return cls._compact_ordinals(gpu_indices, env)
+            return cls._compact_ordinals([main_gpu], env, is_vulkan)
+        return cls._compact_ordinals(gpu_indices, env, is_vulkan)
 
     @classmethod
     def _effective_device_ids(cls, extra_args, env) -> Optional[list[str]]:
@@ -11170,7 +11178,7 @@ class LlamaCppBackend:
         for line in result.stdout.strip().splitlines():
             parts = line.split("\t")
             # 4 columns from an older probe (no name); 5 with the name column.
-            if len(parts) not in (4, 5):
+            if len(parts) not in (4, 5, 6):
                 continue
             try:
                 rows.append(
@@ -11179,7 +11187,10 @@ class LlamaCppBackend:
                         "free_mib": int(parts[1]) // (1024 * 1024),
                         "is_igpu": parts[2] == "1",
                         "total_mib": int(parts[3]) // (1024 * 1024),
-                        "name": parts[4].strip() if len(parts) == 5 else "",
+                        "name": parts[4].strip() if len(parts) >= 5 else "",
+                        # Absent on an older staged probe, which cannot tell "discrete"
+                        # from "type unread", so it reads as unknown and declines.
+                        "type_known": len(parts) >= 6 and parts[5].strip() == "1",
                     }
                 )
             except ValueError:
@@ -24339,7 +24350,12 @@ class LlamaCppBackend:
                 # confirmation checks, or an override onto a unified-memory APU is
                 # priced against the discrete card it replaced.
                 _mem_effective_indices = self._effective_gpu_indices(
-                    binary, _mem_env, gpu_indices, _mem_extra_args, _mem_dio_possible
+                    binary,
+                    _mem_env,
+                    gpu_indices,
+                    _mem_extra_args,
+                    _mem_dio_possible,
+                    is_vulkan_backend,
                 )
                 _mem_host_resident = self._weights_in_host_memory(
                     fully_gpu_offloaded = fully_gpu_offloaded,
@@ -24517,7 +24533,12 @@ class LlamaCppBackend:
                     """
                     _rung_env = _mem_env_for(child_env)
                     devices = self._effective_gpu_indices(
-                        binary, _rung_env, devices, _mem_extra_args, _mem_dio_possible
+                        binary,
+                        _rung_env,
+                        devices,
+                        _mem_extra_args,
+                        _mem_dio_possible,
+                        is_vulkan_backend,
                     )
                     host_resident = self._weights_in_host_memory(
                         fully_gpu_offloaded = fully_offloaded,
@@ -24586,6 +24607,14 @@ class LlamaCppBackend:
                     )
                 if _load_mode_managed:
                     cmd.extend(_load_mode_managed)
+                    # Protected like the extras: the per-model selection is the user's
+                    # choice too, so a later managed strip must not count it as ours.
+                    # Without this, a rung that strips a COPY left only the per-model
+                    # pair behind and the next strip took that one instead.
+                    self._memory_dio_user_tokens = [
+                        *self._memory_dio_user_tokens,
+                        *_load_mode_managed,
+                    ]
                     logger.info("Load mode: %s", " ".join(_load_mode_managed))
 
                 # User pass-through args go last. Placement flags are removed

@@ -1216,23 +1216,23 @@ class TestVulkanIgpuDetection:
         return LlamaCppBackend._vulkan_targets_are_igpus
 
     def test_all_igpus(self, monkeypatch):
-        rows = [{"index": 0, "is_igpu": True}]
+        rows = [{"index": 0, "is_igpu": True, "type_known": True}]
         assert self._probe(monkeypatch, rows)("bin", None) is True
 
     def test_a_mixed_set_still_has_host_weights(self, monkeypatch):
         """A split puts part of the model on the iGPU, whose VRAM is system RAM,
         so those pages are as evictable as if it were the only device."""
-        rows = [{"index": 0, "is_igpu": True}, {"index": 1, "is_igpu": False}]
+        rows = [{"index": 0, "is_igpu": True, "type_known": True}, {"index": 1, "is_igpu": False, "type_known": True}]
         assert self._probe(monkeypatch, rows)("bin", None) is True
 
     def test_only_the_selected_devices_count(self, monkeypatch):
-        rows = [{"index": 0, "is_igpu": True}, {"index": 1, "is_igpu": False}]
+        rows = [{"index": 0, "is_igpu": True, "type_known": True}, {"index": 1, "is_igpu": False, "type_known": True}]
         assert self._probe(monkeypatch, rows)("bin", [0]) is True
         assert self._probe(monkeypatch, rows)("bin", [1]) is False
         assert self._probe(monkeypatch, rows)("bin", [0, 1]) is True
 
     def test_discrete_only_stays_no(self, monkeypatch):
-        rows = [{"index": 0, "is_igpu": False}, {"index": 1, "is_igpu": False}]
+        rows = [{"index": 0, "is_igpu": False, "type_known": True}, {"index": 1, "is_igpu": False, "type_known": True}]
         assert self._probe(monkeypatch, rows)("bin", None) is False
 
     def test_an_unreadable_probe_answers_no(self, monkeypatch):
@@ -2818,7 +2818,7 @@ class TestThePlacementProbes:
     def test_an_igpu_in_play_declines(self, monkeypatch):
         from core.inference.llama_cpp import LlamaCppBackend
 
-        rows = [{"index": 0, "is_igpu": True}, {"index": 1, "is_igpu": False}]
+        rows = [{"index": 0, "is_igpu": True, "type_known": True}, {"index": 1, "is_igpu": False, "type_known": True}]
         monkeypatch.setattr(
             LlamaCppBackend, "_run_vulkan_probe", staticmethod(lambda binary = None: rows)
         )
@@ -4171,7 +4171,8 @@ class TestOneEffectiveDeviceSetFeedsEveryConsumer:
         assert "binary,_mem_env,_mem_effective_indices,_mem_host_resident," in flat
         # the rung resolves its own narrowed set the same way
         assert (
-            "devices=self._effective_gpu_indices(binary,_rung_env,devices,_mem_extra_args,_mem_dio_possible)"
+            "devices=self._effective_gpu_indices(binary,_rung_env,devices,_mem_extra_args,"
+            "_mem_dio_possible,is_vulkan_backend,)"
             in flat
         )
 
@@ -4333,3 +4334,153 @@ class TestSplitModeNoneFollowsTheMainGpu:
         assert B._effective_gpu_indices(
             "llama-server", {}, [0], ["--split-mode", "none", "--main-gpu", "1"], False
         ) == [0]
+
+
+class TestVulkanOrdinalsAreAlreadyCompact:
+    """ggml passes GGML_VK_VISIBLE_DEVICES through and enumerates what survives, so a
+    Vulkan ordinal is already compact, the same thing `_run_vulkan_probe` documents
+    about its own rows. Translating one again pointed the residency and discreteness
+    checks at a different probe row."""
+
+    def test_a_vulkan_launch_is_not_translated(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        assert B._compact_ordinals([1], {"GGML_VK_VISIBLE_DEVICES": "1,2"}, True) == [1]
+
+    def test_the_vulkan_mask_is_not_even_consulted(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        assert B._compact_ordinals([1], {"GGML_VK_VISIBLE_DEVICES": "1,2"}) == [1]
+
+    def test_a_cuda_launch_is_still_translated(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        assert B._compact_ordinals([1], {"CUDA_VISIBLE_DEVICES": "1,2"}) == [0]
+
+    def test_the_resolver_passes_the_backend_through(self, monkeypatch):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        monkeypatch.setattr(
+            B, "_enumerated_gpu_devices",
+            classmethod(lambda cls, binary = None, env = None: ["Vulkan0", "Vulkan1"]),
+        )
+        env = {"GGML_VK_VISIBLE_DEVICES": "1,2"}
+        assert B._effective_gpu_indices("b", env, [1], None, True, True) == [1]
+
+
+class TestAnUnreadDeviceTypeIsNotDiscreteEvidence:
+    """The probe reports all-False when the type query fails, so "not integrated" and
+    "could not read the type" shared a value. That default is right for the page-lock
+    caller and wrong for a loader choice."""
+
+    def _rows(self, monkeypatch, rows):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        monkeypatch.setattr(B, "_run_vulkan_probe", staticmethod(lambda binary = None: rows))
+        return B._vulkan_offload_is_discrete("llama-server", None)
+
+    def test_a_known_discrete_device_confirms(self, monkeypatch):
+        assert self._rows(
+            monkeypatch, [{"index": 0, "is_igpu": False, "type_known": True}]
+        ) is True
+
+    def test_an_unread_type_declines(self, monkeypatch):
+        assert self._rows(
+            monkeypatch, [{"index": 0, "is_igpu": False, "type_known": False}]
+        ) is False
+
+    def test_one_unread_device_declines_the_set(self, monkeypatch):
+        assert self._rows(
+            monkeypatch,
+            [
+                {"index": 0, "is_igpu": False, "type_known": True},
+                {"index": 1, "is_igpu": False, "type_known": False},
+            ],
+        ) is False
+
+    def test_a_known_igpu_still_declines(self, monkeypatch):
+        assert self._rows(
+            monkeypatch, [{"index": 0, "is_igpu": True, "type_known": True}]
+        ) is False
+
+    def test_an_older_probe_without_the_column_reads_as_unknown(self):
+        """A staged probe predating the column cannot tell the two apart, so it
+        declines rather than being trusted."""
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        assert B._vulkan_offload_is_discrete.__doc__  # predicate still documented
+        row = {"index": 0, "is_igpu": False}
+        assert row.get("type_known") is None
+
+    def test_the_probe_emits_the_column(self):
+        import inspect
+        from core.inference import _vulkan_probe
+
+        src = inspect.getsource(_vulkan_probe)
+        assert "known[i] = True" in src
+        assert "int(known[i])" in src
+
+
+class TestThePerModelPairIsUserAuthoredToo:
+    """A per-model `dio` selection is the user's choice as much as a hand-typed flag.
+    Counting only the extras, a rung that stripped a COPY left the per-model pair
+    behind and the next strip took that one instead."""
+
+    def test_the_launch_records_the_per_model_pair(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "self._memory_dio_user_tokens=[*self._memory_dio_user_tokens,*_load_mode_managed,]" in flat
+
+    def test_a_per_model_pair_alone_survives_the_strip(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        b = LlamaCppBackend.__new__(LlamaCppBackend)
+        b._memory_dio_flags = ["--load-mode", "dio"]
+        # extras empty, but the per-model selection put one pair on the command
+        b._memory_dio_user_tokens = ["--load-mode", "dio"]
+        b._memory_dio_applicable = True
+        b._memory_policy_active = True
+        b._memory_policy_extras_touched = False
+        argv = ["llama-server", "--load-mode", "dio"]
+        assert b._drop_managed_dio(argv, "test") == argv
+
+
+class TestResidencyWithdrawsTheNoReserveDio:
+    """A no-reserve launch's managed DirectIO has to go when no-reserve does: with
+    residency on and no-reserve off the policy emits a page-lock or nothing, never
+    dio, so a streaming child contradicts the new settings."""
+
+    def _satisfied(self, monkeypatch, *, direct_io, dio_applicable, policy_active,
+                   mlock_applicable = False, state = (False, False)):
+        import utils.model_memory_settings as mm
+        from core.inference.llama_server_args import memory_state_satisfies_settings
+
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
+        return memory_state_satisfies_settings(
+            state, policy_active, mlock_applicable, direct_io, dio_applicable
+        )
+
+    def test_an_active_managed_dio_demands_a_reload(self, monkeypatch):
+        assert self._satisfied(
+            monkeypatch, direct_io = True, dio_applicable = True, policy_active = True
+        ) is False
+
+    def test_a_user_authored_dio_does_not(self, monkeypatch):
+        """Theirs to keep; the policy never touched this child."""
+        assert self._satisfied(
+            monkeypatch, direct_io = True, dio_applicable = True, policy_active = False
+        ) is True
+
+    def test_a_non_streaming_child_is_unaffected(self, monkeypatch):
+        assert self._satisfied(
+            monkeypatch, direct_io = False, dio_applicable = True, policy_active = True
+        ) is True
+
+    def test_the_mlock_case_still_answers_as_before(self, monkeypatch):
+        assert self._satisfied(
+            monkeypatch, direct_io = None, dio_applicable = False, policy_active = False,
+            mlock_applicable = True, state = (True, False),
+        ) is True

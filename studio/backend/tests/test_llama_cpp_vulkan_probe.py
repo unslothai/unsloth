@@ -80,10 +80,13 @@ def test_missing_description_symbol_keeps_igpu_detection():
     )
     lib = _types.SimpleNamespace(ggml_backend_vk_reg = _FakeCFunction(1))
 
-    flags, names = _igpu_flags_and_names(base, lib, 1)
+    flags, names, known = _igpu_flags_and_names(base, lib, 1)
 
     assert flags == [True]
     assert names == ["Legacy Vulkan iGPU"]
+    # The type WAS read here, which is what separates a real "not integrated" from a
+    # failed query; a DirectIO decision may only trust the former.
+    assert known == [True]
 
 
 def _make_vulkan_install(tmp_path: Path) -> str:

@@ -1933,5 +1933,16 @@ def memory_state_satisfies_settings(
             return False
         return not (dio_applicable and direct_io is False)
     if get_keep_resident():
+        # A no-reserve launch's managed DirectIO has to go when no-reserve does. With
+        # residency on and no-reserve off the policy emits a page-lock or nothing,
+        # never dio, so a streaming child contradicts the new settings however the lock
+        # reads -- and `not mlock_applicable` was accepting exactly that child, which
+        # left both the reload hint and the duplicate-load path keeping a process a
+        # relaunch would put back on the default mapping.
+        #
+        # All three terms: `policy_active` is what separates OUR pair from a user's own
+        # `dio`, which is theirs to keep and must not demand a reload.
+        if direct_io and dio_applicable and policy_active:
+            return False
         return mlock or not mlock_applicable
     return not policy_active
