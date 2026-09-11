@@ -2027,11 +2027,9 @@ _VENV_T5_550_PACKAGES = (
 # Backwards-compat alias
 _VENV_T5_PACKAGES = _VENV_T5_550_PACKAGES
 
-# Packages a sidecar is complete without. setup.sh and setup.ps1 install tiktoken into
-# every sidecar on a best-effort basis (a Python with no compatible wheel gets the
-# sidecar without it, and only Qwen tokenizers notice), and record that sidecar as
-# complete. The runtime has to agree, or the first model on that tier would find the
-# sidecar "incomplete", delete it, and retry the same install that could not be done.
+# Packages a sidecar is complete without: setup installs tiktoken best-effort (no wheel for the
+# interpreter is fine, only Qwen tokenizers notice), and the runtime has to agree or it would delete
+# the sidecar and retry the same impossible install.
 _OPTIONAL_SIDECAR_PACKAGES = frozenset({"tiktoken"})
 
 
@@ -2164,10 +2162,8 @@ def _sidecar_scan_impl(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
         return [], True
     for di in dist_infos:
         name = di.name.split("-")[0]
-        # An optional package (tiktoken) may be absent, and _venv_dir_is_valid accepts
-        # that; present, its RECORD is held to the same standard as every other. A
-        # native extension left over from an older interpreter, or a file an interrupted
-        # install never landed, is a tokenizer that fails at import, not a spare part.
+        # An optional package may be absent; present, its RECORD is held to the same standard, since
+        # a stale extension or a missing file is a tokenizer that fails at import.
         try:
             record = (di / "RECORD").read_text(encoding = "utf-8", errors = "replace")
         except FileNotFoundError:
@@ -2441,8 +2437,8 @@ def _mark_studio_owned(venv_dir: str) -> None:
         pass
 
 
-# (venv_dir, package) pairs this process already tried to top up, so a package whose
-# wheel is unavailable is asked for once per session, not on every tier activation.
+# (venv_dir, package) pairs already tried this process: an unavailable wheel is asked for once per
+# session.
 _OPTIONAL_TOP_UP_ATTEMPTED: set[tuple[str, str]] = set()
 
 
@@ -2498,11 +2494,9 @@ def _remove_optional_remnants(venv_dir: str, pkg_spec: str) -> bool:
     site-packages, and the caller has to treat the directory as not usable rather than
     report a sidecar that will fail at tokenization.
     """
-    # Every top-level entry the wheel owns, not only the import package: tiktoken ships
-    # tiktoken/, tiktoken_ext/ (the plugin namespace, whose openai_public module would
-    # shadow the ambient one on its own) and tiktoken-<v>.dist-info; a .libs directory
-    # would follow the same naming. The prefix is the project name followed by the end,
-    # an underscore, a dot or a hyphen, which no other package in these sidecars shares.
+    # Every top-level entry the wheel owns: tiktoken/, tiktoken_ext/ (whose openai_public would
+    # shadow the ambient one alone), tiktoken-<v>.dist-info, a .libs directory. The prefix is the
+    # project name then end, underscore, dot or hyphen, which no other sidecar package shares.
     root = Path(venv_dir)
 
     def _owned() -> list[str]:
@@ -2551,9 +2545,8 @@ def _dist_info_entries(venv_dir: str, name: str) -> list[str]:
     ]
 
 
-# Failed top-ups, recorded beside the sidecar so every worker process sees them: each
-# job spawns its own workers, and a wheel that is not there for one of them is not
-# there for the next either. Retried after a while, in case it was the network.
+# Failed top-ups, recorded beside the sidecar so every worker process sees them; retried after a
+# while in case it was the network.
 _OPTIONAL_TOP_UP_FAILED = ".optional-top-up-failed.json"
 _OPTIONAL_TOP_UP_RETRY_SECONDS = 6 * 60 * 60.0
 
@@ -2636,10 +2629,9 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> bool:
         if not _sidecar_package_is_optional(pkg):
             continue
         if offline:
-            # No install offline, but a payload an interrupted top-up left without its
-            # dist-info is still cleared: it counts as absent to the validators and would
-            # otherwise be activated ahead of a working ambient copy. Under the lock, so
-            # a top-up another process is finishing right now is not swept from under it.
+            # No install offline, but a payload left without its dist-info is still cleared: it
+            # counts as absent yet would be activated ahead of a working ambient copy. Under the
+            # lock.
             if _optional_package_partly_there(venv_dir, pkg):
                 with _optional_top_up_lock(venv_dir) as held:
                     if held and _optional_package_partly_there(venv_dir, pkg):
@@ -2651,9 +2643,8 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> bool:
                     elif not held:
                         usable = False
             continue
-        # A recordless dist-info beside a complete install (a retry that succeeded after
-        # an interrupted one) is never reached by the staging path's cleanup, since the
-        # package reads as present; importlib.metadata could keep answering its version.
+        # A recordless dist-info beside a complete install is never reached by the staging cleanup,
+        # and importlib.metadata could keep answering its version.
         _remove_recordless_dist_infos(venv_dir, pkg)
         if not _optional_package_absent(venv_dir, pkg):
             continue
@@ -2666,8 +2657,7 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> bool:
                 logger.warning(
                     "%s: another process held the top-up lock too long; left as is", venv_dir
                 )
-                # Left as is, but not activated with a partial payload ahead of
-                # site-packages: the same rule as the offline branch above.
+                # Left as is, but not activated with a partial payload ahead of site-packages.
                 if _optional_package_partly_there(venv_dir, pkg):
                     usable = False
                 continue
@@ -2687,9 +2677,7 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> bool:
                     pkg,
                     venv_dir,
                 )
-                # ...only if nothing of it is left behind. A remnant the cleanup could
-                # not remove sits ahead of site-packages, and the sidecar is not one to
-                # activate until it is gone.
+                # ...only if nothing of it is left behind ahead of site-packages.
                 if _optional_package_partly_there(venv_dir, pkg):
                     usable = False
     return usable
@@ -2702,19 +2690,14 @@ def _stage_optional_package(pkg: str, venv_dir: str) -> bool:
     try:
         os.makedirs(staging, exist_ok = True)
         if not _install_to_dir(pkg, staging):
-            # The caller came here because the package is absent or only partly there
-            # (a payload directory an interrupted top-up moved in without its
-            # dist-info). Left as it is, that partial tree would sit ahead of
-            # site-packages for the whole retry backoff and shadow a working ambient
-            # copy; absent is the only safe shape until the next attempt.
+            # A partial payload (moved in without its dist-info) would shadow a working ambient copy
+            # for the whole retry backoff; absent is the only safe shape.
             _remove_optional_remnants(venv_dir, pkg)
             return False
         entries = sorted(os.listdir(staging), key = lambda name: name.endswith(".dist-info"))
-        # An interrupted install can have left `<pkg>-<old>.dist-info` with no RECORD.
-        # uv cannot uninstall one (it warns and installs the new version beside it), the
-        # two validators skip a recordless dist-info, and importlib.metadata would keep
-        # answering whichever it meets first; every other dist-info of the project goes
-        # before the new metadata lands, under the lock the caller holds.
+        # A recordless `<pkg>-<old>.dist-info`: uv cannot uninstall it, the validators skip it, and
+        # importlib.metadata answers whichever it meets first. Every other dist-info of the project
+        # goes before the new metadata lands.
         for name in entries:
             if not name.endswith(".dist-info"):
                 continue
@@ -2733,8 +2716,7 @@ def _stage_optional_package(pkg: str, venv_dir: str) -> bool:
         return True
     except OSError as exc:
         logger.warning("staging %s into %s failed: %s", pkg, venv_dir, exc)
-        # Entries moved before the failure would sit ahead of site-packages without
-        # their dist-info for the whole retry backoff; absent is the only safe shape.
+        # Entries moved before the failure would shadow site-packages for the whole backoff.
         _remove_optional_remnants(venv_dir, pkg)
         return False
     finally:
@@ -3084,11 +3066,9 @@ def _rebuild_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> b
                     pkg,
                     venv_dir,
                 )
-                # Only an absent optional package is safe to continue without: this
-                # directory goes ahead of site-packages, and a half-copied payload
-                # would shadow the ambient one and fail at tokenization. A remnant
-                # that would not go makes this a failed build, not a sidecar without
-                # the package; the next run rebuilds it.
+                # Only an absent optional package is safe: a half-copied payload ahead of
+                # site-packages fails at tokenization. A remnant that would not go is a failed
+                # build.
                 if _remove_optional_remnants(venv_dir, pkg):
                     continue
             # Nothing usable was there before this began (it was just wiped), and a
@@ -3590,9 +3570,8 @@ def _ensure_venv_t5_latest_exists() -> bool:
         # Only a scan that actually read the files may retire it; one that hit EIO has not.
         if conclusive:
             _clear_latest_repair_request()
-        # Healthy without an optional package is healthy; activation is where the latest
-        # tier is asked for, so it is where a missing tiktoken gets its top-up. A partial
-        # one that would not go withholds the sidecar for this activation.
+        # Healthy without an optional package is healthy; activation is where a missing tiktoken
+        # gets its top-up, and a partial one that would not go withholds the sidecar.
         return _top_up_optional_packages(_VENV_T5_LATEST_DIR, packages)
     # Broken, and every path below can still fail to fix it (offline, a child, a swap already
     # running, pip). Flag it here rather than per bailout, so the routing predicate withholds

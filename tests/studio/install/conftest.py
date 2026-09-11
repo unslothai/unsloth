@@ -20,10 +20,8 @@ if str(_STUDIO_DIR) not in sys.path:
 
 _STACK_FILE = _STUDIO_DIR / "install_python_stack.py"
 
-# What install_python_stack() itself resets at the top of every dependency pass. Kept in
-# step with it: the module is loaded once per test FILE, so a test that drives
-# _ensure_rocm_torch or a gated step leaves the pass half-finished for every test after
-# it, and the next one measures the previous one.
+# What install_python_stack() resets at the top of every pass: the module is loaded once per test
+# FILE, so without this each test measures the previous one.
 _PASS_STATE_DEFAULTS = {
     "_INSTALL_ACTIONS": 0,
     "_PASS_EVIDENCE": None,

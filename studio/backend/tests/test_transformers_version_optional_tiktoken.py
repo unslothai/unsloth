@@ -84,8 +84,7 @@ def test_a_failed_optional_install_leaves_no_partial_payload(tmp_path, monkeypat
     monkeypatch.setattr(tv, "_install_to_dir", fake_install)
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
     assert not (root / "tiktoken").exists()
-    # The plugin namespace too: a partial tiktoken_ext ahead of site-packages shadows
-    # the ambient one's openai_public module by itself.
+    # The plugin namespace too: a partial tiktoken_ext shadows the ambient openai_public module.
     assert not (root / "tiktoken_ext").exists()
     assert not list(root.glob("tiktoken-*.dist-info"))
     assert tv._optional_package_absent(str(root), "tiktoken") is True
@@ -494,8 +493,7 @@ def test_the_top_up_stays_home_offline_and_yields_to_another_process(tmp_path, m
     installed.clear()
     monkeypatch.setattr(tv, "_pip_is_configured_offline", lambda: False)
     monkeypatch.delenv("UV_OFFLINE")
-    # Another process holds the sidecar's top-up lock: this one waits for it, up to the
-    # bound, and leaves the package to the holder when the bound passes.
+    # Another process holds the top-up lock: wait up to the bound, then leave the package to it.
     monkeypatch.setattr(tv, "_OPTIONAL_TOP_UP_WAIT_SECONDS", 0.5)
     with tv._optional_top_up_lock(str(root)) as held:
         assert held is True

@@ -120,8 +120,7 @@ def test_mlx_install_respects_platform_mode_and_pins(
     if platform.startswith("macos"):
         assert stack._TOTAL == (12 if skip_base and not shared_base else 13) + int(enabled)
     if enabled:
-        # --upgrade-package takes a bare NAME as its value, which is not a pin; skip the
-        # argument after each one so the pins below are the only requirements read.
+        # --upgrade-package takes a bare NAME, not a pin: skip its argument.
         args = list(calls[0].args[1:])
         pins = [
             arg
@@ -190,20 +189,15 @@ def test_mlx_command_preserves_pins_and_interpreter_on_fallback(monkeypatch, ret
     for command in commands:
         assert pins <= set(command)
         assert "-c" in command
-    # The upgrade INTENT has to survive both spellings, which is the whole reason this
-    # test exists: uv takes the flag per package, pip has no such flag and _build_pip_cmd
-    # translates it to the environment-wide one. A dropped translation made the fallback
-    # a silent no-op -- pip called every pin satisfied and the update still reported
-    # success. A bare --upgrade on the uv side is the opposite failure: it re-resolves
-    # every transitive dependency against the index and refetches ~60 MB per update.
+    # The upgrade INTENT must survive both spellings: a dropped pip translation made the fallback a
+    # silent no-op, and a bare uv --upgrade refetches ~60 MB per update.
     assert "--upgrade" not in commands[0]
     for name in upgraded:
         assert commands[0][commands[0].index("--upgrade-package") :].count(name) == 1
     if len(commands) > 1:
         assert "--upgrade" in commands[1]
         assert "--upgrade-package" not in commands[1]
-        # ...and no project may be named twice: pip refuses "mlx==0.32.1 mlx" outright
-        # with "Double requirement given", which would fail the step it was rescuing.
+        # ...and no project twice: pip refuses "mlx==0.32.1 mlx" with "Double requirement given".
         projects = [
             arg.split(";")[0].split("[")[0].split("=")[0].split("<")[0].split(">")[0].strip()
             for arg in commands[1]

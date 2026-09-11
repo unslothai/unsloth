@@ -204,8 +204,7 @@ def test_the_tiktoken_top_up_checks_the_payload_not_the_dist_info_alone():
     start = ps1.index("function Repair-SidecarTiktoken {")
     body = ps1[start : ps1.index("\nfunction ", start + 1)]
     assert 'Join-Path $payload "__init__.py"' in body
-    # ...and the repair replaces what is there: a --target install without --upgrade
-    # keeps existing files, damaged ones included.
+    # ...and the repair replaces what is there (--target without --upgrade keeps damaged files).
     assert "--no-deps --upgrade tiktoken" in body
     sh_body = sh[sh.index("_sidecar_top_up_tiktoken() {") :]
     assert '--no-deps --upgrade "tiktoken"' in sh_body[: sh_body.index("\n}\n")]
