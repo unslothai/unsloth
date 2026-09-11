@@ -631,6 +631,10 @@ class TrainingProgress:
     is_run_summary: bool = False
 
 
+# Marks an omitted mode, which keeps the loaded one; a literal default would overwrite it.
+_UNSET = object()
+
+
 class _MLXTrainerAdapter:
     """Adapts the legacy UnslothTrainer API to the shared Unsloth MLX worker path."""
 
@@ -695,6 +699,7 @@ class _MLXTrainerAdapter:
         trust_remote_code: bool = False,
         full_finetuning: bool = False,
         gpu_ids: Optional[list[int]] = None,
+        use_gradient_checkpointing: Union[str, bool] = "unsloth",
     ) -> bool:
         self.model_name = model_name
         self.max_seq_length = max_seq_length
@@ -730,6 +735,7 @@ class _MLXTrainerAdapter:
             "is_dataset_audio": bool(is_dataset_audio),
             "trust_remote_code": bool(trust_remote_code),
             "gpu_ids": gpu_ids,
+            "gradient_checkpointing": use_gradient_checkpointing,
         }
         self._update_progress(
             is_training = False,
@@ -753,11 +759,14 @@ class _MLXTrainerAdapter:
         lora_r: int = 16,
         lora_alpha: int = 16,
         lora_dropout: float = 0.0,
-        use_gradient_checkpointing: Union[str, bool] = "unsloth",
+        use_gradient_checkpointing: Union[str, bool] = _UNSET,
         use_rslora: bool = False,
         use_loftq: bool = False,
         use_dora: bool = False,
     ) -> bool:
+        if use_gradient_checkpointing is _UNSET:
+            # This entry overrides load_model's, so default to the mode recorded there.
+            use_gradient_checkpointing = self._model_config.get("gradient_checkpointing", "unsloth")
         self._peft_config = {
             "use_lora": bool(use_lora),
             "lora_r": lora_r,
