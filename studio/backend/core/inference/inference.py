@@ -13,6 +13,7 @@ from peft import PeftModel, PeftModelForCausalLM
 import contextlib
 import json
 import sys
+import threading
 import torch
 from pathlib import Path
 from typing import Optional, Union, Generator, Tuple
@@ -58,6 +59,7 @@ from core.inference.native_tool_tokens import (
     reasoning_control_tokens,
     stop_token_text,
 )
+from core.inference.mlx_inference import _mlx_stop_cut, _mlx_stop_sequences
 from io import StringIO
 import structlog
 from loggers import get_logger
@@ -253,6 +255,39 @@ class ReasoningTextIteratorStreamer(TextIteratorStreamer):
 
 class _GenerationThreadError(RuntimeError):
     """Generation worker failures that should propagate through stream routes."""
+
+
+class _StopSequenceStreamer:
+    def __init__(self, streamer, stop):
+        self.streamer = streamer
+        self.sequences = _mlx_stop_sequences(stop)
+        self.matched = threading.Event()
+        self.text = ""
+        self.released = 0
+        self.finished = False
+
+    def __next__(self):
+        if not self.sequences:
+            return next(self.streamer)
+        if self.finished:
+            raise StopIteration
+        try:
+            new_text = next(self.streamer)
+        except StopIteration:
+            self.finished = True
+            if self.matched.is_set():
+                raise
+            cut = len(self.text)
+        else:
+            if self.matched.is_set():
+                return ""
+            self.text += new_text
+            cut, matched = _mlx_stop_cut(self.text, self.sequences)
+            if matched:
+                self.matched.set()
+        delta = self.text[self.released : cut]
+        self.released = cut
+        return delta
 
 
 def _prompt_already_has_bos(tokenizer, prompt):
@@ -1036,6 +1071,7 @@ class InferenceBackend:
         continue_final_message: bool = False,
         presence_penalty: float = 0.0,
         tool_protocol_active: Optional[bool] = None,
+        stop: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Generate response for text or vision models (lock held by background thread).
 
@@ -1062,6 +1098,7 @@ class InferenceBackend:
             continue_final_message = continue_final_message,
             tool_protocol_active = tool_protocol_active,
             presence_penalty = presence_penalty,
+            stop = stop,
         )
 
     def _generate_chat_response_inner(
@@ -1084,6 +1121,7 @@ class InferenceBackend:
         continue_final_message: bool = False,
         presence_penalty: float = 0.0,
         tool_protocol_active: Optional[bool] = None,
+        stop: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Inner generation logic.
 
@@ -1128,6 +1166,7 @@ class InferenceBackend:
                     continue_final_message = continue_final_message,
                     tools = tools,
                     tool_protocol_active = tool_protocol_active,
+                    stop = stop,
                 )
                 return
             else:
@@ -1259,6 +1298,7 @@ class InferenceBackend:
             if tool_protocol_active is None
             else tool_protocol_active,
             add_special_tokens = add_special_tokens,
+            stop = stop,
         )
 
     def _generate_vision_response(
@@ -1277,6 +1317,7 @@ class InferenceBackend:
         continue_final_message: bool = False,
         tools: Optional[list] = None,
         tool_protocol_active: Optional[bool] = None,
+        stop: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Handle vision model generation with true token-by-token streaming."""
         # Reset so a failed or uncountable run cannot surface stale stats.
@@ -1522,7 +1563,8 @@ class InferenceBackend:
             )
             timer = GenerationTimer()
             generation_kwargs["logits_processor"] = with_prefill_boundary_processor(_pp, timer)
-            stopping_criteria = self._cancel_stopping_criteria(cancel_event)
+            stop_streamer = _StopSequenceStreamer(streamer, stop)
+            stopping_criteria = self._cancel_stopping_criteria(cancel_event, stop_streamer.matched)
             if stopping_criteria is not None:
                 generation_kwargs["stopping_criteria"] = stopping_criteria
             active_stop_token_ids = self._generation_stop_token_ids(model, generation_kwargs)
@@ -1571,7 +1613,7 @@ class InferenceBackend:
                         elif time.monotonic() >= cancel_deadline:
                             break
                     try:
-                        new_token = next(streamer)
+                        new_token = next(stop_streamer)
                     except StopIteration:
                         generation_complete = True
                         break
@@ -1579,7 +1621,7 @@ class InferenceBackend:
                         if not thread.is_alive():
                             generation_complete = True
                             output = yield from self._drain_streamer_tail(
-                                streamer, output, active_stop_token_ids
+                                stop_streamer, output, active_stop_token_ids
                             )
                             break
                         if cancel_deadline is not None:
@@ -1591,7 +1633,7 @@ class InferenceBackend:
                                 break
                             generation_complete = True
                             output = yield from self._drain_streamer_tail(
-                                streamer, output, active_stop_token_ids
+                                stop_streamer, output, active_stop_token_ids
                             )
                             break
                         continue
@@ -1619,9 +1661,8 @@ class InferenceBackend:
                         model, gen_outputs["sequences"], prompt_len
                     ),
                     max_new_tokens = max_new_tokens,
-                    ended_on_stop_token = self._ended_on_stop_token(
-                        gen_outputs["sequences"], active_stop_token_ids
-                    ),
+                    ended_on_stop_token = stop_streamer.matched.is_set()
+                    or self._ended_on_stop_token(gen_outputs["sequences"], active_stop_token_ids),
                     cancelled = not generation_complete
                     or (cancel_event is not None and cancel_event.is_set()),
                     timer = timer,
@@ -1946,6 +1987,7 @@ class InferenceBackend:
         continued: bool = False,
         preserve_tool_tokens: bool = False,
         add_special_tokens: bool = True,
+        stop: Optional[list] = None,
     ) -> Generator[str, None, None]:
         """Generate a streaming text response (text models only).
 
@@ -2031,7 +2073,8 @@ class InferenceBackend:
             _pp = _make_presence_penalty_processor(presence_penalty, prompt_len)
             timer = GenerationTimer()
             generation_kwargs["logits_processor"] = with_prefill_boundary_processor(_pp, timer)
-            stopping_criteria = self._cancel_stopping_criteria(cancel_event)
+            stop_streamer = _StopSequenceStreamer(streamer, stop)
+            stopping_criteria = self._cancel_stopping_criteria(cancel_event, stop_streamer.matched)
             if stopping_criteria is not None:
                 generation_kwargs["stopping_criteria"] = stopping_criteria
 
@@ -2080,7 +2123,7 @@ class InferenceBackend:
                         elif time.monotonic() >= cancel_deadline:
                             break
                     try:
-                        new_token = next(streamer)
+                        new_token = next(stop_streamer)
                     except StopIteration:
                         generation_complete = True
                         break
@@ -2088,7 +2131,7 @@ class InferenceBackend:
                         if not thread.is_alive():
                             generation_complete = True
                             output = yield from self._drain_streamer_tail(
-                                streamer, output, active_stop_token_ids
+                                stop_streamer, output, active_stop_token_ids
                             )
                             break
                         if cancel_deadline is not None:
@@ -2100,7 +2143,7 @@ class InferenceBackend:
                                 break
                             generation_complete = True
                             output = yield from self._drain_streamer_tail(
-                                streamer, output, active_stop_token_ids
+                                stop_streamer, output, active_stop_token_ids
                             )
                             break
                         continue
@@ -2130,9 +2173,8 @@ class InferenceBackend:
                         model, gen_outputs["sequences"], prompt_len
                     ),
                     max_new_tokens = max_new_tokens,
-                    ended_on_stop_token = self._ended_on_stop_token(
-                        gen_outputs["sequences"], active_stop_token_ids
-                    ),
+                    ended_on_stop_token = stop_streamer.matched.is_set()
+                    or self._ended_on_stop_token(gen_outputs["sequences"], active_stop_token_ids),
                     cancelled = not generation_complete
                     or (cancel_event is not None and cancel_event.is_set()),
                     timer = timer,
@@ -2842,9 +2884,10 @@ class InferenceBackend:
             stats["timings"] = timings
         self.last_generation_stats = stats
 
-    def _cancel_stopping_criteria(self, cancel_event):
+    def _cancel_stopping_criteria(self, *events):
         """Build a Transformers stopping criteria list for user cancellation."""
-        if cancel_event is None:
+        events = [ev for ev in events if ev is not None]
+        if not events:
             return None
         from transformers.generation.stopping_criteria import (
             StoppingCriteria,
@@ -2858,7 +2901,7 @@ class InferenceBackend:
             def __call__(self, input_ids, scores, **kwargs):
                 return self.ev.is_set()
 
-        return StoppingCriteriaList([_CancelCriteria(cancel_event)])
+        return StoppingCriteriaList([_CancelCriteria(ev) for ev in events])
 
     def _clean_generated_text(
         self,
