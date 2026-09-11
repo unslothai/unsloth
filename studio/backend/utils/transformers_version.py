@@ -2384,8 +2384,15 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
         )
         if result.returncode == 0:
             return True
-        logger.warning("uv install of %s failed, falling back to pip", pkg)
-
+        logger.warning("uv install of %s failed", pkg)
+    if _runtime_repair_is_offline() and not _pip_is_configured_offline():
+        # pip has no offline mode: uv's cache is the only answer, unless pip was pointed at a local
+        # wheelhouse (PIP_NO_INDEX with PIP_FIND_LINKS), which an air-gapped install relies on.
+        logger.warning(
+            "%s not installed: the session is offline and pip would use the network", pkg
+        )
+        return False
+    logger.warning("installing %s with pip", pkg)
     result = subprocess.run(
         [
             sys.executable,
@@ -2608,9 +2615,10 @@ def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> bool:
     for it, then finds the package there.
     """
     usable = True
-    offline = (
-        _env_offline() or os.environ.get("UV_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
-    )
+    # Under UV_OFFLINE the install could only miss, and the miss would be remembered for hours.
+    # Unless pip has a local wheelhouse (the exception _install_to_dir makes): an air-gapped host
+    # never sees an online session.
+    offline = _env_offline() or (_runtime_repair_is_offline() and not _pip_is_configured_offline())
     for pkg in packages:
         if not _sidecar_package_is_optional(pkg):
             continue
@@ -2717,20 +2725,14 @@ _OPTIONAL_TOP_UP_WAIT_SECONDS = 120.0
 
 
 @contextlib.contextmanager
-def _optional_top_up_lock(venv_dir: str):
-    """A cross-process lock on a sidecar's optional top-up, waited for up to a bound.
-
-    Workers activate tiers independently, so two can find the package absent at once;
-    two installers writing one --target tree leave it half-written, and a worker that
-    went on without waiting would activate with the package still absent. Yields True
-    when this process holds the lock, False when another kept it past the bound (or
-    the lock cannot be taken at all, read as "someone else's turn" rather than a
-    reason to write unguarded).
-    """
+def _file_lock(path: str, wait_seconds: float):
+    """A cross-process lock on *path*, waited for up to *wait_seconds*. Yields True when
+    this process holds it, False when another kept it past the bound (or it cannot be
+    taken at all, read as "someone else's turn" rather than a reason to write unguarded)."""
     handle = None
     try:
-        handle = open(os.path.join(venv_dir, _OPTIONAL_TOP_UP_LOCK), "a+b")
-        deadline = time.monotonic() + _OPTIONAL_TOP_UP_WAIT_SECONDS
+        handle = open(path, "a+b")
+        deadline = time.monotonic() + wait_seconds
         while True:
             try:
                 if sys.platform == "win32":
@@ -2766,11 +2768,265 @@ def _optional_top_up_lock(venv_dir: str):
         handle.close()
 
 
+_REBUILD_LOCK_DIR = ".sidecar-locks"
+
+
+def _rebuild_lock_path(venv_dir: str) -> str:
+    """The tier's lock file, in a directory beside the sidecars rather than beside the
+    tier itself: the sidecar scans (and the tests' sibling listings) key on the tier's
+    name as a prefix, and a lock file has to stay once taken."""
+    base = venv_dir.rstrip("/\\")
+    parent, stem = os.path.split(base)
+    lock_dir = os.path.join(parent or ".", _REBUILD_LOCK_DIR)
+    try:
+        os.makedirs(lock_dir, exist_ok = True)
+    except OSError:
+        pass
+    return os.path.join(lock_dir, stem + ".lock")
+
+
+# A worker that finds another mid-rebuild waits rather than building a second copy.
+_REBUILD_WAIT_SECONDS = 15 * 60.0
+
+
+@contextlib.contextmanager
+def _optional_top_up_lock(venv_dir: str):
+    """A cross-process lock on a sidecar's optional top-up, waited for up to a bound.
+
+    Workers activate tiers independently, so two can find the package absent at once;
+    two installers writing one --target tree leave it half-written, and a worker that
+    went on without waiting would activate with the package still absent. Yields True
+    when this process holds the lock, False when another kept it past the bound (or
+    the lock cannot be taken at all, read as "someone else's turn" rather than a
+    reason to write unguarded).
+    """
+    with _file_lock(
+        os.path.join(venv_dir, _OPTIONAL_TOP_UP_LOCK), _OPTIONAL_TOP_UP_WAIT_SECONDS
+    ) as held:
+        yield held
+
+
+_UV_OFFLINE_TRUE_VALUES = _OFFLINE_TRUE_VALUES | {"t", "y"}
+
+
+_PIP_TRUE_VALUES = frozenset({"1", "true", "t", "yes", "y", "on"})
+
+# pip's precedence: the environment (":env:" in `pip config list`) over [install] over [global].
+_PIP_SETTING_SCOPES = (":env:", "install", "global")
+
+
+def _pip_effective_settings() -> dict[str, str] | None:
+    """pip's own view of its configuration: `pip config list`, which merges the user,
+    site and global files (or PIP_CONFIG_FILE) with the environment the way the pip
+    fallback in _install_to_dir will read them. None when pip cannot answer, which is
+    also when that fallback has nothing to run."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "config", "list"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 60,
+            env = utf8_child_env(
+                get_hf_cache_paths().child_env(child_env_without_native_path_secret())
+            ),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    settings: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        key, sep, raw = line.partition("=")
+        if not sep:
+            continue
+        raw = raw.strip()
+        try:
+            value = ast.literal_eval(raw)
+        except (ValueError, SyntaxError):
+            value = raw.strip("'\"")
+        settings[key.strip()] = str(value)
+    return settings
+
+
+def _pip_setting(settings: dict[str, str], name: str) -> str | None:
+    for scope in _PIP_SETTING_SCOPES:
+        value = settings.get(f"{scope}.{name}")
+        if value is not None:
+            return value
+    return None
+
+
+def _is_local_wheelhouse_dir(entry: str) -> bool:
+    """A --find-links entry that can only hand pip local files: a directory, as a path
+    or a file:// URL. A URL is the network; a FILE (an HTML index) is parsed for links
+    and those may point at the network as well."""
+    lowered = entry.lower()
+    if lowered.startswith("file://"):
+        from urllib.parse import urlparse
+        from urllib.request import url2pathname
+
+        parsed = urlparse(entry)
+        path = parsed.path
+        # file://server/share is a UNC share: the host is part of the path.
+        if parsed.netloc and parsed.netloc.lower() != "localhost":
+            path = "//" + parsed.netloc + path
+        entry = url2pathname(path)
+    elif "://" in lowered:
+        return False
+    return os.path.isdir(os.path.expanduser(entry))
+
+
+def _pip_is_configured_offline() -> bool:
+    """pip told to ignore the index and read a LOCAL wheelhouse: `--no-index` with
+    `--find-links` naming only local directories (paths or file:// URLs), by pip's
+    effective configuration: its config files as well as the environment, since an
+    air-gapped host sets these in pip.conf as often as in PIP_* variables. Anything
+    else --find-links accepts could reach for the network under UV_OFFLINE: a URL is
+    fetched, and an HTML file is parsed for links that may be URLs."""
+    settings = _pip_effective_settings()
+    if settings is None:
+        settings = {}
+        for name, variable in (("no-index", "PIP_NO_INDEX"), ("find-links", "PIP_FIND_LINKS")):
+            if variable in os.environ:
+                settings[f":env:.{name}"] = os.environ[variable]
+    # pip's own boolean spellings (strtobool): 1/true/t/yes/y/on.
+    no_index = (_pip_setting(settings, "no-index") or "").strip().lower() in _PIP_TRUE_VALUES
+    if not no_index:
+        return False
+    entries = (_pip_setting(settings, "find-links") or "").split()
+    if not entries:
+        return False
+    return all(_is_local_wheelhouse_dir(entry) for entry in entries)
+
+
+def _runtime_repair_is_offline() -> bool:
+    """Whether a sidecar repair could only reach for a network the caller declared absent.
+
+    UV_OFFLINE is what `studio update` honours when it keeps a verified install and
+    leaves a stale sidecar for the next online update. Under it the repair below would
+    wipe a tree it cannot rebuild: uv refuses the network and _install_to_dir then falls
+    back to a pip that would use it, or fails after the deletion.
+
+    The HF offline switches (HF_HUB_OFFLINE, TRANSFORMERS_OFFLINE, an open
+    force_hf_offline window) are deliberately not read here: they turn off Hub model
+    access, not the package index the repair installs from, and the workers raise them
+    on their own when only the Hub is unreachable. Treating them as offline would leave
+    a damaged sidecar unrepaired and the tier unusable while PyPI answers.
+    """
+    # uv's boolish spellings, as setup.sh and setup.ps1 accept them: t and y count too.
+    return os.environ.get("UV_OFFLINE", "").strip().lower() in _UV_OFFLINE_TRUE_VALUES
+
+
+def _sidecar_has_content(venv_dir: str) -> bool:
+    """Whether a sidecar directory holds anything beyond the ownership marker.
+
+    The owned marker is written before the first package lands, so a directory holding
+    only it is a first install that has not happened yet, not a tree worth keeping.
+    """
+    try:
+        return any(name != _STUDIO_OWNED_MARKER for name in os.listdir(venv_dir))
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError:
+        # Unreadable is not empty: the caller's next move on "empty" is to delete the tree.
+        return True
+
+
+_OFFLINE_STAGING_SUFFIX = ".offline-staging-"
+_OFFLINE_RETIRED_SUFFIX = ".offline-old-"
+
+
+def _sidecar_siblings(venv_dir: str, suffix: str) -> list[str]:
+    """`<venv_dir><suffix>*` beside the sidecar, oldest first by modification time."""
+    base = venv_dir.rstrip("/\\")
+    parent, stem = os.path.split(base)
+    try:
+        names = os.listdir(parent or ".")
+    except OSError:
+        return []
+    # Exactly what _repair_offline_beside writes, `<stem><suffix><pid>`, and only with our marker:
+    # the callers delete or rename what this returns.
+    found = [
+        os.path.join(parent, n)
+        for n in names
+        if n.startswith(stem + suffix)
+        and n[len(stem + suffix) :].isdigit()
+        and os.path.isfile(os.path.join(parent, n, _STUDIO_OWNED_MARKER))
+    ]
+
+    def modified(path: str) -> float:
+        # Another worker can remove a sibling between the listing and this read.
+        try:
+            return os.path.getmtime(path)
+        except OSError:
+            return 0.0
+
+    return sorted(found, key = modified)
+
+
+def _recover_retired_sidecar(venv_dir: str) -> None:
+    """Put back a tree an interrupted offline swap left retired.
+
+    The swap renames the live tree aside and the staging tree into place; killed between
+    the two, it leaves the live path empty and the preserved tree next door. Read as a
+    first install, an offline call with a cold cache would then fail with a usable tree
+    a rename away. A live tree with content makes retired copies leftovers, and they go.
+    """
+    retired = _sidecar_siblings(venv_dir, _OFFLINE_RETIRED_SUFFIX)
+    if not retired:
+        return
+    if os.path.isdir(venv_dir) and _sidecar_has_content(venv_dir):
+        for old in retired:
+            shutil.rmtree(old, ignore_errors = True)
+        return
+    newest = retired[-1]
+    shutil.rmtree(venv_dir, ignore_errors = True)
+    try:
+        os.rename(newest, venv_dir)
+        logger.warning("restored %s from %s (an earlier swap was interrupted)", venv_dir, newest)
+    except OSError as exc:
+        logger.warning("could not restore %s from %s: %s", venv_dir, newest, exc)
+        return
+    for old in retired[:-1]:
+        shutil.rmtree(old, ignore_errors = True)
+
+
 def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bool:
     """Ensure *venv_dir* exists with all *packages*. Install if missing."""
     if _venv_dir_is_valid_and_undamaged(venv_dir, packages):
+        # A live tree with content makes retired copies leftovers to sweep.
+        _recover_retired_sidecar(venv_dir)
         return _top_up_optional_packages(venv_dir, packages)
 
+    # One repair of a tier at a time across processes: two workers used to build into one directory
+    # at once, and the loser could delete the winner's finished tree (or, offline, race the
+    # two-rename swap). The second waits and takes the finished tree.
+    with _file_lock(_rebuild_lock_path(venv_dir), _REBUILD_WAIT_SECONDS) as held:
+        if not held:
+            # Another process is still building it: deferred, this activation goes without.
+            logger.warning(
+                "%s: the rebuild lock was not obtained; leaving the repair to the process holding it",
+                venv_dir,
+            )
+            return False
+        _recover_retired_sidecar(venv_dir)
+        if _venv_dir_is_valid_and_undamaged(venv_dir, packages):
+            logger.info("%s at %s was completed by another process", label, venv_dir)
+            return _top_up_optional_packages(venv_dir, packages)
+        # Only an in-place repair is refused offline: it starts by deleting a tree that may still
+        # serve. The replacement is built beside it from uv's cache (the pip fallback stays out) and
+        # swapped in whole.
+        if _runtime_repair_is_offline() and _sidecar_has_content(venv_dir):
+            return _repair_offline_beside(venv_dir, packages, label)
+        return _rebuild_venv_dir(venv_dir, packages, label)
+
+
+def _rebuild_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bool:
+    """Wipe *venv_dir* and install every package into it; the caller holds the tier's lock."""
     logger.warning("%s not found or incomplete at %s -- installing at runtime", label, venv_dir)
     shutil.rmtree(venv_dir, ignore_errors = True)
     os.makedirs(venv_dir, exist_ok = True)
@@ -2790,8 +3046,77 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
                 # build.
                 if _remove_optional_remnants(venv_dir, pkg):
                     continue
+            # A partial tree left behind would count as usable next time and be kept offline. Unless
+            # another process rebuilt it meanwhile: a complete tree is the answer.
+            if _venv_dir_is_valid_and_undamaged(venv_dir, packages):
+                logger.info("%s at %s was completed by another process", label, venv_dir)
+                return True
+            shutil.rmtree(venv_dir, ignore_errors = True)
             return False
     logger.info("Installed %s to %s", label, venv_dir)
+    return True
+
+
+def _drop_offline_staging(staging: str) -> None:
+    """The staging tree and the per-process rebuild lock _ensure_venv_dir took for it."""
+    shutil.rmtree(staging, ignore_errors = True)
+    try:
+        os.unlink(_rebuild_lock_path(staging))
+    except OSError:
+        pass
+
+
+def _repair_offline_beside(venv_dir: str, packages: tuple[str, ...], label: str) -> bool:
+    """Rebuild *venv_dir* from uv's cache into a staging directory beside it and swap
+    only once every package landed; a cold cache leaves the tree exactly as it was."""
+    base = venv_dir.rstrip("/\\")
+    # Per process: a shared staging path would have one worker deleting the other's build.
+    staging = f"{base}{_OFFLINE_STAGING_SUFFIX}{os.getpid()}"
+    retired = f"{base}{_OFFLINE_RETIRED_SUFFIX}{os.getpid()}"
+    _drop_offline_staging(staging)
+    # Staging trees of processes long gone (a kill mid-build); an hour is beyond any build here.
+    for stale in _sidecar_siblings(venv_dir, _OFFLINE_STAGING_SUFFIX):
+        try:
+            if stale != staging and time.time() - os.path.getmtime(stale) > 3600:
+                shutil.rmtree(stale, ignore_errors = True)
+        except OSError:
+            pass
+    # An empty directory takes the ordinary path; a failure removes the staging tree.
+    if not _ensure_venv_dir(staging, packages, label):
+        _drop_offline_staging(staging)
+        logger.warning(
+            "%s not found or incomplete at %s, and this session is offline with no cached "
+            "copy to rebuild it from -- left as is until the next online update",
+            label,
+            venv_dir,
+        )
+        return False
+    # Right before the swap: only a tree passing the activation's own predicate replaces the live
+    # one.
+    if not _venv_dir_is_valid_and_undamaged(staging, packages):
+        _drop_offline_staging(staging)
+        logger.warning("the offline rebuild of %s did not validate; %s left as is", label, venv_dir)
+        return False
+    try:
+        shutil.rmtree(retired, ignore_errors = True)
+        os.rename(venv_dir, retired)
+        try:
+            os.rename(staging, venv_dir)
+        except OSError:
+            if not os.path.isdir(venv_dir) and os.path.isdir(retired):
+                os.rename(retired, venv_dir)
+            raise
+    except OSError as exc:
+        logger.warning("could not swap the offline rebuild of %s into %s: %s", label, venv_dir, exc)
+        _drop_offline_staging(staging)
+        return False
+    shutil.rmtree(retired, ignore_errors = True)
+    # The staging tree is live now; the lock taken for its build goes with the staging name.
+    try:
+        os.unlink(_rebuild_lock_path(staging))
+    except OSError:
+        pass
+    logger.info("Rebuilt %s at %s offline, from the cache", label, venv_dir)
     return True
 
 

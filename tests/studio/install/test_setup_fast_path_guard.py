@@ -219,3 +219,182 @@ def test_the_ps1_sidecar_predicate_reads_no_version_gated_variable():
     body = ps1[start : ps1.index("\nfunction ", start + 1)]
     assert "$PSNativeCommandUseErrorActionPreference =" not in body
     assert "PSVersion.Major -ge 7" not in body
+
+
+# The offline rule: "updating to be safe" is wrong under UV_OFFLINE, where every install can only
+# fail; a complete install is kept, on the incomplete-install guard's own evidence.
+
+
+@pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids = ["setup.sh", "setup.ps1"])
+def test_an_unreachable_pypi_still_updates_by_default(script: pathlib.Path):
+    """Nothing above changes for a plain offline blip."""
+    text = script.read_text(encoding = "utf-8")
+    assert text.count('substep "could not reach PyPI, updating to be safe..."') == 1
+
+
+@pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids = ["setup.sh", "setup.ps1"])
+def test_the_offline_rule_needs_all_three_conditions(script: pathlib.Path):
+    """An installed version, a declared offline mode, and a verified tree. Any two of
+    them is a skip that ships a half-built venv or a venv that was never built."""
+    text = script.read_text(encoding = "utf-8")
+    if script.name.endswith(".ps1"):
+        condition = (
+            "if ($InstalledVer -and (Test-UvOfflineRequested) -and "
+            "(Test-StudioInstallVerified)) {"
+        )
+        taken = "$SkipPythonDeps = $true"
+    else:
+        condition = (
+            'if [ -n "$INSTALLED_VER" ] && _uv_offline_requested '
+            "&& _setup_install_is_verified; then"
+        )
+        taken = "_SKIP_PYTHON_DEPS=true"
+    assert condition in text, f"{script.name} no longer gates the offline skip on all three"
+    start = text.index(condition)
+    body = text[start : start + 400]
+    assert taken in body
+    assert "could not reach PyPI" in body, (
+        f"{script.name} lost the else branch, so a host that fails any one of the three "
+        "conditions now skips silently instead of updating to be safe"
+    )
+
+
+@pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids = ["setup.sh", "setup.ps1"])
+def test_the_two_callers_share_one_definition_of_complete(script: pathlib.Path):
+    """The guard forces the pass when the tree is not verified and the offline rule keeps
+    it when it is. Two copies of that check is how they come to disagree."""
+    text = script.read_text(encoding = "utf-8")
+    helper = (
+        "function Test-StudioInstallVerified"
+        if script.name.endswith(".ps1")
+        else "_setup_install_is_verified() {"
+    )
+    assert helper in text
+    assert text.count("install_manifest.verify_install(deep = True)") == 1, (
+        f"{script.name} has more than one deep verify; the offline rule and the "
+        "incomplete-install guard must ask the same question"
+    )
+
+
+def test_the_posix_offline_switch_reads_the_boolish_spellings(tmp_path):
+    """Same spelling UV_NO_CACHE accepts, because a user who set one expects the other
+    to be read the same way."""
+    import subprocess
+
+    text = SETUP_SH.read_text(encoding = "utf-8")
+    start = text.index("_uv_offline_requested() {")
+    body = text[start : text.index("\n}\n", start) + 3]
+    probe = tmp_path / "probe.sh"
+    probe.write_text(body + "\nif _uv_offline_requested; then echo yes; else echo no; fi\n")
+    for value, expected in (
+        ("1", "yes"),
+        ("true", "yes"),
+        ("TRUE", "yes"),
+        ("  yes  ", "yes"),
+        ("on", "yes"),
+        # uv's boolish parser takes the single letters too (uv 0.10.7).
+        ("t", "yes"),
+        ("T", "yes"),
+        ("y", "yes"),
+        ("0", "no"),
+        ("false", "no"),
+        ("", "no"),
+        ("maybe", "no"),
+        ("tr", "no"),
+    ):
+        result = subprocess.run(
+            ["sh", str(probe)],
+            capture_output = True,
+            text = True,
+            env = {"PATH": "/usr/bin:/bin", "UV_OFFLINE": value},
+        )
+        assert result.stdout.strip() == expected, (value, result.stdout)
+
+
+def test_the_offline_fast_path_never_wipes_a_sidecar():
+    """The offline rule keeps the install because nothing can be fetched. A sidecar
+    rebuild is a wipe followed by four fetches, so under that rule it would either reach
+    for the network or destroy a usable sidecar and then fail. Both shells flag the
+    offline keep and clear every rebuild flag behind it."""
+    sh = SETUP_SH.read_text(encoding = "utf-8")
+    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    keep_sh = sh.index("keeping the verified install")
+    assert "_OFFLINE_FAST_PATH=true" in sh[keep_sh : keep_sh + 400]
+    guard_sh = sh.index('if [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then')
+    assert (
+        sh.index('_sidecar_current "$VENV_T5_510_DIR"')
+        < guard_sh
+        < sh.index('if [ "$_NEED_T5_530" = true ]; then')
+    )
+    assert 'eval "_NEED_T5_$1=false"' in sh[guard_sh : guard_sh + 900]
+    keep_ps1 = ps1.index("keeping the verified install")
+    assert "$script:OfflineFastPath = $true" in ps1[keep_ps1 : keep_ps1 + 400]
+    guard_ps1 = ps1.index("if ($script:OfflineFastPath) {\n    foreach ($tier in")
+    assert (
+        ps1.index("Test-SidecarCurrent -TargetDir $VenvT5_510Dir")
+        < guard_ps1
+        < ps1.index("if ($_NeedT5_530 -or $_NeedT5_550 -or $_NeedT5_510) {")
+    )
+    assert "Set-Variable -Name $flag -Value $false" in ps1[guard_ps1 : guard_ps1 + 900]
+    # The legacy migration is itself a wipe above the guard: skipped under the offline keep, and
+    # under UV_OFFLINE without the fast path.
+    assert sh.index(
+        '[ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; }; then\n    # The migration'
+    ) < sh.index('rm -rf "$STUDIO_HOME/.venv_t5"')
+    assert ps1.index(
+        "(Test-Path -LiteralPath $VenvT5Legacy) -and ($script:OfflineFastPath -or (Test-UvOfflineRequested))"
+    ) < ps1.index("Remove-Item -LiteralPath $VenvT5Legacy -Recurse -Force")
+    # ...nor the tiktoken top-up: its pip fallback reaches the network.
+    top_up = sh[sh.index("_sidecar_top_up_tiktoken() {") :]
+    assert '[ "${_OFFLINE_FAST_PATH:-false}" = true ] && return 0' in top_up[:600]
+    repair = ps1[ps1.index("function Repair-SidecarTiktoken {") :]
+    assert "if ($script:OfflineFastPath) { return }" in repair[:600]
+
+
+def test_uv_offline_without_the_fast_path_still_keeps_an_existing_sidecar():
+    """UV_OFFLINE with the core not verified (or PyPI still answering) takes the ordinary
+    path, whose sidecar rebuild is a wipe followed by four fetches from a cache that may
+    be cold, and an absent tier would go through the pip fallback that does not read
+    UV_OFFLINE. Both shells defer every stale or missing tier under the offline request
+    itself, ahead of the fast-path guard; the runtime self-heal covers a missing tier."""
+    sh = SETUP_SH.read_text(encoding = "utf-8")
+    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    offline_sh = sh.index(
+        'if [ "${_OFFLINE_FAST_PATH:-false}" != true ] && _uv_offline_requested; then'
+    )
+    assert (
+        sh.index('_sidecar_current "$VENV_T5_510_DIR"')
+        < offline_sh
+        < sh.index('if [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then')
+    )
+    block_sh = sh[offline_sh : offline_sh + 1100]
+    # Stale AND missing: an absent tier would reach the pip fallback. No path in the loop's word
+    # list (a space in the Studio home would split it).
+    assert '[ -d "$' not in block_sh.split("for _ofp in", 1)[1].split("done", 1)[0]
+    assert "$VENV_T5_530_DIR" not in block_sh.split("for _ofp in", 1)[1].split("\n", 1)[0]
+    assert 'eval "_NEED_T5_$1=false"' in block_sh and 'eval "_DEFER_T5_$1=true"' in block_sh
+    offline_ps1 = ps1.index("if (-not $script:OfflineFastPath -and (Test-UvOfflineRequested)) {")
+    assert (
+        ps1.index("Test-SidecarCurrent -TargetDir $VenvT5_510Dir")
+        < offline_ps1
+        < ps1.index("if ($script:OfflineFastPath) {\n    foreach ($tier in")
+    )
+    block_ps1 = ps1[offline_ps1 : offline_ps1 + 1100]
+    assert "Test-Path -LiteralPath $tier[2]" not in block_ps1
+    assert "Set-Variable -Name $flag -Value $false" in block_ps1
+    # The tiktoken top-up stays home under the offline request too.
+    top_up = sh[sh.index("_sidecar_top_up_tiktoken() {") :]
+    assert "_uv_offline_requested && return 0" in top_up[:900]
+    repair = ps1[ps1.index("function Repair-SidecarTiktoken {") :]
+    assert "if (Test-UvOfflineRequested) { return }" in repair[:900]
+
+
+def test_the_ps1_offline_flag_is_initialised_before_its_unconditional_reads():
+    """Only the offline keep assigns the flag, and the sidecar block reads it on every
+    update. Under a caller's Set-StrictMode an unassigned script variable is a
+    terminating error, and a dot-sourced rerun would otherwise inherit an earlier
+    offline run's $true."""
+    text = SETUP_PS1.read_text(encoding = "utf-8")
+    init = text.index("$script:OfflineFastPath = $false")
+    assert init < text.index("$script:OfflineFastPath = $true")
+    assert init < text.index("if ($script:OfflineFastPath)")
