@@ -2985,14 +2985,14 @@ class TestASaveDuringPlacementIsAnswered:
         from core.inference.llama_cpp import LlamaCppBackend
         import inspect
 
-        src = inspect.getsource(LlamaCppBackend.load_model)
-        # One assignment carries both facts, so there is no order to get wrong:
-        # the snapshot IS the marker.
-        assert "self._memory_pending_launch = _mem_settings" in src
-        # and it lands right after the capture, before any placement work
-        assert src.index("_mem_settings = get_model_memory_settings()") < src.index(
-            "self._memory_pending_launch = _mem_settings"
-        )
+        src = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        # Capture and publication are ONE act, so there is no window between them for
+        # a save to fall through, and no ordering to get wrong.
+        assert 'capture_model_memory_settings(lambdapair:setattr(self,"_memory_pending_launch",pair))' in src
+        # and nothing re-publishes it between the capture and the placement work; the
+        # recovery rungs further down legitimately re-arm it after a failed attempt
+        head = src[src.index("capture_model_memory_settings(") : src.index("_arm_load_probe_memo()")]
+        assert "self._memory_pending_launch=" not in head
 
     def test_a_save_that_changes_a_toggle_asks_for_a_reload(self, monkeypatch):
         import routes.settings as rs
@@ -3654,6 +3654,166 @@ class TestTheLaunchPublishesItsPlacementWindow:
         from core.inference.llama_cpp import LlamaCppBackend
 
         src = inspect.getsource(LlamaCppBackend.load_model)
-        set_at = src.index("self._memory_pending_launch = _mem_settings")
+        set_at = src.index("capture_model_memory_settings(")
         assert set_at < src.index("_arm_load_probe_memo()")
         assert set_at < src.index("_mem_gpu_offload_confirmed = self._gpu_offload_confirmed(")
+
+
+class TestTheCaptureAndThePublicationAreOneAct:
+    """A launch is committed to the toggle pair from the moment it READS it. Publishing
+    afterwards, however soon, left a window in which a save was answered from a state
+    where the launch did not exist yet: reload_required=false about a child that goes
+    on to run the pre-save flags."""
+
+    def _mod(self):
+        import utils.model_memory_settings as mm
+
+        return mm
+
+    def test_it_publishes_the_pair_it_read(self, monkeypatch):
+        mm = self._mod()
+        monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (True, False))
+        monkeypatch.setattr(mm, "_pair_generations", lambda: (0, 0))
+        seen = []
+        assert mm.capture_model_memory_settings(seen.append) == (True, False)
+        assert seen[-1] == (True, False)
+
+    def test_a_save_inside_the_window_republishes_the_newer_pair(self, monkeypatch):
+        """The write bumps a generation, which is how this module already detects a
+        save racing a read."""
+        mm = self._mod()
+        pairs = [(True, False), (False, True), (False, True)]
+        gens = [(0, 0), (0, 1), (0, 1), (0, 1), (0, 1)]
+
+        monkeypatch.setattr(mm, "get_model_memory_settings", lambda: pairs.pop(0))
+        monkeypatch.setattr(mm, "_pair_generations", lambda: gens.pop(0))
+        seen = []
+        final = mm.capture_model_memory_settings(seen.append)
+        # the stale pair was published, then corrected, and the published value and
+        # the returned value agree at the end
+        assert seen == [(True, False), (False, True)]
+        assert final == (False, True) == seen[-1]
+
+    def test_a_quiet_capture_publishes_once(self, monkeypatch):
+        mm = self._mod()
+        monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))
+        monkeypatch.setattr(mm, "_pair_generations", lambda: (3, 7))
+        seen = []
+        mm.capture_model_memory_settings(seen.append)
+        assert len(seen) == 1
+
+    def test_a_write_storm_still_terminates(self, monkeypatch):
+        """Bounded like the read it mirrors, so a pathological writer cannot spin."""
+        mm = self._mod()
+        counter = iter(range(10_000))
+        monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (True, True))
+        monkeypatch.setattr(mm, "_pair_generations", lambda: (next(counter), 0))
+        seen = []
+        assert mm.capture_model_memory_settings(seen.append) == (True, True)
+        assert len(seen) == mm._MAX_REREADS
+
+
+class TestTheProbeSeesWhatTheChildWillSee:
+    """On Windows the CUDA runtime normally comes from the managed venv, and only
+    `_llama_server_env_for_binary` puts `torch/lib` and `nvidia/*/bin` on PATH.
+    Probing the raw environment reported no devices for installs whose child loads
+    CUDA perfectly, costing every one of them the DirectIO path."""
+
+    def test_the_probe_builds_the_child_env(self, monkeypatch):
+        import core.inference.llama_cpp as m
+
+        seen = {}
+        monkeypatch.setattr(
+            m.LlamaCppBackend, "_llama_server_env_for_binary",
+            staticmethod(lambda b, **kw: {"PATH": "/venv/torch/lib", "KEEP": "1"}),
+        )
+
+        class _R:
+            returncode = 0
+            stdout = "Available devices:\n  CUDA0: x (1 MiB, 1 MiB free)\n"
+
+        monkeypatch.setattr(m.subprocess, "run", lambda *a, **kw: seen.update(kw) or _R())
+        assert m.LlamaCppBackend._run_list_devices("llama-server", None) == ["CUDA0"]
+        assert seen["env"]["PATH"] == "/venv/torch/lib"
+
+    def test_the_callers_placement_removals_are_replayed(self, monkeypatch):
+        """A manual-mode or gpu_ids load hides devices from the child on purpose, so
+        the probe must not see them either -- while keeping the native paths."""
+        import core.inference.llama_cpp as m
+
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+        monkeypatch.setattr(
+            m.LlamaCppBackend, "_llama_server_env_for_binary",
+            staticmethod(
+                lambda b, **kw: {"PATH": "/venv/torch/lib", "CUDA_VISIBLE_DEVICES": "1"}
+            ),
+        )
+        seen = {}
+
+        class _R:
+            returncode = 0
+            stdout = "Available devices:\n"
+
+        monkeypatch.setattr(m.subprocess, "run", lambda *a, **kw: seen.update(kw) or _R())
+        # the caller's view dropped the pin, so the probe drops it too
+        m.LlamaCppBackend._run_list_devices("llama-server", {"PATH": "ignored"})
+        assert "CUDA_VISIBLE_DEVICES" not in seen["env"]
+        assert seen["env"]["PATH"] == "/venv/torch/lib"
+
+    def test_an_unbuildable_env_still_probes(self, monkeypatch):
+        import core.inference.llama_cpp as m
+
+        def _boom(b, **kw):
+            raise OSError("no")
+
+        monkeypatch.setattr(m.LlamaCppBackend, "_llama_server_env_for_binary", staticmethod(_boom))
+
+        class _R:
+            returncode = 0
+            stdout = "Available devices:\n  CUDA0: x (1 MiB, 1 MiB free)\n"
+
+        monkeypatch.setattr(m.subprocess, "run", lambda *a, **kw: _R())
+        assert m.LlamaCppBackend._run_list_devices("llama-server", None) == ["CUDA0"]
+
+
+class TestOnlyAClassifiableDeviceConfirms:
+    """`--list-devices` proves a device is LIVE, not that it is discrete. A custom
+    SYCL or OpenCL build on an integrated Intel GPU enumerates `SYCL0` happily, and
+    nothing on this path can tell that its VRAM is system RAM, so confirming it would
+    trade a pageable mapping for a model-sized host buffer."""
+
+    def _confirm(self, monkeypatch, devices, discrete = True):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        monkeypatch.setattr(
+            LlamaCppBackend, "_enumerated_gpu_devices",
+            classmethod(lambda cls, binary = None, env = None: devices),
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_vulkan_offload_is_discrete",
+            staticmethod(lambda binary, idx = None: discrete),
+        )
+        return LlamaCppBackend._gpu_offload_confirmed("llama-server", {}, None, False, True)
+
+    @pytest.mark.parametrize("device", ["CUDA0", "ROCm0", "HIP0"])
+    def test_a_backend_classified_upstream_confirms(self, monkeypatch, device):
+        assert self._confirm(monkeypatch, [device]) is True
+
+    @pytest.mark.parametrize("device", ["SYCL0", "OpenCL0", "MUSA0", "CANN0", "Metal0"])
+    def test_a_backend_that_can_be_integrated_declines(self, monkeypatch, device):
+        assert self._confirm(monkeypatch, [device]) is False
+
+    def test_a_mixed_set_needs_every_device_classifiable(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["CUDA0", "SYCL1"]) is False
+
+    def test_vulkan_still_goes_through_its_probe(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["Vulkan0"], discrete = False) is False
+        assert self._confirm(monkeypatch, ["Vulkan0"], discrete = True) is True
+
+    def test_the_backend_is_read_off_the_id(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        assert B._device_backend("CUDA0") == "cuda"
+        assert B._device_backend("Vulkan10") == "vulkan"
+        assert B._device_backend("ROCm0") == "rocm"
+        assert B._device_backend("SYCL0") == "sycl"
