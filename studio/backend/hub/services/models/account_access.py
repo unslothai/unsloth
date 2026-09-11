@@ -214,11 +214,15 @@ media_load_lock = threading.Lock()
 
 
 def require_live_account() -> None:
-    """A tombstoned account starts nothing and shares nothing."""
+    """A tombstoned or disabled account starts nothing and shares nothing."""
     if managed_account():
         from core.training.account_jobs import account_is_retired
+        from state import active_generations
+
         if account_is_retired():
             raise HTTPException(status_code = 403, detail = "Account is retired")
+        if active_generations.fenced(current_account_id()):
+            raise HTTPException(status_code = 403, detail = "Account is disabled")
 
 
 def admit_media_load(modality: str, start, *references: str):

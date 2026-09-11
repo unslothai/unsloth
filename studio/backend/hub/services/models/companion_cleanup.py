@@ -11,6 +11,7 @@ Sizes are real on-disk blob bytes from the HF cache scan, deduped per blob, not 
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -52,6 +53,18 @@ def _repo_blob_bytes(repo_info, *, only = None) -> int:
 
 # One definition, so the orphan listing and the delete preview cannot disagree about which cached repos are leftovers (see companion_assets.repo_holds_denoiser).
 _repo_holds_denoiser = companion_assets.repo_holds_denoiser
+
+
+def _account_scans() -> list:
+    """A managed caller previews only the repos its grants cover; other accounts' downloads stay unseen."""
+    scans = cache_inventory.all_hf_cache_scans()
+    access = cache_inventory._account_access()
+    if not access.managed_account():
+        return scans
+    return [
+        replace(scan, repos = frozenset(access.filter_model_rows(list(scan.repos or ()))))
+        for scan in scans
+    ]
 
 
 def _repos_by_id(cache_scans) -> dict[str, list]:
@@ -127,7 +140,7 @@ def _variant_is_a_required_companion_asset(repo_id: str, variant: str) -> bool:
 
 
 def _delete_impact_blocking(repo_id: str, variant: Optional[str]) -> dict:
-    scans = cache_inventory.all_hf_cache_scans()
+    scans = _account_scans()
     by_id = _repos_by_id(scans)
     key = repo_id.strip().lower()
     repos = by_id.get(key, [])
@@ -203,7 +216,7 @@ async def delete_impact_response(repo_id: str, variant: Optional[str] = None) ->
 
 
 def _orphan_companions_blocking() -> dict:
-    scans = cache_inventory.all_hf_cache_scans()
+    scans = _account_scans()
     by_id = _repos_by_id(scans)
     required = companion_assets.required_companion_bases(scans)
     known = companion_assets.known_companion_base_ids()

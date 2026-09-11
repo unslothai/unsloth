@@ -228,6 +228,11 @@ def lift_fence(account_id: str) -> None:
         _FENCED.discard(account_id)
 
 
+def fenced(account_id: str) -> bool:
+    with _LOCK:
+        return account_id in _FENCED
+
+
 def reset_for_tests() -> None:
     """Drop every entry. Test-only; never called from request paths."""
     with _LOCK:

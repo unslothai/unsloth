@@ -145,9 +145,12 @@ def set_account_active(account_id: str, payload: AccountActiveRequest):
             restore_account_jobs(account_id)
             active_generations.lift_fence(account_id)
         else:
+            from routes.inference import retire_account_loads
+
             # Fence first, so a request registering after the sweep is cancelled too.
             active_generations.fence(account_id)
             active_generations.cancel_all(account_id)
+            retire_account_loads(account_id)
             account_access.retire_resident_shares(account_id)
         return result
 

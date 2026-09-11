@@ -1970,8 +1970,10 @@ def browse_folders(
     so traversal can't escape. Sorting: model-bearing dirs, then plain,
     then hidden (if ``show_hidden=true``).
     """
-    if account_access.managed_account():
-        from utils.paths.storage_roots import workspace_root
+    from utils.paths.storage_roots import workspace_root
+
+    managed = account_access.managed_account()
+    if managed:
         path = account_access.private_directory(path or str(workspace_root()), "")
     from utils.paths import hf_default_cache_dir, well_known_model_dirs
     from utils.paths import external_media
@@ -1982,12 +1984,21 @@ def browse_folders(
     )
 
     # Probe removable-media and Windows drive roots once; allowlist and chips reuse the result.
-    media_roots = [
-        *external_media.linux_run_media_mount_roots(),
-        *external_media.macos_volume_roots(),
-    ]
-    drive_roots = external_media.windows_drive_roots()
-    allowed_roots = _build_browse_allowlist(media_roots, drive_roots)
+    # A managed account browses its workspace only, and its chips name nothing outside it.
+    media_roots = (
+        []
+        if managed
+        else [
+            *external_media.linux_run_media_mount_roots(),
+            *external_media.macos_volume_roots(),
+        ]
+    )
+    drive_roots = [] if managed else external_media.windows_drive_roots()
+    allowed_roots = (
+        [workspace_root().resolve()]
+        if managed
+        else _build_browse_allowlist(media_roots, drive_roots)
+    )
 
     try:
         target = _resolve_browse_target(path, allowed_roots)
@@ -2096,25 +2107,29 @@ def browse_folders(
             seen_sug.add(resolved)
             suggestions.append(resolved)
 
-    _add_sug(Path.home())
-    for p in media_roots:
-        _add_sug(p)
-    for p in drive_roots:
-        _add_sug(p)
-    try:
-        _add_sug(hf_default_cache_dir())
-    except Exception:
-        pass
-    try:
-        for folder in list_scan_folders():
-            _add_sug(Path(folder.get("path", "")))
-    except Exception as exc:
-        logger.debug("browse-folders: could not load scan folders: %s", exc)
-    try:
-        for p in well_known_model_dirs():
+    if managed:
+        for root in allowed_roots:
+            _add_sug(root)
+    else:
+        _add_sug(Path.home())
+        for p in media_roots:
             _add_sug(p)
-    except Exception as exc:
-        logger.debug("browse-folders: could not load well-known dirs: %s", exc)
+        for p in drive_roots:
+            _add_sug(p)
+        try:
+            _add_sug(hf_default_cache_dir())
+        except Exception:
+            pass
+        try:
+            for folder in list_scan_folders():
+                _add_sug(Path(folder.get("path", "")))
+        except Exception as exc:
+            logger.debug("browse-folders: could not load scan folders: %s", exc)
+        try:
+            for p in well_known_model_dirs():
+                _add_sug(p)
+        except Exception as exc:
+            logger.debug("browse-folders: could not load well-known dirs: %s", exc)
 
     return BrowseFoldersResponse(
         current = str(target),
