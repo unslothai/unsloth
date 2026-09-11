@@ -26,6 +26,7 @@ import re
 import sys
 import threading
 import time
+import traceback
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
@@ -1171,6 +1172,7 @@ class DiffusionBackend:
         # Protect load metadata without waiting for construction.
         # Never acquire pipeline locks while holding this lock.
         self._load_cancel_lock = threading.Lock()
+        self._unload_waiters = 0
         # _generate_lock serialises generations and is the ONLY lock the denoise holds.
         self._generate_lock = threading.Lock()
         self._state: Optional[_LoadState] = None
@@ -1216,7 +1218,7 @@ class DiffusionBackend:
         return target.torch_device, target.dtype
 
     def _raise_if_load_cancelled(self, token: int) -> None:
-        if token != self._load_token:
+        if token != self._load_token or self._unload_waiters:
             raise RuntimeError("Diffusion load was cancelled.")
 
     def _reserve_teardown_locked(self) -> None:
@@ -1996,6 +1998,8 @@ class DiffusionBackend:
         )
 
         with self._lock, self._load_cancel_lock:
+            if self._unload_waiters:
+                raise RuntimeError("A diffusion unload is in progress.")
             # Allow starting over a previously-failed load, but not over a live one.
             if self._loading is not None and self._loading.error is None:
                 raise RuntimeError("A diffusion load is already in progress.")
@@ -4239,101 +4243,96 @@ class DiffusionBackend:
                                 _base_local_dir or fetch_base, **pipe_kwargs
                             )
 
-                # Drop construction references before reclaiming a cancelled load.
-                if _load_token != self._load_token:
-                    pipe = transformer = None
-                    pipe_kwargs.clear()
-                    clear_gpu_cache()
-                    self._raise_if_load_cancelled(_load_token)
-
-                # Effective speed: GGUF defaults to `default` (~2.2x, below the quant noise floor); dense stays
-                # bit-identical `off`.
-                effective_speed = resolve_speed_mode(speed_mode, is_gguf = kind == "gguf")
-                # A torchao-quantized dense transformer must be compiled (eager is ~30x slower, losing to GGUF)
-                if transformer_quant_engaged is not None and effective_speed == SPEED_OFF:
-                    logger.info(
-                        "diffusion.transformer_quant: forcing speed_mode=default "
-                        "(quantized transformer must be compiled; eager is ~30x slower)"
-                    )
-                    effective_speed = SPEED_DEFAULT
-                # Deferred speed auto for dense: stay eager and engage `default` on the 3rd image, where compile
-                # amortises. Only when speed was unset.
-                speed_deferred = (
-                    speed_mode is None
-                    and effective_speed == SPEED_OFF
-                    and transformer_quant_engaged is None
-                    and compile_eligible(target, is_gguf = False, family = fam)
-                )
-                # Speed optims run BEFORE placement, so snapshot the global backend flags first for unload restore.
-                # The dense transformer quant above builds quiet configs, so it mutated none of these flags.
-                backend_flags_before = snapshot_backend_flags()
-                # Pick the attention kernel BEFORE compile: auto upgrades to cuDNN fused attention on NVIDIA (~1.18x)
-                attention_engaged = apply_attention_backend(
-                    pipe,
-                    select_attention_backend(
-                        target, attention_backend, speed_active = effective_speed != SPEED_OFF
-                    ),
-                    logger = logger,
-                    target = target,
-                )
-                # Step caching (First-Block-Cache), also before compile: reuses the transformer tail across steps and
-                # drops compile fullgraph. Tri-state: unset/auto -> FBCACHE_MIN_STEPS policy; off/fbcache pinned.
-                cache_request = normalize_transformer_cache(transformer_cache)
-                cache_auto = transformer_cache is None or cache_request == TC_AUTO
-                cache_quant_active = transformer_quant_engaged is not None or bool(gguf_filename)
-                default_steps: Optional[int] = None
-                if cache_auto:
-                    default_steps, _ = default_generation_params(
-                        gguf_filename, repo_id, base, fam.name
-                    )
-                    cache_request = TC_FBCACHE if default_steps >= FBCACHE_MIN_STEPS else None
-                cache_engaged = apply_step_cache(
-                    pipe,
-                    mode = cache_request,
-                    threshold = transformer_cache_threshold,
-                    # GGUF transformers are quantized too, so the cache needs the higher threshold.
-                    quant_active = cache_quant_active,
-                    logger = logger,
-                )
-                # An auto decision can flip at generation time, but only on a cache-capable transformer
-                cache_may_toggle = cache_auto and callable(
-                    getattr(getattr(pipe, "transformer", None), "enable_cache", None)
-                )
-                if cache_auto:
-                    if cache_engaged:
-                        cache_reason = (
-                            f"auto: {default_steps}-step default schedule reaches "
-                            f"{FBCACHE_MIN_STEPS}; re-checked per generation"
-                        )
-                    elif cache_request is not None:
-                        cache_reason = "auto: model does not support step caching"
-                    else:
-                        cache_reason = (
-                            f"auto: {default_steps}-step default schedule is below "
-                            f"{FBCACHE_MIN_STEPS}; re-checked per generation"
-                        )
-                else:
-                    cache_reason = "requested"
-                # Everything to the _LoadState commit mutates PROCESS-WIDE state; the try/finally below restores it on
-                # failure. gguf_transformer: the dense fast path still sets gguf_filename, but pipe.transformer is
-                # dense (REGIONAL compile).
-                gguf_transformer = kind == "gguf" and transformer_quant_engaged is None
-
+                backend_flags_before = None
                 eager_patched = False
                 compile_ctx = None
                 state_committed = False
                 state = None
-                # Lazy import (these modules import torch) keeps diffusion.py torch-free to import.
-                from .diffusion_eager_patches import (
-                    install_compile_safe_patches,
-                    uninstall_patches,
-                )
-                from .diffusion_arch_patches import (
-                    install_arch_patches,
-                    uninstall_arch_patches,
-                )
-
                 try:
+                    self._raise_if_load_cancelled(_load_token)
+                    # Lazy import (these modules import torch) keeps diffusion.py torch-free to import.
+                    from .diffusion_eager_patches import (
+                        install_compile_safe_patches,
+                        uninstall_patches,
+                    )
+                    from .diffusion_arch_patches import (
+                        install_arch_patches,
+                        uninstall_arch_patches,
+                    )
+
+                    # Effective speed: GGUF defaults to `default` (~2.2x, below the quant noise floor); dense stays
+                    # bit-identical `off`.
+                    effective_speed = resolve_speed_mode(speed_mode, is_gguf = kind == "gguf")
+                    # A torchao-quantized dense transformer must be compiled (eager is ~30x slower, losing to GGUF)
+                    if transformer_quant_engaged is not None and effective_speed == SPEED_OFF:
+                        logger.info(
+                            "diffusion.transformer_quant: forcing speed_mode=default "
+                            "(quantized transformer must be compiled; eager is ~30x slower)"
+                        )
+                        effective_speed = SPEED_DEFAULT
+                    # Deferred speed auto for dense: stay eager and engage `default` on the 3rd image, where compile
+                    # amortises. Only when speed was unset.
+                    speed_deferred = (
+                        speed_mode is None
+                        and effective_speed == SPEED_OFF
+                        and transformer_quant_engaged is None
+                        and compile_eligible(target, is_gguf = False, family = fam)
+                    )
+                    # Speed optims run BEFORE placement, so snapshot the global backend flags first for unload restore.
+                    # The dense transformer quant above builds quiet configs, so it mutated none of these flags.
+                    backend_flags_before = snapshot_backend_flags()
+                    # Pick the attention kernel BEFORE compile: auto upgrades to cuDNN fused attention on NVIDIA (~1.18x)
+                    attention_engaged = apply_attention_backend(
+                        pipe,
+                        select_attention_backend(
+                            target, attention_backend, speed_active = effective_speed != SPEED_OFF
+                        ),
+                        logger = logger,
+                        target = target,
+                    )
+                    # Step caching (First-Block-Cache), also before compile: reuses the transformer tail across steps and
+                    # drops compile fullgraph. Tri-state: unset/auto -> FBCACHE_MIN_STEPS policy; off/fbcache pinned.
+                    cache_request = normalize_transformer_cache(transformer_cache)
+                    cache_auto = transformer_cache is None or cache_request == TC_AUTO
+                    cache_quant_active = transformer_quant_engaged is not None or bool(
+                        gguf_filename
+                    )
+                    default_steps: Optional[int] = None
+                    if cache_auto:
+                        default_steps, _ = default_generation_params(
+                            gguf_filename, repo_id, base, fam.name
+                        )
+                        cache_request = TC_FBCACHE if default_steps >= FBCACHE_MIN_STEPS else None
+                    cache_engaged = apply_step_cache(
+                        pipe,
+                        mode = cache_request,
+                        threshold = transformer_cache_threshold,
+                        # GGUF transformers are quantized too, so the cache needs the higher threshold.
+                        quant_active = cache_quant_active,
+                        logger = logger,
+                    )
+                    # An auto decision can flip at generation time, but only on a cache-capable transformer
+                    cache_may_toggle = cache_auto and callable(
+                        getattr(getattr(pipe, "transformer", None), "enable_cache", None)
+                    )
+                    if cache_auto:
+                        if cache_engaged:
+                            cache_reason = (
+                                f"auto: {default_steps}-step default schedule reaches "
+                                f"{FBCACHE_MIN_STEPS}; re-checked per generation"
+                            )
+                        elif cache_request is not None:
+                            cache_reason = "auto: model does not support step caching"
+                        else:
+                            cache_reason = (
+                                f"auto: {default_steps}-step default schedule is below "
+                                f"{FBCACHE_MIN_STEPS}; re-checked per generation"
+                            )
+                    else:
+                        cache_reason = "requested"
+                    # The dense fast path sets gguf_filename, but its transformer is dense.
+                    gguf_transformer = kind == "gguf" and transformer_quant_engaged is None
+
                     if effective_speed != SPEED_OFF:
                         install_compile_safe_patches()
                         # Per-arch compile-safe fusions; neutral under compile, tracked by the same eager_patched
@@ -4602,6 +4601,21 @@ class DiffusionBackend:
                         self._raise_if_load_cancelled(_load_token)
                         self._state = state
                         state_committed = True
+                except BaseException as exc:
+                    # Failed setup frames can retain the pipeline through rollback.
+                    errors, seen = [exc], set()
+                    while errors:
+                        error = errors.pop()
+                        if id(error) in seen:
+                            continue
+                        seen.add(id(error))
+                        traceback.clear_frames(error.__traceback__)
+                        errors.extend(
+                            cause
+                            for cause in (error.__cause__, error.__context__)
+                            if cause is not None
+                        )
+                    raise
                 finally:
                     # Pre-commit failure: roll back the process-wide mutations (symmetric with _unload_locked).
                     if not state_committed:
@@ -6248,28 +6262,33 @@ class DiffusionBackend:
 
     def unload(self) -> dict[str, Any]:
         with self._load_cancel_lock:
-            # Signal cancellation before waiting for pipeline teardown.
+            # Fence replacement loads before waiting for pipeline teardown.
+            self._unload_waiters += 1
             self._cancel_event.set()
             self._load_token += 1
             self._loading = None
-        with self._lock:
-            with self._generation_cancel_lock:
-                if self._active_generate_cancel is not None:
-                    self._active_generate_cancel.set()
-            # Fence queued generations too: they are intentionally not cancelled by model lifecycle changes, so they
-            # must wait and observe the post-teardown state.
-            self._reserve_teardown_locked()
-        # Wait for the signalled denoise to exit BEFORE tearing down: _unload_locked uninstalls process-wide state
-        # (attention patches, GGUF compile hooks, backend flags, compile cache) the denoise still depends on.
-        with self._model_transition_slot():
+        try:
             with self._lock:
-                try:
-                    self._unload_locked()
-                finally:
-                    # Released in a finally, exactly like begin_load: _unload_locked ends in clear_gpu_cache(), which
-                    # raises on a sticky CUDA fault, and an un-drained fence would refuse every later generation for
-                    # the life of the process.
-                    self._release_teardown_locked()
+                with self._generation_cancel_lock:
+                    if self._active_generate_cancel is not None:
+                        self._active_generate_cancel.set()
+                # Fence queued generations too: they are intentionally not cancelled by model lifecycle changes, so they
+                # must wait and observe the post-teardown state.
+                self._reserve_teardown_locked()
+            # Wait for the signalled denoise to exit BEFORE tearing down: _unload_locked uninstalls process-wide state
+            # (attention patches, GGUF compile hooks, backend flags, compile cache) the denoise still depends on.
+            with self._model_transition_slot():
+                with self._lock:
+                    try:
+                        self._unload_locked()
+                    finally:
+                        # Released in a finally, exactly like begin_load: _unload_locked ends in clear_gpu_cache(), which
+                        # raises on a sticky CUDA fault, and an un-drained fence would refuse every later generation for
+                        # the life of the process.
+                        self._release_teardown_locked()
+        finally:
+            with self._load_cancel_lock:
+                self._unload_waiters -= 1
         return self.status()
 
     def _unload_locked(self) -> None:

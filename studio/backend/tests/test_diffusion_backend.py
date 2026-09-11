@@ -2503,7 +2503,17 @@ def test_unload_sets_cancel_event(fake_runtime):
 
 
 @pytest.mark.parametrize(
-    "phase", ["transformer", "pipeline", "dense", "quantize", "placement", "publication"]
+    "phase",
+    [
+        "transformer",
+        "pipeline",
+        "dense",
+        "attention_error",
+        "cache_error",
+        "quantize",
+        "placement",
+        "publication",
+    ],
 )
 def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatch, phase):
     import gc
@@ -2572,6 +2582,14 @@ def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatc
             mp.setattr(diff_mod, "select_transformer_quant_scheme", lambda *a, **k: "int8")
             mp.setattr(backend, "_dense_transformer_resident_bytes", lambda *a, **k: 0)
             mp.setattr(backend, "_load_dense_quant_pipeline", dense)
+        elif phase in ("attention_error", "cache_error"):
+
+            def fail_setup(*args, **kwargs):
+                park(None)
+                raise RuntimeError("setup failed")
+
+            name = "apply_attention_backend" if phase == "attention_error" else "apply_step_cache"
+            mp.setattr(diff_mod, name, fail_setup)
         elif phase in ("quantize", "placement", "publication"):
             name = {
                 "quantize": "quantize_text_encoders",
@@ -2601,7 +2619,7 @@ def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatc
 
     assert not loader.is_alive() and not ejector.is_alive()
     assert "loaded" not in outcome, "a cancelled pipeline was published as ready"
-    assert "cancelled" in outcome["error"]
+    assert ("setup failed" if phase.endswith("_error") else "cancelled") in outcome["error"]
     assert not backend.is_loaded
     assert not ep.is_installed()
     assert backend._teardown_waiters == 0
@@ -2615,6 +2633,78 @@ def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatc
     for _ in range(2):
         assert len(backend.generate(prompt = "a sloth", steps = 2)["images"]) == 1
         assert backend._state.pipe is pipe
+    backend.unload()
+
+
+@pytest.mark.parametrize("load_method", ["begin_load", "load_pipeline"])
+def test_replacement_load_waits_for_every_unload(fake_runtime, tmp_path, monkeypatch, load_method):
+    backend = DiffusionBackend()
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    parked = [threading.Event(), threading.Event()]
+    release = [threading.Event(), threading.Event()]
+    real_lock = backend._lock
+    errors = []
+    dispatched = threading.Event()
+    monkeypatch.setattr(backend, "_run_load", lambda **kwargs: dispatched.set())
+
+    class GateLock:
+        def __init__(self):
+            self.waited = set()
+
+        def __enter__(self):
+            name = threading.current_thread().name
+            if name.startswith("eject-") and name not in self.waited:
+                self.waited.add(name)
+                index = int(name[-1])
+                parked[index].set()
+                assert release[index].wait(5)
+            real_lock.acquire()
+
+        def __exit__(self, *args):
+            real_lock.release()
+
+    monkeypatch.setattr(backend, "_lock", GateLock())
+
+    def eject():
+        try:
+            backend.unload()
+        except Exception as exc:
+            errors.append(str(exc))
+
+    def load():
+        return getattr(backend, load_method)(
+            str(tmp_path),
+            gguf_filename = "model.gguf",
+            base_repo = "base/repo",
+            family_override = "z-image",
+        )
+
+    ejectors = [threading.Thread(target = eject, name = f"eject-{i}", daemon = True) for i in range(2)]
+    for thread in ejectors:
+        thread.start()
+    try:
+        assert all(event.wait(5) for event in parked)
+        with pytest.raises(RuntimeError, match = "unload|cancelled"):
+            load()
+        release[0].set()
+        ejectors[0].join(5)
+        assert not ejectors[0].is_alive()
+        with pytest.raises(RuntimeError, match = "unload|cancelled"):
+            load()
+        assert not dispatched.is_set()
+    finally:
+        for event in release:
+            event.set()
+        for thread in ejectors:
+            thread.join(5)
+
+    assert not errors and all(not thread.is_alive() for thread in ejectors)
+    assert backend._teardown_waiters == 0
+    load()
+    if load_method == "begin_load":
+        assert dispatched.wait(5)
+        _load_into(backend, tmp_path)
+    assert backend.generate(prompt = "after eject", steps = 2)["images"]
     backend.unload()
 
 
