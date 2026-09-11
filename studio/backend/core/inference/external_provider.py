@@ -3067,6 +3067,12 @@ class ExternalProviderClient:
                         for sc in web_search_calls.values()
                         if isinstance(sc.get("results"), list)
                     )
+                    web_search_errors = [
+                        sc["results"].get("error_code") or "unknown"
+                        for sc in web_search_calls.values()
+                        if isinstance(sc.get("results"), dict)
+                        and sc["results"].get("type") == "web_search_tool_result_error"
+                    ]
                     queries = [sc["query"] for sc in web_search_calls.values() if sc.get("query")]
                     # cache_read_input_tokens > 0 proves the cache_control marker works (turn 1 shows cache_creation
                     # instead).
@@ -3080,7 +3086,7 @@ class ExternalProviderClient:
                     logger.info(
                         "Anthropic stream complete (model=%s, "
                         "web_search_requested=%s, web_search_invocations=%s, "
-                        "results=%s, queries=%s, "
+                        "results=%s, web_search_errors=%s, queries=%s, "
                         "web_fetch_requested=%s, web_fetch_invocations=%s, "
                         "web_fetch_urls=%s, "
                         "code_execution_requested=%s, "
@@ -3098,6 +3104,7 @@ class ExternalProviderClient:
                         web_search_requested,
                         web_search_invocations,
                         total_results,
+                        web_search_errors,
                         queries,
                         web_fetch_requested,
                         web_fetch_invocations,
