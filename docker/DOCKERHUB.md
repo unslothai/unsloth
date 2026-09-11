@@ -106,17 +106,39 @@ Turing has no bfloat16; Unsloth falls back to float16 there. AMD GPUs are not su
 | `UNSLOTH_SKIP_NOTEBOOK_SYNC=1` | Do not refresh the notebooks from GitHub on start. |
 | `HF_TOKEN`, `WANDB_API_KEY` | Forwarded to Hugging Face and Weights and Biases. |
 
-## Volumes
+## Volumes and persistence
 
-The working directory is `/workspace`. Mount what you want to keep:
+The container working directory is `/workspace`. Mount `/data` for unified persistence across container recreations (#4396):
+
+```bash
+docker run -d --gpus all --ipc=host \
+  --ulimit memlock=-1 --ulimit stack=67108864 \
+  -p 8000:8000 -p 8888:8888 \
+  -v "$PWD/data":/data \
+  unsloth/unsloth
+```
+
+Or using the bundled `docker compose`:
+
+```bash
+docker compose -f docker/compose.yml up -d
+```
+
+Mount what you want to keep:
 
 | Container path | What it holds |
 |---|---|
+| `/data` | Unified persistence root: models, fine-tune outputs, exports, and auth (`auth.db`). |
 | `/workspace/host` | Your files. Mount your project directory here. |
 | `/workspace/.cache/huggingface` | Model downloads. Mount your host HF cache to reuse it. |
 | `/workspace/.cache/triton` | Compiled kernels. Optional, speeds up restarts. |
 | `/workspace/unsloth-notebooks` | The synced notebooks. Your edits are kept across refreshes. |
 | `/workspace/Unsloth Notebooks` | The same notebooks grouped by topic, rebuilt on each start. |
+
+> **Warning: Do NOT bind-mount `/workspace/studio` or `/opt/unsloth-studio`.**
+> Those directories contain pre-installed Python environments and `llama.cpp` binaries.
+> Bind-mounting host folders directly over them replaces the files and prevents Studio from starting.
+> Always mount `/data` for persistence instead.
 
 The container runs as root by default. `--user <uid>:<gid>` is supported and keeps files on your mounts owned by you.
 

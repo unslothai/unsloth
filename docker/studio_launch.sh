@@ -21,6 +21,9 @@ set -euo pipefail
 export JUPYTER_PORT="${JUPYTER_PORT:-8888}"
 export UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"
 export UNSLOTH_JUPYTER_CLOUDFLARE="${UNSLOTH_JUPYTER_CLOUDFLARE:-0}"
+export UNSLOTH_DATA_DIR="${UNSLOTH_DATA_DIR:-/data}"
+export HF_HOME="${HF_HOME:-${UNSLOTH_DATA_DIR}/cache/huggingface}"
+export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-${UNSLOTH_DATA_DIR}/cache/triton}"
 
 # SSH login shells lack the `docker run -e` vars. Secrets are excluded on purpose,
 # and every value is shlex.quote()d because this file is sourced by every login shell.
