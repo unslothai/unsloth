@@ -198,9 +198,7 @@ def test_raw_text_loader():
         # Spaces around newlines trimmed on both sides, even across multiple newlines.
         assert preprocessor.clean_text("foo \n\n bar") == "foo\n\nbar"
 
-        # Stripping a non-ASCII symbol between spaces must not leave a double space. These used to
-        # use a letter (\u00e9) as the stand-in for "a non-ASCII char"; letters are kept now, so the
-        # symbols carry the whitespace assertions instead.
+        # Stripping a non-ASCII symbol between spaces must not leave a double space.
         assert preprocessor.clean_text("word1 \u00a9 word2") == "word1 word2"
         assert preprocessor.clean_text("a \u2122 b") == "a b"
         assert preprocessor.clean_text("prefix \U0001f600 suffix") == "prefix suffix"
@@ -241,16 +239,7 @@ def test_raw_text_loader():
 
 
 def test_clean_text_keeps_letters_marks_and_punctuation():
-    """Letters, digits, marks and punctuation from any script are text, not noise.
-
-    The character class used to be [^\\x20-\\x7E\\n], which deleted every non-ASCII character, so an
-    accented word lost its accents and a document in any non-Latin script came back empty.
-    Marks have to survive or Devanagari and Arabic lose their vowels, and punctuation has to
-    survive or a Chinese sentence loses its full stop.
-
-    Deliberately a top-level test: test_raw_text_loader wraps its body in try/except, so an
-    assertion added there is swallowed and the suite still reports a pass.
-    """
+    """Top level on purpose: test_raw_text_loader's try/except swallows assertion failures."""
     preprocessor = TextPreprocessor()
     for script_text in [
         "Le caf\u00e9 \u00e9tait tr\u00e8s bon.",
@@ -277,7 +266,6 @@ def test_clean_text_still_drops_symbols_and_control_characters():
     assert preprocessor.clean_text("a\x00b") == "ab"
     assert preprocessor.clean_text("a\x1bb") == "ab"
     assert preprocessor.clean_text("\ufeffhello") == "hello"
-    # Emoji presentation and keycap marks go with the emoji instead of outliving it.
     assert preprocessor.clean_text("I \u2764\ufe0f you") == "I you"
     assert preprocessor.clean_text("\u00a9\ufe0f 2026") == "2026"
     assert preprocessor.clean_text("1\ufe0f\u20e3 first") == "1 first"

@@ -305,11 +305,8 @@ def _iter_column(dataset, column):
 class _TextCharTable(dict):
     """str.translate table for clean_text, filled in the first time each character is seen."""
 
-    # Outside printable ASCII, keep whatever is part of the text and drop the rest. This used to
-    # be the class [^\x20-\x7E\n], which deleted every non-ASCII character, so "café" came back
-    # as "caf" and a document in any non-Latin script came back empty. Marks have to survive or
-    # Devanagari and Arabic lose their vowels, and punctuation has to survive or a Chinese
-    # sentence loses its full stop. Symbols (\u00a9, emoji) are still dropped, as before.
+    # Keep letters, digits, marks and punctuation from any script: marks carry Devanagari and
+    # Arabic vowels, P carries the CJK full stop. Symbols (\u00a9, emoji) and control chars go.
     _KEEP_UNICODE_CATEGORIES = ("L", "N", "M", "P")
     # VS15, VS16 and the keycap mark only style an emoji and would outlive it if kept.
     _EMOJI_MARKS = frozenset("\ufe0e\ufe0f\u20e3")
