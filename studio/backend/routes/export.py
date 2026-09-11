@@ -91,6 +91,17 @@ def _resolve_export_hf_token(
     return hf_token_arg(token, allow_ambient_token = allow_ambient)
 
 
+def _is_unquantized_full_finetune(checkpoint_dir: Path) -> bool:
+    config_file = checkpoint_dir / "config.json"
+    try:
+        if not config_file.is_file() or (checkpoint_dir / "adapter_config.json").exists():
+            return False
+        config = json.loads(config_file.read_text(encoding = "utf-8-sig"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(config, dict) and "quantization_config" not in config
+
+
 @router.post("/load-checkpoint", response_model = ExportOperationResponse)
 async def load_checkpoint(
     request: LoadCheckpointRequest,
@@ -106,6 +117,15 @@ async def load_checkpoint(
     """
     try:
         await _ensure_export_supported()
+        load_in_4bit = request.load_in_4bit
+        if "load_in_4bit" not in request.model_fields_set and _is_unquantized_full_finetune(
+            Path(request.checkpoint_path)
+        ):
+            load_in_4bit = False
+            logger.info(
+                f"Full fine-tune checkpoint {request.checkpoint_path} has no quantization_config - "
+                "loading in 16-bit for export"
+            )
         backend = get_export_backend()
         # Run in a worker thread (spawns and waits on a subprocess, can take
         # minutes) so the event loop stays free to serve the live log SSE stream.
@@ -113,7 +133,7 @@ async def load_checkpoint(
             backend.load_checkpoint,
             checkpoint_path = request.checkpoint_path,
             max_seq_length = request.max_seq_length,
-            load_in_4bit = request.load_in_4bit,
+            load_in_4bit = load_in_4bit,
             trust_remote_code = request.trust_remote_code,
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
             hf_token = _resolve_export_hf_token(request.hf_token, allow_ambient = allow_ambient),
