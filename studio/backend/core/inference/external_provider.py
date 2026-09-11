@@ -2502,7 +2502,11 @@ class ExternalProviderClient:
                     }
                     return f"data: {_json.dumps(chunk)}"
 
-                def _format_web_search_results(results: list[Any]) -> str:
+                def _format_web_search_results(results: list[Any] | dict[str, Any]) -> str:
+                    if isinstance(results, dict):
+                        if results.get("type") == "web_search_tool_result_error":
+                            return f"Error: {results.get('error_code') or 'unknown'}"
+                        return ""
                     blocks: list[str] = []
                     for r in results:
                         if not isinstance(r, dict):
@@ -2647,7 +2651,7 @@ class ExternalProviderClient:
                                 content = content_block.get("content") or []
                                 current_result_block = {
                                     "tool_use_id": tool_use_id,
-                                    "results": list(content) if isinstance(content, list) else [],
+                                    "results": content if isinstance(content, (list, dict)) else [],
                                 }
                             elif block_type == "server_tool_use" and block_name == "web_fetch":
                                 tool_use_id = content_block.get("id", "") or (
@@ -3060,8 +3064,16 @@ class ExternalProviderClient:
                     web_search_requested = bool(enabled_tools and "web_search" in enabled_tools)
                     web_search_invocations = len(web_search_calls)
                     total_results = sum(
-                        len(sc.get("results") or []) for sc in web_search_calls.values()
+                        len(sc["results"])
+                        for sc in web_search_calls.values()
+                        if isinstance(sc.get("results"), list)
                     )
+                    web_search_errors = [
+                        sc["results"].get("error_code") or "unknown"
+                        for sc in web_search_calls.values()
+                        if isinstance(sc.get("results"), dict)
+                        and sc["results"].get("type") == "web_search_tool_result_error"
+                    ]
                     queries = [sc["query"] for sc in web_search_calls.values() if sc.get("query")]
                     # cache_read_input_tokens > 0 proves the cache_control marker works (turn 1 shows cache_creation
                     # instead).
@@ -3075,7 +3087,7 @@ class ExternalProviderClient:
                     logger.info(
                         "Anthropic stream complete (model=%s, "
                         "web_search_requested=%s, web_search_invocations=%s, "
-                        "results=%s, queries=%s, "
+                        "results=%s, web_search_errors=%s, queries=%s, "
                         "web_fetch_requested=%s, web_fetch_invocations=%s, "
                         "web_fetch_urls=%s, "
                         "code_execution_requested=%s, "
@@ -3093,6 +3105,7 @@ class ExternalProviderClient:
                         web_search_requested,
                         web_search_invocations,
                         total_results,
+                        web_search_errors,
                         queries,
                         web_fetch_requested,
                         web_fetch_invocations,
