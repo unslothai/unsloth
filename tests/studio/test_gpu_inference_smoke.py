@@ -67,6 +67,7 @@ def test_gpu_generation_smoke():
     # Gemma is numerically unstable in fp16 (it emits only <pad>); use bf16 where supported, else fp32. The model is
     # tiny, so fp32 is still fast.
     dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
+
     def load():
         tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
         model = AutoModelForCausalLM.from_pretrained(MODEL_ID, dtype = dtype).to("cuda")
