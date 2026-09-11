@@ -4,6 +4,8 @@
 import httpx
 import pytest
 
+from core import research_runs
+
 from .test_anthropic_thinking_translation import (
     _anthropic_sse,
     _collect,
@@ -49,6 +51,33 @@ def _error(error_type, message):
     return {"type": "error", "error": {"type": error_type, "message": message}}
 
 
+def _stream_lines(monkeypatch, events):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content = _anthropic_sse([_MESSAGE_START, *events]),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_client()
+        lines = await _collect(
+            client._stream_anthropic(
+                messages = [{"role": "user", "content": "hi"}],
+                model = "claude-opus-4-6",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 4096,
+            )
+        )
+        await client.close()
+        return lines
+
+    return _drive(run())
+
+
 @pytest.mark.parametrize(
     ("events", "error", "content", "expected"),
     [
@@ -74,37 +103,20 @@ def _error(error_type, message):
             _TEXT,
             _error("api_error", "Internal server error"),
             "The three causes are",
-            {"message": "Internal server error (api_error)", "code": "502"},
+            {"message": "Internal server error (api_error)", "code": "500"},
+        ),
+        (
+            _TEXT,
+            _error("some_new_error", "Something went wrong"),
+            "The three causes are",
+            {"message": "Something went wrong (some_new_error)", "code": "502"},
         ),
     ],
 )
 def test_midstream_error_event_ends_stream_with_error(
     monkeypatch, events, error, content, expected
 ):
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            content = _anthropic_sse([_MESSAGE_START, *events, error]),
-            headers = {"content-type": "text/event-stream"},
-        )
-
-    _mock_http_client(monkeypatch, handler)
-
-    async def run():
-        client = _make_client()
-        lines = await _collect(
-            client._stream_anthropic(
-                messages = [{"role": "user", "content": "hi"}],
-                model = "claude-opus-4-6",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 4096,
-            )
-        )
-        await client.close()
-        return lines
-
-    payloads = _payloads_from_lines(_drive(run()))
+    payloads = _payloads_from_lines(_stream_lines(monkeypatch, [*events, error]))
 
     assert payloads[-1:] == [
         {"error": {**expected, "type": "provider_error", "provider": "anthropic"}}
@@ -112,3 +124,10 @@ def test_midstream_error_event_ends_stream_with_error(
     assert "[DONE]" not in payloads
     combined = "".join(p["choices"][0]["delta"].get("content", "") for p in payloads[:-1])
     assert combined == content
+
+
+def test_midstream_rate_limit_is_retried_by_research(monkeypatch):
+    lines = _stream_lines(monkeypatch, [_error("rate_limit_error", "Rate limited")])
+
+    assert _payloads_from_lines(lines)[-1]["error"]["code"] == "429"
+    assert research_runs._stream_rate_limit_delay(lines[0]) == 0.0
