@@ -30,6 +30,7 @@ from typing import Optional, Tuple, Any, Callable, Union, TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
+from hub.utils.hf_tokens import hf_token_arg
 from utils.hardware import get_device, prepare_gpu_selection
 from utils.native_path_leases import (
     native_path_secret_removed_for_child_start,
@@ -1613,6 +1614,9 @@ class TrainingBackend:
         self._pump_running = False
 
         config = _build_training_worker_config(kwargs)
+        hf_token = hf_token_arg(
+            config["hf_token"], allow_ambient_token = config.get("allow_ambient", True)
+        )
 
         _apply_cache_pins(config)
         from .provenance import initialize_resource_provenance
@@ -1627,7 +1631,7 @@ class TrainingBackend:
         gpu_ids = kwargs.get("gpu_ids")
         gpu_selection_kwargs = dict(
             model_name = config["model_name"],
-            hf_token = config["hf_token"] or None,
+            hf_token = hf_token,
             training_type = config["training_type"],
             load_in_4bit = config["load_in_4bit"],
             batch_size = config.get("batch_size", 4),
@@ -1675,7 +1679,7 @@ class TrainingBackend:
                 effective_training_load_in_4bit(
                     config,
                     config.get("model_snapshot_path") or config["model_name"],
-                    config.get("hf_token") or None,
+                    hf_token,
                 )
             with self._lock:
                 if not self._start_request_allows_spawn_locked(start_request_id, job_id):

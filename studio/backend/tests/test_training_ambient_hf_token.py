@@ -167,3 +167,147 @@ def test_training_worker_holds_only_the_callers_credential(
     seen = json.loads(out.stdout.strip().splitlines()[-1])
     assert seen["token"] == expected_token
     assert seen["header"] == (f"Bearer {expected_token}" if expected_token else None)
+
+
+@pytest.mark.parametrize(
+    "allow_ambient,token,expected",
+    [
+        (False, "", None),
+        (False, "hf_caller", "Bearer hf_caller"),
+        (True, "", "Bearer hf_operator_probe"),
+    ],
+)
+def test_parent_gpu_probe_uses_only_authorized_token(monkeypatch, allow_ambient, token, expected):
+    from core.training import training as training_module
+    from utils.hardware import hardware
+    from huggingface_hub import hf_api
+
+    class Captured(BaseException):
+        pass
+
+    seen = []
+
+    class Session:
+        def get(self, url, **kwargs):
+            seen.append(kwargs.get("headers", {}).get("authorization"))
+            raise Captured
+
+    monkeypatch.setenv("HF_TOKEN", "hf_operator_probe")
+    monkeypatch.setenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", "0")
+    monkeypatch.setattr(training_module, "should_use_mlx_training_backend", lambda **kwargs: False)
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.CUDA)
+    monkeypatch.setattr(
+        hardware, "_resolve_model_identifier_for_gpu_estimate", lambda name, hf_token = None: name
+    )
+    monkeypatch.setattr(hf_api, "get_session", lambda: Session())
+    backend = training_module.TrainingBackend()
+    with pytest.raises(Captured):
+        backend.start_training(
+            "credential-probe",
+            model_name = "org/public-model",
+            training_type = "LoRA/QLoRA",
+            hf_token = token,
+            allow_ambient = allow_ambient,
+            load_in_4bit = False,
+        )
+    assert seen == [expected]
+
+
+@pytest.mark.parametrize(
+    "cached_path", ["fallback", "known", "offline", "resume", "public_metadata"]
+)
+@pytest.mark.parametrize("token", [False, "hf_no_access"])
+def test_private_cached_model_requires_caller_authorization(
+    monkeypatch, tmp_path, cached_path, token
+):
+    from fastapi import HTTPException
+    from core.training import training as training_module
+    from hub.utils import hf_tokens
+
+    (tmp_path / "config.json").write_text('{"model_type":"llama"}')
+    (tmp_path / "model.safetensors").write_bytes(b"cached weights")
+    monkeypatch.setattr(training_module, "_resolve_model_snapshot", lambda *a, **k: str(tmp_path))
+    monkeypatch.setattr(
+        "hub.utils.hf_cache_state.iter_repo_cache_dirs", lambda *a, **k: iter([tmp_path])
+    )
+    monkeypatch.setattr(
+        "hub.utils.hf_cache_state.latest_snapshot_from_cache_path", lambda *a, **k: str(tmp_path)
+    )
+    monkeypatch.setattr(tr, "hf_env_offline", lambda: cached_path == "offline")
+    monkeypatch.setattr(tr, "_hub_unreachable", lambda: False)
+    monkeypatch.setattr(hf_tokens, "_explicit_token_reaches_repo", lambda *a, **k: False)
+
+    def denied(*args):
+        raise tr._hf_preflight_error(422, "hf_model_access_denied", "Denied")
+
+    monkeypatch.setattr(
+        tr,
+        "_remote_untrainable_model_format",
+        (lambda *a: None) if cached_path == "public_metadata" else denied,
+    )
+    request = TrainingStartRequest(
+        model_name = "org/private-model",
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+        model_known_cached = cached_path == "known",
+        resume_from_checkpoint = str(tmp_path) if cached_path == "resume" else None,
+        model_snapshot_path = str(tmp_path) if cached_path == "resume" else None,
+    )
+    with pytest.raises(HTTPException) as error:
+        tr._reject_untrainable_model_request(request, hf_token = token)
+    assert error.value.detail["code"] == "hf_model_access_denied"
+
+
+@pytest.mark.parametrize("token,authorized", [(None, False), (False, True), ("hf_caller", True)])
+def test_authorized_cached_models_remain_available(monkeypatch, tmp_path, token, authorized):
+    from core.training import training as training_module
+    from hub.utils import hf_tokens
+
+    (tmp_path / "config.json").write_text('{"model_type":"llama"}')
+    (tmp_path / "model.safetensors").write_bytes(b"cached weights")
+    monkeypatch.setattr(training_module, "_resolve_model_snapshot", lambda *a, **k: str(tmp_path))
+    monkeypatch.setattr(
+        "hub.utils.hf_cache_state.iter_repo_cache_dirs", lambda *a, **k: iter([tmp_path])
+    )
+    monkeypatch.setattr(tr, "hf_env_offline", lambda: False)
+    monkeypatch.setattr(hf_tokens, "_explicit_token_reaches_repo", lambda *a, **k: authorized)
+    request = TrainingStartRequest(
+        model_name = "org/model",
+        model_known_cached = True,
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+    )
+    result = tr._reject_untrainable_model_request(request, hf_token = token)
+    assert result.model_name == "org/model"
+
+
+def test_chat_coexistence_preserves_anonymous_token(monkeypatch):
+    from routes.training_vram import can_keep_chat_during_training
+    from utils import hardware
+
+    class Captured(BaseException):
+        pass
+
+    seen = []
+
+    def select(*args, **kwargs):
+        seen.append(kwargs["hf_token"])
+        raise Captured
+
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.CUDA)
+    monkeypatch.setattr(hardware, "auto_select_gpu_ids", select)
+    with pytest.raises(Captured):
+        can_keep_chat_during_training(
+            model_name = "org/model",
+            hf_token = False,
+            training_type = "LoRA/QLoRA",
+            load_in_4bit = False,
+            batch_size = 1,
+            max_seq_length = 128,
+            lora_rank = 16,
+            target_modules = None,
+            gradient_checkpointing = "unsloth",
+            optimizer = "adamw_8bit",
+            gpu_ids = None,
+        )
+    assert seen == [False]

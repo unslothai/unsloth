@@ -72,7 +72,7 @@ except ImportError:
     from utils.paths import is_local_path, normalize_path, resolve_dataset_path
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
-from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
+from hub.utils.hf_tokens import HfTokenArg, cached_read_refused, hf_token_arg
 
 from utils.utils import (
     canonical_model_repo_id,
@@ -761,6 +761,35 @@ def _reject_untrainable_model_request(
                     canonical_model_repo_id(request.model_name),
                     snapshot,
                 )
+        from hub.utils.hf_cache_state import iter_repo_cache_dirs
+        from utils.security import load_scan_target
+
+        authorization_repo, _ = load_scan_target(
+            canonical_model_repo_id(actual_model_repo_id or request.model_name), ()
+        )
+
+        def has_cached_model():
+            if snapshot:
+                return True
+            scan_errors = []
+            cached = next(
+                iter_repo_cache_dirs("model", authorization_repo, scan_errors = scan_errors),
+                None,
+            )
+            return cached is not None or bool(scan_errors)
+
+        # HF can reuse cached weights even when remote metadata/HEAD denies access.
+        if cached_read_refused(
+            hf_token,
+            repo_id = authorization_repo,
+            is_cached = has_cached_model,
+            offline = offline_mode,
+        ):
+            raise _hf_preflight_error(
+                422,
+                "hf_model_access_denied",
+                "Hugging Face denied access to this cached model. Add a token with repository access.",
+            )
     if path is None and offline_mode:
         raise _hf_preflight_error(
             409,
@@ -1512,7 +1541,7 @@ async def start_training(
                     effective_training_load_in_4bit,
                     training_kwargs,
                     model_load_target,
-                    training_kwargs["hf_token"] or None,
+                    hf_token,
                 )
             except ExactResumeResourcesUnavailable as exc:
                 raise HTTPException(status_code = 409, detail = str(exc))
@@ -1531,9 +1560,7 @@ async def start_training(
 
             model_defaults = load_model_defaults(request.model_name)
             yaml_trust = model_defaults.get("training", {}).get("trust_remote_code", False)
-            if yaml_trust and is_trusted_org_repo(
-                request.model_name, hf_token = request.hf_token or None
-            ):
+            if yaml_trust and is_trusted_org_repo(request.model_name, hf_token = hf_token):
                 logger.info(f"YAML config sets trust_remote_code=True for {request.model_name}")
                 training_kwargs["trust_remote_code"] = True
             elif yaml_trust:
@@ -1601,7 +1628,7 @@ async def start_training(
                 def _can_keep_resident_models():
                     return can_keep_chat_during_training(
                         model_name = training_kwargs["model_name"],
-                        hf_token = training_kwargs["hf_token"],
+                        hf_token = hf_token,
                         training_type = training_kwargs["training_type"],
                         load_in_4bit = training_kwargs["load_in_4bit"],
                         batch_size = training_kwargs["batch_size"],
