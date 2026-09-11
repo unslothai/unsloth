@@ -10037,6 +10037,7 @@ def _gguf_runtime_bytes(
     ctx_last_wins: bool = False,
     model_identifier: Optional[str] = None,
     launch_vision_mmproj: Optional[str] = None,
+    launch_is_vision: bool = False,
 ) -> _GgufRuntimeBytes:
     """KV-cache and compute-buffer VRAM (bytes) at the larger of max_seq_length and
     any `--ctx-size`/`-c` override, over n_parallel slots at the effective
@@ -10072,7 +10073,10 @@ def _gguf_runtime_bytes(
         n_batch, n_ubatch = _batch_ubatch_for_mmproj(
             not is_diffusion
             and _mmproj_needs_bigger_ubatch(
-                launch_vision_mmproj, getattr(probe, "_embedding_length", None)
+                launch_vision_mmproj,
+                getattr(probe, "_embedding_length", None),
+                llama_extra_args,
+                is_vision = launch_is_vision,
             ),
             n_batch,
             n_ubatch,
@@ -10358,6 +10362,7 @@ def _estimate_gguf_kv_gb(
     is_diffusion: bool = False,
     model_identifier: Optional[str] = None,
     launch_vision_mmproj: Optional[str] = None,
+    launch_is_vision: bool = False,
 ) -> float:
     """``_gguf_runtime_bytes`` summed into GB, for the training guard.
 
@@ -10378,6 +10383,7 @@ def _estimate_gguf_kv_gb(
         is_diffusion = is_diffusion,
         model_identifier = model_identifier,
         launch_vision_mmproj = launch_vision_mmproj,
+        launch_is_vision = launch_is_vision,
     )
     return (runtime.kv_bytes + runtime.compute_bytes) / (1024**3)
 
@@ -10797,6 +10803,7 @@ def _estimate_gguf_required_gb(
                 launch_vision_mmproj = _launch_vision_mmproj(
                     config, llama_extra_args, disable_vision
                 ),
+                launch_is_vision = bool(getattr(config, "is_vision", False)) and not disable_vision,
             )
 
         repo = getattr(config, "gguf_hf_repo", None)
@@ -11284,6 +11291,7 @@ def _gguf_resident_file_gb(
             # Paired with the arm above: a term added at 2048 and taken away at 512
             # would move the weights figure by the difference.
             launch_vision_mmproj = _launch_vision_mmproj(config, llama_extra_args, disable_vision),
+            launch_is_vision = bool(getattr(config, "is_vision", False)) and not disable_vision,
         )
     else:
         context_term_gb = _remote_gguf_compute_reserve_gb(
@@ -11845,6 +11853,7 @@ def _gguf_memory_breakdown(
         # panel has to hand over the same one /load does or it prices a generation model.
         model_identifier = getattr(config, "identifier", None),
         launch_vision_mmproj = _launch_vision_mmproj(config, llama_extra_args, disable_vision),
+        launch_is_vision = bool(getattr(config, "is_vision", False)) and not disable_vision,
     )
     files_gb = _gguf_resident_file_gb(
         config,

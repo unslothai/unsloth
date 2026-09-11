@@ -60,6 +60,23 @@ class TestBatchUbatchForMmproj:
         # chunks, so the batch caps how big the micro-batch has to be.
         assert _batch_ubatch_for_mmproj(True, batch, None, None, {}) == expected
 
+    @pytest.mark.parametrize("batch", ["-1", "-2"])
+    def test_a_negative_batch_is_read_as_llama_cpp_reads_it(self, batch):
+        # common_params stores the batch signed and llama_context_params casts it to
+        # uint32_t, so -1 reaches the child as 4294967295 and caps nothing. Taking the
+        # raw value would read as a batch under the ubatch and skip the raise.
+        assert _batch_ubatch_for_mmproj(True, None, None, ["-b", batch], {}) == (
+            None,
+            _MMPROJ_DEFAULT_N_BATCH_UBATCH,
+        )
+
+    def test_a_negative_env_batch_is_normalized_too(self):
+        env = {"LLAMA_ARG_BATCH": "-1"}
+        assert _batch_ubatch_for_mmproj(True, None, None, None, env) == (
+            None,
+            _MMPROJ_DEFAULT_N_BATCH_UBATCH,
+        )
+
     def test_a_small_batch_already_holds_the_chunk(self):
         # -b 256 makes every chunk 256, which the llama.cpp default 512 holds.
         assert _batch_ubatch_for_mmproj(True, None, None, ["-b", "256"], {}) == (None, None)
@@ -357,6 +374,27 @@ def test_default_is_decided_from_the_resolved_projector_before_the_fit():
     decide = source.index("_batch_ubatch_for_mmproj(")
     price = source.index("_ubatch_for_slots(n_parallel)")
     assert download < resolve < decide < price
+
+
+def test_the_estimators_classify_the_projector_as_the_launch_does():
+    """Same four inputs on both sides, or the panel prices a micro-batch nothing runs.
+
+    ``_mmproj_needs_bigger_ubatch`` reads the extras for ``--mmproj-auto`` and the
+    vision state for whether discovery can find anything, so an estimator that passes
+    only the path answers differently from ``load_model`` on a load that has no
+    configured projector but lets llama-server go looking for one.
+    """
+    from studio.backend.routes import inference as routes
+
+    runtime = inspect.getsource(routes._gguf_runtime_bytes)
+    assert "llama_extra_args," in runtime.split("_mmproj_needs_bigger_ubatch(")[1][:220]
+    assert "is_vision = launch_is_vision" in runtime
+    for fn in (
+        routes._estimate_gguf_required_gb,
+        routes._gguf_resident_file_gb,
+        routes._gguf_memory_breakdown,
+    ):
+        assert "launch_is_vision" in inspect.getsource(fn), fn.__name__
 
 
 def test_resident_files_subtract_the_term_they_were_priced_with():

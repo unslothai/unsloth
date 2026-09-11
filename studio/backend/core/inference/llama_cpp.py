@@ -5931,6 +5931,11 @@ def _batch_ubatch_for_mmproj(
     )
     if ubatch_named:
         return n_batch, n_ubatch
+    # Same uint32_t round-trip llama_context_params applies, and the same one
+    # _extra_args_n_ubatch already mirrors: common_params stores the batch signed, so a
+    # "-b -1" reaches the child as 4294967295 and caps nothing. Comparing the raw -1
+    # would read as a batch below the ubatch and skip the raise the image needs.
+    batch &= 0xFFFFFFFF
     target = min(_MMPROJ_DEFAULT_N_BATCH_UBATCH, batch)
     if target <= ubatch:
         return n_batch, n_ubatch
