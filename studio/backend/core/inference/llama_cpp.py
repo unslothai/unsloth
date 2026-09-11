@@ -3544,12 +3544,12 @@ def _with_gguf_load_marker(load: Callable):
         # The Vulkan probe memo: several placement decisions inside want the same rows
         # and each probe is a subprocess behind a 15s timeout, while system-info
         # polling outside a load needs LIVE free/used VRAM and must never be served
-        # that snapshot. (Arming is narrower still; see _arm_vulkan_probe_memo.)
+        # that snapshot. (Arming is narrower still; see _arm_load_probe_memo.)
         #
         # (The pre-spawn placement marker is released by `_serial_load_scope` instead,
         # on the way out of the LOCK rather than the call, so a finished load cannot
         # blank a queued one that has already taken the lock and published.)
-        with _vulkan_probe_memo_scope(), gguf_load_in_flight(hf_repo):
+        with _load_probe_memo_scope(), gguf_load_in_flight(hf_repo):
             if hf_repo and _hub_download_blocks_gguf_load(
                 hf_repo,
                 intent.hf_variant,
@@ -6141,92 +6141,105 @@ _CPU_RUNTIME_OWNER_FILE = "UNSLOTH_OWNER_PID"
 # threads and at any time, and those callers want live free/used VRAM. A shared dict
 # let such a poll seed the load's memo with rows that were minutes old by the time the
 # fitter read them.
-_VULKAN_PROBE_STATE = threading.local()
+_LOAD_PROBE_STATE = threading.local()
 
 
-def _vulkan_probe_memo_armed() -> bool:
-    return getattr(_VULKAN_PROBE_STATE, "armed", False)
+def _load_probe_memo_armed() -> bool:
+    return getattr(_LOAD_PROBE_STATE, "armed", False)
 
 
-def _vulkan_probe_memo_get(binary):
-    rows = getattr(_VULKAN_PROBE_STATE, "rows", None)
-    return rows.get(binary) if rows else None
+def _load_probe_memo_get(kind, binary):
+    rows = getattr(_LOAD_PROBE_STATE, "rows", None)
+    return rows.get((kind, binary)) if rows else None
 
 
-def _vulkan_probe_memo_put(binary, rows) -> None:
-    if not _vulkan_probe_memo_armed():
+def _load_probe_memo_put(kind, binary, rows) -> None:
+    if not _load_probe_memo_armed():
         return
-    store = getattr(_VULKAN_PROBE_STATE, "rows", None)
+    store = getattr(_LOAD_PROBE_STATE, "rows", None)
     if store is None:
-        store = _VULKAN_PROBE_STATE.rows = {}
-    store[binary] = rows
+        store = _LOAD_PROBE_STATE.rows = {}
+    store[(kind, binary)] = rows
 
 
-def _arm_vulkan_probe_memo() -> None:
-    """Start memoising the probe for the placement decision, on this thread only.
+def _arm_load_probe_memo() -> None:
+    """Start memoising the launch probes for the placement decision, on this thread
+    only. Keyed by kind: the placement asks two different subprocesses, the device
+    enumeration and, for a Vulkan target, the discrete-versus-shared probe.
 
     Called at the placement work rather than at the load call, which also covers the
     Hub download: rows captured before a multi-minute download would price the fit
-    against VRAM that has since been allocated. `_vulkan_probe_memo_scope` on the
-    load call owns the lifetime, so this never has to be unwound by hand.
+    against VRAM that has since been allocated. `_load_probe_memo_scope` on the load
+    call owns the lifetime, so this never has to be unwound by hand.
     """
-    _VULKAN_PROBE_STATE.armed = True
-    _VULKAN_PROBE_STATE.rows = {}
+    _LOAD_PROBE_STATE.armed = True
+    _LOAD_PROBE_STATE.rows = {}
 
 
 @contextlib.contextmanager
-def _vulkan_probe_memo_scope():
+def _load_probe_memo_scope():
     """Guarantee the memo cannot outlive a load however it exits. Arming is the
-    narrower `_arm_vulkan_probe_memo`, taken around the placement decision."""
+    narrower `_arm_load_probe_memo`, taken around the placement decision."""
     try:
         yield
     finally:
-        _VULKAN_PROBE_STATE.armed = False
-        _VULKAN_PROBE_STATE.rows = None
+        _LOAD_PROBE_STATE.armed = False
+        _LOAD_PROBE_STATE.rows = None
 
 
-_GGML_GPU_BACKENDS = ("cuda", "hip", "vulkan", "metal", "sycl", "opencl", "musa", "cann", "virtgpu")
+# Sentinel for "this probe ran and had no usable answer", so a memo can hold that
+# apart from "not probed yet". None means the latter to every reader.
+_MISSING = object()
+
+# `llama-server --list-devices` prints a header and then one indented
+# `<id>: <description> (<total> MiB, <free> MiB free)` line per ggml device. Observed
+# across builds: a GPU build lists `  CUDA0: NVIDIA RTX 6000 Ada Generation (...)`,
+# while CPU-only builds print the header followed by `  (none)` or by nothing at all.
+# The id has no internal spaces, which is what separates it from the `  Device 0: ...`
+# lines ggml_cuda_init writes ABOVE the header.
+_LISTED_DEVICE_RE = re.compile(r"^\s+(\S+):\s")
+_LIST_DEVICES_HEADER = "Available devices:"
 
 
-def _ggml_plugin_re(backends: Iterable[str]) -> "re.Pattern[str]":
-    """Strict filename match for a ggml backend plugin.
+def _parse_listed_devices(text: Optional[str]) -> Optional[list[str]]:
+    """Device ids from ``--list-devices`` output, or None when it had no answer.
 
-    Anchored on a filename the dynamic loader can actually open, not on the stem
-    alone. A bare prefix also matched `ggml-cuda.dll.bak`, `ggml-cuda.dll.disabled`
-    and `ggml-cuda-notes.txt` -- exactly the names left behind by disabling a
-    backend, which is when the build genuinely ships none. Reading those as a GPU
-    backend let a CPU-only install be confirmed for full offload and take managed
-    DirectIO while the weights stayed in host RAM: `_windows_cuda_runtime_missing`
-    keys off the exact `ggml-cuda.dll` and so reports nothing missing when only the
-    renamed copy is there, and both the offers-a-backend and the classifiable check
-    said yes off the prefix.
-
-    Same rule `_lib_dir_has_ggml_backend` already applies: exact soname, or a
-    versioned form the platform really uses (`libggml-cuda.so.1`,
-    `libggml-metal.1.dylib`). One owner, so the two checks cannot drift apart again.
+    Only lines BELOW the header count. Backends log their own initialisation above it
+    (``ggml_cuda_init: found 2 CUDA devices``, ``load_backend: loaded CUDA backend
+    from ...``), and that is noise which happens to contain colons.
     """
-    alternation = "|".join(re.escape(name) for name in sorted(backends))
-    return re.compile(
-        rf"^(?:lib)?ggml-(?:{alternation})(?:\.dll|\.so(?:\.\d+)*|(?:\.\d+)*\.dylib)$"
-    )
+    if not text:
+        return None
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() == _LIST_DEVICES_HEADER:
+            break
+    else:
+        # No header at all: an older build that does not know the flag, or output we
+        # cannot read. Neither is evidence that there are no devices.
+        return None
+    devices = []
+    for line in lines[index + 1 :]:
+        if not line.strip():
+            continue
+        if not line[:1].isspace():
+            break  # dedent ends the block
+        match = _LISTED_DEVICE_RE.match(line)
+        if match:
+            devices.append(match.group(1))
+    return devices
 
 
-_GGML_GPU_BACKEND_RE = _ggml_plugin_re(_GGML_GPU_BACKENDS)
-
-# The Windows import chain each GPU plugin needs before it can load. LoadLibrary
-# returns NULL unless every one resolves, and then `--list-devices` prints "(none)"
-# and the child runs on the CPU while host probes still report the card.
-#   cuda: ggml-cuda imports cublas64, which in turn imports cublasLt64. The same set
-#         REAL_UPSTREAM_CUDART_BUNDLE pins in test_windows_gpu_detection_mock.py, and
-#         a venv can hold some without the rest.
-#   hip:  ggml-hip imports the HIP runtime and the ROCm BLAS pair, which a partial
-#         ROCm install can leave out.
-# Only the backends whose chain is known are validated; anything else is not
-# second-guessed, which keeps a custom build from being called broken.
-_WINDOWS_GPU_RUNTIME_IMPORTS: dict[str, frozenset] = {
-    "cuda": frozenset({"cudart64_", "cublas64_", "cublaslt64_"}),
-    "hip": frozenset({"amdhip64", "hipblas", "rocblas"}),
-}
+# Strict filename match for a ggml GPU backend plugin, anchored on a name the dynamic
+# loader can actually open rather than on the stem alone. A bare prefix also matched
+# `ggml-cuda.dll.bak`, `ggml-cuda.dll.disabled` and `ggml-cuda-notes.txt`, which are
+# exactly the names left behind by disabling a backend -- the case where the build
+# genuinely ships none. Same rule `_lib_dir_has_ggml_backend` applies: exact soname, or
+# a versioned form the platform really uses (`libggml-cuda.so.1`, `libggml-metal.1.dylib`).
+_GGML_GPU_BACKEND_RE = re.compile(
+    r"^(?:lib)?ggml-(?:cann|cuda|hip|metal|musa|opencl|sycl|virtgpu|vulkan)"
+    r"(?:\.dll|\.so(?:\.\d+)*|(?:\.\d+)*\.dylib)$"
+)
 
 
 def _cpu_runtime_owner_alive(staged_dir: Path) -> bool:
@@ -8549,51 +8562,6 @@ class LlamaCppBackend:
         return stripped
 
     @staticmethod
-    def _devices_are_real(devices, detected) -> bool:
-        """Whether the placement targets devices the probe actually found.
-
-        A requested index is a REQUEST, not evidence: a stale explicit pin is
-        filtered out of the detected list and then restored into ``gpu_indices``, so
-        accepting a nonempty list confirmed an offload to a device that does not
-        exist and llama.cpp kept the model on the CPU, where DirectIO buffers the
-        whole GGUF.
-
-        A method rather than a closure in ``load_model``: it is consulted from two
-        places hundreds of lines apart, and as a nested ``def`` the earlier one ran
-        before the binding existed and raised ``UnboundLocalError``.
-        """
-        found = {idx for idx, *_rest in (detected or ())}
-        if not found:
-            return False
-        if not devices:
-            return True
-        return all(int(idx) in found for idx in devices)
-
-    @staticmethod
-    def _vulkan_plugin_in_roots(
-        binary: Optional[str] = None, env: Optional[Mapping[str, str]] = None
-    ) -> bool:
-        """Whether a Vulkan plugin is present anywhere this install loads from.
-
-        ``_is_vulkan_backend`` scans only beside the executable, so a custom runtime
-        supplying ``ggml-vulkan`` through ``GGML_BACKEND_PATH`` read as non-Vulkan and
-        the discreteness probe was skipped -- confirming an iGPU whose memory is
-        shared system RAM. Used to DEMAND the probe, never to skip it.
-        """
-        try:
-            roots = LlamaCppBackend._ggml_plugin_roots(str(_llama_lib_dir(binary)), env)
-        except Exception:
-            return False
-        stem = "ggml-vulkan" if sys.platform == "win32" else "libggml-vulkan"
-        for root in roots:
-            try:
-                if any(p.name.startswith(stem) for p in root.iterdir() if p.is_file()):
-                    return True
-            except OSError:
-                continue
-        return False
-
-    @staticmethod
     def _vulkan_offload_is_discrete(binary: Optional[str], gpu_indices = None) -> bool:
         """True only when the probe ANSWERED and every device in play is discrete.
 
@@ -8613,53 +8581,148 @@ class LlamaCppBackend:
         selected = [r for r in rows if wanted is None or r["index"] in wanted]
         return bool(selected) and not any(r["is_igpu"] for r in selected)
 
-    @staticmethod
-    def _build_offers_gpu_backend(
-        binary: Optional[str] = None, env: Optional[Mapping[str, str]] = None
+    @classmethod
+    def _gpu_offload_confirmed(
+        cls,
+        binary: Optional[str],
+        env: Optional[Mapping[str, str]],
+        gpu_indices,
+        host_resident: bool,
+        dio_possible: bool,
     ) -> bool:
-        """Whether the installed prebuilt ships a GPU backend at all.
+        """Whether this launch really puts the weights on a discrete GPU.
 
-        llama.cpp accepts ``-ngl`` on a CPU-only build and quietly keeps the
-        model on the CPU, so a layer count is not on its own evidence that
-        anything reaches a device. Reads the ggml libs beside llama-server, like
-        ``_is_vulkan_backend``. Windows and Linux only, which is where the
-        prebuilts are single-backend; Metal is not among the names.
+        The one predicate behind managed DirectIO, and all that stands between "the
+        fit planner intended a full offload" and "the child performs one". Confirming
+        wrongly is worse than not acting: DirectIO over weights that are really in
+        host RAM replaces a pageable mapping with a model-sized allocated buffer.
 
+        Two questions, because the child can answer only one of them:
+
+        1. Will these devices exist for the child? ``--list-devices`` is the loader's
+           own verdict, so a missing CUDA or HIP runtime, a plugin renamed to disable
+           it, a plugin built for another vendor, and a plugin reachable only through
+           ``GGML_BACKEND_PATH`` all come out right without inspecting one filename.
+        2. Is the device discrete, or is its VRAM carved out of system RAM? ggml does
+           not report that, and an iGPU "full offload" is still host-backed, so a
+           Vulkan target keeps its separate probe.
+
+        Anything unanswered declines.
+
+        ``dio_possible`` is the platform-and-build gate, not the toggle: off Windows,
+        or on a build that does not understand ``--load-mode``, no answer here can
+        reach a flag now or after a later save, so the probes are not worth spawning.
+        Gating on the TOGGLE would be wrong for the reason the Vulkan probe is not:
+        the verdict is recorded as this launch's placement and compared against a
+        later save, so it has to mean "we looked" rather than "the toggle was off".
         """
-        # Fail CLOSED on an install we cannot enumerate. A statically linked custom
-        # build ships no ggml-*.dll either way, so its GPU support is unknowable
-        # from here, and the device list comes from host tools (nvidia-smi, torch)
-        # which answer for the MACHINE and not for this binary. The two mistakes
-        # are not symmetric: guessing "GPU" hands DirectIO to a model llama.cpp
-        # actually keeps on the CPU and turns its pageable mapping into an
-        # allocated buffer, which is the reservation this setting exists to avoid;
-        # guessing "no GPU" only declines an optimisation on an unusual install.
-        # Recognition is _binary_ships_no_gpu_backend's, not a second list: that one
-        # reads _GGML_GPU_BACKEND_RE, so a SYCL, MUSA, CANN or OpenCL build counts
-        # too, and it already knows GGML_BACKEND_PATH points the child at plugins
-        # elsewhere. A private cuda/hip/vulkan set answered "no GPU" for all of those.
-        if LlamaCppBackend._binary_ships_no_gpu_backend(binary, env):
+        if not dio_possible or host_resident:
             return False
-        # _binary_ships_no_gpu_backend answering False means "I cannot say it ships
-        # none", which is NOT "it ships one": it returns False for a static layout,
-        # an unreadable directory and any nonempty GGML_BACKEND_PATH. Reading it as
-        # a positive is the fail-open this check exists to avoid, so look for the
-        # plugin itself, in the external path when one is set and beside the binary
-        # otherwise. A stale, missing or CPU-only path confirms nothing.
+        devices = cls._enumerated_gpu_devices(binary, env)
+        if not cls._offload_devices_are_live(devices, gpu_indices):
+            return False
+        if cls._devices_are_vulkan(devices, gpu_indices):
+            return cls._vulkan_offload_is_discrete(binary, gpu_indices)
+        return True
+
+    @staticmethod
+    def _selected_devices(devices: Optional[list[str]], gpu_indices) -> list[str]:
+        """The enumerated GPU devices this launch will actually use.
+
+        ggml ids are ``<Backend><ordinal>`` and the CPU device is not a placement
+        target. With no pin, every GPU device is in play.
+        """
+        if not devices:
+            return []
+        gpu = [d for d in devices if not d.upper().startswith("CPU")]
+        if not gpu_indices:
+            return gpu
+        wanted = {int(i) for i in gpu_indices}
+        picked = []
+        for device in gpu:
+            match = re.search(r"(\d+)$", device)
+            if match and int(match.group(1)) in wanted:
+                picked.append(device)
+        return picked
+
+    @classmethod
+    def _offload_devices_are_live(cls, devices: Optional[list[str]], gpu_indices) -> bool:
+        """Whether every device this launch pins was enumerated by the build.
+
+        Replaces "do the host's GPUs exist": a device the host reports but the child
+        cannot open is exactly the case that confirmed an offload which never
+        happened, and only the child's own list separates the two.
+        """
+        selected = cls._selected_devices(devices, gpu_indices)
+        if not selected:
+            return False
+        if not gpu_indices:
+            return True
+        return len(selected) == len({int(i) for i in gpu_indices})
+
+    @classmethod
+    def _devices_are_vulkan(cls, devices: Optional[list[str]], gpu_indices) -> bool:
+        """Whether any device in play is a Vulkan one, read off the build's own ids.
+
+        What `_is_vulkan_backend` and the plugin-root scan were approximating. An
+        external ``GGML_BACKEND_PATH`` plugin names itself here like any other.
+        """
+        return any(
+            d.upper().startswith("VULKAN") for d in cls._selected_devices(devices, gpu_indices)
+        )
+
+    @classmethod
+    def _enumerated_gpu_devices(
+        cls, binary: Optional[str] = None, env: Optional[Mapping[str, str]] = None
+    ) -> Optional[list[str]]:
+        """The ggml device ids ``llama-server --list-devices`` reports, or None when
+        the probe had no usable answer.
+
+        Tri-state on purpose, like ``sd_cpp_accelerator_device_verdict``. ``[]`` is the
+        build saying it has no devices; None is no answer at all -- an older build that
+        rejects the flag, a timeout, a crash. Both decline, but they are not the same
+        fact, and empty is not folded into None: "Available devices:" with nothing
+        under it and the same header with ``(none)`` are both real answers, and
+        different builds print each.
+        """
+        binary = binary or cls._find_llama_server_binary()
+        if not binary:
+            return None
+        memo = _load_probe_memo_get("devices", binary)
+        if memo is not None:
+            return None if memo is _MISSING else memo
+        devices = cls._run_list_devices(binary, env)
+        _load_probe_memo_put("devices", binary, _MISSING if devices is None else devices)
+        return devices
+
+    @staticmethod
+    def _run_list_devices(
+        binary: str, env: Optional[Mapping[str, str]] = None
+    ) -> Optional[list[str]]:
+        """``--list-devices`` once, parsed.
+
+        The flag prints and exits, so this never leaves a server behind. It is on the
+        argv denylist for that reason, which does not apply to Unsloth calling it
+        deliberately.
+        """
+        source = dict(os.environ if env is None else env)
         try:
-            roots = LlamaCppBackend._ggml_plugin_roots(str(_llama_lib_dir(binary)), env)
-        except Exception:
-            # Naming the directory can fail too, and an install we cannot even
-            # locate is the fail-closed case by definition.
-            return False
-        for root in roots:
-            try:
-                names = tuple(path.name for path in root.iterdir() if path.is_file())
-            except OSError:
-                continue
-            if any(_GGML_GPU_BACKEND_RE.match(name) for name in names):
-                return True
-        return False
+            result = subprocess.run(
+                [binary, "--list-devices"],
+                capture_output = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 30,
+                env = utf8_child_env(source),
+                **_windows_hidden_subprocess_kwargs(),
+            )
+        except Exception as e:
+            logger.debug(f"llama-server --list-devices failed: {e}")
+            return None
+        if result.returncode != 0:
+            logger.debug(f"llama-server --list-devices exited {result.returncode}")
+            return None
+        return _parse_listed_devices(result.stdout)
 
     @staticmethod
     def _is_vulkan_backend(binary: Optional[str] = None) -> bool:
@@ -10854,14 +10917,14 @@ class LlamaCppBackend:
         # Vulkan backend and carries a 15s timeout, and one load now asks for the rows
         # from several places: the host-residency verdict, the DirectIO confirmation,
         # and again per rung that narrows the device set. Cleared by
-        # _vulkan_probe_memo_scope for the duration of one load, so a driver or
+        # _load_probe_memo_scope for the duration of one load, so a driver or
         # device change between loads is never answered from cache.
-        _memo = _vulkan_probe_memo_get(binary)
+        _memo = _load_probe_memo_get("vulkan", binary)
         if _memo is not None:
             return _memo
         binary_dir = _llama_lib_dir(binary)
         if not _lib_dir_has_ggml_backend(binary_dir, "vulkan"):
-            _vulkan_probe_memo_put(binary, [])
+            _load_probe_memo_put("vulkan", binary, [])
             return []
 
         env = child_env_without_native_path_secret()
@@ -10892,7 +10955,7 @@ class LlamaCppBackend:
                 logger.debug(
                     f"vulkan GPU probe exited {result.returncode}: {result.stderr.strip()}"
                 )
-                _vulkan_probe_memo_put(binary, [])
+                _load_probe_memo_put("vulkan", binary, [])
                 return []
         except Exception as e:
             logger.debug(f"vulkan GPU probe failed: {e}")
@@ -10900,7 +10963,7 @@ class LlamaCppBackend:
             # "not an iGPU" upstream, which sends the DirectIO confirmation
             # straight back here, so an uncached timeout is paid twice over
             # and again per device-set rung.
-            _vulkan_probe_memo_put(binary, [])
+            _load_probe_memo_put("vulkan", binary, [])
             return []
 
         rows: list[dict] = []
@@ -10922,7 +10985,7 @@ class LlamaCppBackend:
             except ValueError:
                 continue
         rows.sort(key = lambda r: r["index"])
-        _vulkan_probe_memo_put(binary, rows)
+        _load_probe_memo_put("vulkan", binary, rows)
         return rows
 
     @staticmethod
@@ -12719,160 +12782,6 @@ class LlamaCppBackend:
         _add(site_packages / "torch" / "lib")
         return out
 
-    # Backends whose offload target this code can actually classify: CUDA and HIP
-    # through _amd_apu_wants_unified_memory, Vulkan through _run_vulkan_probe. A
-    # SYCL, MUSA, CANN or OpenCL plugin has neither, and an Intel iGPU reached that
-    # way shares system memory, so a "full offload" there is still host-backed and
-    # DirectIO would buffer it. Deliberately NARROWER than _GGML_GPU_BACKEND_RE,
-    # which answers the different question of whether a GPU backend exists at all.
-    _CLASSIFIABLE_GPU_BACKENDS: frozenset = frozenset({"cuda", "hip", "vulkan"})
-    # Same strict filename rule as _GGML_GPU_BACKEND_RE, over the narrower set: a
-    # prefix match here read a disabled `ggml-cuda.dll.bak` as a classifiable target.
-    _CLASSIFIABLE_GPU_BACKEND_RE = _ggml_plugin_re(_CLASSIFIABLE_GPU_BACKENDS)
-
-    @staticmethod
-    def _offload_target_is_classifiable(
-        binary: Optional[str] = None, env: Optional[Mapping[str, str]] = None
-    ) -> bool:
-        """Whether a discrete-vs-shared verdict is available for this build.
-
-        Reads the plugin roots, not just the executable directory:
-        `_installed_ggml_backends` scans beside the binary, so an external
-        `GGML_BACKEND_PATH` CUDA or HIP plugin answered "unclassifiable" and the
-        policy declined a placement it can in fact classify. Third check to need
-        this, hence `_ggml_plugin_roots` rather than a fourth private scan.
-        """
-        try:
-            roots = LlamaCppBackend._ggml_plugin_roots(str(_llama_lib_dir(binary)), env)
-        except Exception:
-            return False
-        wanted = LlamaCppBackend._CLASSIFIABLE_GPU_BACKEND_RE
-        for root in roots:
-            try:
-                names = tuple(path.name for path in root.iterdir() if path.is_file())
-            except OSError:
-                continue
-            if any(wanted.match(name) for name in names):
-                return True
-        return False
-
-    @classmethod
-    def _gpu_runtime_missing_for(
-        cls,
-        binary: Optional[str],
-        env: Optional[Mapping[str, str]] = None,
-    ) -> bool:
-        """Whether an installed GPU plugin has no runtime to load.
-
-        Every backend with a known import chain, not just CUDA. A HIP build whose
-        ``amdhip64*.dll`` is absent loads no more than a CUDA build without cudart:
-        llama.cpp reports no devices and keeps the weights on the CPU while the host
-        inventory still lists the card. Checking only CUDA left that the single
-        fail-OPEN path into `_mem_gpu_offload_confirmed`, which would replace a
-        pageable mapping with a model-sized allocated buffer.
-
-        Computed every time, deliberately. The answer depends on PATH, CUDA_PATH,
-        GGML_BACKEND_PATH and the files themselves, so anything keyed on the binary
-        directory alone goes stale the moment one of those changes -- and the cost is
-        a handful of `os.listdir` calls, unlike the Vulkan probe this briefly copied.
-        """
-        if sys.platform != "win32":
-            return False
-        try:
-            binary_dir = str(_llama_lib_dir(binary))
-        except Exception:
-            return False
-        source = os.environ if env is None else env
-        try:
-            path_dirs = cls._build_windows_path_dirs(
-                binary_dir, sys.prefix, os.environ.get("CUDA_PATH", "")
-            )
-        except Exception:
-            path_dirs = []
-        # The FULL search path the child gets, inherited entries included: a
-        # hand-installed toolkit puts the runtime on PATH without the venv knowing.
-        path_dirs = path_dirs + [d for d in str(source.get("PATH", "")).split(";") if d]
-        # ANY installed plugin with a broken chain condemns the launch: the build is
-        # single-backend in practice, so the one that is present is the one that has
-        # to load.
-        return any(
-            cls._windows_backend_runtime_missing(binary_dir, path_dirs, env, backend)
-            for backend in _WINDOWS_GPU_RUNTIME_IMPORTS
-        )
-
-    @staticmethod
-    def _ggml_plugin_roots(binary_dir: str, env: Optional[Mapping[str, str]] = None):
-        """Where this install's ggml plugins really live.
-
-        ``GGML_BACKEND_PATH`` points the child at plugins outside the executable
-        directory, and a check that only looks beside the binary answers about a
-        different install than the one that will load. One resolver, so the backend
-        check and the loadability check cannot disagree about which plugin they mean.
-        """
-        source = os.environ if env is None else env
-        external = str(source.get("GGML_BACKEND_PATH", "") or "").strip()
-        if external:
-            return [Path(part) for part in external.split(os.pathsep) if part.strip()]
-        return [Path(binary_dir)]
-
-    @staticmethod
-    def _windows_cuda_runtime_missing(
-        binary_dir: str,
-        path_dirs: list[str],
-        env: Optional[Mapping[str, str]] = None,
-    ) -> bool:
-        """Whether this CUDA build has no cudart to load.
-
-        The predicate behind ``_warn_missing_windows_cuda_runtime``, split out
-        because it is also a placement fact: without both linked runtime DLLs
-        (``cudart64_*`` and ``cublas64_*``) the CUDA ggml backend
-        does not load, ``--list-devices`` prints "(none)" and the child runs on the
-        CPU, while host probes still report the card. A DirectIO decision taken on
-        the filename alone would then buffer the whole model in host RAM.
-
-        False for a non-CUDA build and for any unreadable path entry, so only a
-        positively broken CUDA install answers True.
-        """
-        return LlamaCppBackend._windows_backend_runtime_missing(binary_dir, path_dirs, env, "cuda")
-
-    @staticmethod
-    def _windows_backend_runtime_missing(
-        binary_dir: str, path_dirs: list[str], env: Optional[Mapping[str, str]], backend: str
-    ) -> bool:
-        """Whether ``backend``'s plugin is installed but its import chain is not.
-
-        Parameterised rather than written once per backend: HIP fails exactly the way
-        CUDA does -- ``ggml-hip.dll`` present, ``amdhip64*.dll`` absent, LoadLibrary
-        returns NULL, ``--list-devices`` prints "(none)" and the child runs on the CPU
-        while host probes still report the card -- and a CUDA-only check answered
-        "nothing missing" for it. That is the one fail-OPEN case in the confirmation
-        chain, so it would hand a CPU-resident launch managed DirectIO and trade a
-        pageable mapping for a model-sized allocated buffer.
-        """
-        needed = _WINDOWS_GPU_RUNTIME_IMPORTS.get(backend)
-        if not needed:
-            return False
-        # Same identification _installed_ggml_backends uses: the official prebuilts are
-        # single-backend, so the ggml lib beside llama-server IS the build. Looked for
-        # wherever the plugins actually are: an external GGML_BACKEND_PATH plugin is the
-        # one that will load, and answering "nothing missing" because binary_dir holds
-        # no plugin left exactly that install unvalidated.
-        if not any(
-            (root / f"ggml-{backend}.dll").is_file()
-            for root in LlamaCppBackend._ggml_plugin_roots(binary_dir, env)
-        ):
-            return False
-        found: set[str] = set()
-        for directory in path_dirs:
-            try:
-                names = os.listdir(directory)
-            except OSError:
-                continue
-            lowered = [name.lower() for name in names]
-            found |= {stem for stem in needed if any(n.startswith(stem) for n in lowered)}
-            if found >= needed:
-                return False
-        return True
 
     @classmethod
     def _warn_missing_windows_cuda_runtime(cls, binary_dir: str, path_dirs: list[str]) -> None:
@@ -12892,16 +12801,24 @@ class LlamaCppBackend:
         try:
             if binary_dir in cls._missing_cuda_runtime_warned:
                 return
-            if not cls._windows_cuda_runtime_missing(binary_dir, path_dirs):
-                return
+            # Same identification _installed_ggml_backends uses: the official prebuilts are
+            # single-backend, so the ggml CUDA lib beside llama-server IS the build.
             ggml_cuda = os.path.join(binary_dir, "ggml-cuda.dll")
+            if not os.path.isfile(ggml_cuda):
+                return
+            for directory in path_dirs:
+                try:
+                    names = os.listdir(directory)
+                except OSError:
+                    continue
+                if any(name.lower().startswith("cudart64_") for name in names):
+                    return
             cls._missing_cuda_runtime_warned.add(binary_dir)
             logger.warning(
-                "llama.cpp is the CUDA build (%s) but cudart64_*.dll / cublas64_*.dll "
-                "were not both found on its DLL search path. The CUDA ggml backend will "
-                "not load and llama-server will report no devices. This is what a "
-                "CPU-only PyTorch in the managed environment looks like; repair the "
-                "installation to restore GPU support.",
+                "llama.cpp is the CUDA build (%s) but no cudart64_*.dll was found on its "
+                "DLL search path. The CUDA ggml backend will not load and llama-server "
+                "will report no devices. This is what a CPU-only PyTorch in the managed "
+                "environment looks like; repair the installation to restore GPU support.",
                 ggml_cuda,
             )
         except Exception as e:
@@ -24213,7 +24130,7 @@ class LlamaCppBackend:
                 # and rows captured before it would price the fit against VRAM that has
                 # since been allocated. The scope on the load call only guarantees the
                 # memo cannot outlive the load.
-                _arm_vulkan_probe_memo()
+                _arm_load_probe_memo()
                 _mem_dio_possible = no_reserve_requires_dio(
                     supports_load_mode = bool(server_caps.get("supports_load_mode")),
                     gpu_offload_confirmed = True,
@@ -24269,20 +24186,8 @@ class LlamaCppBackend:
                 # buffers it allocates, so the projector is an allocated copy whatever
                 # this resolves to. Gating on it only withheld dio from the multi-GB
                 # weights that DO respond to it.
-                _mem_gpu_offload_confirmed = bool(
-                    not _mem_host_resident
-                    and self._build_offers_gpu_backend(binary, _mem_env)
-                    and not self._gpu_runtime_missing_for(binary, _mem_env)
-                    and self._devices_are_real(gpu_indices, _detected_gpus)
-                    # A probe that did not answer declines rather than confirms; see
-                    # _vulkan_offload_is_discrete.
-                    and self._offload_target_is_classifiable(binary, _mem_env)
-                    # `_is_vulkan_backend` misses an external GGML_BACKEND_PATH plugin,
-                    # so the probe is demanded whenever one could be the target.
-                    and (
-                        not (is_vulkan_backend or self._vulkan_plugin_in_roots(binary, _mem_env))
-                        or self._vulkan_offload_is_discrete(binary, gpu_indices)
-                    )
+                _mem_gpu_offload_confirmed = self._gpu_offload_confirmed(
+                    binary, _mem_env, gpu_indices, _mem_host_resident, _mem_dio_possible
                 )
                 _mem_managed, _mem_extras = apply_model_memory_policy(
                     extra_args,
@@ -24406,22 +24311,8 @@ class LlamaCppBackend:
                             [*cmd, *(_mem_extra_args or [])], _mem_env
                         ),
                     )
-                    confirmed = bool(
-                        not host_resident
-                        and self._build_offers_gpu_backend(binary, _mem_env)
-                        # Present is not loadable: a CUDA build with no cudart on the
-                        # child's search path reports no devices and runs on the CPU.
-                        and not self._gpu_runtime_missing_for(binary, _mem_env)
-                        and self._devices_are_real(devices, _detected_gpus)
-                        # No classifier, no confirmation: see
-                        # _offload_target_is_classifiable.
-                        and self._offload_target_is_classifiable(binary, _mem_env)
-                        and (
-                            not (
-                                is_vulkan_backend or self._vulkan_plugin_in_roots(binary, _mem_env)
-                            )
-                            or self._vulkan_offload_is_discrete(binary, devices)
-                        )
+                    confirmed = self._gpu_offload_confirmed(
+                        binary, _mem_env, devices, host_resident, _mem_dio_possible
                     )
 
                     def _for(pair, env_view):

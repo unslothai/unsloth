@@ -2571,14 +2571,19 @@ class TestTheDioPolicy:
         assert _dio(**kwargs) == (False, False)
 
     def test_host_residency_reaches_the_branch_as_an_unconfirmed_offload(self):
-        """The launch derives gpu_offload_confirmed from `not _mem_host_resident`,
-        so the two cannot disagree; the policy takes the confirmation and does not
-        re-derive it."""
+        """The launch hands host residency to the confirmation, so the two cannot
+        disagree; the policy takes the confirmation and does not re-derive it."""
         from core.inference.llama_cpp import LlamaCppBackend
         import inspect
 
         flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert "_mem_gpu_offload_confirmed=bool(not_mem_host_resident" in flat
+        assert "_mem_gpu_offload_confirmed=self._gpu_offload_confirmed(" in flat
+        assert "binary,_mem_env,gpu_indices,_mem_host_resident,_mem_dio_possible" in flat
+        # and the owner declines on host residency before probing anything
+        owner = "".join(inspect.getsource(LlamaCppBackend._gpu_offload_confirmed).split())
+        assert owner.index("ifnotdio_possibleorhost_resident:returnFalse") < owner.index(
+            "_enumerated_gpu_devices("
+        )
 
     def test_other_platforms_keep_mmap(self, monkeypatch):
         for platform in ("linux", "darwin"):
@@ -2864,7 +2869,8 @@ class TestEveryDeviceSetChangeReAsks:
         arm = arm[: arm.index("return pair,")]
         flat = "".join(arm.split())
         assert "host_resident=self._weights_in_host_memory(" in flat
-        assert "nothost_resident" in flat
+        # host residency is carried INTO the confirmation, which declines on it
+        assert "self._gpu_offload_confirmed(binary,_mem_env,devices,host_resident,_mem_dio_possible)" in flat
         assert "fully_gpu_offloaded=fully_offloaded," in flat
 
     def test_the_decision_answers_all_three_questions(self):
@@ -2923,40 +2929,6 @@ class TestTheVulkanProbeMemoIsScopedToThePlacement:
         monkeypatch.setattr(m.subprocess, "run", run)
         return calls
 
-    def test_while_armed_repeated_asks_spawn_one_probe(self, monkeypatch):
-        import core.inference.llama_cpp as m
-
-        calls = self._count_probes(monkeypatch, m)
-        with m._vulkan_probe_memo_scope():
-            m._arm_vulkan_probe_memo()
-            for _ in range(3):
-                m.LlamaCppBackend._run_vulkan_probe("llama-server")
-        assert len(calls) == 1
-
-    def test_a_failed_probe_is_memoised_too(self, monkeypatch):
-        """An unanswered probe folds into "not an iGPU" upstream, which sends the
-        confirmation straight back here, so an uncached timeout is paid twice over
-        and again per device-set rung."""
-        import core.inference.llama_cpp as m
-
-        calls = self._count_probes(monkeypatch, m, raising = True)
-        with m._vulkan_probe_memo_scope():
-            m._arm_vulkan_probe_memo()
-            for _ in range(3):
-                assert m.LlamaCppBackend._run_vulkan_probe("llama-server") == []
-        assert len(calls) == 1
-
-    def test_before_arming_every_ask_is_live(self, monkeypatch):
-        """The load call is entered long before the placement work, and the Hub
-        download sits in between."""
-        import core.inference.llama_cpp as m
-
-        calls = self._count_probes(monkeypatch, m)
-        with m._vulkan_probe_memo_scope():
-            for _ in range(3):
-                m.LlamaCppBackend._run_vulkan_probe("llama-server")
-        assert len(calls) == 3
-
     def test_outside_a_load_every_ask_is_live(self, monkeypatch):
         """Stale rows here would report free/used VRAM captured before llama-server
         allocated, and a transient empty result would stick indefinitely."""
@@ -2966,166 +2938,6 @@ class TestTheVulkanProbeMemoIsScopedToThePlacement:
         for _ in range(3):
             m.LlamaCppBackend._run_vulkan_probe("llama-server")
         assert len(calls) == 3
-
-    def test_another_thread_cannot_seed_it(self, monkeypatch):
-        """A concurrent system-info poll during a load must not hand the fitter its
-        rows, which is what a shared dict allowed."""
-        import threading
-        import core.inference.llama_cpp as m
-
-        calls = self._count_probes(monkeypatch, m)
-        with m._vulkan_probe_memo_scope():
-            m._arm_vulkan_probe_memo()
-            m.LlamaCppBackend._run_vulkan_probe("llama-server")
-            seen = []
-            t = threading.Thread(
-                target = lambda: seen.append(m._vulkan_probe_memo_get("llama-server"))
-            )
-            t.start()
-            t.join()
-        assert seen == [None]
-        assert len(calls) == 1
-
-    def test_the_scope_clears_at_the_end(self, monkeypatch):
-        import core.inference.llama_cpp as m
-
-        self._count_probes(monkeypatch, m)
-        with m._vulkan_probe_memo_scope():
-            m._arm_vulkan_probe_memo()
-            m.LlamaCppBackend._run_vulkan_probe("llama-server")
-            assert m._vulkan_probe_memo_get("llama-server") is not None
-        assert m._vulkan_probe_memo_armed() is False
-        assert m._vulkan_probe_memo_get("llama-server") is None
-
-    def test_the_load_owns_the_scope_and_the_placement_arms_it(self):
-        from core.inference.llama_cpp import LlamaCppBackend
-        import inspect, core.inference.llama_cpp as m
-
-        # Whitespace-normalised: a formatter may split the with-statement across
-        # lines, and pinning the wrapping made that read as a behaviour change.
-        flat = "".join(inspect.getsource(m._with_gguf_load_marker).split())
-        assert "_vulkan_probe_memo_scope(),gguf_load_in_flight(hf_repo)" in flat
-        assert "_arm_vulkan_probe_memo()" in inspect.getsource(LlamaCppBackend.load_model)
-
-
-class TestThePlacementWindowIsPublished:
-    """A save landing between the memory snapshot and Popen saw neither an active
-    nor a pending child and answered reload_required=false, while the child was
-    already committed to the older settings. The probe and the placement work sit
-    in that window."""
-
-    def test_the_marker_is_set_with_the_snapshot(self):
-        from core.inference.llama_cpp import LlamaCppBackend
-        import inspect
-
-        src = inspect.getsource(LlamaCppBackend.load_model)
-        set_at = src.index("self._memory_pending_launch = _mem_settings")
-        assert set_at < src.index("_arm_vulkan_probe_memo()")
-        assert set_at < src.index("_mem_gpu_offload_confirmed = bool(")
-
-    def test_the_predicate_is_the_warning_s_own(self):
-        from core.inference.llama_cpp import LlamaCppBackend
-        import inspect
-
-        # one definition, so the diagnostic and the placement fact cannot drift
-        warn = inspect.getsource(LlamaCppBackend._warn_missing_windows_cuda_runtime)
-        assert "cls._windows_cuda_runtime_missing(binary_dir, path_dirs)" in warn
-
-    def test_a_cuda_build_without_cudart_is_missing(self, tmp_path):
-        from core.inference.llama_cpp import LlamaCppBackend
-
-        (tmp_path / "ggml-cuda.dll").write_text("")
-        empty = tmp_path / "empty"
-        empty.mkdir()
-        assert LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [str(empty)])
-
-    def test_every_runtime_lib_on_the_path_clears_it(self, tmp_path):
-        """ggml-cuda imports cublas64, which imports cublasLt64; any one absent and
-        LoadLibrary returns NULL."""
-        from core.inference.llama_cpp import LlamaCppBackend
-
-        (tmp_path / "ggml-cuda.dll").write_text("")
-        libs = tmp_path / "libs"
-        libs.mkdir()
-        for name in ("cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll"):
-            (libs / name).write_text("")
-        assert not LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [str(libs)])
-
-    @pytest.mark.parametrize("present", ["cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll"])
-    def test_only_one_of_the_three_is_still_missing(self, tmp_path, present):
-        from core.inference.llama_cpp import LlamaCppBackend
-
-        (tmp_path / "ggml-cuda.dll").write_text("")
-        libs = tmp_path / "libs"
-        libs.mkdir()
-        (libs / present).write_text("")
-        assert LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [str(libs)])
-
-    def test_the_pair_may_be_split_across_path_entries(self, tmp_path):
-        from core.inference.llama_cpp import LlamaCppBackend
-
-        (tmp_path / "ggml-cuda.dll").write_text("")
-        a, b = tmp_path / "a", tmp_path / "b"
-        a.mkdir()
-        b.mkdir()
-        (a / "cudart64_12.dll").write_text("")
-        (b / "cublas64_12.dll").write_text("")
-        (b / "cublasLt64_12.dll").write_text("")
-        assert not LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [str(a), str(b)])
-
-    def test_a_non_cuda_build_is_never_missing(self, tmp_path):
-        from core.inference.llama_cpp import LlamaCppBackend
-        (tmp_path / "ggml-vulkan.dll").write_text("")
-        assert not LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [])
-
-    def test_both_confirmations_consult_it(self):
-        from core.inference.llama_cpp import LlamaCppBackend
-        import inspect
-
-        flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert flat.count("andnotself._gpu_runtime_missing_for(binary,_mem_env)") == 2
-
-
-class TestTheBackendCheckReusesTheRepoRecognition:
-    """A private cuda/hip/vulkan set answered "no GPU" for a SYCL, MUSA, CANN or
-    OpenCL build, and for a custom runtime loading its plugin from
-    GGML_BACKEND_PATH. _binary_ships_no_gpu_backend already knows both."""
-
-    def test_it_defers_to_the_existing_helper(self):
-        from core.inference.llama_cpp import LlamaCppBackend
-        import inspect
-
-        src = inspect.getsource(LlamaCppBackend._build_offers_gpu_backend)
-        assert "_binary_ships_no_gpu_backend(binary, env)" in src
-        assert "_GGML_GPU_BACKEND_RE" in src
-        assert '{"cuda", "hip", "vulkan"}' not in src
-
-    def test_a_readable_cpu_only_bundle_is_still_rejected(self, monkeypatch):
-        from core.inference.llama_cpp import LlamaCppBackend
-        monkeypatch.setattr(
-            LlamaCppBackend,
-            "_binary_ships_no_gpu_backend",
-            staticmethod(lambda binary = None, env = None: True),
-        )
-        assert not LlamaCppBackend._build_offers_gpu_backend("llama-server", {})
-
-    def test_an_unreadable_install_still_fails_closed(self, monkeypatch):
-        """Guessing GPU hands DirectIO to a CPU-resident model; guessing no GPU
-        only declines an optimisation."""
-        import core.inference.llama_cpp as m
-
-        monkeypatch.setattr(
-            m.LlamaCppBackend,
-            "_binary_ships_no_gpu_backend",
-            staticmethod(lambda binary = None, env = None: False),
-        )
-
-        def boom(_b):
-            raise OSError("unreadable")
-
-        monkeypatch.setattr(m, "_llama_lib_dir", boom)
-        assert not m.LlamaCppBackend._build_offers_gpu_backend("llama-server", {})
-
 
 class TestTheBackendPathIsEvidenceOnlyWhenItHoldsAPlugin:
     """_binary_ships_no_gpu_backend answering False means "I cannot say it ships
@@ -3141,40 +2953,6 @@ class TestTheBackendPathIsEvidenceOnlyWhenItHoldsAPlugin:
             "_binary_ships_no_gpu_backend",
             staticmethod(lambda binary = None, env = None: False),
         )
-
-    def test_a_path_holding_a_gpu_plugin_confirms(self, monkeypatch, tmp_path):
-        from core.inference.llama_cpp import LlamaCppBackend
-
-        self._no_verdict(monkeypatch)
-        (tmp_path / "ggml-cuda.dll").write_text("")
-        assert LlamaCppBackend._build_offers_gpu_backend(
-            "llama-server", {"GGML_BACKEND_PATH": str(tmp_path)}
-        )
-
-    def test_a_cpu_only_path_does_not(self, monkeypatch, tmp_path):
-        from core.inference.llama_cpp import LlamaCppBackend
-
-        self._no_verdict(monkeypatch)
-        (tmp_path / "ggml-cpu.dll").write_text("")
-        assert not LlamaCppBackend._build_offers_gpu_backend(
-            "llama-server", {"GGML_BACKEND_PATH": str(tmp_path)}
-        )
-
-    def test_a_stale_or_missing_path_does_not(self, monkeypatch, tmp_path):
-        from core.inference.llama_cpp import LlamaCppBackend
-        self._no_verdict(monkeypatch)
-        assert not LlamaCppBackend._build_offers_gpu_backend(
-            "llama-server", {"GGML_BACKEND_PATH": str(tmp_path / "gone")}
-        )
-
-    def test_a_gpu_lib_beside_the_binary_still_confirms(self, monkeypatch, tmp_path):
-        import core.inference.llama_cpp as m
-
-        self._no_verdict(monkeypatch)
-        (tmp_path / "ggml-vulkan.dll").write_text("")
-        monkeypatch.setattr(m, "_llama_lib_dir", lambda b: tmp_path)
-        assert m.LlamaCppBackend._build_offers_gpu_backend("llama-server", {})
-
 
 class TestTheSnapshotCarriesTheDioTokens:
     def test_the_flags_round_trip_with_the_base_command(self):
@@ -3234,108 +3012,6 @@ class TestASaveDuringPlacementIsAnswered:
         )
         monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))
         assert rs._model_memory_reload_required() is False
-
-
-class TestOnlyAClassifiableTargetConfirms:
-    """ "Has a GPU backend" and "we can tell whether its target is discrete" are
-    different questions, and broadening the first silently broadened the second.
-    CUDA and HIP are classified by _amd_apu_wants_unified_memory and Vulkan by the
-    probe; a SYCL, MUSA, CANN or OpenCL plugin has neither, and an Intel iGPU
-    reached that way shares system memory, so DirectIO would buffer it."""
-
-    @pytest.mark.parametrize(
-        "lib,classifiable",
-        [
-            ("ggml-cuda.dll", True),
-            ("ggml-hip.dll", True),
-            ("ggml-vulkan.dll", True),
-            ("ggml-sycl.dll", False),
-            ("ggml-opencl.dll", False),
-            ("ggml-cpu.dll", False),
-        ],
-    )
-    def test_the_classifier_set_is_narrower_than_the_backend_check(
-        self, monkeypatch, tmp_path, lib, classifiable
-    ):
-        import core.inference.llama_cpp as m
-
-        monkeypatch.setattr(m.sys, "platform", "win32")
-        monkeypatch.setattr(m, "_llama_lib_dir", lambda b: tmp_path)
-        (tmp_path / lib).write_text("")
-        assert m.LlamaCppBackend._offload_target_is_classifiable("llama-server", {}) is classifiable
-
-    def test_it_follows_an_external_backend_path(self, monkeypatch, tmp_path):
-        """Third check to need this: scanning only beside the binary answered
-        "unclassifiable" for an external CUDA plugin the policy can classify."""
-        import core.inference.llama_cpp as m
-
-        beside, external = tmp_path / "beside", tmp_path / "ext"
-        beside.mkdir()
-        external.mkdir()
-        (external / "ggml-cuda.dll").write_text("")
-        monkeypatch.setattr(m.sys, "platform", "win32")
-        monkeypatch.setattr(m, "_llama_lib_dir", lambda b: beside)
-        assert not m.LlamaCppBackend._offload_target_is_classifiable("llama-server", {})
-        assert m.LlamaCppBackend._offload_target_is_classifiable(
-            "llama-server", {"GGML_BACKEND_PATH": str(external)}
-        )
-
-    def test_both_confirmations_require_it(self):
-        from core.inference.llama_cpp import LlamaCppBackend
-        import inspect
-
-        flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert flat.count("self._offload_target_is_classifiable(binary,_mem_env)") == 2
-
-
-class TestTheLoadabilityCheckFollowsThePlugin:
-    """GGML_BACKEND_PATH puts the plugin outside the executable directory. The
-    backend check accepts it there, so the loadability check has to look there too
-    or an external CUDA plugin with a missing dependency goes unvalidated."""
-
-    def test_one_resolver_serves_both(self):
-        from core.inference.llama_cpp import LlamaCppBackend
-        import inspect
-
-        for fn in (
-            LlamaCppBackend._build_offers_gpu_backend,
-            # the runtime check resolves roots in the parameterised owner now, which
-            # _windows_cuda_runtime_missing delegates to for CUDA
-            LlamaCppBackend._windows_backend_runtime_missing,
-        ):
-            assert "_ggml_plugin_roots(" in inspect.getsource(fn)
-        assert "_windows_backend_runtime_missing(" in inspect.getsource(
-            LlamaCppBackend._windows_cuda_runtime_missing
-        )
-
-    def test_an_external_root_wins(self, tmp_path):
-        from core.inference.llama_cpp import LlamaCppBackend
-
-        beside, external = tmp_path / "beside", tmp_path / "ext"
-        beside.mkdir()
-        external.mkdir()
-        assert LlamaCppBackend._ggml_plugin_roots(str(beside), {}) == [beside]
-        assert LlamaCppBackend._ggml_plugin_roots(
-            str(beside), {"GGML_BACKEND_PATH": str(external)}
-        ) == [external]
-
-    def test_an_external_cuda_plugin_is_validated(self, tmp_path):
-        """The plugin lives outside binary_dir, so the old check returned "nothing
-        missing" and skipped the guard entirely."""
-        from core.inference.llama_cpp import LlamaCppBackend
-
-        beside, external = tmp_path / "beside", tmp_path / "ext"
-        beside.mkdir()
-        external.mkdir()
-        (external / "ggml-cuda.dll").write_text("")
-        env = {"GGML_BACKEND_PATH": str(external)}
-        # no cudart/cublas anywhere on the search path
-        assert LlamaCppBackend._windows_cuda_runtime_missing(str(beside), [], env)
-        libs = tmp_path / "libs"
-        libs.mkdir()
-        for _n in ("cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll"):
-            (libs / _n).write_text("")
-        assert not LlamaCppBackend._windows_cuda_runtime_missing(str(beside), [str(libs)], env)
 
 
 class TestTheMarkerIsReleasedWithTheLoadLock:
@@ -3403,78 +3079,6 @@ class TestAReplacementLoadIsNotAnsweredByTheOldChild:
         assert src.count("_active_launch_placement()") == 1
 
 
-class TestLoadabilityIsComputedNotAwaited:
-    """The DirectIO guard runs well before `_llama_server_env_for_binary`, so a
-    cache-only read answered "nothing missing" on every first load and a build that
-    cannot load its CUDA backend was confirmed as fully offloaded."""
-
-    def test_the_guard_computes_on_demand(self, monkeypatch, tmp_path):
-        import core.inference.llama_cpp as m
-
-        monkeypatch.setattr(m.sys, "platform", "win32")
-        monkeypatch.setattr(m, "_llama_lib_dir", lambda b: tmp_path)
-        monkeypatch.setattr(
-            m.LlamaCppBackend,
-            "_build_windows_path_dirs",
-            staticmethod(lambda *a, **k: []),
-        )
-        (tmp_path / "ggml-cuda.dll").write_text("")
-        # nothing populated the cache; the accessor must still answer correctly
-        assert m.LlamaCppBackend._gpu_runtime_missing_for("llama-server", {"PATH": ""})
-
-    def test_a_complete_runtime_clears_it(self, monkeypatch, tmp_path):
-        import core.inference.llama_cpp as m
-
-        libs = tmp_path / "libs"
-        libs.mkdir()
-        for _n in ("cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll"):
-            (libs / _n).write_text("")
-        (tmp_path / "ggml-cuda.dll").write_text("")
-        monkeypatch.setattr(m.sys, "platform", "win32")
-        monkeypatch.setattr(m, "_llama_lib_dir", lambda b: tmp_path)
-        monkeypatch.setattr(
-            m.LlamaCppBackend,
-            "_build_windows_path_dirs",
-            staticmethod(lambda *a, **k: [str(libs)]),
-        )
-        assert not m.LlamaCppBackend._gpu_runtime_missing_for("llama-server", {"PATH": ""})
-
-    def test_it_is_a_noop_off_windows(self, monkeypatch):
-        import core.inference.llama_cpp as m
-        monkeypatch.setattr(m.sys, "platform", "linux")
-        assert not m.LlamaCppBackend._gpu_runtime_missing_for("llama-server", {})
-
-
-class TestAnExternalVulkanPluginStillGetsProbed:
-    """`_is_vulkan_backend` scans only beside the executable, so a custom runtime
-    supplying ggml-vulkan through GGML_BACKEND_PATH read as non-Vulkan and the
-    discreteness probe was skipped, confirming an iGPU on shared system RAM."""
-
-    def test_the_plugin_is_found_in_the_external_root(self, monkeypatch, tmp_path):
-        import core.inference.llama_cpp as m
-
-        beside, external = tmp_path / "beside", tmp_path / "ext"
-        beside.mkdir()
-        external.mkdir()
-        (external / "ggml-vulkan.dll").write_text("")
-        monkeypatch.setattr(m.sys, "platform", "win32")
-        monkeypatch.setattr(m, "_llama_lib_dir", lambda b: beside)
-        assert not m.LlamaCppBackend._vulkan_plugin_in_roots("llama-server", {})
-        assert m.LlamaCppBackend._vulkan_plugin_in_roots(
-            "llama-server", {"GGML_BACKEND_PATH": str(external)}
-        )
-
-    def test_both_guards_demand_the_probe_for_it(self):
-        from core.inference.llama_cpp import LlamaCppBackend
-        import inspect
-
-        flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        # the probe is skipped only when NEITHER signal says Vulkan
-        assert (
-            flat.count("not(is_vulkan_backendorself._vulkan_plugin_in_roots(binary,_mem_env))") == 2
-        )
-
-
 class TestAllThreeCudaFamiliesAreRequired:
     """ggml-cuda imports cublas64, which imports cublasLt64; LoadLibrary returns
     NULL unless all three resolve. Same set REAL_UPSTREAM_CUDART_BUNDLE pins in
@@ -3486,41 +3090,6 @@ class TestAllThreeCudaFamiliesAreRequired:
         libs = tmp_path / "libs"
         libs.mkdir()
         return libs
-
-    @pytest.mark.parametrize(
-        "present",
-        [
-            ("cudart64_12.dll", "cublas64_12.dll"),
-            ("cudart64_12.dll", "cublasLt64_12.dll"),
-            ("cublas64_12.dll", "cublasLt64_12.dll"),
-        ],
-        ids = ["no-cublasLt", "no-cublas", "no-cudart"],
-    )
-    def test_any_missing_family_is_missing(self, tmp_path, present):
-        from core.inference.llama_cpp import LlamaCppBackend
-
-        libs = self._cuda_build(tmp_path)
-        for name in present:
-            (libs / name).write_text("")
-        assert LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [str(libs)])
-
-    def test_all_three_clear_it(self, tmp_path):
-        from core.inference.llama_cpp import LlamaCppBackend
-
-        libs = self._cuda_build(tmp_path)
-        for name in ("cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll"):
-            (libs / name).write_text("")
-        assert not LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [str(libs)])
-
-    def test_cublas_and_cublaslt_are_distinct_prefixes(self, tmp_path):
-        """cublas64_ must not be satisfied by a cublasLt64_ file or vice versa."""
-        from core.inference.llama_cpp import LlamaCppBackend
-
-        libs = self._cuda_build(tmp_path)
-        (libs / "cudart64_12.dll").write_text("")
-        (libs / "cublasLt64_12.dll").write_text("")
-        assert LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [str(libs)])
-
 
 class TestARetryKeepsThePlacementWindowOpen:
     """The marker is dropped after Popen because is_active covers it, but a crashed
@@ -3583,42 +3152,12 @@ class TestThePendingCompareIsByEffect:
                 assert mlock_bit == (keep and not no_res)
 
 
-class TestADeviceMustActuallyExist:
-    """A requested index is a REQUEST, not evidence: a stale explicit pin is
-    filtered out of `_detected_gpus` and restored into `gpu_indices`, so accepting a
-    nonempty list confirmed an offload to a device that is not there."""
-
-    def test_the_launch_checks_membership_not_emptiness(self):
-        from core.inference.llama_cpp import LlamaCppBackend
-        import inspect
-
-        src = inspect.getsource(LlamaCppBackend.load_model)
-        # the old "either list is nonempty" form is gone from both confirmations
-        assert "(_detected_gpus or devices)" not in src
-        assert "(_detected_gpus or gpu_indices)" not in src
-        flat = "".join(src.split())
-        assert flat.count("andself._devices_are_real(") == 2
-
-    def test_a_stale_pin_is_not_evidence(self):
-        """Now exercisable directly, since it is a method rather than a closure."""
-        from core.inference.llama_cpp import LlamaCppBackend
-
-        detected = [(0, 1024), (1, 2048)]
-        devices_are_real = LlamaCppBackend._devices_are_real
-
-        assert devices_are_real([0], detected)
-        assert devices_are_real([0, 1], detected)
-        assert devices_are_real(None, detected)
-        assert not devices_are_real([99], detected)  # the stale pin
-        assert not devices_are_real([0, 99], detected)  # partially stale
-        assert not devices_are_real([0], [])  # nothing probed at all
-
-
 class TestNoNestedHelperIsUsedBeforeItsDef:
     """A nested `def` in `load_model` binds the name as a local, so a call placed
     above it raises UnboundLocalError at runtime rather than failing any import or
-    lint check. That shipped once (`_devices_are_real`) and aborted every
-    full-offload launch; this is the guard that would have caught it."""
+    lint check. That shipped once, in a device validator since replaced by the
+    build's own device list, and aborted every full-offload launch; this is the
+    guard that would have caught it."""
 
     def test_every_nested_def_precedes_its_calls(self):
         import ast
@@ -3647,15 +3186,6 @@ class TestNoNestedHelperIsUsedBeforeItsDef:
                     f"{defined_at[node.func.id]}"
                 )
         assert not offenders, "UnboundLocalError at runtime: " + "; ".join(offenders)
-
-    def test_the_device_validator_is_a_method_now(self):
-        from core.inference.llama_cpp import LlamaCppBackend
-        import inspect
-
-        # order-independent by construction, and reachable from both call sites
-        assert callable(LlamaCppBackend._devices_are_real)
-        assert "def _devices_are_real" not in inspect.getsource(LlamaCppBackend.load_model)
-
 
 class TestThePendingWindowHasNoGaps:
     """Three ways the window closed early, each found in turn: the publish order,
@@ -3829,33 +3359,6 @@ class TestOnlyALoadablePluginCountsAsAGpuBackend:
         for name in self.NOT_LOADABLE:
             assert not _GGML_GPU_BACKEND_RE.match(name), name
 
-    def test_the_classifiable_pattern_uses_the_same_rule(self):
-        from core.inference.llama_cpp import LlamaCppBackend
-
-        rex = LlamaCppBackend._CLASSIFIABLE_GPU_BACKEND_RE
-        for name in ("ggml-cuda.dll", "libggml-vulkan.so.1", "libggml-hip.so"):
-            assert rex.match(name), name
-        for name in self.NOT_LOADABLE:
-            assert not rex.match(name), name
-        # still narrower than the full set: a SYCL plugin exists but is unclassifiable
-        assert not rex.match("ggml-sycl.dll")
-        from core.inference.llama_cpp import _GGML_GPU_BACKEND_RE
-
-        assert _GGML_GPU_BACKEND_RE.match("ggml-sycl.dll")
-
-    def test_both_patterns_come_from_one_builder(self):
-        import inspect
-        from core.inference import llama_cpp
-
-        src = "".join(inspect.getsource(llama_cpp._ggml_plugin_re).split())
-        # the one place the loadable-filename rule is written down
-        assert r"(?:\.dll|\.so(?:\.\d+)*|(?:\.\d+)*\.dylib)$" in src
-        body = "".join(
-            inspect.getsource(llama_cpp.LlamaCppBackend._offload_target_is_classifiable).split()
-        )
-        assert "startswith" not in body, "classifiable check went back to a prefix match"
-
-
 class TestRecoveryRungsReadTheLaunchSnapshot:
     """Every rung of one launch has to decide from the pair that launch captured. The
     fit-on and architecture-crash recoveries called live `should_mlock()` and passed no
@@ -3912,59 +3415,226 @@ class TestAnyInstalledGpuPluginMustBeLoadable:
             (libs / name).write_text("")
         return [str(libs)]
 
-    def test_a_hip_build_without_the_hip_runtime_is_missing(self, tmp_path):
-        from core.inference.llama_cpp import LlamaCppBackend
-        libs = self._install(tmp_path, "ggml-hip.dll", ())
-        assert LlamaCppBackend._windows_backend_runtime_missing(str(tmp_path), libs, None, "hip")
 
-    def test_the_full_hip_chain_clears_it(self, tmp_path):
+
+# Real `llama-server --list-devices` output, captured from installed builds rather
+# than invented: a CUDA build with two cards, and the two ways a build with nothing
+# to offer prints it. The noise above the header is what ggml_cuda_init writes.
+_LIST_DEVICES_GPU = """ggml_cuda_init: found 2 CUDA devices (Total VRAM: 72627 MiB):
+  Device 0: NVIDIA RTX 6000 Ada Generation, compute capability 8.9, VMM: yes, VRAM: 48504 MiB
+  Device 1: NVIDIA GeForce RTX 3090, compute capability 8.6, VMM: yes, VRAM: 24123 MiB
+Available devices:
+  CUDA0: NVIDIA RTX 6000 Ada Generation (48504 MiB, 47172 MiB free)
+  CUDA1: NVIDIA GeForce RTX 3090 (24123 MiB, 21855 MiB free)
+"""
+_LIST_DEVICES_NONE = "Available devices:\n  (none)\n"
+_LIST_DEVICES_BARE = "Available devices:\n"
+_LIST_DEVICES_VULKAN = "Available devices:\n  Vulkan0: AMD Radeon 8060S (16384 MiB, 15000 MiB free)\n"
+
+
+class TestTheBuildsOwnDeviceListIsTheEvidence:
+    """The confirmation used to be six filename checks standing in for one question:
+    will the child actually place the weights on a discrete GPU. Each was a proxy,
+    each could be satisfied by a build that still enumerates nothing, and each needed
+    its own review round to find. `--list-devices` is the loader's own verdict, so a
+    missing CUDA or HIP runtime, a plugin renamed to disable it, a plugin built for
+    another vendor and a plugin reachable only through GGML_BACKEND_PATH all resolve
+    without inspecting a single filename."""
+
+    def test_it_parses_a_real_gpu_listing(self):
+        from core.inference.llama_cpp import _parse_listed_devices
+
+        assert _parse_listed_devices(_LIST_DEVICES_GPU) == ["CUDA0", "CUDA1"]
+
+    def test_the_init_noise_above_the_header_is_not_a_device(self):
+        """`  Device 0: ...` is indented and has a colon, so only the header keeps it out."""
+        from core.inference.llama_cpp import _parse_listed_devices
+
+        assert "Device" not in "".join(_parse_listed_devices(_LIST_DEVICES_GPU))
+
+    @pytest.mark.parametrize("text", [_LIST_DEVICES_NONE, _LIST_DEVICES_BARE])
+    def test_both_renderings_of_no_devices_are_an_answer(self, text):
+        """Different builds print `(none)` or nothing at all. Both mean zero devices,
+        which is a real answer and must not collapse into "could not tell"."""
+        from core.inference.llama_cpp import _parse_listed_devices
+
+        assert _parse_listed_devices(text) == []
+
+    @pytest.mark.parametrize(
+        "text", ["", None, "error: unknown argument --list-devices\n", "garbage\n"]
+    )
+    def test_no_header_is_no_answer(self, text):
+        """An older build that rejects the flag is not evidence of having no devices."""
+        from core.inference.llama_cpp import _parse_listed_devices
+
+        assert _parse_listed_devices(text) is None
+
+
+class TestOnlyEnumeratedDevicesConfirmAnOffload:
+    def _confirm(self, monkeypatch, devices, gpu_indices = None, host_resident = False,
+                 discrete = True, dio_possible = True):
         from core.inference.llama_cpp import LlamaCppBackend
-        libs = self._install(
-            tmp_path, "ggml-hip.dll", ("amdhip64_6.dll", "hipblas.dll", "rocblas.dll")
+
+        monkeypatch.setattr(
+            LlamaCppBackend, "_enumerated_gpu_devices",
+            classmethod(lambda cls, binary = None, env = None: devices),
         )
-        assert not LlamaCppBackend._windows_backend_runtime_missing(
-            str(tmp_path), libs, None, "hip"
+        monkeypatch.setattr(
+            LlamaCppBackend, "_vulkan_offload_is_discrete",
+            staticmethod(lambda binary, idx = None: discrete),
+        )
+        return LlamaCppBackend._gpu_offload_confirmed(
+            "llama-server", {}, gpu_indices, host_resident, dio_possible
         )
 
-    @pytest.mark.parametrize("present", ["amdhip64_6.dll", "hipblas.dll", "rocblas.dll"])
-    def test_any_one_of_the_hip_chain_alone_is_still_missing(self, tmp_path, present):
-        from core.inference.llama_cpp import LlamaCppBackend
-        libs = self._install(tmp_path, "ggml-hip.dll", (present,))
-        assert LlamaCppBackend._windows_backend_runtime_missing(str(tmp_path), libs, None, "hip")
+    def test_an_enumerated_gpu_confirms(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["CUDA0"]) is True
 
-    def test_a_backend_with_no_known_chain_is_not_second_guessed(self, tmp_path):
-        """A custom build must not be called broken just because we cannot check it."""
+    def test_a_build_reporting_no_devices_declines(self, monkeypatch):
+        """The CUDA-without-cudart, HIP-without-amdhip64, disabled-plugin and
+        wrong-vendor cases all arrive here as an empty list."""
+        assert self._confirm(monkeypatch, []) is False
+
+    def test_an_unanswered_probe_declines(self, monkeypatch):
+        assert self._confirm(monkeypatch, None) is False
+
+    def test_host_resident_weights_decline_without_probing(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["CUDA0"], host_resident = True) is False
+
+    def test_a_platform_that_cannot_use_dio_never_probes(self, monkeypatch):
+        """Off Windows no answer can reach a flag, now or after a later save, so the
+        subprocess is not worth spawning."""
         from core.inference.llama_cpp import LlamaCppBackend
 
-        libs = self._install(tmp_path, "ggml-sycl.dll", ())
-        assert not LlamaCppBackend._windows_backend_runtime_missing(
-            str(tmp_path), libs, None, "sycl"
+        def _boom(cls, binary = None, env = None):
+            raise AssertionError("probed when the answer cannot matter")
+
+        monkeypatch.setattr(
+            LlamaCppBackend, "_enumerated_gpu_devices", classmethod(_boom)
         )
+        assert LlamaCppBackend._gpu_offload_confirmed(
+            "llama-server", {}, None, False, False
+        ) is False
 
-    def test_an_absent_plugin_is_not_missing_a_runtime(self, tmp_path):
-        from core.inference.llama_cpp import LlamaCppBackend
-        libs = self._install(tmp_path, "ggml-cpu.dll", ())
-        for backend in ("cuda", "hip"):
-            assert not LlamaCppBackend._windows_backend_runtime_missing(
-                str(tmp_path), libs, None, backend
-            )
+    def test_a_cpu_only_listing_is_not_an_offload_target(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["CPU"]) is False
 
-    def test_the_cuda_predicate_still_answers_for_the_warning(self, tmp_path):
-        """`_warn_missing_windows_cuda_runtime` keeps its own CUDA-specific message,
-        so the narrow predicate has to survive the generalisation."""
-        from core.inference.llama_cpp import LlamaCppBackend
+    def test_a_pinned_device_the_build_never_listed_declines(self, monkeypatch):
+        """The stale-pin case: the host reports a card the child cannot open."""
+        assert self._confirm(monkeypatch, ["CUDA0"], gpu_indices = [1]) is False
 
-        libs = self._install(tmp_path, "ggml-cuda.dll", ())
-        assert LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), libs)
+    def test_every_pinned_device_must_be_listed(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["CUDA0"], gpu_indices = [0, 1]) is False
+        assert self._confirm(monkeypatch, ["CUDA0", "CUDA1"], gpu_indices = [0, 1]) is True
 
-    def test_the_launch_check_covers_every_known_backend(self):
+    def test_a_vulkan_target_still_needs_the_discreteness_probe(self, monkeypatch):
+        """--list-devices does not say whether the VRAM is carved out of system RAM,
+        and an iGPU full offload is still host-backed."""
+        assert self._confirm(monkeypatch, ["Vulkan0"], discrete = False) is False
+        assert self._confirm(monkeypatch, ["Vulkan0"], discrete = True) is True
+
+    def test_a_non_vulkan_target_does_not_pay_for_that_probe(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["CUDA0"], discrete = False) is True
+
+    def test_an_external_vulkan_plugin_names_itself_like_any_other(self):
+        """What the plugin-root scan was approximating: the build lists the device it
+        loaded, wherever the plugin came from."""
+        from core.inference.llama_cpp import LlamaCppBackend, _parse_listed_devices
+
+        devices = _parse_listed_devices(_LIST_DEVICES_VULKAN)
+        assert LlamaCppBackend._devices_are_vulkan(devices, None) is True
+
+
+class TestTheDeviceListIsProbedOncePerLoad:
+    def test_while_armed_repeated_asks_spawn_one_probe(self, monkeypatch):
+        import core.inference.llama_cpp as m
+
+        calls = []
+        monkeypatch.setattr(
+            m.LlamaCppBackend, "_run_list_devices",
+            staticmethod(lambda binary, env = None: calls.append(binary) or ["CUDA0"]),
+        )
+        m._arm_load_probe_memo()
+        try:
+            for _ in range(3):
+                assert m.LlamaCppBackend._enumerated_gpu_devices("llama-server", {}) == ["CUDA0"]
+            assert len(calls) == 1
+        finally:
+            m._LOAD_PROBE_STATE.armed = False
+            m._LOAD_PROBE_STATE.rows = None
+
+    def test_an_unanswered_probe_is_memoised_too(self, monkeypatch):
+        """Otherwise a build that hangs on the flag pays the timeout once per rung."""
+        import core.inference.llama_cpp as m
+
+        calls = []
+        monkeypatch.setattr(
+            m.LlamaCppBackend, "_run_list_devices",
+            staticmethod(lambda binary, env = None: calls.append(binary) or None),
+        )
+        m._arm_load_probe_memo()
+        try:
+            for _ in range(3):
+                assert m.LlamaCppBackend._enumerated_gpu_devices("llama-server", {}) is None
+            assert len(calls) == 1
+        finally:
+            m._LOAD_PROBE_STATE.armed = False
+            m._LOAD_PROBE_STATE.rows = None
+
+    def test_the_two_probes_do_not_share_a_slot(self, monkeypatch):
+        """One memo, two kinds: the device list and the Vulkan discreteness rows."""
+        import core.inference.llama_cpp as m
+
+        m._arm_load_probe_memo()
+        try:
+            m._load_probe_memo_put("devices", "b", ["CUDA0"])
+            m._load_probe_memo_put("vulkan", "b", [{"index": 0}])
+            assert m._load_probe_memo_get("devices", "b") == ["CUDA0"]
+            assert m._load_probe_memo_get("vulkan", "b") == [{"index": 0}]
+        finally:
+            m._LOAD_PROBE_STATE.armed = False
+            m._LOAD_PROBE_STATE.rows = None
+
+    def test_before_arming_every_ask_is_live(self, monkeypatch):
+        import core.inference.llama_cpp as m
+
+        calls = []
+        monkeypatch.setattr(
+            m.LlamaCppBackend, "_run_list_devices",
+            staticmethod(lambda binary, env = None: calls.append(binary) or ["CUDA0"]),
+        )
+        m._LOAD_PROBE_STATE.armed = False
+        m._LOAD_PROBE_STATE.rows = None
+        for _ in range(2):
+            m.LlamaCppBackend._enumerated_gpu_devices("llama-server", {})
+        assert len(calls) == 2
+
+    def test_the_load_owns_the_scope_and_the_placement_arms_it(self):
+        import inspect
+        import core.inference.llama_cpp as m
+
+        assert "_load_probe_memo_scope()" in inspect.getsource(m._with_gguf_load_marker)
+        assert "_arm_load_probe_memo()" in inspect.getsource(m.LlamaCppBackend.load_model)
+
+    def test_the_scope_clears_at_the_end(self):
+        import core.inference.llama_cpp as m
+
+        m._arm_load_probe_memo()
+        with m._load_probe_memo_scope():
+            pass
+        assert m._load_probe_memo_armed() is False
+        assert m._load_probe_memo_get("devices", "b") is None
+
+
+class TestTheLaunchPublishesItsPlacementWindow:
+    """Kept from the class that also held the old CUDA-runtime checks: the window
+    itself is still real, the filename checks that shared the class are not."""
+
+    def test_the_snapshot_is_published_before_any_placement_work(self):
         import inspect
         from core.inference.llama_cpp import LlamaCppBackend
 
-        src = "".join(inspect.getsource(LlamaCppBackend._gpu_runtime_missing_for).split())
-        assert "forbackendin_WINDOWS_GPU_RUNTIME_IMPORTS" in src
-
-    def test_the_known_chains_cover_cuda_and_hip(self):
-        from core.inference.llama_cpp import _WINDOWS_GPU_RUNTIME_IMPORTS
-        assert set(_WINDOWS_GPU_RUNTIME_IMPORTS) == {"cuda", "hip"}
-        assert _WINDOWS_GPU_RUNTIME_IMPORTS["hip"] == {"amdhip64", "hipblas", "rocblas"}
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        set_at = src.index("self._memory_pending_launch = _mem_settings")
+        assert set_at < src.index("_arm_load_probe_memo()")
+        assert set_at < src.index("_mem_gpu_offload_confirmed = self._gpu_offload_confirmed(")
