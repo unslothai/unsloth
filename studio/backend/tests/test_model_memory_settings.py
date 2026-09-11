@@ -3696,7 +3696,6 @@ class TestThePendingWindowHasNoGaps:
     def test_the_lock_is_still_the_backstop(self):
         from core.inference.llama_cpp import LlamaCppBackend
         import inspect
-
         assert "self._memory_launch_pending = False" in inspect.getsource(
             LlamaCppBackend._serial_load_scope
         )
