@@ -1751,6 +1751,31 @@ class TestMinGpuVram(unittest.TestCase):
         self.assertEqual(breakdown.total, breakdown.min_gpu_vram(1))
 
 
+class TestAttentionEstimateModelClass(unittest.TestCase):
+    def _resolved_model_class(self, raw_config):
+        from utils.hardware import hardware as hardware_module
+
+        captured = {}
+
+        def _stub_resolver(model_class, cfg):
+            captured["model_class"] = model_class
+            return "sdpa"
+
+        with patch("utils.transformers_version._load_config_json", return_value = raw_config):
+            config = hardware_module._load_config_for_gpu_estimate("unsloth/test")
+        with patch.dict(sys.modules, _fake_unsloth_attention_modules(_stub_resolver)):
+            hardware_module._determine_attention_impl_for_gpu_estimate(config)
+        return captured["model_class"]
+
+    def test_raw_config_resolves_model_class_from_model_type(self):
+        from transformers import LlamaForCausalLM
+        model_class = self._resolved_model_class({"model_type": "llama", "hidden_size": 4096})
+        self.assertIs(model_class, LlamaForCausalLM)
+
+    def test_unknown_model_type_resolves_no_model_class(self):
+        self.assertIsNone(self._resolved_model_class({"model_type": "not_a_real_model"}))
+
+
 class TestPerGpuFitGuardAllCounts(unittest.TestCase):
     def test_training_estimate_resolves_attention_without_raising(self):
         with (

@@ -4852,9 +4852,14 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
 
     from unsloth.models._utils import resolve_attention_implementation
     from transformers import AutoModel, AutoModelForCausalLM
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
 
     # resolve_attention_implementation writes _attn_implementation onto the config and propagates to nested sub-configs, so a shallow copy would still mutate the cached config's shared inner objects.
     config_copy = copy.deepcopy(config)
+    model_type = getattr(config_copy, "model_type", None)
+    config_class = (
+        CONFIG_MAPPING[model_type] if model_type in CONFIG_MAPPING else config_copy.__class__
+    )
 
     model_class = None
     for auto_model in (AutoModelForCausalLM, AutoModel):
@@ -4862,8 +4867,8 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
         if mapping is None:
             continue
         try:
-            if config_copy.__class__ in mapping:
-                model_class = mapping[config_copy.__class__]
+            if config_class in mapping:
+                model_class = mapping[config_class]
                 break
         except Exception:
             continue
