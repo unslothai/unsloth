@@ -151,10 +151,14 @@ def _metadata_scan_paths() -> List[str]:
 
 def _installed_metadata_records(dist_name: str) -> List[Tuple[str, Optional[Path]]]:
     """Every matching metadata version and its directory, when available."""
-    from importlib.metadata import distributions
+    from importlib.metadata import MetadataPathFinder, distributions
 
     wanted = _canonical(dist_name)
     paths = _metadata_scan_paths()
+    # importlib.metadata caches each directory listing. A dist-info that appeared after an
+    # earlier scan in this process -- a manifest write, an interrupted uninstall -- would
+    # stay invisible, and a damaged install would verify as healthy.
+    MetadataPathFinder.invalidate_caches()
     kwargs = {"path": paths} if paths else {}
     found: List[Tuple[str, Optional[Path]]] = []
     for dist in distributions(**kwargs):
