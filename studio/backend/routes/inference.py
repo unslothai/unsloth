@@ -7907,7 +7907,9 @@ def _anthropic_request_has_image(payload, *, tool_results: bool = True) -> bool:
 def _anthropic_local_image_payloads(payload) -> list[str]:
     encoded_images = []
     for block in _anthropic_image_blocks(payload):
-        source = block.get("source") or {}
+        source = block.get("source")
+        if not isinstance(source, dict):
+            continue
         source_type = source.get("type")
         data = source.get("data")
         if source_type == "base64" and isinstance(data, str):

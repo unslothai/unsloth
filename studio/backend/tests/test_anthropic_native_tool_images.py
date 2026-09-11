@@ -94,6 +94,16 @@ def test_native_images_keep_order_and_tool_identity(order):
     assert [p["type"] for p in folded[2]["content"][1:]] == ["image_url"] * order.count("image")
 
 
+@pytest.mark.parametrize(
+    "source", ["invalid", {"type": "url", "url": 5}, {"type": "base64", "data": 5}]
+)
+def test_malformed_tool_result_image_source_is_skipped(source):
+    request = AnthropicMessagesRequest(**payload([{"type": "image", "source": source}]))
+    converted = anthropic_messages_to_openai([m.model_dump() for m in request.messages])
+    assert converted[2]["content"] == ""
+    assert inf._anthropic_local_image_payloads(request) == []
+
+
 @pytest.mark.parametrize("vision", [True, False])
 def test_native_image_http_generation_and_count(monkeypatch, vision):
     seen = {}

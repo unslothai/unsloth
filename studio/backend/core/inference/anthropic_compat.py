@@ -52,11 +52,13 @@ def _anthropic_image_block_to_openai_part(block: dict) -> Optional[dict]:
 
     Returns ``None`` when the source is malformed so the caller can skip it.
     """
-    source = block.get("source") or {}
+    source = block.get("source")
+    if not isinstance(source, dict):
+        return None
     stype = source.get("type")
     if stype == "base64":
         data = source.get("data")
-        if not data:
+        if not isinstance(data, str) or not data:
             return None
         media_type = source.get("media_type") or "image/jpeg"
         return {
@@ -65,7 +67,7 @@ def _anthropic_image_block_to_openai_part(block: dict) -> Optional[dict]:
         }
     if stype == "url":
         url = source.get("url")
-        if not url:
+        if not isinstance(url, str) or not url:
             return None
         return {"type": "image_url", "image_url": {"url": url}}
     return None
