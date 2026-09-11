@@ -24,6 +24,7 @@ import struct
 import sys
 import sysconfig
 import tempfile
+import threading
 import time
 
 import pytest
@@ -1190,6 +1191,48 @@ def test_an_interpreter_symlinked_out_of_the_workdir_fails_the_call(tmp_path, mo
 
     with pytest.raises(WorkdirUnsafeError, match = "Python that runs Studio"):
         sandbox_linux._runtime_paths_under(str(workdir))
+
+
+def test_concurrent_launches_start_one_cache_worker_and_never_raise(tmp_path, monkeypatch):
+    """Tool calls arrive on request threads, so the pending map is contended.
+    Check-then-start let a burst start one worker each against the same wedged
+    path, which is the leak the bookkeeping exists to stop; check-then-delete let
+    one caller remove an entry another was holding, and that KeyError leaves the
+    launch answering `auto` by dropping OS isolation."""
+    cache = tmp_path / "hostcache"
+    (cache / "hub").mkdir(parents = True)
+    _share_cache_paths(monkeypatch, cache)
+    started: list[str] = []
+    gate = threading.Event()
+
+    def wedged(name, path):
+        started.append(path)
+        gate.wait(30)
+
+    monkeypatch.setattr(sandbox_linux, "_inspect_cache_component", wedged)
+    monkeypatch.setattr(sandbox_linux, "_CACHE_INSPECT_SECONDS", 0.5)
+    monkeypatch.setattr(sandbox_linux, "_cache_scan_pending", {})
+    session = str(tmp_path / "session")
+    errors: list[BaseException] = []
+
+    def launch() -> None:
+        try:
+            sandbox_linux._model_cache_binds(session)
+        except BaseException as exc:  # noqa: BLE001 - the point of the test
+            errors.append(exc)
+
+    threads = [threading.Thread(target = launch) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(60)
+    gate.set()
+    assert not errors, errors
+    # One worker per distinct component, never a second for a path already being
+    # inspected: _model_cache_binds walks four components, so four is correct and
+    # a duplicate is the race.
+    assert started, "the inspection never ran"
+    assert len(started) == len(set(started)), f"a path was scanned twice: {sorted(started)}"
 
 
 def test_a_runtime_prefix_contributes_its_certificate_store(tmp_path, monkeypatch):

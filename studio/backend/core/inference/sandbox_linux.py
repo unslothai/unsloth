@@ -475,14 +475,16 @@ def _inspect_cache_component(name: str, path: str) -> "str | None":
 # wedged mount is an unbounded leak with extra steps. The entry clears when the
 # original worker finally finishes, so a mount that recovers is picked up again.
 _cache_scan_pending: "dict[str, threading.Thread]" = {}
+# Tool calls arrive on request threads, so every read and write of the map above
+# is contended. Two races, both of which defeat the bookkeeping it exists for: a
+# check-then-start that is not atomic lets a burst start one worker each against
+# the same wedged path, and a check-then-delete lets one caller remove an entry
+# the other is still holding, raising KeyError out of a launch -- which `auto`
+# answers by dropping OS isolation and `required` by refusing.
+_cache_scan_lock = threading.Lock()
 
 
 def _cache_hazard_within_deadline(name: str, path: str) -> "str | None":
-    pending = _cache_scan_pending.get(path)
-    if pending is not None:
-        if pending.is_alive():
-            return "was still being inspected when a previous launch gave up (a wedged mount?)"
-        del _cache_scan_pending[path]
     answer: list[str | None] = []
 
     def inspect() -> None:
@@ -491,15 +493,28 @@ def _cache_hazard_within_deadline(name: str, path: str) -> "str | None":
         except Exception as exc:  # noqa: BLE001 - a launch never fails over this
             answer.append(f"could not be inspected: {exc}")
 
-    worker = threading.Thread(target = inspect, name = f"unsloth-cache-scan-{name}", daemon = True)
-    worker.start()
+    with _cache_scan_lock:
+        pending = _cache_scan_pending.get(path)
+        if pending is not None:
+            if pending.is_alive():
+                return "was still being inspected when a previous launch gave up (a wedged mount?)"
+            del _cache_scan_pending[path]
+        worker = threading.Thread(target = inspect, name = f"unsloth-cache-scan-{name}", daemon = True)
+        # Reserved and STARTED under the lock, so the entry a concurrent caller
+        # finds is always a thread that is already running: reserving without
+        # starting would leave is_alive() False and let that caller replace it.
+        _cache_scan_pending[path] = worker
+        worker.start()
     worker.join(_CACHE_INSPECT_SECONDS)
     if not answer:
         # The thread is left behind on purpose -- one blocked in scandir cannot be
-        # killed -- and it is remembered, so no later launch starts a second one
+        # killed -- and its entry stays, so no later launch starts a second one
         # against the same path while this one is still stuck.
-        _cache_scan_pending[path] = worker
         return f"could not be inspected within {_CACHE_INSPECT_SECONDS:.0f}s (a wedged mount?)"
+    with _cache_scan_lock:
+        # By identity: another caller may already have replaced it.
+        if _cache_scan_pending.get(path) is worker:
+            del _cache_scan_pending[path]
     return answer[0]
 
 
