@@ -157,16 +157,30 @@ class TestRunShDegradesWithoutNvidia:
 
 
 class TestStudioImageAllowsCpu:
-    def test_studio_image_defaults_allow_cpu_on(self):
-        """:latest is the Studio image. Without this default every CPU-only, AMD
-        and Docker-Desktop user goes from working Studio to an exit 1."""
+    def test_studio_image_opts_in_through_its_own_variable(self):
+        """:latest is the Studio image. Without an opt-in every CPU-only, AMD and
+        Docker-Desktop user goes from working Studio to an exit 1."""
         body = open(_STUDIO_DF, encoding = "utf-8").read()
         env_lines = [
             ln.strip()
             for ln in body.splitlines()
+            if "UNSLOTH_IMAGE_ALLOW_CPU=1" in ln and not ln.strip().startswith("#")
+        ]
+        assert env_lines, "Dockerfile.studio does not default UNSLOTH_IMAGE_ALLOW_CPU=1"
+
+    def test_studio_image_env_never_carries_allow_cpu(self):
+        """An image ENV reaches every process, so UNSLOTH_ALLOW_CPU=1 there broke
+        training everywhere on a GPU host. Only install.sh may see it, inline."""
+        body = open(_STUDIO_DF, encoding = "utf-8").read()
+        env_block = body[body.index("ENV UNSLOTH_STUDIO_HOME") :]
+        env_block = env_block[: env_block.index("\n\n")]
+        assert "UNSLOTH_ALLOW_CPU" not in env_block.replace("UNSLOTH_IMAGE_ALLOW_CPU", "")
+        inline = [
+            ln.strip()
+            for ln in body.splitlines()
             if "UNSLOTH_ALLOW_CPU=1" in ln and not ln.strip().startswith("#")
         ]
-        assert env_lines, "Dockerfile.studio does not default UNSLOTH_ALLOW_CPU=1"
+        assert inline == ["UNSLOTH_ALLOW_CPU=1 \\"], inline
 
     def test_the_base_training_image_keeps_the_strict_check(self):
         """FastLanguageModel genuinely needs a GPU, so :core must NOT default it."""
@@ -174,20 +188,115 @@ class TestStudioImageAllowsCpu:
         offenders = [
             ln.strip()
             for ln in body.splitlines()
-            if "UNSLOTH_ALLOW_CPU=1" in ln and not ln.strip().startswith("#")
+            if "ALLOW_CPU=1" in ln and not ln.strip().startswith("#")
         ]
         assert not offenders, f"base image weakened the GPU check: {offenders}"
 
-    def test_entrypoint_reads_allow_cpu_from_the_environment(self):
-        """An image-level ENV and a `-e` flag reach the process identically, so the
-        entrypoint must read it from the environment with no `-e`-only handling."""
-        body = open(_ENTRYPOINT, encoding = "utf-8").read()
-        assert '"${UNSLOTH_ALLOW_CPU:-0}" == "1"' in body
 
-    def test_allow_cpu_only_applies_when_no_gpu_is_visible(self):
-        """The default must not weaken a GPU host: the CPU branch has to be gated
-        on nvidia-smi finding nothing, otherwise it would skip the torch checks."""
-        body = open(_ENTRYPOINT, encoding = "utf-8").read()
-        idx = body.index('"${UNSLOTH_ALLOW_CPU:-0}" == "1"')
-        branch = body[idx : idx + 400]
-        assert "nvidia-smi" in branch and "grep -q '^GPU'" in branch
+def _run_entrypoint(tmp_path, *, gpu, env_extra):
+    """Run docker/entrypoint.sh with stubbed nvidia-smi and python, exec'ing a command
+    that dumps its environment. Returns (returncode, child env dict, stderr)."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    if gpu:
+        _stub(
+            str(bindir / "nvidia-smi"),
+            'case "$*" in\n'
+            '  *compute_cap*) echo "8.9" ;;\n'
+            '  *driver_version*) echo "610.43.02" ;;\n'
+            '  *) echo "GPU 0: NVIDIA RTX 6000 Ada Generation (UUID: GPU-abc)" ;;\n'
+            "esac\n",
+        )
+    else:
+        _stub(str(bindir / "nvidia-smi"), "exit 1\n")
+    # the GPU path runs two torch heredocs; accept them without torch
+    _stub(str(bindir / "python"), "cat > /dev/null\nexit 0\n")
+    dump = tmp_path / "child_env"
+    env = {
+        "PATH": str(bindir) + ":/usr/bin:/bin",
+        "HOME": str(tmp_path),
+        "UNSLOTH_STUDIO_HOME": str(tmp_path / "studio"),
+    }
+    env.update(env_extra)
+    proc = subprocess.run(
+        [shutil.which("bash") or "/bin/bash", _ENTRYPOINT, "bash", "-c", f"env > {dump}"],
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    child = {}
+    if dump.exists():
+        for line in dump.read_text().splitlines():
+            key, _, value = line.partition("=")
+            child[key] = value
+    return proc.returncode, child, proc.stderr
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason = "bash required")
+class TestEntrypointAllowCpu:
+    def test_studio_image_on_a_cpu_host_starts_and_exports_allow_cpu(self, tmp_path):
+        """Studio's own processes still need UNSLOTH_ALLOW_CPU=1 to import unsloth
+        without a GPU, so the entrypoint exports it for its children."""
+        rc, child, stderr = _run_entrypoint(
+            tmp_path, gpu = False, env_extra = {"UNSLOTH_IMAGE_ALLOW_CPU": "1"}
+        )
+        assert rc == 0, stderr
+        assert child.get("UNSLOTH_ALLOW_CPU") == "1"
+        assert "continuing on CPU" in stderr
+
+    def test_studio_image_on_a_gpu_host_hides_allow_cpu(self, tmp_path):
+        """The regression: with a GPU visible the children must not see the variable,
+        or Studio training and every notebook run on stock TRL."""
+        rc, child, stderr = _run_entrypoint(
+            tmp_path, gpu = True, env_extra = {"UNSLOTH_IMAGE_ALLOW_CPU": "1"}
+        )
+        assert rc == 0, stderr
+        assert "UNSLOTH_ALLOW_CPU" not in child
+        assert "Ignoring UNSLOTH_ALLOW_CPU" not in stderr
+
+    def test_an_explicit_allow_cpu_on_a_gpu_host_is_dropped_with_a_warning(self, tmp_path):
+        """docker/run.sh forwards a host-shell UNSLOTH_ALLOW_CPU, and the docs tell
+        CPU users to pass it, so a GPU host can receive it explicitly too."""
+        rc, child, stderr = _run_entrypoint(
+            tmp_path, gpu = True, env_extra = {"UNSLOTH_ALLOW_CPU": "1"}
+        )
+        assert rc == 0, stderr
+        assert "UNSLOTH_ALLOW_CPU" not in child
+        assert "Ignoring UNSLOTH_ALLOW_CPU=1" in stderr
+
+    def test_an_explicit_zero_restores_the_strict_check(self, tmp_path):
+        rc, _, stderr = _run_entrypoint(
+            tmp_path,
+            gpu = False,
+            env_extra = {"UNSLOTH_IMAGE_ALLOW_CPU": "1", "UNSLOTH_ALLOW_CPU": "0"},
+        )
+        assert rc == 1
+        assert "No GPU visible" in stderr
+
+    def test_core_without_an_opt_in_still_refuses(self, tmp_path):
+        rc, _, stderr = _run_entrypoint(tmp_path, gpu = False, env_extra = {})
+        assert rc == 1
+        assert "No GPU visible" in stderr
+
+    def test_core_with_an_explicit_opt_in_starts_on_cpu(self, tmp_path):
+        rc, child, stderr = _run_entrypoint(
+            tmp_path, gpu = False, env_extra = {"UNSLOTH_ALLOW_CPU": "1"}
+        )
+        assert rc == 0, stderr
+        assert child.get("UNSLOTH_ALLOW_CPU") == "1"
+
+    @pytest.mark.parametrize("gpu", [True, False])
+    def test_skipping_the_gpu_check_applies_the_same_rule(self, tmp_path, gpu):
+        """UNSLOTH_SKIP_GPU_CHECK=1 skips the torch checks, not the variable's
+        meaning: a GPU host must still lose it and a CPU host must still get it."""
+        rc, child, stderr = _run_entrypoint(
+            tmp_path,
+            gpu = gpu,
+            env_extra = {"UNSLOTH_IMAGE_ALLOW_CPU": "1", "UNSLOTH_SKIP_GPU_CHECK": "1"},
+        )
+        assert rc == 0, stderr
+        if gpu:
+            assert "UNSLOTH_ALLOW_CPU" not in child
+        else:
+            assert child.get("UNSLOTH_ALLOW_CPU") == "1"
