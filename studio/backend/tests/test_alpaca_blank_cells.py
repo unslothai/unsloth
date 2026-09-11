@@ -3,7 +3,7 @@
 
 from datasets import Dataset, load_dataset
 
-from utils.datasets import format_and_template_dataset
+from utils.datasets import convert_alpaca_to_chatml, format_and_template_dataset
 
 
 class _Tokenizer:
@@ -50,3 +50,20 @@ def test_blank_csv_cells_are_not_trained_as_none(tmp_path):
     assert texts[0].endswith("### Input:\n\n\n### Response:\nhi")
     assert texts[1].endswith("### Input:\n\n\n### Response:\n")
     assert all("None" not in text for text in texts)
+
+
+def test_blank_csv_cells_are_not_converted_to_none_for_chatml(tmp_path):
+    csv_path = tmp_path / "train.csv"
+    csv_path.write_text("instruction,input,output\nSay bye,,\n,context,answer\n")
+    dataset = load_dataset("csv", data_files = str(csv_path), split = "train")
+
+    conversations = convert_alpaca_to_chatml(dataset, batch_size = 2, num_proc = 1)["conversations"]
+
+    assert conversations[0] == [
+        {"role": "user", "content": "Say bye"},
+        {"role": "assistant", "content": ""},
+    ]
+    assert conversations[1] == [
+        {"role": "user", "content": "context"},
+        {"role": "assistant", "content": "answer"},
+    ]

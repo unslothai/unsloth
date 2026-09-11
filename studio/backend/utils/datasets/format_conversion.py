@@ -265,6 +265,9 @@ def convert_alpaca_to_chatml(
             instruction = examples["instruction"][i]
             input_text = examples.get("input", [""] * len(examples["instruction"]))[i]
             output = examples["output"][i]
+            instruction, input_text, output = (
+                "" if value is None else value for value in (instruction, input_text, output)
+            )
 
             if input_text and input_text.strip():
                 user_content = f"{instruction}\n\n{input_text}".strip()
