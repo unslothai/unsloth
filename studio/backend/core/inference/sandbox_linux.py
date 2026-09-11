@@ -127,6 +127,16 @@ _MODEL_CACHE_RELPATH = os.path.join(".cache", "huggingface")
 # Never the cache root: the access token lives at $HF_HOME/token. "modules" is
 # excluded because it holds the generated Python for a trust_remote_code model,
 # so sharing it writably is a path to code a later unsandboxed load imports.
+# "hub" is NOT excluded for the same reason, and that is a decision rather than
+# an oversight: a remote-code model's own modeling_*.py lives in
+# hub/models--*/snapshots/*, so a tool call can rewrite it and a later load that
+# was given trust_remote_code will run it. Read-only would close that, and would
+# also make every download inside a tool call re-fetch gigabytes into a
+# directory that is thrown away, which is how a sandbox gets switched off. It
+# stays writable on the same footing as model_cache_writable in LIMITATIONS:
+# trust_remote_code is opt-in and off by default, and today, with no sandbox at
+# all, a tool call can rewrite that file by absolute path with nothing in
+# its way. Narrower than main, not a new hole. #5603 is what closes it.
 _MODEL_CACHE_SUBDIRS = ("hub", "datasets", "xet", "assets")
 # NixOS keeps glibc here, so a store interpreter cannot link without it.
 _NIX_STORE = "/nix/store"

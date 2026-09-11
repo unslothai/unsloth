@@ -71,8 +71,15 @@ def program(machine: str, *, block_userns: bool = False) -> tuple[tuple[int, int
         # word is then checked. Other syscalls rejoin below with nr still in A.
         clone_nr, unshare_nr, clone3_nr = _USERNS_SYSCALLS[key]
         code += [
-            (_JEQ, 0, 1, unshare_nr),
+            # unshare() is read like clone() below, on its flags: this filter
+            # exists to stop a NESTED USER NAMESPACE, and a blanket refusal also
+            # took unshare(CLONE_FS) and unshare(CLONE_FILES), which have nothing
+            # to do with that and work everywhere outside the jail.
+            (_JEQ, 0, 4, unshare_nr),
+            (_LOAD, 0, 0, 16),
+            (_JSET, 0, 1, _CLONE_NEWUSER),
             (_RET, 0, 0, _EPERM),
+            (_LOAD, 0, 0, 0),
             (_JEQ, 0, 1, clone3_nr),
             (_RET, 0, 0, _ENOSYS),
             (_JEQ, 0, 4, clone_nr),

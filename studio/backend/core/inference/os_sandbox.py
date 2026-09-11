@@ -402,11 +402,13 @@ def _importable_entries(
     ]
     # A PEP 660 finder puts nothing on sys.path, so fall back to the two layouts
     # that cover almost everything published.
-    for fallback in (project_root, os.path.join(project_root, "src")):
-        if fallback not in import_roots and os.path.isdir(fallback):
-            import_roots.append(fallback)
+    guessed = [
+        fallback
+        for fallback in (project_root, os.path.join(project_root, "src"))
+        if fallback not in import_roots and os.path.isdir(fallback)
+    ]
     found: list[str] = []
-    for import_root in import_roots:
+    for import_root in (*import_roots, *guessed):
         try:
             names = sorted(os.listdir(import_root))
         except OSError:
@@ -415,14 +417,21 @@ def _importable_entries(
             if name.startswith(".") or name.endswith((".egg-info", ".dist-info")):
                 continue
             entry = os.path.join(import_root, name)
+            declared_here = name in declared or name.removesuffix(".py") in declared
+            if import_root in guessed and not declared_here:
+                # A root off sys.path is the installer's own answer, so its
+                # listing IS the mapping. A fallback root is only a guess at
+                # one, and taking the listing from a guess hands back the whole
+                # top level of the checkout: the deploy.py with a credential in
+                # it, and the tests/ package whose fixtures the docstring above
+                # is about. Take only what the distribution declares.
+                continue
             # Declared, or carrying an __init__.py. The second alone missed PEP
             # 420 namespace packages, which have none by design.
             package = os.path.isdir(entry) and (
-                name in declared or os.path.exists(os.path.join(entry, "__init__.py"))
+                declared_here or os.path.exists(os.path.join(entry, "__init__.py"))
             )
-            module = name.endswith(".py") and (
-                name in declared or name[:-3] in declared or os.path.isfile(entry)
-            )
+            module = name.endswith(".py") and (declared_here or os.path.isfile(entry))
             if (package or module) and entry not in found:
                 found.append(entry)
     return tuple(found)

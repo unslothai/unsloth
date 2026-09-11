@@ -661,14 +661,19 @@ def test_the_x32_syscall_table_is_killed(program):
 def test_nested_user_namespaces_are_refused_only_when_bwrap_cannot_do_it():
     clone_nr, unshare_nr, clone3_nr = sandbox_seccomp._USERNS_SYSCALLS[platform.machine().lower()]
     blocking = sandbox_seccomp.program(platform.machine(), block_userns = True)
-    assert _evaluate(blocking, nr = unshare_nr) == _EPERM
+    assert _evaluate(blocking, nr = unshare_nr, args = (0x10000000, 0, 0, 0, 0, 0)) == _EPERM
+    # unshare() is judged on its flags like clone() below. A blanket refusal also
+    # took CLONE_FS and CLONE_FILES, which do not create a user namespace and
+    # work everywhere outside the jail.
+    for flags in (0x00000200, 0x00000400, 0x00040000):  # CLONE_FS, CLONE_FILES, CLONE_SYSVSEM
+        assert _evaluate(blocking, nr = unshare_nr, args = (flags, 0, 0, 0, 0, 0)) == _ALLOW
     # ENOSYS, so glibc falls back to clone() where the flags word is checkable.
     assert _evaluate(blocking, nr = clone3_nr) == _ENOSYS
     assert _evaluate(blocking, nr = clone_nr, args = (0x10000000, 0, 0, 0, 0, 0)) == _EPERM
     assert _evaluate(blocking, nr = clone_nr, args = (0x00000100, 0, 0, 0, 0, 0)) == _ALLOW
 
     permissive = sandbox_seccomp.program(platform.machine(), block_userns = False)
-    assert _evaluate(permissive, nr = unshare_nr) == _ALLOW
+    assert _evaluate(permissive, nr = unshare_nr, args = (0x10000000, 0, 0, 0, 0, 0)) == _ALLOW
     assert _evaluate(permissive, nr = clone3_nr) == _ALLOW
 
 
@@ -718,6 +723,7 @@ def _kernel_verdicts(block_userns):
                 ("keyctl", keyctl_nr, 0),
                 ("clone3", clone3_nr, None),
                 ("unshare_userns", unshare_nr, 0x10000000),
+                ("unshare_fs", unshare_nr, 0x00000200),  # CLONE_FS: not a user namespace
             ):
                 ctypes.set_errno(0)
                 result = libc.syscall(number, argument, 0, 0)
@@ -755,7 +761,11 @@ def test_the_kernel_refuses_nested_user_namespaces_only_in_the_fallback_filter()
     # returns EPERM from unshare anyway, but only this filter makes clone3
     # report ENOSYS.
     assert _kernel_verdicts(block_userns = True)["clone3"] == errno.ENOSYS
-    assert _kernel_verdicts(block_userns = True)["unshare_userns"] == errno.EPERM
+    blocking = _kernel_verdicts(block_userns = True)
+    assert blocking["unshare_userns"] == errno.EPERM
+    # And only that flag: the filter is for nested user namespaces, so an
+    # unshare the host allows must not start failing inside the jail.
+    assert blocking["unshare_fs"] == 0
     assert _kernel_verdicts(block_userns = False)["clone3"] != errno.ENOSYS
 
 
@@ -1183,6 +1193,34 @@ def test_an_editable_installs_source_root_is_readable(tmp_path, monkeypatch):
         read = sandbox_linux._runtime_read_paths(str(tmp_path / "wd"), roots)
         assert str(package) in read
         assert str(source) not in read
+    finally:
+        os_sandbox.editable_source_roots.cache_clear()
+
+
+def test_a_guessed_editable_import_root_gives_up_what_it_cannot_confirm(tmp_path, monkeypatch):
+    """A PEP 660 finder puts nothing on sys.path, so the project root is a GUESS
+    at the import root rather than the installer's answer, and the whole top
+    level of a checkout is not the editable mapping. Both halves were granted:
+    every top-level .py, because `os.path.isfile` is true for all of them and it
+    was OR-ed with the declared check, and any directory with an __init__.py,
+    which is the tests/ package holding the fixtures the module docstring is
+    about. The sandbox keeps the network, so a granted file is an exportable one.
+    """
+    source = tmp_path / "checkout"
+    package = source / "demo"
+    package.mkdir(parents = True)
+    (package / "__init__.py").write_text("", encoding = "utf-8")
+    (source / "deploy.py").write_text("AWS_SECRET_ACCESS_KEY = 'real'\n", encoding = "utf-8")
+    (source / "conftest.py").write_text("", encoding = "utf-8")
+    tests_pkg = source / "tests"
+    tests_pkg.mkdir()
+    (tests_pkg / "__init__.py").write_text("", encoding = "utf-8")
+    (tests_pkg / "fixtures").mkdir()
+    (tests_pkg / "fixtures" / "id_rsa").write_text("-----BEGIN-----", encoding = "utf-8")
+    _fake_editable(tmp_path, monkeypatch, str(source), top_level = "demo")
+    try:
+        granted = os_sandbox.editable_source_roots()
+        assert granted == (str(package),), granted
     finally:
         os_sandbox.editable_source_roots.cache_clear()
 
