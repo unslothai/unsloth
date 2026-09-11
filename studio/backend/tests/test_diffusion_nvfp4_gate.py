@@ -22,6 +22,7 @@ from core.inference.diffusion_nvfp4_gate import (
     RECORD_KEY_FIELDS,
     load_gate_records,
     nvfp4_gate_backend,
+    nvfp4_gate_backends,
     nvfp4_gate_passed,
     nvfp4_gate_record,
 )
@@ -143,6 +144,26 @@ def test_the_backend_a_verdict_was_measured_on_is_readable(tmp_path):
             "z-image", ZIMAGE_BASE, path = _gate_file(tmp_path, _record(backend = "TorchAO "))
         )
         == "torchao"
+    )
+
+
+def test_two_artifacts_gated_on_different_backends_both_read_as_covered(tmp_path):
+    # Record identity carries the checkpoint digest and not the backend, so the writer accepts the
+    # RTN artifact gated on one backend and the GPTQ one gated on the other. Reducing the rows to
+    # the first pass would cover whichever backend happens to come first in the file.
+    path = _gate_file(
+        tmp_path,
+        _record(),
+        _record(checkpoint_sha256 = "b" * 64, gptq = True, backend = "torchao"),
+    )
+    assert nvfp4_gate_backends("z-image", ZIMAGE_BASE, path = path) == ("flashinfer", "torchao")
+    assert nvfp4_gate_backends("Z-Image", ZIMAGE_BASE, path = path) == ("flashinfer", "torchao")
+    assert nvfp4_gate_backends("z-image", ZIMAGE_BASE, path = _gate_file(tmp_path)) == ()
+    assert (
+        nvfp4_gate_backends(
+            "z-image", ZIMAGE_BASE, path = _gate_file(tmp_path, _record(all_pass = False))
+        )
+        == ()
     )
 
 

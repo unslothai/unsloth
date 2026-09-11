@@ -118,22 +118,23 @@ def nvfp4_gate_record(
     return matched[0] if matched else None
 
 
-def _passing_record(
+def _passing_records(
     family: Any,
     base_repo: Any,
     *,
     path: Any = None,
-) -> Optional[dict]:
-    """The record that says PASS for this family and base at the policy this commit resolves, or
-    None. Every way of answering None means "nothing measured this model". Scans every row: a
-    failure recorded for one checkpoint must not mask a later checkpoint that passed."""
+) -> tuple:
+    """Every record that says PASS for this family and base at the policy this commit resolves, in
+    file order. Empty means "nothing measured this model". A failure recorded for one checkpoint
+    must not mask a later checkpoint that passed."""
     try:
         from .diffusion_nvfp4_policy import resolve_policy
         policy = resolve_policy(family, base_repo)
     except Exception:  # noqa: BLE001 -- an unresolvable policy is "not gated", never a load error
-        return None
+        return ()
     if policy is None:
-        return None
+        return ()
+    passing = []
     for record in nvfp4_gate_records(family, base_repo, policy.policy_id, path = path):
         if record.get("all_pass") is not True:
             continue
@@ -142,8 +143,19 @@ def _passing_record(
         except (TypeError, ValueError):
             continue
         if recorded == (str(policy.policy_id), int(policy.version)):
-            return record
-    return None
+            passing.append(record)
+    return tuple(passing)
+
+
+def _passing_record(
+    family: Any,
+    base_repo: Any,
+    *,
+    path: Any = None,
+) -> Optional[dict]:
+    """The first passing record for this family and base at the resolved policy, or None."""
+    passing = _passing_records(family, base_repo, path = path)
+    return passing[0] if passing else None
 
 
 def nvfp4_gate_passed(
@@ -157,16 +169,31 @@ def nvfp4_gate_passed(
     return _passing_record(family, base_repo, path = path) is not None
 
 
+def nvfp4_gate_backends(
+    family: Any,
+    base_repo: Any,
+    *,
+    path: Any = None,
+) -> tuple:
+    """Every NVFP4 backend a passing record was measured on, lowercased, deduplicated, in file
+    order. A verdict covers one numerical path, and one policy can hold an artifact gated on
+    torchao next to one gated on flashinfer; the ladder asks whether this device's backend is
+    among them, never whether it is the first row's."""
+    backends: list[str] = []
+    for record in _passing_records(family, base_repo, path = path):
+        backend = str(record.get("backend") or "").strip().lower()
+        if backend and backend not in backends:
+            backends.append(backend)
+    return tuple(backends)
+
+
 def nvfp4_gate_backend(
     family: Any,
     base_repo: Any,
     *,
     path: Any = None,
 ) -> Optional[str]:
-    """The NVFP4 backend the passing record was MEASURED on, lowercased, or None. A verdict covers
-    one numerical path (baked activation scales on flashinfer, a run-time scale on torchao)."""
-    record = _passing_record(family, base_repo, path = path)
-    if record is None:
-        return None
-    backend = str(record.get("backend") or "").strip().lower()
-    return backend or None
+    """The backend of the first passing record, lowercased, or None. Coverage questions want
+    ``nvfp4_gate_backends``."""
+    backends = nvfp4_gate_backends(family, base_repo, path = path)
+    return backends[0] if backends else None
