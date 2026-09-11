@@ -3039,20 +3039,22 @@ class TestThePlacementWindowIsPublished:
         empty.mkdir()
         assert LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [str(empty)])
 
-    def test_both_runtime_libs_on_the_path_clear_it(self, tmp_path):
-        """The prebuilt links cudart64 AND cublas64; either one absent and the
-        plugin does not load."""
+    def test_every_runtime_lib_on_the_path_clears_it(self, tmp_path):
+        """ggml-cuda imports cublas64, which imports cublasLt64; any one absent and
+        LoadLibrary returns NULL."""
         from core.inference.llama_cpp import LlamaCppBackend
 
         (tmp_path / "ggml-cuda.dll").write_text("")
         libs = tmp_path / "libs"
         libs.mkdir()
-        (libs / "cudart64_12.dll").write_text("")
-        (libs / "cublas64_12.dll").write_text("")
+        for name in ("cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll"):
+            (libs / name).write_text("")
         assert not LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [str(libs)])
 
-    @pytest.mark.parametrize("present", ["cudart64_12.dll", "cublas64_12.dll"])
-    def test_only_one_of_the_pair_is_still_missing(self, tmp_path, present):
+    @pytest.mark.parametrize(
+        "present", ["cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll"]
+    )
+    def test_only_one_of_the_three_is_still_missing(self, tmp_path, present):
         from core.inference.llama_cpp import LlamaCppBackend
 
         (tmp_path / "ggml-cuda.dll").write_text("")
@@ -3070,6 +3072,7 @@ class TestThePlacementWindowIsPublished:
         b.mkdir()
         (a / "cudart64_12.dll").write_text("")
         (b / "cublas64_12.dll").write_text("")
+        (b / "cublasLt64_12.dll").write_text("")
         assert not LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [str(a), str(b)])
 
     def test_a_non_cuda_build_is_never_missing(self, tmp_path):
@@ -3322,8 +3325,8 @@ class TestTheLoadabilityCheckFollowsThePlugin:
         assert LlamaCppBackend._windows_cuda_runtime_missing(str(beside), [], env)
         libs = tmp_path / "libs"
         libs.mkdir()
-        (libs / "cudart64_12.dll").write_text("")
-        (libs / "cublas64_12.dll").write_text("")
+        for _n in ("cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll"):
+            (libs / _n).write_text("")
         assert not LlamaCppBackend._windows_cuda_runtime_missing(str(beside), [str(libs)], env)
 
 
@@ -3417,8 +3420,8 @@ class TestLoadabilityIsComputedNotAwaited:
 
         libs = tmp_path / "libs"
         libs.mkdir()
-        (libs / "cudart64_12.dll").write_text("")
-        (libs / "cublas64_12.dll").write_text("")
+        for _n in ("cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll"):
+            (libs / _n).write_text("")
         (tmp_path / "ggml-cuda.dll").write_text("")
         monkeypatch.setattr(m.sys, "platform", "win32")
         monkeypatch.setattr(m, "_llama_lib_dir", lambda b: tmp_path)
@@ -3462,4 +3465,76 @@ class TestAnExternalVulkanPluginStillGetsProbed:
         # the probe is skipped only when NEITHER signal says Vulkan
         assert (
             flat.count("not(is_vulkan_backendorself._vulkan_plugin_in_roots(binary,_mem_env))") == 2
+        )
+
+
+class TestAllThreeCudaFamiliesAreRequired:
+    """ggml-cuda imports cublas64, which imports cublasLt64; LoadLibrary returns
+    NULL unless all three resolve. Same set REAL_UPSTREAM_CUDART_BUNDLE pins in
+    test_windows_gpu_detection_mock.py."""
+
+    @staticmethod
+    def _cuda_build(tmp_path):
+        (tmp_path / "ggml-cuda.dll").write_text("")
+        libs = tmp_path / "libs"
+        libs.mkdir()
+        return libs
+
+    @pytest.mark.parametrize(
+        "present",
+        [
+            ("cudart64_12.dll", "cublas64_12.dll"),
+            ("cudart64_12.dll", "cublasLt64_12.dll"),
+            ("cublas64_12.dll", "cublasLt64_12.dll"),
+        ],
+        ids = ["no-cublasLt", "no-cublas", "no-cudart"],
+    )
+    def test_any_missing_family_is_missing(self, tmp_path, present):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        libs = self._cuda_build(tmp_path)
+        for name in present:
+            (libs / name).write_text("")
+        assert LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [str(libs)])
+
+    def test_all_three_clear_it(self, tmp_path):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        libs = self._cuda_build(tmp_path)
+        for name in ("cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll"):
+            (libs / name).write_text("")
+        assert not LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [str(libs)])
+
+    def test_cublas_and_cublaslt_are_distinct_prefixes(self, tmp_path):
+        """cublas64_ must not be satisfied by a cublasLt64_ file or vice versa."""
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        libs = self._cuda_build(tmp_path)
+        (libs / "cudart64_12.dll").write_text("")
+        (libs / "cublasLt64_12.dll").write_text("")
+        assert LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), [str(libs)])
+
+
+class TestARetryKeepsThePlacementWindowOpen:
+    """The marker is dropped after Popen because is_active covers it, but a crashed
+    child is not active either, and the retry rungs redo the placement work and
+    spawn from the SAME captured settings."""
+
+    def test_a_failed_attempt_re_arms_it(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        drop = src.index("# is_active covers it from here, so drop the pre-spawn flag.")
+        rearm = src.index("self._memory_launch_pending = True", drop)
+        crashed = src.index("_crashed_proc = self._process", drop)
+        # re-armed before the crash is even classified, so every rung inherits it
+        assert drop < rearm < crashed
+
+    def test_the_lock_still_owns_the_release(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        assert "self._memory_launch_pending = False" in inspect.getsource(
+            LlamaCppBackend._serial_load_scope
         )

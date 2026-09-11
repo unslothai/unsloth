@@ -12767,9 +12767,12 @@ class LlamaCppBackend:
             for root in LlamaCppBackend._ggml_plugin_roots(binary_dir, env)
         ):
             return False
-        # BOTH, because the prebuilt links both: cudart alone does not make the plugin
-        # loadable, and a venv can hold one without the other.
-        needed = {"cudart64_", "cublas64_"}
+        # All THREE families: ggml-cuda imports cublas64, which in turn imports
+        # cublasLt64, and LoadLibrary returns NULL unless every one resolves. The
+        # same set REAL_UPSTREAM_CUDART_BUNDLE pins in
+        # test_windows_gpu_detection_mock.py, and a venv can hold some without the
+        # rest.
+        needed = {"cudart64_", "cublas64_", "cublaslt64_"}
         found: set[str] = set()
         for directory in path_dirs:
             try:
@@ -25409,6 +25412,11 @@ class LlamaCppBackend:
                             self._health_wait_cancelled = True
                             return False
                         # is_active covers it from here, so drop the pre-spawn flag.
+                        # Re-armed below if this attempt does not come up: a crashed
+                        # child is not active either, and the retry rungs redo the
+                        # placement work and spawn again from the SAME captured
+                        # settings, so a save landing in that window must not be told
+                        # the child already honours it.
                         self._memory_launch_pending = False
 
                         # Background thread to drain stdout (prevents pipe deadlock)
@@ -25424,6 +25432,13 @@ class LlamaCppBackend:
                             return True
                         if getattr(self, "_health_wait_cancelled", False):
                             return False
+                        # This attempt did not come up, so the window the marker covers
+                        # is open again: the rungs below redo the placement work and
+                        # spawn from the SAME captured settings, while a crashed child
+                        # leaves is_active false. Re-armed here rather than per rung so
+                        # a rung added later cannot forget it; `_serial_load_scope`
+                        # still releases it on the way out of the lock.
+                        self._memory_launch_pending = True
                         # Read once, like the wait itself: a cleared reference is a
                         # teardown, not a startup crash, and re-reading the
                         # attribute per term would race the shutdown thread again.
