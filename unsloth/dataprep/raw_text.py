@@ -305,18 +305,39 @@ def _iter_column(dataset, column):
 class _TextCharTable(dict):
     """str.translate table for clean_text, filled in the first time each character is seen."""
 
-    # Drop only invisible junk: control, format, private-use and surrogate code points. Unassigned (Cn)
-    # code points are kept, since they are characters newer than this interpreter's Unicode database.
-    _DROP_CATEGORIES = frozenset(("Cc", "Cf", "Co", "Cs"))
-    # ZWNJ and ZWJ carry Persian and Indic spelling and join emoji sequences; tags spell subdivision flags.
-    _KEEP_FORMAT_CHARS = frozenset("\u200c\u200d") | frozenset(map(chr, range(0xE0020, 0xE0080)))
+    # Drop only invisible junk: control, private-use and surrogate code points, noncharacters and the format
+    # characters below. Other format characters (Arabic number and ayah signs, ZWJ, ZWNJ, emoji tags, hieroglyph
+    # controls) are part of the text, and unassigned (Cn) code points are characters newer than this
+    # interpreter's Unicode database.
+    _DROP_CATEGORIES = frozenset(("Cc", "Co", "Cs"))
+    _JUNK_CHARS = frozenset(
+        chr(codepoint)
+        for first, last in (
+            (0x00AD, 0x00AD),  # soft hyphen
+            (0x061C, 0x061C),  # Arabic letter mark
+            (0x200B, 0x200B),  # zero-width space
+            (0x200E, 0x200F),  # left-to-right and right-to-left marks
+            (0x202A, 0x202E),  # bidi embeddings and overrides
+            (0x2060, 0x2064),  # word joiner and invisible math operators
+            (0x2066, 0x206F),  # bidi isolates and deprecated format controls
+            (0xFEFF, 0xFEFF),  # byte order mark
+            (0xFFF9, 0xFFFB),  # interlinear annotation
+            (0xFFFD, 0xFFFD),  # replacement character left by a bad decode
+            (0xE0001, 0xE0001),  # deprecated language tag
+        )
+        for codepoint in range(first, last + 1)
+    )
 
     def __missing__(self, codepoint):
         char = chr(codepoint)
-        if char == "\n" or char in self._KEEP_FORMAT_CHARS:
+        if char == "\n":
             keep = True
-        elif codepoint == 0xFFFD or 0xFDD0 <= codepoint <= 0xFDEF or (codepoint & 0xFFFE) == 0xFFFE:
-            keep = False  # replacement character and noncharacters
+        elif (
+            char in self._JUNK_CHARS
+            or 0xFDD0 <= codepoint <= 0xFDEF
+            or (codepoint & 0xFFFE) == 0xFFFE
+        ):
+            keep = False
         else:
             keep = unicodedata.category(char) not in self._DROP_CATEGORIES
         self[codepoint] = codepoint if keep else None

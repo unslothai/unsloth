@@ -257,6 +257,8 @@ def test_clean_text_keeps_text_in_any_script():
         "Price: \u20ac100, x \u2264 4, \u00a9 2026 Acme\u2122",
         "I \u2764\ufe0f you 1\ufe0f\u20e3 \U0001f468\u200d\U0001f469\u200d\U0001f467",
         "\U0001f3f4\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f",
+        "\u06dd\u0661\u0662 \u0600\u0663",
+        "\U00013000\U00013430\U00013001",
         # Garay (Unicode 16) is unassigned in older interpreters' databases and must survive anyway.
         "\U00010d50\U00010d51",
     ]:
@@ -275,6 +277,8 @@ def test_clean_text_drops_invisible_characters():
         ("co\u00adop", "coop"),
         ("a\u200bb", "ab"),
         ("\u202eabc", "abc"),
+        ("a\u200eb\u2060c", "abc"),
+        ("\u2066abc\u2069", "abc"),
         ("a\ue000b", "ab"),
         ("a\ufffdb", "ab"),
         ("a\uffffb", "ab"),
