@@ -119,15 +119,20 @@ def _mask_code(text: str, placeholders: dict[str, str]) -> str:
     return "".join(pieces)
 
 
-def _validate_report_sources(report: str, sources: list[dict]) -> str:
-    """Canonicalize citations and remove model-authored source lists."""
+def _restore_placeholders(text: str, placeholders: dict[str, str]) -> str:
+    for token, value in placeholders.items():
+        text = text.replace(token, value)
+    return text
+
+
+def _validate_masked_sources(
+    report: str, sources: list[dict], placeholders: dict[str, str]
+) -> str:
     source_by_url = {
         str(source.get("url") or ""): source for source in sources if source.get("url")
     }
     source_urls = list(source_by_url)
-    placeholders: dict[str, str] = {}
 
-    report = _mask_code(report, placeholders)
     heading = _SOURCES_HEADING.search(report)
     if heading:
         report = report[: heading.start()]
@@ -227,10 +232,14 @@ def _validate_report_sources(report: str, sources: list[dict]) -> str:
     validated = _AUTOLINK.sub(replace_autolink, validated)
     validated = _NUMBERED_CITATION.sub(replace_number, validated)
     validated = _RAW_URL.sub(replace_raw_url, validated)
-    validated = validated.strip()
-    for token, link in placeholders.items():
-        validated = validated.replace(token, link)
-    return validated
+    return validated.strip()
+
+
+def _validate_report_sources(report: str, sources: list[dict]) -> str:
+    """Canonicalize citations and remove model-authored source lists."""
+    placeholders: dict[str, str] = {}
+    validated = _validate_masked_sources(_mask_code(report, placeholders), sources, placeholders)
+    return _restore_placeholders(validated, placeholders)
 
 
 def _document_source_citation(source: dict) -> str:
@@ -249,18 +258,32 @@ def _allowed_document_citations(sources: list[dict]) -> set[str]:
     return allowed
 
 
-def _validate_report_document_sources(report: str, sources: list[dict]) -> str:
+def _validate_masked_document_sources(
+    report: str, sources: list[dict], placeholders: dict[str, str]
+) -> str:
     allowed = _allowed_document_citations(sources)
     # Tokenize valid citations first so a "]" inside a filename ("budget [final].pdf") does not
     # truncate them, then strip the invalid ones and restore the valid.
-    placeholders: dict[str, str] = {}
-    report = _mask_code(report, placeholders)
     for index, citation in enumerate(sorted(allowed, key = len, reverse = True)):
         if citation in report:
             token = f"\x00document-citation-{index}\x00"
             placeholders[token] = citation
             report = report.replace(citation, token)
-    report = _DOCUMENT_CITATION.sub("", report)
-    for token, citation in placeholders.items():
-        report = report.replace(token, citation)
-    return report
+    return _DOCUMENT_CITATION.sub("", report)
+
+
+def _validate_report_document_sources(report: str, sources: list[dict]) -> str:
+    placeholders: dict[str, str] = {}
+    validated = _validate_masked_document_sources(
+        _mask_code(report, placeholders), sources, placeholders
+    )
+    return _restore_placeholders(validated, placeholders)
+
+
+def _validate_report(report: str, sources: list[dict], document_sources: list[dict]) -> str:
+    # Mask the draft once: removing a URL-only line can split a paragraph, and reparsing
+    # would then read an indented citation as code.
+    placeholders: dict[str, str] = {}
+    validated = _validate_masked_sources(_mask_code(report, placeholders), sources, placeholders)
+    validated = _validate_masked_document_sources(validated, document_sources, placeholders)
+    return _restore_placeholders(validated, placeholders)

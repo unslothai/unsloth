@@ -21,6 +21,7 @@ from fastapi import HTTPException
 from core import research_runs
 from core.research.citations import (
     _citation_title,
+    _validate_report,
     _validate_report_document_sources,
     _validate_report_sources,
 )
@@ -3381,5 +3382,19 @@ def test_unclosed_quote_fence_stops_at_the_quote_boundary():
 def test_delivered_report_keeps_document_literals_in_code(code):
     report = f"Example:\n\n{code}\n\nProse [Document: missing.pdf]."
     expected = f"Example:\n\n{code}\n\nProse ."
-    validated = _validate_report_sources(report, [])
-    assert _validate_report_document_sources(validated, []) == expected
+    assert _validate_report(report, [], []) == expected
+    assert _validate_report_document_sources(_validate_report_sources(report, []), []) == expected
+
+
+@pytest.mark.parametrize(
+    ("report", "expected"),
+    [
+        ("Context\nhttps://nope.example\n    [Document: hallucinated]", "Context\n\n    "),
+        (
+            "Findings [1]\nhttps://nope.example\n    [Document: made-up.pdf, p. 3] supports this.",
+            "Findings [A](https://a.com)\n\n     supports this.",
+        ),
+    ],
+)
+def test_removed_url_line_does_not_turn_a_document_citation_into_code(report, expected):
+    assert _validate_report(report, [{"url": "https://a.com", "title": "A"}], []) == expected
