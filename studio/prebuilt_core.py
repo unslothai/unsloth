@@ -166,6 +166,7 @@ _OPS_FIRST_NAMES = {
     "write_prebuilt_metadata",
     "load_prebuilt_metadata",
     "existing_install_matches",
+    "marker_install_fingerprint",
     "metadata_path",
     "selection_from_artifact",
     "plan_selection",
@@ -2072,6 +2073,11 @@ def write_prebuilt_metadata(ops: ModuleOps, install_dir: Path, selection: Instal
         "min_os": coverage.get("min_os"),
         "studio_protocol": selection.studio_protocol,
         "install_fingerprint": selection.fingerprint(),
+        # The fingerprint's one input the top-level fields above do not carry whole
+        # (they record its sm/gfx/min_os projections). With it, a later run can
+        # recompute the fingerprint from the marker alone and tell a marker written
+        # whole by this installer from one edited or truncated since.
+        "fingerprint_coverage": coverage,
         "installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     if selection.install_kind == "slim":
@@ -2097,6 +2103,64 @@ def write_prebuilt_metadata(ops: ModuleOps, install_dir: Path, selection: Instal
             payload["linked_runtime_directories"] = list(selection.linked_runtime_directories)
     ops.metadata_path(install_dir).write_text(
         json.dumps(payload, indent = 2) + "\n", encoding = "utf-8"
+    )
+
+
+def marker_install_fingerprint(metadata: dict[str, Any]) -> str | None:
+    """The fingerprint recomputed from the marker's own recorded fields.
+
+    Self-consistency, not a comparison against a fresh plan: equal to the recorded
+    install_fingerprint only when every field it was computed from is still the one
+    written with it, which is what lets a no-network check trust the release_tag it
+    reads. None for a marker that predates fingerprint_coverage, which then takes the
+    full path once and is settled there (_backfill_fingerprint_inputs).
+    """
+    coverage = metadata.get("fingerprint_coverage")
+    if not isinstance(coverage, dict):
+        return None
+    try:
+        return compute_install_fingerprint(
+            published_repo = str(metadata.get("published_repo")),
+            release_tag = str(metadata.get("release_tag")),
+            upstream_tag = metadata.get("upstream_tag"),
+            source_commit = metadata.get("source_commit"),
+            asset = str(metadata.get("asset")),
+            asset_sha256 = str(metadata.get("asset_sha256")),
+            backend = str(metadata.get("backend")),
+            runtime_line = metadata.get("runtime_line"),
+            coverage = coverage,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _fingerprint_inputs_missing(ops: ModuleOps, install_dir: Path) -> bool:
+    # Optional like the settle hooks: a component without marker readers has no
+    # marker to backfill.
+    load = getattr(ops, "load_prebuilt_metadata", None)
+    if load is None or getattr(ops, "metadata_path", None) is None:
+        return False
+    metadata = load(install_dir)
+    return bool(metadata) and not isinstance(metadata.get("fingerprint_coverage"), dict)
+
+
+def _backfill_fingerprint_inputs(
+    ops: ModuleOps, install_dir: Path, selection: InstallSelection
+) -> None:
+    """Record fingerprint_coverage on a kept marker written before the key existed.
+
+    Only for a marker whose fingerprint this run's selection reproduces, so the
+    coverage written is the one it was computed from; anything else is left for the
+    install path to rewrite whole.
+    """
+    if not _fingerprint_inputs_missing(ops, install_dir):
+        return
+    metadata = ops.load_prebuilt_metadata(install_dir)
+    if metadata.get("install_fingerprint") != selection.fingerprint():
+        return
+    metadata["fingerprint_coverage"] = selection.coverage
+    ops.metadata_path(install_dir).write_text(
+        json.dumps(metadata, indent = 2) + "\n", encoding = "utf-8"
     )
 
 
@@ -2411,20 +2475,24 @@ def _settle_kept_install(
     the install is already valid, and a lock that cannot be had or a write that fails
     costs the next run the same settle, not the install.
     """
-    try:
-        settle = getattr(ops, "settle_kept_install")
-        needs_settling = getattr(ops, "kept_install_needs_settling")
-    except AttributeError:
-        return True
+    settle = getattr(ops, "settle_kept_install", None)
+    needs_settling = getattr(ops, "kept_install_needs_settling", None)
     try:
         if locked:
-            settle(install_dir)
+            _backfill_fingerprint_inputs(ops, install_dir, selection)
+            if settle is not None:
+                settle(install_dir)
             return True
-        if not needs_settling(install_dir):
+        needs = _fingerprint_inputs_missing(ops, install_dir) or (
+            needs_settling is not None and needs_settling(install_dir)
+        )
+        if not needs:
             return True
         with ops.install_lock(ops.install_lock_path(install_dir)):
             if ops.existing_install_matches(install_dir, host, selection):
-                settle(install_dir)
+                _backfill_fingerprint_inputs(ops, install_dir, selection)
+                if settle is not None:
+                    settle(install_dir)
                 return True
     except Exception as exc:  # noqa: BLE001 - a metadata catch-up must never fail a kept install
         ops.log(f"kept {ops.COMPONENT} install not settled: {exc}")

@@ -2354,6 +2354,57 @@ def test_whisper_keep_paths_reject_an_empty_server_and_a_marker_without_a_finger
     assert _whisper_check(install_dir, host) is True
 
 
+def test_whisper_marker_fields_edited_under_a_kept_fingerprint_take_the_full_path(
+    tmp_path, monkeypatch
+):
+    """A release_tag edited to the current tag over an old binary and its old
+    fingerprint used to read as current from the marker alone; the full path compared
+    the fingerprint against the plan's and reinstalled. The marker-only path now
+    recomputes the fingerprint from the marker's own fields."""
+    install_dir, host, calls = _installed_cpu_tree(tmp_path, monkeypatch)
+    marker_path = install_dir / M.METADATA_FILENAME
+    original = marker_path.read_text(encoding = "utf-8")
+    payload = json.loads(original)
+    assert isinstance(payload.get("fingerprint_coverage"), dict)
+    assert M.core.marker_install_fingerprint(payload) == payload["install_fingerprint"]
+    # The release_tag moved to what the download host now calls latest, over the old
+    # asset and its old fingerprint: the tag comparison alone would pass this.
+    edited = dict(payload)
+    edited["release_tag"] = "v9.9.9-unsloth.1"
+    marker_path.write_text(json.dumps(edited), encoding = "utf-8")
+    monkeypatch.setattr(
+        M.llama,
+        "_download_host_latest_release_tag",
+        lambda _repo: "v9.9.9-unsloth.1",
+        raising = False,
+    )
+    assert _whisper_check(install_dir, host) is False
+    monkeypatch.setattr(
+        M.llama, "_download_host_latest_release_tag", lambda _repo: RELEASE_TAG, raising = False
+    )
+    for field, value in (("asset_sha256", "0" * 64), ("upstream_tag", "v0.0.1")):
+        edited = dict(payload)
+        edited[field] = value
+        marker_path.write_text(json.dumps(edited), encoding = "utf-8")
+        assert _whisper_check(install_dir, host) is False, field
+    marker_path.write_text(original, encoding = "utf-8")
+    assert _whisper_check(install_dir, host) is True
+    # A marker written before fingerprint_coverage existed is not trusted alone; the
+    # full path keeps the install (no download) and settles the key, after which the
+    # marker-only path answers again.
+    legacy = dict(payload)
+    legacy.pop("fingerprint_coverage")
+    marker_path.write_text(json.dumps(legacy), encoding = "utf-8")
+    assert _whisper_check(install_dir, host) is False
+    downloads = calls["n"]
+    assert M.install_prebuilt(install_dir, backend = "cpu") == M.EXIT_SUCCESS
+    assert calls["n"] == downloads
+    settled = json.loads(marker_path.read_text(encoding = "utf-8"))
+    assert settled.get("fingerprint_coverage") == payload["fingerprint_coverage"]
+    assert settled["install_fingerprint"] == payload["install_fingerprint"]
+    assert _whisper_check(install_dir, host) is True
+
+
 def test_whisper_second_install_run_downloads_and_fetches_nothing(tmp_path, monkeypatch):
     """The end-to-end shape: a repeat install_prebuilt is now a marker read, not a
     release fetch followed by a fingerprint comparison."""

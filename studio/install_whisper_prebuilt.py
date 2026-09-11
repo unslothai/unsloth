@@ -1553,6 +1553,14 @@ def _existing_install_is_intact(
     recorded_fingerprint = marker.get("install_fingerprint")
     if not isinstance(recorded_fingerprint, str) or not recorded_fingerprint:
         return None
+    # ...and the marker has to be self-consistent: the fingerprint recomputed from its
+    # own fields must be the one recorded with them. The full path compares the recorded
+    # fingerprint against the plan's; without a plan, this is what stands between a
+    # release_tag edited to the current one over an old binary and "current". A marker
+    # written before fingerprint_coverage existed recomputes to None and takes the full
+    # path once, which settles it (prebuilt_core._backfill_fingerprint_inputs).
+    if core.marker_install_fingerprint(marker) != recorded_fingerprint:
+        return None
     # A slim install is only as intact as the llama runtime it hardlinks: a llama update
     # that moved ggml invalidates a whisper install whose own release did not, and
     # selection_from_artifact is what would normally notice. Nothing pairs without the
