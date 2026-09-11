@@ -3306,3 +3306,66 @@ def test_note_server_address_defers_to_run_server_published_state():
     supervisor.note_server_address(("127.0.0.1", 9999))
     assert getattr(state, "research_request_host", None) is None
     assert supervisor._endpoint() == "http://192.168.1.239:8889/v1/chat/completions"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "    git clone https://github.com/unslothai/unsloth\n    print(x[1])",
+        "\tgit clone https://github.com/unslothai/unsloth\n\tprint(x[1])",
+        "1. Install:\n\n    ```sh\n    git clone https://github.com/unslothai/unsloth\n    ```",
+        "- Install:\n\n      git clone https://github.com/unslothai/unsloth",
+    ],
+)
+def test_report_preserves_indented_and_list_code(code):
+    report = f"Setup:\n\n{code}\n\nUse this [1], not https://nope.example."
+    out = _validate_report_sources(report, [{"url": "https://a.com", "title": "A"}])
+    assert out == f"Setup:\n\n{code}\n\nUse this [A](https://a.com), not ."
+
+
+def test_report_starting_with_indented_code_keeps_its_indentation():
+    report = "    curl https://example.com/api\n\nExplanation."
+    assert _validate_report_sources(report, []) == report
+
+
+def test_indented_paragraph_continuation_is_still_validated():
+    report = "Explanation continues\n    at https://nope.example."
+    assert _validate_report_sources(report, []) == "Explanation continues\n    at ."
+
+
+def test_multiline_inline_code_keeps_urls_and_brackets():
+    code = "`pip install torch\n--index-url https://download.pytorch.org/whl/cu121`"
+    report = f"Use {code}, then [1]."
+    assert _validate_report_sources(report, [{"url": "https://a.com", "title": "A"}]) == (
+        f"Use {code}, then [A](https://a.com)."
+    )
+
+
+def test_literal_escaped_backticks_do_not_hide_prose_urls():
+    report = r"Literal \`https://nope.example\` then [1]."
+    out = _validate_report_sources(report, [{"url": "https://a.com", "title": "A"}])
+    assert "https://nope.example" not in out
+    assert out.endswith("then [A](https://a.com).")
+
+
+def test_unclosed_quote_fence_stops_at_the_quote_boundary():
+    code = "> ```sh\n> curl https://example.com/api"
+    report = f"{code}\n\nOutside https://nope.example and [1]."
+    assert _validate_report_sources(report, [{"url": "https://a.com", "title": "A"}]) == (
+        f"{code}\n\nOutside  and [A](https://a.com)."
+    )
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        '```python\npattern = "[Document: generated]"\n```',
+        '`pattern = "[Document: generated]"`',
+        '    pattern = "[Document: generated]"',
+    ],
+)
+def test_delivered_report_keeps_document_literals_in_code(code):
+    report = f"Example:\n\n{code}\n\nProse [Document: missing.pdf]."
+    expected = f"Example:\n\n{code}\n\nProse ."
+    validated = _validate_report_sources(report, [])
+    assert _validate_report_document_sources(validated, []) == expected
