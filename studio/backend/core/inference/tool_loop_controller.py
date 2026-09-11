@@ -69,7 +69,6 @@ def _looks_like_broken_json(raw: str) -> bool:
         # json at all` healable.
         if error.msg.startswith("Expecting property name"):
             return False
-        # excluded for the opposite reason: `{"a": 1} trailing` decodes fully and then finds junk
         # Excluded for the opposite reason: a COMPLETE document with something after it. `{"a": 1} trailing` decodes
         # fully and then finds junk, so nothing was lost.
         if error.msg.startswith("Extra data"):
@@ -152,7 +151,6 @@ def _heal_arg_key(tool_name: str, tool_schemas = None) -> "str | None":
     key = _HEAL_ARG_CACHE.get(tool_name)
     if key is not None or not tool_schemas:
         return key
-    # not cached: caching by name would let one chat's MCP server decide another chat's healing
     # Not cached: the request's tools belong to the request, and caching them by name would let one chat's MCP server
     # decide another chat's healing.
     return _healable_keys_from(tool_schemas).get(tool_name)
@@ -197,7 +195,6 @@ class ToolCallDecision:
     tool_name: str
     arguments: dict[str, Any]
     tool_call_id: str = ""
-    # for an id-less call this is the spelling the client minted
     # The id the card carries on screen. For an id-less call that is the spelling the client minted, not the id the
     # conversation replays; otherwise the two are the same.
     card_call_id: str = ""
@@ -240,7 +237,6 @@ class ToolCallDecision:
         return None
 
     def tool_start_payload(self) -> dict[str, Any]:
-        """Build the payload fields for a real tool_start event."""
         fragment = self.unparsed_fragment
         # `raw` is the shape this module already uses for arguments it could not read into a schema, so the card shows
         # the model's own text under a name that means something rather than an internal sentinel.
@@ -255,7 +251,6 @@ class ToolCallDecision:
         }
 
     def tool_start_event(self) -> dict[str, Any]:
-        """Build the existing backend event shape for a real execution."""
         return {"type": "tool_start", **self.tool_start_payload()}
 
     def as_assistant_tool_call(self) -> dict[str, Any]:
@@ -290,7 +285,6 @@ class ToolCallCompletion:
     executed: bool = False
 
     def tool_end_payload(self) -> dict[str, Any]:
-        """Build the payload fields for a real tool_end event."""
         return {
             "tool_name": self.decision.tool_name,
             "tool_call_id": self.decision.card_id,
@@ -299,7 +293,6 @@ class ToolCallCompletion:
         }
 
     def tool_end_event(self) -> dict[str, Any]:
-        """Build the existing backend event shape for a real execution result."""
         return {"type": "tool_end", **self.tool_end_payload()}
 
     def tool_message(self) -> dict[str, Any]:
@@ -364,10 +357,9 @@ _DECODE_ERRORS = (ValueError, RecursionError)
 _LITERAL_ERRORS = (*_DECODE_ERRORS, SyntaxError, MemoryError)
 
 
-# group 1 is the closing quote, which `endswith` cannot stand in for because an open string can end on an escaped one;
 # A JSON string, open or closed; group 1 is the closing quote, which `endswith` cannot stand in for because an open
-# string can end on an escaped one. The `\?$` tail stops a started match from ever failing, which would send `finditer`
-# back over every later quote.
+# string can end on an escaped one. The `\?$` tail stops a started match from ever failing, which would send
+# `finditer` back over every later quote.
 _JSON_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*(?:(")|\\?$)', re.S)
 _JSON_CLOSER = {"[": "]", "{": "}"}
 
@@ -869,9 +861,80 @@ def _is_file_entry(entry: object) -> bool:
     )
 
 
+def _strip_images_sentinel(result: str) -> str:
+    """Drop the trailing ``__IMAGES__`` envelopes, and only those.
+
+    Validated rather than split on sight, like the two above and like
+    ``studio_tool_loop._carries_image_sentinel``: a tool whose own output quotes
+    the marker would otherwise lose everything after it while the card the user
+    reads still shows the whole result.
+
+    Every envelope, not just the last: a Gemini ``code_execution`` turn that drew
+    two figures stacks one per ``inlineData`` part, and stopping after the last
+    would replay the earlier plot's whole base64 data URI to the model.
+
+    Walked by index and cut once at the end. Re-partitioning the shortened string
+    each time copies it again, which is quadratic in the number of markers, and an
+    MCP server answering with 80,000 of them is 1.3 MB of text that held this
+    thread for seconds.
+    """
+    marker = "\n__IMAGES__:"
+    end = len(result)
+    cut = -1
+    while True:
+        start = result.rfind(marker, 0, end)
+        if start == -1:
+            break
+        try:
+            images = json.loads(result[start + len(marker) : end])
+        except (ValueError, RecursionError):
+            break
+        if not isinstance(images, list) or not images:
+            break
+        if not all(isinstance(image, str) and image for image in images):
+            break
+        cut = start
+        end = start
+    return result if cut == -1 else result[:cut].rstrip()
+
+
+def _strip_rag_sources_sentinel(result: str) -> str:
+    """Drop a trailing ``__RAG_SOURCES__`` source map, and only that.
+
+    The retrieval tools append ``RAG_SOURCES_SENTINEL`` plus a JSON list; a
+    result that merely mentions the marker is text.
+
+    Deliberately unbounded, like the walk above. Each source record repeats its whole
+    chunk, and ``search_knowledge_base`` takes the model's ``top_k`` without a ceiling,
+    so a real map has no size worth calling suspicious -- and one refused for being big
+    is a frontend-only blob left in the model's context, which ``_fit_result_to_room``
+    would then truncate into malformed JSON. What keeps unbounded MCP text away from
+    this decode is the gate on the emitting tools, not a length.
+    """
+    head, sep, payload = result.rpartition("\n__RAG_SOURCES__:")
+    if not sep:
+        return result
+    try:
+        sources = json.loads(payload)
+    except (ValueError, RecursionError):
+        return result
+    if not isinstance(sources, list):
+        return result
+    return head.rstrip()
+
+
 # Only these emit the file envelope, and only their output is defused first. An MCP tool or a fetched page ending in a
 # well-formed __FILES__ line is content, not an envelope, and stripping it would take that line away from the model.
 _SANDBOX_TOOLS = frozenset({"python", "terminal"})
+
+# Same rule for the other two envelopes. The image one is emitted by the sandbox tools
+# through `_created_file_sentinels` and by Gemini's hosted code_execution through the
+# provider; the source map by the retrieval tools that append `RAG_SOURCES_SENTINEL`. A
+# document an MCP tool read, or a page that was fetched, ending in a well-formed one of
+# either is content the model needs, and cutting it leaves the model reasoning over less
+# than the card the user is looking at.
+_IMAGE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"code_execution"}
+_SOURCE_MAP_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
 
 
 def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
@@ -883,9 +946,10 @@ def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
     result = _strip_mcp_image_suffix(result)
     if tool_name is None or tool_name in _SANDBOX_TOOLS:
         result = _strip_files_sentinel(result)
-    for sentinel in ("__IMAGES__:", "__RAG_SOURCES__:"):
-        if sentinel in result:
-            result = result.split(sentinel, 1)[0].rstrip()
+    if tool_name is None or tool_name in _IMAGE_SENTINEL_TOOLS:
+        result = _strip_images_sentinel(result)
+    if tool_name is None or tool_name in _SOURCE_MAP_TOOLS:
+        result = _strip_rag_sources_sentinel(result)
     return result
 
 

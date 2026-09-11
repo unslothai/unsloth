@@ -42,6 +42,7 @@ on:
       - 'scripts/**'
       - 'pyproject.toml'
       - '.github/workflows/studio-backend-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
   push:
     branches: [main]
 
@@ -167,9 +168,16 @@ jobs:
             studio/backend/requirements/*.txt
 
       - name: Install bubblewrap, so the sandbox tests run instead of skipping
+        # Both apt calls go through the shared helper, so a stalled mirror fails
+        # this step instead of eating the job timeout and skipping what follows.
+        # 25 covers the worst case the two calls authorise, 1450s.
+        timeout-minutes: 25
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '300'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bubblewrap
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y --no-install-recommends bubblewrap || { apt-get update && apt-get install -y --no-install-recommends bubblewrap; }'
           # ubuntu-latest is 24.04, which ships
           # kernel.apparmor_restrict_unprivileged_userns=1. bwrap is then present
           # and still cannot build a sandbox, which is the one configuration that
@@ -178,7 +186,8 @@ jobs:
           # so apply the same one here rather than turning the sysctl off: CI then
           # exercises the advice, and a regression in it is a red check.
           if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = "1" ]; then
-            sudo apt-get install -y --no-install-recommends apparmor-profiles
+            bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+              'apt-get install -y --no-install-recommends apparmor-profiles || { apt-get update && apt-get install -y --no-install-recommends apparmor-profiles; }'
             sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict || true
           fi
           # Report rather than require: a runner where this cannot work must skip
@@ -439,6 +448,21 @@ jobs:
             sleep $((5 * attempt))
           done
           pip install -e . --no-deps
+
+      # tests/test_formatter_fixed_point.py runs the real formatting hook, and it
+      # skips when the installed ruff is not the one the repo is formatted with,
+      # because another ruff answers a different question. Without this the guard
+      # would be permanently skipped here, which is the failure mode it exists to
+      # stop. The version is read out of .pre-commit-config.yaml rather than
+      # pinned a second time: a stale copy would silently disable the guard.
+      - name: Install the pinned ruff (formatter fixed-point guard)
+        run: |
+          pin="$(python -c 'import sys; sys.path.insert(0, "scripts"); import run_ruff_format as r; print(r.pinned_ruff_version(r.CONFIG.read_text(encoding = "utf-8")) or "")')"
+          if [ -z "$pin" ]; then
+            echo "::error::.pre-commit-config.yaml no longer pins a ruff for ruff-format-with-kwargs"
+            exit 1
+          fi
+          pip install "ruff==$pin"
 
       - name: Repo tests (CPU, auto-discovered)
         env:

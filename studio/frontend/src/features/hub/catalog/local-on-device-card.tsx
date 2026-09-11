@@ -323,10 +323,9 @@ export function LocalOnDeviceCard({
       };
     });
   }, [currentVariantState.variants, remoteVariantState.variants]);
-  // The same live VRAM Budget the memory bar on this card reads. Without it the
-  // quant menu ranked against the 0.97 default while the bar beside it used the
-  // saved fraction, so an over-budget variant could sit above a smaller one that
-  // actually fits.
+  // The same live VRAM Budget the memory bar on this card reads. Without it the quant menu ranked
+  // against the 0.97 default while the bar beside it used the saved fraction, so an over-budget
+  // variant could sit above a smaller one that actually fits.
   const budgetFraction = useVramBudgetFraction() ?? undefined;
   const sortedVariants = useMemo(
     () =>
@@ -398,10 +397,9 @@ export function LocalOnDeviceCard({
     !runPending &&
     !updateJobActive &&
     updateAvailable;
-  // Update runs as a MANAGED download (same path as a normal download) so it
-  // shows in the Downloads panel with manifest-based progress and a working
-  // Cancel. The worker re-resolves `main` and pulls changed blobs while the old
-  // cached copy stays runnable until the new revision verifies.
+  // Update runs as a MANAGED download (same path as a normal download) so it shows in the Downloads
+  // panel with manifest-based progress and a working Cancel. The worker re-resolves `main` and
+  // pulls changed blobs while the old cached copy stays runnable until the new revision verifies.
   const handleConfirmUpdate = () => {
     if (!repoId || !updateTargetVariant) return;
     setUpdateOpen(false);

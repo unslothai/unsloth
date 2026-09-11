@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import stat
 import site
 import subprocess
 import sys
@@ -28,6 +29,8 @@ from .os_sandbox import (
     SandboxUnavailableError,
     ToolLaunchPlan,
     WorkdirUnsafeError,
+    cache_share_hazard,
+    editable_source_roots,
     scan_workdir_for_host_channels,
 )
 
@@ -46,6 +49,16 @@ LIMITATIONS = (
     # Abstract AF_UNIX sockets live in the shared network namespace, so without
     # the Landlock scope (Linux 6.12+) a launch reaches the session bus and X.
     *(() if sandbox_landlock.abstract_scope_supported() else ("host_abstract_sockets_reachable",)),
+    # The same hole, through the filesystem rather than the abstract namespace. A
+    # read-only bind does not stop connect(): the mount flag governs write(), and
+    # a socket is reached with send() (Viro, LKML 2014, on MNT_READONLY; it is why
+    # a read-only docker.sock is still a full Docker API). So a pathname socket
+    # under a bound system root -- a service under /opt is the realistic one -- is
+    # reachable from inside. Named rather than scanned: the read-only roots are
+    # /usr and friends, and walking them on every tool call is not affordable.
+    # Unlike the writable cache, this is not a regression against a host launch,
+    # which could connect to the same socket directly.
+    "host_pathname_sockets_reachable",
     "shared_kernel",
 )
 
@@ -81,6 +94,11 @@ _ETC_FILES = (
     "/etc/localtime",
     "/etc/nsswitch.conf",
 )
+# Bound only when it passes _trusted_system_file. git reads it for a corporate
+# proxy, a custom CA path or a URL rewrite, and /etc is fresh in the jail, so
+# without it an otherwise valid clone fails against defaults. macOS already binds
+# it; this is the Linux half.
+_ETC_FILES_IF_TRUSTED = ("/etc/gitconfig",)
 # Resolution and TLS trust. The PUBLIC halves one by one, never /etc/ssl or
 # /etc/pki whole: both carry private keys beside the certificates, and a miss
 # here breaks verification loudly where a miss in a mask list leaks a key quietly.
@@ -112,6 +130,23 @@ _MODEL_CACHE_RELPATH = os.path.join(".cache", "huggingface")
 _MODEL_CACHE_SUBDIRS = ("hub", "datasets", "xet", "assets")
 # NixOS keeps glibc here, so a store interpreter cannot link without it.
 _NIX_STORE = "/nix/store"
+
+
+def _trusted_system_file(path: str) -> bool:
+    """A real, root-owned, non-user-writable regular file, reached without a symlink.
+
+    The point of the checks is that this path is bound into a jail whose whole
+    claim is that the user's home is not readable. An /etc/gitconfig that is a
+    symlink into $HOME, or that the invoking user can rewrite, would carry
+    whatever they aimed it at straight back in.
+    """
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    if not stat.S_ISREG(info.st_mode):
+        return False  # a symlink or anything else is not followed
+    return info.st_uid == 0 and not info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
 
 
 def _within(path: str, root: str) -> bool:
@@ -180,6 +215,48 @@ def _host_mount_points() -> tuple[str, ...]:
     return tuple(points)
 
 
+def _runtime_paths_under(workdir: str) -> tuple[str, ...]:
+    """Interpreter directories that sit INSIDE the session workdir.
+
+    _runtime_read_paths drops these, correctly: binding them by name would follow
+    a <workdir>/venv/lib symlinked at ~/.ssh straight back in. But dropping alone
+    leaves them under the recursive WRITABLE workdir bind, so when Studio's own
+    virtualenv lives beneath the workdir a tool call can write its site-packages
+    or its interpreter, and the next server subprocess launched with
+    sys.executable runs that code with the server's authority. They are re-bound
+    read-only after the writable bind instead.
+
+    Judged on the RESOLVED path, not the spelling. A venv invoked through a
+    symlinked path keeps that alias in sys.prefix -- measured on CPython 3.12,
+    where <alias>/venv/bin/python reports sys.prefix = <alias>/venv, not the
+    resolved form -- while the caller hands in the canonical workdir. A lexical
+    test against either spelling alone rejects the other, and with an
+    alias-valued sys.prefix that left nothing protected: a tool call overwrote
+    the interpreter's sitecustomize through both spellings, under bubblewrap
+    0.11 in a container.
+
+    One that RESOLVES outside still gets no rule, which is the <workdir>/venv/lib
+    symlinked at ~/.ssh case: nothing is bound at the far end, so inside the jail
+    it dangles.
+    """
+    canonical_root = os.path.realpath(workdir)
+    inside: list[str] = []
+    for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
+        for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg", "ssl"):
+            candidate = os.path.join(prefix, name)
+            if not os.path.exists(candidate):
+                continue
+            # The RESOLVED path decides, and it is also what gets bound. Testing
+            # the spelling as written answered a different question -- an
+            # alias-prefixed path is not lexically beneath the canonical root,
+            # and a canonical one is not beneath the alias -- so pairing the two
+            # tests per root rejected every path either way round.
+            resolved = os.path.realpath(candidate)
+            if _within(resolved, canonical_root) and resolved not in inside:
+                inside.append(resolved)
+    return tuple(inside)
+
+
 def _validate_workdir(workdir: str) -> str:
     """The mount table is re-read here because the shared scan's ``os.path.ismount``
     compares device numbers and misses a same-filesystem bind mount, which is what
@@ -221,6 +298,11 @@ def _runtime_read_paths(workdir: str, system_roots: tuple[str, ...]) -> tuple[st
         )
     except (KeyError, OSError):
         pass
+    # An editable install keeps its code outside site-packages, so without this a
+    # sandboxed `import unsloth` fails where the same environment imported it a
+    # moment earlier. Added as CANDIDATES, so the workdir exclusion, the
+    # filesystem-root refusal and the dual-spelling handling below all apply.
+    candidates.extend(editable_source_roots())
     try:
         candidates.extend(site.getsitepackages())
     except AttributeError:
@@ -318,8 +400,22 @@ def _model_cache_binds(workdir: str) -> dict[str, str]:
         resolved = {}
     for name in _MODEL_CACHE_SUBDIRS:
         path = os.path.abspath(resolved.get(name) or os.path.join(home, name))
-        if os.path.isdir(path) and not _within(path, workdir):
-            binds[name] = path
+        if not os.path.isdir(path) or _within(path, workdir):
+            continue
+        # This bind is WRITABLE, so it is held to the workdir's rule: no IPC nodes
+        # and no hard link to an inode named outside it. A component that fails is
+        # dropped, never refused, so the worst case is the re-download every call
+        # did before the cache was shared.
+        # The mount table, for the same reason _validate_workdir re-reads it: the
+        # shared scan's os.path.ismount compares device numbers and misses a
+        # same-filesystem bind mount, which this recursive WRITABLE bind would
+        # otherwise carry in.
+        nested = next((m for m in _host_mount_points() if m != path and _within(m, path)), None)
+        hazard = f"contains a nested host mount: {nested}" if nested else cache_share_hazard(path)
+        if hazard is not None:
+            logger.warning("Not sharing the %s cache into the sandbox: it %s", name, hazard)
+            continue
+        binds[name] = path
     return binds
 
 
@@ -377,6 +473,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     model_cache = _model_cache_binds(workdir)
     # A runtime under /tmp has to be restored after the tmpfs replaces it.
     tmp_runtime_paths = tuple(path for path in runtime_paths if _within(path, "/tmp"))
+    workdir_runtime_paths = _runtime_paths_under(workdir)
 
     disable_userns = _bwrap_supports(bwrap, "--disable-userns")
     try:
@@ -420,7 +517,8 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         ]
         for root in system_roots:
             argv += ["--ro-bind-try", root, root]
-        for path in (*_ETC_FILES, *_NETWORK_FILES):
+        trusted = tuple(p for p in _ETC_FILES_IF_TRUSTED if _trusted_system_file(p))
+        for path in (*_ETC_FILES, *trusted, *_NETWORK_FILES):
             argv += ["--ro-bind-try", path, path]
         argv += ["--ro-bind", passwd, "/etc/passwd", "--ro-bind", group, "/etc/group"]
         for path in runtime_paths:
@@ -438,6 +536,15 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         argv += ["--bind", workdir, inner]
         if inner != workdir:
             argv += ["--bind", workdir, workdir]
+        # After BOTH writable binds, and at BOTH spellings. A read-only mount
+        # placed before the second bind is hidden by it, and one placed at a
+        # spelling the jail has not bound yet has no mount point to land on:
+        # bwrap then dies with "Can't mkdir parents ... Read-only file system"
+        # and the launch fails outright. See _runtime_paths_under.
+        for path in workdir_runtime_paths:
+            argv += ["--ro-bind", path, path]
+            if inner != workdir:
+                argv += ["--ro-bind", path, inner + path[len(workdir) :]]
         argv += ["--chdir", inner]
         if model_cache:
             inner_cache = os.path.join(inner, _MODEL_CACHE_RELPATH)

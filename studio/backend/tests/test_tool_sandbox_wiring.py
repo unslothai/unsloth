@@ -187,14 +187,29 @@ def test_an_unknown_mode_is_reported_rather_than_silently_downgraded():
     assert "nonsense" in out
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason = "pre-exec and pass_fds are POSIX; Windows keeps today's path"
+)
 def test_the_process_unsloth_holds_still_lands_in_its_own_session():
     """Asserted about the OUTER process: under bubblewrap the payload is not a
     session leader, so asking it about its own sid only passes on a fallback."""
+    # One call OUTSIDE the window first. Everything this platform initialises
+    # lazily then happens before anything is counted: the capability probe spawns
+    # a real launch, and on macOS _developer_paths() shells out to xcode-select.
+    # Both are one-time, and counting them made this fail 4 == 2 on macos-14
+    # while passing on Linux. What the assertion is for is per-CALL behaviour, so
+    # a warm-up is what separates the two: a genuine per-call spawn survives it,
+    # which is how the extra fork this test caught before was found.
+    # Both kinds, since the terminal path initialises its own shell lookup and a
+    # python-only warm-up left that inside the window.
+    tools._python_exec("pass", None, 60, _SESSION)
+    tools._bash_exec("true", None, 60, _SESSION)
+
     seen = []
     real = subprocess.Popen
 
     def capture(argv, **kwargs):
-        seen.append(kwargs.get("preexec_fn"))
+        seen.append((argv, kwargs.get("preexec_fn")))
         return real(argv, **kwargs)
 
     subprocess.Popen = capture
@@ -203,7 +218,18 @@ def test_the_process_unsloth_holds_still_lands_in_its_own_session():
         assert "6" in tools._bash_exec("echo 6", None, 60, _SESSION)
     finally:
         subprocess.Popen = real
-    assert len(seen) == 2 and all(preexec is not None for preexec in seen)
+    # Tool launches carry a pre-exec; the bookkeeping spawns do not. macOS adds a
+    # `ps` liveness check per call, which no warm-up removes because it is not a
+    # one-time cost, and counting it made this fail 4 == 2 there while passing on
+    # Linux. Both halves are asserted, so an extra TOOL launch still fails the
+    # count and an extra bookkeeping spawn has to be a known one.
+    launches = [preexec for _, preexec in seen if preexec is not None]
+    bookkeeping = [argv for argv, preexec in seen if preexec is None]
+    # The argv is in the message because a count alone cannot say WHICH extra
+    # spawn appeared, and this only ever fails on a runner nobody can attach to.
+    assert len(launches) == 2, [argv for argv, _ in seen]
+    assert all(tuple(argv)[:1] == ("ps",) for argv in bookkeeping), bookkeeping
+    seen = launches
     # Asked by result, not identity: an isolated launch composes the plan's
     # pre-exec with the backend's, so the object differs either way.
     for preexec in seen:
@@ -231,6 +257,9 @@ def test_a_timeout_kills_the_tool_and_leaves_the_server_running():
     assert "9" in tools._python_exec("print(4 + 5)", None, 60, _SESSION)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason = "pre-exec and pass_fds are POSIX; Windows keeps today's path"
+)
 def test_the_plan_carries_the_pre_exec_the_kill_paths_depend_on():
     seen = []
     real = os_sandbox.prepare_tool_launch
@@ -350,6 +379,9 @@ def test_the_launch_is_released_when_required_refuses(monkeypatch):
     assert "install it" in out
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason = "pre-exec and pass_fds are POSIX; Windows keeps today's path"
+)
 def test_pass_fds_and_owned_files_reach_the_spawn(monkeypatch):
     read_fd, write_fd = os.pipe()
     holder = os.fdopen(write_fd, "wb")
@@ -407,6 +439,9 @@ def test_full_access_keeps_its_own_label_even_when_the_planner_breaks(monkeypatc
     assert "command_and_code_analysis" not in record.retained_safeguards
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason = "pre-exec and pass_fds are POSIX; Windows keeps today's path"
+)
 def test_a_backend_that_drops_the_pre_exec_has_it_put_back(monkeypatch):
     def forgetful(plan):
         return PreparedSandboxLaunch(
@@ -523,13 +558,18 @@ def test_required_still_refuses_when_the_backend_declines_this_launch(monkeypatc
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason = "the workdir scan is POSIX only")
-def test_tool_code_cannot_switch_the_boundary_off_for_the_next_call():
+def test_tool_code_cannot_switch_the_boundary_off_for_the_next_call(monkeypatch):
     if not os_sandbox.capability_snapshot().available:
         pytest.skip("this host cannot isolate, so there is no boundary to switch off")
     workdir = tools._get_workdir(_SESSION)
     planted = os.path.join(workdir, "planted.sock")
     holder = socket.socket(socket.AF_UNIX)
-    holder.bind(planted)
+    # Bound RELATIVE: an AF_UNIX address is capped at ~108 bytes, and under
+    # `pytest -n 4` the studio home is a per-worker tmp_path that alone exceeds
+    # it, so the absolute spelling raised "AF_UNIX path too long" instead of
+    # planting anything. Backend CI runs -n 4.
+    monkeypatch.chdir(workdir)
+    holder.bind("planted.sock")
     try:
         tools._last_tool_execution_record = None
         out = tools._python_exec("print('SHOULD_NOT_RUN')", None, 60, _SESSION)
@@ -661,3 +701,30 @@ def test_a_planner_os_error_refuses_rather_than_running_unisolated(monkeypatch):
     out = tools._python_exec("print('SHOULD_NOT_RUN')", None, 60, _SESSION)
     assert "SHOULD_NOT_RUN" not in out
     assert tools._last_tool_execution_record is None
+
+
+def test_an_unisolated_launch_cannot_be_hooked_by_a_planted_usercustomize(tmp_path):
+    """site imports `usercustomize` from sys.path at interpreter startup whenever
+    ENABLE_USER_SITE is on, which it is for any non-venv interpreter. The session
+    packages directory is writable by the tool call and goes on PYTHONPATH, so
+    without PYTHONNOUSERSITE a call could leave a payload that runs on the host at
+    the start of every later unisolated call, ahead of that call's own analysed
+    script. Measured on a system python3 before this was set."""
+    workdir = tmp_path / "session"
+    (workdir / os_sandbox.SESSION_PACKAGES_RELPATH).mkdir(parents = True)
+    env = tools._with_session_packages({"PATH": "/usr/bin"}, str(workdir))
+    assert env["PYTHONNOUSERSITE"] == "1"
+
+
+def test_the_shipped_sitecustomize_is_found_before_the_session_packages(tmp_path):
+    """The other half, and the reason no separate guard is needed for it: site
+    always imports `sitecustomize`, and PYTHONNOUSERSITE does not stop that. What
+    stops a planted one is ordering, so the ordering is pinned here. The shim
+    directory _build_safe_env sets must stay AHEAD of the writable directory."""
+    workdir = tmp_path / "session"
+    (workdir / os_sandbox.SESSION_PACKAGES_RELPATH).mkdir(parents = True)
+    env = tools._with_session_packages({"PYTHONPATH": tools._SANDBOX_SITE_DIR}, str(workdir))
+    entries = env["PYTHONPATH"].split(os.pathsep)
+    assert entries.index(tools._SANDBOX_SITE_DIR) < entries.index(
+        str(workdir / os_sandbox.SESSION_PACKAGES_RELPATH)
+    )

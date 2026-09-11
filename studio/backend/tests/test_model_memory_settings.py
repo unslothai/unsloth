@@ -210,7 +210,6 @@ class TestMemlockLimit:
 
     def test_unlimited_reports_none(self, monkeypatch):
         import resource
-
         import utils.model_memory_settings as mm
 
         monkeypatch.setattr(
@@ -223,7 +222,6 @@ class TestMemlockLimit:
     @pytest.mark.parametrize("soft", [0, 64 * 1024, 8 * 1024 * 1024])
     def test_finite_limits_are_reported(self, monkeypatch, soft):
         import resource
-
         import utils.model_memory_settings as mm
 
         monkeypatch.setattr(resource, "getrlimit", lambda _w: (soft, soft))
@@ -231,7 +229,6 @@ class TestMemlockLimit:
 
     def test_negative_is_treated_as_unlimited(self, monkeypatch):
         import resource
-
         import utils.model_memory_settings as mm
 
         monkeypatch.setattr(resource, "getrlimit", lambda _w: (-1, -1))
@@ -240,7 +237,6 @@ class TestMemlockLimit:
     @pytest.mark.parametrize("exc", [ValueError, OSError, AttributeError])
     def test_probe_failure_never_raises(self, monkeypatch, exc):
         import resource
-
         import utils.model_memory_settings as mm
 
         def boom(_w):
@@ -537,9 +533,9 @@ class TestCapabilityProbeFallback:
     def test_load_mode_flag_survives_a_failed_probe(self, monkeypatch):
         """A timed-out or broken --help probe must fall back conservatively,
         not raise UnboundLocalError and block the load."""
-        import subprocess
-
         from core.inference.llama_cpp import LlamaCppBackend
+
+        import subprocess
 
         LlamaCppBackend._capability_cache.clear()
 
@@ -574,9 +570,9 @@ class TestCacheInvalidationRace:
     rest of the TTL, and a load could launch flags contradicting it."""
 
     def test_stale_fill_is_dropped(self, monkeypatch):
-        import threading
-
         import utils.model_memory_settings as mm
+
+        import threading
 
         mm._cache.clear()
         store = {mm.KEEP_RESIDENT_SETTING_KEY: False}
@@ -681,9 +677,9 @@ class TestRacingReadReturnsTheNewValue:
     write must not hand back the pre-write setting."""
 
     def test_a_read_invalidated_mid_flight_is_retried(self, monkeypatch):
-        import threading
-
         import utils.model_memory_settings as mm
+
+        import threading
 
         mm._cache.clear()
         store = {mm.KEEP_RESIDENT_SETTING_KEY: False}
@@ -883,11 +879,11 @@ class TestFullOffloadDetection:
     def test_the_manual_branch_really_does_not_set_fully_gpu_offloaded(self):
         """Pins the premise. If a later change starts setting it there, this
         test fails and the derived check can be simplified away."""
+        from core.inference.llama_cpp import LlamaCppBackend
         import ast
         import inspect
-        import textwrap
 
-        from core.inference.llama_cpp import LlamaCppBackend
+        import textwrap
 
         source = textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model))
         tree = ast.parse(source)
@@ -1073,8 +1069,9 @@ class TestHostMemoryGate:
         vulkan_igpu = False,
         **kwargs,
     ):
-        import utils.hardware
         from core.inference.llama_cpp import LlamaCppBackend
+
+        import utils.hardware
 
         monkeypatch.setattr(utils.hardware, "is_apple_silicon", lambda: apple)
         monkeypatch.setattr(
@@ -1535,7 +1532,6 @@ class TestTheRetryCanReadTheGate:
     @staticmethod
     def _load_model_ast():
         import ast
-        from pathlib import Path
 
         src = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_cpp.py"
         for node in ast.walk(ast.parse(src.read_text(encoding = "utf-8"))):
@@ -1654,11 +1650,11 @@ class TestCpuMoeCountIsParsed:
         assert _args_place_tensors_on_cpu(extras) is expected
 
     def test_it_is_the_same_predicate_the_pipeline_check_uses(self):
+        import ast
         import inspect
 
         from core.inference.llama_cpp import _pipeline_parallel_disabled_by_args
 
-        import ast
         import textwrap
 
         tree = ast.parse(textwrap.dedent(inspect.getsource(_pipeline_parallel_disabled_by_args)))
@@ -1861,7 +1857,6 @@ class TestPairedWritesAreInvalidatedTogether:
 
     def test_one_acquisition_covers_every_key(self):
         import ast
-        from pathlib import Path
 
         src = Path(__file__).resolve().parent.parent / "utils" / "model_memory_settings.py"
         tree = ast.parse(src.read_text(encoding = "utf-8"))
@@ -1889,9 +1884,9 @@ class TestThePolicyReadsOneSnapshot:
     saved --mlock in the extras."""
 
     def test_a_save_between_the_two_reads_is_not_observable(self, monkeypatch):
+        # Start at (keep_resident=True, no_ram_reserve=False).
         import utils.model_memory_settings as mm
 
-        # Start at (keep_resident=True, no_ram_reserve=False).
         store = {
             mm.KEEP_RESIDENT_SETTING_KEY: True,
             mm.NO_RAM_RESERVE_SETTING_KEY: False,
@@ -1926,7 +1921,6 @@ class TestThePolicyReadsOneSnapshot:
 
     def test_the_policy_derives_both_from_one_call(self):
         import ast
-        from pathlib import Path
 
         src = Path(__file__).resolve().parent.parent / "core" / "inference" / "llama_server_args.py"
         tree = ast.parse(src.read_text(encoding = "utf-8"))
@@ -1987,6 +1981,7 @@ class TestResidencyDoesNotBlockReload:
     @pytest.fixture
     def idle_env(self, monkeypatch):
         """Standalone UNSLOTH_MODEL_IDLE_TTL with auto-switch off."""
+        import utils.model_memory_settings as mm
         import utils.openai_auto_switch_settings as aus
 
         monkeypatch.setattr(aus, "_stored_idle_seconds", lambda: None)
@@ -1994,7 +1989,6 @@ class TestResidencyDoesNotBlockReload:
         monkeypatch.setattr(aus, "get_openai_auto_switch_enabled", lambda: False)
 
         def residency(on):
-            import utils.model_memory_settings as mm
             monkeypatch.setattr(mm, "get_keep_resident", lambda: on)
 
         return residency
@@ -2025,9 +2019,10 @@ class TestResidencyDoesNotBlockReload:
     def test_turning_idle_unload_off_still_disables_the_reload_path(self, monkeypatch):
         """The converse: no TTL and no auto-switch means no automatic load, with
         or without residency, so this is not just always-true."""
-        import routes.inference as ri
         import utils.model_memory_settings as mm
         import utils.openai_auto_switch_settings as aus
+
+        import routes.inference as ri
 
         monkeypatch.setattr(aus, "_stored_idle_seconds", lambda: None)
         monkeypatch.setattr(aus, "_env_idle_seconds", lambda: None)
@@ -2203,10 +2198,10 @@ class TestAGpuIdsPinOverridesADeviceFlag:
     def test_the_launch_really_sanitizes_before_classifying(self):
         """Source check: the gate call must receive the stripped extras and env,
         so this cannot regress into reading the raw ones again."""
-        import inspect
-        import re
-
         from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        import re
 
         src = inspect.getsource(LlamaCppBackend.load_model)
         strip = src.find("_mem_extra_args = self._strip_device_extra_args(extra_args)")
@@ -2274,9 +2269,8 @@ class TestFitOffRetryDropsTheLock:
     def test_the_launch_really_reclassifies_the_fit_off_retry(self):
         """Source check: the branch must re-ask the gate and clear the
         bookkeeping, so it cannot drift back to reusing the fitted verdict."""
-        import inspect
-
         from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
 
         src = inspect.getsource(LlamaCppBackend.load_model)
         branch = src.find('run_cmd = [*run_cmd, "--fit", "off"]')
@@ -2320,9 +2314,8 @@ class TestFitOffRetryClearsPolicyActivity:
     def test_the_launch_recomputes_activity_without_the_managed_flag(self):
         """Source check: the retry must reuse the non-managed half of the launch
         expression, not leave the first attempt's verdict standing."""
-        import inspect
-
         from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
 
         src = inspect.getsource(LlamaCppBackend.load_model)
         assert (
@@ -2342,7 +2335,6 @@ class TestNoDeadMemoryBookkeeping:
 
     def test_the_launch_records_nothing_unread(self):
         import ast
-        from pathlib import Path
 
         backend = Path(__file__).resolve().parent.parent
         target = backend / "core" / "inference" / "llama_cpp.py"
@@ -2445,9 +2437,8 @@ class TestTheEffectiveFitterState:
     def test_the_launch_asks_over_the_whole_command(self):
         """Source check: Unsloth emits its own --fit into cmd, so reading the
         extras alone would miss it."""
-        import inspect
-
         from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
 
         src = inspect.getsource(LlamaCppBackend.load_model)
         assert "fit_active = fit_is_effectively_on(" in src

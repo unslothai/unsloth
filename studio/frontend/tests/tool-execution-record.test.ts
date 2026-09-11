@@ -37,6 +37,12 @@ const scope = loadWithStubs<{
     },
     react,
     "../../lib/strip-ansi": { stripAnsi: (value: string) => value },
+    "./tool-output-result": {
+      preferFullToolOutput: (_full: string, result: string) => result,
+      preferSanitizedFullToolOutput: (_full: string, result: string) => result,
+      shouldPreserveFullOutput: () => false,
+      toolResultText: (result: unknown) => String(result),
+    },
   },
 );
 

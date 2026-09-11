@@ -189,7 +189,11 @@ def test_system_directories_are_bound_whole_and_never_file_by_file(prepared):
     # Enumerating shared objects produces hundreds of binds and still misses
     # the one dlopen() wants, so every bind of a *file* has to be a named
     # config file or one of the two synthesised identities.
-    named = {*sandbox_linux._ETC_FILES, *sandbox_linux._NETWORK_FILES}
+    named = {
+        *sandbox_linux._ETC_FILES,
+        *sandbox_linux._ETC_FILES_IF_TRUSTED,
+        *sandbox_linux._NETWORK_FILES,
+    }
     identity_dir = prepared.cleanup_paths[0]
     for flag in ("--bind", "--ro-bind", "--ro-bind-try"):
         for source, _ in _pairs(prepared.argv, flag):
@@ -940,6 +944,10 @@ def test_a_cache_leaf_left_behind_as_a_file_is_refused_at_preparation(tmp_path, 
     assert (workdir / ".cache" / "huggingface" / "hub").read_text() == "not a directory"
 
 
+@pytest.mark.skipif(
+    os.geteuid() == 0,
+    reason = "root reads and writes regardless of the mode bits, so the premise is void",
+)
 def test_an_unreadable_directory_is_refused(tmp_path):
     """A mode-000 directory hides a link out from the scan, and the process that
     owns it can chmod it back."""
@@ -977,3 +985,318 @@ def test_the_cache_studio_actually_uses_is_the_one_shared(tmp_path, monkeypatch)
     assert binds["datasets"] == str(home / "datasets")
     # And a component that would sit inside the workdir is dropped.
     assert "hub" not in sandbox_linux._model_cache_binds(str(hub.parent))
+
+
+def _real_cache(monkeypatch, home):
+    """Point the settings layer at *home* and let the REAL _model_cache_binds run.
+
+    _share_cache replaces _model_cache_binds outright, so a test that used it
+    would never reach the hazard check it is about.
+    """
+    import types
+
+    paths = types.SimpleNamespace(cache_home = home, hub_cache = home / "hub", xet_cache = home / "xet")
+    module = types.ModuleType("utils.hf_cache_settings")
+    module.get_hf_cache_paths = lambda: paths
+    monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", module)
+
+
+def test_a_cache_component_holding_an_ipc_node_is_not_shared(tmp_path, monkeypatch):
+    """The bind is writable and the network namespace is shared, so a pathname
+    socket under it is connectable from inside: a read-only mount would not even
+    help, since MNT_READONLY governs write() and a socket is reached with send().
+    Measured against the real backend before this check existed."""
+    host = tmp_path / "hostcache"
+    (host / "hub").mkdir(parents = True)
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    # Relative, because an AF_UNIX address is capped at ~108 bytes and pytest's
+    # tmp_path alone can exceed it.
+    monkeypatch.chdir(host / "hub")
+    sock.bind("leftover.sock")
+    try:
+        _real_cache(monkeypatch, host)
+        assert "hub" not in sandbox_linux._model_cache_binds(str(tmp_path / "session"))
+    finally:
+        sock.close()
+
+
+def test_a_cache_component_holding_an_external_hard_link_is_not_shared(tmp_path, monkeypatch):
+    """Same inode under two names, one of them outside the cache. The bind is
+    writable, so without this the file outside is writable through the cache name."""
+    host = tmp_path / "hostcache"
+    (host / "hub").mkdir(parents = True)
+    outside = tmp_path / "private.txt"
+    outside.write_text("secret")
+    os.link(outside, host / "hub" / "innocent.bin")
+    _real_cache(monkeypatch, host)
+    assert "hub" not in sandbox_linux._model_cache_binds(str(tmp_path / "session"))
+
+
+def test_a_clean_cache_component_is_still_shared(tmp_path, monkeypatch):
+    """The negative control: the check above must not simply drop everything."""
+    host = tmp_path / "hostcache"
+    (host / "hub" / "models--x").mkdir(parents = True)
+    (host / "hub" / "models--x" / "weights.bin").write_text("w")
+    _real_cache(monkeypatch, host)
+    assert sandbox_linux._model_cache_binds(str(tmp_path / "session"))["hub"] == str(host / "hub")
+
+
+def test_a_hazardous_cache_drops_the_component_rather_than_failing_the_launch(
+    tmp_path, monkeypatch
+):
+    """Dropping, never refusing. The cache is an optimisation, so the degraded
+    case is the re-download every call did before it was shared; refusing would
+    let anything able to write one socket end every later tool call."""
+    host = tmp_path / "hostcache"
+    (host / "hub").mkdir(parents = True)
+    os.mkfifo(host / "hub" / "pipe")
+    _real_cache(monkeypatch, host)
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    launch = sandbox_linux.prepare(_plan(workdir))
+    try:
+        assert "HF_HOME" not in launch.argv
+    finally:
+        launch.cleanup()
+
+
+def test_a_trusted_system_gitconfig_is_bound_and_an_untrusted_one_is_not(tmp_path, monkeypatch):
+    """git reads /etc/gitconfig for a proxy, a CA path or a URL rewrite, and /etc
+    is fresh in the jail. Bound only when root owns it and no one else can write
+    it: a symlink into $HOME, or a user-writable file, would carry whatever it
+    aimed at back into a jail whose claim is that $HOME is unreadable."""
+    good = tmp_path / "gitconfig"
+    good.write_text("[http]\n")
+    link = tmp_path / "linked"
+    link.symlink_to(good)
+    assert sandbox_linux._trusted_system_file(str(link)) is False, "a symlink is followed"
+    assert sandbox_linux._trusted_system_file(str(tmp_path / "absent")) is False
+    os.chmod(good, 0o666)
+    assert sandbox_linux._trusted_system_file(str(good)) is False, "world-writable accepted"
+
+
+def test_a_runtime_under_the_workdir_is_re_bound_read_only(tmp_path, monkeypatch):
+    """Studio's own venv living beneath the session workdir must not be writable.
+
+    _runtime_read_paths drops these deliberately, but the recursive workdir bind
+    is WRITABLE, so dropping alone let a tool call rewrite site-packages or the
+    interpreter and the next server subprocess launched with sys.executable ran
+    it with the server's authority. Re-bound read-only AFTER the writable bind.
+    """
+    workdir = tmp_path / "session"
+    venv = workdir / "venv"
+    (venv / "lib").mkdir(parents = True)
+    (venv / "bin").mkdir()
+    monkeypatch.setattr(sys, "prefix", str(venv))
+    monkeypatch.setattr(sys, "exec_prefix", str(venv))
+
+    launch = sandbox_linux.prepare(_plan(workdir))
+    try:
+        argv = launch.argv
+        writable = argv.index("--bind")
+        ro_after = [
+            source
+            for index, source in enumerate(argv)
+            if index > writable and argv[index - 1] == "--ro-bind"
+        ]
+        assert str(venv / "lib") in ro_after, "the runtime stayed writable"
+        assert str(venv / "bin") in ro_after
+    finally:
+        launch.cleanup()
+
+
+def test_a_runtime_symlinked_out_of_the_workdir_is_not_re_bound(tmp_path, monkeypatch):
+    """The negative control for the rule above. A <workdir>/venv/lib aimed at the
+    user's home must NOT be bound by name; inside the jail it simply dangles."""
+    workdir = tmp_path / "session"
+    (workdir / "venv").mkdir(parents = True)
+    secret = tmp_path / "home" / ".ssh"
+    secret.mkdir(parents = True)
+    (workdir / "venv" / "lib").symlink_to(secret)
+    monkeypatch.setattr(sys, "prefix", str(workdir / "venv"))
+
+    launch = sandbox_linux.prepare(_plan(workdir))
+    try:
+        for flag in ("--bind", "--ro-bind", "--ro-bind-try"):
+            for source, _ in _pairs(launch.argv, flag):
+                assert not sandbox_linux._within(str(secret), source), source
+    finally:
+        launch.cleanup()
+
+
+def test_a_nested_bind_mount_in_the_cache_is_caught_by_the_mount_table(tmp_path, monkeypatch):
+    """os.path.ismount compares device numbers and misses a same-filesystem bind
+    mount, which is why _validate_workdir re-reads /proc/self/mountinfo. The
+    writable cache bind needs the same check, or it carries the nested mount in."""
+    host = tmp_path / "hostcache"
+    (host / "hub" / "nested").mkdir(parents = True)
+    _real_cache(monkeypatch, host)
+    monkeypatch.setattr(
+        sandbox_linux, "_host_mount_points", lambda: (str(host / "hub" / "nested"),)
+    )
+    assert "hub" not in sandbox_linux._model_cache_binds(str(tmp_path / "session"))
+
+
+def _fake_editable(
+    tmp_path,
+    monkeypatch,
+    source: str,
+    top_level: str | None = None,
+):
+    """A dist-info recording an editable install, the way an installer writes it."""
+    site_dir = tmp_path / "sitepkgs"
+    info = site_dir / "demo-1.0.dist-info"
+    info.mkdir(parents = True)
+    (info / "METADATA").write_text("Name: demo\nVersion: 1.0\n", encoding = "utf-8")
+    (info / "RECORD").write_text("", encoding = "utf-8")
+    if top_level is not None:
+        (info / "top_level.txt").write_text(top_level + "\n", encoding = "utf-8")
+    (info / "direct_url.json").write_text(
+        json.dumps({"url": f"file://{source}", "dir_info": {"editable": True}}),
+        encoding = "utf-8",
+    )
+    monkeypatch.syspath_prepend(str(site_dir))
+    os_sandbox.editable_source_roots.cache_clear()
+    return site_dir
+
+
+def test_an_editable_installs_source_root_is_readable(tmp_path, monkeypatch):
+    """Its code lives OUTSIDE site-packages, so without this a sandboxed
+    `import unsloth` fails where the same environment imported it a moment
+    earlier. Read from PEP 610's direct_url.json rather than by parsing .pth
+    files, because that record is written whichever mechanism the installer used:
+    a PEP 660 finder keeps its mapping in a module and puts nothing on sys.path."""
+    source = tmp_path / "checkout"
+    package = source / "demo"
+    package.mkdir(parents = True)
+    (package / "__init__.py").write_text("", encoding = "utf-8")
+    # A checkout holds more than its packages, and the sandbox keeps the network.
+    (source / ".env").write_text("AWS_SECRET_ACCESS_KEY=real\n", encoding = "utf-8")
+    (source / "fixtures").mkdir()
+    _fake_editable(tmp_path, monkeypatch, str(source))
+    try:
+        granted = os_sandbox.editable_source_roots()
+        assert str(package) in granted, granted
+        assert str(source) not in granted, granted
+        assert not any("fixtures" in path or ".env" in path for path in granted), granted
+        roots = tuple(p for p in sandbox_linux._SYSTEM_ROOTS if os.path.isdir(p))
+        read = sandbox_linux._runtime_read_paths(str(tmp_path / "wd"), roots)
+        assert str(package) in read
+        assert str(source) not in read
+    finally:
+        os_sandbox.editable_source_roots.cache_clear()
+
+
+def test_an_editable_root_at_the_filesystem_root_is_refused(tmp_path, monkeypatch):
+    """The negative control. An editable install rooted at / or /usr would hand
+    back most of the host, which is the guard the runtime paths already apply."""
+    _fake_editable(tmp_path, monkeypatch, "/usr")
+    try:
+        assert os_sandbox.editable_source_roots() == ()
+    finally:
+        os_sandbox.editable_source_roots.cache_clear()
+
+
+def test_a_runtime_under_a_symlinked_workdir_is_read_only_through_both_spellings(
+    tmp_path, monkeypatch
+):
+    """A workdir reached through a symlink is bound TWICE, once per spelling, and
+    the read-only runtime mounts have to come after both.
+
+    Placed between them, the second bind hides them. Placed at a spelling the jail
+    has not bound yet, there is no mount point to land on and bwrap dies with
+    "Can't mkdir parents ... Read-only file system", which in `auto` costs the
+    session its isolation rather than protecting anything. Measured under
+    bubblewrap 0.11 in a container: before this ordering the alias spelling failed
+    to launch at all, and now both refuse the write with EROFS.
+    """
+    real = tmp_path / "real"
+    venv = real / "venv"
+    (venv / "lib").mkdir(parents = True)
+    (venv / "bin").mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real)
+    monkeypatch.setattr(sys, "prefix", str(venv))
+    monkeypatch.setattr(sys, "exec_prefix", str(venv))
+
+    launch = sandbox_linux.prepare(_plan(alias))
+    try:
+        argv = list(launch.argv)
+        binds = [i for i, item in enumerate(argv) if item == "--bind"]
+        writable = [argv[i + 2] for i in binds]
+        assert str(alias) in writable and str(real) in writable, writable
+        last_bind = max(binds)
+        for leg in ("lib", "bin"):
+            for spelling in (real / "venv" / leg, alias / "venv" / leg):
+                landed = [
+                    i
+                    for i in range(len(argv))
+                    if argv[i] == "--ro-bind" and argv[i + 2] == str(spelling)
+                ]
+                assert landed, f"{spelling} is not re-bound read-only"
+                assert min(landed) > last_bind, f"{spelling} is bound before the last --bind"
+    finally:
+        launch.cleanup()
+
+
+def test_a_runtime_is_protected_when_sys_prefix_carries_the_workdir_alias(tmp_path, monkeypatch):
+    """The spelling CPython actually reports, which the test above did not use.
+
+    A venv invoked as <alias>/venv/bin/python reports sys.prefix = <alias>/venv,
+    not the resolved form; measured on CPython 3.12. The caller hands in the
+    canonical workdir, so a lexical containment test rejected every runtime path
+    and nothing was re-bound: under bubblewrap 0.11 in a container a tool call
+    then overwrote the interpreter's sitecustomize through both spellings.
+    """
+    real = tmp_path / "real"
+    (real / "venv" / "lib").mkdir(parents = True)
+    (real / "venv" / "bin").mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real)
+    # The alias spelling, exactly as an invoked venv reports it.
+    monkeypatch.setattr(sys, "prefix", str(alias / "venv"))
+    monkeypatch.setattr(sys, "exec_prefix", str(alias / "venv"))
+
+    under = sandbox_linux._runtime_paths_under(str(real))
+    assert str(real / "venv" / "lib") in under, under
+    assert str(real / "venv" / "bin") in under, under
+
+    launch = sandbox_linux.prepare(_plan(alias))
+    try:
+        argv = list(launch.argv)
+        last_bind = max(i for i, item in enumerate(argv) if item == "--bind")
+        for leg in ("lib", "bin"):
+            for spelling in (real / "venv" / leg, alias / "venv" / leg):
+                landed = [
+                    i
+                    for i in range(len(argv))
+                    if argv[i] == "--ro-bind" and argv[i + 2] == str(spelling)
+                ]
+                # The LAST one is what stands: an earlier read-only bind is fine
+                # and is covered by the writable bind that follows it, which is
+                # exactly why the post-bind one has to exist.
+                assert landed and max(landed) > last_bind, f"{spelling} unprotected"
+    finally:
+        launch.cleanup()
+
+
+def test_an_editable_namespace_package_is_granted_without_an_init(tmp_path, monkeypatch):
+    """A PEP 420 namespace package has no __init__.py by design, so presence of
+    one cannot be the only test: the package imports in Studio's environment and
+    would fail only inside a tool call. top_level.txt names it."""
+    source = tmp_path / "checkout"
+    namespace = source / "acme"
+    (namespace / "widget").mkdir(parents = True)
+    (namespace / "widget" / "__init__.py").write_text("", encoding = "utf-8")
+    (source / ".env").write_text("AWS_SECRET_ACCESS_KEY=real\n", encoding = "utf-8")
+    (source / "fixtures").mkdir()
+    _fake_editable(tmp_path, monkeypatch, str(source), top_level = "acme")
+    try:
+        granted = os_sandbox.editable_source_roots()
+        assert str(namespace) in granted, granted
+        # Still only what the distribution declares, so the checkout does not
+        # come with it.
+        assert not any("fixtures" in path or ".env" in path for path in granted), granted
+        assert str(source) not in granted, granted
+    finally:
+        os_sandbox.editable_source_roots.cache_clear()

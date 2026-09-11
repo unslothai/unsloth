@@ -18,6 +18,9 @@ from pathlib import Path
 
 import pytest
 
+if sys.platform == "win32":
+    pytest.skip("the Seatbelt profile generator is POSIX only", allow_module_level = True)
+
 from core.inference import sandbox_macos as backend
 from core.inference.os_sandbox import SandboxUnavailableError, ToolLaunchPlan
 
@@ -124,6 +127,22 @@ def test_both_private_spellings_are_emitted_for_the_workdir(profile):
         for path in (_WORKDIR, f"/private{_WORKDIR}"):
             assert f'(literal "{path}")' in rule
             assert f'(subpath "{path}")' in rule
+
+
+def test_a_non_ascii_workdir_reaches_the_profile_unescaped(monkeypatch):
+    """SBPL is TinyScheme and has no \\u escape, so json's default spelling of an
+    accented path is a rule that matches nothing: the workdir would be unwritable
+    and the live probe would report the whole backend unavailable."""
+    workdir = "/tmp/unsloth-session-caf\u00e9"
+    private_tmp = "/tmp/us-seatbelt-\u00fcber"
+    real_exists, real_isdir = os.path.exists, os.path.isdir
+    named = {workdir, private_tmp}
+    monkeypatch.setattr(os.path, "exists", lambda path: path in named or real_exists(path))
+    monkeypatch.setattr(os.path, "isdir", lambda path: path in named or real_isdir(path))
+    text = backend.build_profile(workdir = workdir, private_tmp = private_tmp, runtime_paths = ())
+    assert "\\u00" not in text
+    for path in (workdir, private_tmp):
+        assert f'(subpath "{path}")' in _rule(text, _WRITE_PREFIX)
 
 
 def test_optional_literals_are_allowed_even_though_they_do_not_exist(profile):
@@ -422,7 +441,7 @@ def test_home_is_unreadable_inside_the_sandbox(tmp_path):
     workdir = tmp_path / "session"
     workdir.mkdir()
     canary = Path(os.path.expanduser("~")) / ".unsloth-seatbelt-canary"
-    canary.write_text("UNSLOTH_CANARY_HOME_READABLE")
+    canary.write_text("UNSLOTH_CANARY_HOME_READABLE", encoding = "utf-8")
     try:
         argv = ("/bin/sh", "-c", f"cat {shlex.quote(str(canary))}")
         host = subprocess.run(argv, capture_output = True, text = True, timeout = 60, check = False)
@@ -495,3 +514,241 @@ def test_a_framework_build_gets_its_dyld_image(monkeypatch, tmp_path):
     paths = backend.runtime_read_paths()
     assert str(prefix / "Python") in paths
     assert str(prefix) not in paths
+
+
+def test_a_runtime_under_the_workdir_is_denied_write_after_the_allowance(tmp_path, monkeypatch):
+    """The macOS half of the same rule as the Linux backend.
+
+    runtime_read_paths drops a runtime inside the workdir so a <workdir>/venv/lib
+    symlinked at ~/.ssh is not granted by name, but file-write* covers the workdir
+    subpath, so dropping alone left Studio's own venv writable when it sits under
+    the workdir. A tool call could rewrite site-packages or the interpreter and the
+    next server subprocess started from sys.executable would run it with the
+    server's authority. Denied AFTER the allowance, because Seatbelt is
+    last-match-wins and a deny before it would be overridden.
+    """
+    workdir = tmp_path / "session"
+    venv = workdir / "venv"
+    (venv / "lib").mkdir(parents = True)
+    (venv / "bin").mkdir()
+    monkeypatch.setattr(sys, "prefix", str(venv))
+    monkeypatch.setattr(sys, "exec_prefix", str(venv))
+
+    profile = backend.build_profile(workdir = str(workdir), private_tmp = "/tmp/pt", runtime_paths = ())
+    lines = profile.splitlines()
+    allow = next(i for i, line in enumerate(lines) if line.startswith("(allow file-write* "))
+    deny = next(i for i, line in enumerate(lines) if line.startswith("(deny file-write* "))
+    assert deny > allow, "a deny before the allowance is overridden by it"
+    denied = _subpaths(lines[deny]) | _literals(lines[deny])
+    assert str(venv / "lib") in denied
+    assert str(venv / "bin") in denied
+
+
+def test_no_write_denial_is_emitted_when_the_runtime_is_outside_the_workdir(tmp_path, monkeypatch):
+    """The negative control: the rule above must not fire for an ordinary layout,
+    where denying anything under the workdir would take away the one writable place."""
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    monkeypatch.setattr(sys, "prefix", "/usr")
+    monkeypatch.setattr(sys, "exec_prefix", "/usr")
+    profile = backend.build_profile(workdir = str(workdir), private_tmp = "/tmp/pt", runtime_paths = ())
+    assert not any(line.startswith("(deny file-write* ") for line in profile.splitlines())
+
+
+def test_the_openssl_directory_is_granted_by_component_not_whole(profile):
+    """A locally managed OpenSSL keeps private keys in a directory beside the
+    certificates, so a recursive rule over /etc/ssl is an exfiltratable key with
+    the network open. Linux names the public components one by one; this asserts
+    macOS does too. The ancestor `file-read-metadata` literals are the exception:
+    they carry no contents, and every allowed path needs them."""
+    for spelling in ("/etc/ssl", "/private/etc/ssl"):
+        for line in profile.splitlines():
+            if line.startswith("(allow file-read-metadata"):
+                continue
+            assert f'(subpath "{spelling}")' not in line, line
+            assert f'(literal "{spelling}")' not in line, line
+    # The components are optional paths, dropped from the profile on a host that
+    # lacks them, so the trust list itself is what carries the assertion.
+    assert "/private/etc/ssl" not in backend._TLS_TRUST_PATHS
+    for component in ("cert.pem", "certs", "openssl.cnf"):
+        assert f"/private/etc/ssl/{component}" in backend._TLS_TRUST_PATHS
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0,
+    reason = "root reads and writes regardless of the mode bits, so the premise is void",
+)
+def test_a_toolchain_directory_the_user_can_write_is_not_trusted(tmp_path):
+    """`xcode-select -p` honours $DEVELOPER_DIR, so a Studio started with that
+    aimed at a directory under $HOME would otherwise hand recursive file-read*
+    over a home subtree to a profile whose claim is that $HOME is unreadable.
+    The variable is stripped from the subprocess, and the answer is checked
+    rather than trusted, which is what this pins."""
+    mine = tmp_path / "FakeXcode.app" / "Contents" / "Developer"
+    mine.mkdir(parents = True)
+    assert backend._trusted_system_dir(str(mine)) is False
+    assert backend._trusted_system_dir(str(tmp_path / "absent")) is False
+    missing_file = tmp_path / "Developer"
+    missing_file.write_text("", encoding = "utf-8")
+    assert backend._trusted_system_dir(str(missing_file)) is False
+    # The positive control, so the check above is not passing because it always
+    # says no: a root-owned system directory is accepted.
+    assert backend._trusted_system_dir("/usr") is True
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0,
+    reason = "root reads and writes regardless of the mode bits, so the premise is void",
+)
+def test_the_developer_dir_variable_never_reaches_xcode_select(monkeypatch, tmp_path):
+    mine = tmp_path / "Developer"
+    mine.mkdir()
+    monkeypatch.setenv("DEVELOPER_DIR", str(mine))
+    monkeypatch.setattr(backend.sys, "platform", "darwin")
+    monkeypatch.setattr(backend.os.path, "exists", lambda path: True)
+    seen: dict = {}
+
+    def fake_run(argv, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, stdout = str(mine), stderr = "")
+
+    monkeypatch.setattr(backend.subprocess, "run", fake_run)
+    monkeypatch.setattr(backend, "_developer_paths_cache", None)
+    try:
+        assert backend._developer_paths() == ()
+    finally:
+        backend._developer_paths_cache = None
+    assert "DEVELOPER_DIR" not in seen["env"]
+
+
+def _profile_for(workdir, monkeypatch, prefix):
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    monkeypatch.setattr(sys, "exec_prefix", str(prefix))
+    return backend.build_profile(workdir = str(workdir), private_tmp = _PRIVATE_TMP, runtime_paths = ())
+
+
+def test_a_runtime_under_a_symlinked_workdir_is_denied_through_both_spellings(
+    tmp_path, monkeypatch
+):
+    """build_profile is handed the caller's spelling of the workdir, and its write
+    allowance covers the resolved form too. Measuring containment against the alias
+    alone rejected every runtime path, so NO denial was emitted and a tool could
+    rewrite the interpreter a later host subprocess runs."""
+    real = tmp_path / "real"
+    venv = real / "venv"
+    (venv / "lib").mkdir(parents = True)
+    (venv / "bin").mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real)
+
+    profile = _profile_for(alias, monkeypatch, venv)
+    under = backend.runtime_paths_under(str(alias))
+    for spelling in (real / "venv" / "lib", alias / "venv" / "lib"):
+        assert str(spelling) in under, under
+    deny = _rule(profile, "(deny file-write* ")
+    for spelling in (real / "venv" / "lib", alias / "venv" / "lib"):
+        assert f'(subpath "{spelling}")' in deny, deny
+    # Last-match-wins, so the denial is worthless before the allowance.
+    lines = profile.splitlines()
+    assert lines.index(_rule(profile, _WRITE_PREFIX)) < lines.index(deny)
+
+
+def test_the_framework_python_image_is_denied_when_the_prefix_is_under_the_workdir(
+    tmp_path, monkeypatch
+):
+    """A python.org framework's top-level `Python` is the dyld image, and
+    runtime_read_paths already names it. Left out of the denial it stayed under
+    the workdir's write allowance, which is the one file a later host subprocess
+    maps."""
+    workdir = tmp_path / "session"
+    prefix = workdir / "Python.framework" / "Versions" / "3.12"
+    (prefix / "lib").mkdir(parents = True)
+    image = prefix / "Python"
+    image.write_bytes(b"\xcf\xfa\xed\xfe")
+
+    deny = _rule(_profile_for(workdir, monkeypatch, prefix), "(deny file-write* ")
+    assert str(image) in backend.runtime_paths_under(str(workdir))
+    assert f'(literal "{image}")' in deny, deny
+
+
+def test_an_optional_search_root_that_resolves_out_of_its_prefix_is_dropped(monkeypatch):
+    """Homebrew on Intel chowns /usr/local to the user, so /usr/local/bin aimed at
+    the home directory is something a user, or an earlier unisolated tool call,
+    can arrange. _path_filters resolves before it emits, so the recursive subpath
+    would be over a home subtree."""
+    home = os.path.expanduser("~")
+    real = os.path.realpath
+
+    def resolves_home(path):
+        return home if path == "/usr/local/bin" else real(path)
+
+    monkeypatch.setattr(os.path, "realpath", resolves_home)
+    kept = backend._contained_optional_roots()
+    assert "/usr/local/bin" not in kept
+    # The positive control: the siblings are untouched, so this is not passing by
+    # dropping everything.
+    assert "/opt/homebrew/bin" in kept and "/usr/local/lib" in kept
+    # Through the profile as well, since the filter is worth nothing if
+    # build_profile still reaches for the unfiltered list.
+    named = {"/usr/local/bin", _WORKDIR, _PRIVATE_TMP}
+    real_isdir, real_exists = os.path.isdir, os.path.exists
+    monkeypatch.setattr(os.path, "isdir", lambda path: path in named or real_isdir(path))
+    monkeypatch.setattr(os.path, "exists", lambda path: path in named or real_exists(path))
+    profile = backend.build_profile(workdir = _WORKDIR, private_tmp = _PRIVATE_TMP, runtime_paths = ())
+    assert f'(subpath "{home}")' not in profile
+
+
+def test_an_editable_checkout_is_listable_but_not_readable(tmp_path, monkeypatch):
+    """The import root has to be listed for the interpreter to find anything in
+    it, and a literal grants exactly that. A subpath would grant the checkout,
+    which is the whole point of naming the packages one by one."""
+    checkout = tmp_path / "checkout"
+    package = checkout / "demo"
+    package.mkdir(parents = True)
+    (package / "__init__.py").write_text("", encoding = "utf-8")
+    (checkout / ".env").write_text("AWS_SECRET_ACCESS_KEY=real\n", encoding = "utf-8")
+    monkeypatch.setattr(backend, "editable_source_roots", lambda: (str(package),))
+    monkeypatch.setattr(backend, "editable_import_roots", lambda: (str(checkout),))
+
+    named = {_WORKDIR, _PRIVATE_TMP}
+    real_isdir, real_exists = os.path.isdir, os.path.exists
+    monkeypatch.setattr(os.path, "isdir", lambda path: path in named or real_isdir(path))
+    monkeypatch.setattr(os.path, "exists", lambda path: path in named or real_exists(path))
+    profile = backend.build_profile(
+        workdir = _WORKDIR,
+        private_tmp = _PRIVATE_TMP,
+        runtime_paths = (str(package),),
+    )
+    assert f'(literal "{checkout}")' in profile
+    assert f'(subpath "{checkout}")' not in profile
+    assert f'(subpath "{package}")' in profile
+
+
+def test_a_runtime_is_denied_when_sys_prefix_carries_the_workdir_alias(tmp_path, monkeypatch):
+    """The macOS half of the same miss. A venv invoked through a symlinked path
+    reports the alias in sys.prefix, and pairing the two lexical tests per root
+    rejected it either way round, so no denial was emitted at all."""
+    real = tmp_path / "real"
+    (real / "venv" / "lib").mkdir(parents = True)
+    alias = tmp_path / "alias"
+    alias.symlink_to(real)
+    profile = _profile_for(alias, monkeypatch, alias / "venv")
+    deny = _rule(profile, "(deny file-write* ")
+    for spelling in (real / "venv" / "lib", alias / "venv" / "lib"):
+        assert f'(subpath "{spelling}")' in deny, deny
+
+
+def test_a_path_that_cannot_be_encoded_is_refused_rather_than_carried():
+    """Non-ASCII is kept raw so TinyScheme sees the character rather than a \\u
+    escape it has no rule for. The other half of that: the profile is an argv
+    string, so a path carrying undecodable bytes -- a lone surrogate, after
+    surrogateescape -- would raise at the spawn instead. In `auto` an exception
+    there is caught and the call runs UNISOLATED, which is the silent loss the
+    raw spelling exists to prevent, so it is refused here where the caller can
+    still see it."""
+    with pytest.raises(SandboxUnavailableError, match = "encodable as UTF-8"):
+        backend._validated("/tmp/session-\udcff")
+    # The positive control: an ordinary accented path is NOT refused, or this
+    # guard would be undoing the fix it is protecting.
+    assert backend._validated("/tmp/session-café") == "/tmp/session-café"
+    assert "\\u00" not in backend._sbpl_string("/tmp/session-café")

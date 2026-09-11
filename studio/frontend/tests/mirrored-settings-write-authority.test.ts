@@ -12,15 +12,12 @@
 // sits in both graphs), so these pin the source the way the sibling store tests do.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-function read(path: string): string {
-  return readFileSync(new URL(path, import.meta.url), "utf8");
-}
+import { readText } from "./helpers/kit.ts";
 
-const store = read("../src/features/chat/stores/chat-runtime-store.ts");
-const storage = read("../src/features/chat/utils/chat-settings-storage.ts");
+const store = readText("../src/features/chat/stores/chat-runtime-store.ts");
+const storage = readText("../src/features/chat/utils/chat-settings-storage.ts");
 
 function slice(source: string, from: string, to: string): string {
   const start = source.indexOf(from);

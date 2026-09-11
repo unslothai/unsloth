@@ -8,6 +8,7 @@ import functools
 import hashlib
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -185,66 +186,84 @@ def spawn_prepared_launch(prepared: PreparedSandboxLaunch, **popen_kwargs: Any) 
 
 WORKDIR_SCAN_ENTRIES = 50_000
 WORKDIR_SCAN_SECONDS = 5.0
+# The shared cache is walked per launch, so its budget is tighter than the
+# workdir's; a cache too big to check in it is simply not shared.
+CACHE_SCAN_ENTRIES = 50_000
+CACHE_SCAN_SECONDS = 3.0
 
 
-def scan_workdir_for_host_channels(workdir: str) -> None:
-    """Refuse a session workdir that carries a way out of itself.
+def _host_channel_hazard(root: str, max_entries: int, seconds: float) -> str | None:
+    """Why *root* carries a way out of itself, or None. Never raises.
 
     A socket or device node under it is a channel no path rule closes, a hard link
     to an inode also named outside is a writable path out, and a nested mount is
-    storage both backends grant writes across. The workdir being a mount point
-    itself is fine. Sockets, FIFOs and exceeding the entry budget are refused
-    even though a tool call can create them, since the scan cannot tell those
-    apart from the host's.
+    storage both backends grant writes across. *root* being a mount point itself
+    is fine. Sockets, FIFOs and exceeding the budget count even though a tool call
+    can create them, since the scan cannot tell those apart from the host's.
     """
-    deadline = time.monotonic() + WORKDIR_SCAN_SECONDS
+    deadline = time.monotonic() + seconds
     entries = 0
     # Refusing every st_nlink > 1 would refuse any tree built by `cp -al`,
     # `git clone --local` or pip; only an unaccounted link leads outside.
     links: dict[tuple[int, int], list] = {}
+    unreadable: list[str] = []
 
-    def stop(exc: OSError) -> None:
-        raise WorkdirUnsafeError(
-            f"the session workdir cannot be fully inspected: {exc.filename or workdir}"
-        ) from exc
-
-    for base, dirs, names in os.walk(workdir, followlinks = False, onerror = stop):
+    for base, dirs, names in os.walk(
+        root, followlinks = False, onerror = lambda exc: unreadable.append(exc.filename or root)
+    ):
+        if unreadable:
+            return f"{unreadable[0]} cannot be fully inspected"
         for name in (*dirs, *names):
             entries += 1
-            if entries > WORKDIR_SCAN_ENTRIES or time.monotonic() > deadline:
-                raise WorkdirUnsafeError(
-                    "the session workdir is too large to check for host channels before a "
-                    f"launch (over {WORKDIR_SCAN_ENTRIES} entries or "
-                    f"{WORKDIR_SCAN_SECONDS:.0f}s)"
-                )
+            if entries > max_entries or time.monotonic() > deadline:
+                return f"too large to check for host channels (over {max_entries} entries or {seconds:.0f}s)"
             path = os.path.join(base, name)
             try:
                 info = os.lstat(path)
-            except OSError as exc:
-                raise WorkdirUnsafeError(
-                    f"the session workdir changed during its safety scan: {path}"
-                ) from exc
+            except OSError:
+                return f"changed during its safety scan: {path}"
             if stat.S_ISLNK(info.st_mode):
                 continue
             if stat.S_ISDIR(info.st_mode):
                 # Misses a same-filesystem bind mount; Linux also asks the mount table.
                 if os.path.ismount(path):
-                    raise WorkdirUnsafeError(
-                        f"the session workdir contains a nested host mount: {path}"
-                    )
+                    return f"contains a nested host mount: {path}"
                 continue
             if not stat.S_ISREG(info.st_mode):
-                raise WorkdirUnsafeError(
-                    f"the session workdir contains a device or IPC node: {path}"
-                )
+                return f"contains a device or IPC node: {path}"
             if info.st_nlink > 1:
                 found = links.setdefault((info.st_dev, info.st_ino), [0, info.st_nlink, path])
                 found[0] += 1
+    if unreadable:
+        return f"{unreadable[0]} cannot be fully inspected"
     for found, total, path in links.values():
         if found < total:
-            raise WorkdirUnsafeError(
-                f"the session workdir contains a file hard-linked from outside it: {path}"
-            )
+            return f"contains a file hard-linked from outside it: {path}"
+    return None
+
+
+def scan_workdir_for_host_channels(workdir: str) -> None:
+    """The writable session workdir. A hazard here fails the call."""
+    hazard = _host_channel_hazard(workdir, WORKDIR_SCAN_ENTRIES, WORKDIR_SCAN_SECONDS)
+    if hazard is not None:
+        raise WorkdirUnsafeError(f"the session workdir {hazard}")
+
+
+def cache_share_hazard(path: str) -> str | None:
+    """Why this host cache directory must not be shared into the jail, or None.
+
+    Same hazards as the workdir and for the same reason: the model cache is bound
+    WRITABLE, so a pathname socket under it is connectable from inside (a
+    read-only bind does not stop connect(), and the network namespace is shared),
+    and a file hard-linked to one outside the cache is writable through the cache
+    name. Both measured before this existed.
+
+    A hazard DROPS the component from the binds rather than failing the launch.
+    The cache is an optimisation: without it the call re-downloads, which is what
+    every call did before the cache was shared at all. Refusing instead would let
+    anything able to write one socket into the cache end every later tool call.
+    """
+    return _host_channel_hazard(path, CACHE_SCAN_ENTRIES, CACHE_SCAN_SECONDS)
 
 
 _LINUX_REQUIRED_BINARIES = ("bwrap",)
@@ -273,6 +292,146 @@ def _linux_userns_blocked_by_apparmor() -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return probe.returncode != 0
+
+
+@functools.lru_cache(maxsize = 1)
+def editable_source_roots() -> tuple[str, ...]:
+    """Source directories of editable installs, so `import unsloth` still works.
+
+    An editable install leaves the package's code OUTSIDE site-packages, and the
+    interpreter paths the backends bind do not reach it, so a sandboxed tool call
+    could not import a package the same environment imported a moment earlier.
+
+    Read from PEP 610's direct_url.json rather than by parsing .pth files,
+    because that record is written whichever mechanism the installer used: the
+    classic path-in-a-.pth and the PEP 660 finder with its MAPPING both appear
+    here, and only one of them is on sys.path.
+
+    Filesystem root and /usr are refused: an editable install rooted there would
+    hand back most of the host, which is the same guard the runtime paths apply.
+    """
+    roots: list[str] = []
+    try:
+        from importlib import metadata
+        import json
+        from urllib.parse import unquote, urlparse
+    except Exception:  # noqa: BLE001 - never fail a launch over this
+        return ()
+    try:
+        distributions = list(metadata.distributions())
+    except Exception:  # noqa: BLE001
+        return ()
+    for dist in distributions:
+        try:
+            raw = dist.read_text("direct_url.json")
+            if not raw:
+                continue
+            record = json.loads(raw)
+            if not record.get("dir_info", {}).get("editable"):
+                continue
+            parsed = urlparse(record.get("url", ""))
+            if parsed.scheme != "file":
+                continue
+            path = os.path.abspath(unquote(parsed.path))
+        except Exception:  # noqa: BLE001 - a malformed record is not a launch failure
+            continue
+        if path in ("/", "/usr") or not os.path.isdir(path):
+            continue
+        for importable in _importable_entries(path, _declared_names(dist)):
+            if importable not in roots:
+                roots.append(importable)
+    return tuple(roots)
+
+
+@functools.lru_cache(maxsize = 1)
+def editable_import_roots() -> tuple[str, ...]:
+    """The directories the entries above sit in, for LISTING only.
+
+    An editable install puts its import root on sys.path, and the interpreter
+    lists that directory to find anything in it. Under bubblewrap the read-only
+    bind of each package creates the parent as an otherwise empty directory, so
+    the listing works and shows nothing else; Seatbelt has no such side effect
+    and needs the directory itself named, as a literal so its contents do not
+    come with it.
+    """
+    return tuple(dict.fromkeys(os.path.dirname(path) for path in editable_source_roots()))
+
+
+def _declared_names(dist) -> frozenset[str]:
+    """Top-level names the distribution itself declares.
+
+    A PEP 420 namespace package has no __init__.py on purpose, so presence of one
+    cannot be the only test or an editable namespace package is importable in
+    Studio and missing inside a tool call. top_level.txt names it; the project
+    name normalised is the fallback for a wheel built without one.
+    """
+    names: set[str] = set()
+    try:
+        raw = dist.read_text("top_level.txt") or ""
+        names.update(line.strip() for line in raw.splitlines() if line.strip())
+    except Exception:  # noqa: BLE001 - a missing or unreadable record is not fatal
+        pass
+    try:
+        project = (dist.metadata["Name"] or "").strip()
+    except Exception:  # noqa: BLE001
+        project = ""
+    if project:
+        names.add(re.sub(r"[-_.]+", "_", project).lower())
+    return frozenset(name for name in names if name and "/" not in name and name != "..")
+
+
+def _importable_entries(
+    project_root: str, declared: frozenset[str] = frozenset()
+) -> tuple[str, ...]:
+    """The importable entries under an editable checkout, not the checkout.
+
+    direct_url.json names the PROJECT root, and a checkout holds more than its
+    packages: a .env, a credentialed .git/config, a private key someone left in
+    tests/fixtures. Granting the root recursively hands all of it to
+    model-authored code that still has the network, which is the boundary this
+    is supposed to hold.
+
+    The import root is taken from sys.path where the installer put it there (a
+    src layout puts <root>/src, not <root>), and only its top-level packages and
+    modules are returned. Nothing importable found means nothing is granted:
+    the import then fails inside the jail exactly as it did before any of this,
+    which is the honest failure rather than a quiet grant of the whole tree.
+    """
+    import_roots = [
+        entry
+        for entry in sys.path
+        if entry
+        and (
+            os.path.abspath(entry) == project_root
+            or os.path.abspath(entry).startswith(project_root + os.sep)
+        )
+    ]
+    # A PEP 660 finder puts nothing on sys.path, so fall back to the two layouts
+    # that cover almost everything published.
+    for fallback in (project_root, os.path.join(project_root, "src")):
+        if fallback not in import_roots and os.path.isdir(fallback):
+            import_roots.append(fallback)
+    found: list[str] = []
+    for import_root in import_roots:
+        try:
+            names = sorted(os.listdir(import_root))
+        except OSError:
+            continue
+        for name in names:
+            if name.startswith(".") or name.endswith((".egg-info", ".dist-info")):
+                continue
+            entry = os.path.join(import_root, name)
+            # Declared, or carrying an __init__.py. The second alone missed PEP
+            # 420 namespace packages, which have none by design.
+            package = os.path.isdir(entry) and (
+                name in declared or os.path.exists(os.path.join(entry, "__init__.py"))
+            )
+            module = name.endswith(".py") and (
+                name in declared or name[:-3] in declared or os.path.isfile(entry)
+            )
+            if (package or module) and entry not in found:
+                found.append(entry)
+    return tuple(found)
 
 
 def linux_unavailable_remediation() -> str:

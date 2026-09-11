@@ -11,6 +11,7 @@ effort: on a pre-6.12 kernel nothing is applied and ``LIMITATIONS`` says so.
 from __future__ import annotations
 
 import ctypes
+import functools
 import os
 import struct
 from typing import Callable
@@ -29,11 +30,89 @@ try:
     # deadlock on a lock a thread held at fork time.
     _libc = ctypes.CDLL(None, use_errno = True)
     _libc.syscall.restype = ctypes.c_long
-except OSError:  # pragma: no cover - a libc that will not load
+except (OSError, TypeError, AttributeError):  # pragma: no cover
+    # TypeError is Windows: CDLL(None) means "the running process" only where
+    # dlopen has that convention, and ctypes there tests the name for a
+    # separator before anything else. Importing this module raised, which is not
+    # something a Linux-only helper should do on a platform that never calls it.
     _libc = None
 
 
+@functools.lru_cache(maxsize = 1)
 def abstract_scope_supported() -> bool:
+    """Whether the scope can actually be APPLIED here, not whether the ABI has it.
+
+    The two differ, and the difference disqualified a working sandbox. An outer
+    sandbox or an exhausted nesting limit lets the ABI query succeed while
+    create_ruleset or restrict_self is denied; apply_abstract_scope() cannot
+    report that, since it runs post-fork in the child. Both callers then behaved
+    as if the scope were in force: LIMITATIONS dropped
+    host_abstract_sockets_reachable, and the probe armed a negative control that
+    could not pass, so the whole bubblewrap backend was reported unavailable and
+    auto gave up filesystem and PID isolation it could have had.
+
+    So this proves it in a forked child that applies the scope for real. The
+    child is where restrict_self is irreversible, which is exactly why the answer
+    cannot be taken in this process. Cached: it costs a fork, both callers ask,
+    and it cannot change without a restart.
+    """
+    if _libc is None:
+        return False
+    if not _abi_reports_scope():
+        return False
+    # The listener is bound HERE, in the unscoped parent, so it sits outside the
+    # child's Landlock domain. That is the whole test: the scope stops a domain
+    # reaching sockets outside itself and leaves its own alone, so a child that
+    # binds and connects its own name is permitted and proves nothing. Measured:
+    # scoped child -> parent's socket is EPERM, scoped child -> its own socket
+    # connects.
+    import socket as _socket
+
+    name = b"\0unsloth-scope-" + os.urandom(6).hex().encode()
+    listener = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    try:
+        listener.bind(name)
+        listener.listen(1)
+    except OSError:
+        listener.close()
+        return False
+    read_fd, write_fd = os.pipe()
+    pid = os.fork()
+    if pid == 0:  # pragma: no cover - the child never returns
+        try:
+            os.close(read_fd)
+            listener.close()
+            apply_abstract_scope()
+            client = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+            client.settimeout(2)
+            try:
+                client.connect(name)
+                os.write(write_fd, b"n")  # reached it, so nothing was applied
+            except OSError:
+                os.write(write_fd, b"y")  # refused, so the scope is in force
+        except BaseException:
+            try:
+                os.write(write_fd, b"n")
+            except OSError:
+                pass
+        finally:
+            os._exit(0)
+    os.close(write_fd)
+    try:
+        answer = os.read(read_fd, 1)
+    except OSError:
+        answer = b""
+    finally:
+        os.close(read_fd)
+        listener.close()
+        try:
+            os.waitpid(pid, 0)
+        except OSError:
+            pass
+    return answer == b"y"
+
+
+def _abi_reports_scope() -> bool:
     """NULL attr only reports the ABI version and changes nothing."""
     if _libc is None:
         return False

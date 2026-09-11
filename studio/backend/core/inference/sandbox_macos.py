@@ -31,6 +31,8 @@ from .os_sandbox import (
     SandboxUnavailableError,
     ToolLaunchPlan,
     WorkdirUnsafeError,
+    editable_import_roots,
+    editable_source_roots,
     scan_workdir_for_host_channels,
 )
 
@@ -85,7 +87,14 @@ _READ_ROOTS = (
 )
 # SYSTEM keychains only; the login keychain stays unreadable.
 _TLS_TRUST_PATHS = (
-    "/private/etc/ssl",
+    # The PUBLIC components one by one, never /etc/ssl whole. A locally managed
+    # OpenSSL keeps its private keys in a directory beside the certificates, and
+    # this grants recursive file-read* while the network stays open, so a whole
+    # -tree rule is an exfiltratable key. The Linux backend names them separately
+    # for exactly this reason and macOS did not, which is the asymmetry here.
+    "/private/etc/ssl/cert.pem",
+    "/private/etc/ssl/certs",
+    "/private/etc/ssl/openssl.cnf",
     "/System/Library/Keychains",
     "/Library/Keychains",
     "/System/Library/Security",
@@ -105,6 +114,14 @@ _OPTIONAL_READ_ROOTS = (
     "/opt/homebrew/opt",
     "/opt/homebrew/Cellar",
 )
+# Every optional root has to RESOLVE inside one of these. Homebrew on Intel
+# chowns /usr/local to the invoking user, so an /usr/local/bin symlinked at the
+# home directory is something a user, or an earlier unisolated tool call, can
+# arrange; _path_filters resolves before it emits, and the recursive subpath
+# would then be over a home subtree in a profile whose claim is the opposite.
+# Ownership is the wrong test here, because that same chown would drop the
+# Homebrew trees this exists to keep working. Containment is the right one.
+_OPTIONAL_ROOT_PREFIXES = ("/usr/local", "/opt/homebrew")
 # HAZARD 3, optional literals. Under (deny default) an absent file yields
 # EPERM rather than ENOENT and git aborts, and the existence-filtered path
 # rules cannot carry these.
@@ -218,11 +235,33 @@ def available() -> tuple[bool, str]:
     return True, "the system Seatbelt launcher is present and executable"
 
 
+def _sbpl_string(value: str) -> str:
+    r"""An SBPL string literal, non-ASCII left RAW: SBPL is TinyScheme, which knows
+    \", \n, \r, \t and \xDD and no \u, so json's default turned /Users/José into a
+    rule matching nothing and every macOS home with an accent lost isolation
+    silently. The profile is an argv string, so the raw character arrives as the
+    same UTF-8 bytes the path has."""
+    return json.dumps(value, ensure_ascii = False)
+
+
 def _validated(path: str) -> str:
     if not path or not posixpath.isabs(path) or any(c in path for c in "\0\n\r"):
         raise SandboxUnavailableError(
             f"Seatbelt paths must be absolute and free of NUL/newline: {path!r}"
         )
+    try:
+        # The profile is handed to sandbox-exec as an argv string, so it has to
+        # survive the UTF-8 encode. Now that non-ASCII is kept raw rather than
+        # \u-escaped, a lone surrogate -- what a path carrying undecodable bytes
+        # looks like after surrogateescape -- reaches that encode and raises
+        # there instead of here. Refusing is the whole point: in `auto` an
+        # exception at spawn is caught and the call runs UNISOLATED, which is
+        # the silent loss the escaping change exists to prevent.
+        path.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise SandboxUnavailableError(
+            f"Seatbelt paths must be encodable as UTF-8: {path!r}"
+        ) from exc
     return path
 
 
@@ -276,7 +315,7 @@ def _path_filters(paths: tuple[str, ...]) -> list[str]:
             continue
         kinds = ("literal", "subpath") if os.path.isdir(path) else ("literal",)
         for spelling in _sbpl_spellings(path):
-            encoded = json.dumps(spelling)
+            encoded = _sbpl_string(spelling)
             for kind in kinds:
                 if (kind, encoded) not in seen:
                     seen.add((kind, encoded))
@@ -290,7 +329,7 @@ def _literal_filters(paths: tuple[str, ...], *, resolve: bool = True) -> list[st
     seen: set[str] = set()
     for path in paths:
         for spelling in _sbpl_spellings(path, resolve = resolve):
-            encoded = json.dumps(spelling)
+            encoded = _sbpl_string(spelling)
             if encoded not in seen:
                 seen.add(encoded)
                 filters.append(f"(literal {encoded})")
@@ -308,7 +347,7 @@ def _ancestor_filters(spellings: tuple[str, ...]) -> list[str]:
     for spelling in spellings:
         current = posixpath.dirname(_validated(spelling))
         while current:
-            encoded = json.dumps(current)
+            encoded = _sbpl_string(current)
             if encoded not in seen:
                 seen.add(encoded)
                 filters.append(f"(literal {encoded})")
@@ -317,6 +356,22 @@ def _ancestor_filters(spellings: tuple[str, ...]) -> list[str]:
                 break
             current = parent
     return filters
+
+
+def _trusted_system_dir(path: str) -> bool:
+    """A real directory owned by root that no one else can write.
+
+    The toolchain is granted recursive reads, so "it exists" is not enough: the
+    point of the check is that a path the invoking user controls cannot be turned
+    into a read rule over their own home.
+    """
+    try:
+        info = os.stat(path)
+    except OSError:
+        return False
+    if not stat.S_ISDIR(info.st_mode):
+        return False
+    return info.st_uid == 0 and not info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
 
 
 def _developer_paths() -> tuple[str, ...]:
@@ -329,6 +384,13 @@ def _developer_paths() -> tuple[str, ...]:
         found: list[str] = []
         if sys.platform == "darwin" and os.path.exists("/usr/bin/xcode-select"):
             try:
+                # DEVELOPER_DIR is stripped, and the answer is then checked
+                # rather than trusted. xcode-select honours that variable, so a
+                # Studio started with it aimed at a toolchain under $HOME would
+                # otherwise return a home directory that this grants recursive
+                # file-read* over, including its enclosing .app -- in a profile
+                # whose whole claim is that $HOME is not readable.
+                environment = {k: v for k, v in os.environ.items() if k != "DEVELOPER_DIR"}
                 result = subprocess.run(
                     ["/usr/bin/xcode-select", "-p"],
                     capture_output = True,
@@ -336,9 +398,10 @@ def _developer_paths() -> tuple[str, ...]:
                     encoding = "utf-8",
                     timeout = 10,
                     check = False,
+                    env = environment,
                 )
                 candidate = result.stdout.strip()
-                if result.returncode == 0 and candidate and os.path.isdir(candidate):
+                if result.returncode == 0 and candidate and _trusted_system_dir(candidate):
                     for spelling in (os.path.realpath(candidate), candidate):
                         if spelling not in found:
                             found.append(spelling)
@@ -384,6 +447,9 @@ def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
         )
     except (KeyError, OSError):
         pass
+    # Same as the Linux backend: an editable install's source root is outside
+    # site-packages, and a candidate here inherits every guard below.
+    candidates.extend(editable_source_roots())
     try:
         candidates.extend(site.getsitepackages())
     except AttributeError:
@@ -406,6 +472,75 @@ def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
     return tuple(selected)
 
 
+def _contained_optional_roots() -> tuple[str, ...]:
+    """Optional search roots whose target stays inside an approved prefix.
+
+    Dropped rather than un-resolved: the whole point of a search root is that
+    Homebrew's /usr/local/bin entries are symlinks into ../Cellar, so refusing to
+    follow them would grant a directory of dangling names.
+    """
+    kept: list[str] = []
+    for root in _OPTIONAL_READ_ROOTS:
+        resolved = os.path.realpath(root)
+        if any(
+            _within(root, prefix) and _within(resolved, prefix)
+            for prefix in _OPTIONAL_ROOT_PREFIXES
+        ):
+            kept.append(root)
+    return tuple(kept)
+
+
+def runtime_paths_under(workdir: str) -> tuple[str, ...]:
+    """Interpreter directories inside the session workdir. The Linux twin of this.
+
+    runtime_read_paths drops them so a <workdir>/venv/lib symlinked at ~/.ssh is
+    not granted by name, but file-write* covers the workdir subpath, so dropping
+    alone leaves Studio's own venv writable when it sits beneath the workdir. A
+    tool call could then rewrite site-packages or the interpreter and the next
+    server subprocess started from sys.executable would run it with the server's
+    authority. Denied after the write allowance instead; Seatbelt is
+    last-match-wins.
+
+    Only when both spellings stay inside the workdir. One that RESOLVES outside is
+    the symlink case, and denying that path would be denying the user's own home.
+
+    Both spellings of the WORKDIR too. build_profile is handed the caller's
+    spelling, and its write allowance covers the resolved form as well, so
+    measuring containment against the alias alone rejected every runtime path
+    when the workdir was a symlink and no denial was emitted at all.
+    """
+    roots: list[str] = []
+    for root in (posixpath.abspath(workdir), os.path.realpath(workdir)):
+        if root not in roots:
+            roots.append(root)
+    canonical_root = os.path.realpath(workdir)
+    inside: list[str] = []
+    # "Python" is the framework build's top-level dyld image, which
+    # runtime_read_paths already names: omitted here it stayed writable under the
+    # workdir allowance, which is the one file a later host subprocess maps.
+    for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
+        for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg", "ssl", "Python"):
+            candidate = posixpath.join(prefix, name)
+            if not os.path.exists(candidate):
+                continue
+            # The RESOLVED path decides. Pairing the two lexical tests per root
+            # answered a different question: an alias-prefixed path is not
+            # beneath the canonical root and a canonical one is not beneath the
+            # alias, so every path was rejected either way round -- and a venv
+            # invoked through a symlink keeps that alias in sys.prefix.
+            resolved = os.path.realpath(candidate)
+            if not _within(resolved, canonical_root):
+                continue
+            # Denied under every spelling of the workdir, since Seatbelt judges
+            # the path as written and the allowance covers them all.
+            relative = posixpath.relpath(resolved, canonical_root)
+            for other in roots:
+                spelling = posixpath.join(other, relative)
+                if spelling not in inside:
+                    inside.append(spelling)
+    return tuple(inside)
+
+
 def build_profile(
     *,
     workdir: str,
@@ -417,7 +552,7 @@ def build_profile(
     readable_paths = (
         *_READ_ROOTS,
         *_TLS_TRUST_PATHS,
-        *_OPTIONAL_READ_ROOTS,
+        *_contained_optional_roots(),
         *developer_paths,
         *_DEVICES,
         *runtime_paths,
@@ -444,17 +579,22 @@ def build_profile(
     # The workdir too, since TMPDIR points into it and an AF_UNIX bind is
     # network-bind, not a file operation.
     tmp_subpaths = " ".join(
-        f"(subpath {json.dumps(spelling)})"
+        f"(subpath {_sbpl_string(spelling)})"
         for path in (private_tmp, workdir)
         for spelling in _sbpl_spellings(path)
     )
     mdns_filters = " ".join(_literal_filters((_MDNSRESPONDER_SOCKET,)))
     # resolve = False so an /etc/gitconfig symlinked into the home does not turn
     # a config read allowance into a home one.
-    optional_filters = _literal_filters(_OPTIONAL_READ_LITERALS, resolve = False)
+    # The editable import roots ride here rather than in read_filters because a
+    # literal grants the directory itself, which is all a listing needs, while
+    # _path_filters would add the subpath and hand back the whole checkout.
+    optional_filters = _literal_filters(
+        _OPTIONAL_READ_LITERALS + editable_import_roots(), resolve = False
+    )
     sysctl_filters = [
-        *(f"(sysctl-name {json.dumps(name)})" for name in _SYSCTL_NAMES),
-        *(f"(sysctl-name-prefix {json.dumps(name)})" for name in _SYSCTL_PREFIXES),
+        *(f"(sysctl-name {_sbpl_string(name)})" for name in _SYSCTL_NAMES),
+        *(f"(sysctl-name-prefix {_sbpl_string(name)})" for name in _SYSCTL_PREFIXES),
     ]
     lines = [
         "(version 1)",
@@ -470,6 +610,14 @@ def build_profile(
         _rule("allow file-read* file-test-existence", optional_filters),
         _rule("allow file-map-executable", read_filters),
         _rule("allow file-write*", write_filters),
+        # AFTER the allowance, because Seatbelt is last-match-wins: Studio's own
+        # runtime stays read-only even when it lives under the writable workdir.
+        # See runtime_paths_under.
+        *(
+            [_rule("deny file-write*", _path_filters(runtime_under))]
+            if (runtime_under := runtime_paths_under(workdir))
+            else []
+        ),
         _rule("allow file-read* file-test-existence file-write-data", device_filters),
         # bash process substitution hands the child /dev/fd/63, and opening it dups
         # a descriptor already held.
@@ -512,7 +660,7 @@ def build_profile(
         _rule("allow sysctl-read", sysctl_filters),
         '(allow iokit-open (iokit-registry-entry-class "RootDomainUserClient"))',
         "(allow mach-lookup\n"
-        + "\n".join(f"  (global-name {json.dumps(name)})" for name in _MACH_SERVICES)
+        + "\n".join(f"  (global-name {_sbpl_string(name)})" for name in _MACH_SERVICES)
         + ")",
     ]
     return "\n".join(lines) + "\n"

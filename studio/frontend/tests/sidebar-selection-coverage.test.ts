@@ -2,22 +2,18 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
+
+import { readSrc } from "./helpers/kit.ts";
+
+const APP_SIDEBAR = readSrc("components/app-sidebar.tsx");
 
 // A row is only selectable if it is handed the list it belongs to. Dropping
 // that argument still compiles, since it is optional, and the row just stops
 // responding to cmd and shift click.
 
-async function sidebarSource(): Promise<string> {
-  return readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
-}
-
 test("every chat list hands its rows a selection list", async () => {
-  const source = await sidebarSource();
+  const source = APP_SIDEBAR;
   for (const list of [
     /\{ scope: PINNED_ORDER_SCOPE, ids: pinnedRowIds \}/,
     /\{ scope: RECENTS_ORDER_SCOPE, ids: recentRowIds \}/,
@@ -28,7 +24,7 @@ test("every chat list hands its rows a selection list", async () => {
 });
 
 test("folder rows select too, and open their own bulk menu", async () => {
-  const source = await sidebarSource();
+  const source = APP_SIDEBAR;
   assert.match(source, /handleProjectSelectionClick\(event, project\.id\)/);
   assert.match(source, /selectProjectForContextMenu\(project\.id\)/);
   assert.match(source, /\{renderProjectContextMenu\(\)\}/);
@@ -47,7 +43,7 @@ test("picking one kind of row drops the other", async () => {
   // Chats and folders have no shared bulk action, so a mixed selection would
   // leave the menu unable to say what it acts on. All four entry points, since
   // one that skips it is what puts the sidebar in that state.
-  const source = await sidebarSource();
+  const source = APP_SIDEBAR;
   for (const [name, drop] of [
     ["handleSelectionClick", "dropProjectSelection()"],
     ["selectForContextMenu", "dropProjectSelection()"],
@@ -65,7 +61,7 @@ test("a right-click drops the other kind even on an already-selected row", async
   // Both menus return early when the row is already selected. Dropping after
   // that return would keep a mixed selection alive for exactly the rows a bulk
   // action is most likely to run on.
-  const source = await sidebarSource();
+  const source = APP_SIDEBAR;
   for (const [name, drop] of [
     ["selectForContextMenu", "dropProjectSelection()"],
     ["selectProjectForContextMenu", "dropChatSelection()"],
@@ -85,7 +81,7 @@ test("a right-click drops the other kind even on an already-selected row", async
 test("dropping a selection clears its anchor too", async () => {
   // A kept anchor shift-selects a range from a row that no longer looks
   // selected, which is how a cleared list grows again on the next click.
-  const source = await sidebarSource();
+  const source = APP_SIDEBAR;
   assert.match(
     source,
     /const dropChatSelection = useCallback\(\(\) => \{\s*selectionAnchorRef\.current = null;/,
@@ -99,7 +95,7 @@ test("dropping a selection clears its anchor too", async () => {
 test("the bulk archive failure reads a translated string", async () => {
   // Its wording already exists as a key, so a literal here would be the one
   // English toast in an otherwise translated flow.
-  const source = await sidebarSource();
+  const source = APP_SIDEBAR;
   const archive = /async function archiveSelected\(([\s\S]*?)\n  \}/.exec(source);
   assert.ok(archive, "no archiveSelected");
   assert.match(archive[1], /translate\("settings\.data\.failedToArchiveChats"\)/);
@@ -109,7 +105,7 @@ test("one failed archive does not abandon the rest of the batch", async () => {
   // The selection is cleared up front, so chats skipped by an early exit are
   // left unarchived with nothing left highlighted to retry from. The other two
   // bulk loops catch per item; this one has to as well.
-  const source = await sidebarSource();
+  const source = APP_SIDEBAR;
   const archive = /async function archiveSelected\(([\s\S]*?)\n  \}/.exec(source);
   assert.ok(archive, "no archiveSelected");
   const body = archive[1];
@@ -126,7 +122,7 @@ test("one failed archive does not abandon the rest of the batch", async () => {
 test("deleting folders in bulk cleans up like deleting one", async () => {
   // Both branches end the same way, or a batch leaves stale chat rows behind
   // and strands the user on a page whose project is gone.
-  const source = await sidebarSource();
+  const source = APP_SIDEBAR;
   const branch = /if \(target\.kind === "projects"\) \{([\s\S]*?)\n      return;/.exec(
     source,
   );
@@ -150,7 +146,7 @@ test("both sidebar expanders read translated labels", async () => {
   // The two sit one control apart, so an English literal next to a translated
   // twin is the visible half of the omission.
   // Comments name the control too, so match the rendered ternary, not the words.
-  const source = await sidebarSource();
+  const source = APP_SIDEBAR;
   assert.equal(
     /\?\s*"Show less"\s*:\s*"Show more"/.test(source),
     false,

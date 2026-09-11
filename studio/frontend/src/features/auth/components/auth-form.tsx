@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { apiUrl } from "@/lib/api-base";
 import { Button } from "@/components/ui/button";
 import { MascotImg } from "@/components/mascot-img";
@@ -81,6 +82,7 @@ type AuthFormProps = {
 const HIDDEN_LOGIN_USERNAME = "unsloth";
 
 export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
+  const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
   const isLoginMode = mode === "login";
   const [showPassword, setShowPassword] = useState(false);
@@ -110,9 +112,8 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     let canceled = false;
 
     async function initializeAuthForm(): Promise<void> {
-      // Always check the server first; localStorage flags can be stale (e.g.
-      // tokens from a previous install). /api/auth/status is the source of
-      // truth for requires_password_change.
+      // Always check the server first; localStorage flags can be stale (e.g. tokens from a previous
+      // install). /api/auth/status is the source of truth for requires_password_change.
       try {
         const response = await fetch(apiUrl("/api/auth/status"));
         if (!response.ok) throw new Error("Failed to load auth status.");
@@ -144,8 +145,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
             return;
           }
 
-          // On login, skip to the app if a valid session exists and no
-          // password change is required.
+          // On login, skip to the app if a valid session exists and no password change is required.
           if (isLoginMode && !result.requires_password_change) {
             if (hasRefreshToken()) {
               const refreshed = await refreshSession();
@@ -181,8 +181,8 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   useEffect(() => {
     if (statusLoading || reloadReadySent.current) return;
     reloadReadySent.current = true;
-    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
-  }, [statusLoading]);
+    signalReady();
+  }, [statusLoading, signalReady]);
 
   // Seed password from bootstrap credentials injected into HTML by web CLI.
   useEffect(() => {
