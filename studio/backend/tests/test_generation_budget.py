@@ -252,3 +252,70 @@ def test_the_vision_path_resolves_an_unset_budget(monkeypatch):
 
     assert model.calls, "generate was never reached"
     assert model.calls[0]["max_new_tokens"] == _WINDOW - _PROMPT_LEN
+
+
+def _audio_backend(monkeypatch, window = _WINDOW):
+    try:
+        from core.inference.inference import InferenceBackend
+    except (ImportError, RuntimeError) as exc:  # pragma: no cover - env-dependent
+        pytest.skip(f"full inference backend unavailable ({type(exc).__name__}: {exc})")
+
+    backend = InferenceBackend.__new__(InferenceBackend)
+    backend.active_model_name = "audio-model"
+    backend.last_generation_stats = None
+    backend._generation_lock = threading.Lock()
+    model = _FakeModel(window)
+
+    class _AudioProcessor(_FakeTokenizer):
+        def apply_chat_template(self, *_a, **_k):
+            return _FakeEncoding(input_ids = _FakeTensor(_PROMPT_LEN))
+
+    processor = _AudioProcessor()
+    backend.models = {
+        backend.active_model_name: {
+            "model": model,
+            "tokenizer": processor,
+            "processor": processor,
+            "audio_type": "audio_vlm",
+            "chat_turn_end_eos_ids": [2],
+        }
+    }
+    monkeypatch.setattr(
+        backend, "_make_text_streamer", lambda *a, **k: _EmptyStreamer(), raising = False
+    )
+    return backend, model
+
+
+def _run_audio(backend, max_new_tokens):
+    list(
+        backend.generate_audio_input_response(
+            [{"role": "user", "content": "hi"}],
+            "",
+            object(),
+            0.0,
+            1.0,
+            0,
+            0.0,
+            max_new_tokens,
+            1.0,
+        )
+    )
+
+
+def test_the_audio_input_path_resolves_an_unset_budget(monkeypatch):
+    """The OpenAI route sends no cap when the client sent none, on the audio branch as on
+    the text one. Reaching generate() with None would take transformers' own tiny default."""
+    backend, model = _audio_backend(monkeypatch)
+
+    _run_audio(backend, None)
+
+    assert model.calls, "generate was never reached"
+    assert model.calls[0]["max_new_tokens"] == _WINDOW - _PROMPT_LEN
+
+
+def test_an_explicit_audio_budget_is_untouched(monkeypatch):
+    backend, model = _audio_backend(monkeypatch)
+
+    _run_audio(backend, 128)
+
+    assert model.calls[0]["max_new_tokens"] == 128

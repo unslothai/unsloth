@@ -22142,7 +22142,7 @@ async def produce_openai_chat_completions(
                     top_p = payload.top_p,
                     top_k = payload.top_k,
                     min_p = payload.min_p,
-                    max_new_tokens = _effective_max_tokens(payload) or 2048,
+                    max_new_tokens = _effective_max_tokens(payload),
                     repetition_penalty = payload.repetition_penalty,
                     # Compare sends audio_base64 and use_adapter in one body.
                     use_adapter = payload.use_adapter,

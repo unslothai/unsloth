@@ -3476,6 +3476,11 @@ class MLXInferenceBackend:
                 "cannot build an audio prompt."
             )
 
+        if max_new_tokens is None:
+            # Audio expands past its placeholder token exactly as an image does, so the counted
+            # prompt is short of the real one: cap at the default, but stay under the window.
+            max_new_tokens = min(self._unset_generation_budget(prompt), UNSET_GENERATION_BUDGET)
+
         logger.info("MLX audio-input generating: prompt_len=%d", len(prompt))
         markers = detect_reasoning_channel_markers(self._processor)
         normalizer = make_reasoning_normalizer(markers) if markers is not None else None

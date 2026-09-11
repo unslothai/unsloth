@@ -1723,6 +1723,12 @@ class InferenceBackend:
                 timeout = 0.2,
             )
 
+            _audio_input_ids = inputs.get("input_ids") if hasattr(inputs, "get") else None
+            prompt_len = int(_audio_input_ids.shape[1]) if _audio_input_ids is not None else None
+            max_new_tokens = generation_budget_within_context(
+                model, prompt_len or 0, max_new_tokens
+            )
+
             # Notebook uses do_sample=False (greedy) for ASR accuracy
             generation_kwargs = dict(
                 **inputs,
@@ -1732,8 +1738,6 @@ class InferenceBackend:
                 do_sample = False,
             )
 
-            _audio_input_ids = inputs.get("input_ids") if hasattr(inputs, "get") else None
-            prompt_len = int(_audio_input_ids.shape[1]) if _audio_input_ids is not None else None
             timer = GenerationTimer()
             generation_kwargs["logits_processor"] = with_prefill_boundary_processor(None, timer)
             active_stop_token_ids = self._generation_stop_token_ids(model, generation_kwargs)
