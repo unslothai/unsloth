@@ -256,6 +256,7 @@ def _prime_nvlink_topology() -> Optional[threading.Thread]:
     def _probe() -> None:
         try:
             from core.inference.llama_cpp import LlamaCppBackend
+
             # Opted out, so the answer could never be used. The load path skips the
             # probe for the same reason rather than pay its timeout to decide
             # something the user already decided.
