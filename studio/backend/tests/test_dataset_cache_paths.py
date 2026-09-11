@@ -4,6 +4,7 @@
 import errno
 import json
 import os
+import shutil
 import sys
 import time
 import types
@@ -869,6 +870,209 @@ def test_app_processed_cache_is_deterministic_and_discoverable(monkeypatch, tmp_
     assert second.cache_dir == first.cache_dir
     assert second.complete is True
     assert list(dataset_processed_cache.iter_app_processed_dataset_caches()) == [second]
+
+
+def test_cached_load_survives_a_failed_completion_write(monkeypatch, tmp_path):
+    """A dataset that loaded must not be discarded because bookkeeping failed.
+
+    ``complete`` is advisory -- nothing reads it back to gate a load -- so a cache purge
+    racing the load, a read-only studio home or a full disk must not turn a successful
+    cached load into an exception. Propagating it costs a full Hub re-download of a good
+    cached dataset, and fails the run outright offline or on an exact-resource resume.
+    """
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    calls = _fake_datasets(monkeypatch)
+
+    def _explode(entry):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(dataset_cache, "mark_app_processed_dataset_cache_complete", _explode)
+
+    result = dataset_cache.load_cached_hf_dataset(
+        repo_id,
+        str(snapshot),
+        subset = None,
+        split = "train",
+    )
+
+    assert result == {"loaded": True}
+    assert len(calls) == 1
+
+
+def test_completion_marking_reports_a_swapped_in_symlink_as_unsafe(tmp_path):
+    """Marking is the only check that runs after the load, so it must still fail loudly.
+
+    ``prepare`` validates the entry, then the load runs; an entry swapped for a symlink in
+    that window is caught here or nowhere.
+    """
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    entry = dataset_processed_cache.prepare_app_processed_dataset_cache(repo_id, snapshot)
+    external = tmp_path / "external"
+    external.mkdir()
+    entry.cache_dir.rmdir()
+    entry.cache_dir.symlink_to(external, target_is_directory = True)
+
+    with pytest.raises(dataset_processed_cache.UnsafeDatasetCachePathError):
+        dataset_processed_cache.mark_app_processed_dataset_cache_complete(entry)
+
+
+def test_completion_marking_reports_a_dangling_symlink_as_unsafe(tmp_path):
+    """A symlinked entry whose target disappears is still a swap, not a purge.
+
+    Strict resolution raises ``FileNotFoundError`` for a dangling link, which a
+    best-effort caller reads as "the entry was purged" -- so the symlink has to be
+    classified before the entry is resolved, or the swap is silently tolerated.
+    """
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    entry = dataset_processed_cache.prepare_app_processed_dataset_cache(repo_id, snapshot)
+    external = tmp_path / "external"
+    external.mkdir()
+    shutil.rmtree(entry.path)
+    entry.path.symlink_to(external, target_is_directory = True)
+    external.rmdir()
+
+    assert entry.path.is_symlink() and not entry.path.exists()
+    with pytest.raises(dataset_processed_cache.UnsafeDatasetCachePathError):
+        dataset_processed_cache.mark_app_processed_dataset_cache_complete(entry)
+
+
+@pytest.mark.parametrize("swap", ["leaf", "parent", "grandparent"])
+def test_completion_marking_reports_a_symlinked_ancestor_as_unsafe(tmp_path, swap):
+    """A swapped hashed parent redirects the entry just as well as a swapped leaf.
+
+    ``is_symlink()`` on the leaf reports False when an ancestor is the link, so checking
+    only the leaf leaves the dangling-ancestor case to strict resolution, which raises
+    ``FileNotFoundError`` and reads as a benign purge.
+    """
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    entry = dataset_processed_cache.prepare_app_processed_dataset_cache(repo_id, snapshot)
+    external = tmp_path / "external"
+    external.mkdir()
+    target = {
+        "leaf": entry.path,
+        "parent": entry.path.parent,
+        "grandparent": entry.path.parent.parent,
+    }[swap]
+    shutil.rmtree(target)
+    target.symlink_to(external, target_is_directory = True)
+    external.rmdir()
+
+    with pytest.raises(dataset_processed_cache.UnsafeDatasetCachePathError):
+        dataset_processed_cache.mark_app_processed_dataset_cache_complete(entry)
+
+
+@pytest.mark.parametrize("swap", ["snapshot_loads", "hf_datasets"])
+def test_completion_marking_reports_a_symlinked_root_ancestor_as_unsafe(tmp_path, swap):
+    """A redirected root is not a missing root.
+
+    ``exists()`` on the leaf follows a dangling parent and reports False, so testing only
+    the leaf makes a redirected cache root look like a plain purge -- which the caller
+    swallows.
+    """
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    entry = dataset_processed_cache.prepare_app_processed_dataset_cache(repo_id, snapshot)
+    root = dataset_processed_cache.app_processed_dataset_cache_root()
+    target = root if swap == "snapshot_loads" else root.parent
+    external = tmp_path / "external"
+    external.mkdir()
+    shutil.rmtree(target)
+    target.symlink_to(external, target_is_directory = True)
+    external.rmdir()
+
+    with pytest.raises(dataset_processed_cache.UnsafeDatasetCachePathError):
+        dataset_processed_cache.mark_app_processed_dataset_cache_complete(entry)
+
+
+def test_completion_marking_reports_a_symlinked_cache_root_as_unsafe(tmp_path):
+    """The configured root is the trust anchor, so it is classified too.
+
+    The descendant walk starts below it, so a swap of the configured directory itself
+    would otherwise leave every walked child reporting False.
+    """
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    entry = dataset_processed_cache.prepare_app_processed_dataset_cache(repo_id, snapshot)
+    configured = tmp_path / "app-cache"
+    external = tmp_path / "external"
+    external.mkdir()
+    shutil.rmtree(configured)
+    configured.symlink_to(external, target_is_directory = True)
+    external.rmdir()
+
+    with pytest.raises(dataset_processed_cache.UnsafeDatasetCachePathError):
+        dataset_processed_cache.mark_app_processed_dataset_cache_complete(entry)
+
+
+def test_completion_marking_allows_a_live_symlinked_cache_root(tmp_path):
+    """Pointing the cache at another volume is a legitimate setup, not an attack.
+
+    Only a root that fails to resolve is suspicious. A live symlink resolves normally and
+    must keep working, or this hardening breaks anyone who moved their cache off the
+    system disk.
+    """
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    real_cache = tmp_path / "real-cache"
+    real_cache.mkdir()
+    (tmp_path / "app-cache").symlink_to(real_cache, target_is_directory = True)
+
+    entry = dataset_processed_cache.prepare_app_processed_dataset_cache(repo_id, snapshot)
+    dataset_processed_cache.mark_app_processed_dataset_cache_complete(entry)
+
+    assert (
+        dataset_processed_cache.prepare_app_processed_dataset_cache(repo_id, snapshot).complete
+        is True
+    )
+
+
+def test_completion_marking_treats_a_real_purge_as_benign(tmp_path):
+    """The counterpart: a root that is genuinely gone must stay a benign failure.
+
+    Tightening the symlink classification must not turn an ordinary cache purge into a
+    hard failure, which would defeat the point of the best-effort handler.
+    """
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    entry = dataset_processed_cache.prepare_app_processed_dataset_cache(repo_id, snapshot)
+    shutil.rmtree(dataset_processed_cache.app_processed_dataset_cache_root().parent)
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        dataset_processed_cache.mark_app_processed_dataset_cache_complete(entry)
+    assert not isinstance(excinfo.value, dataset_processed_cache.UnsafeDatasetCachePathError)
+
+
+def test_cached_load_still_fails_on_an_unsafe_cache_path(monkeypatch, tmp_path):
+    """Best effort covers a failed write, never a path that left the trusted cache root."""
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    _fake_datasets(monkeypatch)
+
+    def _unsafe(entry):
+        raise dataset_processed_cache.UnsafeDatasetCachePathError("cache path is a symlink")
+
+    monkeypatch.setattr(dataset_cache, "mark_app_processed_dataset_cache_complete", _unsafe)
+
+    with pytest.raises(dataset_processed_cache.UnsafeDatasetCachePathError):
+        dataset_cache.load_cached_hf_dataset(
+            repo_id,
+            str(snapshot),
+            subset = None,
+            split = "train",
+        )
 
 
 def test_app_processed_cache_rejects_symlinked_parent(monkeypatch, tmp_path):
