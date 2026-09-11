@@ -55,8 +55,10 @@ class _Backend:
     [
         (True, None, False, False),
         (True, "hf_caller", "hf_caller", False),
+        (True, " hf_caller\n", "hf_caller", False),
         (False, None, None, True),
         (False, "hf_caller", "hf_caller", True),
+        (False, " hf_caller\n", "hf_caller", True),
     ],
 )
 def test_start_gives_the_model_preflight_only_the_callers_token(
@@ -92,6 +94,7 @@ def test_start_gives_the_model_preflight_only_the_callers_token(
     assert response.status == "queued", response
     assert probed == [probe_token]
     assert backend.kwargs["allow_ambient"] is allow_ambient
+    assert backend.kwargs["hf_token"] == (probe_token or "")
 
 
 @pytest.mark.parametrize("offline", [False, True])

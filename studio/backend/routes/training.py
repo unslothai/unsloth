@@ -1476,7 +1476,7 @@ async def start_training(
             "model_name": model_preflight.model_name,
             "project_name": request.project_name,
             "training_type": request.training_type,
-            "hf_token": request.hf_token or "",
+            "hf_token": (request.hf_token or "").strip(),
             "allow_ambient": allow_ambient,
             "load_in_4bit": request.load_in_4bit,
             "max_seq_length": request.max_seq_length,
