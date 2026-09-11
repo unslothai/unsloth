@@ -319,11 +319,35 @@ def test_set_flags_refuses_a_foreign_or_unknown_id():
     assert gallery.set_flags("foreign", pinned = True) is None
 
 
-def test_delete_prunes_the_flag_entry():
+@pytest.mark.parametrize("missing_at", [None, "lookup", "read", "unlink"])
+def test_delete_prunes_the_flag_entry(monkeypatch, missing_at):
     record = _save_with_mtime("a", 100.0)
-    gallery.set_flags(record["id"], pinned = True)
-    assert gallery.delete(record["id"]) is True
-    assert gallery_flags.read(gallery.gallery_dir()) == {}
+    other = _save_with_mtime("keep", 200.0)
+    gallery.set_flags(record["id"], pinned = True, archived = True)
+    gallery.set_flags(other["id"], archived = True)
+    path = gallery.image_path(record["id"])
+    if missing_at == "lookup":
+        path.unlink()
+    elif missing_at == "read":
+        read_meta = gallery._read_meta
+
+        def disappear_before_read(candidate, **kwargs):
+            candidate.unlink()
+            return read_meta(candidate, **kwargs)
+
+        monkeypatch.setattr(gallery, "_read_meta", disappear_before_read)
+    elif missing_at == "unlink":
+        unlink = type(path).unlink
+
+        def disappear_before_unlink(candidate, **kwargs):
+            if candidate == path:
+                unlink(candidate)
+            return unlink(candidate, **kwargs)
+
+        monkeypatch.setattr(type(path), "unlink", disappear_before_unlink)
+    assert gallery.delete(record["id"]) is (missing_at is None)
+    assert gallery_flags.read(gallery.gallery_dir()) == {other["id"]: {"archived": True}}
+    assert gallery.image_path(other["id"]) is not None
 
 
 def test_clear_spares_archived_images():

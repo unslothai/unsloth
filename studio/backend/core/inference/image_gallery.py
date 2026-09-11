@@ -239,22 +239,27 @@ def set_flags(
 
 def delete(image_id: str) -> bool:
     path = image_path(image_id)
-    if path is None:
-        return False
     # a hand-dropped foreign PNG is invisible to list_images, so a guessed id must not destroy it
-    if _read_meta(path, strict_io = True) is None:
+    if path is None or _read_meta(path, strict_io = True) is None:
+        if _ID_RE.fullmatch(image_id):
+            # Only prune absent files, preserving foreign files and symlinks.
+            try:
+                (gallery_dir() / f"{image_id}.png").lstat()
+            except FileNotFoundError:
+                gallery_flags.forget(gallery_dir(), [image_id])
         return False
+    removed = True
     try:
         path.unlink()
     except FileNotFoundError:
-        return False
+        removed = False
     except OSError as exc:
         logger.warning("image_gallery.delete_failed: %s", exc)
         # Propagate I/O failures instead of reporting a missing image.
         raise
     # drop the flags with the file, so the id cannot hand out a stale pin and the store cannot grow forever
     gallery_flags.forget(gallery_dir(), [image_id])
-    return True
+    return removed
 
 
 def clear(include_archived: bool = False) -> int:
