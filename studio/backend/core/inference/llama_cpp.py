@@ -8694,7 +8694,11 @@ class LlamaCppBackend:
         return int(match.group(1)) if match else None
 
     @staticmethod
-    def _compact_ordinals(gpu_indices, env: Optional[Mapping[str, str]], is_vulkan = False):
+    def _compact_ordinals(
+        gpu_indices,
+        env: Optional[Mapping[str, str]],
+        is_vulkan = False,
+    ):
         """Physical ordinals translated into the child's COMPACT space.
 
         A mask reindexes survivors from 0, so the adapter this launch calls physical 1

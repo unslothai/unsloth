@@ -1222,17 +1222,26 @@ class TestVulkanIgpuDetection:
     def test_a_mixed_set_still_has_host_weights(self, monkeypatch):
         """A split puts part of the model on the iGPU, whose VRAM is system RAM,
         so those pages are as evictable as if it were the only device."""
-        rows = [{"index": 0, "is_igpu": True, "type_known": True}, {"index": 1, "is_igpu": False, "type_known": True}]
+        rows = [
+            {"index": 0, "is_igpu": True, "type_known": True},
+            {"index": 1, "is_igpu": False, "type_known": True},
+        ]
         assert self._probe(monkeypatch, rows)("bin", None) is True
 
     def test_only_the_selected_devices_count(self, monkeypatch):
-        rows = [{"index": 0, "is_igpu": True, "type_known": True}, {"index": 1, "is_igpu": False, "type_known": True}]
+        rows = [
+            {"index": 0, "is_igpu": True, "type_known": True},
+            {"index": 1, "is_igpu": False, "type_known": True},
+        ]
         assert self._probe(monkeypatch, rows)("bin", [0]) is True
         assert self._probe(monkeypatch, rows)("bin", [1]) is False
         assert self._probe(monkeypatch, rows)("bin", [0, 1]) is True
 
     def test_discrete_only_stays_no(self, monkeypatch):
-        rows = [{"index": 0, "is_igpu": False, "type_known": True}, {"index": 1, "is_igpu": False, "type_known": True}]
+        rows = [
+            {"index": 0, "is_igpu": False, "type_known": True},
+            {"index": 1, "is_igpu": False, "type_known": True},
+        ]
         assert self._probe(monkeypatch, rows)("bin", None) is False
 
     def test_an_unreadable_probe_answers_no(self, monkeypatch):
@@ -2818,7 +2827,10 @@ class TestThePlacementProbes:
     def test_an_igpu_in_play_declines(self, monkeypatch):
         from core.inference.llama_cpp import LlamaCppBackend
 
-        rows = [{"index": 0, "is_igpu": True, "type_known": True}, {"index": 1, "is_igpu": False, "type_known": True}]
+        rows = [
+            {"index": 0, "is_igpu": True, "type_known": True},
+            {"index": 1, "is_igpu": False, "type_known": True},
+        ]
         monkeypatch.setattr(
             LlamaCppBackend, "_run_vulkan_probe", staticmethod(lambda binary = None: rows)
         )
@@ -4172,8 +4184,7 @@ class TestOneEffectiveDeviceSetFeedsEveryConsumer:
         # the rung resolves its own narrowed set the same way
         assert (
             "devices=self._effective_gpu_indices(binary,_rung_env,devices,_mem_extra_args,"
-            "_mem_dio_possible,is_vulkan_backend,)"
-            in flat
+            "_mem_dio_possible,is_vulkan_backend,)" in flat
         )
 
 
@@ -4344,24 +4355,22 @@ class TestVulkanOrdinalsAreAlreadyCompact:
 
     def test_a_vulkan_launch_is_not_translated(self):
         from core.inference.llama_cpp import LlamaCppBackend as B
-
         assert B._compact_ordinals([1], {"GGML_VK_VISIBLE_DEVICES": "1,2"}, True) == [1]
 
     def test_the_vulkan_mask_is_not_even_consulted(self):
         from core.inference.llama_cpp import LlamaCppBackend as B
-
         assert B._compact_ordinals([1], {"GGML_VK_VISIBLE_DEVICES": "1,2"}) == [1]
 
     def test_a_cuda_launch_is_still_translated(self):
         from core.inference.llama_cpp import LlamaCppBackend as B
-
         assert B._compact_ordinals([1], {"CUDA_VISIBLE_DEVICES": "1,2"}) == [0]
 
     def test_the_resolver_passes_the_backend_through(self, monkeypatch):
         from core.inference.llama_cpp import LlamaCppBackend as B
 
         monkeypatch.setattr(
-            B, "_enumerated_gpu_devices",
+            B,
+            "_enumerated_gpu_devices",
             classmethod(lambda cls, binary = None, env = None: ["Vulkan0", "Vulkan1"]),
         )
         env = {"GGML_VK_VISIBLE_DEVICES": "1,2"}
@@ -4375,33 +4384,31 @@ class TestAnUnreadDeviceTypeIsNotDiscreteEvidence:
 
     def _rows(self, monkeypatch, rows):
         from core.inference.llama_cpp import LlamaCppBackend as B
-
         monkeypatch.setattr(B, "_run_vulkan_probe", staticmethod(lambda binary = None: rows))
         return B._vulkan_offload_is_discrete("llama-server", None)
 
     def test_a_known_discrete_device_confirms(self, monkeypatch):
-        assert self._rows(
-            monkeypatch, [{"index": 0, "is_igpu": False, "type_known": True}]
-        ) is True
+        assert self._rows(monkeypatch, [{"index": 0, "is_igpu": False, "type_known": True}]) is True
 
     def test_an_unread_type_declines(self, monkeypatch):
-        assert self._rows(
-            monkeypatch, [{"index": 0, "is_igpu": False, "type_known": False}]
-        ) is False
+        assert (
+            self._rows(monkeypatch, [{"index": 0, "is_igpu": False, "type_known": False}]) is False
+        )
 
     def test_one_unread_device_declines_the_set(self, monkeypatch):
-        assert self._rows(
-            monkeypatch,
-            [
-                {"index": 0, "is_igpu": False, "type_known": True},
-                {"index": 1, "is_igpu": False, "type_known": False},
-            ],
-        ) is False
+        assert (
+            self._rows(
+                monkeypatch,
+                [
+                    {"index": 0, "is_igpu": False, "type_known": True},
+                    {"index": 1, "is_igpu": False, "type_known": False},
+                ],
+            )
+            is False
+        )
 
     def test_a_known_igpu_still_declines(self, monkeypatch):
-        assert self._rows(
-            monkeypatch, [{"index": 0, "is_igpu": True, "type_known": True}]
-        ) is False
+        assert self._rows(monkeypatch, [{"index": 0, "is_igpu": True, "type_known": True}]) is False
 
     def test_an_older_probe_without_the_column_reads_as_unknown(self):
         """A staged probe predating the column cannot tell the two apart, so it
@@ -4431,7 +4438,10 @@ class TestThePerModelPairIsUserAuthoredToo:
         from core.inference.llama_cpp import LlamaCppBackend
 
         flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert "self._memory_dio_user_tokens=[*self._memory_dio_user_tokens,*_load_mode_managed,]" in flat
+        assert (
+            "self._memory_dio_user_tokens=[*self._memory_dio_user_tokens,*_load_mode_managed,]"
+            in flat
+        )
 
     def test_a_per_model_pair_alone_survives_the_strip(self):
         from core.inference.llama_cpp import LlamaCppBackend
@@ -4452,8 +4462,16 @@ class TestResidencyWithdrawsTheNoReserveDio:
     residency on and no-reserve off the policy emits a page-lock or nothing, never
     dio, so a streaming child contradicts the new settings."""
 
-    def _satisfied(self, monkeypatch, *, direct_io, dio_applicable, policy_active,
-                   mlock_applicable = False, state = (False, False)):
+    def _satisfied(
+        self,
+        monkeypatch,
+        *,
+        direct_io,
+        dio_applicable,
+        policy_active,
+        mlock_applicable = False,
+        state = (False, False),
+    ):
         import utils.model_memory_settings as mm
         from core.inference.llama_server_args import memory_state_satisfies_settings
 
@@ -4464,23 +4482,33 @@ class TestResidencyWithdrawsTheNoReserveDio:
         )
 
     def test_an_active_managed_dio_demands_a_reload(self, monkeypatch):
-        assert self._satisfied(
-            monkeypatch, direct_io = True, dio_applicable = True, policy_active = True
-        ) is False
+        assert (
+            self._satisfied(monkeypatch, direct_io = True, dio_applicable = True, policy_active = True)
+            is False
+        )
 
     def test_a_user_authored_dio_does_not(self, monkeypatch):
         """Theirs to keep; the policy never touched this child."""
-        assert self._satisfied(
-            monkeypatch, direct_io = True, dio_applicable = True, policy_active = False
-        ) is True
+        assert (
+            self._satisfied(monkeypatch, direct_io = True, dio_applicable = True, policy_active = False)
+            is True
+        )
 
     def test_a_non_streaming_child_is_unaffected(self, monkeypatch):
-        assert self._satisfied(
-            monkeypatch, direct_io = False, dio_applicable = True, policy_active = True
-        ) is True
+        assert (
+            self._satisfied(monkeypatch, direct_io = False, dio_applicable = True, policy_active = True)
+            is True
+        )
 
     def test_the_mlock_case_still_answers_as_before(self, monkeypatch):
-        assert self._satisfied(
-            monkeypatch, direct_io = None, dio_applicable = False, policy_active = False,
-            mlock_applicable = True, state = (True, False),
-        ) is True
+        assert (
+            self._satisfied(
+                monkeypatch,
+                direct_io = None,
+                dio_applicable = False,
+                policy_active = False,
+                mlock_applicable = True,
+                state = (True, False),
+            )
+            is True
+        )
