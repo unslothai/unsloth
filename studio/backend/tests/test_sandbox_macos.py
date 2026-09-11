@@ -724,6 +724,29 @@ def test_an_editable_checkout_is_listable_but_not_readable(tmp_path, monkeypatch
     assert f'(subpath "{package}")' in profile
 
 
+def test_a_standalone_interpreter_in_the_workdir_is_denied_writes(tmp_path, monkeypatch):
+    """The Linux twin's case, on this backend. A standalone build sits directly
+    in its own prefix, so when that prefix IS the workdir none of the named
+    children exist and nothing was denied: the workdir-wide file-write* left the
+    interpreter replaceable, and sandbox_probe runs sys.executable on the HOST
+    for its positive control, so the replacement runs outside Seatbelt."""
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    executable = workdir / "python"
+    executable.write_bytes(b"#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+    for attribute in ("prefix", "base_prefix", "exec_prefix", "base_exec_prefix"):
+        monkeypatch.setattr(sys, attribute, str(workdir))
+    monkeypatch.setattr(sys, "executable", str(executable))
+
+    assert backend.runtime_paths_under(str(workdir)) == (str(executable),)
+    profile = backend.build_profile(
+        workdir = str(workdir), private_tmp = str(tmp_path / "tmp"), runtime_paths = ()
+    )
+    deny = _rule(profile, "(deny file-write* ")
+    assert f'(literal "{executable}")' in deny, deny
+
+
 def test_a_runtime_is_denied_when_sys_prefix_carries_the_workdir_alias(tmp_path, monkeypatch):
     """The macOS half of the same miss. A venv invoked through a symlinked path
     reports the alias in sys.prefix, and pairing the two lexical tests per root

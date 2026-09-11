@@ -515,29 +515,36 @@ def runtime_paths_under(workdir: str) -> tuple[str, ...]:
             roots.append(root)
     canonical_root = os.path.realpath(workdir)
     inside: list[str] = []
+    # The interpreter FILE leads the list, like the Linux twin: a standalone
+    # build sits directly in its own prefix, so when that prefix is the workdir
+    # none of the names below exist and nothing was denied at all.
     # "Python" is the framework build's top-level dyld image, which
     # runtime_read_paths already names: omitted here it stayed writable under the
     # workdir allowance, which is the one file a later host subprocess maps.
+    candidates = [os.path.realpath(sys.executable)]
     for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
-        for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg", "ssl", "Python"):
-            candidate = posixpath.join(prefix, name)
-            if not os.path.exists(candidate):
-                continue
-            # The RESOLVED path decides. Pairing the two lexical tests per root
-            # answered a different question: an alias-prefixed path is not
-            # beneath the canonical root and a canonical one is not beneath the
-            # alias, so every path was rejected either way round -- and a venv
-            # invoked through a symlink keeps that alias in sys.prefix.
-            resolved = os.path.realpath(candidate)
-            if not _within(resolved, canonical_root):
-                continue
-            # Denied under every spelling of the workdir, since Seatbelt judges
-            # the path as written and the allowance covers them all.
-            relative = posixpath.relpath(resolved, canonical_root)
-            for other in roots:
-                spelling = posixpath.join(other, relative)
-                if spelling not in inside:
-                    inside.append(spelling)
+        candidates.extend(
+            posixpath.join(prefix, name)
+            for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg", "ssl", "Python")
+        )
+    for candidate in candidates:
+        if not os.path.exists(candidate):
+            continue
+        # The RESOLVED path decides. Pairing the two lexical tests per root
+        # answered a different question: an alias-prefixed path is not
+        # beneath the canonical root and a canonical one is not beneath the
+        # alias, so every path was rejected either way round -- and a venv
+        # invoked through a symlink keeps that alias in sys.prefix.
+        resolved = os.path.realpath(candidate)
+        if not _within(resolved, canonical_root):
+            continue
+        # Denied under every spelling of the workdir, since Seatbelt judges
+        # the path as written and the allowance covers them all.
+        relative = posixpath.relpath(resolved, canonical_root)
+        for other in roots:
+            spelling = posixpath.join(other, relative)
+            if spelling not in inside:
+                inside.append(spelling)
     return tuple(inside)
 
 
