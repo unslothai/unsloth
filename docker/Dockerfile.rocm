@@ -72,15 +72,15 @@ RUN python3 -m venv ${VENV} \
 # dependent packages resolve. The ROCm index also pulls the matching
 # triton-rocm as a hard dep, so we don't pin triton separately.
 #
-# Why --index-url (primary) + --extra-index-url (pypi fallback):
-#   torch ROCm builds live on download.pytorch.org/whl/rocmX.Y only.
-#   Everything else (datasets, transformers, etc.) comes from PyPI.
-#   unsafe-best-match lets uv pick the best wheel from either index.
+# The ROCm index ONLY. Adding pypi as a fallback here with unsafe-best-match
+# compares versions across both indexes, and every ROCm index below 7.2 trails
+# pypi's torch, so the "best match" is pypi's CUDA build: rocm6.2 and rocm6.4
+# both resolve to a plain torch==2.14.0 that drags in nvidia-cublas / nccl and
+# then fails the torch.version.hip assertion below. torch, torchvision and
+# torchaudio all live on the ROCm index, so no fallback is needed.
 RUN ${VENV}/bin/uv pip install \
         --python ${VENV}/bin/python \
-        --index-strategy unsafe-best-match \
         --index-url "${TORCH_INDEX_URL}" \
-        --extra-index-url https://pypi.org/simple \
         "torch" "torchvision" "torchaudio"
 
 # Install the rest of the Unsloth stack.
@@ -96,6 +96,20 @@ RUN ${VENV}/bin/uv pip install \
         "unsloth_zoo @ git+https://github.com/unslothai/unsloth-zoo@${UNSLOTH_ZOO_REF}" \
         "unsloth[huggingface] @ git+https://github.com/unslothai/unsloth@${UNSLOTH_REF}" \
         "timm>=1.0.11" "addict"
+
+# Repair the triton tree. unsloth-zoo and cut-cross-entropy both declare a bare
+# `triton` on Linux, which is the NVIDIA-targeted pypi wheel; torch+rocm needs
+# triton-rocm. Both distributions install into the same site-packages/triton/,
+# so the layer above leaves a spliced tree: `triton` 3.8.0 by metadata,
+# triton.__version__ 3.7.1, and backends/ holding both amd and nvidia.
+# Uninstalling the pypi one clears the shared directory; reinstalling
+# triton-rocm puts back the build torch actually links against.
+RUN set -eu; \
+    PIN="$(${VENV}/bin/python -c "import re;from importlib.metadata import requires;print([re.split(r'[;\[]', r)[0].strip() for r in requires('torch') if r.startswith('triton-rocm')][0])")"; \
+    echo "torch pins ${PIN}"; \
+    ${VENV}/bin/uv pip uninstall --python ${VENV}/bin/python triton; \
+    ${VENV}/bin/uv pip install --python ${VENV}/bin/python \
+        --index-url "${TORCH_INDEX_URL}" --reinstall "${PIN}"
 
 # Install bitsandbytes via pip (NOT uv) using the pre-release wheel that
 # contains the ROCm 4-bit GEMV fix (bitsandbytes PR #1887).

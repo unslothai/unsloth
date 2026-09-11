@@ -28,8 +28,11 @@ UNSLOTH_ZOO_REF="${UNSLOTH_ZOO_REF:-main}"
 UNSLOTH_NOTEBOOKS_REF="${UNSLOTH_NOTEBOOKS_REF:-main}"
 if [[ $ROCM -eq 1 ]]; then
     IMAGE_NAME="${IMAGE_NAME:-unsloth-rocm}"
-    ROCM_VERSION="${ROCM_VERSION:-6.4.4}"
-    TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/rocm6.4}"
+    # 7.2 is the floor, not a preference: rocm6.2 tops out at torch 2.5.1 and
+    # rocm6.4 at 2.9.1, both far below what current unsloth-zoo / transformers
+    # want, and RDNA4 (gfx1200/1201) has no kernels before 7.x either.
+    ROCM_VERSION="${ROCM_VERSION:-7.2.4}"
+    TORCH_INDEX_URL="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/rocm7.2}"
 else
     IMAGE_NAME="${IMAGE_NAME:-unsloth-blackwell}"
     CUDA_VERSION="${CUDA_VERSION:-12.8.1}"
