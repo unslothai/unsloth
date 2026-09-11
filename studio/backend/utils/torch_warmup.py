@@ -239,32 +239,43 @@ def _warm_inference_backend() -> None:
     _prime_nvlink_topology()
 
 
-def _prime_nvlink_topology() -> None:
+def _prime_nvlink_topology() -> Optional[threading.Thread]:
     """Build the P2P gate's interconnect matrix so the load path does not pay the
-    probe inline. Rides the inference_backend stage because it imports the same
-    first-party module.
+    probe inline. Returns the thread doing it, for tests to join.
+
+    Fire and forget, on a thread of its own. The probe can spend up to its NVML bound
+    plus the shell-out's timeout, and a warm stage that blocks that long delays every
+    stage behind it. Nothing here is on anyone's critical path: the gate re-probes on
+    demand, so a prime that never finishes costs one load its head start and nothing
+    else.
 
     cache_failure=False: this runs early, possibly mid driver initialisation, and a
     miss cached here would keep P2P off for the life of the process even once the
     topology became readable (#10613)."""
-    try:
-        from core.inference.llama_cpp import LlamaCppBackend
-        # Opted out, so the answer could never be used. The load path skips the probe
-        # for the same reason rather than pay its timeout to decide something the user
-        # already decided.
-        if os.environ.get("UNSLOTH_DISABLE_DC_TUNING") == "1":
-            return
-        if LlamaCppBackend._p2p_user_opted_out():
-            return
-        if LlamaCppBackend._effective_gpu_count() < 2:
-            return
-        if not LlamaCppBackend._all_selected_gpus_match(
-            LlamaCppBackend._NVLINK_FABRIC_GPU_RE, None
-        ):
-            return
-        LlamaCppBackend._nvlink_topology(cache_failure = False)
-    except Exception as e:  # noqa: BLE001 -- a warm miss costs latency, never correctness
-        logger.debug("NVLink topology prime skipped: %r", e)
+
+    def _probe() -> None:
+        try:
+            from core.inference.llama_cpp import LlamaCppBackend
+            # Opted out, so the answer could never be used. The load path skips the
+            # probe for the same reason rather than pay its timeout to decide
+            # something the user already decided.
+            if os.environ.get("UNSLOTH_DISABLE_DC_TUNING") == "1":
+                return
+            if LlamaCppBackend._p2p_user_opted_out():
+                return
+            if LlamaCppBackend._effective_gpu_count() < 2:
+                return
+            if not LlamaCppBackend._all_selected_gpus_match(
+                LlamaCppBackend._NVLINK_FABRIC_GPU_RE, None
+            ):
+                return
+            LlamaCppBackend._nvlink_topology(cache_failure = False)
+        except Exception as e:  # noqa: BLE001 -- a warm miss costs latency, never correctness
+            logger.debug("NVLink topology prime skipped: %r", e)
+
+    worker = threading.Thread(target = _probe, daemon = True, name = "nvlink-topology-prime")
+    worker.start()
+    return worker
 
 
 _STAGES = (

@@ -1450,12 +1450,39 @@ def test_the_prime_skips_work_the_opt_outs_make_useless(monkeypatch):
         monkeypatch.setenv(var, value)
         LlamaCppBackend._NVLINK_TOPO_CACHE = None
         probed.clear()
-        torch_warmup._prime_nvlink_topology()
+        torch_warmup._prime_nvlink_topology().join(10)
         assert probed == [], f"{var}={value} still primed"
         monkeypatch.delenv(var, raising = False)
 
     # Without an opt-out it still primes.
     LlamaCppBackend._NVLINK_TOPO_CACHE = None
     probed.clear()
-    torch_warmup._prime_nvlink_topology()
+    torch_warmup._prime_nvlink_topology().join(10)
     assert probed == [1]
+
+
+def test_the_prime_never_blocks_the_warm_sequence(monkeypatch):
+    """The probe can spend its NVML bound plus the shell-out timeout. A warm stage
+    that waits that long delays every stage behind it, and on a loaded CI worker that
+    is enough to tip unrelated timing-sensitive tests over."""
+    from utils import torch_warmup
+    import threading as _threading
+    import time as _time
+
+    release = _threading.Event()
+
+    def _slow(cls, **kw):
+        release.wait(30)
+        return {(0, 1): "NVLINK", (1, 0): "NVLINK"}
+
+    monkeypatch.setattr(LlamaCppBackend, "_nvlink_topology", classmethod(_slow))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 8))
+    try:
+        started = _time.perf_counter()
+        worker = torch_warmup._prime_nvlink_topology()
+        elapsed = _time.perf_counter() - started
+        assert elapsed < 1.0, f"the prime blocked its caller for {elapsed:.2f}s"
+        assert worker.is_alive()
+    finally:
+        release.set()
+        worker.join(10)
