@@ -24,6 +24,7 @@ import struct
 import sys
 import sysconfig
 import tempfile
+import time
 
 import pytest
 
@@ -910,11 +911,63 @@ def test_the_backend_says_so_when_the_kernel_cannot_scope_them(monkeypatch):
     assert ("host_abstract_sockets_reachable" in sandbox_linux.LIMITATIONS) is not supported
 
 
+def test_a_landlock_probe_child_that_never_answers_does_not_hang_the_server(monkeypatch):
+    """The fork is from a MULTITHREADED server, so a lock another thread held at
+    fork time can leave the child neither writing nor exiting. The read was
+    unbounded, and this runs before any tool call and is cached, so one stuck
+    child hung every later call rather than one probe. No answer is a NO: the
+    scope is unproven and the launch still happens without it."""
+    if not sandbox_landlock._abi_reports_scope():
+        pytest.skip("no Landlock ABI 6 here, so the fork under test never happens")
+
+    def never_answers():
+        # Holds the write end open and never writes, which is what a child
+        # deadlocked after fork looks like from out here.
+        time.sleep(30)
+
+    monkeypatch.setattr(sandbox_landlock, "apply_abstract_scope", never_answers)
+    monkeypatch.setattr(sandbox_landlock, "_PROBE_TIMEOUT_SECONDS", 1.0)
+    sandbox_landlock.abstract_scope_supported.cache_clear()
+    try:
+        started = time.monotonic()
+        assert sandbox_landlock.abstract_scope_supported() is False
+        assert time.monotonic() - started < 10, "the deadline did not fire"
+    finally:
+        sandbox_landlock.abstract_scope_supported.cache_clear()
+
+
 def test_the_plan_pre_exec_still_runs_before_the_scope():
     ran = []
     composed = sandbox_landlock.with_abstract_scope(lambda: ran.append("plan"))
     composed()
     assert ran == ["plan"]
+
+
+def test_a_standalone_interpreter_in_the_workdir_is_re_bound_read_only(tmp_path, monkeypatch):
+    """A standalone build sits directly in its own prefix, with no bin/ or lib/,
+    so keying only on <prefix>/<name> protected nothing when that prefix IS the
+    workdir: the interpreter stayed under the recursive WRITABLE bind. It is not
+    only the jail's own copy that matters -- sandbox_probe runs sys.executable
+    on the HOST for its positive control, so a replaced one runs unsandboxed."""
+    workdir = tmp_path / "session"
+    workdir.mkdir()
+    executable = workdir / "python"
+    executable.write_bytes(b"#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+    for attribute in ("prefix", "base_prefix", "exec_prefix", "base_exec_prefix"):
+        monkeypatch.setattr(sys, attribute, str(workdir))
+    monkeypatch.setattr(sys, "executable", str(executable))
+
+    assert sandbox_linux._runtime_paths_under(str(workdir)) == (str(executable),)
+    launch = sandbox_linux.prepare(_plan(workdir))
+    try:
+        argv = list(launch.argv)
+        read_only = [argv[i + 1] for i, item in enumerate(argv) if item == "--ro-bind"]
+        assert str(executable) in read_only, read_only
+        # After the writable bind, or it is hidden by it.
+        assert argv.index("--ro-bind", argv.index("--bind")) > argv.index("--bind")
+    finally:
+        launch.cleanup()
 
 
 def test_a_runtime_prefix_contributes_its_certificate_store(tmp_path, monkeypatch):

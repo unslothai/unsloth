@@ -251,11 +251,19 @@ def _runtime_paths_under(workdir: str) -> tuple[str, ...]:
     """
     canonical_root = os.path.realpath(workdir)
     inside: list[str] = []
+    # The interpreter FILE leads the list, not just <prefix>/bin: a standalone
+    # build sits directly in its own prefix, so when that prefix is the workdir
+    # none of the names below exist and this returned nothing at all. That one
+    # is not a cosmetic gap -- sandbox_probe runs sys.executable on the HOST for
+    # its positive control, so a replaced one is executed outside the jail.
+    candidates = [os.path.realpath(sys.executable)]
     for prefix in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix):
-        for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg", "ssl"):
-            candidate = os.path.join(prefix, name)
-            if not os.path.exists(candidate):
-                continue
+        candidates.extend(
+            os.path.join(prefix, name)
+            for name in ("bin", "include", "lib", "lib64", "libexec", "pyvenv.cfg", "ssl")
+        )
+    for candidate in candidates:
+        if os.path.exists(candidate):
             # The RESOLVED path decides, and it is also what gets bound. Testing
             # the spelling as written answered a different question -- an
             # alias-prefixed path is not lexically beneath the canonical root,

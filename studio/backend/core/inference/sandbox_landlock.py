@@ -13,6 +13,8 @@ from __future__ import annotations
 import ctypes
 import functools
 import os
+import select
+import signal
 import struct
 from typing import Callable
 
@@ -24,6 +26,9 @@ _LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET = 1 << 0
 # itself the version check -- an older kernel answers E2BIG.
 _RULESET_ATTR = struct.pack("=QQQ", 0, 0, _LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET)
 _PR_SET_NO_NEW_PRIVS = 38
+# The child binds one socket and calls two syscalls, so this is a hang budget,
+# not a work budget.
+_PROBE_TIMEOUT_SECONDS = 5.0
 
 try:
     # Resolved at import, never in the forked child, where an import can
@@ -98,18 +103,38 @@ def abstract_scope_supported() -> bool:
         finally:
             os._exit(0)
     os.close(write_fd)
+    answer = b""
     try:
-        answer = os.read(read_fd, 1)
+        # Deadlined, and the child is killed rather than waited on: this forks a
+        # MULTITHREADED server, and the child then runs real Python and libc
+        # work, so a lock another thread held at fork time can leave it never
+        # writing and never exiting. An unbounded read here is not one hung
+        # probe, it is every tool call for the life of the process, since the
+        # capability is asked for before any of them and the answer is cached.
+        # No answer is a NO: the scope is unproven, LIMITATIONS keeps
+        # host_abstract_sockets_reachable, and the launch still happens.
+        if select.select([read_fd], [], [], _PROBE_TIMEOUT_SECONDS)[0]:
+            answer = os.read(read_fd, 1)
     except OSError:
         answer = b""
     finally:
         os.close(read_fd)
         listener.close()
-        try:
-            os.waitpid(pid, 0)
-        except OSError:
-            pass
+        _reap(pid)
     return answer == b"y"
+
+
+def _reap(pid: int) -> None:
+    """SIGKILL then wait. Harmless for a child that already exited: it is a
+    zombie until reaped, so the signal lands on nothing and the wait returns."""
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+    try:
+        os.waitpid(pid, 0)
+    except OSError:
+        pass
 
 
 def _abi_reports_scope() -> bool:
