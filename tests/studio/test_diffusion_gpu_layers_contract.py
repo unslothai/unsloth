@@ -229,7 +229,9 @@ def test_the_dedupe_compares_the_requested_split_through_the_paravirtual_rewrite
     assert "_metal_device_is_paravirtual()" in adopt
     assert "paravirtual_normalized_request(" in adopt
     # Normalized before the runtime comparison reads it, or the rewrite changes nothing.
-    assert adopt.index("paravirtual_normalized_request(") < adopt.index("_runtime_matches_intent(")
+    assert adopt.index("paravirtual_normalized_request(") < adopt.index(
+        "_runtime_matches_intent(intent, candidate_extra_args)"
+    )
     runtime = bodies["_runtime_matches_intent"]
     assert "_diffusion_manual_ngl(intent.gpu_memory_mode, intent.gpu_layers)" in runtime
     assert "self.diffusion_requested_ngl" in runtime

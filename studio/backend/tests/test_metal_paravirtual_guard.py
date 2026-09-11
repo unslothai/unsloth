@@ -1051,7 +1051,7 @@ def test_a_diffusion_load_drops_the_drafter_state_it_inherits():
     tail = src[at : at + 600]
     assert "self._mtp_draft_path = None" in tail
     assert "self._mtp_draft_suppressed_path = None" in tail
-    assert at < src.index("return self._start_diffusion_server(")
+    assert at < src.index("started = self._start_diffusion_server(")
 
 
 def test_the_drafter_pin_covers_the_device_not_just_the_layers():
