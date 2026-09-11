@@ -2505,6 +2505,12 @@ def test_unload_sets_cancel_event(fake_runtime):
 @pytest.mark.parametrize(
     "phase",
     [
+        "validation",
+        "preinstall",
+        "transformer_error",
+        "pipeline_error",
+        "dense_error",
+        "dense_fallback",
         "transformer",
         "pipeline",
         "dense",
@@ -2528,6 +2534,7 @@ def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatc
     live = weakref.WeakSet()
     reclaimed = []
     pipelines = []
+    transformer_calls = []
 
     def tracked():
         value = _FakePipe()
@@ -2545,7 +2552,11 @@ def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatc
         return value
 
     def transformer(cls, *args, **kwargs):
+        transformer_calls.append(True)
         value = tracked()
+        if phase == "transformer_error":
+            park(None)
+            raise RuntimeError("setup failed")
         return park(value) if phase == "transformer" else value
 
     def pipeline(cls, *args, **kwargs):
@@ -2553,12 +2564,18 @@ def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatc
         value.transformer = kwargs["transformer"]
         value.text_encoder = kwargs["text_encoder"]
         pipelines.append(weakref.ref(value))
+        if phase == "pipeline_error":
+            park(None)
+            raise RuntimeError("setup failed")
         return park(value) if phase == "pipeline" else value
 
     def dense(*args, **kwargs):
         value = tracked()
         value.transformer = tracked()
         pipelines.append(weakref.ref(value))
+        if phase in ("dense_error", "dense_fallback"):
+            park(None)
+            raise RuntimeError("setup failed")
         return park(value), "int8"
 
     def load():
@@ -2567,7 +2584,11 @@ def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatc
                 backend,
                 tmp_path,
                 speed_mode = "eager",
-                transformer_quant = "int8" if phase == "dense" else "off",
+                transformer_quant = None
+                if phase == "dense_fallback"
+                else "int8"
+                if phase.startswith("dense")
+                else "off",
             )
         except Exception as exc:
             outcome["error"] = str(exc)
@@ -2577,11 +2598,22 @@ def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatc
         mp.setattr(_FakeTransformer, "from_single_file", classmethod(transformer))
         mp.setattr(_FakePipeline, "from_pretrained", classmethod(pipeline))
         mp.setattr(diff_mod, "te_prequant_pipe_kwargs", lambda *a, **k: {"text_encoder": tracked()})
-        if phase == "dense":
+        if phase.startswith("dense"):
             mp.setattr(diff_mod, "dense_transformer_supported", lambda target: True)
             mp.setattr(diff_mod, "select_transformer_quant_scheme", lambda *a, **k: "int8")
             mp.setattr(backend, "_dense_transformer_resident_bytes", lambda *a, **k: 0)
             mp.setattr(backend, "_load_dense_quant_pipeline", dense)
+        elif phase in ("validation", "preinstall"):
+            if phase == "validation":
+                original = backend.validate_load_request
+                mp.setattr(
+                    backend, "validate_load_request", lambda *a, **k: park(original(*a, **k))
+                )
+            else:
+                mp.setattr(diff_mod, "select_attention_backend", lambda *a, **k: "test")
+                mp.setattr(
+                    diff_mod, "_ensure_attention_backend_installed", lambda *a, **k: park(None)
+                )
         elif phase in ("attention_error", "cache_error"):
 
             def fail_setup(*args, **kwargs):
@@ -2610,7 +2642,11 @@ def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatc
             assert entered.wait(5), "load did not reach the blocked construction stage"
             ejector.start()
             assert backend._cancel_event.wait(2), "eject could not signal during construction"
-            assert ejector.is_alive(), "teardown must wait for the constructor to unwind"
+            if phase in ("validation", "preinstall"):
+                ejector.join(5)
+                assert not ejector.is_alive()
+            else:
+                assert ejector.is_alive(), "teardown must wait for the constructor to unwind"
         finally:
             release.set()
             loader.join(5)
@@ -2619,11 +2655,18 @@ def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatc
 
     assert not loader.is_alive() and not ejector.is_alive()
     assert "loaded" not in outcome, "a cancelled pipeline was published as ready"
-    assert ("setup failed" if phase.endswith("_error") else "cancelled") in outcome["error"]
+    assert (
+        "setup failed" if phase.endswith("_error") and phase != "dense_error" else "cancelled"
+    ) in outcome["error"]
     assert not backend.is_loaded
     assert not ep.is_installed()
     assert backend._teardown_waiters == 0
-    assert reclaimed and all(item == (0, True, True) for item in reclaimed), reclaimed
+    if phase in ("validation", "preinstall"):
+        assert not live and not reclaimed
+    else:
+        assert reclaimed and all(item == (0, True, True) for item in reclaimed), reclaimed
+    if phase == "dense_fallback":
+        assert not transformer_calls, "cancelled dense attempt started a GGUF fallback"
     if phase == "transformer":
         assert not pipelines, "cancelled load still constructed its companions"
 
