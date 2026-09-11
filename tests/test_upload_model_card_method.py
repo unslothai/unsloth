@@ -26,7 +26,12 @@ def uploading(monkeypatch):
     pushed = {}
 
     class RecordingCard(ModelCard):
-        def push_to_hub(self, repo_id, token = None, **kwargs):
+        def push_to_hub(
+            self,
+            repo_id,
+            token = None,
+            **kwargs,
+        ):
             pushed["repo_id"] = repo_id
             pushed["content"] = self.content
 
