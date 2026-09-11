@@ -88,7 +88,7 @@ def _entry(repo_id: str) -> dict[str, object]:
 def _open_quant(page, *, navigate: bool) -> None:
     if navigate:
         page.goto(f"{BASE_URL}/images", wait_until = "domcontentloaded")
-    trigger = page.get_by_role("button", name = "Select image model")
+    trigger = page.locator(".unsloth-model-selector-trigger:visible")
     trigger.wait_for(state = "visible", timeout = 30_000)
     trigger.scroll_into_view_if_needed()
     # Finish input scrolling before opening the dismiss-on-scroll picker.
@@ -111,7 +111,7 @@ def _open_quant(page, *, navigate: bool) -> None:
     gguf = page.get_by_text("GGUF", exact = True)
     if gguf.count() == 1:
         gguf.click()
-    quant = page.locator("button").filter(has_text = "Q4_K_M")
+    quant = page.locator("button[data-model-picker-option]").filter(has_text = "Q4_K_M")
     quant.wait_for(state = "visible")
     assert quant.count() == 1
     quant.click()
@@ -127,7 +127,7 @@ def main() -> None:
         "load_calls": 0,
         "load_payloads": [],
         "load_progress_polls": 0,
-        "loaded": False,
+        "loaded": DOWNLOAD_ONLY,
         "plan_snapshots": [],
     }
     page_errors: list[str] = []
@@ -290,6 +290,7 @@ def main() -> None:
                 return
             if path == "/api/inference/images/unload" and request.method == "POST":
                 unload_calls.append(payload)
+                state["loaded"] = False
                 _json(route, _status(loaded = False))
                 return
             if path == "/api/inference/images/load" and request.method == "POST":
@@ -353,6 +354,11 @@ def main() -> None:
             page.get_by_role("textbox", name = "Guidance", exact = True).fill("2.5")
         _open_quant(page, navigate = not DOWNLOAD_ONLY)
         if DOWNLOAD_ONLY:
+            with page.expect_request(
+                lambda request: urlparse(request.url).path == "/api/inference/images/unload"
+            ):
+                page.locator("[data-eject-hit]:visible").click()
+            expect(page.get_by_role("button", name = "Select image model")).to_be_visible()
             page.get_by_test_id("nav-row-hub").click()
             expect(page).to_have_url(f"{BASE_URL}/hub")
             assert held_plans, "No pending plan to exercise"
@@ -433,7 +439,7 @@ def main() -> None:
             ).wait_for(timeout = 20_000)
             assert state["starts"] == [*expected_initial_starts, COMPANION_REPO], state["starts"]
             assert state["load_calls"] == 0, "download-only completion loaded the model"
-            assert state["loaded"] is False and not unload_calls
+            assert state["loaded"] is False and len(unload_calls) == 1
             expect(page.get_by_role("textbox", name = "Steps", exact = True)).to_have_value("17")
             expect(page.get_by_role("textbox", name = "Guidance", exact = True)).to_have_value("2.5")
             assert not page_errors, page_errors

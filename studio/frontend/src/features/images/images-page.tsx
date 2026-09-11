@@ -1350,6 +1350,7 @@ export function ImagesPage({
   const stagedQuantRevert = useRef<PickRevert | null>(null);
   // Bumped per Hub pick, so a plan that resolves after a newer pick can tell it has been superseded.
   const pickSeq = useRef(0);
+  const pendingDownloadPick = useRef<number | null>(null);
   // The Reapply target to restore if the optimistic swap fails: handleLoad overwrites
   // lastLoad.current at load start. Mirrors quantRevert.
   const lastLoadRevert = useRef<{ prev: typeof lastLoad.current } | null>(null);
@@ -1461,9 +1462,10 @@ export function ImagesPage({
   // Client-side state that only means anything while a model is resident: the replacement
   // load's tracking and the Reapply target. Shared with the indicator eject.
   const dropResidentState = useCallback(() => {
-    // Cancel, not release: a resolving pick or a staged download would load back what was just
-    // ejected. Here rather than in handleUnload, so the loaded-models card is covered too.
-    pickGuard.cancel();
+    // Cancel picks that could reload the ejected model; download-only work can continue.
+    if (pendingDownloadPick.current === null || !pickGuard.isLatest(pendingDownloadPick.current)) {
+      pickGuard.cancel();
+    }
     // Everything in flight is now stale. Clearing the timer stops the NEXT poll tick but not a
     // request awaiting its response, and those still apply terminal state; the counter is what
     // they compare against.
@@ -2614,6 +2616,7 @@ export function ImagesPage({
       const owns = () => token === undefined ||
         (downloadOnly ? pickGuard.isLatest(token) : pickGuard.holds(token));
       if (!owns()) return true;
+      pendingDownloadPick.current = downloadOnly ? token ?? null : null;
       if (source !== "hub" && !downloadOnly) return handleLoadRef.current(repoId, opts);
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
       const advanced = currentLoadAdvanced(repoId);
@@ -2675,6 +2678,8 @@ export function ImagesPage({
           return true;
         }
         // No plan (older backend, metadata hiccup): fall back to the load's own download.
+      } finally {
+        if (pendingDownloadPick.current === token) pendingDownloadPick.current = null;
       }
       // Re-checked: a plan that REJECTED after a newer pick would otherwise reach the fallback load.
       if (pick !== pickSeq.current || !owns()) return true;
@@ -2722,6 +2727,7 @@ export function ImagesPage({
       // Claimed here so every entry point is covered; the next pick's claim makes this one inert.
       const token = pickGuard.claim();
       const downloadOnly = modelSelectionAction === "download";
+      pendingDownloadPick.current = downloadOnly ? token : null;
       const isCurrent = () => isMounted.current &&
         (downloadOnly ? pickGuard.isLatest(token) : pickGuard.holds(token));
       const revert: PickRevert = quantRevert.current ?? { prev: quant, steps, guidance };
@@ -2738,6 +2744,7 @@ export function ImagesPage({
           toast.error("Pick a quantization for this model to load it"),
         // Optimistic label, reverted if the load never starts, like the curated GGUF branch below.
         onResolved: (filename) => {
+          if (downloadOnly) return;
           quantRevert.current = revert;
           setQuant(quantHint ?? filename);
           applyImageModelDefaults(repoId);
@@ -2750,6 +2757,8 @@ export function ImagesPage({
         },
         load: (filename) =>
           loadOrStage(repoId, { kind: "gguf", filename }, source, token),
+      }).finally(() => {
+        if (pendingDownloadPick.current === token) pendingDownloadPick.current = null;
       });
     },
     [applyImageModelDefaults, loadOrStage, modelSelectionAction, pickGuard, quant, revertPick],

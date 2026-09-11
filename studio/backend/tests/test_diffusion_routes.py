@@ -1713,7 +1713,10 @@ def test_download_plan_suppresses_only_the_verdict_while_training_runs(client, m
         assert "allow_device_probe" not in seen, training
 
 
-def test_download_plan_response_keeps_the_planners_checkpoint_marker(client, monkeypatch):
+@pytest.mark.parametrize("plan_failed", [False, True])
+def test_download_plan_response_keeps_the_planners_checkpoint_marker(
+    client, monkeypatch, plan_failed
+):
     # Through the ROUTE, not the planner: the response model is what the picker actually reads, and
     # a field the planner sets but the model does not declare is dropped silently on serialization.
     # That is exactly how the checkpoint marker was lost, leaving a mirrored pipeline mislabelled.
@@ -1741,6 +1744,7 @@ def test_download_plan_response_keeps_the_planners_checkpoint_marker(client, mon
                     "checkpoint": False,
                 },
             ],
+            "plan_failed": plan_failed,
             "total_bytes": 30,
             "required_bytes": 30,
             "checkpoint_bytes": 10,
@@ -1756,6 +1760,7 @@ def test_download_plan_response_keeps_the_planners_checkpoint_marker(client, mon
     )
 
     assert resp.status_code == 200
+    assert resp.json()["plan_failed"] is plan_failed
     assert [e["checkpoint"] for e in resp.json()["entries"]] == [True, False]
 
 
@@ -1785,6 +1790,7 @@ def test_download_plan_defaults_the_checkpoint_marker_for_an_older_planner(clien
     )
 
     assert resp.status_code == 200
+    assert resp.json()["plan_failed"] is False
     assert resp.json()["entries"][0]["checkpoint"] is False
 
 
