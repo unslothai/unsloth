@@ -30783,7 +30783,16 @@ async def anthropic_count_tokens(
             status_code = 503,
             detail = "Unable to count tokens with the loaded model tokenizer.",
         )
-    return JSONResponse(content = {"input_tokens": int(count)})
+    # /apply-template renders an image as a marker, not its projector embeddings, so charge
+    # the same per-image allowance admission reserves.
+    image_parts = sum(
+        isinstance(part, dict) and part.get("type") == "image_url"
+        for message in openai_messages
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+    )
+    image_tokens = image_parts * _openai_llama_admission_image_tokens(llama_backend)
+    return JSONResponse(content = {"input_tokens": int(count) + image_tokens})
 
 
 def _set_or_prepend_system_message(

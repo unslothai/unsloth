@@ -243,14 +243,16 @@ def fold_tool_results_into_user(messages: list[dict]) -> list[dict]:
         if tool_call_id:
             response["tool_call_id"] = tool_call_id
         content = response["content"]
-        # Only images must stay real parts; other lists keep the JSON block the archive matches.
-        if isinstance(content, list) and any(
-            isinstance(part, dict) and part.get("type") == "image_url" for part in content
-        ):
-            response.pop("content")
+        images = []
+        if isinstance(content, list):
+            images = [p for p in content if isinstance(p, dict) and p.get("type") == "image_url"]
+        if images:
+            # Images must be real parts; the rest of the result stays inside the tool_response
+            # wrapper, so tool text never reads as user text and the archive still matches it.
+            response["content"] = [p for p in content if p not in images]
             folded_content = [
                 {"type": "text", "text": json.dumps({"tool_response": response}, indent = 2)},
-                *content,
+                *images,
             ]
         else:
             folded_content = json.dumps({"tool_response": response}, indent = 2)

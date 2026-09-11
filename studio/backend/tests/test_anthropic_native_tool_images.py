@@ -88,8 +88,10 @@ def test_native_images_keep_order_and_tool_identity(order):
         p["source"]["data"] for p in parts if p["type"] == "image"
     ]
     folded = fold_tool_results_into_user(converted)
-    assert "toolu_first" in folded[2]["content"][0]["text"]
-    assert any(p["type"] == "image_url" for p in folded[2]["content"])
+    wrapper = json.loads(folded[2]["content"][0]["text"])["tool_response"]
+    assert wrapper["tool_call_id"] == "toolu_first"
+    assert wrapper["content"] == [p for p in converted[2]["content"] if p["type"] == "text"]
+    assert [p["type"] for p in folded[2]["content"][1:]] == ["image_url"] * order.count("image")
 
 
 @pytest.mark.parametrize("vision", [True, False])
@@ -143,6 +145,8 @@ def test_native_image_http_generation_and_count(monkeypatch, vision):
         counted = client.post("/v1/messages/count_tokens", json = body)
     assert response.status_code == 200, response.text
     assert counted.status_code == 200, counted.text
+    image_tokens = inf._OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS if vision else 0
+    assert counted.json()["input_tokens"] == 42 + image_tokens
     assert response.json()["content"][0]["text"] == "The image is red."
     assert [p["require_vision"] for p in seen["preflight"]] == [False, False]
     assert len(seen["preflight"][0]["image_preflight"]["b64s"]) == 1
