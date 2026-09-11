@@ -302,14 +302,35 @@ def _iter_column(dataset, column):
         yield from dataset[column]
 
 
-class TextPreprocessor:
-    _WHITESPACE_PATTERN = re.compile(r"[^\S\n]+")
+class _TextCharTable(dict):
+    """str.translate table for clean_text, filled in the first time each character is seen."""
+
     # Outside printable ASCII, keep whatever is part of the text and drop the rest. This used to
     # be the class [^\x20-\x7E\n], which deleted every non-ASCII character, so "café" came back
     # as "caf" and a document in any non-Latin script came back empty. Marks have to survive or
     # Devanagari and Arabic lose their vowels, and punctuation has to survive or a Chinese
     # sentence loses its full stop. Symbols (\u00a9, emoji) are still dropped, as before.
     _KEEP_UNICODE_CATEGORIES = ("L", "N", "M", "P")
+    # VS15, VS16 and the keycap mark only style an emoji and would outlive it if kept.
+    _EMOJI_MARKS = frozenset("\ufe0e\ufe0f\u20e3")
+
+    def __missing__(self, codepoint):
+        char = chr(codepoint)
+        keep = (
+            " " <= char <= "~"
+            or char == "\n"
+            or (
+                char not in self._EMOJI_MARKS
+                and unicodedata.category(char)[0] in self._KEEP_UNICODE_CATEGORIES
+            )
+        )
+        self[codepoint] = codepoint if keep else None
+        return self[codepoint]
+
+
+class TextPreprocessor:
+    _WHITESPACE_PATTERN = re.compile(r"[^\S\n]+")
+    _TEXT_CHARS = _TextCharTable()
     _MULTIPLE_SPACES_PATTERN = re.compile(r"[ ]{2,}")
     _NEWLINE_SPACES_PATTERN = re.compile(r" *\n *")
     _MULTIPLE_NEWLINES_PATTERN = re.compile(r"\n{3,}")
@@ -322,13 +343,7 @@ class TextPreprocessor:
         """Remove unwanted characters, normalize whitespace"""
         text = text.replace("\r\n", "\n").replace("\r", "\n")
         text = self._WHITESPACE_PATTERN.sub(" ", text)
-        text = "".join(
-            c
-            for c in text
-            if " " <= c <= "~"
-            or c == "\n"
-            or unicodedata.category(c)[0] in self._KEEP_UNICODE_CATEGORIES
-        )
+        text = text.translate(self._TEXT_CHARS)
         text = self._MULTIPLE_SPACES_PATTERN.sub(" ", text)
         text = self._NEWLINE_SPACES_PATTERN.sub("\n", text)
         text = self._MULTIPLE_NEWLINES_PATTERN.sub("\n\n", text)

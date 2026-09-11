@@ -277,6 +277,10 @@ def test_clean_text_still_drops_symbols_and_control_characters():
     assert preprocessor.clean_text("a\x00b") == "ab"
     assert preprocessor.clean_text("a\x1bb") == "ab"
     assert preprocessor.clean_text("\ufeffhello") == "hello"
+    # Emoji presentation and keycap marks go with the emoji instead of outliving it.
+    assert preprocessor.clean_text("I \u2764\ufe0f you") == "I you"
+    assert preprocessor.clean_text("\u00a9\ufe0f 2026") == "2026"
+    assert preprocessor.clean_text("1\ufe0f\u20e3 first") == "1 first"
 
 
 def test_smart_chunk_text_single_chunk_no_eos_returns_plain_list():
