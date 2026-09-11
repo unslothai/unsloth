@@ -54,6 +54,48 @@ on:
       - '.github/actions/frontend-dist-save/action.yml'
   push:
     branches: [main]
+    # The same list as pull_request. This workflow has a macOS leg, and macOS runners
+    # are capped at five concurrent jobs account-wide, so a push trigger without a
+    # filter would spend them on commits that cannot affect what it tests.
+    paths:
+      - 'install.sh'
+      - 'scripts/uninstall.sh'
+      - 'studio/setup.sh'
+      - 'studio/install_python_stack.py'
+      - 'studio/install_llama_prebuilt.py'
+      - 'studio/install_whisper_prebuilt.py'
+      - 'studio/install_node_prebuilt.py'
+      - 'studio/install_manifest.py'
+      - 'studio/prebuilt_core.py'
+      # install_node_prebuilt.py reads the default version and archive digests from here.
+      - 'studio/node_prebuilt_pins.json'
+      - 'studio/setup.ps1'
+      - 'install.ps1'
+      - 'studio/backend/requirements/**'
+      # setup.sh and setup.ps1 run npm against these two trees on every update, and the
+      # harness holds the frontend bundle to be current afterwards; a dependency change
+      # there used to reach these jobs only through the push to main.
+      - 'studio/frontend/package.json'
+      - 'studio/frontend/package-lock.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/package.json'
+      - 'studio/backend/core/data_recipe/oxc-validator/package-lock.json'
+      # The harness below and the proxy it measures with.
+      - 'tests/studio/install/test_update_idempotency.py'
+      - 'tests/studio/install/idempotency_proxy.py'
+      - 'unsloth_cli/commands/studio.py'
+      - 'unsloth_cli/__init__.py'
+      - 'unsloth_cli/_system_dir_guard.py'
+      - 'pyproject.toml'
+      - '.github/workflows/studio-update-smoke.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
+      # The dist cache moved out of install-unsloth-local so the Windows jobs could
+      # share one definition of its key; a change to it still has to re-run the jobs
+      # that depend on it.
+      - '.github/actions/frontend-dist-restore/action.yml'
+      - '.github/actions/frontend-dist-save/action.yml'
   workflow_dispatch:
 
 concurrency:
@@ -422,8 +464,13 @@ jobs:
           # Tee-Object: in-process it goes straight to [Console]::Out and the log is
           # empty. Same idiom as studio-windows-api-smoke.yml.
           $child = '$ErrorActionPreference = ''Stop''; $ProgressPreference = ''SilentlyContinue''; & ./install.ps1 --local --no-torch; exit $LASTEXITCODE'
+          # Elapsed-seconds prefix, added to the STEP LOG only. Tee-Object writes
+          # logs/install.log upstream of this filter, so the artifact keeps exactly
+          # what install.ps1 produced. Same idiom as studio-windows-api-smoke.yml.
+          $sw = [System.Diagnostics.Stopwatch]::StartNew()
           pwsh -NoProfile -ExecutionPolicy Bypass -Command $child 2>&1 |
-            Tee-Object -FilePath logs/install.log
+            Tee-Object -FilePath logs/install.log |
+            ForEach-Object { '[{0,4:N0}s] {1}' -f $sw.Elapsed.TotalSeconds, $_ }
           if ($LASTEXITCODE -ne 0) { throw "install.ps1 exited with code $LASTEXITCODE" }
 
       - name: A second update does nothing, and proves it
