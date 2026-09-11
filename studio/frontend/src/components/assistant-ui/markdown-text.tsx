@@ -72,6 +72,7 @@ import {
 } from "./code-fence-defer";
 import { createCodePlugin } from "./code-plugin";
 import { withMathBlockMarker } from "./math-block-marker";
+import { markdownBlockFallback } from "./markdown-block-fallback";
 import {
   MarkdownBlockBoundary,
   MarkdownBlockFallbackView,
@@ -609,7 +610,22 @@ function StreamdownBlockContent(props: BlockProps) {
      * Measured: with this unguarded, a streamed abort produced an identical document to the commit before the inner
      * boundary existed, 0 copy and 0 download buttons on both. Guarding it keeps the failure inside the renderer
      * boundary, so the completed block mounts `FenceBlock` normally and keeps its controls.
+     *
+     * A streaming OPEN fence is also the path that re-tokenizes a growing body on every frame. Plain prose on this
+     * route still needs `Block`; only a fence whose closing delimiter has not arrived yet is routed to the same
+     * unhighlighted shell deferral uses, and highlighted once in `FenceBlock` when the fence completes.
      */
+  if (props.isIncomplete) {
+    const openFence = markdownBlockFallback(props.content);
+    if (openFence.fenced) {
+      return (
+        <DeferredFenceShell
+          language={openFence.language}
+          source={openFence.text}
+        />
+      );
+    }
+  }
   return (
     <MarkdownRendererBoundary
       fallback={<MarkdownBlockFallbackView content={props.content} />}
