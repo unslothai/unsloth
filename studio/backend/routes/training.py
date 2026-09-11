@@ -538,7 +538,9 @@ def _remote_untrainable_model_format(model_name: str, hf_token: HfTokenArg) -> O
     return None
 
 
-def _refuse_unauthorized_cached_dataset(request: TrainingStartRequest, hf_token: HfTokenArg) -> None:
+def _refuse_unauthorized_cached_dataset(
+    request: TrainingStartRequest, hf_token: HfTokenArg
+) -> None:
     from hub.utils.dataset_cache import dataset_cache_can_answer, training_dataset_cache_pin
 
     dataset_id = request.hf_dataset
