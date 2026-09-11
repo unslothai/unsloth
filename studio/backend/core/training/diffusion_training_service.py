@@ -52,11 +52,13 @@ def _finite_or_none(value: Any) -> Optional[float]:
 
 
 def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
-    # Fresh spawned interpreter: re-apply the OS-trust-store injection, inside the secret scrub and
-    # before the trainer imports diffusers.
+    # Fresh spawned interpreter: re-apply the process-wide network injections, inside the secret
+    # scrub and before the trainer imports diffusers.
     from utils.native_tls import activate_native_tls
+    from utils.happy_eyeballs import activate_happy_eyeballs
 
     activate_native_tls()
+    activate_happy_eyeballs()
 
     # Imported lazily so this module (and the route layer) stays torch-free at import.
     from .diffusion_lora_trainer import run_diffusion_training_process
