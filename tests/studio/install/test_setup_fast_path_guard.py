@@ -221,14 +221,8 @@ def test_the_ps1_sidecar_predicate_reads_no_version_gated_variable():
     assert "PSVersion.Major -ge 7" not in body
 
 
-# ── the offline rule ──
-#
-# "could not reach PyPI, updating to be safe" is the right default: an unreachable PyPI
-# is usually a blip, and a pass over a warm cache is cheap. It is the wrong answer when
-# the caller has SET UV_OFFLINE, because then every install command in that pass can only
-# fail -- the update does the slow half of its work and exits non-zero on a venv that was
-# already complete. The rule keeps such an install, and only on the evidence the
-# incomplete-install guard already demands.
+# The offline rule: "updating to be safe" is wrong under UV_OFFLINE, where every install can only
+# fail; a complete install is kept, on the incomplete-install guard's own evidence.
 
 
 @pytest.mark.parametrize("script", [SETUP_SH, SETUP_PS1], ids = ["setup.sh", "setup.ps1"])
@@ -298,8 +292,7 @@ def test_the_posix_offline_switch_reads_the_boolish_spellings(tmp_path):
         ("TRUE", "yes"),
         ("  yes  ", "yes"),
         ("on", "yes"),
-        # uv's boolish parser also takes the single letters; checked against uv 0.10.7,
-        # where UV_OFFLINE=t and =y both disable the network.
+        # uv's boolish parser takes the single letters too (uv 0.10.7).
         ("t", "yes"),
         ("T", "yes"),
         ("y", "yes"),
@@ -343,18 +336,15 @@ def test_the_offline_fast_path_never_wipes_a_sidecar():
         < ps1.index("if ($_NeedT5_530 -or $_NeedT5_550 -or $_NeedT5_510) {")
     )
     assert "Set-Variable -Name $flag -Value $false" in ps1[guard_ps1 : guard_ps1 + 900]
-    # The legacy migration is itself a wipe, and it sits above the guard; under the
-    # offline keep it has to be skipped, not merely followed by cleared flags.
-    # ...and under UV_OFFLINE without the fast path as well: the legacy tree is the only
-    # sidecar the install has, and the three rebuilds would come from a cache that may be cold.
+    # The legacy migration is itself a wipe above the guard: skipped under the offline keep, and
+    # under UV_OFFLINE without the fast path.
     assert sh.index(
         '[ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; }; then\n    # The migration'
     ) < sh.index('rm -rf "$STUDIO_HOME/.venv_t5"')
     assert ps1.index(
         "(Test-Path -LiteralPath $VenvT5Legacy) -and ($script:OfflineFastPath -or (Test-UvOfflineRequested))"
     ) < ps1.index("Remove-Item -LiteralPath $VenvT5Legacy -Recurse -Force")
-    # ...and the tiktoken top-up a current tier gets must not run either: its pip
-    # fallback reaches the network, and a deferred tier would gain a tiktoken-only dir.
+    # ...nor the tiktoken top-up: its pip fallback reaches the network.
     top_up = sh[sh.index("_sidecar_top_up_tiktoken() {") :]
     assert '[ "${_OFFLINE_FAST_PATH:-false}" = true ] && return 0' in top_up[:600]
     repair = ps1[ps1.index("function Repair-SidecarTiktoken {") :]
@@ -378,9 +368,8 @@ def test_uv_offline_without_the_fast_path_still_keeps_an_existing_sidecar():
         < sh.index('if [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then')
     )
     block_sh = sh[offline_sh : offline_sh + 1100]
-    # Stale AND missing: an absent tier would reach fast_install's pip fallback, which
-    # does not read UV_OFFLINE. No path in the loop's word list either (a Studio home
-    # with a space in its path would split there).
+    # Stale AND missing: an absent tier would reach the pip fallback. No path in the loop's word
+    # list (a space in the Studio home would split it).
     assert '[ -d "$' not in block_sh.split("for _ofp in", 1)[1].split("done", 1)[0]
     assert "$VENV_T5_530_DIR" not in block_sh.split("for _ofp in", 1)[1].split("\n", 1)[0]
     assert 'eval "_NEED_T5_$1=false"' in block_sh and 'eval "_DEFER_T5_$1=true"' in block_sh

@@ -59,10 +59,9 @@ class Proxy:
         self.refuse = refuse
         self.deny_hosts = tuple(h.strip().lower() for h in deny_hosts if h.strip())
         self.lock = threading.Lock()
-        # Workers between accept and their journal record. Published to a sibling file so
-        # the harness can tell "the journal is quiet" from "nothing is left to journal":
-        # a worker blocked in the upstream connect has written nothing yet, and a proxy
-        # terminated at that moment loses the very connection the harness exists to see.
+        # Workers between accept and their journal record, published so the harness can tell "quiet"
+        # from "nothing left to journal": a worker blocked in the upstream connect has written
+        # nothing yet.
         self.active = 0
         self.active_path = log_path + ".active"
         self._publish_active()
@@ -72,8 +71,7 @@ class Proxy:
         self.srv.listen(256)
         self.port = self.srv.getsockname()[1]
         if port_file:
-            # Written last and in one go: the caller polls for this file to learn the
-            # port, so a partial write is a race it would read as the whole answer.
+            # Written last and in one go: the caller polls this file for the port.
             tmp = port_file + ".tmp"
             with open(tmp, "w") as fh:
                 fh.write(str(self.port))
@@ -117,9 +115,8 @@ class Proxy:
                 conn, _ = self.srv.accept()
             except OSError:
                 return
-            # Counted here, before the worker exists: a connection accepted but not yet
-            # scheduled is invisible to the journal, and the harness reads the count to
-            # decide whether the proxy may be stopped.
+            # Before the worker exists: an accepted, unscheduled connection is invisible to the
+            # journal.
             self._adjust_active(+1)
             threading.Thread(target = self.handle, args = (conn,), daemon = True).start()
 
@@ -149,8 +146,7 @@ class Proxy:
         }
 
     def handle(self, conn: socket.socket) -> None:
-        # The accept loop counted this connection in; this releases it once its record
-        # is in the journal (or the worker died trying).
+        # Released once the record is in the journal (or the worker died trying).
         try:
             self._handle(conn)
         finally:
@@ -163,8 +159,7 @@ class Proxy:
         down = up = 0
         status = "ok"
         upstream = None
-        # Set once this connection is in the journal, so a path that has to journal
-        # early does not get a second record from the `finally` below.
+        # Set once journalled, so an early journal does not get a second record from the `finally`.
         recorded = False
         try:
             head = self._read_head(conn)
@@ -183,11 +178,8 @@ class Proxy:
             if self.denied(probe):
                 host, status = probe, "refused"
                 port = 443 if method == "CONNECT" else 80
-                # Journalled BEFORE the 403 reaches the client, not from the `finally`.
-                # A caller can observe the refusal and tear this proxy down in the same
-                # breath, and a record still waiting to be written is then lost -- which,
-                # for a harness whose claim is that an update made ZERO connections, reads
-                # as a connection that never happened.
+                # Journalled BEFORE the 403 reaches the client: a caller can tear the proxy down on
+                # seeing the refusal, and a lost record reads as a connection that never happened.
                 self.log(self._record(t0, host, port, method, down, up, status))
                 recorded = True
                 conn.sendall(

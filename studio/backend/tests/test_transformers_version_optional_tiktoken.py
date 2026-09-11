@@ -202,8 +202,7 @@ def test_a_remnant_that_will_not_go_fails_the_build_instead_of_shadowing(tmp_pat
 
     monkeypatch.setattr(tv.shutil, "rmtree", stuck_rmtree)
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is False
-    # A failed build wipes the partial tree here (so an offline run does not keep it);
-    # whether or not the remnant itself survived that, nothing reads as a usable sidecar.
+    # A failed build wipes the partial tree; either way nothing reads as a usable sidecar.
     assert tv._venv_dir_is_valid_and_undamaged(str(root), tv._VENV_T5_550_PACKAGES) is False
     monkeypatch.setattr(tv.shutil, "rmtree", real_rmtree)
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
@@ -483,8 +482,7 @@ def test_the_top_up_stays_home_offline_and_yields_to_another_process(tmp_path, m
         tv._top_up_optional_packages(str(root), packages)
         assert installed == [], spelling
     assert not (root / tv._OPTIONAL_TOP_UP_FAILED).exists()
-    # ...unless pip has a local wheelhouse to read: the same exception _install_to_dir
-    # makes, so an air-gapped host still gets the package.
+    # ...unless pip has a local wheelhouse, the exception _install_to_dir makes.
     monkeypatch.setenv("UV_OFFLINE", "1")
     monkeypatch.setattr(tv, "_pip_is_configured_offline", lambda: True)
     tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
@@ -771,9 +769,8 @@ def test_a_sidecar_stranded_by_an_interrupted_swap_is_restored_first(tmp_path, m
     leftover.mkdir()
     (leftover / "x").write_text("", encoding = "utf-8")
     (leftover / tv._STUDIO_OWNED_MARKER).write_text("", encoding = "utf-8")
-    # ...but only a tree this code made, under exactly the name it writes: in a custom
-    # Studio home a directory the user named like one, or one without the marker, is
-    # theirs and is neither deleted nor renamed into the live path.
+    # ...but only a tree this code made, under exactly its name: an unmarked or differently named
+    # directory is the user's.
     users = tmp_path / ".venv_t5_550.offline-old-backup"
     users.mkdir()
     (users / "precious").write_text("", encoding = "utf-8")
@@ -825,9 +822,7 @@ def test_a_rebuild_takes_the_tiers_lock_and_keeps_a_tree_finished_under_it(tmp_p
     monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: False)
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
     assert installed == list(tv._VENV_T5_550_PACKAGES)
-    # The lock not obtained (another process past the bound, or a lock that cannot be
-    # taken): no unguarded rebuild, the repair is deferred and this activation goes
-    # without the sidecar.
+    # Lock not obtained: no unguarded rebuild, this activation goes without the sidecar.
     installed.clear()
     (root / "half").write_text("", encoding = "utf-8")
 

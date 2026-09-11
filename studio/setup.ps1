@@ -159,10 +159,8 @@ if ($script:UnslothVerbose) {
     $env:UNSLOTH_VERBOSE = '1'
 }
 $script:LlamaCppDegraded = $false
-# Set by the offline keep in the version check; read unconditionally by the sidecar and
-# legacy-migration blocks. Initialised here so a caller's Set-StrictMode does not end
-# the script at that read on an ordinary update, and so a dot-sourced rerun in the same
-# session does not inherit an earlier offline run's answer.
+# Set by the offline keep, read unconditionally by the sidecar and legacy-migration blocks:
+# initialised for Set-StrictMode and for a dot-sourced rerun in the same session.
 $script:OfflineFastPath = $false
 $script:CudaToolkitReady = $false
 $script:NvccPath = $null
@@ -4931,11 +4929,9 @@ function Fast-Download {
 # ── Check if Python deps need updating ──
 # Compare installed package version against PyPI latest.
 # Skip all Python dependency work if versions match (fast update path).
-# Does the venv on disk claim, and prove, a finished install?
-#
-# Two callers ask for opposite reasons: the incomplete-install guard forces the dependency
-# pass when this says no, and the offline rule below keeps the fast path when it says yes.
-# One implementation, so those two can never disagree about what "complete" means.
+# Does the venv on disk claim, and prove, a finished install? One implementation for the
+# incomplete-install guard (forces the pass on no) and the offline rule (keeps the fast path on
+# yes), so they cannot disagree about "complete".
 function Test-StudioInstallVerified {
     try {
         & python -c "
@@ -4959,45 +4955,27 @@ sys.exit(0 if ok else 1)
     } catch { return $false }
 }
 
-# UV_OFFLINE is uv's own "there is no network" switch, and every install command this script
-# runs goes through uv. Same boolish spelling the POSIX side accepts.
+# UV_OFFLINE is uv's own "no network" switch, and every install here goes through uv.
 function Test-UvOfflineRequested {
-    # uv's boolish parser: y, yes, t, true, on, 1 (checked against uv 0.10.7, where
-    # UV_OFFLINE=t and =y both disable the network). Mirrors _uv_offline_requested.
+    # uv's boolish parser (uv 0.10.7): y, yes, t, true, on, 1. Mirrors _uv_offline_requested.
     $value = "$($env:UV_OFFLINE)".Trim()
     return @('1', 't', 'true', 'y', 'yes', 'on') -contains $value.ToLowerInvariant()
 }
 
 function Invoke-FastPathEscapes {
-    # Every reason an "up to date" package on disk is still not a working install. Both
-    # callers that can keep the fast path -- the version compare below and the UV_OFFLINE
-    # rule after it -- run this, so an offline skip is held to exactly the bar an online one
-    # is held to. While these lived inline in the version compare alone, an offline update
-    # of a venv below the desktop backend floor (or carrying the anyio or tokenizers damage,
-    # or stranded on a CPU wheel under an XPU pin) reported success and repaired nothing:
-    # only the dependency pass acts on any of it.
-    #
-    # Two things deliberately stay out. Test-StudioInstallVerified, because both callers ask
-    # it for themselves and word the same answer differently, so a shared copy would have to
-    # drop one of the two messages. And the AMD/ROCm probe, which now sits after the whole
-    # if/elseif chain gated on $SkipPythonDeps -- exactly where setup.sh has always kept it,
-    # and reaching both branches for the same reason.
-    #
-    # Scope: a plain assignment inside a function creates a LOCAL, which would silently throw
-    # away everything decided here. Rather than $script:-prefix every arm -- one missed prefix
-    # and the escape is a no-op -- the flag is copied in, written unqualified by the arms
-    # exactly as they did inline, and published once on the way out.
+    # Every reason an "up to date" package is still not a working install, run by both callers that
+    # can keep the fast path (the version compare and the UV_OFFLINE rule) so an offline skip meets
+    # the online bar; inline in the compare alone, an offline update below the desktop floor
+    # reported success and repaired nothing. Test-StudioInstallVerified stays out (each caller words
+    # it differently), as does the AMD/ROCm probe (after the chain, as in setup.sh). Scope: a plain
+    # assignment in a function is LOCAL, so the flag is copied in, written unqualified by the arms,
+    # and published once on the way out.
     $SkipPythonDeps = $script:SkipPythonDeps
 
-    # The documented escape hatch, and the first arm because it is the only one a user can
-    # reach: install_python_stack.py honours UNSLOTH_STUDIO_FULL_DEPS in _full_deps_requested
-    # ("A skip nobody can turn off is a bug nobody can work around"), but that file is never
-    # invoked when the version compare above sets $SkipPythonDeps, so setting it did nothing
-    # for exactly the install it exists for -- one that is "up to date" and still broken.
-    # First also means the bounded probes below cannot cost anything once the answer is
-    # settled. Spelled inline rather than as a Test-FullDepsRequested helper so this function
-    # stays the self-contained unit the tests slice out of the file, but the accepted values
-    # are Test-UvOfflineRequested's: trimmed, case-insensitive 1/true/yes/on.
+    # The documented escape hatch, first: install_python_stack.py honours UNSLOTH_STUDIO_FULL_DEPS
+    # but is never invoked once the version compare skips, so it did nothing for exactly the "up to
+    # date" and broken install it exists for. Inline so the tests can slice this function out whole;
+    # the values are Test-UvOfflineRequested's.
     $_fullDepsRequested = "$($env:UNSLOTH_STUDIO_FULL_DEPS)".Trim()
     if (@('1', 'true', 'yes', 'on') -contains $_fullDepsRequested.ToLowerInvariant()) {
         substep "UNSLOTH_STUDIO_FULL_DEPS is set -- forcing dependency pass..." "Cyan"
@@ -5024,13 +5002,9 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
         substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..." "Cyan"
         $SkipPythonDeps = $false
     }
-    # Same shape, same reason, and the sibling of the probe setup.sh runs: a venv
-    # installed before the tokenizers pin can hold a tokenizers the installed
-    # transformers rejects at import, which takes down every `import transformers`
-    # and so the whole model stack, while $_PkgName itself is current. Without this
-    # the fast path reports "up to date" and repairs nothing. Ask the metadata, not
-    # an import: the import is what is broken. Any unreadable half exits 1 and
-    # changes nothing.
+    # As setup.sh: a pre-pin tokenizers the installed transformers rejects takes down every `import
+    # transformers` while $_PkgName is current. Ask the metadata, not the broken import; an
+    # unreadable half exits 1 and changes nothing.
     $_tokenizersBad = $false
     try {
         & python -c "
@@ -5078,27 +5052,22 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
             $SkipPythonDeps = $false
         }
     }
-    # ...and the same for an Intel Arc / Data Center GPU, or an up-to-date package on a CPU
-    # wheel stays on CPU torch forever. $SkipPythonDeps is re-tested so an escape taken above
-    # does not read twice. Both escapes below exist to reach the XPU install and its two
-    # remediations, all three gated on $XpuIndexUrl (set only when the resolved leaf is xpu),
-    # so $_xpuIsReachable holds them back where a pin or no-torch mode sends this host
-    # elsewhere and clearing the fast path would install nothing and re-fire forever.
+    # ...and for an Intel GPU, or a CPU wheel stays forever. Both escapes reach the XPU install and
+    # its remediations, gated on $XpuIndexUrl, so $_xpuIsReachable holds them back where a pin or
+    # no-torch mode sends this host elsewhere and they would re-fire forever.
     $_pinLeafNow = Get-TorchIndexLeaf (Get-PinnedTorchIndexUrl)
     $_xpuIsReachable = (-not $NoTorchMode) -and ((-not $_pinLeafNow) -or ($_pinLeafNow -eq "xpu"))
     if ($script:IsIntelXpu -and $SkipPythonDeps -and $_xpuIsReachable) {
-        # The WHEEL, not the runtime: torch.xpu.is_available() is also false for a supported
-        # +xpu wheel on a wedged driver, and the dependency pass cannot repair a driver, so
-        # keying on it would force a full resolution every update for nothing.
+        # The WHEEL, not the runtime: a wedged driver also fails torch.xpu.is_available(), and the
+        # pass cannot repair a driver.
         if (-not (Test-VenvTorchIsXpuSupported -VenvPath $VenvDir)) {
             substep "Intel GPU detected but installed PyTorch is not a supported XPU build -- reinstalling XPU PyTorch" "Cyan"
             $SkipPythonDeps = $false
         }
     }
-    # Keyed off the installed wheel as well as the scan: an explicit xpu pin on a host the
-    # scan skips (a mixed NVIDIA + Intel box) still ends up on XPU with $script:IsIntelXpu
-    # false. The bitsandbytes floor and the Triton replacement live in the dependency pass
-    # below, so a venv that reached +xpu without them would fast-path past them forever.
+    # The installed wheel as well as the scan: an explicit xpu pin on a mixed NVIDIA + Intel box
+    # ends up on XPU with $script:IsIntelXpu false, and would fast-path past the bitsandbytes floor
+    # and Triton replacement forever.
     if ($SkipPythonDeps -and $_xpuIsReachable -and ($script:IsIntelXpu -or $installedTorchTag -eq "xpu")) {
         $_xpuDepsCode = "import importlib.metadata as m; " +
             "print('BNB=' + next((d.version for d in m.distributions() " +
@@ -5107,16 +5076,13 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
             "if (d.metadata['Name'] or '').lower().replace('_','-') == 'triton-windows'), ''))"
         $_xpuDeps = Invoke-BoundedPythonProbe -PythonExe "python" -Code $_xpuDepsCode
         if (-not $_xpuDeps.Ok) {
-            # A probe that did not answer says nothing about the venv, and reading that as
-            # "dependencies are current" would fast-path past both remediations forever.
-            # Same direction as an unparseable version below: one extra pass.
+            # A probe that did not answer is not "current": one extra pass, as for an unparseable
+            # version.
             substep "Intel XPU dependencies could not be read -- running the dependency pass" "Cyan"
             $SkipPythonDeps = $false
         } else {
             $_bnbVer = if ($_xpuDeps.Output -match '(?m)^BNB=(\S+)\s*$') { $Matches[1] } else { "" }
-            # An unreadable version is treated as stale, the safe direction: one extra pass,
-            # never a venv left without 4-bit kernels. Trailing suffixes (0.51.0.dev0) are
-            # dropped, not cast.
+            # Unreadable is stale, the safe direction. Trailing suffixes (0.51.0.dev0) are dropped.
             $_bnbNum = ($_bnbVer -replace '[^0-9.].*$', '').TrimEnd('.')
             $_bnbStale = $true
             if ($_bnbNum -match '^\d+\.\d+') {
@@ -5162,33 +5128,22 @@ sys.exit(2 if conflict else (0 if version else 1))
     } elseif ($InstalledVer -and $LatestVer -and ($InstalledVer -eq $LatestVer)) {
         step "python" "$_PkgName $InstalledVer is up to date"
         $SkipPythonDeps = $true
-        # An interrupted install leaves $_PkgName current while studio.txt
-        # never finished, so the compare above says "up to date" and update --
-        # plus the desktop Repair button -- no-ops on a venv that cannot boot.
+        # An interrupted install leaves $_PkgName current while studio.txt never finished, so update
+        # and the Repair button no-op on a venv that cannot boot.
         $_studioInstallIncomplete = -not (Test-StudioInstallVerified)
         if ($_studioInstallIncomplete) {
             substep "studio install incomplete -- forcing dependency pass to repair..." "Cyan"
             $SkipPythonDeps = $false
         }
-        # ...and every remaining escape, shared verbatim with the offline rule below so the
-        # two branches can never disagree about what an up-to-date install owes.
+        # ...and every remaining escape, shared with the offline rule below.
         Invoke-FastPathEscapes
     } elseif ($InstalledVer -and $LatestVer) {
         substep "$_PkgName $InstalledVer -> $LatestVer available, updating..."
     } elseif (-not $LatestVer) {
-        # PyPI unreachable. Updating to be safe stays the default -- an unreachable PyPI is
-        # usually a blip, and a pass over a warm cache is cheap.
-        #
-        # UV_OFFLINE is the exception, because it is not a blip: the caller has declared there
-        # is no network, uv refuses to reach one, and so every install command that pass would
-        # run can only fail. The choice is between a pass that cannot work and keeping what is
-        # on disk, and keeping it is only defensible on the same evidence the incomplete-install
-        # guard demands -- so ask the same question.
-        #
-        # ...and then the same escapes the up-to-date branch takes. A verified tree is not the
-        # whole bar: the desktop backend floor, the anyio and tokenizers damage and a CPU wheel
-        # under an XPU pin all describe an install that verifies and still cannot do its job,
-        # and a skip here that ducked them would repair nothing while reporting success.
+        # PyPI unreachable: updating to be safe stays the default (a blip, and a warm-cache pass is
+        # cheap). UV_OFFLINE is not a blip: every install in that pass can only fail, so a verified
+        # tree is kept, on the incomplete-install guard's own evidence, and then held to the same
+        # escapes as the up-to-date branch (a verified tree can still be below the floor).
         if ($InstalledVer -and (Test-UvOfflineRequested) -and (Test-StudioInstallVerified)) {
             substep "PyPI is unreachable and UV_OFFLINE is set -- keeping the verified install"
             $SkipPythonDeps = $true
@@ -5199,16 +5154,9 @@ sys.exit(2 if conflict else (0 if version else 1))
         }
     }
 
-    # A current package can still have CPU torch on an AMD host, because nothing above
-    # looks at the wheel's flavour. Placed after the chain and gated on the flag rather
-    # than hoisted into Invoke-FastPathEscapes, so that it covers the UV_OFFLINE branch
-    # too and lands in the same place setup.sh keeps it: there the equivalent block sits
-    # after the whole if/elif chain under `[ "$_SKIP_PYTHON_DEPS" = true ]`, which is what
-    # has always made the POSIX side check both branches. Inside the wrapper rather than
-    # outside it only for tidiness: $SkipPythonDeps is $false whenever the chain is skipped.
-    #
-    # Skipping the probe once the pass is already forced is the point of the gate: it is a
-    # bounded subprocess whose answer could no longer change the outcome.
+    # A current package can still have CPU torch on an AMD host. After the chain and gated on the
+    # flag, as setup.sh keeps it, so it covers the UV_OFFLINE branch too; a probe whose answer
+    # cannot change a forced pass is skipped.
     if ($SkipPythonDeps) {
         # ...but not if an AMD GPU is present and installed PyTorch is CPU-only
         # (host predates ROCm-wheel support, or GPU added later): the fast "up to
@@ -6004,9 +5952,8 @@ function Repair-SidecarTiktoken {
         [Parameter(Mandatory = $true)][string]$TargetDir,
         [Parameter(Mandatory = $true)][string]$DirName
     )
-    # Under the offline keep this would reach for the network through Fast-Install's pip
-    # fallback, and for a tier whose rebuild was deferred it would create a directory
-    # holding tiktoken alone.
+    # Under the offline keep this would reach the network through Fast-Install's pip fallback, and
+    # give a deferred tier a directory holding tiktoken alone.
     if ($script:OfflineFastPath) { return }
     # And under UV_OFFLINE without the fast path: the pip fallback would reach for the network.
     if (Test-UvOfflineRequested) { return }
@@ -6137,13 +6084,10 @@ function Install-T5Sidecar {
 $_NeedT5_530 = $false
 $_NeedT5_550 = $false
 $_NeedT5_510 = $false
-# Under the offline keep, and under UV_OFFLINE without it (the core not verified, or
-# PyPI still answering): the migration is a wipe followed by three rebuilds from a cache
-# that may be cold, and the legacy tree is the only sidecar this install has.
+# Under the offline keep, and under UV_OFFLINE without it: the migration is a wipe followed by three
+# rebuilds from a cache that may be cold, and the legacy tree is the only sidecar.
 if ((Test-Path -LiteralPath $VenvT5Legacy) -and ($script:OfflineFastPath -or (Test-UvOfflineRequested))) {
-    # The migration below is a wipe followed by three rebuilds, and under the offline keep
-    # nothing can be fetched: the legacy sidecar is the only one this install has, so it
-    # stays, untouched, for the next online update to migrate.
+    # The migration is a wipe followed by three rebuilds; left for the next online update.
     substep "legacy transformers sidecar left in place -- UV_OFFLINE is set, migration waits for the next online update" "Yellow"
 } elseif (Test-Path -LiteralPath $VenvT5Legacy) {
     # Legacy layout, migrate. A staged run's tiered venvs may never be activated, so the live legacy
@@ -6159,22 +6103,15 @@ if ((Test-Path -LiteralPath $VenvT5Legacy) -and ($script:OfflineFastPath -or (Te
 if (-not (Test-SidecarCurrent -TargetDir $VenvT5_530Dir -Version "5.3.0")) { $_NeedT5_530 = $true }
 if (-not (Test-SidecarCurrent -TargetDir $VenvT5_550Dir -Version "5.5.0")) { $_NeedT5_550 = $true }
 if (-not (Test-SidecarCurrent -TargetDir $VenvT5_510Dir -Version "5.10.2")) { $_NeedT5_510 = $true }
-# The offline rule above kept the install because nothing could be fetched. A sidecar
-# rebuild is a wipe followed by four fetches, and Fast-Install falls back from an offline
-# uv to pip, so under that rule it would either reach for the network or destroy a usable
-# sidecar and then fail. Left for the next online update; the runtime self-heal covers a
-# missing tier in the meantime. Mirrors the _OFFLINE_FAST_PATH guard in setup.sh.
-# A deferred tier keeps its own flag, so the status line below says "left for the next
-# online update" rather than "current" for a sidecar the warning just called stale.
+# Under the offline keep a sidecar rebuild (a wipe and four fetches, with a pip fallback that
+# reaches the network) is left for the next online update; the runtime self-heal covers a missing
+# tier meanwhile. Mirrors setup.sh's _OFFLINE_FAST_PATH guard. A deferred tier keeps its own flag so
+# the status line does not call it "current".
 $_DeferT5_530 = $false
 $_DeferT5_550 = $false
 $_DeferT5_510 = $false
-# UV_OFFLINE without the fast path (the core was not verified, or PyPI still answered):
-# the same wipe followed by four fetches for a sidecar that exists, from a cache that
-# may be cold, and for an absent one the same fetches through Fast-Install's pip
-# fallback, which does not read UV_OFFLINE and would reach for the network the caller
-# declared absent. Every stale or missing tier is left for the next online update; the
-# runtime self-heal builds a missing tier from the cache when a model first needs it.
+# UV_OFFLINE without the fast path: the same wipe and fetches, through a pip fallback that does not
+# read UV_OFFLINE. Every stale or missing tier is left for the next online update.
 if (-not $script:OfflineFastPath -and (Test-UvOfflineRequested)) {
     foreach ($tier in @(@("530", "5.3.0"), @("550", "5.5.0"), @("510", "5.10.2"))) {
         $flag = "_NeedT5_$($tier[0])"

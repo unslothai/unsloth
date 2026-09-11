@@ -2,18 +2,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 #
-# UNSLOTH_STUDIO_FULL_DEPS is the documented way to force the whole dependency pass to run
-# again -- install_python_stack.py calls it "the escape hatch" and says a skip nobody can
-# turn off is a bug nobody can work around. But it is read INSIDE install_python_stack.py,
-# and setup.sh's fast path is the branch that never starts it: when the installed version
-# equals the one on PyPI the pass is skipped up in the shell, so the hatch could not be
-# reached on exactly the install it exists for and `UNSLOTH_STUDIO_FULL_DEPS=1 unsloth
-# studio update` printed "dependencies up to date" and did nothing.
-#
-# The escape now lives in _fast_path_escapes, which is also what the UV_OFFLINE branch
-# calls, so both branches are covered by one copy and cannot disagree. This drives the real
-# blocks and the real helper out of setup.sh, the same way
-# test_setup_desktop_backend_version_fastpath.sh does.
+# UNSLOTH_STUDIO_FULL_DEPS is read INSIDE install_python_stack.py, and setup.sh's fast path is the
+# branch that never starts it, so `UNSLOTH_STUDIO_FULL_DEPS=1 unsloth studio update` printed
+# "dependencies up to date" and did nothing. The escape now lives in _fast_path_escapes, which the
+# UV_OFFLINE branch calls too. This drives the real blocks and helper out of setup.sh.
 
 set -euo pipefail
 
@@ -26,10 +18,8 @@ BLK="$WORK/fastpath_blk.sh"
 OFFLINE_BLK="$WORK/offline_blk.sh"
 HELPERS="$WORK/helpers.sh"
 
-# Every slice assumption is checked and reported as drift rather than left to surface as a
-# syntax error from a temp file the reader has never heard of. A block that never sourced
-# leaves _SKIP_PYTHON_DEPS at its false default, which is the answer half the cases below
-# want, so silent extraction failure would look like a pass.
+# Every slice assumption is reported as drift: a block that never sourced leaves _SKIP_PYTHON_DEPS
+# at its false default, the answer half the cases want.
 drift() {
     echo "FATAL: the fast-path extraction no longer matches $SETUP_SH -- $1" >&2
     echo "       Fix the extraction in $0 (or the block in setup.sh), do not silence it." >&2
@@ -91,14 +81,9 @@ for _fn in _setup_install_is_verified _uv_offline_requested _fast_path_escapes; 
         || drift "$_fn is no longer a top-level function in setup.sh"
 done
 
-# The escape has to live in the SHARED helper, not in one branch: an escape inlined into
-# the version compare alone would leave the offline branch answering differently, which is
-# the whole reason _fast_path_escapes exists.
-#
-# Sliced to a FILE and grepped from there, never `awk ... | grep -q`: this suite runs under
-# `set -o pipefail` and grep -q exits on its first match, which kills awk with SIGPIPE and
-# fails the pipeline whenever the match is not near the end. That is the same defect the uv
-# cache scan carried, and writing this check the tempting way reproduced it here.
+# The escape has to live in the SHARED helper, or the offline branch answers differently. Sliced to
+# a FILE, never `awk ... | grep -q`: under `set -o pipefail` grep's early exit kills awk with
+# SIGPIPE and fails the pipeline (the uv cache scan's defect, reproduced here).
 FPE="$WORK/fast_path_escapes.sh"
 awk '/^_fast_path_escapes\(\) \{/ { grab = 1 } grab { print } grab && /^}/ { grab = 0 }' \
     "$SETUP_SH" > "$FPE"
@@ -117,9 +102,7 @@ for _blk in "$BLK" "$OFFLINE_BLK" "$HELPERS"; do
     fi
 done
 
-# setup.sh is bash, but this region is written in POSIX sh and the neighbouring boolish
-# helpers are too, so a bash-only construct here would be a style break the next reader
-# copies. dash parses it or this fails.
+# This region is POSIX sh like its neighbours: dash parses it or this fails.
 if command -v dash >/dev/null 2>&1; then
     if ! _dash_err=$(dash -n "$FPE" 2>&1); then
         echo "$_dash_err" >&2
@@ -139,8 +122,7 @@ check() {
     fi
 }
 
-# A venv whose python runs without site-packages, so every probe inside the escapes takes
-# its "cannot answer" path and only the variable under test moves the answer.
+# A python without site-packages: every probe takes its "cannot answer" path.
 VENV_DIR="$WORK/mock_venv"
 mkdir -p "$VENV_DIR/bin"
 cat << 'EOF' > "$VENV_DIR/bin/python"
@@ -153,9 +135,8 @@ printf 'def verify_install(**kwargs):\n    return {"ok": True}\n' > "$WORK/insta
 _common_env() {
     _PKG_NAME="unsloth"
     SCRIPT_DIR="$WORK"
-    # A torch pin or a desktop floor leaking in from the ambient environment would fire a
-    # different arm of the escapes and every "true" case here would read false for the
-    # wrong reason, so they are cleared rather than assumed absent.
+    # An ambient torch pin or desktop floor would fire another arm and read false for the wrong
+    # reason.
     UNSLOTH_TORCH_INDEX_URL=""
     UNSLOTH_TORCH_INDEX_FAMILY=""
     UNSLOTH_DESKTOP_BACKEND_VERSION=""
@@ -169,8 +150,8 @@ eval_fastpath() {
         LATEST_VER="2026.8.15"
         if [ "$1" = "<unset>" ]; then unset UNSLOTH_STUDIO_FULL_DEPS; else UNSLOTH_STUDIO_FULL_DEPS="$1"; fi
         _common_env
-        # false is also what a block that never ran leaves behind, so the skip cases would
-        # pass on a block that did nothing at all. Both ways that can happen report here.
+        # false is also what a block that never ran leaves, so both ways that can happen report
+        # here.
         _STEP_CALLS=0
         step() { _STEP_CALLS=$((_STEP_CALLS + 1)); }
         substep() { :; }
@@ -234,16 +215,14 @@ echo "Testing UNSLOTH_STUDIO_FULL_DEPS against setup.sh's up-to-date fast path:"
 # The baseline the hatch has to be able to override: same version, nothing else wrong.
 check "unset leaves the fast path alone" "$(eval_fastpath '<unset>')" "true"
 
-# Accepted exactly as install_python_stack.py's _full_deps_requested accepts it:
-# .strip().lower() in ("1", "true", "yes", "on"). A shell that took a narrower set would
-# make the same command mean different things depending on which half of the update it hit.
+# Accepted exactly as install_python_stack.py's _full_deps_requested: .strip().lower() in ("1",
+# "true", "yes", "on"), or the same command means different things per half.
 for truthy in 1 true TRUE True yes YES on ON " 1 " "  on  " "	true	"; do
     check "UNSLOTH_STUDIO_FULL_DEPS=[$truthy] forces the dependency pass" \
         "$(eval_fastpath "$truthy")" "false"
 done
 
-# ...and nothing wider. "maybe" is not consent, and 0/false/empty are the values a script
-# that wanted the default writes on purpose.
+# ...and nothing wider: 0/false/empty are what a script wanting the default writes.
 for falsy in 0 false FALSE no off "" " " maybe 2 "1x" "on!" "yes please"; do
     check "UNSLOTH_STUDIO_FULL_DEPS=[$falsy] leaves the fast path alone" \
         "$(eval_fastpath "$falsy")" "true"

@@ -1840,12 +1840,9 @@ fi
 # On Colab (no venv), skip this version check (it needs $VENV_DIR/bin/python)
 # but still run install_python_stack below (it uses sys.executable).
 _setup_install_is_verified() {
-    # Does the venv on disk claim, and prove, a finished install? Exit 0 yes, 1 no.
-    #
-    # Two callers ask for opposite reasons: the incomplete-install guard forces the
-    # dependency pass when this says no, and the offline rule below keeps the fast path
-    # when it says yes. One implementation, so those two can never disagree about what
-    # "complete" means.
+    # Does the venv on disk claim, and prove, a finished install? Exit 0 yes, 1 no. One
+    # implementation for the incomplete-install guard (forces the pass on no) and the offline rule
+    # (keeps the fast path on yes), so they cannot disagree about "complete".
     "$VENV_DIR/bin/python" -c "
 import os, sys
 sys.path.insert(0, sys.argv[1])
@@ -1866,10 +1863,8 @@ sys.exit(0 if ok else 1)
 }
 
 _uv_offline_requested() {
-    # UV_OFFLINE is uv's own "there is no network" switch, and every install command this
-    # script runs goes through uv. The spellings are uv's boolish parser's: y, yes, t,
-    # true, on, 1 (checked against uv 0.10.7: UV_OFFLINE=t and =y both disable the
-    # network), so a value uv honours is never one this rule misses.
+    # UV_OFFLINE is uv's own "no network" switch, and every install here goes through uv. uv's
+    # boolish spellings (uv 0.10.7): y, yes, t, true, on, 1.
     _uvo=${UV_OFFLINE:-}
     _uvo=${_uvo#"${_uvo%%[![:space:]]*}"}
     _uvo=${_uvo%"${_uvo##*[![:space:]]}"}
@@ -1881,38 +1876,17 @@ _uv_offline_requested() {
 }
 
 _fast_path_escapes() {
-    # Every reason an "up to date" package on disk is still not a working install. Both
-    # callers that can keep the fast path -- the version compare below and the UV_OFFLINE
-    # rule after it -- run this, so an offline skip is held to exactly the bar an online
-    # one is held to. While these lived inline in the version compare alone, an offline
-    # update of a venv below the desktop backend floor (or carrying the anyio/tokenizers
-    # damage, or stranded on a CPU wheel under an XPU pin) reported success and repaired
-    # nothing: only install_python_stack acts on any of it.
-    #
-    # The incomplete-install check is deliberately NOT hoisted here. Both callers already
-    # ask _setup_install_is_verified for themselves, and they report the same answer with
-    # different wording, so one shared copy would have to lose one of the two messages.
-    #
-    # _SKIP_PYTHON_DEPS is set directly: a POSIX sh function shares the caller's variable
-    # scope, so there is nothing to thread back and no way for a caller to forget to.
+    # Every reason an "up to date" package is still not a working install, run by both callers that
+    # can keep the fast path (the version compare and the UV_OFFLINE rule) so an offline skip meets
+    # the online bar; inline in the compare alone, an offline update below the desktop floor
+    # reported success and repaired nothing. The incomplete-install check stays out: each caller
+    # words it differently. _SKIP_PYTHON_DEPS is set directly (shared scope).
 
-    # First, because it is the one escape nothing on disk has to earn: the user asked for it
-    # by hand, and answering it here costs no interpreter and no probe.
-    #
-    # UNSLOTH_STUDIO_FULL_DEPS is install_python_stack.py's own switch (_full_deps_requested
-    # there -- "a skip nobody can turn off is a bug nobody can work around"), and the shell
-    # has to know about a Python-side variable because THIS is the branch that never starts
-    # that module. When the installed version equals the PyPI one the whole dependency pass
-    # is skipped up here, so a hatch honoured only inside install_python_stack.py could not
-    # be reached on the very install it exists for: `UNSLOTH_STUDIO_FULL_DEPS=1 unsloth
-    # studio update` printed "dependencies up to date" and did nothing at all.
-    #
-    # Spelled inline rather than as a helper on purpose: the shell suites drive this function
-    # by slicing it out of this file by name, and a helper left behind in setup.sh would read
-    # as "not requested" instead of failing loudly. The accepted values match
-    # _uv_no_cache_requested / _uv_offline_requested above and .strip().lower() in
-    # ("1", "true", "yes", "on") in install_python_stack.py, whitespace stripped either side
-    # so a value threaded through a desktop launcher or a CI matrix still counts.
+    # First, costing no probe: the user asked by hand. UNSLOTH_STUDIO_FULL_DEPS is
+    # install_python_stack.py's own hatch, and this branch never starts that module, so
+    # `UNSLOTH_STUDIO_FULL_DEPS=1 unsloth studio update` printed "up to date" and did nothing.
+    # Inline so the suites can slice this function out whole; the values match _uv_offline_requested
+    # and install_python_stack.py's ("1", "true", "yes", "on").
     _fpe_full=${UNSLOTH_STUDIO_FULL_DEPS:-}
     _fpe_full=${_fpe_full#"${_fpe_full%%[![:space:]]*}"}
     _fpe_full=${_fpe_full%"${_fpe_full##*[![:space:]]}"}
@@ -1924,9 +1898,7 @@ _fast_path_escapes() {
     esac
     unset _fpe_full
 
-    # A pre-#6483-fix install can be stuck on anyio>=4.14 even though
-    # $_PKG_NAME itself is current; the fast path would otherwise
-    # never reach install_python_stack's anyio repair (#6797).
+    # A pre-#6483 install stuck on anyio>=4.14 would never reach the anyio repair (#6797).
     if "$VENV_DIR/bin/python" -c "
 import re, sys
 from importlib.metadata import version, PackageNotFoundError
@@ -1941,12 +1913,9 @@ sys.exit(0 if (major, minor) >= (4, 14) else 1)
         substep "anyio >=4.14 found (#6483) -- forcing dependency pass to repair..."
         _SKIP_PYTHON_DEPS=false
     fi
-    # Same shape, same reason: a venv installed before the tokenizers pin can
-    # hold a tokenizers the installed transformers rejects at import, which
-    # takes down every `import transformers` and so the whole MLX stack, while
-    # $_PKG_NAME itself is current. Without this the fast path reports "up to
-    # date" and repairs nothing. Ask the metadata, not an import: the import is
-    # what is broken. Any unreadable half exits 1 and changes nothing.
+    # Same shape: a pre-pin tokenizers the installed transformers rejects takes down every `import
+    # transformers` while $_PKG_NAME is current. Ask the metadata, not the broken import; an
+    # unreadable half exits 1 and changes nothing.
     if "$VENV_DIR/bin/python" -c "
 import sys
 from importlib.metadata import PackageNotFoundError, requires, version
@@ -1984,25 +1953,19 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
             _SKIP_PYTHON_DEPS=false
         fi
     fi
-    # An XPU pin the venv does not satisfy. Only the dependency pass acts on it
-    # (install_python_stack's _ensure_xpu_torch), so without this escape a CPU install
-    # switched to UNSLOTH_TORCH_INDEX_FAMILY=xpu keeps its CPU wheel forever: the package
-    # version is current, so the fast path calls it up to date. Mirrors setup.ps1.
+    # An XPU pin the venv does not satisfy: only the dependency pass acts on it, so a CPU install
+    # switched to UNSLOTH_TORCH_INDEX_FAMILY=xpu kept its wheel forever. Mirrors setup.ps1.
     _setup_pin="${UNSLOTH_TORCH_INDEX_URL:-${UNSLOTH_TORCH_INDEX_FAMILY:-}}"
-    # Strip query/fragment first: an authenticated mirror (…/whl/xpu?token=...) is a
-    # supported pin shape, and missing it reads as "no XPU pin" and skips the repair.
+    # Strip query/fragment first: an authenticated mirror (…/whl/xpu?token=...) is a supported pin.
     _setup_pin="${_setup_pin%%\#*}"
     _setup_pin="${_setup_pin%%\?*}"
     # ALL trailing slashes, like the shared leaf parsers: a single %/ leaves "…/xpu/" behind.
     while [ "${_setup_pin%/}" != "$_setup_pin" ]; do _setup_pin="${_setup_pin%/}"; done
-    # Exact, lowercased leaf, like every other leaf parser: a *xpu suffix match (…/private-xpu)
-    # would force a pass every update that _ensure_xpu_torch then declines to act on, and an
-    # uncased match would miss UNSLOTH_TORCH_INDEX_FAMILY=XPU that those parsers do accept.
+    # Exact, lowercased leaf, like every other leaf parser: a suffix match (…/private-xpu) would
+    # force a pass _ensure_xpu_torch declines to act on.
     _setup_pin_leaf=$(printf '%s' "${_setup_pin##*/}" | tr '[:upper:]' '[:lower:]')
-    # Disk first, no interpreter: version.py carries the local label, so a wedged Intel
-    # driver cannot hang `studio update` inside `import torch`. Read unconditionally, not
-    # only under a pin: the pin is one-shot, so the installed wheel is the only durable
-    # signal -- the same one _ensure_xpu_triton keys on.
+    # Disk, no interpreter: a wedged Intel driver cannot hang `import torch`. Read unconditionally:
+    # the pin is one-shot, the installed wheel is the durable signal.
     _setup_pin_ok=false
     _setup_pin_is_xpu=false
     for _setup_pin_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
@@ -2023,14 +1986,10 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
         esac
         break
     done
-    # Correct torch is not enough: the Triton swap also lives in install_python_stack, so a
-    # migrated +xpu venv with a leftover generic triton keeps the CUDA build shadowing the
-    # XPU one. The dist-info glob below matches only generic "triton-<ver>" -- the XPU builds
-    # are pytorch_triton_xpu-* / triton_xpu-*.
-    # Leaves the shared classifiers recognise as a non-XPU family. EXACT families, mirroring
-    # install.sh _is_pip_rocm_family_leaf and install_python_stack _is_cuda_family_leaf: a
-    # merely prefixed leaf (cu128-private) is a custom verbatim pin they never repair, so
-    # escaping on one would force a pass every update that changes nothing.
+    # Correct torch is not enough: a leftover generic triton ("triton-<ver>", not
+    # pytorch_triton_xpu-*) shadows the XPU build, and only the pass swaps it. Non-XPU family
+    # leaves, EXACT as install.sh and install_python_stack classify them: a prefixed leaf
+    # (cu128-private) is a custom pin they never repair.
     _setup_known_nonxpu_leaf() {
         case "$1" in
             cpu|gfx[0-9]*) return 0 ;;
@@ -2066,8 +2025,7 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
         substep "generic triton shadows the XPU build -- forcing dependency pass to repair..."
         _SKIP_PYTHON_DEPS=false
     elif [ "$_setup_pin_is_xpu" = true ] && [ "$_setup_pin_known_nonxpu" = true ]; then
-        # Migrating AWAY from XPU: the pin is authoritative, but only install_python_stack
-        # acts on it, so an up-to-date install kept its +xpu wheel over the requested family.
+        # Migrating AWAY from XPU: only install_python_stack acts on the pin.
         substep "$_setup_pin_leaf pinned over an XPU wheel -- forcing dependency pass to migrate..."
         _SKIP_PYTHON_DEPS=false
     fi
@@ -2100,10 +2058,8 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
         substep "$_setup_pin_leaf pinned over a +$_setup_pin_have_family torch wheel -- forcing dependency pass to reinstall torch from the pin..."
         _SKIP_PYTHON_DEPS=false
     fi
-    # Explicit, because setup.sh runs under `set -e` and both call sites put this last in
-    # their branch: an arm whose final command happened to be false would abort the update
-    # rather than force a dependency pass. What this function decides, it decides in
-    # _SKIP_PYTHON_DEPS; its exit status carries nothing.
+    # Explicit under `set -e`: an arm ending in a false command would abort the update. The decision
+    # is in _SKIP_PYTHON_DEPS; the exit status carries nothing.
     return 0
 }
 
@@ -2139,32 +2095,21 @@ sys.exit(2 if conflict else (0 if version else 1))
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ] && [ "$INSTALLED_VER" = "$LATEST_VER" ]; then
         step "python" "$_PKG_NAME $INSTALLED_VER is up to date"
         _SKIP_PYTHON_DEPS=true
-        # An interrupted install leaves $_PKG_NAME current while studio.txt
-        # never finished, so the compare above says "up to date" and update --
-        # plus the desktop Repair button -- no-ops on a venv that cannot boot.
+        # An interrupted install leaves $_PKG_NAME current while studio.txt never finished, so
+        # update and the Repair button no-op on a venv that cannot boot.
         if ! _setup_install_is_verified; then
             substep "studio install incomplete -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
         fi
-        # ...and every remaining escape, shared verbatim with the offline rule below so
-        # the two branches can never disagree about what an up-to-date install owes.
+        # ...and every remaining escape, shared with the offline rule below.
         _fast_path_escapes
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
         substep "$_PKG_NAME $INSTALLED_VER -> $LATEST_VER available, updating..."
     elif [ -z "$LATEST_VER" ]; then
-        # PyPI unreachable. Updating to be safe stays the default -- an unreachable PyPI is
-        # usually a blip, and a pass over a warm cache is cheap.
-        #
-        # UV_OFFLINE is the exception, because it is not a blip: the caller has declared
-        # there is no network, uv refuses to reach one, and so every install command that
-        # pass would run can only fail. The choice is between a pass that cannot work and
-        # keeping what is on disk, and keeping it is only defensible on the same evidence
-        # the incomplete-install guard demands -- so ask the same question.
-        #
-        # ...and then the same escapes the up-to-date branch takes. A verified tree is not
-        # the whole bar: the desktop backend floor, the anyio and tokenizers damage and the
-        # XPU pin all describe an install that verifies and still cannot do its job, and a
-        # skip here that ducked them would repair nothing while reporting success.
+        # PyPI unreachable: updating to be safe stays the default (a blip, and a warm-cache pass is
+        # cheap). UV_OFFLINE is not a blip: every install in that pass can only fail, so a verified
+        # tree is kept, on the incomplete-install guard's own evidence, and then held to the same
+        # escapes as the up-to-date branch (a verified tree can still be below the floor).
         if [ -n "$INSTALLED_VER" ] && _uv_offline_requested && _setup_install_is_verified; then
             substep "PyPI is unreachable and UV_OFFLINE is set -- keeping the verified install"
             _SKIP_PYTHON_DEPS=true
@@ -2260,9 +2205,8 @@ _sidecar_retire_after_failed_tiktoken() {
 _sidecar_top_up_tiktoken() {
     _stt_dir="$1"
     _stt_label="$2"
-    # Under the offline keep this would reach for the network through fast_install's pip
-    # fallback, and for a tier whose rebuild was deferred it would create a directory
-    # holding tiktoken alone.
+    # Under the offline keep this would reach the network through fast_install's pip fallback,
+    # and give a deferred tier a directory holding tiktoken alone.
     [ "${_OFFLINE_FAST_PATH:-false}" = true ] && return 0
     # And under UV_OFFLINE without the fast path: the pip fallback would reach for the network.
     _uv_offline_requested && return 0
@@ -2271,10 +2215,9 @@ _sidecar_top_up_tiktoken() {
     # interrupted install can leave the dist-info with no package beside it, or METADATA
     # and the package without the native extension and RECORD; the sidecar predicate
     # accepts the sidecar either way (tiktoken is unpinned and optional), and a weaker
-    # check would skip this top-up forever while Qwen tokenizers fail.
-    # Under the offline keep this would reach for the network through fast_install's pip
-    # fallback, and for a tier whose rebuild was deferred it would create a directory
-    # holding tiktoken alone.
+    # check would skip this top-up forever while Qwen tokenizers fail. Under the offline keep this
+    # would reach the network through fast_install's pip fallback, and give a deferred tier a
+    # directory holding tiktoken alone.
     [ "${_OFFLINE_FAST_PATH:-false}" = true ] && return 0
     # A dist-info with no RECORD is one uv cannot uninstall: --upgrade warns and lands
     # the new version beside it, and importlib.metadata may keep answering the stale
@@ -2397,13 +2340,10 @@ _install_sidecar() {
 _NEED_T5_530=false
 _NEED_T5_550=false
 _NEED_T5_510=false
-# Under the offline keep, and under UV_OFFLINE without it (the core not verified, or
-# PyPI still answering): the migration is a wipe followed by three rebuilds from a cache
-# that may be cold, and the legacy tree is the only sidecar this install has.
+# Under the offline keep, and under UV_OFFLINE without it: the migration is a wipe followed by three
+# rebuilds from a cache that may be cold, and the legacy tree is the only sidecar.
 if [ -d "$STUDIO_HOME/.venv_t5" ] && { [ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; }; then
-    # The migration below is a wipe followed by three rebuilds, and under the offline
-    # keep nothing can be fetched: the legacy sidecar is the only one this install has,
-    # so it stays, untouched, for the next online update to migrate.
+    # The migration is a wipe followed by three rebuilds; left for the next online update.
     substep "legacy transformers sidecar left in place -- UV_OFFLINE is set, migration waits for the next online update"
 elif [ -d "$STUDIO_HOME/.venv_t5" ]; then
     # Legacy layout — migrate. The tiered venvs a staged run builds land under the
@@ -2420,22 +2360,15 @@ fi
 _sidecar_current "$VENV_T5_530_DIR" "5.3.0" || _NEED_T5_530=true
 _sidecar_current "$VENV_T5_550_DIR" "5.5.0" || _NEED_T5_550=true
 _sidecar_current "$VENV_T5_510_DIR" "5.10.2" || _NEED_T5_510=true
-# The offline rule above kept the install because nothing could be fetched. A sidecar
-# rebuild is a wipe followed by four fetches, and fast_install falls back from an offline
-# uv to pip, so under that rule it would either reach for the network or destroy a
-# usable sidecar and then fail. Left for the next online update; the runtime self-heal
-# (transformers_version._ensure_venv_dir) covers a missing tier in the meantime.
-# A deferred tier keeps its own flag, so the status line below says "left for the next
-# online update" rather than "current" for a sidecar the warning just called stale.
+# Under the offline keep a sidecar rebuild (a wipe and four fetches, with a pip fallback that
+# reaches the network) is left for the next online update; the runtime self-heal
+# (transformers_version._ensure_venv_dir) covers a missing tier meanwhile. A deferred tier keeps its
+# own flag so the status line does not call it "current".
 _DEFER_T5_530=false
 _DEFER_T5_550=false
 _DEFER_T5_510=false
-# UV_OFFLINE without the fast path (the core was not verified, or PyPI still answered):
-# the same wipe followed by four fetches for a sidecar that exists, from a cache that
-# may be cold, and for an absent one the same fetches through fast_install's pip
-# fallback, which does not read UV_OFFLINE and would reach for the network the caller
-# declared absent. Every stale or missing tier is left for the next online update; the
-# runtime self-heal builds a missing tier from the cache when a model first needs it.
+# UV_OFFLINE without the fast path: the same wipe and fetches, through a pip fallback that does not
+# read UV_OFFLINE. Every stale or missing tier is left for the next online update.
 if [ "${_OFFLINE_FAST_PATH:-false}" != true ] && _uv_offline_requested; then
     for _ofp in "530 5.3.0" "550 5.5.0" "510 5.10.2"; do
         set -- $_ofp

@@ -79,34 +79,27 @@ E2E = os.environ.get("UNSLOTH_IDEMPOTENCY_E2E") == "1"
 
 PROXY = pathlib.Path(__file__).resolve().parent / "idempotency_proxy.py"
 IS_WINDOWS = sys.platform == "win32"
-# Where each run's update log and proxy journal are kept. Under pytest's tmp dir by
-# default, which a passing run discards; point UNSLOTH_IDEMPOTENCY_ARTIFACTS at a real
-# directory to keep them (CI uploads them, and a failure is unreadable without them).
+# Each run's update log and proxy journal: pytest's tmp dir, or UNSLOTH_IDEMPOTENCY_ARTIFACTS to
+# keep them (a failure is unreadable without them).
 ARTIFACTS = os.environ.get("UNSLOTH_IDEMPOTENCY_ARTIFACTS", "")
 
-# Hosts a no-op update must not touch at all. pypi.org and github.com are listed
-# separately because a version check and a "what is the latest release" HEAD are both
-# legitimate, and small; these five are where the megabytes are.
+# Hosts a no-op update must not touch. pypi.org and github.com are bounded separately (a version
+# check and a latest-release HEAD are legitimate); these five are where the megabytes are.
 PAYLOAD_HOSTS = (
     "files.pythonhosted.org",
     "objects.githubusercontent.com",
     "release-assets.githubusercontent.com",
     "nodejs.org",
 )
-# NOT raw.githubusercontent.com. install.sh's desktop-shortcut refresh falls back to
-# downloading rounded-512.png from it when it cannot find the icon in the installed
-# frontend, which is the case for an editable --local install with no built frontend.
-# ~8 KB, and it does not happen for the wheel installs users have -- but a bound keeps
-# it from quietly becoming something bigger.
+# NOT raw.githubusercontent.com: install.sh's shortcut refresh fetches rounded-512.png from it on an
+# editable install with no built frontend (~8 KB); a bound keeps it from growing.
 ICON_FETCH_CEILING = 64 * 1024
 
-# What the installers print when they decline to do work. "already matches" is what the
-# prebuilt installers log; setup.sh CONSUMES that and prints its own line, so the log a
-# user (and this harness) sees carries these instead.
+# What the installers print when they decline to do work (setup.sh consumes the prebuilt installers'
+# "already matches" and prints its own line).
 NO_WORK_MARKERS = ("dependencies up to date", "prebuilt up to date", "sidecar current")
-# What setup.sh prints (step "frontend" "up to date", column-padded) when the built dist
-# is newer than its sources. A pass that rebuilt the frontend instead talks to no
-# forbidden host on a warm npm cache, so the log line is the only witness.
+# setup.sh's column-padded frontend line: a rebuild on a warm npm cache talks to no forbidden host,
+# so the log line is the only witness.
 FRONTEND_CURRENT_MARKER = re.compile(r"frontend\s+up to date")
 # What setup.sh / setup.ps1 print when the version check found a newer release, and when
 # it could not ask PyPI at all (the pass runs on purpose in both cases).
@@ -117,19 +110,10 @@ UPTODATE_MARKER = re.compile(r"python\s+\S+ \S+ is up to date")
 PYPI_UNREACHABLE_MARKER = "could not reach PyPI, updating to be safe..."
 # What --local installs from the checkout on every pass, so its RECORD moving is expected.
 LOCAL_CORE = frozenset({"unsloth", "unsloth-zoo", "unsloth_zoo"})
-# What a FULL dependency pass (one without last run's evidence: every --local pass, and
-# the pass after a deleted manifest) reinstalls at the same version, so its RECORD
-# moving says nothing about idempotency:
-#   * the two seed plugins are installed from a path inside the checkout, and without
-#     evidence a path install is never "already satisfied";
-#   * click is caught between two pins no resolution holds at once (data-designer-engine
-#     0.5.x wants sqlfluff<4, which pins click<=8.3.0; huggingface-hub 1.23+ needs
-#     click>=8.4.2), so the data designer step takes it down and the diffusers step
-#     brings it back, and the pass records the conflict as known_unmet rather than
-#     re-running the step for it once it has evidence.
-# The desktop path never reaches the dependency pass on a settled install (setup.sh's
-# fast path), so masking these costs it nothing; a version CHANGE is still seen, since
-# the distribution list is compared separately.
+# What a FULL pass (no evidence: every --local pass, the pass after a deleted manifest) reinstalls
+# at the same version: the two path-installed seed plugins, and click, caught between sqlfluff<4
+# (click<=8.3.0) and huggingface-hub 1.23+ (click>=8.4.2) and recorded as known_unmet. A version
+# CHANGE is still seen, since the distribution list is compared separately.
 FULL_PASS_CHURN = LOCAL_CORE | frozenset(
     {"data-designer-github-repo-seed", "data-designer-unstructured-seed", "click"}
 )
@@ -139,9 +123,8 @@ DIST_LIST = (
     "print(json.dumps(sorted(((d.metadata['Name'] or '').lower(), d.version) "
     "for d in m.distributions())))"
 )
-# Names and versions cannot see a reinstall at the same version, and a warm uv cache
-# makes one download nothing; the dist-info RECORD is rewritten by every install, so
-# its mtime can. Per distribution, so a failure names the package that moved.
+# Names and versions cannot see a same-version reinstall; the RECORD mtime can. Per distribution, so
+# a failure names the package.
 DIST_RECORDS = (
     "import importlib.metadata as m, json, os; "
     "out = []\n"
@@ -207,15 +190,12 @@ def _pypi_latest() -> str:
 
 @pytest.fixture(scope = "session")
 def install() -> pathlib.Path:
-    # The gate lives here rather than on the module so the proxy's own self test, which
-    # needs nothing installed, still runs in ordinary CI. A measuring instrument that
-    # quietly stopped measuring would make every assertion below pass.
+    # Gated here, not on the module, so the proxy self test still runs in ordinary CI.
     if not E2E:
         pytest.skip("opt-in end to end; set UNSLOTH_IDEMPOTENCY_E2E=1")
     venv_python = _venv_python()
     if not venv_python.is_file():
-        # Opted in, and nothing to measure: a skip here would let every product-facing
-        # case report itself skipped while the proxy self test keeps the job green.
+        # Opted in and nothing to measure: a skip would keep the job green while measuring nothing.
         pytest.fail(
             f"UNSLOTH_IDEMPOTENCY_E2E is set but there is no Studio install at {venv_python}"
         )
@@ -273,8 +253,7 @@ def _start_proxy(directory: pathlib.Path, *extra: str):
     log = directory / "proxy.jsonl"
     port_file = directory / "proxy.port"
     port_file.unlink(missing_ok = True)
-    # The proxy appends and the summary reads the whole journal, so a retained artifacts
-    # directory would attribute the previous invocation's traffic to this run.
+    # The proxy appends: a retained journal would attribute the previous run's traffic to this one.
     log.unlink(missing_ok = True)
     process = subprocess.Popen(
         [
@@ -345,9 +324,8 @@ def _settle_journal(
     active_path = log_path.with_name(log_path.name + ".active")
 
     def _workers_active() -> bool:
-        # The proxy publishes how many workers sit between accept and their record. A
-        # worker blocked in an upstream connect has written nothing, so a quiet journal
-        # alone is not proof that nothing is left to journal.
+        # A worker blocked in an upstream connect has written nothing: a quiet journal alone is not
+        # proof.
         try:
             return int(active_path.read_text().strip() or "0") > 0
         except (OSError, ValueError):
@@ -389,14 +367,11 @@ def run_update(
     directory.mkdir(parents = True, exist_ok = True)
     extra = ["--refuse"] if refuse else (["--deny-hosts", deny_hosts] if deny_hosts else [])
     process, url, log_path = _start_proxy(directory, *extra)
-    # Inherited, not replaced: the runner's PATH, SystemRoot and certificate bundle all
-    # matter, and a hand-built environment here fails in ways that look like the product.
+    # Inherited, not replaced: a hand-built environment fails in ways that look like the product.
     env = dict(os.environ)
     env.pop("UNSLOTH_IDEMPOTENCY_E2E", None)
-    # The venv pytest runs in is not the venv under test. Anything that would point the
-    # child at this interpreter's environment has to go, or the update resolves against
-    # the wrong cache, the wrong constraints, or the wrong site-packages -- and then
-    # measures whatever that produced.
+    # The venv pytest runs in is not the venv under test: anything pointing the child at this
+    # interpreter's environment has to go.
     for leaked in (
         "VIRTUAL_ENV",
         "PYTHONPATH",
@@ -430,16 +405,13 @@ def run_update(
         http_proxy = url,
         NO_PROXY = "127.0.0.1,localhost",
         no_proxy = "127.0.0.1,localhost",
-        # npm reads its own variables ahead of the generic ones (with npm 11 an
-        # npm_config_https_proxy in the invoking environment outranks HTTPS_PROXY), and
-        # setup runs npm on every update: a value inherited from a corporate machine
-        # would route the registry traffic around the proxy that counts it.
+        # npm_config_https_proxy outranks HTTPS_PROXY (npm 11): an inherited value would route the
+        # registry traffic around the proxy that counts it.
         npm_config_proxy = url,
         npm_config_https_proxy = url,
         npm_config_noproxy = "127.0.0.1,localhost",
-        # Presence, not truthiness: without it the CLI probes the Windows PowerShell
-        # profiles for an Invoke-WebRequest proxy default, which would outrank the
-        # variables above and route setup.ps1 around the logging proxy.
+        # Presence, not truthiness: without it the CLI reads an Invoke-WebRequest proxy default from
+        # the PowerShell profiles, which would outrank the variables above.
         _UNSLOTH_PS_PROXY_DEFAULTS = "{}",
     )
     if os.environ.get("UNSLOTH_IDEMPOTENCY_STUDIO_HOME"):
@@ -467,9 +439,8 @@ def run_update(
         rc = completed.returncode
     finally:
         seconds = time.time() - started
-        # Read before anything is done to it: a proxy that died during the run journalled
-        # nothing after its death, and a client whose CONNECT was refused by a dead
-        # listener looks, in that journal, like one that made no connection at all.
+        # Read first: a proxy that died mid-run journalled nothing after, and a CONNECT refused by a
+        # dead listener looks like no connection at all.
         proxy_died = process.poll() is not None
         settled = _settle_journal(log_path)
         process.terminate()
@@ -549,10 +520,8 @@ def snapshot(venv_python: pathlib.Path) -> dict:
         text = True,
         timeout = 300,
     )
-    # The packages a full pass reinstalls at the same version (FULL_PASS_CHURN: the two
-    # --local overlays, the two path-installed seed plugins, the click conflict) move
-    # their RECORD on every such pass; their mtime and size are not compared, their
-    # name and version still are.
+    # FULL_PASS_CHURN moves its RECORD on every full pass: mtime and size are not compared, name and
+    # version still are.
     state["dist_records"] = [
         [name, version, None, None] if name in FULL_PASS_CHURN else [name, version, mtime, size]
         for name, version, mtime, size in json.loads(records.stdout or "[]")
@@ -562,13 +531,11 @@ def snapshot(venv_python: pathlib.Path) -> dict:
     manifest = None
     if manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
-        # The one key that is ALLOWED to move: it records when the pass finished, and a
-        # pass that correctly did nothing still finished.
+        # The one key ALLOWED to move: a pass that correctly did nothing still finished.
         manifest.pop("completed_at_ms", None)
     state["manifest"] = manifest
 
-    # Byte for byte: a marker rewritten with identical content is still a rewrite, and
-    # the whole point of the prebuilt pre-checks is that they do not rewrite it.
+    # Byte for byte: the point of the prebuilt pre-checks is that they do not rewrite the marker.
     for marker in (
         "UNSLOTH_PREBUILT_INFO.json",
         "UNSLOTH_WHISPER_PREBUILT_INFO.json",
@@ -626,9 +593,8 @@ def test_a_second_update_changes_nothing_on_disk(install, settled):
         f"  {key}:\n    before={before.get(key)!r}\n    after={after.get(key)!r}"
         for key in diff(before, after)
     )
-    # The same run's traffic too: a regression that downloads on this first measured
-    # update and parks its evidence outside the install (an npm or uv cache) would leave
-    # the snapshot alone here and be quiet by the network case that follows.
+    # The same run's traffic too: a download parked in an npm or uv cache leaves the snapshot alone
+    # and is quiet by the network case that follows.
     for host in PAYLOAD_HOSTS:
         assert run.connections_to(host) == 0, f"{host}: {run.report()}"
         assert run.bytes_from(host) == 0, f"{host}: {run.report()}"
@@ -641,9 +607,7 @@ def test_a_second_update_downloads_no_payload(install, settled):
     run = run_update(directory, "run3-network")
     assert run.rc == 0, run.log[-8000:]
     for host in PAYLOAD_HOSTS:
-        # Connections, not only bytes: an attempt that failed or timed out upstream is
-        # still a payload fetch the update decided to make, and the installer can keep
-        # the verified prebuilt and exit 0 after one.
+        # Connections, not only bytes: a failed attempt is still a fetch the update decided to make.
         assert run.connections_to(host) == 0, (
             f"{host} was contacted {run.connections_to(host)} time(s) by an update with "
             f"nothing to do: {run.report()}"
@@ -663,8 +627,7 @@ def test_a_second_local_update_reuses_everything_it_can(install, settled):
     directory, _ = settled
     run = run_update(directory, "run4-local", local = True)
     assert run.rc == 0, run.log[-8000:]
-    # The full message: the MLX stack, base requirements, local plugin and finalization
-    # steps end in the same suffix, and any of them would satisfy a substring match.
+    # The full message: several other steps end in the same suffix.
     assert "pip bootstrap (satisfied, skipped)" in run.log, (
         "the pip bootstrap reinstalled pip on a venv that already had one:\n" + run.log[-8000:]
     )
@@ -674,8 +637,7 @@ def test_a_second_local_update_reuses_everything_it_can(install, settled):
     assert run.log.count("sidecar current") == 3, (
         "a settled transformers sidecar was rebuilt:\n" + run.log[-8000:]
     )
-    # One line each from llama.cpp and whisper.cpp: a single match would let one of the
-    # two re-validate an installed prebuilt while the other answered from its marker.
+    # One line each from llama.cpp and whisper.cpp: a single match would let one re-validate.
     assert run.log.count("prebuilt up to date") >= 2, (
         "a prebuilt was re-validated instead of answered from its marker:\n" + run.log[-8000:]
     )
@@ -683,8 +645,7 @@ def test_a_second_local_update_reuses_everything_it_can(install, settled):
     for host in PAYLOAD_HOSTS:
         assert run.connections_to(host) == 0, f"{host}: {run.report()}"
         assert run.bytes_from(host) == 0, f"{host}: {run.report()}"
-    # The release is never listed on this path either: the marker checks cost one HEAD
-    # on github.com per prebuilt, and a --local pass has no other business with the API.
+    # The release is never listed: the marker checks cost one HEAD per prebuilt.
     assert run.connections_to("api.github.com") == 0, run.report()
 
 
@@ -710,11 +671,9 @@ def test_the_desktop_update_path_keeps_a_verified_install_offline(install, settl
         "an update with nothing to do failed offline. That is the state a user on a "
         f"plane, or behind a corporate proxy, is in:\n{run.log[-8000:]}"
     )
-    # Either the offline rule or the ordinary fast path: setup.ps1 asks PyPI with
-    # Invoke-RestMethod, which follows the system proxy settings rather than HTTPS_PROXY,
-    # so on Windows the version check can still reach PyPI past this harness's proxy and
-    # answer "up to date". Both leave the pass unrun; what is asserted regardless is that
-    # nothing got through the proxy and nothing on disk moved.
+    # Either the offline rule or the ordinary fast path: Invoke-RestMethod ignores HTTPS_PROXY, so
+    # on Windows the version check can still answer "up to date". Either way nothing got through the
+    # proxy and nothing on disk moved.
     assert "keeping the verified install" in run.log or UPTODATE_MARKER.search(run.log), run.log[
         -8000:
     ]
@@ -722,12 +681,8 @@ def test_the_desktop_update_path_keeps_a_verified_install_offline(install, settl
     assert diff(before, snapshot(install)) == []
 
 
-# ── fault injection ──
-#
-# The direction that matters. A needless install costs seconds; a wrong skip ships a
-# venv that dies on `import structlog`. Each case damages one thing and asserts that the
-# update repairs THAT thing -- and, where it is cheap to check, that it does not decide
-# to rebuild everything else while it is there.
+# Fault injection: each case damages one thing and asserts the update repairs THAT thing, and where
+# cheap to check, nothing else.
 
 
 def _replace_bytes(path: pathlib.Path, data: bytes) -> None:
@@ -758,17 +713,13 @@ def test_a_truncated_sidecar_file_rebuilds_only_that_sidecar(install, settled):
     )
     assert victim is not None, f"no file to damage in {target}"
     saved = victim.read_bytes()
-    # Replaced, not truncated in place: uv installs a --target tree by hardlinking from
-    # its cache where the filesystem allows (NTFS on the hosted Windows runner), so an
-    # in-place truncation would empty the cache's copy and the other sidecars' copies of
-    # the same file with it. The rebuild would then relink the damaged bytes and every
-    # tier would read as damaged; a real corruption of one tree does neither.
+    # Replaced, not truncated in place: uv hardlinks --target trees from its cache (NTFS too), so an
+    # in-place truncation would poison the cache and every tier with it.
     _replace_bytes(victim, b"")
     try:
         run = run_update(directory, "fault-sidecar", local = True)
         assert run.rc == 0, run.log[-8000:]
-        # Judged before the cleanup below, which would otherwise restore the bytes
-        # itself and advance the mtime the rebuild assertion reads.
+        # Judged before the cleanup, which would restore the bytes and advance the mtime.
         restored = victim.read_bytes() if victim.is_file() else b""
         assert restored != b"", "the update exited 0 and left the truncated sidecar file as it was"
         assert (
@@ -780,9 +731,7 @@ def test_a_truncated_sidecar_file_rebuilds_only_that_sidecar(install, settled):
     after = snapshot(install)
     changed = diff(before, after)
     assert target.name in changed, f"the damaged sidecar was not rebuilt (changed: {changed})"
-    # Exactly the damaged component: the other two sidecars, every dist record, both
-    # prebuilt markers and the binaries stay as they were. The manifest may move, as it
-    # records the sidecar evidence the repair renewed.
+    # Exactly the damaged component; the manifest may move, as it records the renewed evidence.
     unexpected = sorted(set(changed) - {target.name, "manifest"})
     assert unexpected == [], f"the sidecar repair changed more than the damaged sidecar: {changed}"
 
@@ -794,15 +743,13 @@ def test_a_deleted_manifest_re_runs_the_pass_and_changes_nothing(install, settle
     directory, _ = settled
     manifest = install.parent.parent / "unsloth_install_manifest.json"
     saved = manifest.read_bytes()
-    # Baseline taken here, not from the fixture: the fault tests before this one repair
-    # what they broke, and a repair may legitimately move a record or an mtime.
+    # Baseline taken here: the fault tests before this one legitimately move records.
     before = snapshot(install)
     manifest.unlink()
     try:
         run = run_update(directory, "fault-manifest", local = True)
         assert run.rc == 0, run.log[-8000:]
-        # Judged before the cleanup below, which would otherwise put the saved copy back
-        # and let the assertion after the snapshot pass on the test's own file.
+        # Judged before the cleanup puts the saved copy back.
         assert manifest.is_file(), "the pass exited 0 without rewriting the manifest"
     finally:
         if not manifest.is_file():
@@ -812,16 +759,14 @@ def test_a_deleted_manifest_re_runs_the_pass_and_changes_nothing(install, settle
         after["distributions"] == before["distributions"]
     ), "a pass with no evidence resolved to a different set of packages"
     assert after["manifest"] is not None, "the pass did not rewrite the manifest"
-    # The rest of the install is the manifest's business only in that it is described
-    # there: a pass with no evidence re-checks every component and must leave the valid
-    # ones alone. The manifest itself is the one key allowed to differ.
+    # A pass with no evidence re-checks every component and must leave the valid ones alone; the
+    # manifest itself is the one key allowed to differ.
     untouched = [key for key in diff(before, after) if key not in ("manifest", "dist_records")]
     assert untouched == [], (
         "a pass with no evidence redid work on already-valid components: " + ", ".join(untouched)
     )
-    # Names and versions cannot see a reinstall at the same version; the RECORD mtime can
-    # (the snapshot already leaves out what a full pass reinstalls by design, see
-    # FULL_PASS_CHURN).
+    # Names and versions cannot see a same-version reinstall; the RECORD mtime can (FULL_PASS_CHURN
+    # excepted).
     was = {tuple(record) for record in before["dist_records"]}
     moved = sorted(record[0] for record in after["dist_records"] if tuple(record) not in was)
     assert moved == [], "a pass with no evidence reinstalled: " + ", ".join(moved)
@@ -849,9 +794,7 @@ def test_a_damaged_llama_binary_makes_the_marker_check_decline(install, settled)
     saved = victim.read_bytes()
     mode = victim.stat().st_mode
     if IS_WINDOWS:
-        # The Linux and macOS validators read the executable image, so a truncated
-        # binary is caught; Windows has no such preflight and the marker match checks
-        # that the executables exist. Damage the Windows validator detects.
+        # Damage the Windows validator detects too: it has no image-reading preflight.
         victim.unlink()
     else:
         victim.write_bytes(saved[: len(saved) // 4])
@@ -878,9 +821,8 @@ def test_the_manifest_records_the_evidence_the_next_run_needs(install, settled):
     covered by tests/studio/install/test_dependency_pass_skips.py.
     """
     _directory, _before = settled
-    # The manifest on disk now, not the settled snapshot's copy: the fault case before this
-    # one deleted and regenerated it, and the regenerated one is what the next update's
-    # skips read, so it is the one that has to carry the evidence.
+    # The manifest on disk now: the previous case regenerated it, and that copy is what the next
+    # update's skips read.
     manifest_path = install.parent.parent / "unsloth_install_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding = "utf-8"))
     assert manifest is not None, "the install finished without a manifest"
@@ -950,8 +892,7 @@ def _assert_install_working(
         assert core(after["distributions"]), "the checkout's own packages are gone"
     assert after["manifest"] is not None
     verify_env = {**os.environ, "HOME": str(_home()), "USERPROFILE": str(_home())}
-    # The same root the measured runs used: under UNSLOTH_IDEMPOTENCY_STUDIO_HOME the
-    # install lives outside HOME, and the CLI would otherwise verify a default root.
+    # The same root the measured runs used, or the CLI verifies a default one.
     if os.environ.get("UNSLOTH_IDEMPOTENCY_STUDIO_HOME"):
         verify_env["UNSLOTH_STUDIO_HOME"] = os.environ["UNSLOTH_IDEMPOTENCY_STUDIO_HOME"]
     verify = subprocess.run(
@@ -996,21 +937,17 @@ def test_the_harness_measures_a_real_proxy(tmp_path):
         opener = urllib.request.build_opener(
             urllib.request.ProxyHandler({"http": url, "https": url})
         )
-        # A refused CONNECT surfaces as URLError, not HTTPError: urllib never gets a
-        # tunnel to raise an HTTP status through.
+        # A refused CONNECT is a URLError: urllib never gets a tunnel to raise an HTTP status
+        # through.
         with pytest.raises(urllib.error.URLError) as excinfo:
             opener.open("https://pypi.org/simple/", timeout = 30)
         assert "403" in str(excinfo.value)
-        # The client sees the 403 off the socket; the journal is written by the proxy
-        # worker. The proxy writes that record before it answers (see the refused branch
-        # of Proxy.handle), so all that is left to absorb here is the write itself being
-        # in flight -- but a proxy that had stopped journalling altogether must fail
-        # loudly rather than be papered over, hence the deadline and the failure below.
+        # The proxy journals before it answers (Proxy.handle's refused branch), so only an in-flight
+        # write is absorbed here; a proxy that stopped journalling must fail loudly.
         if not _wait_until(lambda: module.summary(str(log_path))["connections"] >= 1):
             pytest.fail(f"the proxy answered 403 but never journalled the connection: {log_path}")
-        # An allowed tunnel, driven by hand: CONNECT to the local server, then a plain
-        # GET through it, and the bytes that came back must be the bytes the journal
-        # attributes to that host.
+        # An allowed tunnel by hand: CONNECT, then a GET through it; the bytes must match the
+        # journal.
         proxy = urlsplit(url)
         port = upstream.server_address[1]
         with socket.create_connection((proxy.hostname, proxy.port), timeout = 30) as tunnel:
@@ -1050,12 +987,8 @@ def test_the_harness_measures_a_real_proxy(tmp_path):
     assert summary["by_host"]["pypi.org"]["bytes_down"] == 0
 
 
-# ── the desktop path, last ──
-#
-# Deliberately the final case. When the installed version is not PyPI's latest this run
-# is a real upgrade and mutates the session install; anything measured after it would be
-# measuring the released package, and comparing it against the settled snapshot would
-# fail on every version-bump commit with the offline behaviour perfectly correct.
+# The desktop path, last: when the installed version is not PyPI's latest this is a real upgrade,
+# and anything measured after it would be measuring the released package.
 
 
 def test_the_desktop_update_path_does_no_network_work(install, settled):
@@ -1072,8 +1005,7 @@ def test_the_desktop_update_path_does_no_network_work(install, settled):
     checkout is put back for the workflow steps after this harness.
     """
     directory, _ = settled
-    # Its own baseline, taken now: this is the last case, and the fault-injection cases
-    # before it legitimately rebuilt a sidecar and advanced a binary's mtime.
+    # Its own baseline: the fault-injection cases before it legitimately moved things.
     before = snapshot(install)
     # Read BEFORE the run: after it the installed version may already be PyPI's.
     installed, latest = _installed_version(install), _pypi_latest()
@@ -1082,31 +1014,24 @@ def test_the_desktop_update_path_does_no_network_work(install, settled):
     assert run.rc == 0, run.log[-8000:]
     took_fast_path = NO_WORK_MARKERS[0] in run.log
     if not took_fast_path:
-        # The checkout goes back first either way: the workflow steps after this harness
-        # run the CLI and expect the code under test. It is the last product operation
-        # of the run, so it is held to the same bar as the ordered cases, not to its
-        # exit code alone.
+        # The checkout goes back first either way: later workflow steps expect the code under test.
+        # Held to the same bar as the ordered cases, not its exit code alone.
         restore = run_update(directory, "run5-restore", local = True)
         assert restore.rc == 0, restore.log[-8000:]
         _assert_install_working(install, before, same_distributions = UPGRADE_MARKER not in run.log)
-        # Why the pass ran, read off the measured run's own log: the separate PyPI
-        # lookup above can fail or see another release than the one the update saw.
+        # Why the pass ran, off the measured run's own log: the separate lookup can see another
+        # release.
         if UPGRADE_MARKER in run.log:
-            # This run WAS an upgrade to PyPI's release, whose Node, sidecar, llama.cpp
-            # and whisper.cpp pins can legitimately differ from the checkout's: it may
-            # rebuild or download any of them, so nothing below can be asserted of it.
+            # A real upgrade to PyPI's release, whose pins may differ: nothing below can be
+            # asserted.
             pytest.skip(
                 "installed version is not PyPI's latest; the desktop no-op path was not taken"
             )
         if PYPI_UNREACHABLE_MARKER in run.log:
-            # The product runs the pass on purpose when it cannot ask PyPI: correct
-            # behaviour, and nothing this case can judge. Only the measured run's own
-            # lookup counts: the harness's separate request above can fail or see
-            # another release while the update's succeeded, and skipping on it would
-            # look away from exactly the equal-version pass this case exists to catch.
+            # The pass runs on purpose when PyPI cannot be asked: nothing to judge. Only the
+            # measured run's own lookup counts, or this would look away from the equal-version pass.
             pytest.skip("PyPI was unreachable; the desktop no-op path could not be judged")
-        # Equal versions and a reachable index, and the pass still ran: that is the
-        # regression this case exists to catch, not a reason to look away.
+        # Equal versions, a reachable index, and the pass still ran: the regression this catches.
         pytest.fail(
             f"the desktop update ran the dependency pass with unsloth {installed!r} installed "
             f"and {latest!r} on PyPI; the fast path was not taken:\n{run.log[-8000:]}"
@@ -1117,17 +1042,14 @@ def test_the_desktop_update_path_does_no_network_work(install, settled):
     assert run.bytes_from("raw.githubusercontent.com") <= ICON_FETCH_CEILING, run.report()
     for marker in NO_WORK_MARKERS:
         assert marker in run.log, f"{marker!r} missing from a no-op update:\n{run.log[-8000:]}"
-    # Each component, not the generic line once: one prebuilt re-validating while the
-    # other answers from its marker would otherwise pass here.
+    # Each component, not the generic line once.
     assert run.log.count("prebuilt up to date") >= 2, run.log[-8000:]
     assert run.log.count("sidecar current") == 3, run.log[-8000:]
-    # One version check, and one "what is the latest release" HEAD per prebuilt. The
-    # bound is what stops this quietly becoming a full release listing again.
+    # One version check and one latest-release HEAD per prebuilt; the bound stops a full listing
+    # returning.
     assert run.connections_to("pypi.org") <= 2, run.report()
     assert run.connections_to("github.com") <= 6, run.report()
-    # The other half of the prebuilt claim: the release itself is never listed. Both of
-    # these carried traffic on every update before the marker checks, and both are where
-    # the 13-63 s macOS re-validation went.
+    # The other half of the prebuilt claim: the release itself is never listed.
     assert run.connections_to("api.github.com") == 0, run.report()
     assert run.connections_to("release-assets.githubusercontent.com") == 0, run.report()
     assert diff(before, snapshot(install)) == []

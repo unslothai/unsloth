@@ -42,9 +42,8 @@ FASTPATH_COND='[ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ] && [ "$INSTALLED_
 # The sibling branch, taken when PyPI could not be reached at all.
 OFFLINE_COND='[ -z "$LATEST_VER" ]; then'
 
-# $1 condition literal, $2 end-anchor regex, $3 destination. The end anchor line is
-# consumed by KEEP: the up-to-date branch ends ON its handoff line and has to keep it,
-# the offline branch ends on the `fi` that closes the whole chain and must not.
+# $1 condition literal, $2 end-anchor regex, $3 destination. KEEP consumes the anchor line: the
+# up-to-date branch ends ON its handoff line, the offline branch on the chain's closing `fi`.
 extract_branch() {
     _extract_status=0
     awk -v COND="$1" -v ENDRE="$2" -v KEEP="$3" '
@@ -105,13 +104,9 @@ for _blk in "$BLK" "$OFFLINE_BLK"; do
     fi
 done
 
-# Both branches call shared helpers rather than inlining their probes, so the helpers have
-# to come with the slices. Extracted by function name and checked, for the same reason the
-# slices above are: a helper this file silently failed to find would be a "command not
-# found" that reads as an incomplete install, which forces the dependency pass -- and three
-# of the cases below expect exactly that answer for a DIFFERENT reason, so they would still
-# pass. _fast_path_escapes is where the desktop-version floor now lives; keeping it out of
-# both branches is what lets the offline branch share it.
+# The shared helpers come with the slices, extracted by name and checked: a helper silently missing
+# is a "command not found" that reads as an incomplete install, the very answer three cases below
+# expect for a DIFFERENT reason.
 HELPERS="$WORK/helpers.sh"
 : > "$HELPERS"
 for _fn in _setup_install_is_verified _uv_offline_requested _fast_path_escapes; do
@@ -158,9 +153,8 @@ chmod +x "$VENV_DIR/bin/python"
 # Mock install_manifest to return ok: True so manifest check passes
 printf 'def verify_install(**kwargs):\n    return {"ok": True}\n' > "$WORK/install_manifest.py"
 
-# Shared by both drivers. A torch pin leaking in from the ambient environment would fire
-# the XPU arm of _fast_path_escapes and every case here would read "false" for the wrong
-# reason, so it is cleared explicitly rather than assumed absent.
+# Shared by both drivers: an ambient torch pin would fire the XPU arm and every case would read
+# "false" for the wrong reason.
 _common_env() {
     _PKG_NAME="unsloth"
     SCRIPT_DIR="$WORK"
@@ -195,8 +189,7 @@ eval_fastpath() {
     )
 }
 
-# The offline branch prints no `step`, so "did it run at all" is answered by its substep
-# instead: the two outcomes have distinct messages and exactly one of them must appear.
+# The offline branch prints no `step`: exactly one of its two substep messages must appear.
 eval_offline() {
     local installed_ver="$1"
     local uv_offline="$2"
@@ -249,11 +242,8 @@ check "post-release requirement forces dependency pass without packaging" \
     "$(eval_fastpath '2026.8.15' '2026.8.15' '2026.8.15.post1')" "false"
 
 echo "The offline branch is held to the same bar:"
-# UV_OFFLINE turns "could not reach PyPI, updating to be safe" into a skip, because uv
-# will not reach a network and every install in that pass can only fail. A verified tree
-# is what buys the skip -- but a verified tree can still be below the floor the desktop
-# app requires, and only the dependency pass raises it. Before the escapes were shared,
-# this case reported success and repaired nothing.
+# UV_OFFLINE turns "updating to be safe" into a skip bought by a verified tree, which can still be
+# below the desktop floor; before the escapes were shared this reported success.
 check "offline, verified, no desktop requirement" \
     "$(eval_offline '2026.8.15' '1' '')" "true"
 
@@ -266,8 +256,7 @@ check "offline, verified, BELOW desktop requirement" \
 check "offline, verified, unorderable desktop requirement" \
     "$(eval_offline '2026.8.15' '1' '2026.8.15.post1')" "false"
 
-# The default is unchanged: without UV_OFFLINE an unreachable PyPI still updates to be
-# safe, and the escapes never come into it.
+# The default is unchanged: without UV_OFFLINE an unreachable PyPI still updates to be safe.
 check "unreachable PyPI without UV_OFFLINE still updates" \
     "$(eval_offline '2026.8.15' '' '')" "false"
 

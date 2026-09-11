@@ -101,9 +101,8 @@ Describe 'the offline skip takes the shared escapes' {
         }
         $offlineSrc = Get-FunctionSource -Path $script:SetupPs1 -Name 'Test-UvOfflineRequested'
 
-        # The offline arm itself, from its elseif to the `}` that closes the whole chain.
-        # Sliced rather than restated: a branch that stopped calling the helper has to make
-        # this file fail, and a copy of the branch here could not.
+        # The offline arm itself, sliced rather than restated: a branch that stopped calling the
+        # helper has to fail this file.
         $lines = $script:SetupText -split "`r?`n"
         $start = -1
         for ($i = 0; $i -lt $lines.Count; $i++) {
@@ -197,8 +196,7 @@ function python {
             $text = ($out | Out-String)
             $skip = if ($text -match '(?m)^SKIP=(\S+)\s*$') { $Matches[1] } else { "<no SKIP line>" }
             $steps = if ($text -match '(?m)^SUBSTEPS=(.*)$') { $Matches[1] } else { "" }
-            # The branch has exactly two outcomes and both announce themselves; neither
-            # appearing means the slice never ran and every assertion below is vacuous.
+            # Both outcomes announce themselves; neither means the slice never ran.
             if ($steps -notmatch 'keeping the verified install' -and $steps -notmatch 'could not reach PyPI') {
                 throw "the offline arm did not run (substeps: '$steps', output: '$text')"
             }
@@ -207,9 +205,8 @@ function python {
     }
 
     AfterAll {
-        # Guarded: when the slice checks above throw, BeforeAll never got as far as naming a
-        # driver directory, and an unguarded Remove-Item here would bury that message under a
-        # parameter-binding error from this block.
+        # Guarded: a failed slice check names no driver directory, and an unguarded Remove-Item
+        # would bury that message.
         if ($script:DriverDir) {
             Remove-Item -Recurse -Force -LiteralPath $script:DriverDir -ErrorAction SilentlyContinue
         }
@@ -270,8 +267,7 @@ Describe 'UNSLOTH_STUDIO_FULL_DEPS reaches the fast path' {
     BeforeAll {
         $fullDepsEscapeSrc = Get-FunctionSource -Path $script:SetupPs1 -Name 'Invoke-FastPathEscapes'
         if (-not $fullDepsEscapeSrc) { throw "Invoke-FastPathEscapes is gone from setup.ps1." }
-        # Without this every case below would pass vacuously against a helper that never
-        # looks at the variable: an unset hatch and an ignored hatch both preserve the skip.
+        # An unset hatch and an ignored hatch both preserve the skip: this tells them apart.
         if ($fullDepsEscapeSrc -notmatch 'UNSLOTH_STUDIO_FULL_DEPS') {
             throw ("Invoke-FastPathEscapes no longer reads UNSLOTH_STUDIO_FULL_DEPS -- the " +
                    "escape hatch is honoured only inside install_python_stack.py, which a " +
@@ -282,9 +278,8 @@ Describe 'UNSLOTH_STUDIO_FULL_DEPS reaches the fast path' {
         New-Item -ItemType Directory -Path $script:FullDepsDir -Force | Out-Null
         $script:FullDepsDriver = Join-Path $script:FullDepsDir 'driver.ps1'
 
-        # Stubs for everything the helper reaches that is not the hatch, all answering "no
-        # repair owed", so the ONLY thing that can clear the skip in this driver is the
-        # variable under test.
+        # Every other probe answers "no repair owed", so only the variable under test can clear the
+        # skip.
         $fullDepsPrelude = @'
 param(
     [AllowEmptyString()][string]$FullDeps,
@@ -374,9 +369,8 @@ Invoke-FastPathEscapes
         @{ value = '1' }, @{ value = 'true' }, @{ value = 'TRUE' }, @{ value = 'True' },
         @{ value = 'yes' }, @{ value = 'on' }, @{ value = ' 1 ' }, @{ value = '  true  ' }
     ) {
-        # The same spellings Test-UvOfflineRequested and install_python_stack.py's
-        # _full_deps_requested accept: a user who wrote FULL_DEPS=yes on one platform, or
-        # for one half of the installer, means the same thing everywhere.
+        # The spellings Test-UvOfflineRequested and _full_deps_requested accept, the same
+        # everywhere.
         Invoke-FullDepsEscape -FullDeps $value | Should -Be 'False'
     }
 
@@ -384,14 +378,12 @@ Invoke-FastPathEscapes
         @{ value = '0' }, @{ value = '' }, @{ value = '   ' }, @{ value = 'maybe' },
         @{ value = 'false' }, @{ value = 'off' }, @{ value = 'no' }
     ) {
-        # Not a "set means true" variable: a stale FULL_DEPS=0 in a shell profile must not
-        # turn every update into a full dependency pass.
+        # Not "set means true": a stale FULL_DEPS=0 in a profile must not force every update.
         Invoke-FullDepsEscape -FullDeps $value | Should -Be 'True'
     }
 
     It 'says why it is running the pass' {
-        # Silence here is the original bug wearing a different hat: a user who set the
-        # variable has to be able to see from the log that it took effect.
+        # A user who set the variable has to see from the log that it took effect.
         Get-FullDepsSubsteps -FullDeps '1' | Should -Match 'UNSLOTH_STUDIO_FULL_DEPS'
     }
 
@@ -401,8 +393,7 @@ Invoke-FastPathEscapes
     }
 
     It 'does not turn a forced pass back into a skip' {
-        # The helper only ever clears the flag. A version compare that already decided to
-        # update must stay updating whatever the hatch says.
+        # The helper only ever clears the flag: a compare that decided to update stays updating.
         Invoke-FullDepsEscape -FullDeps '1' -StartSkipping $false | Should -Be 'False'
         Invoke-FullDepsEscape -FullDeps '0' -StartSkipping $false | Should -Be 'False'
     }
