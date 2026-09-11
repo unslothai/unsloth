@@ -1,0 +1,157 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+name: Main red attribution
+
+# Main has no PR gate for the team, so Backend CI going red on a direct push is
+# routine -- and the cost is never the fix, it is the NOTICING. A red main sits
+# until someone happens to look, everyone who branched meanwhile inherits the
+# failure families into their PR runs, and the eventual fixer starts by
+# re-deriving which of the pushes since the last green run broke it. On
+# Aug 29-31 alone that cycle ran three times (#9949-#9958's families, then
+# test_offload_frozen_module_device's encoding pin, fixed twice in parallel as
+# #10039/#10041 because nothing said the work was already claimed).
+#
+# This workflow does the noticing and the attribution, immediately: when a
+# Backend CI run on main completes red, it looks up the last green run on main,
+# lists the commits between the two heads -- the complete suspect set, usually
+# one or two pushes -- and opens ONE issue carrying that range, the failing
+# jobs, and the run link. Repeat failures update the same issue instead of
+# stacking new ones, and the first green run on main closes it with the
+# healing sha, so the issue's lifetime IS main's red window. Whoever picks it
+# up starts from the suspect list, and everyone else can see the break is
+# known and claimed.
+#
+# SHIPS INERT, following ci-capacity.yml's convention: every write is gated on
+# the repository variable MAIN_RED_GUARD_ENABLED being the exact string
+# 'true'. With the variable unset, which is how this merges, the workflow
+# still runs the full attribution on every red main run and prints the issue
+# it WOULD have filed to the job summary -- so its output can be judged on
+# real breaks before it is allowed to speak. Turn it on with:
+#
+#   gh variable set MAIN_RED_GUARD_ENABLED --repo unslothai/unsloth --body true
+
+# lint:workflow_triggers-allow-workflow_run -- this workflow is a pure
+# observer of Backend CI's completions: it checks out nothing, runs no code
+# from the triggering ref, and its only writes are issue create/comment/close,
+# gated twice (head_branch == 'main', and the MAIN_RED_GUARD_ENABLED variable).
+on:
+  workflow_run:
+    workflows: ["Backend CI"]
+    types: [completed]
+
+# One attribution at a time. Two overlapping runs (a red and the green that
+# heals it, completing close together) must serialize so the close cannot land
+# before the issue it closes exists.
+concurrency:
+  group: main-red-attribution-${{ github.repository }}
+  cancel-in-progress: false
+
+env:
+  GUARD_LABEL: main-backend-red
+
+jobs:
+  attribute:
+    # Only main is guarded: PR branches are red all the time for normal
+    # reasons, and their owners are already watching them.
+    if: github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      actions: read
+    steps:
+      - name: Attribute a red run, or close the issue on a green one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_CREATED: ${{ github.event.workflow_run.created_at }}
+          WORKFLOW_ID: ${{ github.event.workflow_run.workflow_id }}
+          ENABLED: ${{ vars.MAIN_RED_GUARD_ENABLED }}
+        run: |
+          set -euo pipefail
+          short="${HEAD_SHA:0:9}"
+
+          open_issue() {
+            gh issue list --repo "$REPO" --label "$GUARD_LABEL" --state open \
+              --json number --jq '.[0].number // empty'
+          }
+
+          if [ "$CONCLUSION" = "success" ]; then
+            existing="$(open_issue)"
+            if [ -z "$existing" ]; then
+              echo "Green run on main, no open $GUARD_LABEL issue. Nothing to do."
+              exit 0
+            fi
+            body="Backend CI is green again on main at \`$short\` ($RUN_URL). Closing."
+            if [ "$ENABLED" = "true" ]; then
+              gh issue close "$existing" --repo "$REPO" --comment "$body"
+            else
+              {
+                echo "## Dry run (MAIN_RED_GUARD_ENABLED is not 'true')"
+                echo "Would close #$existing with:"
+                echo ""
+                echo "$body"
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit 0
+          fi
+
+          [ "$CONCLUSION" = "failure" ] || { echo "Conclusion $CONCLUSION, not attributable."; exit 0; }
+
+          # The last green Backend CI run on main that started before this one.
+          # Per-page 50 reaches ~2 days back at the current push rate; a red
+          # window longer than that has long since been noticed by humans.
+          last_green="$(gh api \
+            "repos/$REPO/actions/workflows/$WORKFLOW_ID/runs?branch=main&status=success&per_page=50" \
+            --jq "[.workflow_runs[] | select(.created_at < \"$RUN_CREATED\")] | .[0].head_sha // empty")"
+
+          if [ -n "$last_green" ]; then
+            suspects="$(gh api "repos/$REPO/compare/$last_green...$HEAD_SHA" \
+              --jq '.commits[] | "- \(.sha[0:9]) \(.commit.message | split("\n")[0]) (@\(.author.login // .commit.author.name))"')"
+            range_line="Last green: \`${last_green:0:9}\` — suspect commits ([full compare](https://github.com/$REPO/compare/$last_green...$HEAD_SHA)):"
+          else
+            suspects="(no green run found in the last 50 main runs -- attribute by hand)"
+            range_line="Last green: unknown."
+          fi
+
+          failed_jobs="$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
+            --jq '[.jobs[] | select(.conclusion == "failure") | .name] | join(", ")')"
+
+          body="Backend CI failed on main at \`$short\` — [run]($RUN_URL). Failing jobs: ${failed_jobs:-unknown}.
+
+          $range_line
+
+          $suspects
+
+          One of the suspect pushes broke the leg; the fix (or revert) belongs on main. This issue closes itself on the next green main run.
+          "
+          # The heredoc-ish indent above travels into the body; strip it.
+          body="$(printf '%s\n' "$body" | sed 's/^          //')"
+
+          existing="$(open_issue)"
+          if [ "$ENABLED" = "true" ]; then
+            gh label create "$GUARD_LABEL" --repo "$REPO" \
+              --description "Backend CI is red on main" --color B60205 2>/dev/null || true
+            if [ -n "$existing" ]; then
+              gh issue comment "$existing" --repo "$REPO" --body "Still red at \`$short\`. $body"
+            else
+              gh issue create --repo "$REPO" --label "$GUARD_LABEL" \
+                --title "Backend CI is red on main (broke between ${last_green:0:9} and $short)" \
+                --body "$body"
+            fi
+          else
+            {
+              echo "## Dry run (MAIN_RED_GUARD_ENABLED is not 'true')"
+              if [ -n "$existing" ]; then
+                echo "Would comment on #$existing:"
+              else
+                echo "Would open an issue titled: Backend CI is red on main (broke between ${last_green:0:9} and $short)"
+              fi
+              echo ""
+              echo "$body"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
