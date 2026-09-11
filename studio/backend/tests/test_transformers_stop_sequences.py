@@ -222,10 +222,8 @@ def test_synthetic_reasoning_tags_do_not_match_stops(kind, raw, stop):
             skip_prompt = False,
         )
     wrapped = inf._StopSequenceStreamer(streamer, [stop])
-    # Use the production model.generate interface on both sides of the fix.
-    producer = wrapped if hasattr(wrapped, "put") else streamer
-    producer.put(torch.tensor([2]))
-    producer.end()
+    wrapped.put(torch.tensor([2]))
+    wrapped.end()
     output = []
     while True:
         try:
