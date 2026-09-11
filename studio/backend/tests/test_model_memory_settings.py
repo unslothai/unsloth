@@ -3203,9 +3203,10 @@ class TestASaveDuringPlacementIsAnswered:
         import inspect
 
         src = inspect.getsource(LlamaCppBackend.load_model)
-        marker = src.index("self._memory_launch_pending = True")
-        assert "self._memory_pending_settings = _mem_settings" in src
-        assert src.index("self._memory_pending_settings = _mem_settings") > marker
+        # publish-last: the snapshot lands BEFORE the marker that makes it visible
+        assert src.index("self._memory_pending_settings = _mem_settings") < src.index(
+            "self._memory_launch_pending = True"
+        )
 
     def test_a_save_that_changes_a_toggle_asks_for_a_reload(self, monkeypatch):
         import routes.settings as rs
@@ -3584,25 +3585,18 @@ class TestADeviceMustActuallyExist:
         import inspect
 
         src = inspect.getsource(LlamaCppBackend.load_model)
-        assert "def _devices_are_real(devices)" in src
         # the old "either list is nonempty" form is gone from both confirmations
         assert "(_detected_gpus or devices)" not in src
         assert "(_detected_gpus or gpu_indices)" not in src
         flat = "".join(src.split())
-        assert flat.count("and_devices_are_real(") == 2
+        assert flat.count("andself._devices_are_real(") == 2
 
     def test_a_stale_pin_is_not_evidence(self):
-        """The predicate's logic, exercised directly: nothing detected, or a pin the
-        probe never found, is not a confirmed placement."""
-        detected = [(0, 1024), (1, 2048)]
+        """Now exercisable directly, since it is a method rather than a closure."""
+        from core.inference.llama_cpp import LlamaCppBackend
 
-        def devices_are_real(devices, found_rows):
-            found = {idx for idx, *_rest in (found_rows or ())}
-            if not found:
-                return False
-            if not devices:
-                return True
-            return all(int(idx) in found for idx in devices)
+        detected = [(0, 1024), (1, 2048)]
+        devices_are_real = LlamaCppBackend._devices_are_real
 
         assert devices_are_real([0], detected)
         assert devices_are_real([0, 1], detected)
@@ -3610,3 +3604,99 @@ class TestADeviceMustActuallyExist:
         assert not devices_are_real([99], detected)  # the stale pin
         assert not devices_are_real([0, 99], detected)  # partially stale
         assert not devices_are_real([0], [])  # nothing probed at all
+
+
+class TestNoNestedHelperIsUsedBeforeItsDef:
+    """A nested `def` in `load_model` binds the name as a local, so a call placed
+    above it raises UnboundLocalError at runtime rather than failing any import or
+    lint check. That shipped once (`_devices_are_real`) and aborted every
+    full-offload launch; this is the guard that would have caught it."""
+
+    def test_every_nested_def_precedes_its_calls(self):
+        import ast
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        tree = ast.parse(inspect.cleandoc("\n".join(src.splitlines()[1:])))
+        fn = tree.body[0]
+
+        defined_at = {}
+        for node in ast.walk(fn):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node is not fn:
+                defined_at.setdefault(node.name, node.lineno)
+
+        offenders = []
+        for node in ast.walk(fn):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in defined_at
+                and node.lineno < defined_at[node.func.id]
+            ):
+                offenders.append(
+                    f"{node.func.id} called at {node.lineno}, defined at "
+                    f"{defined_at[node.func.id]}"
+                )
+        assert not offenders, "UnboundLocalError at runtime: " + "; ".join(offenders)
+
+    def test_the_device_validator_is_a_method_now(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        # order-independent by construction, and reachable from both call sites
+        assert callable(LlamaCppBackend._devices_are_real)
+        assert "def _devices_are_real" not in inspect.getsource(LlamaCppBackend.load_model)
+
+
+class TestThePendingWindowHasNoGaps:
+    """Three ways the window closed early, each found in turn: the publish order,
+    the spawn caller's unconditional clear, and the outer recovery rungs."""
+
+    def test_the_snapshot_is_published_before_the_marker(self):
+        """Publish-LAST: a reader sees either no pending launch or one WITH its
+        settings. The other order left pending=True with settings=None."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        assert src.index("self._memory_pending_settings = _mem_settings") < src.index(
+            "self._memory_launch_pending = True"
+        )
+
+    def test_the_reader_takes_the_marker_first(self):
+        """Mirror of publish-last: read the marker, then the settings it gates."""
+        import routes.settings as rs
+        import inspect
+
+        src = inspect.getsource(rs._active_launch_placement)
+        assert src.index('"_memory_launch_pending"') < src.index('"_memory_pending_settings"')
+
+    def test_the_clear_drops_the_marker_first(self):
+        """So a reader never sees the marker still set beside a cleared snapshot."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend._serial_load_scope)
+        assert src.index("self._memory_launch_pending = False") < src.index(
+            "self._memory_pending_settings = None"
+        )
+
+    def test_the_spawn_caller_clears_only_on_success(self):
+        """An unconditional clear undid the in-spawn re-arm and left the outer
+        recovery rungs respawning from the captured settings unmarked."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        arm = src[src.index("healthy = _spawn_and_wait(cmd)") :][:900]
+        flat = "".join(arm.split())
+        assert "ifhealthy:self._memory_launch_pending=False" in flat
+
+    def test_the_lock_is_still_the_backstop(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        assert "self._memory_launch_pending = False" in inspect.getsource(
+            LlamaCppBackend._serial_load_scope
+        )

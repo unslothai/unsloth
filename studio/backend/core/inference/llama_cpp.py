@@ -8509,6 +8509,27 @@ class LlamaCppBackend:
         return stripped
 
     @staticmethod
+    def _devices_are_real(devices, detected) -> bool:
+        """Whether the placement targets devices the probe actually found.
+
+        A requested index is a REQUEST, not evidence: a stale explicit pin is
+        filtered out of the detected list and then restored into ``gpu_indices``, so
+        accepting a nonempty list confirmed an offload to a device that does not
+        exist and llama.cpp kept the model on the CPU, where DirectIO buffers the
+        whole GGUF.
+
+        A method rather than a closure in ``load_model``: it is consulted from two
+        places hundreds of lines apart, and as a nested ``def`` the earlier one ran
+        before the binding existed and raised ``UnboundLocalError``.
+        """
+        found = {idx for idx, *_rest in (detected or ())}
+        if not found:
+            return False
+        if not devices:
+            return True
+        return all(int(idx) in found for idx in devices)
+
+    @staticmethod
     def _vulkan_plugin_in_roots(
         binary: Optional[str] = None, env: Optional[Mapping[str, str]] = None
     ) -> bool:
@@ -24115,13 +24136,17 @@ class LlamaCppBackend:
                 # save landing in there saw neither an active nor a pending child and
                 # answered reload_required=false about a child already committed to the
                 # older settings. _with_gguf_load_marker clears it however this exits.
-                self._memory_launch_pending = True
-                # The marker alone is not enough: `_memory_state` is still None until the
-                # flags are resolved, and the comparator reads None as "not governed by
+                # Publish-LAST: the snapshot is written first and the marker that makes
+                # it visible second, so a reader either sees no pending launch or sees
+                # one with its settings. The other order left a window where a request
+                # read pending=True with settings=None and fell back to the stale state.
+                #
+                # The marker alone is not enough either: `_memory_state` is None until
+                # the flags resolve, and the comparator reads None as "not governed by
                 # this policy" and answers satisfied. What the child IS committed to from
-                # here is the toggle snapshot, so publish that and let a save be compared
-                # against it directly.
+                # here is the toggle snapshot.
                 self._memory_pending_settings = _mem_settings
+                self._memory_launch_pending = True
                 # Armed HERE, not at the load call: that also covers the Hub download,
                 # and rows captured before it would price the fit against VRAM that has
                 # since been allocated. The scope on the load call only guarantees the
@@ -24186,7 +24211,7 @@ class LlamaCppBackend:
                     not _mem_host_resident
                     and self._build_offers_gpu_backend(binary, _mem_env)
                     and not self._cuda_runtime_missing_for(binary, _mem_env)
-                    and _devices_are_real(gpu_indices)
+                    and self._devices_are_real(gpu_indices, _detected_gpus)
                     # A probe that did not answer declines rather than confirms; see
                     # _vulkan_offload_is_discrete.
                     and self._offload_target_is_classifiable(binary, _mem_env)
@@ -24294,22 +24319,6 @@ class LlamaCppBackend:
                 _off_view = dict(_mem_env)
                 scrub_memory_env(_off_view, (False, False))
 
-                def _devices_are_real(devices) -> bool:
-                    """Whether the placement targets devices the probe actually found.
-
-                    A requested index is a REQUEST, not evidence: a stale explicit pin
-                    is filtered out of `_detected_gpus` and then restored into
-                    `gpu_indices`, so accepting a nonempty list confirmed an offload to
-                    a device that does not exist and llama.cpp kept the model on the
-                    CPU, where DirectIO buffers the whole GGUF.
-                    """
-                    found = {idx for idx, *_rest in (_detected_gpus or ())}
-                    if not found:
-                        return False
-                    if not devices:
-                        return True
-                    return all(int(idx) in found for idx in devices)
-
                 def _dio_decision_for(devices, *, fully_offloaded):
                     """``(pair, applicable, active)`` for a CHANGED device set.
 
@@ -24341,7 +24350,7 @@ class LlamaCppBackend:
                         # Present is not loadable: a CUDA build with no cudart on the
                         # child's search path reports no devices and runs on the CPU.
                         and not self._cuda_runtime_missing_for(binary, _mem_env)
-                        and _devices_are_real(devices)
+                        and self._devices_are_real(devices, _detected_gpus)
                         # No classifier, no confirmation: see
                         # _offload_target_is_classifiable.
                         and self._offload_target_is_classifiable(binary, _mem_env)
@@ -25991,7 +26000,15 @@ class LlamaCppBackend:
                 try:
                     healthy = _spawn_and_wait(cmd)
                 finally:
-                    self._memory_launch_pending = False
+                    # Only once a child is actually up, where is_active takes over.
+                    # An unconditional clear here undid the re-arm and left the outer
+                    # recovery rungs -- arch gate, KV-unified, flash-attention -- doing
+                    # their placement work and respawning from the SAME captured
+                    # settings with nothing marking the window. `_serial_load_scope`
+                    # releases it on the way out of the lock either way, so a load that
+                    # never comes up cannot strand it.
+                    if healthy:
+                        self._memory_launch_pending = False
                 if not healthy and _finish_cancelled_health_wait(
                     "Load cancelled during the llama-server health wait"
                 ):
