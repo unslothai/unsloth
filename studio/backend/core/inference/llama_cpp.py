@@ -15125,6 +15125,10 @@ class LlamaCppBackend:
         "LLAMA_ARG_FIT",
         "LLAMA_ARG_FIT_TARGET",
         "LLAMA_ARG_FIT_CTX",
+        # Manual mode now states --split-mode layer explicitly for multi-GPU layer
+        # loads, so an inherited split-mode env must not override that decision
+        # during planning either.
+        "LLAMA_ARG_SPLIT_MODE",
     )
 
     # Eligibility must reject every inherited placement value replay removes.
@@ -26512,6 +26516,11 @@ class LlamaCppBackend:
                             )
                             self._tensor_split = _sanitized_split
                             manual_tensor_split_emitted = True
+                            # A manual layer split should be explicit so inherited
+                            # env / previous server state cannot silently promote
+                            # it to tensor/row. Respect a user --split-mode extra.
+                            if not tensor_parallel and split_mode_override is None:
+                                cmd.extend(["--split-mode", "layer"])
                         else:
                             logger.warning(
                                 "Dropping manual --tensor-split (%d entries for "
