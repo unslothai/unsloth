@@ -898,7 +898,9 @@ def test_probe_server_capabilities_reports_outdated_binary(tmp_path):
 def test_probe_server_capabilities_detects_reasoning_budget_flags(tmp_path):
     fake = _make_fake_llama_server(
         tmp_path / "llama-server",
-        "  --reasoning-budget N\n  --reasoning-budget-message MESSAGE\n",
+        # Column 0, the way llama-server really prints its flags; the indented lines are
+        # descriptions. The sibling tests below use the same layout.
+        "--reasoning-budget N\n--reasoning-budget-message MESSAGE\n",
     )
     _clear_caps_cache()
     caps = LlamaCppBackend.probe_server_capabilities(str(fake))
