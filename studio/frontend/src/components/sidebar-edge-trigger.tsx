@@ -58,10 +58,19 @@ export function SidebarEdgeTrigger({
     <div
       ref={ref}
       className="contents"
-      onPointerDownCapture={() => setHolding(true)}
+      // Only a primary press takes pointer capture, so only a primary press
+      // has a release to wait for. Holding for any other would never clear.
+      onPointerDownCapture={(event) => {
+        if (event.button === 0) setHolding(true);
+      }}
       onPointerUp={release}
       onPointerCancel={release}
       onLostPointerCapture={release}
+      // Tab reaches the strip with no pointer to hold the sidebar out, so
+      // focus does it instead. focusin and focusout bubble, which leaves the
+      // strip's own focus handling to the shared handle.
+      onFocus={() => setPeeking(true)}
+      onBlur={() => setPeeking(false)}
     >
       <PanelResizeHandle
         edge="right"
@@ -121,6 +130,9 @@ export function SidebarEdgeTrigger({
           // The sidebar sliding out is the hover feedback, not a hairline
           // hanging down the middle of the page.
           "after:hidden",
+          // That hairline is also where the shared handle marks focus, and on
+          // a 2px strip it would sit off-screen, so mark it on the strip.
+          "focus-visible:bg-sidebar-ring/60",
           // The two-headed resize cursor other chat apps put here, not the
           // one-way `e-resize` of a collapsed panel border.
           "cursor-col-resize!",
