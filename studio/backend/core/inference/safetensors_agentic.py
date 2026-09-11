@@ -1306,11 +1306,17 @@ def run_safetensors_tool_loop(
         # Collapse exact-duplicate calls and cap the count (runaway-turn guard).
         if tool_calls:
             seen_keys: set = set()
+            last_workspace_key = None
             deduped: list = []
             for _tc in tool_calls:
                 _fn = _tc.get("function", {}) or {}
                 _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
-                if _key in seen_keys and _fn.get("name") not in _WORKSPACE_TOOLS:
+                if _fn.get("name") in _WORKSPACE_TOOLS:
+                    # A workspace repeat only matters after a different workspace call.
+                    if _key == last_workspace_key:
+                        continue
+                    last_workspace_key = _key
+                elif _key in seen_keys:
                     continue
                 seen_keys.add(_key)
                 deduped.append(_tc)

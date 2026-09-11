@@ -32358,11 +32358,17 @@ class LlamaCppBackend:
                 # fallback (mirrors the safetensors loop; see _MAX_TOOL_CALLS_PER_TURN).
                 if tool_calls and not has_structured_tc and len(tool_calls) > 1:
                     _seen_keys: set = set()
+                    _last_workspace_key = None
                     _deduped: list = []
                     for _tc in tool_calls:
                         _fn = _tc.get("function", {}) or {}
                         _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
-                        if _key in _seen_keys and _fn.get("name") not in _WORKSPACE_TOOLS:
+                        if _fn.get("name") in _WORKSPACE_TOOLS:
+                            # A workspace repeat only matters after a different workspace call.
+                            if _key == _last_workspace_key:
+                                continue
+                            _last_workspace_key = _key
+                        elif _key in _seen_keys:
                             continue
                         _seen_keys.add(_key)
                         _deduped.append(_tc)
