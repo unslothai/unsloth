@@ -52,10 +52,9 @@ from torch import nn
 # ``_int_mm`` wants strictly more than 16 rows.
 INT_MM_MIN_M = 17
 
-# pad to a warp-friendly 32 rather than exactly INT_MM_MIN_M
-# Pad to a warp-friendly constant rather than to exactly INT_MM_MIN_M. Two reasons: 32 tiles better than 17, and it pins
-# ONE compiled shape for every activation below it, so prompts of differing token counts (H3's seven eval prompts run at
-# M = 10..19) do not each trigger their own inductor recompile.
+# Pad to a warp-friendly constant rather than to exactly INT_MM_MIN_M. Two reasons: 32 tiles better than 17, and it
+# pins ONE compiled shape for every activation below it, so prompts of differing token counts (H3's seven eval prompts
+# run at M = 10..19) do not each trigger their own inductor recompile.
 DEFAULT_PAD_TO = 32
 
 
@@ -137,7 +136,6 @@ class PadToMinM(nn.Module):
         self.pad_to = max(int(pad_to or min_m), self.min_m)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # deliberately free of call counters: dynamo guards on an nn.Module's integer attributes
         # Deliberately free of call counters or any other mutable int attribute: dynamo treats an nn.Module's integer
         # attributes as static and guards on their value, so a `+= 1` here would force a recompile on EVERY call until
         # the recompile limit is hit, at which point the module silently drops back to eager. Instrumentation belongs
@@ -146,10 +144,9 @@ class PadToMinM(nn.Module):
         flat = x.reshape(-1, x.shape[-1])
         m = flat.shape[0]
         if m == 0:
-            # torchao returns a zero-row input UNPROJECTED (a 1472 -> 2048 Linear maps [0, 1472] to [0, 1472])
             # No rows to project, and no row 0 to replicate from. torchao returns a zero-row input UNPROJECTED (a
-            # quantized 1472 -> 2048 Linear maps [0, 1472] to [0, 1472]), which then breaks a downstream width-sensitive
-            # add, so synthesise the empty result at the right width instead of calling through.
+            # quantized 1472 -> 2048 Linear maps [0, 1472] to [0, 1472]), which then breaks a downstream
+            # width-sensitive add, so synthesise the empty result at the right width instead of calling through.
             return x.new_empty((*lead, self.inner.out_features))
         if m < self.pad_to:
             # Everything below pad_to normalises to pad_to, not just what is below min_m. Clearing the floor takes only
