@@ -2119,33 +2119,19 @@ _target_has_pkg_version() {
     done
     return 1
 }
-# The pins, once. install_manifest.sidecar_is_current audits these exact strings and
-# _install_sidecar installs them, so the check and the install can never disagree about
-# what a current sidecar holds.
-#
-# Every name here has to be one that audit can actually reach. It proves a distribution
-# arrived by looking for its package directory, and falls back to the top-level names in
-# that distribution's own RECORD only when neither spelling of the project name is a
-# directory (six.py has no directory at all; pillow's is PIL). A pin whose payload is
-# neither -- nothing recorded either -- reads as stale forever, and then every update
-# deletes and refetches a healthy several-hundred-MB sidecar.
-#
-# tiktoken is deliberately not a pin. Both shells treat its install as optional (no wheel
-# for the interpreter is a warning, not a failure), so a sidecar without it is a finished
-# sidecar; as a pin it would read stale on every update and be wiped and refetched three
-# times over, for a package the rebuild would fail to add again. _sidecar_top_up_tiktoken
-# retries it alone instead.
+# The pins, once, audited by install_manifest.sidecar_is_current and installed by _install_sidecar.
+# Every name must be one the audit can reach (a package directory, or the RECORD's top-level names:
+# six.py, PIL), or it reads stale forever and every update refetches the sidecar. tiktoken is not a
+# pin: its install is optional, so a sidecar without it is finished; _sidecar_top_up_tiktoken
+# retries it alone.
 _SIDECAR_COMMON_PINS="huggingface_hub==1.8.0 hf_xet==1.4.2"
 
-# What a failed tiktoken install leaves must go: the sidecar sits ahead of site-packages,
-# so a partial tiktoken/ or tiktoken_ext/ shadows a working ambient copy, and tiktoken is
-# unpinned, so nothing else would ever clear it. Every entry the wheel owns, as the
-# runtime's _remove_optional_remnants removes them.
+# A failed tiktoken install's remnants shadow a working ambient copy from ahead of site-packages,
+# and being unpinned nothing else clears them. Every entry the wheel owns, as the runtime's
+# _remove_optional_remnants.
 _sidecar_drop_tiktoken() {
-    # Answers 0 when nothing of tiktoken is left, 1 when an entry would not go (a
-    # permission, a file held open): the caller then retires the whole sidecar, since a
-    # partial tiktoken ahead of site-packages shadows a working ambient copy and the
-    # sidecar predicate (tiktoken optional) would still call the directory current.
+    # 1 when an entry would not go (a permission, a file held open): the caller then retires the
+    # whole sidecar, which the predicate would still call current.
     for _sdt_entry in "$1"/tiktoken "$1"/tiktoken_ext "$1"/tiktoken.libs "$1"/tiktoken-*.dist-info; do
         [ -e "$_sdt_entry" ] && rm -rf "$_sdt_entry" 2>/dev/null
     done
@@ -2163,9 +2149,7 @@ _sidecar_drop_tiktoken() {
 }
 
 _sidecar_retire_after_failed_tiktoken() {
-    # The cleanup left part of tiktoken behind: the sidecar is not one to keep. Best
-    # effort, as the cleanup was; what this cannot remove the runtime withholds at
-    # activation (_optional_package_partly_there), and the next update rebuilds it.
+    # Part of tiktoken remains: the sidecar goes, best effort; the runtime withholds the rest.
     rm -rf "$1" 2>/dev/null
     substep "the $2 sidecar kept part of a failed tiktoken install; retired, rebuilt on the next update"
 }
@@ -2173,16 +2157,11 @@ _sidecar_retire_after_failed_tiktoken() {
 _sidecar_top_up_tiktoken() {
     _stt_dir="$1"
     _stt_label="$2"
-    # The payload AND a complete dist-info (RECORD is written last), as
-    # Repair-SidecarTiktoken and the runtime's _optional_package_absent check: an
-    # interrupted install can leave the dist-info with no package beside it, or METADATA
-    # and the package without the native extension and RECORD; the sidecar predicate
-    # accepts the sidecar either way (tiktoken is unpinned and optional), and a weaker
-    # check would skip this top-up forever while Qwen tokenizers fail.
-    # A dist-info with no RECORD is one uv cannot uninstall: --upgrade warns and lands
-    # the new version beside it, and importlib.metadata may keep answering the stale
-    # one. It goes before the package is declared present, so a complete install that
-    # a retry put beside an older recordless record does not keep the record forever.
+    # The payload AND a complete dist-info (RECORD is written last), as Repair-SidecarTiktoken and
+    # the runtime check: an interrupted install leaves either without the other, the predicate
+    # accepts both, and a weaker check would skip this top-up while Qwen tokenizers fail. A
+    # recordless dist-info goes first: uv cannot uninstall it and importlib.metadata may keep
+    # answering it.
     for _stt_info in "$_stt_dir"/tiktoken-*.dist-info; do
         if [ -d "$_stt_info" ] && [ ! -f "$_stt_info/RECORD" ]; then
             rm -rf "$_stt_info"
@@ -2196,18 +2175,13 @@ _sidecar_top_up_tiktoken() {
         fi
     done
     unset _stt_meta
-    # Not present, so every tiktoken dist-info still here describes a payload that is
-    # missing or damaged. It goes before the install: --upgrade replaces the package
-    # but lands the new version's dist-info under its own name beside the old one, and
-    # importlib.metadata may keep answering the stale version (the runtime's
-    # _stage_optional_package clears the others for the same reason).
+    # Not present, so every tiktoken dist-info here describes a missing or damaged payload and goes
+    # before the install: --upgrade lands the new dist-info beside the old one.
     for _stt_info in "$_stt_dir"/tiktoken-*.dist-info; do
         [ -d "$_stt_info" ] && rm -rf "$_stt_info"
     done
     unset _stt_info
-    # --upgrade: a --target install without it does not replace existing files, so a
-    # damaged tiktoken/ directory an interrupted install left would be kept under fresh
-    # metadata and read as present on the next run.
+    # --upgrade: a --target install without it keeps a damaged tiktoken/ under fresh metadata.
     if ! fast_install_sidecar --target "$_stt_dir" --no-deps --upgrade "tiktoken" >/dev/null 2>&1; then
         if _sidecar_drop_tiktoken "$_stt_dir"; then
             substep "could not install tiktoken into the $_stt_label sidecar -- Qwen tokenizers may fail"
@@ -2219,20 +2193,14 @@ _sidecar_top_up_tiktoken() {
 }
 
 _sidecar_current() {
-    # One predicate for both shells: install_manifest.py answers, setup.ps1 asks the same
-    # way. A shell reimplementation is what let the two drift the last time -- the
-    # version grep below sees a transformers 5.3.0 METADATA and calls a sidecar whose
-    # package tree an interrupted pip left half-written "current", and the training
-    # worker then dies on `import transformers` with the setup log reporting success.
+    # One predicate for both shells (install_manifest.py): the version grep called a half-written
+    # sidecar with a transformers 5.3.0 METADATA "current".
     _sc_dir="$1"
     _sc_ver="$2"
     [ -d "$_sc_dir" ] || return 1
-    # No venv interpreter is the Colab path (_COLAB_NO_VENV), where the backend deps go
-    # into system Python and $VENV_DIR/bin/python never exists. The shim is stdlib-only,
-    # so the `python` the installer itself runs under there asks it the same question;
-    # the version grep this replaced sees only transformers, and a sidecar install
-    # interrupted after transformers landed read as current on every later run. Only a
-    # tree with no interpreter to ask at all falls back to the grep.
+    # No venv interpreter is the Colab path (_COLAB_NO_VENV); the stdlib-only shim runs under the
+    # installer's own `python` there. Only a tree with no interpreter at all falls back to the grep,
+    # which read an interrupted sidecar as current.
     _sc_python="$VENV_DIR/bin/python"
     if [ ! -x "$_sc_python" ]; then
         _sc_python=$(command -v python 2>/dev/null || command -v python3 2>/dev/null || true)
@@ -2242,10 +2210,8 @@ _sidecar_current() {
         _target_has_pkg_version "$_sc_dir" "transformers" "$_sc_ver"
         return $?
     fi
-    # Bounded where a timeout exists: the shim's own scan budget starts after it has
-    # globbed and read every RECORD and cannot interrupt a stalled read, so a Studio
-    # home on a wedged mount would otherwise hold setup here forever. A timeout reads
-    # as stale, and the rebuild that follows is the installer's own fallback.
+    # Bounded where a timeout exists: the shim cannot interrupt a stalled RECORD read (a wedged
+    # mount). A timeout reads as stale, and the rebuild follows.
     # shellcheck disable=SC2086 - the pins are a deliberate word-split list
     if command -v timeout >/dev/null 2>&1; then
         _sc_out=$(timeout -k 5 60 "$_sc_python" "$SCRIPT_DIR/install_manifest.py" sidecar "$_sc_dir" \
@@ -2256,15 +2222,13 @@ _sidecar_current() {
             "transformers==$_sc_ver" $_SIDECAR_COMMON_PINS 2>/dev/null)
         _sc_rc=$?
     fi
-    # 124 is the TERM after 60 s; 137 is the KILL five seconds later when the audit
-    # ignored the TERM. Both are an audit that did not answer.
+    # 124 is the TERM after 60 s, 137 the KILL after it: an audit that did not answer.
     if [ "$_sc_rc" -eq 124 ] || [ "$_sc_rc" -eq 137 ]; then
         _sc_out="sidecar: audit did not answer within 60 seconds"
     fi
     unset _sc_python
-    # The marker, not the exit code alone. An install_manifest.py predating the shim has
-    # no __main__ block at all, so running it exits 0 with no output -- and reading that
-    # silence as "current" would retire the sidecar rebuild entirely.
+    # The marker, not the exit code alone: an install_manifest.py predating the shim exits 0
+    # silently.
     case "$_sc_out" in
         "sidecar: current")
             unset _sc_out _sc_rc
@@ -2277,10 +2241,7 @@ _sidecar_current() {
             ;;
     esac
     unset _sc_out
-    # No marker and a failure: the audit started and died (an exception in the shim, an
-    # interpreter that cannot run it). That is not the legacy silent exit 0 the version
-    # grep below stands in for, and reading it as current would retire the audit for
-    # exactly the trees it could not read. Stale, and the rebuild follows.
+    # No marker and a failure: the audit died, which is not the legacy silent exit 0. Stale.
     if [ "$_sc_rc" -ne 0 ]; then
         verbose_substep "sidecar $_sc_dir: audit failed (exit $_sc_rc)"
         unset _sc_rc
@@ -2302,8 +2263,7 @@ _install_sidecar() {
     run_quiet "install transformers $_is_ver" fast_install_sidecar --target "$_is_dir" --no-deps "transformers==$_is_ver"
     run_quiet "install huggingface_hub for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "huggingface_hub==1.8.0"
     run_quiet "install hf_xet for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "hf_xet==1.4.2"
-    # Optional, as in setup.ps1: a missing tiktoken wheel must not fail the whole setup,
-    # and it is retried by _sidecar_top_up_tiktoken on later updates.
+    # Optional, as in setup.ps1: retried by _sidecar_top_up_tiktoken on later updates.
     if ! run_quiet_no_exit "install tiktoken for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "tiktoken"; then
         if _sidecar_drop_tiktoken "$_is_dir"; then
             substep "could not install tiktoken into the $_is_label sidecar -- Qwen tokenizers may fail"
@@ -2314,11 +2274,8 @@ _install_sidecar() {
     step "transformers" "$_is_ver pre-installed"
 }
 
-# Per tier, not one flag for all three. The old single flag rebuilt every sidecar
-# whenever any one of them was stale, and -- through the `_SKIP_PYTHON_DEPS = false`
-# clause that used to sit at the end of this list -- on every update that touched the
-# dependency pass at all, whether or not a sidecar had moved. That is three wipes and
-# twelve `--target` installs, measured at 60-90 s on Windows, for work already done.
+# Per tier: the old single flag (with its `_SKIP_PYTHON_DEPS = false` clause) rebuilt all three
+# sidecars on every update that touched the dependency pass, 60-90 s on Windows for nothing.
 _NEED_T5_530=false
 _NEED_T5_550=false
 _NEED_T5_510=false

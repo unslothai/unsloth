@@ -1314,9 +1314,8 @@ def _sidecar_pin_ok(root: Path, spec: str) -> Optional[str]:
                 payload_present = _sidecar_payload_present(root, dist)
     except Exception:
         return f"{name} metadata unreadable"
-    # An optional package (tiktoken) is one the sidecar is complete without: absent, or
-    # left as a dist-info by an interrupted install, it is setup's top-up's business, not
-    # a reason to rebuild the sidecar. Present, it is held to its pin like any other.
+    # An optional package (tiktoken) absent or left as a bare dist-info is the top-up's business,
+    # not a reason to rebuild; present, it is held to its pin.
     if canonical in OPTIONAL_SIDECAR_PACKAGES and (
         not found or (not directory_present and not payload_present)
     ):
@@ -1360,16 +1359,13 @@ def _sidecar_damaged_files(
         return []
     for dist_info in dist_infos:
         name = dist_info.name.split("-")[0]
-        # An optional package (tiktoken) may be absent; present, its RECORD is held to
-        # the same standard as every other, as the runtime scan does. Mirrors
-        # _sidecar_scan_impl in studio/backend/utils/transformers_version.py.
+        # An optional package may be absent; present, its RECORD is held to the same standard
+        # (mirrors _sidecar_scan_impl in transformers_version.py).
         try:
             record = (dist_info / "RECORD").read_text(encoding = "utf-8", errors = "replace")
         except FileNotFoundError:
-            # No RECORD under a pinned package's dist-info is an interrupted install
-            # (pip and uv write it last), and every truncation of that payload is then
-            # invisible to the size check below; an optional package's is cleared by
-            # its top-up instead, so only the pins are held to it.
+            # No RECORD under a pinned dist-info is an interrupted install (written last) whose
+            # truncations the size check cannot see; an optional package's top-up clears its own.
             if _canonical(name) in required_names:
                 recordless.append(f"{name}: RECORD is missing")
             continue
@@ -1450,12 +1446,9 @@ def _sidecar_damaged_files(
     return found
 
 
-# Mirror of transformers_version._sidecar_file_check_disabled: same variable, same
-# values. The runtime's file scan has this escape hatch because a false positive costs a
-# several-hundred-MB reinstall, and the setup-side predicate must not be the one path
-# that still wipes the sidecar while the hatch is set. Package and version checks stay.
-# Packages a sidecar is complete without; setup installs them best-effort and the
-# runtime (transformers_version._OPTIONAL_SIDECAR_PACKAGES) treats them the same way.
+# Mirror of transformers_version._sidecar_file_check_disabled: the escape hatch for a false positive
+# (a several-hundred-MB reinstall) must hold on the setup side too. Then the packages a sidecar is
+# complete without (transformers_version._OPTIONAL_SIDECAR_PACKAGES).
 OPTIONAL_SIDECAR_PACKAGES = frozenset({"tiktoken"})
 SIDECAR_FILE_CHECK_ENV = "UNSLOTH_SKIP_SIDECAR_FILE_CHECK"
 
