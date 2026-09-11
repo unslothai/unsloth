@@ -420,7 +420,15 @@ def _developer_paths() -> tuple[str, ...]:
 
 def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
     """*workdir* is excluded by ORIGIN: dropping only the resolved form would skip
-    ``<workdir>/venv/lib`` and grant file-read* on the ~/.ssh behind it."""
+    ``<workdir>/venv/lib`` and grant file-read* on the ~/.ssh behind it.
+
+    Both SPELLINGS of the workdir, for the mirror image of the Linux twin's case:
+    there sys.prefix held the alias and the caller passed the canonical root,
+    here the caller passes the alias and sys.prefix or sysconfig may hold the
+    canonical one. Either way a lexical test against one spelling does not see a
+    candidate written in the other, and the loop then resolves it and adds
+    whatever is behind it to the read roots.
+    """
     candidates: list[str] = [
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site"),
     ]
@@ -467,7 +475,10 @@ def runtime_read_paths(workdir: str | None = None) -> tuple[str, ...]:
     for candidate in candidates:
         if not candidate or not posixpath.isabs(candidate):
             continue
-        if workdir is not None and _within(posixpath.abspath(candidate), workdir):
+        written = posixpath.abspath(candidate)
+        if workdir is not None and any(
+            _within(written, root) for root in (workdir, os.path.realpath(workdir))
+        ):
             continue
         # Both spellings: a venv reached through a symlink needs the link's own path
         # as well as the directory it lands on.
@@ -547,12 +558,19 @@ def runtime_paths_under(workdir: str) -> tuple[str, ...]:
         if not _within(resolved, canonical_root):
             continue
         # Denied under every spelling of the workdir, since Seatbelt judges
-        # the path as written and the allowance covers them all.
-        relative = posixpath.relpath(resolved, canonical_root)
-        for other in roots:
-            spelling = posixpath.join(other, relative)
-            if spelling not in inside:
-                inside.append(spelling)
+        # the path as written and the allowance covers them all. The candidate's
+        # OWN spelling too, not just the resolved one: keeping only the target
+        # left a symlinked entry inside the checkout writable by name, so a tool
+        # call could unlink it and put its own package there.
+        written = posixpath.abspath(candidate)
+        for form in (resolved, written):
+            if not _within(form, canonical_root):
+                continue
+            relative = posixpath.relpath(form, canonical_root)
+            for other in roots:
+                spelling = posixpath.join(other, relative)
+                if spelling not in inside:
+                    inside.append(spelling)
     return tuple(inside)
 
 

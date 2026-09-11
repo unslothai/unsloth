@@ -781,6 +781,29 @@ def test_an_interpreter_in_a_home_directory_does_not_grant_the_home(tmp_path, mo
     assert str(executable) in paths, paths
 
 
+def test_a_runtime_origin_is_excluded_under_either_workdir_spelling(tmp_path, monkeypatch):
+    """The mirror image of the Linux case: there sys.prefix held the alias and
+    the caller passed the canonical root, here the caller passes the alias and
+    sys.prefix holds the canonical one. Either way a lexical test against one
+    spelling misses the candidate, and the loop then resolves it and adds the
+    secret behind it to the read roots."""
+    real = tmp_path / "real"
+    real.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real)
+    secret = tmp_path / "secret"
+    secret.mkdir()
+    (secret / "id_rsa").write_text("SECRET", encoding = "utf-8")
+    venv = real / "venv"
+    (venv / "bin").mkdir(parents = True)
+    (venv / "lib").symlink_to(secret)
+    for attribute in ("prefix", "base_prefix", "exec_prefix", "base_exec_prefix"):
+        monkeypatch.setattr(sys, attribute, str(real / "venv"))
+
+    paths = backend.runtime_read_paths(str(alias))
+    assert not any(os.path.realpath(p) == str(secret) for p in paths), paths
+
+
 def test_an_editable_source_inside_the_workdir_is_denied_writes(tmp_path, monkeypatch):
     """The Linux twin's case. runtime_read_paths drops it so it is not granted by
     name, but the workdir-wide file-write* then leaves code Studio itself imports

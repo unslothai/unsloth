@@ -18,6 +18,7 @@ import sys
 import sysconfig
 import tempfile
 import threading
+import time
 from functools import lru_cache
 
 from loggers import get_logger
@@ -271,9 +272,14 @@ def _runtime_paths_under(workdir: str) -> tuple[str, ...]:
             # alias-prefixed path is not lexically beneath the canonical root,
             # and a canonical one is not beneath the alias -- so pairing the two
             # tests per root rejected every path either way round.
-            resolved = os.path.realpath(candidate)
-            if _within(resolved, canonical_root) and resolved not in inside:
-                inside.append(resolved)
+            # BOTH spellings, when both are inside. Keeping only the resolved one
+            # left a symlinked entry -- an editable package inside the checkout
+            # pointing at a sibling in it -- under the writable workdir mount:
+            # the target was read-only but the NAME was not, so a tool call could
+            # unlink it and put its own package there for a later host import.
+            for path in (os.path.abspath(candidate), os.path.realpath(candidate)):
+                if _within(path, canonical_root) and path not in inside:
+                    inside.append(path)
     return tuple(inside)
 
 
@@ -446,7 +452,18 @@ def _inspect_cache_component(name: str, path: str) -> "str | None":
     return cache_share_hazard(path)
 
 
+# path -> when its scan may be attempted again. A thread stuck in scandir on a
+# wedged mount never returns, so without this every later launch started another
+# one against the same path and they accumulated for the life of the process.
+_cache_scan_backoff: "dict[str, float]" = {}
+_CACHE_BACKOFF_SECONDS = 300.0
+
+
 def _cache_hazard_within_deadline(name: str, path: str) -> "str | None":
+    now = time.monotonic()
+    retry_at = _cache_scan_backoff.get(path)
+    if retry_at is not None and now < retry_at:
+        return "was still being inspected when a previous launch gave up (a wedged mount?)"
     answer: list[str | None] = []
 
     def inspect() -> None:
@@ -459,7 +476,12 @@ def _cache_hazard_within_deadline(name: str, path: str) -> "str | None":
     worker.start()
     worker.join(_CACHE_INSPECT_SECONDS)
     if not answer:
+        # The thread is left behind on purpose -- one blocked in scandir cannot be
+        # killed -- but the PATH is remembered, so the next launch drops the
+        # component without starting another one.
+        _cache_scan_backoff[path] = time.monotonic() + _CACHE_BACKOFF_SECONDS
         return f"could not be inspected within {_CACHE_INSPECT_SECONDS:.0f}s (a wedged mount?)"
+    _cache_scan_backoff.pop(path, None)
     return answer[0]
 
 

@@ -26,6 +26,11 @@ _LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET = 1 << 0
 # itself the version check -- an older kernel answers E2BIG.
 _RULESET_ATTR = struct.pack("=QQQ", 0, 0, _LANDLOCK_SCOPE_ABSTRACT_UNIX_SOCKET)
 _PR_SET_NO_NEW_PRIVS = 38
+# Built at import, never in the forked child: see apply_abstract_scope.
+_RULESET_ATTR_BUFFER = ctypes.create_string_buffer(_RULESET_ATTR, len(_RULESET_ATTR))
+_RULESET_ATTR_REF = ctypes.byref(_RULESET_ATTR_BUFFER)
+_RULESET_ATTR_SIZE = ctypes.c_size_t(len(_RULESET_ATTR))
+_ZERO_FLAGS = ctypes.c_uint32(0)
 # The child binds one socket and calls two syscalls, so this is a hang budget,
 # not a work budget.
 _PROBE_TIMEOUT_SECONDS = 5.0
@@ -156,16 +161,24 @@ def _abi_reports_scope() -> bool:
 def apply_abstract_scope() -> None:
     """Runs in the forked child, so it must never raise or log. Success cannot be
     inferred from the ABI version, since an outer sandbox or the nesting limit can
-    still deny restrict_self; the live probe decides."""
+    still deny restrict_self; the live probe decides.
+
+    Everything allocatable is built at IMPORT and reused here. This is a pre-exec,
+    so it runs after fork() in a process whose other threads are gone but whose
+    locks are not, and an allocation that wants one of them deadlocks the child
+    before exec -- where Popen is still waiting on the error pipe and its own
+    timeout has not started. That does not make this async-signal-safe, which no
+    Python pre-exec is, but it is the difference between the work this adds and
+    the setsid the tool launches already did on main.
+    """
     if _libc is None:
         return
-    attr = ctypes.create_string_buffer(_RULESET_ATTR, len(_RULESET_ATTR))
     ctypes.set_errno(0)
     ruleset = _libc.syscall(
         _NR_LANDLOCK_CREATE_RULESET,
-        ctypes.byref(attr),
-        ctypes.c_size_t(len(_RULESET_ATTR)),
-        ctypes.c_uint32(0),
+        _RULESET_ATTR_REF,
+        _RULESET_ATTR_SIZE,
+        _ZERO_FLAGS,
     )
     if ruleset < 0:
         return
@@ -173,7 +186,7 @@ def apply_abstract_scope() -> None:
         # Required before restrict_self for an unprivileged caller. Set again
         # here so this does not depend on which pre-exec it was composed with.
         _libc.prctl(_PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)
-        _libc.syscall(_NR_LANDLOCK_RESTRICT_SELF, ctypes.c_int(int(ruleset)), ctypes.c_uint32(0))
+        _libc.syscall(_NR_LANDLOCK_RESTRICT_SELF, ctypes.c_int(int(ruleset)), _ZERO_FLAGS)
     finally:
         try:
             os.close(int(ruleset))

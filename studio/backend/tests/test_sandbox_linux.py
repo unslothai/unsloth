@@ -1105,6 +1105,48 @@ def _share_cache_paths(monkeypatch, cache):
     monkeypatch.setitem(sys.modules, "utils.hf_cache_settings", module)
 
 
+def test_a_symlinked_runtime_entry_inside_the_workdir_is_protected_by_name(tmp_path, monkeypatch):
+    """Keeping only the resolved target left the symlink's own NAME under the
+    writable workdir mount: the package it pointed at was read-only, but a tool
+    call could unlink the entry and put its own package there for a later host
+    import to run."""
+    workdir = tmp_path / "session"
+    target = workdir / "real_pkg"
+    target.mkdir(parents = True)
+    (target / "__init__.py").write_text("", encoding = "utf-8")
+    entry = workdir / "mypkg"
+    entry.symlink_to(target)
+    monkeypatch.setattr(sandbox_linux, "editable_source_roots", lambda: (str(entry),))
+
+    protected = sandbox_linux._runtime_paths_under(str(workdir))
+    assert str(entry) in protected, protected
+    assert str(target) in protected, protected
+
+
+def test_a_wedged_cache_path_is_not_re_scanned_by_every_later_launch(tmp_path, monkeypatch):
+    """A thread blocked in scandir never returns, so without a backoff every
+    later launch started another one against the same path and they accumulated
+    for the life of the process."""
+    cache = tmp_path / "hostcache"
+    (cache / "hub").mkdir(parents = True)
+    _share_cache_paths(monkeypatch, cache)
+    started: list[str] = []
+
+    def wedged(name, path):
+        started.append(path)
+        time.sleep(30)
+
+    monkeypatch.setattr(sandbox_linux, "_inspect_cache_component", wedged)
+    monkeypatch.setattr(sandbox_linux, "_CACHE_INSPECT_SECONDS", 0.5)
+    monkeypatch.setattr(sandbox_linux, "_cache_scan_backoff", {})
+    session = str(tmp_path / "session")
+    assert sandbox_linux._model_cache_binds(session) == {}
+    first = len(started)
+    assert first > 0
+    assert sandbox_linux._model_cache_binds(session) == {}
+    assert len(started) == first, "a second launch started another worker on the same path"
+
+
 def test_a_runtime_prefix_contributes_its_certificate_store(tmp_path, monkeypatch):
     prefix = tmp_path / "conda"
     for name in ("bin", "ssl", "lib"):
