@@ -130,6 +130,70 @@ def _drop_pool_if_unused() -> None:
         pass
 
 
+def _nvfp4_flashinfer_linears(module: Any) -> list:
+    """``(fqn, layer)`` for every FlashInfer NVFP4 Linear under ``module``. Imported lazily, so a
+    build without the backend does not lose CUDA graphs over it."""
+    try:
+        from .diffusion_nvfp4_linear import is_nvfp4_flashinfer_linear
+    except Exception:  # noqa: BLE001 - no backend module, no NVFP4 layers to find
+        return []
+    found: list = []
+    try:
+        for name, sub in module.named_modules():
+            if is_nvfp4_flashinfer_linear(sub):
+                found.append((name, sub))
+    except Exception:  # noqa: BLE001 - an exotic module tree is simply not an NVFP4 one
+        return []
+    return found
+
+
+def _protect_keyed(module: Any) -> bool:
+    """Does this module need the per-step precision branch in its graph key? Only when the lever is
+    armed AND the module holds NVFP4 layers, so an fp8 load in the same process does not double
+    its graph count for a branch it cannot take."""
+    try:
+        from .diffusion_nvfp4_protect import protect_controller
+        if not protect_controller().armed:
+            return False
+        return bool(_nvfp4_flashinfer_linears(module))
+    except Exception:  # noqa: BLE001 - a tree we cannot walk simply keys the way it always did
+        return False
+
+
+def protect_graph_key() -> tuple:
+    """The branch in flight as a key suffix. Imported lazily; ``()`` when the lever is off."""
+    from .diffusion_nvfp4_protect import protect_graph_key as _key
+    return _key()
+
+
+def _unbaked_nvfp4_layers(layers: list) -> list:
+    """The fqns among ``layers`` whose activation global scale is not a baked, constant one. A
+    scale still being learned is recorded rather than executed under capture, so every replay runs
+    whatever the capture saw. Fail closed: no answer counts as unbaked."""
+    return [name for name, layer in layers if not getattr(layer, "activation_scales_baked", False)]
+
+
+def _prewarm_token_counts(live: list) -> tuple:
+    """Candidate GEMM row counts (M) for this call, smallest first. Read off the warm-up's own
+    shapes, since the resolution is not knowable at load time. Generous rather than exact (tuning
+    an unused M is inert) but bounded, so a family with many inputs cannot turn a capture into a
+    profiling session."""
+    counts = {1}
+    for tensor in live:
+        try:
+            shape = tuple(int(dim) for dim in tensor.shape)
+        except Exception:  # noqa: BLE001 - not a shaped tensor, nothing to read
+            continue
+        if len(shape) < 2:
+            continue
+        rows = 1
+        for dim in shape[:-1]:
+            rows *= dim
+        if rows > 0:
+            counts.add(rows)
+    return tuple(sorted(counts)[:8])
+
+
 def _warn(logger: Any, what: str, exc: Any) -> None:
     if logger is not None:
         logger.warning("diffusion.cuda_graph: %s failed: %s", what, exc)
@@ -177,6 +241,8 @@ class GraphedForward:
         self.capture_error: Optional[dict] = None
         self.cache: dict = {}
         self.cap_hit = False
+        # Resolved on the first call, not here: the walk is O(modules) and must not run per call.
+        self.protect_keyed: Optional[bool] = None
         self.stats = {
             "captures": 0,
             "replays": 0,
@@ -295,6 +361,23 @@ class GraphedForward:
 
         try:
             key = graph_key((args, kwargs))
+            if self.protect_keyed is None:
+                self.protect_keyed = _protect_keyed(self.module)
+                if self.protect_keyed:
+                    # Arming the lever splits every input shape into two calls, so the same shapes
+                    # need twice the graphs or half of them fall out of the cap and run eager.
+                    self.max_graphs *= 2
+                    if self.logger is not None:
+                        self.logger.info(
+                            "diffusion.cuda_graph: NVFP4 per-step precision is armed on %s; graph "
+                            "cap raised to %d (one graph per branch per input shape)",
+                            type(self.module).__name__,
+                            self.max_graphs,
+                        )
+            if self.protect_keyed:
+                # One graph per branch: a graph recorded at a W4A4 step and replayed at a W4A16
+                # one would report the lever as measured while it never fired.
+                key = key + protect_graph_key()
             entry = self.cache.get(key)
         except Exception:  # noqa: BLE001 - an unhashable tree is simply not capturable
             self.stats["refused_object"] += 1
@@ -373,12 +456,27 @@ class GraphedForward:
                 f"inside a captured region is baked in at its recorded value"
             )
 
+        nvfp4_layers = _nvfp4_flashinfer_linears(self.module)
+        unbaked = _unbaked_nvfp4_layers(nvfp4_layers)
+        if unbaked:
+            raise RuntimeError(
+                f"{len(unbaked)} NVFP4 linear(s) report unbaked activation scales "
+                f"(first: {unbaked[0]}); a scale still being calibrated would be frozen into the "
+                f"graph at whatever value this capture saw, so this load runs eager"
+            )
+
         # A tensor made under ``torch.inference_mode()``, which renders run in, refuses ``copy_``.
         with torch.inference_mode(False):
             entry.static = [torch.empty_like(t) for t in live]
         for dst, src in zip(entry.static, live):
             dst.copy_(src)
         static_args, static_kwargs = _rebuild(entry.in_spec, entry.static)
+
+        if nvfp4_layers:
+            # BEFORE the warm-up and so before the capture: the autotuner's candidate launches
+            # would be recorded rather than measured, baking in the default tactic.
+            from .diffusion_nvfp4_linear import nvfp4_prewarm
+            nvfp4_prewarm(self.module, _prewarm_token_counts(live), logger = self.logger)
 
         # Side stream: a workspace first created DURING capture is only valid while recording.
         side = torch.cuda.Stream()

@@ -84,6 +84,29 @@ def test_flux1_krea_dev_generation_defaults():
     assert default_generation_params("krea/Krea-2-Raw") == (52, 3.5)
 
 
+def test_flux_dev_and_krea_do_not_inherit_the_schnell_nvfp4_checkpoint():
+    # The NVFP4 artifact is baked from the schnell weights and its policy is gated on schnell only.
+    # As a family-wide row, dev and Krea-dev inherited it: planning budgeted a prequant-only load,
+    # the checkpoint downloaded, _validate_checkpoint refused it on base_model_id, and the dense
+    # fallback the explicit nvfp4 request needed was already disabled. The fp8 / int8 variant rows
+    # for those two bases must be untouched.
+    from core.inference.diffusion_families import family_prequant_repo
+
+    fam = detect_family("black-forest-labs/FLUX.1-schnell")
+    assert fam is not None and fam.name == "flux.1"
+    assert (
+        family_prequant_repo(fam, "nvfp4", base_repo = "black-forest-labs/FLUX.1-schnell")
+        == "unsloth/FLUX.1-schnell-NVFP4"
+    )
+    for base, fp8_repo in (
+        ("black-forest-labs/FLUX.1-dev", "unsloth/FLUX.1-dev-FP8"),
+        ("black-forest-labs/FLUX.1-Krea-dev", "unsloth/FLUX.1-Krea-dev-FP8"),
+    ):
+        assert family_prequant_repo(fam, "nvfp4", base_repo = base) is None
+        assert family_prequant_repo(fam, "fp8", base_repo = base) == fp8_repo
+        assert family_prequant_repo(fam, "int8", base_repo = base) == fp8_repo
+
+
 def test_flux2_klein_generation_defaults_distinguish_base_from_distilled():
     for size in ("4B", "9B"):
         assert default_generation_params(f"unsloth/FLUX.2-klein-base-{size}") == (50, 4.0)

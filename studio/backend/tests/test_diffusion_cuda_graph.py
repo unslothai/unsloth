@@ -823,3 +823,106 @@ def test_real_cuda_capture_replays_bit_identically():
         assert torch.equal(after, want)
     finally:
         cg.uninstall_all([handle])
+
+
+class _FakeNVFP4Linear:
+    """Named exactly as the real class, since ``is_nvfp4_flashinfer_linear`` gates on the NAME."""
+
+    def __init__(
+        self,
+        *,
+        baked = True,
+        in_features = 4,
+        out_features = 8,
+    ):
+        self.a_gsf = 1.0
+        self.in_features = in_features
+        self.out_features = out_features
+        if baked is not None:
+            self.activation_scales_baked = bool(baked)
+
+
+_FakeNVFP4Linear.__name__ = "NVFP4FlashInferLinear"
+
+
+class _NVFP4DiT(_FakeDiT):
+    """A denoiser whose module tree holds the given NVFP4 linears."""
+
+    def __init__(self, layers):
+        super().__init__()
+        self._layers = list(layers)
+
+    def named_modules(self):
+        yield "", self
+        for name, layer in self._layers:
+            yield name, layer
+
+
+@pytest.fixture
+def record_prewarm(monkeypatch):
+    """Record every ``nvfp4_prewarm`` call the graph layer makes, without importing flashinfer."""
+    from core.inference import diffusion_nvfp4_linear as nl
+
+    calls: list = []
+    monkeypatch.setattr(
+        nl,
+        "nvfp4_prewarm",
+        lambda transformer, shapes, **kwargs: calls.append((transformer, tuple(shapes))) or 0,
+    )
+    return calls
+
+
+def test_capture_prewarms_the_nvfp4_layers_before_the_warmup(stub_torch, record_prewarm):
+    module = _NVFP4DiT([("blocks.0.attention.to_q", _FakeNVFP4Linear())])
+    handle = _armed(module)
+    handle(_t((2, 8, 4)), timestep = _t((1,)), return_dict = False)
+
+    assert len(record_prewarm) == 1
+    tuned_module, shapes = record_prewarm[0]
+    assert tuned_module is module
+    assert 1 in shapes and 16 in shapes
+    assert handle.stats["captures"] == 1
+    assert handle.poisoned is False
+
+
+def test_capture_does_not_prewarm_a_model_without_nvfp4_layers(stub_torch, record_prewarm):
+    handle = _armed()
+    handle(_t(), timestep = _t((1,)), return_dict = False)
+    assert record_prewarm == []
+    assert handle.stats["captures"] == 1
+
+
+def test_unbaked_activation_scales_poison_the_capture(stub_torch, record_prewarm):
+    module = _NVFP4DiT(
+        [
+            ("blocks.0.attention.to_q", _FakeNVFP4Linear()),
+            ("blocks.1.attention.to_q", _FakeNVFP4Linear(baked = False)),
+        ]
+    )
+    handle = _armed(module)
+    out = handle(_t(), timestep = _t((1,)), return_dict = False)
+
+    assert handle.poisoned is True
+    assert handle.stats["captures"] == 0
+    assert "unbaked activation scales" in handle.capture_error["msg"]
+    assert "blocks.1.attention.to_q" in handle.capture_error["msg"]
+    assert record_prewarm == []
+    assert module.calls == 1  # the eager fallback only
+    assert out[0].value == ("out", 1)
+
+
+def test_a_layer_that_cannot_answer_counts_as_unbaked(stub_torch, record_prewarm):
+    """Fail closed: a layer from some other build with no flag is not assumed to be baked."""
+    module = _NVFP4DiT([("blocks.0.attention.to_q", _FakeNVFP4Linear(baked = None))])
+    handle = _armed(module)
+    handle(_t(), timestep = _t((1,)), return_dict = False)
+    assert handle.poisoned is True
+    assert record_prewarm == []
+
+
+def test_prewarm_token_counts_are_bounded_and_sorted(stub_torch):
+    counts = cg._prewarm_token_counts([_t((2, 8, 4)), _t((1,)), _t((4, 4))])
+    assert counts[0] == 1  # the modulation M is always tuned
+    assert counts == tuple(sorted(set(counts)))
+    assert set(counts) >= {1, 4, 16}
+    assert len(cg._prewarm_token_counts([_t((n, 4)) for n in range(2, 40)])) <= 8

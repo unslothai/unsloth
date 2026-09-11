@@ -1,0 +1,150 @@
+{
+  "version": 1,
+  "comment": "Reviewed NVFP4 accuracy-gate verdicts, one entry per (family, base_repo, policy_id, policy_version, checkpoint_sha256). Written by scripts/record_nvfp4_gate.py from a scripts/prequant_accuracy_gate.py results.json, read by core/inference/diffusion_nvfp4_gate.py. Empty means no checkpoint has been gated yet, which keeps nvfp4 out of the auto ladder for every family.",
+  "records": [
+    {
+      "family": "z-image",
+      "base_repo": "Tongyi-MAI/Z-Image-Turbo",
+      "policy_id": "zimg_f8mod_toq34_v1",
+      "policy_version": 1,
+      "checkpoint_sha256": "d2f80a4a32c7b21bb3f5bda15f6c786802953ab472dc284cae81f3193670dc27",
+      "repo_id": "unsloth/Z-Image-Turbo-NVFP4",
+      "filename": "Z-Image-Turbo-NVFP4-RTN.pt",
+      "gptq": false,
+      "all_pass": true,
+      "num_pairs": 24,
+      "num_passed": 24,
+      "aggregates": {
+        "lpips_mean": 0.15640976116992533,
+        "ssim_mean": 0.8474995975672268,
+        "clip_delta_mean": 0.005153092245260875,
+        "failures": []
+      },
+      "gates": {
+        "lpips_case_max": 0.6,
+        "lpips_mean_max": 0.25,
+        "ssim_case_min": 0.3,
+        "ssim_mean_min": 0.7,
+        "clip_delta_case_max": 0.03,
+        "clip_delta_mean_max": 0.01,
+        "black_luma_min": 0.02
+      },
+      "resolutions": [
+        512,
+        1024
+      ],
+      "seeds": [
+        1234,
+        4321
+      ],
+      "cuda_graphs": true,
+      "backend": "flashinfer",
+      "gpu": "NVIDIA B200",
+      "versions": {
+        "torch": "2.12.1+cu130",
+        "torchao": "0.17.0+cu130",
+        "diffusers": "0.40.0.dev0",
+        "flashinfer": "0.6.6"
+      },
+      "gate_script_sha256": "5d3de7f30c40ea11cdf47c1e7f86903d8eba398bbd751bba2bd5aa986aaef8d8",
+      "run_date": "2026-09-09",
+      "results_path": "/mnt/disks/unslothai/ubuntu/workspace_81/outputs/nvfp4_pr2/gate_zimage_flashinfer/results.json"
+    },
+    {
+      "family": "z-image",
+      "base_repo": "Tongyi-MAI/Z-Image-Turbo",
+      "policy_id": "zimg_f8mod_toq34_v1",
+      "policy_version": 1,
+      "checkpoint_sha256": "22771918e8ef71abb99caa7d15f0058b9329c77c095707d5cc9236b1ca4ab336",
+      "repo_id": "unsloth/Z-Image-Turbo-NVFP4",
+      "filename": "Z-Image-Turbo-NVFP4.pt",
+      "gptq": true,
+      "all_pass": true,
+      "num_pairs": 24,
+      "num_passed": 24,
+      "aggregates": {
+        "lpips_mean": 0.14103486808016896,
+        "ssim_mean": 0.8657750307609459,
+        "clip_delta_mean": 0.006255585700273514,
+        "failures": []
+      },
+      "gates": {
+        "lpips_case_max": 0.6,
+        "lpips_mean_max": 0.25,
+        "ssim_case_min": 0.3,
+        "ssim_mean_min": 0.7,
+        "clip_delta_case_max": 0.03,
+        "clip_delta_mean_max": 0.01,
+        "black_luma_min": 0.02
+      },
+      "resolutions": [
+        512,
+        1024
+      ],
+      "seeds": [
+        1234,
+        4321
+      ],
+      "cuda_graphs": true,
+      "backend": "flashinfer",
+      "gpu": "NVIDIA B200",
+      "versions": {
+        "torch": "2.12.1+cu130",
+        "torchao": "0.17.0+cu130",
+        "diffusers": "0.40.0.dev0",
+        "flashinfer": "0.6.6"
+      },
+      "gate_script_sha256": "5d3de7f30c40ea11cdf47c1e7f86903d8eba398bbd751bba2bd5aa986aaef8d8",
+      "run_date": "2026-09-09",
+      "results_path": "/mnt/disks/unslothai/ubuntu/workspace_81/outputs/nvfp4_pr2/gate_zimage_gptq_flashinfer/results.json"
+    },
+    {
+      "family": "flux.1",
+      "base_repo": "black-forest-labs/FLUX.1-schnell",
+      "policy_id": "flux_mod_single_v1",
+      "policy_version": 1,
+      "checkpoint_sha256": "5b344cafa3884540841b25fa9e8818c2edb8ca6354d7dc3e20a2351da35d4a6a",
+      "repo_id": "unsloth/FLUX.1-schnell-NVFP4",
+      "filename": "FLUX.1-schnell-NVFP4.pt",
+      "gptq": false,
+      "all_pass": true,
+      "num_pairs": 24,
+      "num_passed": 24,
+      "aggregates": {
+        "lpips_mean": 0.18111217020001882,
+        "ssim_mean": 0.7998154920352115,
+        "clip_delta_mean": 0.006424197306235631,
+        "failures": []
+      },
+      "gates": {
+        "lpips_case_max": 0.6,
+        "lpips_mean_max": 0.25,
+        "ssim_case_min": 0.3,
+        "ssim_mean_min": 0.7,
+        "clip_delta_case_max": 0.03,
+        "clip_delta_mean_max": 0.01,
+        "black_luma_min": 0.02
+      },
+      "resolutions": [
+        512,
+        1024
+      ],
+      "seeds": [
+        1234,
+        4321
+      ],
+      "cuda_graphs": true,
+      "backend": "flashinfer",
+      "gpu": "NVIDIA B200",
+      "versions": {
+        "torch": "2.12.1+cu130",
+        "torchao": "0.17.0+cu130",
+        "diffusers": "0.40.0.dev0",
+        "flashinfer": "0.6.6"
+      },
+      "gate_script_sha256": "5d3de7f30c40ea11cdf47c1e7f86903d8eba398bbd751bba2bd5aa986aaef8d8",
+      "run_date": "2026-09-09",
+      "results_path": "/mnt/disks/unslothai/ubuntu/workspace_81/outputs/nvfp4_pr2/gate_flux_flashinfer/results.json"
+    }
+  ]
+}

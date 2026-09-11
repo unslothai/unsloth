@@ -53,3 +53,29 @@ def test_nvfp4_is_below_int8():
     for info in family_inference_infos():
         estimated = info["estimated_resident_gb"]
         assert estimated["nvfp4"] < estimated["int8"], info["family"]
+
+
+def test_a_policy_family_reports_its_policy_nvfp4_footprint():
+    from core.inference.diffusion_auto_policy import _POLICY_STEADY_FACTOR, policy_steady_factor
+    infos = {info["family"]: info for info in family_inference_infos()}
+    for family, policy_id in (
+        ("z-image", "zimg_f8mod_toq34_v1"),
+        ("flux.1", "flux_mod_single_v1"),
+        ("qwen-image", "qwen_p02_v1"),
+    ):
+        transformer, text_encoders, vae = _FAMILY_BF16_GB[family]
+        expected = round(transformer * _POLICY_STEADY_FACTOR[policy_id] + text_encoders + vae, 1)
+        assert infos[family]["estimated_resident_gb"]["nvfp4"] == expected, family
+        whole = round(transformer * _QUANT_STEADY_FACTOR["nvfp4"] + text_encoders + vae, 1)
+        assert expected > whole, family
+
+
+def test_a_family_without_a_policy_keeps_the_whole_model_factor():
+    from core.inference.diffusion_auto_policy import policy_steady_factor
+    infos = {info["family"]: info for info in family_inference_infos()}
+    for family in ("flux.1-kontext", "qwen-image-edit", "lumina-2"):
+        transformer, text_encoders, vae = _FAMILY_BF16_GB[family]
+        assert policy_steady_factor(family) is None, family
+        assert infos[family]["estimated_resident_gb"]["nvfp4"] == round(
+            transformer * _QUANT_STEADY_FACTOR["nvfp4"] + text_encoders + vae, 1
+        ), family

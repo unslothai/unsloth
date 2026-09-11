@@ -333,11 +333,27 @@ class _Bytes:
 
 
 class Float8Tensor:
-    """A quantized weight as far as the fingerprint is concerned: the class NAME is the key."""
+    """A quantized fp8 weight as far as this module is concerned: the class NAME is the key, for the
+    fingerprint's payload table and for the activation-floor check that has to tell an fp8 weight
+    apart from the 4-bit ones beside it in a policy checkpoint."""
 
-    def __init__(self, qdata):
+    def __init__(
+        self,
+        qdata = b"",
+        hp_value_lb = 1e-12,
+    ):
         self.qdata = _Bytes(qdata)
         self.scale = _Bytes(b"scale")
+        self.act_quant_kwargs = types.SimpleNamespace(hp_value_lb = hp_value_lb)
+
+
+class NVFP4Tensor:
+    """The other half of a per-layer policy checkpoint: 4-bit weights sitting in the same state dict."""
+
+    def __init__(self, qdata = b""):
+        self.qdata = _Bytes(qdata)
+        self.scale = _Bytes(b"scale")
+        self.act_quant_kwargs = types.SimpleNamespace(scale_dtype = "float8_e4m3fn")
 
 
 class _Recorder:
@@ -2050,25 +2066,18 @@ def test_load_is_dropped_when_the_padding_cannot_be_proven(monkeypatch, tmp_path
 # ── fp8 activation scale floor ──────────────────────────────────────────────────
 
 
-class _FakeFp8Tensor:
-    """Stands in for a torchao Float8Tensor: only act_quant_kwargs.hp_value_lb is read."""
-
-    def __init__(self, hp_value_lb):
-        self.act_quant_kwargs = types.SimpleNamespace(hp_value_lb = hp_value_lb)
-
-
 def test_an_fp8_checkpoint_without_the_activation_floor_is_rejected():
     # A checkpoint built before activation_value_lb bakes hp_value_lb=None into every quantised
     # tensor, and stays broken however it is loaded: torchao's per-row activation quantiser divides
     # by the row amax, so qwen's all-zero text rows give scale 0 and NaN. The metadata checks around
     # this one all accept an absent field for back-compat, which is exactly wrong here, so the floor
     # is read off the TENSORS instead. Measured: 412 of 512 rows non-finite without it, 0 with it.
-    floored = {"blocks.0.attn.to_q.weight": _FakeFp8Tensor(1e-12)}
-    unfloored = {"blocks.0.attn.to_q.weight": _FakeFp8Tensor(None)}
+    floored = {"blocks.0.attn.to_q.weight": Float8Tensor(hp_value_lb = 1e-12)}
+    unfloored = {"blocks.0.attn.to_q.weight": Float8Tensor(hp_value_lb = None)}
     assert pq._fp8_activation_floor_present(floored, None) is True
     assert pq._fp8_activation_floor_present(unfloored, None) is False
     # Zero is not a floor either: it is what an unclamped amax divide produces.
-    assert pq._fp8_activation_floor_present({"w": _FakeFp8Tensor(0.0)}, None) is False
+    assert pq._fp8_activation_floor_present({"w": Float8Tensor(hp_value_lb = 0.0)}, None) is False
 
 
 def test_the_floor_check_ignores_dense_and_unreadable_state_dicts():
@@ -2078,6 +2087,144 @@ def test_the_floor_check_ignores_dense_and_unreadable_state_dicts():
     assert pq._fp8_activation_floor_present({"w": object()}, None) is True
     assert pq._fp8_activation_floor_present(None, None) is True
     assert pq._fp8_activation_floor_present({}, None) is True
+
+
+def _policy_meta(
+    policy = None,
+    *,
+    base = "Tongyi-MAI/Z-Image-Turbo",
+    family = "z-image",
+    **overrides,
+):
+    """A checkpoint metadata dict declaring the z-image policy, with fields overridable."""
+    from core.inference.diffusion_nvfp4_policy import (
+        NVFP4_POLICY_KEY,
+        ZIMAGE_F8MOD_TOQ34,
+        policy_metadata,
+    )
+
+    policy = policy or ZIMAGE_F8MOD_TOQ34
+    assignment = {f"layers.{i}.attention.to_q": "nvfp4" for i in range(34)}
+    assignment.update({f"layers.{i}.feed_forward.w1": "fp8" for i in range(237)})
+    assignment.update({f"t_embedder.mlp.{i}": "bf16" for i in range(5)})
+    block = dict(policy_metadata(policy, assignment)[NVFP4_POLICY_KEY])
+    block.update(overrides)
+    return {
+        "scheme": "nvfp4",
+        "base_model_id": base,
+        "family": family,
+        # Stamped by the builder for a policy build too: the fp8 half runs the same per-row kernels.
+        "fp8_granularity": "per_row",
+        NVFP4_POLICY_KEY: block,
+    }
+
+
+def test_the_format_tag_follows_the_policy_and_refuses_to_carry_two_claims():
+    from core.inference.diffusion_convrot import rotation_metadata
+
+    assert pq.prequant_format_for({"scheme": "nvfp4"}) == pq.PREQUANT_FORMAT
+    assert pq.prequant_format_for(_policy_meta()) == pq.PREQUANT_FORMAT_POLICY
+    assert pq.PREQUANT_FORMAT_POLICY not in (pq.PREQUANT_FORMAT, pq.PREQUANT_FORMAT_ROTATED)
+    both = {**_policy_meta(), **rotation_metadata(128, ["layers.0.attention.to_q"])}
+    with pytest.raises(ValueError, match = "both"):
+        pq.prequant_format_for(both)
+
+
+@pytest.mark.parametrize(
+    ("fmt", "declared", "ok"),
+    [
+        (pq.PREQUANT_FORMAT_POLICY, True, True),
+        (pq.PREQUANT_FORMAT, False, True),
+        (pq.PREQUANT_FORMAT, True, False),
+        (pq.PREQUANT_FORMAT_ROTATED, True, False),
+        (pq.PREQUANT_FORMAT_POLICY, False, False),
+    ],
+)
+def test_the_validator_enforces_the_format_policy_biconditional(fmt, declared, ok):
+    meta = _policy_meta() if declared else {"scheme": "nvfp4"}
+    assert pq._validate_policy(fmt, meta, "nvfp4", None) is ok
+
+
+def test_a_policy_declaration_this_build_cannot_reproduce_is_refused():
+    from core.inference.diffusion_nvfp4_policy import NVFP4_POLICY_KEY
+
+    fmt = pq.PREQUANT_FORMAT_POLICY
+    assert pq._validate_policy(fmt, _policy_meta(), "nvfp4", None) is True
+    assert pq._validate_policy(fmt, _policy_meta(kind = "v2"), "nvfp4", None) is False
+    assert pq._validate_policy(fmt, _policy_meta(nvfp4_fqns = []), "nvfp4", None) is False
+    assert pq._validate_policy(fmt, _policy_meta(), "fp8", None) is False
+    assert pq._validate_policy(fmt, _policy_meta(base = "some/other-dit"), "nvfp4", None) is False
+    assert pq._validate_policy(fmt, _policy_meta(family = "flux.1"), "nvfp4", None) is False
+    assert pq._validate_policy(fmt, _policy_meta(policy_version = 2), "nvfp4", None) is False
+    assert pq._validate_policy(fmt, _policy_meta(policy_id = "qwen_p02_v1"), "nvfp4", None) is False
+    drifted = _policy_meta()
+    drifted[NVFP4_POLICY_KEY]["counts"] = {"nvfp4": 34, "fp8": 236, "bf16": 6}
+    assert pq._validate_policy(fmt, drifted, "nvfp4", None) is False
+
+
+def test_a_policy_checkpoint_is_validated_end_to_end():
+    logger = _Recorder()
+    ckpt = {
+        "format": pq.PREQUANT_FORMAT_POLICY,
+        "metadata": _policy_meta(),
+        "state_dict": {"weight": object()},
+    }
+    assert pq._validate_checkpoint(ckpt, "nvfp4", "Tongyi-MAI/Z-Image-Turbo", logger) is True
+    ckpt["format"] = pq.PREQUANT_FORMAT
+    assert pq._validate_checkpoint(ckpt, "nvfp4", "Tongyi-MAI/Z-Image-Turbo", logger) is False
+    assert "v3" in logger.text
+
+
+def test_the_fp8_invariants_cover_the_fp8_half_of_a_policy_checkpoint():
+    # A policy artifact is declared nvfp4 and is mostly Float8Tensor, so the per-row granularity and
+    # the activation floor decide whether ITS fp8 layers render or go black. Gating both on
+    # scheme == fp8 skipped every one of them.
+    logger = _Recorder()
+    ckpt = {
+        "format": pq.PREQUANT_FORMAT_POLICY,
+        "metadata": _policy_meta(),
+        "state_dict": {
+            "layers.0.attention.to_q.weight": NVFP4Tensor(b"q4"),
+            "layers.0.feed_forward.w1.weight": Float8Tensor(hp_value_lb = 1e-12),
+        },
+    }
+    base = "Tongyi-MAI/Z-Image-Turbo"
+    assert pq._validate_checkpoint(ckpt, "nvfp4", base, logger) is True
+    unfloored = dict(ckpt)
+    unfloored["state_dict"] = dict(ckpt["state_dict"])
+    unfloored["state_dict"]["layers.0.feed_forward.w1.weight"] = Float8Tensor(hp_value_lb = None)
+    assert pq._validate_checkpoint(unfloored, "nvfp4", base, logger) is False
+    per_tensor = dict(ckpt)
+    per_tensor["metadata"] = _policy_meta()
+    per_tensor["metadata"]["fp8_granularity"] = "per_tensor"
+    assert pq._validate_checkpoint(per_tensor, "nvfp4", base, logger) is False
+
+
+def test_the_floor_check_skips_the_4_bit_weights_beside_the_fp8_ones():
+    mixed = {
+        "layers.0.attention.to_q.weight": NVFP4Tensor(b"q4"),
+        "layers.0.feed_forward.w1.weight": Float8Tensor(hp_value_lb = 1e-12),
+    }
+    assert pq._fp8_activation_floor_present(mixed, None) is True
+    mixed["layers.0.feed_forward.w1.weight"] = Float8Tensor(hp_value_lb = None)
+    assert pq._fp8_activation_floor_present(mixed, None) is False
+    assert pq._fp8_activation_floor_present({"w": NVFP4Tensor()}, None) is True
+
+
+def test_pinning_the_fp8_kernel_leaves_the_4_bit_weights_alone(monkeypatch):
+    _stub_kernel_preference(monkeypatch)
+    sd = {
+        "layers.0.attention.to_q.weight": NVFP4Tensor(b"q4"),
+        "layers.0.feed_forward.w1.weight": _FakeFp8Weight(_FakeKernelPreference.AUTO),
+    }
+    assert pq._pin_kernel_preference(sd, logger = None) == 1
+    assert not hasattr(sd["layers.0.attention.to_q.weight"], "kernel_preference")
+
+
+def test_an_nvfp4_install_must_be_able_to_open_the_fp8_weights_too():
+    required = pq._SCHEME_REQUIRED_GLOBALS["nvfp4"]
+    assert pq._SCHEME_REQUIRED_GLOBALS["fp8"] <= required
+    assert "torchao.prototype.mx_formats.nvfp4_tensor.NVFP4Tensor" in required
 
 
 def test_the_checkpoint_is_released_before_the_device_copy(monkeypatch, tmp_path):

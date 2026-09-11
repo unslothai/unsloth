@@ -7836,7 +7836,9 @@ def test_dense_quant_replan_uses_the_scaled_text_encoder(fake_runtime, monkeypat
     scale, text_encoder_gb, transformer_gb, vae_gb = _shared_setup_9(monkeypatch)
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(
-        video_mod, "select_transformer_quant_scheme", lambda target, mode, family = None: "int8"
+        video_mod,
+        "select_transformer_quant_scheme",
+        lambda target, mode, family = None, **_kw: "int8",
     )
     monkeypatch.setattr(video_mod, "quantize_transformer", lambda *a, **k: None)
     # Force the first plan to offload so the re-plan branch runs.
@@ -8256,7 +8258,7 @@ def test_unified_memory_refuses_on_the_dense_peak_even_when_a_quant_is_requested
     monkeypatch.setattr(video_mod, "resolve_diffusion_device_target", lambda: target)
     monkeypatch.setattr(video_mod, "dense_transformer_supported", lambda t: True)
     monkeypatch.setattr(
-        video_mod, "select_transformer_quant_scheme", lambda t, q, family = None: "fp8"
+        video_mod, "select_transformer_quant_scheme", lambda t, q, family = None, **_kw: "fp8"
     )
     # An integrated CUDA device: 48 GiB shared, so LTX-2's ~65 GB of dense weights cannot fit even
     # though the fp8 steady size would.
@@ -9299,6 +9301,20 @@ def test_a_speed_off_plan_stages_the_dense_experts_the_load_will_open(monkeypatc
     assert "transformer/diffusion_pytorch_model.safetensors" in staged
     assert "transformer_2/diffusion_pytorch_model.safetensors" in staged
     assert not any(f.endswith(".pt") for f in staged)
+
+
+def test_the_video_status_response_carries_the_nvfp4_backend_label():
+    """The same field the image status exposes: on Wan2.2-T2V-A14B the auto ladder puts nvfp4
+    first only where flashinfer serves it, so 'NVFP4' alone does not say what ran."""
+    from models.inference import VideoStatusResponse
+
+    resp = VideoStatusResponse(
+        loaded = True,
+        transformer_quant = "nvfp4",
+        transformer_quant_backend = "flashinfer",
+    )
+    assert resp.model_dump()["transformer_quant_backend"] == "flashinfer"
+    assert VideoStatusResponse(loaded = True).model_dump()["transformer_quant_backend"] is None
 
 
 def _cuda_plan_target(monkeypatch, video_mod, *, free_gib):
