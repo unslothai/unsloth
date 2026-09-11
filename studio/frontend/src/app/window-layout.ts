@@ -96,16 +96,24 @@ export function fitWindowSize(
 }
 
 export function calculateFirstAppWindowSize(
-  { maximum }: WindowSizeBounds,
+  { minimum, maximum }: WindowSizeBounds,
   cssSafeLogicalWidth?: number,
 ): LogicalWindowSize {
   if (!maximum) return NOMINAL_APP_WINDOW_SIZE;
 
   // A first window floors at the nominal size, not the resize floor: opening
-  // at a width the user may shrink to would be a surprise.
+  // at a width the user may shrink to would be a surprise. Never below the
+  // floor either: a work area too small for the nominal size relaxes it, and
+  // the constraints would then grow the window off the centre it was placed on.
   const nominal = {
-    width: relaxMinimum(NOMINAL_APP_WINDOW_SIZE.width, maximum.width),
-    height: relaxMinimum(NOMINAL_APP_WINDOW_SIZE.height, maximum.height),
+    width: Math.max(
+      minimum.width,
+      relaxMinimum(NOMINAL_APP_WINDOW_SIZE.width, maximum.width),
+    ),
+    height: Math.max(
+      minimum.height,
+      relaxMinimum(NOMINAL_APP_WINDOW_SIZE.height, maximum.height),
+    ),
   };
   const width = Math.max(
     nominal.width,

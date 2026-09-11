@@ -59,6 +59,18 @@ test("lets a window stay squeezed to a companion width", () => {
   );
 });
 
+test("never opens a first window below the resize floor", () => {
+  // Small enough that the nominal size relaxes: 85% of it is under the floor.
+  const bounds = calculateWindowSizeBounds({ width: 700, height: 500 });
+  const first = calculateFirstAppWindowSize(bounds);
+
+  // Opening under the floor leaves the size constraints to grow the window
+  // afterwards, away from the centre it was just placed on.
+  assert.ok(first.width >= bounds.minimum.width, `width ${first.width}`);
+  assert.ok(first.height >= bounds.minimum.height, `height ${first.height}`);
+  assert.deepEqual(first, { width: 595, height: 480 });
+});
+
 test("keeps the resize floor a CSS-pixel floor under webview zoom", () => {
   const workAreaSize = { width: 1920, height: 1040 };
 
