@@ -15445,7 +15445,7 @@ def _resolve_loaded_trust_remote_code(
 
     Resolution order: a value stored on the model at load time (so a status refresh does
     not re-derive it) -> the trust_remote_code the load actually used -> the YAML default
-    -> the raw ``auto_map`` check (reads the loaded model's cached config; no network)."""
+    -> the raw ``auto_map`` check (reads the config from the cache, or the Hub on a miss)."""
     stored = (model_info or {}).get("requires_trust_remote_code")
     if stored is not None:
         return bool(stored)
@@ -17375,6 +17375,18 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         ):
             _loading_models.append(_tracked_loading_id)
 
+        # The auto_map fallback reads raw config JSON, so guarded and off-loop like validate_model.
+        _requires_trc = False
+        if backend.active_model_name:
+            _requires_trc = await asyncio.to_thread(
+                _offline_guarded,
+                [backend.active_model_name],
+                _resolve_loaded_trust_remote_code,
+                backend.active_model_name,
+                model_info,
+                inference_config,
+            )
+
         return InferenceStatusResponse(
             active_model = backend.active_model_name,
             model_identifier = backend.active_model_name,
@@ -17397,9 +17409,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             loading = _loading_models,
             loaded = list(backend.models.keys()),
             inference = inference_config,
-            requires_trust_remote_code = _resolve_loaded_trust_remote_code(
-                backend.active_model_name, model_info, inference_config
-            ),
+            requires_trust_remote_code = _requires_trc,
             supports_reasoning = _sf_flags["supports_reasoning"],
             reasoning_style = _sf_flags["reasoning_style"],
             reasoning_effort_levels = _sf_flags.get("reasoning_effort_levels", []),
