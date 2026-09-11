@@ -3764,3 +3764,107 @@ class TestOneLaunchReadsOneSettingsSnapshot:
         _live(True, False)
         env = {"LLAMA_ARG_MLOCK": "1"}
         assert scrub_memory_env(env) == ["LLAMA_ARG_MLOCK"]
+
+
+class TestOnlyALoadablePluginCountsAsAGpuBackend:
+    """A disabled backend leaves `ggml-cuda.dll.bak` / `.disabled` behind, and that is
+    precisely when the build ships no GPU backend. A prefix match read those as a
+    backend, so a CPU-only install could be confirmed for full offload and take
+    managed DirectIO while the weights stayed in host RAM: `_windows_cuda_runtime_missing`
+    keys off the exact `ggml-cuda.dll`, so it reports nothing missing when only the
+    renamed copy is present and the chain never catches it."""
+
+    LOADABLE = (
+        "ggml-cuda.dll",
+        "ggml-vulkan.dll",
+        "libggml-cuda.so",
+        "libggml-cuda.so.1",
+        "libggml-cuda.so.0.0.1",
+        "libggml-hip.so.2",
+        "libggml-metal.dylib",
+        "libggml-metal.1.dylib",
+    )
+    NOT_LOADABLE = (
+        "ggml-cuda.dll.bak",
+        "ggml-cuda.dll.disabled",
+        "ggml-cuda.dll.old",
+        "ggml-cuda-notes.txt",
+        "ggml-cuda.txt",
+        "ggml-cudafoo.dll",
+        "ggml-cuda",
+        "libggml-cuda.so.x",
+    )
+
+    def test_the_gpu_backend_pattern_matches_only_loadable_names(self):
+        from core.inference.llama_cpp import _GGML_GPU_BACKEND_RE
+
+        for name in self.LOADABLE:
+            assert _GGML_GPU_BACKEND_RE.match(name), name
+        for name in self.NOT_LOADABLE:
+            assert not _GGML_GPU_BACKEND_RE.match(name), name
+
+    def test_the_classifiable_pattern_uses_the_same_rule(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        rex = LlamaCppBackend._CLASSIFIABLE_GPU_BACKEND_RE
+        for name in ("ggml-cuda.dll", "libggml-vulkan.so.1", "libggml-hip.so"):
+            assert rex.match(name), name
+        for name in self.NOT_LOADABLE:
+            assert not rex.match(name), name
+        # still narrower than the full set: a SYCL plugin exists but is unclassifiable
+        assert not rex.match("ggml-sycl.dll")
+        from core.inference.llama_cpp import _GGML_GPU_BACKEND_RE
+
+        assert _GGML_GPU_BACKEND_RE.match("ggml-sycl.dll")
+
+    def test_both_patterns_come_from_one_builder(self):
+        import inspect
+        from core.inference import llama_cpp
+
+        src = "".join(inspect.getsource(llama_cpp._ggml_plugin_re).split())
+        # the one place the loadable-filename rule is written down
+        assert r"(?:\.dll|\.so(?:\.\d+)*|(?:\.\d+)*\.dylib)$" in src
+        body = "".join(inspect.getsource(llama_cpp.LlamaCppBackend._offload_target_is_classifiable).split())
+        assert "startswith" not in body, "classifiable check went back to a prefix match"
+
+
+class TestRecoveryRungsReadTheLaunchSnapshot:
+    """Every rung of one launch has to decide from the pair that launch captured. The
+    fit-on and architecture-crash recoveries called live `should_mlock()` and passed no
+    `settings` to `apply_model_memory_policy`, so a save landing mid-launch could give
+    the retry flags from toggles the rest of the launch never saw, while the settings
+    route still compared against the published old snapshot."""
+
+    def test_load_model_never_calls_the_live_mlock_helper(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "should_mlock()" not in src
+
+    def test_the_live_helper_is_not_even_imported_into_the_launch(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "importshould_mlock" not in src
+        assert ",should_mlock" not in src
+
+    def test_every_policy_call_in_load_model_carries_the_snapshot(self):
+        import ast
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        tree = ast.parse(inspect.cleandoc("\n".join(src.splitlines()[1:])))
+        bare = [
+            node.lineno
+            for node in ast.walk(tree.body[0])
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "apply_model_memory_policy"
+            and not any(kw.arg == "settings" for kw in node.keywords)
+        ]
+        assert not bare, (
+            f"apply_model_memory_policy without the launch snapshot at line(s) {bare}"
+        )

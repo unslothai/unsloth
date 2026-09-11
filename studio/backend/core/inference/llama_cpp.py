@@ -6185,9 +6185,33 @@ def _vulkan_probe_memo_scope():
         _VULKAN_PROBE_STATE.rows = None
 
 
-_GGML_GPU_BACKEND_RE = re.compile(
-    r"^(?:lib)?ggml-(?:cuda|hip|vulkan|metal|sycl|opencl|musa|cann|virtgpu)"
-)
+_GGML_GPU_BACKENDS = ("cuda", "hip", "vulkan", "metal", "sycl", "opencl", "musa", "cann", "virtgpu")
+
+
+def _ggml_plugin_re(backends: Iterable[str]) -> "re.Pattern[str]":
+    """Strict filename match for a ggml backend plugin.
+
+    Anchored on a filename the dynamic loader can actually open, not on the stem
+    alone. A bare prefix also matched `ggml-cuda.dll.bak`, `ggml-cuda.dll.disabled`
+    and `ggml-cuda-notes.txt` -- exactly the names left behind by disabling a
+    backend, which is when the build genuinely ships none. Reading those as a GPU
+    backend let a CPU-only install be confirmed for full offload and take managed
+    DirectIO while the weights stayed in host RAM: `_windows_cuda_runtime_missing`
+    keys off the exact `ggml-cuda.dll` and so reports nothing missing when only the
+    renamed copy is there, and both the offers-a-backend and the classifiable check
+    said yes off the prefix.
+
+    Same rule `_lib_dir_has_ggml_backend` already applies: exact soname, or a
+    versioned form the platform really uses (`libggml-cuda.so.1`,
+    `libggml-metal.1.dylib`). One owner, so the two checks cannot drift apart again.
+    """
+    alternation = "|".join(re.escape(name) for name in sorted(backends))
+    return re.compile(
+        rf"^(?:lib)?ggml-(?:{alternation})(?:\.dll|\.so(?:\.\d+)*|(?:\.\d+)*\.dylib)$"
+    )
+
+
+_GGML_GPU_BACKEND_RE = _ggml_plugin_re(_GGML_GPU_BACKENDS)
 
 
 def _cpu_runtime_owner_alive(staged_dir: Path) -> bool:
@@ -12686,6 +12710,9 @@ class LlamaCppBackend:
     # DirectIO would buffer it. Deliberately NARROWER than _GGML_GPU_BACKEND_RE,
     # which answers the different question of whether a GPU backend exists at all.
     _CLASSIFIABLE_GPU_BACKENDS: frozenset = frozenset({"cuda", "hip", "vulkan"})
+    # Same strict filename rule as _GGML_GPU_BACKEND_RE, over the narrower set: a
+    # prefix match here read a disabled `ggml-cuda.dll.bak` as a classifiable target.
+    _CLASSIFIABLE_GPU_BACKEND_RE = _ggml_plugin_re(_CLASSIFIABLE_GPU_BACKENDS)
 
     @staticmethod
     def _offload_target_is_classifiable(
@@ -12703,14 +12730,13 @@ class LlamaCppBackend:
             roots = LlamaCppBackend._ggml_plugin_roots(str(_llama_lib_dir(binary)), env)
         except Exception:
             return False
-        prefix = "ggml-" if sys.platform == "win32" else "libggml-"
-        wanted = {f"{prefix}{name}" for name in LlamaCppBackend._CLASSIFIABLE_GPU_BACKENDS}
+        wanted = LlamaCppBackend._CLASSIFIABLE_GPU_BACKEND_RE
         for root in roots:
             try:
                 names = tuple(path.name for path in root.iterdir() if path.is_file())
             except OSError:
                 continue
-            if any(name.startswith(tuple(wanted)) for name in names):
+            if any(wanted.match(name) for name in names):
                 return True
         return False
 
@@ -24093,7 +24119,7 @@ class LlamaCppBackend:
                 # GPU with full offload it would hold a second copy of the model
                 # in system RAM and do nothing for VRAM, so it is not emitted
                 # and the idle-unload veto carries residency by itself.
-                from utils.model_memory_settings import get_model_memory_settings, should_mlock
+                from utils.model_memory_settings import get_model_memory_settings
 
                 # fully_gpu_offloaded is only set by the auto branch. Manual mode
                 # and a user -ngl reach the same placement by their own routes,
@@ -24174,7 +24200,7 @@ class LlamaCppBackend:
                     binary = binary,
                     env = _mem_env,
                     # An unprobed Vulkan device answers the conservative True, and
-                    # should_mlock() is always False under no-reserve, so gating on it
+                    # _mem_should_mlock is always False under no-reserve, so gating on it
                     # alone made the DirectIO branch unreachable on the Vulkan build.
                     probe_vulkan = _mem_should_mlock or _mem_probe_for_dio,
                     # Over the built cmd AND the extras, so Unsloth's own --fit
@@ -25608,7 +25634,7 @@ class LlamaCppBackend:
                             # wrong, so llama.cpp may now leave weights in host
                             # RAM. Re-arm residency for the retry (last-wins, so
                             # appending is enough) and re-record the state.
-                            if should_mlock() and not _mem_host_resident:
+                            if _mem_should_mlock and not _mem_host_resident:
                                 _run.extend(
                                     ["--load-mode", "mmap+mlock"]
                                     if server_caps.get("supports_load_mode")
@@ -26331,7 +26357,7 @@ class LlamaCppBackend:
                             is_vulkan_backend = is_vulkan_backend,
                             binary = binary,
                             env = env,
-                            probe_vulkan = should_mlock(),
+                            probe_vulkan = _mem_should_mlock,
                             fit_active = fit_is_effectively_on([*cmd, *(_mem_extra_args or [])], env),
                         )
                         # Lock-ADDING direction only: `cmd` carries a policy-emitted
@@ -26351,6 +26377,10 @@ class LlamaCppBackend:
                                 # copy would land after the extras and mark
                                 # _memory_policy_active for a launch it never touched.
                                 weights_in_host_memory = _retry_host_resident,
+                                # The launch's own pair, not the live one: a save
+                                # landing before this retry would otherwise pick flags
+                                # from toggles the rest of this launch never saw.
+                                settings = _mem_settings,
                             )
                             if _retry_managed:
                                 # After the user extras, so llama.cpp's last-wins parse
