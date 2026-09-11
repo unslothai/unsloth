@@ -3296,6 +3296,7 @@ class TestTheLoadabilityCheckFollowsThePlugin:
     def test_one_resolver_serves_both(self):
         from core.inference.llama_cpp import LlamaCppBackend
         import inspect
+
         for fn in (
             LlamaCppBackend._build_offers_gpu_backend,
             # the runtime check resolves roots in the parameterised owner now, which
@@ -3722,10 +3723,11 @@ class TestThePendingWindowHasNoGaps:
     def test_the_lock_is_still_the_backstop(self):
         import inspect
         from core.inference.llama_cpp import LlamaCppBackend
-
         assert "self._memory_pending_launch = None" in inspect.getsource(
             LlamaCppBackend._serial_load_scope
         )
+
+
 class TestOneLaunchReadsOneSettingsSnapshot:
     """`load_model` captures `(keep_resident, no_ram_reserve)` once and decides the
     argv from it. Every consumer inside the launch has to read that snapshot: a save
@@ -3912,15 +3914,11 @@ class TestAnyInstalledGpuPluginMustBeLoadable:
 
     def test_a_hip_build_without_the_hip_runtime_is_missing(self, tmp_path):
         from core.inference.llama_cpp import LlamaCppBackend
-
         libs = self._install(tmp_path, "ggml-hip.dll", ())
-        assert LlamaCppBackend._windows_backend_runtime_missing(
-            str(tmp_path), libs, None, "hip"
-        )
+        assert LlamaCppBackend._windows_backend_runtime_missing(str(tmp_path), libs, None, "hip")
 
     def test_the_full_hip_chain_clears_it(self, tmp_path):
         from core.inference.llama_cpp import LlamaCppBackend
-
         libs = self._install(
             tmp_path, "ggml-hip.dll", ("amdhip64_6.dll", "hipblas.dll", "rocblas.dll")
         )
@@ -3931,11 +3929,8 @@ class TestAnyInstalledGpuPluginMustBeLoadable:
     @pytest.mark.parametrize("present", ["amdhip64_6.dll", "hipblas.dll", "rocblas.dll"])
     def test_any_one_of_the_hip_chain_alone_is_still_missing(self, tmp_path, present):
         from core.inference.llama_cpp import LlamaCppBackend
-
         libs = self._install(tmp_path, "ggml-hip.dll", (present,))
-        assert LlamaCppBackend._windows_backend_runtime_missing(
-            str(tmp_path), libs, None, "hip"
-        )
+        assert LlamaCppBackend._windows_backend_runtime_missing(str(tmp_path), libs, None, "hip")
 
     def test_a_backend_with_no_known_chain_is_not_second_guessed(self, tmp_path):
         """A custom build must not be called broken just because we cannot check it."""
@@ -3948,7 +3943,6 @@ class TestAnyInstalledGpuPluginMustBeLoadable:
 
     def test_an_absent_plugin_is_not_missing_a_runtime(self, tmp_path):
         from core.inference.llama_cpp import LlamaCppBackend
-
         libs = self._install(tmp_path, "ggml-cpu.dll", ())
         for backend in ("cuda", "hip"):
             assert not LlamaCppBackend._windows_backend_runtime_missing(
@@ -3972,6 +3966,5 @@ class TestAnyInstalledGpuPluginMustBeLoadable:
 
     def test_the_known_chains_cover_cuda_and_hip(self):
         from core.inference.llama_cpp import _WINDOWS_GPU_RUNTIME_IMPORTS
-
         assert set(_WINDOWS_GPU_RUNTIME_IMPORTS) == {"cuda", "hip"}
         assert _WINDOWS_GPU_RUNTIME_IMPORTS["hip"] == {"amdhip64", "hipblas", "rocblas"}

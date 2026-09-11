@@ -12833,16 +12833,11 @@ class LlamaCppBackend:
         False for a non-CUDA build and for any unreadable path entry, so only a
         positively broken CUDA install answers True.
         """
-        return LlamaCppBackend._windows_backend_runtime_missing(
-            binary_dir, path_dirs, env, "cuda"
-        )
+        return LlamaCppBackend._windows_backend_runtime_missing(binary_dir, path_dirs, env, "cuda")
 
     @staticmethod
     def _windows_backend_runtime_missing(
-        binary_dir: str,
-        path_dirs: list[str],
-        env: Optional[Mapping[str, str]],
-        backend: str,
+        binary_dir: str, path_dirs: list[str], env: Optional[Mapping[str, str]], backend: str
     ) -> bool:
         """Whether ``backend``'s plugin is installed but its import chain is not.
 
