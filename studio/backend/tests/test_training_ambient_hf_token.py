@@ -239,7 +239,9 @@ def test_local_snapshot_path_in_the_hub_cache_requires_caller_authorization(
     from hub.utils import hf_cache_state, hf_tokens
 
     root = tmp_path / "hub"
-    parent = root / "models--org--private-model" / "snapshots" if inside_cache else tmp_path / "local"
+    parent = (
+        root / "models--org--private-model" / "snapshots" if inside_cache else tmp_path / "local"
+    )
     snapshot = parent / "0123456789abcdef0123456789abcdef01234567"
     snapshot.mkdir(parents = True)
     (snapshot / "config.json").write_text('{"model_type":"llama"}')
@@ -274,7 +276,10 @@ def test_cached_repo_id_for_path(monkeypatch, tmp_path):
     monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda scan_errors = None: [root])
 
     assert hf_cache_state.cached_repo_id_for_path(snapshot) == "Org/Private-Model"
-    assert hf_cache_state.cached_repo_id_for_path(root / "models--Org--Private-Model") == "Org/Private-Model"
+    assert (
+        hf_cache_state.cached_repo_id_for_path(root / "models--Org--Private-Model")
+        == "Org/Private-Model"
+    )
     assert hf_cache_state.cached_repo_id_for_path(outside) is None
     assert hf_cache_state.cached_repo_id_for_path(root) is None
 
