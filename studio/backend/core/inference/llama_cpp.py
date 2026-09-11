@@ -19684,6 +19684,9 @@ class LlamaCppBackend:
                         "supports_tools",
                     ):
                         setattr(self, "_" + field, template_flags[field])
+                self._idle_slot_clearing_active = _idle_slot_clearing_active(
+                    cmd, supports_cache_ram = bool(caps.get("supports_cache_ram"))
+                )
                 if cancelled() or not self._publish_healthy():
                     self._kill_process()
                     return False
@@ -19697,6 +19700,12 @@ class LlamaCppBackend:
                     1 if self._kv_cache_unified else compiled.n_parallel
                 )
                 self._n_ubatch = tuning.get("n_ubatch", 0)
+                self._requested_n_batch = None
+                self._requested_n_ubatch = None
+                self._requested_load_mode = None
+                self._requested_spec_draft_cache_type = None
+                self._requested_ctx_checkpoints = None
+                self._requested_cache_ram = None
                 self._swa_full = bool(tuning.get("swa_full", False))
                 flash_observed = None
                 for line in self._stdout_lines:
@@ -19738,8 +19747,8 @@ class LlamaCppBackend:
                 self._speculative_type = tuning.get("spec_type")
                 self._requested_spec_mode = self._speculative_type
                 self._spec_draft_n_max = None
-                self._extra_args = list(compiled.argv)
-                self._requested_extra_args = list(intent.extra_args or ())
+                self._extra_args = []
+                self._requested_extra_args = []
                 self._extra_args_source = (intent.model_identifier, intent.hf_variant)
                 self._launch_binary_revision = revision
                 self._capability_probe_inconclusive = False

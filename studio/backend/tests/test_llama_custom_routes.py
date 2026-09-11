@@ -119,6 +119,17 @@ def preset_backend(monkeypatch):
     return backend
 
 
+@pytest.mark.parametrize("predict", [0, 128])
+@pytest.mark.parametrize("caps", [{}, {"max_tokens": 64}, {"max_completion_tokens": 32}])
+def test_custom_predict_fills_only_an_omitted_chat_cap(preset_backend, predict, caps):
+    preset_backend.llama_cpp_config_summary["request_defaults"]["n_predict"] = predict
+    payload = ChatCompletionRequest(messages = [], **caps)
+    routes._fill_recommended_sampling_openai(payload, "model.gguf")
+    assert routes._effective_openai_max_tokens(payload) == caps.get(
+        "max_completion_tokens", caps.get("max_tokens", predict)
+    )
+
+
 def test_preset_beats_auto_seeded_ui_values_and_retains_native_domains(preset_backend):
     payload = ChatCompletionRequest(
         messages = [],

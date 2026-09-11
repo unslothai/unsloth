@@ -109,6 +109,56 @@ def launch(monkeypatch, tmp_path):
     )
 
 
+def test_custom_flags_are_not_inheritable_managed_extras(launch):
+    assert launch.backend.load_model(launch.intent)
+    assert "--no-warmup" in launch.captured[0][0]
+    assert launch.backend.extra_args == []
+    assert launch.backend.requested_extra_args == []
+
+
+@pytest.mark.parametrize(
+    "previous,supported,setting,expected",
+    [
+        (True, True, "0", False),
+        (False, True, "128", True),
+        (True, False, None, False),
+        (False, True, None, True),
+    ],
+)
+def test_custom_launch_recomputes_idle_slot_clearing(
+    launch, previous, supported, setting, expected
+):
+    launch.backend._idle_slot_clearing_active = previous
+    launch.caps["supports_cache_ram"] = supported
+    launch.caps["option_catalog"] = parse_option_catalog(
+        HELP + "\n--alias NAME                            model id\n"
+        "--jinja                                 templates\n"
+        "--cache-ram N                           idle cache MiB\n"
+    )
+    ini = "[*]\nnp=2\nc=56000\nngl=0\nfit=off"
+    if setting is not None:
+        ini += "\ncache-ram=" + setting
+    assert launch.backend.load_model(replace(launch.intent, llama_cpp_config = source(ini)))
+    assert launch.backend.idle_slot_clearing_active is expected
+
+
+def test_custom_launch_clears_previous_managed_request_echoes(launch):
+    fields = (
+        "n_batch",
+        "n_ubatch",
+        "load_mode",
+        "spec_draft_cache_type",
+        "ctx_checkpoints",
+        "cache_ram",
+    )
+    for field, previous in zip(fields, (777, 555, "fast", "q8_0", 8, 4096)):
+        setattr(launch.backend, "_requested_" + field, previous)
+    assert launch.backend.load_model(launch.intent)
+    for field in fields:
+        assert getattr(launch.backend, "_requested_" + field) is None, field
+    assert launch.backend._n_ubatch == 3000
+
+
 def test_custom_dispatch_precedes_managed_mutation_and_preserves_tuning(launch, monkeypatch):
     backend = launch.backend
     monkeypatch.setattr(

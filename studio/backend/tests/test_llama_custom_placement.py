@@ -37,6 +37,7 @@ def route_probe(
     device = "none",
     vision = False,
     projector = None,
+    inherited_config = False,
 ):
     events = []
     config = NS(
@@ -104,15 +105,26 @@ def route_probe(
         "section": None,
     }
     request = LoadRequest(
-        model_path = "selected.gguf",
-        gguf_variant = "Q4_K_M",
-        llama_cpp_config = source,
+        model_path = "owner/repo" if inherited_config else "selected.gguf",
+        gguf_variant = None if inherited_config else "Q4_K_M",
+        llama_cpp_config = None if inherited_config else source,
         gpu_memory_mode = mode,
         gpu_layers = layers,
         speculative_type = "off",
         tensor_parallel = tensor,
     )
     with (
+        patch(
+            "utils.openai_auto_switch_settings.resolve_override_for_load",
+            side_effect = lambda _identifier, _alias, variant: (
+                "override",
+                {
+                    "llama_cpp_config": source
+                    if variant
+                    else {**source, "ini": source["ini"].replace("ngl=0", "ngl=99")}
+                },
+            ),
+        ),
         patch.object(r, "get_llama_cpp_backend", return_value = backend),
         patch.object(r, "get_inference_backend", return_value = NS(active_model_name = None)),
         patch.object(
@@ -163,6 +175,10 @@ def test_custom_route_never_retries_from_managed_tensor_toggle(tensor, raises):
 
 def test_uncertain_custom_device_keeps_gpu_handoff():
     assert route_probe("manual", 0, 0, device = None) == ["acquire_gpu"]
+
+
+def test_auto_selected_variant_replaces_early_bare_custom_override():
+    assert route_probe("auto", -1, 0, inherited_config = True) == ["drain_without_acquire"]
 
 
 @pytest.mark.parametrize("vision,projector", [(True, None), (False, "audio-projector.gguf")])

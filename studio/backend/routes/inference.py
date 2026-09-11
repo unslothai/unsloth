@@ -14364,6 +14364,7 @@ async def _load_model_impl(
     model_log_label = request.model_path
     gguf_load_stack = ExitStack()
     try:
+        requested_llama_cpp_config = request.llama_cpp_config
         request = _resolve_llama_cpp_config(request)
         # Validate user pass-through args up front so a managed-flag collision
         # returns 400 before any model work.
@@ -14639,7 +14640,17 @@ async def _load_model_impl(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
-        request = _resolve_llama_cpp_config(request, config, public_model_identifier)
+        request = _resolve_llama_cpp_config(
+            request.model_copy(update = {"llama_cpp_config": requested_llama_cpp_config}),
+            config,
+            public_model_identifier,
+        )
+        try:
+            extra_llama_args = validate_extra_args(
+                [] if _custom_llama_config(request) else request.llama_extra_args
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc))) from exc
         custom_compiled = await _preflight_custom_llama_config(
             request, config, native_grant_backed = native_grant_backed
         )
@@ -21613,6 +21624,14 @@ def _fill_recommended_sampling_openai(payload, model_id) -> None:
     for field, value in effective.items():
         setattr(payload, field, value)
     if preset:
+        predict = preset.get("n_predict")
+        if (
+            payload.max_tokens is None
+            and payload.max_completion_tokens is None
+            and isinstance(predict, int)
+            and predict >= 0
+        ):
+            payload.max_tokens = predict
         for field in ("frequency_penalty", "seed"):
             if field not in fields and field in preset:
                 setattr(payload, field, preset[field])
