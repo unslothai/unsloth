@@ -3341,6 +3341,20 @@ def test_multiline_inline_code_keeps_urls_and_brackets():
     )
 
 
+@pytest.mark.parametrize(
+    ("report", "expected"),
+    [
+        ("参见https://a.com的`pip install unsloth`命令。", "参见`pip install unsloth`命令。"),
+        (
+            "Clone https://nope.example/`git clone repo` then build [1].",
+            "Clone `git clone repo` then build [A](https://a.com).",
+        ),
+    ],
+)
+def test_url_glued_to_inline_code_keeps_the_code(report, expected):
+    assert _validate_report_sources(report, [{"url": "https://a.com", "title": "A"}]) == expected
+
+
 def test_literal_escaped_backticks_do_not_hide_prose_urls():
     report = r"Literal \`https://nope.example\` then [1]."
     out = _validate_report_sources(report, [{"url": "https://a.com", "title": "A"}])

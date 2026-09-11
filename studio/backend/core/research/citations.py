@@ -30,7 +30,8 @@ _SOURCES_HEADING = re.compile(
 )
 _NUMBERED_CITATION = re.compile(r"(?<!\^)\[(\d+)]")
 _AUTOLINK = re.compile(r"<(https?://[^>\s]+)>")
-_RAW_URL = re.compile(r"https?://[^\s<>]+")
+# \x00 stops a URL glued to masked code from swallowing its placeholder.
+_RAW_URL = re.compile(r"https?://[^\s<>\x00]+")
 
 
 def _citation_title(source: dict, fallback: str) -> str:
