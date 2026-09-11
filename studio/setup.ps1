@@ -4629,12 +4629,9 @@ function Get-SetupUvExecutableVerdict {
     # Mirrors Get-UvExecutableVerdict in install.ps1: "ok", "failed" or "unknown". Only the
     # binary answering non-zero is "failed"; a launch that throws or a wait that times out got
     # no verdict, and the digest already proved the bytes are astral's pinned release.
-    #
-    # The verdict is the ONLY thing this returns. Its diagnostics go through substep: a
-    # message written to the pipeline here rode along in the return value, and a caller
-    # comparing that array with -ne "ok" read every probe as not ok. The exit code decides
-    # where there is one; where the timed wait returned before the code was cached (the
-    # empty code that made the runners re-download uv), a printed version is "ok".
+    # Returns the verdict ONLY; diagnostics go through substep (a pipeline write rode along in
+    # the return value and `-ne "ok"` read every probe as not ok). A cached exit code decides;
+    # with none (the timed wait can return first), a printed version is "ok".
     param([string]$Path)
     if (-not $Path -or -not (Test-Path -LiteralPath $Path)) { return "failed" }
     $outFile = [System.IO.Path]::GetTempFileName()
@@ -4647,24 +4644,20 @@ function Get-SetupUvExecutableVerdict {
             substep "uv did not answer --version within 20s; installing it unprobed."
             return "unknown"
         }
-        # The timed overload can return before the exit code is cached, which is how
-        # arm64 and the Windows containers reported an EMPTY code and had a working uv
-        # read as broken. The parameterless wait settles it and returns at once, since
-        # the process has already exited.
+        # The timed overload can return before the exit code is cached (arm64 and the Windows
+        # containers read a working uv as broken); the parameterless wait settles it at once.
         try { $proc.WaitForExit() } catch {}
         $code = $null
         try { $code = $proc.ExitCode } catch {}
         if ($null -eq $code -or "$code" -eq "") {
-            # No code to read: the printed version is the next best evidence. A uv that
-            # printed one is "ok"; one that printed nothing got no verdict.
+            # No exit code: a printed version is "ok"; nothing printed gets no verdict.
             $answer = ""
             try { $answer = Get-Content -LiteralPath $outFile -Raw -ErrorAction SilentlyContinue } catch {}
             if ($answer -and ($answer.Trim() -match '^uv \d+\.\d+')) { return "ok" }
             substep "uv --version gave no exit code; installing it unprobed."
             return "unknown"
         }
-        # A code that is there decides: a binary that printed a version and still exited
-        # non-zero reported its own failure, and setup must not run `uv pip` with it.
+        # A code decides: a printed version with a non-zero exit is the binary's own failure.
         if ($code -eq 0) { return "ok" }
         $detail = ""
         try {
@@ -4828,44 +4821,30 @@ Enter-StudioVenv
 Assert-VenvActivated -VenvDir $VenvDir
 
 function Find-InstalledUv {
-    # The uv a previous run put at astral's destination, when it is not on PATH: a desktop
-    # shell launched before the install and never relaunched from Explorer, a CI step with a
-    # fresh PATH. Without this the miss re-downloaded the pinned archive on every update --
-    # 19 MB and 42 of the 53 seconds a Windows no-op update took, measured on the staging
-    # matrix. The same priority list Install-UvFromPinnedRelease writes to, then the alias
-    # directory install.ps1's winget route fills, so what is found is what was installed,
-    # and it has to run, not merely exist.
-    # Paths are built with .NET's Combine, not the PowerShell path cmdlet: this runs under
-    # the script's ErrorActionPreference Stop, before the installation branch's try, and
-    # the cmdlet is a terminating error for a candidate on a missing or disconnected drive
-    # (XDG_DATA_HOME set to Z:\xdg). Such a candidate is skipped by the Test-Path below.
+    # The uv a previous run installed but this process's PATH lacks (a desktop shell launched
+    # before the install, a CI step): the miss re-downloaded the pinned archive on every
+    # update, 42 of a 53 s Windows no-op. Same priority list Install-UvFromPinnedRelease
+    # writes to, plus install.ps1's winget alias directory; it has to run, not merely exist.
+    # .NET Combine, not the path cmdlet: under ErrorActionPreference Stop, before the
+    # installation branch's try, the cmdlet terminates on a missing drive (XDG_DATA_HOME=Z:\xdg).
     $candidates = @($env:UV_INSTALL_DIR, $env:UV_UNMANAGED_INSTALL, $env:XDG_BIN_HOME)
     if ($env:XDG_DATA_HOME) { $candidates += [System.IO.Path]::Combine($env:XDG_DATA_HOME, "..", "bin") }
     $userHome = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
     if ($userHome) { $candidates += [System.IO.Path]::Combine($userHome, ".local", "bin") }
-    # install.ps1 installs uv through winget first, whose alias lands here and reaches
-    # PATH only through the registry, so a process started before that install (the
-    # desktop shell the installer launches, a CI step) never sees it. install.ps1 lists
-    # the same directory among its known locations; without it here, every update from
-    # such a process downloaded the pinned release over a uv winget had just installed
-    # (observed on the staging matrix: a manifest uv_version that moved once per install).
+    # winget's alias directory reaches PATH only via the registry, so a process started before
+    # install.ps1's winget route never saw it and downloaded the pinned release over it.
     if ($env:LOCALAPPDATA) { $candidates += [System.IO.Path]::Combine($env:LOCALAPPDATA, "Microsoft", "WinGet", "Links") }
     $script:InstalledUvLooked = @()
-    # Assigned here too, not only by a probe that missed: read after a search that found
-    # no uv.exe at all, an unassigned script variable is a terminating error under a
-    # caller's Set-StrictMode.
+    # Assigned even when no uv.exe exists: unassigned, it terminates under a caller's Set-StrictMode.
     $script:InstalledUvProbeMiss = $null
     foreach ($dir in $candidates) {
         if (-not $dir) { continue }
         $exe = [System.IO.Path]::Combine($dir, "uv.exe")
         $script:InstalledUvLooked += $exe
         if (-not (Test-Path -LiteralPath $exe -PathType Leaf -ErrorAction SilentlyContinue)) { continue }
-        # "ok" only. The pinned installer accepts "unknown" because a digest already
-        # proved its bytes; an existing candidate has no such proof, and a launch that
-        # threw or timed out would go on to an unbounded uv pip invocation. Asked twice:
-        # one miss (Defender scanning a fresh binary, a loaded runner) used to send setup
-        # to the pinned download, which put an OLDER uv over the one found here and moved
-        # the manifest's uv_version on the next pass (observed on the staging matrix).
+        # "ok" only: no digest vouches for a found binary, and a launch that threw or timed out
+        # would reach an unbounded uv pip. Asked twice: one miss (Defender scanning a fresh
+        # binary) sent setup to the pinned download, which put an OLDER uv over this one.
         if ((Get-InstalledUvVerdict -Path $exe) -ne "ok") { continue }
         return $dir
     }
@@ -4873,8 +4852,7 @@ function Find-InstalledUv {
 }
 
 function Get-InstalledUvVerdict {
-    # The verdict alone (Get-SetupUvExecutableVerdict also writes its reason to the
-    # pipeline), from a second question when the first was not "ok".
+    # The verdict alone (Get-SetupUvExecutableVerdict also writes its reason to the pipeline), asked twice.
     param([string]$Path)
     $verdict = @(Get-SetupUvExecutableVerdict -Path $Path)[-1]
     if ($verdict -eq "ok") { return "ok" }
@@ -4890,9 +4868,8 @@ $installedUvDir = $null
 if (Get-Command uv -ErrorAction SilentlyContinue) {
     $UseUv = $true
 } elseif (($installedUvDir = Find-InstalledUv)) {
-    # Read-only reuse, so it is right under a stage root too. Appended, not prepended:
-    # nothing on PATH answered to uv, so the end of it is where uv is found, and a
-    # python.exe beside it must not step in front of the staged interpreter.
+    # Read-only reuse, fine under a stage root. Appended: a python.exe beside uv must not
+    # step in front of the staged interpreter.
     $env:PATH = "$env:PATH;$installedUvDir"
     substep "reusing the uv installed at $installedUvDir (it was not on PATH)"
     $UseUv = $true
@@ -4900,7 +4877,7 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
     if ($script:InstalledUvProbeMiss) {
         substep "the uv at $($script:InstalledUvProbeMiss) did not answer --version twice; installing the pinned release"
     } elseif ($script:InstalledUvLooked) {
-        # Named so a re-download can be read: which destinations held no uv.exe at this moment.
+        # Names the destinations searched, so a re-download can be read.
         substep "no installed uv at $($script:InstalledUvLooked -join ', '); installing the pinned release"
     }
     substep "installing uv package manager..."

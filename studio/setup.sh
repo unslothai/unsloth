@@ -1598,15 +1598,11 @@ _setup_uv_sha256() {
     fi
 }
 
-# Bounded liveness probe: no stdin, so a build that prompts reads EOF, and a 20 s ceiling
-# everywhere. GNU timeout where it exists; without it (stock macOS) the probe runs in the
-# background and is killed when the ceiling passes, so a discovered binary that starts and
-# never answers cannot hold setup ahead of its download or pip fallback.
+# Bounded liveness probe: no stdin (a prompting build reads EOF), 20 s ceiling held by GNU
+# timeout or, without it (stock macOS), a background job killed when the ceiling passes.
 _setup_uv_probe_exec() {
     _supe_secs="${_SETUP_UV_PROBE_SECONDS:-20}"
-    # TERM can be caught or ignored; KILL five seconds later cannot. `timeout -k` where
-    # the timeout at hand takes it (coreutils, current busybox); a timeout without -k
-    # would send TERM alone, so that host takes the watchdog below, which escalates.
+    # KILL after TERM (TERM can be ignored): `timeout -k` where supported, else the watchdog below.
     if command -v timeout >/dev/null 2>&1 && timeout -k 1 5 true >/dev/null 2>&1; then
         timeout -k 5 "$_supe_secs" "$1" --version >/dev/null 2>&1 </dev/null
         return $?
@@ -1617,8 +1613,7 @@ _setup_uv_probe_exec() {
     while kill -0 "$_supe_pid" 2>/dev/null; do
         if [ "$_supe_waited" -ge "$_supe_secs" ]; then
             kill "$_supe_pid" 2>/dev/null
-            # The same escalation as timeout -k: a binary that ignores TERM would
-            # otherwise hold the wait below for as long as it likes.
+            # Escalate as timeout -k does: a binary ignoring TERM would hold the wait.
             _supe_grace=0
             while [ "$_supe_grace" -lt 5 ] && kill -0 "$_supe_pid" 2>/dev/null; do
                 sleep 1
@@ -1823,28 +1818,21 @@ _setup_persist_uv_path() {
 _SETUP_UV_PROBE_MISS=""
 _SETUP_UV_LOOKED=""
 _SETUP_UV_DIR=""
-# Answers in _SETUP_UV_DIR and returns 0, rather than printing the directory: called
-# through command substitution it would run in a subshell, and the two diagnostics above,
-# which explain the download that follows a miss, would never reach the caller.
+# Answers in _SETUP_UV_DIR: under command substitution the miss diagnostics above would die
+# with the subshell.
 _setup_find_installed_uv() {
-    # The uv a previous run put at astral's destination, when it is not on PATH: a desktop
-    # shell launched before the install and never relaunched from Explorer, a CI step with
-    # a fresh PATH, a login shell whose profile line has not been read yet. Without this
-    # the miss re-downloaded the pinned archive on every update -- 19 MB and 42 of the 53
-    # seconds a Windows no-op update took, measured on the staging matrix. The same
-    # priority list _setup_install_uv_pinned writes to, so what is found is what was
-    # installed, and it has to run, not merely exist.
+    # The uv a previous run installed but this process's PATH lacks (a desktop shell launched
+    # before the install, a CI step, an unread profile line): the miss re-downloaded the pinned
+    # archive on every update, 42 of a 53 s Windows no-op. Same priority list
+    # _setup_install_uv_pinned writes to; it has to run, not merely exist.
     for _sfu_dir in "${UV_INSTALL_DIR:-}" "${UV_UNMANAGED_INSTALL:-}" "${XDG_BIN_HOME:-}" \
         "${XDG_DATA_HOME:+$XDG_DATA_HOME/../bin}" "${HOME:+$HOME/.local/bin}"; do
         [ -n "$_sfu_dir" ] || continue
         _SETUP_UV_LOOKED="${_SETUP_UV_LOOKED:+$_SETUP_UV_LOOKED, }$_sfu_dir/uv"
         [ -x "$_sfu_dir/uv" ] || continue
-        # Bounded, as the pinned installer's own probe is: a binary that starts and never
-        # answers must not hold setup up before the download or pip fallback. Asked twice:
-        # one miss (an antivirus scan holding a fresh binary, a loaded machine) used to
-        # send setup to the pinned download, which put an OLDER uv over the one found here
-        # and moved the manifest's uv_version on the next pass (observed on the staging
-        # matrix under fault injection on Windows).
+        # Bounded, like the pinned installer's probe. Asked twice: one miss (an antivirus scan
+        # holding a fresh binary) sent setup to the pinned download, which put an OLDER uv
+        # over this one and moved the manifest's uv_version on the next pass.
         if _setup_uv_probe_exec "$_sfu_dir/uv" || { sleep 2; _setup_uv_probe_exec "$_sfu_dir/uv"; }; then
             _SETUP_UV_DIR="$_sfu_dir"
             unset _sfu_dir
@@ -1861,10 +1849,8 @@ if command -v uv &>/dev/null; then
     USE_UV=true
 elif _setup_find_installed_uv; then
     _setup_uv_dir="$_SETUP_UV_DIR"
-    # Read-only reuse, so it is right under a stage root too. Appended, not prepended:
-    # nothing on PATH answered to uv, so the end of it is where uv is found, and a
-    # python beside it (~/.local/bin often has one) must not step in front of the staged
-    # $VENV_DIR/bin/python that fast_install and every bare python call rely on.
+    # Read-only reuse, fine under a stage root. Appended: a python beside uv (~/.local/bin
+    # often has one) must not step in front of the staged $VENV_DIR/bin/python.
     export PATH="$PATH:$_setup_uv_dir"
     step "uv" "reusing the uv installed at $_setup_uv_dir (it was not on PATH)"
     USE_UV=true

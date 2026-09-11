@@ -2558,17 +2558,11 @@ _uv_sha256() {
     fi
 }
 
-# Can a freshly downloaded binary run at all? Both ways it could hang are closed off: no stdin,
-# so a build that prompts reads EOF, and a ceiling. A healthy uv answers in milliseconds, so
-# only a binary we would refuse reaches the ceiling. Where `timeout` exists it holds the
-# ceiling (with a KILL after TERM where it takes -k); stock macOS has none, and there a
-# background job with a watchdog does the same, since a probe that only had a ceiling under
-# `timeout` waited the full length of a hang on exactly the hosts that ship without it.
+# Liveness probe for a fresh binary, hang-proof: no stdin (a prompting build reads EOF) and a
+# ceiling, held by `timeout -k` where it exists and by a watchdog on stock macOS, which has none.
 _uv_probe_exec() {
     _upe_secs="${_UV_PROBE_SECONDS:-20}"
-    # TERM can be caught or ignored; KILL five seconds later cannot. `timeout -k` where
-    # the timeout at hand takes it (coreutils, current busybox); a timeout without -k
-    # would send TERM alone, so that host takes the watchdog below, which escalates.
+    # KILL after TERM (TERM can be ignored): `timeout -k` where supported, else the watchdog below.
     if command -v timeout >/dev/null 2>&1 && timeout -k 1 5 true >/dev/null 2>&1; then
         timeout -k 5 "$_upe_secs" "$1" --version >/dev/null 2>&1 </dev/null
         return $?
