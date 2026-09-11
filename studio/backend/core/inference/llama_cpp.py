@@ -3539,16 +3539,12 @@ def _with_gguf_load_marker(load: Callable):
         load_cancel_event: Optional[threading.Event] = None,
     ):
         hf_repo = intent.hf_repo
-        # Two things this call owns and must not leak, however it exits.
-        #
-        # The Vulkan probe memo: several placement decisions inside want the same rows
-        # and each probe is a subprocess behind a 15s timeout, while system-info
-        # polling outside a load needs LIVE free/used VRAM and must never be served
-        # that snapshot. (Arming is narrower still; see _arm_load_probe_memo.)
-        #
-        # (The pre-spawn placement marker is released by `_serial_load_scope` instead,
-        # on the way out of the LOCK rather than the call, so a finished load cannot
-        # blank a queued one that has already taken the lock and published.)
+        # The launch probe memo, which must not leak however this exits: several
+        # placement decisions want the same rows and each probe is a subprocess, while
+        # system-info polling outside a load needs LIVE VRAM and must never be served
+        # the snapshot. Arming is narrower; see _arm_load_probe_memo. The pre-spawn
+        # placement marker is released by `_serial_load_scope` instead, on the way out
+        # of the LOCK, so a finished load cannot blank a queued one that published.
         with _load_probe_memo_scope(), gguf_load_in_flight(hf_repo):
             if hf_repo and _hub_download_blocks_gguf_load(
                 hf_repo,
@@ -6191,20 +6187,17 @@ def _load_probe_memo_scope():
 # apart from "not probed yet". None means the latter to every reader.
 _MISSING = object()
 
-# Backends whose devices are discrete by construction, so enumerating one is already
-# the answer. Everything else must be proven: a Vulkan id gets the shared-memory
-# probe, and a SYCL, OpenCL, MUSA or CANN id can be an integrated GPU that nothing on
-# this path recognises, so it declines rather than confirming a host-backed offload.
-# CUDA and ROCm sit here because `_weights_in_host_memory` already classifies them
-# upstream, AMD APUs included.
+# Backends whose devices are discrete by construction, because `_weights_in_host_memory`
+# already classifies them upstream, AMD APUs included. Everything else must be proven: a
+# Vulkan id gets the shared-memory probe, and a SYCL, OpenCL, MUSA or CANN id can be an
+# integrated GPU nothing here recognises, so it declines.
 _SELF_EVIDENTLY_DISCRETE = frozenset({"cuda", "rocm", "hip"})
 
-# `llama-server --list-devices` prints a header and then one indented
-# `<id>: <description> (<total> MiB, <free> MiB free)` line per ggml device. Observed
-# across builds: a GPU build lists `  CUDA0: NVIDIA RTX 6000 Ada Generation (...)`,
-# while CPU-only builds print the header followed by `  (none)` or by nothing at all.
-# The id has no internal spaces, which is what separates it from the `  Device 0: ...`
-# lines ggml_cuda_init writes ABOVE the header.
+# `llama-server --list-devices` prints a header, then one indented `<id>: <desc>
+# (<total> MiB, <free> MiB free)` line per device. Observed across builds: CPU-only
+# ones print the header followed by `  (none)` or by nothing. The id has no internal
+# spaces, which is what excludes the `  Device 0: ...` lines ggml_cuda_init writes
+# ABOVE the header.
 _LISTED_DEVICE_RE = re.compile(r"^\s+(\S+):\s")
 _LIST_DEVICES_HEADER = "Available devices:"
 
@@ -6212,9 +6205,8 @@ _LIST_DEVICES_HEADER = "Available devices:"
 def _parse_listed_devices(text: Optional[str]) -> Optional[list[str]]:
     """Device ids from ``--list-devices`` output, or None when it had no answer.
 
-    Only lines BELOW the header count. Backends log their own initialisation above it
-    (``ggml_cuda_init: found 2 CUDA devices``, ``load_backend: loaded CUDA backend
-    from ...``), and that is noise which happens to contain colons.
+    Only lines BELOW the header count: backends log their own initialisation above it,
+    which is noise that happens to contain colons.
     """
     if not text:
         return None
@@ -6685,13 +6677,10 @@ class LlamaCppBackend:
         # placement can take them back out. Empty for a mode the user asked for.
         self._fit_load_mode_flags: list[str] = []
         # The (keep_resident, no_ram_reserve) pair a launch in flight is committed to,
-        # or None when no launch is pending. ONE attribute, so "is a launch pending"
-        # and "what is it committed to" cannot be read out of step: a reader that
-        # sampled a separate marker and snapshot could catch the marker before the
-        # publish and the snapshot after it, then conclude there was no launch at all
-        # and answer a save with reload_required=false about a child already committed
-        # to the pre-save flags. A single assignment is atomic, so the reader sees
-        # either no launch or a launch with its settings, and never half of one.
+        # None when none is pending. ONE attribute, because a separate marker and
+        # snapshot could be read out of step -- marker before the publish, snapshot
+        # after -- and answer a save with reload_required=false about a child already
+        # committed to the pre-save flags. A single assignment is atomic.
         self._memory_pending_launch: Optional[tuple[bool, bool]] = None
         # True when the resident model came from an explicit UI load rather than
         # the OpenAI API, so the idle unload can be scoped to API-loaded models.
@@ -8600,32 +8589,22 @@ class LlamaCppBackend:
     ) -> bool:
         """Whether this launch really puts the weights on a discrete GPU.
 
-        The one predicate behind managed DirectIO, and all that stands between "the
-        fit planner intended a full offload" and "the child performs one". Confirming
-        wrongly is worse than not acting: DirectIO over weights that are really in
-        host RAM replaces a pageable mapping with a model-sized allocated buffer.
-
-        Two questions, because the child can answer only one of them:
+        The one predicate behind managed DirectIO. Confirming wrongly is worse than
+        not acting: DirectIO over host-resident weights replaces a pageable mapping
+        with a model-sized allocated buffer. Two questions, and anything unanswered
+        declines:
 
         1. Will these devices exist for the child? ``--list-devices`` is the loader's
-           own verdict, so a missing CUDA or HIP runtime, a plugin renamed to disable
-           it, a plugin built for another vendor, and a plugin reachable only through
-           ``GGML_BACKEND_PATH`` all come out right without inspecting one filename.
-        2. Is the device discrete, or is its VRAM carved out of system RAM? ggml does
-           not report that, and an iGPU "full offload" is still host-backed. Only some
-           backends can be answered: a Vulkan device has the separate probe, and CUDA
-           and ROCm are already classified upstream by `_weights_in_host_memory`,
-           which knows about AMD APUs. A SYCL or OpenCL id can be an integrated Intel
-           GPU that nothing on this path can recognise, so it declines.
+           own verdict, so a missing runtime, a disabled plugin, a wrong-vendor plugin
+           and a ``GGML_BACKEND_PATH`` plugin all resolve without reading a filename.
+        2. Is the device discrete? ggml does not report it. Vulkan has the separate
+           probe, CUDA and ROCm are classified upstream by `_weights_in_host_memory`,
+           and a SYCL or OpenCL id can be an integrated GPU nothing here recognises.
 
-        Anything unanswered declines.
-
-        ``dio_possible`` is the platform-and-build gate, not the toggle: off Windows,
-        or on a build that does not understand ``--load-mode``, no answer here can
-        reach a flag now or after a later save, so the probes are not worth spawning.
-        Gating on the TOGGLE would be wrong for the reason the Vulkan probe is not:
-        the verdict is recorded as this launch's placement and compared against a
-        later save, so it has to mean "we looked" rather than "the toggle was off".
+        ``dio_possible`` is the platform-and-build gate, NOT the toggle: off Windows
+        no answer can reach a flag, so the probes are not worth spawning. Gating on
+        the toggle would be wrong, because the verdict is recorded as this launch's
+        placement and compared against a later save.
         """
         if not dio_possible or host_resident:
             return False
@@ -8639,11 +8618,9 @@ class LlamaCppBackend:
 
     @staticmethod
     def _selected_devices(devices: Optional[list[str]], gpu_indices) -> list[str]:
-        """The enumerated GPU devices this launch will actually use.
-
-        ggml ids are ``<Backend><ordinal>`` and the CPU device is not a placement
-        target. With no pin, every GPU device is in play.
-        """
+        """The enumerated GPU devices this launch will use. ggml ids are
+        ``<Backend><ordinal>``; the CPU device is not a placement target, and with no
+        pin every GPU device is in play."""
         if not devices:
             return []
         gpu = [d for d in devices if not d.upper().startswith("CPU")]
@@ -8662,8 +8639,7 @@ class LlamaCppBackend:
         """Whether every device this launch pins was enumerated by the build.
 
         Replaces "do the host's GPUs exist": a device the host reports but the child
-        cannot open is exactly the case that confirmed an offload which never
-        happened, and only the child's own list separates the two.
+        cannot open is the case that confirmed an offload which never happened.
         """
         selected = cls._selected_devices(devices, gpu_indices)
         if not selected:
@@ -8674,13 +8650,9 @@ class LlamaCppBackend:
 
     @staticmethod
     def _device_backend(device: str) -> str:
-        """The ggml backend behind a device id, lowercased.
-
-        Ids are ``<Backend><ordinal>``, so the trailing digits come off. This is what
-        `_is_vulkan_backend` and the plugin-root scan were approximating from
-        filenames: an external ``GGML_BACKEND_PATH`` plugin names itself here like
-        any other, because the build is reporting what it loaded.
-        """
+        """The ggml backend behind a device id, lowercased. What `_is_vulkan_backend`
+        and the plugin-root scan approximated from filenames: the build reports what it
+        actually loaded, so an external ``GGML_BACKEND_PATH`` plugin names itself too."""
         return re.sub(r"\d+$", "", device).strip().lower()
 
     @classmethod
@@ -8697,15 +8669,11 @@ class LlamaCppBackend:
         binary: Optional[str] = None,
         env: Optional[Mapping[str, str]] = None,
     ) -> Optional[list[str]]:
-        """The ggml device ids ``llama-server --list-devices`` reports, or None when
-        the probe had no usable answer.
+        """The ggml device ids ``--list-devices`` reports, or None for no usable answer.
 
-        Tri-state on purpose, like ``sd_cpp_accelerator_device_verdict``. ``[]`` is the
-        build saying it has no devices; None is no answer at all -- an older build that
-        rejects the flag, a timeout, a crash. Both decline, but they are not the same
-        fact, and empty is not folded into None: "Available devices:" with nothing
-        under it and the same header with ``(none)`` are both real answers, and
-        different builds print each.
+        Tri-state like ``sd_cpp_accelerator_device_verdict``: ``[]`` is the build
+        saying it has no devices, None is an older build rejecting the flag, a timeout
+        or a crash. Both decline, but empty is a real answer and is not folded in.
         """
         binary = binary or cls._find_llama_server_binary()
         if not binary:
@@ -8721,27 +8689,18 @@ class LlamaCppBackend:
     def _run_list_devices(
         binary: str, env: Optional[Mapping[str, str]] = None
     ) -> Optional[list[str]]:
-        """``--list-devices`` once, parsed.
-
-        The flag prints and exits, so this never leaves a server behind. It is on the
-        argv denylist for that reason, which does not apply to Unsloth calling it
-        deliberately.
-        """
+        """``--list-devices`` once, parsed. The flag prints and exits, so this leaves no
+        server behind; it is on the argv denylist for that reason, which does not apply
+        to Unsloth calling it deliberately."""
         try:
             probe_env = LlamaCppBackend._llama_server_env_for_binary(binary)
         except Exception:
             probe_env = child_env_without_native_path_secret()
-        # The probe has to see what the CHILD will see, or it answers about a
-        # different process. On Windows the CUDA runtime usually comes from the
-        # managed venv (`torch/lib`, `nvidia/*/bin`) and only
-        # `_llama_server_env_for_binary` puts those on PATH, so probing the raw
-        # environment reported no devices for installs that load CUDA perfectly and
-        # cost every one of them the DirectIO path this change exists to take.
-        #
-        # The caller's view is that same environment with placement variables
-        # REMOVED -- a manual-mode or gpu_ids load hides devices from the child on
-        # purpose -- so its removals are replayed rather than its whole mapping,
-        # which would otherwise drop the native paths again.
+        # The probe must see what the CHILD sees or it answers about a different
+        # process: on Windows the CUDA runtime comes from the managed venv and only
+        # `_llama_server_env_for_binary` puts it on PATH. The caller's view is that
+        # environment with placement variables REMOVED, so its removals are replayed
+        # rather than its whole mapping, which would drop the native paths again.
         if env is not None:
             for name in list(probe_env):
                 if name not in env and name in os.environ:
@@ -24206,9 +24165,8 @@ class LlamaCppBackend:
                 _mem_env_view_no_reserve = dict(_mem_env)
                 scrub_memory_env(_mem_env_view_no_reserve, (_mem_keep_resident, True))
                 # POSITIVE, not "not host-resident": that predicate only gates skipping
-                # a page-lock, so it errs True for an unprobed device and stays False for
-                # an -ngl a cpu-only prebuilt accepts and ignores, where dio would buffer
-                # the whole file instead of mapping it.
+                # a page-lock, so it errs True for an unprobed device and stays False
+                # for an -ngl a cpu-only prebuilt accepts and ignores.
                 # Deliberately NOT gated on where the projector lands. --load-mode is a
                 # main-model loader setting: mtmd_context_params carries no use_mmap or
                 # load_mode field, and clip.cpp reads the mmproj through an ifstream into
@@ -25080,16 +25038,12 @@ class LlamaCppBackend:
                         _child_gpu_physical_ids = tuple(int(i) for i in _survivors)
                         # Narrower than any pin above, so it replaces it.
                         _launch_pinned_ids = list(_survivors)
-                        # The DirectIO decision was taken against the UNNARROWED set,
-                        # where an unsupported unified-memory APU answers host-resident
-                        # for the whole launch. This gate is what removes it, so the
-                        # child can be a confirmed discrete full offload after all, and
-                        # nothing downstream re-asked: the reactive retry has this, the
-                        # proactive one did not. Same helper, same rule.
-                        # fully_offloaded False: this arm is the unpinned "--fit on" /
-                        # manual-ratio shape, so the fitter still owns placement and the
-                        # survivors may not hold the model. The decision re-runs the
-                        # host-residency check for exactly that.
+                        # The decision was taken against the UNNARROWED set, where an
+                        # unsupported unified-memory APU answers host-resident for the
+                        # whole launch; this gate removes it, so the child can be a
+                        # confirmed discrete full offload after all. fully_offloaded
+                        # False because the fitter still owns placement here, so the
+                        # decision re-runs the host-residency check.
                         _gate_dio, _gate_applicable, _gate_active = _dio_decision_for(
                             _survivors, fully_offloaded = False
                         )

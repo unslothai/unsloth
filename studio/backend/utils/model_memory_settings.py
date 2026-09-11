@@ -118,18 +118,16 @@ def _pair_generations() -> tuple[int, int]:
 
 
 def capture_model_memory_settings(publish) -> tuple[bool, bool]:
-    """Read the pair and publish it, with no window in between a save can fall through.
+    """Read the pair and publish it, with no window in between for a save to fall through.
 
-    ``get_model_memory_settings`` closes the window INSIDE the read. This closes the
-    one after it: a launch is committed to the pair from the moment it reads it, so a
-    save landing before the launch publishes what it captured is answered from a state
-    where the launch does not exist yet -- ``reload_required=false`` about a child that
-    will run the pre-save flags.
+    ``get_model_memory_settings`` closes the window INSIDE the read; this closes the one
+    after it. A launch is committed to the pair from the moment it reads it, so a save
+    landing before the publication is answered from a state where the launch does not
+    exist yet: ``reload_required=false`` about a child that will run the pre-save flags.
 
-    Detected rather than locked, the same way this module already handles the read:
-    the write bumps a generation, so a capture whose generation moved republished the
-    newer pair. Holding ``_cache_lock`` across the publication instead would mean
-    holding it across the settings read's DB I/O.
+    Detected rather than locked, as this module already handles the read: the write
+    bumps a generation, so a capture whose generation moved republishes the newer pair.
+    Holding ``_cache_lock`` instead would mean holding it across the read's DB I/O.
     """
     for _attempt in range(_MAX_REREADS):
         before = _pair_generations()

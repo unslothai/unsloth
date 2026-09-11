@@ -912,15 +912,10 @@ def _active_launch_placement():
         from routes.inference import get_llama_cpp_backend
 
         backend = get_llama_cpp_backend()
-        # Read ONCE, in one pass: two separate reads of the backend can straddle the
-        # marker clear, and a replacement load finishing in between left the killed
-        # child's placement answering for the launch that replaced it.
-        #
-        # One attribute carries both "is a launch pending" and "what is it committed
-        # to", so this single read cannot catch the two out of step. Sampling a
-        # separate marker and snapshot could read the marker before a load published
-        # and the snapshot after, see no pending launch, and answer a save with
-        # reload_required=false about a child already committed to the pre-save flags.
+        # Read ONCE: two reads can straddle the marker clear, and a replacement load
+        # finishing in between left the killed child's placement answering for the
+        # launch that replaced it. One attribute carries both "is a launch pending"
+        # and "what is it committed to", so this cannot catch the two out of step.
         pending = getattr(backend, "_memory_pending_launch", None)
         if not backend.is_active and pending is None:
             return _NO_LAUNCH, False, True, None, False, None
@@ -966,21 +961,18 @@ def _model_memory_reload_required() -> bool:
     if state is _NO_LAUNCH:
         return False
 
-    # A launch in flight has not resolved its flags yet, so there is no state of its
-    # own to compare and the comparator reads None as "not governed by this policy".
-    # What it IS committed to is the toggle snapshot it took, so answer from that.
-    #
-    # Whenever one is pending, NOT only when `state` is None: replacing a model kills
-    # the old process without clearing its `_memory_state`, so the stale placement of
-    # a child that is already gone would otherwise answer for the launch replacing it.
+    # A launch in flight has no resolved flags to compare, and the comparator reads
+    # None as "not governed", so answer from the snapshot it is committed to. Whenever
+    # one is pending, NOT only when `state` is None: replacing a model kills the old
+    # process without clearing its `_memory_state`, whose stale placement would
+    # otherwise answer for the launch replacing it.
     if pending is not None:
         from utils.model_memory_settings import get_model_memory_settings
 
-        # By EFFECT, not by the literal pair. no-reserve wins over keep-resident for
-        # every loader flag, so flipping keep-resident while no-reserve is on changes
-        # nothing the child launches with -- only the idle-unload veto, which the loop
-        # re-reads each poll and which no reload is needed to apply. Comparing the raw
-        # tuple asked the user to reload for a change the launch cannot express.
+        # By EFFECT, not the literal pair: no-reserve wins over keep-resident for every
+        # loader flag, so flipping keep-resident under it changes only the idle-unload
+        # veto, which the loop re-reads each poll. The raw tuple asked for a reload the
+        # launch cannot express.
         return _launch_effect_of(get_model_memory_settings()) != _launch_effect_of(pending)
 
     # Same predicate the duplicate-load comparator uses.

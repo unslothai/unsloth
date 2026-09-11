@@ -3159,11 +3159,9 @@ class TestThePendingCompareIsByEffect:
 
 
 class TestNoNestedHelperIsUsedBeforeItsDef:
-    """A nested `def` in `load_model` binds the name as a local, so a call placed
-    above it raises UnboundLocalError at runtime rather than failing any import or
-    lint check. That shipped once, in a device validator since replaced by the
-    build's own device list, and aborted every full-offload launch; this is the
-    guard that would have caught it."""
+    """A nested `def` in `load_model` binds the name as a local, so a call above it
+    raises UnboundLocalError at runtime rather than failing import or lint. That
+    shipped once and aborted every full-offload launch."""
 
     def test_every_nested_def_precedes_its_calls(self):
         import ast
@@ -3195,16 +3193,11 @@ class TestNoNestedHelperIsUsedBeforeItsDef:
 
 
 class TestThePendingWindowHasNoGaps:
-    """Three ways the window closed early, each found in turn: the publish order,
-    the spawn caller's unconditional clear, and the outer recovery rungs.
-
-    The publish-order one is closed by construction now rather than by convention.
-    `_memory_launch_pending` and `_memory_pending_settings` were two attributes
-    holding one fact between them, so every writer had to order its two stores and
-    the reader had to mirror that order. They are one attribute: None for no pending
-    launch, the `(keep_resident, no_ram_reserve)` pair otherwise. A single assignment
-    is atomic, so a reader cannot catch the halves out of step and there is no
-    ordering left to assert."""
+    """Three ways the window closed early: the publish order, the spawn caller's
+    unconditional clear, and the outer recovery rungs. The first is closed by
+    construction now. Two attributes held one fact between them, so every writer had
+    to order its stores and the reader had to mirror that; one attribute (None, or
+    the pair) is assigned atomically, leaving no ordering to assert."""
 
     def test_the_two_attribute_marker_is_gone(self):
         import inspect
@@ -3266,12 +3259,10 @@ class TestThePendingWindowHasNoGaps:
 
 
 class TestOneLaunchReadsOneSettingsSnapshot:
-    """`load_model` captures `(keep_resident, no_ram_reserve)` once and decides the
-    argv from it. Every consumer inside the launch has to read that snapshot: a save
-    landing mid-launch would otherwise scrub the child's environment under the new
-    pair while the flags came from the old one, and the process would run a mix of
-    the two. The child-environment scrub read the live settings instead, which is the
-    one place this could happen."""
+    """`load_model` captures the pair once and decides the argv from it, so every
+    consumer inside the launch must read that snapshot. The child-environment scrub
+    read the live settings, so a save landing mid-launch gave the process flags from
+    one pair and an environment scrubbed under the other."""
 
     def test_no_scrub_in_load_model_reads_the_live_settings(self):
         import ast
@@ -3331,12 +3322,9 @@ class TestOneLaunchReadsOneSettingsSnapshot:
 
 
 class TestOnlyALoadablePluginCountsAsAGpuBackend:
-    """A disabled backend leaves `ggml-cuda.dll.bak` / `.disabled` behind, and that is
-    precisely when the build ships no GPU backend. A prefix match read those as a
-    backend, so a CPU-only install could be confirmed for full offload and take
-    managed DirectIO while the weights stayed in host RAM: `_windows_cuda_runtime_missing`
-    keys off the exact `ggml-cuda.dll`, so it reports nothing missing when only the
-    renamed copy is present and the chain never catches it."""
+    """A disabled backend leaves `ggml-cuda.dll.bak` behind, which is precisely when
+    the build ships none. A prefix match read those as a backend, so a CPU-only install
+    could be confirmed for full offload and take DirectIO over host-resident weights."""
 
     LOADABLE = (
         "ggml-cuda.dll",
@@ -3368,11 +3356,9 @@ class TestOnlyALoadablePluginCountsAsAGpuBackend:
 
 
 class TestRecoveryRungsReadTheLaunchSnapshot:
-    """Every rung of one launch has to decide from the pair that launch captured. The
-    fit-on and architecture-crash recoveries called live `should_mlock()` and passed no
-    `settings` to `apply_model_memory_policy`, so a save landing mid-launch could give
-    the retry flags from toggles the rest of the launch never saw, while the settings
-    route still compared against the published old snapshot."""
+    """Every rung of one launch decides from the pair that launch captured. The fit-on
+    and arch-crash recoveries called live `should_mlock()` and passed no `settings`, so
+    a save mid-launch gave the retry toggles the rest of the launch never saw."""
 
     def test_load_model_never_calls_the_live_mlock_helper(self):
         import inspect
@@ -3443,12 +3429,10 @@ _LIST_DEVICES_VULKAN = (
 
 class TestTheBuildsOwnDeviceListIsTheEvidence:
     """The confirmation used to be six filename checks standing in for one question:
-    will the child actually place the weights on a discrete GPU. Each was a proxy,
-    each could be satisfied by a build that still enumerates nothing, and each needed
-    its own review round to find. `--list-devices` is the loader's own verdict, so a
-    missing CUDA or HIP runtime, a plugin renamed to disable it, a plugin built for
-    another vendor and a plugin reachable only through GGML_BACKEND_PATH all resolve
-    without inspecting a single filename."""
+    will the child place the weights on a discrete GPU. Each was a proxy that a build
+    enumerating nothing could still satisfy. `--list-devices` is the loader's own
+    verdict, so a missing runtime, a disabled plugin, a wrong-vendor plugin and a
+    GGML_BACKEND_PATH plugin all resolve without reading a filename."""
 
     def test_it_parses_a_real_gpu_listing(self):
         from core.inference.llama_cpp import _parse_listed_devices
@@ -3660,10 +3644,9 @@ class TestTheLaunchPublishesItsPlacementWindow:
 
 
 class TestTheCaptureAndThePublicationAreOneAct:
-    """A launch is committed to the toggle pair from the moment it READS it. Publishing
-    afterwards, however soon, left a window in which a save was answered from a state
-    where the launch did not exist yet: reload_required=false about a child that goes
-    on to run the pre-save flags."""
+    """A launch is committed to the pair from the moment it READS it, so publishing
+    afterwards, however soon, left a window where a save was answered from a state in
+    which the launch did not exist yet."""
 
     def _mod(self):
         import utils.model_memory_settings as mm
@@ -3714,10 +3697,9 @@ class TestTheCaptureAndThePublicationAreOneAct:
 
 
 class TestTheProbeSeesWhatTheChildWillSee:
-    """On Windows the CUDA runtime normally comes from the managed venv, and only
-    `_llama_server_env_for_binary` puts `torch/lib` and `nvidia/*/bin` on PATH.
-    Probing the raw environment reported no devices for installs whose child loads
-    CUDA perfectly, costing every one of them the DirectIO path."""
+    """On Windows the CUDA runtime comes from the managed venv, and only
+    `_llama_server_env_for_binary` puts it on PATH. Probing the raw environment
+    reported no devices for installs whose child loads CUDA perfectly."""
 
     def test_the_probe_builds_the_child_env(self, monkeypatch):
         import core.inference.llama_cpp as m
@@ -3777,10 +3759,9 @@ class TestTheProbeSeesWhatTheChildWillSee:
 
 
 class TestOnlyAClassifiableDeviceConfirms:
-    """`--list-devices` proves a device is LIVE, not that it is discrete. A custom
-    SYCL or OpenCL build on an integrated Intel GPU enumerates `SYCL0` happily, and
-    nothing on this path can tell that its VRAM is system RAM, so confirming it would
-    trade a pageable mapping for a model-sized host buffer."""
+    """`--list-devices` proves a device is LIVE, not discrete. A SYCL or OpenCL build
+    on an integrated Intel GPU enumerates `SYCL0` happily, and nothing here can tell
+    its VRAM is system RAM."""
 
     def _confirm(self, monkeypatch, devices, discrete = True):
         from core.inference.llama_cpp import LlamaCppBackend
