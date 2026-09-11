@@ -1079,9 +1079,8 @@ def _apply_overflow_truncation(
     if not dropped and not clipped:
         return False
     if reprice_max_tokens is not None:
-        # Replaced, not narrowed, and before the headroom clamp: a prompt over the window
-        # priced at the one-token floor, and narrowing keeps the floor no matter how much
-        # room the drop above just made. None means no bound applies, so leave it alone.
+        # Replaced, not narrowed, and before the headroom clamp: narrowing keeps the one-token
+        # floor however much room the drop just made. None means no bound applies.
         _repriced = reprice_max_tokens(body.get("messages") or [])
         if _repriced is not None:
             body["max_tokens"] = _repriced
@@ -2103,9 +2102,8 @@ def _openai_llama_admission_transport_tokens(payload) -> int:
 
 
 # The tool-use instruction block a chat template emits once whenever a catalogue is present,
-# which the message list never carries. Measured at 171 to 190 tokens on Qwen3.5-4B across 1,
-# 2, 4 and 8 tools; 256 keeps margin for a wordier template. Only charged when there is a
-# catalogue, so a tool-free request is priced exactly as before.
+# which the message list never carries. Measured at 171 to 190 tokens on Qwen3.5-4B; 256 keeps
+# margin. Charged only with a catalogue, so a tool-free request is priced exactly as before.
 _OPENAI_LLAMA_ADMISSION_TOOL_PREAMBLE_TOKENS = 256
 
 
@@ -2203,8 +2201,7 @@ def _openai_llama_admission_tokens(
         return None
     if conversation is not None:
         # What is sent: the GGUF builders splice a date prompt, a nudge and media in later.
-        # Priced on the same neutralised list the bound is, so a profiled marker the generic
-        # sweep leaves alone cannot leave the charge below what the wire carries.
+        # Neutralised like the bound, so the charge cannot fall below what the wire carries.
         prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
             conversation,
             image_tokens = image_tokens,
@@ -2367,22 +2364,11 @@ def _openai_llama_admission_wire_prompt_tokens(
     )
 
 
-# Cells a sequence needs beyond what this module can price. Two measured costs, both bounded
-# and both per request, on b10840 at `-c 16384 --parallel 4 --kv-unified`:
-#
-#   - llama-server stops on `prompt.n_tokens() + 1 >= slot.n_ctx` (server-context.cpp
-#     process_token and pre_decode), so a sequence held to exactly its share leaves the pool
-#     nothing to place its next token in. Filling the pool to exactly `capacity * share` lost
-#     every chat in 3 of 6, 4 of 8 and 7 of 12 waves. The floor was 2 cells a request.
-#   - The estimator prices the MESSAGE LIST; llama-server prices the RENDERED template, whose
-#     role markers it never sees. Measured worst case 38 tokens, on a conversation of one
-#     short message. The gap shrinks as the conversation grows and turns into a large
-#     over-count by about 300 characters, so it only bites the empty-chat case -- which is
-#     the four fresh chats this change exists for, and which failed 6 of 6 waves at 8.
-#
-# 64 covers both with margin, at 1.6% of a 4096 share. It does NOT cover the estimator's
-# under-count on dense ASCII (base64 0.34x, hex 0.28x, logs 0.47x of real): that is unbounded
-# and predates the wire bound, since the charge has always been an estimate.
+# Cells a sequence needs beyond what this module can price: llama-server stops on
+# `prompt.n_tokens() + 1 >= slot.n_ctx`, so a share-exact sequence has nowhere to step, and the
+# estimator prices the MESSAGE LIST where llama-server prices the RENDERED template. Both are
+# bounded and per request; 64 covers them at 1.6% of a 4096 share. It does NOT cover the
+# estimator's under-count on dense ASCII, which is unbounded and predates the wire bound.
 _OPENAI_LLAMA_ADMISSION_WIRE_RESERVE_TOKENS = 64
 
 
@@ -2445,8 +2431,7 @@ def _openai_llama_admission_enforced_max_tokens(
     cap = _positive_int_or_none(stated)
     # Stated but unusable, which `_positive_int_or_none` cannot tell from absent: /v1/messages
     # takes `max_tokens: 0` past its required-field check, and reading that as unstated would
-    # replace the caller's zero with an allowance and generate where nothing was asked for.
-    # Not ours to rewrite; it reaches llama-server as it did before the bound existed.
+    # generate where nothing was asked for. Not ours to rewrite.
     if cap is None and stated is not None:
         return None
     window = _openai_llama_admission_context_window(

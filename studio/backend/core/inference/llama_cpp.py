@@ -29849,10 +29849,9 @@ class LlamaCppBackend:
         _allow_respawn_retry: bool = True,
         # Appended, never inserted: no bare `*`, so a mid parameter rebinds positional callers.
         admission_output_allowance: Optional[int] = None,
-        # Re-prices the bound from the messages the fit LEAVES. This path has no re-cost, so
-        # without it a history over the window is bounded at the one-token floor and stays
-        # there after the fit made room. Pure pricing, no lease: the fit only shrinks the
-        # prompt, so the figure it returns is already inside what the opening charged.
+        # Re-prices the bound from the messages the fit LEAVES: this path has no re-cost, so a
+        # history over the window stays at the one-token floor after the fit made room. Pure
+        # pricing, no lease, since the fit only shrinks the prompt.
         on_prompt_fitted: Optional[Callable[[list], Optional[int]]] = None,
     ) -> Generator[Union[str, dict], None, None]:
         """
@@ -30892,8 +30891,7 @@ class LlamaCppBackend:
             )
             # What the wire may emit, for SIZING only: a fit reserving the caller's whole cap
             # against an eighth-of-the-window share evicts history that had room.
-            # `payload["max_tokens"]` keeps its own path. The re-cost below reassigns the
-            # allowance after the fit, so an iteration prices against the previous round's.
+            # `payload["max_tokens"]` keeps its own path.
             _iteration_fit_max_tokens = (
                 min(
                     _iteration_max_tokens
