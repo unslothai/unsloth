@@ -8690,13 +8690,11 @@ class LlamaCppBackend:
     def _compact_ordinals(gpu_indices, env: Optional[Mapping[str, str]]):
         """Physical ordinals translated into the child's COMPACT space.
 
-        A visibility mask reindexes what survives from 0, so the adapter this launch
-        calls physical 1 is ``CUDA0`` to the child. Comparing our physical ordinal
-        against the reported compact one rejected a narrowed launch that was in fact
-        fully offloaded, which is the opposite of what the narrowing is for.
-
-        The mask lists survivors in order, so a physical id's position in it IS its
-        compact ordinal. Unchanged with no mask, or one we cannot map.
+        A mask reindexes survivors from 0, so the adapter this launch calls physical 1
+        is ``CUDA0`` to the child, and comparing the two rejected a narrowed launch that
+        was fully offloaded. The mask lists survivors in order, so a physical id's
+        position in it IS its compact ordinal. Unchanged with no mask, or one we cannot
+        map.
         """
         if not gpu_indices or not env:
             return gpu_indices
