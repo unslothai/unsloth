@@ -324,6 +324,10 @@ class _TextCharTable(dict):
         self[codepoint] = codepoint if keep else None
         return self[codepoint]
 
+    def __reduce__(self):
+        # Pickle empty: the MLX path pickles TextPreprocessor by value, and datasets would hash the cache.
+        return type(self), ()
+
 
 class TextPreprocessor:
     _WHITESPACE_PATTERN = re.compile(r"[^\S\n]+")
