@@ -10846,9 +10846,7 @@ def _estimate_gguf_required_gb(
                 n_devices = n_devices,
                 tensor_parallel = tensor_parallel,
                 is_diffusion = is_diffusion,
-                opens_vision_mmproj = _remote_raises_ubatch(
-                    config, llama_extra_args, disable_vision
-                ),
+                opens_vision_mmproj = _remote_raises_ubatch(config, llama_extra_args, disable_vision),
             )
             return total_gb
         return None
@@ -11284,9 +11282,7 @@ def _gguf_resident_file_gb(
         context_term_gb = _remote_gguf_compute_reserve_gb(
             llama_extra_args = llama_extra_args,
             max_seq_length = 0,
-            opens_vision_mmproj = _remote_raises_ubatch(
-                config, llama_extra_args, disable_vision
-            ),
+            opens_vision_mmproj = _remote_raises_ubatch(config, llama_extra_args, disable_vision),
         )
     files_gb = max(0.0, required_gb - context_term_gb)
     # Under the lock: the route body runs in an asyncio.to_thread worker, so two panel
