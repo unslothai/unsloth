@@ -1314,6 +1314,12 @@ def _sidecar_pin_ok(root: Path, spec: str) -> Optional[str]:
                 payload_present = _sidecar_payload_present(root, dist)
     except Exception:
         return f"{name} metadata unreadable"
+    # An optional package (tiktoken) absent or left as a bare dist-info is the top-up's business,
+    # not a reason to rebuild; present, it is held to its pin.
+    if canonical in OPTIONAL_SIDECAR_PACKAGES and (
+        not found or (not directory_present and not payload_present)
+    ):
+        return None
     if not found:
         return f"{name} not installed"
     if not directory_present and not payload_present:
@@ -1329,6 +1335,7 @@ def _sidecar_damaged_files(
     root: Path,
     limit: int = 3,
     budget_seconds: float = SIDECAR_SCAN_BUDGET_SECONDS,
+    required: Sequence[str] = (),
 ) -> List[str]:
     """RECORD rows under a sidecar that are gone, truncated, or built for another CPython.
 
@@ -1344,16 +1351,26 @@ def _sidecar_damaged_files(
     ext_tag = _current_ext_tag()
     entries: List[Tuple[str, str, Optional[int], Path, str]] = []
     owners: Dict[str, int] = {}
+    required_names = {_canonical(name) for name in required if name}
+    recordless: List[str] = []
     try:
         dist_infos = sorted(root.glob("*.dist-info"))
     except OSError:
         return []
     for dist_info in dist_infos:
         name = dist_info.name.split("-")[0]
+        # An optional package may be absent; present, its RECORD is held to the same standard
+        # (mirrors _sidecar_scan_impl in transformers_version.py).
         try:
             record = (dist_info / "RECORD").read_text(encoding = "utf-8", errors = "replace")
+        except FileNotFoundError:
+            # No RECORD under a pinned dist-info is an interrupted install (written last) whose
+            # truncations the size check cannot see; an optional package's top-up clears its own.
+            if _canonical(name) in required_names:
+                recordless.append(f"{name}: RECORD is missing")
+            continue
         except OSError:
-            # Absent or unreadable RECORD says nothing about damage.
+            # Unreadable RECORD says nothing about damage.
             continue
         try:
             rows = list(csv.reader(io.StringIO(record)))
@@ -1389,7 +1406,9 @@ def _sidecar_damaged_files(
                     recorded = None
             entries.append((name, rel, recorded, target, key))
 
-    found: List[str] = []
+    found: List[str] = list(recordless[:limit])
+    if len(found) >= limit:
+        return found
     for name, rel, recorded, target, key in entries:
         # Every row: a batched deadline let one slow mount overrun it by a minute.
         if deadline is not None and time.monotonic() > deadline:
@@ -1427,6 +1446,17 @@ def _sidecar_damaged_files(
     return found
 
 
+# Mirror of transformers_version._sidecar_file_check_disabled: the escape hatch for a false positive
+# (a several-hundred-MB reinstall) must hold on the setup side too. Then the packages a sidecar is
+# complete without (transformers_version._OPTIONAL_SIDECAR_PACKAGES).
+OPTIONAL_SIDECAR_PACKAGES = frozenset({"tiktoken"})
+SIDECAR_FILE_CHECK_ENV = "UNSLOTH_SKIP_SIDECAR_FILE_CHECK"
+
+
+def _sidecar_file_check_disabled() -> bool:
+    return os.environ.get(SIDECAR_FILE_CHECK_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def sidecar_is_current(
     venv_dir,
     pins: Sequence[str],
@@ -1456,7 +1486,13 @@ def sidecar_is_current(
         problem = _sidecar_pin_ok(root, spec)
         if problem is not None:
             return False, problem
-    damaged = _sidecar_damaged_files(root, budget_seconds = budget_seconds)
+    if _sidecar_file_check_disabled():
+        return True, ""
+    damaged = _sidecar_damaged_files(
+        root,
+        budget_seconds = budget_seconds,
+        required = [spec.split("==")[0] for spec in pins if "==" in spec],
+    )
     if damaged:
         return False, "; ".join(damaged)
     return True, ""

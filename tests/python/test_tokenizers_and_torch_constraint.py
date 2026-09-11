@@ -180,7 +180,11 @@ def test_setup_sh_sidecar_installs_isolate_uv_override():
     result = subprocess.run(["bash", "-c", script], capture_output = True, text = True)
     assert result.returncode == 0 and result.stdout.splitlines() == ["child=unset", "parent=base"]
     sidecars = source.split("# ── 6b.", 1)[1].split("# ── GPU detection", 1)[0]
-    assert sidecars.count("fast_install_sidecar --target") == 12
+    # Four installs in ONE helper per tier plus the tiktoken top-up (it used to be twelve, written
+    # out three times). Every sidecar install must go through the UV_OVERRIDE-clearing wrapper.
+    assert sidecars.count("fast_install_sidecar --target") == 5
+    assert sidecars.count('_install_sidecar "$VENV_T5_') == 3
+    assert sidecars.count('_sidecar_top_up_tiktoken "$VENV_T5_') == 3
     assert " fast_install --target" not in sidecars
 
 

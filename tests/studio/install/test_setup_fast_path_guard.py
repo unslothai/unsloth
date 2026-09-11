@@ -138,3 +138,84 @@ def test_the_installer_reports_duplicate_metadata_on_every_platform(script: path
     assert (
         "duplicate metadata found" in text
     ), f"{script.name} detects the conflict but never says so"
+
+
+def test_the_sidecar_predicate_asks_the_shim_on_colab_too():
+    """No venv interpreter on Colab; the shim is stdlib-only and the installer's own
+    `python` asks it. The version grep alone read a sidecar interrupted after
+    transformers landed as current on every later run."""
+    text = SETUP_SH.read_text(encoding = "utf-8")
+    start = text.index("_sidecar_current() {")
+    body = text[start : text.index("\n}\n", start)]
+    assert "command -v python" in body
+    assert '"$_sc_python" "$SCRIPT_DIR/install_manifest.py" sidecar' in body
+    # The grep is the last resort, for a tree with no interpreter to ask at all.
+    assert body.index("command -v python") < body.index("_target_has_pkg_version")
+
+
+def test_the_ps1_sidecar_predicate_runs_the_shim_as_a_bounded_process():
+    """Two reasons, one mechanism. The shim answers "stale" with exit 1, which a native
+    command turns into a terminating error under $PSNativeCommandUseErrorActionPreference,
+    and the shim's scan budget cannot interrupt a stalled read on a wedged mount. A bounded
+    process has neither problem; a timeout reads as stale."""
+    text = SETUP_PS1.read_text(encoding = "utf-8")
+    start = text.index("function Test-SidecarCurrent {")
+    body = text[start : text.index("\nfunction ", start + 1)]
+    assert "& python $shim" not in body
+    assert "Invoke-BoundedPythonProbe -PythonExe $pythonExe -Code $code -TimeoutSec 60" in body
+    # The argv travels base64-encoded: a path with quotes or backslashes cannot break -c.
+    assert "[Convert]::ToBase64String" in body and "base64.b64decode" in body
+    assert "runpy.run_path(sys.argv[0], run_name='__main__')" in body
+    assert body.index("$probe.TimedOut") < body.index('$out = "sidecar: audit did not answer')
+    # The shell mirror: the shim call is bounded where a timeout exists and a timeout is stale.
+    sh = SETUP_SH.read_text(encoding = "utf-8")
+    call = sh.index('install_manifest.py" sidecar "$_sc_dir"')
+    window = sh[call - 400 : call + 900]
+    assert "timeout -k 5 60" in window
+    assert '[ "$_sc_rc" -eq 124 ] || [ "$_sc_rc" -eq 137 ]' in window
+    assert "sidecar: audit did not answer" in window
+
+
+def test_the_ps1_sidecar_installs_are_isolated_from_uv_override():
+    """setup.sh routes every sidecar install through fast_install_sidecar, which unsets
+    UV_OVERRIDE; an override naming huggingface_hub or hf_xet would otherwise install
+    another version than the exact pin and the audit would rebuild the sidecar to the
+    same wrong answer on every run. The PowerShell helper mirrors it."""
+    text = SETUP_PS1.read_text(encoding = "utf-8")
+    start = text.index("function Fast-Install-Sidecar {")
+    body = text[start : text.index("\nfunction ", start + 1)]
+    assert "Remove-Item Env:UV_OVERRIDE" in body and "Fast-Install @Args_" in body
+    assert "finally" in body and "$env:UV_OVERRIDE = $savedOverride" in body
+    for name in ("function Repair-SidecarTiktoken {", "function Install-T5Sidecar {"):
+        start = text.index(name)
+        body = text[start : text.index("\nfunction ", start + 1)]
+        assert "Fast-Install --target" not in body, name
+        assert "Fast-Install-Sidecar --target" in body, name
+
+
+def test_the_tiktoken_top_up_checks_the_payload_not_the_dist_info_alone():
+    """An interrupted install leaves tiktoken-*.dist-info with no package beside it; the
+    sidecar predicate accepts that sidecar (tiktoken is optional), so the top-up is the
+    only repair left, and a dist-info-only check would skip it forever."""
+    sh = SETUP_SH.read_text(encoding = "utf-8")
+    start = sh.index("_sidecar_top_up_tiktoken() {")
+    assert '"$_stt_dir/tiktoken/__init__.py"' in sh[start : sh.index("\n}\n", start)]
+    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    start = ps1.index("function Repair-SidecarTiktoken {")
+    body = ps1[start : ps1.index("\nfunction ", start + 1)]
+    assert 'Join-Path $payload "__init__.py"' in body
+    # ...and the repair replaces what is there (--target without --upgrade keeps damaged files).
+    assert "--no-deps --upgrade tiktoken" in body
+    sh_body = sh[sh.index("_sidecar_top_up_tiktoken() {") :]
+    assert '--no-deps --upgrade "tiktoken"' in sh_body[: sh_body.index("\n}\n")]
+
+
+def test_the_ps1_sidecar_predicate_reads_no_version_gated_variable():
+    """$PSNativeCommandUseErrorActionPreference exists from PowerShell 7.3 and reading an
+    absent variable under Set-StrictMode is a terminating error; the predicate no longer
+    touches it at all, and must not grow a version check in its place."""
+    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    start = ps1.index("function Test-SidecarCurrent {")
+    body = ps1[start : ps1.index("\nfunction ", start + 1)]
+    assert "$PSNativeCommandUseErrorActionPreference =" not in body
+    assert "PSVersion.Major -ge 7" not in body

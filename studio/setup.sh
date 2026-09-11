@@ -2119,7 +2119,166 @@ _target_has_pkg_version() {
     done
     return 1
 }
-_NEED_T5_INSTALL=false
+# The pins, once, audited by install_manifest.sidecar_is_current and installed by _install_sidecar.
+# Every name must be one the audit can reach (a package directory, or the RECORD's top-level names:
+# six.py, PIL), or it reads stale forever and every update refetches the sidecar. tiktoken is not a
+# pin: its install is optional, so a sidecar without it is finished; _sidecar_top_up_tiktoken
+# retries it alone.
+_SIDECAR_COMMON_PINS="huggingface_hub==1.8.0 hf_xet==1.4.2"
+
+# A failed tiktoken install's remnants shadow a working ambient copy from ahead of site-packages,
+# and being unpinned nothing else clears them. Every entry the wheel owns, as the runtime's
+# _remove_optional_remnants.
+_sidecar_drop_tiktoken() {
+    # 1 when an entry would not go (a permission, a file held open): the caller then retires the
+    # whole sidecar, which the predicate would still call current.
+    for _sdt_entry in "$1"/tiktoken "$1"/tiktoken_ext "$1"/tiktoken.libs "$1"/tiktoken-*.dist-info; do
+        [ -e "$_sdt_entry" ] && rm -rf "$_sdt_entry" 2>/dev/null
+    done
+    _sdt_left=0
+    for _sdt_entry in "$1"/tiktoken "$1"/tiktoken_ext "$1"/tiktoken.libs "$1"/tiktoken-*.dist-info; do
+        [ -e "$_sdt_entry" ] && _sdt_left=1
+    done
+    unset _sdt_entry
+    if [ "$_sdt_left" = 1 ]; then
+        unset _sdt_left
+        return 1
+    fi
+    unset _sdt_left
+    return 0
+}
+
+_sidecar_retire_after_failed_tiktoken() {
+    # Part of tiktoken remains: the sidecar goes, best effort; the runtime withholds the rest.
+    rm -rf "$1" 2>/dev/null
+    substep "the $2 sidecar kept part of a failed tiktoken install; retired, rebuilt on the next update"
+}
+
+_sidecar_top_up_tiktoken() {
+    _stt_dir="$1"
+    _stt_label="$2"
+    # The payload AND a complete dist-info (RECORD is written last), as Repair-SidecarTiktoken and
+    # the runtime check: an interrupted install leaves either without the other, the predicate
+    # accepts both, and a weaker check would skip this top-up while Qwen tokenizers fail. A
+    # recordless dist-info goes first: uv cannot uninstall it and importlib.metadata may keep
+    # answering it.
+    for _stt_info in "$_stt_dir"/tiktoken-*.dist-info; do
+        if [ -d "$_stt_info" ] && [ ! -f "$_stt_info/RECORD" ]; then
+            rm -rf "$_stt_info"
+        fi
+    done
+    unset _stt_info
+    for _stt_meta in "$_stt_dir"/tiktoken-*.dist-info/METADATA; do
+        if [ -f "$_stt_meta" ] && [ -f "${_stt_meta%METADATA}RECORD" ] && [ -f "$_stt_dir/tiktoken/__init__.py" ]; then
+            unset _stt_meta
+            return 0
+        fi
+    done
+    unset _stt_meta
+    # Not present, so every tiktoken dist-info here describes a missing or damaged payload and goes
+    # before the install: --upgrade lands the new dist-info beside the old one.
+    for _stt_info in "$_stt_dir"/tiktoken-*.dist-info; do
+        [ -d "$_stt_info" ] && rm -rf "$_stt_info"
+    done
+    unset _stt_info
+    # --upgrade: a --target install without it keeps a damaged tiktoken/ under fresh metadata.
+    if ! fast_install_sidecar --target "$_stt_dir" --no-deps --upgrade "tiktoken" >/dev/null 2>&1; then
+        if _sidecar_drop_tiktoken "$_stt_dir"; then
+            substep "could not install tiktoken into the $_stt_label sidecar -- Qwen tokenizers may fail"
+        else
+            _sidecar_retire_after_failed_tiktoken "$_stt_dir" "$_stt_label"
+        fi
+    fi
+    return 0
+}
+
+_sidecar_current() {
+    # One predicate for both shells (install_manifest.py): the version grep called a half-written
+    # sidecar with a transformers 5.3.0 METADATA "current".
+    _sc_dir="$1"
+    _sc_ver="$2"
+    [ -d "$_sc_dir" ] || return 1
+    # No venv interpreter is the Colab path (_COLAB_NO_VENV); the stdlib-only shim runs under the
+    # installer's own `python` there. Only a tree with no interpreter at all falls back to the grep,
+    # which read an interrupted sidecar as current.
+    _sc_python="$VENV_DIR/bin/python"
+    if [ ! -x "$_sc_python" ]; then
+        _sc_python=$(command -v python 2>/dev/null || command -v python3 2>/dev/null || true)
+    fi
+    if [ -z "$_sc_python" ]; then
+        unset _sc_python
+        _target_has_pkg_version "$_sc_dir" "transformers" "$_sc_ver"
+        return $?
+    fi
+    # Bounded where a timeout exists: the shim cannot interrupt a stalled RECORD read (a wedged
+    # mount). A timeout reads as stale, and the rebuild follows.
+    # shellcheck disable=SC2086 - the pins are a deliberate word-split list
+    if command -v timeout >/dev/null 2>&1; then
+        _sc_out=$(timeout -k 5 60 "$_sc_python" "$SCRIPT_DIR/install_manifest.py" sidecar "$_sc_dir" \
+            "transformers==$_sc_ver" $_SIDECAR_COMMON_PINS 2>/dev/null)
+        _sc_rc=$?
+    else
+        _sc_out=$("$_sc_python" "$SCRIPT_DIR/install_manifest.py" sidecar "$_sc_dir" \
+            "transformers==$_sc_ver" $_SIDECAR_COMMON_PINS 2>/dev/null)
+        _sc_rc=$?
+    fi
+    # 124 is the TERM after 60 s, 137 the KILL after it: an audit that did not answer.
+    if [ "$_sc_rc" -eq 124 ] || [ "$_sc_rc" -eq 137 ]; then
+        _sc_out="sidecar: audit did not answer within 60 seconds"
+    fi
+    unset _sc_python
+    # The marker, not the exit code alone: an install_manifest.py predating the shim exits 0
+    # silently.
+    case "$_sc_out" in
+        "sidecar: current")
+            unset _sc_out _sc_rc
+            return 0
+            ;;
+        sidecar:*)
+            verbose_substep "sidecar $_sc_dir: ${_sc_out#sidecar: }"
+            unset _sc_out _sc_rc
+            return 1
+            ;;
+    esac
+    unset _sc_out
+    # No marker and a failure: the audit died, which is not the legacy silent exit 0. Stale.
+    if [ "$_sc_rc" -ne 0 ]; then
+        verbose_substep "sidecar $_sc_dir: audit failed (exit $_sc_rc)"
+        unset _sc_rc
+        return 1
+    fi
+    unset _sc_rc
+    # An old shim (clean, silent exit 0): fall back to the version grep this replaced.
+    _target_has_pkg_version "$_sc_dir" "transformers" "$_sc_ver"
+}
+
+_install_sidecar() {
+    _is_dir="$1"
+    _is_ver="$2"
+    _is_label="$3"
+    _assert_studio_owned_or_absent "$_is_dir" "transformers $_is_label sidecar venv"
+    [ -d "$_is_dir" ] && rm -rf "$_is_dir"
+    mkdir -p "$_is_dir"
+    : > "$_is_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+    run_quiet "install transformers $_is_ver" fast_install_sidecar --target "$_is_dir" --no-deps "transformers==$_is_ver"
+    run_quiet "install huggingface_hub for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "huggingface_hub==1.8.0"
+    run_quiet "install hf_xet for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "hf_xet==1.4.2"
+    # Optional, as in setup.ps1: retried by _sidecar_top_up_tiktoken on later updates.
+    if ! run_quiet_no_exit "install tiktoken for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "tiktoken"; then
+        if _sidecar_drop_tiktoken "$_is_dir"; then
+            substep "could not install tiktoken into the $_is_label sidecar -- Qwen tokenizers may fail"
+        else
+            _sidecar_retire_after_failed_tiktoken "$_is_dir" "$_is_label"
+        fi
+    fi
+    step "transformers" "$_is_ver pre-installed"
+}
+
+# Per tier: the old single flag (with its `_SKIP_PYTHON_DEPS = false` clause) rebuilt all three
+# sidecars on every update that touched the dependency pass, 60-90 s on Windows for nothing.
+_NEED_T5_530=false
+_NEED_T5_550=false
+_NEED_T5_510=false
 if [ -d "$STUDIO_HOME/.venv_t5" ]; then
     # Legacy layout — migrate. The tiered venvs a staged run builds land under the
     # stage root and may never be activated, so removing the live legacy one here
@@ -2128,47 +2287,31 @@ if [ -d "$STUDIO_HOME/.venv_t5" ]; then
         _assert_studio_owned_or_absent "$STUDIO_HOME/.venv_t5" "legacy transformers sidecar venv"
         rm -rf "$STUDIO_HOME/.venv_t5"
     fi
-    _NEED_T5_INSTALL=true
+    _NEED_T5_530=true
+    _NEED_T5_550=true
+    _NEED_T5_510=true
 fi
-[ ! -d "$VENV_T5_530_DIR" ] && _NEED_T5_INSTALL=true
-[ ! -d "$VENV_T5_550_DIR" ] && _NEED_T5_INSTALL=true
-[ ! -d "$VENV_T5_510_DIR" ] && _NEED_T5_INSTALL=true
-_target_has_pkg_version "$VENV_T5_530_DIR" "transformers" "5.3.0" || _NEED_T5_INSTALL=true
-_target_has_pkg_version "$VENV_T5_550_DIR" "transformers" "5.5.0" || _NEED_T5_INSTALL=true
-_target_has_pkg_version "$VENV_T5_510_DIR" "transformers" "5.10.2" || _NEED_T5_INSTALL=true
-# Also reinstall when python deps were updated (packages may need rebuild)
-[ "$_SKIP_PYTHON_DEPS" = false ] && _NEED_T5_INSTALL=true
+_sidecar_current "$VENV_T5_530_DIR" "5.3.0" || _NEED_T5_530=true
+_sidecar_current "$VENV_T5_550_DIR" "5.5.0" || _NEED_T5_550=true
+_sidecar_current "$VENV_T5_510_DIR" "5.10.2" || _NEED_T5_510=true
 
-if [ "$_NEED_T5_INSTALL" = true ]; then
-    _assert_studio_owned_or_absent "$VENV_T5_530_DIR" "transformers 5.3 sidecar venv"
-    [ -d "$VENV_T5_530_DIR" ] && rm -rf "$VENV_T5_530_DIR"
-    mkdir -p "$VENV_T5_530_DIR"
-    : > "$VENV_T5_530_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
-    run_quiet "install transformers 5.3.0" fast_install_sidecar --target "$VENV_T5_530_DIR" --no-deps "transformers==5.3.0"
-    run_quiet "install huggingface_hub for t5_530" fast_install_sidecar --target "$VENV_T5_530_DIR" --no-deps "huggingface_hub==1.8.0"
-    run_quiet "install hf_xet for t5_530" fast_install_sidecar --target "$VENV_T5_530_DIR" --no-deps "hf_xet==1.4.2"
-    run_quiet "install tiktoken for t5_530" fast_install_sidecar --target "$VENV_T5_530_DIR" --no-deps "tiktoken"
-    step "transformers" "5.3.0 pre-installed"
-
-    _assert_studio_owned_or_absent "$VENV_T5_550_DIR" "transformers 5.5 sidecar venv"
-    [ -d "$VENV_T5_550_DIR" ] && rm -rf "$VENV_T5_550_DIR"
-    mkdir -p "$VENV_T5_550_DIR"
-    : > "$VENV_T5_550_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
-    run_quiet "install transformers 5.5.0" fast_install_sidecar --target "$VENV_T5_550_DIR" --no-deps "transformers==5.5.0"
-    run_quiet "install huggingface_hub for t5_550" fast_install_sidecar --target "$VENV_T5_550_DIR" --no-deps "huggingface_hub==1.8.0"
-    run_quiet "install hf_xet for t5_550" fast_install_sidecar --target "$VENV_T5_550_DIR" --no-deps "hf_xet==1.4.2"
-    run_quiet "install tiktoken for t5_550" fast_install_sidecar --target "$VENV_T5_550_DIR" --no-deps "tiktoken"
-    step "transformers" "5.5.0 pre-installed"
-
-    _assert_studio_owned_or_absent "$VENV_T5_510_DIR" "transformers 5.10 sidecar venv"
-    [ -d "$VENV_T5_510_DIR" ] && rm -rf "$VENV_T5_510_DIR"
-    mkdir -p "$VENV_T5_510_DIR"
-    : > "$VENV_T5_510_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
-    run_quiet "install transformers 5.10.2" fast_install_sidecar --target "$VENV_T5_510_DIR" --no-deps "transformers==5.10.2"
-    run_quiet "install huggingface_hub for t5_510" fast_install_sidecar --target "$VENV_T5_510_DIR" --no-deps "huggingface_hub==1.8.0"
-    run_quiet "install hf_xet for t5_510" fast_install_sidecar --target "$VENV_T5_510_DIR" --no-deps "hf_xet==1.4.2"
-    run_quiet "install tiktoken for t5_510" fast_install_sidecar --target "$VENV_T5_510_DIR" --no-deps "tiktoken"
-    step "transformers" "5.10.2 pre-installed"
+if [ "$_NEED_T5_530" = true ]; then
+    _install_sidecar "$VENV_T5_530_DIR" "5.3.0" "5.3"
+else
+    step "transformers" "5.3.0 sidecar current"
+    _sidecar_top_up_tiktoken "$VENV_T5_530_DIR" "5.3"
+fi
+if [ "$_NEED_T5_550" = true ]; then
+    _install_sidecar "$VENV_T5_550_DIR" "5.5.0" "5.5"
+else
+    step "transformers" "5.5.0 sidecar current"
+    _sidecar_top_up_tiktoken "$VENV_T5_550_DIR" "5.5"
+fi
+if [ "$_NEED_T5_510" = true ]; then
+    _install_sidecar "$VENV_T5_510_DIR" "5.10.2" "5.10"
+else
+    step "transformers" "5.10.2 sidecar current"
+    _sidecar_top_up_tiktoken "$VENV_T5_510_DIR" "5.10"
 fi
 fi
 

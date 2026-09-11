@@ -354,6 +354,46 @@ def test_a_truncated_recorded_file_forces_a_rebuild(sidecar: pathlib.Path) -> No
     assert "0 bytes, expected 32" in reason
 
 
+@pytest.mark.parametrize("value", ["1", "true", "YES", "on"])
+def test_the_file_check_kill_switch_reaches_the_setup_predicate(
+    sidecar: pathlib.Path, monkeypatch, value
+) -> None:
+    """The runtime honours UNSLOTH_SKIP_SIDECAR_FILE_CHECK so a false positive can be
+    turned off without a release; a setup-side scan that ignored it would be the one
+    path left that still wipes the sidecar. Package and version checks still apply."""
+    (sidecar / "transformers" / "__init__.py").write_bytes(b"")
+    monkeypatch.setenv(im.SIDECAR_FILE_CHECK_ENV, value)
+    assert im.sidecar_is_current(sidecar, PINS) == (True, "")
+    current, reason = im.sidecar_is_current(sidecar, ("transformers==5.5.0",) + PINS[1:])
+    assert current is False and "5.5.0" in reason
+
+
+@pytest.mark.parametrize("value", ["0", "false", "", "maybe"])
+def test_a_non_true_kill_switch_value_changes_nothing(
+    sidecar: pathlib.Path, monkeypatch, value
+) -> None:
+    (sidecar / "transformers" / "__init__.py").write_bytes(b"")
+    monkeypatch.setenv(im.SIDECAR_FILE_CHECK_ENV, value)
+    assert im.sidecar_is_current(sidecar, PINS)[0] is False
+
+
+def test_a_pinned_package_without_a_record_forces_a_rebuild(sidecar: pathlib.Path) -> None:
+    """pip and uv write RECORD last: a pinned dist-info without one is an interrupted
+    install whose payload the size check cannot see. The optional package is not held
+    to it, since its own top-up clears a recordless dist-info."""
+    (sidecar / "hf_xet-1.4.2.dist-info" / "RECORD").unlink()
+    (sidecar / "hf_xet" / "__init__.py").write_bytes(b"")
+    ok, reason = im.sidecar_is_current(sidecar, PINS)
+    assert ok is False
+    assert "hf_xet: RECORD is missing" in reason
+    (sidecar / "hf_xet-1.4.2.dist-info" / "RECORD").write_text(
+        "hf_xet/__init__.py,sha256=deadbeef,0\n", encoding = "utf-8"
+    )
+    assert im.sidecar_is_current(sidecar, PINS) == (True, "")
+    (sidecar / "tiktoken-0.9.0.dist-info" / "RECORD").unlink()
+    assert im.sidecar_is_current(sidecar, PINS) == (True, "")
+
+
 def test_a_deleted_recorded_file_forces_a_rebuild(sidecar: pathlib.Path) -> None:
     (sidecar / "transformers" / "__init__.py").unlink()
     current, reason = im.sidecar_is_current(sidecar, PINS)
@@ -484,11 +524,14 @@ def test_a_distribution_with_no_record_at_all_is_not_current(sidecar: pathlib.Pa
     assert current is False and "directory missing" in reason
 
 
-def test_a_sidecar_with_no_record_is_left_alone(sidecar: pathlib.Path) -> None:
-    """An absent RECORD says nothing about damage, and the answer costs a
-    several-hundred-MB refetch."""
+def test_a_pinned_sidecar_package_with_no_record_is_rebuilt(sidecar: pathlib.Path) -> None:
+    """An absent RECORD used to say nothing about damage, since the answer costs a
+    several-hundred-MB refetch; but pip and uv write RECORD last, so a pinned package
+    without one is an interrupted install whose payload the size check cannot see."""
     (sidecar / "transformers-5.3.0.dist-info" / "RECORD").unlink()
-    assert im.sidecar_is_current(sidecar, PINS) == (True, "")
+    ok, reason = im.sidecar_is_current(sidecar, PINS)
+    assert ok is False
+    assert reason == "transformers: RECORD is missing"
 
 
 def test_the_scan_is_bounded(sidecar: pathlib.Path) -> None:
@@ -537,3 +580,23 @@ def test_the_shim_marks_its_own_output(sidecar: pathlib.Path) -> None:
 def test_the_shim_refuses_what_it_does_not_implement() -> None:
     for args in ((), ("nonsense",), ("sidecar",)):
         assert _shim(*args).returncode == 2
+
+
+def test_an_absent_tiktoken_is_optional_but_a_present_one_is_held_to_its_record(
+    sidecar: pathlib.Path,
+) -> None:
+    """Absence is what is optional: a sidecar without tiktoken is current, and setup's
+    top-up adds it. Present, tiktoken's RECORD is held to the disk like every other
+    package's, since a file it names that is not there is a tokenizer that fails at
+    import. A required package's RECORD is held to the disk too."""
+    import shutil
+
+    (sidecar / "tiktoken" / "__init__.py").unlink()
+    current, reason = im.sidecar_is_current(sidecar, PINS)
+    assert current is False and "tiktoken" in reason
+    shutil.rmtree(sidecar / "tiktoken")
+    shutil.rmtree(next(sidecar.glob("tiktoken-*.dist-info")))
+    assert im.sidecar_is_current(sidecar, PINS) == (True, "")
+    (sidecar / "hf_xet" / "__init__.py").unlink()
+    current, reason = im.sidecar_is_current(sidecar, PINS)
+    assert current is False and "hf_xet" in reason
