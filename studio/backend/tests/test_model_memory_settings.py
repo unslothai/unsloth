@@ -1381,7 +1381,7 @@ class TestPreSpawnWindow:
 
         backend = _fake_backend(
             is_active = False,
-            _memory_launch_pending = True,
+            _memory_pending_launch = (True, False),
             _memory_state = (True, False),
             _memory_policy_active = True,
         )
@@ -1399,7 +1399,7 @@ class TestPreSpawnWindow:
         import routes.settings as rs
 
         backend = _fake_backend(
-            _memory_launch_pending = True,
+            _memory_pending_launch = (True, False),
             _memory_state = (True, False),
             _memory_policy_active = True,
         )
@@ -3019,7 +3019,7 @@ class TestThePlacementWindowIsPublished:
         import inspect
 
         src = inspect.getsource(LlamaCppBackend.load_model)
-        set_at = src.index("self._memory_launch_pending = True")
+        set_at = src.index("self._memory_pending_launch = _mem_settings")
         assert set_at < src.index("_arm_vulkan_probe_memo()")
         assert set_at < src.index("_mem_gpu_offload_confirmed = bool(")
 
@@ -3083,7 +3083,7 @@ class TestThePlacementWindowIsPublished:
         import inspect
 
         flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert flat.count("andnotself._cuda_runtime_missing_for(binary,_mem_env)") == 2
+        assert flat.count("andnotself._gpu_runtime_missing_for(binary,_mem_env)") == 2
 
 
 class TestTheBackendCheckReusesTheRepoRecognition:
@@ -3203,9 +3203,12 @@ class TestASaveDuringPlacementIsAnswered:
         import inspect
 
         src = inspect.getsource(LlamaCppBackend.load_model)
-        # publish-last: the snapshot lands BEFORE the marker that makes it visible
-        assert src.index("self._memory_pending_settings = _mem_settings") < src.index(
-            "self._memory_launch_pending = True"
+        # One assignment carries both facts, so there is no order to get wrong:
+        # the snapshot IS the marker.
+        assert "self._memory_pending_launch = _mem_settings" in src
+        # and it lands right after the capture, before any placement work
+        assert src.index("_mem_settings = get_model_memory_settings()") < src.index(
+            "self._memory_pending_launch = _mem_settings"
         )
 
     def test_a_save_that_changes_a_toggle_asks_for_a_reload(self, monkeypatch):
@@ -3295,9 +3298,14 @@ class TestTheLoadabilityCheckFollowsThePlugin:
         import inspect
         for fn in (
             LlamaCppBackend._build_offers_gpu_backend,
-            LlamaCppBackend._windows_cuda_runtime_missing,
+            # the runtime check resolves roots in the parameterised owner now, which
+            # _windows_cuda_runtime_missing delegates to for CUDA
+            LlamaCppBackend._windows_backend_runtime_missing,
         ):
             assert "_ggml_plugin_roots(" in inspect.getsource(fn)
+        assert "_windows_backend_runtime_missing(" in inspect.getsource(
+            LlamaCppBackend._windows_cuda_runtime_missing
+        )
 
     def test_an_external_root_wins(self, tmp_path):
         from core.inference.llama_cpp import LlamaCppBackend
@@ -3340,8 +3348,7 @@ class TestTheMarkerIsReleasedWithTheLoadLock:
         import inspect
 
         src = inspect.getsource(LlamaCppBackend._serial_load_scope)
-        assert "self._memory_launch_pending = False" in src
-        assert "self._memory_pending_settings = None" in src
+        assert "self._memory_pending_launch = None" in src
         # released beside the markers that already had this treatment
         assert "self._vram_fraction_pending = None" in src
 
@@ -3361,7 +3368,7 @@ class TestTheMarkerIsReleasedWithTheLoadLock:
 
         src = inspect.getsource(LlamaCppBackend.load_model)
         assert src.index("with self._serial_load_scope():") < src.index(
-            "self._memory_launch_pending = True"
+            "self._memory_pending_launch = _mem_settings"
         )
 
 
@@ -3412,7 +3419,7 @@ class TestLoadabilityIsComputedNotAwaited:
         )
         (tmp_path / "ggml-cuda.dll").write_text("")
         # nothing populated the cache; the accessor must still answer correctly
-        assert m.LlamaCppBackend._cuda_runtime_missing_for("llama-server", {"PATH": ""})
+        assert m.LlamaCppBackend._gpu_runtime_missing_for("llama-server", {"PATH": ""})
 
     def test_a_complete_runtime_clears_it(self, monkeypatch, tmp_path):
         import core.inference.llama_cpp as m
@@ -3429,12 +3436,12 @@ class TestLoadabilityIsComputedNotAwaited:
             "_build_windows_path_dirs",
             staticmethod(lambda *a, **k: [str(libs)]),
         )
-        assert not m.LlamaCppBackend._cuda_runtime_missing_for("llama-server", {"PATH": ""})
+        assert not m.LlamaCppBackend._gpu_runtime_missing_for("llama-server", {"PATH": ""})
 
     def test_it_is_a_noop_off_windows(self, monkeypatch):
         import core.inference.llama_cpp as m
         monkeypatch.setattr(m.sys, "platform", "linux")
-        assert not m.LlamaCppBackend._cuda_runtime_missing_for("llama-server", {})
+        assert not m.LlamaCppBackend._gpu_runtime_missing_for("llama-server", {})
 
 
 class TestAnExternalVulkanPluginStillGetsProbed:
@@ -3525,7 +3532,7 @@ class TestARetryKeepsThePlacementWindowOpen:
 
         src = inspect.getsource(LlamaCppBackend.load_model)
         drop = src.index("# is_active covers it from here, so drop the pre-spawn flag.")
-        rearm = src.index("self._memory_launch_pending = True", drop)
+        rearm = src.index("self._memory_pending_launch = _mem_settings", drop)
         crashed = src.index("_crashed_proc = self._process", drop)
         # re-armed before the crash is even classified, so every rung inherits it
         assert drop < rearm < crashed
@@ -3533,7 +3540,7 @@ class TestARetryKeepsThePlacementWindowOpen:
     def test_the_lock_still_owns_the_release(self):
         from core.inference.llama_cpp import LlamaCppBackend
         import inspect
-        assert "self._memory_launch_pending = False" in inspect.getsource(
+        assert "self._memory_pending_launch = None" in inspect.getsource(
             LlamaCppBackend._serial_load_scope
         )
 
@@ -3651,56 +3658,74 @@ class TestNoNestedHelperIsUsedBeforeItsDef:
 
 class TestThePendingWindowHasNoGaps:
     """Three ways the window closed early, each found in turn: the publish order,
-    the spawn caller's unconditional clear, and the outer recovery rungs."""
+    the spawn caller's unconditional clear, and the outer recovery rungs.
 
-    def test_the_snapshot_is_published_before_the_marker(self):
-        """Publish-LAST: a reader sees either no pending launch or one WITH its
-        settings. The other order left pending=True with settings=None."""
-        from core.inference.llama_cpp import LlamaCppBackend
+    The publish-order one is closed by construction now rather than by convention.
+    `_memory_launch_pending` and `_memory_pending_settings` were two attributes
+    holding one fact between them, so every writer had to order its two stores and
+    the reader had to mirror that order. They are one attribute: None for no pending
+    launch, the `(keep_resident, no_ram_reserve)` pair otherwise. A single assignment
+    is atomic, so a reader cannot catch the halves out of step and there is no
+    ordering left to assert."""
+
+    def test_the_two_attribute_marker_is_gone(self):
         import inspect
+        import routes.settings as rs
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        for src in (
+            inspect.getsource(LlamaCppBackend.load_model),
+            inspect.getsource(LlamaCppBackend._serial_load_scope),
+            inspect.getsource(rs._active_launch_placement),
+        ):
+            assert "_memory_launch_pending" not in src
+            assert "_memory_pending_settings" not in src
+
+    def test_the_reader_takes_one_value(self):
+        import ast
+        import inspect
+        import routes.settings as rs
+
+        # module-level function, so its source already sits at column 0
+        tree = ast.parse(inspect.getsource(rs._active_launch_placement))
+        reads = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and node.value == "_memory_pending_launch"
+        ]
+        assert len(reads) == 1, "the pending launch must be sampled exactly once"
+
+    def test_every_arming_site_carries_the_snapshot(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
 
         src = inspect.getsource(LlamaCppBackend.load_model)
-        assert src.index("self._memory_pending_settings = _mem_settings") < src.index(
-            "self._memory_launch_pending = True"
-        )
-
-    def test_the_reader_takes_the_marker_first(self):
-        """Mirror of publish-last: read the marker, then the settings it gates."""
-        import routes.settings as rs
-        import inspect
-
-        src = inspect.getsource(rs._active_launch_placement)
-        assert src.index('"_memory_launch_pending"') < src.index('"_memory_pending_settings"')
-
-    def test_the_clear_drops_the_marker_first(self):
-        """So a reader never sees the marker still set beside a cleared snapshot."""
-        from core.inference.llama_cpp import LlamaCppBackend
-        import inspect
-
-        src = inspect.getsource(LlamaCppBackend._serial_load_scope)
-        assert src.index("self._memory_launch_pending = False") < src.index(
-            "self._memory_pending_settings = None"
-        )
+        armed = [
+            line.strip() for line in src.splitlines() if "self._memory_pending_launch =" in line
+        ]
+        assert armed, "the launch must publish its pending window"
+        for line in armed:
+            # either it arms WITH the captured pair, or it clears
+            assert line.endswith("= _mem_settings") or line.endswith("= None"), line
 
     def test_the_spawn_caller_clears_only_on_success(self):
         """An unconditional clear undid the in-spawn re-arm and left the outer
         recovery rungs respawning from the captured settings unmarked."""
-        from core.inference.llama_cpp import LlamaCppBackend
         import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
 
         src = inspect.getsource(LlamaCppBackend.load_model)
         arm = src[src.index("healthy = _spawn_and_wait(cmd)") :][:900]
         flat = "".join(arm.split())
-        assert "ifhealthy:self._memory_launch_pending=False" in flat
+        assert "ifhealthy:self._memory_pending_launch=None" in flat
 
     def test_the_lock_is_still_the_backstop(self):
-        from core.inference.llama_cpp import LlamaCppBackend
         import inspect
-        assert "self._memory_launch_pending = False" in inspect.getsource(
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        assert "self._memory_pending_launch = None" in inspect.getsource(
             LlamaCppBackend._serial_load_scope
         )
-
-
 class TestOneLaunchReadsOneSettingsSnapshot:
     """`load_model` captures `(keep_resident, no_ram_reserve)` once and decides the
     argv from it. Every consumer inside the launch has to read that snapshot: a save
@@ -3867,3 +3892,86 @@ class TestRecoveryRungsReadTheLaunchSnapshot:
             and not any(kw.arg == "settings" for kw in node.keywords)
         ]
         assert not bare, f"apply_model_memory_policy without the launch snapshot at line(s) {bare}"
+
+
+class TestAnyInstalledGpuPluginMustBeLoadable:
+    """A CUDA-only runtime check was the single fail-OPEN path into
+    `_mem_gpu_offload_confirmed`. `ggml-hip.dll` present with `amdhip64*.dll` absent
+    loads no more than a CUDA build without cudart: llama.cpp reports no devices and
+    keeps the weights on the CPU, while the host inventory still lists the card. The
+    launch was then confirmed for full offload and given managed DirectIO, trading a
+    pageable mapping for a model-sized allocated buffer."""
+
+    def _install(self, tmp_path, plugin, runtime_names):
+        (tmp_path / plugin).write_text("")
+        libs = tmp_path / "libs"
+        libs.mkdir(exist_ok = True)
+        for name in runtime_names:
+            (libs / name).write_text("")
+        return [str(libs)]
+
+    def test_a_hip_build_without_the_hip_runtime_is_missing(self, tmp_path):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        libs = self._install(tmp_path, "ggml-hip.dll", ())
+        assert LlamaCppBackend._windows_backend_runtime_missing(
+            str(tmp_path), libs, None, "hip"
+        )
+
+    def test_the_full_hip_chain_clears_it(self, tmp_path):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        libs = self._install(
+            tmp_path, "ggml-hip.dll", ("amdhip64_6.dll", "hipblas.dll", "rocblas.dll")
+        )
+        assert not LlamaCppBackend._windows_backend_runtime_missing(
+            str(tmp_path), libs, None, "hip"
+        )
+
+    @pytest.mark.parametrize("present", ["amdhip64_6.dll", "hipblas.dll", "rocblas.dll"])
+    def test_any_one_of_the_hip_chain_alone_is_still_missing(self, tmp_path, present):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        libs = self._install(tmp_path, "ggml-hip.dll", (present,))
+        assert LlamaCppBackend._windows_backend_runtime_missing(
+            str(tmp_path), libs, None, "hip"
+        )
+
+    def test_a_backend_with_no_known_chain_is_not_second_guessed(self, tmp_path):
+        """A custom build must not be called broken just because we cannot check it."""
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        libs = self._install(tmp_path, "ggml-sycl.dll", ())
+        assert not LlamaCppBackend._windows_backend_runtime_missing(
+            str(tmp_path), libs, None, "sycl"
+        )
+
+    def test_an_absent_plugin_is_not_missing_a_runtime(self, tmp_path):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        libs = self._install(tmp_path, "ggml-cpu.dll", ())
+        for backend in ("cuda", "hip"):
+            assert not LlamaCppBackend._windows_backend_runtime_missing(
+                str(tmp_path), libs, None, backend
+            )
+
+    def test_the_cuda_predicate_still_answers_for_the_warning(self, tmp_path):
+        """`_warn_missing_windows_cuda_runtime` keeps its own CUDA-specific message,
+        so the narrow predicate has to survive the generalisation."""
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        libs = self._install(tmp_path, "ggml-cuda.dll", ())
+        assert LlamaCppBackend._windows_cuda_runtime_missing(str(tmp_path), libs)
+
+    def test_the_launch_check_covers_every_known_backend(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = "".join(inspect.getsource(LlamaCppBackend._gpu_runtime_missing_for).split())
+        assert "forbackendin_WINDOWS_GPU_RUNTIME_IMPORTS" in src
+
+    def test_the_known_chains_cover_cuda_and_hip(self):
+        from core.inference.llama_cpp import _WINDOWS_GPU_RUNTIME_IMPORTS
+
+        assert set(_WINDOWS_GPU_RUNTIME_IMPORTS) == {"cuda", "hip"}
+        assert _WINDOWS_GPU_RUNTIME_IMPORTS["hip"] == {"amdhip64", "hipblas", "rocblas"}

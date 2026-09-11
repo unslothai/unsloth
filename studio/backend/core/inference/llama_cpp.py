@@ -6213,6 +6213,21 @@ def _ggml_plugin_re(backends: Iterable[str]) -> "re.Pattern[str]":
 
 _GGML_GPU_BACKEND_RE = _ggml_plugin_re(_GGML_GPU_BACKENDS)
 
+# The Windows import chain each GPU plugin needs before it can load. LoadLibrary
+# returns NULL unless every one resolves, and then `--list-devices` prints "(none)"
+# and the child runs on the CPU while host probes still report the card.
+#   cuda: ggml-cuda imports cublas64, which in turn imports cublasLt64. The same set
+#         REAL_UPSTREAM_CUDART_BUNDLE pins in test_windows_gpu_detection_mock.py, and
+#         a venv can hold some without the rest.
+#   hip:  ggml-hip imports the HIP runtime and the ROCm BLAS pair, which a partial
+#         ROCm install can leave out.
+# Only the backends whose chain is known are validated; anything else is not
+# second-guessed, which keeps a custom build from being called broken.
+_WINDOWS_GPU_RUNTIME_IMPORTS: dict[str, frozenset] = {
+    "cuda": frozenset({"cudart64_", "cublas64_", "cublaslt64_"}),
+    "hip": frozenset({"amdhip64", "hipblas", "rocblas"}),
+}
+
 
 def _cpu_runtime_owner_alive(staged_dir: Path) -> bool:
     """Whether a live process still owns this staged CPU-fallback runtime."""
@@ -6461,7 +6476,7 @@ class LlamaCppBackend:
         # settings route reports a stale budget instead of nagging on every save.
         self._vram_fraction_launched: Optional[float] = None
         # Budget a load has committed to but not published, covering planning ->
-        # Popen as _memory_launch_pending does for Model Memory placement.
+        # Popen as _memory_pending_launch does for Model Memory placement.
         self._vram_fraction_pending: Optional[float] = None
         # --batch-size / --ubatch-size the last load asked for; none = defaults or extras / env
         self._requested_n_batch: Optional[int] = None
@@ -6648,14 +6663,15 @@ class LlamaCppBackend:
         # The "--load-mode none" tokens the FIT emitted, so paths that replace the
         # placement can take them back out. Empty for a mode the user asked for.
         self._fit_load_mode_flags: list[str] = []
-        # True between recording a launch's placement and the child being
-        # spawned, so a save landing in that window still has a launch to
-        # compare against.
-        self._memory_launch_pending: bool = False
         # The (keep_resident, no_ram_reserve) pair a launch in flight is committed to,
-        # published WITH the marker: a save during the placement work has no resolved
-        # state to compare against yet, only the snapshot the child will use.
-        self._memory_pending_settings: Optional[tuple[bool, bool]] = None
+        # or None when no launch is pending. ONE attribute, so "is a launch pending"
+        # and "what is it committed to" cannot be read out of step: a reader that
+        # sampled a separate marker and snapshot could catch the marker before the
+        # publish and the snapshot after it, then conclude there was no launch at all
+        # and answer a save with reload_required=false about a child already committed
+        # to the pre-save flags. A single assignment is atomic, so the reader sees
+        # either no launch or a launch with its settings, and never half of one.
+        self._memory_pending_launch: Optional[tuple[bool, bool]] = None
         # True when the resident model came from an explicit UI load rather than
         # the OpenAI API, so the idle unload can be scoped to API-loaded models.
         # Not on GgufLoadIntent: that is compared for equality to detect
@@ -12741,12 +12757,19 @@ class LlamaCppBackend:
         return False
 
     @classmethod
-    def _cuda_runtime_missing_for(
+    def _gpu_runtime_missing_for(
         cls,
         binary: Optional[str],
         env: Optional[Mapping[str, str]] = None,
     ) -> bool:
-        """Whether this install's CUDA plugin has no runtime to load.
+        """Whether an installed GPU plugin has no runtime to load.
+
+        Every backend with a known import chain, not just CUDA. A HIP build whose
+        ``amdhip64*.dll`` is absent loads no more than a CUDA build without cudart:
+        llama.cpp reports no devices and keeps the weights on the CPU while the host
+        inventory still lists the card. Checking only CUDA left that the single
+        fail-OPEN path into `_mem_gpu_offload_confirmed`, which would replace a
+        pageable mapping with a model-sized allocated buffer.
 
         Computed every time, deliberately. The answer depends on PATH, CUDA_PATH,
         GGML_BACKEND_PATH and the files themselves, so anything keyed on the binary
@@ -12769,7 +12792,13 @@ class LlamaCppBackend:
         # The FULL search path the child gets, inherited entries included: a
         # hand-installed toolkit puts the runtime on PATH without the venv knowing.
         path_dirs = path_dirs + [d for d in str(source.get("PATH", "")).split(";") if d]
-        return cls._windows_cuda_runtime_missing(binary_dir, path_dirs, env)
+        # ANY installed plugin with a broken chain condemns the launch: the build is
+        # single-backend in practice, so the one that is present is the one that has
+        # to load.
+        return any(
+            cls._windows_backend_runtime_missing(binary_dir, path_dirs, env, backend)
+            for backend in _WINDOWS_GPU_RUNTIME_IMPORTS
+        )
 
     @staticmethod
     def _ggml_plugin_roots(binary_dir: str, env: Optional[Mapping[str, str]] = None):
@@ -12804,22 +12833,40 @@ class LlamaCppBackend:
         False for a non-CUDA build and for any unreadable path entry, so only a
         positively broken CUDA install answers True.
         """
+        return LlamaCppBackend._windows_backend_runtime_missing(
+            binary_dir, path_dirs, env, "cuda"
+        )
+
+    @staticmethod
+    def _windows_backend_runtime_missing(
+        binary_dir: str,
+        path_dirs: list[str],
+        env: Optional[Mapping[str, str]],
+        backend: str,
+    ) -> bool:
+        """Whether ``backend``'s plugin is installed but its import chain is not.
+
+        Parameterised rather than written once per backend: HIP fails exactly the way
+        CUDA does -- ``ggml-hip.dll`` present, ``amdhip64*.dll`` absent, LoadLibrary
+        returns NULL, ``--list-devices`` prints "(none)" and the child runs on the CPU
+        while host probes still report the card -- and a CUDA-only check answered
+        "nothing missing" for it. That is the one fail-OPEN case in the confirmation
+        chain, so it would hand a CPU-resident launch managed DirectIO and trade a
+        pageable mapping for a model-sized allocated buffer.
+        """
+        needed = _WINDOWS_GPU_RUNTIME_IMPORTS.get(backend)
+        if not needed:
+            return False
         # Same identification _installed_ggml_backends uses: the official prebuilts are
-        # single-backend, so the ggml CUDA lib beside llama-server IS the build.
-        # Looked for wherever the plugins actually are: an external GGML_BACKEND_PATH
-        # plugin is the one that will load, and answering "nothing missing" because
-        # binary_dir holds no ggml-cuda.dll left exactly that install unvalidated.
+        # single-backend, so the ggml lib beside llama-server IS the build. Looked for
+        # wherever the plugins actually are: an external GGML_BACKEND_PATH plugin is the
+        # one that will load, and answering "nothing missing" because binary_dir holds
+        # no plugin left exactly that install unvalidated.
         if not any(
-            (root / "ggml-cuda.dll").is_file()
+            (root / f"ggml-{backend}.dll").is_file()
             for root in LlamaCppBackend._ggml_plugin_roots(binary_dir, env)
         ):
             return False
-        # All THREE families: ggml-cuda imports cublas64, which in turn imports
-        # cublasLt64, and LoadLibrary returns NULL unless every one resolves. The
-        # same set REAL_UPSTREAM_CUDART_BUNDLE pins in
-        # test_windows_gpu_detection_mock.py, and a venv can hold some without the
-        # rest.
-        needed = {"cudart64_", "cublas64_", "cublaslt64_"}
         found: set[str] = set()
         for directory in path_dirs:
             try:
@@ -15446,7 +15493,7 @@ class LlamaCppBackend:
         self._memory_policy_extras_touched = False
         self._memory_mlock_applicable = True
         self._fit_load_mode_flags = []
-        self._memory_launch_pending = False
+        self._memory_pending_launch = None
         self._n_ubatch = self._DEFAULT_N_UBATCH
         self._requested_n_batch = None
         self._requested_n_ubatch = None
@@ -19664,8 +19711,7 @@ class LlamaCppBackend:
                 # so it has to be given back on the way out of the LOCK. Released at
                 # the end of the call instead, a finished load could blank the marker
                 # of a queued one that had already taken the lock and published.
-                self._memory_launch_pending = False
-                self._memory_pending_settings = None
+                self._memory_pending_launch = None
 
     @_with_gguf_load_marker
     def load_model(
@@ -24154,25 +24200,20 @@ class LlamaCppBackend:
                 _mem_settings = get_model_memory_settings()
                 _mem_keep_resident, _mem_no_reserve = _mem_settings
                 _mem_should_mlock = _mem_keep_resident and not _mem_no_reserve
-                # Asked BEFORE the placement, because whether this platform and build
-                # could owe a managed DirectIO decides if the placement must be probed.
-                # The memory snapshot below is what the child will launch with, so the
-                # window a save must not fall through starts HERE, not at the spawn:
+                # Published immediately after the capture, because the window a save
+                # must not fall through starts at the capture, not at the spawn:
                 # between the two sit the Vulkan probe and the placement work, and a
                 # save landing in there saw neither an active nor a pending child and
-                # answered reload_required=false about a child already committed to the
-                # older settings. _with_gguf_load_marker clears it however this exits.
-                # Publish-LAST: the snapshot is written first and the marker that makes
-                # it visible second, so a reader either sees no pending launch or sees
-                # one with its settings. The other order left a window where a request
-                # read pending=True with settings=None and fell back to the stale state.
+                # answered reload_required=false about a child already committed to
+                # the older settings. `_with_gguf_load_marker` clears it however this
+                # exits. The snapshot IS the marker, so there is no ordering to get
+                # wrong and no window where a reader sees one without the other.
                 #
-                # The marker alone is not enough either: `_memory_state` is None until
-                # the flags resolve, and the comparator reads None as "not governed by
-                # this policy" and answers satisfied. What the child IS committed to from
-                # here is the toggle snapshot.
-                self._memory_pending_settings = _mem_settings
-                self._memory_launch_pending = True
+                # It has to carry the settings rather than just say "busy":
+                # `_memory_state` is None until the flags resolve, and the comparator
+                # reads None as "not governed by this policy" and answers satisfied.
+                # What the child is committed to from here is the toggle snapshot.
+                self._memory_pending_launch = _mem_settings
                 # Armed HERE, not at the load call: that also covers the Hub download,
                 # and rows captured before it would price the fit against VRAM that has
                 # since been allocated. The scope on the load call only guarantees the
@@ -24236,7 +24277,7 @@ class LlamaCppBackend:
                 _mem_gpu_offload_confirmed = bool(
                     not _mem_host_resident
                     and self._build_offers_gpu_backend(binary, _mem_env)
-                    and not self._cuda_runtime_missing_for(binary, _mem_env)
+                    and not self._gpu_runtime_missing_for(binary, _mem_env)
                     and self._devices_are_real(gpu_indices, _detected_gpus)
                     # A probe that did not answer declines rather than confirms; see
                     # _vulkan_offload_is_discrete.
@@ -24375,7 +24416,7 @@ class LlamaCppBackend:
                         and self._build_offers_gpu_backend(binary, _mem_env)
                         # Present is not loadable: a CUDA build with no cudart on the
                         # child's search path reports no devices and runs on the CPU.
-                        and not self._cuda_runtime_missing_for(binary, _mem_env)
+                        and not self._gpu_runtime_missing_for(binary, _mem_env)
                         and self._devices_are_real(devices, _detected_gpus)
                         # No classifier, no confirmation: see
                         # _offload_target_is_classifiable.
@@ -25472,7 +25513,7 @@ class LlamaCppBackend:
                         # placement work and spawn again from the SAME captured
                         # settings, so a save landing in that window must not be told
                         # the child already honours it.
-                        self._memory_launch_pending = False
+                        self._memory_pending_launch = None
 
                         # Background thread to drain stdout (prevents pipe deadlock)
                         self._stdout_thread = threading.Thread(
@@ -25493,7 +25534,7 @@ class LlamaCppBackend:
                         # leaves is_active false. Re-armed here rather than per rung so
                         # a rung added later cannot forget it; `_serial_load_scope`
                         # still releases it on the way out of the lock.
-                        self._memory_launch_pending = True
+                        self._memory_pending_launch = _mem_settings
                         # Read once, like the wait itself: a cleared reference is a
                         # teardown, not a startup crash, and re-reading the
                         # attribute per term would race the shutdown thread again.
@@ -26024,7 +26065,7 @@ class LlamaCppBackend:
                 # window sees no active backend and reports no reload while the
                 # child is already committed. Popen clears it, and so does every
                 # exit below, so a failed spawn cannot leave it stuck on.
-                self._memory_launch_pending = True
+                self._memory_pending_launch = _mem_settings
                 self._vram_fraction_pending = _budget_priced_placement()
                 healthy = False
                 try:
@@ -26038,7 +26079,7 @@ class LlamaCppBackend:
                     # releases it on the way out of the lock either way, so a load that
                     # never comes up cannot strand it.
                     if healthy:
-                        self._memory_launch_pending = False
+                        self._memory_pending_launch = None
                 if not healthy and _finish_cancelled_health_wait(
                     "Load cancelled during the llama-server health wait"
                 ):
@@ -28040,7 +28081,7 @@ class LlamaCppBackend:
             self._memory_policy_active = False
             self._memory_policy_extras_touched = False
             self._memory_mlock_applicable = True
-            self._memory_launch_pending = False
+            self._memory_pending_launch = None
             self._vram_fraction_pending = None
             self._loaded_by_user_action = False
             self._n_ubatch = self._DEFAULT_N_UBATCH

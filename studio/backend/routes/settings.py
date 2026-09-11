@@ -915,9 +915,14 @@ def _active_launch_placement():
         # Read ONCE, in one pass: two separate reads of the backend can straddle the
         # marker clear, and a replacement load finishing in between left the killed
         # child's placement answering for the launch that replaced it.
-        pending = bool(getattr(backend, "_memory_launch_pending", False))
-        pending_settings = getattr(backend, "_memory_pending_settings", None)
-        if not backend.is_active and not pending:
+        #
+        # One attribute carries both "is a launch pending" and "what is it committed
+        # to", so this single read cannot catch the two out of step. Sampling a
+        # separate marker and snapshot could read the marker before a load published
+        # and the snapshot after, see no pending launch, and answer a save with
+        # reload_required=false about a child already committed to the pre-save flags.
+        pending = getattr(backend, "_memory_pending_launch", None)
+        if not backend.is_active and pending is None:
             return _NO_LAUNCH, False, True, None, False, None
         return (
             getattr(backend, "_memory_state", None),
@@ -925,7 +930,7 @@ def _active_launch_placement():
             bool(getattr(backend, "_memory_mlock_applicable", True)),
             getattr(backend, "_memory_direct_io", None),
             bool(getattr(backend, "_memory_dio_applicable", False)),
-            pending_settings if pending else None,
+            pending,
         )
     except Exception:
         return _NO_LAUNCH, False, True, None, False, None
