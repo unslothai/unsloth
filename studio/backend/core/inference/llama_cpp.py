@@ -5826,6 +5826,18 @@ def _extra_args_n_ubatch(
     return effective
 
 
+def _read_gguf_embedding_length(path: Optional[str]) -> Optional[int]:
+    """``{arch}.embedding_length``, cached, or None. Thin import-local wrapper."""
+    if not path:
+        return None
+    try:
+        from utils.models.gguf_metadata import read_gguf_embedding_length
+        return read_gguf_embedding_length(str(path))
+    except Exception as e:
+        logger.debug(f"embedding length read failed: {e}")
+        return None
+
+
 def _mmproj_emits_oversized_chunks(
     mmproj_path: Optional[str], n_embd_text: Optional[int] = None
 ) -> bool:
@@ -20089,7 +20101,12 @@ class LlamaCppBackend:
                         model_path = model_path,
                         mmproj_path = mmproj_path,
                     ),
-                    self._embedding_length,
+                    # The same order-independent read the estimators use. GGUF does not
+                    # guarantee KV order, and _read_gguf_metadata only starts matching
+                    # arch-namespaced keys once general.architecture has gone past, so a
+                    # file that writes embedding_length first leaves it unset and the two
+                    # sides would disagree about E2B and E4B.
+                    _read_gguf_embedding_length(model_path),
                     extra_args,
                     is_vision = is_vision,
                     vision_off = disable_vision,

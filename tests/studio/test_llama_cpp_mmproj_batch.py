@@ -248,6 +248,25 @@ def test_the_decision_lands_after_the_download_and_before_the_fit():
     assert "self._resolve_launch_mmproj_path(" in decision
 
 
+def test_both_sides_read_the_embedding_length_the_same_way():
+    """GGUF does not guarantee KV order, and the two readers disagree when it varies.
+
+    ``_read_gguf_metadata`` only starts matching ``{arch}.`` keys once
+    ``general.architecture`` has gone past, so a file writing ``embedding_length``
+    first leaves ``self._embedding_length`` unset. ``read_gguf_embedding_length``
+    buffers instead. Only the E2B/E4B test reads this value, so a split would have the
+    launch raise the micro-batch while the panel priced 512.
+    """
+    source = inspect.getsource(LlamaCppBackend.load_model)
+    decision = source[
+        source.index("_batch_ubatch_for_mmproj(") : source.index(
+            "\n\n", source.index("_batch_ubatch_for_mmproj(")
+        )
+    ]
+    assert "_read_gguf_embedding_length(" in decision
+    assert "self._embedding_length" not in decision
+
+
 def test_the_estimators_ask_the_same_question_as_the_launch():
     """One helper, called with a config on one side and load state on the other.
 
