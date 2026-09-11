@@ -6193,6 +6193,20 @@ _MISSING = object()
 # integrated GPU nothing here recognises, so it declines.
 _SELF_EVIDENTLY_DISCRETE = frozenset({"cuda", "rocm", "hip"})
 
+# What the child enumerates depends on these as much as on the binary: a visibility
+# mask hides adapters, and GGML_BACKEND_PATH decides which plugins load at all. The
+# recovery rungs narrow exactly these, so a memo keyed on the binary alone answered a
+# narrowed set with the original set's verdict.
+_DEVICE_VISIBILITY_ENV = (
+    "CUDA_VISIBLE_DEVICES",
+    "HIP_VISIBLE_DEVICES",
+    "ROCR_VISIBLE_DEVICES",
+    "GGML_VK_VISIBLE_DEVICES",
+    "GGML_BACKEND_PATH",
+    "LLAMA_ARG_DEVICE",
+    "LLAMA_ARG_MAIN_GPU",
+)
+
 # `llama-server --list-devices` prints a header, then one indented `<id>: <desc>
 # (<total> MiB, <free> MiB free)` line per device. Observed across builds: CPU-only
 # ones print the header followed by `  (none)` or by nothing. The id has no internal
@@ -8611,10 +8625,17 @@ class LlamaCppBackend:
         devices = cls._enumerated_gpu_devices(binary, env)
         if not cls._offload_devices_are_live(devices, gpu_indices):
             return False
+        # EVERY selected device, not whichever kind was found first. A multi-backend
+        # build can enumerate a discrete Vulkan device beside an unclassifiable SYCL
+        # one, and returning the Vulkan verdict there confirmed a set that still had
+        # weights on an integrated GPU.
         selected = cls._selected_devices(devices, gpu_indices)
-        if any(cls._device_backend(d) == "vulkan" for d in selected):
+        backends = {cls._device_backend(d) for d in selected}
+        if backends - {"vulkan"} - _SELF_EVIDENTLY_DISCRETE:
+            return False
+        if "vulkan" in backends:
             return cls._vulkan_offload_is_discrete(binary, gpu_indices)
-        return all(cls._device_backend(d) in _SELF_EVIDENTLY_DISCRETE for d in selected)
+        return True
 
     @staticmethod
     def _selected_devices(devices: Optional[list[str]], gpu_indices) -> list[str]:
@@ -8677,12 +8698,24 @@ class LlamaCppBackend:
         binary = binary or cls._find_llama_server_binary()
         if not binary:
             return None
-        memo = _load_probe_memo_get("devices", binary)
+        key = (binary, cls._device_visibility_key(env))
+        memo = _load_probe_memo_get("devices", key)
         if memo is not None:
             return None if memo is _MISSING else memo
         devices = cls._run_list_devices(binary, env)
-        _load_probe_memo_put("devices", binary, _MISSING if devices is None else devices)
+        _load_probe_memo_put("devices", key, _MISSING if devices is None else devices)
         return devices
+
+    @staticmethod
+    def _device_visibility_key(env: Optional[Mapping[str, str]]):
+        """What this environment lets the child see, as a memo key.
+
+        The probe is memoised per load, but a recovery rung that masks an adapter has
+        a different answer coming: without this, a rung that narrows onto a usable
+        discrete GPU kept the original set's failure and could never gain DirectIO.
+        """
+        source = os.environ if env is None else env
+        return tuple((name, source.get(name)) for name in _DEVICE_VISIBILITY_ENV)
 
     @staticmethod
     def _run_list_devices(

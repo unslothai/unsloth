@@ -3809,3 +3809,84 @@ class TestOnlyAClassifiableDeviceConfirms:
         assert B._device_backend("Vulkan10") == "vulkan"
         assert B._device_backend("ROCm0") == "rocm"
         assert B._device_backend("SYCL0") == "sycl"
+
+
+class TestEverySelectedBackendMustBeClassifiable:
+    """A multi-backend build can enumerate a discrete Vulkan device beside an
+    unclassifiable SYCL one. Returning whichever kind was found first confirmed a set
+    that still had weights on an integrated GPU."""
+
+    def _confirm(self, monkeypatch, devices, discrete = True):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        monkeypatch.setattr(
+            LlamaCppBackend, "_enumerated_gpu_devices",
+            classmethod(lambda cls, binary = None, env = None: devices),
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend, "_vulkan_offload_is_discrete",
+            staticmethod(lambda binary, idx = None: discrete),
+        )
+        return LlamaCppBackend._gpu_offload_confirmed("llama-server", {}, None, False, True)
+
+    def test_a_discrete_vulkan_beside_an_unclassifiable_device_declines(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["Vulkan0", "SYCL1"], discrete = True) is False
+
+    def test_a_discrete_vulkan_beside_a_known_discrete_device_confirms(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["Vulkan0", "CUDA1"], discrete = True) is True
+
+    def test_that_pair_still_obeys_the_vulkan_probe(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["Vulkan0", "CUDA1"], discrete = False) is False
+
+    def test_an_unclassifiable_device_alone_declines(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["OpenCL0"]) is False
+
+
+class TestTheDeviceMemoFollowsVisibility:
+    """The child enumerates what the environment lets it see, so the memo is keyed on
+    that too. A recovery rung that masks an unsupported adapter has a different answer
+    coming; keyed on the binary alone it kept the original set's failure and could
+    never gain DirectIO on the very path meant to."""
+
+    def test_a_changed_mask_re_probes(self, monkeypatch):
+        import core.inference.llama_cpp as m
+
+        calls = []
+
+        def _run(binary, env = None):
+            calls.append(dict(env or {}))
+            return ["CUDA0"] if (env or {}).get("ROCR_VISIBLE_DEVICES") else None
+
+        monkeypatch.setattr(m.LlamaCppBackend, "_run_list_devices", staticmethod(_run))
+        m._arm_load_probe_memo()
+        try:
+            assert m.LlamaCppBackend._enumerated_gpu_devices("b", {}) is None
+            # the gate masks the bad adapter; the narrowed child is a new question
+            assert m.LlamaCppBackend._enumerated_gpu_devices("b", {"ROCR_VISIBLE_DEVICES": "1"}) == ["CUDA0"]
+            assert len(calls) == 2
+        finally:
+            m._LOAD_PROBE_STATE.armed = False
+            m._LOAD_PROBE_STATE.rows = None
+
+    def test_the_same_visibility_is_still_probed_once(self, monkeypatch):
+        import core.inference.llama_cpp as m
+
+        calls = []
+        monkeypatch.setattr(
+            m.LlamaCppBackend, "_run_list_devices",
+            staticmethod(lambda binary, env = None: calls.append(1) or ["CUDA0"]),
+        )
+        m._arm_load_probe_memo()
+        try:
+            for _ in range(3):
+                m.LlamaCppBackend._enumerated_gpu_devices("b", {"CUDA_VISIBLE_DEVICES": "0"})
+            assert len(calls) == 1
+        finally:
+            m._LOAD_PROBE_STATE.armed = False
+            m._LOAD_PROBE_STATE.rows = None
+
+    def test_the_key_covers_the_masks_that_matter(self):
+        from core.inference.llama_cpp import _DEVICE_VISIBILITY_ENV
+
+        assert {"CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES",
+                "GGML_VK_VISIBLE_DEVICES", "GGML_BACKEND_PATH"} <= set(_DEVICE_VISIBILITY_ENV)
