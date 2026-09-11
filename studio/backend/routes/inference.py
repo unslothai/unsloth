@@ -9967,24 +9967,22 @@ def _launch_raises_ubatch(
     panel and the admission guard price the micro-batch the child actually launches at.
     """
     from core.inference.llama_cpp import _launch_needs_bigger_ubatch
+    from utils.models.gguf_metadata import read_gguf_embedding_length
 
-    probe = _probe_backend()
     gguf_file = str(getattr(config, "gguf_file", "") or "")
     own = getattr(config, "gguf_mmproj_file", None)
     resolved = None
     if own and getattr(config, "is_vision", False) and not disable_vision:
-        resolved = probe._resolve_launch_mmproj_path(
+        resolved = _probe_backend()._resolve_launch_mmproj_path(
             model_path = gguf_file,
             mmproj_path = str(own),
         )
-    if gguf_file:
-        # Gemma 4 E2B and E4B decode causally, and only the text n_embd tells them
-        # apart. Cached by _METADATA_CACHE, so this costs nothing the caller has not
-        # already paid.
-        probe._read_gguf_metadata(gguf_file)
     return _launch_needs_bigger_ubatch(
         resolved,
-        getattr(probe, "_embedding_length", None),
+        # Gemma 4 E2B and E4B decode causally, and only the text n_embd tells them
+        # apart. Its own cached read rather than the estimator's full metadata walk,
+        # which this runs ahead of and which costs ~77ms on every settings change.
+        read_gguf_embedding_length(gguf_file) if gguf_file else None,
         llama_extra_args,
         is_vision = bool(getattr(config, "is_vision", False)),
         vision_off = disable_vision,
