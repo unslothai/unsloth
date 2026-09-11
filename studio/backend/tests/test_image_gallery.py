@@ -7,6 +7,7 @@ listing order, safe id handling, and delete/clear."""
 from __future__ import annotations
 
 import base64
+import errno
 import io
 import os
 
@@ -105,14 +106,18 @@ def test_delete_and_clear():
     assert gallery.list_images() == []
 
 
-def test_delete_does_not_report_an_io_failure_as_a_missing_image(monkeypatch):
+@pytest.mark.parametrize("stage", ["read", "unlink"])
+def test_delete_does_not_report_an_io_failure_as_a_missing_image(monkeypatch, stage):
     record = gallery.save(_img(), _meta())
     path = gallery.image_path(record["id"])
 
-    def refuse_unlink(self):
-        raise PermissionError("read-only gallery")
+    def refuse(*args, **kwargs):
+        raise PermissionError(errno.EACCES, "read-only gallery")
 
-    monkeypatch.setattr(type(path), "unlink", refuse_unlink)
+    if stage == "read":
+        monkeypatch.setattr(Image, "open", refuse)
+    else:
+        monkeypatch.setattr(type(path), "unlink", refuse)
     with pytest.raises(PermissionError, match = "read-only gallery"):
         gallery.delete(record["id"])
     assert path.exists()
