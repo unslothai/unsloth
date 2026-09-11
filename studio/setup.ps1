@@ -911,9 +911,8 @@ function Redact-InstallOutput {
     return $Text -replace '(https?://[^\s`#]+)#[^\s`]+', '$1#<redacted>'
 }
 
-# A credential-free identity for an index URL: userinfo, query and fragment dropped, no
-# trailing slash. What is recorded beside the venv and compared across runs, so neither a
-# mirror credential nor a rotated token lands on disk or in the log.
+# A credential-free identity for an index URL (no userinfo, query, fragment or trailing slash),
+# recorded beside the venv and compared across runs.
 function Get-IndexIdentity {
     param([string]$Url)
     if (-not $Url) { return "" }
@@ -5168,8 +5167,7 @@ if (-not $SkipPythonDeps) {
 # install_python_stack.py drops the manifest before its own dependency pass, but
 # pip, torch and triton are replaced first here. Drop it now so a run killed in
 # those leaves the venv marked half-built, not behind a marker that verifies.
-# remove_manifest parks the file rather than deleting it, so the dependency pass
-# can still read what the last completed pass recorded and skip what is current.
+# remove_manifest parks the file, so the dependency pass can still read the last completed pass.
 $_ManifestDropped = $true
 try {
     & python -c "
@@ -5344,21 +5342,15 @@ if ($ROCmIndexUrl) {
             $_rocmKeptActive = $true
         }
     }
-    # Same rule as the XPU and CPU arms: force only when the resident torch is not this
-    # family, the pin moved or the import failed. An unconditional --force-reinstall made
-    # every update re-resolve the trio against the ROCm index and rewrite its resolved
-    # dependencies (fsspec moved forward here and back in the core step, every time).
+    # As the XPU and CPU arms: force only when the resident torch is not this family, the pin moved
+    # or the import failed. Unconditional --force-reinstall re-resolved the trio every update.
     $rocmForce = @()
     if ($installedTorchTag -ne "rocm") { $rocmForce = @("--force-reinstall") }
     if ($script:PinChangedForceReinstall) { $rocmForce = @("--force-reinstall") }
     if ($script:TorchImportDefinitivelyFailed) { $rocmForce = @("--force-reinstall") }
-    # The +rocm tag names the family, not the GPU architecture: AMD publishes one index
-    # per architecture family and the same torch version from each, so a changed
-    # UNSLOTH_ROCM_GFX_ARCH, another GPU on a mixed host or a replaced card moves
-    # $ROCmIndexUrl while the resident trio still satisfies its pins. The index a trio was
-    # installed from is recorded beside the venv after each successful install; a record
-    # that names another index, or no record at all (an install from before this was
-    # kept), takes the reinstall the unconditional --force-reinstall used to give everyone.
+    # +rocm names the family, not the architecture: a changed UNSLOTH_ROCM_GFX_ARCH or replaced card
+    # moves $ROCmIndexUrl while the trio still satisfies its pins, so the index a trio came from is
+    # recorded; another index, or no record, takes the reinstall.
     $script:RocmIndexRecord = Join-Path $VenvDir ".unsloth-rocm-index"
     $_rocmIndexIdentity = Get-IndexIdentity $ROCmIndexUrl
     $_recordedRocmIndex = ""
@@ -5374,24 +5366,13 @@ if ($ROCmIndexUrl) {
         $rocmForce = @("--force-reinstall")
     }
     if ($installedTorchTag -eq "rocm" -and $rocmForce.Count -eq 0 -and $VenvPyExe -and (Test-Path -LiteralPath $VenvPyExe)) {
-        # torch alone names the family. A torchvision or torchaudio that another step
-        # re-resolved from PyPI satisfies its version pin without linking ROCm, and the
-        # pinned-index install below leaves a satisfied companion untouched; a companion
-        # with no local tag, or a +cpu / +cuNNN one, is that case. AMD's indexes tag all
-        # three +rocm and the older community wheels carry a git hash, so both keep the
-        # fast path. Bounded like the torch probe above, and find_spec does not import.
-        # A companion whose dist-info remains while its package directory is gone reports
-        # as "payload missing", and one whose RECORD names a file that is gone or has
-        # another size as "payload damaged": the pinned install would read the satisfying
-        # metadata and leave the payload unrestored, where the unconditional reinstall
-        # this replaced repaired it. Read from RECORD rows, not Distribution.files, which
-        # CPython 3.13 filters down to the files that still exist, so a deleted one could
-        # never be found through it; no RECORD is damage too. Bytecode is left out
-        # (recompiled after install). A probe that did not answer forces the trio too.
-        # The same companions the trio below installs: on Windows on ARM torchaudio is
-        # left out (no win_arm64 wheel), so a leftover non-ROCm torchaudio there is not a
-        # mismatch this step can repair, and probing it would force the reinstall on
-        # every update for good.
+        # torch alone names the family: a companion re-resolved from PyPI (no local tag, or +cpu /
+        # +cuNNN) satisfies its pin without linking ROCm and the pinned install leaves it. AMD tags
+        # all three +rocm; community wheels carry a git hash. Payload too: a dist-info without its
+        # package, or a RECORD row gone or resized, is damage the pinned install would not repair.
+        # RECORD rows, not Distribution.files (3.13 filters to existing files); bytecode left out.
+        # No answer forces the trio. Only the companions the trio installs: Windows on ARM has no
+        # torchaudio, so a leftover one there is not a repairable mismatch.
         $_companionNames = if ($WinArm64NoAudio) { "('torchvision',)" } else { "('torchvision', 'torchaudio')" }
         $_companionProbe = Invoke-BoundedPythonProbe -PythonExe $VenvPyExe -Code "import csv, io, importlib.util as u, importlib.metadata as m, os; out = []`nfor n in $($_companionNames):`n    try:`n        d = m.distribution(n)`n    except m.PackageNotFoundError:`n        continue`n    v = d.version`n    if u.find_spec(n) is None:`n        out.append(n + '==' + v + ' (payload missing)')`n        continue`n    rec = d.read_text('RECORD')`n    damaged = not rec`n    for row in csv.reader(io.StringIO(rec or '')):`n        if damaged or len(row) < 3 or not row[0] or row[0].endswith('.pyc') or not row[2]:`n            continue`n        try:`n            damaged = os.stat(d.locate_file(row[0])).st_size != int(row[2])`n        except (OSError, ValueError):`n            damaged = True`n    if damaged:`n        out.append(n + '==' + v + ' (payload damaged)')`n        continue`n    t = (v.split('+', 1) + [''])[1].lower()`n    if not t or t.startswith('cpu') or t.startswith('cu') or t.startswith('xpu'):`n        out.append(n + '==' + v)`nprint(' '.join(out))"
         $_companionMismatch = if ($_companionProbe.Ok) { $_companionProbe.Output.Trim() } else { "probe did not answer" }
@@ -5426,8 +5407,7 @@ if ($ROCmIndexUrl) {
     } else {
         # Tell install_python_stack.py to skip the probe and the manual-install warning.
         $env:UNSLOTH_ROCM_TORCH_INSTALLED = "1"
-        # Recorded after the trio landed, so the next run can tell a changed architecture
-        # family from an unchanged one (see $rocmForce above).
+        # Recorded after the trio landed (see $rocmForce).
         try {
             if ($script:RocmIndexRecord) { Set-Content -LiteralPath $script:RocmIndexRecord -Value (Get-IndexIdentity $ROCmIndexUrl) -Encoding ascii -NoNewline }
         } catch { }

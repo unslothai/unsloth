@@ -2041,14 +2041,10 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
             substep "$_setup_pin_leaf pinned over an XPU wheel -- forcing dependency pass to migrate..."
             _SKIP_PYTHON_DEPS=false
         fi
-        # The same rule between the other curated families, mirroring setup.ps1's "Torch-index
-        # pin changed" branch: an explicit cu*/rocm*/cpu pin over a venv whose torch carries
-        # ANOTHER family's label is a request only the dependency pass acts on
-        # (_ensure_cuda_torch, _ensure_rocm_torch and _ensure_cpu_torch reinstall from the
-        # pin), and the version compare above would otherwise call the install up to date and
-        # keep the old wheel. Labelled wheels only: an untagged torch (PyPI's, macOS) names no
-        # family to disagree with, and escaping on it would force a pass on every update.
-        # Custom leaves (a private mirror) are left alone, as everywhere else.
+        # As setup.ps1's "Torch-index pin changed" branch: an explicit cu*/rocm*/cpu pin over
+        # ANOTHER family's torch is a request only the dependency pass acts on, and the version
+        # compare would call it up to date. Labelled wheels only (an untagged torch names no
+        # family); custom leaves left alone.
         _setup_pin_have_family=""
         case "${_setup_pin_ver:-}" in
             *+cu[0-9]*) _setup_pin_have_family=cu ;;

@@ -384,8 +384,7 @@ def test_a_git_requirement_is_matched_by_ref_not_version(monkeypatch, tmp_path) 
         "python/triton_kernels",
     )
 
-    # A branch is never evidence (see below); the installed-ref comparison is exercised
-    # with a commit, which is the only ref that cannot move under the requirements text.
+    # A commit, the only ref that cannot move under the requirements text.
     commit = "0123456789abcdef0123456789abcdef01234567"
     req.write_text(
         f"triton_kernels @ git+https://example.invalid/triton.git@{commit}"
@@ -505,8 +504,7 @@ def test_the_triton_step_keeps_a_current_build_even_on_a_full_pass(monkeypatch, 
     monkeypatch.setattr(stack, "pip_install", lambda *a, **k: installs.append((a, k)))
     monkeypatch.setattr(stack, "_record_step", lambda key, outcome: recorded.append((key, outcome)))
     monkeypatch.setattr(stack, "_progress", lambda *_a, **_k: None)
-    # The keep also wants the recorded payload intact and no forced full pass; both are
-    # exercised at the end of this test.
+    # The keep also wants the payload intact and no forced pass; both at the end of this test.
     payload_intact = {"value": True}
     monkeypatch.setattr(stack, "_payload_recorded_intact", lambda dist: payload_intact["value"])
     monkeypatch.setattr(stack, "_full_deps_requested", lambda: False)
@@ -572,9 +570,8 @@ def test_the_triton_step_keeps_a_current_build_even_on_a_full_pass(monkeypatch, 
     stack._triton_kernels_step()
     assert installs == [] and asked == []
 
-    # A current commit does not keep a build whose recorded files are damaged or gone
-    # (`pip show` still answers for it), nor one under UNSLOTH_FULL_DEPS: the forced pass
-    # the user asked for reinstalls it.
+    # A current commit keeps neither a damaged build (`pip show` still answers) nor one under
+    # UNSLOTH_FULL_DEPS.
     monkeypatch.setattr(stack, "_has_working_git", lambda: True)
     monkeypatch.setattr(stack, "_skip_step", _skip)
     monkeypatch.setattr(stack, "_direct_reference_is_installed", _current(True))
@@ -1089,12 +1086,8 @@ def test_the_plan_is_read_before_the_manifest_is_dropped() -> None:
     assert plan < drop
 
 
-# -- the finalizing tail -------------------------------------------------------
-#
-# Three fixed costs at the end of every pass that a settled install has no reason to
-# pay: a subprocess that rewrites three METADATA files it already rewrote, a full
-# metadata resolve of the venv by `pip check` whose result is discarded, and an out of
-# process probe that imports torch, mlx, mlx_lm and mlx_vlm to reprint the same verdict.
+# The finalizing tail: three fixed costs a settled install has no reason to pay (the METADATA
+# rewrite, a discarded `pip check`, an out-of-process MLX import probe).
 
 
 class _FakePatchModule:
@@ -1142,8 +1135,7 @@ def _patch_module(
         metadata.write_text(text, encoding = "utf-8")
     fake = _FakePatchModule(metadata if text is not None else None, **kwargs)
     monkeypatch.setattr(stack, "SINGLE_ENV", tmp_path)
-    # The real import is cached in sys.modules after the first pass, so this is also
-    # how the second install_python_stack() call in one interpreter sees it.
+    # Cached in sys.modules after the first pass, so the second call in one interpreter sees it too.
     monkeypatch.setitem(sys.modules, "patch_metadata", fake)
     return fake
 
@@ -1219,8 +1211,8 @@ def test_pip_check_is_gated_on_this_pass_having_changed_something() -> None:
     source = STACK_PATH.read_text(encoding = "utf-8")
     gate = source.index('_pip_check_ok = (_PASS_EVIDENCE or {}).get("pip_check_ok")')
     tail = source[gate : gate + 400]
-    # Both halves: a pass that installed anything re-checks, and so does one whose last
-    # recorded answer was not a clean True (missing, False, or never recorded).
+    # Both halves: anything installed re-checks, and so does a last answer that was not a clean
+    # True.
     assert "if _INSTALL_ACTIONS > 0 or _pip_check_ok is not True:" in tail
     assert '"pip_check_ok": _pip_check_ok,' in source
 
@@ -1290,8 +1282,7 @@ def test_a_rebuilt_mlx_stack_is_always_probed(mlx) -> None:
         {"pins": ["mlx==0.0.1"]},
         {"python": "39"},
         {"mlx_vlm": "0.4.4"},
-        # A dependency the probe imports moved between two passes (still inside its
-        # declared range, so no step reinstalled it), and a record from before the
+        # An imported dependency moved within its range between passes, and a record from before the
         # imports were fingerprinted.
         {
             "imports": {
@@ -1335,8 +1326,7 @@ def test_the_fingerprint_names_everything_a_verdict_depends_on(monkeypatch) -> N
     assert fingerprint["python"] == stack._installer_python_tag()
     assert fingerprint["imports"] == {n: "0.4.5" for n in stack._MLX_IMPORTED_DEPENDENCIES}
     assert {"transformers", "tokenizers", "numpy", "huggingface-hub"} <= set(fingerprint["imports"])
-    # mlx-vlm floats inside a range, so the pin string alone does not identify what is
-    # installed -- and it is the package whose half-install the probe exists to catch.
+    # mlx-vlm floats inside a range: the pin string alone does not identify what is installed.
     assert fingerprint["mlx_vlm"] == "0.4.5"
     monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: None)
     assert stack._mlx_health_fingerprint()["mlx_vlm"] == ""
@@ -1443,10 +1433,8 @@ def test_a_conflict_the_last_pass_left_behind_does_not_run_the_step(monkeypatch,
     monkeypatch.setattr(stack.install_manifest, "missing_requirements", lambda *a, **k: [])
     assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is False
     stack._PASS_EVIDENCE["known_unmet"] = {"studio.txt": ["click 8.5.0"]}
-    # The record is evidence about the installed set it was made against, no other: a
-    # requirer moved within its range since (a manual pip between two passes) can have
-    # dropped the bound that made the conflict, and the same entry would then hide a
-    # resolvable one. No recorded set (an older manifest) and a different one both run.
+    # The record is evidence about its own installed set only: a requirer moved since can have
+    # dropped the bound that made the conflict. No recorded set and a different one both run.
     assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is False
     stack._PASS_EVIDENCE["known_unmet_index"] = "not-the-installed-set"
     assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is False
@@ -1675,8 +1663,7 @@ def test_the_mlx_and_codec_skips_ask_for_the_evidence_too() -> None:
         "                and _mlx_stack_is_current()\n"
         '                and _inputs_unchanged(["single-env/overrides-darwin-arm64.txt"])\n'
     )
-    # The arm64 overrides reach uv through UV_OVERRIDE and shape MLX's dependency graph:
-    # a bundle whose overrides moved runs the resolver even with the four pins satisfied.
+    # Moved arm64 overrides (UV_OVERRIDE) run the resolver even with the four pins satisfied.
     assert mlx_guard in source
     assert "_may_skip_on_evidence()\n            and not _codec_rebuild\n" in source
 
@@ -1689,10 +1676,8 @@ def test_the_npp_repair_is_not_conditional_on_reinstalling_the_codec() -> None:
     assert "        elif _codec_index:\n" in source
     # One occurrence left: the unpinned retry, which really does depend on an attempt.
     assert source.count('_STEP_RESULTS.get("torchcodec") == "ran"') == 1
-    # An NPP that is already resident short-circuits the install, so an update that has it
-    # makes no round trip to resolve the name. The name comes out of the spec rather than
-    # being spelled here: _npp_requirement stops suffixing the CUDA major after 12, so the
-    # distribution is nvidia-npp-cu12 below that and plain nvidia-npp above it.
+    # A resident NPP short-circuits the install. The name comes from the spec: nvidia-npp-cu12
+    # through CUDA 12, plain nvidia-npp above.
     assert '_npp_name = re.split(r"[<>=!~]", _npp_spec, maxsplit = 1)[0].strip()' in source
     assert "if _npp_have and _spec_is_satisfied(_npp_spec, _npp_have):" in source
 
@@ -1764,8 +1749,7 @@ def test_the_mlx_payload_check_walks_each_records_files(monkeypatch, tmp_path) -
     payload.parent.mkdir()
     payload.write_bytes(b"x" * 10)
 
-    # RECORD rows, not Distribution.files: CPython 3.13 drops paths that no longer
-    # exist from `files`, so a deleted module could never be found through it.
+    # RECORD rows, not Distribution.files: CPython 3.13 drops missing paths from `files`.
     record = {"text": "mlx_lm/sample_utils.py,sha256=x,10\nmlx_lm/__pycache__/x.pyc,,\n"}
     dist = SimpleNamespace(
         read_text = lambda name: record["text"] if name == "RECORD" else None,
@@ -1779,16 +1763,14 @@ def test_the_mlx_payload_check_walks_each_records_files(monkeypatch, tmp_path) -
 
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
     monkeypatch.setattr(importlib.metadata, "distribution", distribution)
-    # The imported dependencies are walked too, except one that is not installed at
-    # all (the probe's to report; its fingerprint entry is already empty).
+    # The imported dependencies are walked too, except one not installed at all (the probe's).
     monkeypatch.setattr(
         stack,
         "_installed_distribution_version",
         lambda name: None if name == "sentencepiece" else "1.0",
     )
     assert stack._mlx_payload_present() is True
-    # Every pinned MLX distribution, the Metal library included: a truncated
-    # mlx.metallib leaves mlx's own RECORD intact.
+    # Every pinned MLX distribution, the Metal library included.
     assert set(asked) >= {"mlx", "mlx-metal", "mlx-lm", "mlx-vlm"}
     assert set(asked) >= set(stack._MLX_IMPORTED_DEPENDENCIES) - {"sentencepiece"}
     assert "sentencepiece" not in asked
@@ -1852,9 +1834,7 @@ def test_the_parked_manifest_is_consumed_when_it_is_read_as_evidence(monkeypatch
     source = open(stack.__file__, encoding = "utf-8").read()
     at = source.index("manifest = install_manifest.read_previous_manifest()")
     assert "install_manifest.consume_previous_manifest()" in source[at : at + 700]
-    # And before every refusal: a forced pass (full deps, a development shape, a
-    # caller's resolver input) mutates the venv too, and one killed part-way must not
-    # leave the parked copy behind for the next ordinary run.
+    # And before every refusal: a forced pass killed part-way must not leave the parked copy behind.
     planner = source[source.index("def _plan_pass(") :]
     assert planner.index("consume_previous_manifest()") < planner.index("_full_deps_requested()")
     assert planner.index("consume_previous_manifest()") < planner.index(

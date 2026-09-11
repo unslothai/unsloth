@@ -115,9 +115,8 @@ def _route(
     buf = io.StringIO()
 
     stack_mod._invalidate_torch_runtime_probe()
-    # Pass state, not a memo: _ensure_rocm_torch is called twice by one dependency pass
-    # and the second call answers from what the first one left installed. Each call here
-    # is meant to be its own pass, so the record is cleared like the probes above.
+    # Pass state: the second _ensure_rocm_torch of a pass answers from the first; each call here is
+    # its own pass.
     stack_mod._BNB_ROCM_PASS_PROVENANCE = None
     with (
         patch.dict(os.environ, env or {}, clear = False),
@@ -135,10 +134,8 @@ def _route(
         patch.object(stack_mod, "_kfd_gfx_targets", return_value = []),
         patch.object(stack_mod, "_installed_rocm_wheel_family", return_value = family),
         patch.object(stack_mod, "_torch_requires_rocm_sdk", return_value = torch_owns_rocm),
-        # The third door into the running interpreter, and it has to be pinned for the
-        # same reason as the other two: the AMD bitsandbytes repair now keeps a wheel it
-        # can prove is the one it would install, so an unpinned read makes the verdict
-        # depend on whether the machine running pytest happens to have bitsandbytes.
+        # The third door into the running interpreter, pinned like the other two, or the verdict
+        # depends on whether the pytest machine has bitsandbytes.
         patch.object(stack_mod, "_installed_bnb_provenance", return_value = bnb_provenance),
         patch.object(stack_mod.os.path, "isdir", return_value = True),
         patch.object(stack_mod.subprocess, "run", return_value = probe),
