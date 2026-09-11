@@ -1942,8 +1942,17 @@ def test_idle_loop_resets_timer_for_same_repo_different_variant(monkeypatch):
         task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = 0.01))
         await asyncio.sleep(0.03)
         assert unloads == []
-        kw._last_active = time.monotonic() - 60  # force idle
-        backend.hf_variant = "Q8_0"  # same id, new quant -> fresh identity
+        # Under the gate the loop itself holds: it reads the identity and decides idleness
+        # inside one _unload_gate, so an unguarded write can land between the two, be judged
+        # against the old identity, and unload on the forced idle -- the reset under test
+        # never happening. Acquired off the loop, never with a plain `with`: the loop awaits
+        # inside that gate, so blocking this thread on the lock it holds deadlocks both.
+        await asyncio.to_thread(kw._lifecycle_lock.acquire)
+        try:
+            kw._last_active = time.monotonic() - 60  # force idle
+            backend.hf_variant = "Q8_0"  # same id, new quant -> fresh identity
+        finally:
+            kw._lifecycle_lock.release()
         await asyncio.sleep(0.03)
         assert unloads == []  # timer reset by the variant change, not unloaded
         task.cancel()
