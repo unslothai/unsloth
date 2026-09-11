@@ -1672,11 +1672,8 @@ exit 1
             # Under "Stop", Test-Path inside an ACL-denied directory throws.
             $existing = Test-Path -LiteralPath $markerFile -ErrorAction SilentlyContinue
             if ($existing) {
-                # The bytes, not the text: a rollback puts back exactly what it found,
-                # whichever writer (and encoding) produced it, so a failed reinstall
-                # leaves no change of its own behind. (Reading it as text went wrong
-                # twice over: Windows PowerShell 5.1 decoded a BOM-less file with the
-                # ANSI code page, and the restore re-encoded whatever it had read.)
+                # The bytes, not the text: a rollback puts back exactly what it found, whatever
+                # writer and encoding produced it (5.1 decoded a BOM-less file as ANSI and re-encoded it).
                 $previous = $null
                 try { $previous = [System.IO.File]::ReadAllBytes($markerFile) } catch { $previous = $null }
                 # One we cannot read is one we cannot put back, so leave it alone.
@@ -1693,31 +1690,20 @@ exit 1
         if (-not (Test-Path -LiteralPath $markerDir -PathType Container -ErrorAction SilentlyContinue)) {
             try { [System.IO.Directory]::CreateDirectory($markerDir) | Out-Null } catch { }
         }
-        # Removed first: a write follows a symlink and would truncate its target. That is
-        # as true of WriteAllText below as it was of the Set-Content this replaced, so the
-        # check stays exactly where it was.
+        # Removed first: a write (WriteAllText as much as Set-Content) follows a symlink and would truncate its target.
         Remove-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue
         # And only once gone, since that removal fails non-terminatingly. Get-Item -Force
         # reports the link itself; Test-Path would follow it.
         if ($null -ne (Get-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue)) {
             return
         }
-        # WriteAllText with an explicit BOM-less encoder, NOT `Set-Content -Encoding utf8`:
-        # that encoding emits a UTF-8 BOM under Windows PowerShell 5.1 (PowerShell 7 does
-        # not), so one installer wrote two different files depending on which host ran it.
-        # The readers only TOLERATE a BOM -- setup.sh strips $_UV_MARKER_BOM, unsloth_cli
-        # reads utf-8-sig -- and tolerance is not the contract. install.sh writes
-        # `printf '%s\n'` and unsloth_cli writes os.fsencode(f"{chosen}\n"), both plain
-        # UTF-8 with one LF, and the update procedure DIGESTS this file to decide whether a
-        # rerun changed anything: a marker that flips between CRLF+BOM and LF depending on
-        # which half of the installer last touched it reads as a change that never happened.
-        # Hence LF and not CRLF as well -- both readers accept either (setup.sh strips one
-        # trailing CR, the CLI strips one "\n" then one "\r"), so CRLF would be legal and
-        # still differ from every other writer's bytes. WriteAllText appends no newline of
-        # its own, so the one the contract requires is written explicitly.
+        # WriteAllText with a BOM-less encoder, NOT `Set-Content -Encoding utf8`, which emits a
+        # BOM under Windows PowerShell 5.1 and none under 7. The update DIGESTS this file, and
+        # install.sh (`printf '%s\n'`) and unsloth_cli (os.fsencode(f"{chosen}\n")) write plain
+        # UTF-8 with one LF, so a BOM or CRLF here (the readers merely tolerate both) reads as
+        # a change that never happened. WriteAllText appends no newline, so it is written explicitly.
         try {
-            # It throws where -ErrorAction SilentlyContinue only warned, and a marker is a
-            # preference rather than a requirement: no install may fail over one.
+            # It throws where -ErrorAction SilentlyContinue only warned; a marker is a preference, so no install may fail over one.
             [System.IO.File]::WriteAllText($markerFile, ($Cache + "`n"),
                 (New-Object System.Text.UTF8Encoding($false)))
         } catch { }
@@ -1734,11 +1720,8 @@ exit 1
         Remove-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue
         $stillThere = $null -ne (Get-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue)
         if (-not $stillThere -and $script:StudioUvMarkerExisted -and $null -ne $script:StudioUvMarkerPrevious) {
-            # The saved bytes, verbatim: a rollback that put the marker back in another
-            # encoding or line ending than the one it saved would be a change of its
-            # own. The try/catch replaces -ErrorAction SilentlyContinue verbatim --
-            # WriteAllBytes throws, and anything escaping this function is reported as
-            # a failed environment restore.
+            # The saved bytes, verbatim: another encoding or line ending would be a change of its
+            # own. WriteAllBytes throws; the try/catch stands in for -ErrorAction SilentlyContinue.
             try {
                 [System.IO.File]::WriteAllBytes($markerFile, [byte[]]$script:StudioUvMarkerPrevious)
             } catch { }

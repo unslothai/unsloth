@@ -1250,8 +1250,7 @@ class TestInstallUvCacheRootParity:
         assert "UV_WORKING_DIR" in sh[sh.index("_absolutize_uv_cache_dir() {") :][:600]
         assert "UV_WORKING_DIR" in ps1[ps1.index("function Resolve-StudioUvCachePath") :][:800]
         for start in _all_indexes(ps1_marker, "Remove-Item -LiteralPath $markerFile"):
-            # The call form: the comment above the gate names the cmdlet too. The record
-            # writes text, the rollback restore writes the bytes it saved.
+            # The call form; the record writes text, the restore writes saved bytes.
             ends = [
                 end
                 for end in (
@@ -1263,10 +1262,8 @@ class TestInstallUvCacheRootParity:
             window = ps1_marker[start : min(ends)]
             assert "Get-Item -LiteralPath $markerFile -Force" in window, window
 
-        # Bytes, not text: a rollback puts back exactly what it found, whichever writer
-        # and encoding produced it. Reading it as text under 5.1 decoded a BOM-less file
-        # with the ANSI code page and restored mojibake. Asserted on source, since pwsh 7
-        # passes either way.
+        # Bytes, not text: 5.1 decoded a BOM-less file with the ANSI code page and restored
+        # mojibake. Asserted on source, since pwsh 7 passes either way.
         assert "[System.IO.File]::ReadAllBytes($markerFile)" in ps1_marker
         assert (
             "[System.IO.File]::WriteAllBytes($markerFile, [byte[]]$script:StudioUvMarkerPrevious)"

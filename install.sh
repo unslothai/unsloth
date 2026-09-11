@@ -583,14 +583,9 @@ _absolutize_uv_cache_dir() {
 }
 
 _probe_uv_cache_writable() {
-    # mkdir -p exits 0 for an existing unwritable directory and -w reads the mode rather
-    # than the filesystem, so probe with a real create.
-    #
-    # mktemp, not a $$-derived name: this runs for a cache directory another account can
-    # write, and there a predictable path can be pre-created as a symlink, which `: >`
-    # would follow and truncate -- as root, any file on the box. mktemp creates O_EXCL
-    # with an unpredictable suffix, so it cannot follow one, and failing to create IS the
-    # writability answer this probe wanted.
+    # mkdir -p exits 0 for an existing unwritable directory and -w reads the mode, so probe with
+    # a real create. mktemp (O_EXCL, unpredictable name), not a $$ name: another account can
+    # pre-create a predictable path as a symlink that `: >` would follow and truncate.
     _uv_probe_dir="$1"
     _uv_cache_probe=""
     if ! mkdir -p "$_uv_probe_dir" 2>/dev/null \
@@ -646,15 +641,10 @@ _restore_uv_cache_marker() {
 
 _configure_uv_cache() {
     _uv_studio_cache="$STUDIO_HOME/cache/uv"
-    # `_default_uv_cache_early` exported the Studio path so the uv bootstrap and this
-    # phase share one cache. That value is OURS, not the caller's, and reading it back as
-    # a custom UV_CACHE_DIR is what kept `shared` unreachable on POSIX: install.ps1 has no
-    # such early export and has always reached it, so a Linux or macOS box with a warm
-    # ~/.cache/uv re-downloaded every Torch and CUDA wheel into a second cache while the
-    # same box under Windows reused them. Dropped here so the detection below runs on the
-    # same input Windows gives it. A value the caller actually set survives untouched,
-    # because the early block returns without setting the flag when one is present -- so
-    # `custom` still outranks everything, and --isolated-uv-cache still forces Studio.
+    # `_default_uv_cache_early` exported OUR Studio path so the bootstrap shares one cache; read
+    # back as a custom UV_CACHE_DIR it kept `shared` unreachable on POSIX (install.ps1 has no
+    # early export), so a warm ~/.cache/uv was duplicated. Dropped here; a caller's own value
+    # survives because the early block sets no flag when one is present.
     if [ "${_UV_CACHE_DEFAULTED:-false}" = true ]; then
         unset UV_CACHE_DIR
         _UV_CACHE_DEFAULTED=false
@@ -679,12 +669,9 @@ _configure_uv_cache() {
         return 0
     fi
 
-    # Ask uv so uv.toml / UV_CONFIG_FILE / platform defaults count; -u so a blank
-    # inherited value cannot override them; last line so a notice ahead of the path
-    # does not become the path.
-    # Only the line ending is stripped: a pathname ending in a space is a pathname
-    # uv preserves, and trimming it here would scan a directory that does not exist,
-    # read a warm cache as cold and duplicate it.
+    # Ask uv so uv.toml / UV_CONFIG_FILE / platform defaults count; -u so a blank inherited value
+    # cannot override them; last line so a notice ahead of the path is not the path. Only the
+    # line ending is stripped: a pathname may end in a space.
     _uv_default_cache=$(env -u UV_CACHE_DIR uv cache dir 2>/dev/null \
         | tr -d '\r' | sed -e '/^[[:space:]]*$/d' | tail -n 1) || _uv_default_cache=""
     if [ -z "$_uv_default_cache" ]; then
@@ -694,9 +681,8 @@ _configure_uv_cache() {
             _uv_default_cache="${HOME}/.cache/uv"
         fi
     fi
-    # A relative cache-dir in uv.toml is reported relative, and uv resolves it against
-    # UV_WORKING_DIR (its own cwd otherwise); scanned against this script's cwd it would
-    # read as cold and a warm cache would be duplicated.
+    # A relative uv.toml cache-dir is reported relative to UV_WORKING_DIR (uv's cwd); scanned
+    # against this script's cwd it reads as cold.
     case "$_uv_default_cache" in
         "" | /*) ;;
         *)
@@ -723,23 +709,15 @@ _configure_uv_cache() {
                 _uv_scan_blocked=true
                 continue
             fi
-            # -print -quit, not `-print ... | head -n 1`: head exits on the first match and
-            # find then dies of SIGPIPE on a bucket large enough to fill the 64K pipe buffer,
-            # which is every cache with wheels in it. This script is `#!/bin/sh` with `set -e`
-            # and never turns on pipefail, so today the pipeline still reports head's own 0 and
-            # the match survives -- but the identical line in studio/setup.sh runs under
-            # `set -o pipefail` and did lose it, reading a warm shared cache as cold. The three
-            # scanners are meant to answer alike; one of them being one `set -o` away from
-            # answering differently is not a difference worth keeping. -quit also stops the walk
-            # inside find, so a huge shared cache is not enumerated just to prove it is not empty.
+            # -print -quit, not `| head -n 1`: head exits on the first match and find dies of
+            # SIGPIPE on any bucket over 64K of names. Harmless here (no pipefail), but the same
+            # line under studio/setup.sh's pipefail lost the match, and the scanners must agree.
             _uv_artifact=$(find -L "$_uv_bucket" -type f \
                 ! -name CACHEDIR.TAG ! -name .git ! -name .gitignore \
                 ! -name '*.lock' ! -name '*.msgpack' ! -name '*.http' ! -name '*.rev' \
                 -print -quit 2>/dev/null) || true
-            # `|| true`, not `|| _uv_artifact=""`: find reports a nonzero status when any
-            # part of the walk was unreadable, even after it printed a hit and quit, and
-            # discarding the hit on that status read a warm cache with one denied leaf
-            # as cold. The assignment already holds whatever find printed.
+            # `|| true`, not `|| _uv_artifact=""`: find exits nonzero after an unreadable leaf
+            # even once it printed the hit, and the hit is already assigned.
             if [ -n "$_uv_artifact" ]; then
                 _uv_default_populated=true
                 break
@@ -747,9 +725,8 @@ _configure_uv_cache() {
         done
     fi
 
-    # Warm is not enough: uv writes to its cache in normal operation and aborts on one
-    # it cannot, so a read-only shared cache (a preseeded image, an NFS mount) is not one
-    # this install can use however many wheels it holds.
+    # Warm is not enough: uv writes to its cache and aborts on one it cannot (a preseeded
+    # image, an NFS mount).
     _uv_default_readonly=false
     if [ "$_uv_default_populated" = true ] && ! _probe_uv_cache_writable "$_uv_default_cache"; then
         _uv_default_populated=false
@@ -762,10 +739,9 @@ _configure_uv_cache() {
     else
         UV_CACHE_DIR="$_uv_studio_cache"
         _UV_CACHE_MODE=studio
-        # The early block probed this same path and unset on failure; that answer is
-        # discarded above, so the probe has to happen again here or uv is handed a cache
-        # it cannot create and aborts the install outright. Nothing is recorded in that
-        # case: an empty marker would point the next update at uv's default by accident.
+        # The early probe's answer was discarded above, so probe again or uv aborts on a cache
+        # it cannot create. Nothing is recorded then: an empty marker would point the next
+        # update at uv's default.
         if ! _probe_uv_cache_writable "$UV_CACHE_DIR"; then
             echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
             echo "[WARN] Wheels will be copied into the venv rather than hardlinked, costing extra disk." >&2
@@ -858,18 +834,12 @@ _claim_studio_root() {
 _claim_studio_root
 
 # Keep uv's cache on the same filesystem as the venv it fills.
-# uv hardlinks wheels within one filesystem and copies across a boundary, so a moved
-# STUDIO_HOME paid double the disk and stranded the cache. An explicit UV_CACHE_DIR wins.
-# The fallback is required, since uv aborts on a cache it cannot create.
-#
-# This runs long before `_configure_uv_cache`, which is the real selector: it has to,
-# because the uv bootstrap between the two would otherwise fill uv's default cache and
-# then the selector would find it warm and adopt it -- a cache this install created
-# reading as one the user already had. `_UV_CACHE_DEFAULTED` is how the selector tells
-# our own placeholder from a value the caller set; see the note there.
-#
-# A function so tests/sh/test_install_uv_cache_root.sh can run the real prologue rather
-# than a paraphrase of it.
+# uv hardlinks within one filesystem and copies across, so a moved STUDIO_HOME paid double
+# disk. An explicit UV_CACHE_DIR wins; the fallback is required since uv aborts on a cache it
+# cannot create. Runs long before `_configure_uv_cache` (the real selector) because the uv
+# bootstrap in between would fill uv's default cache, which the selector would then adopt as
+# warm; `_UV_CACHE_DEFAULTED` tells the selector our placeholder from a caller's value.
+# A function so tests/sh/test_install_uv_cache_root.sh runs the real prologue.
 _default_uv_cache_early() {
     [ -n "${UV_CACHE_DIR:-}" ] && return 0
     UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
@@ -2314,10 +2284,8 @@ _maybe_reroute_strixhalo_to_2404() {
     _rr_exports="set -o pipefail; export UNSLOTH_WSL_REROUTED=1"
 
     # An automatic path belongs to the origin distro; only an override is portable.
-    # `_UV_CACHE_DEFAULTED` is what tells the two apart: the early default block above
-    # always leaves a value here, so testing the variable alone forwarded OUR path --
-    # named after the origin distro's $HOME -- into a distro where it means a different
-    # directory, and pinned the rerouted install to `custom` on top of it.
+    # `_UV_CACHE_DEFAULTED` tells them apart: the early block always leaves a value here, and
+    # forwarding OUR path into another distro pinned the rerouted install to `custom`.
     case "${UV_CACHE_DIR-}" in
         *[![:space:]]*)
             if [ "${_UV_CACHE_DEFAULTED:-false}" = true ]; then

@@ -100,15 +100,11 @@ run_case() { # shell, label, state, input, isolate, home, xdg-state, xdg, root, 
     fi
 }
 
-# A bucket holding more file names than a 64K pipe can carry, built once because
-# `touch`ing 4000 paths is the only slow thing in this file. `find ... -print | head -n 1`
-# answers "cold" for THIS cache in any shell with `set -o pipefail` on: head has its answer
-# after one line and exits, find is killed writing the rest, and the failed pipeline routes
-# a match already in hand into `|| _uv_artifact=""`. Every other fixture here is a handful
-# of files, so the pipe never fills and the defect cannot show. install.sh is `#!/bin/sh`
-# with `set -e` and no pipefail, so it never lost a match -- studio/setup.sh runs the same
-# scan under `set -euo pipefail` and did. The scans are meant to agree; pinning the big case
-# in both suites is what keeps them agreeing after the next option change.
+# A bucket with more names than a 64K pipe carries, built once (4000 touches is the slow part).
+# `find ... -print | head -n 1` reads THIS cache as cold under `set -o pipefail`: head exits
+# after one line, find dies writing the rest, and the failed pipeline routes the hit into
+# `|| _uv_artifact=""`. install.sh has no pipefail and never lost a match; studio/setup.sh
+# runs the same scan under `set -euo pipefail` and did. Pinned in both suites so the scans agree.
 BIG_CACHE="$WORK/big shared cache/uv"
 mkdir -p "$BIG_CACHE/archive-v0/pkg"
 awk -v d="$BIG_CACHE/archive-v0/pkg" 'BEGIN { for (i = 0; i < 4000; i++)
@@ -236,10 +232,8 @@ for shell in sh bash; do
         "reusing existing shared cache ($BIG_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
         "$STUDIO_CACHE"
 
-    # And under the strictest option set any caller could impose on this helper. The word
-    # splitting is deliberate: run_case invokes "$_shell" unquoted precisely so a shell can
-    # be named with its options. Only bash, because `-o pipefail` is what is being pinned
-    # and dash has no such option to set.
+    # Under the strictest options a caller could impose. run_case invokes "$_shell" unquoted so
+    # a shell can be named with options; bash only, since dash has no `-o pipefail`.
     if [ "$shell" = bash ]; then
         run_case "bash -e -u -o pipefail" "a big shared cache survives set -euo pipefail" unset "" false \
             "$HOME_DIR" unset "" "$ROOT" "$BIG_CACHE" "$BIG_CACHE" shared \
@@ -271,12 +265,10 @@ for shell in sh bash; do
         chmod 755 "$DENIED_CACHE/archive-v0" 2>/dev/null || true
     fi
 
-    # The denied leaf has to be walked BEFORE the hit for this to test anything: find
-    # exits nonzero once any part of the walk was unreadable, even after it printed the
-    # hit and quit, and the scanner used to discard the hit on that status. find walks
-    # in readdir order: creation order in a small ext4 directory, name order on APFS,
-    # hash order elsewhere. The denied leaf is created first and named to sort first,
-    # and more are added until `ls -f` (readdir order) shows one ahead of the hit.
+    # The denied leaf must be walked BEFORE the hit: find exits nonzero after an unreadable
+    # leaf even once it printed the hit, and the scanner used to discard it. readdir order is
+    # creation order on small ext4, name order on APFS: created first, named first, and
+    # added until `ls -f` shows one ahead of the hit.
     DEEP_CACHE="$CASE/denied leaf/uv"
     mkdir -p "$DEEP_CACHE/archive-v0/hidden 1"
     : > "$DEEP_CACHE/archive-v0/hidden 1/other.so"
@@ -499,9 +491,8 @@ EXPORTED
         bad "$shell: custom cache exported as [$_exp], wanted [$CASE/relcache]"
     fi
 
-    # A warm default cache that cannot be written (a preseeded image, an NFS mount) is
-    # not one uv can run against: it writes to its cache in normal operation and aborts
-    # on one it cannot. Warm alone used to select it, where the Studio cache had worked.
+    # A warm but unwritable default cache (a preseeded image, an NFS mount): uv aborts on it,
+    # yet warm alone used to select it.
     RO_CACHE="$CASE/read-only cache/uv"
     mkdir -p "$RO_CACHE/archive-v0/pkg"
     : > "$RO_CACHE/archive-v0/pkg/payload.whl"
@@ -513,9 +504,7 @@ EXPORTED
         chmod 755 "$RO_CACHE" 2>/dev/null || true
     fi
 
-    # uv reports a relative cache-dir from uv.toml relative, and resolves it against
-    # UV_WORKING_DIR rather than the installer's cwd; scanned in the wrong place the warm
-    # cache read as cold and was duplicated.
+    # A relative uv.toml cache-dir resolves against UV_WORKING_DIR, not the installer's cwd.
     mkdir -p "$CASE/work/relcache/archive-v0/pkg"
     : > "$CASE/work/relcache/archive-v0/pkg/payload.whl"
     REL_PROBE="$WORK/$shell relative default.sh"
@@ -559,13 +548,9 @@ RELATIVE
     fi
 done
 
-# ── The real prologue, not a paraphrase of it ──
-# `_default_uv_cache_early` runs ~2000 lines before the selector and always leaves
-# UV_CACHE_DIR set, because the uv bootstrap in between must not fill a second cache.
-# Every case above calls the selector on a bare environment and so never saw that. With
-# the placeholder in hand the selector used to answer `custom`, which made `shared`
-# unreachable on POSIX: the same box under Windows reused a warm ~/.cache/uv, and under
-# Linux or macOS downloaded every Torch and CUDA wheel again into a Studio cache.
+# The real prologue: `_default_uv_cache_early` runs ~2000 lines before the selector and always
+# leaves UV_CACHE_DIR set. With that placeholder the selector answered `custom`, so `shared`
+# was unreachable on POSIX and every wheel was refetched into a Studio cache.
 PROLOGUE="$WORK/prologue.sh"
 {
     printf '%s\n' "$HELPERS"

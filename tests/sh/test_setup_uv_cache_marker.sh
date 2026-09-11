@@ -2,19 +2,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 #
-# studio/setup.sh is the standalone entry point `unsloth studio update` runs, so it
-# picks its own uv cache. It used to pick $STUDIO_HOME/cache/uv unconditionally, which
-# on a shared-mode install is the EMPTY one -- the wheels are in uv's own cache, and the
-# update refetched every one of them.
-#
-# The marker install.sh recorded is the only thing that can tell those apart, so this
-# reads it, on the same terms the CLI does (unsloth_cli/commands/studio.py):
-#   * an explicit UV_CACHE_DIR wins and is never recorded
-#   * UV_NO_CACHE leaves it unset entirely
-#   * the marker wins only while its cache still holds packages
-#   * otherwise the Studio path, and only if it is writable
-# setup.sh never WRITES the marker: it infers, and an inference written down as a
-# decision is how a stale marker outlives the install that justified it.
+# studio/setup.sh (the `unsloth studio update` entry point) used to pick $STUDIO_HOME/cache/uv
+# unconditionally, the EMPTY one on a shared-mode install, and refetched every wheel. It now
+# reads install.sh's marker on the CLI's terms (unsloth_cli/commands/studio.py): an explicit
+# UV_CACHE_DIR wins and is never recorded, UV_NO_CACHE leaves it unset, the marker wins only
+# while its cache holds packages, otherwise the Studio path if writable. setup.sh never
+# WRITES the marker: a recorded inference outlives its install.
 set -e
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
@@ -24,8 +17,7 @@ SETUP_SH="$SCRIPT_DIR/../../studio/setup.sh"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT INT TERM
 
-# The real helpers plus the real selector, lifted out of setup.sh so nothing here is a
-# paraphrase. The selector is not a function, so it is sliced by its own anchors.
+# The real helpers and selector, sliced out of setup.sh by their anchors (the selector is not a function).
 HELPERS=$(awk '
     /^_uv_no_cache_requested\(\) \{/ { grab = 1 }
     /^_uv_cache_probe_writable\(\) \{/ { grab = 1 }
@@ -90,21 +82,15 @@ run() {  # run <shell> <state> <input> <no-cache-state> <no-cache> <studio home>
     "$1" "$PROBE" "$2" "$3" "$4" "$5" "$6"
 }
 
-# The same probe under the options setup.sh actually sets on line 5. Every case here runs
-# the selector under a bare `sh`/`bash`, which is a weaker shell than the one that ships:
-# `set -o pipefail` turns a SIGPIPE inside a command substitution into a failed pipeline,
-# and that is the difference between reading a real cache as warm and refetching it.
+# The same probe under setup.sh's own options (line 5): `set -o pipefail` turns a SIGPIPE inside
+# a command substitution into a failed pipeline, the difference between warm and refetched.
 run_strict() {  # run_strict <state> <input> <no-cache-state> <no-cache> <studio home>
     bash -e -u -o pipefail "$PROBE" "$1" "$2" "$3" "$4" "$5"
 }
 
-# A bucket with more file names in it than a 64K pipe can hold. Built once, outside the
-# per-shell loop, because `touch`ing it twice is the only slow thing in this file.
-# `find ... -print | head -n 1` reads THIS cache as cold under pipefail: head has its
-# answer after one line and exits, find is killed writing the rest, and the pipeline's
-# non-zero status sends the match to `|| _uvw_hit=""`. Every other fixture here is a
-# handful of files, which is exactly why the suite stayed green while `unsloth studio
-# update` walked away from warm caches on real machines.
+# A bucket with more names than a 64K pipe holds, built once (touching it is the slow part).
+# `find ... -print | head -n 1` reads THIS cache as cold under pipefail; every other fixture is
+# a handful of files, which is why the suite stayed green while updates refetched warm caches.
 BIG="$WORK/big cache/uv"
 mkdir -p "$BIG/archive-v0/pkg"
 awk -v d="$BIG/archive-v0/pkg" 'BEGIN { for (i = 0; i < 4000; i++)
@@ -132,8 +118,7 @@ for shell in sh bash; do
     assert_eq "$shell: a BOM and a CRLF do not hide the path" \
         "$SHARED" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
 
-    # A recorded cache that has gone read-only since the install (a share remounted
-    # read-only): warm, and useless to uv, which aborts on a cache it cannot write.
+    # A recorded cache gone read-only since the install: warm, and useless to uv, which aborts on it.
     RO="$CASE/read-only recorded/uv"
     warm "$RO"
     record "$HOME_DIR" "$RO\\n"
@@ -143,8 +128,7 @@ for shell in sh bash; do
         chmod 755 "$RO" 2>/dev/null || true
     fi
 
-    # A cache the user cleared, or one recorded by an install whose cache has since
-    # been deleted: content, not the record, has the last word on emptiness.
+    # A cache the user cleared: content, not the record, has the last word on emptiness.
     COLD="$CASE/emptied cache/uv"
     mkdir -p "$COLD"
     record "$HOME_DIR" "$COLD\\n"
@@ -170,9 +154,7 @@ for shell in sh bash; do
             "$BUCKET_CACHE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
     done
 
-    # ...and one that is warm by thousands of files rather than by one. Under the shell
-    # setup.sh really runs, the old `-print | head -n 1` scan answered "cold" for this and
-    # sent the update to an empty Studio cache to refetch every wheel it already had.
+    # ...and one warm by thousands of files: the old `-print | head -n 1` scan read it as cold.
     record "$HOME_DIR" "$BIG\\n"
     assert_eq "$shell: a cache too big for one pipe buffer is still warm" \
         "$BIG" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
@@ -181,11 +163,9 @@ for shell in sh bash; do
             "$BIG" "$(run_strict unset "" unset "" "$HOME_DIR")"
     fi
 
-    # ...and one with a leaf this user cannot read, walked before the hit. find exits
-    # nonzero once any part of the walk was unreadable, even after it printed the hit
-    # and quit, and `|| _uvw_hit=""` on that status threw the hit away. Denied leaves
-    # are created first (creation order in a small ext4 directory, name order on APFS)
-    # and added until `ls -f`, which lists in readdir order, shows one ahead of the hit.
+    # ...and one with a leaf this user cannot read, walked before the hit (find exits nonzero
+    # after it, even once the hit printed, and `|| _uvw_hit=""` threw the hit away). Denied
+    # leaves are created and named first, and added until `ls -f` shows one ahead of the hit.
     DENIED="$CASE/denied leaf/uv"
     mkdir -p "$DENIED/archive-v0/hidden 1"
     : > "$DENIED/archive-v0/hidden 1/other.whl"
@@ -212,8 +192,7 @@ for shell in sh bash; do
         chmod 755 "$_leaf" 2>/dev/null || true
     done
 
-    # A relative record names a different directory in each phase and there is nothing
-    # here to resolve it against, so it is declined rather than guessed at.
+    # A relative record names a different directory in each phase: declined, not guessed at.
     record "$HOME_DIR" "relative/cache\\n"
     assert_eq "$shell: a relative record is declined" \
         "$STUDIO_CACHE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
@@ -222,9 +201,8 @@ for shell in sh bash; do
     assert_eq "$shell: an empty record is declined" \
         "$STUDIO_CACHE" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
 
-    # A pathname that itself ends in a newline. The CLI writes it plus one delimiter and
-    # reads it back by removing exactly one; a reader that let command substitution strip
-    # every trailing newline checked a different directory and called the cache cold.
+    # A pathname ending in a newline: the CLI writes one delimiter and removes exactly one; a
+    # reader that let substitution strip every trailing newline checked another directory.
     NLCACHE="$CASE/trailing newline"
     NLCACHE="$NLCACHE$(printf '\nx')"
     NLCACHE=${NLCACHE%x}
@@ -243,8 +221,7 @@ for shell in sh bash; do
         assert_eq "$shell: UV_NO_CACHE=[$truthy] leaves the cache unset" \
             "<unset>" "$(run "$shell" unset "" value "$truthy" "$HOME_DIR")"
     done
-    # An exported EMPTY UV_CACHE_DIR is not a caller value, and uv parses it as an empty
-    # --cache-dir and fails; no-cache mode has to unset it rather than leave it.
+    # An exported EMPTY UV_CACHE_DIR is not a caller value; uv fails on it, so no-cache mode unsets it.
     assert_eq "$shell: an empty UV_CACHE_DIR under UV_NO_CACHE is unset, not kept" \
         "<unset>" "$(run "$shell" value "" value 1 "$HOME_DIR")"
     for falsy in 0 false "" maybe; do
@@ -252,8 +229,7 @@ for shell in sh bash; do
             "$SHARED" "$(run "$shell" unset "" value "$falsy" "$HOME_DIR")"
     done
 
-    # uv aborts on a cache it cannot create, so an unwritable Studio path has to unset
-    # rather than export: uv's own default still works.
+    # uv aborts on a cache it cannot create: an unwritable Studio path unsets rather than exports.
     BLOCKED="$CASE/blocked"
     : > "$BLOCKED"
     assert_eq "$shell: an uncreatable Studio cache is dropped, not exported" \
