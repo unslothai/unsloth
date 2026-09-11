@@ -851,7 +851,7 @@ def test_swap_into_place_survives_a_transient_lock(monkeypatch, tmp_path):
     assert (install_dir / "marker.txt").read_text(encoding = "utf-8") == "node"
 
 
-# ── the recorded runtime check: the 110 MB interpreter start it saves per run ──
+# The recorded runtime check: the 110 MB interpreter start it saves per run.
 def _real_node_tree(root: Path, host) -> None:
     """The two files existing_install_matches spawns, as real bytes on disk.
 
@@ -886,8 +886,7 @@ def test_a_verified_install_is_not_re_probed(tmp_path: Path, monkeypatch):
 
     spawns.clear()
     assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
-    # `node -v` is the one that is saved. npm is re-probed on purpose: the record covers
-    # npm-cli.js, not the module tree it loads.
+    # `node -v` is saved; npm is re-probed, since the record covers the launcher, not the tree.
     assert spawns == ["npm"], "the recorded verification was not believed"
 
 
@@ -952,9 +951,7 @@ def test_a_recorded_npm_below_the_floor_is_probed_again(tmp_path: Path, monkeypa
     assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is False
 
 
-# os.access(..., X_OK) answers from the POSIX mode bits, which root is exempt from and
-# Windows does not have, so the stripped execute bit can only be observed as an
-# unprivileged POSIX user.
+# os.access X_OK reads POSIX mode bits, which root ignores and Windows lacks.
 _EXECUTE_BIT_IS_ENFORCED = os.name != "nt" and getattr(os, "geteuid", lambda: 0)() != 0
 
 
@@ -1077,8 +1074,7 @@ def test_a_failed_marker_refresh_leaves_the_old_marker_intact(tmp_path: Path, mo
     M.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
     assert M.metadata_path(tmp_path).read_bytes() == before
     assert M.load_metadata(tmp_path) is not None
-    # A stranded sibling would sit in the install directory forever, and _swap_into_place
-    # would carry one written during an install into the live tree.
+    # A stranded sibling would sit there forever, and _swap_into_place would carry it live.
     assert list(tmp_path.glob(M.METADATA_FILENAME + ".tmp-*")) == []
 
 
@@ -1235,8 +1231,7 @@ def test_a_refreshed_marker_keeps_its_owner_and_group(tmp_path, monkeypatch):
     chowned = []
     monkeypatch.setattr(M.os, "chown", lambda path, uid, gid: chowned.append((uid, gid)))
     M._write_metadata_payload(install_dir, {"kind": "node"})
-    # The group only: a non-root member can hand the file to a group it belongs to,
-    # and asking for the original owner too would refuse the call before the group.
+    # The group only: asking for the owner too would refuse the call for a non-root member.
     assert chowned == [(-1, original.st_gid)]
     chowned.clear()
     # A marker written for the first time has no owner to preserve.

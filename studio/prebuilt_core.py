@@ -504,10 +504,8 @@ def write_live_marker(marker_path: Path, marker: dict[str, Any]) -> None:
             os.fsync(handle.fileno())
         if original is not None:
             os.chmod(tmp_path, stat.S_IMODE(original.st_mode))
-            # The group only (uid -1), as the Node marker writer does: a non-root member
-            # of a shared install may hand a file to a group it belongs to, while asking
-            # for the original owner as well refuses the whole call before the group
-            # is applied, and os.replace would then install the member's primary group.
+            # Group only (uid -1), as the Node writer does: asking for the owner too refuses the
+            # whole call for a non-root member, and os.replace would install their primary group.
             try:
                 os.chown(tmp_path, -1, original.st_gid)
             except (OSError, AttributeError):
@@ -2064,14 +2062,11 @@ class InstallSelection:
     linked_libraries: tuple[str, ...] | None = None
     runtime_wiring_version: int | None = None
     linked_runtime_directories: tuple[str, ...] | None = None
-    # The macOS release walk-back behind this choice (WalkBack), None when release_tag
-    # is the newest. Describes the choice, not the bundle, so never part of the
-    # fingerprint.
+    # The macOS release walk-back behind this choice (WalkBack), None when release_tag is the
+    # newest. Describes the choice, not the bundle: never in the fingerprint.
     walk_back: "WalkBack | None" = None
-    # The platform the artifact was selected for, from the manifest's os/arch fields.
-    # Recorded on the marker (os, arch) so a keep decision can check the platform
-    # without inferring it from the asset name, which a custom repository need not
-    # follow. Outside the fingerprint: the fields it hashes already name the asset.
+    # The manifest's os/arch, recorded on the marker so a keep decision need not infer the platform
+    # from an asset name a custom repository may spell freely. Outside the fingerprint.
     platform_os: str | None = None
     platform_arch: str | None = None
 
@@ -2223,10 +2218,8 @@ def write_prebuilt_metadata(ops: ModuleOps, install_dir: Path, selection: Instal
         "min_os": coverage.get("min_os"),
         "studio_protocol": selection.studio_protocol,
         "install_fingerprint": selection.fingerprint(),
-        # The fingerprint's one input the top-level fields above do not carry whole
-        # (they record its sm/gfx/min_os projections). With it, a later run can
-        # recompute the fingerprint from the marker alone and tell a marker written
-        # whole by this installer from one edited or truncated since.
+        # The one fingerprint input the top-level fields do not carry whole: with it a later run
+        # recomputes the fingerprint and tells a whole marker from an edited one.
         "fingerprint_coverage": coverage,
         "installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
@@ -2240,12 +2233,9 @@ def write_prebuilt_metadata(ops: ModuleOps, install_dir: Path, selection: Instal
         payload["install_kind"] = "slim"
         payload["paired_llama_tag"] = selection.paired_llama_tag
         payload["linked_from"] = selection.linked_from
-        # The ggml tree of the llama runtime these hardlinks point into. The tag alone
-        # cannot answer whether a later llama build still backs this bundle -- that is
-        # what llama_runtime_pairs exists for -- and a no-network re-check has no
-        # release to ask. Recorded from the live llama marker at install time, so the
-        # next run can compare it against the live one. Absent means "written before
-        # this key existed", which reads as "cannot say" and takes the full path.
+        # The ggml tree these hardlinks point into, from the live llama marker: the tag alone cannot
+        # say whether a later llama build still backs this bundle, and the no-network re-check has
+        # no release to ask. Absent reads as "cannot say": full path.
         paired_tree = getattr(ops, "installed_paired_runtime_tree", None)
         paired_tree = paired_tree() if callable(paired_tree) else None
         if isinstance(paired_tree, str) and paired_tree:
@@ -2347,9 +2337,8 @@ def _backfill_fingerprint_inputs(
             metadata.pop(key, None)
         else:
             metadata[key] = value
-    # Over a LIVE marker: temp-and-replace with its mode and owner kept, so a write
-    # that fails part-way leaves the valid marker it found and a group-shared
-    # install's marker stays readable to the other users.
+    # Over a LIVE marker: temp-and-replace, mode and owner kept, so a failed write leaves the valid
+    # marker and a group-shared marker stays readable.
     write_live_marker(ops.metadata_path(install_dir), metadata)
 
 
@@ -2627,9 +2616,8 @@ def install_selected_prebuilt(
     if not force and ops.existing_install_matches(install_dir, host, selection):
         if _settle_kept_install(ops, install_dir, host, selection, locked = False):
             return 0
-        # The install changed under the lock while the keep was being settled; the
-        # locked path below re-checks and installs rather than reporting the release
-        # this run just saw replaced.
+        # The install changed under the lock: the locked path re-checks and installs rather than
+        # reporting a release just replaced.
 
     with ops.install_lock(ops.install_lock_path(install_dir)):
         # Re-check under the lock: a concurrent run may have just finished.

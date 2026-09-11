@@ -1158,9 +1158,7 @@ def _backfill_slim_pairing_record(install_dir: Path) -> None:
     if not tree:
         return
     marker["paired_llama_ggml_tree"] = tree
-    # llama's writer, deliberately: same atomic temp-and-replace, same mode and owner
-    # preservation for a shared install, and the same refusal to ever raise. Reused for
-    # the same reason this module already reuses its download-host resolver.
+    # llama's writer: same atomic temp-and-replace, mode and owner kept, never raises.
     if llama._write_marker(metadata_path(install_dir), marker):
         log(f"existing {COMPONENT} install reused; recorded its paired ggml tree {tree}")
 
@@ -1257,11 +1255,9 @@ def fetch_release_for_install(
     except PrebuiltFallback:
         raise
     except (OSError, ValueError, RuntimeError) as exc:
-        # A refused connection, a timeout or an unparseable payload arrive here as
-        # URLError / OSError / ValueError, and fetch_json turns an HTTP 403/429 from
-        # api.github.com (a rate limit, a proxy) into RuntimeError; install_prebuilt's
-        # keep path only reads PrebuiltFallback. Without this wrap an offline update
-        # printed "unexpected error" and "prebuilt install failed" over an intact tree.
+        # URLError / OSError / ValueError, and fetch_json's RuntimeError for an HTTP 403/429:
+        # install_prebuilt's keep path reads only PrebuiltFallback, and without this wrap an offline
+        # update printed "prebuilt install failed" over an intact tree.
         raise PrebuiltFallback(
             f"could not fetch release {repo}@{published_release_tag or 'latest'}: {exc}"
         ) from exc
@@ -1274,9 +1270,7 @@ class WhisperReleasePlan:
     artifact: dict[str, Any]
     resolved_backend: str
     used_fallback: bool
-    # The macOS release walk-back behind bundle (core.WalkBack: the newest published
-    # release skipped for this host's OS floor and the host version that skipped it);
-    # None when bundle is the newest.
+    # The macOS release walk-back behind bundle (core.WalkBack); None when bundle is the newest.
     walk_back: core.WalkBack | None = None
 
 
@@ -1425,9 +1419,8 @@ def _release_plan_for_host(
         assert first_error is not None
         raise first_error
 
-    # A lookup like the release fetch above it: an API limit (RuntimeError) or a network
-    # failure (OSError) here is the same "could not answer" the keep-existing path in
-    # install_prebuilt handles, not a failed update over an intact install.
+    # An API limit (RuntimeError) or network failure (OSError) is the "could not answer" the
+    # keep-existing path handles, not a failed update.
     try:
         compatible_tags = _published_release_tags(published_repo)
     except (OSError, RuntimeError) as exc:
@@ -1466,9 +1459,8 @@ def _release_plan_for_host(
             else None
         )
         if walk_back is not None:
-            # A walk-back from the newest release: recorded so the marker-only check
-            # can hold the install current while that release is still the newest and
-            # this is still the macOS version that could not take it.
+            # Recorded so the marker-only check holds the install current while that release is
+            # still the newest on this macOS version.
             plan = replace(
                 plan,
                 walk_back = walk_back,
@@ -1547,13 +1539,10 @@ def _existing_install_is_intact(
         return None
     if marker.get("backend") != requested_backend:
         return None
-    # The platform the bundle was selected for has to be this host's: a bundle for
-    # another architecture (a home directory carried between machines, an emulated
-    # interpreter) is not intact here whatever the tree looks like. The marker records
-    # the manifest's os/arch (prebuilt_core.write_prebuilt_metadata); a marker written
-    # before it did is read from its asset name, which the fork spells
-    # whisper-<tag>-<os>-<arch>-<accel><ext> (asset_name_for). A custom repository's
-    # manifest may name its assets freely, so only the recorded platform answers there.
+    # A bundle for another architecture (a home directory carried between machines) is not intact
+    # here. The marker records the manifest's os/arch; one written before that is read from its
+    # asset name, whisper-<tag>-<os>-<arch>-<accel><ext> (asset_name_for), a convention a custom
+    # repository need not follow.
     os_token, arch_token = host_platform_tokens(host)
     recorded_os, recorded_arch = marker.get("os"), marker.get("arch")
     if isinstance(recorded_os, str) and isinstance(recorded_arch, str):
@@ -1566,10 +1555,8 @@ def _existing_install_is_intact(
             or f"-{os_token}-{arch_token}-" not in recorded_asset
         ):
             return None
-    # The bundle's macOS floor, which the selector applies (_macos_min_os_ok) and
-    # write_prebuilt_metadata records at the marker's top level as min_os: an install
-    # restored onto an older same-architecture Mac has the right tokens and the execute
-    # bit, and fails at load time. A floor nested under coverage is read the same way.
+    # The bundle's macOS floor (min_os, top level or under coverage): an install restored onto an
+    # older Mac has the right tokens and fails at load time.
     min_os = marker.get("min_os")
     coverage = marker.get("coverage")
     if min_os is None and isinstance(coverage, dict):
@@ -1580,24 +1567,17 @@ def _existing_install_is_intact(
     recorded_release = marker.get("release_tag")
     if not isinstance(recorded_release, str) or not recorded_release:
         return None
-    # The full path holds the marker to its recorded fingerprint; a marker without one
-    # is not a record of a finished install and takes the full path once instead.
+    # A marker without a fingerprint is not a record of a finished install.
     recorded_fingerprint = marker.get("install_fingerprint")
     if not isinstance(recorded_fingerprint, str) or not recorded_fingerprint:
         return None
-    # ...and the marker has to be self-consistent: the fingerprint recomputed from its
-    # own fields must be the one recorded with them. The full path compares the recorded
-    # fingerprint against the plan's; without a plan, this is what stands between a
-    # release_tag edited to the current one over an old binary and "current". A marker
-    # written before fingerprint_coverage existed recomputes to None and takes the full
-    # path once, which settles it (prebuilt_core._backfill_fingerprint_inputs).
+    # ...and self-consistent: without a plan to compare against, the recomputed fingerprint is what
+    # stands between a release_tag edited over an old binary and "current". A marker predating
+    # fingerprint_coverage recomputes to None: full path once, which settles it.
     if core.marker_install_fingerprint(marker) != recorded_fingerprint:
         return None
-    # A slim install is only as intact as the llama runtime it hardlinks: a llama update
-    # that moved ggml invalidates a whisper install whose own release did not, and
-    # selection_from_artifact is what would normally notice. Nothing pairs without the
-    # recorded tree, so a marker written before this key existed is not trusted here
-    # either -- it takes the full path once instead.
+    # A slim install is only as intact as the llama runtime it hardlinks: a llama update that moved
+    # ggml invalidates it. A marker predating the recorded tree takes the full path once.
     if marker.get("install_kind") == "slim":
         recorded_tree = marker.get("paired_llama_ggml_tree")
         if not isinstance(recorded_tree, str) or not recorded_tree:
@@ -1634,11 +1614,8 @@ def _api_newest_release_tag_for_upstream(
         tag = release.get("tag_name") if isinstance(release, dict) else None
         if not isinstance(tag, str):
             continue
-        # The packaged tag is the upstream tag plus the fork's packaging suffix
-        # (-unsloth.N). The upstream part can itself carry a hyphen (v1.9.2-rc1), so
-        # the tag is neither cut at its first hyphen (which read v1.9.2-rc1-unsloth.2 as
-        # a packaging of v1.9.2) nor matched on any hyphen (which read it as a packaging
-        # of v1.9.2 the other way round, and named an RC the manifest match would refuse).
+        # The upstream part can carry a hyphen (v1.9.2-rc1), so the tag is neither cut at its first
+        # hyphen nor matched on any: both read v1.9.2-rc1-unsloth.2 as a packaging of v1.9.2.
         packaged = _normalized_upstream_tag(tag)
         if (
             tag == recorded_release
@@ -1686,15 +1663,10 @@ def existing_install_current_without_plan(
     pinned = (published_release_tag or "").strip()
     requested = (whisper_tag or "latest").strip().lower()
     if requested not in ("", "latest"):
-        # An upstream version pin, checked whether or not the release is pinned too: the
-        # full path refuses a pinned release whose bundle targets another upstream
-        # version (_bundle_matches_whisper_tag), so a marker matching the release pin
-        # alone is not the install this run asked for. Unlike llama's fork, this one
-        # publishes several packaging revisions of one upstream tag (v1.9.2-unsloth.17,
-        # .18, ...) and _release_plan_for_host takes the newest that matches, so with no
-        # release pin the marker's upstream_tag rules out a wrong pin but cannot answer
-        # alone: the install is current only when it is also the release the HEAD below
-        # names.
+        # An upstream pin, checked even with a release pin: the full path refuses a pinned release
+        # targeting another upstream version (_bundle_matches_whisper_tag). This fork publishes
+        # several packagings of one upstream tag and takes the newest, so without a release pin the
+        # upstream_tag alone cannot answer.
         if _normalized_upstream_tag(
             str(marker.get("upstream_tag") or "")
         ) != _normalized_upstream_tag(whisper_tag):
@@ -1703,12 +1675,9 @@ def existing_install_current_without_plan(
         if pinned != recorded_release:
             return False
     elif requested not in ("", "latest"):
-        # An upstream pin selects the newest release packaging THAT version, which the
-        # repository-wide latest cannot name once a newer upstream is published: ask
-        # the release list for it instead, as llama's check does for its upstream pins.
-        # By tag name, which only the fork's convention (v1.9.2-unsloth.N) supports; a
-        # custom repository is matched by manifest in _release_plan_for_host, so the
-        # full path answers there.
+        # The newest packaging of THAT version, which /releases/latest cannot name once a newer
+        # upstream ships: ask the release list, by tag name, which only the fork's convention
+        # supports; a custom repository is matched by manifest on the full path.
         if published_repo != DEFAULT_PUBLISHED_REPO:
             return False
         newest = _api_newest_release_tag_for_upstream(published_repo, whisper_tag, recorded_release)
@@ -1725,10 +1694,8 @@ def existing_install_current_without_plan(
         if not latest:
             return False
         if latest != recorded_release and not core.walk_back_stands(marker, host, latest):
-            # A macOS walk-back: the planner skipped the newest release for this host's
-            # OS floor and recorded it with the host version; while the newest is still
-            # that one on that version, the walk-back stands. A newer release or an OS
-            # upgrade takes the full path, which re-decides it.
+            # A recorded macOS walk-back stands while the newest release is still the skipped one on
+            # the same OS version; a newer release or an OS upgrade re-decides it.
             return False
     # "already matches" is the substring setup.sh:3635 and setup.ps1:6109 grep for.
     log(
@@ -1777,32 +1744,17 @@ def install_prebuilt(
             requested_backend = requested_backend,
         )
     except ReleaseCompatibilityError:
-        # The lookup ANSWERED, and the answer is that no published bundle pairs with this
-        # host's llama.cpp runtime. Real, actionable release skew -- setup reads the exact
-        # pairing out of exit 2 and names both tags -- so it must never be papered over by
-        # keeping whatever is already on disk.
+        # The lookup ANSWERED: no published bundle pairs with this host's llama.cpp runtime. Real
+        # release skew (setup names both tags from exit 2), never papered over by keeping.
         raise
     except PrebuiltFallback as exc:
-        # llama.cpp's rule for the identical outcome ("prebuilt update unavailable;
-        # keeping the existing complete install"): a lookup that could not produce an
-        # installable plan says nothing about whether the tree on disk still works. Until
-        # this, a strict offline update -- UV_OFFLINE with a proxy refusing every
-        # connection -- printed "prebuilt install failed; curated whisper.cpp dictation is
-        # unavailable" over a healthy install it had not touched, while llama.cpp beside
-        # it kept its own and said so.
-        #
-        # Anything this RUN asked for that keeping the tree would silently ignore takes
-        # the failure instead. --has-rocm and --rocm-gfx are deliberately not in the list,
-        # for llama's reason: both entrypoints forward DETECTED hardware on every AMD
-        # host, so counting them would take this path away from all of them. A different
-        # --published-repo or --backend needs no clause either, because
-        # _existing_install_is_intact compares the marker's own recorded repo and backend
-        # against this run's -- and --cpu-fallback is a backend request too
-        # (resolve_backend makes it "cpu"), so a kept CPU tree honours it exactly as an
-        # explicit --backend cpu does, and an offline update with one is recoverable.
-        # UNSLOTH_WHISPER_FORCE_COMPILE counts as explicit too: setup.sh runs the source
-        # build only after this installer exits nonzero, so a lookup failure kept as
-        # success here would silently take that opt-in path away.
+        # llama.cpp's rule: a lookup that could not answer says nothing about the tree on disk. A
+        # strict offline update used to print "prebuilt install failed" over a healthy install.
+        # Anything this RUN asked for that keeping would ignore fails instead. Not --has-rocm or
+        # --rocm-gfx (both entrypoints forward DETECTED hardware on every AMD host); not
+        # --published-repo, --backend or --cpu-fallback (a backend request), which
+        # _existing_install_is_intact compares against the marker. UNSLOTH_WHISPER_FORCE_COMPILE
+        # counts: setup.sh runs the source build only after a nonzero exit.
         explicit_release_request = (
             force
             or bool((published_release_tag or "").strip())
@@ -1821,19 +1773,15 @@ def install_prebuilt(
         )
         if marker is None:
             raise
-        # One line, two readers. "update unavailable, existing prebuilt kept" is the
-        # wording setup.sh and setup.ps1 already print for llama.cpp's identical outcome,
-        # and "keeping the existing complete install" is the substring they grep to choose
-        # it, so a whisper branch mirroring setup.sh's llama one needs no new token. Not
-        # "already matches" and not "installed": both name a release this run never
-        # fetched, which is the claim that cannot be made here.
+        # "keeping the existing complete install" is the substring setup.sh and setup.ps1 grep for
+        # llama's identical outcome. Not "already matches" or "installed": both name a release this
+        # run never fetched.
         log(
             f"{COMPONENT} update unavailable, existing prebuilt kept; keeping the "
             f"existing complete install of {marker.get('release_tag')}"
         )
-        # llama.cpp's exact wording again, so update_flow's verdict matcher reads the two
-        # installers the same way. log_lines, not log: a multi-line reason is otherwise
-        # indistinguishable from unprefixed diagnostics for whoever reads this output back.
+        # llama.cpp's wording, so update_flow reads both installers alike. log_lines: a multi-line
+        # reason is otherwise indistinguishable from unprefixed diagnostics.
         log_lines(f"prebuilt update reason: {exc}".splitlines())
         return EXIT_SUCCESS
     if plan.selection is None:  # pragma: no cover - install plans always verify

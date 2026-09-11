@@ -6379,10 +6379,9 @@ if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
         if ($whisperOutput -match "already matches") {
             step "whisper.cpp" "prebuilt up to date"
         } elseif ($whisperOutput -match "keeping the existing complete install") {
-            # Exit 0 can also mean the installer kept the tree already on disk after a
-            # release lookup that could not answer. "prebuilt installed" would name a
-            # release nothing fetched. Same wording and same token as the llama arm
-            # above, so a strictly offline update reads the same for both components.
+            # Exit 0 can also mean a kept tree after a lookup that could not answer; "prebuilt
+            # installed" would name a release nothing fetched. Same wording and token as llama's
+            # arm.
             step "whisper.cpp" "update unavailable, existing prebuilt kept" "Yellow"
         } else {
             step "whisper.cpp" "prebuilt installed"
