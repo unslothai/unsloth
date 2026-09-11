@@ -259,6 +259,7 @@ def test_clean_text_keeps_text_in_any_script():
         "\U0001f3f4\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f",
         "\u06dd\u0661\u0662 \u0600\u0663",
         "\U00013000\U00013430\U00013001",
+        "f\u2061(x) = a\u2062b",
         # Garay (Unicode 16) is unassigned in older interpreters' databases and must survive anyway.
         "\U00010d50\U00010d51",
     ]:
@@ -717,6 +718,8 @@ def test_validate_dataset_reports_zero_min_length_when_nothing_has_content():
 
 if __name__ == "__main__":
     success = test_raw_text_loader()
+    test_clean_text_keeps_text_in_any_script()
+    test_clean_text_drops_invisible_characters()
     success = test_smart_chunk_text_single_chunk_no_eos_returns_plain_list() and success
     success = test_load_from_file_skips_non_object_json_lines() and success
     success = test_smart_chunk_text_empty_input_returns_no_chunks() and success
