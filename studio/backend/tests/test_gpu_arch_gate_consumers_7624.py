@@ -612,12 +612,17 @@ class TestArchRetryRestoresTheMemoryPolicy:
         # Snapshotted at the launch, not re-derived at the retry: re-probing
         # residency for the SURVIVORS would mark an APU survivor mlock-applicable
         # against a lock-free argv, turning every later duplicate load into a reload.
-        assert "_mem_policy_for_cmd = (" in text
-        _snap = [
-            _line.strip().rstrip(",")
-            for _line in text.split("_mem_policy_for_cmd = (")[1].split(")")[0].splitlines()
-            if _line.strip()
-        ]
+        # One helper, so every site that mutates `cmd` retakes the same shape.
+        assert "def _snapshot_policy_for_cmd():" in text
+        assert "_mem_policy_for_cmd = _snapshot_policy_for_cmd()" in text
+        _body = text.split("def _snapshot_policy_for_cmd():")[1].split("return (")[1]
+        _members = []
+        for _line in _body.splitlines():
+            if _line.strip() == ")":
+                break
+            if _line.strip():
+                _members.append(_line.strip().rstrip(","))
+        _snap = _members
         assert _snap == [
             "_mem_host_resident",
             "self._memory_state",
@@ -630,7 +635,7 @@ class TestArchRetryRestoresTheMemoryPolicy:
             "self._memory_dio_applicable",
             # Copied on the way in, so a later strip cannot reach back into the
             # snapshot the fallback respawns from.
-            "_mem_dio_flags_for_cmd",
+            "list(self._memory_dio_flags)",
             "self._memory_policy_active",
             "self._memory_mlock_applicable",
         ]

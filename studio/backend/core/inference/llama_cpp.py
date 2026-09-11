@@ -8687,6 +8687,34 @@ class LlamaCppBackend:
         return int(match.group(1)) if match else None
 
     @classmethod
+    def _effective_gpu_indices(cls, binary, env, gpu_indices, extra_args, dio_possible = True):
+        """The ordinals the child will really use.
+
+        A pass-through ``--device`` is appended last, so it beats the auto selection.
+        Resolved once and handed to every consumer, because the host-residency verdict
+        and the confirmation have to be about the SAME devices: computed apart, an
+        override onto a unified-memory APU was priced against the discrete card it
+        replaced and took DirectIO over weights that are really in host RAM.
+
+        Unchanged when there is no override, when it names no GPU, or when it names a
+        device the build never enumerated. The confirmation declines those on their own
+        terms, and answering them here would hide the reason behind an empty selection.
+        """
+        # Gated like the confirmation itself: where no DirectIO decision can follow,
+        # nothing here can change an outcome and the enumeration is not worth a
+        # subprocess. Off that path the selection stays exactly what it was.
+        if not dio_possible:
+            return gpu_indices
+        override = cls._effective_device_ids(extra_args, env)
+        if not override or any(d.lower() in _CPU_DEVICE_VALUES for d in override):
+            return gpu_indices
+        listed = {d.lower() for d in (cls._enumerated_gpu_devices(binary, env) or [])}
+        if not {d.lower() for d in override} <= listed:
+            return gpu_indices
+        ordinals = [cls._device_ordinal(d) for d in override]
+        return [o for o in ordinals if o is not None] or gpu_indices
+
+    @classmethod
     def _effective_device_ids(cls, extra_args, env) -> Optional[list[str]]:
         """The explicit ``--device`` selection, or None when there is none.
 
@@ -24238,12 +24266,20 @@ class LlamaCppBackend:
                 # partial count). Probing costs one subprocess, and only on Windows
                 # Vulkan builds that understand --load-mode.
                 _mem_probe_for_dio = _mem_dio_possible
+                # The ordinals the CHILD will use, resolved once and given to every
+                # consumer. A pass-through `--device` is appended last and wins, so the
+                # host-residency verdict has to be about the same devices the
+                # confirmation checks, or an override onto a unified-memory APU is
+                # priced against the discrete card it replaced.
+                _mem_effective_indices = self._effective_gpu_indices(
+                    binary, _mem_env, gpu_indices, _mem_extra_args, _mem_dio_possible
+                )
                 _mem_host_resident = self._weights_in_host_memory(
                     fully_gpu_offloaded = fully_gpu_offloaded,
                     gpu_memory_mode = gpu_memory_mode,
                     gpu_layers = gpu_layers,
                     extra_args = _mem_extra_args,
-                    gpu_indices = gpu_indices,
+                    gpu_indices = _mem_effective_indices,
                     is_vulkan_backend = is_vulkan_backend,
                     binary = binary,
                     env = _mem_env,
@@ -24283,7 +24319,7 @@ class LlamaCppBackend:
                 _mem_gpu_offload_confirmed = self._gpu_offload_confirmed(
                     binary,
                     _mem_env,
-                    gpu_indices,
+                    _mem_effective_indices,
                     _mem_host_resident,
                     _mem_dio_possible,
                     _mem_extra_args,
@@ -24413,6 +24449,9 @@ class LlamaCppBackend:
                     never gaining it, a redundant pair recorded as activity.
                     """
                     _rung_env = _mem_env_for(child_env)
+                    devices = self._effective_gpu_indices(
+                        binary, _rung_env, devices, _mem_extra_args, _mem_dio_possible
+                    )
                     host_resident = self._weights_in_host_memory(
                         fully_gpu_offloaded = fully_offloaded,
                         gpu_memory_mode = gpu_memory_mode,
@@ -24632,16 +24671,26 @@ class LlamaCppBackend:
                 # _spawn_and_wait's --fit retries append a page-lock to THEIR argv
                 # and write the policy back; the arch-crash retry (#7624) respawns
                 # `cmd`, which never carried that lock, so it restores these.
-                _mem_dio_flags_for_cmd = list(self._memory_dio_flags)
-                _mem_policy_for_cmd = (
-                    _mem_host_resident,
-                    self._memory_state,
-                    self._memory_direct_io,
-                    self._memory_dio_applicable,
-                    _mem_dio_flags_for_cmd,
-                    self._memory_policy_active,
-                    self._memory_mlock_applicable,
-                )
+                def _snapshot_policy_for_cmd():
+                    """What `cmd` means RIGHT NOW, for the arch-crash retry to restore.
+
+                    A function, not a one-off tuple: every site that mutates `cmd`'s
+                    managed pair has to retake it, and the proactive gate did not. The
+                    retry then restored a pre-gate snapshot over a post-gate command,
+                    appending a second pair after an addition, or believing an absent
+                    one was still there after a removal.
+                    """
+                    return (
+                        _mem_host_resident,
+                        self._memory_state,
+                        self._memory_direct_io,
+                        self._memory_dio_applicable,
+                        list(self._memory_dio_flags),
+                        self._memory_policy_active,
+                        self._memory_mlock_applicable,
+                    )
+
+                _mem_policy_for_cmd = _snapshot_policy_for_cmd()
                 # Omitting --threads relies on llama.cpp's physical-core default, so
                 # drop an inherited LLAMA_ARG_THREADS that would otherwise feed the
                 # arg handler and silently force hardware_concurrency(). #5692
@@ -25199,11 +25248,13 @@ class LlamaCppBackend:
                             )
                             self._memory_dio_applicable = _gate_applicable
                             self._record_memory_state(cmd, env)
+                            _mem_policy_for_cmd = _snapshot_policy_for_cmd()
                         elif _gate_dio and not self._memory_dio_flags:
                             cmd = [*cmd, *_gate_dio]
                             self._memory_dio_flags = list(_gate_dio)
                             self._memory_policy_active = _gate_active or self._memory_policy_active
                             self._record_memory_state(cmd, env)
+                            _mem_policy_for_cmd = _snapshot_policy_for_cmd()
                             logger.info(
                                 "Model Memory: applying %s; the arch gate pins this "
                                 "launch to discrete GPU(s) %s.",
@@ -25327,16 +25378,7 @@ class LlamaCppBackend:
                     # runs. The snapshot too: the arch-crash retry restores it over
                     # `cmd`, which now carries the override.
                     self._record_memory_state(cmd, env)
-                    _mem_dio_flags_for_cmd = list(self._memory_dio_flags)
-                    _mem_policy_for_cmd = (
-                        _mem_host_resident,
-                        self._memory_state,
-                        self._memory_direct_io,
-                        self._memory_dio_applicable,
-                        _mem_dio_flags_for_cmd,
-                        self._memory_policy_active,
-                        self._memory_mlock_applicable,
-                    )
+                    _mem_policy_for_cmd = _snapshot_policy_for_cmd()
                 self._record_load_warning(_offload_msg)
 
                 # Captured before any text-only fallback strips it from cmd.
@@ -26015,7 +26057,10 @@ class LlamaCppBackend:
                         # cannot put the stale pair back. The pageable override rewrites
                         # the same field, and so does the managed DirectIO withdrawal, so
                         # the record simply follows the argv that is about to spawn.
+                        # The snapshot with it: this replay REPLACED `cmd`, so one taken
+                        # for the old argv describes a command that no longer exists.
                         self._record_memory_state(cmd, env)
+                        _mem_policy_for_cmd = _snapshot_policy_for_cmd()
                         # The preflight above priced and, where needed, rewrote the argv
                         # this replay was built FROM; an override settled here is news it
                         # could not have carried. Appended to whatever notice is recorded,

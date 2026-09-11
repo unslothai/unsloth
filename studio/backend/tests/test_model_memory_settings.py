@@ -2578,7 +2578,9 @@ class TestTheDioPolicy:
 
         flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_mem_gpu_offload_confirmed=self._gpu_offload_confirmed(" in flat
-        assert "binary,_mem_env,gpu_indices,_mem_host_resident,_mem_dio_possible" in flat
+        assert "binary,_mem_env,_mem_effective_indices,_mem_host_resident," in flat
+        # and host residency was priced against those SAME ordinals
+        assert "gpu_indices=_mem_effective_indices," in flat
         # and the owner declines on host residency before probing anything
         owner = "".join(inspect.getsource(LlamaCppBackend._gpu_offload_confirmed).split())
         assert owner.index("ifnotdio_possibleorhost_resident:returnFalse") < owner.index(
@@ -2974,10 +2976,12 @@ class TestTheSnapshotCarriesTheDioTokens:
         import inspect
 
         src = inspect.getsource(LlamaCppBackend.load_model)
-        # Copied on the way in, so a later strip cannot reach back into the snapshot.
-        assert src.count("_mem_dio_flags_for_cmd = list(self._memory_dio_flags)") == 2
-        assert src.count("_mem_dio_flags_for_cmd,") == 2  # both snapshots
+        # One snapshot helper, which copies on the way in so a later strip cannot
+        # reach back into it.
+        assert "list(self._memory_dio_flags)," in src
         assert "self._memory_dio_flags,\n" in src  # the restore
+        # every site that takes the snapshot goes through the helper
+        assert src.count("_mem_policy_for_cmd = _snapshot_policy_for_cmd()") >= 4
 
 
 class TestASaveDuringPlacementIsAnswered:
@@ -4114,3 +4118,97 @@ class TestAPassThroughDeviceOverrideDecidesPlacement:
 
     def test_no_override_still_uses_the_auto_selection(self, monkeypatch):
         assert self._confirm(monkeypatch, ["CUDA0", "SYCL1"], [0]) is True
+
+
+class TestOneEffectiveDeviceSetFeedsEveryConsumer:
+    """The host-residency verdict and the confirmation have to be about the SAME
+    devices. Resolved apart, an override onto a unified-memory APU was priced against
+    the discrete card it replaced, and DirectIO went to weights in host RAM."""
+
+    def _resolve(self, monkeypatch, devices, gpu_indices, extra_args = None, env = None):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        monkeypatch.setattr(
+            LlamaCppBackend, "_enumerated_gpu_devices",
+            classmethod(lambda cls, binary = None, e = None: devices),
+        )
+        return LlamaCppBackend._effective_gpu_indices(
+            "llama-server", env or {}, gpu_indices, extra_args, True
+        )
+
+    def test_an_override_replaces_the_auto_selection(self, monkeypatch):
+        assert self._resolve(
+            monkeypatch, ["CUDA0", "ROCm1"], [0], ["--device", "ROCm1"]
+        ) == [1]
+
+    def test_the_env_twin_counts(self, monkeypatch):
+        assert self._resolve(
+            monkeypatch, ["CUDA0", "ROCm1"], [0], None, {"LLAMA_ARG_DEVICE": "ROCm1"}
+        ) == [1]
+
+    def test_no_override_leaves_the_auto_selection(self, monkeypatch):
+        assert self._resolve(monkeypatch, ["CUDA0", "ROCm1"], [0]) == [0]
+
+    def test_a_cpu_override_leaves_it_for_the_confirmation_to_decline(self, monkeypatch):
+        assert self._resolve(
+            monkeypatch, ["CUDA0"], [0], ["--device", "none"]
+        ) == [0]
+
+    def test_an_unlisted_override_leaves_it_for_the_confirmation_to_decline(self, monkeypatch):
+        assert self._resolve(
+            monkeypatch, ["CUDA0"], [0], ["--device", "CUDA7"]
+        ) == [0]
+
+    def test_both_consumers_get_the_resolved_set(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        # main path: resolved once, then used for residency AND confirmation
+        assert "_mem_effective_indices=self._effective_gpu_indices(" in flat
+        assert "gpu_indices=_mem_effective_indices," in flat
+        assert "binary,_mem_env,_mem_effective_indices,_mem_host_resident," in flat
+        # the rung resolves its own narrowed set the same way
+        assert "devices=self._effective_gpu_indices(binary,_rung_env,devices,_mem_extra_args,_mem_dio_possible)" in flat
+
+
+class TestTheSnapshotIsRetakenAfterEveryCmdMutation:
+    """The arch-crash retry restores `_mem_policy_for_cmd` over `cmd`. Any site that
+    adds or removes the managed pair on `cmd` has to retake it first, or the retry
+    appends a second pair after an addition, or believes an absent one is still there
+    after a removal."""
+
+    def _src(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        return inspect.getsource(LlamaCppBackend.load_model)
+
+    def test_the_snapshot_comes_from_one_helper(self):
+        src = self._src()
+        assert "def _snapshot_policy_for_cmd():" in src
+        assert "_mem_policy_for_cmd = (" not in src  # no inline copies left
+
+    def test_the_proactive_gate_retakes_it_on_both_arms(self):
+        src = self._src()
+        gate = src[src.index("the arch gate's surviving GPU(s) no longer confirm a") :]
+        gate = gate[: gate.index("_gated_carveout_need")]
+        # once for the removal arm, once for the addition arm
+        assert gate.count("_mem_policy_for_cmd = _snapshot_policy_for_cmd()") == 2
+
+    def test_every_mutation_before_the_restore_retakes_it(self):
+        """A `_record_memory_state(cmd, ...)` means `cmd` changed meaning. Only the
+        mutations BEFORE the arch-crash restore matter; the ones inside the retry run
+        after the snapshot has been consumed and have nothing left to feed."""
+        src = self._src()
+        lines = [ln.strip() for ln in src.splitlines()]
+        restore = next(i for i, ln in enumerate(lines) if ln.endswith("= _mem_policy_for_cmd"))
+        checked = 0
+        for i, line in enumerate(lines[:restore]):
+            if line == "self._record_memory_state(cmd, env)":
+                checked += 1
+                window = lines[i + 1 : i + 4]
+                assert any(
+                    "_mem_policy_for_cmd = _snapshot_policy_for_cmd()" in w for w in window
+                ), f"no retake after the cmd mutation at offset {i}"
+        assert checked >= 4, "expected several pre-restore cmd mutations to guard"
