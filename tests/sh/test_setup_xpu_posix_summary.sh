@@ -126,9 +126,10 @@ check "probe was extracted" "$([ -n "$_probe" ] && echo yes || echo no)" "yes"
 check "probe carries its own deadline" \
     "$(printf '%s' "$_probe" | grep -q 'signal.alarm(' && echo yes || echo no)" "yes"
 # Both arms must run the SAME string, or only one is bounded. Comment lines are excluded: the
-# summary arm below names the same call.
+# summary arm below names the same call. So does the #8473 probe, which asks it inside its OWN
+# bounded probe -- excluded by name, not by raising the count, so a copy-paste still fails here.
 check "no second probe literal" \
-    "$(grep -v '^ *#' "$SETUP_SH" | grep -c "torch.xpu.is_available()")" "1"
+    "$(grep -v '^ *#' "$SETUP_SH" | grep -v "^ *_setup_torch_probe='" | grep -c "torch.xpu.is_available()")" "1"
 check "fallback arm reuses the probe" \
     "$(grep -q 'elif "\$VENV_DIR/bin/python" -c "\$_setup_xpu_probe"' "$SETUP_SH" && echo yes || echo no)" "yes"
 # Execute it against a torch that never returns, alarm shortened: python installs no SIGALRM
