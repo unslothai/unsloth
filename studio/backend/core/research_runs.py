@@ -44,8 +44,6 @@ from core.research.citations import (
     _citation_title,
     _document_source_citation,
     _validate_report,
-    _validate_report_document_sources,
-    _validate_report_sources,
 )
 from core.research.redaction import _sanitize_public_query, _shield_untrusted
 from core.research.prompts import (
