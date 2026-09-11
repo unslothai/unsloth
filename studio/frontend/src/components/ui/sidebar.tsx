@@ -412,6 +412,11 @@ function Sidebar({
         // crosses between them, and only leaving both retracts it.
         onPointerEnter={holdsOut ? () => setPeeking(true) : undefined}
         onPointerLeave={holdsOut ? () => setPeeking(false) : undefined}
+        // The same for focus, which arrives by Shift+Tab off the edge strip.
+        // Without it the strip's own blur retracts the panel around the focus
+        // that just landed in it, and going inert drops that focus entirely.
+        onFocus={holdsOut ? () => setPeeking(true) : undefined}
+        onBlur={holdsOut ? () => setPeeking(false) : undefined}
         className={cn(
           hasPinMode
             ? cn(

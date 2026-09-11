@@ -17,7 +17,12 @@ import { type ReactElement, useRef, useState } from "react";
  * Draggable window edge for the desktop sidebar, which collapses to zero width
  * and so has no edge of its own to grab. The same handle the pinned sidebar
  * uses, anchored to the window instead of to an off-screen panel: hover holds
- * the sidebar out, click pins it, drag resizes it.
+ * the sidebar out, click or Enter pins it, drag resizes it.
+ *
+ * Hover and the keyboard are what land on macOS. A decorated window keeps its
+ * resize border over the first few CSS pixels of the content and takes the
+ * press there, so at 2px the click and the drag go to the window instead. Both
+ * reach the 12px strip on Windows and Linux.
  *
  * Desktop only. On the web a collapsed sidebar keeps its icon rail, and that
  * rail already carries the handle.
