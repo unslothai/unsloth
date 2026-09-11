@@ -3470,7 +3470,8 @@ class DiffusionBackend:
                     else normalize_transformer_quant(transformer_quant_requested)
                 )
 
-                pipe = None
+                pipe = transformer = None
+                pipe_kwargs: dict[str, Any] = {}
                 transformer_quant_engaged = None
                 quant_plan = None
                 # Why the dense quant did not engage, in the caller's terms. Threaded into `resolved` so a fallback is
@@ -4096,7 +4097,7 @@ class DiffusionBackend:
                             # from the mirror for the same reason.
                             pipe = load_ideogram4_pipeline(fetch_base, dtype, hf_token = hf_token)
                         else:
-                            pipe_kwargs: dict[str, Any] = {
+                            pipe_kwargs = {
                                 "local_files_only": local_files_only,
                                 "torch_dtype": dtype,
                                 "cache_dir": hub_cache_dir(),
@@ -4174,7 +4175,10 @@ class DiffusionBackend:
                         transformer = transformer_cls.from_single_file(
                             single_file_path, **sf_kwargs
                         )
-                        self._raise_if_load_cancelled(_load_token)
+                        if _load_token != self._load_token:
+                            transformer = None
+                            clear_gpu_cache()
+                            self._raise_if_load_cancelled(_load_token)
 
                         if fam.name == KREA2_FAMILY_NAME:
                             pipe = load_krea2_pipeline(
@@ -4235,8 +4239,12 @@ class DiffusionBackend:
                                 _base_local_dir or fetch_base, **pipe_kwargs
                             )
 
-                # Stop after construction, before optimization and placement.
-                self._raise_if_load_cancelled(_load_token)
+                # Drop construction references before reclaiming a cancelled load.
+                if _load_token != self._load_token:
+                    pipe = transformer = None
+                    pipe_kwargs.clear()
+                    clear_gpu_cache()
+                    self._raise_if_load_cancelled(_load_token)
 
                 # Effective speed: GGUF defaults to `default` (~2.2x, below the quant noise floor); dense stays
                 # bit-identical `off`.
@@ -4314,6 +4322,7 @@ class DiffusionBackend:
                 eager_patched = False
                 compile_ctx = None
                 state_committed = False
+                state = None
                 # Lazy import (these modules import torch) keeps diffusion.py torch-free to import.
                 from .diffusion_eager_patches import (
                     install_compile_safe_patches,
@@ -4603,6 +4612,8 @@ class DiffusionBackend:
                         if eager_patched:
                             uninstall_patches()
                             uninstall_arch_patches()
+                        state = pipe = transformer = None
+                        pipe_kwargs.clear()
                         clear_gpu_cache()
 
         logger.info(

@@ -2502,8 +2502,12 @@ def test_unload_sets_cancel_event(fake_runtime):
     assert backend._cancel_event.is_set()
 
 
-@pytest.mark.parametrize("phase", ["transformer", "pipeline", "placement"])
+@pytest.mark.parametrize(
+    "phase", ["transformer", "pipeline", "dense", "quantize", "placement", "publication"]
+)
 def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatch, phase):
+    import gc
+    import weakref
     from core.inference import diffusion as diff_mod
     from core.inference import diffusion_eager_patches as ep
 
@@ -2511,37 +2515,75 @@ def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatc
     backend = DiffusionBackend()
     entered, release = threading.Event(), threading.Event()
     outcome = {}
+    live = weakref.WeakSet()
+    reclaimed = []
+    pipelines = []
+
+    def tracked():
+        value = _FakePipe()
+        value.cycle = value
+        live.add(value)
+        return value
+
+    def reclaim():
+        gc.collect()
+        reclaimed.append((len(live), backend._transition_owns_slot, backend._lock.locked()))
+
+    def park(value):
+        entered.set()
+        assert release.wait(5)
+        return value
+
+    def transformer(cls, *args, **kwargs):
+        value = tracked()
+        return park(value) if phase == "transformer" else value
+
+    def pipeline(cls, *args, **kwargs):
+        value = tracked()
+        value.transformer = kwargs["transformer"]
+        value.text_encoder = kwargs["text_encoder"]
+        pipelines.append(weakref.ref(value))
+        return park(value) if phase == "pipeline" else value
+
+    def dense(*args, **kwargs):
+        value = tracked()
+        value.transformer = tracked()
+        pipelines.append(weakref.ref(value))
+        return park(value), "int8"
 
     def load():
         try:
-            outcome["loaded"] = _load_into(backend, tmp_path, speed_mode = "eager")
+            outcome["loaded"] = _load_into(
+                backend,
+                tmp_path,
+                speed_mode = "eager",
+                transformer_quant = "int8" if phase == "dense" else "off",
+            )
         except Exception as exc:
             outcome["error"] = str(exc)
 
     with monkeypatch.context() as mp:
-        if phase == "placement":
-            original = diff_mod.apply_memory_plan
+        mp.setattr(diff_mod, "clear_gpu_cache", reclaim)
+        mp.setattr(_FakeTransformer, "from_single_file", classmethod(transformer))
+        mp.setattr(_FakePipeline, "from_pretrained", classmethod(pipeline))
+        mp.setattr(diff_mod, "te_prequant_pipe_kwargs", lambda *a, **k: {"text_encoder": tracked()})
+        if phase == "dense":
+            mp.setattr(diff_mod, "dense_transformer_supported", lambda target: True)
+            mp.setattr(diff_mod, "select_transformer_quant_scheme", lambda *a, **k: "int8")
+            mp.setattr(backend, "_dense_transformer_resident_bytes", lambda *a, **k: 0)
+            mp.setattr(backend, "_load_dense_quant_pipeline", dense)
+        elif phase in ("quantize", "placement", "publication"):
+            name = {
+                "quantize": "quantize_text_encoders",
+                "placement": "apply_memory_plan",
+                "publication": "_LoadState",
+            }[phase]
+            original = getattr(diff_mod, name)
 
             def parked(*args, **kwargs):
-                entered.set()
-                assert release.wait(5)
-                return original(*args, **kwargs)
+                return park(original(*args, **kwargs))
 
-            mp.setattr(diff_mod, "apply_memory_plan", parked)
-        else:
-            cls, method = (
-                (_FakeTransformer, "from_single_file")
-                if phase == "transformer"
-                else (_FakePipeline, "from_pretrained")
-            )
-            original = getattr(cls, method).__func__
-
-            def parked(cls, *args, **kwargs):
-                entered.set()
-                assert release.wait(5)
-                return original(cls, *args, **kwargs)
-
-            mp.setattr(cls, method, classmethod(parked))
+            mp.setattr(diff_mod, name, parked)
 
         loader = threading.Thread(target = load, daemon = True)
         ejector = threading.Thread(target = backend.unload, daemon = True)
@@ -2563,8 +2605,9 @@ def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatc
     assert not backend.is_loaded
     assert not ep.is_installed()
     assert backend._teardown_waiters == 0
+    assert reclaimed and all(item == (0, True, True) for item in reclaimed), reclaimed
     if phase == "transformer":
-        assert not _FakePipeline.last, "cancelled load still constructed its companions"
+        assert not pipelines, "cancelled load still constructed its companions"
 
     # A fresh load still serves consecutive generations.
     _load_into(backend, tmp_path)
