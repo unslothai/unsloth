@@ -24496,7 +24496,11 @@ class LlamaCppBackend:
                 # llama.cpp reads LLAMA_ARG_MLOCK / _MMAP / _LOAD_MODE before argv,
                 # so stripping the tokens alone would leave an inherited value in
                 # force. Only when a toggle is on, so existing setups are untouched.
-                _mem_scrubbed = scrub_memory_env(env)
+                # _mem_settings, not the live toggles: a save landing between the
+                # snapshot and here would scrub the child's environment under the new
+                # pair while its argv was already chosen from the old one, so the
+                # process would run a mix of the two. One launch, one snapshot.
+                _mem_scrubbed = scrub_memory_env(env, _mem_settings)
                 if _mem_scrubbed:
                     logger.info(
                         "Model Memory owns placement; dropped inherited %s",

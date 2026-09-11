@@ -3699,3 +3699,72 @@ class TestThePendingWindowHasNoGaps:
         assert "self._memory_launch_pending = False" in inspect.getsource(
             LlamaCppBackend._serial_load_scope
         )
+
+
+class TestOneLaunchReadsOneSettingsSnapshot:
+    """`load_model` captures `(keep_resident, no_ram_reserve)` once and decides the
+    argv from it. Every consumer inside the launch has to read that snapshot: a save
+    landing mid-launch would otherwise scrub the child's environment under the new
+    pair while the flags came from the old one, and the process would run a mix of
+    the two. The child-environment scrub read the live settings instead, which is the
+    one place this could happen."""
+
+    def test_no_scrub_in_load_model_reads_the_live_settings(self):
+        import ast
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        tree = ast.parse(inspect.cleandoc("\n".join(src.splitlines()[1:])))
+
+        bare = [
+            node.lineno
+            for node in ast.walk(tree.body[0])
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "scrub_memory_env"
+            and len(node.args) < 2
+            and not any(kw.arg == "settings" for kw in node.keywords)
+        ]
+        assert not bare, (
+            "scrub_memory_env called without the launch's settings snapshot at "
+            f"line(s) {bare}; it would re-read the live toggles mid-launch"
+        )
+
+    def test_the_child_environment_scrub_uses_the_snapshot(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "_mem_scrubbed=scrub_memory_env(env,_mem_settings)" in src
+
+    def test_an_explicit_snapshot_overrides_the_live_settings(self, monkeypatch):
+        from core.inference.llama_server_args import scrub_memory_env
+        from utils import model_memory_settings
+
+        def _live(keep_resident, no_ram_reserve):
+            monkeypatch.setattr(
+                model_memory_settings, "get_keep_resident", lambda: keep_resident
+            )
+            monkeypatch.setattr(
+                model_memory_settings, "get_no_ram_reserve", lambda: no_ram_reserve
+            )
+
+        # Live settings own placement; the snapshot says neither toggle was on, so
+        # the launch that snapshotted must leave the inherited value alone.
+        _live(True, False)
+        env = {"LLAMA_ARG_MLOCK": "1"}
+        assert scrub_memory_env(env, (False, False)) == []
+        assert env == {"LLAMA_ARG_MLOCK": "1"}
+
+        # and the converse: the snapshot owns placement even though the live pair does not
+        _live(False, False)
+        env = {"LLAMA_ARG_MLOCK": "1"}
+        assert scrub_memory_env(env, (True, False)) == ["LLAMA_ARG_MLOCK"]
+        assert env == {}
+
+        # with no snapshot it falls back to the live pair, which is what the other
+        # scrub sites (outside a launch) rely on
+        _live(True, False)
+        env = {"LLAMA_ARG_MLOCK": "1"}
+        assert scrub_memory_env(env) == ["LLAMA_ARG_MLOCK"]
