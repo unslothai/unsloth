@@ -94,6 +94,59 @@ def test_start_gives_the_model_preflight_only_the_callers_token(
     assert backend.kwargs["allow_ambient"] is allow_ambient
 
 
+@pytest.mark.parametrize("offline", [False, True])
+@pytest.mark.parametrize(
+    "via_api_key,request_token,authorized,refused",
+    [
+        (True, None, False, True),
+        (True, "hf_no_access", False, True),
+        (True, "hf_caller", True, False),
+        (False, None, False, False),
+    ],
+)
+def test_private_cached_dataset_requires_caller_authorization(
+    monkeypatch, tmp_path, offline, via_api_key, request_token, authorized, refused
+):
+    from fastapi import HTTPException
+    from hub.utils import dataset_cache, hf_tokens
+
+    backend = _Backend()
+    monkeypatch.setattr(tr, "get_training_backend", lambda: backend)
+    monkeypatch.setattr(tr, "_diffusion_training_active", lambda: False)
+    monkeypatch.setattr(tr, "_diffusion_gpu_admission", contextlib.nullcontext)
+    monkeypatch.setattr(tr, "hf_env_offline", lambda: offline)
+    monkeypatch.setattr(tr, "_hub_unreachable", lambda: False)
+    monkeypatch.setattr(
+        tr,
+        "_reject_untrainable_model_request",
+        lambda request, *a: tr._ModelPreflightResult(request.model_name, None, None),
+    )
+    monkeypatch.setattr("utils.hardware.ensure_hardware_detected", lambda: None)
+    monkeypatch.setattr(dataset_cache, "dataset_cache_can_answer", lambda repo_id: True)
+    monkeypatch.setattr(
+        dataset_cache, "training_dataset_cache_pin", lambda *a, **k: (str(tmp_path), "rev")
+    )
+    monkeypatch.setattr(hf_tokens, "_explicit_token_reaches_repo", lambda *a, **k: authorized)
+
+    request = TrainingStartRequest(
+        model_name = "unsloth/tiny-model",
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+        hf_token = request_token,
+        hf_dataset = "org/private-dataset",
+        dataset_known_cached = True,
+        load_in_4bit = False,
+    )
+    start = tr.start_training(request = request, current_subject = "alice", via_api_key = via_api_key)
+    if refused:
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(start)
+        assert error.value.detail["code"] == "hf_dataset_access_denied"
+        assert backend.kwargs is None
+    else:
+        assert asyncio.run(start).status == "queued"
+
+
 def test_worker_config_carries_the_ambient_policy():
     from core.training.training import _build_training_worker_config
 

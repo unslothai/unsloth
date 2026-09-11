@@ -538,6 +538,35 @@ def _remote_untrainable_model_format(model_name: str, hf_token: HfTokenArg) -> O
     return None
 
 
+def _refuse_unauthorized_cached_dataset(request: TrainingStartRequest, hf_token: HfTokenArg) -> None:
+    from hub.utils.dataset_cache import dataset_cache_can_answer, training_dataset_cache_pin
+
+    dataset_id = request.hf_dataset
+
+    def has_cached_dataset():
+        if dataset_cache_can_answer(dataset_id):
+            return True
+        pin, _ = training_dataset_cache_pin(
+            dataset_id,
+            request.dataset_snapshot_path or request.dataset_local_path,
+        )
+        return pin is not None
+
+    # Cached and offline starts skip the Hub check below, and the worker then loads the cache.
+    if cached_read_refused(
+        hf_token,
+        repo_id = dataset_id,
+        repo_type = "dataset",
+        is_cached = has_cached_dataset,
+        offline = hf_env_offline(),
+    ):
+        raise _hf_preflight_error(
+            422,
+            "hf_dataset_access_denied",
+            "Hugging Face denied access to this cached dataset. Add a token with repository access.",
+        )
+
+
 def _preflight_hf_dataset_request(request: TrainingStartRequest) -> None:
     dataset_id = request.hf_dataset
     if not dataset_id:
@@ -1417,7 +1446,7 @@ async def start_training(
                         "dataset cache; disable streaming to train from the cached copy."
                     ),
                 )
-        allow_ambient = not via_api_key
+        allow_ambient = via_api_key is not True
         hf_token = hf_token_arg(request.hf_token, allow_ambient_token = allow_ambient)
         model_preflight = await asyncio.to_thread(
             _reject_untrainable_model_request,
@@ -1432,6 +1461,7 @@ async def start_training(
             training_actual_model_repo_id, training_model_snapshot_path = cached_model_pin
 
         if request.hf_dataset:
+            await asyncio.to_thread(_refuse_unauthorized_cached_dataset, request, hf_token)
             await asyncio.to_thread(_preflight_hf_dataset_request, request)
 
         training_kwargs = {
