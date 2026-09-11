@@ -147,6 +147,79 @@ def test_private_cached_dataset_requires_caller_authorization(
         assert asyncio.run(start).status == "queued"
 
 
+@pytest.mark.parametrize("token,refused", [(False, True), ("hf_no_access", True), (None, False)])
+def test_snapshot_cached_during_the_metadata_probe_is_authorized(
+    monkeypatch, tmp_path, token, refused
+):
+    from fastapi import HTTPException
+    from core.training import training as training_module
+    from hub.utils import hf_tokens
+
+    (tmp_path / "config.json").write_text('{"model_type":"llama"}')
+    (tmp_path / "model.safetensors").write_bytes(b"cached weights")
+    monkeypatch.setattr("hub.utils.hf_cache_state.iter_repo_cache_dirs", lambda *a, **k: iter(()))
+    monkeypatch.setattr(training_module, "_resolve_model_snapshot", lambda *a, **k: str(tmp_path))
+    monkeypatch.setattr(tr, "hf_env_offline", lambda: False)
+    monkeypatch.setattr(tr, "_hub_unreachable", lambda: False)
+    monkeypatch.setattr(hf_tokens, "_explicit_token_reaches_repo", lambda *a, **k: False)
+
+    def denied(*args):
+        raise tr._hf_preflight_error(422, "hf_model_access_denied", "Denied")
+
+    monkeypatch.setattr(tr, "_remote_untrainable_model_format", denied)
+    request = TrainingStartRequest(
+        model_name = "org/private-model",
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+    )
+    if refused:
+        with pytest.raises(HTTPException) as error:
+            tr._reject_untrainable_model_request(request, hf_token = token)
+        assert error.value.detail["code"] == "hf_model_access_denied"
+    else:
+        result = tr._reject_untrainable_model_request(request, hf_token = token)
+        assert result.cached_model_pin == ("org/private-model", str(tmp_path))
+
+
+def test_dataset_cached_after_the_first_scan_is_not_pinned(monkeypatch, tmp_path):
+    from fastapi import HTTPException
+    from hub.utils import dataset_cache, hf_tokens
+
+    backend = _Backend()
+    scans = []
+
+    def appears_after_first_scan(*args, **kwargs):
+        scans.append(args)
+        return (str(tmp_path), "rev") if len(scans) > 1 else (None, None)
+
+    monkeypatch.setattr(tr, "get_training_backend", lambda: backend)
+    monkeypatch.setattr(tr, "_diffusion_training_active", lambda: False)
+    monkeypatch.setattr(tr, "_diffusion_gpu_admission", contextlib.nullcontext)
+    monkeypatch.setattr(tr, "hf_env_offline", lambda: False)
+    monkeypatch.setattr(tr, "_hub_unreachable", lambda: True)
+    monkeypatch.setattr(
+        tr,
+        "_reject_untrainable_model_request",
+        lambda request, *a: tr._ModelPreflightResult(request.model_name, None, None),
+    )
+    monkeypatch.setattr("utils.hardware.ensure_hardware_detected", lambda: None)
+    monkeypatch.setattr(dataset_cache, "dataset_cache_can_answer", lambda repo_id: bool(scans))
+    monkeypatch.setattr(dataset_cache, "training_dataset_cache_pin", appears_after_first_scan)
+    monkeypatch.setattr(hf_tokens, "_explicit_token_reaches_repo", lambda *a, **k: False)
+
+    request = TrainingStartRequest(
+        model_name = "unsloth/tiny-model",
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+        hf_dataset = "org/private-dataset",
+        dataset_known_cached = True,
+        load_in_4bit = False,
+    )
+    with pytest.raises(HTTPException):
+        asyncio.run(tr.start_training(request = request, current_subject = "alice", via_api_key = True))
+    assert backend.kwargs is None
+
+
 def test_worker_config_carries_the_ambient_policy():
     from core.training.training import _build_training_worker_config
 

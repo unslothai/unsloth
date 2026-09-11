@@ -809,18 +809,21 @@ def _reject_untrainable_model_request(
             )
             return cached is not None or bool(scan_errors)
 
-        # HF can reuse cached weights even when remote metadata/HEAD denies access.
-        if cached_read_refused(
-            hf_token,
-            repo_id = authorization_repo,
-            is_cached = has_cached_model,
-            offline = offline_mode,
-        ):
-            raise _hf_preflight_error(
-                422,
-                "hf_model_access_denied",
-                "Hugging Face denied access to this cached model. Add a token with repository access.",
-            )
+        def refuse_unauthorized_cache(is_cached):
+            # HF can reuse cached weights even when remote metadata/HEAD denies access.
+            if cached_read_refused(
+                hf_token,
+                repo_id = authorization_repo,
+                is_cached = is_cached,
+                offline = offline_mode,
+            ):
+                raise _hf_preflight_error(
+                    422,
+                    "hf_model_access_denied",
+                    "Hugging Face denied access to this cached model. Add a token with repository access.",
+                )
+
+        refuse_unauthorized_cache(has_cached_model)
     if path is None and offline_mode:
         raise _hf_preflight_error(
             409,
@@ -856,6 +859,8 @@ def _reject_untrainable_model_request(
             )
             if snapshot is None:
                 raise
+            # The snapshot can land while the metadata probe is in flight.
+            refuse_unauthorized_cache(lambda: True)
             path = Path(snapshot)
             cached_model_pin = (
                 canonical_model_repo_id(request.model_name),
@@ -1463,8 +1468,9 @@ async def start_training(
             training_actual_model_repo_id, training_model_snapshot_path = cached_model_pin
 
         if request.hf_dataset:
-            await asyncio.to_thread(_refuse_unauthorized_cached_dataset, request, hf_token)
             await asyncio.to_thread(_preflight_hf_dataset_request, request)
+            # After the preflight: a cache it pinned is still on disk for this scan to refuse.
+            await asyncio.to_thread(_refuse_unauthorized_cached_dataset, request, hf_token)
 
         training_kwargs = {
             "model_name": model_preflight.model_name,
