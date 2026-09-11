@@ -790,7 +790,7 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
               ) : (
                 <SearchImagesEnabledContext.Provider value={false}>
                   <MarkdownTextSource
-                    key={page.documentIndex}
+                    key={`${page.documentIndex}:${page.start}`}
                     messageHasRenderableRenderHtmlTool={
                       messageHasRenderableRenderHtmlTool
                     }
