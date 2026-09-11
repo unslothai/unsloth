@@ -194,6 +194,17 @@ class TestMmprojNeedsBiggerUbatch:
         path = self._projector(monkeypatch, tmp_path, "ultravox")
         assert _mmproj_needs_bigger_ubatch(path, 4096) is False
 
+    def test_mmproj_auto_with_nothing_resolved_keeps_the_raise(self):
+        # --mmproj-auto leaves llama-server discovering an adjacent projector that
+        # never reached the command line, so nothing here can open it and classify it.
+        assert _mmproj_needs_bigger_ubatch(None, 3840, ["--mmproj-auto"]) is True
+        # Last-wins, exactly as llama-server parses the trio.
+        assert _mmproj_needs_bigger_ubatch(None, 3840, ["--mmproj-auto", "--no-mmproj"]) is False
+        assert _mmproj_needs_bigger_ubatch(None, 3840, ["--no-mmproj", "--mmproj-auto"]) is True
+
+    def test_mmproj_auto_on_a_text_only_model_pays_nothing(self):
+        assert _mmproj_needs_bigger_ubatch(None, 3840, ["--mmproj-auto"], is_vision = False) is False
+
 
 class TestRemoteOpensVisionMmproj:
     """Nothing is downloaded yet, so charge a vision repo as image-capable."""

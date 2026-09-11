@@ -88,6 +88,7 @@ from core.inference.llama_server_args import (
     apply_model_memory_policy,
     resolve_ctx_checkpoints,
     extra_args_disable_mmproj,
+    extra_args_mmproj_auto,
     extra_args_select_load_mode,
     fit_is_enabled_in,
     force_pageable_load,
@@ -5870,18 +5871,25 @@ def _mmproj_opens_images(mmproj_path: Optional[str]) -> bool:
 
 
 def _mmproj_needs_bigger_ubatch(
-    mmproj_path: Optional[str], n_embd_text: Optional[int] = None
+    mmproj_path: Optional[str],
+    n_embd_text: Optional[int] = None,
+    extra_args: Optional[Iterable[str]] = None,
+    is_vision: bool = True,
 ) -> bool:
-    """Whether this projector can hand llama.cpp an image chunk the 512 default aborts on.
+    """Whether this launch can hand llama.cpp an image chunk the 512 default aborts on.
 
     Read off ``clip.vision.projector_type`` rather than assumed, so the raise reaches
     the two Gemma 4 towers that assert and nothing else; see
     ``_MMPROJ_NON_CAUSAL_OVER_UBATCH`` for why a blanket raise is the expensive answer.
     A projector nothing can read -- a URL, or a header without the key -- keeps the
     raise, since being wrong there is a crashed server rather than a smaller offload.
+
+    With no projector at all, a winning ``--mmproj-auto`` in the extras still leaves
+    llama-server discovering an adjacent one on its own, and nothing here can open a
+    file it was never told about; that lands in the same unreadable case.
     """
     if not mmproj_path:
-        return False
+        return bool(is_vision) and extra_args_mmproj_auto(extra_args)
     try:
         from utils.models.gguf_metadata import read_mmproj_vision_projector_type
         projector = read_mmproj_vision_projector_type(mmproj_path)
@@ -20069,6 +20077,10 @@ class LlamaCppBackend:
                     mmproj_path = mmproj_path,
                 )
             )
+            if not _fit_emitted_mmproj and mmproj_path and extra_args_mmproj_auto(extra_args):
+                # Studio's family check dropped it, but --mmproj-auto asks llama-server
+                # to rediscover the adjacent file, and discovery applies no such check.
+                _fit_emitted_mmproj = mmproj_path if not disable_vision and is_vision else None
             # The switch suppresses Unsloth's own projector and scrubs the env pair, but
             # never the extras, so a pass-through --mmproj opens an image tower even on
             # a load that reports vision off.
@@ -20078,7 +20090,12 @@ class LlamaCppBackend:
                 {} if disable_vision else None,
             )
             n_batch, n_ubatch = _batch_ubatch_for_mmproj(
-                _mmproj_needs_bigger_ubatch(_fit_vision_mmproj, self._embedding_length),
+                _mmproj_needs_bigger_ubatch(
+                    _fit_vision_mmproj,
+                    self._embedding_length,
+                    extra_args,
+                    is_vision = is_vision and not disable_vision,
+                ),
                 n_batch,
                 n_ubatch,
                 extra_args,

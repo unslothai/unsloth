@@ -9969,6 +9969,7 @@ def _launch_vision_mmproj(
     that one, and a pass-through or inherited projector surviving both.
     """
     from core.inference.llama_cpp import _child_effective_mmproj, extra_args_disable_mmproj
+    from core.inference.llama_server_args import extra_args_mmproj_auto
 
     own = getattr(config, "gguf_mmproj_file", None)
     emitted = None
@@ -9978,6 +9979,10 @@ def _launch_vision_mmproj(
                 model_path = str(getattr(config, "gguf_file", "") or ""),
                 mmproj_path = str(own),
             )
+            if not emitted and extra_args_mmproj_auto(llama_extra_args):
+                # Studio's family check dropped it, but --mmproj-auto asks llama-server
+                # to rediscover the adjacent file, and discovery applies no such check.
+                emitted = str(own)
     return _child_effective_mmproj(emitted, llama_extra_args, {} if disable_vision else None)
 
 
