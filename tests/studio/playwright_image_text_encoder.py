@@ -161,7 +161,7 @@ def main():
         if gguf.count() == 1:
             gguf.click()
         with page.expect_request(lambda request: urlparse(request.url).path == "/api/hub/download"):
-            page.locator("button").filter(has_text = "Q4_K_M").click()
+            page.locator("button[data-model-picker-option]").filter(has_text = "Q4_K_M").click()
         assert plans and all(plan.get("text_encoder_quant") == "fp8" for plan in plans), plans
         assert not loads
         choose("INT8")
@@ -188,6 +188,23 @@ def main():
             assert loads[-1].get("text_encoder_quant") == requested, loads[-1]
             if requested is None:
                 assert "text_encoder_quant" not in loads[-1]
+        # A completed reload can have the same precision record as its predecessor.
+        state.update(cached = False, complete = False, started = False)
+        page.get_by_role("button", name = "Reapply to loaded model").scroll_into_view_if_needed()
+        page.locator(".unsloth-model-selector-trigger:visible").click()
+        klein_row(page).click()
+        gguf = page.get_by_text("GGUF", exact = True)
+        if gguf.count() == 1:
+            gguf.click()
+        with page.expect_request(lambda request: urlparse(request.url).path == "/api/hub/download"):
+            page.locator("button[data-model-picker-option]").filter(has_text = "Q4_K_M").click()
+        choose("FP8 (storage)")
+        with page.expect_request(
+            lambda request: urlparse(request.url).path == "/api/inference/images/load"
+        ):
+            state["complete"] = True
+        expect(encoder).to_have_text("Default")
+        assert "text_encoder_quant" not in loads[-1], loads[-1]
         assert not errors, errors
         print(
             f"Passed: planned and pinned precision, four explicit modes, fallback reseeding and default omission ({browser.version})"
