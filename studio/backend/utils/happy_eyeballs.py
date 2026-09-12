@@ -8,9 +8,17 @@ the caller's ``timeout`` to each, with no overall deadline. On a network that bl
 one family (a VPN carrying no IPv6, say) every address in that family burns the full
 timeout before the other family is tried.
 
-Every sync HTTP stack in this process bottoms out there -- ``httpx`` via ``httpcore``,
-``requests`` via ``urllib3``, ``urllib.request`` via ``http.client`` -- so the fix goes
-in at the socket rather than per client. Async httpx already races through anyio.
+``httpx`` bottoms out there through ``httpcore``'s sync backend, and ``urllib.request``
+through ``http.client``, so the fix goes in at the socket rather than per client. That
+covers ``huggingface_hub`` 1.x, whose ``get_session()`` is an ``httpx.Client``. Async
+httpx already races through anyio.
+
+``requests`` is NOT covered: urllib3 2.x implements its own ``getaddrinfo`` loop in
+``urllib3.util.connection.create_connection`` and never calls the stdlib's. So the raw
+Hub API fallback in ``utils/models/model_config.py`` still pays one timeout per address,
+as does ``huggingface_hub`` on Python 3.9, where requirements pin the requests-based
+``huggingface-hub==0.36.2``. Closing that means patching urllib3's connector too, which
+is a separate decision from patching the stdlib and is left out deliberately.
 
 CPython tracks this as python/cpython#88810 (open since 2021). Waiting is not a plan: it
 would land in a future version, stdlib features are not backported, and Studio supports
@@ -239,7 +247,7 @@ def activate_happy_eyeballs() -> bool:
         return False
     try:
         # http.client reads this in HTTPConnection.__init__, not at class definition, so
-        # patching before the first request reaches urllib and requests too.
+        # patching before the first request reaches urllib.request too.
         socket.create_connection = happy_eyeballs_connection
     except Exception as exc:  # noqa: BLE001
         _logger.warning(
