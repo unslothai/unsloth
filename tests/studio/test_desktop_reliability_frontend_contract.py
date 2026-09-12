@@ -676,8 +676,9 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
         assert offset is not None and offset > 0, (name, values)
         assert titlebar is not None, (name, values)
         assert offset + button <= titlebar, (name, offset, button, titlebar)
-    assert "aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
-    assert "inert={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
+    # #10706 named the pair: the rail holds out (holdsOut) unless an edge peek holds it open (heldOut).
+    assert "aria-hidden={(holdsOut && !heldOut) || undefined}" in primitive
+    assert "inert={(holdsOut && !heldOut) || undefined}" in primitive
 
 
 def test_fixed_sheets_start_below_the_custom_titlebar():

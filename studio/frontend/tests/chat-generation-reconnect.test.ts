@@ -179,6 +179,42 @@ test("durable replay normalizes reasoning summary control frames", async () => {
   assert.deepEqual(chunks, [{ _reasoningDurationMs: 3200 }]);
 });
 
+test("durable replay re-tags persisted tool control frames for the shared consumer", async () => {
+  const toolStart = { type: "tool_start", name: "web_search", input: { q: "x" } };
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (String(input).includes("/events")) {
+      return sse([
+        frame(1, "chunk", { type: "tool_status", content: "Searching…" }),
+        frame(2, "chunk", toolStart),
+        frame(
+          3,
+          "chunk",
+          { choices: [{ delta: { tool_calls: [{ index: 0, id: "c1" }] } }] },
+        ),
+        frame(4, "run.completed", { status: "completed" }, run("completed", 4)),
+      ]);
+    }
+    return new Response(JSON.stringify(run("completed", 4)), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch;
+  const chunks: object[] = [];
+  for await (const update of followChatGenerationRun("run-1", {
+    initialRun: run("running", 0),
+    replayFrom: 0,
+  })) {
+    if (update.event?.type === "chunk") chunks.push(update.event.payload);
+  }
+  // Tagged exactly like the legacy stream yields them, and structured delta.tool_calls chunks
+  // pass through untouched for the consumer's index-keyed accumulation.
+  assert.deepEqual(chunks, [
+    { _toolStatus: "Searching…" },
+    { _toolEvent: toolStart },
+    { choices: [{ delta: { tool_calls: [{ index: 0, id: "c1" }] } }] },
+  ]);
+});
+
 test("a backend without chat runs selects the legacy path", async () => {
   globalThis.fetch = (async () =>
     new Response(null, { status: 404 })) as typeof fetch;

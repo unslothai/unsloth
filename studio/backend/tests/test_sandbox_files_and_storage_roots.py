@@ -3736,11 +3736,26 @@ def test_the_client_reads_the_file_line_only_from_the_sandbox_tools():
     assert "SANDBOX_FILE_TOOLS" in files
     assert '"python", "terminal"' in files
 
+    # The rule lived inline in the live stream's tool-result block. It lives in the shaper the live stream
+    # and the recovery replay now share, so a reopened card unwraps as a watched one did. Pin it where it
+    # lives now: gated on the tool that emits the line, ahead of the image marker slice, so a marker for a
+    # tool that does not emit one stays content.
+
+    shaper = (src / "features/chat/utils/tool-result-shape.ts").read_text(encoding = "utf-8")
+    shaped = shaper[shaper.index("export function shapeToolResult") :]
+    # The gate, the extraction it gates, and the image slice that must stay downstream of both.
+    gate = shaped.index("SANDBOX_FILE_TOOLS.has(toolName)")
+    files_from_the_tool_that_emits_them = shaped.index("extractCreatedFiles(raw)")
+    image_slice = shaped.index("lastIndexOf(SANDBOX_IMAGES_MARKER)")
+    assert gate < files_from_the_tool_that_emits_them < image_slice
+
+    # Both readers read it through that one shaper, rather than each keeping its own copy of the rule.
     adapter = (src / "features/chat/api/chat-adapter.ts").read_text(encoding = "utf-8")
-    guarded = adapter[adapter.index("const rawEvent = (toolEvent.result as string)") :]
-    guarded = guarded[: guarded.index("const imgMarker")]
-    assert "SANDBOX_FILE_TOOLS.has(" in guarded
-    assert guarded.index("SANDBOX_FILE_TOOLS.has(") < guarded.index("extractCreatedFiles(")
+    replay = (src / "features/chat/utils/chat-generation-replay.ts").read_text(encoding = "utf-8")
+    assert "shapeToolResult(" in adapter
+    # A private copy in the live stream is exactly the drift this test exists to catch.
+    assert "extractCreatedFiles" not in adapter
+    assert "shapeToolResult(" in replay
 
 
 def test_the_old_shared_bucket_is_read_but_never_moved(tmp_path, monkeypatch):

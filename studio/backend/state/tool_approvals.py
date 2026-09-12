@@ -48,14 +48,15 @@ def wait_tool_decision(
     cancel_event = None,
     timeout = _DECISION_TIMEOUT,
 ):
-    """Block on a slot from ``begin_tool_decision`` until the user decides. Returns ``"allow"`` or ``"deny"``, falling back to ``"deny"`` if the wait times out or generation is cancelled first. Always removes its own slot on exit."""
+    """Block on a slot from ``begin_tool_decision`` until the user decides. Returns ``"allow"`` or ``"deny"``, falling back to ``"deny"`` if the wait times out or generation is cancelled first; a durable run's cancel_event is never set on a browser disconnect, so a parked gate does NOT auto-deny at the 3600s ceiling - it keeps waiting until the session returns and resolves by id (or an explicit Stop sets cancel_event). Always removes its own slot on exit."""
+    park = bool(getattr(cancel_event, "durable", False))
     try:
         waited = 0.0
         while not slot["event"].wait(timeout = 0.5):
             if cancel_event is not None and cancel_event.is_set():
                 return "deny"
             waited += 0.5
-            if waited >= timeout:
+            if not park and waited >= timeout:
                 return "deny"
         return slot["decision"] or "deny"
     finally:
