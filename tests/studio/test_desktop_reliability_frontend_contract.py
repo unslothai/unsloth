@@ -5,7 +5,12 @@
 
 import re
 from pathlib import Path
-from tests.studio._js_source import binding_joining, gates_the_markup
+from tests.studio._js_source import (
+    attribute_expressions,
+    binding_joining,
+    gates_the_markup,
+    split_operands,
+)
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -676,8 +681,21 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
         assert offset is not None and offset > 0, (name, values)
         assert titlebar is not None, (name, values)
         assert offset + button <= titlebar, (name, offset, button, titlebar)
-    assert "aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
-    assert "inert={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
+    # Read the CONDITION, not the text that spells it. The exact-string form this replaces
+    # pinned the inlined expression, so #10706 broke it by hoisting that expression into a
+    # named const and giving it a peek exception: a refactor that changed nothing this
+    # contract protects, and it left main and every open PR red for a day. What must hold is
+    # that a sidebar collapsing to nothing leaves the accessibility tree, and that it goes
+    # inert on exactly the same condition, since hidden-but-focusable is the actual bug.
+    holds_out = binding_joining(primitive, "&&", {"hasPinMode", "!pinned", "collapseToZero"})
+    assert holds_out, "nothing binds hasPinMode && !pinned && collapseToZero any more"
+    hidden = attribute_expressions(primitive, "aria-hidden")
+    inert = attribute_expressions(primitive, "inert")
+    assert len(hidden) == 1 and len(inert) == 1, (hidden, inert)
+    assert hidden == inert, (hidden, inert)
+    assert any(
+        holds_out in split_operands(term, "&&") for term in split_operands(hidden[0], "||")
+    ), (holds_out, hidden)
 
 
 def test_fixed_sheets_start_below_the_custom_titlebar():
