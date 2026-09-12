@@ -68,6 +68,31 @@ def test_the_fallback_runs_inside_the_offline_guard(monkeypatch):
     ], "the trust_remote_code read did not go through _offline_guarded"
 
 
+def test_a_load_completing_mid_resolve_does_not_mix_two_models(monkeypatch):
+    """Going off-loop puts a suspension point between the snapshot and the response. A
+    load landing in that window must not pair the new model's identity with the trust
+    requirement and capabilities read for the one it replaced."""
+    backend = _backend("unsloth/Qwen3-8B")
+
+    def _resolve(*_args, **_kwargs):
+        backend.active_model_name = "unsloth/Llama-3.1-8B"
+        backend.models = {"unsloth/Llama-3.1-8B": {}}
+        return True
+
+    monkeypatch.setattr(inference_routes, "_peek_inference_backend", lambda *a, **k: backend)
+    monkeypatch.setattr(inference_routes, "_resolve_loaded_trust_remote_code", _resolve)
+
+    response = asyncio.new_event_loop().run_until_complete(
+        inference_routes.get_status(current_subject = "t")
+    )
+
+    assert response.active_model == "unsloth/Qwen3-8B", (
+        "reported the model that landed mid-resolve, while carrying the trust_remote_code "
+        "and capabilities read for the one it replaced"
+    )
+    assert response.requires_trust_remote_code is True
+
+
 def test_no_loaded_model_reads_nothing(monkeypatch):
     """Nothing is loaded, so there is no repo to ask about."""
     called: list[int] = []
