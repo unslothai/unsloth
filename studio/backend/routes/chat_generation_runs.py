@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import os
+
 import asyncio
 import json
 import re
@@ -186,14 +188,24 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             status_code = 400,
             detail = "Media chat runs use the legacy streaming path",
         )
-    # Recovery currently rebuilds text and reasoning deltas, not server-side tool events. Keep any request whose
-    # effective policy can enter the local tool loop on the legacy subscriber-owned stream until those events are
-    # replayable.
+    # What UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 hands back to the legacy stream beyond the raw `tools` key: the
+    # launcher's effective tool policy, and any checkpoint recall that can switch tools on mid-thread.
     from routes.inference import _checkpoint_recall_may_enable_tools, _effective_enable_tools
 
     request = request.model_copy(update = {"thread_id": payload.threadId})
 
-    if (
+    # Shipped ON (default ON so a restart alone activates it - env scoping proved unreliable across launchers):
+    # tool-enabled turns are durable because replay now re-tags persisted frames exactly as the live stream yields
+    # them; set UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 to restore the original refusal.
+    _durable_tools = os.environ.get("UNSLOTH_STUDIO_DURABLE_TOOL_TURNS", "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    # NOTE: the guard wraps the WHOLE or-chain. `A and B or C or D` parses as `(A and B) or C or D`, so a bare
+    # prefix only guarded raw["tools"]; the Studio UI sends `enable_tools: true` (term 2), which still raised with
+    # the flag ON - the flip was inert for exactly the turns it was added to unblock.
+    if not _durable_tools and (
         raw.get("tools")
         or request.enable_tools is True
         or bool(request.mcp_enabled)
