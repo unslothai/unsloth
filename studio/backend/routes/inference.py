@@ -9996,14 +9996,17 @@ def _remote_required_ubatch(
     """
     from core.inference.llama_cpp import _launch_required_ubatch, extra_args_disable_mmproj
 
-    from core.inference.llama_cpp import _MMPROJ_UNKNOWN_UBATCH
+    from core.inference.llama_cpp import _unknown_projector_ubatch
 
     if (
         bool(getattr(config, "is_vision", False))
         and not disable_vision
         and not extra_args_disable_mmproj(llama_extra_args)
     ):
-        return _MMPROJ_UNKNOWN_UBATCH
+        # Nothing to read yet, so headroom, raised by --image-max-tokens exactly as the
+        # post-download launch raises it; pricing less would admit a load the child
+        # then over-allocates against a training job.
+        return _unknown_projector_ubatch(llama_extra_args)
     # No repo projector in play, but the extras or the environment may still name one.
     return _launch_required_ubatch(
         None,

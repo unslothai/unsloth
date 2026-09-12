@@ -267,6 +267,33 @@ def test_image_max_tokens_is_honoured_for_every_non_causal_family(
     assert _mmproj_required_ubatch(projector(family), n_embd, extras) == expected
 
 
+@pytest.mark.parametrize(
+    "extras, env",
+    [
+        (["--image-max-tokens", "4096"], {"LLAMA_ARG_MMPROJ_URL": "https://example.invalid/m"}),
+        (["--mmproj-auto", "--image-max-tokens", "4096"], {}),
+    ],
+)
+def test_image_max_tokens_reaches_the_unclassifiable_projectors_too(extras, env):
+    """An unfetched URL and --mmproj-auto discovery get headroom, not a fixed number.
+
+    The flag lifts whatever ceiling clip.cpp would have applied, so a chunk over the
+    assumed size aborts the server exactly as it would for a family we can read.
+    """
+    assert _launch_required_ubatch(None, 3840, extras, env = env) == 4096
+
+
+def test_the_remote_estimate_honours_a_custom_ceiling_too():
+    """Or the pre-download guard prices less than the post-download launch allocates."""
+    from types import SimpleNamespace
+
+    from studio.backend.routes.inference import _remote_required_ubatch
+
+    config = SimpleNamespace(is_vision = True, gguf_hf_repo = "owner/repo")
+    assert _remote_required_ubatch(config, None, False) == _MMPROJ_UNKNOWN_UBATCH
+    assert _remote_required_ubatch(config, ["--image-max-tokens", "4096"], False) == 4096
+
+
 def test_the_batch_still_caps_what_is_emitted():
     # The batch caps the chunk mtmd cuts, so it caps the micro-batch that must hold it.
     assert _batch_ubatch_for_mmproj(4096, None, None, None, {})[1] == 2048

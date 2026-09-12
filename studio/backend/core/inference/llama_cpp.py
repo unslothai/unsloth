@@ -5851,6 +5851,16 @@ def _read_gguf_embedding_length(path: Optional[str]) -> Optional[int]:
         return None
 
 
+def _unknown_projector_ubatch(extra_args: Optional[Iterable[str]] = None) -> int:
+    """Micro-batch to assume for a projector this process cannot open and classify.
+
+    Headroom rather than a ceiling, raised by ``--image-max-tokens`` like a known
+    family's: the flag lifts whatever ceiling clip.cpp would have applied, and a chunk
+    over the assumed size aborts the server just the same.
+    """
+    return max(_MMPROJ_UNKNOWN_UBATCH, extra_args_image_max_tokens(extra_args) or 0)
+
+
 def _mmproj_required_ubatch(
     mmproj_path: Optional[str],
     n_embd_text: Optional[int] = None,
@@ -5879,7 +5889,7 @@ def _mmproj_required_ubatch(
         family = ""
     custom = extra_args_image_max_tokens(extra_args) or 0
     if not family:
-        return max(_MMPROJ_UNKNOWN_UBATCH, custom)
+        return _unknown_projector_ubatch(extra_args)
     if family not in _MMPROJ_NON_CAUSAL_IMAGE_TOKENS:
         return 0
     if family == "gemma4v" and n_embd_text in _GEMMA4V_CAUSAL_TEXT_N_EMBD:
@@ -5927,7 +5937,7 @@ def _launch_required_ubatch(
         # mmproj.path. A URL names a download that has not happened, so it is unknown.
         source_env = os.environ if env is None else env
         if (source_env.get("LLAMA_ARG_MMPROJ_URL") or "").strip():
-            required = max(required, _MMPROJ_UNKNOWN_UBATCH)
+            required = max(required, _unknown_projector_ubatch(extra_args))
         inherited = (source_env.get("LLAMA_ARG_MMPROJ") or "").strip()
         if inherited:
             required = max(required, _mmproj_required_ubatch(inherited, n_embd_text, extra_args))
@@ -5940,7 +5950,7 @@ def _launch_required_ubatch(
         elif extra_args_mmproj_auto(extra_args):
             # --mmproj-auto leaves llama-server discovering an adjacent projector
             # this process was never told about.
-            required = max(required, _MMPROJ_UNKNOWN_UBATCH)
+            required = max(required, _unknown_projector_ubatch(extra_args))
 
     return required
 
