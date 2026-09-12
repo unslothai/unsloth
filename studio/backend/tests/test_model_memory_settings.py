@@ -3027,7 +3027,7 @@ class TestASaveDuringPlacementIsAnswered:
         monkeypatch.setattr(
             rs,
             "_active_launch_placement",
-            lambda: (None, False, True, None, False, (False, False)),
+            lambda: (None, False, True, None, False, False, (False, False)),
         )
         monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))
         assert rs._model_memory_reload_required() is True
@@ -3039,7 +3039,7 @@ class TestASaveDuringPlacementIsAnswered:
         monkeypatch.setattr(
             rs,
             "_active_launch_placement",
-            lambda: (None, False, True, None, False, (False, True)),
+            lambda: (None, False, True, None, False, False, (False, True)),
         )
         monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))
         assert rs._model_memory_reload_required() is False
@@ -3093,7 +3093,7 @@ class TestAReplacementLoadIsNotAnsweredByTheOldChild:
         monkeypatch.setattr(
             rs,
             "_active_launch_placement",
-            lambda: ((False, False), False, True, False, False, (False, False)),
+            lambda: ((False, False), False, True, False, False, False, (False, False)),
         )
         monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))
         assert rs._model_memory_reload_required() is True
@@ -3171,7 +3171,7 @@ class TestThePendingCompareIsByEffect:
         monkeypatch.setattr(
             rs,
             "_active_launch_placement",
-            lambda: (None, False, True, None, False, pending),
+            lambda: (None, False, True, None, False, False, pending),
         )
         monkeypatch.setattr(mm, "get_model_memory_settings", lambda: live)
         assert rs._model_memory_reload_required() is reload_required
@@ -4473,6 +4473,7 @@ class TestResidencyWithdrawsTheNoReserveDio:
         policy_active,
         mlock_applicable = False,
         state = (False, False),
+        dio_managed = None,
     ):
         import utils.model_memory_settings as mm
         from core.inference.llama_server_args import memory_state_satisfies_settings
@@ -4480,8 +4481,25 @@ class TestResidencyWithdrawsTheNoReserveDio:
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
         monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
         return memory_state_satisfies_settings(
-            state, policy_active, mlock_applicable, direct_io, dio_applicable
+            state,
+            policy_active,
+            mlock_applicable,
+            direct_io,
+            dio_applicable,
+            policy_active if dio_managed is None else dio_managed,
         )
+
+    def test_the_aggregate_activity_bit_is_not_what_decides(self, monkeypatch):
+        """A scrubbed env var or a vetoed extra also sets `policy_active`, so a user's
+        own dio beside an inherited LLAMA_ARG_MLOCK matched it and every relaunch
+        produced the same child and set it again, leaving reload_required stuck on."""
+        assert self._satisfied(
+            monkeypatch,
+            direct_io = True,
+            dio_applicable = True,
+            policy_active = True,
+            dio_managed = False,
+        ) is True
 
     def test_an_active_managed_dio_demands_a_reload(self, monkeypatch):
         assert (
@@ -4562,15 +4580,17 @@ class TestTheSelectionCarriesBothOrdinalSpaces:
         assert compact == [1]
         assert physical == [3]
 
-    def test_main_gpu_is_physical_and_gets_a_compact_twin(self, monkeypatch):
+    def test_main_gpu_is_compact_and_maps_back_to_physical(self, monkeypatch):
+        """`--main-gpu` indexes the child's FILTERED list, so with one masked survivor
+        `--main-gpu 0` is physical 1."""
         physical, compact = self._sel(
             monkeypatch,
             [0],
             {"CUDA_VISIBLE_DEVICES": "1"},
-            ["--split-mode", "none", "--main-gpu", "1"],
+            ["--split-mode", "none", "--main-gpu", "0"],
         )
-        assert physical == [1]
         assert compact == [0]
+        assert physical == [1]
 
     def test_vulkan_keeps_the_two_identical(self, monkeypatch):
         physical, compact = self._sel(
@@ -4602,3 +4622,89 @@ class TestTheSelectionCarriesBothOrdinalSpaces:
         # and the rung does the same with its narrowed set
         assert "gpu_indices=_rung_physical," in flat
         assert "self._gpu_offload_confirmed(binary,_rung_env,_rung_compact,host_resident," in flat
+
+
+class TestTheVulkanProbeMustCoverItsOwnTargets:
+    """`gpu_indices` carries ordinals from every selected backend, but the probe
+    reports Vulkan rows. Passing all of them let a CUDA target's 0 satisfy Vulkan row
+    0 and leave the real Vulkan device unprobed but treated as discrete."""
+
+    def _confirm(self, monkeypatch, devices, rows):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        monkeypatch.setattr(
+            B, "_enumerated_gpu_devices",
+            classmethod(lambda cls, binary = None, env = None: list(devices)),
+        )
+        monkeypatch.setattr(B, "_run_vulkan_probe", staticmethod(lambda binary = None: rows))
+        return B._gpu_offload_confirmed("llama-server", {}, None, False, True)
+
+    def test_a_cuda_ordinal_cannot_satisfy_a_vulkan_row(self, monkeypatch):
+        """Selected CUDA0 and Vulkan1, probe holds only Vulkan0: the Vulkan target is
+        unprobed, so this must decline."""
+        assert self._confirm(
+            monkeypatch,
+            ["CUDA0", "Vulkan1"],
+            [{"index": 0, "is_igpu": False, "type_known": True}],
+        ) is False
+
+    def test_covering_the_vulkan_target_confirms(self, monkeypatch):
+        assert self._confirm(
+            monkeypatch,
+            ["CUDA0", "Vulkan1"],
+            [{"index": 1, "is_igpu": False, "type_known": True}],
+        ) is True
+
+    def test_an_igpu_on_the_covered_target_still_declines(self, monkeypatch):
+        assert self._confirm(
+            monkeypatch,
+            ["CUDA0", "Vulkan1"],
+            [{"index": 1, "is_igpu": True, "type_known": True}],
+        ) is False
+
+    def test_the_predicate_requires_full_coverage(self, monkeypatch):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        monkeypatch.setattr(
+            B, "_run_vulkan_probe",
+            staticmethod(lambda binary = None: [
+                {"index": 0, "is_igpu": False, "type_known": True}
+            ]),
+        )
+        assert B._vulkan_offload_is_discrete("llama-server", [0]) is True
+        assert B._vulkan_offload_is_discrete("llama-server", [0, 1]) is False
+
+
+class TestAForcedProbeKeepsMlockConservative:
+    """The probe is forced for the DirectIO decision even when the page-lock question
+    would not have run it. An unreadable Vulkan probe answers "not an iGPU", which
+    turned host residency off and recorded the lock as inapplicable, and the
+    comparator then excused a missing lock on weights that may be host-backed."""
+
+    def test_an_unanswered_probe_keeps_the_lock_applicable(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert (
+            "self._memory_mlock_applicable=_mem_host_residentor("
+            "_mem_probe_for_dioandnot_mem_should_mlockandis_vulkan_backendand"
+            "notself._vulkan_probe_answered(binary))" in flat
+        )
+
+    def test_the_answered_predicate_is_not_the_igpu_one(self, monkeypatch):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        monkeypatch.setattr(B, "_run_vulkan_probe", staticmethod(lambda binary = None: []))
+        assert B._vulkan_probe_answered("llama-server") is False
+        # and the iGPU question still answers False for the same empty probe, which is
+        # exactly why it cannot be read as a measurement
+        assert B._vulkan_targets_are_igpus("llama-server", None) is False
+
+        monkeypatch.setattr(
+            B, "_run_vulkan_probe",
+            staticmethod(lambda binary = None: [
+                {"index": 0, "is_igpu": False, "type_known": True}
+            ]),
+        )
+        assert B._vulkan_probe_answered("llama-server") is True

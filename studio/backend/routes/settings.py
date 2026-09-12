@@ -902,7 +902,7 @@ _NO_LAUNCH = object()
 
 
 def _active_launch_placement():
-    """``(state, policy_active, mlock_applicable, direct_io, dio_applicable,
+    """``(state, policy_active, mlock_applicable, direct_io, dio_applicable, dio_managed,
     pending_settings)`` for the running child.
 
     ``state`` is ``_NO_LAUNCH`` when nothing is running or coming up, so the
@@ -918,17 +918,20 @@ def _active_launch_placement():
         # and "what is it committed to", so this cannot catch the two out of step.
         pending = getattr(backend, "_memory_pending_launch", None)
         if not backend.is_active and pending is None:
-            return _NO_LAUNCH, False, True, None, False, None
+            return _NO_LAUNCH, False, True, None, False, False, None
         return (
             getattr(backend, "_memory_state", None),
             bool(getattr(backend, "_memory_policy_active", False)),
             bool(getattr(backend, "_memory_mlock_applicable", True)),
             getattr(backend, "_memory_direct_io", None),
             bool(getattr(backend, "_memory_dio_applicable", False)),
+            # The pair the POLICY emitted, apart from the aggregate activity bit: a
+            # user's own `dio` must not be withdrawn on their behalf.
+            bool(getattr(backend, "_memory_dio_flags", None)),
             pending,
         )
     except Exception:
-        return _NO_LAUNCH, False, True, None, False, None
+        return _NO_LAUNCH, False, True, None, False, False, None
 
 
 def _launch_effect_of(settings):
@@ -955,7 +958,7 @@ def _model_memory_reload_required() -> bool:
     same window before Popen, where the placement is decided but _process is
     still None.
     """
-    state, policy_active, mlock_applicable, direct_io, dio_applicable, pending = (
+    state, policy_active, mlock_applicable, direct_io, dio_applicable, dio_managed, pending = (
         _active_launch_placement()
     )
     if state is _NO_LAUNCH:
@@ -979,7 +982,7 @@ def _model_memory_reload_required() -> bool:
     from core.inference.llama_server_args import memory_state_satisfies_settings
 
     return not memory_state_satisfies_settings(
-        state, policy_active, mlock_applicable, direct_io, dio_applicable
+        state, policy_active, mlock_applicable, direct_io, dio_applicable, dio_managed
     )
 
 
@@ -991,7 +994,7 @@ def _model_memory_mlock_active(want_mlock: bool) -> bool:
     user's own --mlock counts, since the resolver reads the launched argv."""
     if not want_mlock:
         return False
-    state, _policy_active, _applicable, _direct_io, _dio_applicable, _pending = (
+    state, _policy_active, _applicable, _direct_io, _dio_applicable, _dio_managed, _pending = (
         _active_launch_placement()
     )
     if state is _NO_LAUNCH:

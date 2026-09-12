@@ -1892,6 +1892,7 @@ def memory_state_satisfies_settings(
     mlock_applicable: bool = True,
     direct_io: Optional[bool] = None,
     dio_applicable: bool = False,
+    dio_managed: bool = False,
 ) -> bool:
     """True when a launched ``(mlock, reserves_ram)`` matches the settings.
 
@@ -1936,9 +1937,13 @@ def memory_state_satisfies_settings(
         # A no-reserve launch's managed DirectIO has to go when no-reserve does: with
         # residency on the policy emits a page-lock or nothing, never dio, so a
         # streaming child contradicts the settings however the lock reads.
-        # `not mlock_applicable` was accepting exactly that child. `policy_active`
-        # separates OUR pair from a user's own dio, which is theirs to keep.
-        if direct_io and dio_applicable and policy_active:
+        # `not mlock_applicable` was accepting exactly that child.
+        #
+        # `dio_managed`, not `policy_active`: the latter is an aggregate that a
+        # scrubbed env var or a vetoed extra also sets, so a user's own `dio` beside an
+        # inherited LLAMA_ARG_MLOCK matched it and every relaunch produced the same
+        # child and set it again, leaving reload_required permanently true.
+        if direct_io and dio_applicable and dio_managed:
             return False
         return mlock or not mlock_applicable
     return not policy_active

@@ -8620,6 +8620,10 @@ class LlamaCppBackend:
         selected = [r for r in rows if wanted is None or r["index"] in wanted]
         if not selected:
             return False
+        # Every ordinal asked about has to be present, not merely some of them: a
+        # partial intersection left the missing device unclassified and confirmed.
+        if wanted is not None and wanted - {r["index"] for r in selected}:
+            return False
         # The probe reports all-False when the type query fails, so "not integrated"
         # and "could not read the type" share a value. That default is right for the
         # page-lock caller and wrong here: an unread type is not discrete evidence.
@@ -8684,7 +8688,17 @@ class LlamaCppBackend:
         if backends - {"vulkan"} - _SELF_EVIDENTLY_DISCRETE:
             return False
         if "vulkan" in backends:
-            return cls._vulkan_offload_is_discrete(binary, gpu_indices)
+            # Only the VULKAN ordinals. The probe reports Vulkan rows, so passing every
+            # selected ordinal let a CUDA target's 0 satisfy Vulkan row 0 and leave the
+            # actual Vulkan device unprobed but treated as discrete.
+            vulkan_ordinals = [
+                cls._device_ordinal(d)
+                for d in selected
+                if cls._device_backend(d) == "vulkan"
+            ]
+            if any(o is None for o in vulkan_ordinals):
+                return False
+            return cls._vulkan_offload_is_discrete(binary, vulkan_ordinals)
         return True
 
     @staticmethod
@@ -8829,8 +8843,11 @@ class LlamaCppBackend:
         # Otherwise the ordinals are PHYSICAL, and `--main-gpu` under `-sm none`
         # replaces the selection outright.
         main_gpu = cls._effective_main_gpu(extra_args, env)
-        physical = [main_gpu] if main_gpu is not None else gpu_indices
-        return physical, cls._compact_ordinals(physical, env, is_vulkan)
+        if main_gpu is not None:
+            # `--main-gpu` indexes the child's FILTERED device list, so it arrives
+            # compact like `--device` and the physical form is the derived one.
+            return cls._physical_ordinals([main_gpu], env, is_vulkan), [main_gpu]
+        return gpu_indices, cls._compact_ordinals(gpu_indices, env, is_vulkan)
 
     @classmethod
     def _effective_device_ids(cls, extra_args, env) -> Optional[list[str]]:
@@ -9157,6 +9174,19 @@ class LlamaCppBackend:
             env, ",".join(str(i) for i in order), prefer_rocr = prefer_rocr
         )
         return tuple(int(i) for i in order)
+
+    @staticmethod
+    def _vulkan_probe_answered(binary: Optional[str]) -> bool:
+        """Whether the Vulkan device probe produced rows at all.
+
+        `_vulkan_targets_are_igpus` folds "no answer" into "not integrated", which is
+        right for the page-lock question it was written for and not something the
+        bookkeeping can read as a measurement.
+        """
+        try:
+            return bool(LlamaCppBackend._run_vulkan_probe(binary))
+        except Exception:
+            return False
 
     @staticmethod
     def _vulkan_targets_are_igpus(binary: Optional[str], gpu_indices = None) -> bool:
@@ -24637,7 +24667,18 @@ class LlamaCppBackend:
                 )
                 # Remembered so the reload hint and the duplicate-load comparator do
                 # not demand an mlock this launch deliberately skipped.
-                self._memory_mlock_applicable = _mem_host_resident
+                # A probe forced for the DirectIO decision must not leave the
+                # page-lock bookkeeping LESS conservative than it would have been
+                # unprobed. An unreadable Vulkan probe answers "not an iGPU", which
+                # turned host residency off and recorded the lock as inapplicable, and
+                # the comparator then excused a missing lock on weights that may be
+                # host-backed after all.
+                self._memory_mlock_applicable = _mem_host_resident or (
+                    _mem_probe_for_dio
+                    and not _mem_should_mlock
+                    and is_vulkan_backend
+                    and not self._vulkan_probe_answered(binary)
+                )
                 if _mem_should_mlock and not _mem_host_resident:
                     logger.info(
                         "Model Memory: skipping page-lock, the weights are fully "
@@ -28050,6 +28091,7 @@ class LlamaCppBackend:
             self._memory_mlock_applicable,
             self._memory_direct_io,
             self._memory_dio_applicable,
+            bool(self._memory_dio_flags),
         ):
             logger.info("Model Memory policy changed since launch; forcing a reload")
             return False
