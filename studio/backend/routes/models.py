@@ -5338,7 +5338,7 @@ def _resolve_local_path_inside_allowlist(raw_path: str) -> Path:
 
 @router.post("/reveal-local-path")
 async def reveal_local_path(
-    path: str = Body(...),
+    path: str = Body(..., embed = True),
     current_subject: str = Depends(get_current_subject),
 ):
     """Reveal a local model file or directory (custom folders, LM Studio, models dir) in the OS file manager."""
@@ -5405,7 +5405,7 @@ def _local_delete_target_is_model_dir(target: Path) -> bool:
 
 @router.delete("/delete-local-path")
 async def delete_local_path(
-    path: str = Body(...),
+    path: str = Body(..., embed = True),
     current_subject: str = Depends(get_current_subject),
 ):
     """Delete a single local model file (.gguf, weights) or a model directory from custom folders, LM Studio, or the models dir."""
