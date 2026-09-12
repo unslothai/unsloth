@@ -221,7 +221,13 @@ def binding_joining(source: str, operator: str, required: set[str]) -> str | Non
     return None
 
 
-def expand_bindings(source: str, expression: str, *, stop = (), limit: int = 8) -> str:
+def expand_bindings(
+    source: str,
+    expression: str,
+    *,
+    stop = (),
+    limit: int = 8,
+) -> str:
     """`expression` with every local `const NAME = ...` it names inlined, transitively.
 
     Operand presence answers "is this condition still consulted". It cannot answer "does
@@ -242,7 +248,9 @@ def expand_bindings(source: str, expression: str, *, stop = (), limit: int = 8) 
     for _ in range(limit):
         grown = re.sub(
             r"\b\w+\b",
-            lambda match: f"({bodies[match.group(0)]})" if match.group(0) in bodies else match.group(0),
+            lambda match: f"({bodies[match.group(0)]})"
+            if match.group(0) in bodies
+            else match.group(0),
             expression,
         )
         if grown == expression:
@@ -267,9 +275,9 @@ def boolean_table(expression: str, names) -> dict:
     leftover = re.sub(r"\b(?:and|or|not|False)\b|[()\s]|\b[A-Za-z_]\w*\b", "", python)
     assert not leftover, f"{expression!r} is not a plain boolean expression: {leftover!r} left"
     reads = set(re.findall(r"\b[A-Za-z_]\w*\b", python)) - {"and", "or", "not", "False"}
-    assert reads <= set(names), (
-        f"{expression!r} reads names this contract does not cover: {sorted(reads - set(names))}"
-    )
+    assert reads <= set(
+        names
+    ), f"{expression!r} reads names this contract does not cover: {sorted(reads - set(names))}"
     table = {}
     for combination in itertools.product((False, True), repeat = len(names)):
         table[combination] = bool(
