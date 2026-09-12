@@ -1408,6 +1408,7 @@ export const es = {
           "Fija elementos en el menú lateral «+» del chat. Los demás pasarán a «Más».",
         chatWithFiles: "Chat con archivos (RAG)",
         mcp: "MCP",
+        skills: "Habilidades de agentes",
         savedPrompts: "Prompts guardados",
         compareChat: "Comparar chats",
         exportChat: "Exportar chat",

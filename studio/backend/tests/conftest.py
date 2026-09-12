@@ -80,6 +80,36 @@ def _studio_home_root(tmp_path_factory):
 _studio_home_counter = itertools.count()
 
 
+@pytest.fixture(scope = "session")
+def _skills_home_root(tmp_path_factory):
+    # One mktemp per session; see _studio_home_root for why a per-test mktemp is quadratic.
+    return tmp_path_factory.mktemp("skills_homes")
+
+
+_skills_home_counter = itertools.count()
+
+
+@pytest.fixture(autouse = True)
+def _isolate_agent_skills(_skills_home_root, monkeypatch):
+    # Agent Skills discovery reads ~/.agents/skills and ~/.claude/skills. A developer with
+    # skills installed otherwise gets extra read_skill tools in every tool-selection test.
+    from core.inference import skills as _skills
+
+    home = _skills_home_root / f"h{next(_skills_home_counter)}"
+    home.mkdir()
+    original_roots = _skills._skill_roots
+    monkeypatch.setattr(
+        _skills,
+        "_skill_roots",
+        lambda explicit = None: original_roots(explicit if explicit is not None else home),
+    )
+    try:
+        from routes import inference as _inference_routes
+    except Exception:
+        return
+    monkeypatch.setattr(_inference_routes, "_AGENT_SKILLS_CACHE", (0.0, []))
+
+
 @pytest.fixture(autouse = True)
 def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
     """Mechanism: tests/_shared/installer_venv_root.py.

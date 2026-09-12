@@ -30,6 +30,7 @@ import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import {
   Bookmark02Icon,
+  BookOpen01Icon,
   Download01Icon,
   FileDatabaseIcon,
   Folder01Icon,
@@ -75,6 +76,17 @@ const PLUS_MENU_SETTINGS: {
     icon: (
       <HugeiconsIcon
         icon={McpServerIcon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
+  {
+    id: "skills",
+    labelKey: "settings.chat.menu.skills",
+    icon: (
+      <HugeiconsIcon
+        icon={BookOpen01Icon}
         strokeWidth={2}
         className={PLUS_MENU_ICON_CLASS}
       />

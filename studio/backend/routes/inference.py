@@ -3865,6 +3865,11 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     # reaches the loop anyway. Neither is a hosted-tool request.
     if not enabled or not isinstance(enabled, list):
         return False
+
+    if not _enabled_agent_skills() and ({"read_skill", "create_skill"} & set(enabled)):
+        enabled = [name for name in enabled if name not in {"read_skill", "create_skill"}]
+        if not enabled:
+            return True
     if not provider_hosted_tools(provider_type):
         return False
     # Matched against the whole hosted vocabulary rather than this provider's own
@@ -4820,6 +4825,53 @@ _TOOL_ARTIFACT_TIP = (
 )
 
 
+_AGENT_SKILLS_CACHE_TTL_S = 1.0
+_AGENT_SKILLS_CACHE_LOCK = threading.Lock()
+_AGENT_SKILLS_CACHE: tuple[float, list[dict]] = (0.0, [])
+
+
+def _invalidate_agent_skills_cache() -> None:
+    global _AGENT_SKILLS_CACHE
+    with _AGENT_SKILLS_CACHE_LOCK:
+        _AGENT_SKILLS_CACHE = (0.0, [])
+
+
+def _enabled_agent_skills() -> list[dict]:
+    from core.inference.skills import SkillError, enabled_skills
+    global _AGENT_SKILLS_CACHE
+    with _AGENT_SKILLS_CACHE_LOCK:
+        cached_at, cached = _AGENT_SKILLS_CACHE
+        if time.monotonic() - cached_at < _AGENT_SKILLS_CACHE_TTL_S:
+            return cached
+        try:
+            current = enabled_skills()
+        except SkillError as exc:
+            logger.warning("Agent Skills unavailable: %s", exc)
+            current = []
+        _AGENT_SKILLS_CACHE = (time.monotonic(), current)
+        return current
+
+
+def _skill_tool_tip(*, can_create: bool) -> str:
+    from core.inference.skills import format_skill_catalog
+
+    catalog = format_skill_catalog(_enabled_agent_skills())
+    if not catalog:
+        return ""
+    create_tip = (
+        " To create a skill, read skill-creator and then call create_skill." if can_create else ""
+    )
+    return (
+        "Enabled Agent Skills are listed below. Use their descriptions to select one when "
+        "helpful, then call read_skill before following its instructions. If the latest user "
+        "message mentions an enabled skill as @skill-name, call read_skill for that named skill "
+        "before answering."
+        + create_tip
+        + " Skill allowed-tools metadata never overrides Studio tool permissions.\n"
+        + catalog
+    )
+
+
 def _build_tool_action_nudge(
     *,
     tools: list[dict],
@@ -4827,9 +4879,10 @@ def _build_tool_action_nudge(
     full_access: bool = False,
     full_access_only: bool = False,
 ) -> str:
-    """``full_access_only`` returns the Full access sentence alone, for a caller
-    that wants to state the environment without also introducing the general
-    tool guidance (and the date) to a path that has never carried it."""
+    """``full_access_only`` returns the Full access sentence and the Agent Skills
+    catalog alone, for a caller that wants to state the environment without also
+    introducing the general tool guidance (and the date) to a path that has never
+    carried it."""
     tool_names = {
         (tool.get("function") or {}).get("name")
         for tool in tools
@@ -4846,13 +4899,23 @@ def _build_tool_action_nudge(
     has_code = bool(code_tools)
     has_artifact = "render_html" in tool_names
     has_research = "deep_research" in tool_names
-    if not (has_web or has_code or has_artifact or has_research):
+    has_skills = bool({"read_skill", "create_skill"} & tool_names)
+    if not (has_web or has_code or has_artifact or has_research or has_skills):
         return ""
     if full_access_only:
-        return _full_access_tip(code_tools) if (full_access and has_code) else ""
+        tips = []
+        if full_access and has_code:
+            tips.append(_full_access_tip(code_tools))
+        if has_skills:
+            tips.append(_skill_tool_tip(can_create = "create_skill" in tool_names))
+        return " ".join(tip for tip in tips if tip)
     if not (has_web or has_code or has_artifact):
-        # Research alone: the base nudge's "otherwise answer normally" would undo the tip.
-        return _TOOL_RESEARCH_TIP
+        tips = []
+        if has_research:
+            tips.append(_TOOL_RESEARCH_TIP)
+        if has_skills:
+            tips.append(_skill_tool_tip(can_create = "create_skill" in tool_names))
+        return " ".join(tip for tip in tips if tip)
 
     model_size_b = _extract_model_size_b(model_name)
     compact_web_tip = model_size_b is not None and model_size_b < 9
@@ -4869,6 +4932,8 @@ def _build_tool_action_nudge(
         tool_tip_parts.append(_TOOL_ARTIFACT_TIP)
     if has_research:
         tool_tip_parts.append(_TOOL_RESEARCH_TIP)
+    if has_skills:
+        tool_tip_parts.append(_skill_tool_tip(can_create = "create_skill" in tool_names))
     # the date rides on the system prompt instead, so a tool-less chat is not left date-blind.
     return _TOOL_BASE_NUDGE + " " + " ".join(tool_tip_parts)
 
@@ -5199,6 +5264,21 @@ async def _select_request_tools(
     else:
         # Copy so the shared module-global tool list can't be mutated by callers.
         tools = list(ALL_TOOLS)
+    tools = [
+        tool for tool in tools if tool["function"]["name"] not in {"read_skill", "create_skill"}
+    ]
+    enabled_skills = _enabled_agent_skills() if tools_on else []
+    if enabled_skills:
+        from core.inference.tools import CREATE_SKILL_TOOL, READ_SKILL_TOOL
+
+        skill_tools = (READ_SKILL_TOOL,)
+        if any(skill["name"] == "skill-creator" for skill in enabled_skills):
+            skill_tools += (CREATE_SKILL_TOOL,)
+        if payload.enabled_tools is not None:
+            skill_tools = tuple(
+                tool for tool in skill_tools if tool["function"]["name"] in payload.enabled_tools
+            )
+        tools.extend(skill_tools)
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]
@@ -20663,19 +20743,16 @@ async def _proxy_to_external_provider(
             tool_payloads = studio_tool_payloads
             # This path runs python/terminal locally too (disable_sandbox =
             # bypass_permissions), so it has the same false-isolation problem.
-            # Only the Full access sentence is added: the path has never carried
-            # the general tool nudge, and widening it would change every
-            # non-Full-access Codex run as a side effect.
-            if payload.bypass_permissions:
-                _codex_full_access_nudge = _build_tool_action_nudge(
-                    tools = studio_tool_payloads,
-                    model_name = model,
-                    full_access = True,
-                    full_access_only = True,
-                )
-                chat_messages = _append_to_codex_instructions(
-                    chat_messages, _codex_full_access_nudge
-                )
+            # Only the Full access sentence and the skill catalog are added: the
+            # path has never carried the general tool nudge, and widening it
+            # would change every non-Full-access Codex run as a side effect.
+            _codex_nudge = _build_tool_action_nudge(
+                tools = studio_tool_payloads,
+                model_name = model,
+                full_access = bool(payload.bypass_permissions),
+                full_access_only = True,
+            )
+            chat_messages = _append_to_codex_instructions(chat_messages, _codex_nudge)
         chat_messages = _prepend_current_date_to_messages(
             chat_messages,
             request,
@@ -21003,13 +21080,14 @@ async def _proxy_to_external_provider(
         )
     # Built before the date, because whether a nudge exists decides whether the Modelfile
     # exemption is worth claiming: _append_to_system_message below displaces that prompt anyway.
-    # Full access disables the sandbox at execution time, so the schemas must say so too.
+    # Full access disables the sandbox at execution time, so the schemas must say so too. The
+    # skill catalog rides along; the general tool nudge stays off this path.
     _external_nudge = ""
-    if run_studio_tool_loop and payload.bypass_permissions:
+    if run_studio_tool_loop:
         _external_nudge = _build_tool_action_nudge(
             tools = external_studio_tools,
             model_name = model,
-            full_access = True,
+            full_access = bool(payload.bypass_permissions),
             full_access_only = True,
         )
     chat_messages = _prepend_current_date_to_messages(
@@ -29921,6 +29999,7 @@ _STUDIO_ANTHROPIC_TOOL_ALIASES = {
     "web_fetch_20260209": "web_search",
     "python": "python",
     "terminal": "terminal",
+    "read_skill": "read_skill",
 }
 # Server tools that never need a confirmation prompt (read-only / non code-
 # executing; mirrors the unconditional-safe names in is_potentially_unsafe_tool_call).
@@ -29929,7 +30008,7 @@ _STUDIO_ANTHROPIC_TOOL_ALIASES = {
 # asks then. render_html is excluded because a networked canvas prompts in auto,
 # and this channel invokes the loop without confirm; auto/ask reject, off/full run.
 _ANTHROPIC_UNPROMPTED_SAFE_TOOLS = frozenset(
-    {"web_search", "search_knowledge_base", "search_conversation"}
+    {"web_search", "search_knowledge_base", "search_conversation", "read_skill"}
 )
 
 
@@ -29996,14 +30075,18 @@ def _select_anthropic_server_tools(
     all_tools: list[dict], requested_studio_tools: set[str], enabled_tools: Optional[list[str]]
 ) -> list[dict]:
     """Select Unsloth tools requested through Anthropic tools and extensions."""
+    available = list(all_tools)
+    if _enabled_agent_skills():
+        from core.inference.tools import READ_SKILL_TOOL
+        available.append(READ_SKILL_TOOL)
     if not requested_studio_tools and enabled_tools is None:
-        return all_tools
+        return available
 
     selected_names = set(requested_studio_tools)
     if enabled_tools is not None:
         selected_names.update(enabled_tools)
 
-    return [tool for tool in all_tools if tool["function"]["name"] in selected_names]
+    return [tool for tool in available if tool["function"]["name"] in selected_names]
 
 
 def _image_bytes_to_png_b64(raw: bytes) -> str:
@@ -30770,6 +30853,27 @@ async def anthropic_count_tokens(
             request,
             include_api_key = _count_server_tools,
         )
+    if _count_server_tools:
+        from core.inference.tools import ALL_TOOLS as _ANTHROPIC_COUNT_TOOLS
+
+        openai_tools = _tools_for_search_images(
+            _select_anthropic_server_tools(
+                _ANTHROPIC_COUNT_TOOLS,
+                _count_studio_tools,
+                payload.enabled_tools,
+            )
+        )
+        _count_full_access = bool(getattr(payload, "bypass_permissions", False))
+        if _count_full_access:
+            # Same schemas /messages renders under Full access, or the count prices a different prompt.
+            from core.inference.tools import apply_full_access_tool_descriptions
+            openai_tools = apply_full_access_tool_descriptions(openai_tools)
+        _count_nudge = _build_tool_action_nudge(
+            tools = openai_tools,
+            model_name = _llama_public_model_id(llama_backend, payload.model),
+            full_access = _count_full_access,
+        )
+        openai_messages = _append_to_system_message(openai_messages, _count_nudge)
 
     # Render with the same reasoning controls generation will use: on switchable
     # templates thinking / reasoning_effort / preserve_thinking change the

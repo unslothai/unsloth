@@ -33,6 +33,28 @@ import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
 import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
 import { usePlatformStore } from "@/config/env";
+
+import { getSkillsSnapshot, settleSkillsForText } from "./skills-api";
+
+function lastUserText(
+  messages: readonly { role?: string; content?: unknown }[],
+): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "user") continue;
+    const content = message.content;
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content
+      .map((part) =>
+        part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
+          ? (part as { text: string }).text
+          : "",
+      )
+      .join(" ");
+  }
+  return "";
+}
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
   IMAGE_SENTINEL_TOOLS,
@@ -1754,13 +1776,19 @@ export async function buildLocalTokenCountExtras(
     ? await projectHasSources(ragProjectId)
     : false;
   const ragOn = ragEnabled || projectRagEnabled;
+
+  await settleSkillsForText("");
+  const hasEnabledSkills = getSkillsSnapshot().skills.some(
+    (skill) => skill.valid && !skill.shadowed && skill.enabled,
+  );
   if (
     !toolsEnabled &&
     !codeToolsEnabled &&
     !artifactsEnabled &&
     !mcpEnabledForChat &&
     !ragOn &&
-    !deepResearchEnabled
+    !deepResearchEnabled &&
+    !hasEnabledSkills
   ) {
     // Explicit false, not omission: the server defaults tools on. The permission level rides
     // along because `--enable-tools` still outranks that false in _effective_enable_tools.
@@ -1784,6 +1812,8 @@ export async function buildLocalTokenCountExtras(
       ...(toolsEnabled ? ["web_search"] : []),
       ...(codeToolsEnabled ? ["python", "terminal", "edit_file"] : []),
       ...(artifactsEnabled ? ["render_html"] : []),
+      "read_skill",
+      "create_skill",
     ],
     mcp_enabled: mcpEnabledForChat,
     // Top level, not inside rag_scope: an archived thread puts search_conversation and its
@@ -5674,6 +5704,12 @@ export function createOpenAIStreamAdapter(
         const buildRequestPayload = async (
           forceRefreshPublicKey = false,
         ): Promise<OpenAIChatCompletionsRequest> => {
+          if (supportsStudioToolsForThisTurn) {
+            await settleSkillsForText(lastUserText(outboundMessages));
+          }
+          const hasEnabledSkills = getSkillsSnapshot().skills.some(
+            (skill) => skill.valid && !skill.shadowed && skill.enabled,
+          );
           if (externalSelection && externalProvider) {
             // Per-thread container reuse; empty falls back to container_auto. Anthropic uses its own key.
             // Anthropic uses anthropicCodeExecContainerId.
@@ -5829,6 +5865,7 @@ export function createOpenAIStreamAdapter(
                 mcpEnabledForChat ||
                 ragEnabled ||
                 projectRagEnabled ||
+                hasEnabledSkills ||
                 // Armed research needs Studio's loop: deep_research is appended past every tool filter, but
                 // only for a request that asked for the loop at all.
                 deepResearchArmed)
@@ -5839,6 +5876,9 @@ export function createOpenAIStreamAdapter(
                         ? ["search_knowledge_base"]
                         : []),
                       ...(toolsEnabled ? ["web_search"] : []),
+                      ...(hasEnabledSkills
+                        ? ["read_skill", "create_skill"]
+                        : []),
                       ...studioLocalCodeTools,
                       // Hosted tools with no local stand-in; their pills stay lit regardless, so listing only local
                       // names dropped Images/Fetch whenever another tool selected this branch. Search is excluded
@@ -6063,13 +6103,14 @@ export function createOpenAIStreamAdapter(
             bypass_permissions: bypassPermissions,
             ...(deepResearchArmed ? { deep_research_armed: true } : {}),
             ...(supportsTools &&
-            (toolsEnabled ||
-              codeToolsEnabled ||
-              renderHtmlToolEnabledForThisTurn ||
-              mcpEnabledForChat ||
-              ragEnabled ||
-              projectRagEnabled ||
-              deepResearchArmed)
+              (toolsEnabled ||
+                codeToolsEnabled ||
+                renderHtmlToolEnabledForThisTurn ||
+                mcpEnabledForChat ||
+                ragEnabled ||
+                projectRagEnabled ||
+                hasEnabledSkills ||
+                deepResearchArmed)
               ? {
                   enable_tools: true,
                   enabled_tools: [
@@ -6078,6 +6119,9 @@ export function createOpenAIStreamAdapter(
                       ? ["search_knowledge_base"]
                       : []),
                     ...(toolsEnabled ? ["web_search"] : []),
+                    ...(hasEnabledSkills
+                      ? ["read_skill", "create_skill"]
+                      : []),
                     ...(codeToolsEnabled
                       ? ["python", "terminal", "edit_file"]
                       : []),
@@ -6128,7 +6172,8 @@ export function createOpenAIStreamAdapter(
                     return mins >= 9999 ? 9999 : mins * 60;
                   })(),
                 }
-              :  // Explicit false, not omission: the server defaults tools on for a request that never mentions them.
+              : // Explicit false keeps UI-off tools disabled; --enable-tools still overrides it
+                // and sees no exhaustive enabled_tools list, so it can supply the default catalog.
                 { enable_tools: false }),
           };
         };
