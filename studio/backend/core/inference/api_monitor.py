@@ -523,11 +523,7 @@ class ApiMonitor:
 
         with self._lock:
             entry = self._find_locked(entry_id)
-            if (
-                entry is None
-                or entry.status != "running"
-                or entry.kind != "request"
-            ):
+            if entry is None or entry.status != "running" or entry.kind != "request":
                 return
 
             entry.running_phase = "prompt_processing"

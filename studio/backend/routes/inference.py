@@ -5812,9 +5812,7 @@ def _monitor_usage(
                 )
     # Only a real llama.cpp prompt_progress frame means prefill is active.
     # Final timing metadata must not move a decoding request back to this phase.
-    prompt_progress = (
-        timings.get("prompt_progress") if isinstance(timings, dict) else None
-    )
+    prompt_progress = timings.get("prompt_progress") if isinstance(timings, dict) else None
     if monitor_id and isinstance(prompt_progress, dict):
         api_monitor.set_prompt_progress(
             monitor_id,
