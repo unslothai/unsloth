@@ -4493,13 +4493,16 @@ class TestResidencyWithdrawsTheNoReserveDio:
         """A scrubbed env var or a vetoed extra also sets `policy_active`, so a user's
         own dio beside an inherited LLAMA_ARG_MLOCK matched it and every relaunch
         produced the same child and set it again, leaving reload_required stuck on."""
-        assert self._satisfied(
-            monkeypatch,
-            direct_io = True,
-            dio_applicable = True,
-            policy_active = True,
-            dio_managed = False,
-        ) is True
+        assert (
+            self._satisfied(
+                monkeypatch,
+                direct_io = True,
+                dio_applicable = True,
+                policy_active = True,
+                dio_managed = False,
+            )
+            is True
+        )
 
     def test_an_active_managed_dio_demands_a_reload(self, monkeypatch):
         assert (
@@ -4633,7 +4636,8 @@ class TestTheVulkanProbeMustCoverItsOwnTargets:
         from core.inference.llama_cpp import LlamaCppBackend as B
 
         monkeypatch.setattr(
-            B, "_enumerated_gpu_devices",
+            B,
+            "_enumerated_gpu_devices",
             classmethod(lambda cls, binary = None, env = None: list(devices)),
         )
         monkeypatch.setattr(B, "_run_vulkan_probe", staticmethod(lambda binary = None: rows))
@@ -4642,34 +4646,42 @@ class TestTheVulkanProbeMustCoverItsOwnTargets:
     def test_a_cuda_ordinal_cannot_satisfy_a_vulkan_row(self, monkeypatch):
         """Selected CUDA0 and Vulkan1, probe holds only Vulkan0: the Vulkan target is
         unprobed, so this must decline."""
-        assert self._confirm(
-            monkeypatch,
-            ["CUDA0", "Vulkan1"],
-            [{"index": 0, "is_igpu": False, "type_known": True}],
-        ) is False
+        assert (
+            self._confirm(
+                monkeypatch,
+                ["CUDA0", "Vulkan1"],
+                [{"index": 0, "is_igpu": False, "type_known": True}],
+            )
+            is False
+        )
 
     def test_covering_the_vulkan_target_confirms(self, monkeypatch):
-        assert self._confirm(
-            monkeypatch,
-            ["CUDA0", "Vulkan1"],
-            [{"index": 1, "is_igpu": False, "type_known": True}],
-        ) is True
+        assert (
+            self._confirm(
+                monkeypatch,
+                ["CUDA0", "Vulkan1"],
+                [{"index": 1, "is_igpu": False, "type_known": True}],
+            )
+            is True
+        )
 
     def test_an_igpu_on_the_covered_target_still_declines(self, monkeypatch):
-        assert self._confirm(
-            monkeypatch,
-            ["CUDA0", "Vulkan1"],
-            [{"index": 1, "is_igpu": True, "type_known": True}],
-        ) is False
+        assert (
+            self._confirm(
+                monkeypatch,
+                ["CUDA0", "Vulkan1"],
+                [{"index": 1, "is_igpu": True, "type_known": True}],
+            )
+            is False
+        )
 
     def test_the_predicate_requires_full_coverage(self, monkeypatch):
         from core.inference.llama_cpp import LlamaCppBackend as B
 
         monkeypatch.setattr(
-            B, "_run_vulkan_probe",
-            staticmethod(lambda binary = None: [
-                {"index": 0, "is_igpu": False, "type_known": True}
-            ]),
+            B,
+            "_run_vulkan_probe",
+            staticmethod(lambda binary = None: [{"index": 0, "is_igpu": False, "type_known": True}]),
         )
         assert B._vulkan_offload_is_discrete("llama-server", [0]) is True
         assert B._vulkan_offload_is_discrete("llama-server", [0, 1]) is False
@@ -4702,9 +4714,8 @@ class TestAForcedProbeKeepsMlockConservative:
         assert B._vulkan_targets_are_igpus("llama-server", None) is False
 
         monkeypatch.setattr(
-            B, "_run_vulkan_probe",
-            staticmethod(lambda binary = None: [
-                {"index": 0, "is_igpu": False, "type_known": True}
-            ]),
+            B,
+            "_run_vulkan_probe",
+            staticmethod(lambda binary = None: [{"index": 0, "is_igpu": False, "type_known": True}]),
         )
         assert B._vulkan_probe_answered("llama-server") is True

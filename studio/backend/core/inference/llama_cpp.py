@@ -8692,9 +8692,7 @@ class LlamaCppBackend:
             # selected ordinal let a CUDA target's 0 satisfy Vulkan row 0 and leave the
             # actual Vulkan device unprobed but treated as discrete.
             vulkan_ordinals = [
-                cls._device_ordinal(d)
-                for d in selected
-                if cls._device_backend(d) == "vulkan"
+                cls._device_ordinal(d) for d in selected if cls._device_backend(d) == "vulkan"
             ]
             if any(o is None for o in vulkan_ordinals):
                 return False
