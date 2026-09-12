@@ -13,12 +13,27 @@ import ast
 import errno
 import selectors
 import socket
+import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
 from utils import happy_eyeballs as he
+
+_TESTS_DIR = str(Path(__file__).resolve().parent)
+if _TESTS_DIR not in sys.path:
+    sys.path.insert(0, _TESTS_DIR)
+
+# Imported rather than restated. The first version of this guard copied the list and
+# dropped three of them -- including hub/workers/hf_download.py, the Hub downloader this
+# whole change exists for -- while its docstring claimed to mirror that file.
+from test_native_tls_entrypoints import _ENTRYPOINTS as _NATIVE_TLS_ENTRYPOINTS  # noqa: E402
+
+# Activates inside the spawned child function rather than at import, so the native TLS
+# guard (which checks module-level calls by AST) does not list it.
+_EXTRA_ENTRYPOINTS = ("core/training/diffusion_training_service.py",)
 
 
 DISCARD = [f"100::{i + 1}" for i in range(8)]
@@ -281,17 +296,12 @@ def test_activation_installs_the_connector_and_is_idempotent(monkeypatch):
 
 
 def test_every_network_entry_point_activates_it():
-    """Injection does not survive a spawn. Mirrors test_native_tls_entrypoints.py."""
+    """Injection does not survive a spawn, so a worker that activates native TLS without
+    this one still pays one timeout per resolved address."""
     import pathlib
 
     backend = pathlib.Path(he.__file__).resolve().parent.parent
-    for rel in (
-        "main.py",
-        "core/data_recipe/jobs/worker.py",
-        "core/training/worker.py",
-        "core/training/diffusion_training_service.py",
-        "core/inference/worker.py",
-    ):
+    for rel in tuple(_NATIVE_TLS_ENTRYPOINTS) + _EXTRA_ENTRYPOINTS:
         src = (backend / rel).read_text(encoding = "utf-8")
         assert "activate_native_tls()" in src, f"{rel} moved; update this guard"
         assert (
