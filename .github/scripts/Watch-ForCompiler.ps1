@@ -370,6 +370,15 @@ function Invoke-WithCompilerWatch {
     # of the sweep above, so a compiler started in that second is counted: a deliberate
     # trade towards a loud false alarm rather than a dropped real compile.
     $since = (Get-Date).AddSeconds(-1)
+    # That second reaches backwards, so it can reach into whatever ran BEFORE this action.
+    # It did: the positive control compiles a type one step earlier, and its
+    # csc.exe -> cvtres.exe landed inside the installer measurement's lookback and was
+    # reported as "the installer spawned 1 compiler process(es)".
+    #
+    # Recorded and subtracted below, rather than moving the floor forward: a hit already in
+    # the window before the action starts cannot be the action's, while moving the floor to
+    # "now" would give up the same-tick protection the second is there to provide.
+    $prior = @(Get-StudioCompilerEvents -Since $since -Until (Get-Date))
     # Opened here, with the 4688 window, and not before the baseline: a file the
     # machine creates during that recursive sweep predates the action.
     $watch = Start-StudioTempWatch
@@ -394,7 +403,13 @@ function Invoke-WithCompilerWatch {
     # Closed before the temp sweep, which can take seconds: anything the machine
     # starts during that walk belongs to nobody's measurement.
     $until = Get-Date
-    $compilers = @(Get-StudioCompilerEvents -Since $since -Until $until)
+    # Each hit string carries its own round-trip timestamp, image and message, so it
+    # identifies the record. Anything that was already there before the action ran is
+    # dropped by identity.
+    $compilers = @(
+        Get-StudioCompilerEvents -Since $since -Until $until |
+            Where-Object { $prior -notcontains $_ }
+    )
 
     $after = Get-StudioTempArtifacts
     $left = @($after | Where-Object { -not $before.Contains($_) })

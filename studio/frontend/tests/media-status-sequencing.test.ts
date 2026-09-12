@@ -65,6 +65,14 @@ for (const [name, path, read, unload] of PAGES) {
       guard.index < write,
       "the ticket guard must come before the status write, not after it",
     );
+    // And there is only the one write. Guarding the first while a second sits unguarded
+    // after it leaves every stale response overwriting the status, which is the same bug
+    // with an extra line in front of it.
+    assert.equal(
+      (body.match(/setStatus\(/g) ?? []).length,
+      1,
+      "setStatusIfNewest must write the status exactly once, under the ticket guard",
+    );
     // Every writer goes through it, so none can be the one that slips past.
     assert.doesNotMatch(
       page,
