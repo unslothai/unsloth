@@ -64,9 +64,7 @@ host_has_nvidia() {
     local listing
     [[ -e "$DEV_ROOT/dev/nvidiactl" ]] && return 0
     command -v nvidia-smi >/dev/null 2>&1 || return 1
-    # buffer before matching: under `set -o pipefail` a `grep -q` that exits on the
-    # first line can turn the producer's SIGPIPE into the pipeline's status, which
-    # would read as "no GPU" and silently drop --gpus. Same reason as entrypoint.sh.
+    # buffer before grep -q: under pipefail the producer's SIGPIPE can become the pipeline status, which reads as "no GPU" and silently drops --gpus
     listing="$(nvidia-smi -L 2>/dev/null || true)"
     grep -q '^GPU' <<< "${listing}"
 }

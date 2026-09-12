@@ -55,14 +55,10 @@ sync_notebooks() {
 err()  { printf "\033[1;31mERROR:\033[0m %s\n" "$*" >&2; }
 warn() { printf "\033[1;33mWARN:\033[0m %s\n"  "$*" >&2; }
 
-# nvidia-smi is injected on a GPU request, not baked in, so a missing binary means
-# "no GPU attached", same as an empty -L
+# nvidia-smi is injected on a GPU request, so a missing binary means "no GPU attached"
 gpu_visible() {
     local listing
-    # nvidia-smi -L lists the hardware and ignores CUDA_VISIBLE_DEVICES, but torch
-    # honours it: an empty value or -1 leaves torch.cuda.device_count() == 0. Both
-    # are the documented way to hide every device, so answering "visible" here would
-    # take the GPU path for processes that have no GPU.
+    # nvidia-smi -L ignores CUDA_VISIBLE_DEVICES but torch honours it: "" and -1 leave device_count() == 0, so they are no GPU
     case "${CUDA_VISIBLE_DEVICES-unset}" in
         ""|-1) return 1 ;;
     esac
@@ -71,11 +67,8 @@ gpu_visible() {
     grep -q '^GPU' <<< "${listing}"
 }
 
-# The unsloth library reads UNSLOTH_ALLOW_CPU=1 as CPU-only CI and skips its TRL
-# trainer patches, so it may only reach processes that have no GPU. An image opts in to
-# the CPU fallback with UNSLOTH_IMAGE_ALLOW_CPU=1; an explicit -e still decides.
-# `-`, not `:-`: `-e UNSLOTH_ALLOW_CPU=` sets it to empty, which is a way of saying
-# off, so it must not fall through to the image opt-in and start anyway.
+# The library reads UNSLOTH_ALLOW_CPU=1 as CPU-only CI and skips its TRL trainer patches, so it may only reach processes with no GPU.
+# Images opt in via UNSLOTH_IMAGE_ALLOW_CPU; `-`, not `:-`, so an explicitly empty UNSLOTH_ALLOW_CPU means off.
 allow_cpu="${UNSLOTH_ALLOW_CPU-${UNSLOTH_IMAGE_ALLOW_CPU:-0}}"
 if gpu_visible; then
     has_gpu=1
@@ -96,8 +89,6 @@ if [[ "${UNSLOTH_SKIP_GPU_CHECK:-0}" == "1" ]]; then
     exec "$@"
 fi
 
-# CPU mode covers Jupyter, GGUF tooling and Studio chat, but NOT training or loading
-# a model. A visible GPU still runs the checks below.
 if [[ "${has_gpu}" == "0" && "${allow_cpu}" == "1" ]]; then
     warn "UNSLOTH_ALLOW_CPU=1 and no GPU visible -- continuing on CPU."
     warn "CPU mode covers Jupyter, GGUF tooling and llama.cpp (GGUF) Studio chat."

@@ -27,12 +27,7 @@ _BASE_DF = os.path.join(_DOCKER, "Dockerfile")
 _ENTRYPOINT = os.path.join(_DOCKER, "entrypoint.sh")
 
 
-# Both shell classes below stub /usr/bin-style tools, stage a /dev tree and read the
-# environment a POSIX exec hands on. Git Bash puts `bash` on PATH on a Windows runner,
-# so a which() check alone lets them run there and fail on path translation and the
-# exec bit -- including four that predate this file's entrypoint cases. Linux and
-# macOS is also the only place any workflow runs this file: the Windows matrix in
-# cross-platform-parity-ci.yml names five files, none of them this one.
+# Git Bash satisfies which("bash") on Windows but breaks on path translation and the exec bit; upstream only runs this file on ubuntu.
 _posix_shell = pytest.mark.skipif(
     os.name != "posix" or shutil.which("bash") is None,
     reason = "POSIX shell required",
@@ -171,8 +166,7 @@ class TestRunShDegradesWithoutNvidia:
 
 class TestStudioImageAllowsCpu:
     def test_studio_image_opts_in_through_its_own_variable(self):
-        """:latest is the Studio image. Without an opt-in every CPU-only, AMD and
-        Docker-Desktop user goes from working Studio to an exit 1."""
+        """:latest is the Studio image: without an opt-in every CPU-only, AMD and Docker-Desktop user gets an exit 1."""
         body = open(_STUDIO_DF, encoding = "utf-8").read()
         env_lines = [
             ln.strip()
@@ -182,8 +176,7 @@ class TestStudioImageAllowsCpu:
         assert env_lines, "Dockerfile.studio does not default UNSLOTH_IMAGE_ALLOW_CPU=1"
 
     def test_studio_image_env_never_carries_allow_cpu(self):
-        """An image ENV reaches every process, so UNSLOTH_ALLOW_CPU=1 there broke
-        training everywhere on a GPU host. Only install.sh may see it, inline."""
+        """An image ENV reaches every process, so UNSLOTH_ALLOW_CPU=1 there broke training on GPU hosts. Only install.sh may see it, inline."""
         body = open(_STUDIO_DF, encoding = "utf-8").read()
         env_block = body[body.index("ENV UNSLOTH_STUDIO_HOME") :]
         env_block = env_block[: env_block.index("\n\n")]
@@ -196,10 +189,7 @@ class TestStudioImageAllowsCpu:
         assert inline == ["UNSLOTH_ALLOW_CPU=1 \\"], inline
 
     def test_the_studio_image_bundles_the_entrypoint_that_reads_its_opt_in(self):
-        """BASE_IMAGE defaults to the PUBLISHED :core, whose entrypoint predates
-        UNSLOTH_IMAGE_ALLOW_CPU. Without its own copy a standalone build opts in and
-        still exits 1 on a CPU-only host; CI never saw it because it pins the digest
-        of the core image built in the same run."""
+        """The published :core entrypoint predates UNSLOTH_IMAGE_ALLOW_CPU, so without its own copy a standalone build opts in and still exits 1."""
         body = open(_STUDIO_DF, encoding = "utf-8").read()
         assert re.search(
             r"^COPY\s+entrypoint\.sh\s+/usr/local/bin/unsloth-entrypoint\s*$",
@@ -219,9 +209,7 @@ class TestStudioImageAllowsCpu:
 
 
 def _studio_image_env():
-    """The *ALLOW_CPU settings Dockerfile.studio bakes as image ENV, read from the
-    file rather than hardcoded: a test that spells the new name itself still passes
-    against an entrypoint that has never heard of it."""
+    """Read the image ENV from the Dockerfile: a test that spells the name itself would pass against an entrypoint that never heard of it."""
     body = open(_STUDIO_DF, encoding = "utf-8").read()
     env = {}
     for block in re.findall(r"^ENV\s+((?:.*\\\n)*.*)$", body, re.M):
@@ -231,8 +219,6 @@ def _studio_image_env():
 
 
 def _run_entrypoint(tmp_path, *, gpu, env_extra):
-    """Run docker/entrypoint.sh with stubbed nvidia-smi and python, exec'ing a command
-    that dumps its environment. Returns (returncode, child env dict, stderr)."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     if gpu:
@@ -273,8 +259,7 @@ def _run_entrypoint(tmp_path, *, gpu, env_extra):
 @_posix_shell
 class TestEntrypointAllowCpu:
     def test_studio_image_on_a_cpu_host_starts_and_exports_allow_cpu(self, tmp_path):
-        """Studio's own processes still need UNSLOTH_ALLOW_CPU=1 to import unsloth
-        without a GPU, so the entrypoint exports it for its children."""
+        """Studio's own processes need UNSLOTH_ALLOW_CPU=1 to import unsloth without a GPU."""
         rc, child, stderr = _run_entrypoint(
             tmp_path, gpu = False, env_extra = {"UNSLOTH_IMAGE_ALLOW_CPU": "1"}
         )
@@ -283,10 +268,7 @@ class TestEntrypointAllowCpu:
         assert "continuing on CPU" in stderr
 
     def test_studio_image_on_a_gpu_host_hides_allow_cpu(self, tmp_path):
-        """The regression: with a GPU visible the children must not see the variable,
-        or Studio training and every notebook run on stock TRL. The environment comes
-        from the Dockerfile, so this exercises the image and entrypoint as a PAIR --
-        spelled out, it would pass against the image ENV that caused the bug."""
+        """The regression: children that see it train on stock TRL. Env comes from the Dockerfile, so image and entrypoint are exercised as a PAIR."""
         image_env = _studio_image_env()
         assert image_env, "Dockerfile.studio bakes no *ALLOW_CPU image ENV"
         rc, child, stderr = _run_entrypoint(tmp_path, gpu = True, env_extra = image_env)
@@ -294,8 +276,7 @@ class TestEntrypointAllowCpu:
         assert "UNSLOTH_ALLOW_CPU" not in child
 
     def test_an_explicit_allow_cpu_on_a_gpu_host_is_dropped_with_a_warning(self, tmp_path):
-        """docker/run.sh forwards a host-shell UNSLOTH_ALLOW_CPU, and the docs tell
-        CPU users to pass it, so a GPU host can receive it explicitly too."""
+        """run.sh forwards a host-shell UNSLOTH_ALLOW_CPU and the docs tell CPU users to pass it, so a GPU host can receive it too."""
         rc, child, stderr = _run_entrypoint(
             tmp_path, gpu = True, env_extra = {"UNSLOTH_ALLOW_CPU": "1"}
         )
@@ -326,8 +307,6 @@ class TestEntrypointAllowCpu:
 
     @pytest.mark.parametrize("gpu", [True, False])
     def test_skipping_the_gpu_check_applies_the_same_rule(self, tmp_path, gpu):
-        """UNSLOTH_SKIP_GPU_CHECK=1 skips the torch checks, not the variable's
-        meaning: a GPU host must still lose it and a CPU host must still get it."""
         rc, child, stderr = _run_entrypoint(
             tmp_path,
             gpu = gpu,
@@ -340,9 +319,7 @@ class TestEntrypointAllowCpu:
             assert child.get("UNSLOTH_ALLOW_CPU") == "1"
 
     def test_skipping_the_gpu_check_does_not_invent_an_opt_in(self, tmp_path):
-        """:core sets no opt-in. UNSLOTH_SKIP_GPU_CHECK=1 is the only way to reach
-        exec on a CPU host without one, so it is the only place an unconditional
-        export would hide -- and it would silently disable the TRL patches."""
+        """The only way to reach exec on a CPU host with no opt-in, so the only place an unconditional export would hide and disable the TRL patches."""
         rc, child, stderr = _run_entrypoint(
             tmp_path, gpu = False, env_extra = {"UNSLOTH_SKIP_GPU_CHECK": "1"}
         )
@@ -351,9 +328,7 @@ class TestEntrypointAllowCpu:
 
     @pytest.mark.parametrize("mask", ["", "-1"])
     def test_cuda_masked_to_nothing_counts_as_no_gpu(self, tmp_path, mask):
-        """nvidia-smi -L lists the hardware and ignores CUDA_VISIBLE_DEVICES; torch
-        honours it, so an empty value or -1 leaves device_count() == 0. Taking the
-        GPU path there would strip the opt-in from processes that have no GPU."""
+        """nvidia-smi -L ignores CUDA_VISIBLE_DEVICES but torch honours it, so the GPU path would strip the opt-in from a process with no device."""
         rc, child, stderr = _run_entrypoint(
             tmp_path,
             gpu = True,
@@ -364,7 +339,6 @@ class TestEntrypointAllowCpu:
         assert "continuing on CPU" in stderr
 
     def test_a_real_device_mask_is_still_a_gpu(self, tmp_path):
-        """The mask above must not swallow an ordinary pin to one device."""
         rc, child, stderr = _run_entrypoint(
             tmp_path,
             gpu = True,
@@ -374,8 +348,7 @@ class TestEntrypointAllowCpu:
         assert "UNSLOTH_ALLOW_CPU" not in child
 
     def test_an_explicit_empty_value_is_not_an_opt_in(self, tmp_path):
-        """`-e UNSLOTH_ALLOW_CPU=` sets it to empty, which is a way of saying off. It
-        must not fall through to the image opt-in, which `:-` would do."""
+        """`-e UNSLOTH_ALLOW_CPU=` means off; it must not fall through to the image opt-in, which `:-` would do."""
         rc, _, stderr = _run_entrypoint(
             tmp_path,
             gpu = False,
