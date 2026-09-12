@@ -16,6 +16,7 @@ lets this run in seconds rather than behind a GGUF download.
 
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -302,6 +303,64 @@ def read_globals(page):
     )
 
 
+def check_reasoning_page_navigation(page, token):
+    step("saved reasoning pages render the selected source range")
+    source = "\n\n".join(
+        f"Step {index:04d}. Compare this observation with the preceding reasoning "
+        "and keep the complete trace available for inspection."
+        for index in range(400)
+    )
+    thread_id = seed_thread(page, token, "Reasoning page navigation")
+    messages = api(page, f"/api/chat/threads/{thread_id}/messages", token = token)["messages"]
+    messages.append(
+        {
+            "id": str(uuid.uuid4()),
+            "threadId": thread_id,
+            "parentId": messages[0]["id"],
+            "role": "assistant",
+            "content": [
+                {"type": "reasoning", "text": source},
+                {"type": "text", "text": "The final answer stays separate."},
+            ],
+            "createdAt": int(time.time() * 1000),
+        }
+    )
+    api(
+        page,
+        f"/api/chat/threads/{thread_id}/messages",
+        method = "PUT",
+        token = token,
+        body = {"messages": messages},
+    )
+    open_thread(page, thread_id)
+    page.get_by_role("button", name = "Thought for 0 seconds", exact = True).click()
+    navigation = page.get_by_role("navigation", name = "Reasoning pages")
+    body = page.locator('[data-slot="reasoning-text"]')
+
+    def expect_selected_page():
+        expect(navigation).to_be_visible()
+        match = re.search(r"(\d+)–(\d+) of (\d+)", navigation.inner_text())
+        assert match, "missing reasoning source range"
+        start, end, total = map(int, match.groups())
+        assert total == len(source)
+        assert 0 < end - start + 1 <= 8192
+        expect(body).to_have_text(source[start - 1 : end].replace("\n", ""))
+        return start, end
+
+    latest = expect_selected_page()
+    navigation.get_by_role("button", name = "Earlier", exact = True).click()
+    earlier = expect_selected_page()
+    assert earlier[1] < latest[0]
+    navigation.get_by_role("button", name = "Earlier", exact = True).click()
+    oldest = expect_selected_page()
+    assert oldest[1] < earlier[0]
+    navigation.get_by_role("button", name = "Newer", exact = True).click()
+    assert expect_selected_page() == earlier
+    navigation.get_by_role("button", name = "Latest", exact = True).click()
+    assert expect_selected_page() == latest
+    expect(page.get_by_text("The final answer stays separate.", exact = True)).to_be_visible()
+
+
 def main():
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(args = ["--no-sandbox", "--disable-dev-shm-usage"])
@@ -457,6 +516,8 @@ def main():
         for thread in listing.get("threads", []):
             if thread.get("settings") is not None:
                 fail(f"thread listing carries a settings snapshot: {thread['id']}")
+
+        check_reasoning_page_navigation(page, token)
 
         if page_errors:
             fail(f"page errors during the run: {page_errors[:3]!r}")

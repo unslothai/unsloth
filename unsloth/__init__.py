@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -15,6 +12,17 @@
 import os, importlib.util, platform, sys
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
+
+# Before transformers, which reads sentencepiece availability during its own import. On Windows
+# the extension is never imported at all: a code integrity policy can refuse it by reputation,
+# and any probe to find out whether this machine will is itself the refusal the user sees. See
+# import_fixes.disable_sentencepiece_on_windows; UNSLOTH_DISABLE_SENTENCEPIECE=0 opts out.
+try:
+    from .import_fixes import disable_sentencepiece_on_windows as _no_sentencepiece
+    _no_sentencepiece()
+    del _no_sentencepiece
+except Exception:
+    pass
 
 # Transformers 4.x imports TensorFlow / Flax merely because they are installed (processing_utils
 # -> image_transforms); it reads these variables once at its own import, so they have to land

@@ -1,66 +1,165 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Estimated Memory Usage header is the only row in the panel carrying a title AND
-// two figures, and the panel is w-[min(468px,calc(100vw-1rem))] -- so under a ~460px
-// window it shrinks while the figures do not. Measured on the merged build at 320px
-// the title had been squeezed from 150px to 11px and rendered as "E...", which is what
-// was reported. The layout half is asserted against the source, the idiom
-// tensor-parallel-row-gating already uses for markup that cannot be imported; the note
-// half is a pure function and is exercised directly.
+// Verify the memory row's disclosure markup and wrapping captions.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { ChevronDown } from "lucide-react";
+import * as React from "react";
+import * as jsxRuntime from "react/jsx-runtime";
+import { renderToStaticMarkup } from "react-dom/server";
+import type * as MemoryEstimateModule from "../src/features/model-picker/components/memory-estimate-row.tsx";
+import * as memoryFit from "../src/features/model-picker/model-config/memory-fit.ts";
+import { loadWithStubs } from "./helpers/module-stubs.ts";
 
-import {
-  glueNoteItems,
-  resolveDraftCacheNote,
-  resolveKvNote,
-} from "../src/features/model-picker/model-config/memory-fit.ts";
-
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const CONFIG_PAGE = readFileSync(
-  path.join(
-    HERE,
-    "..",
-    "src/features/model-picker/components/model-config-page.tsx",
+const { glueNoteItems, resolveDraftCacheNote, resolveKvNote } = memoryFit;
+const { MemoryEstimateRow } = loadWithStubs<typeof MemoryEstimateModule>(
+  new URL(
+    "../src/features/model-picker/components/memory-estimate-row.tsx",
+    import.meta.url,
   ),
-  "utf8",
+  {
+    react: React,
+    "react/jsx-runtime": jsxRuntime,
+    "lucide-react": { ChevronDown },
+    "../model-config/memory-fit": memoryFit,
+    "@/components/ui/tooltip": {
+      Tooltip: ({ children }: { children: React.ReactNode }) => children,
+      TooltipTrigger: ({ children }: { children: React.ReactNode }) => children,
+      TooltipContent: () => null,
+    },
+  },
 );
+
+type Props = React.ComponentProps<typeof MemoryEstimateRow>;
+const GIB = 1024 ** 3;
+const props: Props = {
+  estimate: {
+    available: true,
+    reason: null,
+    weightsBytes: 3.25 * GIB,
+    kvBytes: 1.5 * GIB,
+    computeBytes: 0.75 * GIB,
+    drafterRuntimeBytes: 0,
+    drafterRuntimeGpuBytes: 0,
+    projectorRuntimeBytes: 0,
+    drafterKvUnsized: false,
+    adaptersUnsized: false,
+    totalBytes: 5.5 * GIB,
+    gpuBytes: 4.75 * GIB,
+    kvEstimable: true,
+    kvOnGpu: true,
+    nCtx: 262144,
+    cacheTypeKv: "f16",
+    nParallel: 4,
+    layerCount: 27,
+    gpuLayers: 12,
+    moeOffloadUnmodelled: false,
+  },
+  loading: false,
+  stale: false,
+  gpuCapacityGb: 24,
+  totalCapacityGb: 88,
+  systemRamCapacityGb: 64,
+  freeGpuCapacityGb: 24,
+  usableSystemRamGb: 60,
+  isUnifiedMemory: false,
+  singleMemoryPool: false,
+  expanded: false,
+  onExpandedChange: () => {},
+};
+
+function render(overrides: Partial<Props> = {}): string {
+  return renderToStaticMarkup(
+    React.createElement(MemoryEstimateRow, { ...props, ...overrides }),
+  );
+}
 
 const NBSP = " ";
 
-test("the memory header may wrap, so the figures drop rather than eat the title", () => {
-  assert.match(CONFIG_PAGE, /\$\{ROW_CLASS\} flex-wrap gap-y-1/);
+test("the title and figures occupy separate rows", () => {
+  const html = render();
+  const button = html.match(/<button\b[^>]*>([\s\S]*?)<\/button>/)?.[1];
+  assert.ok(button);
+  assert.match(button, /Estimated Memory Usage/);
+  assert.doesNotMatch(button, /GiB/);
+  assert.match(html, />GPU<\/span>/);
+  assert.match(html, />Total<\/span>/);
+  assert.match(html, /4\.75 GiB/);
+  assert.match(html, /5\.50 GiB/);
 });
 
-test("the wrapped figures still sit at the right edge", () => {
-  // justify-between has nothing to push against on a line holding one item, so
-  // without this the figures jump to the left margin when they wrap.
-  assert.match(CONFIG_PAGE, /className=\{`ml-auto flex shrink-0 items-center gap-3/);
+test("the disclosure controls an existing breakdown in both states", () => {
+  for (const expanded of [false, true]) {
+    const html = render({ expanded });
+    assert.ok(html.includes(`aria-expanded="${expanded}"`));
+    const contentId = html.match(/aria-controls="([^"]+)"/)?.[1];
+    assert.ok(contentId);
+    assert.ok(html.includes(`id="${contentId}"`));
+    assert.equal(html.includes(`id="${contentId}" hidden=""`), !expanded);
+    assert.match(html, /Weights/);
+    assert.match(html, /KV cache/);
+  }
 });
 
-test("the header title is still allowed to truncate as a backstop", () => {
-  // Wrapping is what keeps it whole at the widths that matter; truncation stays for a
-  // locale whose title does not fit a line of its own. Dropping min-w-0 here would
-  // overflow the panel instead.
-  assert.match(
-    CONFIG_PAGE,
-    /className="flex min-w-0 items-center gap-1\.5 rounded-sm text-left/,
+test("a shared pool shows the total without a duplicate GPU figure", () => {
+  const html = render({ singleMemoryPool: true, isUnifiedMemory: true });
+  assert.match(html, />Unified<\/span>/);
+  assert.match(html, /5\.50 GiB/);
+  assert.doesNotMatch(html, />GPU<\/span>|>Total<\/span>|4\.75 GiB/);
+});
+
+test("an unavailable estimate stays hidden", () => {
+  assert.equal(render({ estimate: null }), "");
+  assert.equal(
+    render({ estimate: { ...props.estimate!, available: false } }),
+    "",
   );
 });
 
-test("breakdown notes are rendered glued", () => {
-  assert.match(CONFIG_PAGE, /\{glueNoteItems\(note\)\}/);
+test("a RAM-only load shows one figure with CPU-appropriate guidance", () => {
+  const html = render({
+    estimate: { ...props.estimate!, gpuBytes: 0, gpuLayers: 0, kvOnGpu: false },
+    usableSystemRamGb: 2,
+  });
+  assert.match(html, />RAM<\/span>/);
+  assert.match(html, /aria-label="RAM: 5\.50 GiB"/);
+  assert.match(html, /Fits system RAM, but little is free right now/);
+  assert.doesNotMatch(html, />GPU<\/span>|>Total<\/span>|fewer CPU layers/);
+});
+
+test("zero free VRAM keeps the GPU figure and its warning", () => {
+  const html = render({ freeGpuCapacityGb: 0, freeGpuCapacityKnown: true });
+  assert.match(html, />GPU<\/span>/);
+  assert.match(html, />Total<\/span>/);
+  assert.match(html, /little VRAM is free right now/);
+});
+
+test("memory figures are keyboard targets with the full value as their name", () => {
+  const html = render();
+  assert.match(
+    html,
+    /<button[^>]*type="button"[^>]*aria-label="GPU: 4\.75 GiB"/,
+  );
+  assert.match(
+    html,
+    /<button[^>]*type="button"[^>]*aria-label="Total: 5\.50 GiB"/,
+  );
+});
+
+test("breakdown captions preserve word groups", () => {
+  assert.ok(
+    render({ expanded: true }).includes(
+      glueNoteItems("f16 · 262,144 tokens · 4 slots"),
+    ),
+  );
 });
 
 test("an item's own spaces do not break", () => {
   const glued = glueNoteItems("f16 · 262,144 tokens · 4 slots");
   assert.equal(glued, `f16 ·${NBSP}262,144${NBSP}tokens ·${NBSP}4${NBSP}slots`);
-  // The only ordinary spaces left are the ones a line may break at: one per bullet.
+  // One breakable space remains per bullet.
   assert.equal(glued.split(" ").length - 1, 2);
 });
 
@@ -71,9 +170,7 @@ test("the bullet leads its item, so a break cannot orphan it", () => {
 });
 
 test("a note with no separator keeps every break opportunity it had", () => {
-  // Only the KV caption is a list. Weights and Draft cache are ordinary prose, and
-  // gluing those bought nothing while costing them the ability to wrap at all, so a
-  // long one ran past the caption column into the value instead of wrapping inside it.
+  // Prose captions must still wrap.
   for (const note of [
     "256 of 257 layers on GPU",
     "2.14 GB on GPU",
@@ -86,8 +183,7 @@ test("a note with no separator keeps every break opportunity it had", () => {
 });
 
 test("the notes the row actually builds are left breakable", () => {
-  // The two non-list note sources, at their real call sites in model-config-page.
-  assert.match(CONFIG_PAGE, /layers on GPU`/);
+  assert.match(render({ expanded: true }), /12 of 28 layers on GPU/);
   const hostNote = resolveDraftCacheNote(0, 1e9);
   assert.equal(hostNote, "host RAM");
   for (const note of ["256 of 257 layers on GPU", hostNote ?? ""]) {
@@ -103,6 +199,6 @@ test("gluing round-trips the note the row actually builds", () => {
     nParallel: 4,
     kvOnGpu: false,
   });
-  // Same text to a reader, and to anyone grepping the panel: only the spaces differ.
+  // Only whitespace changes.
   assert.equal(glueNoteItems(note).replace(new RegExp(NBSP, "g"), " "), note);
 });

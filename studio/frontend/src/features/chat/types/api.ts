@@ -148,7 +148,6 @@ export interface ValidateModelResponse {
   chat_template?: string | null;
   /** Architecture only shipped by a newer transformers; UI pauses on the upgrade dialog. */
   requires_transformers_upgrade?: boolean;
-  /** Set only when requires_transformers_upgrade. */
   transformers_upgrade?: TransformersUpgradeInfo | null;
 }
 
@@ -208,6 +207,10 @@ export interface LoadModelResponse {
   is_lora: boolean;
   is_gguf?: boolean;
   is_local_model?: boolean;
+  /** Advisory, absent on nearly every load: the integrated GPU has less memory
+   *  dedicated to it than the weights need. Unknown-shaped on purpose so an older or
+   *  proxied backend cannot render "undefined GB"; narrowed by parseCarveoutAdvice. */
+  carveout_advice?: unknown;
   is_diffusion?: boolean;
   /** GPU-layer count the diffusion runner was ASKED for, when it differs from what it applied: a shim
    *  without --ngl runs Auto, so gpu_layers reports -1 while this carries the request. */

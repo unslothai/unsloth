@@ -80,10 +80,9 @@ export function usePanelAnchor(
       setSize(null);
       return;
     }
-    // offsetWidth/offsetHeight, not the bounding rect: the panel animates in
-    // from scale 0.94, and a rect measured through that transform is 6% short.
-    // Placed against it, the panel then overhangs the right edge of the screen
-    // once the animation lands.
+    // offsetWidth/offsetHeight, not the bounding rect: the panel animates in from scale 0.94, and a
+    // rect measured through that transform is 6% short. Placed against it, the panel then overhangs
+    // the right edge of the screen once the animation lands.
     const measure = () => {
       const width = element.offsetWidth;
       const height = element.offsetHeight;
@@ -136,10 +135,9 @@ export function usePanelAnchor(
     [commit, size, viewport],
   );
 
-  // Publish where it actually landed, so the notification stack steps over this
-  // panel the same way it steps over the resource monitor. Measured rather than
-  // derived from the anchor, because before the first anchor is committed the
-  // panel is still sitting on its CSS corner.
+  // Publish where it actually landed, so the notification stack steps over this panel the same way
+  // it steps over the resource monitor. Measured rather than derived from the anchor, because
+  // before the first anchor is committed the panel is still sitting on its CSS corner.
   useLayoutEffect(() => {
     const { setFrame, clearFrame } = useMonitorFrameStore.getState();
     if (!element) {
