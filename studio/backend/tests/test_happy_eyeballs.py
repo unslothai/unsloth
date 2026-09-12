@@ -3,8 +3,11 @@
 
 """A black-holed address family must cost one stagger, not one timeout per address.
 
-The black hole is real, not mocked: 100::/64 is the RFC 6666 discard prefix, so a
-connect() to it hangs exactly as it does behind a VPN that carries no IPv6.
+Where the clock is the thing under test, the black hole is real: 100::/64 is the RFC
+6666 discard prefix, so a connect() to it hangs exactly as it does behind a VPN that
+carries no IPv6. Where the thing under test is which attempt opens, and when, the socket
+is scripted instead, because a discard address is refused outright rather than silent on
+a host with no IPv6 route at all.
 """
 
 from __future__ import annotations
@@ -119,9 +122,9 @@ def test_eight_black_holed_aaaa_cost_one_stagger(listener, monkeypatch):
     assert elapsed < 3.0, f"took {elapsed:.1f}s; the AAAA records were walked in order"
 
 
-def test_the_timeout_is_the_whole_connect_not_each_address(monkeypatch):
-    """With no A record to win, six black-holed AAAA must still fail at the budget, not
-    at six times it."""
+def test_the_whole_walk_costs_one_timeout_plus_staggers_not_one_timeout_each(monkeypatch):
+    """With no A record to win, six black-holed AAAA must fail at one budget plus the
+    staggers that opened them, not at six budgets."""
     monkeypatch.setattr(socket, "getaddrinfo", _resolver(443, aaaa = 6, with_a = False))
 
     start = time.monotonic()
@@ -129,9 +132,87 @@ def test_the_timeout_is_the_whole_connect_not_each_address(monkeypatch):
         he.happy_eyeballs_connection(("hub.invalid", 443), 3)
     elapsed = time.monotonic() - start
 
+    # 3s + five staggers = 4.25s; 6s leaves slack for a loaded CI box and is still well
+    # under the 18s the stdlib pays.
     assert (
-        elapsed < 5.0
+        elapsed < 6.0
     ), f"took {elapsed:.1f}s for a 3s budget; the timeout is still applied per address"
+
+
+def test_a_reachable_address_late_in_the_list_is_still_dialled(monkeypatch):
+    """The stdlib hands every resolved address the caller's whole timeout, so a host
+    whose only reachable address sits late in the list connects, however slowly. Sharing
+    one budget of ``timeout`` across the race took that away: once ``timeout / delay``
+    attempts had opened, the deadline had passed and the addresses behind them were never
+    tried at all. The budget now carries one stagger per extra address, so every attempt
+    still gets the whole timeout.
+
+    One family, because interleaving is what saves a host whose families differ. A host
+    with eight dead A records and one live one has no second family to cut in.
+
+    Scripted rather than dialled: the case is about which attempts open and when.
+    """
+    monkeypatch.setenv(he._DELAY_ENV, "0.05")
+    good = "127.0.0.1"
+    dialled = []
+
+    class _Stub:
+        def __init__(self, family, *_args, **_kwargs):
+            self.family = family
+            self.peer = None
+
+        def setblocking(self, _flag):
+            pass
+
+        def settimeout(self, _value):
+            pass
+
+        def connect_ex(self, sa):
+            dialled.append(sa[0])
+            self.peer = sa[0]
+            # Every black hole stays in flight forever; the one live address answers.
+            return 0 if sa[0] == good else errno.EINPROGRESS
+
+        def close(self):
+            pass
+
+    class _NeverReady:
+        """No black hole ever becomes writable, so only the clock moves the loop on."""
+
+        def register(self, *_args, **_kwargs):
+            pass
+
+        def unregister(self, *_args, **_kwargs):
+            pass
+
+        def select(self, timeout):
+            if timeout:
+                time.sleep(timeout)
+            return []
+
+        def close(self):
+            pass
+
+    # 192.0.2.0/24 is TEST-NET-1. The live address is ninth, due 0.4s in, where a shared
+    # 0.2s budget had already run out.
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", (f"192.0.2.{i + 1}", 443)) for i in range(8)
+        ]
+        + [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (good, 443))],
+    )
+    monkeypatch.setattr(socket, "socket", _Stub)
+    monkeypatch.setattr(selectors, "DefaultSelector", _NeverReady)
+
+    sock = he.happy_eyeballs_connection(("hub.invalid", 443), 0.2)
+
+    assert good in dialled, (
+        "the only live address was never dialled; the stdlib would have reached it with "
+        "a whole timeout of its own"
+    )
+    assert sock.peer == good, "the race returned a black hole instead of the winner"
 
 
 def test_a_single_address_keeps_stdlib_semantics(listener, monkeypatch):

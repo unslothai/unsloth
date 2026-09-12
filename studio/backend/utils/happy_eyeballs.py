@@ -24,8 +24,10 @@ CPython tracks this as python/cpython#88810 (open since 2021). Waiting is not a 
 would land in a future version, stdlib features are not backported, and Studio supports
 3.9 through 3.14.
 
-Attempts are interleaved across families and staggered 250ms apart under one deadline,
-so a black-holed family costs one stagger rather than one timeout per address. Installed
+Attempts are interleaved across families and staggered 250ms apart, so a black-holed
+family costs one stagger rather than one timeout per address. Every attempt still keeps
+the caller's whole timeout, so no address connects on less budget here than the stdlib
+gave it. Installed
 process-wide like :mod:`utils.native_tls`; injection does not survive a spawn, so every
 network-touching entry point activates it before its first connection.
 """
@@ -101,16 +103,17 @@ def happy_eyeballs_connection(
     *,
     all_errors = False,
 ):
-    """Drop-in ``socket.create_connection`` that races families under one deadline.
+    """Drop-in ``socket.create_connection`` that races families instead of walking them.
 
-    ``timeout`` bounds the whole connect, not each resolved address.
+    ``timeout`` is what every attempt gets, as in the stdlib. Attempts overlap rather
+    than queue, so the whole connect ends within ``timeout`` plus one stagger per extra
+    address, where the stdlib takes ``timeout`` times the number of addresses.
     """
     host, port = address
     if timeout is socket._GLOBAL_DEFAULT_TIMEOUT:
         resolved_timeout = socket.getdefaulttimeout()
     else:
         resolved_timeout = timeout
-    deadline = None if resolved_timeout is None else time.monotonic() + resolved_timeout
 
     infos = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
     if len(infos) <= 1:
@@ -129,6 +132,17 @@ def happy_eyeballs_connection(
 
     ordered = _interleave(infos)
     delay = attempt_delay()
+    # Each attempt keeps the caller's whole timeout, the way the stdlib hands it to every
+    # address. Attempt k opens (k-1) staggers in, so the shared deadline carries the last
+    # attempt's stagger on top of the timeout; without that, an address late in the list
+    # would get less budget here than the stdlib gave it, and a host whose only reachable
+    # address sits there would fail where it used to connect. The walk still ends within
+    # timeout + (n-1) staggers, against the stdlib's n x timeout.
+    deadline = (
+        None
+        if resolved_timeout is None
+        else time.monotonic() + resolved_timeout + (len(ordered) - 1) * delay
+    )
     # Appended in COMPLETION order, which is what lets the raise below pick the last
     # failure the way the stdlib does.
     exceptions: list = []
