@@ -70,13 +70,18 @@ def test_status_response_exposes_source_build():
         "installed_at_utc": None,
         "age_days": None,
         "source_build": True,
+        "source_refresh": True,
         "job": {"state": "idle", "reload_required": False},
     }
     model = rl.LlamaUpdateStatusResponse(**payload)
     assert model.model_dump()["source_build"] is True
+    assert model.model_dump()["source_refresh"] is True
     assert model.model_dump()["job"]["reload_required"] is False
     # Extra/unknown keys must not crash the response model.
     rl.LlamaUpdateStatusResponse(**{**payload, "unexpected": 1})
+    # Omitted source_refresh defaults to False (Pydantic must not drop a True).
+    without = {k: v for k, v in payload.items() if k != "source_refresh"}
+    assert rl.LlamaUpdateStatusResponse(**without).model_dump()["source_refresh"] is False
 
 
 def test_status_response_exposes_update_size_bytes():

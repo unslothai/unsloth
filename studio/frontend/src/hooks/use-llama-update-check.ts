@@ -48,6 +48,8 @@ export interface LlamaUpdateStatus {
   latest_tag: string | null;
   // Prebuilt download size in bytes, if known.
   update_size_bytes: number | null;
+  // Managed source tree refresh (no matching prebuilt for this host).
+  source_refresh?: boolean;
   // The install recorded "auto" and detection now resolves elsewhere, so Update would move
   // it. Independent of update_available: reported only when the release is current.
   backend_migration_available: boolean;
@@ -116,6 +118,7 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
       typeof details.update_size_bytes === "number"
         ? details.update_size_bytes
         : null,
+    source_refresh: s.source_refresh === true,
     // Always from the top level: the backend belongs to the llama.cpp install whatever
     // component the version fields describe.
     backend_migration_available: s.backend_migration_available === true,
