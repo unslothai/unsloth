@@ -8,11 +8,20 @@ from __future__ import annotations
 from fnmatch import fnmatch
 from typing import Any, Iterable
 
-from data_designer.config.processors import ProcessorType  # pyright: ignore[reportMissingImports]
-
 
 def _is_glob(pattern: str) -> bool:
     return "*" in pattern
+
+
+def _processor_type_name(processor_config: Any) -> str:
+    raw = getattr(processor_config, "processor_type", "")
+    if hasattr(raw, "value"):
+        return str(raw.value)
+    return str(raw)
+
+
+def _is_drop_columns_processor(processor_config: Any) -> bool:
+    return _processor_type_name(processor_config) == "drop_columns"
 
 
 def column_names_after_drop_processors(
@@ -21,9 +30,14 @@ def column_names_after_drop_processors(
     """Return ``names`` minus columns removed by ``drop_columns`` processors."""
     remaining = set(names)
     for processor_config in processor_configs:
-        if processor_config.processor_type != ProcessorType.DROP_COLUMNS:
+        if not _is_drop_columns_processor(processor_config):
             continue
-        for pattern in processor_config.column_names:
+        column_names = getattr(processor_config, "column_names", None)
+        if not isinstance(column_names, list):
+            continue
+        for pattern in column_names:
+            if not isinstance(pattern, str):
+                continue
             if _is_glob(pattern):
                 matched = {name for name in remaining if fnmatch(name, pattern)}
                 remaining -= matched
