@@ -222,46 +222,92 @@ def test_kimi_bare_counter_id_is_dropped():
 # DeepSeek truncated mid-stream
 
 
-def test_deepseek_v3_1_huge_truncated_body_is_linear():
-    """Adversarial input: DeepSeek envelope with no JSON brace and a
-    50k-char body. A regex-based ``[^\\n<]+?`` name capture is O(N^2)
-    here; the parser uses ``str.find`` on the sep marker so it stays
-    linear. Budget 1s to flag any future regression."""
+def _growth(
+    build,
+    units: int,
+    factor: int = 4,
+    repeats: int = 3,
+) -> tuple[float, float, list]:
+    """How much more `factor` times the input costs. Returns (ratio, big_seconds, big_result).
+
+    Best-of-`repeats` at each size, not a mean: contention on a shared runner only ever ADDS
+    time, so the minimum is the closest each size gets to its own true cost, and dividing one
+    minimum by the other cancels the machine out.
+
+    This replaces an absolute ``elapsed < 1.0`` budget at one size. That budget read 0.20s on
+    a quiet runner and 1.41s on a busy one, so it failed for the wrong reason on unrelated
+    PRs, and it also sat close enough to the line that a REAL regression (#10507, which made
+    the R1 path quadratic again) only tipped it over some of the time. A ratio answers the
+    question these tests are named for: linear is ~`factor`, quadratic is ~`factor ** 2`.
+    """
     import time as _time
 
-    text = "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>fn<｜tool▁sep｜>" + "x" * 50_000
-    start = _time.time()
-    calls = parse_tool_calls_from_text(text)
-    elapsed = _time.time() - start
-    assert elapsed < 1.0, f"V3 path is non-linear: {elapsed:.2f}s"
-    assert calls == []
+    def cost(n: int) -> tuple[float, list]:
+        text, best, result = build(n), None, None
+        for _ in range(repeats):
+            start = _time.perf_counter()
+            result = parse_tool_calls_from_text(text)
+            elapsed = _time.perf_counter() - start
+            best = elapsed if best is None else min(best, elapsed)
+        return best, result
+
+    small, _ = cost(units)
+    big, result = cost(units * factor)
+    # A timer's own resolution must not read as superlinear growth on a very fast machine.
+    return big / max(small, 1e-4), big, result
+
+
+def _assert_linear(
+    build,
+    label: str,
+    units: int,
+    *,
+    factor: int = 4,
+    tolerance: float = 6.0,
+):
+    """`build(n)` must cost ~`factor`x, not ~`factor ** 2`x, for `factor`x the input."""
+    ratio, big, result = _growth(build, units, factor)
+    # Backstop: a regression bad enough to make the ratio unmeasurable still has to fail, and
+    # fail quickly, rather than run until the job's own timeout kills it with no explanation.
+    assert big < 60.0, f"{label} path took {big:.1f}s on {units * factor} units"
+    assert ratio < tolerance, (
+        f"{label} path is not linear: {factor}x the input cost {ratio:.1f}x the time "
+        f"(linear is ~{factor}, quadratic is ~{factor ** 2})"
+    )
+    return result
+
+
+def test_deepseek_v3_1_huge_truncated_body_is_linear():
+    """Adversarial input: DeepSeek envelope with no JSON brace and a long
+    body. A regex-based ``[^\\n<]+?`` name capture is O(N^2) here; the
+    parser uses ``str.find`` on the sep marker so it stays linear."""
+    build = lambda n: "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>fn<｜tool▁sep｜>" + "x" * n
+    assert _assert_linear(build, "V3", 50_000) == []
 
 
 def test_deepseek_r1_huge_fenceless_body_is_linear():
     """R1 detection used a greedy ``([^\\n]+)\\n```json`` regex that is O(N^2) on a
     fence-less body of repeated ``function<sep>`` tokens. The parser now scans with
-    ``str.find``; budget 1s to flag any regression."""
-    import time as _time
+    ``str.find``."""
+    build = lambda n: "<｜tool▁calls▁begin｜>" + "function<｜tool▁sep｜>a" * n
+    assert _assert_linear(build, "R1", 10_000) == []
 
-    text = "<｜tool▁calls▁begin｜>" + "function<｜tool▁sep｜>a" * 40_000
-    start = _time.time()
-    calls = parse_tool_calls_from_text(text)
-    elapsed = _time.time() - start
-    assert elapsed < 1.0, f"R1 path is non-linear: {elapsed:.2f}s"
-    assert calls == []
+
+def test_deepseek_r1_fenceless_body_with_one_distant_object_is_linear():
+    """The same body with a single ``{`` after it, which is the shape that survived the
+    first fix for #10507: seeking the next object per marker found one every time and
+    rescanned the tail to reach it, so the sweep stayed quadratic while the fence-less
+    case above had gone linear."""
+    build = lambda n: "<｜tool▁calls▁begin｜>" + "function<｜tool▁sep｜>a" * n + '{"a": 1}'
+    _assert_linear(build, "R1 distant-object", 10_000)
 
 
 def test_glm_unclosed_body_many_arg_keys_is_linear():
     """An unclosed GLM ``<tool_call>`` body runs to EOF; a lazy-group ``finditer``
     over many bare ``<arg_key>`` tokens was O(N^2). The parser now walks pairs with
-    ``str.find``; budget 1s."""
-    import time as _time
-
-    text = "<tool_call>foo\n" + "<arg_key>k" * 40_000
-    start = _time.time()
-    parse_tool_calls_from_text(text)
-    elapsed = _time.time() - start
-    assert elapsed < 1.0, f"GLM path is non-linear: {elapsed:.2f}s"
+    ``str.find``."""
+    build = lambda n: "<tool_call>foo\n" + "<arg_key>k" * n
+    _assert_linear(build, "GLM", 10_000)
 
 
 def test_deepseek_r1_fenced_json_parses():

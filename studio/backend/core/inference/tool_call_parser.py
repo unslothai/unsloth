@@ -951,15 +951,35 @@ def _only_a_code_fence(between: str) -> bool:
 _FENCE_ONLY_RE = re.compile(r"[\w.\-]*[ \t]*\n?[ \t]*`{3,}[a-zA-Z0-9_+-]*")
 
 
+# What can sit between a wrapper marker and the object it introduces: a name, a newline and a
+# fence, or blank space. All short. Anything longer is not a call's own body, so it is not
+# trusted, which is the conservative direction here (an untrusted span is masked, not exempted).
+_MAX_WRAPPER_BODY_GAP = 4096
+
+
 def _inference_wrapper_spans(text: str) -> list:
     """Spans covering the argument object of each inference-only wrapped call."""
     spans: list = []
     for opener in _INFERENCE_WRAPPER_OPENERS:
         pos = text.find(opener)
+        brace = -2  # Not yet sought. Distinct from -1, which means there is none left.
         while pos != -1:
-            brace = text.find("{", pos + len(opener))
+            after = pos + len(opener)
+            # The next ``{`` is re-sought only once the last one falls behind this opener.
+            # Both indices only move forward, so the whole loop reads the text once instead
+            # of once per opener. Seeking per opener is quadratic on a body that is all
+            # opener and no object, which is what
+            # ``test_deepseek_r1_huge_fenceless_body_is_linear`` measures.
+            if brace != -1 and brace < after:
+                brace = text.find("{", after)
+            # None at or after this opener means none at or after any later one either.
+            if brace == -1:
+                break
             # Only the object that follows the marker directly; anything else is not its body.
-            if brace != -1 and _only_a_code_fence(text[pos + len(opener) : brace]):
+            # The gap is a fence or blank space, both short, so a long one is not a body and
+            # is rejected without copying it: the slice is what made a single far-away brace
+            # quadratic in the same way.
+            if brace - after <= _MAX_WRAPPER_BODY_GAP and _only_a_code_fence(text[after:brace]):
                 end = _balanced_brace_end(text, brace)
                 if end is not None:
                     spans.append((pos, end + 1))
