@@ -6,7 +6,7 @@
 llama.cpp aborts a non-causal image decode when the chunk mtmd cuts exceeds n_ubatch.
 Only the Gemma 4 towers produce such a chunk at the stock 512, so only they get the
 raise, and only as far as their own per-image ceiling; see
-``_MMPROJ_IMAGE_TOKEN_CEILING``.
+``_MMPROJ_NON_CAUSAL_IMAGE_TOKENS``.
 """
 
 import inspect
@@ -18,11 +18,11 @@ from studio.backend.core.inference.llama_cpp import (
     _batch_ubatch_for_mmproj,
     _launch_required_ubatch,
     _mmproj_required_ubatch,
-    _MMPROJ_IMAGE_TOKEN_CEILING,
+    _MMPROJ_NON_CAUSAL_IMAGE_TOKENS,
     _MMPROJ_UNKNOWN_UBATCH,
 )
 
-_GEMMA4 = _MMPROJ_IMAGE_TOKEN_CEILING["gemma4uv"]
+_GEMMA4 = _MMPROJ_NON_CAUSAL_IMAGE_TOKENS["gemma4uv"]
 
 
 @pytest.fixture
@@ -229,20 +229,46 @@ def test_the_target_is_the_per_image_ceiling_not_a_round_number():
     so rounding 1120 up to 2048 priced Gemma 4 12B at 13.45 GiB against 10.27 GiB and
     put it over the budget of a 16 GB Mac and a 12 GB card that both hold it today.
     """
-    assert _MMPROJ_IMAGE_TOKEN_CEILING == {"gemma4v": 1120, "gemma4uv": 1120}
+    assert _MMPROJ_NON_CAUSAL_IMAGE_TOKENS == {
+        "gemma4v": 1120,
+        "gemma4uv": 1120,
+        "gemma3": 256,
+        "deepseek4v": 384,
+    }
     # clip.cpp: set_limit_image_tokens(70, 1120) for both Gemma 4 towers.
     assert _GEMMA4 == 1120
     # Only a projector whose family cannot be read gets headroom instead.
     assert _MMPROJ_UNKNOWN_UBATCH > _GEMMA4
 
 
-def test_image_max_tokens_raises_the_target_with_it():
-    """clip.cpp lets the flag override a family ceiling, and the chunk grows with it."""
-    got = _launch_required_ubatch(
-        None, 3840, ["--image-max-tokens", "4096"], env = {"LLAMA_ARG_MMPROJ_URL": "https://x/y"}
-    )
-    assert got == 4096
-    # The batch still caps what is emitted, and it also caps the chunk mtmd cuts.
+@pytest.mark.parametrize(
+    "family, n_embd, custom, expected",
+    [
+        # Stock ceilings under the default micro-batch need nothing raised...
+        ("gemma3", 2560, None, 0),
+        ("deepseek4v", 4096, None, 0),
+        # ...but clip.cpp lets --image-max-tokens replace them, and the chunk grows
+        # with it, so a non-causal family under 512 today can be lifted past it.
+        ("gemma3", 2560, 1024, 1024),
+        ("deepseek4v", 4096, 4096, 4096),
+        # Below the stock micro-batch it changes nothing.
+        ("gemma3", 2560, 256, 0),
+        # A family ceiling already above it wins when the flag asks for less.
+        ("gemma4uv", 3840, 256, 1120),
+        # Causal families never reach the assert, whatever the flag says.
+        ("qwen3vl_merger", 2048, 8192, 0),
+        ("gemma4v", 2560, 8192, 0),
+    ],
+)
+def test_image_max_tokens_is_honoured_for_every_non_causal_family(
+    projector, family, n_embd, custom, expected
+):
+    extras = ["--image-max-tokens", str(custom)] if custom else None
+    assert _mmproj_required_ubatch(projector(family), n_embd, extras) == expected
+
+
+def test_the_batch_still_caps_what_is_emitted():
+    # The batch caps the chunk mtmd cuts, so it caps the micro-batch that must hold it.
     assert _batch_ubatch_for_mmproj(4096, None, None, None, {})[1] == 2048
 
 

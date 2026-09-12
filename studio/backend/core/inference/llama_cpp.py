@@ -4297,13 +4297,24 @@ _DEFAULT_LLAMA_N_UBATCH = 512
 # the chunk while attention is non-causal (llama-context.cpp:1749): 862 against 512 on
 # Gemma 4 12B, and the server aborts.
 #
-# The micro-batch only has to hold ONE image, so the target is the projector's own
-# per-image ceiling rather than a round number. clip.cpp caps a Gemma 4 image at
-# set_limit_image_tokens(70, 1120), so 1120 is exactly sufficient, and the difference is
-# not cosmetic: the ubatch scales _estimate_compute_buffer_bytes, which feeds
-# model_size_fit, so 2048 prices Gemma 4 12B at 13.45 GiB against 10.27 GiB at 1120 and
-# puts it over the budget of a 16 GB Mac and a 12 GB card that both hold it today.
-_MMPROJ_IMAGE_TOKEN_CEILING = {"gemma4v": 1120, "gemma4uv": 1120}
+# Only these decode non-causally, so only these can reach the assert:
+# mtmd_decode_use_non_causal answers True for exactly gemma4v (outside E2B/E4B, told
+# apart by the TEXT n_embd), gemma4uv, gemma3 and deepseek4v. The value is each one's
+# per-image ceiling from clip.cpp -- set_limit_image_tokens(70, 1120) for both Gemma 4
+# towers, (64, 256) for gemma3, dsv4_max_n_token = 384 -- because the micro-batch only
+# has to hold ONE image. gemma3 and deepseek4v sit under the stock 512 and need nothing
+# raised, but --image-max-tokens can lift any of these ceilings, so all four are listed.
+#
+# The exact ceiling rather than a round number: the ubatch scales
+# _estimate_compute_buffer_bytes, which feeds model_size_fit, so 2048 prices Gemma 4 12B
+# at 13.45 GiB against 10.27 GiB at 1120 and puts it over the budget of a 16 GB Mac and
+# a 12 GB card that both hold it today.
+_MMPROJ_NON_CAUSAL_IMAGE_TOKENS = {
+    "gemma4v": 1120,
+    "gemma4uv": 1120,
+    "gemma3": 256,
+    "deepseek4v": 384,
+}
 # A projector whose family we cannot read gets headroom instead of a ceiling.
 _MMPROJ_UNKNOWN_UBATCH = 2048
 # Which projectors reach that assert. mtmd_decode_use_non_causal is True for exactly
@@ -5840,8 +5851,12 @@ def _read_gguf_embedding_length(path: Optional[str]) -> Optional[int]:
         return None
 
 
-def _mmproj_required_ubatch(mmproj_path: Optional[str], n_embd_text: Optional[int] = None) -> int:
-    """Micro-batch this projector's largest image needs, or 0 when none does.
+def _mmproj_required_ubatch(
+    mmproj_path: Optional[str],
+    n_embd_text: Optional[int] = None,
+    extra_args: Optional[Iterable[str]] = None,
+) -> int:
+    """Micro-batch this projector's largest image needs, or 0 when the stock one holds it.
 
     Keyed on ``clip.vision.projector_type``, not ``is_vision``: ModelConfig sets that
     flag for ANY discovered mmproj, so an audio-only encoder (ultravox, Voxtral,
@@ -5861,12 +5876,18 @@ def _mmproj_required_ubatch(mmproj_path: Optional[str], n_embd_text: Optional[in
         family = (read_mmproj_vision_projector_type(mmproj_path) or "").strip().lower()
     except Exception as e:
         logger.debug(f"mmproj capability read failed: {e}")
-        return _MMPROJ_UNKNOWN_UBATCH
+        family = ""
+    custom = extra_args_image_max_tokens(extra_args) or 0
     if not family:
-        return _MMPROJ_UNKNOWN_UBATCH
+        return max(_MMPROJ_UNKNOWN_UBATCH, custom)
+    if family not in _MMPROJ_NON_CAUSAL_IMAGE_TOKENS:
+        return 0
     if family == "gemma4v" and n_embd_text in _GEMMA4V_CAUSAL_TEXT_N_EMBD:
         return 0
-    return _MMPROJ_IMAGE_TOKEN_CEILING.get(family, 0)
+    # clip.cpp reads --image-max-tokens as custom_image_max_tokens and lets it replace
+    # the family ceiling, so a gemma3 at 256 can be lifted past the stock micro-batch.
+    ceiling = max(_MMPROJ_NON_CAUSAL_IMAGE_TOKENS[family], custom)
+    return ceiling if ceiling > _DEFAULT_LLAMA_N_UBATCH else 0
 
 
 def _launch_required_ubatch(
@@ -5898,7 +5919,7 @@ def _launch_required_ubatch(
     # --no-mmproj, so it opens an image tower whatever else the request says.
     override = _extra_args_device(extra_args, {"--mmproj", "-mm"})
     if override:
-        required = max(required, _mmproj_required_ubatch(str(override), n_embd_text))
+        required = max(required, _mmproj_required_ubatch(str(override), n_embd_text, extra_args))
 
     if not vision_off:
         # The switch scrubs this pair. Without it they open whatever they name even
@@ -5909,22 +5930,18 @@ def _launch_required_ubatch(
             required = max(required, _MMPROJ_UNKNOWN_UBATCH)
         inherited = (source_env.get("LLAMA_ARG_MMPROJ") or "").strip()
         if inherited:
-            required = max(required, _mmproj_required_ubatch(inherited, n_embd_text))
+            required = max(required, _mmproj_required_ubatch(inherited, n_embd_text, extra_args))
 
     if is_vision and not vision_off and not extra_args_disable_mmproj(extra_args):
         if mmproj_path:
-            required = max(required, _mmproj_required_ubatch(str(mmproj_path), n_embd_text))
+            required = max(
+                required, _mmproj_required_ubatch(str(mmproj_path), n_embd_text, extra_args)
+            )
         elif extra_args_mmproj_auto(extra_args):
             # --mmproj-auto leaves llama-server discovering an adjacent projector
             # this process was never told about.
             required = max(required, _MMPROJ_UNKNOWN_UBATCH)
 
-    if required:
-        # clip.cpp lets --image-max-tokens raise a family's own ceiling, and the chunk
-        # grows with it, so the flag has to raise this target too.
-        requested = extra_args_image_max_tokens(extra_args)
-        if requested:
-            required = max(required, requested)
     return required
 
 
