@@ -230,25 +230,56 @@ function Stop-StudioTempWatch {
     return ,[string[]]$seen
 }
 
-function Get-StudioProcessImageName {
+function Get-StudioEventField {
     <#
     .SYNOPSIS
-    The image a 4688 record says was created, from the record's own field.
+    One named EventData field of a 4688 record, from the record's own XML.
     .DESCRIPTION
-    NewProcessName, read out of the event XML by name rather than by position, so a
-    schema that gains a field still means the same thing. Nothing else is consulted:
-    the rendered message also carries the command line, so matching it would score
-    `cmd.exe /c echo csc.exe` as a compiler.
+    Read by name rather than by position, so a schema that gains a field still means the
+    same thing. The rendered message is never consulted: it carries the command line too,
+    so matching that would score `cmd.exe /c echo csc.exe` as a compiler.
     #>
-    param([Parameter(Mandatory = $true)]$Event)
+    param(
+        [Parameter(Mandatory = $true)]$Event,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
 
     try {
         $xml = [xml]$Event.ToXml()
         foreach ($field in $xml.Event.EventData.Data) {
-            if ($field.Name -eq 'NewProcessName') { return [string]$field.'#text' }
+            if ($field.Name -eq $Name) { return [string]$field.'#text' }
         }
     } catch { }
     return ''
+}
+
+function Get-StudioProcessImageName {
+    <#
+    .SYNOPSIS
+    The image a 4688 record says was created.
+    #>
+    param([Parameter(Mandatory = $true)]$Event)
+
+    return Get-StudioEventField -Event $Event -Name 'NewProcessName'
+}
+
+function Test-StudioCompilerImage {
+    <#
+    .SYNOPSIS
+    True when $Image is one of the compiler binaries, matched on the whole leaf name.
+    #>
+    param([string]$Image)
+
+    if ([string]::IsNullOrEmpty($Image)) { return $false }
+    # Split explicitly, not via [System.IO.Path]::GetFileName, which splits on the HOST's
+    # separators: under the Linux pwsh where this is tested a backslash is an ordinary
+    # character and the whole path came back as the leaf. The records are always Windows
+    # paths whatever reads them.
+    $leaf = ($Image -split '[\\/]')[-1]
+    foreach ($name in $script:CompilerNames) {
+        if ($leaf -eq $name) { return $true }
+    }
+    return $false
 }
 
 function Select-StudioCompilerHits {
@@ -264,21 +295,28 @@ function Select-StudioCompilerHits {
     $hits = @()
     foreach ($record in $Events) {
         $image = Get-StudioProcessImageName -Event $record
-        if ([string]::IsNullOrEmpty($image)) { continue }
-        # Split explicitly, not via [System.IO.Path]::GetFileName, which splits on the
-        # HOST's separators: under the Linux pwsh where this is tested a backslash is an
-        # ordinary character and the whole path came back as the leaf. The records are
-        # always Windows paths whatever reads them.
-        $leaf = ($image -split '[\\/]')[-1]
-        foreach ($name in $script:CompilerNames) {
-            if ($leaf -eq $name) {
-                $rendered = ''
-                try { $rendered = [string]$record.Message } catch { }
-                $hits += ("{0:o} {1} :: {2}" -f $record.TimeCreated, $image,
-                    ($rendered -replace '\s+', ' '))
-                break
-            }
+        if (-not (Test-StudioCompilerImage -Image $image)) { continue }
+        # A compiler started BY a compiler is a step of a compile that is already being
+        # scored, not a new one. csc.exe shells out to cvtres.exe to build its resource
+        # blob, and counting that as a second hit says the action compiled twice.
+        #
+        # It also decides the cross-step bleed the $prior subtraction could not, because
+        # the Security log is written with latency: the positive control's csc.exe started
+        # before the installer's window, its cvtres.exe child landed inside, and neither
+        # was in the log yet when the baseline was taken. The child is the only part that
+        # was ever in range.
+        #
+        # Detection is unchanged for a compile the action really starts, because its ROOT
+        # compiler is spawned by the installer's shell, not by another compiler, and the
+        # window opens before the action does. What this drops is only ever the second
+        # process of a chain whose first was already seen or was never in range at all.
+        if (Test-StudioCompilerImage -Image (Get-StudioEventField -Event $record -Name 'ParentProcessName')) {
+            continue
         }
+        $rendered = ''
+        try { $rendered = [string]$record.Message } catch { }
+        $hits += ("{0:o} {1} :: {2}" -f $record.TimeCreated, $image,
+            ($rendered -replace '\s+', ' '))
     }
     return ,[string[]]$hits
 }
