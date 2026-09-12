@@ -76,6 +76,10 @@ export interface LoadModelRequest {
   /** Parallel decode slots for llama-server (--parallel), 1..64. Omit/null = the launch default. The
    *  VRAM fitter may launch fewer to stay on GPU. */
   n_parallel?: number | null;
+  /** llama.cpp thinking token budget: -1 unrestricted, 0 end immediately, >0 token cap. */
+  reasoning_budget?: number;
+  /** Message emitted when the reasoning budget is exhausted. */
+  reasoning_budget_message?: string;
   /** prompt batch size (--batch-size), 1..65536; omit/null = llama.cpp default 2048, gguf only */
   n_batch?: number | null;
   /** prompt micro-batch size (--ubatch-size), 1..65536; omit/null = llama.cpp default 512, capped at the batch size */
@@ -278,6 +282,13 @@ export interface LoadModelResponse {
   requested_gpu_ids?: number[] | null;
   /** Slots the load was invoked with (else the --parallel default). Null for non-GGUF loads. */
   requested_parallel_slots?: number | null;
+  reasoning_budget?: number;
+  reasoning_budget_message?: string;
+  /** What the load ASKED for, before LLAMA_ARG_THINK_BUDGET*: the value a client can resend. */
+  // biome-ignore lint/style/useNamingConvention: API schema
+  requested_reasoning_budget?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  requested_reasoning_budget_message?: string;
   /** Slots llama-server actually runs, after any fit-time reduction. Null for non-GGUF loads. */
   parallel_slots?: number | null;
   /** batch size (--batch-size) the load was invoked with; null = default */
@@ -382,6 +393,13 @@ export interface InferenceStatusResponse {
   requested_gpu_ids?: number[] | null;
   /** Slots the active load was invoked with (else the --parallel default). Null when no GGUF model is loaded. */
   requested_parallel_slots?: number | null;
+  reasoning_budget?: number;
+  reasoning_budget_message?: string;
+  /** What the load ASKED for, before LLAMA_ARG_THINK_BUDGET*: the value a client can resend. */
+  // biome-ignore lint/style/useNamingConvention: API schema
+  requested_reasoning_budget?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  requested_reasoning_budget_message?: string;
   /** Slots llama-server actually runs, after any fit-time reduction. Null when no GGUF model is loaded. */
   parallel_slots?: number | null;
   /** batch size (--batch-size) the active load was invoked with; null = default */

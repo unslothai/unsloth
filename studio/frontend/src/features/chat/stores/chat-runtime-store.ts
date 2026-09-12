@@ -2339,6 +2339,10 @@ type ChatRuntimeStore = {
   /** Slots the last successful load sent (null = default); a rollback re-sends them so a failed
    *  switch cannot lose the override. */
   loadedNParallel: number | null;
+  reasoningBudget: number;
+  loadedReasoningBudget: number | null;
+  reasoningBudgetMessage: string;
+  loadedReasoningBudgetMessage: string | null;
   /** user --batch-size override for gguf loads (null = llama.cpp default 2048) */
   nBatch: number | null;
   loadedNBatch: number | null;
@@ -3979,6 +3983,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedSpecDraftNMax: null,
   nParallel: null,
   loadedNParallel: null,
+  reasoningBudget: -1,
+  loadedReasoningBudget: null,
+  reasoningBudgetMessage: "",
+  loadedReasoningBudgetMessage: null,
   nBatch: null,
   loadedNBatch: null,
   loadedLlamaExtraArgs: null,
@@ -4868,6 +4876,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedSpecDraftNMax: null,
       nParallel: null,
       loadedNParallel: null,
+      reasoningBudget: -1,
+      loadedReasoningBudget: null,
+      reasoningBudgetMessage: "",
+      loadedReasoningBudgetMessage: null,
       nBatch: null,
       loadedNBatch: null,
       loadedLlamaExtraArgs: null,

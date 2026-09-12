@@ -363,3 +363,87 @@ def test_the_disable_aliases_survive_override_normalization():
     assert "speculative_type" not in settings.normalize_model_override(
         {"speculative_type": "bogus"}
     )
+
+
+# The pair the route learned to forward one release after the four: the same replace-on-write
+# exposure, and a build that mirrors the tuning group can still predate it.
+REASONING_PAYLOAD = dict(reasoning_budget = 512, reasoning_budget_message = "Wrap up.")
+
+
+def test_a_client_that_does_not_know_the_reasoning_pair_cannot_erase_it(override_store):
+    _put(
+        MODEL,
+        **PRE_TUNING_PAYLOAD,
+        **REASONING_PAYLOAD,
+        mirrors_server_tuning = True,
+        mirrors_reasoning_budget = True,
+    )
+    before = settings.get_model_override(MODEL)
+    for field, value in REASONING_PAYLOAD.items():
+        assert before[field] == value
+
+    # A build that mirrors the four but predates the pair: it cannot set the new flag.
+    _put(MODEL, **PRE_TUNING_PAYLOAD, mirrors_server_tuning = True)
+    after = settings.get_model_override(MODEL)
+
+    for field, value in REASONING_PAYLOAD.items():
+        assert after[field] == value, f"{field} was deleted by a save that never mentioned it"
+    assert after == before
+    kwargs = settings.model_override_load_kwargs(after, is_gguf = True)
+    for field, value in REASONING_PAYLOAD.items():
+        assert kwargs[field] == value
+
+
+def test_a_client_that_does_know_the_reasoning_pair_still_clears_by_omission(override_store):
+    _put(
+        MODEL,
+        **PRE_TUNING_PAYLOAD,
+        **REASONING_PAYLOAD,
+        mirrors_server_tuning = True,
+        mirrors_reasoning_budget = True,
+    )
+    assert settings.get_model_override(MODEL)["reasoning_budget"] == 512
+
+    _put(MODEL, **PRE_TUNING_PAYLOAD, mirrors_server_tuning = True, mirrors_reasoning_budget = True)
+    after = settings.get_model_override(MODEL)
+    for field in REASONING_PAYLOAD:
+        assert field not in after, f"{field} survived an explicit clear"
+
+
+def test_the_reasoning_flag_is_not_itself_a_saved_field(override_store):
+    _put(MODEL, **PRE_TUNING_PAYLOAD, mirrors_reasoning_budget = True)
+    assert settings.get_model_override(MODEL)
+
+    _put(MODEL, mirrors_reasoning_budget = True)
+    assert settings.get_model_override(MODEL) == {}
+
+
+def test_a_reset_tombstone_outlives_a_later_default_save(override_store):
+    """The -1/"" pair is stored so a qualified row shadows a reasoning flag on a broader entry.
+    A later save with the controls at their defaults omits the pair, and the row must not empty
+    out and be deleted, or the load falls back and hands the reset value straight back."""
+    bare = "unsloth/Repo-GGUF"
+    # The legacy fallback every quant without a row of its own reads.
+    settings.set_model_override(bare, llama_extra_args = ["--reasoning-budget", "512"])
+
+    # The user resets the control on the quant: a tombstone, not an empty row.
+    _put(MODEL, reasoning_budget = -1, mirrors_server_tuning = True, mirrors_reasoning_budget = True)
+    assert settings.get_model_override(MODEL).get("reasoning_budget") == -1
+
+    # An unrelated save from the same build, controls still at their defaults.
+    _put(MODEL, mirrors_server_tuning = True, mirrors_reasoning_budget = True)
+    after = settings.get_model_override(MODEL)
+    assert (
+        after.get("reasoning_budget") == -1
+    ), "the tombstone was dropped, so the bare row's --reasoning-budget 512 applies again"
+
+    # And it still strips the shadowed flag off the load.
+    kwargs = settings.model_override_load_kwargs(after, is_gguf = True)
+    assert kwargs["reasoning_budget"] == -1
+
+
+def test_no_tombstone_is_invented_without_a_fallback_to_shadow(override_store):
+    # The other side: with nothing to shadow, a default save leaves no row at all.
+    _put(MODEL, reasoning_budget = -1, mirrors_server_tuning = True, mirrors_reasoning_budget = True)
+    _put(MODEL, mirrors_server_tuning = True, mirrors_reasoning_budget = True)
+    assert settings.get_model_override(MODEL) == {}

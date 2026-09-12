@@ -1247,6 +1247,14 @@ export function useChatModelRuntime() {
             typeof selection !== "string" && selection.previousConfig
               ? (selection.previousConfig.nParallel ?? null)
               : useChatRuntimeStore.getState().nParallel;
+          const previousReasoningBudget =
+            typeof selection !== "string" && selection.previousConfig
+              ? selection.previousConfig.reasoningBudget
+              : useChatRuntimeStore.getState().reasoningBudget;
+          const previousReasoningBudgetMessage =
+            typeof selection !== "string" && selection.previousConfig
+              ? selection.previousConfig.reasoningBudgetMessage
+              : useChatRuntimeStore.getState().reasoningBudgetMessage;
           const previousNBatch =
             typeof selection !== "string" && selection.previousConfig
               ? (selection.previousConfig.nBatch ?? null)
@@ -1424,6 +1432,12 @@ export function useChatModelRuntime() {
             pendingLoadConfig?.specDraftNMax ?? stateBeforeUnload.specDraftNMax;
           let loadNParallel =
             pendingLoadConfig?.nParallel ?? stateBeforeUnload.nParallel;
+          let loadReasoningBudget =
+            pendingLoadConfig?.reasoningBudget ??
+            stateBeforeUnload.reasoningBudget;
+          let loadReasoningBudgetMessage =
+            pendingLoadConfig?.reasoningBudgetMessage ??
+            stateBeforeUnload.reasoningBudgetMessage;
           // No store fallback and no reset with the rest below: undefined means "this config never read
           // them", and the route preserves the stored flags when the field is omitted, so a fallback
           // would clear flags the user set elsewhere.
@@ -1471,6 +1485,12 @@ export function useChatModelRuntime() {
             const validateNParallel = resetsPerModelSettings
               ? (pendingLoadConfig?.nParallel ?? null)
               : loadNParallel;
+            const validateReasoningBudget = resetsPerModelSettings
+              ? (pendingLoadConfig?.reasoningBudget ?? -1)
+              : loadReasoningBudget;
+            const validateReasoningBudgetMessage = resetsPerModelSettings
+              ? (pendingLoadConfig?.reasoningBudgetMessage ?? "")
+              : loadReasoningBudgetMessage;
             const validateNBatch = resetsPerModelSettings
               ? (pendingLoadConfig?.nBatch ?? null)
               : loadNBatch;
@@ -1529,6 +1549,12 @@ export function useChatModelRuntime() {
                     // when it fits.
                     gpu_layers: validateGpuLayers,
                     n_parallel: validateNParallel,
+                    reasoning_budget: targetIsDiffusion
+                      ? -1
+                      : validateReasoningBudget,
+                    reasoning_budget_message: targetIsDiffusion
+                      ? ""
+                      : validateReasoningBudgetMessage,
                     // omitted when blank, like the load payload below
                     ...(validateNBatch != null
                       ? { n_batch: validateNBatch }
@@ -1628,6 +1654,10 @@ export function useChatModelRuntime() {
                 // Per-model too: a different model follows the server default unless its staged config overrides it.
                 nParallel: null,
                 loadedNParallel: null,
+                reasoningBudget: -1,
+                loadedReasoningBudget: null,
+                reasoningBudgetMessage: "",
+                loadedReasoningBudgetMessage: null,
                 nBatch: null,
                 loadedNBatch: null,
                 nUbatch: null,
@@ -1650,6 +1680,9 @@ export function useChatModelRuntime() {
                   : persistedSpeculativeType;
               loadSpecDraftNMax = pendingLoadConfig?.specDraftNMax ?? null;
               loadNParallel = pendingLoadConfig?.nParallel ?? null;
+              loadReasoningBudget = pendingLoadConfig?.reasoningBudget ?? -1;
+              loadReasoningBudgetMessage =
+                pendingLoadConfig?.reasoningBudgetMessage ?? "";
               loadNBatch = pendingLoadConfig?.nBatch ?? null;
               loadNUbatch = pendingLoadConfig?.nUbatch ?? null;
               loadServerTuning = {
@@ -1756,6 +1789,10 @@ export function useChatModelRuntime() {
               spec_draft_n_max: loadSpecDraftNMax,
               // GGUF-only: slots mean nothing for a transformers load.
               n_parallel: isGguf ? loadNParallel : null,
+              reasoning_budget:
+                isGguf && !targetIsDiffusion ? loadReasoningBudget : -1,
+              reasoning_budget_message:
+                isGguf && !targetIsDiffusion ? loadReasoningBudgetMessage : "",
               // Sent only once known, and [] is the explicit "launch with none": the flags are llama-server's,
               // so neither a transformers load nor a diffusion GGUF carries them.
               ...(isGguf && !targetIsDiffusion && loadLlamaExtraArgs !== undefined
@@ -1967,6 +2004,28 @@ export function useChatModelRuntime() {
               // "server default" control.
               nParallel: committedSlots,
               loadedNParallel: committedSlots,
+              reasoningBudget:
+                (loadResponse.is_gguf ?? false) &&
+                !(loadResponse.is_diffusion ?? false)
+                  ? (loadResponse.reasoning_budget ?? loadReasoningBudget)
+                  : -1,
+              loadedReasoningBudget:
+                (loadResponse.is_gguf ?? false) &&
+                !(loadResponse.is_diffusion ?? false)
+                  ? (loadResponse.reasoning_budget ?? loadReasoningBudget)
+                  : -1,
+              reasoningBudgetMessage:
+                (loadResponse.is_gguf ?? false) &&
+                !(loadResponse.is_diffusion ?? false)
+                  ? (loadResponse.reasoning_budget_message ??
+                    loadReasoningBudgetMessage)
+                  : "",
+              loadedReasoningBudgetMessage:
+                (loadResponse.is_gguf ?? false) &&
+                !(loadResponse.is_diffusion ?? false)
+                  ? (loadResponse.reasoning_budget_message ??
+                    loadReasoningBudgetMessage)
+                  : "",
               nBatch: committedNBatch,
               loadedNBatch: committedNBatch,
               ...committedServerTuning,
@@ -2087,6 +2146,10 @@ export function useChatModelRuntime() {
                   spec_draft_n_max:
                     stateBeforeUnload.loadedSpecDraftNMax,
                   n_parallel: stateBeforeUnload.loadedNParallel,
+                  reasoning_budget:
+                    stateBeforeUnload.loadedReasoningBudget ?? -1,
+                  reasoning_budget_message:
+                    stateBeforeUnload.loadedReasoningBudgetMessage ?? "",
                   // omit unset fields: a null counts as set and would strip the previous server's extras
                   ...(stateBeforeUnload.loadedNBatch != null
                     ? { n_batch: stateBeforeUnload.loadedNBatch }
@@ -2143,6 +2206,12 @@ export function useChatModelRuntime() {
                   // Control keeps its intent; only the baseline takes the echo.
                   nParallel: previousNParallel,
                   loadedNParallel: stateBeforeUnload.loadedNParallel ?? null,
+                  reasoningBudget: previousReasoningBudget,
+                  loadedReasoningBudget:
+                    rollbackResponse.reasoning_budget ?? -1,
+                  reasoningBudgetMessage: previousReasoningBudgetMessage,
+                  loadedReasoningBudgetMessage:
+                    rollbackResponse.reasoning_budget_message ?? "",
                   nBatch: previousNBatch,
                   loadedNBatch: stateBeforeUnload.loadedNBatch ?? null,
                   nUbatch: previousNUbatch,

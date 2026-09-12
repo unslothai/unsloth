@@ -1467,6 +1467,12 @@ export function SharedComposer({
                 gpu_layers: effectiveGpuLayers,
                 // Slots scale the KV estimate; keep validate sized like the load.
                 n_parallel: ownConfig.nParallel ?? null,
+                reasoning_budget: resolvedIsDiffusion
+                  ? -1
+                  : ownConfig.reasoningBudget,
+                reasoning_budget_message: resolvedIsDiffusion
+                  ? ""
+                  : ownConfig.reasoningBudgetMessage,
                 // Only when this panel has read the stored value: omitted, the load inherits it, which is what
                 // keeps CLI-set flags working.
                 ...(ownConfig.llamaExtraArgs !== undefined
@@ -1544,6 +1550,14 @@ export function SharedComposer({
           mlx_kv_bits: ownConfig.mlxKvBits ?? null,
           speculative_type: effectiveSpeculativeType,
           spec_draft_n_max: effectiveSpecDraftNMax,
+          reasoning_budget:
+            targetIsGguf && !resolvedIsDiffusion
+              ? ownConfig.reasoningBudget
+              : -1,
+          reasoning_budget_message:
+            targetIsGguf && !resolvedIsDiffusion
+              ? ownConfig.reasoningBudgetMessage
+              : "",
           tensor_parallel: effectiveTensorParallel,
           disable_vision: effectiveDisableVision,
           force_cancel_active:
@@ -1643,6 +1657,24 @@ export function SharedComposer({
           // Click-time value, not the resolved echo (see the single-model load).
           nParallel: committedSlots,
           loadedNParallel: committedSlots,
+          reasoningBudget:
+            targetIsGguf && !(resp.is_diffusion ?? false)
+              ? (resp.reasoning_budget ?? ownConfig.reasoningBudget)
+              : -1,
+          loadedReasoningBudget:
+            targetIsGguf && !(resp.is_diffusion ?? false)
+              ? (resp.reasoning_budget ?? ownConfig.reasoningBudget)
+              : -1,
+          reasoningBudgetMessage:
+            targetIsGguf && !(resp.is_diffusion ?? false)
+              ? (resp.reasoning_budget_message ??
+                ownConfig.reasoningBudgetMessage)
+              : "",
+          loadedReasoningBudgetMessage:
+            targetIsGguf && !(resp.is_diffusion ?? false)
+              ? (resp.reasoning_budget_message ??
+                ownConfig.reasoningBudgetMessage)
+              : "",
           nBatch: committedNBatch,
           loadedNBatch: committedNBatch,
           nUbatch: committedNUbatch,

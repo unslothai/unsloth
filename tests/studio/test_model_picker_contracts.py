@@ -2721,6 +2721,86 @@ def test_evicted_local_configs_drop_their_server_overrides():
     assert "modelIdFromStorageKey(" in store and "ggufVariantFromStorageKey(" in store
 
 
+def test_reasoning_resets_reach_the_server_without_making_backfill_destructive():
+    api = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
+    assert "options?.resetReasoningBudget && config?.reasoningBudget === -1" in api
+    assert "reasoning_budget: -1" in api
+    assert 'options?.resetReasoningBudgetMessage && config?.reasoningBudgetMessage === ""' in api
+    assert 'reasoning_budget_message: ""' in api
+
+    route = _read_backend("routes/settings.py")
+    assert "fields_set = payload.model_fields_set" in route
+    assert '"reasoning_budget" in fields_set and payload.reasoning_budget == -1' in route
+    assert (
+        '"reasoning_budget_message" in fields_set and payload.reasoning_budget_message == ""'
+        in route
+    )
+    assert "if not payload.fill_absent_fields and requested_extra_args:" in route
+
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert "baseline.reasoningBudget !== -1" in page
+    assert "normalizedRuntimeConfig.reasoningBudget === -1" in page
+    assert 'baseline.reasoningBudgetMessage !== ""' in page
+    assert 'normalizedRuntimeConfig.reasoningBudgetMessage === ""' in page
+
+
+def test_a_recipe_restores_the_previous_model_at_its_reasoning_budget():
+    """Captured from /status beside the context request and replayed the same way; a recipe's
+    own target carries neither and runs at the defaults."""
+    src = _read("features/recipe-studio/hooks/use-recipe-executions.ts")
+    assert src.count("reasoningBudget: status.requested_reasoning_budget ?? -1,") == 2, src
+    assert (
+        src.count('reasoningBudgetMessage: status.requested_reasoning_budget_message ?? "",') == 2
+    ), src
+    assert "reasoning_budget: reasoningBudget ?? -1," in src
+    assert 'reasoning_budget_message: reasoningBudgetMessage ?? "",' in src
+    assert "(left.reasoningBudget ?? -1) === (right.reasoningBudget ?? -1)" in src
+
+    api = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
+    assert "mirrors_reasoning_budget: true," in api
+
+
+def test_reasoning_settings_hydrate_from_a_server_authored_override():
+    """A row written by another browser or an API client carries the pair, and fromApiOverride has
+    to copy it or the panel shows local defaults and the next save writes them back."""
+    api = _read("features/model-picker/api/model-overrides.ts")
+    hydrate = api.split("export function fromApiOverride", 1)[1]
+    hydrate = hydrate[: hydrate.index("\n}")]
+    assert "reasoningBudget: override.reasoning_budget ?? local.reasoningBudget" in hydrate
+    assert "override.reasoning_budget_message ?? local.reasoningBudgetMessage" in hydrate
+
+
+def test_a_recipe_compares_the_requested_reasoning_budget():
+    """Requested, never effective: the effective pair folds in LLAMA_ARG_THINK_BUDGET*, which no
+    request can express, so comparing it would reload the weights on every run forever."""
+    src = _read("features/recipe-studio/hooks/use-recipe-executions.ts")
+    reuse = src.split("async function isLocalModelAlreadyLoaded", 1)[1]
+    reuse = reuse[: reuse.index("\n}")]
+    assert "status.requested_reasoning_budget" in reuse
+    assert (
+        "status.reasoning_budget" not in reuse
+    ), "the reuse check must compare the request, never the environment-resolved value"
+
+
+def test_validate_sends_reasoning_controls_before_the_runtime_unloads():
+    api = _read("features/chat/api/chat-api.ts")
+    validate_body = api.split("export async function validateModel", 1)[1].split(
+        "export async function", 1
+    )[0]
+    assert "reasoning_budget: payload.reasoning_budget ?? -1" in validate_body
+    assert 'reasoning_budget_message: payload.reasoning_budget_message ?? ""' in validate_body
+
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    validation = runtime.index("const validation = await validateModel({")
+    unload = runtime.index("await unloadModel(", validation)
+    assert validation < unload
+    validate_payload = runtime[validation:unload]
+    assert "reasoning_budget:" in validate_payload
+    assert "validateReasoningBudget" in validate_payload
+    assert "reasoning_budget_message:" in validate_payload
+    assert "validateReasoningBudgetMessage" in validate_payload
+
+
 def test_backfill_compares_server_keys_by_normalized_identity():
     """app_settings has no schema version, so an install predating identity normalization
     holds rows keyed by whatever id was typed, e.g."""

@@ -102,8 +102,14 @@ from core.inference.llama_server_args import (
     parse_cache_override_per_axis,
     parse_ctx_override,
     parse_gpu_layers_override,
+    parse_reasoning_budget_message_override,
+    parse_reasoning_budget_override,
     parse_split_mode_override,
     resolve_requested_ctx,
+    resolve_reasoning_budget,
+    resolve_reasoning_budget_message,
+    resolve_reasoning_budget_message_with_env,
+    resolve_reasoning_budget_with_env,
     split_policy_starves_devices,
     strip_context_only,
     strip_shadowing_flags,
@@ -557,6 +563,10 @@ class GgufLoadIntent:
     spec_draft_cache_type: Optional[str] = None
     ctx_checkpoints: Optional[int] = None
     cache_ram: Optional[int] = None
+    # llama.cpp thinking budget (--reasoning-budget / --reasoning-budget-message);
+    # -1 and "" follow the llama.cpp defaults.
+    reasoning_budget: int = -1
+    reasoning_budget_message: str = ""
     extra_args: Optional[tuple[str, ...]] = None
     # The route materialises inherited extras from the live server, so the list alone
     # cannot say whether the caller named it. Duplicate-load checks need the difference:
@@ -5829,6 +5839,18 @@ def _build_ngram_mod_flags(
     return []
 
 
+def _build_reasoning_budget_flags(
+    caps: Mapping[str, object], reasoning_budget: int, reasoning_budget_message: str
+) -> list[str]:
+    """Build only the reasoning flags advertised by this llama-server."""
+    flags: list[str] = []
+    if reasoning_budget != -1 and caps.get("supports_reasoning_budget"):
+        flags.extend(["--reasoning-budget", str(reasoning_budget)])
+    if reasoning_budget_message and caps.get("supports_reasoning_budget_message"):
+        flags.extend(["--reasoning-budget-message", reasoning_budget_message])
+    return flags
+
+
 # Canonical Speculative Decoding modes exposed by the Unsloth chat UI.
 # Dropdown renders seven (auto, mtp, dspark, dflash, ngram, mtp+ngram, off); the
 # load API also accepts legacy values the original Switch and external callers
@@ -6393,6 +6415,11 @@ class LlamaCppBackend:
         self._chat_template_override: Optional[str] = None
         self._supports_reasoning: bool = False
         self._reasoning_always_on: bool = False
+        self._reasoning_budget: int = -1
+        self._reasoning_budget_message: str = ""
+        # What the load asked for, before the environment. See _runtime_matches_intent.
+        self._requested_reasoning_budget: int = -1
+        self._requested_reasoning_budget_message: str = ""
         self._reasoning_style: str = "enable_thinking"
         self._reasoning_effort_levels: list = []
         self._supports_preserve_thinking: bool = False
@@ -6771,6 +6798,14 @@ class LlamaCppBackend:
         """n_ctx the last load was invoked with (not the effective cap).
         0 means Auto. Used by the route to detect Auto-vs-explicit flips."""
         return self._requested_n_ctx
+
+    @property
+    def reasoning_budget(self) -> int:
+        return self._reasoning_budget
+
+    @property
+    def reasoning_budget_message(self) -> str:
+        return self._reasoning_budget_message
 
     @property
     def extra_args_source(self) -> Optional[tuple[str, Optional[str]]]:
@@ -7303,6 +7338,16 @@ class LlamaCppBackend:
             return False
 
         extra_args = list(effective_extra_args) if effective_extra_args is not None else None
+        # Request against request. The live EFFECTIVE value can carry an inherited
+        # LLAMA_ARG_THINK_BUDGET* that no request can express, so comparing against it would
+        # tear down a healthy server on every load and never converge.
+        if not self._is_diffusion and (
+            self._requested_reasoning_budget
+            != resolve_reasoning_budget(extra_args, intent.reasoning_budget)
+            or self._requested_reasoning_budget_message
+            != resolve_reasoning_budget_message(extra_args, intent.reasoning_budget_message)
+        ):
+            return False
         # A request omitting the extras field inherits the LAUNCHED list; anything else is
         # the caller's own. A launch-time rewrite (drafter drop, MTP crash replay) makes
         # the two differ, and the equality below wants what the load was INVOKED with.
@@ -7902,6 +7947,9 @@ class LlamaCppBackend:
                 "supports_no_cache_prompt": False,
                 "supports_metrics": False,
                 "supports_slot_save": False,
+                "supports_reasoning_budget": False,
+                "supports_reasoning_budget_message": False,
+                "reasoning_budget_probe_inconclusive": True,
                 "supports_no_mmproj_offload": False,
                 "supports_load_mode": False,
                 "spec_draft_ngl_flag": None,
@@ -7949,6 +7997,8 @@ class LlamaCppBackend:
         supports_no_cache_prompt = False
         supports_metrics = False
         supports_slot_save = False
+        supports_reasoning_budget = False
+        supports_reasoning_budget_message = False
         supports_no_mmproj_offload = False
         supports_load_mode = False
         spec_draft_ngl_flag = None
@@ -8174,6 +8224,8 @@ class LlamaCppBackend:
             supports_no_cache_prompt = _is_real("--no-cache-prompt")
             supports_metrics = _is_real("--metrics")
             supports_slot_save = _is_real("--slot-save-path")
+            supports_reasoning_budget = _is_real("--reasoning-budget")
+            supports_reasoning_budget_message = _is_real("--reasoning-budget-message")
             supports_no_mmproj_offload = _is_real("--no-mmproj-offload")
             # --load-mode supersedes --mlock / --no-mmap, which are deprecated.
             # Pre-initialised above: a failed probe must fall back, not raise.
@@ -8266,6 +8318,9 @@ class LlamaCppBackend:
             "supports_no_cache_prompt": supports_no_cache_prompt,
             "supports_metrics": supports_metrics,
             "supports_slot_save": supports_slot_save,
+            "supports_reasoning_budget": supports_reasoning_budget,
+            "supports_reasoning_budget_message": supports_reasoning_budget_message,
+            "reasoning_budget_probe_inconclusive": not (probe_ok and help_nonempty),
             "supports_no_mmproj_offload": supports_no_mmproj_offload,
             "supports_load_mode": supports_load_mode,
             "spec_draft_ngl_flag": spec_draft_ngl_flag,
@@ -8321,6 +8376,96 @@ class LlamaCppBackend:
                 cls._capability_retry_after.pop(cache_key, None)
                 cls._capability_retry_backoff.pop(cache_key, None)
             return info
+
+    @classmethod
+    def validate_reasoning_budget_capabilities(
+        cls,
+        binary: Optional[str],
+        *,
+        extra_args: Optional[Iterable[str]],
+        reasoning_budget: int,
+        reasoning_budget_message: str,
+    ) -> dict[str, object]:
+        """Reject configured reasoning flags before replacing a live server.
+
+        Explicit config only: the first-class fields and the passthrough extras.
+        LLAMA_ARG_THINK_BUDGET* is a machine-wide llama.cpp default no Studio control
+        can clear, so gating on it would fail loads with no way out of the UI.
+        llama-server validates its own env; effective state still reports it.
+        """
+        effective_budget = resolve_reasoning_budget(extra_args, reasoning_budget)
+        effective_message = resolve_reasoning_budget_message(extra_args, reasoning_budget_message)
+        needs_budget, needs_message = cls.reasoning_budget_settings_requested(
+            extra_args = extra_args,
+            reasoning_budget = effective_budget,
+            reasoning_budget_message = effective_message,
+        )
+        if not needs_budget and not needs_message:
+            return cls.probe_server_capabilities(binary) if binary else {}
+        if not binary:
+            raise ValueError(
+                "Reasoning budget settings require a llama-server runtime. "
+                "Install or update llama.cpp, then try again."
+            )
+
+        caps = cls.probe_server_capabilities(binary)
+        missing = []
+        if needs_budget and not caps.get("supports_reasoning_budget"):
+            missing.append("--reasoning-budget")
+        if needs_message and not caps.get("supports_reasoning_budget_message"):
+            missing.append("--reasoning-budget-message")
+        if missing:
+            verdict = (
+                "could not verify support for"
+                if caps.get("reasoning_budget_probe_inconclusive")
+                else "does not support"
+            )
+            raise ValueError(
+                f"llama-server at {binary} {verdict} {', '.join(missing)}. "
+                "Update llama.cpp or clear the Reasoning Budget settings."
+            )
+        if needs_budget and effective_budget > 0:
+            value_key = f"supports_reasoning_budget_value:{effective_budget}"
+            if value_key not in caps:
+                probe_env = cls._llama_server_env_for_binary(binary)
+                # Same shape as the --help probe: llama-server parses LLAMA_ARG_* before
+                # argv, so a stale inherited value would read as "rejects the budget".
+                for name in tuple(probe_env):
+                    if name.startswith("LLAMA_ARG_"):
+                        probe_env.pop(name, None)
+                if sys.platform == "darwin":
+                    probe_env["GGML_METAL_DEVICES"] = "0"
+                try:
+                    result = subprocess.run(
+                        [binary, "--reasoning-budget", str(effective_budget), "--help"],
+                        capture_output = True,
+                        text = True,
+                        encoding = "utf-8",
+                        errors = "replace",
+                        timeout = 10,
+                        check = False,
+                        env = probe_env,
+                    )
+                    caps[value_key] = result.returncode == 0
+                except (OSError, subprocess.SubprocessError):
+                    caps[value_key] = False
+            if not caps[value_key]:
+                raise ValueError(
+                    f"llama-server at {binary} does not accept positive reasoning budgets. "
+                    "Update llama.cpp, use 0 or -1, or clear the Reasoning Budget setting."
+                )
+        return caps
+
+    @staticmethod
+    def reasoning_budget_settings_requested(
+        *, extra_args: Optional[Iterable[str]], reasoning_budget: int, reasoning_budget_message: str
+    ) -> tuple[bool, bool]:
+        budget_override = parse_reasoning_budget_override(extra_args)
+        message_override = parse_reasoning_budget_message_override(extra_args)
+        return (
+            reasoning_budget != -1 or budget_override is not None,
+            bool(reasoning_budget_message) or message_override is not None,
+        )
 
     @staticmethod
     def _mtp_token_from_spec_help(spec_help: str) -> Optional[str]:
@@ -15031,6 +15176,10 @@ class LlamaCppBackend:
         self._is_audio = False  # clear any prior TTS/audio model's routing flag
         self._model_identifier = model_identifier
         self._cache_type_kv = None
+        self._reasoning_budget = -1
+        self._reasoning_budget_message = ""
+        self._requested_reasoning_budget = -1
+        self._requested_reasoning_budget_message = ""
         self._swa_full = False
         self._kv_cache_unified = False
         self._memory_state = None
@@ -19298,6 +19447,8 @@ class LlamaCppBackend:
         cache_ram = intent.cache_ram
         extra_args = list(intent.extra_args) if intent.extra_args is not None else None
         preserve_multi_gpu_on_layer = intent.preserve_multi_gpu_on_layer
+        reasoning_budget = intent.reasoning_budget
+        reasoning_budget_message = intent.reasoning_budget_message
         # Before the serial scope: a queued load still belongs to the lifecycle it
         # was requested in.
         # The process-wide equivalent, for the same reason. Only _begin_server_lifecycle
@@ -19523,6 +19674,30 @@ class LlamaCppBackend:
                     _launch_probe_inconclusive = True
                 return caps
 
+            _reasoning_requested = any(
+                self.reasoning_budget_settings_requested(
+                    extra_args = extra_args,
+                    reasoning_budget = reasoning_budget,
+                    reasoning_budget_message = reasoning_budget_message,
+                )
+            )
+            if (
+                _reasoning_requested
+                and gguf_path
+                and Path(gguf_path).is_file()
+                and self._gguf_path_is_diffusion(gguf_path, model_identifier)
+            ):
+                raise ValueError(
+                    "Reasoning Budget settings are not supported for DiffusionGemma models."
+                )
+            # Nothing configured means nothing to reject; _launch_caps probes the binary anyway.
+            if _reasoning_requested:
+                self.validate_reasoning_budget_capabilities(
+                    binary,
+                    extra_args = extra_args,
+                    reasoning_budget = reasoning_budget,
+                    reasoning_budget_message = reasoning_budget_message,
+                )
             is_vulkan_backend = self._is_vulkan_backend(binary)
             _vulkan_ordinal_pin = (
                 is_vulkan_backend and bool(gpu_ids) and gpu_ids_are_vulkan_ordinals is not False
@@ -22963,6 +23138,9 @@ class LlamaCppBackend:
                             "llama-server has no --cache-ram; skipping the requested %s MiB.",
                             cache_ram,
                         )
+                # Read early so the effective budget can fold in an inherited
+                # LLAMA_ARG_THINK_BUDGET*; the launch env is rebuilt below before spawn.
+                env = self._llama_server_env_for_binary(binary)
 
                 # Report a clean public model id (matching GET /v1/models) rather
                 # than the raw -m path in llama-server's own /v1/models and the
@@ -23534,6 +23712,41 @@ class LlamaCppBackend:
                         ]
                     )
                     logger.info(f"Reasoning model: {reasoning_kw} by default")
+
+                reasoning_budget = resolve_reasoning_budget(extra_args, reasoning_budget)
+                reasoning_budget_message = resolve_reasoning_budget_message(
+                    extra_args, reasoning_budget_message
+                )
+                cmd.extend(
+                    _build_reasoning_budget_flags(
+                        server_caps, reasoning_budget, reasoning_budget_message
+                    )
+                )
+                # What was asked for, pass-through flags folded in but not the environment: the
+                # value a client can resend, and the one the reuse check compares against.
+                self._requested_reasoning_budget = reasoning_budget
+                self._requested_reasoning_budget_message = reasoning_budget_message
+                # Only a CONCLUSIVE "no such flag" means the child ignores the environment. A probe
+                # that timed out says nothing, and the child still applies LLAMA_ARG_THINK_BUDGET*,
+                # so recording the bare request there would misreport the running server.
+                _budget_env_applies = server_caps.get(
+                    "supports_reasoning_budget"
+                ) or server_caps.get("reasoning_budget_probe_inconclusive")
+                reasoning_budget = (
+                    resolve_reasoning_budget_with_env(extra_args, reasoning_budget, env)
+                    if _budget_env_applies
+                    else reasoning_budget
+                )
+                reasoning_budget_message = (
+                    resolve_reasoning_budget_message_with_env(
+                        extra_args, reasoning_budget_message, env
+                    )
+                    if server_caps.get("supports_reasoning_budget_message")
+                    or server_caps.get("reasoning_budget_probe_inconclusive")
+                    else reasoning_budget_message
+                )
+                self._reasoning_budget = reasoning_budget
+                self._reasoning_budget_message = reasoning_budget_message
 
                 if launch_mmproj_path and effective_is_vision:
                     cmd.extend(["--mmproj", launch_mmproj_path])
@@ -27263,6 +27476,10 @@ class LlamaCppBackend:
             self._chat_template_override = None
             self._supports_reasoning = False
             self._reasoning_always_on = False
+            self._reasoning_budget = -1
+            self._reasoning_budget_message = ""
+            self._requested_reasoning_budget = -1
+            self._requested_reasoning_budget_message = ""
             self._reasoning_style = "enable_thinking"
             self._reasoning_effort_levels = []
             self._reasoning_default = True

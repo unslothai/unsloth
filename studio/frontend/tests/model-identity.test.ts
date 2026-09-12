@@ -47,6 +47,8 @@ function config(maxSeqLength: number, kvCacheDtype: string | null = null) {
     speculativeType: null,
     specDraftNMax: null,
     nParallel: null,
+    reasoningBudget: -1,
+    reasoningBudgetMessage: "",
     nBatch: null,
     nUbatch: null,
     tensorParallel: false,

@@ -1613,7 +1613,11 @@ try:
         drop_managed_flags,
         extra_args_disable_mmproj,
         parse_gpu_layers_override,
+        parse_reasoning_budget_message_override,
+        parse_reasoning_budget_override,
         parse_split_mode_override,
+        resolve_reasoning_budget,
+        resolve_reasoning_budget_message,
         resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
@@ -1671,7 +1675,11 @@ except ImportError:
         drop_managed_flags,
         extra_args_disable_mmproj,
         parse_gpu_layers_override,
+        parse_reasoning_budget_message_override,
+        parse_reasoning_budget_override,
         parse_split_mode_override,
+        resolve_reasoning_budget,
+        resolve_reasoning_budget_message,
         resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
@@ -7079,6 +7087,8 @@ def _active_gguf_intent(
             strip_spec = False,
             strip_template = False,
             strip_split_mode = False,
+            strip_reasoning_budget = "reasoning_budget" in request_fields_set,
+            strip_reasoning_budget_message = "reasoning_budget_message" in request_fields_set,
             strip_batch = "n_batch" in request_fields_set,
             strip_ubatch = "n_ubatch" in request_fields_set,
             strip_ctx_checkpoints = "ctx_checkpoints" in request_fields_set,
@@ -12236,6 +12246,60 @@ def _classify_diffusion_gguf(config: ModelConfig) -> Optional[bool]:
     return True if name_says_diffusion else None
 
 
+async def _validate_reasoning_budget_preflight(
+    config: ModelConfig,
+    diffusion_kind: Optional[bool],
+    extra_args: Optional[list[str]],
+    request: LoadRequest | ValidateModelRequest,
+) -> None:
+    """Reject unsupported reasoning controls before any resident model is torn down.
+
+    Explicit config only, exactly as LlamaCppBackend gates the load itself. Counting
+    an inherited LLAMA_ARG_THINK_BUDGET* as a request rejected every undownloaded
+    GGUF and every DiffusionGemma, naming a setting the UI already shows as default.
+    """
+    if not config.is_gguf:
+        return
+    effective_budget = resolve_reasoning_budget(extra_args, request.reasoning_budget)
+    effective_message = resolve_reasoning_budget_message(
+        extra_args, request.reasoning_budget_message
+    )
+    requested = any(
+        LlamaCppBackend.reasoning_budget_settings_requested(
+            extra_args = extra_args,
+            reasoning_budget = effective_budget,
+            reasoning_budget_message = effective_message,
+        )
+    )
+    if diffusion_kind and requested:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Reasoning Budget settings are not supported for DiffusionGemma models.",
+        )
+    if diffusion_kind is None and requested:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Reasoning Budget settings cannot be applied until this GGUF is "
+                "downloaded and its architecture can be verified. Load it once with "
+                "the default reasoning budget, then apply these settings."
+            ),
+        )
+    if not requested:
+        return
+    backend = get_llama_cpp_backend()
+    try:
+        await asyncio.to_thread(
+            backend.validate_reasoning_budget_capabilities,
+            backend._find_llama_server_binary(),
+            extra_args = extra_args,
+            reasoning_budget = effective_budget,
+            reasoning_budget_message = effective_message,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
+
 async def _override_gpu_ids_still_resolve(
     gpu_ids: List[int], stored_index_kind: str = "physical"
 ) -> bool:
@@ -13504,6 +13568,8 @@ def _resolve_inherited_extra_args(
             # must not last-wins-override it. auto leaves a user's inherited -ngl
             # alone. getattr: a validate request reuses this resolver, no offload fields.
             strip_offload = getattr(request, "gpu_memory_mode", "auto") == "manual",
+            strip_reasoning_budget = "reasoning_budget" in fields_set,
+            strip_reasoning_budget_message = "reasoning_budget_message" in fields_set,
             # a set field emits its own flag; an inherited -b / -ub would last-wins-override it
             strip_batch = "n_batch" in fields_set,
             strip_ubatch = "n_ubatch" in fields_set,
@@ -14297,6 +14363,14 @@ async def _load_model_impl(
             None if request.llama_extra_args is None else extra_llama_args
         )
 
+        _reasoning_updates = {}
+        _reasoning_budget_override = parse_reasoning_budget_override(extra_llama_args)
+        if _reasoning_budget_override is not None:
+            _reasoning_updates["reasoning_budget"] = _reasoning_budget_override
+        _reasoning_message_override = parse_reasoning_budget_message_override(extra_llama_args)
+        if _reasoning_message_override is not None:
+            _reasoning_updates["reasoning_budget_message"] = _reasoning_message_override
+
         # Manual mode owns the offload flags. Preserve an explicit layer count
         # by translating its last-wins value into the first-class field before
         # stripping the raw flags. This keeps CLI pass-through such as
@@ -14330,6 +14404,8 @@ async def _load_model_impl(
         # particular, the already-loaded comparator must not compare the raw
         # request's managed offload flags against the stripped launch state.
         request = request.model_copy(update = {"llama_extra_args": extra_llama_args})
+        if _reasoning_updates:
+            request = request.model_copy(update = _reasoning_updates)
 
         resolved_ollama_path = await _lease_ollama_model_ref(
             request,
@@ -14556,6 +14632,11 @@ async def _load_model_impl(
 
         # Invalid GPU IDs must fail before the training coexistence guard.
         placement = await _prepare_load_placement(config, request, extra_llama_args)
+        # Ahead of the diffusion drop below: an explicit reasoning flag is a refusal, not a
+        # silent no-op, and the check needs the authoritative classification.
+        await _validate_reasoning_budget_preflight(
+            config, placement.diffusion_kind, extra_llama_args, request
+        )
         if placement.diffusion_kind is True and extra_llama_args:
             # The visual runner builds its own command and appends none of these, so
             # keeping them would record a load as running arguments the process never
@@ -15598,6 +15679,11 @@ async def validate_model(
         # Apply the same placement policy as /load before the frontend unloads
         # the current model.
         placement = await _prepare_load_placement(config, request, effective_extra_args)
+        # Same ordering as /load: judged before the diffusion drop, or an explicit
+        # pass-through flag would be ignored rather than refused.
+        await _validate_reasoning_budget_preflight(
+            config, placement.diffusion_kind, effective_extra_args, request
+        )
         if placement.diffusion_kind is True and effective_extra_args:
             # Same drop as /load, and for the same reason: the diffusion runner appends
             # none of these, so an estimate that reads a --ctx-size out of them approves

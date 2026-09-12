@@ -323,6 +323,34 @@ export function applyActiveModelStatusToStore(
     gpuLayers: status.gpu_layers ?? null,
     loadedPin: prevState.loadedCustomContextLength ?? null,
   });
+  const reasoningBudgetApplicable =
+    status.is_gguf === true && status.is_diffusion !== true;
+  const incomingReasoningBudget = reasoningBudgetApplicable
+    ? (status.reasoning_budget ?? -1)
+    : -1;
+  const incomingReasoningBudgetMessage = reasoningBudgetApplicable
+    ? (status.reasoning_budget_message ?? "")
+    : "";
+  const reasoningBudgetStatusChanged =
+    prevState.loadedReasoningBudget !== incomingReasoningBudget ||
+    prevState.loadedReasoningBudgetMessage !== incomingReasoningBudgetMessage;
+  const reasoningBudgetEditPending =
+    prevState.loadedReasoningBudget !== null &&
+    prevState.reasoningBudget !== prevState.loadedReasoningBudget;
+  const reasoningBudgetMessageEditPending =
+    prevState.loadedReasoningBudgetMessage !== null &&
+    prevState.reasoningBudgetMessage !==
+      prevState.loadedReasoningBudgetMessage;
+  const reasoningBudgetStatusFields = {
+    loadedReasoningBudget: incomingReasoningBudget,
+    loadedReasoningBudgetMessage: incomingReasoningBudgetMessage,
+    ...(!reasoningBudgetEditPending || hydratingExistingModel
+      ? { reasoningBudget: incomingReasoningBudget }
+      : {}),
+    ...(!reasoningBudgetMessageEditPending || hydratingExistingModel
+      ? { reasoningBudgetMessage: incomingReasoningBudgetMessage }
+      : {}),
+  };
   const incomingGpuMode = status.is_gguf
     ? (status.gpu_memory_mode ?? "auto")
     : null;
@@ -540,6 +568,11 @@ export function applyActiveModelStatusToStore(
     // Per-model: a change underneath this tab blanks the control like performLoad's cross-model
     // reset, or the old count follows onto the new model. The baseline still has the rollback.
     ...(seedLoadParams && slotsModelChanged && { nParallel: null }),
+    ...(seedLoadParams &&
+      (prevState.loadedReasoningBudget === null ||
+        hydratingExistingModel ||
+        reasoningBudgetStatusChanged) &&
+      reasoningBudgetStatusFields),
     // AFTER that clear, which both a first hydration and a model change trip: either would leave
     // the control blank while the model runs on a remembered override, so the next Apply would
     // save the blank over it. Adopted only when the running count matches.

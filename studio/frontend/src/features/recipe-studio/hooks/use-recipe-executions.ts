@@ -79,6 +79,12 @@ type LocalModelSelection = {
   requestedContextLength?: number | null;
   /** Whether MLX served it. Only there is a positive request above unambiguous. */
   isMlx?: boolean;
+  /** What that load ASKED for, captured the same way as the context request: a restore
+   *  replays it, while a recipe's own target runs at the defaults. Requested rather than
+   *  effective, because the effective pair folds in a LLAMA_ARG_THINK_BUDGET* no request can
+   *  express, and comparing against that would reload on every run and never converge. */
+  reasoningBudget?: number;
+  reasoningBudgetMessage?: string;
 };
 
 type LocalModelLoadPlan =
@@ -243,7 +249,13 @@ function contextIntent(
 async function isLocalModelAlreadyLoaded(
   selection: LocalModelSelection,
 ): Promise<boolean> {
-  const { target, ggufVariant, requestedContextLength } = selection;
+  const {
+    target,
+    ggufVariant,
+    requestedContextLength,
+    reasoningBudget,
+    reasoningBudgetMessage,
+  } = selection;
   try {
     const status = await getInferenceStatus();
     if (
@@ -260,9 +272,19 @@ async function isLocalModelAlreadyLoaded(
     // asked for nothing must not inherit whatever window Chat pinned.
     // The resident backend decides, since both values describe the load that is running.
     const residentIsMlx = status.is_mlx ?? false;
-    return (
-      contextIntent(requestedContextLength, residentIsMlx) ===
+    if (
+      contextIntent(requestedContextLength, residentIsMlx) !==
       contextIntent(status.requested_context_length, residentIsMlx)
+    ) {
+      return false;
+    }
+    // Same rule for reasoning: a recipe asked for the defaults, so Chat's budget would
+    // otherwise change what the run produces. Both sides are REQUESTED values, so an
+    // inherited environment default reads as equal and cannot loop.
+    return (
+      (reasoningBudget ?? -1) === (status.requested_reasoning_budget ?? -1) &&
+      (reasoningBudgetMessage ?? "") ===
+        (status.requested_reasoning_budget_message ?? "")
     );
   } catch {
     // Fall through to load attempt; the backend will re-error if needed.
@@ -273,7 +295,13 @@ async function isLocalModelAlreadyLoaded(
 async function loadLocalModelSelection(
   selection: LocalModelSelection,
 ): Promise<string | null> {
-  const { target, ggufVariant, requestedContextLength } = selection;
+  const {
+    target,
+    ggufVariant,
+    requestedContextLength,
+    reasoningBudget,
+    reasoningBudgetMessage,
+  } = selection;
   const modelLabel = ggufVariant ? `${target} (${ggufVariant})` : target;
   let loadToastDismissed = false;
   const toastId = toast.message(`Loading ${modelLabel}...`, {
@@ -303,6 +331,10 @@ async function loadLocalModelSelection(
           isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason),
           DEFAULT_MAX_SEQ_LENGTH,
         ),
+      // biome-ignore lint/style/useNamingConvention: api schema
+      reasoning_budget: reasoningBudget ?? -1,
+      // biome-ignore lint/style/useNamingConvention: api schema
+      reasoning_budget_message: reasoningBudgetMessage ?? "",
       // biome-ignore lint/style/useNamingConvention: api schema
       load_in_4bit: true,
       // biome-ignore lint/style/useNamingConvention: api schema
@@ -362,6 +394,8 @@ async function getActiveLocalModelSelection(): Promise<LocalModelSelection | nul
       aliases: ["previous Chat model"],
       requestedContextLength: status.requested_context_length ?? null,
       isMlx: status.is_mlx ?? false,
+      reasoningBudget: status.requested_reasoning_budget ?? -1,
+      reasoningBudgetMessage: status.requested_reasoning_budget_message ?? "",
     };
   } catch {
     return null;
@@ -387,7 +421,9 @@ async function getRestorableActiveLocalModelSelection(): Promise<RestorableLocal
         ggufVariant: status.gguf_variant?.trim() ?? "",
         aliases: ["previous Chat model"],
         requestedContextLength: status.requested_context_length ?? null,
-      isMlx: status.is_mlx ?? false,
+        isMlx: status.is_mlx ?? false,
+        reasoningBudget: status.requested_reasoning_budget ?? -1,
+        reasoningBudgetMessage: status.requested_reasoning_budget_message ?? "",
       },
       unrestorableLabel: null,
     };
@@ -405,7 +441,9 @@ function isSameLocalModelSelection(
       left.target.toLowerCase() === right.target.toLowerCase() &&
       left.ggufVariant === right.ggufVariant &&
       contextIntent(left.requestedContextLength, left.isMlx) ===
-        contextIntent(right.requestedContextLength, right.isMlx),
+        contextIntent(right.requestedContextLength, right.isMlx) &&
+      (left.reasoningBudget ?? -1) === (right.reasoningBudget ?? -1) &&
+      (left.reasoningBudgetMessage ?? "") === (right.reasoningBudgetMessage ?? ""),
   );
 }
 

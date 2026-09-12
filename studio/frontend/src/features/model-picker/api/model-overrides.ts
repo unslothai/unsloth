@@ -41,6 +41,10 @@ export interface ApiModelOverride {
   // biome-ignore lint/style/useNamingConvention: API schema
   n_parallel?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
+  reasoning_budget?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  reasoning_budget_message?: string;
+  // biome-ignore lint/style/useNamingConvention: API schema
   n_batch?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   n_ubatch?: number;
@@ -304,6 +308,9 @@ export function fromApiOverride(
     specDraftCacheDtype:
       override.spec_draft_cache_type ?? local.specDraftCacheDtype,
     nParallel: override.n_parallel ?? local.nParallel,
+    reasoningBudget: override.reasoning_budget ?? local.reasoningBudget,
+    reasoningBudgetMessage:
+      override.reasoning_budget_message ?? local.reasoningBudgetMessage,
     nBatch: override.n_batch ?? local.nBatch,
     nUbatch: override.n_ubatch ?? local.nUbatch,
     loadMode: override.load_mode ?? local.loadMode,
@@ -362,6 +369,12 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   // Blank follows the server-wide --parallel default, which is the app default here.
   if (config.nParallel && config.nParallel > 0) {
     payload.n_parallel = config.nParallel;
+  }
+  if (config.reasoningBudget !== -1) {
+    payload.reasoning_budget = config.reasoningBudget;
+  }
+  if (config.reasoningBudgetMessage) {
+    payload.reasoning_budget_message = config.reasoningBudgetMessage;
   }
   // blank follows the llama.cpp defaults (2048 / 512)
   if (config.nBatch && config.nBatch > 0) {
@@ -443,6 +456,9 @@ export interface PutModelOverrideOptions {
    *  local entry for the storage budget is not a forget, so it must not take
    *  `llama_extra_args` the page can neither show nor restore. */
   keepLaunchFlags?: boolean;
+  /** Remove a legacy passthrough value only after this control was explicitly reset. */
+  resetReasoningBudget?: boolean;
+  resetReasoningBudgetMessage?: boolean;
 }
 
 export async function putModelOverride(
@@ -491,6 +507,10 @@ async function sendModelOverride(
       // knew to send. An older backend ignores the key.
       // biome-ignore lint/style/useNamingConvention: API schema
       mirrors_server_tuning: true,
+      // Same contract for the reasoning pair, which a build mirroring the tuning group
+      // can still predate.
+      // biome-ignore lint/style/useNamingConvention: API schema
+      mirrors_reasoning_budget: true,
       // Only sent when set, so an older backend is not handed an unknown key every save.
       ...(options?.fillAbsentFields
         ? // biome-ignore lint/style/useNamingConvention: API schema
@@ -506,6 +526,20 @@ async function sendModelOverride(
           { llama_extra_args: [] }
         : {}),
       ...toApiOverride(config),
+      // Write-only reset markers let the backend remove legacy passthrough flags
+      // shadowing these controls. Fill-only migration must never delete stored flags.
+      ...(options?.resetReasoningBudget && config?.reasoningBudget === -1
+        ? {
+            // biome-ignore lint/style/useNamingConvention: API schema
+            reasoning_budget: -1,
+          }
+        : {}),
+      ...(options?.resetReasoningBudgetMessage && config?.reasoningBudgetMessage === ""
+        ? {
+            // biome-ignore lint/style/useNamingConvention: API schema
+            reasoning_budget_message: "",
+          }
+        : {}),
     }),
   });
   if (!res.ok) {

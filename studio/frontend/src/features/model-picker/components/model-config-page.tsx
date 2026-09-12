@@ -129,6 +129,7 @@ import {
   deletePerModelConfig,
   floorMaxSeqLength,
   isDefaultConfig,
+  isReasoningBudgetMessageValid,
   contextPinPatch,
   isServedByMlx,
   savedContextPin,
@@ -240,6 +241,8 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     config.specDraftNMax != null ||
     config.specDraftCacheDtype != null ||
     config.nParallel != null ||
+    config.reasoningBudget !== -1 ||
+    config.reasoningBudgetMessage !== "" ||
     config.nBatch != null ||
     config.nUbatch != null ||
     config.loadMode != null ||
@@ -270,6 +273,8 @@ function withoutUnsupportedDiffusionSettings(
     (config.gpuMemoryMode ?? "auto") === "auto" &&
     config.gpuLayers == null &&
     config.nCpuMoe == null &&
+    config.reasoningBudget === -1 &&
+    config.reasoningBudgetMessage === "" &&
     !config.tensorParallel &&
     !config.disableVision &&
     config.nBatch == null &&
@@ -284,6 +289,8 @@ function withoutUnsupportedDiffusionSettings(
     gpuMemoryMode: "auto",
     gpuLayers: undefined,
     nCpuMoe: undefined,
+    reasoningBudget: -1,
+    reasoningBudgetMessage: "",
     tensorParallel: false,
     disableVision: false,
     // the diffusion runner ignores the llama-server batch flags
@@ -1439,6 +1446,67 @@ function GgufAdvancedSettings({
             className="panel-switch shrink-0"
             checked={!config.disableVision}
             onCheckedChange={(checked) => update({ disableVision: !checked })}
+          />
+        </div>
+      )}
+
+      {!isDiffusion && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS}>Reasoning Budget</span>
+            <InfoHint>
+              Maximum thinking tokens. -1 is unrestricted, 0 ends reasoning
+              immediately, and a positive value sets a token budget.
+            </InfoHint>
+          </div>
+          <input
+            type="number"
+            min={-1}
+            max={2_147_483_647}
+            step={1}
+            value={config.reasoningBudget}
+            onChange={(event) => {
+              const raw = event.target.value;
+              if (raw === "") {
+                update({ reasoningBudget: -1 });
+                return;
+              }
+              const parsed = Number.parseInt(raw, 10);
+              if (Number.isFinite(parsed)) {
+                update({
+                  reasoningBudget: Math.max(
+                    -1,
+                    Math.min(2_147_483_647, parsed),
+                  ),
+                });
+              }
+            }}
+            aria-label="Reasoning Budget"
+            className={NUMBER_INPUT_CLASS}
+          />
+        </div>
+      )}
+
+      {!isDiffusion && (
+        <div className={ROW_CLASS}>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={LABEL_CLASS_WRAP}>Reasoning Budget Message</span>
+            <InfoHint>
+              Optional text injected before the end-of-thinking tag when the
+              model reaches its reasoning budget.
+            </InfoHint>
+          </div>
+          <input
+            type="text"
+            value={config.reasoningBudgetMessage}
+            placeholder="None"
+            onChange={(event) => {
+              if (isReasoningBudgetMessageValid(event.target.value)) {
+                update({ reasoningBudgetMessage: event.target.value });
+              }
+            }}
+            aria-label="Reasoning Budget Message"
+            className={`h-8 w-[180px] min-w-0 ${CONTROL_SURFACE} px-3 py-0 text-ui-13 font-medium text-nav-fg outline-none focus-visible:ring-0`}
           />
         </div>
       )}
@@ -2728,7 +2796,13 @@ export function ModelConfigPage({
       : config;
     const effectiveConfig = resolvedIsDiffusion
       ? withoutUnsupportedDiffusionSettings(committedConfig, gpuIndexKind)
-      : committedConfig;
+      : target.isGguf
+        ? committedConfig
+        : {
+            ...committedConfig,
+            reasoningBudget: -1,
+            reasoningBudgetMessage: "",
+          };
     // pinFixedLayerContext above was computed from the render-time config, before the same-click
     // GPU Layers draft was committed, so recompute from effectiveConfig or a later fresh load
     // recreates the OOM.
@@ -2784,6 +2858,16 @@ export function ModelConfigPage({
         configId,
         target.ggufVariant,
         remember ? normalizedRuntimeConfig : null,
+        remember
+          ? {
+              resetReasoningBudget:
+                baseline.reasoningBudget !== -1 &&
+                normalizedRuntimeConfig.reasoningBudget === -1,
+              resetReasoningBudgetMessage:
+                baseline.reasoningBudgetMessage !== "" &&
+                normalizedRuntimeConfig.reasoningBudgetMessage === "",
+            }
+          : undefined,
       );
     }
     // Saving can push the local map over budget and drop other models, whose server entries would

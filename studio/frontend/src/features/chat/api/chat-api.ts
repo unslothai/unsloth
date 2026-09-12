@@ -360,6 +360,8 @@ export async function validateModel(
       gpu_layers: payload.gpu_layers,
       // Slots scale the KV estimate; keep validate sized like the load.
       n_parallel: payload.n_parallel,
+      reasoning_budget: payload.reasoning_budget ?? -1,
+      reasoning_budget_message: payload.reasoning_budget_message ?? "",
       // A --ctx-size or cache override in here changes the estimate, so a preflight that dropped them
       // would approve a different command from the one that runs.
       ...(payload.llama_extra_args !== undefined

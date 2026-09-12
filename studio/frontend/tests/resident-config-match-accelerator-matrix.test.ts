@@ -69,6 +69,8 @@ const BLANK = {
   nParallel: null,
   nBatch: null,
   nUbatch: null,
+  reasoningBudget: -1,
+  reasoningBudgetMessage: "",
   tensorParallel: false,
   disableVision: false,
   chatTemplateOverride: null,
@@ -206,6 +208,18 @@ const FIELDS: FieldCase[] = [
     statusKey: "requested_cache_ram",
     same: 4096,
     different: 8192,
+  },
+  {
+    key: "reasoningBudget",
+    statusKey: "reasoning_budget",
+    same: 1024,
+    different: 512,
+  },
+  {
+    key: "reasoningBudgetMessage",
+    statusKey: "reasoning_budget_message",
+    same: "Wrap up.",
+    different: "Stop here.",
   },
   {
     key: "chatTemplateOverride",

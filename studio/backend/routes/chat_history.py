@@ -32,6 +32,7 @@ from core.inference.llama_server_args import (
     PARALLEL_MIN,
 )
 from loggers import get_logger
+from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.api_errors import safe_validation_errors
 from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
@@ -404,6 +405,8 @@ class ChatPresetLoadConfig(BaseModel):
     speculativeType: Optional[str] = None
     specDraftNMax: Optional[int] = Field(default = None, ge = 1, le = 16)
     nParallel: Optional[int] = Field(default = None, ge = PARALLEL_MIN, le = PARALLEL_MAX)
+    reasoningBudget: NotABoolean = Field(default = None, ge = -1, le = 2_147_483_647)
+    reasoningBudgetMessage: Optional[str] = None
     # The normalizer emits both keys on every preset (null included) and this model is
     # extra="forbid", so without them PUT /api/chat/settings 400s the whole save for any
     # preset carrying a loadConfig, including one that only pinned nParallel.
@@ -421,6 +424,11 @@ class ChatPresetLoadConfig(BaseModel):
     gpuMemoryMode: Optional[Literal["manual"]] = None
     gpuLayers: Optional[int] = None
     nCpuMoe: Optional[int] = Field(default = None, ge = 0)
+
+    @field_validator("reasoningBudgetMessage")
+    @classmethod
+    def _validate_reasoning_budget_message(cls, value: Optional[str]) -> Optional[str]:
+        return None if value is None else validate_reasoning_budget_message(value)
 
 
 class ChatPreset(BaseModel):
