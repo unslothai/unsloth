@@ -951,10 +951,14 @@ def _only_a_code_fence(between: str) -> bool:
 _FENCE_ONLY_RE = re.compile(r"[\w.\-]*[ \t]*\n?[ \t]*`{3,}[a-zA-Z0-9_+-]*")
 
 
-# What can sit between a wrapper marker and the object it introduces: a name, a newline and a
-# fence, or blank space. All short. Anything longer is not a call's own body, so it is not
-# trusted, which is the conservative direction here (an untrusted span is masked, not exempted).
-_MAX_WRAPPER_BODY_GAP = 4096
+# Cap on the NON-BLANK part of the gap between a wrapper marker and its object, which is the
+# only part ``_only_a_code_fence`` decides on: a name, an optional newline, backticks and a
+# language tag. This is orders of magnitude more than a fence can be, so the cap only refuses
+# what was never one. The blank part is unbounded, as it is in real output, and is answered
+# without reading it. Capping the RAW gap instead would have refused a genuine fence trailed by
+# blank space, and refusing wrongly is not free: an untrusted wrapper body gets masked, which is
+# how a tool ends up receiving a run of U+E000 in place of the model's text.
+_MAX_FENCE_CHARS = 4096
 
 
 def _inference_wrapper_spans(text: str) -> list:
@@ -963,6 +967,12 @@ def _inference_wrapper_spans(text: str) -> list:
     for opener in _INFERENCE_WRAPPER_OPENERS:
         pos = text.find(opener)
         brace = -2  # Not yet sought. Distinct from -1, which means there is none left.
+        # The gap with its blank ends removed, as ``_only_a_code_fence`` would strip it. Held
+        # as indices so the gap is never copied; both walks stop at the first non-blank, and
+        # the runs they cross are disjoint across distinct braces, so they cost nothing
+        # amortised. Recomputed only when the brace or the opener moves past them.
+        core_end = 0
+        core_start = -1
         while pos != -1:
             after = pos + len(opener)
             # The next ``{`` is re-sought only once the last one falls behind this opener.
@@ -972,14 +982,25 @@ def _inference_wrapper_spans(text: str) -> list:
             # ``test_deepseek_r1_huge_fenceless_body_is_linear`` measures.
             if brace != -1 and brace < after:
                 brace = text.find("{", after)
+                core_end = brace
+                while core_end > 0 and text[core_end - 1].isspace():
+                    core_end -= 1
+                core_start = -1
             # None at or after this opener means none at or after any later one either.
             if brace == -1:
                 break
             # Only the object that follows the marker directly; anything else is not its body.
-            # The gap is a fence or blank space, both short, so a long one is not a body and
-            # is rejected without copying it: the slice is what made a single far-away brace
-            # quadratic in the same way.
-            if brace - after <= _MAX_WRAPPER_BODY_GAP and _only_a_code_fence(text[after:brace]):
+            if core_end <= after:
+                trusted = True  # Blank all the way to the object, however long.
+            else:
+                if core_start < after:
+                    core_start = after
+                    while core_start < core_end and text[core_start].isspace():
+                        core_start += 1
+                trusted = core_end - core_start <= _MAX_FENCE_CHARS and _only_a_code_fence(
+                    text[core_start:core_end]
+                )
+            if trusted:
                 end = _balanced_brace_end(text, brace)
                 if end is not None:
                     spans.append((pos, end + 1))
