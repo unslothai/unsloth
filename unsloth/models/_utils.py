@@ -2921,6 +2921,196 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
     return outputs
 
 
+def _unsloth_train_if_needed(model):
+    """`Trainer.training_step` calls `model.train()` on every micro-step. On a PEFT-wrapped
+    9B model that is a recursive walk over ~2k modules with a `__setattr__` each, ~13 ms of
+    pure Python per micro-step while the GPU waits. The mode only has to be asserted once:
+    skip the walk when the root already reports training mode and we set it before. A root
+    `.eval()` (evaluation, `for_inference`) flips `model.training`, so the next call walks again.
+    """
+    if model.training and getattr(model, "_unsloth_train_mode_asserted", False):
+        return model
+    model.train()
+    try:
+        model._unsloth_train_mode_asserted = True
+    except Exception:
+        pass
+    return model
+
+
+def _unsloth_floating_point_ops(self, inputs):
+    """transformers' `Trainer.floating_point_ops` calls `model.num_parameters(exclude_embeddings=True)`
+    on every micro-step, which walks `named_modules()` and `named_parameters()` of the whole
+    model (~13 ms of Python on a PEFT-wrapped 9B model) to count parameters that do not change
+    during training. Count once per model object and reuse it.
+    """
+    model = self.model
+    main_input = getattr(model, "main_input_name", "input_ids")
+    if main_input not in inputs or not hasattr(model, "num_parameters"):
+        return 0
+    cached = getattr(self, "_unsloth_flos_num_params", None)
+    if cached is None or cached[0] is not model:
+        cached = (model, model.num_parameters(exclude_embeddings = True))
+        self._unsloth_flos_num_params = cached
+    return 6 * inputs[main_input].numel() * cached[1]
+
+
+def patch_bnb_optimizer_step_sync():
+    """bitsandbytes' `Optimizer8bit.step` calls `torch.cuda.synchronize()` after every single
+    parameter update (`bitsandbytes/optim/optimizer.py: sync_gpu(p)`), 256 full device drains
+    per optimizer step for a LoRA model. The sync exists for paged optimizers, whose state
+    lives in unified memory; the plain 8-bit optimizers launch ordinary CUDA kernels on the
+    current stream and need none. Keep the sync for paged optimizers, drop it otherwise.
+    """
+    try:
+        import bitsandbytes.optim.optimizer as bnb_optimizer
+    except Exception:
+        return
+    Optimizer8bit = getattr(bnb_optimizer, "Optimizer8bit", None)
+    if Optimizer8bit is None or getattr(Optimizer8bit.step, "_unsloth_no_sync", False):
+        return
+    if not hasattr(bnb_optimizer, "sync_gpu"):
+        return
+    original_step = Optimizer8bit.step
+    real_sync_gpu = bnb_optimizer.sync_gpu
+
+    def _no_sync(t):
+        return None
+
+    @functools.wraps(original_step)
+    def step(self, closure = None):
+        if getattr(self, "is_paged", False):
+            return original_step(self, closure)
+        bnb_optimizer.sync_gpu = _no_sync
+        try:
+            return original_step(self, closure)
+        finally:
+            bnb_optimizer.sync_gpu = real_sync_gpu
+
+    step._unsloth_no_sync = True
+    Optimizer8bit.step = step
+
+
+def patch_triton_heuristics_run():
+    """`triton.runtime.autotuner.Heuristics.run` rebuilds a dict of every kernel argument once per
+    heuristic value per launch (fla kernels carry several). Build it once per launch and keep it
+    in step with the values computed so far; each heuristic sees exactly what it saw before.
+    """
+    try:
+        from triton.runtime.autotuner import Heuristics
+    except Exception:
+        return
+    if getattr(Heuristics.run, "_unsloth_single_dict", False):
+        return
+
+    def run(self, *args, **kwargs):
+        nargs = {**dict(zip(self.arg_names, args)), **kwargs}
+        for v, heur in self.values.items():
+            value = heur(nargs)
+            kwargs[v] = value
+            nargs[v] = value
+        return self.fn.run(*args, **kwargs)
+
+    run._unsloth_single_dict = True
+    Heuristics.run = run
+
+
+def patch_fla_autotuner_fast_path():
+    """unsloth_zoo's `compile_fla_no_autotune` makes every fla Triton autotuner reuse its first
+    tuned config for every key (`_ReuseBestCache`). After that, fla's `CachedAutotuner.run`
+    still builds its own `AutotuneKey` (dict zips, dtype strings, JSON-able normalisation) and
+    then Triton's `Autotuner.run` builds the key a second time, per launch, ~25 us of Python
+    for a lookup whose answer is always the same config. The Qwen3.5 GDN layers make ~2,500
+    such launches per optimizer step. Once a config exists, launch the kernel with it directly.
+    Same config, same kernel, same numerics.
+    """
+    try:
+        import fla.ops.utils.cache as fla_cache
+    except Exception:
+        return
+    CachedAutotuner = getattr(fla_cache, "CachedAutotuner", None)
+    if CachedAutotuner is None or getattr(CachedAutotuner.run, "_unsloth_fast_path", False):
+        return
+    original_run = CachedAutotuner.run
+
+    @functools.wraps(original_run)
+    def run(self, *args, **kwargs):
+        cfg = getattr(self, "_unsloth_fixed_config", None)
+        if cfg is None:
+            cache = self.cache
+            if len(self.configs) == 1:
+                cfg = self.configs[0]
+            elif type(cache).__name__ == "_ReuseBestCache" and len(cache) > 0:
+                cfg = next(iter(cache.values()))
+            else:
+                return original_run(self, *args, **kwargs)
+            if cfg.pre_hook is not None:
+                return original_run(self, *args, **kwargs)
+            self._unsloth_fixed_config = cfg
+            self._unsloth_fixed_kwargs = cfg.all_kwargs()
+        self.best_config = cfg
+        return self.fn.run(*args, **kwargs, **self._unsloth_fixed_kwargs)
+
+    run._unsloth_fast_path = True
+    CachedAutotuner.run = run
+
+
+def _model_uses_no_rng_in_forward(model):
+    """True when nothing in the training forward consumes the RNG: no dropout with p > 0 and
+    no attention dropout in the config."""
+    for m in model.modules():
+        if isinstance(m, torch.nn.Dropout) and m.p > 0:
+            return False
+        p = getattr(m, "p", None)
+        if type(m).__name__.endswith("Dropout") and isinstance(p, float) and p > 0:
+            return False
+    config = getattr(model, "config", None)
+    for attr in ("attention_dropout", "hidden_dropout", "dropout", "attn_pdrop", "resid_pdrop"):
+        v = getattr(config, attr, 0.0) or 0.0
+        if isinstance(v, (int, float)) and v > 0:
+            return False
+        text = getattr(config, "text_config", None)
+        v = getattr(text, attr, 0.0) or 0.0
+        if isinstance(v, (int, float)) and v > 0:
+            return False
+    return True
+
+
+def patch_checkpoint_rng_state(model):
+    """Gradient checkpointing saves and restores the CPU and CUDA RNG state around every
+    checkpointed layer (forward and recompute) so dropout replays identically. With no dropout
+    anywhere in the model that is ~170 us of Python per layer per micro-step for nothing.
+    Default `preserve_rng_state=False` for the checkpoint call when the forward consumes no RNG;
+    an explicit `preserve_rng_state` from the caller still wins.
+    """
+    try:
+        if not _model_uses_no_rng_in_forward(model):
+            return False
+    except Exception:
+        return False
+    import torch.utils.checkpoint as torch_checkpoint
+    import transformers.modeling_utils as hf_modeling_utils
+
+    for holder in (torch_checkpoint, hf_modeling_utils):
+        fn = getattr(holder, "checkpoint", None)
+        if fn is None or getattr(fn, "_unsloth_no_rng_default", False):
+            continue
+
+        @functools.wraps(fn)
+        def checkpoint(
+            function,
+            *args,
+            _fn = fn,
+            **kwargs,
+        ):
+            kwargs.setdefault("preserve_rng_state", False)
+            return _fn(function, *args, **kwargs)
+
+        checkpoint._unsloth_no_rng_default = True
+        holder.checkpoint = checkpoint
+    return True
+
+
 def patch_gradient_accumulation_fix(Trainer):
     # Fixes "Output 0 of UnslothFusedLossBackward is a view and is being modified inplace" and gradient accumulation.
     import inspect
@@ -3006,6 +3196,9 @@ def patch_gradient_accumulation_fix(Trainer):
         )
         function = function.replace("def training_step", "def _unsloth_training_step", 1)
 
+        # Skip the per-micro-step recursive `model.train()` walk once train mode is set.
+        function = function.replace("model.train()", "_unsloth_train_if_needed(model)", 1)
+
         # Fix 4.47.0 removing num_items_in_batch (huggingface/transformers#35121) and the case where it is nothing (huggingface/transformers#35207).
         function = function.replace(
             "if self.model_accepts_loss_kwargs:",
@@ -3026,6 +3219,17 @@ def patch_gradient_accumulation_fix(Trainer):
 
         exec(function, globals())
         Trainer.training_step = _unsloth_training_step
+
+    patch_bnb_optimizer_step_sync()
+    patch_fla_autotuner_fast_path()
+    patch_triton_heuristics_run()
+
+    # Count parameters once for the FLOPs tally instead of walking the model every micro-step.
+    if (
+        hasattr(Trainer, "floating_point_ops")
+        and getattr(Trainer.floating_point_ops, "__name__", "") != "_unsloth_floating_point_ops"
+    ):
+        Trainer.floating_point_ops = _unsloth_floating_point_ops
 
     # Settle any deferred compile-mode switch at the start of every step: on recompile-limit exhaustion unsloth_zoo defers the switch to eager rather than flipping mid-call, since non-reentrant checkpointing packs the forward compiled and would recompute it eagerly, aborting the backward. Between steps nothing is half-packed.
     if not getattr(Trainer, "_unsloth_settles_eager_fallbacks", False):
