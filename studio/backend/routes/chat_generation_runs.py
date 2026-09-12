@@ -188,16 +188,15 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             status_code = 400,
             detail = "Media chat runs use the legacy streaming path",
         )
-    # Recovery currently rebuilds text and reasoning deltas, not server-side tool events. Keep any request whose
-    # effective policy can enter the local tool loop on the legacy subscriber-owned stream until those events are
-    # replayable.
+    # What UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 hands back to the legacy stream beyond the raw `tools` key: the
+    # launcher's effective tool policy, and any checkpoint recall that can switch tools on mid-thread.
     from routes.inference import _checkpoint_recall_may_enable_tools, _effective_enable_tools
 
     request = request.model_copy(update = {"thread_id": payload.threadId})
 
-    # TEMPORARY DIAGNOSTIC (default ON so a restart alone activates it - env scoping proved unreliable across launchers).
-    # Tool-enabled turns take the durable path so the persisted event types can be observed; set
-    # UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 to restore the original refusal.
+    # Shipped ON (default ON so a restart alone activates it - env scoping proved unreliable across launchers):
+    # tool-enabled turns are durable because replay now re-tags persisted frames exactly as the live stream yields
+    # them; set UNSLOTH_STUDIO_DURABLE_TOOL_TURNS=0 to restore the original refusal.
     _durable_tools = os.environ.get("UNSLOTH_STUDIO_DURABLE_TOOL_TURNS", "1").strip().lower() in (
         "1",
         "true",
