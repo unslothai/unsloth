@@ -1129,6 +1129,7 @@ def test_packing_sdpa(tmp_path):
         device,
         *,
         sliding_window = None,
+        total_tokens = None,
     ):
         mask_calls.append(tuple(seq_info[0].tolist()))
         return original_mask(
@@ -1136,6 +1137,7 @@ def test_packing_sdpa(tmp_path):
             dtype = dtype,
             device = device,
             sliding_window = sliding_window,
+            total_tokens = total_tokens,
         )
 
     def _capture_loss(*, logits, labels, **loss_kwargs):
