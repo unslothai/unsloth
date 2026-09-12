@@ -63,18 +63,12 @@ export const LOCAL_MAX_IMAGES_PER_TURN = 1;
 // images that DECODE and this side cannot tell which will. Bounded, so a result
 // of unreadable blobs still cannot grow the request without limit.
 export const DECODE_FAILURE_ALLOWANCE = 4;
-// Base64 characters of replayed envelope one request may carry, across every result
-// in it. The count bound alone is not a size bound: MAX_IMAGE_PAYLOAD_CHARS lets ONE
-// authentic result be 12 million characters, so twelve retained candidates could
-// re-upload ~144 MB on every later turn of an image-heavy chat. Set to that same
-// per-result ceiling, so a whole replayed history can never cost more to send than
-// the single tool result the backend already permits.
+// Bound total replay base64 to the backend's per-result payload ceiling.
+// The count cap alone permits twelve 12 MB candidates (~144 MB per turn).
 export const MAX_TOTAL_MCP_IMAGE_CHARS = 12_000_000;
-// Data only, matching the backend's live limit (mcp_client.MAX_IMAGE_PAYLOAD_CHARS): a
-// picture the live turn accepted at that size must still fit its own replay. The entry's
-// other field is bounded instead, mirroring MAX_MCP_IMAGE_MIME_CHARS in mcp_images.py:
-// a token subtype has no length bound, and a megabyte of mimeType on a tiny picture
-// bypassed the budget and was re-uploaded every turn.
+// The data budget matches mcp_client.MAX_IMAGE_PAYLOAD_CHARS so accepted live
+// images fit their replay. Bound metadata separately, matching mcp_images.py
+// MAX_MCP_IMAGE_MIME_CHARS, to prevent oversized mimeType values bypassing it.
 export const MAX_MCP_IMAGE_MIME_CHARS = 256;
 
 const MCP_TOOL_PREFIX = "mcp__";
@@ -108,38 +102,23 @@ export function planMcpImageBound(
   for (let b = batches.length - 1; b >= 0; b--) {
     const batch = batches[b];
     const room = Math.min(budget, perResult);
-    // The backend promotes at most perResult out of any one result, so a result
-    // carrying more must not spend history budget on images that will be dropped
-    // anyway -- that would evict older results which still had room.
-    //
-    // But it counts SUCCESSFUL decodes, and this side cannot decode: cutting the
-    // first entries would drop valid PNGs sitting behind formats Pillow rejects,
-    // which the first turn showed and the replay would then lose. Keep enough
-    // candidates for the backend to still find its quota, and let it pick. The
-    // slice is the remaining budget PLUS the spare candidates, not the budget
-    // alone: counting spares against it strands valid PNGs sitting behind corrupt
-    // entries whenever a newer result has already taken part of the allowance.
-    //
-    // The allowance is spent across the CONVERSATION, not reset per result. Per
-    // result it dies with the budget: four undecodable entries in the newest result
-    // charge the full room, and the next result down then sees room 0 and loses its
-    // envelope entirely -- so four valid PNGs are dropped while the allowance that
-    // exists for exactly that case is still untouched.
+    // Charge only what the backend can promote; excess entries must not evict
+    // older results. Since only successful decodes count and this side cannot
+    // decode, keep shared fallback candidates beyond the remaining image budget.
+    // Spending or resetting spares per result can strand valid older images
+    // behind corrupt entries even when decoding would leave room.
     let allowance = room + spare;
     let taken = 0;
     for (let r = batch.length - 1; r >= 0; r--) {
       const images = batch[r];
-      // Scanned until the allowance is actually MET, not sliced to it first: with a
-      // newer result holding most of the byte budget, the first candidates can all be
-      // too large while a later one fits, and slicing first dropped the whole envelope.
+      // Scan until enough candidates fit: slicing first could discard smaller
+      // images behind entries that exceed the remaining byte budget.
       const keep: McpImage[] = [];
       for (const image of images) {
         if (keep.length >= allowance) break;
         if (image.mimeType.length > MAX_MCP_IMAGE_MIME_CHARS) continue;
         const cost = image.data.length;
-        // Skip the one that does not fit and keep looking: breaking here threw away
-        // three 1MB pictures sitting behind a 5MB one, which the backend could have
-        // replayed. The live-result budget already skips rather than stops.
+        // Keep looking for smaller images that fit, matching the live-result budget.
         if (charsLeft - cost < 0) continue;
         charsLeft -= cost;
         keep.push(image);
@@ -155,9 +134,8 @@ export function planMcpImageBound(
       const returned = Math.max(images[0]?.returned ?? 0, images.length);
       out[b][r] = keep.length > 0 ? [{ ...keep[0], returned }, ...keep.slice(1)] : [];
     }
-    // Charged for what the batch can actually contribute, never for room it did
-    // not use, and never for the spares -- those exist only so the backend has
-    // candidates to decode and must not evict an older result on their own account.
+    // Charge only the batch's usable slots. Fallback candidates consume spares
+    // so they cannot independently evict older results.
     const charged = Math.min(taken, room);
     budget -= charged;
     spare -= taken - charged;
@@ -182,9 +160,8 @@ export function boundMcpImageEnvelopes<T extends EnvelopeCarrier>(
     if (typeof message.content !== "string") continue;
     const { text, images } = splitMcpImages(message.content);
     if (images.length === 0) continue;
-    // A named non-MCP result is never promoted, and the backend strips its envelope
-    // regardless -- so drop it here too. Left alone it bypassed both bounds below,
-    // and its base64 was re-uploaded whole on every later turn.
+    // Match backend provenance: strip named non-MCP envelopes so their payloads
+    // cannot bypass the replay bounds and be uploaded again.
     if (
       typeof message.name === "string" &&
       message.name &&

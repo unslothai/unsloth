@@ -2064,13 +2064,9 @@ def _openai_llama_admission_messages_for_estimate(
                 estimate_content.append(_openai_llama_admission_compact_image_part(part))
             estimate_message["content"] = estimate_content
         estimate_messages.append(estimate_message)
-    # promote_history caps what the envelopes become, so charging past that would
-    # reserve KV for images the prompt will not carry. This estimator prices the GGUF
-    # paths, and their promotion keeps the full replay allowance BESIDE the caller's
-    # own pictures (only a provider reserves the caller's room, and it has no KV
-    # admission here): one attachment plus eight replayed pictures sends nine, so
-    # nine are charged. Subtracting the attachments admitted concurrent requests
-    # past the KV budget for exactly that shape.
+    # Match GGUF promotion: cap replay images separately from caller attachments.
+    # One attachment plus eight replay images needs nine KV charges; reserving
+    # attachment slots within this cap would undercharge concurrent requests.
     return estimate_messages, image_parts + min(envelope_image_parts, _MCP_MAX_TOTAL_MODEL_IMAGES)
 
 
@@ -2150,12 +2146,9 @@ def _openai_llama_admission_tokens(
     """
     if not budget:
         return None
-    # Anthropic nests a replayed MCP envelope in a role="user" tool_result BLOCK
-    # rather than a role="tool" string, so estimating off its raw payload misses the
-    # envelope branch entirely: megabytes of base64 get priced as dense text (which
-    # can clamp the reservation to the whole KV budget and serialise every other
-    # request) and the images that are really sent are charged nothing. The caller
-    # hands over the OpenAI-shaped list it will actually generate from.
+    # Use the translated OpenAI messages for Anthropic: its raw user/tool_result
+    # blocks bypass envelope handling, mispricing base64 as text and omitting
+    # image KV charges, which can consume the budget and serialize requests.
     messages = (
         messages_override if messages_override is not None else getattr(payload, "messages", None)
     )
@@ -8052,21 +8045,12 @@ def _names_a_non_mcp_tool(message) -> bool:
 _TEXT_ONLY_PROVIDER_TYPES = frozenset({"cohere", "deepseek", "mistral"})
 
 
-# Providers that serve a broad catalog mixing vision and text-only models. Their
-# registry entry is vision-capable for the FAMILY and says nothing about the model
-# Studio happens to be pointed at, so a picture goes only to a model the registry
-# names as taking one.
-#
-# Deliberately NOT including the single-endpoint types (custom, vllm, ollama,
-# llamacpp, lmstudio): there the user configured one endpoint and chose its model,
-# no catalog exists to consult, and refusing everything would turn the feature off
-# for local serving -- which is the case this PR exists for. Their permissive
-# registry default is the only signal available and is treated as the user's.
-# qwen belongs here on the evidence of its own registry entry: no allowlist narrows it
-# and every one of its four default_models is a text model (the DashScope vision line is
-# qwen-vl-*, and Qwen2.5-VL is a different id from qwen2.5-72b-instruct). kimi is NOT
-# here for the opposite reason -- its model_id_allowlist admits only kimi-k2.5/k2.6,
-# which its own comment records as the multimodal pair.
+# Mixed catalogs require model-level vision capability; family flags do not
+# identify which models accept images. Qwen has unrestricted text defaults;
+# its vision models use separate qwen-vl-* or Qwen2.5-VL IDs. Kimi is excluded
+# because its allowlist permits only multimodal kimi-k2.5/k2.6.
+# Single-endpoint types (custom, vllm, ollama, llamacpp, lmstudio) retain the
+# registry default: no model catalog exists to check the configured endpoint.
 _MIXED_CATALOG_PROVIDER_TYPES = frozenset({"huggingface", "openrouter", "qwen"})
 
 
@@ -25627,13 +25611,9 @@ async def produce_openai_chat_completions(
         # survives templating; fold system/developer into one leading system
         # message (templates reject "developer") and clear prompt to avoid a dup.
         #
-        # The envelopes stay on through the flatten (this is not a llama-server body,
-        # so it drops image parts) and are promoted afterwards under the server-tool
-        # path's rules: one marker per tool batch, at the batch's own position or
-        # merged into the user turn that follows it. Collecting every retained payload
-        # into one detached turn instead built the very shape the route refuses on a
-        # non-GGUF target -- a message carrying several images -- and, placed ahead of
-        # an attachment's turn, two user turns in a row.
+        # Promote after flattening, which drops image parts. Preserve one marker per
+        # batch at its original position or merge it into the following user turn;
+        # a detached block can violate non-GGUF image limits and turn alternation.
         _sf_rebuilt, _sf_rebuilt_images = await _promote_local_mcp_images_async(
             _structured_tool_history_for_local_template(
                 _flatten_content_parts_for_local_template(
@@ -31360,18 +31340,10 @@ async def anthropic_count_tokens(
     # support, and both the refusal and _promote only look at tool messages.
     openai_messages = _named_anthropic_tool_results(openai_messages)
 
-    # Refused rather than answered, exactly as /v1/chat/completions' counter refuses
-    # the same shape: count_chat_tokens renders /apply-template, which swaps each
-    # image for a short media marker, so a promoted envelope would be reported
-    # without any of the projector tokens /v1/messages actually spends on it. An
-    # undercount here is worse than no answer -- it is what a client sizes its
-    # context against. Checked on the translated list because an Anthropic envelope
-    # arrives nested in a tool_result block, not as a role="tool" string.
-    # Name-aware, since the names were just stamped: a client tool whose output
-    # merely ends in a valid envelope is never promoted, and refusing on it turned
-    # away a countable prompt with a 400.
-    # The exact check parses the envelope, so it runs off the loop, as the sibling
-    # /chat/count_tokens does, and only once the substring form says there is one.
+    # Like /chat/count_tokens, refuse promoted images: /apply-template counts
+    # media markers without the projector tokens generation uses. Check the
+    # translated, named results so Anthropic blocks are recognized and non-MCP
+    # envelopes remain countable. Parse off the event loop after a substring check.
     if (
         llama_backend.is_vision
         and _messages_mention_mcp_images(openai_messages)
@@ -31728,14 +31700,9 @@ async def anthropic_messages(
     # 1. enable_tools=true → server-side execution of built-in tools (Unsloth shorthand)
     # 2. tools=[...] only  → client-side pass-through (standard Anthropic behavior)
     # 3. neither           → plain chat
-    # The server-side agentic loop takes no caller attachment -- matches the
-    # `not image_b64` gate in /v1/chat/completions -- but it does take a REPLAYED
-    # picture (replayed_image_parts below), so the gate reads the caller's own
-    # attachments off the original blocks, not _has_image, which the promotion
-    # above sets for a replay too and which routed a follow-up away from the tools
-    # it selected merely because an earlier tool had returned a picture.
-    # requested_studio_tools and the mixed-mode rejection were computed before the
-    # switch above.
+    # Match /v1/chat/completions: server tools reject caller attachments but
+    # accept replayed images. Check original blocks because promotion also sets
+    # _has_image. Tool selection and mixed-mode rejection preceded the switch.
     openai_client_tools = [
         tool
         for tool in anthropic_tools_to_openai(payload.tools or [])

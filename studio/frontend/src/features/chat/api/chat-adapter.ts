@@ -1752,10 +1752,8 @@ export async function buildLocalTokenCountHistory(
   const activeModel = runtimeState.models.find(
     (model) => model.id === runtimeState.params.checkpoint,
   );
-  // Same target rules as the send path, applied to the run's own results before
-  // anything is serialized: the backend's cap runs after the body is parsed, so it
-  // cannot keep the request from growing, and this recount runs in the background on
-  // every turn -- envelopes the count would strip anyway must not be built at all.
+  // Apply send-path target limits before serializing this background recount;
+  // backend limits run after parsing and cannot bound the uploaded body.
   const messages = boundMcpImageResults(rawMessages, {
     readsImages: localTargetReadsImages(runtimeState),
     localMarkers: activeModel?.isGguf === false,
@@ -4764,13 +4762,9 @@ export function createOpenAIStreamAdapter(
         throw new Error("Image generation edit unavailable.");
       }
 
-      // Resolved ahead of the outbound build, which tests/studio runs as a standalone slice
-      // with only messages and isExternalRequest in scope: a target the backend would hand
-      // no MCP picture gets no envelopes at all, since it strips them without sending a
-      // pixel and bounding them only re-uploaded megabytes of base64 on every turn after a
-      // switch. The backend's own rules on both sides: its external gate per provider and
-      // model, and for a local model its vision flag rather than "multimodal", which an
-      // audio-only model also is.
+      // Resolve before the outbound build's standalone tests/studio slice. Match
+      // backend provider/model gates and local vision flags (audio-only models can
+      // be multimodal), so targets that strip MCP images never upload the envelopes.
       const targetReadsImages = isExternalRequest
         ? providerModelTakesMcpImages(
             externalProvider?.providerType,
