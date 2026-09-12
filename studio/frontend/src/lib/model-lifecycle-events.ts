@@ -1,17 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// One announcement per model load or release, raised from the API call itself
-// so every caller is covered without each page remembering to.
-//
-// Two things listen. The Images and Video pages hold their own `status` and
-// re-read it on tab activation rather than on a timer, so a release from
-// anywhere else leaves their controls claiming a model is still loaded. And the
-// loaded models indicator polls every 5s, which is long enough that a load
-// looked like it had not started: the toast said "loading" while the card said
-// nothing. Both now hear the moment it happens.
-//
-// In lib/, not a feature, since the emitters and the listeners are both features.
+// One announcement per model load or release, raised from the API call itself so every caller is
+// covered without each page remembering to. Two things listen. The Images and Video pages hold
+// their own `status` and re-read it on tab activation rather than on a timer, so a release from
+// anywhere else leaves their controls claiming a model is still loaded. And the loaded models
+// indicator polls every 5s, which is long enough that a load looked like it had not started: the
+// toast said "loading" while the card said nothing. Both now hear the moment it happens. In lib/,
+// not a feature, since the emitters and the listeners are both features.
 
 export const MODEL_EJECTED_EVENT = "unsloth:model-ejected";
 export const MODEL_LIFECYCLE_EVENT = "unsloth:model-lifecycle";
@@ -141,12 +137,11 @@ export async function withBackgroundLoadNotice<T>(
   try {
     const result = await start();
     started = true;
-    // Announce a second time, now that the POST has returned. That is the
-    // instant the GPU arbiter has committed: acquire_for evicts whoever held
-    // the GPU inside this call, ahead of a download that can run for hours, so
-    // the first announcement was raised while the status it displaces was still
-    // correct. Listeners that re-read another runtime need this edge, and the
-    // rows this drives are keyed by runtime, so a repeat is a no-op for them.
+    // Announce a second time, now that the POST has returned. That is the instant the GPU arbiter
+    // has committed: acquire_for evicts whoever held the GPU inside this call, ahead of a download
+    // that can run for hours, so the first announcement was raised while the status it displaces
+    // was still correct. Listeners that re-read another runtime need this edge, and the rows this
+    // drives are keyed by runtime, so a repeat is a no-op for them.
     notifyModelLifecycle({ runtime, loading: true, model });
     void settleWhenLoadEnds(runtime, model, readPhase, timing);
     return result;
@@ -170,10 +165,9 @@ async function settleWhenLoadEnds(
   try {
     for (;;) {
       await new Promise((resolve) => setTimeout(resolve, pollMs));
-      // An unreadable read is not proof the load ended: a restarting backend or
-      // one dropped request would end the row early and hide a live load. That
-      // is `undefined`, kept distinct from the `null` phase precisely so the two
-      // are not conflated here.
+      // An unreadable read is not proof the load ended: a restarting backend or one dropped request
+      // would end the row early and hide a live load. That is `undefined`, kept distinct from the
+      // `null` phase precisely so the two are not conflated here.
       const phase = await boundedRead(readPhase, readTimeoutMs);
       if (phase === undefined) {
         // Only a sustained run of unreadable polls gives up. A load that is

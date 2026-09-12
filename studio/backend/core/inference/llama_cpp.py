@@ -389,8 +389,13 @@ def _fit_with_instruction_pins(
 # catches Llama-3 / Mistral / Gemma 4 (legacy helper only knew <tool_call> / <function=).
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
-    _GEMMA_BARE_TC_RE,
     _balanced_brace_end,
+    blocked_bare_json_chain_may_continue,
+    blocked_gemma_chain_may_continue,
+    held_bare_gemma_tail_len,
+    blocked_markerless_prefix_end,
+    leading_bare_gemma_call_is_promotable,
+    promotable_gemma_call_pos,
     TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
     StreamingMarkupStripper as _StreamingMarkupStripper,
     RAG_MAX_SEARCHES_PER_TURN,
@@ -400,6 +405,9 @@ from core.inference.tool_call_parser import (
     strip_leading_bare_json_call,
     strip_llama3_leading_sentinels,
     strip_tool_markup as _shared_strip_tool_markup,
+)
+from core.tool_healing import (
+    _markerless_promotable,
 )
 
 from utils.native_path_leases import child_env_without_native_path_secret
@@ -2059,14 +2067,14 @@ _GGUF_REHEARSAL_ARGS_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]")
 
 
 def _gguf_rehearsal_signal_pos(text: str, active_tools: list[dict]) -> int:
-    """Index of the first ``NAME[ARGS]`` whose NAME is an active tool, else -1. A
-    bare/inactive-name ``foo[ARGS]`` in prose is not a call; mirrors the safetensors
-    ``_earliest_tool_signal`` name-gating (no unrestricted GGUF mode)."""
+    """Index of the first ``NAME[ARGS]`` whose NAME is markerless-promotable, else -1. An
+    inactive-name ``foo[ARGS]`` in prose is not a call, nor is a bare execution-class
+    ``terminal[ARGS]``; mirrors the safetensors ``_earliest_tool_signal`` gating."""
     active = set(_gguf_active_tool_names(active_tools))
     if not active:
         return -1
     for m in _GGUF_REHEARSAL_ARGS_RE.finditer(text):
-        if m.group(1) in active:
+        if _markerless_promotable(m.group(1), active):
             return m.start()
     return -1
 
@@ -2084,7 +2092,9 @@ def _gguf_has_genuine_tool_signal(text: str, signals, active_tools: list[dict]) 
             continue
         if sig in text:
             return True
-    return False
+    # Bare Gemma is not in ``signals``, but the parser promotes it wherever it sits, so a
+    # mid-prose one is a boundary too.
+    return promotable_gemma_call_pos(text, lambda: set(_gguf_active_tool_names(active_tools))) >= 0
 
 
 _TEXT_TOOL_NAME_RE = re.compile(r'"name"\s*:\s*"([\w.\-]+)"')
@@ -2095,26 +2105,40 @@ _TEXT_TOOL_REHEARSAL_RE = re.compile(r"\s*([\w.\-]+)\s*\[ARGS\]")
 def _sniff_text_tool_name(text: str, enabled_names: set) -> str:
     """Best-effort tool name from a partially drained TEXT tool call, gated on
     enabled names so prose can never spawn a card. Used only to open the live
-    argument pane early; the authoritative parse still happens at stream end."""
+    argument pane early; the authoritative parse still happens at stream end.
+
+    The two anchored arms only match a MARKERLESS leading call (a wrapper pushes the shape
+    off position 0), so they take the parser's gate: a card for a bare ``call:terminal{``
+    would show a call that never runs. The ``"name":`` arm searches the whole prefix and so
+    also sees a trusted ``[TOOL_CALLS][{"name":"terminal",..}]``; the markerless bare-JSON
+    form cannot reach it, since ``strip_leading_bare_json_call`` refuses to drain it."""
+    # A blocked leading call will NOT run, so naming the card after it hands the client a card
+    # the real call then reuses by id. Every markerless format is skipped, not just bare JSON.
+    text = text[blocked_markerless_prefix_end(text, 0, enabled_names) :]
     m = _TEXT_TOOL_NAME_RE.search(text[:4096])
     if m and m.group(1) in enabled_names:
         return m.group(1)
     m = _TEXT_TOOL_GEMMA_RE.match(text[:256])
-    if m and m.group(1) in enabled_names:
+    if m and _markerless_promotable(m.group(1), enabled_names):
         return m.group(1)
     m = _TEXT_TOOL_REHEARSAL_RE.match(text[:256])
-    if m and m.group(1) in enabled_names:
+    if m and _markerless_promotable(m.group(1), enabled_names):
         return m.group(1)
     return ""
 
 
 def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
-    """True if ``stripped`` is a (possibly partial) prefix of ``NAME[ARGS]`` for an
-    active tool -- the bare tool name arriving in its own chunk before ``[ARGS]{...}``.
-    Mirrors the safetensors loop so the split rehearsal call is not streamed."""
+    """True if ``stripped`` is a (possibly partial) prefix of ``NAME[ARGS]`` for a
+    markerless-promotable tool: the bare name arriving in its own chunk before
+    ``[ARGS]{...}``. An execution-class name is prose here, so it streams rather than being
+    held. Mirrors the safetensors loop so the split rehearsal is not leaked."""
     if not stripped or any(ch.isspace() for ch in stripped):
         return False
     for name in _gguf_active_tool_names(active_tools):
+        # Active by construction, so only the class is left. The shared gate, not the built-in
+        # three: an mcp__* name is refused too, and holding its suffix withholds visible text.
+        if not _markerless_promotable(name, None):
+            continue
         if stripped == name or f"{name}[ARGS]".startswith(stripped):
             return True
     return False
@@ -2123,12 +2147,16 @@ def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
 def _held_rehearsal_tail_len(text: str, active_tools: list[dict]) -> int:
     """Length of a trailing bare tool-name token that may be a split rehearsal call
     (``...web_search`` with ``[ARGS]{...}`` still to arrive), so STREAMING can hold it
-    instead of leaking the name. Returns 0 for ordinary prose. Mirrors safetensors."""
+    instead of leaking the name. Returns 0 for ordinary prose. Mirrors safetensors, including
+    the trailing bare-Gemma ``call:NAME{..`` the signal scan misses until its ``{``."""
     i = len(text)
     while i > 0 and not text[i - 1].isspace():
         i -= 1
     tail = text[i:]
-    return len(tail) if tail and _is_rehearsal_prefix(tail, active_tools) else 0
+    held = len(tail) if tail and _is_rehearsal_prefix(tail, active_tools) else 0
+    return max(
+        held, held_bare_gemma_tail_len(text, lambda: set(_gguf_active_tool_names(active_tools)))
+    )
 
 
 def _should_suppress_forced_no_tool_output(text: str, previous: str = "") -> bool:
@@ -2552,7 +2580,8 @@ _TOOL_TEMPLATE_MARKERS = (
 # Canonical reasoning_effort levels, weakest -> strongest. Used to read the
 # discrete set a template branches on (e.g. GLM-5.2 uses 'high' | 'max', Inkling
 # uses the full 'none'..'max' ladder) so we only ever offer levels the template
-# actually understands.
+# actually understands. Must stay in sync with REASONING_EFFORT_SCALE in
+# studio/frontend/src/features/chat/provider-capabilities.ts.
 _REASONING_EFFORT_SCALE = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 # Match a Qwen3.8 path/repo segment without treating future names such as
@@ -6228,6 +6257,15 @@ class LlamaCppBackend:
         3. unload_model(): terminate the subprocess
     """
 
+    # Held across "is a teardown running?" and publishing the child, never across a
+    # health wait. On the class: doubles built with __new__ never run __init__.
+    _spawn_lock = threading.Lock()
+
+    # Held across a whole teardown, so a lifecycle cannot reopen mid-kill. Separate
+    # from _spawn_lock so that long hold does not also block a spawn, which only
+    # needs to read the flag. Order is always _teardown_lock then _spawn_lock.
+    _teardown_lock = threading.Lock()
+
     def __init__(self, *, manages_processes: bool = True):
         """``manages_processes = False`` builds an INERT probe.
 
@@ -9024,25 +9062,31 @@ class LlamaCppBackend:
             return True
         return LlamaCppBackend._unified_memory_would_help(gpu_indices, need_bytes = need_bytes)
 
-    # Datacenter / professional NVIDIA parts that benefit from the llama.cpp
-    # FP32-accum / P2P tunings. Whole-word (\b) so short markers don't match
-    # workstation parts as substrings: "a100" must not fire on "RTX A1000".
+    # Datacenter / professional NVIDIA parts that get the FP32-accum tuning.
+    # Whole-word (\b) so "a100" does not fire on "RTX A1000".
     _DATACENTER_GPU_RE = re.compile(
         r"\b(?:a100|a30|h100|h200|h800|gh200|b200|b100|b300|gb200|gb300|"
         r"l40s?|l4|rtx pro 6000|rtx 6000 ada)\b"
     )
 
-    @staticmethod
-    def _is_datacenter_gpu(gpu_indices = None) -> bool:
-        """True iff every selected NVIDIA GPU is a datacenter/professional part.
-        NVIDIA-only, fails open to False (consumer GeForce, ROCm, CPU and errors
-        are left untouched); a mixed DC+consumer selection counts as non-DC.
+    # The NVLink-capable subset. The rest (RTX 6000 Ada/PRO, L40/L40S, L4) have no
+    # NVLink connector, so peer copies cross PCIe, where a translating IOMMU on
+    # bare metal discards them silently while CUDA reports success (#10613).
+    # NECESSARY, never SUFFICIENT: _p2p_veto_reason also demands a positive NV#
+    # link, since a name cannot see an absent bridge.
+    _NVLINK_FABRIC_GPU_RE = re.compile(
+        r"\b(?:a100|a30|h100|h200|h800|gh200|b200|b100|b300|gb200|gb300)\b"
+    )
 
-        gpu_indices are PHYSICAL ids (see _get_gpu_free_memory), but
-        get_device_properties wants mask-relative ordinals, so we rebuild the
-        ordinal->physical map from CUDA_VISIBLE_DEVICES and key names by physical
-        id. Otherwise a masked host (CUDA_VISIBLE_DEVICES=4,5,6,7, selection [4,5])
-        would drop the tuning or probe the wrong GPU."""
+    @staticmethod
+    def _all_selected_gpus_match(pattern, gpu_indices = None) -> bool:
+        """True iff every selected NVIDIA GPU's name matches ``pattern``. False for
+        consumer GeForce / ROCm / CPU / errors and for a mixed selection.
+
+        gpu_indices are PHYSICAL ids (see _get_gpu_free_memory) but
+        get_device_properties wants mask-relative ordinals, so names are keyed by
+        physical id via CUDA_VISIBLE_DEVICES; otherwise a masked host would drop
+        the tuning or probe the wrong GPU."""
         try:
             import torch
 
@@ -9056,7 +9100,6 @@ class LlamaCppBackend:
             # CUDA_VISIBLE_DEVICES; unset/unparsable leaves physical id == ordinal.
             physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
 
-            pattern = LlamaCppBackend._DATACENTER_GPU_RE
             names_by_id: dict[int, str] = {}
             for ordinal in range(count):
                 try:
@@ -9084,6 +9127,301 @@ class LlamaCppBackend:
             return False
 
     @staticmethod
+    def _is_datacenter_gpu(gpu_indices = None) -> bool:
+        """True iff every selected GPU qualifies for the FP32-accum tuning. Mask
+        handling: _all_selected_gpus_match. Peer-copy safety: _p2p_veto_reason."""
+        return LlamaCppBackend._all_selected_gpus_match(
+            LlamaCppBackend._DATACENTER_GPU_RE, gpu_indices
+        )
+
+    # `nvidia-smi topo -m` vocabulary: NV# is a bonded set of # NVLinks; SYS /
+    # NODE / PHB / PXB / PIX all traverse PCIe and are unsafe. The header is
+    # ANSI-underlined, so escapes are stripped before parsing.
+    _TOPO_GPU_LABEL_RE = re.compile(r"^GPU(\d+)$")
+    _TOPO_NVLINK_RE = re.compile(r"^NV\d+$")
+    _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+    # One shell-out per process, not per launch. None = not yet probed; otherwise a
+    # 1-tuple whose value may itself be None ("probed and unavailable").
+    _NVLINK_TOPO_CACHE = None
+
+    @staticmethod
+    def _probe_nvlink_topology() -> Optional[dict]:
+        """Parse ``nvidia-smi topo -m`` into {(i, j): "NV18" | "NODE" | ...}, keyed
+        by the *nvidia-smi* index (PCI order, NOT the CUDA ordinal), both orders
+        present. None when the topology cannot be established. Never raises.
+
+        The table also carries NIC rows/columns, affinity columns and a Legend, so
+        the GPU columns are the leading run of GPU<n> header labels and only GPU<n>
+        rows are read."""
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "topo", "-m"],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 10,
+                env = child_env_without_native_path_secret(),
+                **_windows_hidden_subprocess_kwargs(),
+            )
+            if result.returncode != 0:
+                return None
+            columns: list[int] = []
+            matrix: dict = {}
+            for raw in result.stdout.splitlines():
+                line = LlamaCppBackend._ANSI_ESCAPE_RE.sub("", raw)
+                if line.strip().lower().startswith("legend"):
+                    break
+                tokens = line.split()
+                if not tokens:
+                    continue
+                if not columns:
+                    # Header: the leading run of GPU<n> labels names the columns.
+                    for token in tokens:
+                        m = LlamaCppBackend._TOPO_GPU_LABEL_RE.match(token)
+                        if m is None:
+                            break
+                        columns.append(int(m.group(1)))
+                    # Data rows lead with GPU<n> too, so one column is more likely
+                    # a missing header than a real table: keep looking.
+                    if len(columns) < 2:
+                        columns = []
+                    continue
+                row = LlamaCppBackend._TOPO_GPU_LABEL_RE.match(tokens[0])
+                if row is None:
+                    continue  # NIC row, or the blank line before the legend
+                source = int(row.group(1))
+                labels = tokens[1 : 1 + len(columns)]
+                if len(labels) != len(columns):
+                    return None  # truncated row: refuse to guess
+                for col, label in zip(columns, labels):
+                    if col != source:
+                        matrix[(source, col)] = label.upper()
+            # Every directed pair the header promised, or nothing. Row-truncated
+            # output still exits 0 and parses cleanly, and the rows that arrived can
+            # be uniformly NV#, which reads as "the whole box is NVLinked" and would
+            # enable P2P on cards whose links were never seen (#10613).
+            if len(matrix) != len(columns) * (len(columns) - 1):
+                logger.debug(
+                    f"nvidia-smi topo -m: {len(matrix)} pairs for {len(columns)} "
+                    "GPUs, expected "
+                    f"{len(columns) * (len(columns) - 1)}; treating as unreadable"
+                )
+                return None
+            return matrix or None
+        except Exception as e:
+            logger.debug(f"nvidia-smi topo probe failed: {e}")
+            return None
+
+    @classmethod
+    def _nvlink_topology(cls, refresh = False) -> Optional[dict]:
+        """_probe_nvlink_topology, cached for the life of the process."""
+        if refresh or cls._NVLINK_TOPO_CACHE is None:
+            cls._NVLINK_TOPO_CACHE = (cls._probe_nvlink_topology(),)
+        return cls._NVLINK_TOPO_CACHE[0]
+
+    @staticmethod
+    def _running_virtualized() -> bool:
+        """True when this kernel runs under a hypervisor. CUDA supports peer copies
+        via VM pass-through but NOT on bare metal behind a translating IOMMU, so the
+        IOMMU veto applies only off this path. False when unknown (no flags line on
+        non-x86), which keeps the veto in play."""
+        try:
+            with open("/proc/cpuinfo", "r", encoding = "utf-8", errors = "replace") as f:
+                for line in f:
+                    if line.startswith("flags") and ":" in line:
+                        return "hypervisor" in line.split(":", 1)[1].split()
+        except Exception:
+            pass
+        return False
+
+    # One directory per IOMMU group, each with a `type`. Overridable for tests.
+    _IOMMU_GROUPS_ROOT = "/sys/kernel/iommu_groups"
+
+    # Whether _get_gpu_memory ids are nvidia-smi PCI indices (True) or torch CUDA
+    # ordinals (False, the fallback); None until a probe has run. They coincide
+    # only under PCI_BUS_ID, so a caller pinning the child's device order has to
+    # know which it holds (#10613).
+    _GPU_IDS_ARE_PCI_INDICES = None
+
+    # Boot-time property: read once, not per launch (the #10613 host has 175
+    # groups). Only the default root is cached; an explicit root (tests) re-reads.
+    _IOMMU_CACHE = None
+
+    @classmethod
+    def _iommu_is_translating_cached(cls) -> Optional[bool]:
+        if cls._IOMMU_CACHE is None:
+            try:
+                cls._IOMMU_CACHE = (cls._iommu_is_translating(),)
+            except Exception as e:
+                logger.debug(f"IOMMU probe failed: {e}")
+                cls._IOMMU_CACHE = (None,)
+        return cls._IOMMU_CACHE[0]
+
+    @staticmethod
+    def _iommu_is_translating(root = None) -> Optional[bool]:
+        """Whether the IOMMU translates DMA: True for DMA / DMA-FQ groups, False
+        when every group is identity/passthrough or there are none, None when the
+        groups exist but none is readable. Never raises.
+
+        CUDA C++ Programming Guide, "IOMMU on Linux": bare-metal PCIe peer-to-peer
+        is unsupported while the IOMMU translates, and the dropped write looks like
+        a successful copy rather than an error (#10613). Read per group, not per
+        GPU: a host with ANY translating group is not one to infer P2P safety on,
+        and resolving each GPU's PCI address needs a third index-space join."""
+        root = root or LlamaCppBackend._IOMMU_GROUPS_ROOT
+        try:
+            groups = os.listdir(root)
+        except Exception:
+            # Absent = nothing translates; present but unreadable = unknown.
+            return None if os.path.isdir(root) else False
+        if not groups:
+            return False  # IOMMU compiled in but off
+        kinds = []
+        for group in groups:
+            try:
+                with open(
+                    os.path.join(root, group, "type"),
+                    "r",
+                    encoding = "utf-8",
+                    errors = "replace",
+                ) as f:
+                    kinds.append(f.read().strip().upper())
+            except OSError:
+                continue  # pre-5.x kernels have no `type`; other groups may
+        if not kinds:
+            return None
+        return any(not kind.startswith("IDENTITY") for kind in kinds)
+
+    @classmethod
+    def _p2p_veto_reason(
+        cls,
+        gpu_indices = None,
+        launch_order_pinned = False,
+    ) -> Optional[str]:
+        """Fail-closed wrapper around _p2p_veto_reason_inner: anything unexpected
+        reads as "do not set P2P", since losing the tuning beats an exception
+        escaping into load_model and failing the load."""
+        try:
+            return cls._p2p_veto_reason_inner(gpu_indices, launch_order_pinned)
+        except Exception as e:
+            logger.debug(f"peer-fabric check failed: {e}")
+            return f"the peer-fabric check could not complete ({type(e).__name__})"
+
+    @classmethod
+    def _p2p_veto_reason_inner(
+        cls,
+        gpu_indices = None,
+        launch_order_pinned = False,
+    ) -> Optional[str]:
+        """Why GGML_CUDA_P2P must NOT be set for this selection, or None once a
+        working NVLink fabric is confirmed for every selected pair. Fails CLOSED on
+        every unknown.
+
+        Before #10613 the flag came from the device NAME alone, which cannot see an
+        absent NVLink bridge: 2x RTX 6000 Ada matched the allowlist and every model
+        returned garbage. The driver is no better, since cudaDeviceCanAccessPeer
+        and `nvidia-smi topo -p2p w` both answered OK on that host, so the only
+        evidence accepted here is a positive NV# link.
+
+        Index spaces: gpu_indices are physical ids, the matrix is keyed by
+        nvidia-smi index, and the two coincide only under
+        CUDA_DEVICE_ORDER=PCI_BUS_ID (CUDA otherwise enumerates FASTEST_FIRST).
+        Rather than lose the tuning on every host that never set it, an inexact
+        mapping demands a uniformly NV# matrix, which holds under any permutation.
+
+        Overrides come first: UNSLOTH_DISABLE_DC_P2P=1 drops P2P while KEEPING
+        FP32-accum (all-or-nothing UNSLOTH_DISABLE_DC_TUNING would discard a tuning
+        that is not implicated), UNSLOTH_FORCE_DC_P2P=1 opts back in for a real but
+        unparsable fabric -- check it with scripts/p2p_integrity_probe.py."""
+        if os.environ.get("UNSLOTH_DISABLE_DC_P2P") == "1":
+            return "disabled by UNSLOTH_DISABLE_DC_P2P=1"
+        if os.environ.get("UNSLOTH_FORCE_DC_P2P") == "1":
+            return None
+
+        def _pcie(reason: str) -> str:
+            """Append the IOMMU diagnosis to a veto that implies a PCIe peer path.
+            On bare-metal Linux with a translating IOMMU such a copy is not merely
+            slow but unsupported, the write silently discarded. Hangs off EVERY such
+            veto, not just the topology one: the #10613 reporter's 2x RTX 6000 Ada
+            fails the NAME gate first and would otherwise never learn why its output
+            was garbled."""
+            if cls._iommu_is_translating_cached() and not cls._running_virtualized():
+                reason += (
+                    "; bare-metal Linux with a translating IOMMU, where CUDA "
+                    "does not support PCIe peer copies at all"
+                )
+            return reason
+
+        if not cls._all_selected_gpus_match(cls._NVLINK_FABRIC_GPU_RE, gpu_indices):
+            return _pcie("no NVLink-capable part in the selection, so peer copies would cross PCIe")
+
+        matrix = cls._nvlink_topology()
+        if not matrix:
+            return "nvidia-smi topo -m gave no usable interconnect matrix"
+
+        gpu_ids = sorted({i for pair in matrix for i in pair})
+
+        # gpu_indices are ALREADY nvidia-smi indices (_get_gpu_memory reads
+        # `--query-gpu=index`, the same enumeration as `topo -m`), so they index the
+        # matrix VERBATIM and remapping them as CUDA ordinals is wrong: under
+        # FASTEST_FIRST that would turn a PCIe-crossing selection into an
+        # NVLinked-looking one and enable the flag this gate exists to withhold. A
+        # usable matrix means nvidia-smi answered, so the selection came from its
+        # branch too.
+        if gpu_indices is not None:
+            # Verifying these ids means something only if the CHILD resolves the
+            # same cards. Without a PCI_BUS_ID pin it reads them in FASTEST_FIRST
+            # order, so [0,1] here can be [0,2] there: refuse rather than confirm
+            # NVLink for a pair that is not the one about to run (#10613).
+            # Unless the whole box is NVLinked, where the mapping cannot matter and
+            # vetoing would lose P2P on every auto-fit NVSwitch launch (#6098).
+            if not (
+                launch_order_pinned
+                or os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID"
+                or all(cls._TOPO_NVLINK_RE.match(v) for v in matrix.values())
+            ):
+                return _pcie(
+                    "the child's device order is not pinned to PCI_BUS_ID and the "
+                    "box is not uniformly NVLinked, so the verified GPUs may not be "
+                    "the ones it runs on; set CUDA_DEVICE_ORDER=PCI_BUS_ID to "
+                    "enable P2P here"
+                )
+            selected = sorted(set(gpu_indices))
+        else:
+            # No explicit selection: the child uses every VISIBLE GPU. nvidia-smi
+            # ignores CUDA_VISIBLE_DEVICES, so the matrix covers devices the child
+            # never touches, and filtering it to the mask keeps a clean NVLinked
+            # pair from being vetoed by a PCIe edge to a hidden device.
+            # Sound only when mask and matrix share an index space: numeric mask
+            # entries are CUDA ordinals, the matrix is PCI indices, and under
+            # FASTEST_FIRST mask "0,1" can mean physical 0,2, which could confirm
+            # NV# for a pair that is not the one in use (_cuda_compute_caps declines
+            # the same mapping). Unmappable means check the whole box.
+            visible = cls._resolve_visible_physical_ids()
+            mappable = os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID"
+            selected = (
+                [i for i in gpu_ids if i in set(visible)]
+                if visible is not None and mappable
+                else list(gpu_ids)
+            )
+
+        if len(selected) < 2:
+            return "fewer than two GPUs resolved in the interconnect matrix"
+
+        for a in selected:
+            for b in selected:
+                if a == b:
+                    continue
+                label = matrix.get((a, b))
+                if label is None:
+                    return f"GPU {a} and GPU {b} are absent from the interconnect matrix"
+                if not cls._TOPO_NVLINK_RE.match(label):
+                    return _pcie(f"GPU {a} to GPU {b} is {label}, not NVLink")
+        return None
+
+    @staticmethod
     def _effective_gpu_count(gpu_indices = None) -> int:
         """GPUs llama-server will use: len(selection), else the visible CUDA
         device count (None = every visible GPU). 0 on error so multi-GPU tuning
@@ -9098,23 +9436,136 @@ class LlamaCppBackend:
             return 0
         return 0
 
+    # Values a user writes to mean "off". ggml tests GGML_CUDA_P2P for PRESENCE, not
+    # value, so passing any of these through ENABLES what they turned off; only
+    # absence is off. Same trap as GGML_CUDA_ENABLE_UNIFIED_MEMORY (#8651).
+    _FALSY_ENV_VALUES = frozenset({"", "0", "false", "off", "no"})
+
+    # Property of the host, not the model, so warn once rather than per launch.
+    _warned_no_nvlink = False
+
     @staticmethod
-    def _apply_datacenter_env(env: dict, gpu_indices = None) -> bool:
-        """Inject DC llama.cpp tuning into env in place via setdefault (user
-        values win); return whether the box qualified. Opt out with
-        UNSLOTH_DISABLE_DC_TUNING=1; only datacenter NVIDIA parts qualify
-        (consumer/ROCm/CPU/error are a no-op). Sets GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F
-        for any qualifying GPU (FP32 accum: ~0% cost on B200, real cost on GeForce),
-        plus GGML_CUDA_P2P + CUDA_SCALE_LAUNCH_QUEUES=4x for multi-GPU (+33-51% pp
-        tensor-split, +8-16% pipeline split on B200)."""
+    def _sanitize_p2p_env(env: dict) -> Optional[str]:
+        """Drop an inherited GGML_CUDA_P2P that must not reach the child; return the
+        removed value for logging, else None. ggml tests the variable for PRESENCE
+        and not value, so both cases mean OFF and neither is honoured upstream: a
+        falsy value ("0", "false", "off", ""), or UNSLOTH_DISABLE_DC_P2P=1, where
+        suppressing our own default is not enough because an inherited truthy value
+        would sail past it (#10613).
+
+        Belongs at the call site on EVERY launch path: env is inherited from
+        os.environ, and a consumer-GPU user who set the flag off by hand never
+        reaches the datacenter gate at all."""
+        value = env.get("GGML_CUDA_P2P")
+        if value is None:
+            return None
+        if (
+            str(value).strip().lower() in LlamaCppBackend._FALSY_ENV_VALUES
+            or os.environ.get("UNSLOTH_DISABLE_DC_P2P") == "1"
+        ):
+            del env["GGML_CUDA_P2P"]
+            logger.info(
+                "Dropped inherited GGML_CUDA_P2P=%r from the llama-server "
+                "environment: llama.cpp tests this variable for presence, not "
+                "value, so passing it through would have ENABLED peer copies "
+                "(#10613)",
+                value,
+            )
+            return value
+        return None
+
+    @staticmethod
+    def _p2p_user_opted_out() -> bool:
+        """Whether the USER asked for peer copies off. Read from os.environ, not a
+        child env _sanitize_p2p_env may already have cleaned, so the intent survives
+        the variable and the default cannot put it back."""
+        return (
+            os.environ.get("UNSLOTH_DISABLE_DC_P2P") == "1"
+            or str(os.environ.get("GGML_CUDA_P2P", "1")).strip().lower()
+            in LlamaCppBackend._FALSY_ENV_VALUES
+        )
+
+    @staticmethod
+    def _apply_datacenter_env(
+        env: dict,
+        gpu_indices = None,
+        p2p_opted_out = False,
+        launch_order_pinned = False,
+    ) -> bool:
+        """Inject DC llama.cpp tuning into env in place via setdefault (user values
+        win); return whether the box qualified. Only datacenter NVIDIA parts qualify
+        (consumer/ROCm/CPU/error are a no-op); opt out with
+        UNSLOTH_DISABLE_DC_TUNING=1. Any qualifying GPU gets
+        GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F (FP32 accum: ~0% cost on B200).
+
+        GGML_CUDA_P2P (+33-51% pp tensor-split on B200) additionally needs a
+        CONFIRMED NVLink fabric across the selection (_p2p_veto_reason): without one
+        the peer copy is silently discarded and every model emits garbage (#10613).
+        CUDA_SCALE_LAUNCH_QUEUES=4x (+8-16% pipeline split) is deliberately NOT
+        gated with it: it sizes a command buffer, moves no data across the bus, and
+        measured clean in isolation on the affected host.
+
+        p2p_opted_out records that the call site already removed a falsy
+        user-supplied GGML_CUDA_P2P (_sanitize_p2p_env), so the default must not put
+        it straight back."""
+        # Defence in depth, idempotent: called directly with a falsy value,
+        # setdefault would keep "0" and log "GGML_CUDA_P2P=0 (user)", which reads as
+        # off to a human and ON to ggml (#10613).
+        if LlamaCppBackend._sanitize_p2p_env(env) is not None:
+            p2p_opted_out = True
         if os.environ.get("UNSLOTH_DISABLE_DC_TUNING") == "1":
             return False
         if not LlamaCppBackend._is_datacenter_gpu(gpu_indices):
             return False
-        env.setdefault("GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F", "1")
+
+        def _apply(name: str, value: str) -> str:
+            supplied = name in env
+            env.setdefault(name, value)
+            return f"{name}={env[name]}" + (" (user)" if supplied else "")
+
+        applied = [_apply("GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F", "1")]
         if LlamaCppBackend._effective_gpu_count(gpu_indices) > 1:
-            env.setdefault("GGML_CUDA_P2P", "1")
-            env.setdefault("CUDA_SCALE_LAUNCH_QUEUES", "4x")
+            # Moves no data between GPUs, so it is not gated on the fabric.
+            applied.append(_apply("CUDA_SCALE_LAUNCH_QUEUES", "4x"))
+            # Asked for off: skip the probe rather than pay up to its 10s timeout to
+            # decide something the user already decided.
+            veto = (
+                "GGML_CUDA_P2P was turned off in the environment"
+                if p2p_opted_out
+                else LlamaCppBackend._p2p_veto_reason(gpu_indices, launch_order_pinned)
+            )
+            if veto is None:
+                applied.append(_apply("GGML_CUDA_P2P", "1"))
+            elif "GGML_CUDA_P2P" in env:
+                # Truthy and user-supplied: their value stands, but it steers
+                # straight into the #10613 failure.
+                logger.warning(
+                    "GGML_CUDA_P2P is set in the environment (%s), so peer copies stay "
+                    "ON despite: %s. Unset it entirely -- not =0, which reads as ON "
+                    "upstream -- if model output is garbled (#10613).",
+                    env["GGML_CUDA_P2P"],
+                    veto,
+                )
+            elif p2p_opted_out or os.environ.get("UNSLOTH_DISABLE_DC_P2P") == "1":
+                # Asked for off and got off. The fabric was never inspected, so
+                # calling it unconfirmed would warn about corruption on a box that
+                # may be perfectly healthy.
+                logger.info("GGML_CUDA_P2P left unset: %s", veto)
+            elif not LlamaCppBackend._warned_no_nvlink:
+                LlamaCppBackend._warned_no_nvlink = True
+                logger.warning(
+                    "Multi-GPU data-center box without a confirmed NVLink fabric: %s. "
+                    "Leaving GGML_CUDA_P2P unset. A PCIe peer copy can be discarded "
+                    "silently while CUDA still reports success, which surfaces as "
+                    "garbled output rather than an error (#10613). Verify with "
+                    "scripts/p2p_integrity_probe.py; if it passes, set "
+                    "UNSLOTH_FORCE_DC_P2P=1 to opt back in.",
+                    veto,
+                )
+        logger.info(
+            "Data-center GPU detected: applied DC llama.cpp env tuning (%s)",
+            ", ".join(applied),
+        )
         return True
 
     @staticmethod
@@ -10016,6 +10467,7 @@ class LlamaCppBackend:
                 # Match the docstring's sort-by-id guarantee (driver order isn't).
                 gpus.sort(key = lambda g: g[0])
                 if gpus:
+                    LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
                     return gpus
         except Exception as e:
             logger.debug(f"nvidia-smi probe failed: {e}")
@@ -10035,6 +10487,8 @@ class LlamaCppBackend:
                 return []
             if not hasattr(torch.cuda, "mem_get_info"):
                 return []
+            # CUDA ordinals from here on, not nvidia-smi PCI indices.
+            LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
             # torch.cuda enumerates GPUs RELATIVE to the visibility mask. We
             # feed these IDs back into the subprocess as CVD, so visible ordinals
             # must be translated to physical indices first; otherwise CVD=2,3
@@ -10250,7 +10704,7 @@ class LlamaCppBackend:
         return min(usable_mib, backed_mib)
 
     @staticmethod
-    def _cgroup_available_memory_mib() -> Optional[int]:
+    def _cgroup_memory_budgets() -> list[tuple[int, int]]:
         """Memory this process can still charge to an enforcing cgroup.
 
         ``psutil`` and ``/proc/meminfo`` expose host-wide availability in many
@@ -10316,7 +10770,7 @@ class LlamaCppBackend:
         except OSError:
             lines = []
 
-        remaining: list[int] = []
+        budgets: list[tuple[int, int]] = []
         v2_relative = next((line[3:] for line in lines if line.startswith("0::")), None)
         for directory in _directories(_CGROUP_ROOT, v2_relative):
             limit = _integer(_first_line(os.path.join(directory, "memory.max")), limit = True)
@@ -10330,7 +10784,7 @@ class LlamaCppBackend:
                 used = max(
                     0, used - _stat_integer(os.path.join(directory, "memory.stat"), "inactive_file")
                 )
-            remaining.append(limit if used is None else limit - used)
+            budgets.append((limit if used is None else limit - used, limit))
 
         v1_root = os.path.join(_CGROUP_ROOT, "memory")
         v1_relative = None
@@ -10359,9 +10813,28 @@ class LlamaCppBackend:
                         "inactive_file",
                     ),
                 )
-            remaining.append(limit if used is None else limit - used)
+            budgets.append((limit if used is None else limit - used, limit))
 
-        return max(min(remaining), 0) // (1024 * 1024) if remaining else None
+        return budgets
+
+    @staticmethod
+    def _cgroup_available_memory_mib() -> Optional[int]:
+        """What this process can still charge, i.e. the tightest REMAINDER."""
+        budgets = LlamaCppBackend._cgroup_memory_budgets()
+        if not budgets:
+            return None
+        return max(min(remaining for remaining, _limit in budgets), 0) // (1024 * 1024)
+
+    @staticmethod
+    def _cgroup_memory_limit_mib() -> Optional[int]:
+        """The CAPACITY an enforcing cgroup allows, i.e. the tightest LIMIT.
+
+        Not interchangeable with the remainder above, which shrinks as the container
+        fills and would price against memory that is merely busy rather than absent."""
+        budgets = LlamaCppBackend._cgroup_memory_budgets()
+        if not budgets:
+            return None
+        return min(limit for _remaining, limit in budgets) // (1024 * 1024)
 
     @staticmethod
     def _available_system_memory_mib() -> Optional[int]:
@@ -12011,6 +12484,11 @@ class LlamaCppBackend:
         WSL's librocdxg prepend is independent and is not gated by this flag.
         """
         env = child_env_without_native_path_secret()
+        # Every llama-server child inherits os.environ, so an off-meaning
+        # GGML_CUDA_P2P is stripped HERE, not at one call site: chat, the STT
+        # sidecar and the embedding probe all build from this, and any path that
+        # skips it keeps the #10613 bug (presence, not value).
+        LlamaCppBackend._sanitize_p2p_env(env)
         # _llama_lib_dir resolves the llama-server symlink to the real build/bin.
         binary_dir = str(_llama_lib_dir(binary))
 
@@ -14493,29 +14971,49 @@ class LlamaCppBackend:
 
         # The shim (and its visual server) die with this backend process, so a
         # Unsloth crash/restart never orphans a GPU process.
-        self._process = subprocess.Popen(
-            cmd,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            env = utf8_child_env(env),
-            # Deliberately NOT start_new_session, as with the component
-            # installer: the desktop stops this backend by signalling its
-            # process group and force-kills it after five seconds, so a session
-            # of its own would leave the shim and the visual server holding the
-            # GPU until the next launch sweeps them.
-            **_windows_hidden_subprocess_kwargs(),
-            **_child_popen_kwargs(),
-        )
-        # macOS has no parent-death signal, so the kwargs above are empty there and
-        # only this record lets the next startup reap a runner holding the GPU.
-        try:
-            from utils.process_lifetime import adopt_pid
-            adopt_pid(self._process.pid)
-        except Exception as e:
-            logger.debug(f"Could not track diffusion runner for lifetime sweep: {e}")
+        # Own Popen, and no parent-death backstop on every platform, so a runner
+        # started after the shutdown sweep outlives it.
+        with self._spawn_lock:
+            if self._spawn_is_stale():
+                logger.info("app is shutting down; not starting the diffusion runner")
+                self._close_attempt_log()
+                self._health_wait_cancelled = True
+                return False
+            _spawned = subprocess.Popen(
+                cmd,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                env = utf8_child_env(env),
+                # Deliberately NOT start_new_session, as with the component
+                # installer: the desktop stops this backend by signalling its
+                # process group and force-kills it after five seconds, so a session
+                # of its own would leave the shim and the visual server holding the
+                # GPU until the next launch sweeps them.
+                **_windows_hidden_subprocess_kwargs(),
+                **_child_popen_kwargs(),
+            )
+            self._process = _spawned
+            # macOS has no parent-death signal, so only this record reaps a runner
+            # holding the GPU. Under the lock: adopting after the sweep re-adds a
+            # pid it just forgot.
+            try:
+                from utils.process_lifetime import adopt_pid
+                adopt_pid(_spawned.pid)
+            except Exception as e:
+                logger.debug(f"Could not track diffusion runner for lifetime sweep: {e}")
+        # Same post-adoption recheck as the llama-server spawns: this backend can be
+        # helper-owned, which run.py's singleton teardown never marks, so a latch set
+        # after the in-lock check would otherwise leave the shim and the visual server
+        # alive for the whole health wait below.
+        if self._spawn_is_stale():
+            logger.info("shutdown began during the spawn; killing the new diffusion runner")
+            self._kill_process()
+            self._close_attempt_log()
+            self._health_wait_cancelled = True
+            return False
         self._stdout_thread = threading.Thread(
             target = self._drain_stdout, daemon = True, name = "diffusion-stdout"
         )
@@ -14606,7 +15104,11 @@ class LlamaCppBackend:
 
         healthy = self._wait_for_health(timeout = 600.0, cancelled = cancelled)
         if healthy:
-            self._healthy = True
+            if not self._publish_healthy():
+                # A teardown between the probe and this commit is already killing
+                # the runner; publishing would advertise a server that is gone.
+                self._kill_process()
+                return False
             self._gpu_offload_active = not holds_no_gpu
             if extra_args is not None:
                 self._extra_args = list(extra_args)
@@ -18655,12 +19157,16 @@ class LlamaCppBackend:
 
     def _start_llama_process(
         self, cmd: list[str], env: dict, *, child_gpu_physical_ids: Optional[tuple[int, ...]]
-    ) -> None:
+    ) -> bool:
         """Spawn llama-server from cmd and start draining its output.
 
         Caller holds self._lock. Resets the stdout buffer, opens a fresh
         per-attempt tee log, launches the process, and starts the drain
         thread. Used for the initial start and the text-only mmproj retry.
+
+        Returns False without spawning once app teardown has begun. Reported rather
+        than silent so the caller can stop instead of health-waiting on the previous
+        child and then reading a reference the teardown is clearing.
         """
         # Defensive kill: if a concurrent load slipped past Phase 1
         # (because its `self._process` was None at the time) and already
@@ -18696,26 +19202,48 @@ class LlamaCppBackend:
         # with --mmproj stripped), redacting the API key.
         logger.info(f"Starting llama-server: {' '.join(self._redacted_cmd_for_log(cmd))}")
 
-        self._process = subprocess.Popen(
-            cmd,
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            env = env,
-            **_windows_hidden_subprocess_kwargs(),
-            **_child_popen_kwargs(),
-        )
-        # Cross-session backstop: record the PID so a later startup can reap this
-        # server if parent-death cleanup did not run (macOS / best-effort failure).
-        self._record_server_pid(self._process.pid)
+        # Check with publication under one lock: the mmproj text-only retry reaches
+        # a spawn without passing _spawn_and_wait's boundary.
+        with self._spawn_lock:
+            if self._spawn_is_stale():
+                logger.info("app is shutting down; not starting llama-server")
+                self._close_attempt_log()
+                self._health_wait_cancelled = True
+                return False
+            _spawned = subprocess.Popen(
+                cmd,
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                env = env,
+                **_windows_hidden_subprocess_kwargs(),
+                **_child_popen_kwargs(),
+            )
+            self._process = _spawned
+            # Cross-session backstop for when parent-death cleanup did not run.
+            # Under the lock: see _spawn_and_wait.
+            self._record_server_pid(_spawned.pid)
+
+        # The stale check above and the process-wide latch are only atomic for the
+        # instance run.py tears down, which sets its own flag under this same lock. A
+        # helper load owns a backend nothing marks, so its check can pass microseconds
+        # before the latch is set and the child then outlives the sweep. Recheck once
+        # the pid is recorded and reap it, as the inference worker spawn does.
+        if self._spawn_is_stale():
+            logger.info("shutdown began during the spawn; killing the new llama-server")
+            self._kill_process()
+            self._close_attempt_log()
+            self._health_wait_cancelled = True
+            return False
 
         # Start background thread to drain stdout and prevent pipe deadlock
         self._stdout_thread = threading.Thread(
             target = self._drain_stdout, daemon = True, name = "llama-stdout"
         )
         self._stdout_thread.start()
+        return True
 
     @contextlib.contextmanager
     def _serial_load_scope(self):
@@ -18788,9 +19316,22 @@ class LlamaCppBackend:
         cache_ram = intent.cache_ram
         extra_args = list(intent.extra_args) if intent.extra_args is not None else None
         preserve_multi_gpu_on_layer = intent.preserve_multi_gpu_on_layer
+        # Before the serial scope: a queued load still belongs to the lifecycle it
+        # was requested in.
+        # The process-wide equivalent, for the same reason. Only _begin_server_lifecycle
+        # advances the per-instance one, and a helper load owns a backend that never
+        # gets it, so an embedded second session would otherwise release this load.
         # Serialise the whole load so concurrent /load calls never leave two
         # llama-server processes alive (#5401 / #5161). Doesn't block /unload.
         with self._serial_load_scope():
+            # Here, not at the spawn: a lock gives a waiter no priority, and the
+            # duplicate-adoption phase below kills whatever is loaded -- after a
+            # restart, the new lifecycle's model.
+            with self._spawn_lock:
+                _stale_load = self._spawn_is_stale()
+            if _stale_load:
+                logger.info("dropping a load left over from the previous server lifecycle")
+                return False
             # In-app update swapping binaries: refuse fast (set under this lock,
             # so any in-flight load has drained) instead of using a half-swapped one.
             if getattr(self, "_llama_update_in_progress", False):
@@ -23728,12 +24269,77 @@ class LlamaCppBackend:
                     forced_cpu = _arch_gate_forced_cpu,
                 )
 
-                # DC NVIDIA GPUs: FP32 accum (+ P2P / launch queues for multi-GPU).
-                # See _apply_datacenter_env; opt out with UNSLOTH_DISABLE_DC_TUNING=1.
-                if not is_vulkan_backend and self._apply_datacenter_env(env, gpu_indices):
-                    multi_gpu = self._effective_gpu_count(gpu_indices) > 1
-                    logger.info(
-                        f"Data-center GPU detected: applied DC llama.cpp env tuning (multi_gpu={multi_gpu})"
+                # An inherited GGML_CUDA_P2P=0 means OFF to the user and ON to
+                # llama.cpp, which tests presence and not value (#10613).
+                # _llama_server_env_for_binary already stripped it for every backend;
+                # this covers an env assembled another way.
+                self._sanitize_p2p_env(env)
+
+                # A multi-GPU box that is NOT a datacenter part never reaches the
+                # block below, so warn here or not at all: the 2x RTX 3090 case,
+                # whose own truthy GGML_CUDA_P2P rides through to the child.
+                # Computed here because a deliberate zero-offload load is masked to
+                # CUDA_VISIBLE_DEVICES=-1 and moves no tensors between GPUs, so
+                # probing or warning it is noise about traffic it never generates.
+                _cpu_only_zero_offload = (
+                    gpu_memory_mode == "manual"
+                    and gpu_layers == 0
+                    and not is_vulkan_backend
+                    and not self._zero_offload_keeps_gpu_visible(cmd, env)
+                )
+
+                # Whether the child will resolve gpu_indices as the nvidia-smi ids
+                # the P2P gate verifies. The launch below pins PCI_BUS_ID for an
+                # explicit pick, and for an auto-fit selection only when NO mask was
+                # inherited (nothing to reinterpret); anything else leaves CUDA on
+                # FASTEST_FIRST, where those ids may name other cards.
+                # That auto-fit arm also requires the ids to BE PCI indices: when the
+                # nvidia-smi query fails _get_gpu_memory falls back to torch CUDA
+                # ordinals, and pinning PCI order re-emits those numbers as a
+                # different set of cards. An explicit pick is unaffected, its ids
+                # come from the UI's own PCI-ordered picker.
+                _p2p_launch_order_pinned = bool(gpu_ids) or (
+                    os.environ.get("CUDA_VISIBLE_DEVICES") is None
+                    and LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is True
+                )
+
+                # Only when the fabric is NOT confirmed: on a verified NV# pair the
+                # flag is the benchmarked configuration. Datacenter boxes are
+                # excluded because _apply_datacenter_env warns about the same
+                # variable from its own veto branch.
+                if (
+                    env.get("GGML_CUDA_P2P")
+                    and not _cpu_only_zero_offload
+                    and not is_vulkan_backend
+                    and not self._is_datacenter_gpu(gpu_indices)
+                    and self._effective_gpu_count(gpu_indices) > 1
+                    and not LlamaCppBackend._warned_no_nvlink
+                ):
+                    _p2p_veto = self._p2p_veto_reason(gpu_indices, _p2p_launch_order_pinned)
+                    if _p2p_veto is not None:
+                        LlamaCppBackend._warned_no_nvlink = True
+                        logger.warning(
+                            "GGML_CUDA_P2P=%s is set in the environment but this "
+                            "selection has no confirmed NVLink fabric: %s. Peer copies "
+                            "over PCIe can be discarded silently while CUDA still "
+                            "reports success, which surfaces as garbled output rather "
+                            "than an error. Verify with scripts/p2p_integrity_probe.py "
+                            "and unset the variable entirely (not =0, which reads as ON "
+                            "upstream) if it fails (#10613).",
+                            env["GGML_CUDA_P2P"],
+                            _p2p_veto,
+                        )
+
+                # DC NVIDIA GPUs: FP32 accum and launch queues, plus P2P once a
+                # multi-GPU selection has a CONFIRMED NVLink fabric (#10613). Opt
+                # out with UNSLOTH_DISABLE_DC_TUNING=1, or UNSLOTH_DISABLE_DC_P2P=1
+                # for the peer flag alone.
+                if not (is_vulkan_backend or _cpu_only_zero_offload):
+                    self._apply_datacenter_env(
+                        env,
+                        gpu_indices,
+                        p2p_opted_out = self._p2p_user_opted_out(),
+                        launch_order_pinned = _p2p_launch_order_pinned,
                     )
 
                 # Pin to selected GPU(s) (issue #7164; resolved above into gpu_indices).
@@ -23748,12 +24354,6 @@ class LlamaCppBackend:
                 # pin (extras or an inherited LLAMA_ARG_DEVICE) keeps control of its
                 # own devices, the child aborting on a pin it cannot see. The
                 # draft-device forms count too: parsed with no drafter loaded.
-                _cpu_only_zero_offload = (
-                    gpu_memory_mode == "manual"
-                    and gpu_layers == 0
-                    and not is_vulkan_backend
-                    and not self._zero_offload_keeps_gpu_visible(cmd, env)
-                )
                 _child_gpu_physical_ids: Optional[tuple[int, ...]] = None
                 if not is_vulkan_backend and _gpu_mem:
                     _child_gpu_physical_ids = self._unmasked_child_gpu_physical_ids()
@@ -23812,7 +24412,14 @@ class LlamaCppBackend:
                     # When the user picked GPUs by index, align CUDA's ordering with
                     # the PCI-bus order the picker enumerated, so "GPU 1" in the UI is
                     # GPU 1 to llama.cpp, not CUDA's FASTEST_FIRST default (#5025).
-                    if gpu_ids:
+                    # Extended to an auto-fit selection ONLY when the inherited mask
+                    # is ABSENT: a scheduler's CUDA_VISIBLE_DEVICES=0,1 meaning
+                    # physical 2,0 would be re-read as physical 0,1 once the order
+                    # changes, running on a device hidden on purpose. With no mask
+                    # there is nothing to preserve, and the one emitted below is our
+                    # own nvidia-smi indices, which pinning is what makes true. Where
+                    # we cannot pin, _p2p_veto_reason withholds the flag.
+                    if _p2p_launch_order_pinned:
                         env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
                     # Mask on AMD at the ROCr/HSA layer: HIP-only masking still
                     # enumerates every agent first, which segfaults on a deselected
@@ -24160,19 +24767,44 @@ class LlamaCppBackend:
                             run_cmd,
                             supports_cache_ram = bool(server_caps.get("supports_cache_ram")),
                         )
-                        self._process = subprocess.Popen(
-                            run_cmd,
-                            stdout = subprocess.PIPE,
-                            stderr = subprocess.STDOUT,
-                            text = True,
-                            encoding = "utf-8",
-                            errors = "replace",
-                            env = env,
-                            cwd = _spawn_cwd,
-                            **_windows_hidden_subprocess_kwargs(),
-                            **_child_popen_kwargs(),
-                        )
-                        self._record_server_pid(self._process.pid)
+                        # Check with publication under one lock: a spawn either
+                        # publishes first and the sweep kills it, or sees the flag
+                        # and never starts. Across Popen only, never the wait.
+                        with self._spawn_lock:
+                            if self._spawn_is_stale():
+                                logger.info("app is shutting down; not starting llama-server")
+                                self._close_attempt_log()
+                                self._health_wait_cancelled = True
+                                return False
+                            _spawned = subprocess.Popen(
+                                run_cmd,
+                                stdout = subprocess.PIPE,
+                                stderr = subprocess.STDOUT,
+                                text = True,
+                                encoding = "utf-8",
+                                errors = "replace",
+                                env = env,
+                                cwd = _spawn_cwd,
+                                **_windows_hidden_subprocess_kwargs(),
+                                **_child_popen_kwargs(),
+                            )
+                            self._process = _spawned
+                            # Inside the lock: written after a sweep reaped the child,
+                            # _pid_start_identity yields no start time, and the bare pid
+                            # left behind is one a later launch kills blind.
+                            self._record_server_pid(_spawned.pid)
+                        # mark_process_shutting_down does not take _spawn_lock, so the
+                        # check above is not atomic against it for a helper-owned
+                        # backend. Without this recheck a child spawned in that gap sits
+                        # outside the completed sweep for the whole 600s health wait.
+                        if self._spawn_is_stale():
+                            logger.info(
+                                "shutdown began during the spawn; killing the new llama-server"
+                            )
+                            self._kill_process()
+                            self._close_attempt_log()
+                            self._health_wait_cancelled = True
+                            return False
                         # is_active covers it from here, so drop the pre-spawn flag.
                         self._memory_launch_pending = False
 
@@ -24484,7 +25116,8 @@ class LlamaCppBackend:
                             # and keep the staged runtime for the caller's next argv.
                             self._kill_process()
                             return False
-                        cpu_rc = self._process.poll() if self._process is not None else None
+                        _proc_snap1 = self._process  # snapshot: re-reading races the teardown
+                        cpu_rc = _proc_snap1.poll() if _proc_snap1 is not None else None
                         detail = self._classify_llama_start_failure(
                             "\n".join(self._stdout_lines[-50:]),
                             gguf_path,
@@ -24701,7 +25334,8 @@ class LlamaCppBackend:
                 # skipping the futile flash-attn/MTP retries.
                 if not healthy and self._tensor_parallel and not _load_cancelled():
                     _ts_out = "\n".join(self._stdout_lines[-50:])
-                    _ts_rc = self._process.poll() if self._process is not None else None
+                    _proc_snap2 = self._process  # snapshot: re-reading races the teardown
+                    _ts_rc = _proc_snap2.poll() if _proc_snap2 is not None else None
                     if self._should_record_tensor_split_abort(_ts_rc, _ts_out):
                         LlamaCppBackend._record_tensor_split_abort(
                             binary, model_identifier, _planned_cache_pair
@@ -25089,7 +25723,8 @@ class LlamaCppBackend:
                 # both vision and MTP, so retry that way before dropping either.
                 # Only on a hard fault with FA on; a cancel/unload stops respawn.
                 if not healthy and not _load_cancelled():
-                    _fa_rc = self._process.poll() if self._process is not None else None
+                    _proc_snap3 = self._process  # snapshot: re-reading races the teardown
+                    _fa_rc = _proc_snap3.poll() if _proc_snap3 is not None else None
                     _fa_cmd = (
                         self._with_flash_attn_off(
                             _last_spawn_cmd,
@@ -25162,7 +25797,8 @@ class LlamaCppBackend:
                 ):
                     # A first-decode hard fault is usually the FA kernel: retry
                     # FA-off (keeps MTP) before dropping speculative decoding below.
-                    _probe_rc = self._process.poll() if self._process is not None else None
+                    _proc_snap4 = self._process  # snapshot: re-reading races the teardown
+                    _probe_rc = _proc_snap4.poll() if _proc_snap4 is not None else None
                     _fa_cmd = (
                         self._with_flash_attn_off(
                             _last_spawn_cmd,
@@ -25332,7 +25968,8 @@ class LlamaCppBackend:
                 if not healthy:
                     out = "\n".join(self._stdout_lines[-50:])
                     # Read the crash code before _kill_process() clears _process.
-                    _crash_rc = self._process.poll() if self._process is not None else None
+                    _proc_snap5 = self._process  # snapshot: re-reading races the teardown
+                    _crash_rc = _proc_snap5.poll() if _proc_snap5 is not None else None
                     self._kill_process()
                     # Only when the WAIT itself was cancelled. A cancel that lands later,
                     # while a crashed launch is staging its CPU fallback, must still run
@@ -25404,8 +26041,10 @@ class LlamaCppBackend:
                                 )
                             else:
                                 _cpu_projector_out = "\n".join(self._stdout_lines[-50:])
+                                # Snapshot: re-reading races the teardown.
+                                _proc_snap6 = self._process
                                 _cpu_projector_rc = (
-                                    self._process.poll() if self._process is not None else None
+                                    _proc_snap6.poll() if _proc_snap6 is not None else None
                                 )
                                 self._kill_process()
                                 if _finish_cancelled_health_wait(
@@ -25475,11 +26114,15 @@ class LlamaCppBackend:
                             _last_spawn_cmd = list(cmd)
                             self._is_vision = False
                             self._mmproj_has_audio = False
-                            self._start_llama_process(
+                            if not self._start_llama_process(
                                 cmd,
                                 env,
                                 child_gpu_physical_ids = _child_gpu_physical_ids,
-                            )
+                            ):
+                                # Shutdown refused the retry; self._process still names
+                                # the old child the teardown is clearing.
+                                _cleanup_cancelled_load("App shut down during the text-only retry")
+                                return False
                             if self._wait_for_health(timeout = 600.0, cancelled = _load_cancelled):
                                 healthy = True
                                 # The child that serves this session never read the
@@ -25500,9 +26143,9 @@ class LlamaCppBackend:
                             else:
                                 # Read the exit code before _kill_process() clears it, so
                                 # an OS-killed text-only retry still gets the OOM message.
-                                _retry_rc = (
-                                    self._process.poll() if self._process is not None else None
-                                )
+                                # Snapshot: re-reading races the teardown.
+                                _retry_proc = self._process
+                                _retry_rc = _retry_proc.poll() if _retry_proc is not None else None
                                 self._kill_process()
                                 if _finish_cancelled_health_wait(
                                     "Load cancelled during the text-only retry health wait"
@@ -25606,7 +26249,11 @@ class LlamaCppBackend:
                             else None
                         ),
                     )
-                self._healthy = True
+                if not self._publish_healthy():
+                    # Teardown began between the 200 and this commit; publishing
+                    # would report a model that is gone.
+                    _cleanup_cancelled_load("App shut down as the load was completing")
+                    return False
                 self._commit_effective_parallel_slots(n_parallel)
                 self._swa_full = swa_full
                 self._kv_cache_unified = kv_cache_unified
@@ -26741,8 +27388,99 @@ class LlamaCppBackend:
         except Exception as e:
             logger.debug(f"Could not terminate server descendants: {e}")
 
-    def _kill_process(self):
-        """Terminate the subprocess if running."""
+    def _publish_healthy(self) -> bool:
+        """Commit _healthy under the spawn lock, or refuse if this load is stale.
+
+        Under the lock the teardown mark is set with, so only two orders exist:
+        publish then teardown (which clears _healthy), or teardown then a refused
+        publish.
+        """
+        with self._spawn_lock:
+            if self._spawn_is_stale():
+                logger.info("load no longer belongs to this lifecycle; not publishing it healthy")
+                return False
+            self._healthy = True
+            return True
+
+    def _close_attempt_log(self) -> None:
+        """Close the per-attempt tee log opened just before a spawn.
+
+        A refusal publishes no process and _kill_process returns early when there is
+        none, so nothing else closes it: the next attempt leaks the descriptor and,
+        on Windows, holds the file lock an update needs.
+        """
+        fh = getattr(self, "_llama_log_fh", None)
+        if fh is not None:
+            try:
+                fh.close()
+            except Exception:
+                pass
+            self._llama_log_fh = None
+
+    def _begin_server_lifecycle(self) -> None:
+        """Clear shutdown state so a restarted server can launch again.
+
+        The backend is a module singleton and an embedded host may call
+        run_server() more than once in one process, so "shutting down" is scoped
+        to a lifecycle rather than to the interpreter. Called from run_server
+        before anything can spawn.
+
+        """
+        # _teardown_lock first, so this waits for an in-progress kill rather than
+        # clearing the flag underneath it. Same order as _kill_process.
+        with self._teardown_lock:
+            with self._spawn_lock:
+                self._shutting_down = False
+                self._torn_down_process = None
+
+    def _spawn_is_stale(self) -> bool:
+        """Whether this load may no longer spawn. Caller holds _spawn_lock."""
+        if getattr(self, "_shutting_down", False):
+            return True
+        # Per-instance state only covers the singleton run.py tears down. A helper or
+        # advisor load builds its own backend (hub/utils/llm_assist.py,
+        # utils/datasets/llm_assist.py), which nothing marks, so without this it would
+        # still spawn a server after the sweep. Read second: the attribute is cheaper
+        # and answers for the instance that actually gets torn down.
+        from utils.process_lifetime import is_process_shutting_down
+
+        return is_process_shutting_down()
+
+    def _kill_process(self, *, teardown: bool = False):
+        """Terminate the subprocess if running.
+
+        ``teardown`` marks an app-level stop (shutdown, atexit) rather than the
+        retry ladder reaping a child it is about to replace: only the former may
+        end an in-flight health wait.
+
+        A teardown holds _teardown_lock for the WHOLE kill, because the terminate and
+        wait below keep reading self._process and finally clear it: a lifecycle
+        reopened mid-kill would have its new child dropped or terminated here, so
+        _begin_server_lifecycle takes the same lock and waits.
+
+        _spawn_lock is taken only long enough to set the flag, NOT across the kill.
+        A spawn arriving mid-teardown then reads the flag and refuses in microseconds
+        instead of queuing behind a SIGTERM/SIGKILL escalation that can run for
+        seconds; the load thread it belongs to is one shutdown is already waiting on.
+        Marked above the early return, since a quit during a download still has to be
+        recorded.
+        """
+        if teardown:
+            # Process-wide as well as per-instance: the atexit teardown reaches here
+            # without going through run.py, and the backends a helper load builds for
+            # itself are only ever covered by the shared latch.
+            from utils.process_lifetime import mark_process_shutting_down
+
+            mark_process_shutting_down()
+            with self._teardown_lock:
+                with self._spawn_lock:
+                    self._shutting_down = True
+                self._kill_process_body(teardown = True)
+            return
+        self._kill_process_body(teardown = False)
+
+    def _kill_process_body(self, *, teardown: bool):
+        """The kill itself. Caller holds _teardown_lock when ``teardown``."""
         # Stop the watchdog before a deliberate kill so a planned reload/unload
         # isn't seen as a crash; a real crash never routes through here.
         self._stop_mtp_crash_watchdog()
@@ -26768,6 +27506,11 @@ class LlamaCppBackend:
         _pid = getattr(self._process, "pid", None)
         _pgid = self._leading_process_group(_pid)
         _descendants = self._collect_descendants(_pid)
+        if teardown:
+            # Before the signal, and as the process itself: the reference stays set
+            # across the waits below, and only identity says which child a teardown
+            # landing between a spawn and its wait referred to.
+            self._torn_down_process = self._process
         try:
             if terminable:
                 self._process.terminate()
@@ -27296,7 +28039,7 @@ class LlamaCppBackend:
         return killed
 
     def _cleanup(self):
-        """atexit handler to ensure llama-server is terminated.
+        """atexit handler to ensure llama-server is terminated (a teardown).
 
         Nothing here may report a failure through the logging machinery. By the
         time atexit runs, the streams the handlers write to can already be closed,
@@ -27314,7 +28057,7 @@ class LlamaCppBackend:
         raise_exceptions = logging.raiseExceptions
         logging.raiseExceptions = False
         try:
-            self._kill_process()
+            self._kill_process(teardown = True)
             # TemporaryDirectory's exit hook runs first and cannot delete a staged
             # runtime whose server is alive (Windows locks the exe). Retry post-kill.
             self._cleanup_cpu_fallback_runtime()
@@ -28315,8 +29058,17 @@ class LlamaCppBackend:
         # Why this wait ended, for callers that must tell a cancel apart from a crash:
         # a cancel landing during CPU-fallback staging is not a cancelled wait.
         self._health_wait_cancelled = False
+        # No teardown reset here: it would erase one that landed between this load's
+        # spawn and this line. _torn_down_process is matched by identity instead.
+        process = None  # the child this wait last looked at, read again after the loop
 
         while time.monotonic() < deadline:
+            # Durable, unlike the per-process marker below: once teardown begins,
+            # every later iteration sees it.
+            if getattr(self, "_shutting_down", False):
+                logger.info("llama-server was torn down while waiting for it to become healthy")
+                self._health_wait_cancelled = True
+                return False
             # unload_model() blocks on self._lock, which the load holds across this wait.
             if cancelled is not None and cancelled():
                 logger.info("llama-server startup cancelled before it became healthy")
@@ -28335,6 +29087,12 @@ class LlamaCppBackend:
                 return False
             # Process crashed?
             if process.poll() is not None:
+                # A teardown holds the reference across its waits, so THIS child
+                # exiting under it is deliberate.
+                if getattr(self, "_torn_down_process", None) is process:
+                    logger.info("llama-server was torn down while waiting for it to become healthy")
+                    self._health_wait_cancelled = True
+                    return False
                 # Let the drain thread collect final output.
                 if self._stdout_thread is not None:
                     self._stdout_thread.join(timeout = 2)
@@ -28364,6 +29122,11 @@ class LlamaCppBackend:
                         logger.info("llama-server became healthy after the load was cancelled")
                         self._health_wait_cancelled = True
                         return False
+                    # A 200 arriving as shutdown began must not publish _healthy.
+                    if getattr(self, "_shutting_down", False):
+                        logger.info("llama-server became healthy while the app was shutting down")
+                        self._health_wait_cancelled = True
+                        return False
                     return True
             except (
                 httpx.ConnectError,
@@ -28380,6 +29143,16 @@ class LlamaCppBackend:
 
         if cancelled is not None and cancelled():
             logger.info("llama-server startup cancelled at the health-check deadline")
+            self._health_wait_cancelled = True
+            return False
+
+        # The deadline is the other way out of the loop, so it asks too -- and about
+        # both signals, since _kill_process sets _shutting_down on entry but
+        # _torn_down_process only after collecting descendants.
+        if getattr(self, "_shutting_down", False) or (
+            process is not None and getattr(self, "_torn_down_process", None) is process
+        ):
+            logger.info("llama-server was torn down while waiting for it to become healthy")
             self._health_wait_cancelled = True
             return False
 
@@ -29664,6 +30437,10 @@ class LlamaCppBackend:
         # names stay visible). Set per iteration; None = pre-loop name-agnostic.
         _enabled_tool_names = None
 
+        def _gemma_lead_promotable(text: str) -> bool:
+            # Reads _enabled_tool_names at call time: it is rebound each tool iteration.
+            return leading_bare_gemma_call_is_promotable(text, _enabled_tool_names)
+
         def _strip_tool_markup(
             text: str,
             *,
@@ -29731,7 +30508,7 @@ class LlamaCppBackend:
             """Close a live-streamed <think> block (or emit the buffered reasoning
             as one block if it never streamed), then append the held
             content_buffer to the cumulative display text."""
-            nonlocal cumulative_display, in_thinking, _prov_entry
+            nonlocal cumulative_display, in_thinking, _prov_entry, _buffer_in_display
             if in_thinking:
                 cumulative_display += "</think>"
                 in_thinking = False
@@ -29748,6 +30525,25 @@ class LlamaCppBackend:
                     )
                 cumulative_display += "<think>" + reasoning_accum + "</think>"
             cumulative_display += content_buffer
+            # Not cleared: the callers measure len(content_buffer) right after to place the
+            # live-args window. Recorded instead, so the cancel flush does not re-add it.
+            _buffer_in_display = True
+
+        def _cancelled_hold_text() -> str:
+            """Display text the guards are still holding, which a cancel would drop.
+
+            Mirrors the safetensors loop: a completed blocked markerless object keeps the
+            chain guard true while its suffix is empty, so the whole object sits in
+            ``content_buffer`` as ordinary display text the parser will never promote, and
+            returning on cancellation lost the reply outright. The final strip removes
+            genuinely promotable markup, so an aborted real call contributes only prose."""
+            if _suppress_visible_output:
+                return ""
+            held = cumulative_display + ("" if _buffer_in_display else content_buffer)
+            if not held:
+                return ""
+            cleaned = _strip_tool_markup(held, final = True, force = True)
+            return cleaned if len(cleaned) > len(_last_emitted) else ""
 
         def _close_streamed_think() -> bool:
             """Close a live-streamed <think> before a tool call drains, so
@@ -30334,6 +31130,8 @@ class LlamaCppBackend:
 
                 detect_state = _S_BUFFERING
                 content_buffer = ""  # Raw content held during BUFFERING
+                # Whether content_buffer has already been added to cumulative_display.
+                _buffer_in_display = False
                 content_accum = ""  # All content tokens (for tool parsing)
                 reasoning_accum = ""
                 _prov_entry = None
@@ -30873,15 +31671,44 @@ class LlamaCppBackend:
                                                     enabled_tool_names = _enabled_tool_names,
                                                 ):
                                                     _drain_silently = True
+                                                elif blocked_bare_json_chain_may_continue(
+                                                    content_buffer, _enabled_tool_names
+                                                ):
+                                                    if len(stripped_buf) < _MAX_BARE_JSON_BUFFER:
+                                                        _hold_buffer = True
+                                                    else:
+                                                        # Bounded buffer: fail closed rather
+                                                        # than expose text a later peer
+                                                        # could make executable.
+                                                        _drain_silently = True
                                             elif (
                                                 "call:".startswith(stripped_buf)
                                                 or _GEMMA_BARE_TC_PREFIX_RE.match(stripped_buf)
                                                 is not None
-                                                or _GEMMA_BARE_TC_RE.match(stripped_buf) is not None
+                                                or _gemma_lead_promotable(stripped_buf)
+                                                or blocked_gemma_chain_may_continue(
+                                                    stripped_buf, _enabled_tool_names
+                                                )
                                             ):
-                                                # Whitespace-tolerant like the parser.
-                                                if _GEMMA_BARE_TC_RE.match(stripped_buf):
+                                                # Whitespace-tolerant like the parser, and on
+                                                # its gate: a rejected name streams as prose.
+                                                if _gemma_lead_promotable(stripped_buf):
                                                     _drain_silently = True
+                                                elif blocked_gemma_chain_may_continue(
+                                                    stripped_buf, _enabled_tool_names
+                                                ):
+                                                    # A promotable peer behind a blocked
+                                                    # call must not stream first.
+                                                    if self._parse_tool_calls_from_text(
+                                                        content_buffer,
+                                                        allow_incomplete = auto_heal_tool_calls,
+                                                        enabled_tool_names = _enabled_tool_names,
+                                                    ):
+                                                        _drain_silently = True
+                                                    elif len(stripped_buf) < _MAX_BARE_JSON_BUFFER:
+                                                        _hold_buffer = True
+                                                    else:
+                                                        _drain_silently = True
                                                 elif len(stripped_buf) < _MAX_BUFFER_CHARS:
                                                     _hold_buffer = True
 
@@ -32516,6 +33343,9 @@ class LlamaCppBackend:
                 continue
 
             except _LlamaStreamCancelled:
+                _held = _cancelled_hold_text()
+                if _held:
+                    yield {"type": "content", "text": _held}
                 return
             except httpx.ConnectError:
                 # Mark unresolved provisional cards as failed before raising.
@@ -33386,6 +34216,10 @@ class LlamaCppBackend:
                 break
 
             except _LlamaStreamCancelled:
+                # No flush here: the buffers ``_cancelled_hold_text`` reads are bound inside the
+                # TOOL LOOP and are never rebound for this pass, which emits incrementally and
+                # holds nothing back. Flushing them replayed the previous iteration's planning
+                # text as this pass's answer, after the status boundary reset the route cursor.
                 return
             except httpx.ConnectError:
                 raise RuntimeError("Lost connection to llama-server")

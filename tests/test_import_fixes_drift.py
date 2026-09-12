@@ -755,3 +755,276 @@ def test_psutil_cpu_freq_shape_and_wiring():
         "DRIFT DETECTED: patch_psutil_cpu_freq is defined but never called in "
         "_gpu_init.py, so real imports never install it."
     )
+
+
+def _import_torchao_intmm_home():
+    from unsloth.import_fixes import _TORCHAO_INTMM_MODULES
+    for name in _TORCHAO_INTMM_MODULES:
+        try:
+            module = importlib.import_module(name)
+        except ImportError:
+            continue
+        if callable(getattr(module, "safe_int_mm", None)):
+            return module
+    pytest.skip("torchao does not define safe_int_mm under any known module name")
+
+
+def _torchao_intmm_original_source():
+    """Once the fix has run, upstream's body is reachable only through ``__unsloth_original__``."""
+    pytest.importorskip("torchao")
+    intmm = _import_torchao_intmm_home()
+    function = intmm.safe_int_mm
+    if getattr(function, "__unsloth_patched__", False):
+        function = function.__unsloth_original__
+    return inspect.getsource(function)
+
+
+def test_torchao_safe_int_mm_still_uses_the_repr_probe():
+    """The pathology itself: a repr that formats the tensor's values, and so calls ``.item()``."""
+    source = _torchao_intmm_original_source()
+    if "__repr__" not in source:
+        pytest.fail(
+            "upstream fixed the probe, delete fix_torchao_safe_int_mm_repr_probe: "
+            "torchao's safe_int_mm no longer reprs its input, so the replacement in "
+            "unsloth/import_fixes.py (and its Studio copy in "
+            "studio/backend/core/inference/diffusion_torchao_patches.py) is dead weight."
+        )
+
+
+def test_torchao_safe_int_mm_body_matches_the_verified_shape():
+    from unsloth.import_fixes import _TORCHAO_SAFE_INT_MM_MARKERS
+
+    source = _torchao_intmm_original_source()
+    missing = [marker for marker in _TORCHAO_SAFE_INT_MM_MARKERS if marker not in source]
+    if missing:
+        pytest.fail(
+            "DRIFT DETECTED: torchao's safe_int_mm body changed "
+            f"({', '.join(missing)} missing); re-verify bit-identity before keeping the patch. "
+            "_make_safe_int_mm copies the cuBLAS dimension guards, the contiguity fixes and the "
+            "fp32 fallback, so a moved body is one the copy must not impersonate."
+        )
+
+
+def _patched_torchao_safe_int_mm():
+    pytest.importorskip("torchao")
+    intmm = _import_torchao_intmm_home()
+    from unsloth.import_fixes import (
+        _TORCHAO_SAFE_INT_MM_MARKERS,
+        fix_torchao_safe_int_mm_repr_probe,
+    )
+
+    fix_torchao_safe_int_mm_repr_probe()
+    function = intmm.safe_int_mm
+    if not getattr(function, "__unsloth_patched__", False):
+        source = inspect.getsource(function)
+        if any(marker not in source for marker in _TORCHAO_SAFE_INT_MM_MARKERS):
+            pytest.skip(
+                "this torchao's safe_int_mm is not the verified body, so the fix declined to "
+                "patch it (see test_torchao_safe_int_mm_body_matches_the_verified_shape)"
+            )
+        pytest.fail(
+            "DRIFT DETECTED: fix_torchao_safe_int_mm_repr_probe left a recognised "
+            "safe_int_mm unpatched."
+        )
+    return intmm, function
+
+
+def test_torchao_intmm_patch_is_bit_identical_on_cpu():
+    torch = pytest.importorskip("torch")
+    intmm, patched = _patched_torchao_safe_int_mm()
+    # int_scaled_matmul resolves the name through module globals, so the rebind must reach it
+    assert intmm.int_scaled_matmul.__globals__["safe_int_mm"] is patched
+    original = patched.__unsloth_original__
+
+    generator = torch.Generator().manual_seed(0)
+
+    def randint8(*shape):
+        return torch.randint(-127, 127, shape, dtype = torch.int8, generator = generator)
+
+    cases = [
+        (randint8(64, 64), randint8(64, 64)),
+        (randint8(40, 24), randint8(24, 72)),
+        (randint8(64, 64), randint8(64, 64).t().contiguous().t()),
+        (randint8(40, 20), randint8(20, 64)),
+    ]
+    for a, b in cases:
+        assert torch.equal(patched(a, b), original(a, b)), (
+            "DRIFT DETECTED: the patched safe_int_mm no longer matches torchao's on "
+            f"{tuple(a.shape)} x {tuple(b.shape)}."
+        )
+
+
+def test_torchao_intmm_patch_is_idempotent():
+    import types
+
+    from unsloth.import_fixes import (
+        _patch_torchao_intmm_module,
+        fix_torchao_safe_int_mm_repr_probe,
+    )
+
+    intmm, patched = _patched_torchao_safe_int_mm()
+    fix_torchao_safe_int_mm_repr_probe()
+    assert intmm.safe_int_mm is patched, "DRIFT DETECTED: safe_int_mm was replaced twice."
+
+    def already_patched(input, mat2):
+        return None
+
+    already_patched.__unsloth_patched__ = True
+    stand_in = types.ModuleType("torchao_intmm_stand_in")
+    stand_in.safe_int_mm = already_patched
+    stand_in.out_dtype = lambda *args, **kwargs: None
+    stand_in.dynamo_is_compiling = lambda: False
+    assert _patch_torchao_intmm_module(stand_in) is False
+    assert stand_in.safe_int_mm is already_patched
+
+
+def test_torchao_intmm_patch_refuses_an_unrecognised_body():
+    import types
+
+    from unsloth.import_fixes import _patch_torchao_intmm_module
+
+    def rewritten_upstream(input, mat2):
+        # None of the markers the gate looks for
+        return input @ mat2
+
+    stand_in = types.ModuleType("torchao_intmm_stand_in")
+    stand_in.safe_int_mm = rewritten_upstream
+    stand_in.out_dtype = lambda *args, **kwargs: None
+    stand_in.dynamo_is_compiling = lambda: False
+    assert _patch_torchao_intmm_module(stand_in) is False
+    assert stand_in.safe_int_mm is rewritten_upstream
+
+
+def test_torchao_intmm_patch_covers_a_later_import():
+    """The point of the finder: the prequant path imports torchao well after ``import unsloth``."""
+    if importlib.util.find_spec("torchao") is None:
+        pytest.skip("torchao not installed -- nothing to patch.")
+    import subprocess
+
+    import_fixes_path = Path(__file__).resolve().parent.parent / "unsloth" / "import_fixes.py"
+    program = (
+        "import importlib.util, sys\n"
+        f"spec = importlib.util.spec_from_file_location('unsloth_import_fixes_under_test', {str(import_fixes_path)!r})\n"
+        "module = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(module)\n"
+        "assert 'torchao' not in sys.modules, 'torchao was imported before the fix ran'\n"
+        "module.fix_torchao_safe_int_mm_repr_probe()\n"
+        "import torchao.quantization\n"
+        "import importlib\n"
+        "intmm = None\n"
+        "for name in module._TORCHAO_INTMM_MODULES:\n"
+        "    try:\n"
+        "        candidate = importlib.import_module(name)\n"
+        "    except ImportError:\n"
+        "        continue\n"
+        "    if callable(getattr(candidate, 'safe_int_mm', None)):\n"
+        "        intmm = candidate\n"
+        "        break\n"
+        "assert intmm is not None, 'no torchao module defines safe_int_mm'\n"
+        "print('PATCHED=' + str(bool(getattr(intmm.safe_int_mm, '__unsloth_patched__', False))))\n"
+    )
+    env = dict(os.environ)
+    env.pop("UNSLOTH_TORCHAO_INT_MM_FIX", None)
+    result = subprocess.run(
+        [sys.executable, "-c", program],
+        capture_output = True,
+        text = True,
+        timeout = 600,
+        env = env,
+    )
+    assert result.returncode == 0, f"child failed:\n{result.stdout}\n{result.stderr}"
+    assert "PATCHED=True" in result.stdout, (
+        "DRIFT DETECTED: a torchao imported AFTER fix_torchao_safe_int_mm_repr_probe ran was "
+        f"left unpatched, so the meta path finder no longer fires.\n{result.stdout}"
+    )
+
+
+def test_torchao_intmm_finder_covers_both_module_homes(monkeypatch):
+    """A finder covering only the old name loses the fix once torchao ships pytorch/ao#4718."""
+    import importlib.machinery
+
+    from unsloth.import_fixes import (
+        _TORCHAO_INTMM_MODULES,
+        _TorchaoIntmmLoader,
+        _TorchaoIntmmPatchFinder,
+    )
+
+    assert "torchao.kernel.intmm" in _TORCHAO_INTMM_MODULES
+    assert "torchao.quantization.quantize_.workflows.int8.kernels" in _TORCHAO_INTMM_MODULES
+
+    class _Loader:
+        def exec_module(self, module):
+            pass
+
+    def fake_find_spec(fullname, *args, **kwargs):
+        return importlib.machinery.ModuleSpec(fullname, _Loader())
+
+    monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+    finder = _TorchaoIntmmPatchFinder()
+    for name in _TORCHAO_INTMM_MODULES:
+        spec = finder.find_spec(name)
+        assert spec is not None and isinstance(spec.loader, _TorchaoIntmmLoader), name
+    assert finder.find_spec("torchao.kernel.somewhere_else") is None
+    assert finder.find_spec("torchao.quantization.quantize_.workflows.int8") is None
+
+
+def test_torchao_intmm_installer_patches_the_new_home_when_already_imported(monkeypatch):
+    """A module ALREADY in ``sys.modules`` must be patched too: the finder only sees later imports."""
+    import types
+
+    torch = pytest.importorskip("torch")
+    from unsloth.import_fixes import (
+        _TORCHAO_INTMM_MODULES,
+        _TORCHAO_INTMM_SENTINEL,
+        fix_torchao_safe_int_mm_repr_probe,
+    )
+
+    source = _torchao_intmm_original_source()
+    module = types.ModuleType("torchao.quantization.quantize_.workflows.int8.kernels")
+    module.__dict__["torch"] = torch
+    from torch._dynamo import is_compiling as dynamo_is_compiling
+    from torch._higher_order_ops.out_dtype import out_dtype
+
+    module.out_dtype = out_dtype
+    module.dynamo_is_compiling = dynamo_is_compiling
+    import linecache
+    import textwrap
+
+    # The gate reads the body through inspect.getsource, so the copy needs a linecache entry.
+    text = textwrap.dedent(source)
+    filename = "<torchao safe_int_mm copy>"
+    linecache.cache[filename] = (len(text), None, text.splitlines(True), filename)
+    exec(compile(text, filename, "exec"), module.__dict__)
+    assert callable(module.safe_int_mm)
+
+    # Hide every real torchao home so only the stand-in is visible, and drop any finder.
+    for name in _TORCHAO_INTMM_MODULES:
+        monkeypatch.delitem(sys.modules, name, raising = False)
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    monkeypatch.setattr(
+        sys,
+        "meta_path",
+        [f for f in sys.meta_path if not getattr(f, _TORCHAO_INTMM_SENTINEL, False)],
+    )
+    monkeypatch.delenv("UNSLOTH_TORCHAO_INT_MM_FIX", raising = False)
+
+    assert fix_torchao_safe_int_mm_repr_probe() is True
+    assert getattr(
+        module.safe_int_mm, "__unsloth_patched__", False
+    ), "the installer ignored a safe_int_mm registered under torchao's new module name"
+    a = torch.randint(-128, 127, (16, 32), dtype = torch.int8)
+    b = torch.randint(-128, 127, (32, 24), dtype = torch.int8)
+    assert torch.equal(module.safe_int_mm(a, b), module.safe_int_mm.__unsloth_original__(a, b))
+
+
+def test_torchao_intmm_patch_wired_into_gpu_init():
+    source = Path(__file__).resolve().parent.parent / "unsloth" / "_gpu_init.py"
+    source = source.read_text(encoding = "utf-8")
+    assert "fix_torchao_safe_int_mm_repr_probe()" in source, (
+        "DRIFT DETECTED: fix_torchao_safe_int_mm_repr_probe is defined but never called in "
+        "_gpu_init.py, so real imports never install it."
+    )
+    assert "del fix_torchao_safe_int_mm_repr_probe" in source, (
+        "DRIFT DETECTED: fix_torchao_safe_int_mm_repr_probe is left bound on the unsloth "
+        "namespace; _gpu_init.py deletes every fix it calls."
+    )

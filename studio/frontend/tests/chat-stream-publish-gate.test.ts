@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -15,6 +14,8 @@ import {
   lastReasoningGroupTextLength,
 } from "../src/features/chat/utils/reasoning-duration.ts";
 import { parseAssistantContent } from "../src/features/chat/utils/parse-assistant-content.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 type Scheduled = {
   frames: Array<() => void>;
@@ -244,10 +245,7 @@ test("a painting window publishes on frames, never on the cap", () => {
   });
 });
 
-const ADAPTER = readFileSync(
-  new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
-  "utf8",
-);
+const ADAPTER = readSrc("features/chat/api/chat-adapter.ts");
 
 /** Drop comments, so a commented-out gate cannot satisfy a search. */
 function withoutComments(source: string): string {

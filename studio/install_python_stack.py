@@ -381,6 +381,7 @@ _TORCHCODEC_TORCH_SPECS: dict[int, str] = {
     6: "torchcodec>=0.2.0,<0.3.0",
     5: "torchcodec>=0.1.0,<0.2.0",
 }
+_TORCHCODEC_MIN_KNOWN_MINOR = min(_TORCHCODEC_TORCH_SPECS)
 _TORCHCODEC_MAX_KNOWN_MINOR = max(_TORCHCODEC_TORCH_SPECS)
 
 # Not every platform was published from 0.1. Read off the live PyPI index:
@@ -511,6 +512,27 @@ def _cuda_major_for_npp(torch_version: "str | None", index_url: str) -> str:
     # still answers for the public download.pytorch.org form.
     match = re.search(r"/cu(\d+)/?$", index_url or "")
     return match.group(1)[:2] if match else ""
+
+
+# `nvidia-npp-cu13` is a wheel-less stub ("DEPRECATED: Use nvidia-npp instead"); plain
+# `nvidia-npp` is the 13.x runtime. WRONG to widen into "13 drops the suffix": `nvidia-cudnn`
+# and `nvidia-nccl` kept theirs, and their unsuffixed names are fake warning packages.
+_NPP_SUFFIXED_THROUGH_CUDA_MAJOR = 12
+
+
+def _npp_requirement(cuda_major: str) -> str:
+    """The NPP runtime for this CUDA major, spelled the way its publisher spells it.
+
+    Bounded because `nvidia-npp` carries the same 0.0.0a0 junk the stub is made of, and a cu14
+    host must not take a 13 runtime. `[0-9]+` not `isdigit()`, as in _hsa_override_gfx_arch:
+    isdigit() also takes the superscripts, where `int()` below raises, and the non-ASCII digits,
+    which reach a str `\\d` and emit an unparseable `>=١٣`.
+    """
+    if not re.fullmatch(r"[0-9]+", cuda_major):
+        return f"nvidia-npp-cu{cuda_major}"
+    if int(cuda_major) <= _NPP_SUFFIXED_THROUGH_CUDA_MAJOR:
+        return f"nvidia-npp-cu{cuda_major}"
+    return f"nvidia-npp>={cuda_major},<{int(cuda_major) + 1}"
 
 
 # Any sign of the CUDA runtime, versioned or not: nvcudart_hybrid64.dll is the Windows cu130
@@ -709,10 +731,10 @@ def _torchcodec_spec_is_installable(spec: str) -> bool:
     return True
 
 
-def _select_torchcodec_spec(torch_version: "str | None") -> str:
+def _select_torchcodec_spec(torch_version: "str | None") -> "str | None":
     """Map an installed torch version (e.g. '2.11.0+cu128') to the torchcodec spec built
-    against it. Falls back to _TORCHCODEC_DEFAULT_SPEC for torch <=2.4, a non-2.x major, or
-    an unparseable/missing version. Pure function."""
+    against it, or None below the oldest known torch minor. Falls back to
+    _TORCHCODEC_DEFAULT_SPEC for a non-2.x major or an unparseable/missing version."""
     if not torch_version:
         return _TORCHCODEC_DEFAULT_SPEC
     release = str(torch_version).split("+", 1)[0]  # drop +cu128/+rocm7.2/+cpu
@@ -725,6 +747,8 @@ def _select_torchcodec_spec(torch_version: "str | None") -> str:
         return _TORCHCODEC_DEFAULT_SPEC
     if major != 2:
         return _TORCHCODEC_DEFAULT_SPEC
+    if minor < _TORCHCODEC_MIN_KNOWN_MINOR:
+        return None
     # Clamp to the ABI-stable floor, never the 0.11 row: 0.11 is locked to torch 2.11 exactly.
     minor = min(minor, _TORCHCODEC_MAX_KNOWN_MINOR)
     return _TORCHCODEC_TORCH_SPECS.get(minor, _TORCHCODEC_DEFAULT_SPEC)
@@ -8032,6 +8056,12 @@ def install_python_stack() -> int:
     elif not _codec_torch_ver:
         _progress("torchcodec (skipped, torch version unknown)")
         _note("could not read the installed torch version -- leaving torchcodec alone")
+    elif _select_torchcodec_spec(_codec_torch_ver) is None:
+        _progress("torchcodec (skipped, unsupported torch version)")
+        _note(
+            f"torch {_codec_torch_ver} is below the oldest supported torchcodec pairing "
+            f"(torch 2.{_TORCHCODEC_MIN_KNOWN_MINOR}) -- leaving torchcodec alone"
+        )
     elif not _torchcodec_spec_is_installable(_select_torchcodec_spec(_codec_torch_ver)):
         # This platform published no wheel in the window this torch selects. Skipping is what
         # such a host got before this step existed; attempting it would end the install.
@@ -8107,11 +8137,10 @@ def install_python_stack() -> int:
                 "the rest of the install is unaffected"
             )
         elif _codec_index:
-            # torchcodec's CUDA build dlopens libnppicc and libnppc, and NPP is NOT in
-            # torch's own dependency set, so a --no-deps install from a cuNNN index reports
-            # success and then fails to import, disabling audio for a reason nothing here
-            # would otherwise name. docker/Dockerfile installs nvidia-npp-cu12 beside the
-            # same wheel for exactly this. cu13x wheels want nvidia-npp-cu13.
+            # torchcodec's CUDA build dlopens libnppicc and libnppc, and NPP is not in torch's
+            # dependency set, so an older cuNNN wheel installs fine under --no-deps and then
+            # fails to import. 0.12+ no longer links NPP, so this only guards the older pins.
+            # _npp_requirement spells the name, which stops being suffixed after 12.
             _npp_major = _cuda_major_for_npp(_codec_torch_ver, _codec_index)
             if _codec_fellback:
                 # The pin is gone, so the tag no longer describes this wheel. Probe EVERY
@@ -8125,13 +8154,14 @@ def install_python_stack() -> int:
                         "which its torch tag implies -- matching NPP to the wheel"
                     )
                     _npp_major = _npp_probed
-            if _npp_major and not pip_install_try(
+            _npp_spec = _npp_requirement(_npp_major) if _npp_major else ""
+            if _npp_spec and not pip_install_try(
                 "Installing torchcodec CUDA runtime (NPP)",
                 "--no-cache-dir",
-                f"nvidia-npp-cu{_npp_major}",
+                _npp_spec,
             ):
                 _note(
-                    f"could not install nvidia-npp-cu{_npp_major} -- torchcodec may fail to "
+                    f"could not install {_npp_spec} -- torchcodec may fail to "
                     "import on a host without the CUDA toolkit, leaving audio disabled"
                 )
 

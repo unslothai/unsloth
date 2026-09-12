@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { SectionCard } from "@/components/section-card";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -169,6 +170,7 @@ function siblingGgufDirectory(sourcePath: string): string | null {
 }
 
 export function ExportPage() {
+  const signalReady = useAppShellReadySignal();
   const { hfToken, setHfToken } = useHfTokenStore(
     useShallow((s) => ({
       hfToken: s.token,
@@ -176,7 +178,6 @@ export function ExportPage() {
     })),
   );
 
-  // ---- API-driven checkpoint state ----
   const [models, setModels] = useState<ModelCheckpoints[]>(
     () => getCachedCheckpoints() ?? [],
   );
@@ -300,7 +301,6 @@ export function ExportPage() {
     steps: exportTourSteps,
   });
 
-  // ---- Fetch checkpoints on mount ----
   useEffect(() => {
     let cancelled = false;
     const hadCache = getCachedCheckpoints() !== null;
@@ -345,7 +345,6 @@ export function ExportPage() {
     setExportMethod("gguf");
   }, [preselectRun, models]);
 
-  // ---- Fetch local models for direct export ----
   useEffect(() => {
     let cancelled = false;
     const hadCache = getCachedLocalModels() !== null;
@@ -381,10 +380,9 @@ export function ExportPage() {
       return;
     }
     reloadReadySent.current = true;
-    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
-  }, [isLoadingLocalModels, loadingCheckpoints]);
+    signalReady();
+  }, [isLoadingLocalModels, loadingCheckpoints, signalReady]);
 
-  // ---- Derived state ----
   const selectedModelData = useMemo(
     () =>
       selectedModelIdx != null
@@ -903,7 +901,6 @@ export function ExportPage() {
     return () => obs.disconnect();
   }, [showPanel]);
 
-  // ---- Render ----
   return (
     <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
       <main className="mx-auto max-w-7xl px-5 py-8 sm:px-9">
