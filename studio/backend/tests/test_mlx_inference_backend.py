@@ -4342,7 +4342,7 @@ def test_mlx_vlm_recovers_native_tool_tokens_like_the_text_path(monkeypatch):
     backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
     backend._processor = SimpleNamespace(tokenizer = _Tok())
     backend._tokenizer = _Tok()
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+    args = ([{"role": "user", "content": [{"type": "image"}]}], [object()], 0, 1, 0, 0, 1, 1, None)
 
     snapshots = list(
         backend._generate_vlm(
@@ -4454,7 +4454,7 @@ def test_mlx_vlm_does_not_leak_a_preserved_stop_token(monkeypatch):
     backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
     backend._processor = SimpleNamespace(tokenizer = _Tok())
     backend._tokenizer = _Tok()
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+    args = ([{"role": "user", "content": [{"type": "image"}]}], [object()], 0, 1, 0, 0, 1, 1, None)
 
     snapshots = list(
         backend._generate_vlm(
@@ -4526,7 +4526,7 @@ def test_mlx_vlm_keeps_a_stop_token_that_closes_a_tool_envelope(monkeypatch):
     backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
     backend._processor = SimpleNamespace(tokenizer = _Tok())
     backend._tokenizer = _Tok()
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+    args = ([{"role": "user", "content": [{"type": "image"}]}], [object()], 0, 1, 0, 0, 1, 1, None)
 
     snapshots = list(
         backend._generate_vlm(
@@ -4596,7 +4596,7 @@ def test_mlx_vlm_drops_an_orphan_closer_that_opened_nothing(monkeypatch):
     backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
     backend._processor = SimpleNamespace(tokenizer = _Tok())
     backend._tokenizer = _Tok()
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+    args = ([{"role": "user", "content": [{"type": "image"}]}], [object()], 0, 1, 0, 0, 1, 1, None)
 
     snapshots = list(
         backend._generate_vlm(
@@ -4675,7 +4675,7 @@ def test_mlx_vlm_keeps_the_reasoning_protocol_delimiters_on_a_tool_turn(monkeypa
     backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
     backend._processor = SimpleNamespace(tokenizer = _Tok(), chat_template = _Tok.chat_template)
     backend._tokenizer = _Tok()
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 8, 1, None)
+    args = ([{"role": "user", "content": [{"type": "image"}]}], [object()], 0, 1, 0, 0, 8, 1, None)
 
     snapshots = list(
         backend._generate_vlm(
@@ -4772,10 +4772,9 @@ def test_mlx_vlm_pixels_follow_the_order_the_markers_appear_in():
     assert marker_turns[-1] == len(sent_messages) - 1
 
 
-def test_mlx_marks_the_attachment_even_beside_a_replayed_marker():
-    """Replay promotion can merge an MCP picture into the very turn the new
-    attachment lands on. Testing that turn for "any marker" then skips the one
-    the attachment needs, and _render_vlm_prompt raises on 1 marker / 2 pixels."""
+def test_mlx_attachment_displaces_a_replayed_image_on_the_same_turn():
+    """A local turn takes one picture, so the attachment replaces the replay
+    marker and its pixels together."""
     from core.inference.mlx_inference import MLXInferenceBackend, _count_vlm_images
 
     backend = MLXInferenceBackend()
@@ -4797,7 +4796,7 @@ def test_mlx_marks_the_attachment_even_beside_a_replayed_marker():
 
     sent, attached = captured[0]
     markers = sum(_count_vlm_images(m.get("content")) for m in sent)
-    assert attached == [replayed, attachment]
+    assert attached == [attachment]
     assert markers == len(attached), f"{markers} marker(s) for {len(attached)} images"
     # The attachment's pixels are last, so its marker has to be too.
     assert sent[-1]["content"][-1] == {"type": "image"}
@@ -5188,7 +5187,7 @@ def _run_vlm_budget(
     backend._is_vlm = True
     backend._model = SimpleNamespace()
     backend._processor = SimpleNamespace(tokenizer = backend._tokenizer)
-    args = (messages, image, 0, 1, 0, 0, max_new_tokens, 1, None)
+    args = (messages, [image] if image is not None else [], 0, 1, 0, 0, max_new_tokens, 1, None)
     list(backend._generate_vlm(*args, _adapter_state = False))
     return seen["max_tokens"]
 

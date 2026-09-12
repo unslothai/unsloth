@@ -64,6 +64,7 @@ _stub_if_missing("unsloth_zoo")
 _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 
 from PIL import Image
+import pytest
 
 from core.inference import mcp_images
 from core.inference.mcp_images import (
@@ -2700,7 +2701,10 @@ def test_a_replay_batch_of_two_picture_results_is_detached():
     assert _first_note(out).startswith(mcp_images.DETACHED_IMAGE_TURN_TEXT)
 
 
-def test_a_displaced_replay_marker_takes_its_note_with_it():
+@pytest.mark.parametrize(
+    "mark, count", [(mcp_images.top_up_image_markers, 2), (mcp_images.mark_last_user_turn, 1)]
+)
+def test_a_displaced_replay_marker_takes_its_note_with_it(mark, count):
     """The replay merged its marker and note into the question that also owns the
     attachment; the attachment displaces the marker, and the note must go too, or it
     says the caller's own picture was returned by the tool."""
@@ -2715,7 +2719,7 @@ def test_a_displaced_replay_marker_takes_its_note_with_it():
     for ordinal in (1, None):
         conversation = [{"role": "user", "content": "read a.png"}, dict(question)]
         prior = mcp_images.image_marker_parts(conversation)
-        topped = mcp_images.top_up_image_markers(conversation, 2, ordinal = ordinal)
+        topped = mark(conversation, count, ordinal = ordinal)
         parts = topped[1]["content"]
         assert sum(1 for p in parts if p.get("type") == "image") == 1, parts
         texts = [p["text"] for p in parts if p.get("type") == "text"]

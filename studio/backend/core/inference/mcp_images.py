@@ -494,24 +494,21 @@ def _is_image_turn_note(text) -> bool:
     return value.startswith(IMAGE_TURN_TEXT) or value.startswith(DETACHED_IMAGE_TURN_TEXT)
 
 
+def _image_parts(conversation: Sequence[dict], part_type: str):
+    for message in conversation:
+        content = message.get("content")
+        if isinstance(content, list):
+            yield from (
+                part for part in content if isinstance(part, dict) and part.get("type") == part_type
+            )
+
+
 def _all_image_url_parts(conversation: Sequence[dict]) -> list:
-    return [
-        part
-        for message in conversation
-        if isinstance(message.get("content"), list)
-        for part in message["content"]
-        if isinstance(part, dict) and part.get("type") == "image_url"
-    ]
+    return list(_image_parts(conversation, "image_url"))
 
 
 def count_image_parts(conversation: Sequence[dict], part_type: str) -> int:
-    return sum(
-        1
-        for message in conversation
-        if isinstance(message.get("content"), list)
-        for part in message["content"]
-        if isinstance(part, dict) and part.get("type") == part_type
-    )
+    return sum(1 for _ in _image_parts(conversation, part_type))
 
 
 def _drop_oldest_image_parts(
@@ -527,55 +524,22 @@ def _drop_oldest_image_parts(
     images, which admission has already charged for.
     """
     owned = {id(part) for part in only} if only is not None else None
-    drained = []
-    for index, message in enumerate(conversation):
-        if excess <= 0:
+    ordinals = set()
+    for ordinal, part in enumerate(_image_parts(conversation, part_type)):
+        if len(ordinals) >= excess:
             break
-        content = message.get("content")
-        if not isinstance(content, list):
-            continue
-        # Only what this trim may touch: with caller attachments beside promoted
-        # parts, counting every picture told the model the attachments came from the
-        # tool -- five attachments plus a four-image result cut to three read (8 of 9).
-        original = sum(
-            1
-            for part in content
-            if isinstance(part, dict)
-            and part.get("type") == part_type
-            and (owned is None or id(part) in owned)
-        )
-        kept = []
-        for part in content:
-            if (
-                excess > 0
-                and isinstance(part, dict)
-                and part.get("type") == part_type
-                and (owned is None or id(part) in owned)
-            ):
-                excess -= 1
-                continue
-            kept.append(part)
-        if len(kept) == len(content):
-            continue
-        if not kept or (
-            len(kept) == 1
-            and kept[0].get("type") == "text"
-            and _is_image_turn_note(kept[0].get("text"))
-        ):
-            # An image-only turn whose last picture just went has nothing left to
-            # say. Written back as content: [] it becomes an empty user message,
-            # which strict provider APIs and chat templates reject.
-            drained.append(index)
-        else:
-            conversation[index] = {
-                **message,
-                "content": _relabelled(kept, part_type, original, owned = owned),
-            }
-    for index in reversed(drained):
-        del conversation[index]
+        if owned is None or id(part) in owned:
+            ordinals.add(ordinal)
+    _drop_image_parts_at(conversation, ordinals, part_type, owned = owned)
 
 
-def _drop_image_parts_at(conversation: list, ordinals: set, part_type: str) -> None:
+def _drop_image_parts_at(
+    conversation: list,
+    ordinals: set,
+    part_type: str,
+    *,
+    owned: "set | None" = None,
+) -> None:
     """Drop the image parts at the given positions in document order.
 
     Positional rather than oldest-first: a protected pixel can sit anywhere in the
@@ -592,7 +556,11 @@ def _drop_image_parts_at(conversation: list, ordinals: set, part_type: str) -> N
         if not isinstance(content, list):
             continue
         original = sum(
-            1 for part in content if isinstance(part, dict) and part.get("type") == part_type
+            1
+            for part in content
+            if isinstance(part, dict)
+            and part.get("type") == part_type
+            and (owned is None or id(part) in owned)
         )
         kept = []
         for part in content:
@@ -613,7 +581,7 @@ def _drop_image_parts_at(conversation: list, ordinals: set, part_type: str) -> N
         else:
             conversation[index] = {
                 **message,
-                "content": _relabelled(kept, part_type, original),
+                "content": _relabelled(kept, part_type, original, owned = owned),
             }
     for index in reversed(drained):
         del conversation[index]
@@ -851,6 +819,7 @@ def top_up_image_markers(
     missing = total - have
     if missing <= 0:
         return out
+    markers = [{"type": "image"} for _ in range(missing)]
     if ordinal is not None:
         # The turn that supplied the attachment, which need not be the newest: a
         # later text-only question would otherwise be shown as carrying it.
@@ -861,19 +830,7 @@ def top_up_image_markers(
             if is_synthetic_image_turn(message):
                 continue
             if seen == ordinal:
-                content = message.get("content", "")
-                markers = [{"type": "image"} for _ in range(missing)]
-                if isinstance(content, list):
-                    # A replay merged into this turn already left a marker here. A
-                    # non-GGUF message takes one image, so the attachment displaces
-                    # it; pixels_in_marker_order drops the orphaned payload.
-                    kept = _without_replay_parts(content)
-                    out[index] = {**message, "content": [*kept, *markers]}
-                else:
-                    out[index] = {
-                        **message,
-                        "content": [*markers, {"type": "text", "text": content or ""}],
-                    }
+                out[index] = _with_attachment_markers(message, markers, after_text = True)
                 return out
             seen += 1
     # No ordinal: the legacy top-level image field, which has no part to locate.
@@ -888,30 +845,14 @@ def top_up_image_markers(
     ]
     real = [index for index in candidates if not is_synthetic_image_turn(out[index])]
     for index in real or candidates:
-        message = out[index]
-        content = message.get("content", "")
-        markers = [{"type": "image"} for _ in range(missing)]
-        if isinstance(content, list):
-            kept = _without_replay_parts(content)
-            out[index] = {**message, "content": [*kept, *markers]}
-        else:
-            out[index] = {
-                **message,
-                "content": [*markers, {"type": "text", "text": content or ""}],
-            }
+        out[index] = _with_attachment_markers(out[index], markers, after_text = True)
         break
     return out
 
 
 def image_marker_parts(conversation: Sequence[dict]) -> list:
     """Every ``{"type": "image"}`` marker part, in document order."""
-    return [
-        part
-        for message in conversation
-        if isinstance(message.get("content"), list)
-        for part in message["content"]
-        if isinstance(part, dict) and part.get("type") == "image"
-    ]
+    return list(_image_parts(conversation, "image"))
 
 
 def pixels_in_marker_order(
@@ -974,13 +915,21 @@ def is_synthetic_image_turn(message) -> bool:
     return bool(texts) and all(_is_image_turn_note(text) for text in texts)
 
 
-def _with_attachment_markers(message: dict, markers: list[dict]) -> dict:
-    """_with_parts for the ATTACHMENT's markers: any image marker already on the turn
-    was a replay merged into it, and a non-GGUF message carries one picture."""
+def _with_attachment_markers(
+    message: dict,
+    markers: list[dict],
+    *,
+    after_text: bool = False,
+) -> dict:
+    """Replace a replay's marker and attribution with the caller's attachment."""
     content = message.get("content")
-    own = list(content) if isinstance(content, list) else [{"type": "text", "text": content or ""}]
-    own = [p for p in own if not (isinstance(p, dict) and p.get("type") == "image")]
-    return {**message, "content": [*markers, *own]}
+    own = (
+        _without_replay_parts(content)
+        if isinstance(content, list)
+        else [{"type": "text", "text": content or ""}]
+    )
+    parts = [*own, *markers] if after_text and isinstance(content, list) else [*markers, *own]
+    return {**message, "content": parts}
 
 
 def mark_last_user_turn(

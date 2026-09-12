@@ -8097,21 +8097,6 @@ def _external_takes_mcp_images(
     return True
 
 
-def _messages_have_mcp_image_envelope(messages) -> bool:
-    for message in messages or ():
-        role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
-        if role != "tool":
-            continue
-        content = (
-            message.get("content")
-            if isinstance(message, dict)
-            else getattr(message, "content", None)
-        )
-        if isinstance(content, str) and mcp_images_sentinel_in(content):
-            return True
-    return False
-
-
 def _messages_mention_mcp_images(messages) -> bool:
     """Dispatch only -- whether the work belongs off the loop. Substring, never a
     parse: the exact check json-loads the whole array, and doing that on the loop
