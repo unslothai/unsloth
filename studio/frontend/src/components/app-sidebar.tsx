@@ -231,7 +231,6 @@ import { toast } from "@/lib/toast";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { translate, useT, type TranslationKey } from "@/i18n";
 
-/** The ⌥⌘1-6 Recents slots, as a constant so the list below is fixed-length. */
 const RECENT_SLOT_NUMBERS = [1, 2, 3, 4, 5, 6] as const;
 
 const EMPHASIS_MARKER = "__UNSLOTH_I18N_EMPHASIS_MARKER__";
@@ -312,10 +311,9 @@ const SIDEBAR_PROJECT_LIMIT = 5;
 const menuRadioItemClass =
   "pl-9 pr-3 [&>[data-slot=dropdown-menu-radio-item-indicator]]:right-auto [&>[data-slot=dropdown-menu-radio-item-indicator]]:left-3";
 
-// Whether cmd or ctrl adds a row to the selection. This is the user's own
-// keyboard, not the host Unsloth runs on, so it reads the browser rather than
-// the platform store: a Mac browser on a Linux host still uses cmd. Ctrl is
-// left alone on macOS, where ctrl click is the right click chord.
+// Whether cmd or ctrl adds a row to the selection. This is the user's own keyboard, not the host
+// Unsloth runs on, so it reads the browser rather than the platform store: a Mac browser on a Linux
+// host still uses cmd. Ctrl is left alone on macOS, where ctrl click is the right click chord.
 const SELECT_WITH_META =
   typeof navigator !== "undefined" &&
   /mac/i.test(navigator.platform || navigator.userAgent);
@@ -431,18 +429,13 @@ function preloadSilently(request: Promise<unknown>): void {
   void request.catch(() => undefined);
 }
 
-// "New" pill for recent tabs. Same recipe as the brand "beta" badge.
 /**
- * "Open chat folder" for a browser session, where the backend's file manager is
- * not the user's. Radix's `disabled` takes the row's pointer events away and a
- * tooltip is blocked while the menu owns the screen, so the row stays enabled,
- * refuses the select itself, and drives a controlled tooltip off a
- * pointer-events-none anchor (as the MCP rows do).
- *
- * The reason is carried twice: the tooltip hangs off an aria-hidden anchor and
- * opens on hover, which a screen reader never reaches and a touch device does
- * not have, so `title` describes the row itself and selecting it (tap or Enter)
- * opens the hint rather than doing nothing.
+ * "Open chat folder" for a browser session, where the backend's file manager is not the user's.
+ * Radix's `disabled` takes the row's pointer events away and a tooltip is blocked while the menu
+ * owns the screen, so the row stays enabled, refuses the select itself, and drives a controlled
+ * tooltip off a pointer-events-none anchor (as the MCP rows do). The reason is carried twice: that
+ * tooltip opens on hover, which a screen reader never reaches and a touch device does not have, so
+ * `title` describes the row and selecting it opens the hint rather than doing nothing.
  */
 function OpenChatFolderUnavailableItem() {
   const [hintOpen, setHintOpen] = useState(false);
@@ -529,7 +522,6 @@ function NavItem({
   // Show that tooltip on the expanded row too, not just the collapsed rail where it
   // stands in for the hidden label.
   alwaysTooltip?: boolean;
-  // Trailing "New" pill text.
   badge?: string;
   // Absolutely-positioned extras over the row, e.g. a disclosure chevron.
   overlay?: ReactNode;
@@ -580,11 +572,9 @@ function getSidebarItemThreadIds(item: SidebarItem) {
 
 const WORKFLOW_UNAVAILABLE = "The loaded model cannot do this";
 
-// Re-read cadences for the hardware verdict below. An unmeasured verdict holds Train and Video
-// on a spinner, so it is re-read sooner than the background MLX self-heal check, which only
-// pays off after the user has repaired an install. A re-read outstanding longer than the stall
-// window is given up on rather than latching the poll off: the backend it is waiting on is the
-// one case this has to recover from.
+// Re-read cadences for the hardware verdict below. An unmeasured verdict holds Train and Video on
+// a spinner, so it is re-read sooner than the background MLX self-heal check. A re-read outstanding
+// longer than the stall window is given up on rather than latching the poll off.
 /** How long a selection chord keeps a repeat press off the open chat. */
 const SELECTION_ACTION_GRACE_MS = 750;
 /** The sidebar's own element, present on desktop and inside the mobile drawer. */
@@ -596,11 +586,10 @@ const VERDICT_POLL_STALL_MS = 30000;
 // CPU-torch machine and no_gpu becomes torch_cpu_build. Nothing else re-reads the verdict.
 // Matched to that TTL, since polling faster than the answer can change is pure traffic.
 const INVENTORY_POLL_MS = 60000;
-// The health path reads those snapshots non-blocking: the first read past expiry SCHEDULES
-// the refresh and returns the stale entry, so the new answer lands a moment later. On the
-// TTL alone the read that triggers the refresh is a whole interval from the read that
-// consumes it, leaving an attached eGPU invisible for close to two minutes. One short
-// follow-up read collects it instead.
+// The health path reads those snapshots non-blocking: the first read past expiry SCHEDULES the
+// refresh and returns the stale entry. On the TTL alone the read that triggers the refresh is a
+// whole interval from the read that consumes it, leaving an attached eGPU invisible for close to
+// two minutes. One short follow-up read collects it instead.
 const INVENTORY_FOLLOW_UP_MS = 4000;
 // The verdicts the inventory can still move. Everything else describes something a probe
 // cannot change (an Intel Mac stays an Intel Mac).
@@ -608,11 +597,10 @@ const INVENTORY_SENSITIVE_REASONS = new Set([
   "no_gpu",
   "torch_cpu_build",
   "torch_cuda_unavailable",
-  // A torch that will not import is classified from its wheel on disk, so the backend can
-  // replace this with torch_cpu_build or torch_cuda_unavailable once the OS probe recovers.
-  // Leaving it out treated that first answer as settled and stopped the only forced health
-  // re-read, so the sidebar and navigation stayed on the failure for the rest of the session
-  // while /api/system already reported the mismatch.
+  // A torch that will not import is classified from its wheel on disk, so the backend can replace
+  // this with torch_cpu_build or torch_cuda_unavailable once the OS probe recovers. Leaving it out
+  // treated that first answer as settled and stopped the only forced health re-read, so the sidebar
+  // stayed on the failure while /api/system already reported the mismatch.
   "detection_failed",
 ]);
 
@@ -772,9 +760,8 @@ export function AppSidebar() {
   );
   const [usesCustomTitlebar] = useState(shouldUseCustomWindowTitlebar);
   const [usesNativeMacTitlebar] = useState(shouldUseNativeMacWindowTitlebar);
-  // Read from the shortcuts store, not the shipped default: a rebound or
-  // cleared action must not leave the hint advertising a dead chord. Both
-  // already render in the platform's own notation.
+  // Read from the shortcuts store, not the shipped default: a rebound or cleared action must not
+  // leave the hint advertising a dead chord. Both already render in the platform's own notation.
   const searchShortcutLabel = useShortcutLabel("searchChats");
   const settingsShortcutLabel = useShortcutLabel("openSettings");
   const { pathname, search, href } = useRouterState({
@@ -806,10 +793,9 @@ export function AppSidebar() {
   const closeMobileIfOpen = () => {
     if (isMobile) setOpenMobile(false);
   };
-  // SidebarProvider is mounted at the route root and outlives the navigation,
-  // and the workspace chords register up there too, above it, so they cannot
-  // call what every row below calls by hand. Closing on the route covers both,
-  // and anything else that navigates from outside this file.
+  // SidebarProvider is mounted at the route root and outlives the navigation, and the workspace
+  // chords register above it, so they cannot call what every row below calls by hand. Closing on the
+  // route covers both, and anything else that navigates from outside this file.
   useEffect(() => {
     if (isMobile) setOpenMobile(false);
   }, [href, isMobile, setOpenMobile]);
@@ -854,34 +840,30 @@ export function AppSidebar() {
   const videoDisabledHint = videoNavHint(chatOnlyMeasured, chatOnlyReason);
   const videoDisabled = videoDisabledHint !== undefined;
 
-  // Two things can change the verdict after the first /api/health. The backend MLX self-heal
-  // (utils/mlx_repair) can reinstall MLX and flip chat_only false without a restart, and
-  // detection can land after fetchDeviceType gave up waiting for it. The platform store cached
-  // that first reply, so re-poll for both; the guard below stops it once neither applies.
+  // Two things can change the verdict after the first /api/health: the backend MLX self-heal
+  // (utils/mlx_repair) can reinstall MLX and flip chat_only false without a restart, and detection
+  // can land after fetchDeviceType gave up waiting. The platform store cached that first reply, so
+  // re-poll for both; the guard below stops it once neither applies.
   useEffect(() => {
     // Also while deferred: under the kill switch health settles nothing, so a GPU host would stay chat-only.
     const selfHealSettled =
       !chatOnly || (chatOnlyReason !== "mlx_unavailable" && !detectionDeferred);
-    // And on any platform while the verdict itself is out. fetchDeviceType spends its bounded
-    // wait at most once per page load, so a host that detects slower than that keeps the
-    // provisional reply, and nothing else is scheduled to re-read it: the rows above would spin
-    // and /studio would hold its loading panel for the rest of the session. This is the only
-    // recovery poll in the app, and the sidebar is mounted on every route that gates on the
-    // verdict (studio-page reads the same store, so it recovers with it; video-page reads the
-    // backend's video verdict instead and needs nothing from here).
+    // And on any platform while the verdict itself is out. fetchDeviceType spends its bounded wait at
+    // most once per page load, so a host that detects slower keeps the provisional reply and nothing
+    // else re-reads it: the rows above would spin and /studio would hold its loading panel for the rest
+    // of the session. This is the only recovery poll in the app, and the sidebar is mounted on every
+    // route that gates on the verdict.
     const inventorySensitive =
       chatOnly && INVENTORY_SENSITIVE_REASONS.has(chatOnlyReason ?? "");
     if (selfHealSettled && !capabilitiesUnknown && !inventorySensitive) return;
     let pollingSince = 0;
-    // Which read currently owns the guard. A read that outlived the stall window is replaced,
-    // and the replacement takes the guard with it; without an owner the abandoned read's
-    // `finally` would clear a guard it no longer holds and let the next tick stack another
-    // forced read onto the slow backend, every interval, which is the pile-up this prevents.
+    // Which read currently owns the guard. A read that outlived the stall window is replaced, and the
+    // replacement takes the guard with it; without an owner the abandoned read's `finally` would clear
+    // a guard it no longer holds and stack another forced read onto the slow backend every interval.
     let pollOwner = 0;
-    // Cleared on unmount with the interval: a follow-up outliving the effect would read
-    // against a verdict this effect no longer describes. Through `window`, like the
-    // interval beside it, and 0 for "none" because that is what window.setTimeout never
-    // returns.
+    // Cleared on unmount with the interval: a follow-up outliving the effect would read against a
+    // verdict this effect no longer describes. Through `window`, and 0 for "none" because that is what
+    // window.setTimeout never returns.
     let followUp = 0;
     const id = window.setInterval(() => {
       // A backend still importing torch answers slowly, so skip while a re-read is outstanding
@@ -970,10 +952,9 @@ export function AppSidebar() {
   const [scrolled, setScrolled] = useState(false);
   // Bottom fade hides at the very bottom / for short lists so the last row isn't washed out.
   const [canScrollDown, setCanScrollDown] = useState(false);
-  // Rail width: 0 where scrollbars overlay (macOS default) or the list fits,
-  // the platform's thin rail where they are classic. Only rows inside the
-  // scroller lose it, so the rows outside pad by it to keep one edge. Written
-  // to the DOM, and only on a change: state here would loop (React #185).
+  // Rail width: 0 where scrollbars overlay (macOS default) or the list fits, the platform's thin rail
+  // where they are classic. Only rows inside the scroller lose it, so the rows outside pad by it to
+  // keep one edge. Written to the DOM, and only on a change: state here would loop (React #185).
   const railWidthRef = useRef<number | null>(null);
   const measureScrollRail = useCallback((el: HTMLDivElement) => {
     const rail = el.offsetWidth - el.clientWidth;
@@ -982,10 +963,9 @@ export function AppSidebar() {
     el.parentElement?.style.setProperty("--sidebar-rail", `${rail}px`);
   }, []);
 
-  // A callback ref, not an effect: the mobile Sheet unmounts its subtree on
-  // close and the breakpoint swaps it for the desktop one, so the scroller is a
-  // new node each time and an effect keyed on a stable callback never re-runs.
-  // Still runs before paint.
+  // A callback ref, not an effect: the mobile Sheet unmounts its subtree on close and the breakpoint
+  // swaps it for the desktop one, so the scroller is a new node each time and an effect keyed on a
+  // stable callback never re-runs. Still runs before paint.
   const railObserverRef = useRef<ResizeObserver | null>(null);
   const attachScroller = useCallback(
     (el: HTMLDivElement | null) => {
@@ -997,11 +977,9 @@ export function AppSidebar() {
       railWidthRef.current = null;
       if (!el) return;
       measureScrollRail(el);
-      // Watch the box, not renders: the Images disclosure and the project
-      // toggles change the row count without rendering this component, and a
-      // scrollbar appearing shrinks the content box by its own width. Safe
-      // where the earlier observer was not: it writes a variable, never state,
-      // so there is no render to feed back (React #185).
+      // Watch the box, not renders: the Images disclosure and the project toggles change the row count
+      // without rendering this component, and a scrollbar appearing shrinks the content box. Safe where
+      // the earlier observer was not: it writes a variable, never state, so nothing feeds back.
       const observer = new ResizeObserver(() => measureScrollRail(el));
       observer.observe(el);
       railObserverRef.current = observer;
@@ -1075,11 +1053,9 @@ export function AppSidebar() {
   const setChatSort = useSidebarOrganizationStore((s) => s.setChatSort);
   const setPinnedSort = useSidebarOrganizationStore((s) => s.setPinnedSort);
   const setManualOrder = useSidebarOrganizationStore((s) => s.setManualOrder);
-  // With the Projects section on, a project chat lives in its folder and
-  // repeating it here would be noise. With it off there are no folders, so
-  // Recents is where those chats go, and a new project chat still lands
-  // somewhere visible. Pinned chats are held back either way: the Pinned
-  // section renders those.
+  // With the Projects section on, a project chat lives in its folder and repeating it here would be
+  // noise. With it off there are no folders, so Recents is where those chats go. Pinned chats are
+  // held back either way: the Pinned section renders those.
   const recentChatItems = useMemo(
     () =>
       allChatItems.filter(
@@ -1119,10 +1095,9 @@ export function AppSidebar() {
       list.sort((a, b) => b.updatedAt - a.updatedAt);
     return map;
   }, [allChatItems]);
-  // Every project gets a folder: pinned first in pin order, then by activity,
-  // then whatever the user dragged, which outranks both. Activity comes from
-  // the member chats, since a project's own updatedAt only moves when its name,
-  // instructions or archived flag are edited.
+  // Every project gets a folder: pinned first in pin order, then by activity, then whatever the user
+  // dragged, which outranks both. Activity comes from the member chats, since a project's own
+  // updatedAt only moves when its name, instructions or archived flag are edited.
   const sidebarProjectRecords = useMemo(() => {
     const lastActivityAt = (project: ProjectRecord) => {
       let latest = project.updatedAt ?? project.createdAt;
@@ -1150,10 +1125,9 @@ export function AppSidebar() {
     manualOrder,
     chatsByProjectId,
   ]);
-  // Memoised for its identity, not for the slice. It feeds the rendered-row set
-  // the selection guard depends on, and that effect sets state: React re-renders
-  // once to find the bail-out, which would rebuild this array and schedule the
-  // effect again, without end.
+  // Memoised for its identity, not for the slice. It feeds the rendered-row set the selection guard
+  // depends on, and that effect sets state: React re-renders once to find the bail-out, which would
+  // rebuild this array and schedule the effect again, without end.
   const visibleProjectRecords = useMemo(
     () =>
       showAllProjects
@@ -1229,8 +1203,7 @@ export function AppSidebar() {
       undefined
     : undefined;
   const queueByThreadId = usePromptQueueUI((s) => s.byThreadId);
-  // In the navigation store, not local state: the unread chords register
-  // outside this tree.
+  // In the navigation store, not local state: the unread chords register outside this tree.
   const unreadThreadIds = useChatNavigationStore((s) => s.unreadThreadIds);
   const markThreadsUnread = useChatNavigationStore((s) => s.markThreadsUnread);
   const clearThreadsUnread = useChatNavigationStore(
@@ -1334,24 +1307,19 @@ export function AppSidebar() {
     () => sortedPinnedChatItems.map((item) => item.id),
     [sortedPinnedChatItems],
   );
-  // Whole lists, not the visible slices, so a drop cannot lose what a
-  // collapsed "Show more" is hiding.
-  // The project chats actually on screen. Grouping by project keeps them out of
-  // Recents, so without these the chords cannot see them at all. Same rule the
-  // Projects section renders by, collapsed folders and per-folder limit included.
-  // All three chat groups leave the tree on Train/Recipes/Export and are hidden
-  // on the icon rail, so a chord must not reach what they hold. Same rule a
-  // collapsed section follows, read off the sidebar as a whole. The mobile
-  // sheet is not part of it: it carries no collapsible state, and gating on it
-  // would strand the chords on any window narrow enough to count as mobile.
+  // Whole lists, not the visible slices, so a drop cannot lose what a collapsed "Show more" is
+  // hiding, plus the project chats actually on screen: grouping by project keeps them out of Recents,
+  // so without those the chords cannot see them at all. All three chat groups leave the tree on
+  // Train/Recipes/Export and are hidden on the icon rail, so a chord must not reach what they hold;
+  // read off the sidebar as a whole. The mobile sheet is not part of it, since it carries no
+  // collapsible state and gating on it would strand the chords on any narrow window.
   const chatListsOnScreen =
     !isStudioRoute &&
     !showTrainingRecents &&
     (isMobile || sidebarState !== "collapsed");
-  // Selecting needs the rows, not just the lists. A closed mobile sheet unmounts
-  // them as the icon rail does, so Select All would build a selection with
-  // nothing on screen and Archive, Pin and Mark unread would take it over the
-  // open chat. Navigation is deliberately exempt: it moves the chat the user IS
+  // Selecting needs the rows, not just the lists. A closed mobile sheet unmounts them as the icon
+  // rail does, so Select All would build a selection with nothing on screen and Archive, Pin and Mark
+  // unread would take it over the open chat. Navigation is exempt: it moves the chat the user IS
   // looking at, and the sheet is closed for most of its life on a narrow window.
   const chatRowsOnScreen = chatListsOnScreen && (!isMobile || openMobile);
   const renderedProjectChatItems = useMemo(() => {
@@ -1397,10 +1365,9 @@ export function AppSidebar() {
     for (const item of visibleRecentItems) ids.add(item.id);
     return ids;
   }, [visiblePinnedItems, renderedProjectChatItems, visibleRecentItems]);
-  // The folder rows, selectable in their own right and leaving the screen on
-  // their own terms: the section closes, the sidebar organizes by date, or a
-  // "show less" takes back the overflow. The chat sets above say nothing about
-  // that, since a folder with no chats in view is still a row.
+  // The folder rows, selectable in their own right and leaving the screen on their own terms: the
+  // section closes, the sidebar organizes by date, or a "show less" takes back the overflow. The chat
+  // sets above say nothing about that, since a folder with no chats in view is still a row.
   const renderedProjectIds = useMemo(() => {
     if (!chatListsOnScreen || organizeBy !== "project" || !projectsOpen) {
       return new Set<string>();
@@ -1522,14 +1489,11 @@ export function AppSidebar() {
     dropProjectSelection();
   }, [dropChatSelection, dropProjectSelection]);
 
-  // Emptying the published lists is not enough: Archive, Pin, Mark unread and
-  // Delete all prefer the selection over the open chat, and a selection shows
-  // nowhere but the rows, its count living in their context menus. Carried onto
-  // Train or behind the icon rail it would be invisible and still be what the
-  // chords hit. Same reason opening a row drops it.
-  // Sections close one at a time, though, and a "show less" takes back only
-  // its own overflow, so the rest of the selection is still on screen and
-  // still worth acting on. Drop what went and keep what stayed.
+  // Emptying the published lists is not enough: Archive, Pin, Mark unread and Delete all prefer the
+  // selection over the open chat, and a selection shows nowhere but the rows. Carried onto Train or
+  // behind the icon rail it would be invisible and still be what the chords hit. Sections close one
+  // at a time, though, and a "show less" takes back only its own overflow, so drop what went and keep
+  // what stayed.
   useEffect(() => {
     if (!chatRowsOnScreen) {
       clearSelection();
@@ -1547,10 +1511,9 @@ export function AppSidebar() {
       }
       return kept.size === prev.size ? prev : kept;
     });
-    // Folder rows go the same way. Left behind, a project whose section the
-    // user closed keeps the selection alive with nothing on screen, and the
-    // tool card's Escape steps aside for it: the press that should have
-    // declined a call clears a selection instead.
+    // Folder rows go the same way. Left behind, a project whose section the user closed keeps the
+    // selection alive with nothing on screen, and the tool card's Escape steps aside for it: the press
+    // that should have declined a call clears a selection instead.
     const projectAnchor = projectAnchorRef.current;
     if (projectAnchor && !renderedProjectIds.has(projectAnchor)) {
       projectAnchorRef.current = null;
@@ -1586,19 +1549,16 @@ export function AppSidebar() {
     dropProjectSelection,
   ]);
 
-  // Escape leaves a selection, as it does the menus. A passive listener rather
-  // than one that consumes the key: dictation's Escape reads defaultPrevented
-  // first, and a stale selection must not outrank a live recording. Declining a
-  // tool call is the Escape that must not double up, and it steps aside on
-  // `selectionActive` below.
+  // Escape leaves a selection, as it does the menus. A passive listener rather than one that consumes
+  // the key: dictation's Escape reads defaultPrevented first, and a stale selection must not outrank
+  // a live recording. Declining a tool call steps aside on `selectionActive` below.
   const selectionActive = selectionCount > 0 || projectSelectionCount > 0;
   useEffect(() => {
     if (!selectionActive) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      // Bare, and only bare. Escape with a modifier is somebody else's chord,
-      // ⇧Esc for Clear all unreads among them, and dropping the selection under
-      // one would leave Archive or Pin pointing elsewhere. defaultPrevented for
-      // the same reason: a menu closing on Escape is not a request to lose it.
+      // Bare, and only bare. Escape with a modifier is somebody else's chord, Clear all unreads among
+      // them, and dropping the selection under one would leave Archive or Pin pointing elsewhere.
+      // defaultPrevented likewise: a menu closing on Escape is not a request to lose it.
       if (event.key !== "Escape" || event.defaultPrevented) return;
       if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) {
         return;
@@ -1783,7 +1743,6 @@ export function AppSidebar() {
   const manualDragEnabled = chatSort === "manual";
   const pinnedDragEnabled = pinnedSort === "manual";
 
-  /** The cue class for this row, or undefined when it is not the drop target. */
   function dropCueClass(
     scope: string | undefined,
     orderedIds: string[] | undefined,
@@ -1802,11 +1761,8 @@ export function AppSidebar() {
       : DROP_CUE_TOP;
   }
 
-  /**
-   * Menu path to the same reorder dragging does. Touch browsers never fire
-   * dragstart and a keyboard cannot drag, so a manually ordered list is
-   * unreorderable without this.
-   */
+  /** Menu path to the same reorder dragging does. Touch browsers never fire dragstart and a keyboard
+     *  cannot drag, so a manually ordered list is unreorderable without this. */
   function renderMoveRowItems(
     scope: string,
     orderedIds: string[],
@@ -1835,7 +1791,6 @@ export function AppSidebar() {
     );
   }
 
-  /** Drag handlers for one row of a reorderable list. */
   function rowDragProps(scope: string, orderedIds: string[], rowId: string) {
     return {
       draggable: true,
@@ -1966,17 +1921,15 @@ export function AppSidebar() {
   const chatDisabled = trainingInProgress;
   const usesDesktopTitlebar = usesCustomTitlebar || usesNativeMacTitlebar;
 
-  // Navigation rows share one box, so a hover pill has the same edges wherever
-  // it lands. Rows outside the list scroller add the rail width it does not
-  // lose, so both end on the same edge whether or not the scrollbar takes
-  // space. Logical sides, since the rail moves under rtl.
+  // Navigation rows share one box, so a hover pill has the same edges wherever it lands. Rows outside
+  // the list scroller add the rail width it does not lose, so both end on the same edge whether or
+  // not the scrollbar takes space. Logical sides, since the rail moves under rtl.
   const rowPadding = usesDesktopTitlebar
     ? "ps-[5px] pe-[calc(var(--sidebar-rail,0px)+5px)]"
     : "ps-1.5 pe-[calc(var(--sidebar-rail,0px)+6px)]";
 
-  // Inside the scroller the rail already occupies that space. The profile
-  // footer also uses this padding deliberately: its width is independent of
-  // whether the unrelated recent-chat list currently has a scrollbar.
+  // Inside the scroller the rail already occupies that space. The profile footer also uses this
+  // padding deliberately: its width is independent of whether the recent-chat list has a scrollbar.
   const unrailedRowPadding = usesDesktopTitlebar ? "px-[5px]" : "px-1.5";
 
   // Header actions end where a hovered row's "…" does: unrailedRowPadding + the
@@ -2566,9 +2519,8 @@ export function AppSidebar() {
     } else if (empty.value) {
       toast.info("No exportable content.");
     } else {
-      // Denied permission, an unfocused document, a failed history read: the
-      // payload was fine and the write was not, and a chord has no cursor to
-      // show that with.
+      // Denied permission, an unfocused document, a failed history read: the payload was fine and
+      // the write was not, and a chord has no cursor to show that with.
       toast.error("Could not copy this chat.");
     }
   }
@@ -2576,11 +2528,9 @@ export function AppSidebar() {
   /** The sandbox sessions this chat's stored tool results name, if any. */
   async function recordedSandboxSessionIds(ids: string[]): Promise<string[]> {
     const recorded: string[] = [];
-    // Every id a thread names, not just its latest: one chat that ran a tool,
-    // moved between projects and ran another wrote to two folders on its own,
-    // and the newest would answer for both.
-    // One at a time, not Promise.all: this file's export contract forbids a
-    // concurrent await here, and two panes win nothing.
+    // Every id a thread names, not just its latest: one chat that ran a tool, moved between projects
+    // and ran another wrote to two folders on its own, and the newest would answer for both. One at a
+    // time, not Promise.all: this file's export contract forbids a concurrent await here.
     for (const threadId of ids) {
       recorded.push(
         ...allRecordedSandboxSessionIds(await listStoredChatMessages(threadId)),
@@ -2590,34 +2540,23 @@ export function AppSidebar() {
   }
 
   /**
-   * The folders this chat's files are actually in: what its tool results name,
-   * or, for a chat old enough that they name nothing, what is on disk.
-   *
-   * Chats stored before results carried a session recorded nothing, so one that
-   * ran loose and has since joined a project would be answered with the project
-   * workspace. Its thread sandbox is the only other candidate, and files there
-   * are this chat's, which is what makes them worth probing: a chat can join a
-   * project, record that session, and move back out, and current membership
-   * says nothing about where its older files went. The project workspace is
-   * not probed, because it belongs to every chat in the project alike.
-   *
-   * A union rather than a fallback. One recorded id is not evidence that the
-   * others are recorded too: a chat can have run a tool before recording
-   * existed, moved into a project, and run another one since, and taking the
-   * recorded id alone would answer for both folders while hiding the older.
-   *
-   * Shared by "Open chat folder" and "Copy session id", which drifted apart
-   * once: the copy path skipped the probe and reported success on a folder the
-   * chat had never written to.
-   */
+     * The folders this chat's files are actually in: what its tool results name, or, for a chat old
+     * enough that they name nothing, what is on disk. Chats stored before results carried a session
+     * recorded nothing, so one that ran loose and has since joined a project would be answered with
+     * the project workspace; its thread sandbox is the only other candidate, and files there are this
+     * chat's. The project workspace is not probed, because it belongs to every chat alike.
+     *
+     * A union rather than a fallback: one recorded id is not evidence that the others are recorded
+     * too, and taking it alone would answer for both folders while hiding the older. Shared by "Open
+     * chat folder" and "Copy session id", which drifted apart once, the copy path skipping the probe
+     * and reporting success on a folder the chat had never written to.
+     */
   async function sandboxSessionIdsHolding(ids: string[]): Promise<string[]> {
     const recorded = await recordedSandboxSessionIds(ids);
-    // Thread folders only. A project sandbox is shared by every chat in the
-    // project, so files there are no evidence that THIS chat wrote them, and
-    // counting one would report a second folder for any chat that joined a
-    // project someone else had already used. Both callers already fall back to
-    // the folder membership gives them when nothing here names one, which is
-    // the honest answer where there is no evidence either way.
+    // Thread folders only. A project sandbox is shared by every chat in the project, so files there are
+    // no evidence that THIS chat wrote them, and counting one would report a second folder for any chat
+    // that joined a project someone else had used. Both callers already fall back to the folder
+    // membership gives them when nothing here names one.
     const held: string[] = [];
     for (const candidate of ids) {
       // Already named, so there is nothing a probe could add.
@@ -2631,10 +2570,9 @@ export function AppSidebar() {
   async function copyChatSessionId(item: SidebarItem) {
     const threadIds = getSidebarItemThreadIds(item);
     const ids = threadIds.length > 0 ? threadIds : [item.id];
-    // The chat's own history names the folder it wrote to, which is not where
-    // current membership points once it has moved between projects. Same read
-    // as "Open chat folder", and the same answer when it names two, whether
-    // that is a compare row's two panes or one thread that outlived a move.
+    // The chat's own history names the folder it wrote to, which is not where current membership points
+    // once it has moved between projects. Same read as "Open chat folder", and the same answer when it
+    // names two, whether that is a compare row's two panes or one thread that outlived a move.
     const refusal: { value: { title: string; description?: string } | null } = {
       value: null,
     };
@@ -2712,9 +2650,9 @@ export function AppSidebar() {
   useEffect(() => {
     openChatItemRef.current = openChatItem;
   });
-  // The sidebar is unmounted on the auth routes, so this is where a sign-out
-  // reaches: the store outlives the component that filled it, and the unread
-  // set and the walk belong to the account that just left.
+  // The sidebar is unmounted on the auth routes, so this is where a sign-out reaches: the store
+  // outlives the component that filled it, and the unread set and the walk belong to the account
+  // that just left.
   useEffect(
     () => () => useChatNavigationStore.getState().resetAccountState(),
     [],
@@ -2725,9 +2663,8 @@ export function AppSidebar() {
     return () => setOpenChatItem(null);
   }, []);
 
-  // --- Chat shortcuts ----------------------------------------------------
-  // The sidebar is on every shell route and holds the list, the handlers and
-  // the router, so the chat chords register here.
+  // --- Chat shortcuts ---
+  // The sidebar is on every shell route and holds the list, the handlers and the router.
   const activeChatItem = useMemo(
     () => allChatItems.find((item) => item.id === activeThreadId) ?? null,
     [allChatItems, activeThreadId],
@@ -2743,12 +2680,10 @@ export function AppSidebar() {
   const goToChat = (pick: (state: ChatNavigationState) => SidebarItem | null) =>
     openChatItemById(pick(useChatNavigationStore.getState()));
 
-  // With rows selected these act on the selection, matching the context menu;
-  // otherwise on the open chat. Acting on a selection clears it, so without
-  // this latch a second press would land on the open chat, which the user
-  // never selected.
-  // Keyed by action: the press to hold back is a repeat of the one that just
-  // took the selection, not a different command the user chose deliberately.
+  // With rows selected these act on the selection, matching the context menu; otherwise on the open
+  // chat. Acting on a selection clears it, so without this latch a second press would land on the
+  // open chat, which the user never selected. Keyed by action: the press to hold back is a repeat of
+  // the one that just took the selection, not a different command chosen deliberately.
   const selectionActedRef = useRef<{ id: ShortcutId; at: number } | null>(null);
   const actOnSelection = (id: ShortcutId, fn: () => void) => {
     selectionActedRef.current = { id, at: Date.now() };
@@ -2765,18 +2700,15 @@ export function AppSidebar() {
   // than falling through to the open chat. Delete already behaves this way.
   const projectsOnlySelected = () =>
     selectionCount === 0 && projectSelectionCount > 0;
-  // A dialog leaves the sidebar mounted and inert behind it, and these chords
-  // are window-level, so Settings over Chat would archive or rename the chat
-  // behind it. Asked at press time, since `enabled` is read at render.
-  //
-  // Backgrounded, not "not in the foreground": reading a missing element as
-  // covered would kill these chords on the mobile drawer, which unmounts.
+  // A dialog leaves the sidebar mounted and inert behind it, and these chords are window-level, so
+  // Settings over Chat would archive or rename the chat behind it. Asked at press time, since
+  // `enabled` is read at render. Backgrounded, not "not in the foreground": reading a missing element
+  // as covered would kill these chords on the mobile drawer, which unmounts.
   const sidebarCovered = () => {
     if (isSurfaceBackgrounded(SIDEBAR_SELECTOR)) return true;
-    // With the mobile drawer closed the sidebar is unmounted, so the check
-    // above has nothing to read. The app root is always mounted and Radix
-    // aria-hides it for a modal's life. A fallback only: an open drawer is
-    // itself a dialog hiding the root, and the sidebar in it is the foreground.
+    // With the mobile drawer closed the sidebar is unmounted, so the check above has nothing to read.
+    // The app root is always mounted and Radix aria-hides it for a modal's life. A fallback only: an
+    // open drawer is itself a dialog hiding the root, and the sidebar in it is the foreground.
     return (
       typeof document !== "undefined" &&
       document.querySelector(SIDEBAR_SELECTOR) === null &&
@@ -2815,9 +2747,8 @@ export function AppSidebar() {
     if (followsSelectionAction("togglePinChat")) return;
     withActiveChat((item) => togglePinnedChat(item.id));
   });
-  // A selection made behind a dialog is invisible and still what the mutating
-  // chords hit once the dialog closes, which is the thing those chords being
-  // guarded was meant to prevent.
+  // A selection made behind a dialog is invisible and still what the mutating chords hit once the
+  // dialog closes, which is the thing those chords being guarded was meant to prevent.
   useShortcut("selectAllChats", () => {
     if (sidebarCovered()) return;
     selectAllChats();
@@ -2827,17 +2758,15 @@ export function AppSidebar() {
     if (sidebarCovered()) return;
     if (selectionCount > 0) deleteSelected();
   });
-  // Through the dialog: the row's inline pill is rendered by the row, and the
-  // open chat may be behind a collapsed section, past a folder's "show more",
-  // or on a route with no chat list at all, where the chord would look dead and
-  // leave a rename waiting to appear the moment the row came back.
+  // Through the dialog: the row's inline pill is rendered by the row, and the open chat may be behind
+  // a collapsed section, past a folder's "show more", or on a route with no chat list at all, where
+  // the chord would look dead and leave a rename waiting to appear when the row came back.
   useShortcut("renameChat", () => {
     if (sidebarCovered()) return;
     withActiveChat((item) => openRenameChat(item, false));
   });
-  // The clipboard is outside the app, so writing a hidden chat's contents into
-  // it from behind a dialog is not something the user can take back by closing
-  // the dialog.
+  // The clipboard is outside the app, so writing a hidden chat's contents into it from behind a
+  // dialog is not something the user can take back by closing the dialog.
   useShortcut("copyChatAsMarkdown", () => {
     if (sidebarCovered()) return;
     withActiveChat((item) => void copyChatItemAsMarkdown(item));
@@ -2855,9 +2784,8 @@ export function AppSidebar() {
   useShortcut("previousChat", () => goToChat((s) => adjacentChatItem(s, -1)), {
     repeats: true,
   });
-  // The walk holds the stack still while it runs, so a modifier held down
-  // reaches the third chat back and beyond; releasing it ends the walk and
-  // puts the chat it landed on at the top.
+  // The walk holds the stack still while it runs, so a modifier held down reaches the third chat
+  // back and beyond; releasing it ends the walk and puts the chat it landed on at the top.
   const walkRecentlyViewed = (delta: number) =>
     openChatItemById(useChatNavigationStore.getState().stepRecentlyViewed(delta));
   useShortcut("nextRecentlyViewedChat", () => walkRecentlyViewed(1), {
@@ -2882,8 +2810,7 @@ export function AppSidebar() {
     toast.success(`Cleared ${cleared} unread ${cleared === 1 ? "chat" : "chats"}`);
   });
 
-  // The six slots register as <Shortcut> elements: a loop of hooks would
-  // break the rules of hooks.
+  // The six slots register as <Shortcut> elements: a loop of hooks would break the rules of hooks.
   const slotShortcuts = (
     <>
       {RECENT_SLOT_NUMBERS.map((slot) => (
@@ -3296,12 +3223,9 @@ export function AppSidebar() {
                     onSelect={() => {
                       void (async () => {
                         try {
-                          // A chat moved between projects keeps the sandbox it
-                          // wrote to, so its own history names the folder, not
-                          // current membership. A failed read is reported
-                          // below rather than caught per pane, which would
-                          // read as "never ran a tool" and fall back to
-                          // membership, the answer the recorded id overrides.
+                          // A chat moved between projects keeps the sandbox it wrote to, so its own
+                          // history names the folder, not current membership. A failed read is
+                          // reported below rather than caught per pane.
                           const ids =
                             threadIds.length > 0 ? threadIds : [item.id];
                           const distinct = await sandboxSessionIdsHolding(ids);
@@ -4327,9 +4251,8 @@ export function AppSidebar() {
           // The profile is outside the recent-chat scroller and keeps its full
           // width when that scroller gains or loses a scrollbar.
           unrailedRowPadding,
-          // pt-[3px] cancels the profile button's -3px margin, so the 8px
-          // above it is whatever sits over the footer edge (the fade plateau,
-          // or the list's pb-2 once the fade is hidden) and 8px sits below.
+          // pt-[3px] cancels the profile button's -3px margin, so the 8px above it is whatever sits over the
+          // footer edge (the fade plateau, or the list's pb-2 once the fade is hidden) and 8px sits below.
           showUpdateCard ? "pt-1" : "pt-[3px]",
         )}
       >
@@ -4340,9 +4263,8 @@ export function AppSidebar() {
         <div
           aria-hidden="true"
           className={cn(
-            // The scroll area hard-clips at the fade's bottom edge, so a plain
-            // ramp is still part-transparent there and slices the last row
-            // mid-glyph. from-[8px] holds it opaque just across the clip, and
+            // The scroll area hard-clips at the fade's bottom edge, so a plain ramp is still part-transparent
+            // there and slices the last row mid-glyph. from-[8px] holds it opaque just across the clip, and
             // matches the list's pb-2 so the gap is the same once it hides.
             "pointer-events-none absolute start-0 end-[var(--sidebar-rail,0px)] bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] from-[8px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
             // Shorter fade with the update card so the list reads closer to

@@ -93,6 +93,8 @@ def client(monkeypatch):
     app = FastAPI()
     app.include_router(settings.router)
     app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
+    # Classified by caller now, so the app must be able to say which caller this is.
+    app.dependency_overrides[settings.allow_ambient_hf_token] = lambda: True
     return TestClient(app, raise_server_exceptions = False), saved
 
 
@@ -274,6 +276,7 @@ def test_llama_backend_skips_the_st_pickle_scan(monkeypatch):
     app = FastAPI()
     app.include_router(settings.router)
     app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
+    app.dependency_overrides[settings.allow_ambient_hf_token] = lambda: True
     c = TestClient(app, raise_server_exceptions = False)
     r = c.put(
         "/embedding-model",
@@ -339,6 +342,7 @@ def test_runtime_llama_fallback_skips_the_st_pickle_scan(monkeypatch):
     app = FastAPI()
     app.include_router(settings.router)
     app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
+    app.dependency_overrides[settings.allow_ambient_hf_token] = lambda: True
     c = TestClient(app, raise_server_exceptions = False)
     r = c.put(
         "/embedding-model",
@@ -429,6 +433,7 @@ def test_settings_scan_scopes_module_subdirs(monkeypatch):
     app = FastAPI()
     app.include_router(settings.router)
     app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
+    app.dependency_overrides[settings.allow_ambient_hf_token] = lambda: True
     c = TestClient(app, raise_server_exceptions = False)
     r = c.put(
         "/embedding-model", json = {"embedding_model": "acme/embed-with-module-dir", "force": True}
@@ -710,3 +715,34 @@ def test_a_llama_download_repo_is_not_used_as_the_scan_target(client, monkeypatc
     assert r.status_code == 200
     # The llama path does not scan the ST repo at all, so nothing was scanned.
     assert "scanned" not in seen
+
+
+def test_offline_cached_acceptance_still_asks_who_is_asking(client, monkeypatch):
+    """The offline branch above accepts a cached transformers-native embedder that HF
+    metadata cannot verify. What makes that safe is the authorization check beside the
+    loadable check: without it, an API key that cannot reach the repo learns the operator
+    has it cached and gets it persisted as this deployment's embedder."""
+    from hub.utils import hf_tokens
+
+    c, saved = client
+    monkeypatch.setitem(sys.modules, "utils.security", _security_stub(blocked = False))
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    import utils.models as _models
+    import utils.utils as _uu
+
+    monkeypatch.setattr(_models, "is_embedding_model", lambda *a, **k: False)
+    monkeypatch.setattr(_uu, "hf_cache_snapshot_is_loadable", lambda name: True)
+    # An API key, so its token is classified as explicit and must reach the repo to read it.
+    c.app.dependency_overrides[settings.allow_ambient_hf_token] = lambda: False
+    hf_tokens.reset_repo_access_cache()
+    monkeypatch.setattr(hf_tokens, "_hub_offline", lambda: False)
+    monkeypatch.setattr(hf_tokens, "_probe_repo_access", lambda *_a, **_k: False)
+
+    r = c.put(
+        "/embedding-model",
+        json = {"embedding_model": "acme/private-embedder", "hf_token": "hf_dummy"},
+    )
+
+    assert r.status_code == 409
+    assert saved.get("model") != "acme/private-embedder"
+    hf_tokens.reset_repo_access_cache()

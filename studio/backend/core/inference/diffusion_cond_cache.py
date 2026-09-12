@@ -60,7 +60,6 @@ def _json_safe(value: Any) -> bool:
     return False
 
 
-# layout codes for _flatten/_unflatten: -1 = None, -2 = bare tensor, n >= 0 = list of n tensors
 # Per-slot layout codes for _flatten/_unflatten (the leading int64 tensor): -1 = None, -2 = a bare tensor, n >= 0 = a
 # LIST of n tensors.
 _SLOT_NONE = -1
@@ -134,7 +133,6 @@ def install(
     if not callable(encode):
         return False
     try:
-        # lazy: core.training imports core.inference, so a module-level import would be circular
         # Lazy: core.training imports parts of core.inference, so a module-level import would be circular.
         from core.training.diffusion_train_extras import PersistentConditioningCache
         signature = inspect.signature(encode)
@@ -144,10 +142,9 @@ def install(
             logger.warning("diffusion.cond_cache: install failed: %s", exc)
         return False
 
-    # a GGUF/single-file checkpoint takes its TEXT ENCODERS from the base repo
-    # Everything beyond the call arguments that changes the embedding numerics. A GGUF/single-file checkpoint takes its
-    # TEXT ENCODERS from the companion base repo, so the base identity keys the cache too; both carry a revision marker,
-    # so an advanced commit or an edited dir misses.
+    # Everything beyond the call arguments that changes the embedding numerics. A GGUF/single-file checkpoint takes
+    # its TEXT ENCODERS from the companion base repo, so the base identity keys the cache too; both carry a revision
+    # marker, so an advanced commit or an edited dir misses.
     base_ref = base_repo if base_repo else repo_id
     load_fp = {
         "repo": str(repo_id),

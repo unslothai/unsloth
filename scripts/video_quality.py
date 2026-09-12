@@ -3,51 +3,15 @@
 
 """Video quality-vs-cost harness for the Unsloth video backend.
 
-The video analogue of scripts/diffusion_quality.py: hold the prompt + seed +
-shape fixed, render one clip with a high-fidelity reference configuration
-(default the family's BF16 artifact), then render the same clip with each
-candidate configuration (a GGUF quant, a dense torchao quant, a speed profile,
-a step cache) and measure how far the output drifts from the reference.
+The video analogue of scripts/diffusion_quality.py: hold the prompt, seed and shape fixed, render one clip with a high-fidelity reference configuration (default the family's BF16 artifact), then render the same clip with each candidate configuration (a GGUF quant, a dense torchao quant, a speed profile, a step cache) and measure how far the output drifts from the reference.
 
-Per candidate it reports:
-- mean PSNR / SSIM over evenly sampled frames (pixel + structural fidelity),
-- a temporal-consistency deviation: the relative error between the reference's
-  and the candidate's frame-to-frame motion-energy series, which catches
-  flicker/juddering that per-frame SSIM alone can miss,
-- black-frame and NaN collapse checks (the failure mode quant bugs actually
-  produce, per the image backend's qwen fp8 incident),
-- an audio check for families that generate sound (LTX-2): RMS ratio vs the
-  reference and a silence trip-wire,
-- wall time per generate and peak VRAM.
+Per candidate it reports mean PSNR / SSIM over evenly sampled frames; a temporal-consistency deviation, the relative error between the reference's and the candidate's frame-to-frame motion-energy series, which catches flicker and juddering that per-frame SSIM alone can miss; black-frame and NaN collapse checks, the failure mode quant bugs actually produce (per the image backend's qwen fp8 incident); an audio check for families that generate sound (LTX-2), RMS ratio against the reference plus a silence trip-wire; and wall time per generate with peak VRAM.
 
-Verdict bands map the standing accuracy budget: a candidate that keeps mean
-SSIM at or above 0.75 PASSes (a ~25 percent structural drift is acceptable for
-a large speed/memory win), 0.50-0.75 WARNs, and below 0.50 or any black/NaN/
-silence collapse FAILs regardless of how fast it is.
+Verdict bands map the standing accuracy budget: mean SSIM at or above 0.75 PASSes (a ~25 percent structural drift is acceptable for a large speed/memory win), 0.50-0.75 WARNs, and below 0.50 or any black/NaN/silence collapse FAILs regardless of speed.
 
-Runtime-budgeted: ONE short clip per candidate (default 33 frames at 480p-class
-sizes) so a full family sweep stays in minutes, not hours. Metrics are pure
-numpy; torch / diffusers / the backend load lazily so --help and --selftest run
-on a host without them.
+Runtime-budgeted: ONE short clip per candidate (default 33 frames at 480p-class sizes) so a full family sweep stays in minutes. Metrics are pure numpy; torch / diffusers / the backend load lazily so --help and --selftest run on a host without them.
 
-Examples:
-    # CPU metric sanity check (no GPU, no model):
-    python scripts/video_quality.py --selftest
-
-    # LTX-2.3 GGUF quants against the BF16 GGUF reference:
-    CUDA_VISIBLE_DEVICES=1 python scripts/video_quality.py \\
-        --model unsloth/LTX-2.3-GGUF --model-kind gguf \\
-        --reference "gguf_filename=distilled-1.1/ltx-2.3-22b-distilled-1.1-BF16.gguf" \\
-        --candidates "gguf_filename=distilled-1.1/ltx-2.3-22b-distilled-1.1-Q8_0.gguf" \\
-                     "gguf_filename=distilled-1.1/ltx-2.3-22b-distilled-1.1-UD-Q4_K_M.gguf" \\
-        --steps 8 --guidance 1.0 --out-dir outputs/video_quality/ltx23
-
-    # Wan2.2-5B dense int8 + speed profiles against plain bf16:
-    CUDA_VISIBLE_DEVICES=1 python scripts/video_quality.py \\
-        --model Wan-AI/Wan2.2-TI2V-5B-Diffusers \\
-        --reference "" \\
-        --candidates "transformer_quant=int8" "speed_mode=max" \\
-        --steps 20 --out-dir outputs/video_quality/wan5b
+Examples: `python scripts/video_quality.py --selftest` for a CPU metric sanity check; `--model unsloth/LTX-2.3-GGUF --model-kind gguf --reference "gguf_filename=distilled-1.1/ltx-2.3-22b-distilled-1.1-BF16.gguf" --candidates "gguf_filename=...-Q8_0.gguf" "gguf_filename=...-UD-Q4_K_M.gguf" --steps 8 --guidance 1.0` for GGUF quants against a BF16 GGUF reference; `--model Wan-AI/Wan2.2-TI2V-5B-Diffusers --reference "" --candidates "transformer_quant=int8" "speed_mode=max" --steps 20` for dense int8 and speed profiles against plain bf16.
 """
 
 from __future__ import annotations
@@ -112,8 +76,7 @@ def frame_ssim(
     b: Any,
     window: int = 7,
 ) -> float:
-    """Pure numpy box-window SSIM on luminance (Wang et al. constants); identical
-    math to scripts/diffusion_quality.py so image and video budgets compare."""
+    """Pure numpy box-window SSIM on luminance (Wang et al. constants); identical math to scripts/diffusion_quality.py so image and video budgets compare."""
     ga, gb = _gray(a), _gray(b)
     if ga.shape != gb.shape:
         return 0.0
@@ -130,9 +93,7 @@ def frame_ssim(
 
 
 def motion_energy(frames: Any) -> list[float]:
-    """Mean absolute frame-to-frame luminance difference, one value per frame
-    transition. The temporal signature of the clip: flicker inflates it, frozen
-    or smeared motion deflates it."""
+    """Mean absolute frame-to-frame luminance difference, one value per frame transition: the temporal signature of the clip, inflated by flicker and deflated by frozen or smeared motion."""
     import numpy as np
 
     grays = [_gray(f) for f in frames]
@@ -140,8 +101,7 @@ def motion_energy(frames: Any) -> list[float]:
 
 
 def temporal_deviation(ref_frames: Any, cand_frames: Any) -> float:
-    """Relative L1 error between the two motion-energy series (0 = identical
-    temporal behaviour). Series lengths must match (same frame count)."""
+    """Relative L1 error between the two motion-energy series (0 = identical temporal behaviour). Series lengths must match (same frame count)."""
     ref_series = motion_energy(ref_frames)
     cand_series = motion_energy(cand_frames)
     if len(ref_series) != len(cand_series) or not ref_series:
@@ -158,8 +118,7 @@ def clip_metrics(
     """All frame metrics for one candidate clip vs the reference clip."""
     import numpy as np
 
-    # A truncated candidate is gated FAIL, not prefix-compared: good early frames would mask the
-    # missing tail.
+    # A truncated candidate is gated FAIL, not prefix-compared: good early frames would mask the missing tail.
     ref_count, cand_count = len(ref_frames), len(cand_frames)
     frame_count_mismatch = ref_count != cand_count
     n = min(ref_count, cand_count)
@@ -197,8 +156,7 @@ def clip_metrics(
 
 
 def audio_metrics(ref_audio: Optional[Any], cand_audio: Optional[Any]) -> dict[str, Any]:
-    """RMS comparison for families with sound. None audio on both sides is fine;
-    losing the track (or emitting silence) when the reference has one is not."""
+    """RMS comparison for families with sound. None audio on both sides is fine; losing the track (or emitting silence) when the reference has one is not."""
     import numpy as np
 
     def _rms(a: Any) -> Optional[float]:
@@ -218,8 +176,7 @@ def audio_metrics(ref_audio: Optional[Any], cand_audio: Optional[Any]) -> dict[s
 
 
 def verdict(metrics: dict[str, Any], audio: dict[str, Any]) -> str:
-    """PASS / WARN / FAIL per the standing accuracy budget (~25 percent structural
-    drift acceptable, 50 percent or a collapse never)."""
+    """PASS / WARN / FAIL per the standing accuracy budget (~25 percent structural drift acceptable, 50 percent or a collapse never)."""
     if (
         metrics["has_nan"]
         or metrics.get("frame_count_mismatch")
