@@ -29,9 +29,7 @@ def _first_index(source: str, needle: str) -> int:
 
 # The one predicate Manual VIABILITY rests on: a fixed layer count. The launch
 # branch and the log must consult the SAME expression, or they can disagree.
-_MANUAL_PREDICATE = (
-    'gpu_memory_mode == "manual" and gpu_layers >= 0'
-)
+_MANUAL_PREDICATE = 'gpu_memory_mode == "manual" and gpu_layers >= 0'
 # How the predicate is held so the log and the launch branch cannot ask two
 # different questions.
 _MANUAL_MARK = "_manual_placement"
@@ -52,8 +50,7 @@ class TestTheLogReportsTheFlagTheLaunchCarries:
         src = _load_model_source()
         assignment = src.find(f"{_MANUAL_MARK} = {_MANUAL_PREDICATE}")
         assert assignment != -1, (
-            "the pre-log verdict must consult the SAME predicate the launch branch "
-            "applies below"
+            "the pre-log verdict must consult the SAME predicate the launch branch applies below"
         )
         branch = src.find(f"if {_MANUAL_PREDICATE}:")
         assert branch != -1, "the Manual launch branch is gone"
@@ -63,7 +60,7 @@ class TestTheEmptyProbeIsLabeled:
     def test_an_empty_probe_can_name_manual(self):
         src = _load_model_source()
         log = _first_index(src, "GPUs free: ")
-        window = src[log: log + 300]
+        window = src[log : log + 300]
         assert "manual placement" in window, (
             "an empty probe in Manual mode is a discarded-on-purpose list, not a "
             "failed enumeration; the line must say so"
@@ -94,7 +91,9 @@ class TestManualIsNotAPartialPlacement:
     def test_the_verdict_reads_the_post_hoist_use_fit(self):
         src = _load_model_source()
         hoist = _first_index(src, f"if {_MANUAL_MARK}:")
-        verdict = _first_index(src, "_placement_verdict_partial = bool(_detected_gpus) and bool(use_fit)")
+        verdict = _first_index(
+            src, "_placement_verdict_partial = bool(_detected_gpus) and bool(use_fit)"
+        )
         assert hoist < verdict, (
             "the partial-placement verdict must read the Manual override, not the "
             "pre-hoist default it shadows"
@@ -108,7 +107,7 @@ class TestManualPlusAutoLayersKeepsTheFitter:
         src = _load_model_source()
         auto = src.find('if gpu_memory_mode == "manual" and gpu_layers < 0:')
         assert auto != -1, "Manual + Auto layers branch is gone"
-        end = src.find('\n', auto)
-        assert "_manual_placement" not in src[auto:end], (
-            "the Auto-layers sibling must stay a fit launch, not a placement one"
-        )
+        end = src.find("\n", auto)
+        assert (
+            "_manual_placement" not in src[auto:end]
+        ), "the Auto-layers sibling must stay a fit launch, not a placement one"
