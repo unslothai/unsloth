@@ -523,14 +523,35 @@ class ApiMonitor:
 
         with self._lock:
             entry = self._find_locked(entry_id)
-            if entry is None or entry.status != "running" or entry.kind != "request":
+            if (
+                entry is None
+                or entry.status != "running"
+                or entry.kind != "request"
+                or entry.running_phase == "token_generation"
+            ):
                 return
 
+            # A tool loop can enter prompt processing more than once in one
+            # API request. Do not carry progress from the previous prefill round
+            # into the next one.
+            if entry.running_phase != "prompt_processing":
+                entry.prompt_progress_total = None
+                entry.prompt_progress_processed = None
+                entry.prompt_progress_cached = None
+                entry.prompt_progress_time_ms = None
+
             entry.running_phase = "prompt_processing"
-            entry.prompt_progress_total = total
+
+            # llama.cpp progress frames may omit fields after reporting them
+            # once, so keep the latest known value within the same prefill round.
+            if total is not None:
+                entry.prompt_progress_total = total
             entry.prompt_progress_processed = processed
-            entry.prompt_progress_cached = cached
-            entry.prompt_progress_time_ms = time_ms
+            if cached is not None:
+                entry.prompt_progress_cached = cached
+            if time_ms is not None:
+                entry.prompt_progress_time_ms = time_ms
+
             entry.updated_at = time.time()
 
     def discard(self, entry_id: Optional[str]) -> None:
@@ -745,6 +766,10 @@ class ApiMonitor:
                 entry.running_phase = "token_generation"
                 if entry.first_decode_monotonic is None:
                     entry.first_decode_monotonic = now
+            else:
+                # Tool/client output means prefill has ended, but the model is
+                # not decoding while Studio executes or awaits the tool.
+                entry.running_phase = None
 
     def set_reply(self, entry_id: Optional[str], text: str) -> None:
         if not entry_id:
