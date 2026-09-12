@@ -27,6 +27,18 @@ _BASE_DF = os.path.join(_DOCKER, "Dockerfile")
 _ENTRYPOINT = os.path.join(_DOCKER, "entrypoint.sh")
 
 
+# Both shell classes below stub /usr/bin-style tools, stage a /dev tree and read the
+# environment a POSIX exec hands on. Git Bash puts `bash` on PATH on a Windows runner,
+# so a which() check alone lets them run there and fail on path translation and the
+# exec bit -- including four that predate this file's entrypoint cases. Linux and
+# macOS is also the only place any workflow runs this file: the Windows matrix in
+# cross-platform-parity-ci.yml names five files, none of them this one.
+_posix_shell = pytest.mark.skipif(
+    os.name != "posix" or shutil.which("bash") is None,
+    reason = "POSIX shell required",
+)
+
+
 def _stub(path, body):
     with open(path, "w") as f:
         f.write("#!/usr/bin/env bash\n" + body)
@@ -108,7 +120,7 @@ def _invoke_run_sh(
     return argv_log.read_text().splitlines(), proc.stderr
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason = "bash required")
+@_posix_shell
 class TestRunShDegradesWithoutNvidia:
     def test_gpus_flag_is_dropped_when_the_host_has_no_nvidia_gpu(self, tmp_path):
         """`--gpus all` on an NVIDIA-less host is exit 125 AT THE DAEMON, so the
@@ -258,7 +270,7 @@ def _run_entrypoint(tmp_path, *, gpu, env_extra):
     return proc.returncode, child, proc.stderr
 
 
-@pytest.mark.skipif(shutil.which("bash") is None, reason = "bash required")
+@_posix_shell
 class TestEntrypointAllowCpu:
     def test_studio_image_on_a_cpu_host_starts_and_exports_allow_cpu(self, tmp_path):
         """Studio's own processes still need UNSLOTH_ALLOW_CPU=1 to import unsloth
