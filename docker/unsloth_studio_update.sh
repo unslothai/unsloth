@@ -12,10 +12,10 @@
 # Not `unsloth studio update`: that re-runs the full installer, which re-probes the
 # host GPU for torch wheels and in a CPU-only container downgrades torch to CPU/cu126.
 #
-# Persistence: the update is written to the container's writable layer, so it
-# survives `docker restart`. To keep it across a full `docker rm` + `docker run`
-# (and to keep your chats/users/models), run Studio with its home on a named
-# volume: -v unsloth_studio_home:/opt/unsloth-studio
+# Persistence: the updated packages live in the image's copy of Studio, so they
+# survive `docker restart` but not `docker rm`; pull a new image for a lasting update.
+# Studio's data (accounts, chats, models) is separate: keep it with
+# -v unsloth-studio:/opt/unsloth-studio, which never pins Studio's code.
 set -euo pipefail
 
 STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"

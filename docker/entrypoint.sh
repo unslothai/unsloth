@@ -7,6 +7,13 @@
 # Bypass for offline tooling/docs/CI: docker run -e UNSLOTH_SKIP_GPU_CHECK=1 ...
 set -euo pipefail
 
+# Studio image: relink its code into the Studio home, which may be a volume from an
+# earlier image. Before the CUDA tool selection below, which reads the Studio venv.
+if [[ -x /usr/local/bin/unsloth-studio-home ]]; then
+    /usr/local/bin/unsloth-studio-home \
+        || echo "WARN: could not link Studio's code into ${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}" >&2
+fi
+
 # CUDA 13 ptxas + NVRTC are baked only for sm_103 and sm_121, which cu12.8 cannot
 # target and which ship on >=580 drivers; every other arch is cu12.8 on the 570-579
 # floor, where a cu13 cubin cannot load. So the choice is per DEVICE at boot.

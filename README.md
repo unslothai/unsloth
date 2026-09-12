@@ -157,6 +157,7 @@ docker run -d --gpus all --ipc=host \
   -p 8000:8000 -p 8888:8888 \
   -e UNSLOTH_STUDIO_PASSWORD="mypassword" -e JUPYTER_PASSWORD="mypassword" \
   -v "$PWD":/workspace/host \
+  -v unsloth-studio:/opt/unsloth-studio \
   unsloth/unsloth
 ```
 Follow startup with `docker logs -f`. Studio is at `http://localhost:8000` (user `unsloth`), JupyterLab at `http://localhost:8888`. Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
