@@ -49,9 +49,9 @@ class TestTheLogReportsTheFlagTheLaunchCarries:
         """Same predicate in both places, or they can drift into opposite answers."""
         src = _load_model_source()
         assignment = src.find(f"{_MANUAL_MARK} = {_MANUAL_PREDICATE}")
-        assert assignment != -1, (
-            "the pre-log verdict must consult the SAME predicate the launch branch applies below"
-        )
+        assert (
+            assignment != -1
+        ), "the pre-log verdict must consult the SAME predicate the launch branch applies below"
         branch = src.find(f"if {_MANUAL_PREDICATE}:")
         assert branch != -1, "the Manual launch branch is gone"
 
@@ -60,7 +60,7 @@ class TestTheEmptyProbeIsLabeled:
     def test_an_empty_probe_can_name_manual(self):
         src = _load_model_source()
         log = _first_index(src, "GPUs free: ")
-        window = src[log: log + 300]
+        window = src[log : log + 300]
         assert "manual placement" in window, (
             "an empty probe in Manual mode is a discarded-on-purpose list, not a "
             "failed enumeration; the line must say so"
@@ -71,10 +71,10 @@ class TestTheEmptyProbeIsLabeled:
         discards the list, so an empty Auto probe must not borrow the label."""
         src = _load_model_source()
         log = _first_index(src, "GPUs free: ")
-        window = src[log: log + 300]
-        assert "if gpus else (' (manual placement)'" in window, (
-            "the label must be gated on the empty list AND Manual, not on Manual alone"
-        )
+        window = src[log : log + 300]
+        assert (
+            "if gpus else (' (manual placement)'" in window
+        ), "the label must be gated on the empty list AND Manual, not on Manual alone"
 
 
 class TestManualSurvivesThePlacementFallback:
