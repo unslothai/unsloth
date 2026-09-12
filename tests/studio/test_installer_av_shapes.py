@@ -313,6 +313,37 @@ def test_a_ci_lane_fails_when_a_compiler_actually_runs() -> None:
 
 _WATCHER = REPO / ".github" / "scripts" / "Watch-ForCompiler.ps1"
 
+# The .NET host tearing itself down, as opposed to the script under test deciding something.
+# Seen on a hosted runner as `System.IO.FileLoadException: The given assembly name was
+# invalid.` out of AssemblyName.ParseAsAssemblySpec, followed by "The PowerShell process will
+# exit" and SIGABRT, on a probe that passes everywhere else and had no assembly of its own.
+_PWSH_HOST_FAULT = (
+    "An error has occurred that was not properly handled",
+    "System.IO.FileLoadException",
+    "Unhandled exception.",
+)
+
+
+def _run_pwsh(script: Path, *, timeout: int):
+    """Run `script` under pwsh, skipping rather than failing when the HOST aborts.
+
+    Only an abnormal termination is forgiven, and only with a fault banner on stderr to back
+    it up: a clean non-zero exit, or the wrong answer on stdout, is the script under test
+    being wrong and still fails. Retried once first, because the fault has never repeated.
+    """
+    command = ["pwsh", "-NoProfile", "-NonInteractive", "-File", str(script)]
+    for attempt in range(2):
+        result = subprocess.run(command, capture_output = True, text = True, timeout = timeout)
+        crashed = result.returncode < 0 and any(
+            marker in result.stderr for marker in _PWSH_HOST_FAULT
+        )
+        if not crashed:
+            return result
+        if attempt:
+            pytest.skip(f"pwsh host aborted ({result.returncode}): {result.stderr.strip()[:400]}")
+    raise AssertionError("unreachable")
+
+
 _FAKE_EVENTS = r"""
 function New-FakeEvent {
     param([string]$Image, [string]$CommandLine)
@@ -363,12 +394,7 @@ def test_the_watcher_scores_the_image_that_ran_not_the_words_in_the_message(
         ),
         encoding = "utf-8",
     )
-    result = subprocess.run(
-        ["pwsh", "-NoProfile", "-NonInteractive", "-File", str(script)],
-        capture_output = True,
-        text = True,
-        timeout = 120,
-    )
+    result = _run_pwsh(script, timeout = 120)
     assert result.returncode == 0, result.stderr + result.stdout
     assert f"HITS:{expected}" in result.stdout, result.stdout
 
@@ -406,12 +432,7 @@ def _run_watch(tmp_path, action: str) -> tuple[str, list[str]]:
         ),
         encoding = "utf-8",
     )
-    result = subprocess.run(
-        ["pwsh", "-NoProfile", "-NonInteractive", "-File", str(script)],
-        capture_output = True,
-        text = True,
-        timeout = 300,
-    )
+    result = _run_pwsh(script, timeout = 300)
     assert result.returncode == 0, result.stderr + result.stdout
     libraries = [
         line[len("LIB:") :] for line in result.stdout.splitlines() if line.startswith("LIB:")
