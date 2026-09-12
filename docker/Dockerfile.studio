@@ -7,7 +7,8 @@
 #     -f docker/Dockerfile.studio -t unsloth/unsloth:studio docker/
 # Run:
 #   docker run --rm --gpus all -p 8000:8000 -p 8888:8888 \
-#     -v $HOME/.cache/huggingface:/workspace/.cache/huggingface unsloth/unsloth:studio
+#     -v $HOME/.cache/huggingface:/workspace/.cache/huggingface \
+#     -v unsloth-studio:/opt/unsloth-studio unsloth/unsloth:studio
 #
 # Studio on :8000 (user unsloth; UNSLOTH_STUDIO_PASSWORD env, else a generated one
 # is printed in the logs; persisted under /opt/unsloth-studio/auth/); JupyterLab on
@@ -60,6 +61,7 @@ USER root
 # UNSLOTH_ALLOW_CPU=0` restores the strict behaviour. The base/training image keeps
 # the strict check: FastLanguageModel genuinely requires a GPU there.
 ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
+    UNSLOTH_STUDIO_APP=/opt/unsloth-studio-app \
     UNSLOTH_ALLOW_CPU=1 \
     JUPYTER_PORT=8888 \
     UNSLOTH_ENABLE_SSHD=false \
@@ -71,6 +73,9 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         curl git ca-certificates supervisor openssh-server \
  && rm -rf /var/lib/apt/lists/*
+
+# The linker the install RUN below finishes with, and the entrypoint reruns (studio_home.sh).
+COPY studio_home.sh /usr/local/bin/unsloth-studio-home
 
 # Clone + install Studio into a dedicated venv under $UNSLOTH_STUDIO_HOME.
 # --local is editable, so the source MUST persist -- keep it at $STUDIO_HOME/src,
@@ -159,7 +164,17 @@ RUN set -eux \
             fi; \
         done; \
         echo "studio venv size after dedup:"; du -sh "${UNSLOTH_STUDIO_HOME}/unsloth_studio"; \
-    fi
+    fi \
+    # Code and data shared one Studio root, so a volume on it froze the code at the first
+    # image's version. Everything the install created is code: move it to the app dir in
+    # this same layer (a later RUN would store it twice) and leave symlinks, so the home
+    # holds only what Studio writes at runtime.
+ && mkdir -p "${UNSLOTH_STUDIO_APP}" \
+ && find "${UNSLOTH_STUDIO_HOME}" -mindepth 1 -maxdepth 1 -exec mv -t "${UNSLOTH_STUDIO_APP}" {} + \
+    # through bash: the exec bit is set further down, with the other bin scripts
+ && bash /usr/local/bin/unsloth-studio-home \
+ && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import os, sys, studio; print('Studio venv', sys.prefix, 'imports studio from', studio.__file__); assert os.path.realpath(studio.__file__).startswith(os.path.realpath('${UNSLOTH_STUDIO_HOME}/src') + '/'), studio.__file__" \
+ && ls -la "${UNSLOTH_STUDIO_HOME}"
 
 COPY supervisord.conf /etc/supervisor/supervisord.conf
 COPY studio_launch.sh /usr/local/bin/unsloth-studio-launch
@@ -219,7 +234,8 @@ RUN SP="$(/opt/unsloth-venv/bin/python -c 'import sysconfig; print(sysconfig.get
        /opt/unsloth-venv/share/jupyter/UNSLOTH_LICENSE.AGPL-3.0 \
  && rm -rf /tmp/unsloth-branding-guard \
  && /opt/unsloth-venv/bin/python -m unsloth_branding --verify
-RUN chmod +x /usr/local/bin/unsloth-studio-launch \
+RUN chmod +x /usr/local/bin/unsloth-studio-home \
+             /usr/local/bin/unsloth-studio-launch \
              /usr/local/bin/unsloth-studio-password \
              /usr/local/bin/unsloth-studio-run \
              /usr/local/bin/unsloth-studio-update \

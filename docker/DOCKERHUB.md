@@ -33,6 +33,7 @@ docker run -d --gpus all --ipc=host \
   -e JUPYTER_PASSWORD="choose-a-password" \
   -v "$PWD":/workspace/host \
   -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
+  -v unsloth-studio:/opt/unsloth-studio \
   unsloth/unsloth
 ```
 
@@ -114,6 +115,7 @@ The working directory is `/workspace`. Mount what you want to keep:
 |---|---|
 | `/workspace/host` | Your files. Mount your project directory here. |
 | `/workspace/.cache/huggingface` | Model downloads. Mount your host HF cache to reuse it. |
+| `/opt/unsloth-studio` | Studio's accounts, chats, trained and exported models (`latest`). Use a named volume: without one, `docker rm` loses them. A new image still brings new Studio code. |
 | `/workspace/.cache/triton` | Compiled kernels. Optional, speeds up restarts. |
 | `/workspace/unsloth-notebooks` | The synced notebooks. Your edits are kept across refreshes. |
 | `/workspace/Unsloth Notebooks` | The same notebooks grouped by topic, rebuilt on each start. |
