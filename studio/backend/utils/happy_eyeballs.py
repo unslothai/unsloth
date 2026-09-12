@@ -108,8 +108,14 @@ def happy_eyeballs_connection(
     if len(infos) <= 1:
         # Nothing to race; delegate so CPython's semantics and error types are kept.
         if _HAS_EXCEPTION_GROUP:
-            return _original_create_connection(
-                address, timeout, source_address, all_errors = all_errors
+            # The branch this sits in IS the guard for the 3.11 all_errors kwarg. vermin
+            # reads names rather than control flow, so it cannot see that; the marker goes
+            # on the call's first line, which is the line it attributes the kwarg to.
+            return _original_create_connection(  # novermin
+                address,
+                timeout,
+                source_address,
+                all_errors = all_errors,
             )
         return _original_create_connection(address, timeout, source_address)
 
@@ -204,6 +210,7 @@ def happy_eyeballs_connection(
     if not exceptions:
         exceptions.append(socket.timeout("timed out"))
     if all_errors and _HAS_EXCEPTION_GROUP:
+        # novermin -- ExceptionGroup is 3.11, and the condition above IS the guard.
         raise ExceptionGroup("create_connection failed", exceptions)
     raise exceptions[0]
 
