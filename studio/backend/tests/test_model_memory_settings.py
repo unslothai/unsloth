@@ -2587,9 +2587,9 @@ class TestTheDioPolicy:
 
         flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_mem_gpu_offload_confirmed=self._gpu_offload_confirmed(" in flat
-        assert "binary,_mem_env,_mem_effective_indices,_mem_host_resident," in flat
+        assert "binary,_mem_env,_mem_compact_indices,_mem_host_resident," in flat
         # and host residency was priced against those SAME ordinals
-        assert "gpu_indices=_mem_effective_indices," in flat
+        assert "gpu_indices=_mem_physical_indices," in flat
         # and the owner declines on host residency before probing anything
         owner = "".join(inspect.getsource(LlamaCppBackend._gpu_offload_confirmed).split())
         assert owner.index("ifnotdio_possibleorhost_resident:returnFalse") < owner.index(
@@ -2890,7 +2890,7 @@ class TestEveryDeviceSetChangeReAsks:
         # the rung probes its OWN visibility rather than the pre-gate snapshot
         assert "_rung_env=_mem_env_for(child_env)" in flat
         assert (
-            "self._gpu_offload_confirmed(binary,_rung_env,devices,host_resident,"
+            "self._gpu_offload_confirmed(binary,_rung_env,_rung_compact,host_resident,"
             "_mem_dio_possible,_mem_extra_args,)" in flat
         )
         assert "fully_gpu_offloaded=fully_offloaded," in flat
@@ -4151,9 +4151,9 @@ class TestOneEffectiveDeviceSetFeedsEveryConsumer:
             "_enumerated_gpu_devices",
             classmethod(lambda cls, binary = None, e = None: devices),
         )
-        return LlamaCppBackend._effective_gpu_indices(
+        return LlamaCppBackend._effective_gpu_selection(
             "llama-server", env or {}, gpu_indices, extra_args, True
-        )
+        )[1]
 
     def test_an_override_replaces_the_auto_selection(self, monkeypatch):
         assert self._resolve(monkeypatch, ["CUDA0", "ROCm1"], [0], ["--device", "ROCm1"]) == [1]
@@ -4178,13 +4178,13 @@ class TestOneEffectiveDeviceSetFeedsEveryConsumer:
 
         flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         # main path: resolved once, then used for residency AND confirmation
-        assert "_mem_effective_indices=self._effective_gpu_indices(" in flat
-        assert "gpu_indices=_mem_effective_indices," in flat
-        assert "binary,_mem_env,_mem_effective_indices,_mem_host_resident," in flat
+        assert "_mem_physical_indices,_mem_compact_indices=self._effective_gpu_selection(" in flat
+        assert "gpu_indices=_mem_physical_indices," in flat
+        assert "binary,_mem_env,_mem_compact_indices,_mem_host_resident," in flat
         # the rung resolves its own narrowed set the same way
         assert (
-            "devices=self._effective_gpu_indices(binary,_rung_env,devices,_mem_extra_args,"
-            "_mem_dio_possible,is_vulkan_backend,)" in flat
+            "_rung_physical,_rung_compact=self._effective_gpu_selection(binary,_rung_env,"
+            "devices,_mem_extra_args,_mem_dio_possible,is_vulkan_backend,)" in flat
         )
 
 
@@ -4262,9 +4262,9 @@ class TestMaskedDevicesCompareInCompactSpace:
             "_enumerated_gpu_devices",
             classmethod(lambda cls, binary = None, env = None: ["CUDA0"]),
         )
-        effective = B._effective_gpu_indices(
+        effective = B._effective_gpu_selection(
             "llama-server", {"CUDA_VISIBLE_DEVICES": "1"}, [1], None, True
-        )
+        )[1]
         assert effective == [0]
         assert B._offload_devices_are_live(["CUDA0"], effective) is True
 
@@ -4289,7 +4289,9 @@ class TestSplitModeNoneFollowsTheMainGpu:
             "_enumerated_gpu_devices",
             classmethod(lambda cls, binary = None, e = None: list(devices)),
         )
-        return B._effective_gpu_indices("llama-server", env or {}, gpu_indices, extra_args, True)
+        return B._effective_gpu_selection(
+            "llama-server", env or {}, gpu_indices, extra_args, True
+        )[0]
 
     def test_main_gpu_replaces_the_plan(self, monkeypatch):
         assert self._eff(monkeypatch, [0], ["--split-mode", "none", "--main-gpu", "1"]) == [1]
@@ -4323,9 +4325,9 @@ class TestSplitModeNoneFollowsTheMainGpu:
         monkeypatch.setattr(
             B, "_vulkan_offload_is_discrete", staticmethod(lambda binary, idx = None: False)
         )
-        effective = B._effective_gpu_indices(
+        effective = B._effective_gpu_selection(
             "llama-server", {}, [0], ["--split-mode", "none", "--main-gpu", "1"], True
-        )
+        )[1]
         assert effective == [1]
         assert (
             B._gpu_offload_confirmed(
@@ -4342,9 +4344,9 @@ class TestSplitModeNoneFollowsTheMainGpu:
     def test_a_main_gpu_override_is_also_gated(self, monkeypatch):
         """Off the DirectIO path nothing is resolved, so no behaviour changes."""
         from core.inference.llama_cpp import LlamaCppBackend as B
-        assert B._effective_gpu_indices(
+        assert B._effective_gpu_selection(
             "llama-server", {}, [0], ["--split-mode", "none", "--main-gpu", "1"], False
-        ) == [0]
+        )[1] == [0]
 
 
 class TestVulkanOrdinalsAreAlreadyCompact:
@@ -4374,7 +4376,7 @@ class TestVulkanOrdinalsAreAlreadyCompact:
             classmethod(lambda cls, binary = None, env = None: ["Vulkan0", "Vulkan1"]),
         )
         env = {"GGML_VK_VISIBLE_DEVICES": "1,2"}
-        assert B._effective_gpu_indices("b", env, [1], None, True, True) == [1]
+        assert B._effective_gpu_selection("b", env, [1], None, True, True)[1] == [1]
 
 
 class TestAnUnreadDeviceTypeIsNotDiscreteEvidence:
@@ -4512,3 +4514,78 @@ class TestResidencyWithdrawsTheNoReserveDio:
             )
             is True
         )
+
+
+class TestTheSelectionCarriesBothOrdinalSpaces:
+    """The consumers need the SAME selection in DIFFERENT spaces, and collapsing them
+    broke one or the other: `_amd_apu_wants_unified_memory` is documented to take
+    physical ids, while `--list-devices` reports the child's compact ordinals."""
+
+    def _sel(self, monkeypatch, gpu_indices, env = None, extra_args = None,
+             devices = ("CUDA0",), is_vulkan = False):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        monkeypatch.setattr(
+            B, "_enumerated_gpu_devices",
+            classmethod(lambda cls, binary = None, e = None: list(devices)),
+        )
+        return B._effective_gpu_selection(
+            "llama-server", env or {}, gpu_indices, extra_args, True, is_vulkan
+        )
+
+    def test_a_mask_splits_the_two_spaces(self, monkeypatch):
+        """Physical APU 1 exposed as compact 0: residency must still classify 1."""
+        physical, compact = self._sel(
+            monkeypatch, [1], {"CUDA_VISIBLE_DEVICES": "1"}
+        )
+        assert physical == [1]
+        assert compact == [0]
+
+    def test_no_mask_leaves_them_equal(self, monkeypatch):
+        physical, compact = self._sel(monkeypatch, [1])
+        assert physical == compact == [1]
+
+    def test_a_device_override_is_mapped_back_to_physical(self, monkeypatch):
+        """`--device` names compact ids, so the physical form is the derived one."""
+        physical, compact = self._sel(
+            monkeypatch, [0], {"CUDA_VISIBLE_DEVICES": "2,3"},
+            ["--device", "CUDA1"], devices = ("CUDA0", "CUDA1"),
+        )
+        assert compact == [1]
+        assert physical == [3]
+
+    def test_main_gpu_is_physical_and_gets_a_compact_twin(self, monkeypatch):
+        physical, compact = self._sel(
+            monkeypatch, [0], {"CUDA_VISIBLE_DEVICES": "1"},
+            ["--split-mode", "none", "--main-gpu", "1"],
+        )
+        assert physical == [1]
+        assert compact == [0]
+
+    def test_vulkan_keeps_the_two_identical(self, monkeypatch):
+        physical, compact = self._sel(
+            monkeypatch, [1], {"GGML_VK_VISIBLE_DEVICES": "1,2"},
+            devices = ("Vulkan0", "Vulkan1"), is_vulkan = True,
+        )
+        assert physical == compact == [1]
+
+    def test_the_inverse_round_trips(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        env = {"CUDA_VISIBLE_DEVICES": "2,3"}
+        assert B._compact_ordinals([3], env) == [1]
+        assert B._physical_ordinals([1], env) == [3]
+        assert B._physical_ordinals(B._compact_ordinals([2, 3], env), env) == [2, 3]
+
+    def test_each_consumer_gets_its_own_space(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        # residency classifies physical ids
+        assert "gpu_indices=_mem_physical_indices," in flat
+        # the confirmation matches the build's compact device list
+        assert "binary,_mem_env,_mem_compact_indices,_mem_host_resident," in flat
+        # and the rung does the same with its narrowed set
+        assert "gpu_indices=_rung_physical," in flat
+        assert "self._gpu_offload_confirmed(binary,_rung_env,_rung_compact,host_resident," in flat

@@ -8731,6 +8731,33 @@ class LlamaCppBackend:
             return mapped or gpu_indices
         return gpu_indices
 
+    @staticmethod
+    def _physical_ordinals(compact, env: Optional[Mapping[str, str]], is_vulkan = False):
+        """The inverse of `_compact_ordinals`: compact ordinals back to physical ids.
+
+        `--device` names compact ids, but `_amd_apu_wants_unified_memory` is documented
+        to take PHYSICAL ones, so a selection that arrives compact has to be mapped
+        back before residency can classify it.
+        """
+        if not compact or not env or is_vulkan:
+            return compact
+        for name in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            raw = env.get(name)
+            if not raw or not str(raw).strip():
+                continue
+            try:
+                order = [int(part.strip()) for part in str(raw).split(",") if part.strip()]
+            except ValueError:
+                return compact
+            if not order:
+                return compact
+            try:
+                mapped = [order[int(i)] for i in compact if 0 <= int(i) < len(order)]
+            except (TypeError, ValueError):
+                return compact
+            return mapped or compact
+        return compact
+
     @classmethod
     def _effective_main_gpu(cls, extra_args, env) -> Optional[int]:
         """The sole device a ``--split-mode none`` launch puts every weight on.
@@ -8753,7 +8780,7 @@ class LlamaCppBackend:
             return None
 
     @classmethod
-    def _effective_gpu_indices(
+    def _effective_gpu_selection(
         cls,
         binary,
         env,
@@ -8769,6 +8796,11 @@ class LlamaCppBackend:
         and the confirmation must be about the SAME devices: computed apart, an override
         onto a unified-memory APU was priced against the discrete card it replaced.
 
+        Returns ``(physical, compact)``, because the consumers need the SAME selection
+        in DIFFERENT spaces and collapsing them broke one or the other:
+        `_amd_apu_wants_unified_memory` is documented to take physical ids, while
+        `--list-devices` reports the child's compact ordinals.
+
         Unchanged when there is no override, when it names no GPU, or when it names a
         device the build never enumerated; the confirmation declines those on their own
         terms, and answering them here would hide the reason.
@@ -8777,21 +8809,24 @@ class LlamaCppBackend:
         # nothing here can change an outcome and the enumeration is not worth a
         # subprocess. Off that path the selection stays exactly what it was.
         if not dio_possible:
-            return gpu_indices
+            return gpu_indices, gpu_indices
         override = cls._effective_device_ids(extra_args, env)
         if override and not any(d.lower() in _CPU_DEVICE_VALUES for d in override):
             listed = {d.lower() for d in (cls._enumerated_gpu_devices(binary, env) or [])}
             if {d.lower() for d in override} <= listed:
-                # `--device` names compact ids already, so no translation.
+                # `--device` names compact ids, so this arrives compact and the
+                # physical form is the one that has to be derived.
                 ordinals = [cls._device_ordinal(d) for d in override]
-                return [o for o in ordinals if o is not None] or gpu_indices
-            return gpu_indices
-        # Otherwise the ordinals are PHYSICAL and a mask may have reindexed them, and
-        # `--main-gpu` under `-sm none` replaces the selection outright.
+                compact = [o for o in ordinals if o is not None]
+                if not compact:
+                    return gpu_indices, cls._compact_ordinals(gpu_indices, env, is_vulkan)
+                return cls._physical_ordinals(compact, env, is_vulkan), compact
+            return gpu_indices, cls._compact_ordinals(gpu_indices, env, is_vulkan)
+        # Otherwise the ordinals are PHYSICAL, and `--main-gpu` under `-sm none`
+        # replaces the selection outright.
         main_gpu = cls._effective_main_gpu(extra_args, env)
-        if main_gpu is not None:
-            return cls._compact_ordinals([main_gpu], env, is_vulkan)
-        return cls._compact_ordinals(gpu_indices, env, is_vulkan)
+        physical = [main_gpu] if main_gpu is not None else gpu_indices
+        return physical, cls._compact_ordinals(physical, env, is_vulkan)
 
     @classmethod
     def _effective_device_ids(cls, extra_args, env) -> Optional[list[str]]:
@@ -24353,7 +24388,9 @@ class LlamaCppBackend:
                 # host-residency verdict has to be about the same devices the
                 # confirmation checks, or an override onto a unified-memory APU is
                 # priced against the discrete card it replaced.
-                _mem_effective_indices = self._effective_gpu_indices(
+                # Physical for the residency classifier, compact for matching the
+                # build's own device list. Same selection, two spaces.
+                _mem_physical_indices, _mem_compact_indices = self._effective_gpu_selection(
                     binary,
                     _mem_env,
                     gpu_indices,
@@ -24366,7 +24403,7 @@ class LlamaCppBackend:
                     gpu_memory_mode = gpu_memory_mode,
                     gpu_layers = gpu_layers,
                     extra_args = _mem_extra_args,
-                    gpu_indices = _mem_effective_indices,
+                    gpu_indices = _mem_physical_indices,
                     is_vulkan_backend = is_vulkan_backend,
                     binary = binary,
                     env = _mem_env,
@@ -24406,7 +24443,7 @@ class LlamaCppBackend:
                 _mem_gpu_offload_confirmed = self._gpu_offload_confirmed(
                     binary,
                     _mem_env,
-                    _mem_effective_indices,
+                    _mem_compact_indices,
                     _mem_host_resident,
                     _mem_dio_possible,
                     _mem_extra_args,
@@ -24536,7 +24573,7 @@ class LlamaCppBackend:
                     never gaining it, a redundant pair recorded as activity.
                     """
                     _rung_env = _mem_env_for(child_env)
-                    devices = self._effective_gpu_indices(
+                    _rung_physical, _rung_compact = self._effective_gpu_selection(
                         binary,
                         _rung_env,
                         devices,
@@ -24549,7 +24586,7 @@ class LlamaCppBackend:
                         gpu_memory_mode = gpu_memory_mode,
                         gpu_layers = gpu_layers,
                         extra_args = _mem_extra_args,
-                        gpu_indices = devices,
+                        gpu_indices = _rung_physical,
                         is_vulkan_backend = is_vulkan_backend,
                         binary = binary,
                         env = _rung_env,
@@ -24561,7 +24598,7 @@ class LlamaCppBackend:
                     confirmed = self._gpu_offload_confirmed(
                         binary,
                         _rung_env,
-                        devices,
+                        _rung_compact,
                         host_resident,
                         _mem_dio_possible,
                         _mem_extra_args,
