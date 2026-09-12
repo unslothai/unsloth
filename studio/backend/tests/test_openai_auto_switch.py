@@ -1942,8 +1942,17 @@ def test_idle_loop_resets_timer_for_same_repo_different_variant(monkeypatch):
         task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = 0.01))
         await asyncio.sleep(0.03)
         assert unloads == []
-        kw._last_active = time.monotonic() - 60  # force idle
-        backend.hf_variant = "Q8_0"  # same id, new quant -> fresh identity
+        # Under the gate the loop itself holds: it reads the identity and decides idleness
+        # inside one _unload_gate, so an unguarded write can land between the two, be judged
+        # against the old identity, and unload on the forced idle -- the reset under test
+        # never happening. Acquired off the loop, never with a plain `with`: the loop awaits
+        # inside that gate, so blocking this thread on the lock it holds deadlocks both.
+        await asyncio.to_thread(kw._lifecycle_lock.acquire)
+        try:
+            kw._last_active = time.monotonic() - 60  # force idle
+            backend.hf_variant = "Q8_0"  # same id, new quant -> fresh identity
+        finally:
+            kw._lifecycle_lock.release()
         await asyncio.sleep(0.03)
         assert unloads == []  # timer reset by the variant change, not unloaded
         task.cancel()
@@ -4384,6 +4393,8 @@ def test_messages_have_image_helper():
 
 
 def test_anthropic_request_has_image_helper():
+    from models.inference import AnthropicImageBlock
+
     f = inference_route._anthropic_request_has_image
     text = SimpleNamespace(messages = [SimpleNamespace(content = "hi")])
     assert f(text) is False
@@ -4393,7 +4404,18 @@ def test_anthropic_request_has_image_helper():
     assert f(text_block) is False
     dict_img = SimpleNamespace(messages = [SimpleNamespace(content = [{"type": "image"}])])
     assert f(dict_img) is True
-    typed_img = SimpleNamespace(messages = [SimpleNamespace(content = [SimpleNamespace(type = "image")])])
+    typed_img = SimpleNamespace(
+        messages = [
+            SimpleNamespace(
+                content = [
+                    AnthropicImageBlock(
+                        type = "image",
+                        source = {"type": "base64", "media_type": "image/png", "data": "AAAA"},
+                    )
+                ]
+            )
+        ]
+    )
     assert f(typed_img) is True
 
 
@@ -4406,12 +4428,13 @@ def test_responses_and_anthropic_wire_require_vision_from_images():
     assert "_responses_has_image = _messages_have_image(" in responses_src
     assert "require_vision = _responses_has_image" in responses_src
     anthropic_src = inspect.getsource(inference_route.anthropic_messages)
-    assert "_anthropic_has_image = _anthropic_request_has_image(" in anthropic_src
-    assert "require_vision = _anthropic_has_image" in anthropic_src
+    guard = "_anthropic_request_has_image(payload, tool_results = False)"
+    assert f"_anthropic_top_level_image = {guard}" in anthropic_src
+    assert "require_vision = _anthropic_top_level_image" in anthropic_src
     # /messages/count_tokens shares the /messages translation, so it needs the same
     # guard: an image count must not evict a vision model for a text-only target.
     count_src = inspect.getsource(inference_route.anthropic_count_tokens)
-    assert "require_vision = _anthropic_request_has_image(" in count_src
+    assert f"require_vision = {guard}" in count_src
 
 
 # ── codex review (round 5): count_tokens tools, tool_choice, process-wide gate ──
@@ -4450,7 +4473,7 @@ def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
         captured["gguf_only"] = gguf_only
         raise _Reached()
 
-    monkeypatch.setattr(inference_route, "_anthropic_request_has_image", lambda p: True)
+    monkeypatch.setattr(inference_route, "_anthropic_request_has_image", lambda p, **_: True)
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
     payload = _anthropic_payload_with_tools(None)  # no tools -> tool validation passes
     with pytest.raises(_Reached):
@@ -4751,6 +4774,50 @@ def test_chat_count_tokens_keeps_adjacent_user_turns_on_the_passthrough(monkeypa
     assert [message.get("content") for message in counted.get("messages") or []] == [
         "first\n\nsecond"
     ]
+
+
+def test_chat_count_tokens_folds_a_stopped_studio_tool_thread(monkeypatch):
+    """The counter skips its own coalesce on the passthrough, so only the fold helper keeps a
+    Stop-sentinel thread alternating; without it the bar prices a prompt the completion 400s on.
+    Unlike ``..._keeps_adjacent_user_turns_on_the_passthrough`` above, this thread IS folded.
+    """
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 99)
+    thread = [
+        {"role": "user", "content": "what did we say about seeds?"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "search_conversation", "arguments": '{"query": "s"}'},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": "search_conversation",
+            "content": "we said 3407",
+        },
+        {"role": "assistant", "content": ""},
+        {"role": "user", "content": "and now?"},
+    ]
+
+    _counted_body(
+        _count_request(
+            thread,
+            studio_tool_history = True,
+            response_format = {
+                "type": "json_schema",
+                "json_schema": {"name": "answer", "schema": {"type": "object", "properties": {}}},
+            },
+        )
+    )
+    roles = [message.get("role") for message in counted.get("messages") or []]
+    assert "tool" not in roles, roles
+    assert not any(a == "user" and b == "user" for a, b in zip(roles, roles[1:])), roles
 
 
 def test_chat_count_tokens_prices_the_current_date(monkeypatch):

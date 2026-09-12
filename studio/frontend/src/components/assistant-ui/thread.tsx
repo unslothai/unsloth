@@ -2135,7 +2135,9 @@ const ThreadComposerDock: FC<{
             : "top-[10px]",
         )}
       />
-      <div className="relative px-5 pb-2">
+      {/* Narrow panes spend the gutter on the composer instead; index.css
+          trims it off the pane's width, not the window's. */}
+      <div className="unsloth-composer-dock-inner relative px-5 pb-2">
         <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
           <ComposerAnimated
             disabled={disabled}
@@ -2245,14 +2247,15 @@ const ThreadWelcome: FC<{
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-start pt-[27.5dvh]">
+        {/* Matches the docked composer's gutter; index.css trims both. */}
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9 px-4">
           {/* Center the greeting (sloth + title) over the composer. */}
-          <div className="flex flex-row items-center justify-center gap-[15px]">
+          <div className="unsloth-welcome-greeting flex flex-row items-center justify-center gap-[15px]">
             {/* Temporary chat keeps the title on its own, no mascot. */}
             {showGreetingSloth && !incognito && (
               <MascotImg
                 src={currentEmojiSrc}
-                className="size-[44px] -translate-y-[2px]"
+                className="unsloth-welcome-sloth size-[44px] -translate-y-[2px]"
               />
             )}
             <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
@@ -2297,7 +2300,10 @@ const ComposerAnimated: FC<{
   disableQueue?: boolean;
 }> = ({ disabled, threadId, menuSide, disableQueue }) => {
   return (
-    <div className="relative mx-auto min-w-0 w-full max-w-[46rem]">
+    // unsloth-composer-shell is the size container the tight (mobile) layout
+    // in index.css queries. It sits outside the surface so those rules can
+    // trim the surface's own padding.
+    <div className="unsloth-composer-shell relative mx-auto min-w-0 w-full max-w-[46rem]">
       <div className="relative z-10 w-full">
         <Composer
           disabled={disabled}
@@ -6831,7 +6837,9 @@ const ComposerRightControls: FC<{
         </Button>
       ) : (
         <AuiIf condition={({ thread }) => thread.isRunning}>
-          <div className="ml-1.5 flex items-center">
+          {/* Classed so the narrow-screen rules can treat this like the
+              sibling send/stop buttons; it is the flex item, not the button. */}
+          <div className="aui-composer-run-controls ml-1.5 flex items-center">
             {queueDisabled ? (
             <ComposerPrimitive.Cancel asChild={true}>
               <Button

@@ -1938,6 +1938,9 @@ def _openai_llama_admission_image_tokens(llama_backend) -> int:
     Over-reserving is the safe direction; under-reserving hands out a slot the cache
     cannot back.
     """
+    # A text-only model is sent no image embeddings.
+    if getattr(llama_backend, "is_vision", True) is False:
+        return 0
     projector = getattr(llama_backend, "_mmproj_projector_type", None)
     known = _MMPROJ_IMAGE_TOKEN_MAX.get(str(projector).strip().lower()) if projector else None
     cap = max(
@@ -1945,6 +1948,29 @@ def _openai_llama_admission_image_tokens(llama_backend) -> int:
         _extra_args_image_max_tokens(getattr(llama_backend, "_extra_args", None)) or 0,
     )
     return cap + _OPENAI_LLAMA_ADMISSION_IMAGE_WRAPPER_TOKENS
+
+
+_ADMISSION_IMAGE_PART_TYPES = ("image_url", "image")
+
+
+def _openai_llama_admission_compact_image_part(part: dict) -> dict:
+    """One image part with its transport bytes replaced by a marker.
+
+    Keeps the wrapper the part really has, since that little JSON is prompt text the
+    request does send; only the base64 goes.
+    """
+    if part.get("type") == "image":
+        source = part.get("source")
+        compact_source = {"type": "base64", "data": "[image]"}
+        if isinstance(source, dict) and source.get("media_type") is not None:
+            compact_source["media_type"] = source["media_type"]
+        return {"type": "image", "source": compact_source}
+
+    image_url = part.get("image_url")
+    compact_image_url = {"url": "[image]"}
+    if isinstance(image_url, dict) and image_url.get("detail") is not None:
+        compact_image_url["detail"] = image_url["detail"]
+    return {"type": "image_url", "image_url": compact_image_url}
 
 
 def _openai_llama_admission_messages_for_estimate(
@@ -2009,21 +2035,33 @@ def _openai_llama_admission_messages_for_estimate(
         if isinstance(content, list):
             estimate_content = []
             for part in content:
-                if not isinstance(part, dict) or part.get("type") != "image_url":
+                if not isinstance(part, dict):
+                    estimate_content.append(part)
+                    continue
+
+                part_type = part.get("type")
+                # Match the native tool-result conversion: text and image blocks reach the wire.
+                if part_type == "tool_result" and isinstance(part.get("content"), list):
+                    part = dict(part)
+                    tool_content = []
+                    for block in part["content"]:
+                        if not isinstance(block, dict):
+                            continue
+                        if block.get("type") == "text":
+                            tool_content.append(block)
+                        elif block.get("type") == "image":
+                            image_parts += 1
+                            tool_content.append(_openai_llama_admission_compact_image_part(block))
+                    part["content"] = tool_content
+                    estimate_content.append(part)
+                    continue
+
+                if part_type not in _ADMISSION_IMAGE_PART_TYPES:
                     estimate_content.append(part)
                     continue
 
                 image_parts += 1
-                image_url = part.get("image_url")
-                compact_image_url = {"url": "[image]"}
-                if isinstance(image_url, dict) and image_url.get("detail") is not None:
-                    compact_image_url["detail"] = image_url["detail"]
-                estimate_content.append(
-                    {
-                        "type": "image_url",
-                        "image_url": compact_image_url,
-                    }
-                )
+                estimate_content.append(_openai_llama_admission_compact_image_part(part))
             estimate_message["content"] = estimate_content
         estimate_messages.append(estimate_message)
     # promote_history caps what the envelopes become, so charging past that would
@@ -3832,6 +3870,33 @@ def _sf_reasoning_prefill_mode(
     return _generation_prompt_opens_think(tpl, enable_thinking, reasoning_effort, messages)
 
 
+def _sf_parse_think_markers(
+    features: dict,
+    enable_thinking: Optional[bool] = None,
+    reasoning_effort: Optional[str] = None,
+) -> bool:
+    """Whether <think> markup in a safetensors/MLX reply can be genuine reasoning.
+
+    Both raw fields reach the template, which reads only the dial it branches on; a
+    hybrid sent both reads enable_thinking first (Kimi-K3).
+    """
+    if features.get("reasoning_always_on"):
+        return True
+    if not features.get("supports_reasoning"):
+        return False
+    style = features.get("reasoning_style")
+    resolved: dict = {}
+    if style == "reasoning_effort":
+        if reasoning_effort is not None:
+            resolved["reasoning_effort"] = reasoning_effort
+    elif enable_thinking is not None:
+        resolved["enable_thinking"] = enable_thinking
+    elif style == "enable_thinking_effort" and reasoning_effort is not None:
+        resolved["reasoning_effort"] = reasoning_effort
+    # No launch default on this backend: an empty dict leaves the template's own.
+    return _resolved_kwargs_think(None, resolved)
+
+
 def _effective_enable_tools(payload) -> Optional[bool]:
     """Resolve `payload.enable_tools` against the process-level tool policy.
 
@@ -4052,6 +4117,51 @@ def _takes_tool_passthrough(payload, llama_backend) -> bool:
     # `{"type": "text"}` names the default, so routing it here would withdraw
     # whatever the ordinary path offers -- n > 1 among them -- for nothing.
     return _response_format_constrains_decoding(payload)
+
+
+def _folds_studio_tool_history(payload, llama_backend) -> bool:
+    """True when Unsloth's own replayed tool turns must be rewritten as user text.
+
+    The client replays that history forever, so refusing it 400s every later turn of the
+    thread. Same ownership test and first guard as ``_takes_tool_passthrough``.
+    """
+    supports_tools = getattr(llama_backend, "supports_tools", False)
+    if supports_tools and _explicit_studio_tool_loop_requested(payload):
+        return False
+    if getattr(llama_backend, "supports_tool_passthrough", supports_tools):
+        return False
+    return _has_openai_tool_history(payload.messages) and _only_studio_tool_history(payload)
+
+
+def _folded_studio_tool_messages(messages) -> list:
+    # _sanitize_anthropic_openai_messages' chain, in its order, and both halves earn their place:
+    #   strip first (it ends in _drop_empty_assistant_sentinels, so this drops those too).
+    #     A stopped turn left between the result and the next question would block the coalesce,
+    #     and the passthrough drops it later without coalescing, so Gemma 400s on role parity.
+    #     Downstream a synthetic pair is matched through its role="tool" reply, which folding
+    #     destroys, so a Gemini code_execution card would ride on as user prose.
+    #   fold before coalesce: what merges a folded result with the note after it.
+    return [
+        ChatMessage.model_validate(_revalidatable(message))
+        for message in _coalesce_consecutive_user_turns(
+            fold_tool_results_into_user(
+                _strip_provider_synthetic_tool_history(
+                    [m.model_dump(exclude_none = True) for m in messages]
+                )
+            )
+        )
+    ]
+
+
+def _revalidatable(message: dict) -> dict:
+    """``content = []`` is the placeholder ``_normalise_chat_content_parts`` leaves behind when it
+    lifts an ``input_audio`` part onto ``payload.audio_base64``. ChatMessage rejects it, and until
+    this fold nothing re-validated a message after that lift. ``""`` is the same placeholder in a
+    shape it accepts, and ``_inject_audio_part`` already reads it that way (``content or ""``).
+    """
+    if message.get("content") == [] and message.get("role") != "assistant":
+        return {**message, "content": ""}
+    return message
 
 
 def _passthrough_client_tools(payload):
@@ -4355,6 +4465,25 @@ def _anthropic_preserve_thinking(llama_backend, payload) -> bool:
     return bool(getattr(llama_backend, "preserve_thinking_default", False))
 
 
+def _resolved_kwargs_think(llama_backend, resolved) -> bool:
+    """Whether the resolved template kwargs leave thinking on.
+
+    Effort dials think at every level except "none", which Inkling's
+    _coerce_reasoning_effort rewrites to numeric 0. With no kwargs the model
+    runs on the default it was launched with.
+    """
+    if "enable_thinking" in resolved:
+        return bool(resolved["enable_thinking"])
+    if "reasoning_effort" in resolved:
+        effort = resolved["reasoning_effort"]
+        if isinstance(effort, str):
+            return effort.strip().lower() != "none"
+        if isinstance(effort, (int, float)) and not isinstance(effort, bool):
+            return float(effort) != 0.0
+        return True
+    return bool(getattr(llama_backend, "reasoning_default", True))
+
+
 def _think_parsing_expected(llama_backend, payload) -> bool:
     """Whether <think> markup in this reply can be genuine reasoning.
 
@@ -4383,13 +4512,7 @@ def _think_parsing_expected(llama_backend, payload) -> bool:
         )
         or {}
     )
-    if "enable_thinking" in resolved:
-        return bool(resolved["enable_thinking"])
-    if "reasoning_effort" in resolved:
-        # Effort-dial templates think at every level except "none".
-        return resolved["reasoning_effort"] != "none"
-    # No explicit kwargs: the template's own default decides whether it thinks.
-    return bool(getattr(llama_backend, "reasoning_default", True))
+    return _resolved_kwargs_think(llama_backend, resolved)
 
 
 def _anthropic_count_template_kwargs(llama_backend, payload):
@@ -4925,8 +5048,8 @@ _roster_failure_logged = False
 # character after them, so one file name can rewrite how the rest of the sentence renders
 # (CVE-2021-42574, "Trojan Source"); U+200B and the joiners split a name into pieces that
 # read as one; ESC is a terminal control sequence in any console or log that echoes the
-# prompt. Only linked folders can carry them -- uploads pass an allowlist at
-# routes/rag.py:_sanitize_filename -- but a linked folder indexes a relative path exactly
+# prompt. Only linked folders can carry them -- routes/rag.py:_document_label strips
+# them out of an uploaded name -- but a linked folder indexes a relative path exactly
 # as it came off disk, and every byte except "/" and NUL is legal in one.
 #
 # The whitespace-like controls map to a space instead of being dropped, so that a name
@@ -5608,21 +5731,24 @@ def _strip_tool_xml_for_display(
     so literal markup inside a value is data), then the ``_TOOL_XML_RE`` arms cover the
     DeepSeek / Kimi / orphan forms. ``<think>`` blocks are preserved verbatim and the
     ``\\Z``-anchored tail arms run only on the last segment (prose ``foo[ARGS]`` before a
-    block survives). ``enabled_tool_names`` (when not None) gates the ambiguous bare-rehearsal
-    ``NAME[ARGS]{...}`` and wrapper-less Gemma ``call:NAME{...}`` strips on the active tool
-    list; an inactive NAME is prose and is kept. The ``[TOOL_CALLS]`` control-token arms strip
-    unconditionally regardless of NAME."""
+    block survives). The ambiguous bare-rehearsal ``NAME[ARGS]{...}`` and wrapper-less Gemma
+    ``call:NAME{...}`` strips run only on a markerless-promotable NAME, so a name outside
+    ``enabled_tool_names`` or an execution-class one is kept as prose. The ``[TOOL_CALLS]``
+    control-token arms strip unconditionally regardless of NAME."""
     if not auto_heal_tool_calls:
         return text
-    from core.tool_healing import _strip_bracket_tag_calls, strip_outside_think
+    from core.tool_healing import (
+        _markerless_promotable,
+        _strip_bracket_tag_calls,
+        strip_outside_think,
+    )
 
     def _keep_inactive_rehearsal(m) -> str:
-        # Only the bare-rehearsal arm captures ``reh``; with a tool list an inactive
-        # NAME[ARGS]{...} is prose -- keep it.
-        if enabled_tool_names is not None:
-            name = m.groupdict().get("reh")
-            if name is not None and name not in enabled_tool_names:
-                return m.group(0)
+        # Only the bare-rehearsal arm captures ``reh``. Deleting one the parser will not
+        # promote leaves the turn with no call AND no text.
+        name = m.groupdict().get("reh")
+        if name is not None and not _markerless_promotable(name, enabled_tool_names):
+            return m.group(0)
         return ""
 
     def _strip_segment(seg: str, is_last: bool) -> str:
@@ -5639,7 +5765,17 @@ def _strip_tool_xml_for_display(
             return _TOOL_XML_RE.sub(_keep_inactive_rehearsal, seg)
         return _TOOL_XML_CLOSED_RE.sub("", seg)
 
-    return strip_outside_think(text, _strip_segment)
+    # Same masking the parser-side strip uses: these passes would otherwise edit the body of
+    # a blocked call, which is prose, so the displayed text and stored history stopped
+    # matching what the model actually said.
+    from core.inference.tool_call_parser import _mask_blocked_bodies, _unmask_blocked_bodies
+
+    masked, bodies = _mask_blocked_bodies(text, enabled_tool_names)
+    result = strip_outside_think(masked, _strip_segment)
+    if not bodies:
+        return result
+    restored = _unmask_blocked_bodies(result, bodies)
+    return restored if restored is not None else strip_outside_think(text, _strip_segment)
 
 
 class _ReasoningSpanGuard:
@@ -8053,39 +8189,42 @@ def _request_has_image(payload) -> bool:
     return _request_has_attached_image(payload) or _request_has_replayed_mcp_images(payload)
 
 
-def _anthropic_request_has_image(payload) -> bool:
-    # Mirror anthropic_messages_to_openai: an Anthropic image block carries
-    # ``type == "image"`` (typed AnthropicImageBlock or a raw dict).
-    for msg in getattr(payload, "messages", None) or []:
-        content = getattr(msg, "content", None)
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            bt = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
-            if bt == "image":
-                return True
-    return False
-
-
-def _anthropic_local_image_payloads(payload) -> list[str]:
-    """Base64 image sources translated by the Anthropic endpoint."""
-    encoded_images = []
+def _anthropic_image_blocks(payload, *, tool_results: bool = True):
     for msg in getattr(payload, "messages", None) or ():
         content = msg.get("content") if isinstance(msg, dict) else msg.content
         if not isinstance(content, list):
             continue
         for block in content:
-            block_type = block.get("type") if isinstance(block, dict) else block.type
-            if block_type != "image":
-                continue
-            source = block.get("source") if isinstance(block, dict) else block.source
-            source_type = source.get("type") if isinstance(source, dict) else source.type
-            data = source.get("data") if isinstance(source, dict) else source.data
-            if source_type == "base64" and isinstance(data, str):
-                encoded_images.append(data)
-            url = source.get("url") if isinstance(source, dict) else source.url
-            if source_type == "url" and isinstance(url, str) and url.startswith("data:"):
-                encoded_images.append(url.partition(",")[2])
+            block = block if isinstance(block, dict) else block.model_dump()
+            if block.get("type") == "image":
+                yield block
+            elif (
+                tool_results
+                and block.get("type") == "tool_result"
+                and isinstance(block.get("content"), list)
+            ):
+                for part in block["content"]:
+                    if isinstance(part, dict) and part.get("type") == "image":
+                        yield part
+
+
+def _anthropic_request_has_image(payload, *, tool_results: bool = True) -> bool:
+    return next(_anthropic_image_blocks(payload, tool_results = tool_results), None) is not None
+
+
+def _anthropic_local_image_payloads(payload) -> list[str]:
+    encoded_images = []
+    for block in _anthropic_image_blocks(payload):
+        source = block.get("source")
+        if not isinstance(source, dict):
+            continue
+        source_type = source.get("type")
+        data = source.get("data")
+        if source_type == "base64" and isinstance(data, str):
+            encoded_images.append(data)
+        url = source.get("url")
+        if source_type == "url" and isinstance(url, str) and url.startswith("data:"):
+            encoded_images.append(url.partition(",")[2])
     return encoded_images
 
 
@@ -22450,7 +22589,7 @@ async def produce_openai_chat_completions(
                     top_p = payload.top_p,
                     top_k = payload.top_k,
                     min_p = payload.min_p,
-                    max_new_tokens = _effective_max_tokens(payload) or 2048,
+                    max_new_tokens = _effective_max_tokens(payload),
                     repetition_penalty = payload.repetition_penalty,
                     # Compare sends audio_base64 and use_adapter in one body.
                     use_adapter = payload.use_adapter,
@@ -22706,7 +22845,10 @@ async def produce_openai_chat_completions(
     _has_tool_messages = _has_openai_tool_history(payload.messages)
     _has_tool_catalog = bool(payload.tools and len(payload.tools) > 0)
     _has_active_tool_catalog = _has_tool_catalog and payload.tool_choice != "none"
-    _has_client_tool_contract = _has_active_tool_catalog or _has_tool_messages
+    # Read the same way `_takes_tool_passthrough` reads it: history Unsloth's own loop
+    # produced is not a client contract.
+    _has_client_tool_history = _has_tool_messages and not _only_studio_tool_history(payload)
+    _has_client_tool_contract = _has_active_tool_catalog or _has_client_tool_history
     # The Unsloth tool loop needs a tool-capable backend, so a request that asks
     # for it on a backend that can't run it (DiffusionGemma forces supports_tools
     # off) must not steal client tools from the passthrough (#6851).
@@ -22741,6 +22883,10 @@ async def produce_openai_chat_completions(
     _supports_tool_passthrough = getattr(
         llama_backend, "supports_tool_passthrough", llama_backend.supports_tools
     )
+    # Before the passthrough dispatch and the parse, so every later reader sees the fold.
+    if using_gguf and _folds_studio_tool_history(payload, llama_backend):
+        payload.messages = _folded_studio_tool_messages(payload.messages)
+        _pre_parsed = None
     if (
         using_gguf
         and not _studio_tool_loop_requested
@@ -24706,6 +24852,11 @@ async def produce_openai_chat_completions(
     except Exception:
         _sf_probe_messages = None
 
+    # Transformers vision generation drops both reasoning fields; MLX forwards them.
+    _sf_vision_drops_reasoning = image is not None and not _sf_model_info.get("is_mlx", False)
+    _sf_gate_enable_thinking = None if _sf_vision_drops_reasoning else payload.enable_thinking
+    _sf_gate_reasoning_effort = None if _sf_vision_drops_reasoning else payload.reasoning_effort
+
     def _sf_response_protocol(
         tools = None,
         template = None,
@@ -24730,8 +24881,10 @@ async def produce_openai_chat_completions(
                 body = _selected[0]
         except Exception:
             logger.debug("safetensors_prefill_template_selection_failed", exc_info = True)
-        parse_think = bool(
-            features.get("supports_reasoning") or features.get("reasoning_always_on")
+        parse_think = _sf_parse_think_markers(
+            features,
+            _sf_gate_enable_thinking,
+            _sf_gate_reasoning_effort,
         )
         reasoning_prefilled = _sf_reasoning_prefill_mode(
             features,
@@ -25387,7 +25540,7 @@ async def produce_openai_chat_completions(
         top_p = payload.top_p,
         top_k = payload.top_k,
         min_p = payload.min_p,
-        max_new_tokens = effective_max_tokens or 2048,
+        max_new_tokens = effective_max_tokens,
         repetition_penalty = payload.repetition_penalty,
         presence_penalty = payload.presence_penalty,
         seed = payload.seed,
@@ -28448,9 +28601,19 @@ def _responses_should_parse_think_markers(
     if llama_backend is not None and getattr(llama_backend, "is_loaded", False):
         if getattr(llama_backend, "reasoning_always_on", False):
             return True
-        if getattr(llama_backend, "supports_reasoning", False):
-            return True
-        return False
+        if not getattr(llama_backend, "supports_reasoning", False):
+            return False
+        # Same rule as _think_parsing_expected: decide from the resolved kwargs.
+        resolved = (
+            _reasoning_template_kwargs(
+                llama_backend,
+                chat_req.enable_thinking,
+                chat_req.reasoning_effort,
+                chat_req.preserve_thinking,
+            )
+            or {}
+        )
+        return _resolved_kwargs_think(llama_backend, resolved)
     if chat_req.enable_thinking is True:
         return True
     return chat_req.enable_thinking is None and chat_req.reasoning_effort not in (None, "none")
@@ -28824,6 +28987,11 @@ def _build_chat_request(
         # turn opens a fresh one and restarts the answer.
         if isinstance(_extra.get("continue_final_message"), bool):
             chat_kwargs["continue_final_message"] = _extra["continue_final_message"]
+        # And for the ownership marker, or every fold below reads a Studio thread as a client's:
+        # only the legacy search_conversation arm could claim one, so a thread that ran terminal
+        # or search_knowledge_base was refused non-streaming and forwarded raw when streamed.
+        if isinstance(_extra.get("studio_tool_history"), bool):
+            chat_kwargs["studio_tool_history"] = _extra["studio_tool_history"]
 
     if isinstance(payload.reasoning, dict):
         effort = payload.reasoning.get("effort")
@@ -29115,6 +29283,13 @@ async def _responses_stream(
             status_code = 400,
             detail = "Image provided but current GGUF model does not support vision.",
         )
+
+    # Same bypass, same reason as the image gate: without this the non-streaming half of this
+    # very route folds a Studio tool thread and answers while the streaming half still ships
+    # role="tool" to a template that cannot render it, so one thread's replies depend on which
+    # half the client called.
+    if _folds_studio_tool_history(chat_req, llama_backend):
+        chat_req.messages = _folded_studio_tool_messages(chat_req.messages)
 
     # Streaming /v1/responses builds the passthrough body directly (bypassing
     # openai_chat_completions), so apply recommended sampling here too.
@@ -30210,6 +30385,17 @@ async def openai_responses(
     internally, and returns a response matching the Responses API schema
     (output array, input_tokens/output_tokens, named SSE events for streaming).
     """
+    for history_param in ("previous_response_id", "conversation"):
+        if getattr(payload, history_param, None) is not None:
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    f"'{history_param}' is not supported. Send the full conversation history in 'input'.",
+                    status = 400,
+                    code = "unsupported_parameter",
+                    param = history_param,
+                ),
+            )
     messages = _normalise_responses_input(payload)
     if not messages:
         raise HTTPException(status_code = 400, detail = "No input provided.")
@@ -30952,12 +31138,15 @@ async def chat_count_tokens(
     # does not merge adjacent user turns, so coalescing here would price a prompt it never sends
     # (two user turns split by an empty assistant sentinel, after a stopped response).
     _takes_passthrough = _takes_tool_passthrough(payload, llama_backend)
+    _count_messages = payload.messages
+    if _folds_studio_tool_history(payload, llama_backend):
+        _count_messages = _folded_studio_tool_messages(_count_messages)
     # Awaited: stripping parses the whole envelope, and this recount runs in the
     # background on every turn, so it must not do that on the shared loop.
     openai_messages = await _promote_mcp_history_images_async(
         _strip_provider_synthetic_tool_history(
             _drop_empty_assistant_sentinels(
-                [m.model_dump(exclude_none = True) for m in payload.messages]
+                [m.model_dump(exclude_none = True) for m in _count_messages]
             )
         ),
         # Never as pixels: /apply-template prices a media marker, not the image.
@@ -31148,7 +31337,7 @@ async def anthropic_count_tokens(
         _switch_model_for_payload(payload),
         request,
         current_subject,
-        require_vision = _anthropic_request_has_image(payload),
+        require_vision = _anthropic_request_has_image(payload, tool_results = False),
         # count_tokens only tokenizes (no generation), so it must not adopt the resident
         # model; the middleware likewise excludes count_tokens from its claim.
         claim_resident = False,
@@ -31171,6 +31360,7 @@ async def anthropic_count_tokens(
         [m.model_dump() for m in payload.messages],
         payload.system,
         preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
+        tool_result_images = llama_backend.is_vision,
     )
     # Apply the same sanitization /messages does before generation, so the count
     # matches the prompt the real request would build (otherwise empty-assistant
@@ -31227,7 +31417,7 @@ async def anthropic_count_tokens(
     _count_server_tools = (
         _anthropic_selects_server_tools(payload, _count_studio_tools, _count_has_client_tool)
         and llama_backend.supports_tools
-        and not _anthropic_request_has_image(payload)
+        and not _anthropic_request_has_image(payload, tool_results = llama_backend.is_vision)
     )
     _count_openai_client_tools = [
         tool
@@ -31277,7 +31467,16 @@ async def anthropic_count_tokens(
             status_code = 503,
             detail = "Unable to count tokens with the loaded model tokenizer.",
         )
-    return JSONResponse(content = {"input_tokens": int(count)})
+    # /apply-template renders an image as a marker, not its projector embeddings, so charge
+    # the same per-image allowance admission reserves.
+    image_parts = sum(
+        isinstance(part, dict) and part.get("type") == "image_url"
+        for message in openai_messages
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+    )
+    image_tokens = image_parts * _openai_llama_admission_image_tokens(llama_backend)
+    return JSONResponse(content = {"input_tokens": int(count) + image_tokens})
 
 
 def _set_or_prepend_system_message(
@@ -31339,6 +31538,9 @@ async def anthropic_messages(
     _validate_anthropic_client_tools(payload.tools)
 
     _anthropic_has_image = _anthropic_request_has_image(payload)
+    # Tool-result images become a note on a text-only model, so until the backend is known
+    # only top-level images require vision or rule out server tools.
+    _anthropic_top_level_image = _anthropic_request_has_image(payload, tool_results = False)
     _anthropic_image_b64s = _anthropic_local_image_payloads(payload)
 
     # Mixing Anthropic server tools with custom client tools is unsupported (the
@@ -31384,7 +31586,7 @@ async def anthropic_messages(
     _selects_server_tools = _anthropic_selects_server_tools(
         payload, requested_studio_tools, _has_client_tool
     )
-    _server_tools_requested_pre = _selects_server_tools and not _anthropic_has_image
+    _server_tools_requested_pre = _selects_server_tools and not _anthropic_top_level_image
     if _server_tools_requested_pre:
         from core.inference.tools import ALL_TOOLS as _ALL_TOOLS_PRE
 
@@ -31424,7 +31626,7 @@ async def anthropic_messages(
         _switch_model_for_payload(payload),
         request,
         current_subject,
-        require_vision = _anthropic_has_image,
+        require_vision = _anthropic_top_level_image,
         # The image normalization below can still 400 after this switch, so defer the claim:
         # the middleware claims on a 2xx, so a rejected request never strands a preview-owned
         # model.
@@ -31459,6 +31661,7 @@ async def anthropic_messages(
         [m.model_dump() for m in payload.messages],
         payload.system,
         preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
+        tool_result_images = llama_backend.is_vision,
     )
     # Strip synthetic provider-side builtin tool history (web_search,
     # web_fetch, code_execution, image_generation cards tagged with

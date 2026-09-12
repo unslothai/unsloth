@@ -35,7 +35,6 @@ from core.inference.tool_loop_controller import (
 )
 from core.tool_healing import parse_tool_calls_from_text
 
-# narrower than the loops' TOOL_XML_SIGNALS
 # Only the formats this healer's parser can promote -- narrower than the loops' broader TOOL_XML_SIGNALS. A loop-only
 # marker (Llama <|python_tag|>, bare [ARGS]) would buffer a streamed call as prose without promoting it, so keep a
 # healer-aligned list. Mistral's [TOOL_CALLS] IS promotable, so it stays in.
@@ -65,9 +64,8 @@ def nudge_enabled(request_flag: Optional[bool]) -> bool:
 
 
 _MAX_SIGNAL_LEN = max(len(s) for s in _HEAL_SIGNALS)
-# a suspected-but-unclosed block larger than this is a false alarm, bounding memory on XML-lookalike prose
-# A suspected-but-unclosed tool block larger than this is declared a false alarm and flushed, bounding memory on a model
-# rambling XML-lookalike text.
+# A suspected-but-unclosed tool block larger than this is declared a false alarm and flushed, bounding memory on a
+# model rambling XML-lookalike text.
 _MAX_HOLD_CHARS = 64 * 1024
 
 
@@ -329,14 +327,11 @@ class StreamToolCallHealer:
         self._buffer = ""
         self._holding = False
         self._id_offset = 0
-        # promotion is destructive, so a caller DISCARDING a promoted call (a turn truncated at finish_reason "length")
-        # has no other way to give the model's words back
-        # Markup span each promoted call was cut from, keyed by its call id. Promotion is destructive -- the span never
-        # reaches the client -- so a caller that ends up DISCARDING a promoted call (a turn truncated at finish_reason
-        # "length" cannot be executed) has no other way to give the model's own words back. Bounded by _MAX_HOLD_CHARS
-        # per span.
+        # Markup span each promoted call was cut from, keyed by its call id. Promotion is destructive -- the span
+        # never reaches the client -- so a caller that ends up DISCARDING a promoted call (a turn truncated at
+        # finish_reason "length" cannot be executed) has no other way to give the model's own words back. Bounded by
+        # _MAX_HOLD_CHARS per span.
         self._promoted_spans: dict[str, str] = {}
-        # structured delta.tool_calls upstream means grammar mode worked, so healing goes dormant
         # Structured delta.tool_calls seen upstream: grammar mode already worked, so healing goes dormant and text
         # relays verbatim.
         self.dormant = False
