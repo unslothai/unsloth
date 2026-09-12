@@ -8,8 +8,9 @@ from pathlib import Path
 from tests.studio._js_source import (
     attribute_expressions,
     binding_joining,
+    boolean_table,
+    expand_bindings,
     gates_the_markup,
-    split_operands,
 )
 
 
@@ -687,15 +688,22 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
     # contract protects, and it left main and every open PR red for a day. What must hold is
     # that a sidebar collapsing to nothing leaves the accessibility tree, and that it goes
     # inert on exactly the same condition, since hidden-but-focusable is the actual bug.
-    holds_out = binding_joining(primitive, "&&", {"hasPinMode", "!pinned", "collapseToZero"})
-    assert holds_out, "nothing binds hasPinMode && !pinned && collapseToZero any more"
     hidden = attribute_expressions(primitive, "aria-hidden")
     inert = attribute_expressions(primitive, "inert")
     assert len(hidden) == 1 and len(inert) == 1, (hidden, inert)
     assert hidden == inert, (hidden, inert)
-    assert any(
-        holds_out in split_operands(term, "&&") for term in split_operands(hidden[0], "||")
-    ), (holds_out, hidden)
+    # Asking only that the held-out condition still appears would accept dropping the peek
+    # exception with it, and a peeked sidebar is on screen: aria-hidden on a visible panel
+    # is the same defect this guards, pointing the other way. So state WHEN the panel leaves
+    # the accessibility tree, over every combination of the four inputs, and let any
+    # spelling that admits exactly those states pass.
+    inputs = ("hasPinMode", "pinned", "collapseToZero", "peeking")
+    table = boolean_table(expand_bindings(primitive, hidden[0], stop = inputs), inputs)
+    for combination, removed in table.items():
+        has_pin_mode, is_pinned, collapses_to_zero, is_peeking = combination
+        assert removed == (
+            has_pin_mode and not is_pinned and collapses_to_zero and not is_peeking
+        ), (combination, hidden[0])
 
 
 def test_fixed_sheets_start_below_the_custom_titlebar():

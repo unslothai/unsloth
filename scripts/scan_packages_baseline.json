@@ -1843,7 +1843,8 @@
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
       "evidence": "L122:             while True: sha256:8b044e656cc30b7456c66ef639158ba5712db35847626e17339ee55d16b2eb3f",
-      "evidence_hash": "e7232e73f5faaeca3e5bd26f5096ddbf20ece6787c3c92ba9fc903f9a167621a"
+      "evidence_hash": "e7232e73f5faaeca3e5bd26f5096ddbf20ece6787c3c92ba9fc903f9a167621a",
+      "file_sha256": "f70fbb46f8523a1eadf67bac45d5a0fb8ffae9762b43964cfb0db0729d76e543"
     },
     {
       "package": "scikit-learn",
