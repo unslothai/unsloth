@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import errno
+import selectors
 import socket
 import threading
 import time
@@ -156,6 +157,98 @@ def test_a_refused_port_still_raises_immediately(monkeypatch):
 
     assert elapsed < 2.0, f"a refused connect waited {elapsed:.1f}s instead of failing"
     assert excinfo.value.errno in (errno.ECONNREFUSED, errno.EADDRNOTAVAIL)
+
+
+def test_the_last_failure_is_raised_not_the_first(monkeypatch):
+    """``create_connection(all_errors = False)`` raises the LAST error, and callers read
+    which one it is: utils.utils.hf_tcp_reachable treats ECONNREFUSED as proof the
+    endpoint answered, so handing it an earlier family's ENETUNREACH instead declares the
+    Hub unreachable and switches the offline guard on."""
+    scripted = {"100::1": errno.ENETUNREACH, "127.0.0.1": errno.ECONNREFUSED}
+
+    class _Stub:
+        def __init__(self, family, *_args, **_kwargs):
+            self.family = family
+
+        def setblocking(self, _flag):
+            pass
+
+        def connect_ex(self, sa):
+            return scripted[sa[0]]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("100::1", 443, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443)),
+        ],
+    )
+    monkeypatch.setattr(socket, "socket", _Stub)
+
+    with pytest.raises(OSError) as excinfo:
+        he.happy_eyeballs_connection(("hub.invalid", 443), 5)
+
+    assert excinfo.value.errno == errno.ECONNREFUSED, (
+        "raised the first family's failure instead of the last; hf_tcp_reachable reads "
+        "that as an unreachable Hub"
+    )
+
+
+def test_a_deadline_reached_with_attempts_in_flight_raises_a_timeout(monkeypatch):
+    """An address still in flight when the budget runs out is a timeout, not whatever an
+    address that failed earlier happened to report.
+
+    Scripted rather than dialled: whether a discard-prefix address hangs or is refused
+    outright depends on whether the host has an IPv6 route at all.
+    """
+
+    class _Stub:
+        def __init__(self, family, *_args, **_kwargs):
+            self.family = family
+
+        def setblocking(self, _flag):
+            pass
+
+        def connect_ex(self, sa):
+            return errno.ECONNREFUSED if sa[0] == "127.0.0.1" else errno.EINPROGRESS
+
+        def close(self):
+            pass
+
+    class _NeverReady:
+        """Nothing ever becomes writable, so the in-flight attempt outlives the budget."""
+
+        def register(self, *_args, **_kwargs):
+            pass
+
+        def unregister(self, *_args, **_kwargs):
+            pass
+
+        def select(self, timeout):
+            if timeout:
+                time.sleep(min(timeout, 0.05))
+            return []
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 443)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("100::1", 443, 0, 0)),
+        ],
+    )
+    monkeypatch.setattr(socket, "socket", _Stub)
+    monkeypatch.setattr(selectors, "DefaultSelector", _NeverReady)
+
+    with pytest.raises(socket.timeout):
+        he.happy_eyeballs_connection(("hub.invalid", 443), 0.3)
 
 
 def test_the_winning_socket_is_blocking_with_the_callers_timeout(listener, monkeypatch):

@@ -121,9 +121,12 @@ def happy_eyeballs_connection(
 
     ordered = _interleave(infos)
     delay = attempt_delay()
+    # Appended in COMPLETION order, which is what lets the raise below pick the last
+    # failure the way the stdlib does.
     exceptions: list = []
     pending: dict = {}  # socket -> sockaddr
     winner = None
+    timed_out = False
 
     def _settle(sock):
         """Hand back a socket with the blocking mode the caller expects."""
@@ -176,6 +179,7 @@ def happy_eyeballs_connection(
             else:
                 wait = budget
             if wait is not None and wait <= 0 and budget is not None and budget <= 0:
+                timed_out = True
                 break
 
             for key, _mask in sel.select(wait):
@@ -193,6 +197,7 @@ def happy_eyeballs_connection(
             if index >= len(ordered) and not pending:
                 break
             if deadline is not None and _remaining(deadline) <= 0:
+                timed_out = bool(pending)
                 break
     finally:
         for sock in list(pending):
@@ -207,12 +212,18 @@ def happy_eyeballs_connection(
     if winner is not None:
         return _settle(winner)
 
-    if not exceptions:
+    # The deadline ran out with attempts still unresolved, so a timeout is what happened,
+    # whatever an address that failed earlier happened to report.
+    if timed_out or not exceptions:
         exceptions.append(socket.timeout("timed out"))
     if all_errors and _HAS_EXCEPTION_GROUP:
         # novermin -- ExceptionGroup is 3.11, and the condition above IS the guard.
         raise ExceptionGroup("create_connection failed", exceptions)
-    raise exceptions[0]
+    # The LAST failure, as the stdlib raises when all_errors is false, and callers read
+    # which one it is: utils.utils.hf_tcp_reachable treats ECONNREFUSED as proof the
+    # endpoint answered, so surfacing an earlier family's ENETUNREACH in its place would
+    # declare the Hub unreachable and switch the offline guard on.
+    raise exceptions[-1]
 
 
 def activate_happy_eyeballs() -> bool:
