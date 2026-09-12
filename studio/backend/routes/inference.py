@@ -15426,6 +15426,31 @@ def _requires_trust_remote_code_for_model(
         return False
 
 
+def _stored_trust_remote_code(
+    model_info,
+    inference_config,
+    trust_remote_code_used = False,
+) -> Optional[bool]:
+    """The part of the resolution order that never touches the network: the value stored
+    on the model at load time -> the trust_remote_code the load actually used -> the YAML
+    default. None when only the raw ``auto_map`` check can answer."""
+    stored = (model_info or {}).get("requires_trust_remote_code")
+    if stored is not None:
+        return bool(stored)
+    if trust_remote_code_used or bool((inference_config or {}).get("trust_remote_code", False)):
+        return True
+    return None
+
+
+def _auto_map_trust_remote_code(model_id, hf_token = None) -> bool:
+    """The raw ``auto_map`` check: reads the config from the cache, or the Hub on a miss.
+    Callers guard it and keep it off the event loop."""
+    try:
+        return bool(_requires_trust_remote_code_for_model(model_id, hf_token))
+    except Exception:
+        return False
+
+
 def _resolve_loaded_trust_remote_code(
     model_id,
     model_info,
@@ -15446,15 +15471,10 @@ def _resolve_loaded_trust_remote_code(
     Resolution order: a value stored on the model at load time (so a status refresh does
     not re-derive it) -> the trust_remote_code the load actually used -> the YAML default
     -> the raw ``auto_map`` check (reads the config from the cache, or the Hub on a miss)."""
-    stored = (model_info or {}).get("requires_trust_remote_code")
-    if stored is not None:
-        return bool(stored)
-    if trust_remote_code_used or bool((inference_config or {}).get("trust_remote_code", False)):
-        return True
-    try:
-        return bool(_requires_trust_remote_code_for_model(model_id, hf_token))
-    except Exception:
-        return False
+    known = _stored_trust_remote_code(model_info, inference_config, trust_remote_code_used)
+    if known is not None:
+        return known
+    return _auto_map_trust_remote_code(model_id, hf_token)
 
 
 def _requires_security_review_for_model(
@@ -17349,10 +17369,12 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         is_audio = False
         audio_type = None
         has_audio_input = False
-        # One snapshot for the whole response. Resolving trust_remote_code below awaits,
-        # and a load or unload completing in that window would otherwise pair the new
-        # model's identity with this one's capabilities and trust requirement.
+        # One snapshot for the whole response. Resolving trust_remote_code below can
+        # await, and a load or unload completing in that window would otherwise pair the
+        # new model's identity with this one's capabilities, trust requirement, or
+        # resident list.
         _active = backend.active_model_name
+        _loaded = list(backend.models.keys())
         model_info = {}
         if _active:
             model_info = backend.models.get(_active, {})
@@ -17377,17 +17399,23 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         ):
             _loading_models.append(_tracked_loading_id)
 
-        # The auto_map fallback reads raw config JSON, so guarded and off-loop like validate_model.
+        # Stored at load, or the YAML default: no network, so no guard and no thread. The
+        # guard probes reachability on entry (memoised 5s, up to 3s cold), which a polled
+        # route would otherwise pay for a dict read.
         _requires_trc = False
         if _active:
-            _requires_trc = await asyncio.to_thread(
-                _offline_guarded,
-                [_active],
-                _resolve_loaded_trust_remote_code,
-                _active,
-                model_info,
-                inference_config,
-            )
+            _known = _stored_trust_remote_code(model_info, inference_config)
+            if _known is not None:
+                _requires_trc = _known
+            else:
+                # Only the raw auto_map fallback reads the Hub: guarded, and on the bounded
+                # status executor rather than the default one that drives token streaming.
+                _requires_trc = await asyncio.get_running_loop().run_in_executor(
+                    _STATUS_PROBE_EXECUTOR,
+                    functools.partial(
+                        _offline_guarded, [_active], _auto_map_trust_remote_code, _active
+                    ),
+                )
 
         return InferenceStatusResponse(
             active_model = _active,
@@ -17407,7 +17435,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             chat_template_override = model_info.get("chat_template_override_requested"),
             chat_template_override_reason = model_info.get("chat_template_override_reason"),
             loading = _loading_models,
-            loaded = list(backend.models.keys()),
+            loaded = _loaded,
             inference = inference_config,
             requires_trust_remote_code = _requires_trc,
             supports_reasoning = _sf_flags["supports_reasoning"],
