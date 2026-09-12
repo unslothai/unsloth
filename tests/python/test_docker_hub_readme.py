@@ -163,3 +163,29 @@ def test_the_sync_fails_without_a_token(sync_job: dict, tmp_path: Path):
     res, log = _run_sync(step, tmp_path, live_after_patch = "", token = "")
     assert res.returncode != 0
     assert "PATCH" not in log, "a PATCH was attempted with an empty token"
+
+
+def test_the_hub_readme_matches_what_each_image_ships():
+    text = HUB_README.read_text(encoding = "utf-8")
+    # whisper.cpp is installed by Studio's setup, so only the Studio image has it
+    assert "The `latest` image adds whisper.cpp" in text
+    # SKIP_NOTEBOOK_SYNC disables the notebooks; SKIP_NOTEBOOK_REFRESH skips only GitHub
+    assert "`UNSLOTH_SKIP_NOTEBOOK_REFRESH=1` | Do not refresh the notebooks from GitHub" in text
+    assert "`UNSLOTH_SKIP_NOTEBOOK_SYNC=1` | Do not set up the notebooks at all" in text
+    # the Studio image's services run as root and exit 1 under --user
+    assert "On `core`, `--user <uid>:<gid>` is supported" in text
+    assert "AGPL-3.0" in text and "Apache-2.0" in text
+
+
+def test_both_images_declare_both_licenses():
+    """metadata-action copies the repository license (Apache-2.0) into the OCI label,
+    but both images carry Studio's AGPL-3.0 code."""
+    text = WORKFLOW.read_text(encoding = "utf-8")
+    assert text.count("org.opencontainers.image.licenses=Apache-2.0 AND AGPL-3.0-only") == 2
+
+
+def test_the_studio_image_does_not_ship_the_uv_download_cache():
+    """install.sh keeps its uv cache under the Studio home, which the /root/.cache
+    cleanup never reached: ~9 GB baked into :latest, 5 GB of it referenced by nothing."""
+    body = (REPO_ROOT / "docker" / "Dockerfile.studio").read_text(encoding = "utf-8")
+    assert '"${UNSLOTH_STUDIO_HOME}/cache/uv"' in body

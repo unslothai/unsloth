@@ -85,6 +85,10 @@ RUN apt-get update \
 # build time would land on cpu/cu126). cu128 on both arches, mirroring the base.
 # Blackwell JIT (sm_103/sm_121) comes from the same cu13 NVRTC swap, repeated below.
 #
+# install.sh keeps its uv cache under $UNSLOTH_STUDIO_HOME/cache/uv, not /root/.cache,
+# so it is removed by path below. The venv's files are hardlinks into it and survive;
+# the ~5 GB the dedup replaced with symlinks had no other link.
+#
 # UNSLOTH_PYTHON=3.12 pins the Studio venv to the base's Python minor so the
 # nvidia-*-cu12 wheels are byte-identical and the dedup below can symlink them.
 #
@@ -128,6 +132,7 @@ RUN set -eux \
  && echo "OK: Studio kept the base image's CUDA llama.cpp bundle" \
  && rm -rf "${UNSLOTH_STUDIO_HOME}/src/.git" \
           "${UNSLOTH_STUDIO_HOME}/src/studio/frontend/node_modules" \
+          "${UNSLOTH_STUDIO_HOME}/cache/uv" \
           /root/.cache \
     # Stage the Studio venv's NVRTC like the base (.cu128.orig default + .cu13
     # alias, retargeted per device by select_cuda_jit_tools). Both arches.
