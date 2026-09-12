@@ -22335,6 +22335,14 @@ class LlamaCppBackend:
                         )
 
                     kv_cache_bytes = _kv_bytes(effective_ctx)
+                    # Manual placement owns the verdict: the same condition the launch
+                    # branch below will apply MUST be decided before the decision line
+                    # is logged, or the log reports --fit on for a launch that carries
+                    # --fit off (see #10821). gpu_layers is a function argument, so
+                    # this is knowable exactly here.
+                    _manual_placement = gpu_memory_mode == "manual" and gpu_layers >= 0
+                    if _manual_placement:
+                        use_fit = False
                     # Everything the spill planner needs, snapshotted as plain ints
                     # where it is already evaluated.
                     _spill_inputs = {
@@ -22428,7 +22436,13 @@ class LlamaCppBackend:
                         f"{_mtp_note}"
                         f"context: {effective_ctx}, "
                         # --fit flag state, not "does it fit": off means this subset provably fits.
-                        f"GPUs free: {gpus}, selected: {gpu_indices}, --fit: {'on' if use_fit else 'off'}"
+                        # --fit flag state, not "does it fit": off means this subset provably fits,
+                        # or the user owns placement. An empty probe with "(manual placement)"
+                        # is a deliberately discarded list, not a failed enumeration: the
+                        # separate warning next door is the one that catches a genuinely
+                        # empty probe.
+                        f"GPUs free: {gpus}{'' if gpus else (' (manual placement)' if _manual_placement else '')}, "
+                        f"selected: {gpu_indices}, --fit: {'on' if use_fit else 'off'}"
                     )
                     if (
                         not gpus
@@ -22980,6 +22994,9 @@ class LlamaCppBackend:
                 if gpu_memory_mode == "manual" and gpu_layers >= 0:
                     # Pin the user's layer count and disable auto-fit. --fit off
                     # also means _ctx_integrity_flags must not add --fit-ctx.
+                    # use_fit was turned off before the decision log above; set it
+                    # again here so the placement try/except's --fit-on fallback
+                    # can never override Manual between the two.
                     use_fit = False
                     cmd.extend(["--gpu-layers", str(gpu_layers), "--fit", "off"])
                     # Keep the first n_cpu_moe MoE layers' experts on CPU.
