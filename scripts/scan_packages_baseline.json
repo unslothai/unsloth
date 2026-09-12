@@ -1892,7 +1892,8 @@
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
       "evidence": "Obfusc: L4662:             _mod = __import__(module_name, fromlist=[\"_\"])\nExec: L157:     mx.eval(model.parameters()) | L191:     mx.eval([v for k, v in tree_flatten(casted) if is_mlx_norm_parameter_path(k)]) | L1170:                 mx.eval(model.parameters()) | L1171:                 mx.eval(mx.distributed.all_sum(mx.array(1.0), stream=mx.cpu)) | L1238:             mx.eval(model.parameters()) | L1241:                 mx.eval(mx.distributed.all_sum(mx.array(1.0), stream=mx.cpu)) | L2576:         mx.eval(altup.correct(predictions, activated)) | L3017:             mx.eval(baseline, perturbed) | L4310:         model.eval() | L5049:         mx.eval(model.parameters()) | L5164:         mx.eval(module.weight) | L8557:                     lambda: mx.eval(model.parameters()), | L8617:                     lambda: mx.eval(model.parameters()), | L8770:                 mx.eval(model.parameters())",
-      "evidence_hash": "cf9c8ed7bf9c33f83b6280d7d2d60b072262a04ce3e886a1f38c4003fbef01f4"
+      "evidence_hash": "cf9c8ed7bf9c33f83b6280d7d2d60b072262a04ce3e886a1f38c4003fbef01f4",
+      "file_sha256": "d18e7eb087b09c360d02d6e274e92cca153768e8a8b61bc978e2a40f1981043d"
     }
   ]
 }

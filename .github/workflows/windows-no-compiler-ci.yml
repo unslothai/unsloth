@@ -143,10 +143,17 @@ jobs:
               # that. Not --tauri, which refuses the UNSLOTH_STUDIO_HOME that keeps
               # every step reading one tree.
               New-Item -ItemType Directory -Force -Path logs | Out-Null
+              # 'Continue' only around the child. Under 'Stop', a native command writing
+              # ANY line to stderr raises NativeCommandError, so one progress line the
+              # installer reports there kills the measurement before the detectors are
+              # read. The exit code below is the gate, which is what this is measuring.
+              $outer = $ErrorActionPreference
+              $ErrorActionPreference = 'Continue'
               & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
                   -File "$env:GITHUB_WORKSPACE\install.ps1" --no-torch *>&1 |
                   Tee-Object -FilePath "$env:UNSLOTH_EVIDENCE\install.log"
               $exit = $LASTEXITCODE
+              $ErrorActionPreference = $outer
               $global:LASTEXITCODE = 0
               if ($exit -ne 0) { throw "install.ps1 exited $exit" }
           }
@@ -192,10 +199,18 @@ jobs:
           # void, not clean.
           $desktop = {
               Remove-Item Env:\UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
+              # Same reason as the shell leg, and this leg needs it more: it deliberately
+              # does NOT gate on exit 0, yet a single stderr line from the child raised
+              # NativeCommandError under 'Stop' and failed the step anyway. The observed
+              # one was "[TAURI:ERROR_CLEAR] create virtual environment recovered", which
+              # is the installer reporting that it recovered.
+              $outer = $ErrorActionPreference
+              $ErrorActionPreference = 'Continue'
               & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
                   -File "$env:GITHUB_WORKSPACE\install.ps1" --tauri --local --no-torch *>&1 |
                   Tee-Object -FilePath "$env:UNSLOTH_EVIDENCE\install-tauri.log"
               $exit = $LASTEXITCODE
+              $ErrorActionPreference = $outer
               $global:LASTEXITCODE = 0
               # Not gated on exit 0: a desktop-mode install can decline for unrelated
               # reasons, and the question is only whether a compiler ran on the way.

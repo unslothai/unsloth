@@ -51,7 +51,12 @@ for (const [name, path, read, unload] of PAGES) {
     assert.notEqual(write, -1, "setStatusIfNewest no longer writes the status");
     const guard =
       /if\s*\(\s*ticket\s*===\s*statusTicket\.current\s*\)[\s{]*setStatus\(/.exec(body) ??
-      /if\s*\(\s*ticket\s*!==\s*statusTicket\.current\s*\)[\s{]*return\b/.exec(body);
+      // The stale branch's return must be BARE. `return setStatus(next);` also reads as an
+      // early return and also precedes the normal write, while writing the superseded
+      // status out of the return expression itself.
+      /if\s*\(\s*ticket\s*!==\s*statusTicket\.current\s*\)[\s{]*return\s*(?:[;}]|\r?\n)/.exec(
+        body,
+      );
     assert.ok(guard, "a superseded read must not write");
     // Ordering, not just presence. Either spelling can be present while the write happens
     // FIRST, and `setStatus(next); if (ticket !== statusTicket.current) return;` has already
