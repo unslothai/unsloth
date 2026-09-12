@@ -35,12 +35,23 @@ $SkipTorch = $false
 # Stand-in interpreter: the helper only runs `& $PythonExe -c` and reads `name==version` lines.
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-ovtest-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $work -Force | Out-Null
-$fakePy = Join-Path $work "fakepython"
-Set-Content -LiteralPath $fakePy -Value @(
-    "#!/usr/bin/env bash"
-    "printf 'torch==2.11.0+cu130\ntorchvision==0.26.0+cu130\ntorchaudio==2.11.0+cu130\n'"
-) -Encoding ascii
-if ($IsLinux -or $IsMacOS) { & chmod +x $fakePy }
+$onWindows = -not ($IsLinux -or $IsMacOS)
+if ($onWindows) {
+    # Windows starts a stand-in only through an extension it can execute.
+    $fakePy = Join-Path $work "fakepython.cmd"
+    Set-Content -LiteralPath $fakePy -Value @(
+        "@echo torch==2.11.0+cu130"
+        "@echo torchvision==0.26.0+cu130"
+        "@echo torchaudio==2.11.0+cu130"
+    ) -Encoding ascii
+} else {
+    $fakePy = Join-Path $work "fakepython"
+    Set-Content -LiteralPath $fakePy -Value @(
+        "#!/usr/bin/env bash"
+        "printf 'torch==2.11.0+cu130\ntorchvision==0.26.0+cu130\ntorchaudio==2.11.0+cu130\n'"
+    ) -Encoding ascii
+    & chmod +x $fakePy
+}
 
 $acute = [char]0x00E9   # e-acute, the cheapest non-ASCII requirement character
 $savedOverride = $env:UV_OVERRIDE
@@ -95,6 +106,35 @@ try {
     $SkipTorch = $true
     Check "returns null under --no-torch" ($null -eq (New-UnslothTorchOverridesFile -PythonExe $fakePy))
     $SkipTorch = $false
+
+    # ── a temp path with a space never reaches uv (#10722) ────────────────────────
+    # UV_OVERRIDE is space-separated itself, so only %TEMP% can hand the helper a spaced path.
+    if ($onWindows) {
+        $spacedTemp = Join-Path $work "John Doe"
+        New-Item -ItemType Directory -Path $spacedTemp -Force | Out-Null
+        $dirShort = $null
+        try { $dirShort = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($spacedTemp).ShortPath } catch { }
+        # Captures the no-8.3 warning.
+        $script:substepCalls = @()
+        function substep { param($Message, $Color) $script:substepCalls += $Message }
+        Remove-Item Env:UV_OVERRIDE -ErrorAction SilentlyContinue
+        $savedTmp = $env:TMP
+        $env:TMP = $spacedTemp   # GetTempPath reads TMP first
+        try { $spaced = New-UnslothTorchOverridesFile -PythonExe $fakePy }
+        finally { $env:TMP = $savedTmp }
+        $made += $spaced
+        if ($dirShort -and -not $dirShort.Contains(" ")) {
+            Check "a spaced temp path comes back without a space" ($spaced -and -not $spaced.Contains(" "))
+            Check "the short path names a file in that same temp directory" (
+                $spaced -and (Test-Path -LiteralPath $spaced) -and ((Split-Path -Parent $spaced) -eq $dirShort))
+        } else {
+            Check "no 8.3 name: no overrides file is returned" ($null -eq $spaced)
+            Check "no 8.3 name: the file it created is removed" (@(Get-ChildItem -LiteralPath $spacedTemp).Count -eq 0)
+            Check "no 8.3 name: the fallback is announced" ($script:substepCalls.Count -gt 0)
+        }
+    } else {
+        Write-Host "  SKIP  spaced-path checks need Windows 8.3 names"
+    }
 
     # ── the merged copy is tracked and locked down ────────────────────────────────
     # The caller's non-torch lines land in this copy, one of which can be an authenticated URL.

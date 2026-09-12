@@ -21,6 +21,8 @@ from core.inference.native_tool_tokens import (
 )
 from core.inference.runtime_context import (
     MAX_REQUESTABLE_CONTEXT,
+    UNSET_GENERATION_BUDGET,
+    generation_budget_for_window,
     runtime_context_length,
 )
 from core.inference.chat_template_helpers import (
@@ -1937,6 +1939,7 @@ class MLXInferenceBackend:
         # Bound now so a load that fails before installing leaves readers a dict rather than raising.
         self._kv_quant = _kv_quant_status(None, None, False)
         self._kv_cache_window = None
+        self._served_context = None
         self._template_override = _template_override_status(None, None, None)[1]
 
         self._prompt_cache_history = None
@@ -2110,6 +2113,23 @@ class MLXInferenceBackend:
             return prompt, None, None, None, 0
         return rest, cache, key, tokens, len(tokens) - len(rest)
 
+    def _unset_generation_budget(
+        self,
+        prompt,
+        prompt_tokens = None,
+    ):
+        """Free context for an unset limit, or the default if the prompt cannot be counted."""
+        try:
+            prompt_n = (
+                len(prompt_tokens)
+                if prompt_tokens is not None
+                else self._count_prompt_tokens(prompt)
+            )
+        except Exception as exc:
+            logger.debug("MLX prompt count for an unset budget failed: %s", exc)
+            return UNSET_GENERATION_BUDGET
+        return generation_budget_for_window(self._served_context, prompt_n, None)
+
     def _kv_quant_generate_kwargs(self):
         """Load-time runtime knobs for a generate call, empty when unset. quantized_kv_start is
         deliberately not passed: mlx-lm and mlx-vlm ship different defaults (0 and 5000) and each
@@ -2134,6 +2154,14 @@ class MLXInferenceBackend:
                 prompt, add_special_tokens = bos is None or not prompt.startswith(bos)
             )
         )
+
+    def _count_prompt_tokens(self, prompt):
+        """Prompt length as generation tokenizes it; vision models follow mlx_vlm's marker rule."""
+        if not self._is_vlm:
+            return len(self._encode_prompt(prompt))
+        model_type = getattr(getattr(self._model, "config", None), "model_type", None)
+        add_special = _vlm_add_special_tokens(model_type, self._processor)
+        return len(self._tokenizer.encode(prompt, add_special_tokens = add_special))
 
     def _configure_memory_limits(self):
         """Apply Metal memory caps before loading a model. memory_limit = 85% of recommended
@@ -2353,6 +2381,7 @@ class MLXInferenceBackend:
         _served_ctx, _native_ctx, _max_ctx = self._resolve_context_lengths(
             self._model, max_seq_length
         )
+        self._served_context = _served_ctx
         # Classify before the first generation: an ineligible cache would otherwise raise inside
         # maybe_quantize_kv_cache mid-stream, after converting the leading entries.
         self._kv_quant, self._kv_cache_window, _ctx_enforced = self._resolve_kv_policy(
@@ -2646,12 +2675,7 @@ class MLXInferenceBackend:
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
             )
-            # Whether the markers belong to the template or to tokenization is a per-model answer mlx_vlm makes for
-            # every generation; ask it rather than guess, or the count is off by whatever the generation's own choice
-            # would have added.
-            _model_type = getattr(getattr(self._model, "config", None), "model_type", None)
-            add_special = _vlm_add_special_tokens(_model_type, self._processor)
-            return len(self._tokenizer.encode(prompt, add_special_tokens = add_special))
+            return self._count_prompt_tokens(prompt)
 
         render_result = self._render_text_prompt(
             full_messages,
@@ -2660,7 +2684,7 @@ class MLXInferenceBackend:
             reasoning_effort = reasoning_effort,
             preserve_thinking = preserve_thinking,
         )
-        return len(self._encode_prompt(render_result.prompt))
+        return self._count_prompt_tokens(render_result.prompt)
 
     def generate_chat_response(
         self,
@@ -2891,6 +2915,8 @@ class MLXInferenceBackend:
                 prompt_tokens,
                 cached_n,
             ) = self._prepare_prompt_cache(prompt, _adapter_state)
+            if max_new_tokens is None:
+                max_new_tokens = self._unset_generation_budget(prompt, prompt_tokens)
             logger.info(
                 "Generating: prompt_len=%d, cached=%d, max_tokens=%d, model=%s, tokenizer=%s",
                 len(prompt),
@@ -3207,6 +3233,12 @@ class MLXInferenceBackend:
         # Matched on the sampled text, for the reason _generate_text gives.
         sequences = _mlx_stop_sequences(stop)
         stopped = False
+        if max_new_tokens is None:
+            max_new_tokens = self._unset_generation_budget(prompt)
+            if image is not None:
+                # An image expands past its one placeholder token, so the counted prompt is short
+                # of the real one: cap at the default, but stay under the rotating cache window.
+                max_new_tokens = min(max_new_tokens, UNSET_GENERATION_BUDGET)
         logger.info(
             "VLM generating: prompt_len=%d, has_image=%s",
             len(prompt),
@@ -3443,6 +3475,11 @@ class MLXInferenceBackend:
                 "mlx-vlm has no registered prompt renderer for this model family; "
                 "cannot build an audio prompt."
             )
+
+        if max_new_tokens is None:
+            # Audio expands past its placeholder token exactly as an image does, so the counted
+            # prompt is short of the real one: cap at the default, but stay under the window.
+            max_new_tokens = min(self._unset_generation_budget(prompt), UNSET_GENERATION_BUDGET)
 
         logger.info("MLX audio-input generating: prompt_len=%d", len(prompt))
         markers = detect_reasoning_channel_markers(self._processor)

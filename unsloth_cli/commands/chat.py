@@ -167,7 +167,12 @@ def chat(
     temperature: float = typer.Option(0.7, "--temperature"),
     top_p: float = typer.Option(0.9, "--top-p"),
     top_k: int = typer.Option(40, "--top-k"),
-    max_new_tokens: int = typer.Option(512, "--max-new-tokens"),
+    max_new_tokens: Optional[int] = typer.Option(
+        None,
+        "--max-new-tokens",
+        help = "Cap on generated tokens. Unset lets a reply use whatever the "
+        "model's context window leaves free after the conversation.",
+    ),
     repetition_penalty: float = typer.Option(1.1, "--repetition-penalty"),
     system_prompt: str = typer.Option(
         "", "--system-prompt", help = "Optional system prompt for the conversation."
@@ -464,6 +469,17 @@ def chat(
                 if is_mlx_distributed:
                     raise typer.Exit(code = 1)
                 continue
+
+            if should_print and getattr(chat_backend, "reply_hit_token_limit", False):
+                hint = (
+                    "raise or omit --max-new-tokens"
+                    if max_new_tokens is not None
+                    else "/reset to clear the history, or reload with a larger --max-seq-length"
+                )
+                console.print(
+                    f"(reply stopped at the token limit — {hint})",
+                    style = "bright_black",
+                )
 
             messages.append(
                 {"role": "assistant", "content": visible_text(answer, show_thinking = False)}
