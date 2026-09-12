@@ -148,6 +148,12 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             status_code = 422,
             detail = safe_validation_errors(exc.errors()),
         ) from exc
+    # The refusal the completion route runs on entry. Without it a part no path can serve is
+    # queued at 202 and fails asynchronously in the supervisor, where the caller cannot see it.
+    from routes.inference import _messages_have_input_audio, _reject_unsupported_content_parts
+
+    _reject_unsupported_content_parts(request)
+
     # Message content/reasoning are user-authored data, not routing configuration. Scan every
     # other persisted field, including extra message-envelope fields, with the credential policy.
     durable_config = {
@@ -172,15 +178,17 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             detail = "Durable chat runs are available only for local inference",
         )
     # A media turn has no replayable transcript and its payload persists verbatim, so a base64 blob would live in
-    # request_json for the life of the thread.
-    if any(raw.get(field) not in (None, "") for field in _MEDIA_FIELDS):
+    # request_json for the life of the thread. A recording rides in a content part too, not just the field.
+    if any(
+        raw.get(field) not in (None, "") for field in _MEDIA_FIELDS
+    ) or _messages_have_input_audio(request.messages):
         raise HTTPException(
             status_code = 400,
             detail = "Media chat runs use the legacy streaming path",
         )
-    # Recovery currently rebuilds text and reasoning deltas, not server-side tool
-    # events. Keep any request whose effective policy can enter the local tool loop
-    # on the legacy subscriber-owned stream until those events are replayable.
+    # Recovery currently rebuilds text and reasoning deltas, not server-side tool events. Keep any request whose
+    # effective policy can enter the local tool loop on the legacy subscriber-owned stream until those events are
+    # replayable.
     from routes.inference import _checkpoint_recall_may_enable_tools, _effective_enable_tools
 
     request = request.model_copy(update = {"thread_id": payload.threadId})
@@ -349,11 +357,10 @@ async def chat_generation_events(
             if await request.is_disconnected():
                 return
             if not events:
-                # Carries the run's progress stamp, which the lease renewals move.
-                # A bare keep-alive proves only that the CONNECTION is healthy, so a follower rearming its no-progress
-                # deadline on one could never settle a wedged run while the socket stayed up, the one case that fallback
-                # exists for.
-                # Comment framing, so _SSEDecoder still drops it and no client parsing it as an event is affected.
+                # Carries the run's progress stamp, which the lease renewals move. A bare keep-alive proves only that the
+                # CONNECTION is healthy, so a follower rearming its no-progress deadline on one could never settle a wedged
+                # run while the socket stayed up, the one case that fallback exists for. Comment framing, so _SSEDecoder
+                # still drops it and no client parsing it as an event is affected.
                 yield f": keep-alive {int(snapshot['updatedAt'])}\n\n"
 
     return StreamingResponse(

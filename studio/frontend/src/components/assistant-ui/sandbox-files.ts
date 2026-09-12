@@ -12,6 +12,14 @@ const FILES_MARKER = "\n__FILES__:";
 /** The tools that emit the file envelope. Nothing else's output is an envelope. */
 export const SANDBOX_FILE_TOOLS = new Set(["python", "terminal"]);
 
+/**
+ * The tools that emit the image envelope: the sandbox ones, and the provider's hosted
+ * code execution, which attaches its plots the same way. The backend keeps a
+ * well-formed `__IMAGES__` line from any other tool as content the model reads, so
+ * the card has to keep it too, or the user sees less than the model was given.
+ */
+export const IMAGE_SENTINEL_TOOLS = new Set([...SANDBOX_FILE_TOOLS, "code_execution"]);
+
 function isSandboxFile(entry: unknown): entry is SandboxFile {
   if (typeof entry !== "object" || entry === null) return false;
   const { name, size } = entry as { name?: unknown; size?: unknown };
@@ -77,9 +85,8 @@ export function isSandboxToolResult(
     images?: unknown;
     files?: unknown;
   };
-  // images too: it is always in Unsloth's own wrapper, and a tool result that
-  // merely has text and sessionId is someone else's, whose other fields would
-  // be dropped on export.
+  // images too: it is always in Unsloth's own wrapper, and a tool result that merely has text and
+  // sessionId is someone else's, whose other fields would be dropped on export.
   return (
     typeof v.text === "string" &&
     typeof v.sessionId === "string" &&

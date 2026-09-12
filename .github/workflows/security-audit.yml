@@ -267,11 +267,29 @@ jobs:
               d = tomllib.load(f)
           core = d["project"]["dependencies"]
           extras = d["project"]["optional-dependencies"]["huggingfacenotorch"]
+          # extras-no-deps.txt no longer pins torchcodec, so the audit set would lose it.
+          audio = d["project"]["optional-dependencies"]["audio-torch211"]
           print("# Auto-generated from pyproject.toml by security-audit.yml.")
-          print("# core deps + huggingfacenotorch extras.")
-          for spec in core + extras:
+          print("# core deps + huggingfacenotorch extras + audio-torch211.")
+          for spec in core + extras + audio:
               print(spec)
           PY
+          for extra in audio-torch210 audio-torch290 audio-torch280; do
+          python - "$extra" <<'PY' > "audit-reqs/$extra.txt"
+          import sys, tomllib
+          extra = sys.argv[1]
+          with open("pyproject.toml", "rb") as f:
+              d = tomllib.load(f)
+          # The older lines _select_torchcodec_spec installs on torch 2.10, 2.9 and 2.8, all of
+          # which the flavor and default-ROCm repairs still resolve. One file each: their
+          # ranges are disjoint, so they cannot share a resolve with each other or with
+          # audio-torch211's >=0.11.
+          print("# Auto-generated from pyproject.toml by security-audit.yml.")
+          print(f"# {extra}.")
+          for spec in d["project"]["optional-dependencies"][extra]:
+              print(spec)
+          PY
+          done
           for f in studio.txt extras.txt extras-no-deps.txt \
                    no-torch-runtime.txt overrides.txt triton-kernels.txt; do
             python <<PY > "audit-reqs/$f"
@@ -312,8 +330,8 @@ jobs:
           wheel
           CONSTRAINTS
           : > logs-pip-audit.txt
-          for f in unsloth-deps studio extras extras-no-deps \
-                   no-torch-runtime overrides triton-kernels; do
+          for f in unsloth-deps audio-torch210 audio-torch290 audio-torch280 studio extras \
+                   extras-no-deps no-torch-runtime overrides triton-kernels; do
             if ! grep -qE '^[^#[:space:]]' "audit-reqs/$f.txt"; then
               echo "[security-audit] $f.txt has no PyPI specs after git+ filter, skipping" \
                 | tee -a logs-pip-audit.txt
@@ -332,7 +350,7 @@ jobs:
             echo "## pip-audit (Python)"
             echo
             echo '### Coverage'
-            echo '- unsloth core + `huggingfacenotorch` extras (pyproject.toml)'
+            echo '- unsloth core + `huggingfacenotorch` + every `audio-torch2xx` extra (pyproject.toml)'
             echo '- studio/backend/requirements/{studio,extras,extras-no-deps,no-torch-runtime,overrides,triton-kernels}.txt'
             echo '- `git+` specs are stripped before audit (out of scope: we audit PyPI archives)'
             echo
@@ -457,6 +475,9 @@ jobs:
               --lockfile=studio/frontend/package-lock.json \
               --lockfile=studio/src-tauri/Cargo.lock \
               --lockfile=requirements.txt:audit-reqs/unsloth-deps.txt \
+              --lockfile=requirements.txt:audit-reqs/audio-torch210.txt \
+              --lockfile=requirements.txt:audit-reqs/audio-torch290.txt \
+              --lockfile=requirements.txt:audit-reqs/audio-torch280.txt \
               --lockfile=requirements.txt:audit-reqs/studio.txt \
               --lockfile=requirements.txt:audit-reqs/no-torch-runtime.txt \
               --lockfile=requirements.txt:audit-reqs/overrides.txt \
@@ -804,10 +825,19 @@ jobs:
             files: 'unsloth-deps no-torch-runtime'
           - name: 'pip scan-packages :: studio'
             id: studio
-            files: 'studio overrides extras-no-deps'
+            files: 'studio overrides extras-no-deps audio-torch210'
           - name: 'pip scan-packages :: extras'
             id: extras
             files: 'extras'
+          # scan_packages.py keeps the first requirement per normalised package name, so the
+          # torchcodec lines have to be scanned apart or only one of them is ever fetched.
+          # They are one package each, so the shards are cheap.
+          - name: 'pip scan-packages :: audio-torch290'
+            id: audio-torch290
+            files: 'audio-torch290'
+          - name: 'pip scan-packages :: audio-torch280'
+            id: audio-torch280
+            files: 'audio-torch280'
     steps:
       # Egress block on every shard. Each shard pulls hundreds of
       # PyPI archives -- if a malicious wheel ever phones home from
@@ -859,11 +889,29 @@ jobs:
               d = tomllib.load(f)
           core = d["project"]["dependencies"]
           extras = d["project"]["optional-dependencies"]["huggingfacenotorch"]
+          # extras-no-deps.txt no longer pins torchcodec, so the audit set would lose it.
+          audio = d["project"]["optional-dependencies"]["audio-torch211"]
           print("# Auto-generated from pyproject.toml by security-audit.yml.")
-          print("# core deps + huggingfacenotorch extras.")
-          for spec in core + extras:
+          print("# core deps + huggingfacenotorch extras + audio-torch211.")
+          for spec in core + extras + audio:
               print(spec)
           PY
+          for extra in audio-torch210 audio-torch290 audio-torch280; do
+          python - "$extra" <<'PY' > "audit-reqs/$extra.txt"
+          import sys, tomllib
+          extra = sys.argv[1]
+          with open("pyproject.toml", "rb") as f:
+              d = tomllib.load(f)
+          # The older lines _select_torchcodec_spec installs on torch 2.10, 2.9 and 2.8, all of
+          # which the flavor and default-ROCm repairs still resolve. One file each: their
+          # ranges are disjoint, so they cannot share a resolve with each other or with
+          # audio-torch211's >=0.11.
+          print("# Auto-generated from pyproject.toml by security-audit.yml.")
+          print(f"# {extra}.")
+          for spec in d["project"]["optional-dependencies"][extra]:
+              print(spec)
+          PY
+          done
           for f in studio.txt extras.txt extras-no-deps.txt \
                    no-torch-runtime.txt overrides.txt triton-kernels.txt; do
             python <<PY > "audit-reqs/$f"

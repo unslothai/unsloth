@@ -140,6 +140,61 @@ def _crash_reason(proc: subprocess.CompletedProcess) -> str | None:
     return None
 
 
+# Prepended to a -Command script so its stdout is UTF-8 whatever the host console is set to.
+# UTF8Encoding($false), not [Text.Encoding]::UTF8: the latter emits a preamble, which lands in
+# stdout as a BOM and breaks the first assertion of whatever reads it.
+_UTF8_PROLOGUE = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n"
+
+
+# Python's own aliases for UTF-8, after "_" is folded to "-". A caller that spells it any of
+# these ways wants what we want and still needs the writing end set.
+_UTF8_ALIASES = frozenset({"utf-8", "utf8", "u8", "utf", "u-8", "cp65001"})
+
+
+def _agree_on_utf8(argv: list[str], kwargs: dict) -> list[str]:
+    """Make both ends of the pipe use UTF-8. Returns the argv to run; `kwargs` is updated.
+
+    Nobody was setting the WRITING end, so the answer depended on the host's code pages.
+    Windows PowerShell 5.1 writes a redirected pipe in the OEM code page (cp437 on a US box,
+    where U+00E4 leaves as one 0x84 byte) while pwsh 7 writes UTF-8. `text = True` alone then
+    decodes with the ANSI code page, which round-trips neither: 5.1 gives U+FFFD and pwsh
+    gives mojibake. That is what test_a_non_ascii_marker_survives_the_rollback fails on in
+    parity CI, on both shells.
+
+    Naming `encoding = "utf-8"` at the call site, which is what that test already does, fixes
+    pwsh 7 and makes 5.1 worse: 0x84 is not valid UTF-8, so the decode raises inside
+    subprocess's reader thread, where the exception is swallowed and the attribute is left as
+    None. The caller gets `returncode == 0` and `stdout is None`, so the run reads as a script
+    that printed nothing rather than as a pipe nobody agreed on.
+
+    Hence both halves, always together. The prologue makes the shell write UTF-8 whatever the
+    console is set to, and the decode reads it back. The pair is exact for every code point on
+    both shells, and a no-op where the output was already UTF-8 or pure ASCII.
+
+    Left alone: byte-mode callers, who asked for bytes and can decode as they like, and a
+    caller that named some OTHER encoding, who has chosen. `-File` has no script string to
+    prepend to, so it gets the decode half only, which is the one available to it.
+
+    The call site's own list is never written to: a caller that reuses its argv, or reads it
+    after the call, sees exactly what it built.
+    """
+    if not (kwargs.get("text") or kwargs.get("universal_newlines")):
+        return argv
+    named = kwargs.get("encoding")
+    if named is not None and named.lower().replace("_", "-") not in _UTF8_ALIASES:
+        return argv
+    kwargs["encoding"] = "utf-8"
+    # -Command only. PowerShell accepts unambiguous prefixes, but every call site here spells
+    # it in full, and prepending to the wrong element would run the prologue as a file path.
+    try:
+        script = argv.index("-Command") + 1
+    except ValueError:
+        return argv
+    if script >= len(argv) or not isinstance(argv[script], str):
+        return argv
+    return argv[:script] + [_UTF8_PROLOGUE + argv[script]] + argv[script + 1 :]
+
+
 def run_pwsh(
     argv: list[str],
     *,
@@ -168,6 +223,8 @@ def run_pwsh(
     """
     if attempts < 1:
         raise ValueError(f"attempts must be >= 1, got {attempts}")
+
+    argv = _agree_on_utf8(argv, kwargs)
 
     # Redirect only pwsh's own startup cache, leaving every other variable as the call site meant it: `env = None`
     # still means "inherit", and a hermetic env dict still gets exactly the keys it listed plus this one.
