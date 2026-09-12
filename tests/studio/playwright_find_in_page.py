@@ -110,7 +110,12 @@ def open_bar(page, mod: str) -> None:
     )
 
 
-def settle(page, condition: str, *, timeout: int = 10000) -> None:
+def settle(
+    page,
+    condition: str,
+    *,
+    timeout: int = 10000,
+) -> None:
     """Give `condition` until `timeout` to hold, and do not fail here if it never does.
 
     A flat sleep before reading the state asserts the runner's speed alongside the
