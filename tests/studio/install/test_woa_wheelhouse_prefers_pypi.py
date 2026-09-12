@@ -1,0 +1,180 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""The wheelhouse is for wheels PyPI does not build, and only for those.
+
+The Windows on ARM wheelhouse exists because PyPI publishes no win_arm64 build of pyarrow,
+tiktoken, grpcio, brotli, hf_transfer or sqlite-vec. regex is different: PyPI has shipped
+win_arm64 regex since 2025.7.29, and the staging directory is first in UV_FIND_LINKS, so a
+user asking for regex got our binary rather than the one the project released.
+
+So staging asks PyPI first and skips the copy when PyPI publishes the same project at or
+above the version that would have been staged. The version half matters as much as the
+check: an upstream BEHIND the wheelhouse has to leave ours in place, or the guard turns
+into a downgrade.
+
+Text-level tests, like the rest of the installer suite: install.ps1 is PowerShell, so the
+shape is asserted against its source rather than by running it.
+"""
+
+from __future__ import annotations
+
+import pathlib
+import re
+import shutil
+import subprocess
+
+import pytest
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+INSTALL_PS1 = REPO_ROOT / "install.ps1"
+
+
+@pytest.fixture(scope = "module")
+def source() -> str:
+    return INSTALL_PS1.read_text(encoding = "utf-8-sig")
+
+
+def _function_body(source: str, name: str) -> str:
+    """One nested `    function Name {` block, to its closing `    }`."""
+    match = re.search(r"(?ms)^    function " + re.escape(name) + r"\b.*?^    \}$", source)
+    assert match, f"install.ps1 no longer defines {name}"
+    return match.group(0)
+
+
+def _staging_loop(source: str) -> str:
+    """The generic wheelhouse mirror: the block that copies everything but pyarrow."""
+    match = re.search(
+        r"(?ms)^        \$WoaExtraStaged = 0$.*?^        if \(\$WoaExtraStaged -gt 0\)", source
+    )
+    assert match, "the wheelhouse staging loop moved"
+    return match.group(0)
+
+
+def test_the_pypi_probe_is_pypi_only(source):
+    """Test-WoaWheelAvailable falls back to the wheelhouse, where the wheel being staged
+    always is, so the guard would never fire. This probe has to ask PyPI and nothing else."""
+    body = _function_body(source, "Test-WoaPyPIWheel")
+    assert "pypi.org/simple" in body
+    for other in ("WoaWheelhouse", "index.txt", "Get-ChildItem"):
+        assert other not in body, f"Test-WoaPyPIWheel consults {other}; it must ask PyPI alone"
+
+
+def test_both_staging_branches_skip_what_pypi_publishes(source):
+    """Both the local-directory branch and the URL branch mirror the wheelhouse, so a guard
+    on one of them leaves the other shipping our copy."""
+    loop = _staging_loop(source)
+    calls = re.findall(r"Test-WoaWheelhouseWheelIsRedundant", loop)
+    assert (
+        len(calls) == 2
+    ), f"expected the redundancy guard in both staging branches, found {len(calls)}"
+
+
+def test_the_guard_is_version_aware(source):
+    """Published is not enough: upstream behind the wheelhouse means dropping ours
+    downgrades the install, so the floor is the staged wheel's own version."""
+    body = _function_body(source, "Test-WoaWheelhouseWheelIsRedundant")
+    assert "-Floor $fields[1]" in body, "the guard must floor PyPI at the staged version"
+    probe = _function_body(source, "Test-WoaPyPIWheel")
+    assert "Test-WoaVersionAtLeast" in probe, "the probe must compare versions, not just presence"
+
+
+def test_the_guard_only_judges_wheels_this_venv_could_use(source):
+    """A cp312 wheel in the wheelhouse is not made redundant by a cp313 wheel on PyPI."""
+    body = _function_body(source, "Test-WoaWheelhouseWheelIsRedundant")
+    assert "Test-WoaWheelTagsUsable" in body
+
+
+def test_interpreter_agnostic_wheels_still_count(source):
+    """hf_transfer ships cp38-abi3 and sqlite_vec py3-none, both usable on cp313: an
+    exact-tag test would call them foreign and go on shipping ours forever."""
+    body = _function_body(source, "Test-WoaWheelTagsUsable")
+    assert '"abi3"' in body and '"none"' in body
+    # Free-threaded venvs are the exception the exact-tag helper exists for.
+    assert '$AbiTag -like "*t"' in body
+
+
+def test_pyarrow_keeps_its_own_pypi_first_path(source):
+    """Get-WoaPyarrowSource already asks PyPI first and the generic loop skips pyarrow for
+    that reason. Both halves have to stay, or pyarrow is staged twice or never probed."""
+    body = _function_body(source, "Get-WoaPyarrowSource")
+    assert 'return "pypi"' in body
+    loop = _staging_loop(source)
+    assert re.search(
+        r'-like "pyarrow-\*"\) \{ continue \}', loop
+    ), "the generic loop must leave pyarrow to Get-WoaPyarrowSource"
+
+
+# The default wheelhouse URL had no test at all: changing it to a working but wrong host left
+# the whole suite green. It is the only source for the pyarrow that gates the native path, so a
+# typo sends every Windows on ARM host back to the emulated x64 stack, and it is fetched over
+# the network, so a wrong host is a wrong download.
+DEFAULT_WHEELHOUSE = "https://huggingface.co/danielhanchen/unsloth-blackwell-docker/resolve/main/windows-arm64-wheels"
+
+PWSH = shutil.which("pwsh")
+requires_pwsh = pytest.mark.skipif(PWSH is None, reason = "pwsh not available")
+
+
+def _wheelhouse_assignment(source: str) -> str:
+    """The `$script:WoaWheelhouse = if (...) {...} else {...}` block, lifted verbatim."""
+    match = re.search(r"(?ms)^    \$script:WoaWheelhouse = if .*?^    \}$", source)
+    assert match, "install.ps1 no longer assigns $script:WoaWheelhouse in one block"
+    return match.group(0)
+
+
+def test_the_default_wheelhouse_url_is_exactly_this(source):
+    assert DEFAULT_WHEELHOUSE in _wheelhouse_assignment(source)
+
+
+def test_the_default_is_an_https_resolve_url_on_hugging_face(source):
+    """`resolve/main` serves the file; a plain repo URL serves an HTML page, which the
+    staging code would happily save as a .whl. The path may continue past `resolve/main`:
+    the wheelhouse is a folder of a repo we own."""
+    assert DEFAULT_WHEELHOUSE.startswith("https://huggingface.co/danielhanchen/")
+    assert "/resolve/main" in DEFAULT_WHEELHOUSE
+    assert not DEFAULT_WHEELHOUSE.endswith("/"), "Join-UrlPath adds the slash"
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    ("configured", "expected", "why"),
+    [
+        (None, DEFAULT_WHEELHOUSE, "unset falls back to the published wheelhouse"),
+        ("", DEFAULT_WHEELHOUSE, "empty is not a configuration"),
+        ("https://example.test/wheels", "https://example.test/wheels", "a mirror is honoured"),
+        ("https://example.test/wheels/", "https://example.test/wheels", "one trailing slash goes"),
+        ("https://example.test/wheels///", "https://example.test/wheels", "so do several"),
+        (
+            "  https://example.test/wheels  ",
+            "https://example.test/wheels",
+            "surrounding space goes",
+        ),
+        (r"C:\wheels", r"C:\wheels", "a local directory survives untouched"),
+        (
+            "C:" + chr(92) + "wheels" + chr(92),
+            "C:" + chr(92) + "wheels" + chr(92),
+            "TrimEnd takes '/' only, so a trailing backslash stays",
+        ),
+    ],
+)
+def test_the_wheelhouse_override_is_normalised(source, configured, expected, why):
+    setup = (
+        "Remove-Item Env:UNSLOTH_WOA_WHEELHOUSE -ErrorAction SilentlyContinue; "
+        if configured is None
+        else f"$env:UNSLOTH_WOA_WHEELHOUSE = '{configured}'; "
+    )
+    script = (
+        "$ErrorActionPreference = 'Stop'; "
+        + setup
+        + _wheelhouse_assignment(source).strip()
+        + '; Write-Output "<<<$script:WoaWheelhouse>>>"'
+    )
+    done = subprocess.run(
+        [PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output = True,
+        text = True,
+        timeout = 120,
+    )
+    assert done.returncode == 0, done.stderr
+    out = done.stdout
+    assert out[out.index("<<<") + 3 : out.rindex(">>>")] == expected, why

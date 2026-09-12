@@ -25,6 +25,7 @@ import re
 import sys
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Dict, List, Optional, Sequence, Tuple
 
 MANIFEST_NAME = "unsloth_install_manifest.json"
@@ -275,6 +276,7 @@ def write_manifest(
     no_torch: Optional[bool] = None,
     expected_torch_tag: Optional[str] = None,
     expected_torch_tag_pinned: Optional[bool] = None,
+    woa_torch_index: Optional[str] = None,
 ) -> Optional[Path]:
     """Record a completed install. Never raises: no manifest reads as incomplete,
     which is the safe answer."""
@@ -307,6 +309,25 @@ def write_manifest(
     # eGPU with no repair offered. Absent means unknown, as with every other additive key.
     if expected_torch_tag_pinned is not None:
         payload["expected_torch_tag_pinned"] = bool(expected_torch_tag_pinned)
+    # Windows on ARM has no CUDA wheels on download.pytorch.org, so a fresh shell cannot re-derive.
+    # Only NVIDIA's own channels, with no userinfo, query or fragment: a mirror is not persisted.
+    if woa_torch_index:
+        candidate = str(woa_torch_index).strip()
+        # urlsplit raises on a malformed authority, which would break the never-raises contract. Scheme and host compare case-insensitively (RFC 3986); the path keeps its case.
+        try:
+            parsed = urlsplit(candidate)
+            _woa_ok = (
+                parsed.scheme.lower() == "https"
+                and parsed.hostname == "pypi.nvidia.com"
+                and parsed.netloc.lower() == parsed.hostname
+                and not parsed.query
+                and not parsed.fragment
+            )
+        except ValueError:
+            _woa_ok = False
+        # netloc, not hostname: hostname strips ":443", so a value with a port is refused. Equality drops userinfo with it.
+        if _woa_ok:
+            payload["woa_torch_index"] = "https://pypi.nvidia.com" + parsed.path.rstrip("/")
     path = manifest_path(root)
     try:
         tmp = path.with_suffix(".json.tmp")

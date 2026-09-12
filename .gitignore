@@ -255,5 +255,9 @@ Speech_12dB_s16.flac
 # so a test run or an Unsloth start rewrites it and dirties the checkout.
 .studio-test-root/
 
+# _filter_requirements() in studio/install_python_stack.py writes its skip-filtered copy beside
+# the source file so relative -r/-c includes still resolve. A killed install leaves them behind.
+studio/backend/requirements/.*-filtered-*.txt
+
 # launch.py --outdir scratch from a local run
 /out/

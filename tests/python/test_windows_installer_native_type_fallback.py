@@ -1679,6 +1679,35 @@ def test_the_private_temp_removal_only_takes_what_it_created(tmp_path: Path):
     assert (data / "studio.port").exists()
 
 
+# Split-Path's -LiteralPath lives in its own parameter set in Windows PowerShell 5.1, so naming
+# -Parent with it throws AmbiguousParameterSet at runtime, not at parse time, which is why eight of
+# them reached a release. -LiteralPath alone already splits off the parent, and -Path globs.
+# Static, because CI has no Windows PowerShell 5.1 to run the scripts under.
+_SPLIT_PATH_LITERAL_PARENT = re.compile(
+    r"Split-Path\b[^\r\n|;]*?-LiteralPath\b[^\r\n|;]*?-Parent\b"
+    r"|Split-Path\b[^\r\n|;]*?-Parent\b[^\r\n|;]*?-LiteralPath\b"
+)
+
+
+# The two installers this change touches. scripts/uninstall.ps1 has its own eight of these and its
+# own PR (#10471); listed here it failed on this tree unconditionally.
+@pytest.mark.parametrize("name", ("install.ps1", "studio/setup.ps1"))
+def test_split_path_never_pairs_literalpath_with_parent(name: str) -> None:
+    text = (REPO_ROOT / name).read_text(encoding = "utf-8")
+    offenders = [
+        f"{name}:{number}: {line.strip()}"
+        for number, line in enumerate(text.splitlines(), start = 1)
+        # Comments are prose about the rule, not a call the shell binds.
+        if not line.strip().startswith("#") and _SPLIT_PATH_LITERAL_PARENT.search(line)
+    ]
+    assert not offenders, (
+        "Split-Path -LiteralPath cannot be combined with -Parent: Windows PowerShell 5.1 "
+        "resolves no parameter set for the pair and the call throws at runtime. Drop "
+        "-Parent -- -LiteralPath alone already returns the parent, and unlike -Path it does "
+        "not treat [ ] in an install root as a wildcard.\n  " + "\n  ".join(offenders)
+    )
+
+
 SETUP_PS1 = REPO_ROOT / "studio" / "setup.ps1"
 
 

@@ -746,10 +746,52 @@ def checkout_friendly_ref(ref_kind: str | None, ref: str | None) -> str | None:
     return ref
 
 
-def windows_cuda_upstream_asset_names(llama_tag: str, runtime: str) -> list[str]:
+# Upstream names these llama-<tag>-bin-win-cuda-<runtime>-<arch>.zip, arch in {x64, arm64}.
+WINDOWS_CUDA_ARCHS = ("x64", "arm64")
+_WINDOWS_CUDA_INSTALL_KINDS = ("windows-cuda", "windows-arm64-cuda")
+
+
+def _upstream_arm64_cuda_allowed() -> bool:
+    """May a Windows ARM64 NVIDIA host install a CUDA llama.cpp bundle at all? Defaults
+    to yes, because the only other answer is a CPU-only build on a CUDA machine.
+    UNSLOTH_LLAMA_ARM64_CUDA=0/false/no/off opts out.
+
+    This governs every ARM64 CUDA bundle, published or upstream. It started narrower --
+    only the unverified upstream bundle, since that is the one with a provenance question
+    -- but what the flag promises the user is a CPU bundle, and scoping it to the
+    unverified case meant the escape hatch would switch itself off the day the fork
+    published an approved windows-arm64-cuda artifact. A setting that silently stops
+    working on someone else's release is worse than one that is merely blunt.
+    """
+    raw = (os.environ.get("UNSLOTH_LLAMA_ARM64_CUDA") or "").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def windows_cuda_arch_for_host(host: HostInfo) -> str:
+    """CUDA prebuilt arch token for a Windows host: arm64 on Windows on ARM, else x64.
+
+    ``is_arm64`` is also true for macOS arm64 and Linux aarch64, so the Windows test
+    is part of the question rather than the caller's job. Every caller today is already
+    inside a Windows branch; this keeps the answer right if one ever is not.
+    """
+    return "arm64" if (host.is_windows and host.is_arm64) else "x64"
+
+
+def windows_cuda_install_kind_for_arch(arch: str) -> str:
+    """install_kind for a Windows CUDA prebuilt of `arch`. Kept separate from the x64
+    kind so the runtime-overlay, health-check and marker tables can tell the two apart
+    (their payloads differ: the arm64 bundle carries no cuBLASLt-for-x64 DLL set)."""
+    return "windows-arm64-cuda" if arch == "arm64" else "windows-cuda"
+
+
+def windows_cuda_upstream_asset_names(
+    llama_tag: str,
+    runtime: str,
+    arch: str = "x64",
+) -> list[str]:
     return [
-        f"llama-{llama_tag}-bin-win-cuda-{runtime}-x64.zip",
-        f"cudart-llama-bin-win-cuda-{runtime}-x64.zip",
+        f"llama-{llama_tag}-bin-win-cuda-{runtime}-{arch}.zip",
+        f"cudart-llama-bin-win-cuda-{runtime}-{arch}.zip",
     ]
 
 
@@ -757,29 +799,35 @@ def windows_cuda_asset_aliases(
     asset_name: str, *, compatibility_tag: str | None = None
 ) -> list[str]:
     aliases: list[str] = []
+    _arch_re = "|".join(WINDOWS_CUDA_ARCHS)
     legacy_match = re.fullmatch(
-        r"llama-(?P<tag>[^/]+)-bin-win-cuda-(?P<runtime>\d+\.\d+)-x64\.zip",
+        rf"llama-(?P<tag>[^/]+)-bin-win-cuda-(?P<runtime>\d+\.\d+)-(?P<arch>{_arch_re})\.zip",
         asset_name,
     )
     if legacy_match:
         runtime = legacy_match.group("runtime")
-        aliases.append(f"cudart-llama-bin-win-cuda-{runtime}-x64.zip")
+        arch = legacy_match.group("arch")
+        aliases.append(f"cudart-llama-bin-win-cuda-{runtime}-{arch}.zip")
         if compatibility_tag:
-            aliases.append(f"llama-{compatibility_tag}-bin-win-cuda-{runtime}-x64.zip")
+            aliases.append(f"llama-{compatibility_tag}-bin-win-cuda-{runtime}-{arch}.zip")
         return aliases
 
     current_match = re.fullmatch(
-        r"cudart-llama-bin-win-cuda-(?P<runtime>\d+\.\d+)-x64\.zip",
+        rf"cudart-llama-bin-win-cuda-(?P<runtime>\d+\.\d+)-(?P<arch>{_arch_re})\.zip",
         asset_name,
     )
     if current_match and compatibility_tag:
         runtime = current_match.group("runtime")
-        aliases.append(f"llama-{compatibility_tag}-bin-win-cuda-{runtime}-x64.zip")
+        arch = current_match.group("arch")
+        aliases.append(f"llama-{compatibility_tag}-bin-win-cuda-{runtime}-{arch}.zip")
     return aliases
 
 
 def _published_windows_cuda_runtime(
-    upstream_assets: dict[str, str], major: int, driver: tuple[int, int] | None
+    upstream_assets: dict[str, str],
+    major: int,
+    driver: tuple[int, int] | None,
+    arch: str = "x64",
 ) -> str | None:
     """Highest cuda-<major>.<minor> published upstream that `driver` can run by
     default CUDA compatibility, i.e. (major, minor) <= driver. None if nothing
@@ -790,7 +838,7 @@ def _published_windows_cuda_runtime(
         return None
     best: int | None = None
     for name in upstream_assets:
-        m = re.search(r"-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$", name)
+        m = re.search(rf"-bin-win-cuda-(\d+)\.(\d+)-{re.escape(arch)}\.zip$", name)
         if m and int(m.group(1)) == major:
             minor = int(m.group(2))
             if (major, minor) <= driver and (best is None or minor > best):
@@ -1086,6 +1134,20 @@ def direct_upstream_release_plan(
                 )
             )
     elif host.is_windows and host.is_arm64:
+        # Upstream ships -arm64 CUDA bundles for these parts; try them first, CPU bundle still last.
+        if host.has_usable_nvidia and _upstream_arm64_cuda_allowed():
+            torch_preference = detect_torch_cuda_runtime_preference(host)
+            attempts.extend(
+                windows_cuda_attempts(
+                    host,
+                    release_tag,
+                    assets,
+                    torch_preference.runtime_line,
+                    torch_preference.selection_log,
+                    arch = "arm64",
+                )
+            )
+            attempts[:] = _drop_blackwell_incapable_windows_cuda(host, attempts)
         # Upstream ggml-org/llama.cpp ships llama-bNNNN-bin-win-cpu-arm64.zip
         # (visible in the b9334 release manifest). Without this branch the
         # selector returned 0 attempts and the installer fell back to a
@@ -1311,6 +1373,22 @@ def detected_linux_runtime_lines() -> tuple[list[str], dict[str, list[str]]]:
 
 
 release_asset_map = _core.release_asset_map
+release_asset_digests = _core.release_asset_digests
+
+
+def github_release_asset_digests(repo: str, tag: str) -> dict[str, str]:
+    """asset name -> sha256, from the release GitHub already serves us.
+
+    Separate call rather than a second return value from github_release_assets: that one is
+    mocked in a dozen suites and used on every platform, while this is read on one branch
+    only. Any failure is an empty mapping, which that branch reads as "refuse", so a rate
+    limit or an outage costs the CUDA bundle rather than installing it unchecked.
+    """
+    try:
+        return release_asset_digests(github_release(repo, tag))
+    except Exception as exc:
+        log(f"could not read release asset digests for {repo}@{tag}: {exc}")
+        return {}
 
 
 def parse_published_artifact(raw: Any) -> PublishedLlamaArtifact | None:
@@ -2957,8 +3035,14 @@ def windows_cuda_attempts(
     upstream_assets: dict[str, str],
     preferred_runtime_line: str | None,
     selection_preamble: Iterable[str] = (),
+    arch: str | None = None,
 ) -> list[AssetChoice]:
+    if arch is None:
+        arch = windows_cuda_arch_for_host(host)
+    install_kind = windows_cuda_install_kind_for_arch(arch)
     selection_log = list(selection_preamble)
+    if arch != "x64":
+        selection_log.append(f"windows_cuda_selection: arch={arch}")
     driver_runtime = pick_windows_cuda_runtime(host)
     detected_runtime_lines, runtime_dirs = detected_windows_runtime_lines()
     compatible_runtime_lines = compatible_windows_runtime_lines(host)
@@ -3043,7 +3127,9 @@ def windows_cuda_attempts(
         # Track whatever minor llama.cpp actually ships for this major
         # (cuda13 -> 13.1, 13.3, ...). Skip the line when the release has no
         # matching asset instead of guessing a now-missing name.
-        runtime = _published_windows_cuda_runtime(upstream_assets, major, host.driver_cuda_version)
+        runtime = _published_windows_cuda_runtime(
+            upstream_assets, major, host.driver_cuda_version, arch
+        )
         if runtime is None:
             selection_log.append(
                 f"windows_cuda_selection: no driver-supported asset for {runtime_line}"
@@ -3051,7 +3137,7 @@ def windows_cuda_attempts(
             continue
         selected_name = None
         asset_url = None
-        for candidate_name in windows_cuda_upstream_asset_names(llama_tag, runtime):
+        for candidate_name in windows_cuda_upstream_asset_names(llama_tag, runtime, arch):
             asset_url = upstream_assets.get(candidate_name)
             if asset_url:
                 selected_name = candidate_name
@@ -3059,7 +3145,7 @@ def windows_cuda_attempts(
         if not asset_url or not selected_name:
             selection_log.append(
                 "windows_cuda_selection: skip missing assets "
-                + ",".join(windows_cuda_upstream_asset_names(llama_tag, runtime))
+                + ",".join(windows_cuda_upstream_asset_names(llama_tag, runtime, arch))
             )
             continue
         # Pair the cudart bundle when upstream ships it. Without this
@@ -3069,7 +3155,7 @@ def windows_cuda_attempts(
         runtime_archive_name: str | None = None
         runtime_archive_url: str | None = None
         if selected_name.startswith("llama-"):
-            cudart_name = f"cudart-llama-bin-win-cuda-{runtime}-x64.zip"
+            cudart_name = f"cudart-llama-bin-win-cuda-{runtime}-{arch}.zip"
             cudart_url = upstream_assets.get(cudart_name)
             if cudart_url and cudart_url != asset_url:
                 runtime_archive_name = cudart_name
@@ -3093,7 +3179,7 @@ def windows_cuda_attempts(
                 name = selected_name,
                 url = asset_url,
                 source_label = "upstream",
-                install_kind = "windows-cuda",
+                install_kind = install_kind,
                 runtime_line = runtime_line,
                 runtime_name = runtime_archive_name,
                 runtime_url = runtime_archive_url,
@@ -3106,13 +3192,15 @@ def windows_cuda_attempts(
 def _windows_cuda_attempt_covers_blackwell(
     attempt: AssetChoice, min_toolkit: tuple[int, int] = _BLACKWELL_MIN_TOOLKIT
 ) -> bool:
-    """True if a windows-cuda attempt is Blackwell-capable (app bundles via
+    """True if a windows CUDA attempt is Blackwell-capable (app bundles via
     declared SMs; legacy upstream bundles via toolkit minor >= min_toolkit:
     12.8 for the family, 12.9 for sm_103/sm_121)."""
-    if attempt.install_kind != "windows-cuda":
+    if attempt.install_kind not in _WINDOWS_CUDA_INSTALL_KINDS:
         return False
     # Legacy bundle: the toolkit minor binds (12.4 cannot offload Blackwell).
-    m = re.search(r"-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$", attempt.name)
+    m = re.search(
+        rf"-bin-win-cuda-(\d+)\.(\d+)-(?:{'|'.join(WINDOWS_CUDA_ARCHS)})\.zip$", attempt.name
+    )
     if m is not None:
         return (int(m.group(1)), int(m.group(2))) >= min_toolkit
     # App-named bundles carry no minor and declare their SM coverage directly.
@@ -3126,17 +3214,19 @@ _blackwell_min_toolkit_for_host = _core.blackwell_min_toolkit_for_host
 def _drop_blackwell_incapable_windows_cuda(
     host: HostInfo, attempts: list[AssetChoice]
 ) -> list[AssetChoice]:
-    """On a Blackwell host, drop windows-cuda attempts that can't offload
+    """On a Blackwell host, drop windows CUDA attempts that can't offload
     Blackwell (e.g. cuda-12.4): they load and validate but run a slow non-native
     path (RTX 5090: 7.1 vs 551.2 tok/s on cuda-13.3). Non-cuda attempts pass
-    through so the host can still fall back to an honest CPU install."""
+    through so the host can still fall back to an honest CPU install. Windows on ARM
+    is covered too: every NVIDIA part in that class (GB10 / N1X) is Blackwell, and its
+    only CUDA bundles are cuda-13.x, so nothing legitimate is filtered there."""
     if not _host_is_blackwell(host):
         return attempts
     min_toolkit = _blackwell_min_toolkit_for_host(host)
     return [
         attempt
         for attempt in attempts
-        if attempt.install_kind != "windows-cuda"
+        if attempt.install_kind not in _WINDOWS_CUDA_INSTALL_KINDS
         or _windows_cuda_attempt_covers_blackwell(attempt, min_toolkit)
     ]
 
@@ -3146,10 +3236,14 @@ def published_windows_cuda_attempts(
     release: PublishedReleaseBundle,
     preferred_runtime_line: str | None,
     selection_preamble: Iterable[str] = (),
+    arch: str | None = None,
 ) -> list[AssetChoice]:
+    if arch is None:
+        arch = windows_cuda_arch_for_host(host)
+    install_kind = windows_cuda_install_kind_for_arch(arch)
     selection_log = list(release.selection_log) + list(selection_preamble)
     published_artifacts = [
-        artifact for artifact in release.artifacts if artifact.install_kind == "windows-cuda"
+        artifact for artifact in release.artifacts if artifact.install_kind == install_kind
     ]
     artifacts_by_runtime: dict[str, list[PublishedLlamaArtifact]] = {}
     for artifact in published_artifacts:
@@ -3164,8 +3258,10 @@ def published_windows_cuda_attempts(
     # actually provides on the host, preferring the torch line. Routing them
     # through the synthetic-minor path wrongly dropped cuda13 on a 13.0 driver.
     legacy_minors: list[str] = []
+    # Scoped to the arch being resolved: hardcoded x64 would mis-order the arm64 runtime lines.
+    _legacy_pattern = rf"-bin-win-cuda-(\d+\.\d+)-{re.escape(arch)}\.zip$"
     for artifact in published_artifacts:
-        m = re.search(r"-bin-win-cuda-(\d+\.\d+)-x64\.zip$", artifact.asset_name)
+        m = re.search(_legacy_pattern, artifact.asset_name)
         if m:
             legacy_minors.append(m.group(1))
     if legacy_minors:
@@ -3175,11 +3271,12 @@ def published_windows_cuda_attempts(
                 host,
                 release.upstream_tag,
                 {
-                    f"llama-{release.upstream_tag}-bin-win-cuda-{minor}-x64.zip": "published"
+                    f"llama-{release.upstream_tag}-bin-win-cuda-{minor}-{arch}.zip": "published"
                     for minor in legacy_minors
                 },
                 preferred_runtime_line,
                 selection_log,
+                arch = arch,
             )
             if attempt.runtime_line
         ]
@@ -3220,7 +3317,10 @@ def published_windows_cuda_attempts(
             asset_url = release.assets.get(artifact.asset_name)
             if not asset_url:
                 continue
-            am = re.search(r"-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$", artifact.asset_name)
+            # Two groups (major, minor), for THIS arch: the x64 spelling never matched an arm64 bundle.
+            am = re.search(
+                rf"-bin-win-cuda-(\d+)\.(\d+)-{re.escape(arch)}\.zip$", artifact.asset_name
+            )
             # Legacy upstream-named bundles encode the minor; gate it against the
             # driver. app-named bundles carry no minor and are driver-gated at the
             # runtime-line level by windows_cuda_attempts above.
@@ -3266,7 +3366,7 @@ def published_windows_cuda_attempts(
         runtime_archive_url: str | None = None
         if am is not None and artifact.asset_name.startswith("llama-"):
             runtime = f"{am.group(1)}.{am.group(2)}"
-            cudart_name = f"cudart-llama-bin-win-cuda-{runtime}-x64.zip"
+            cudart_name = f"cudart-llama-bin-win-cuda-{runtime}-{arch}.zip"
             cudart_url = release.assets.get(cudart_name)
             if cudart_url and cudart_url != asset_url:
                 runtime_archive_name = cudart_name
@@ -3286,7 +3386,7 @@ def published_windows_cuda_attempts(
                 name = artifact.asset_name,
                 url = asset_url,
                 source_label = "published",
-                install_kind = "windows-cuda",
+                install_kind = install_kind,
                 runtime_line = runtime_line,
                 runtime_name = runtime_archive_name,
                 runtime_url = runtime_archive_url,
@@ -3302,7 +3402,10 @@ def published_windows_cuda_attempts(
 
 
 def resolve_windows_cuda_choices(
-    host: HostInfo, llama_tag: str, upstream_assets: dict[str, str]
+    host: HostInfo,
+    llama_tag: str,
+    upstream_assets: dict[str, str],
+    arch: str | None = None,
 ) -> list[AssetChoice]:
     torch_preference = detect_torch_cuda_runtime_preference(host)
     attempts = windows_cuda_attempts(
@@ -3311,6 +3414,7 @@ def resolve_windows_cuda_choices(
         upstream_assets,
         torch_preference.runtime_line,
         torch_preference.selection_log,
+        arch = arch,
     )
     return attempts
 
@@ -3664,6 +3768,28 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
             install_kind = "windows-cpu",
         )
 
+    if host.is_windows and host.is_arm64:
+        # CUDA first on an NVIDIA host, then the CPU bundle; without this branch every Windows ARM64 host fell through to a source build.
+        if host.has_usable_nvidia and _upstream_arm64_cuda_allowed():
+            attempts = _drop_blackwell_incapable_windows_cuda(
+                host,
+                resolve_windows_cuda_choices(host, llama_tag, upstream_assets, arch = "arm64"),
+            )
+            if attempts:
+                return attempts[0]
+            log("no compatible Windows ARM64 CUDA asset was found -- falling back to CPU")
+        upstream_name = f"llama-{llama_tag}-bin-win-cpu-arm64.zip"
+        if upstream_name not in upstream_assets:
+            raise PrebuiltFallback("upstream Windows ARM64 CPU asset was not found")
+        return AssetChoice(
+            repo = UPSTREAM_REPO,
+            tag = llama_tag,
+            name = upstream_name,
+            url = upstream_assets[upstream_name],
+            source_label = "upstream",
+            install_kind = "windows-arm64",
+        )
+
     if host.is_macos and host.is_arm64:
         upstream_name = f"llama-{llama_tag}-bin-macos-arm64.tar.gz"
         if upstream_name not in upstream_assets:
@@ -3756,7 +3882,72 @@ def resolve_release_asset_choice(
         else:
             published_choice = published_asset_choice_for_kind(release, "windows-cpu")
     elif host.is_windows and host.is_arm64:
-        # Windows arm64 has no GPU prebuilt, so it always takes the CPU bundle.
+        # Prefer a CUDA bundle, as x64 does: the published windows-arm64-cuda artifact first, then
+        # upstream's -arm64 zip, both hash-gated. The opt-out gates the WHOLE branch.
+        if host.has_usable_nvidia and _upstream_arm64_cuda_allowed():
+            torch_preference = detect_torch_cuda_runtime_preference(host)
+            published_arm64_cuda = _drop_blackwell_incapable_windows_cuda(
+                host,
+                published_windows_cuda_attempts(
+                    host,
+                    release,
+                    torch_preference.runtime_line,
+                    torch_preference.selection_log,
+                    arch = "arm64",
+                ),
+            )
+            if published_arm64_cuda:
+                try:
+                    return apply_approved_hashes(published_arm64_cuda, checksums)
+                except PrebuiltFallback as exc:
+                    log(
+                        "published Windows ARM64 CUDA assets ignored for install planning: "
+                        f"{release.repo}@{release.release_tag} ({exc})"
+                    )
+            # Same rule as the digest fetch below: a rate limit, an outage or a malformed payload from the
+            # release API costs the CUDA bundle, never the install; the ARM64 CPU bundle is still there.
+            try:
+                upstream_arm64_assets = github_release_assets(UPSTREAM_REPO, llama_tag)
+            except Exception as exc:
+                log(
+                    f"could not list the upstream {UPSTREAM_REPO}@{llama_tag} release assets "
+                    f"({exc}); falling through to the ARM64 CPU bundle."
+                )
+                upstream_arm64_assets = {}
+            upstream_arm64_cuda = _drop_blackwell_incapable_windows_cuda(
+                host,
+                resolve_windows_cuda_choices(
+                    host,
+                    llama_tag,
+                    upstream_arm64_assets,
+                    arch = "arm64",
+                ),
+            )
+            if upstream_arm64_cuda:
+                try:
+                    return apply_approved_hashes(upstream_arm64_cuda, checksums)
+                except PrebuiltFallback as exc:
+                    # The fork publishes no windows-arm64-cuda bundle yet, so take upstream ggml-org's, the same release this fork
+                    # repackages. Verified against GitHub's per-asset digest; an asset it states no digest for is refused, not installed.
+                    verified = _apply_release_digests(
+                        upstream_arm64_cuda,
+                        github_release_asset_digests(UPSTREAM_REPO, llama_tag),
+                    )
+                    if verified:
+                        log(
+                            "no approved checksum covers a Windows ARM64 CUDA bundle "
+                            f"({exc}); installing the upstream {UPSTREAM_REPO} bundle "
+                            f"{verified[0].name}, verified against the release asset digest "
+                            "GitHub reports. Set UNSLOTH_LLAMA_ARM64_CUDA=0 to use the CPU "
+                            "bundle instead."
+                        )
+                        return verified
+                    log(
+                        "no approved checksum covers a Windows ARM64 CUDA bundle "
+                        f"({exc}), and GitHub reports no asset digest for the upstream "
+                        f"{UPSTREAM_REPO} bundle either; refusing to install it unverified "
+                        "and falling through to the ARM64 CPU bundle."
+                    )
         published_choice = published_asset_choice_for_kind(release, "windows-arm64")
     elif host.is_macos and host.is_arm64:
         published_choice = published_asset_choice_for_kind(release, "macos-arm64")
@@ -4121,8 +4312,10 @@ def paired_runtime_dll_patterns(choice: AssetChoice) -> list[str]:
     into the install. Used for the second copy_globs pass in
     install_from_archives, narrower than runtime_patterns_for_choice so
     the runtime archive cannot overwrite main-archive payload like
-    llama-server.exe. Only Windows CUDA has paired runtimes today."""
-    if choice.install_kind == "windows-cuda":
+    llama-server.exe. Only Windows CUDA has paired runtimes today (x64 and arm64
+    alike: upstream ships a cudart-...-arm64.zip beside the arm64 binary bundle,
+    carrying the same DLL names built for ARM64)."""
+    if choice.install_kind in _WINDOWS_CUDA_INSTALL_KINDS:
         return ["cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll"]
     return []
 
@@ -4155,6 +4348,7 @@ def runtime_patterns_for_choice(choice: AssetChoice) -> list[str]:
     if choice.install_kind in {
         "windows-cpu",
         "windows-cuda",
+        "windows-arm64-cuda",
         "windows-hip",
         "windows-vulkan",
         "windows-rocm",
@@ -5903,6 +6097,7 @@ def validate_server(
             "linux-rocm",
             "linux-vulkan",
             "windows-cuda",
+            "windows-arm64-cuda",
             "windows-hip",
             "windows-vulkan",
             "windows-rocm",
@@ -6233,6 +6428,34 @@ def collect_system_report(host: HostInfo, choice: AssetChoice | None, install_di
                 lines.append(f"otool error: {exc}")
 
     return "\n".join(lines)
+
+
+def _apply_release_digests(
+    attempts: Iterable[AssetChoice], digests: dict[str, str]
+) -> list[AssetChoice]:
+    """apply_approved_hashes against GitHub's per-asset digests instead of our manifest.
+
+    Same two rules, because they are the ones that matter: an attempt with no digest is
+    dropped rather than installed unverified, and a paired runtime archive with no digest
+    unpairs rather than riding along unchecked. Returns [] when nothing survives, which the
+    one caller reads as "refuse and fall through", not as "install anyway".
+    """
+    kept: list[AssetChoice] = []
+    for attempt in attempts:
+        digest = digests.get(attempt.name)
+        if digest is None:
+            continue
+        attempt.expected_sha256 = digest
+        if attempt.runtime_name and attempt.runtime_url:
+            runtime_digest = digests.get(attempt.runtime_name)
+            if runtime_digest is None:
+                attempt.runtime_name = None
+                attempt.runtime_url = None
+                attempt.runtime_sha256 = None
+            else:
+                attempt.runtime_sha256 = runtime_digest
+        kept.append(attempt)
+    return kept
 
 
 def apply_approved_hashes(
@@ -7038,7 +7261,7 @@ def runtime_payload_health_groups(
         return groups
     if install_kind in {"windows-cpu", "windows-arm64"}:
         return _windows_shared_groups(source_label, tag)
-    if install_kind == "windows-cuda":
+    if install_kind in {"windows-cuda", "windows-arm64-cuda"}:
         groups = _windows_shared_groups(source_label, tag) + [["ggml-cuda.dll"]]
         # Require the complete cudart trio only when it was paired with this install.
         if runtime_name:
