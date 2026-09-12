@@ -1266,3 +1266,46 @@ def test_an_earlier_attachment_keeps_its_own_turn_against_a_newer_replay():
     assert len(marker_turns) == 2, rendered
     assert marker_turns[0] < marker_turns[1]
     assert seen["images"] == [attachment, replayed], "the pixels bound to each other's markers"
+
+
+@pytest.mark.parametrize(
+    "initial, requested", [(True, False), (False, True), ("first", "second"), ("first", None)]
+)
+def test_replayed_vision_images_honor_adapter_selection_under_lock(initial, requested):
+    backend, seen = _vision_probe()
+    backend.models[backend.active_model_name]["is_vision"] = True
+    model = backend.models[backend.active_model_name]["model"]
+    state = {"active": initial, "applied": []}
+
+    def apply(value):
+        assert backend._generation_lock.locked()
+        state["applied"].append(value)
+        state["active"] = value
+
+    def generate(**kwargs):
+        assert backend._generation_lock.locked()
+        state["generated_with"] = state["active"]
+
+    backend._apply_adapter_state = apply
+    model.generate = generate
+    replay = object()
+    list(
+        backend.generate_with_adapter_control(
+            use_adapter = requested,
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image"},
+                        {"type": "text", "text": "Describe the tool image"},
+                    ],
+                }
+            ],
+            image = None,
+            images = [replay],
+            max_new_tokens = 1,
+        )
+    )
+    assert seen["images"] is replay
+    assert state["generated_with"] == (initial if requested is None else requested)
+    assert state["applied"] == ([] if requested is None else [requested])

@@ -1170,6 +1170,7 @@ class InferenceBackend:
                     reasoning_effort = reasoning_effort,
                     preserve_thinking = preserve_thinking,
                     tool_protocol_active = tool_protocol_active,
+                    _adapter_state = _adapter_state,
                 )
                 return
             else:
@@ -1328,6 +1329,7 @@ class InferenceBackend:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         tool_protocol_active: Optional[bool] = None,
+        _adapter_state = None,
     ) -> Generator[str, None, None]:
         """Handle vision model generation with true token-by-token streaming."""
         # Reset so a failed or uncountable run cannot surface stale stats.
@@ -1620,6 +1622,8 @@ class InferenceBackend:
             def generate_fn():
                 with self._generation_lock:
                     try:
+                        if _adapter_state is not None:
+                            self._apply_adapter_state(_adapter_state)
                         # Started inside the lock so a queued request's wait is not billed as prefill.
                         timer.start()
                         # See generate_stream: only the returned sequences carry

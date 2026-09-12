@@ -30890,12 +30890,17 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             ] or None
         else:
             _tools_to_use = payload.tools or None
-        messages = _set_or_prepend_system_message(
+        messages = await _promote_mcp_history_images_async(
             _structured_tool_history_for_local_template(
-                _flatten_content_parts_for_local_template(_openai_messages_for_passthrough(payload))
+                _flatten_content_parts_for_local_template(
+                    _openai_messages_for_passthrough(
+                        payload, normalize_images = False, promote_mcp_images = False
+                    )
+                )
             ),
-            system_prompt,
+            vision = False,
         )
+        messages = _set_or_prepend_system_message(messages, system_prompt)
         system_prompt = ""
     elif _tools_to_use:
         # A PENDING turn is the shape this loop answers from exactly these messages, splicing

@@ -5238,3 +5238,56 @@ def test_mlx_unset_budget_falls_back_when_the_prompt_cannot_be_counted(monkeypat
     backend._tokenizer = None
 
     assert backend._unset_generation_budget("P") == UNSET_GENERATION_BUDGET
+
+
+def test_mlx_count_strips_replayed_mcp_images_off_the_event_loop(monkeypatch):
+    import base64
+    import io
+    import json
+    import threading
+    from PIL import Image
+    from core.inference import mcp_images
+    from routes import inference as route
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (4, 4), "blue").save(buffer, format = "PNG")
+    envelope = (
+        "screenshot result\n"
+        + mcp_images.SENTINEL
+        + json.dumps(
+            [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
+        )
+    )
+    history = [
+        {"role": "user", "content": "Read the screenshot"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "mcp__screen__shot", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "name": "mcp__screen__shot", "content": envelope},
+        {"role": "user", "content": "Describe it"},
+    ]
+    loop_thread = threading.get_ident()
+    split_threads = []
+    original_split = mcp_images.split_images
+
+    def track_split(content):
+        if mcp_images.SENTINEL in content:
+            split_threads.append(threading.get_ident())
+        return original_split(content)
+
+    monkeypatch.setattr(mcp_images, "split_images", track_split)
+    monkeypatch.setattr(route, "split_mcp_images", track_split)
+    backend = _RenderRecordingBackend()
+    response = _count_route(monkeypatch, backend, messages = history, enable_tools = False)
+    assert response.status_code == 200
+    assert split_threads and all(thread != loop_thread for thread in split_threads)
+    assert backend.messages[1]["tool_calls"][0]["function"]["name"] == "mcp__screen__shot"
+    assert backend.messages[2]["content"] == "screenshot result"
