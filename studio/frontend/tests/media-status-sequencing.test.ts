@@ -49,14 +49,14 @@ for (const [name, path, read, unload] of PAGES) {
     const body = callbackBody(page, "setStatusIfNewest");
     const write = body.indexOf("setStatus(");
     assert.notEqual(write, -1, "setStatusIfNewest no longer writes the status");
-    const guard =
-      /if\s*\(\s*ticket\s*===\s*statusTicket\.current\s*\)[\s{]*setStatus\(/.exec(body) ??
-      // The stale branch's return must be BARE. `return setStatus(next);` also reads as an
-      // early return and also precedes the normal write, while writing the superseded
-      // status out of the return expression itself.
-      /if\s*\(\s*ticket\s*!==\s*statusTicket\.current\s*\)[\s{]*return\s*(?:[;}]|\r?\n)/.exec(
-        body,
-      );
+    const held = /if\s*\(\s*ticket\s*===\s*statusTicket\.current\s*\)[\s{]*setStatus\(/.exec(body);
+    // The stale branch's return must be BARE. `return setStatus(next);` also reads as an
+    // early return and also precedes the normal write, while writing the superseded
+    // status out of the return expression itself.
+    const early = /if\s*\(\s*ticket\s*!==\s*statusTicket\.current\s*\)[\s{]*return\s*(?:[;}]|\r?\n)/.exec(
+      body,
+    );
+    const guard = held ?? early;
     assert.ok(guard, "a superseded read must not write");
     // Ordering, not just presence. Either spelling can be present while the write happens
     // FIRST, and `setStatus(next); if (ticket !== statusTicket.current) return;` has already
@@ -73,6 +73,29 @@ for (const [name, path, read, unload] of PAGES) {
       1,
       "setStatusIfNewest must write the status exactly once, under the ticket guard",
     );
+    // Ordering says the write comes after the early return. It does not say the write is
+    // still REACHED: `if (ticket !== current) { return; setStatus(next); }` returns first
+    // and satisfies every rule above while never publishing anything. So when the stale
+    // branch has a block of its own, the write has to live past the end of it. The
+    // `ticket === current` spelling needs no such rule, since its regex ties the write to
+    // the guard directly.
+    if (early && !held && /\{/.test(early[0])) {
+      const open = body.indexOf("{", early.index);
+      let depth = 0;
+      let close = -1;
+      for (let i = open; i < body.length; i += 1) {
+        if (body[i] === "{") depth += 1;
+        else if (body[i] === "}") {
+          depth -= 1;
+          if (depth === 0) {
+            close = i;
+            break;
+          }
+        }
+      }
+      assert.notEqual(close, -1, "the stale branch never closes");
+      assert.ok(write > close, "the status write is stranded inside the stale branch");
+    }
     // Every writer goes through it, so none can be the one that slips past.
     assert.doesNotMatch(
       page,
