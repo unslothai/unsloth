@@ -47,11 +47,18 @@ for (const [name, path, read, unload] of PAGES) {
     // refactor that changed nothing. Both spellings are checked against the callback's own
     // body, so a guard that lives somewhere else in the file cannot stand in for it.
     const body = callbackBody(page, "setStatusIfNewest");
-    assert.match(body, /setStatus\(/, "setStatusIfNewest no longer writes the status");
+    const write = body.indexOf("setStatus(");
+    assert.notEqual(write, -1, "setStatusIfNewest no longer writes the status");
+    const guard =
+      /if\s*\(\s*ticket\s*===\s*statusTicket\.current\s*\)[\s{]*setStatus\(/.exec(body) ??
+      /if\s*\(\s*ticket\s*!==\s*statusTicket\.current\s*\)[\s{]*return\b/.exec(body);
+    assert.ok(guard, "a superseded read must not write");
+    // Ordering, not just presence. Either spelling can be present while the write happens
+    // FIRST, and `setStatus(next); if (ticket !== statusTicket.current) return;` has already
+    // published the superseded status by the time it returns, which is the whole bug.
     assert.ok(
-      /if\s*\(\s*ticket\s*===\s*statusTicket\.current\s*\)[\s{]*setStatus\(/.test(body) ||
-        /if\s*\(\s*ticket\s*!==\s*statusTicket\.current\s*\)[\s{]*return\b/.test(body),
-      "a superseded read must not write",
+      guard.index < write,
+      "the ticket guard must come before the status write, not after it",
     );
     // Every writer goes through it, so none can be the one that slips past.
     assert.doesNotMatch(
