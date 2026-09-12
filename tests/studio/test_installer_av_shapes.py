@@ -468,14 +468,65 @@ def test_the_watcher_sees_intermediates_the_compiler_cleaned_up(tmp_path) -> Non
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
 def test_the_watcher_still_reports_intermediates_that_were_left_behind(tmp_path) -> None:
-    """The listing half must keep working; the watcher is added to it, not swapped for it."""
+    """The listing half must keep working; the watcher is added to it, not swapped for it.
+
+    A compile that was NOT cleaned up, so the response file is still next to the assembly.
+    This asserted a bare ``leftover.dll`` before, which read as "any DLL under TEMP is a
+    compiler artefact"; that is the rule the job died on, and it is not what this test is
+    for. The vehicle changed, the listing half it checks did not.
+    """
     action = (
         '$dir = Join-Path $env:TEMP "leftover"; '
         "New-Item -ItemType Directory -Force -Path $dir | Out-Null; "
+        'Set-Content -LiteralPath (Join-Path $dir "leftover.cmdline") -Value "/noconfig"; '
         'Set-Content -LiteralPath (Join-Path $dir "leftover.dll") -Value "MZ"'
     )
     _, libraries = _run_watch(tmp_path, action)
     assert any(lib.endswith("leftover.dll") for lib in libraries), libraries
+    assert any(lib.endswith("leftover.cmdline") for lib in libraries), libraries
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+def test_an_unpacked_archive_is_not_scored_as_a_compile(tmp_path) -> None:
+    """What actually ran on every red run of this job.
+
+    The installer unpacks llama.cpp's checksum-verified prebuilt release into a staging
+    directory under TEMP, which lands ~25 DLLs there with no compiler anywhere near them.
+    The shape under test is ``csc.exe -> %TEMP%\\<random>.dll``; an unpacked archive is a
+    different thing and must not read as one, or the job can never pass and stops meaning
+    anything.
+    """
+    action = (
+        '$dir = Join-Path $env:TEMP "unsloth-llama-prebuilt-ay5ptbfd"; '
+        '$dir = Join-Path $dir "extract-w613j_am"; '
+        "New-Item -ItemType Directory -Force -Path $dir | Out-Null; "
+        'foreach ($n in @("ggml.dll", "llama.dll", "mtmd.dll", "ggml-cpu-x64.dll")) { '
+        '    Set-Content -LiteralPath (Join-Path $dir $n) -Value "MZ" '
+        "}; "
+        # A README ships in the archive too, and must stay just as uninteresting.
+        'Set-Content -LiteralPath (Join-Path $dir "LICENSE.txt") -Value "MIT"; '
+        "Start-Sleep -Milliseconds 400"
+    )
+    stdout, libraries = _run_watch(tmp_path, action)
+    assert not libraries, f"an unpacked release archive was scored as a compile: {stdout}"
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+def test_a_compile_beside_an_unpacked_archive_is_still_caught(tmp_path) -> None:
+    """The narrowing is per-directory, so unpacking an archive cannot cover a real compile."""
+    action = (
+        '$extract = Join-Path $env:TEMP "unsloth-llama-prebuilt-zz\\extract-zz"; '
+        "New-Item -ItemType Directory -Force -Path $extract | Out-Null; "
+        'Set-Content -LiteralPath (Join-Path $extract "ggml.dll") -Value "MZ"; '
+        '$compile = Join-Path $env:TEMP "vpmyd5eq"; '
+        "New-Item -ItemType Directory -Force -Path $compile | Out-Null; "
+        'Set-Content -LiteralPath (Join-Path $compile "vpmyd5eq.cmdline") -Value "/noconfig"; '
+        'Set-Content -LiteralPath (Join-Path $compile "vpmyd5eq.dll") -Value "MZ"; '
+        "Start-Sleep -Milliseconds 400"
+    )
+    _, libraries = _run_watch(tmp_path, action)
+    assert any(lib.endswith("vpmyd5eq.dll") for lib in libraries), libraries
+    assert not any(lib.endswith("ggml.dll") for lib in libraries), libraries
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")

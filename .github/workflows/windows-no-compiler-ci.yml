@@ -153,19 +153,22 @@ jobs:
           $seen = Invoke-WithCompilerWatch -Name 'installer' -Action $install `
               -EvidenceRoot $env:UNSLOTH_EVIDENCE
 
+          # Interpolated, not -f: the format operator binds tighter than the string
+          # concatenation above it, so it applied to the last fragment only and the
+          # message reported a literal "{0}" every time it fired.
           if ($seen.Compilers) {
               $seen.Compilers | ForEach-Object { Write-Host "COMPILER: $_" }
-              throw ("the installer spawned {0} compiler process(es). This is the chain that was " +
-                     "blocked in the field: a windowless PowerShell launching csc.exe and dropping " +
-                     "a DLL in TEMP. Declare native methods with New-StudioEmittedNativeType." -f `
-                     $seen.Compilers.Count)
+              throw ("the installer spawned $($seen.Compilers.Count) compiler process(es). This is " +
+                     "the chain that was blocked in the field: a windowless PowerShell launching " +
+                     "csc.exe and dropping a DLL in TEMP. Declare native methods with " +
+                     "New-StudioEmittedNativeType.")
           }
           if ($seen.TempLibraries) {
               $seen.TempLibraries | ForEach-Object { Write-Host "TEMP DLL: $_" }
-              throw ("the installer wrote {0} DLL(s) into a temporary directory. Even without a " +
-                     "compiler process this is the artefact half of the same shape. Cleaning one " +
-                     "up does not clear it: the watcher records the creation." -f `
-                     $seen.TempLibraries.Count)
+              throw ("the installer left $($seen.TempLibraries.Count) compiler artefact(s) in a " +
+                     "temporary directory. Even without a compiler process this is the artefact " +
+                     "half of the same shape. Cleaning one up does not clear it: the watcher " +
+                     "records the creation.")
           }
           Write-Host "no compiler, no temporary DLL"
 

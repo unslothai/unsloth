@@ -20,6 +20,11 @@ is not the code under test:
      silently overridden by machine policy. csc.exe writes the source and the
      response file next to the assembly, so those names are watched too.
 
+     A DLL is only reported when a compile is evidenced in ITS OWN directory; see
+     Select-StudioCompilerLibraries. Reporting every DLL under TEMP is not the same
+     claim, and an installer that unpacks a verified archive there makes the
+     difference the whole result.
+
      Watched live, with a FileSystemWatcher, and not only by comparing a listing
      taken before the action against one taken after. CodeDom deletes its whole
      intermediate directory once the assembly is loaded, so on a hosted runner the
@@ -82,7 +87,75 @@ function Get-StudioTempArtifacts {
 }
 
 $script:ArtifactPattern = '\.(dll|cmdline|rsp|cs|err|out)$'
-$script:LibraryPattern = '\.(dll|cmdline|rsp)$'
+# A compiler's own files, wherever they appear. Nothing else writes a .cmdline.
+$script:CompilerFilePattern = '\.(cmdline|rsp)$'
+# What csc leaves beside the assembly it produced: the response file, the generated
+# source, and the captured streams.
+$script:CompilerSiblingPattern = '\.(cmdline|rsp|cs|err|out)$'
+
+function Get-StudioParentPath {
+    <#
+    .SYNOPSIS
+    The directory part of $Path, split on either separator.
+    .DESCRIPTION
+    Not Split-Path, for the reason Select-StudioCompilerHits splits by hand: under the
+    Linux pwsh these functions are tested on, a backslash is an ordinary character and a
+    Windows path comes back whole. The paths here are always Windows paths whatever reads
+    them.
+    #>
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $at = [Math]::Max($Path.LastIndexOf('\'), $Path.LastIndexOf('/'))
+    if ($at -lt 0) { return '' }
+    return $Path.Substring(0, $at)
+}
+
+function Select-StudioCompilerLibraries {
+    <#
+    .SYNOPSIS
+    The paths among $Artifacts that a C# compile accounts for.
+    .DESCRIPTION
+    A .cmdline or .rsp is a compiler's own file wherever it lands. A .dll on its own is
+    not, and treating it as one is what failed this job on every run since it was added:
+    the installer unpacks llama.cpp's checksum-verified prebuilt release into a staging
+    directory under TEMP, which lands ~25 DLLs there with no compiler within reach. The
+    shape under test is the one that was blocked in the field,
+
+        powershell.exe -> csc.exe -> %TEMP%\<random>.dll
+
+    and an unpacked archive is not it.
+
+    So a DLL counts only when a compile is evidenced in the SAME directory. CodeDom, which
+    is what Add-Type uses and what Bitdefender flagged, writes the response file, the
+    generated source and the captured streams into the per-invocation directory it puts the
+    assembly in, so the pairing holds for the shape this exists to catch. The workflow's
+    positive control compiles a real type and REQUIRES this to fire, so a narrowing that
+    went too far fails there rather than passing quietly.
+    #>
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$Artifacts)
+
+    $compileDirs = New-Object 'System.Collections.Generic.HashSet[string]' (
+        [StringComparer]::OrdinalIgnoreCase)
+    foreach ($path in $Artifacts) {
+        if ($path -match $script:CompilerSiblingPattern) {
+            $null = $compileDirs.Add((Get-StudioParentPath -Path $path))
+        }
+    }
+
+    $libraries = @()
+    foreach ($path in $Artifacts) {
+        if ($path -match $script:CompilerFilePattern) {
+            $libraries += $path
+        } elseif ($path -match '\.dll$' -and
+                  $compileDirs.Contains((Get-StudioParentPath -Path $path))) {
+            $libraries += $path
+        }
+    }
+    # Returned plain, not comma-wrapped like the functions above: the caller normalises
+    # with @(), and wrapping an empty array there yields a one-element array holding an
+    # empty array, which reads downstream as one unnamed temporary library.
+    return $libraries
+}
 
 function Start-StudioTempWatch {
     <#
@@ -333,7 +406,7 @@ function Invoke-WithCompilerWatch {
     foreach ($path in ($left + $transient)) {
         if ($union.Add($path)) { $newArtifacts += $path }
     }
-    $newLibraries = @($newArtifacts | Where-Object { $_ -match $script:LibraryPattern })
+    $newLibraries = @(Select-StudioCompilerLibraries -Artifacts ([string[]]$newArtifacts))
 
     $stem = Join-Path $EvidenceRoot $Name
     $compilers | Out-File -FilePath "$stem-compilers.txt" -Encoding utf8
