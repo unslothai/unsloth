@@ -277,6 +277,34 @@ def _prompt_already_has_bos(tokenizer, prompt):
     return bool(len(ids)) and ids[0] == bos_token_id
 
 
+def _without_image_parts(messages) -> list[dict]:
+    """The same conversation with every image placeholder dropped, collapsing a
+    turn back to its text when that is all it held."""
+    out = []
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            out.append(message)
+            continue
+        kept = [
+            part
+            for part in content
+            if not (
+                isinstance(part, dict) and part.get("type") in ("image", "image_url", "input_image")
+            )
+        ]
+        if len(kept) == len(content):
+            out.append(message)
+            continue
+        texts = [
+            part.get("text", "")
+            for part in kept
+            if isinstance(part, dict) and part.get("type") == "text"
+        ]
+        out.append({**message, "content": "\n".join(texts) if len(kept) == len(texts) else kept})
+    return out
+
+
 class InferenceBackend:
     """Unified inference backend supporting text, vision, and LoRA models"""
 
@@ -1025,6 +1053,8 @@ class InferenceBackend:
         messages: list,
         system_prompt: str,
         image = None,
+        images: Optional[list] = None,
+        image_ordinal: Optional[int] = None,
         temperature: float = 0.7,
         top_p: float = 0.9,
         top_k: int = 40,
@@ -1051,6 +1081,8 @@ class InferenceBackend:
             messages = messages,
             system_prompt = system_prompt,
             image = image,
+            images = images,
+            image_ordinal = image_ordinal,
             temperature = temperature,
             top_p = top_p,
             top_k = top_k,
@@ -1072,6 +1104,8 @@ class InferenceBackend:
         messages: list,
         system_prompt: str = "",
         image = None,
+        images: Optional[list] = None,
+        image_ordinal: Optional[int] = None,
         temperature: float = 0.7,
         top_p: float = 0.9,
         top_k: int = 40,
@@ -1106,7 +1140,7 @@ class InferenceBackend:
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
         top_k = self._normalize_top_k(top_k)
 
-        if is_vision and image:
+        if is_vision and (image or images):
             # Verify the stored processor can handle images; FastVisionModel may
             # return a raw tokenizer instead of a ProcessorMixin (e.g. Gemma-3).
             from transformers import ProcessorMixin
@@ -1130,7 +1164,13 @@ class InferenceBackend:
                     presence_penalty = presence_penalty,
                     continue_final_message = continue_final_message,
                     tools = tools,
+                    images = images,
+                    image_ordinal = image_ordinal,
+                    enable_thinking = enable_thinking,
+                    reasoning_effort = reasoning_effort,
+                    preserve_thinking = preserve_thinking,
                     tool_protocol_active = tool_protocol_active,
+                    _adapter_state = _adapter_state,
                 )
                 return
             else:
@@ -1139,6 +1179,10 @@ class InferenceBackend:
                     f"({type(processor).__name__}) has no image_processor — "
                     f"falling back to text-only generation (image will be ignored)."
                 )
+                # Really text-only: the promoted history still carries {"type": "image"}
+                # placeholders, and a text template either rejects the list content or
+                # renders image tokens with no pixels behind them.
+                messages = _without_image_parts(messages)
 
         # Text path: messages are already in ChatML format from eval.py.
 
@@ -1279,7 +1323,13 @@ class InferenceBackend:
         presence_penalty: float = 0.0,
         continue_final_message: bool = False,
         tools: Optional[list] = None,
+        images: Optional[list] = None,
+        image_ordinal: Optional[int] = None,
+        enable_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+        preserve_thinking: Optional[bool] = None,
         tool_protocol_active: Optional[bool] = None,
+        _adapter_state = None,
     ) -> Generator[str, None, None]:
         """Handle vision model generation with true token-by-token streaming."""
         # Reset so a failed or uncountable run cannot surface stale stats.
@@ -1303,14 +1353,23 @@ class InferenceBackend:
             trailing_assistant_text,
             vlm_prompt_issue,
         )
+        from core.inference.mcp_images import (
+            image_marker_parts,
+            pixels_in_marker_order,
+            top_up_image_markers,
+        )
 
+        # History first, the attachment last: the pixels bind to the markers in
+        # order, and the attachment's marker sits on the newest user turn.
+        attached = list(images or []) + ([image] if image is not None else [])
         user_message = last_user_text(messages)
         continue_partial = trailing_assistant_text(messages) if continue_final_message else None
 
         if not user_message:
-            user_message = "Describe this image." if image else "Hello"
+            user_message = "Describe this image." if attached else "Hello"
 
-        if image:
+        # Prepare vision messages
+        if attached:
             # Ordinary vision turns keep the historic collapse; full history is unbounded.
             has_tool_history = messages_have_tool_history(messages)
             # Client-tools route signature: tool_choice="none" and a forced unknown name
@@ -1318,7 +1377,7 @@ class InferenceBackend:
             folded_system = not system_prompt and any(
                 isinstance(m, dict) and m.get("role") in ("system", "developer") for m in messages
             )
-            if bool(tools) or has_tool_history or folded_system:
+            if bool(tools) or has_tool_history or folded_system or bool(images):
                 # Rebuilding from newest user TEXT dropped the system turn and the tool
                 # history an OpenAI tool loop replays (#10092).
                 vision_messages = messages_with_attached_image(
@@ -1327,6 +1386,19 @@ class InferenceBackend:
                     fallback_user_text = user_message,
                     structured_content = True,
                 )
+                # That helper leaves a conversation that already carries markers
+                # alone, which is right for a retry but not for replayed MCP
+                # pictures: those markers are not the attachment's.
+                _prior_markers = image_marker_parts(vision_messages)
+                vision_messages = top_up_image_markers(
+                    vision_messages, len(attached), ordinal = image_ordinal
+                )
+                if image is not None:
+                    # Same rule as the server-tool branch: order the pixels from
+                    # where the markers actually landed.
+                    attached = pixels_in_marker_order(
+                        vision_messages, _prior_markers, list(images or []), image
+                    )
 
                 # The conversation the LAST render used, not the no-tools probe's (#10092).
                 rendered_with: dict = {"messages": vision_messages}
@@ -1338,6 +1410,9 @@ class InferenceBackend:
                             processor,
                             vision_messages,
                             tools = catalog,
+                            enable_thinking = enable_thinking,
+                            reasoning_effort = reasoning_effort,
+                            preserve_thinking = preserve_thinking,
                             continue_final_message = bool(continue_partial),
                         )
                     except Exception as e:  # noqa: F841 -- read by the fallback below
@@ -1361,6 +1436,9 @@ class InferenceBackend:
                             processor,
                             without_system,
                             tools = catalog,
+                            enable_thinking = enable_thinking,
+                            reasoning_effort = reasoning_effort,
+                            preserve_thinking = preserve_thinking,
                             continue_final_message = bool(continue_partial),
                         )
                         rendered_with["messages"] = without_system
@@ -1397,7 +1475,7 @@ class InferenceBackend:
                 user_msg = {
                     "role": "user",
                     "content": [
-                        {"type": "image"},
+                        *({"type": "image"} for _ in attached),
                         {"type": "text", "text": user_message},
                     ],
                 }
@@ -1450,7 +1528,7 @@ class InferenceBackend:
                     else:
                         raise
             inputs = processor(
-                image,
+                attached[0] if len(attached) == 1 else attached,
                 input_text,
                 add_special_tokens = False,
                 return_tensors = "pt",
@@ -1492,7 +1570,11 @@ class InferenceBackend:
                 # this request's response protocol. Passing *tools* matches the
                 # render: a named template selects "tool_use", not "default".
                 reasoning_channel_markers = detect_reasoning_channel_markers(processor, tools = tools)
-                if image
+                # Every attached image, not just a bare attachment: a replay-only
+                # turn renders through this processor too, and resolving it to no
+                # markers suppresses the fallback detection and lets native
+                # reasoning output through as visible answer text.
+                if attached
                 else None,
                 reasoning_channel_markers_resolved = True,
                 prompt = prompt_text,
@@ -1540,6 +1622,8 @@ class InferenceBackend:
             def generate_fn():
                 with self._generation_lock:
                     try:
+                        if _adapter_state is not None:
+                            self._apply_adapter_state(_adapter_state)
                         # Started inside the lock so a queued request's wait is not billed as prefill.
                         timer.start()
                         # See generate_stream: only the returned sequences carry

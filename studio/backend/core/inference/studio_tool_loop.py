@@ -55,6 +55,32 @@ from core.inference.tool_call_parser import (
     reprompt_to_act_message,
     strip_tool_markup,
 )
+from core.inference.mcp_images import append_image_turn as append_mcp_image_turn
+
+
+def _append_mcp_images_owned(
+    conversation,
+    results,
+    owned,
+    lead = None,
+):
+    """append_image_turn with the loop's own part list, for asyncio.to_thread.
+
+    Reserving here and not on the GGUF loop: this one talks to a remote provider that
+    applies its own per-request image cap in document order, so an attachment beside a
+    full allowance of tool results silently loses the newest result -- the one the
+    model just asked for. llama-server is local and answers to the context window.
+    """
+    append_mcp_image_turn(
+        conversation,
+        results,
+        per_result = True,
+        owned = owned,
+        reserve_caller_images = True,
+        **({"lead": lead} if lead else {}),
+    )
+
+
 from core.inference.tool_loop_controller import (
     ToolLoopController,
     awaiting_approval_status,
@@ -339,6 +365,11 @@ class ToolLoopRun:
     model: str | None = None
     tool_choice: Any = None
     continue_final_message: bool = False
+    supports_vision: bool = False
+    # Image parts an earlier promotion already put in `messages`. The loop's cap
+    # counts these too: starting from zero lets a resumed image-heavy chat carry a
+    # full history through and then add a whole batch on top.
+    promoted_image_parts: tuple = ()
 
 
 @dataclass(frozen = True)
@@ -1179,6 +1210,10 @@ async def stream_with_studio_tools(
 ) -> AsyncIterator[str]:
     """Stream a provider, execute requested Unsloth tools, continue to a final answer."""
     conversation = [dict(message) for message in run.messages]
+    # The image parts this run appends, so its cap never counts a caller's own
+    # attachments. Run-scoped, not turn-scoped: the cap is across the whole loop,
+    # and seeded with what promotion already put in the conversation.
+    loop_mcp_image_parts: list = list(run.promoted_image_parts)
     # Kept before the loop appends anything: this is the branch the request is on.
     request_branch = list(run.messages)
     remaining = policy.max_calls
@@ -1540,6 +1575,9 @@ async def stream_with_studio_tools(
         assistant_tool_calls: list[dict[str, Any]] = []
         tool_messages: list[dict[str, Any]] = []
         noop_messages: list[dict[str, Any]] = []
+        # One entry per tool result, not flattened: the per-result image quota
+        # would otherwise be spent entirely on the first call of a parallel batch.
+        turn_mcp_images: list[list[dict[str, Any]]] = []
         turn_executed_real_tool = False
 
         for call in calls:
@@ -1785,6 +1823,13 @@ async def stream_with_studio_tools(
             last_reprompt_text = ""
             yield _sse(completion.tool_end_event())
             tool_messages.append(completion.tool_message())
+            # Only for a target that reads them, and off the loop: the envelope is
+            # a 12 MB json-load, and a text-only run discards the result anyway.
+            _completion_images = (
+                await asyncio.to_thread(completion.mcp_images) if run.supports_vision else []
+            )
+            if _completion_images:
+                turn_mcp_images.append(_completion_images)
 
         yield _status_sse("")
 
@@ -1823,6 +1868,20 @@ async def stream_with_studio_tools(
             conversation,
             "\n\n".join(dict.fromkeys(message["content"] for message in noop_messages)),
         )
+        if turn_mcp_images and run.supports_vision:
+            # One block after the whole batch. With a single result "the tool call
+            # above" is exact; with several it names whichever ran last, which may
+            # have returned no picture at all, so the block says so instead.
+            from core.inference.mcp_images import DETACHED_IMAGE_TURN_TEXT
+            _lead = DETACHED_IMAGE_TURN_TEXT if len(tool_messages) != 1 else None
+            # Off the event loop: each image is decoded and re-encoded.
+            await asyncio.to_thread(
+                _append_mcp_images_owned,
+                conversation,
+                turn_mcp_images,
+                loop_mcp_image_parts,
+                _lead,
+            )
 
         if turn_executed_real_tool:
             max_reprompts = _MAX_POST_TOOL_REPROMPTS

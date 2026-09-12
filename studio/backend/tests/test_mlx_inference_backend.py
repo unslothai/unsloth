@@ -626,7 +626,7 @@ def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(monkeypatch):
     backend = MLXInferenceBackend()
     backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
     backend._processor = SimpleNamespace(tokenizer = SimpleNamespace())
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+    args = ([{"role": "user", "content": [{"type": "image"}]}], [object()], 0, 1, 0, 0, 1, 1, None)
 
     gen = backend._generate_vlm(*args, _adapter_state = False)
     # First snapshot is the prefill alone, emitted after entering the adapter context.
@@ -693,7 +693,7 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     backend = MLXInferenceBackend()
     backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
     backend._processor = SimpleNamespace(tokenizer = SimpleNamespace())
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+    args = ([{"role": "user", "content": [{"type": "image"}]}], [object()], 0, 1, 0, 0, 1, 1, None)
     tools = [{"function": {"name": "search"}}]
     generator = backend._generate_vlm(*args, _adapter_state = False)
     assert next(generator) == "ok"
@@ -713,7 +713,7 @@ def test_mlx_vlm_generation_selects_renderer_by_capability(monkeypatch):
     assert calls["stream"][-1][0][2] == "<image> healthy generic"
     state["generic"] = "generic prompt"
     text_messages = [{"role": "user", "content": "hello"}]
-    assert list(backend._generate_vlm(*((text_messages, None) + args[2:]), tools = tools)) == ["ok"]
+    assert list(backend._generate_vlm(*((text_messages, []) + args[2:]), tools = tools)) == ["ok"]
     assert calls["generic"][-1]["tools"] == tools
     assert calls["stream"][-1][0][2] == "generic prompt"
     two_images = [{"role": "user", "content": [{"type": "image"}, {"type": "image"}]}]
@@ -3216,7 +3216,7 @@ def test_vlm_seed_rides_on_the_sampler_not_a_seed_kwarg(monkeypatch):
     backend._processor = SimpleNamespace(chat_template = "template")
     args = (
         [{"role": "user", "content": [{"type": "image"}]}],
-        object(),
+        [object()],
         0.7,
         0.9,
         40,
@@ -4070,7 +4070,7 @@ def test_the_window_reaches_the_runtime_on_every_generation_route(monkeypatch):
     next(
         vlm._generate_vlm(
             [{"role": "user", "content": [{"type": "image"}]}],
-            object(),
+            [object()],
             0,
             1,
             0,
@@ -4342,7 +4342,7 @@ def test_mlx_vlm_recovers_native_tool_tokens_like_the_text_path(monkeypatch):
     backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
     backend._processor = SimpleNamespace(tokenizer = _Tok())
     backend._tokenizer = _Tok()
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+    args = ([{"role": "user", "content": [{"type": "image"}]}], [object()], 0, 1, 0, 0, 1, 1, None)
 
     snapshots = list(
         backend._generate_vlm(
@@ -4454,7 +4454,7 @@ def test_mlx_vlm_does_not_leak_a_preserved_stop_token(monkeypatch):
     backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
     backend._processor = SimpleNamespace(tokenizer = _Tok())
     backend._tokenizer = _Tok()
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+    args = ([{"role": "user", "content": [{"type": "image"}]}], [object()], 0, 1, 0, 0, 1, 1, None)
 
     snapshots = list(
         backend._generate_vlm(
@@ -4526,7 +4526,7 @@ def test_mlx_vlm_keeps_a_stop_token_that_closes_a_tool_envelope(monkeypatch):
     backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
     backend._processor = SimpleNamespace(tokenizer = _Tok())
     backend._tokenizer = _Tok()
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+    args = ([{"role": "user", "content": [{"type": "image"}]}], [object()], 0, 1, 0, 0, 1, 1, None)
 
     snapshots = list(
         backend._generate_vlm(
@@ -4596,7 +4596,7 @@ def test_mlx_vlm_drops_an_orphan_closer_that_opened_nothing(monkeypatch):
     backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
     backend._processor = SimpleNamespace(tokenizer = _Tok())
     backend._tokenizer = _Tok()
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 1, 1, None)
+    args = ([{"role": "user", "content": [{"type": "image"}]}], [object()], 0, 1, 0, 0, 1, 1, None)
 
     snapshots = list(
         backend._generate_vlm(
@@ -4675,7 +4675,7 @@ def test_mlx_vlm_keeps_the_reasoning_protocol_delimiters_on_a_tool_turn(monkeypa
     backend._model = SimpleNamespace(config = {"model_type": "deepseek_vl_v2"})
     backend._processor = SimpleNamespace(tokenizer = _Tok(), chat_template = _Tok.chat_template)
     backend._tokenizer = _Tok()
-    args = ([{"role": "user", "content": [{"type": "image"}]}], object(), 0, 1, 0, 0, 8, 1, None)
+    args = ([{"role": "user", "content": [{"type": "image"}]}], [object()], 0, 1, 0, 0, 8, 1, None)
 
     snapshots = list(
         backend._generate_vlm(
@@ -4728,6 +4728,190 @@ def test_vlm_add_special_tokens_falls_back_to_the_inline_rule(monkeypatch):
     assert rule("qwen2_vl", template) is True
     sys.modules["mlx_vlm.utils"].should_add_special_tokens = lambda *_: "mlx-vlm's answer"
     assert rule("gemma4", template) == "mlx-vlm's answer"
+
+
+def test_mlx_vlm_pixels_follow_the_order_the_markers_appear_in():
+    """MLX binds pixels to markers positionally. The replayed MCP pictures carry
+    their markers on earlier turns, and the attachment's marker goes on the last
+    user turn, so the attachment's pixels have to come last."""
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._is_vlm = True
+    captured = []
+    backend._generate_vlm = lambda messages, attached, *_args, **_kwargs: (
+        captured.append((messages, attached)) or iter(())
+    )
+    replayed_first, replayed_second, attachment = object(), object(), object()
+    messages = [
+        {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "a"}]},
+        {"role": "assistant", "content": "seen"},
+        {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "b"}]},
+        {"role": "assistant", "content": "seen"},
+        {"role": "user", "content": "and this one?"},
+    ]
+
+    list(
+        backend.generate_chat_response(
+            messages,
+            image = attachment,
+            images = [replayed_first, replayed_second],
+        )
+    )
+
+    sent_messages, attached = captured[0]
+    assert attached == [replayed_first, replayed_second, attachment]
+    # The attachment's own marker is the last one in the conversation.
+    marker_turns = [
+        index
+        for index, message in enumerate(sent_messages)
+        if isinstance(message.get("content"), list)
+        and any(part.get("type") == "image" for part in message["content"])
+    ]
+    assert marker_turns[-1] == len(sent_messages) - 1
+
+
+def test_mlx_attachment_displaces_a_replayed_image_on_the_same_turn():
+    """A local turn takes one picture, so the attachment replaces the replay
+    marker and its pixels together."""
+    from core.inference.mlx_inference import MLXInferenceBackend, _count_vlm_images
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._is_vlm = True
+    captured = []
+    backend._generate_vlm = lambda messages, attached, *_a, **_k: (
+        captured.append((messages, attached)) or iter(())
+    )
+    replayed, attachment = object(), object()
+    messages = [
+        {
+            "role": "user",
+            "content": [{"type": "image"}, {"type": "text", "text": "and this one?"}],
+        }
+    ]
+
+    list(backend.generate_chat_response(messages, image = attachment, images = [replayed]))
+
+    sent, attached = captured[0]
+    markers = sum(_count_vlm_images(m.get("content")) for m in sent)
+    assert attached == [attachment]
+    assert markers == len(attached), f"{markers} marker(s) for {len(attached)} images"
+    # The attachment's pixels are last, so its marker has to be too.
+    assert sent[-1]["content"][-1] == {"type": "image"}
+
+
+def test_mlx_does_not_double_mark_an_attachment_the_client_already_marked():
+    from core.inference.mlx_inference import MLXInferenceBackend, _count_vlm_images
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._is_vlm = True
+    captured = []
+    backend._generate_vlm = lambda messages, attached, *_a, **_k: (
+        captured.append((messages, attached)) or iter(())
+    )
+    messages = [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "x"}]}]
+
+    list(backend.generate_chat_response(messages, image = object()))
+
+    sent, attached = captured[0]
+    assert sum(_count_vlm_images(m.get("content")) for m in sent) == len(attached) == 1
+
+
+def test_mlx_normalizes_a_replay_only_conversation_for_a_processor_template():
+    """A processor template needs every turn in part shape. A replay-only request
+    (images without an attachment) is a mix of strings and marker lists, and gating
+    the normalization on the singular image left it failing at render."""
+    from types import SimpleNamespace
+
+    from core.inference.mlx_inference import MLXInferenceBackend, _count_vlm_images
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._is_vlm = True
+    # A processor carrying its own template is what chat_render_target selects.
+    backend._processor = SimpleNamespace(
+        apply_chat_template = lambda *a, **k: "prompt", chat_template = "t"
+    )
+    captured = []
+    backend._generate_vlm = lambda messages, attached, *a, **k: (
+        captured.append((messages, attached)) or iter(())
+    )
+    messages = [
+        {"role": "tool", "content": "[1 image returned]"},
+        {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "what was it"}]},
+    ]
+
+    list(backend.generate_chat_response(messages, images = [object()]))
+
+    sent, attached = captured[0]
+    assert all(isinstance(message.get("content"), list) for message in sent), sent
+    markers = sum(_count_vlm_images(message.get("content")) for message in sent)
+    assert markers == len(attached) == 1
+
+
+def test_mlx_binds_an_earlier_attachment_to_its_own_turn_not_a_newer_replay():
+    """The attachment's turn can PRECEDE a tool's picture. The route used to pre-add
+    its marker, so the backend counted that marker as history's, the top-up became a
+    no-op, and the two pixels bound to each other's turns -- the model was shown the
+    screenshot where the user's own diagram belonged."""
+    from core.inference.mcp_images import placeholder_turn
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    backend = MLXInferenceBackend()
+    backend._model = object()
+    backend._is_vlm = True
+    captured = []
+    backend._generate_vlm = lambda messages, attached, *_args, **_kwargs: (
+        captured.append((messages, attached)) or iter(())
+    )
+    attachment, replayed = object(), object()
+
+    # What the plain route hands the backend once the fix stops it pre-marking: the
+    # attachment's turn is still a plain string, and the only marker in the
+    # conversation is the replayed picture's.
+    messages = [
+        {"role": "user", "content": "here is my diagram"},
+        {"role": "assistant", "content": "noted"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "mcp__s__shot", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "[1 image returned]"},
+        placeholder_turn(1, 1),
+        {"role": "user", "content": "which one is bluer?"},
+    ]
+
+    list(
+        backend.generate_chat_response(
+            messages,
+            image = attachment,
+            images = [replayed],
+            image_ordinal = 0,
+        )
+    )
+
+    sent_messages, attached = captured[0]
+    marker_turns = [
+        index
+        for index, message in enumerate(sent_messages)
+        if isinstance(message.get("content"), list)
+        and any(part.get("type") == "image" for part in message["content"])
+    ]
+    assert len(marker_turns) == 2, sent_messages
+    # The attachment's marker is on the FIRST turn, the replay's on the placeholder
+    # after it -- so the pixels have to arrive in that same order.
+    assert marker_turns[0] < marker_turns[1]
+    assert attached == [attachment, replayed], "the pixels bound to each other's markers"
 
 
 def _run_mlx_reasoning_stream(monkeypatch, pieces, special_ids, eos_id):
@@ -5003,7 +5187,7 @@ def _run_vlm_budget(
     backend._is_vlm = True
     backend._model = SimpleNamespace()
     backend._processor = SimpleNamespace(tokenizer = backend._tokenizer)
-    args = (messages, image, 0, 1, 0, 0, max_new_tokens, 1, None)
+    args = (messages, [image] if image is not None else [], 0, 1, 0, 0, max_new_tokens, 1, None)
     list(backend._generate_vlm(*args, _adapter_state = False))
     return seen["max_tokens"]
 
@@ -5054,3 +5238,56 @@ def test_mlx_unset_budget_falls_back_when_the_prompt_cannot_be_counted(monkeypat
     backend._tokenizer = None
 
     assert backend._unset_generation_budget("P") == UNSET_GENERATION_BUDGET
+
+
+def test_mlx_count_strips_replayed_mcp_images_off_the_event_loop(monkeypatch):
+    import base64
+    import io
+    import json
+    import threading
+    from PIL import Image
+    from core.inference import mcp_images
+    from routes import inference as route
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (4, 4), "blue").save(buffer, format = "PNG")
+    envelope = (
+        "screenshot result\n"
+        + mcp_images.SENTINEL
+        + json.dumps(
+            [{"data": base64.b64encode(buffer.getvalue()).decode(), "mimeType": "image/png"}]
+        )
+    )
+    history = [
+        {"role": "user", "content": "Read the screenshot"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "mcp__screen__shot", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "name": "mcp__screen__shot", "content": envelope},
+        {"role": "user", "content": "Describe it"},
+    ]
+    loop_thread = threading.get_ident()
+    split_threads = []
+    original_split = mcp_images.split_images
+
+    def track_split(content):
+        if mcp_images.SENTINEL in content:
+            split_threads.append(threading.get_ident())
+        return original_split(content)
+
+    monkeypatch.setattr(mcp_images, "split_images", track_split)
+    monkeypatch.setattr(route, "split_mcp_images", track_split)
+    backend = _RenderRecordingBackend()
+    response = _count_route(monkeypatch, backend, messages = history, enable_tools = False)
+    assert response.status_code == 200
+    assert split_threads and all(thread != loop_thread for thread in split_threads)
+    assert backend.messages[1]["tool_calls"][0]["function"]["name"] == "mcp__screen__shot"
+    assert backend.messages[2]["content"] == "screenshot result"

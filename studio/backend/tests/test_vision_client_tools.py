@@ -171,7 +171,11 @@ def _vision_probe(chat_template = _CHATML_WITH_TOOLS):
                 return "PROMPT-WITH-TOOLS"
             return "PROMPT"
 
-        def __call__(self, *_args, **_kwargs):
+        def __call__(self, *args, **_kwargs):
+            # The pixels arrive as the first positional argument, one object when
+            # there is a single image and the list itself when there are several.
+            if args:
+                seen["images"] = args[0]
             return Batch({"input_ids": torch.zeros((1, 1), dtype = torch.long)})
 
     class Model:
@@ -1211,3 +1215,97 @@ def test_the_nudge_retry_skips_the_image_marker_on_a_text_only_fallback():
             body = message.get("content")
             if isinstance(body, list):
                 assert not any(p.get("type") == "image" for p in body), message
+
+
+def test_an_earlier_attachment_keeps_its_own_turn_against_a_newer_replay():
+    """The attachment's turn can PRECEDE a tool's picture. The plain route used to
+    pre-add its marker, so this backend counted that marker as history's, the top-up
+    became a no-op, and pixels_in_marker_order could no longer tell the two apart --
+    the model was shown the screenshot where the user's own diagram belonged."""
+    from core.inference.mcp_images import placeholder_turn
+
+    backend, seen = _vision_probe()
+    attachment, replayed = object(), object()
+
+    # What the plain route hands the backend once it stops pre-marking: the
+    # attachment's turn is a plain string and the only marker is the replay's.
+    messages = [
+        {"role": "user", "content": "here is my diagram"},
+        {"role": "assistant", "content": "noted"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "mcp__s__shot", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "c1", "content": "[1 image returned]"},
+        placeholder_turn(1, 1),
+        {"role": "user", "content": "which one is bluer?"},
+    ]
+
+    _drain(
+        backend,
+        messages = messages,
+        image = attachment,
+        images = [replayed],
+        image_ordinal = 0,
+    )
+
+    rendered = seen["messages"]
+    marker_turns = [
+        index
+        for index, message in enumerate(rendered)
+        if isinstance(message.get("content"), list)
+        and any(part.get("type") == "image" for part in message["content"])
+    ]
+    assert len(marker_turns) == 2, rendered
+    assert marker_turns[0] < marker_turns[1]
+    assert seen["images"] == [attachment, replayed], "the pixels bound to each other's markers"
+
+
+@pytest.mark.parametrize(
+    "initial, requested", [(True, False), (False, True), ("first", "second"), ("first", None)]
+)
+def test_replayed_vision_images_honor_adapter_selection_under_lock(initial, requested):
+    backend, seen = _vision_probe()
+    backend.models[backend.active_model_name]["is_vision"] = True
+    model = backend.models[backend.active_model_name]["model"]
+    state = {"active": initial, "applied": []}
+
+    def apply(value):
+        assert backend._generation_lock.locked()
+        state["applied"].append(value)
+        state["active"] = value
+
+    def generate(**kwargs):
+        assert backend._generation_lock.locked()
+        state["generated_with"] = state["active"]
+
+    backend._apply_adapter_state = apply
+    model.generate = generate
+    replay = object()
+    list(
+        backend.generate_with_adapter_control(
+            use_adapter = requested,
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image"},
+                        {"type": "text", "text": "Describe the tool image"},
+                    ],
+                }
+            ],
+            image = None,
+            images = [replay],
+            max_new_tokens = 1,
+        )
+    )
+    assert seen["images"] is replay
+    assert state["generated_with"] == (initial if requested is None else requested)
+    assert state["applied"] == ([] if requested is None else [requested])

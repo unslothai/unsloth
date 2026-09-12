@@ -208,6 +208,29 @@ export function providerModelSupportsVision(
 }
 
 
+// Mirrors _MIXED_CATALOG_PROVIDER_TYPES in studio/backend/routes/inference.py: vision for
+// the family, unknown for a given model, so an MCP picture is not sent to one the
+// registry says nothing about.
+const MIXED_CATALOG_PROVIDER_TYPES = new Set(["huggingface", "openrouter", "qwen"]);
+
+/** Whether the backend's external tool loop will hand this model an MCP picture -- the
+ *  same rule as its _external_takes_mcp_images, so envelopes the backend would strip
+ *  anyway are not re-uploaded on every turn. Stricter than providerModelSupportsVision:
+ *  a model-level answer wins, a mixed catalog with none is a no, unknown elsewhere is a yes. */
+export function providerModelTakesMcpImages(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  if (providerTypeSupportsVision(providerType) === false) return false;
+  hydrateProviderModelCapabilities();
+  if (providerType && modelId) {
+    const capability = REGISTRY_MODEL_CAPABILITIES.get(providerType)?.[modelId];
+    if (typeof capability?.vision === "boolean") return capability.vision;
+  }
+  if (providerType && MIXED_CATALOG_PROVIDER_TYPES.has(providerType)) return false;
+  return true;
+}
+
 /** Provider-level capability key. Self-hosted model ids are user-supplied, so there is no
  *  per-model entry: the registry declares the capability once for the whole provider type. */
 export const PROVIDER_CAPABILITY_WILDCARD = "*";

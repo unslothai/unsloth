@@ -1973,7 +1973,9 @@ def _openai_llama_admission_compact_image_part(part: dict) -> dict:
     return {"type": "image_url", "image_url": compact_image_url}
 
 
-def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict], int]:
+def _openai_llama_admission_messages_for_estimate(
+    messages, *, vision: bool = True
+) -> tuple[list[dict], int]:
     """Remove image bytes before estimating the textual part of a prompt.
 
     mtmd turns an image into model-specific embedding tokens, so its base64 transport
@@ -1982,7 +1984,15 @@ def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict],
     """
     estimate_messages = []
     image_parts = 0
-    for message in messages:
+    # Counted apart from the parts already on the request: promote_history caps how
+    # many an envelope becomes, but a caller that really attaches more images than
+    # that must still be charged for every one (#9842).
+    envelope_image_parts = 0
+    # Same provenance resolution generation uses: an unnamed result correlated to a
+    # non-MCP call is never promoted, so charging its envelope reserves up to eight
+    # embeddings the request never sends.
+    _resolved = _mcp_resolve_tool_names(messages)
+    for _index, message in enumerate(messages):
         # exclude_none like every other dump here, including the generation paths this
         # predicts: the five unset optionals on ChatMessage otherwise serialise as
         # `"name": null` and get priced as prompt text (34 tokens for a two-key message
@@ -1992,6 +2002,36 @@ def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict],
         )
         estimate_message = dict(message_dict)
         content = message_dict.get("content")
+        if message_dict.get("role") == "tool" and isinstance(content, str):
+            # An MCP envelope is still base64 text here, but the chat path promotes
+            # it into projector images before generation. Priced as text it would
+            # reserve megabytes of prompt for bytes never sent; ignored entirely it
+            # charges zero KV for images that are. Strip it and charge the images.
+            head, envelope_images = split_mcp_images(content)
+            if envelope_images:
+                # Generation strips the suffix for everyone, so it is never priced
+                # as prompt text.
+                estimate_message["content"] = head
+                # Charged only where generation will really send pixels: a text-only
+                # model has them stripped, and a named non-MCP result is not promoted
+                # at all, so charging either reserves KV for images never sent.
+                _correlated = _resolved.get(_index)
+                _non_mcp = _names_a_non_mcp_tool(message_dict) or (
+                    isinstance(_correlated, str)
+                    and bool(_correlated)
+                    and not _correlated.startswith("mcp__")
+                )
+                if vision and not _non_mcp:
+                    # Only entries that could become a picture: _flatten_result
+                    # accepts formats Pillow cannot read, promotion drops them, and
+                    # four such entries would reserve most of a small window for
+                    # images llama-server is never sent.
+                    envelope_image_parts += min(
+                        _mcp_count_probably_decodable(envelope_images),
+                        _MCP_MAX_MODEL_IMAGES,
+                    )
+            estimate_messages.append(estimate_message)
+            continue
         if isinstance(content, list):
             estimate_content = []
             for part in content:
@@ -2024,7 +2064,10 @@ def _openai_llama_admission_messages_for_estimate(messages) -> tuple[list[dict],
                 estimate_content.append(_openai_llama_admission_compact_image_part(part))
             estimate_message["content"] = estimate_content
         estimate_messages.append(estimate_message)
-    return estimate_messages, image_parts
+    # Match GGUF promotion: cap replay images separately from caller attachments.
+    # One attachment plus eight replay images needs nine KV charges; reserving
+    # attachment slots within this cap would undercharge concurrent requests.
+    return estimate_messages, image_parts + min(envelope_image_parts, _MCP_MAX_TOTAL_MODEL_IMAGES)
 
 
 def _openai_llama_admission_media_tokens(
@@ -2088,6 +2131,8 @@ def _openai_llama_admission_tokens(
     image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
     injected_tools = None,
     context_window: Optional[int] = None,
+    vision: bool = True,
+    messages_override = None,
 ) -> Optional[int]:
     """KV a request will occupy: what is sent, plus what it may generate.
 
@@ -2101,11 +2146,16 @@ def _openai_llama_admission_tokens(
     """
     if not budget:
         return None
-    messages = getattr(payload, "messages", None)
+    # Use the translated OpenAI messages for Anthropic: its raw user/tool_result
+    # blocks bypass envelope handling, mispricing base64 as text and omitting
+    # image KV charges, which can consume the budget and serialize requests.
+    messages = (
+        messages_override if messages_override is not None else getattr(payload, "messages", None)
+    )
     if isinstance(messages, list) and messages:
         try:
             estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
-                messages
+                messages, vision = vision
             )
             prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
             prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
@@ -2173,6 +2223,36 @@ def _openai_llama_admission_tokens(
     return max(1, min(budget, prompt_tokens + output_tokens))
 
 
+def _openai_llama_admission_estimate(
+    *,
+    request: Optional[Request],
+    llama_backend,
+    payload,
+    tool_loop: bool = False,
+    injected_tools = None,
+    messages_override = None,
+):
+    """The token estimate a reservation is sized by. Split from the reservation so a
+    caller on the event loop can compute it in a worker: it strips every replayed
+    envelope, which json-loads a permitted 12 MB array per result."""
+    capacity = _openai_llama_admission_capacity(request, llama_backend)
+    budget = _openai_llama_admission_budget(llama_backend)
+    return _openai_llama_admission_tokens(
+        payload,
+        budget = budget,
+        capacity = capacity,
+        tool_loop = tool_loop,
+        image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+        injected_tools = injected_tools,
+        context_window = _openai_llama_admission_context_window(llama_backend),
+        vision = bool(getattr(llama_backend, "is_vision", False)),
+        messages_override = messages_override,
+    )
+
+
+_TOKENS_UNSET = object()
+
+
 def _openai_llama_admission_reserve(
     *,
     request: Optional[Request],
@@ -2180,28 +2260,70 @@ def _openai_llama_admission_reserve(
     payload = None,
     tool_loop: bool = False,
     injected_tools = None,
+    messages_override = None,
+    tokens = _TOKENS_UNSET,
 ) -> tuple[LlamaAdmissionReservation, LlamaAdmissionConfig]:
     config = llama_admission_config_from_env()
     capacity = _openai_llama_admission_capacity(request, llama_backend)
     key = str(getattr(llama_backend, "base_url", "llama-server"))
     budget = _openai_llama_admission_budget(llama_backend)
+    if tokens is _TOKENS_UNSET:
+        tokens = (
+            _openai_llama_admission_estimate(
+                request = request,
+                llama_backend = llama_backend,
+                payload = payload,
+                tool_loop = tool_loop,
+                injected_tools = injected_tools,
+                messages_override = messages_override,
+            )
+            if payload is not None
+            else None
+        )
+    # The reservation itself stays on the loop: reserve() binds a waiter to the
+    # running loop, so only the estimate above may be computed elsewhere.
     reservation = get_llama_admission_queue(key).reserve(
         capacity = capacity,
         config = config,
         budget = budget,
-        tokens = _openai_llama_admission_tokens(
-            payload,
-            budget = budget,
-            capacity = capacity,
-            tool_loop = tool_loop,
-            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
-            injected_tools = injected_tools,
-            context_window = _openai_llama_admission_context_window(llama_backend),
-        )
-        if payload is not None
-        else None,
+        tokens = tokens,
     )
     return reservation, config
+
+
+async def _openai_llama_admission_reserve_async(
+    *,
+    request: Optional[Request],
+    llama_backend,
+    payload = None,
+    tool_loop: bool = False,
+    injected_tools = None,
+    messages_override = None,
+) -> tuple[LlamaAdmissionReservation, LlamaAdmissionConfig]:
+    """The same reservation, with the estimate off the loop when a replayed envelope
+    would make it parse one."""
+    tokens = _TOKENS_UNSET
+    if payload is not None and _messages_mention_mcp_images(
+        messages_override if messages_override is not None else payload.messages
+    ):
+        tokens = await asyncio.to_thread(
+            _openai_llama_admission_estimate,
+            request = request,
+            llama_backend = llama_backend,
+            payload = payload,
+            tool_loop = tool_loop,
+            injected_tools = injected_tools,
+            messages_override = messages_override,
+        )
+    return _openai_llama_admission_reserve(
+        request = request,
+        llama_backend = llama_backend,
+        payload = payload,
+        tool_loop = tool_loop,
+        injected_tools = injected_tools,
+        messages_override = messages_override,
+        tokens = tokens,
+    )
 
 
 def _openai_llama_admission_recost(
@@ -2246,7 +2368,8 @@ def _openai_llama_admission_recost(
         # and since the callback fires at the top of round zero, before any growth, it
         # would hand back room llama-server is already using.
         estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
-            conversation
+            conversation,
+            vision = bool(getattr(llama_backend, "is_vision", False)),
         )
         prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
         # Re-sent every round, so it belongs in every re-costing, not just the opening one.
@@ -3248,6 +3371,23 @@ from state.tool_approvals import resolve_tool_decision
 from core.inference.model_ids import display_model_name, model_id_matches, public_model_id
 from core.inference.api_monitor import api_monitor
 from core.inference.llama_http import nonstreaming_client
+from core.inference.mcp_images import (
+    MAX_MODEL_IMAGES as _MCP_MAX_MODEL_IMAGES,
+    count_probably_decodable as _mcp_count_probably_decodable,
+    image_marker_parts as mcp_image_marker_parts,
+    flattened_rgb as _mcp_flattened_rgb,
+    resolve_tool_names as _mcp_resolve_tool_names,
+    pixels_in_marker_order as mcp_pixels_in_marker_order,
+    trim_image_turns as trim_mcp_image_turns,
+    MAX_TOTAL_MODEL_IMAGES as _MCP_MAX_TOTAL_MODEL_IMAGES,
+    has_images as mcp_images_sentinel_in,
+    mentions_images as mcp_images_mentioned_in,
+    text_before_envelope as mcp_text_before_envelope,
+    mark_last_user_turn as mark_mcp_image_turn,
+    promote_history as promote_mcp_history_images,
+    promote_history_local as promote_mcp_history_images_local,
+    split_images as split_mcp_images,
+)
 from core.inference.tool_call_parser import (
     _strip_function_xml_calls,
     _strip_gemma_wrapperless_calls,
@@ -5736,7 +5876,11 @@ def _monitor_content_text(content) -> str:
     if content is None:
         return ""
     if isinstance(content, str):
-        return content
+        # A replayed envelope is megabytes of base64 in a plain string. Generation
+        # and the search index both strip it; the monitor copied it into the prompt
+        # entry, exposing image bytes in inspection and truncating away the later
+        # conversation behind them. Cut, not parsed: this runs on the event loop.
+        return mcp_text_before_envelope(content)
     if isinstance(content, list):
         parts: list[str] = []
         for part in content:
@@ -7875,10 +8019,143 @@ def _messages_have_remote_image(messages) -> bool:
     )
 
 
-def _request_has_image(payload) -> bool:
+def _request_has_attached_image(payload) -> bool:
+    """An image the request itself carries, which the target model has to be able
+    to read. History is not counted: a replayed MCP envelope is stripped for a
+    text-only model, so it must not veto a switch to one."""
     if getattr(payload, "image_base64", None):
         return True
     return _messages_have_image(payload.messages)
+
+
+def _names_a_non_mcp_tool(message) -> bool:
+    """Whether the message names a tool that is definitely not an MCP one.
+
+    An absent name is not evidence against it: older stored turns carry none, and
+    the envelope only ever came from an MCP server.
+    """
+    name = message.get("name") if isinstance(message, dict) else getattr(message, "name", None)
+    return isinstance(name, str) and bool(name) and not name.startswith("mcp__")
+
+
+# Mirrors NON_VISION_PROVIDER_TYPES in studio/frontend/src/features/chat/
+# external-providers.ts. The backend registry marks these providers
+# supports_vision=True for the family, but their main chat endpoint is text-only,
+# and appending a picture there fails upstream mid-run.
+_TEXT_ONLY_PROVIDER_TYPES = frozenset({"cohere", "deepseek", "mistral"})
+
+
+# Mixed catalogs require model-level vision capability; family flags do not
+# identify which models accept images. Qwen has unrestricted text defaults;
+# its vision models use separate qwen-vl-* or Qwen2.5-VL IDs. Kimi is excluded
+# because its allowlist permits only multimodal kimi-k2.5/k2.6.
+# Single-endpoint types (custom, vllm, ollama, llamacpp, lmstudio) retain the
+# registry default: no model catalog exists to check the configured endpoint.
+_MIXED_CATALOG_PROVIDER_TYPES = frozenset({"huggingface", "openrouter", "qwen"})
+
+
+def _external_takes_mcp_images(
+    provider_type,
+    supports_vision: bool,
+    model: "str | None" = None,
+    info: "dict | None" = None,
+) -> bool:
+    """Whether an MCP picture may be appended to this external loop.
+
+    Deliberately stricter than the provider-wide flag: an image the endpoint
+    cannot take does not degrade, it fails the run as soon as a tool returns one.
+    A model-level answer is used wherever the registry has one; where the catalog
+    mixes modalities and says nothing about this model, the answer is no.
+    """
+    if provider_type in _TEXT_ONLY_PROVIDER_TYPES:
+        return False
+    if not supports_vision:
+        return False
+    capabilities = ((info or {}).get("model_capabilities") or {}) if info else {}
+    if model and model in capabilities:
+        return bool(capabilities[model].get("vision"))
+    if provider_type in _MIXED_CATALOG_PROVIDER_TYPES:
+        # Vision for the family, unknown for this model: an image would be sent to
+        # something that may not take one, and the failure lands mid-run.
+        return False
+    return True
+
+
+def _messages_mention_mcp_images(messages) -> bool:
+    """Dispatch only -- whether the work belongs off the loop. Substring, never a
+    parse: the exact check json-loads the whole array, and doing that on the loop
+    to decide whether to leave it parsed a 12 MB envelope right there."""
+    for message in messages or ():
+        role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
+        if role != "tool":
+            continue
+        content = (
+            message.get("content")
+            if isinstance(message, dict)
+            else getattr(message, "content", None)
+        )
+        if isinstance(content, str) and mcp_images_mentioned_in(content):
+            return True
+    return False
+
+
+def _messages_have_promotable_mcp_images(messages) -> bool:
+    """The exact envelope check, minus results generation would never promote.
+
+    For the refusals: a named non-MCP result has its suffix stripped and sends no
+    pixel, so refusing a count on it turned away a countable prompt. Callers stamp
+    names from the calls first (_named_anthropic_tool_results), so an unnamed result
+    here really is one nothing can attribute, and legacy history keeps its trust.
+    """
+    for message in messages or ():
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        content = message.get("content")
+        if not isinstance(content, str) or not mcp_images_sentinel_in(content):
+            continue
+        if _names_a_non_mcp_tool(message):
+            continue
+        return True
+    return False
+
+
+def _request_has_replayed_mcp_images(payload) -> bool:
+    return _messages_mention_mcp_images(payload.messages)
+
+
+def _request_has_promotable_mcp_images(payload, *, exact: bool = True) -> bool:
+    """Envelopes generation would really promote.
+
+    ``_promote`` preserves a named non-MCP result verbatim, so treating its
+    trailing suffix as images here refuses a countable prompt and can buy a
+    model-catalog fetch nothing needs.
+
+    ``exact=False`` is the substring form, for a decision made on the event loop:
+    the exact check json-loads the whole array, and a permitted envelope is 12 MB.
+    A false positive there costs a catalog fetch; the worker validates for real.
+    """
+    present = mcp_images_sentinel_in if exact else mcp_images_mentioned_in
+    # The same positional correlation generation applies: an unnamed result whose
+    # call was a non-MCP tool is never promoted, and reading it as promotable here
+    # refused a countable prompt and bought a catalog fetch for nothing.
+    names = _mcp_resolve_tool_names(payload.messages)
+    for index, message in enumerate(payload.messages):
+        if getattr(message, "role", None) != "tool":
+            continue
+        content = getattr(message, "content", None)
+        if not isinstance(content, str) or not present(content):
+            continue
+        name = getattr(message, "name", None) or names.get(index)
+        if isinstance(name, str) and name and not name.startswith("mcp__"):
+            continue
+        return True
+    return False
+
+
+def _request_has_image(payload) -> bool:
+    # A replayed envelope is decoded and re-encoded like any other image, so the
+    # work belongs off the event loop even when no picture is attached.
+    return _request_has_attached_image(payload) or _request_has_replayed_mcp_images(payload)
 
 
 def _anthropic_image_blocks(payload, *, tool_results: bool = True):
@@ -17759,7 +18036,7 @@ async def generate_audio(
         )
 
     # Extract text from the last user message
-    _, chat_messages, _ = _extract_content_parts(payload.messages)
+    _, chat_messages, _ = await _extract_content_parts_async(payload.messages)
     if not chat_messages:
         raise HTTPException(status_code = 400, detail = "No messages provided.")
     last_user_msg = next((m for m in reversed(chat_messages) if m["role"] == "user"), None)
@@ -19715,7 +19992,9 @@ def _inject_audio_part(messages: list[dict], audio_b64: str, audio_format: str) 
             return
 
 
-def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[str]"]:
+def _extract_content_parts(
+    messages: list, *, keep_tool_images: bool = False
+) -> tuple[str, list[dict], "Optional[str]"]:
     """
     Parse OpenAI-format messages into components the inference backend expects.
 
@@ -19733,7 +20012,8 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
     latest_image_b64: Optional[str] = None
     latest_user_image_b64: Optional[str] = None
 
-    for msg in messages:
+    _resolved_tool_names = _mcp_resolve_tool_names(messages)
+    for _msg_index, msg in enumerate(messages):
         # ── System / developer messages → extract as system_prompt ────────
         if msg.role in ("system", "developer"):
             if isinstance(msg.content, str):
@@ -19785,7 +20065,24 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
 
         if combined_text is None:
             continue
+        if msg.role == "tool" and not keep_tool_images:
+            # The exact split, always: an MCP tool's own text can contain the marker
+            # line without an envelope behind it (the envelope is appended only when
+            # there were images), and a cut at the marker truncated such a result.
+            # The json-load this costs on a permitted 12 MB envelope is why the
+            # awaited callers go through _extract_content_parts_async.
+            combined_text = split_mcp_images(combined_text)[0]
         chat_message = {"role": msg.role, "content": combined_text}
+        # Carried through: promote_history reads it to decide whether an envelope
+        # came from an MCP server, and dropping it here made an unnamed tool
+        # message that bypasses the check entirely. Resolved from the call when the
+        # result itself is unnamed: this rebuild drops tool_call_id and the calls,
+        # so the correlation has to happen here or the local path cannot run the
+        # provenance gate at all.
+        if msg.role == "tool":
+            _tool_name = getattr(msg, "name", None) or _resolved_tool_names.get(_msg_index)
+            if isinstance(_tool_name, str) and _tool_name:
+                chat_message["name"] = _tool_name
         if msg.role == "assistant" and msg.reasoning_content:
             chat_message["reasoning_content"] = msg.reasoning_content
         chat_messages.append(chat_message)
@@ -19797,6 +20094,15 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
         chat_messages,
         latest_user_image_b64 or latest_image_b64,
     )
+
+
+async def _extract_content_parts_async(messages: list, **kwargs):
+    """The same, off the shared loop when a tool result carries the envelope marker:
+    stripping it is the exact split, a json-load of a permitted 12 MB array, and the
+    awaited audio, count and safetensors callers must not do that on the loop."""
+    if _messages_mention_mcp_images(messages):
+        return await asyncio.to_thread(_extract_content_parts, messages, **kwargs)
+    return _extract_content_parts(messages, **kwargs)
 
 
 def _user_ordinal_supplying_the_image(messages: list) -> Optional[int]:
@@ -19823,15 +20129,27 @@ def _user_ordinal_supplying_the_image(messages: list) -> Optional[int]:
     return ordinal
 
 
-def _mark_image_owner_turn(messages: list, ordinal: int) -> list:
+def _mark_image_owner_turn(
+    messages: list,
+    ordinal: int,
+    marked_at: "list | None" = None,
+) -> list:
     """Give the *ordinal*-th user turn a structured image part ahead of its text: the
-    renderers attach it to the newest turn unless one already carries it."""
+    renderers attach it to the newest turn unless one already carries it.
+
+    *marked_at* collects that turn's index. A replayed MCP picture has to be placed
+    ahead of it -- the pixels go history-first with the attachment last, and a
+    positional processor binds them in document order -- so the caller needs to know
+    which turn owns the attachment, not just that one does.
+    """
     marked = list(messages)
     seen = 0
     for index, message in enumerate(marked):
         if not isinstance(message, dict) or message.get("role") != "user":
             continue
         if seen == ordinal:
+            if marked_at is not None:
+                marked_at.append(index)
             body = message.get("content")
             if isinstance(body, str):
                 marked[index] = {
@@ -20030,6 +20348,8 @@ def _build_external_messages(
     supports_vision: bool,
     provider_type: Optional[str] = None,
     base_url: Optional[str] = None,
+    promoted_out: "Optional[list]" = None,
+    promote_mcp_images: "Optional[bool]" = None,
 ) -> list[dict]:
     """
     Convert ChatMessage list to OpenAI-compatible dicts for external providers.
@@ -20037,6 +20357,10 @@ def _build_external_messages(
     Behaviour per content-part type:
     - `text`: always preserved.
     - `image_url`: preserved on vision providers; stripped on non-vision.
+      `promote_mcp_images` governs only whether a replayed MCP envelope becomes
+      image input; it defaults to `supports_vision` and must not be passed as
+      that flag, or a stricter MCP answer would also strip what the caller
+      attached.
     - `input_document`: preserved ONLY when the provider's stream helper has
       explicit translation logic (Anthropic + OpenAI today, see
       ``_INPUT_DOCUMENT_PROVIDERS``). Stripped for every other provider so the
@@ -20348,7 +20672,65 @@ def _build_external_messages(
                 entry["tool_calls"] = _replay_tool_call_ids(entry["tool_calls"], replay_ids)
             if isinstance(entry.get("tool_call_id"), str):
                 entry["tool_call_id"] = replay_ids.get(entry["tool_call_id"], entry["tool_call_id"])
-    return result
+    promote = supports_vision if promote_mcp_images is None else promote_mcp_images
+    # A provider applies its own per-request cap in document order, so the replay
+    # leaves the caller's own pictures room; llama-server is bounded by its context
+    # window instead, and the GGUF callers keep the full allowance.
+    return promote_mcp_history_images(
+        result, vision = promote, promoted_out = promoted_out, reserve_for_caller = True
+    )
+
+
+async def _promote_mcp_history_images_async(
+    messages,
+    *,
+    vision: bool,
+    promoted_out = None,
+):
+    """Promotion off the shared loop when there is really an envelope to rebuild.
+    Same hop, and the same reason, as the local and external replay paths take.
+    On marker presence alone, not on vision: a text-only target still has the
+    envelope stripped, and stripping json-loads the whole 12 MB array."""
+    if _messages_mention_mcp_images(messages):
+        return await asyncio.to_thread(
+            promote_mcp_history_images, messages, vision = vision, promoted_out = promoted_out
+        )
+    return promote_mcp_history_images(messages, vision = vision, promoted_out = promoted_out)
+
+
+async def _promote_local_mcp_images_async(
+    messages,
+    *,
+    vision: bool,
+    decode_cache = None,
+):
+    """Rebuilding a replayed envelope decodes and re-encodes every picture in it.
+    A permitted image runs to 40 megapixels, so that belongs off the shared loop --
+    the same hop the GGUF and external replay paths already take. Taken on marker
+    presence alone: a text-only target still has the envelope stripped, which parses
+    the same 12 MB array."""
+    if _messages_mention_mcp_images(messages):
+        return await asyncio.to_thread(
+            promote_mcp_history_images_local,
+            messages,
+            vision = vision,
+            decode_cache = decode_cache,
+        )
+    return promote_mcp_history_images_local(messages, vision = vision, decode_cache = decode_cache)
+
+
+async def _build_external_messages_async(messages, supports_vision, **kwargs) -> list[dict]:
+    """Also collects what promotion created when the caller passes promoted_out."""
+    """Promoting a replayed envelope decodes and re-encodes every picture in it,
+    which is PIL work on the shared loop. Hop to a thread only when there is an
+    envelope to promote, so an ordinary text turn keeps its direct call."""
+    # On marker presence alone, not on whether promotion is on: a text-only target
+    # still has the envelope stripped, and stripping parses the same 12 MB array.
+    if _messages_mention_mcp_images(messages):
+        return await asyncio.to_thread(
+            _build_external_messages, messages, supports_vision, **kwargs
+        )
+    return _build_external_messages(messages, supports_vision, **kwargs)
 
 
 async def _proxy_to_external_provider(
@@ -20588,11 +20970,25 @@ async def _proxy_to_external_provider(
             if model in capabilities
             else offered_subscription_model(payload.provider_id, model)
         )
-        if image_requested and model not in capabilities and listed_model is None:
+        # An MCP tool can hand this loop a picture on a later turn, and the vision
+        # flag is fixed here for the whole run: a text-only opening turn would
+        # otherwise pin it to False and discard that picture on a capable model.
+        _may_receive_image = (
+            image_requested
+            # A tool can hand this loop a picture on a later turn...
+            or bool(getattr(payload, "mcp_enabled", False))
+            # ...and a conversation that already carries one needs the capability
+            # resolved even when MCP has since been switched off, or the replay is
+            # stripped from a model that could have read it. Substring form: this
+            # runs on the loop, and the exact check parses the whole envelope.
+            or _request_has_promotable_mcp_images(payload, exact = False)
+        )
+        if _may_receive_image and model not in capabilities and listed_model is None:
             # Admitted straight off the saved row, so no catalog read happened this
             # process and nothing here knows the modalities. Defaulting to text-only
-            # would refuse an image for a model the picker offered as capable. Only an
-            # actual image is worth the fetch; a text turn should not pay for one.
+            # would refuse an image for a model the picker offered as capable. Only a
+            # request that can carry one is worth the fetch; a plain text turn with no
+            # tools should not pay for it.
             try:
                 await ensure_subscription_models(payload.provider_id)
             except (CodexAuthError, CodexReauthorizationError) as exc:
@@ -20634,11 +21030,13 @@ async def _proxy_to_external_provider(
             mark_subscription_catalog_stale(payload.provider_id)
             if model not in _allowed_codex_models():
                 raise HTTPException(status_code = 400, detail = "Choose a curated Codex model.")
-        chat_messages = _build_external_messages(
+        _codex_promoted_parts: list = []
+        chat_messages = await _build_external_messages_async(
             payload.messages,
             model_supports_vision,
             provider_type = provider_type,
             base_url = base_url,
+            promoted_out = _codex_promoted_parts,
         )
         tool_payloads = [
             tool.model_dump(exclude_none = True) if hasattr(tool, "model_dump") else tool
@@ -20725,6 +21123,8 @@ async def _proxy_to_external_provider(
                 response_format = _extract_response_format(payload),
                 tool_choice = payload.tool_choice,
                 continue_final_message = _continue_final_message(payload),
+                supports_vision = model_supports_vision,
+                promoted_image_parts = tuple(_codex_promoted_parts),
             )
             policy = (
                 CodexToolPolicy(
@@ -20950,11 +21350,21 @@ async def _proxy_to_external_provider(
 
     _pinfo = _get_provider_info(provider_type) or {}
     _supports_vision = _pinfo.get("supports_vision", False)
-    chat_messages = _build_external_messages(
+    _external_promoted_parts: list = []
+    chat_messages = await _build_external_messages_async(
         payload.messages,
+        # The provider-wide flag, so an image the caller attached is preserved
+        # exactly as it was before MCP promotion existed. The stricter
+        # model-level answer gates promotion alone: openrouter and huggingface
+        # are vision-capable for the family and name no model, so folding the
+        # two together stripped a picture sent to a chosen vision model.
         _supports_vision,
         provider_type = provider_type,
         base_url = base_url,
+        promoted_out = _external_promoted_parts,
+        promote_mcp_images = _external_takes_mcp_images(
+            provider_type, _supports_vision, model, _pinfo
+        ),
     )
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
@@ -21086,6 +21496,10 @@ async def _proxy_to_external_provider(
                     model = model,
                     tool_choice = payload.tool_choice,
                     continue_final_message = _continue_final_message(payload),
+                    supports_vision = _external_takes_mcp_images(
+                        provider_type, _supports_vision, model, _pinfo
+                    ),
+                    promoted_image_parts = tuple(_external_promoted_parts),
                 ),
                 policy = ToolLoopPolicy(
                     tools = external_studio_tools,
@@ -21723,7 +22137,7 @@ async def produce_openai_chat_completions(
     _preprepared_audio = None
     _image_preflight = None
     if _should_validate_before_switch():
-        _pre_parsed = _extract_content_parts(payload.messages)
+        _pre_parsed = _extract_content_parts(payload.messages, keep_tool_images = True)
         if not _pre_parsed[1]:
             raise HTTPException(
                 status_code = 400, detail = "At least one non-system message is required."
@@ -21829,7 +22243,7 @@ async def produce_openai_chat_completions(
         # audio-only request asks for the projector alone, since an audio model's
         # projector carries no vision tower. A safetensors or MLX checkpoint
         # declares audio input separately, so it is tracked apart as well.
-        _needs_image = bool(_pre_parsed[2]) or _request_has_image(payload)
+        _needs_image = bool(_pre_parsed[2]) or _request_has_attached_image(payload)
         # Video rides that projector too. Its own /props gate can only run after
         # the load, so this at least keeps a text-only target from evicting a
         # working model to serve a clip it could never take.
@@ -22101,7 +22515,9 @@ async def produce_openai_chat_completions(
                     if _predecoded_audio is not None
                     else _decode_audio_base64(payload.audio_base64)
                 )
-                system_prompt, chat_messages, _ = _extract_content_parts(payload.messages)
+                system_prompt, chat_messages, _ = await _extract_content_parts_async(
+                    payload.messages
+                )
                 system_prompt = _apply_current_date_prompt(system_prompt, request)
             except _DecodedAudioTooLongError as e:
                 # A limit the caller can act on, not a server fault.
@@ -22534,7 +22950,9 @@ async def produce_openai_chat_completions(
     if _pre_parsed is not None:
         system_prompt, chat_messages, extracted_image_b64 = _pre_parsed
     else:
-        system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(payload.messages)
+        system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(
+            payload.messages, keep_tool_images = True
+        )
     # applied once so both backends inherit it, with or without tools, and never state it twice.
     system_prompt = _apply_current_date_prompt(system_prompt, request)
 
@@ -22587,9 +23005,15 @@ async def produce_openai_chat_completions(
             if video_rejection is not None:
                 raise _reject(*video_rejection)
 
+        # The parts promotion created from replayed envelopes. The loop's cap counts
+        # what MCP tools have returned across the whole conversation, so a resumed chat
+        # has to hand it these: seeded empty it counted only the current run and let a
+        # replayed eight sit beside a fresh eight.
+        _gguf_replayed_image_parts: list = []
         gguf_messages, _ = await _openai_messages_for_gguf_chat_async(
             payload,
             llama_backend.is_vision,
+            _gguf_replayed_image_parts,
         )
         gguf_messages = _set_or_prepend_system_message(gguf_messages, system_prompt)
         image_b64 = None
@@ -22818,6 +23242,7 @@ async def produce_openai_chat_completions(
             def gguf_generate_with_tools():
                 return llama_backend.generate_chat_completion_with_tools(
                     messages = gguf_messages,
+                    replayed_image_parts = tuple(_gguf_replayed_image_parts),
                     tools = tools_to_use,
                     temperature = payload.temperature,
                     top_p = payload.top_p,
@@ -22862,7 +23287,7 @@ async def produce_openai_chat_completions(
 
             _tool_admission_mode = "chat_tool_stream" if payload.stream else "chat_tool_nonstream"
             try:
-                reservation, admission_config = _openai_llama_admission_reserve(
+                reservation, admission_config = await _openai_llama_admission_reserve_async(
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
@@ -23621,7 +24046,7 @@ async def produce_openai_chat_completions(
             _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
             _tracker.__enter__()
             try:
-                reservation, admission_config = _openai_llama_admission_reserve(
+                reservation, admission_config = await _openai_llama_admission_reserve_async(
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
@@ -23965,7 +24390,7 @@ async def produce_openai_chat_completions(
             )
         else:
             try:
-                reservation, admission_config = _openai_llama_admission_reserve(
+                reservation, admission_config = await _openai_llama_admission_reserve_async(
                     request = request,
                     llama_backend = llama_backend,
                     payload = payload,
@@ -24306,6 +24731,17 @@ async def produce_openai_chat_completions(
 
     # Classify capability flags from the loaded template.
     _sf_model_info = backend.models.get(backend.active_model_name, {})
+    # Strips for a text-only model, rebuilds the picture as a marker turn for one
+    # that reads images; either way no envelope reaches the template.
+    # One request's decodes, shared with the client-tool rebuild below, which promotes
+    # the same history again from the raw payload: a retained picture can be a 40
+    # megapixel raster, and it is decoded once, not once per promotion.
+    _sf_mcp_decode_cache: dict = {}
+    chat_messages, sf_mcp_images = await _promote_local_mcp_images_async(
+        chat_messages,
+        vision = bool(_sf_model_info.get("is_vision")),
+        decode_cache = _sf_mcp_decode_cache,
+    )
     _sf_tpl = (_sf_model_info.get("chat_template_info") or {}).get("template")
     # Resolve the tool policy BEFORE the protocol is classified: the template
     # branch chosen here must be the one generation renders. Reading the raw
@@ -24434,6 +24870,31 @@ async def produce_openai_chat_completions(
         _sf_template_tools
     )
 
+    # A replayed MCP picture sends generation down the processor path just as an
+    # attachment does, so protocol classification has to read the same template it
+    # will render with -- otherwise tool schemas and reasoning markers are derived
+    # from the tokenizer template while the prompt comes from the processor one.
+    _sf_has_any_image = image is not None or bool(sf_mcp_images)
+    # Resolved BEFORE the capability gate below, which classifies from this body (#10092).
+    _sf_image_tpl = (
+        (_sf_model_info.get("chat_template_info") or {}).get("processor_template")
+        if _sf_has_any_image
+        else None
+    )
+    # Differs from processor_template: a template-less processor still places the image.
+    _sf_renders_image = _sf_has_any_image and bool(
+        (_sf_model_info.get("chat_template_info") or {}).get("renders_image")
+    )
+    if _sf_image_tpl is not None:
+        # The WHOLE protocol, not just tool support: a processor body can carry a reasoning
+        # channel the tokenizer never declares, whose <think> markup then leaked as visible
+        # content. prefer_tool_use is off: a processor never selects "tool_use" (#10092).
+        _sf_features, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(
+            _sf_template_tools,
+            template = _sf_image_tpl,
+            prefer_tool_use = False,
+        )
+
     # A continued turn renders no generation prompt, so nothing is prefilled and the
     # resumed text is the visible answer. Only the first turn continues; later tool-loop
     # turns render a fresh generation prompt and prefill as usual.
@@ -24474,7 +24935,21 @@ async def produce_openai_chat_completions(
     _sf_use_tools = (
         (_sf_tools_on or _sf_mcp_allowed)
         and _sf_features.get("supports_tools", False)
-        and image is None
+        # An attachment used to withdraw the tools: the loop had no way to carry
+        # a picture. It has one now, so only a model that cannot read images does.
+        #
+        # Except when the caller sent its own catalog. #10092 routes image-plus-tools
+        # to the client passthrough so those schemas are the ones rendered; claiming
+        # the request here would answer it with Unsloth's built-ins instead, which is
+        # the client's tools silently gone. Studio's own chat names tools through
+        # enabled_tools rather than sending schemas, so the picture still reaches the
+        # loop there -- which is the request this whole path exists for.
+        #
+        # Gated on _sf_has_any_image, not on the attachment: a resumed chat whose
+        # only pictures are replayed MCP ones carries image input just the same, and
+        # reading `image is None` there let the loop take the request and swap the
+        # caller's schemas out on exactly the path this PR adds.
+        and (not _sf_has_any_image or (bool(_sf_model_info.get("is_vision")) and not payload.tools))
         and not _sf_is_gptoss
         and _sf_tool_budget > 0
     )
@@ -24568,6 +25043,46 @@ async def produce_openai_chat_completions(
             else:
                 _sf_chat_messages.append(_msg)
 
+        # The attachment rides in last, matching where its marker sits: the MCP
+        # pictures came from earlier turns.
+        _sf_loop_images = list(sf_mcp_images)
+        # Where the attachment lands among the replayed pixels: its marker sits on the
+        # turn that supplied it, which can precede a tool's pictures, so the position
+        # is read off the conversation rather than assumed to be last.
+        _sf_attachment_at: list[int] = []
+        if image is not None:
+            # The turn that supplied it, not simply the newest one: the extractor
+            # takes the newest user image from anywhere in the thread, so a
+            # text-only latest question would otherwise be told it carried an older
+            # picture -- and with replayed images in between, the marker order stops
+            # matching the pixel order too.
+            # Trimmed BEFORE the attachment's marker exists, which is what the
+            # ordering here is for. The trim drops by marker ORDINAL against a payload
+            # list that holds replay only, so with the attachment's turn ahead of the
+            # replayed pictures it deleted ordinal 0 -- the attachment's own marker --
+            # while charging replay payload 0, and every later pixel shifted onto the
+            # marker before it.
+            trim_mcp_image_turns(
+                _sf_chat_messages, sf_mcp_images, limit = _MCP_MAX_TOTAL_MODEL_IMAGES - 1
+            )
+            # Snapshot after the trim, so "history" names the markers that survived it.
+            _sf_prior_markers = mcp_image_marker_parts(_sf_chat_messages)
+            # Read off the conversation, not assumed: the attachment's marker sits
+            # on the turn that supplied it, which can precede a tool's pictures, and
+            # a positional VLM binds the Nth pixel to the Nth marker.
+            _sf_chat_messages = mark_mcp_image_turn(
+                _sf_chat_messages,
+                1,
+                ordinal = _user_ordinal_supplying_the_image(payload.messages),
+            )
+            _sf_loop_images = mcp_pixels_in_marker_order(
+                _sf_chat_messages,
+                _sf_prior_markers,
+                sf_mcp_images,
+                _pil_to_png_b64(image),
+                placed_at = _sf_attachment_at,
+            )
+
         # Request-scoped usage/timings receptacle (filled at gen_done).
         _sf_stats_holder: dict = {}
 
@@ -24576,6 +25091,10 @@ async def produce_openai_chat_completions(
                 messages = _sf_chat_messages,
                 tools = _sf_tools_to_use,
                 system_prompt = _sf_system_prompt or "",
+                images = _sf_loop_images or None,
+                # The loop's cap trims the replay it grows; the caller's own picture
+                # is not the loop's to evict, so it is named by position.
+                caller_image_indexes = tuple(_sf_attachment_at),
                 temperature = payload.temperature,
                 top_p = payload.top_p,
                 top_k = payload.top_k,
@@ -24970,11 +25489,22 @@ async def produce_openai_chat_completions(
         finally:
             _sf_tracker.__exit__(None, None, None)
 
+    # The attachment is passed beside the replayed list and both reach the backend
+    # as one `attached` sequence, so the cap has to cover the pair. Reserve its slot
+    # by trimming the replay, oldest first, with the markers that go with them.
+    if image is not None and sf_mcp_images:
+        trim_mcp_image_turns(chat_messages, sf_mcp_images, limit = _MCP_MAX_TOTAL_MODEL_IMAGES - 1)
+
     # Shared generation kwargs
     gen_kwargs = dict(
         messages = chat_messages,
         system_prompt = system_prompt,
         image = image,
+        images = sf_mcp_images or None,
+        # Which user turn actually supplied the attachment: the extractor takes the
+        # newest user image from anywhere in the thread, so the backends cannot
+        # assume it belongs to the latest question.
+        image_ordinal = _user_ordinal_supplying_the_image(payload.messages),
         temperature = payload.temperature,
         top_p = payload.top_p,
         top_k = payload.top_k,
@@ -25003,25 +25533,10 @@ async def produce_openai_chat_completions(
     # tools into the template, generate one turn, heal text-form calls (#6801).
     # supports_tools=False falls through to plain relay (GGUF gate parity).
     _sf_has_tool_msgs = any(m.role == "tool" or m.tool_calls for m in payload.messages)
-    # Resolved BEFORE the capability gate below, which classifies from this body (#10092).
-    _sf_image_tpl = (
-        (_sf_model_info.get("chat_template_info") or {}).get("processor_template")
-        if image is not None
-        else None
-    )
-    # Differs from processor_template: a template-less processor still places the image.
-    _sf_renders_image = image is not None and bool(
-        (_sf_model_info.get("chat_template_info") or {}).get("renders_image")
-    )
-    if _sf_image_tpl is not None:
-        # The WHOLE protocol, not just tool support: a processor body can carry a reasoning
-        # channel the tokenizer never declares, whose <think> markup then leaked as visible
-        # content. prefer_tool_use is off: a processor never selects "tool_use" (#10092).
-        _sf_features, _sf_parse_think, _sf_reasoning_prefilled = _sf_response_protocol(
-            _sf_template_tools,
-            template = _sf_image_tpl,
-            prefer_tool_use = False,
-        )
+    # Classified against the processor body above, before the server loop's own gate:
+    # that gate reads the same flag, and deciding it here left the loop enabled on a
+    # tokenizer body that renders tools while generation used a processor body that
+    # does not, so the model was never shown the schemas the loop was driving.
     _sf_supports_tools = _sf_features.get("supports_tools", False)
     # Gate on _sf_use_tools (did the server-side path claim the request?), not
     # raw mcp_enabled: an empty MCP registry must not silently drop client tools.
@@ -25031,7 +25546,10 @@ async def produce_openai_chat_completions(
         # recomputing here would hide that and drop the client catalog.
         # Once an image rules out the server loop the passthrough takes the request, or
         # image-plus-tools is answered with prose and no schemas at all (#10092).
-        (not _sf_tools_on or (image is not None and not _sf_use_tools))
+        # _sf_has_any_image, not the attachment: a resumed chat whose only pictures are
+        # replayed MCP ones is the same request, and reading `image is not None` there
+        # left it with neither the loop's tools nor its own.
+        (not _sf_tools_on or (_sf_has_any_image and not _sf_use_tools))
         and not _sf_use_tools
         and not _sf_is_gptoss
         and _sf_supports_tools
@@ -25092,19 +25610,36 @@ async def produce_openai_chat_completions(
         # Re-derive from payload.messages so tool_calls / role="tool" history
         # survives templating; fold system/developer into one leading system
         # message (templates reject "developer") and clear prompt to avoid a dup.
-        gen_kwargs["messages"] = _set_or_prepend_system_message(
+        #
+        # Promote after flattening, which drops image parts. Preserve one marker per
+        # batch at its original position or merge it into the following user turn;
+        # a detached block can violate non-GGUF image limits and turn alternation.
+        _sf_rebuilt, _sf_rebuilt_images = await _promote_local_mcp_images_async(
             _structured_tool_history_for_local_template(
                 _flatten_content_parts_for_local_template(
-                    # Not a llama-server body: the flatten below drops image parts.
-                    _openai_messages_for_passthrough(payload, normalize_images = False)
+                    _openai_messages_for_passthrough(
+                        payload, normalize_images = False, promote_mcp_images = False
+                    )
                 )
             ),
-            system_prompt,
+            vision = _sf_renders_image,
+            decode_cache = _sf_mcp_decode_cache,
         )
+        if image is not None and _sf_rebuilt_images:
+            # The attachment rides beside the replay and both reach the backend as
+            # one sequence, so its slot is reserved here as the server-tool path does.
+            trim_mcp_image_turns(
+                _sf_rebuilt, _sf_rebuilt_images, limit = _MCP_MAX_TOTAL_MODEL_IMAGES - 1
+            )
+        gen_kwargs["messages"] = _set_or_prepend_system_message(_sf_rebuilt, system_prompt)
+        gen_kwargs["images"] = _sf_rebuilt_images or None
         # Mark the turn that owns the image so the newest-user-turn scan does not move an
         # older picture onto a later question. Gated on _sf_renders_image, not on an image:
-        # a text-template render must not be handed part lists (#10092).
-        if _sf_renders_image:
+        # a text-template render must not be handed part lists (#10092). Not when pictures
+        # were replayed: the backends then place the attachment's marker themselves, by
+        # ordinal, from a snapshot of the replay's markers -- marked here first, it would
+        # sit in that snapshot and a replayed picture would bind to it.
+        if _sf_renders_image and not _sf_rebuilt_images:
             _sf_image_ordinal = _user_ordinal_supplying_the_image(payload.messages)
             if _sf_image_ordinal is not None:
                 gen_kwargs["messages"] = _mark_image_owner_turn(
@@ -25131,8 +25666,15 @@ async def produce_openai_chat_completions(
             ] or None
         else:
             gen_kwargs["tools"] = payload.tools
-    elif _sf_renders_image:
+    elif _sf_renders_image and not sf_mcp_images:
         # The plain route too: later turns then share the prefix that holds the image.
+        #
+        # Only when nothing was replayed. Both backends snapshot the conversation's
+        # existing markers as "history" before topping up, so a marker added HERE is
+        # counted as a replayed picture's and the pixels bind to the wrong turns: with
+        # the attachment on an earlier turn than a tool's picture, the model is shown
+        # the screenshot where its own diagram belongs. The top-up places the marker
+        # at the same ordinal anyway, so the only thing lost is the ambiguity.
         _sf_image_ordinal = _user_ordinal_supplying_the_image(payload.messages)
         if _sf_image_ordinal is not None:
             gen_kwargs["messages"] = _mark_image_owner_turn(
@@ -28729,7 +29271,7 @@ async def _responses_stream(
     cancel_event = threading.Event()
     _tracker = _TrackedCancel.for_payload(cancel_event, payload, resp_id)
     try:
-        reservation, admission_config = _openai_llama_admission_reserve(
+        reservation, admission_config = await _openai_llama_admission_reserve_async(
             request = request,
             llama_backend = llama_backend,
             # chat_req, not payload: a ResponsesRequest carries `input` and
@@ -30006,6 +30548,16 @@ def _select_anthropic_server_tools(
     return [tool for tool in all_tools if tool["function"]["name"] in selected_names]
 
 
+def _pil_to_png_b64(img) -> str:
+    buf = io.BytesIO()
+    # Composited, not merely converted: convert("RGB") keeps whatever colour sits
+    # under the alpha, so a transparent attachment whose background was never painted
+    # reaches the worker as black -- and its dark text with it. The ordinary IPC path
+    # carries the PNG's alpha through, so only this serialisation flattened it.
+    _mcp_flattened_rgb(img).save(buf, format = "PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
 def _image_bytes_to_png_b64(raw: bytes) -> str:
     """Decode raw image bytes and re-encode to a base64-ascii PNG string.
 
@@ -30167,6 +30719,25 @@ def _resident_context_satisfies(model_info: dict, max_seq_length: Any) -> bool:
     return _positive_int_or_none(max_seq_length) == _positive_int_or_none(recorded)
 
 
+async def _resident_model_reads_images() -> bool:
+    """Whether whatever is resident would be handed pixels for a promoted envelope.
+
+    Both backends are asked: llama.cpp answers for a loaded GGUF, and the inference
+    backend for a resident MLX or safetensors model, which serves its own count and
+    would otherwise never reach a llama-only guard.
+    """
+    if bool(getattr(get_llama_cpp_backend(), "is_vision", False)):
+        return True
+    # Off the loop for the same reason the MLX count is: building the singleton runs
+    # the torch import.
+    backend = await asyncio.to_thread(get_inference_backend)
+    active = getattr(backend, "active_model_name", None)
+    if not active:
+        return False
+    entry = (getattr(backend, "models", {}) or {}).get(active) or {}
+    return bool(entry.get("is_vision"))
+
+
 async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONResponse]:
     """Count with the resident MLX model's tokenizer, or None if MLX is not serving one.
 
@@ -30194,7 +30765,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
 
     # The completion's own helper: rebuilding it here is how a count prices a prompt
     # nobody sends.
-    system_prompt, messages, _image = _extract_content_parts(payload.messages)
+    system_prompt, messages, _image = await _extract_content_parts_async(payload.messages)
     # The completion applies this once for both non-GGUF backends before it branches.
     # Only with a request: the helper's requestless mode injects the date unconditionally.
     if request is not None:
@@ -30299,12 +30870,17 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
             ] or None
         else:
             _tools_to_use = payload.tools or None
-        messages = _set_or_prepend_system_message(
+        messages = await _promote_mcp_history_images_async(
             _structured_tool_history_for_local_template(
-                _flatten_content_parts_for_local_template(_openai_messages_for_passthrough(payload))
+                _flatten_content_parts_for_local_template(
+                    _openai_messages_for_passthrough(
+                        payload, normalize_images = False, promote_mcp_images = False
+                    )
+                )
             ),
-            system_prompt,
+            vision = False,
         )
+        messages = _set_or_prepend_system_message(messages, system_prompt)
         system_prompt = ""
     elif _tools_to_use:
         # A PENDING turn is the shape this loop answers from exactly these messages, splicing
@@ -30481,7 +31057,7 @@ async def chat_count_tokens(
             _tool["type"] = "function"
 
     # /apply-template swaps each image for a short media marker, so refuse rather than undercount.
-    if _request_has_image(payload):
+    if _request_has_attached_image(payload):
         raise HTTPException(
             status_code = 503,
             detail = "Cannot count tokens for messages containing images.",
@@ -30497,6 +31073,23 @@ async def chat_count_tokens(
         raise HTTPException(
             status_code = 503,
             detail = "Cannot count tokens for messages containing video.",
+        )
+
+    # A replay envelope is countable on a text-only model, where generation strips it
+    # and sends no pixels. On a model that reads images the completion promotes it, so
+    # counting would underreport the prompt by every image-embedding token -- the same
+    # reason a direct attachment is refused above. Checked ahead of the MLX dispatch,
+    # which returns its own count and would otherwise never reach the guard.
+    # The exact check parses the envelope, so it runs off the loop, and only once the
+    # substring form says there is one to parse.
+    if (
+        _request_has_promotable_mcp_images(payload, exact = False)
+        and await asyncio.to_thread(_request_has_promotable_mcp_images, payload)
+        and await _resident_model_reads_images()
+    ):
+        raise HTTPException(
+            status_code = 503,
+            detail = "Cannot count tokens for messages containing images.",
         )
 
     llama_backend = get_llama_cpp_backend()
@@ -30518,12 +31111,22 @@ async def chat_count_tokens(
     _count_messages = payload.messages
     if _folds_studio_tool_history(payload, llama_backend):
         _count_messages = _folded_studio_tool_messages(_count_messages)
-    openai_messages = _strip_provider_synthetic_tool_history(
-        _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in _count_messages])
+    # Awaited: stripping parses the whole envelope, and this recount runs in the
+    # background on every turn, so it must not do that on the shared loop.
+    openai_messages = await _promote_mcp_history_images_async(
+        _strip_provider_synthetic_tool_history(
+            _drop_empty_assistant_sentinels(
+                [m.model_dump(exclude_none = True) for m in _count_messages]
+            )
+        ),
+        # Never as pixels: /apply-template prices a media marker, not the image.
+        # This drops the base64 the completion path would have promoted, which is
+        # the one part a count must not price as text.
+        vision = False,
     )
     if not _takes_passthrough:
         openai_messages = _coalesce_consecutive_user_turns(openai_messages)
-    _system_prompt, _, _ = _extract_content_parts(payload.messages)
+    _system_prompt, _, _ = await _extract_content_parts_async(payload.messages)
     # the verbatim passthrough carries no date line, so counting one here would overcount it.
     if not _takes_passthrough:
         _system_prompt = _apply_current_date_prompt(_system_prompt, request)
@@ -30732,6 +31335,36 @@ async def anthropic_count_tokens(
     # Apply the same sanitization /messages does before generation, so the count
     # matches the prompt the real request would build (otherwise empty-assistant
     # sentinels / synthetic tool history inflate the count or hit the fallback).
+    # Named and judged BEFORE the sanitizer, in the same order /v1/messages uses: it
+    # folds every role="tool" into a user message on a template without tool-role
+    # support, and both the refusal and _promote only look at tool messages.
+    openai_messages = _named_anthropic_tool_results(openai_messages)
+
+    # Like /chat/count_tokens, refuse promoted images: /apply-template counts
+    # media markers without the projector tokens generation uses. Check the
+    # translated, named results so Anthropic blocks are recognized and non-MCP
+    # envelopes remain countable. Parse off the event loop after a substring check.
+    if (
+        llama_backend.is_vision
+        and _messages_mention_mcp_images(openai_messages)
+        and await asyncio.to_thread(_messages_have_promotable_mcp_images, openai_messages)
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "Cannot count tokens for messages containing images.",
+        )
+
+    # Priced as the images the request really sends, not as the base64 the envelope
+    # carries: rendered verbatim a replayed screenshot counts thousands of tokens the
+    # completion never sends, and the two endpoints must agree on the same prompt.
+    # Awaited, like the completion path: promotion is Pillow work on a permitted
+    # 40-megapixel raster, and running it inline stalls every other request on the loop.
+    openai_messages = await _promote_mcp_history_images_async(
+        openai_messages, vision = llama_backend.is_vision
+    )
+
+    # Apply the same sanitization /messages does before generation, so the count
+    # matches the prompt the real request would build.
     openai_messages = _sanitize_anthropic_openai_messages(openai_messages, llama_backend)
     openai_tools = anthropic_tools_to_openai(payload.tools or []) or None
     # Only the client-tool passthrough is forwarded verbatim, so reproduce /messages' own
@@ -30999,11 +31632,26 @@ async def anthropic_messages(
     # builders apply the same strip; without it an Anthropic /v1/messages caller
     # replaying a prior provider-side tool_use forwards fake builtin tool
     # history to a backend with no matching function declarations.
+    # BEFORE the sanitizer. On a template without tool-role support it folds every
+    # role="tool" into a user message, and _promote only looks at tool messages -- so
+    # the envelope survived as JSON in the prompt and the model read megabytes of
+    # base64 while being shown no picture at all.
+    openai_messages = _named_anthropic_tool_results(openai_messages)
+    _anthropic_replayed_image_parts: list = []
+    openai_messages = await _promote_mcp_history_images_async(
+        openai_messages,
+        vision = llama_backend.is_vision,
+        promoted_out = _anthropic_replayed_image_parts,
+    )
+
     openai_messages = _sanitize_anthropic_openai_messages(openai_messages, llama_backend)
 
     # Enforce vision guard + re-encode embedded images to PNG so the Anthropic
     # endpoint matches /v1/chat/completions.
-    if _anthropic_has_image:
+    # Promoted parts count too: _anthropic_has_image was read off the original
+    # blocks, so a replay-only request took the synchronous branch and re-decoded up
+    # to eight promoted PNGs on the shared loop.
+    if _anthropic_has_image or _anthropic_replayed_image_parts:
         _has_image = await asyncio.to_thread(
             _normalize_anthropic_openai_images,
             openai_messages,
@@ -31052,9 +31700,9 @@ async def anthropic_messages(
     # 1. enable_tools=true → server-side execution of built-in tools (Unsloth shorthand)
     # 2. tools=[...] only  → client-side pass-through (standard Anthropic behavior)
     # 3. neither           → plain chat
-    # The server-side agentic loop doesn't support multimodal input -- matches
-    # the `not image_b64` gate in /v1/chat/completions. requested_studio_tools and
-    # the mixed-mode rejection were computed before the switch above.
+    # Match /v1/chat/completions: server tools reject caller attachments but
+    # accept replayed images. Check original blocks because promotion also sets
+    # _has_image. Tool selection and mixed-mode rejection preceded the switch.
     openai_client_tools = [
         tool
         for tool in anthropic_tools_to_openai(payload.tools or [])
@@ -31066,7 +31714,9 @@ async def anthropic_messages(
     # enable_tools=false). Explicit False always wins. Same predicate as the
     # permission gate above: deciding "did this request select server tools"
     # twice is what let the gate reject requests the router then served.
-    server_tools = _selects_server_tools and llama_backend.supports_tools and not _has_image
+    server_tools = (
+        _selects_server_tools and llama_backend.supports_tools and not _anthropic_has_image
+    )
     # One short-circuiting chain: a backend whose supports_tools raises must not turn a plain
     # no-tools turn into a 500.
     client_tools = (
@@ -31270,13 +31920,17 @@ async def anthropic_messages(
 
     async def _admitted_anthropic(coro, *, tool_loop: bool = False):
         try:
-            reservation, admission_config = _openai_llama_admission_reserve(
+            reservation, admission_config = await _openai_llama_admission_reserve_async(
                 request = request,
                 llama_backend = llama_backend,
                 payload = payload,
                 tool_loop = tool_loop,
                 # Only the tool branch resolves a catalogue; the plain branch sends none.
                 injected_tools = openai_tools if tool_loop else None,
+                # The list generation really runs on: already translated out of the
+                # Anthropic block shape and already promoted, so a replayed screenshot
+                # is charged as the image it becomes rather than as its base64.
+                messages_override = openai_messages,
             )
             if tool_loop:
                 _anthropic_admission_hold["reservation"] = reservation
@@ -31525,6 +32179,7 @@ async def anthropic_messages(
             return llama_backend.generate_chat_completion_with_tools(
                 reasoning_provenance = _think_prov,
                 messages = openai_messages,
+                replayed_image_parts = tuple(_anthropic_replayed_image_parts),
                 tools = openai_tools,
                 temperature = temperature,
                 top_p = top_p,
@@ -33265,6 +33920,24 @@ def _template_supports_tools(backend) -> bool:
         return True
 
 
+def _named_anthropic_tool_results(messages: list[dict]) -> list[dict]:
+    """Stamp each role="tool" message with the tool it answers.
+
+    anthropic_messages_to_openai renders a tool_result block as tool_call_id plus
+    content and no ``name``, and _promote reads an absent name as legacy MCP history
+    it may trust. Delegates to the positional resolver rather than a conversation-wide
+    id map: the backend restarts ids like call_0 every response, and a last-wins map
+    renamed every earlier result with that id after the newest call.
+    """
+    names = _mcp_resolve_tool_names(messages)
+    return [
+        {**message, "name": names[index]}
+        if message.get("role") == "tool" and not message.get("name") and index in names
+        else message
+        for index, message in enumerate(messages)
+    ]
+
+
 def _sanitize_anthropic_openai_messages(messages: list[dict], backend) -> list[dict]:
     """Post-conversion chain shared by /v1/messages and its token counter, so a
     diverging list can never make input_tokens describe a different prompt.
@@ -33451,7 +34124,12 @@ def _splice_image_into_last_user(messages: list[dict], image_part: dict) -> None
         messages.append({"role": "user", "content": [image_part]})
 
 
-def _openai_messages_for_passthrough(payload, normalize_images: bool = True) -> list[dict]:
+def _openai_messages_for_passthrough(
+    payload,
+    vision: bool = False,
+    normalize_images: bool = True,
+    promote_mcp_images: bool = True,
+) -> list[dict]:
     """Build OpenAI-format message dicts for the /v1/chat/completions
     passthrough path.
 
@@ -33484,6 +34162,10 @@ def _openai_messages_for_passthrough(payload, normalize_images: bool = True) -> 
     messages = _strip_provider_synthetic_tool_history(
         _drop_empty_assistant_sentinels([m.model_dump(exclude_none = True) for m in payload.messages])
     )
+    # Left on for the local-template rebuild, which promotes them itself once its
+    # flatten has run: promoted here, the flatten would drop the parts again.
+    if promote_mcp_images:
+        messages = promote_mcp_history_images(messages, vision = vision)
 
     if normalize_images:
         _normalize_openai_image_parts_to_png(messages)
@@ -33557,7 +34239,11 @@ def _structured_tool_history_for_local_template(messages: list[dict]) -> list[di
     return out
 
 
-def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict], bool]:
+def _openai_messages_for_gguf_chat(
+    payload,
+    is_vision: bool,
+    promoted_out: "Optional[list]" = None,
+) -> tuple[list[dict], bool]:
     """Build llama-server messages for the standard GGUF chat path.
 
     llama-server accepts OpenAI multimodal content parts directly. Preserve all
@@ -33587,13 +34273,22 @@ def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict]
         }
         _splice_image_into_last_user(messages, image_part)
     has_image = _normalize_anthropic_openai_images(messages, is_vision)
-    return messages, has_image
+    return (
+        promote_mcp_history_images(messages, vision = is_vision, promoted_out = promoted_out),
+        has_image,
+    )
 
 
-async def _openai_messages_for_gguf_chat_async(payload, is_vision: bool) -> tuple[list[dict], bool]:
+async def _openai_messages_for_gguf_chat_async(
+    payload,
+    is_vision: bool,
+    promoted_out: "Optional[list]" = None,
+) -> tuple[list[dict], bool]:
     if _request_has_image(payload):
-        return await asyncio.to_thread(_openai_messages_for_gguf_chat, payload, is_vision)
-    return _openai_messages_for_gguf_chat(payload, is_vision)
+        return await asyncio.to_thread(
+            _openai_messages_for_gguf_chat, payload, is_vision, promoted_out
+        )
+    return _openai_messages_for_gguf_chat(payload, is_vision, promoted_out)
 
 
 def _extract_response_format(payload):
@@ -33631,7 +34326,9 @@ def _build_openai_passthrough_body(
     extensions (``enable_tools``, ``enabled_tools``, ``session_id``, ...) never
     leak to the backend.
     """
-    messages = _openai_messages_for_passthrough(payload)
+    messages = _openai_messages_for_passthrough(
+        payload, vision = bool(getattr(llama_backend, "is_vision", False))
+    )
     system_prompt, _, _ = _extract_content_parts(payload.messages)
     messages = _set_or_prepend_system_message(messages, system_prompt)
     # Markup is broken in _build_passthrough_payload, shared with both /v1/messages (#7066).
@@ -33712,7 +34409,7 @@ async def _openai_passthrough_stream(
     _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
     _tracker.__enter__()
     try:
-        reservation, admission_config = _openai_llama_admission_reserve(
+        reservation, admission_config = await _openai_llama_admission_reserve_async(
             request = request,
             llama_backend = llama_backend,
             payload = payload,
@@ -34766,7 +35463,7 @@ async def _openai_passthrough_non_streaming(
 ):
     """Non-streaming pass-through guarded by local llama-server admission."""
     try:
-        reservation, admission_config = _openai_llama_admission_reserve(
+        reservation, admission_config = await _openai_llama_admission_reserve_async(
             request = request,
             llama_backend = llama_backend,
             payload = payload,
