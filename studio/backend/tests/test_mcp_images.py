@@ -14,6 +14,10 @@ import types
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
+_STUBBED = {}
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -40,31 +44,46 @@ def _stub_if_missing(
     for attr in attrs:
         setattr(module, attr, MagicMock())
     sys.modules[name] = module
+    _STUBBED[name] = module
     parent, _, child = name.rpartition(".")
     if parent and parent in sys.modules:
         setattr(sys.modules[parent], child, module)
 
 
-for _torchao in (
-    "torchao",
-    "torchao.prototype",
-    "torchao.prototype.safetensors",
-    "torchao.prototype.safetensors.safetensors_support",
-    "torchao.prototype.safetensors.safetensors_utils",
-    "torchao.quantization",
-    "torchao.dtypes",
-    "torchao.float8",
-    "torchao.utils",
-):
-    _stub_if_missing(_torchao, named_spec = True)
+@pytest.fixture(scope = "module", autouse = True)
+def _optional_inference_dependencies():
+    try:
+        for _torchao in (
+            "torchao",
+            "torchao.prototype",
+            "torchao.prototype.safetensors",
+            "torchao.prototype.safetensors.safetensors_support",
+            "torchao.prototype.safetensors.safetensors_utils",
+            "torchao.quantization",
+            "torchao.dtypes",
+            "torchao.float8",
+            "torchao.utils",
+        ):
+            _stub_if_missing(_torchao, named_spec = True)
 
-_stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
-_stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
-_stub_if_missing("unsloth_zoo")
-_stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
+        _stub_if_missing(
+            "unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported")
+        )
+        _stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
+        _stub_if_missing("unsloth_zoo")
+        _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
+        yield
+    finally:
+        for name, module in reversed(list(_STUBBED.items())):
+            if sys.modules.get(name) is module:
+                sys.modules.pop(name)
+            parent, _, child = name.rpartition(".")
+            if parent in sys.modules and vars(sys.modules[parent]).get(child) is module:
+                delattr(sys.modules[parent], child)
+        _STUBBED.clear()
+
 
 from PIL import Image
-import pytest
 
 from core.inference import mcp_images
 from core.inference.mcp_images import (
