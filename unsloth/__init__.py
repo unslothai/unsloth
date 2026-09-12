@@ -600,9 +600,14 @@ if _IS_MLX:
         strategy = strategy.rsplit(".", 1)[-1]
         return strategy in ("no", "none", "false")
 
+    # Mirrors the collapse list in unsloth_zoo's `_normalize_mlx_optimizer_name`,
+    # which deliberately leaves `adamw_8bit` out: MLX implements it as a real 8-bit
+    # optimizer (unsloth_zoo/mlx/optimizers_quantized.py) and collapsing it here
+    # would hand the caller plain adamw instead of what they asked for. The paged
+    # and bnb spellings stay, since they promise CPU offload or a library MLX does
+    # not use.
     _MLX_ADAMW_OPTIMIZER_ALIASES = frozenset(
         (
-            "adamw_8bit",
             "paged_adamw_8bit",
             "adamw_bnb_8bit",
             "paged_adamw_32bit",
