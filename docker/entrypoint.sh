@@ -52,29 +52,52 @@ sync_notebooks() {
     fi
 }
 
+err()  { printf "\033[1;31mERROR:\033[0m %s\n" "$*" >&2; }
+warn() { printf "\033[1;33mWARN:\033[0m %s\n"  "$*" >&2; }
+
+# nvidia-smi is injected on a GPU request, so a missing binary means "no GPU attached"
+gpu_visible() {
+    local listing
+    # nvidia-smi -L ignores CUDA_VISIBLE_DEVICES but torch honours it: "" and -1 leave device_count() == 0, so they are no GPU
+    case "${CUDA_VISIBLE_DEVICES-unset}" in
+        ""|-1) return 1 ;;
+    esac
+    command -v nvidia-smi >/dev/null 2>&1 || return 1
+    listing="$(nvidia-smi -L 2>/dev/null || true)"
+    grep -q '^GPU' <<< "${listing}"
+}
+
+# The library reads UNSLOTH_ALLOW_CPU=1 as CPU-only CI and skips its TRL trainer patches, so it may only reach processes with no GPU.
+# Images opt in via UNSLOTH_IMAGE_ALLOW_CPU; `-`, not `:-`, so an explicitly empty UNSLOTH_ALLOW_CPU means off.
+allow_cpu="${UNSLOTH_ALLOW_CPU-${UNSLOTH_IMAGE_ALLOW_CPU:-0}}"
+if gpu_visible; then
+    has_gpu=1
+    if [[ "${UNSLOTH_ALLOW_CPU:-}" == "1" ]]; then
+        warn "Ignoring UNSLOTH_ALLOW_CPU=1: a GPU is visible, and the variable would turn off Unsloth's TRL trainer patches."
+        warn "Drop it from docker run; shells opened with docker exec still see the value you passed."
+    fi
+    unset UNSLOTH_ALLOW_CPU
+else
+    has_gpu=0
+    if [[ "${allow_cpu}" == "1" ]]; then
+        export UNSLOTH_ALLOW_CPU=1
+    fi
+fi
+
 if [[ "${UNSLOTH_SKIP_GPU_CHECK:-0}" == "1" ]]; then
     sync_notebooks
     exec "$@"
 fi
 
-err()  { printf "\033[1;31mERROR:\033[0m %s\n" "$*" >&2; }
-warn() { printf "\033[1;33mWARN:\033[0m %s\n"  "$*" >&2; }
-
-# CPU mode covers Jupyter, GGUF tooling and Studio chat, but NOT training or loading
-# a model. A visible GPU still runs the checks below.
-if [[ "${UNSLOTH_ALLOW_CPU:-0}" == "1" ]]; then
-    if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi -L 2>/dev/null | grep -q '^GPU'; then
-        warn "UNSLOTH_ALLOW_CPU=1 and no GPU visible -- continuing on CPU."
-        warn "CPU mode covers Jupyter, GGUF tooling and llama.cpp (GGUF) Studio chat."
-        warn "Training and loading Unsloth models (FastLanguageModel) still require an NVIDIA GPU."
-        sync_notebooks
-        exec "$@"
-    fi
+if [[ "${has_gpu}" == "0" && "${allow_cpu}" == "1" ]]; then
+    warn "UNSLOTH_ALLOW_CPU=1 and no GPU visible -- continuing on CPU."
+    warn "CPU mode covers Jupyter, GGUF tooling and llama.cpp (GGUF) Studio chat."
+    warn "Training and loading Unsloth models (FastLanguageModel) still require an NVIDIA GPU."
+    sync_notebooks
+    exec "$@"
 fi
 
-# nvidia-smi is injected on a GPU request, not baked in, so a missing binary means
-# "no GPU attached", same as an empty -L
-if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi -L 2>/dev/null | grep -q '^GPU'; then
+if [[ "${has_gpu}" == "0" ]]; then
     err "No GPU visible inside the container."
     cat >&2 <<'MSG'
 
