@@ -60,10 +60,20 @@ class TestTheEmptyProbeIsLabeled:
     def test_an_empty_probe_can_name_manual(self):
         src = _load_model_source()
         log = _first_index(src, "GPUs free: ")
-        window = src[log : log + 300]
+        window = src[log: log + 300]
         assert "manual placement" in window, (
             "an empty probe in Manual mode is a discarded-on-purpose list, not a "
             "failed enumeration; the line must say so"
+        )
+
+    def test_a_non_manual_void_probe_stays_unlabeled(self):
+        """The label exists to distinguish Manual from a failed probe. Auto never
+        discards the list, so an empty Auto probe must not borrow the label."""
+        src = _load_model_source()
+        log = _first_index(src, "GPUs free: ")
+        window = src[log: log + 300]
+        assert "if gpus else (' (manual placement)'" in window, (
+            "the label must be gated on the empty list AND Manual, not on Manual alone"
         )
 
 
