@@ -24667,12 +24667,11 @@ class LlamaCppBackend:
                 )
                 # Remembered so the reload hint and the duplicate-load comparator do
                 # not demand an mlock this launch deliberately skipped.
-                # A probe forced for the DirectIO decision must not leave the
-                # page-lock bookkeeping LESS conservative than it would have been
-                # unprobed. An unreadable Vulkan probe answers "not an iGPU", which
-                # turned host residency off and recorded the lock as inapplicable, and
-                # the comparator then excused a missing lock on weights that may be
-                # host-backed after all.
+                # A probe forced for the DirectIO decision must not leave the page-lock
+                # bookkeeping less conservative than it would have been unprobed: an
+                # unreadable Vulkan probe answers "not an iGPU", which turned residency
+                # off, recorded the lock as inapplicable, and let the comparator excuse
+                # a missing lock on weights that may be host-backed.
                 self._memory_mlock_applicable = _mem_host_resident or (
                     _mem_probe_for_dio
                     and not _mem_should_mlock
