@@ -313,11 +313,43 @@ def test_a_ci_lane_fails_when_a_compiler_actually_runs() -> None:
 
 _WATCHER = REPO / ".github" / "scripts" / "Watch-ForCompiler.ps1"
 
+# The .NET host tearing itself down, as opposed to the script under test deciding something.
+# Seen on a hosted runner as `System.IO.FileLoadException: The given assembly name was
+# invalid.` out of AssemblyName.ParseAsAssemblySpec, followed by "The PowerShell process will
+# exit" and SIGABRT, on a probe that passes everywhere else and had no assembly of its own.
+_PWSH_HOST_FAULT = (
+    "An error has occurred that was not properly handled",
+    "System.IO.FileLoadException",
+    "Unhandled exception.",
+)
+
+
+def _run_pwsh(script: Path, *, timeout: int):
+    """Run `script` under pwsh, skipping rather than failing when the HOST aborts.
+
+    Only an abnormal termination is forgiven, and only with a fault banner on stderr to back
+    it up: a clean non-zero exit, or the wrong answer on stdout, is the script under test
+    being wrong and still fails. Retried once first, because the fault has never repeated.
+    """
+    command = ["pwsh", "-NoProfile", "-NonInteractive", "-File", str(script)]
+    for attempt in range(2):
+        result = subprocess.run(command, capture_output = True, text = True, timeout = timeout)
+        crashed = result.returncode < 0 and any(
+            marker in result.stderr for marker in _PWSH_HOST_FAULT
+        )
+        if not crashed:
+            return result
+        if attempt:
+            pytest.skip(f"pwsh host aborted ({result.returncode}): {result.stderr.strip()[:400]}")
+    raise AssertionError("unreachable")
+
+
 _FAKE_EVENTS = r"""
 function New-FakeEvent {
-    param([string]$Image, [string]$CommandLine)
+    param([string]$Image, [string]$CommandLine, [string]$Parent = 'C:\Windows\System32\cmd.exe')
     $xml = "<Event><EventData>" +
         "<Data Name='NewProcessName'>$Image</Data>" +
+        "<Data Name='ParentProcessName'>$Parent</Data>" +
         "<Data Name='CommandLine'>$CommandLine</Data>" +
         "</EventData></Event>"
     $record = [pscustomobject]@{
@@ -363,14 +395,98 @@ def test_the_watcher_scores_the_image_that_ran_not_the_words_in_the_message(
         ),
         encoding = "utf-8",
     )
-    result = subprocess.run(
-        ["pwsh", "-NoProfile", "-NonInteractive", "-File", str(script)],
-        capture_output = True,
-        text = True,
-        timeout = 120,
-    )
+    result = _run_pwsh(script, timeout = 120)
     assert result.returncode == 0, result.stderr + result.stdout
     assert f"HITS:{expected}" in result.stdout, result.stdout
+
+
+_CSC = r"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+_CVTRES = r"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\cvtres.exe"
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+@pytest.mark.parametrize(
+    ("image", "parent", "expected"),
+    [
+        (_CSC, r"C:\Program Files\PowerShell\7\pwsh.exe", 1),
+        (_CVTRES, r"C:\Program Files\PowerShell\7\pwsh.exe", 1),
+        (_CVTRES, _CSC, 0),
+    ],
+    ids = [
+        "a-compile-the-shell-started",
+        "a-resource-step-with-no-compiler-parent",
+        "a-resource-step-the-compiler-started",
+    ],
+)
+def test_a_compiler_started_by_a_compiler_is_one_compile_not_two(
+    tmp_path, image: str, parent: str, expected: int
+) -> None:
+    """csc.exe shells out to cvtres.exe, so a single compile creates two 4688 records and
+    scoring both says the action compiled twice.
+
+    It also decides the cross-step bleed the timestamp baseline could not. The Security log
+    is written with latency: the positive control's csc.exe started before the installer's
+    window opened, its cvtres.exe child landed just inside, and neither was in the log yet
+    when the baseline was read, so the subtraction had nothing to subtract and the
+    installer was failed for a compile one step earlier.
+
+    A compile the action really starts is still caught, because its ROOT compiler is
+    spawned by the installer's shell and the window opens before the action does. That is
+    the middle case here: an orphaned resource step with a non-compiler parent still counts.
+    """
+    script = tmp_path / "probe.ps1"
+    script.write_text(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                f'. "{_WATCHER}"',
+                _FAKE_EVENTS,
+                f"$e = New-FakeEvent -Image '{image}' -CommandLine 'x' -Parent '{parent}'",
+                "$hits = Select-StudioCompilerHits -Events @($e)",
+                'Write-Output "HITS:$($hits.Count)"',
+            ]
+        ),
+        encoding = "utf-8",
+    )
+    result = _run_pwsh(script, timeout = 120)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert f"HITS:{expected}" in result.stdout, result.stdout
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+def test_a_record_with_no_parent_field_is_still_scored(tmp_path) -> None:
+    """The whole chain is reported when the schema does not carry ParentProcessName. An
+    absent field reads as empty, and empty must not be mistaken for a compiler parent, or a
+    log that predates the field would report nothing at all."""
+    script = tmp_path / "probe.ps1"
+    script.write_text(
+        "\n".join(
+            [
+                '$ErrorActionPreference = "Stop"',
+                f'. "{_WATCHER}"',
+                # The pre-parent schema: NewProcessName and nothing else.
+                "function New-OldEvent {",
+                "    param([string]$Image)",
+                "    $xml = \"<Event><EventData><Data Name='NewProcessName'>$Image</Data>\" +",
+                '        "</EventData></Event>"',
+                "    $record = [pscustomobject]@{",
+                "        TimeCreated = [datetime]'2026-01-01T00:00:00Z'",
+                '        Message     = "New Process Name: $Image"',
+                "    }",
+                "    $body = [scriptblock]::Create(\"return @'`n$xml`n'@\")",
+                "    return ($record | Add-Member -MemberType ScriptMethod -Name ToXml "
+                "-Value $body -PassThru)",
+                "}",
+                f"$e = New-OldEvent -Image '{_CSC}'",
+                "$hits = Select-StudioCompilerHits -Events @($e)",
+                'Write-Output "HITS:$($hits.Count)"',
+            ]
+        ),
+        encoding = "utf-8",
+    )
+    result = _run_pwsh(script, timeout = 120)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert "HITS:1" in result.stdout, result.stdout
 
 
 _FAKE_WINEVENT = r"""
@@ -406,12 +522,7 @@ def _run_watch(tmp_path, action: str) -> tuple[str, list[str]]:
         ),
         encoding = "utf-8",
     )
-    result = subprocess.run(
-        ["pwsh", "-NoProfile", "-NonInteractive", "-File", str(script)],
-        capture_output = True,
-        text = True,
-        timeout = 300,
-    )
+    result = _run_pwsh(script, timeout = 300)
     assert result.returncode == 0, result.stderr + result.stdout
     libraries = [
         line[len("LIB:") :] for line in result.stdout.splitlines() if line.startswith("LIB:")
@@ -447,14 +558,65 @@ def test_the_watcher_sees_intermediates_the_compiler_cleaned_up(tmp_path) -> Non
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
 def test_the_watcher_still_reports_intermediates_that_were_left_behind(tmp_path) -> None:
-    """The listing half must keep working; the watcher is added to it, not swapped for it."""
+    """The listing half must keep working; the watcher is added to it, not swapped for it.
+
+    A compile that was NOT cleaned up, so the response file is still next to the assembly.
+    This asserted a bare ``leftover.dll`` before, which read as "any DLL under TEMP is a
+    compiler artefact"; that is the rule the job died on, and it is not what this test is
+    for. The vehicle changed, the listing half it checks did not.
+    """
     action = (
         '$dir = Join-Path $env:TEMP "leftover"; '
         "New-Item -ItemType Directory -Force -Path $dir | Out-Null; "
+        'Set-Content -LiteralPath (Join-Path $dir "leftover.cmdline") -Value "/noconfig"; '
         'Set-Content -LiteralPath (Join-Path $dir "leftover.dll") -Value "MZ"'
     )
     _, libraries = _run_watch(tmp_path, action)
     assert any(lib.endswith("leftover.dll") for lib in libraries), libraries
+    assert any(lib.endswith("leftover.cmdline") for lib in libraries), libraries
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+def test_an_unpacked_archive_is_not_scored_as_a_compile(tmp_path) -> None:
+    """What actually ran on every red run of this job.
+
+    The installer unpacks llama.cpp's checksum-verified prebuilt release into a staging
+    directory under TEMP, which lands ~25 DLLs there with no compiler anywhere near them.
+    The shape under test is ``csc.exe -> %TEMP%\\<random>.dll``; an unpacked archive is a
+    different thing and must not read as one, or the job can never pass and stops meaning
+    anything.
+    """
+    action = (
+        '$dir = Join-Path $env:TEMP "unsloth-llama-prebuilt-ay5ptbfd"; '
+        '$dir = Join-Path $dir "extract-w613j_am"; '
+        "New-Item -ItemType Directory -Force -Path $dir | Out-Null; "
+        'foreach ($n in @("ggml.dll", "llama.dll", "mtmd.dll", "ggml-cpu-x64.dll")) { '
+        '    Set-Content -LiteralPath (Join-Path $dir $n) -Value "MZ" '
+        "}; "
+        # A README ships in the archive too, and must stay just as uninteresting.
+        'Set-Content -LiteralPath (Join-Path $dir "LICENSE.txt") -Value "MIT"; '
+        "Start-Sleep -Milliseconds 400"
+    )
+    stdout, libraries = _run_watch(tmp_path, action)
+    assert not libraries, f"an unpacked release archive was scored as a compile: {stdout}"
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")
+def test_a_compile_beside_an_unpacked_archive_is_still_caught(tmp_path) -> None:
+    """The narrowing is per-directory, so unpacking an archive cannot cover a real compile."""
+    action = (
+        '$extract = Join-Path $env:TEMP "unsloth-llama-prebuilt-zz\\extract-zz"; '
+        "New-Item -ItemType Directory -Force -Path $extract | Out-Null; "
+        'Set-Content -LiteralPath (Join-Path $extract "ggml.dll") -Value "MZ"; '
+        '$compile = Join-Path $env:TEMP "vpmyd5eq"; '
+        "New-Item -ItemType Directory -Force -Path $compile | Out-Null; "
+        'Set-Content -LiteralPath (Join-Path $compile "vpmyd5eq.cmdline") -Value "/noconfig"; '
+        'Set-Content -LiteralPath (Join-Path $compile "vpmyd5eq.dll") -Value "MZ"; '
+        "Start-Sleep -Milliseconds 400"
+    )
+    _, libraries = _run_watch(tmp_path, action)
+    assert any(lib.endswith("vpmyd5eq.dll") for lib in libraries), libraries
+    assert not any(lib.endswith("ggml.dll") for lib in libraries), libraries
 
 
 @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "needs PowerShell")

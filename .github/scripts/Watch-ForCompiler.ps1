@@ -20,6 +20,11 @@ is not the code under test:
      silently overridden by machine policy. csc.exe writes the source and the
      response file next to the assembly, so those names are watched too.
 
+     A DLL is only reported when a compile is evidenced in ITS OWN directory; see
+     Select-StudioCompilerLibraries. Reporting every DLL under TEMP is not the same
+     claim, and an installer that unpacks a verified archive there makes the
+     difference the whole result.
+
      Watched live, with a FileSystemWatcher, and not only by comparing a listing
      taken before the action against one taken after. CodeDom deletes its whole
      intermediate directory once the assembly is loaded, so on a hosted runner the
@@ -82,7 +87,75 @@ function Get-StudioTempArtifacts {
 }
 
 $script:ArtifactPattern = '\.(dll|cmdline|rsp|cs|err|out)$'
-$script:LibraryPattern = '\.(dll|cmdline|rsp)$'
+# A compiler's own files, wherever they appear. Nothing else writes a .cmdline.
+$script:CompilerFilePattern = '\.(cmdline|rsp)$'
+# What csc leaves beside the assembly it produced: the response file, the generated
+# source, and the captured streams.
+$script:CompilerSiblingPattern = '\.(cmdline|rsp|cs|err|out)$'
+
+function Get-StudioParentPath {
+    <#
+    .SYNOPSIS
+    The directory part of $Path, split on either separator.
+    .DESCRIPTION
+    Not Split-Path, for the reason Select-StudioCompilerHits splits by hand: under the
+    Linux pwsh these functions are tested on, a backslash is an ordinary character and a
+    Windows path comes back whole. The paths here are always Windows paths whatever reads
+    them.
+    #>
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $at = [Math]::Max($Path.LastIndexOf('\'), $Path.LastIndexOf('/'))
+    if ($at -lt 0) { return '' }
+    return $Path.Substring(0, $at)
+}
+
+function Select-StudioCompilerLibraries {
+    <#
+    .SYNOPSIS
+    The paths among $Artifacts that a C# compile accounts for.
+    .DESCRIPTION
+    A .cmdline or .rsp is a compiler's own file wherever it lands. A .dll on its own is
+    not, and treating it as one is what failed this job on every run since it was added:
+    the installer unpacks llama.cpp's checksum-verified prebuilt release into a staging
+    directory under TEMP, which lands ~25 DLLs there with no compiler within reach. The
+    shape under test is the one that was blocked in the field,
+
+        powershell.exe -> csc.exe -> %TEMP%\<random>.dll
+
+    and an unpacked archive is not it.
+
+    So a DLL counts only when a compile is evidenced in the SAME directory. CodeDom, which
+    is what Add-Type uses and what Bitdefender flagged, writes the response file, the
+    generated source and the captured streams into the per-invocation directory it puts the
+    assembly in, so the pairing holds for the shape this exists to catch. The workflow's
+    positive control compiles a real type and REQUIRES this to fire, so a narrowing that
+    went too far fails there rather than passing quietly.
+    #>
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$Artifacts)
+
+    $compileDirs = New-Object 'System.Collections.Generic.HashSet[string]' (
+        [StringComparer]::OrdinalIgnoreCase)
+    foreach ($path in $Artifacts) {
+        if ($path -match $script:CompilerSiblingPattern) {
+            $null = $compileDirs.Add((Get-StudioParentPath -Path $path))
+        }
+    }
+
+    $libraries = @()
+    foreach ($path in $Artifacts) {
+        if ($path -match $script:CompilerFilePattern) {
+            $libraries += $path
+        } elseif ($path -match '\.dll$' -and
+                  $compileDirs.Contains((Get-StudioParentPath -Path $path))) {
+            $libraries += $path
+        }
+    }
+    # Returned plain, not comma-wrapped like the functions above: the caller normalises
+    # with @(), and wrapping an empty array there yields a one-element array holding an
+    # empty array, which reads downstream as one unnamed temporary library.
+    return $libraries
+}
 
 function Start-StudioTempWatch {
     <#
@@ -157,25 +230,56 @@ function Stop-StudioTempWatch {
     return ,[string[]]$seen
 }
 
-function Get-StudioProcessImageName {
+function Get-StudioEventField {
     <#
     .SYNOPSIS
-    The image a 4688 record says was created, from the record's own field.
+    One named EventData field of a 4688 record, from the record's own XML.
     .DESCRIPTION
-    NewProcessName, read out of the event XML by name rather than by position, so a
-    schema that gains a field still means the same thing. Nothing else is consulted:
-    the rendered message also carries the command line, so matching it would score
-    `cmd.exe /c echo csc.exe` as a compiler.
+    Read by name rather than by position, so a schema that gains a field still means the
+    same thing. The rendered message is never consulted: it carries the command line too,
+    so matching that would score `cmd.exe /c echo csc.exe` as a compiler.
     #>
-    param([Parameter(Mandatory = $true)]$Event)
+    param(
+        [Parameter(Mandatory = $true)]$Event,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
 
     try {
         $xml = [xml]$Event.ToXml()
         foreach ($field in $xml.Event.EventData.Data) {
-            if ($field.Name -eq 'NewProcessName') { return [string]$field.'#text' }
+            if ($field.Name -eq $Name) { return [string]$field.'#text' }
         }
     } catch { }
     return ''
+}
+
+function Get-StudioProcessImageName {
+    <#
+    .SYNOPSIS
+    The image a 4688 record says was created.
+    #>
+    param([Parameter(Mandatory = $true)]$Event)
+
+    return Get-StudioEventField -Event $Event -Name 'NewProcessName'
+}
+
+function Test-StudioCompilerImage {
+    <#
+    .SYNOPSIS
+    True when $Image is one of the compiler binaries, matched on the whole leaf name.
+    #>
+    param([string]$Image)
+
+    if ([string]::IsNullOrEmpty($Image)) { return $false }
+    # Split explicitly, not via [System.IO.Path]::GetFileName, which splits on the HOST's
+    # separators: under the Linux pwsh where this is tested a backslash is an ordinary
+    # character and the whole path came back as the leaf. The records are always Windows
+    # paths whatever reads them.
+    $leaf = ($Image -split '[\\/]')[-1]
+    foreach ($name in $script:CompilerNames) {
+        if ($leaf -eq $name) { return $true }
+    }
+    return $false
 }
 
 function Select-StudioCompilerHits {
@@ -191,21 +295,28 @@ function Select-StudioCompilerHits {
     $hits = @()
     foreach ($record in $Events) {
         $image = Get-StudioProcessImageName -Event $record
-        if ([string]::IsNullOrEmpty($image)) { continue }
-        # Split explicitly, not via [System.IO.Path]::GetFileName, which splits on the
-        # HOST's separators: under the Linux pwsh where this is tested a backslash is an
-        # ordinary character and the whole path came back as the leaf. The records are
-        # always Windows paths whatever reads them.
-        $leaf = ($image -split '[\\/]')[-1]
-        foreach ($name in $script:CompilerNames) {
-            if ($leaf -eq $name) {
-                $rendered = ''
-                try { $rendered = [string]$record.Message } catch { }
-                $hits += ("{0:o} {1} :: {2}" -f $record.TimeCreated, $image,
-                    ($rendered -replace '\s+', ' '))
-                break
-            }
+        if (-not (Test-StudioCompilerImage -Image $image)) { continue }
+        # A compiler started BY a compiler is a step of a compile that is already being
+        # scored, not a new one. csc.exe shells out to cvtres.exe to build its resource
+        # blob, and counting that as a second hit says the action compiled twice.
+        #
+        # It also decides the cross-step bleed the $prior subtraction could not, because
+        # the Security log is written with latency: the positive control's csc.exe started
+        # before the installer's window, its cvtres.exe child landed inside, and neither
+        # was in the log yet when the baseline was taken. The child is the only part that
+        # was ever in range.
+        #
+        # Detection is unchanged for a compile the action really starts, because its ROOT
+        # compiler is spawned by the installer's shell, not by another compiler, and the
+        # window opens before the action does. What this drops is only ever the second
+        # process of a chain whose first was already seen or was never in range at all.
+        if (Test-StudioCompilerImage -Image (Get-StudioEventField -Event $record -Name 'ParentProcessName')) {
+            continue
         }
+        $rendered = ''
+        try { $rendered = [string]$record.Message } catch { }
+        $hits += ("{0:o} {1} :: {2}" -f $record.TimeCreated, $image,
+            ($rendered -replace '\s+', ' '))
     }
     return ,[string[]]$hits
 }
@@ -297,6 +408,15 @@ function Invoke-WithCompilerWatch {
     # of the sweep above, so a compiler started in that second is counted: a deliberate
     # trade towards a loud false alarm rather than a dropped real compile.
     $since = (Get-Date).AddSeconds(-1)
+    # That second reaches backwards, so it can reach into whatever ran BEFORE this action.
+    # It did: the positive control compiles a type one step earlier, and its
+    # csc.exe -> cvtres.exe landed inside the installer measurement's lookback and was
+    # reported as "the installer spawned 1 compiler process(es)".
+    #
+    # Recorded and subtracted below, rather than moving the floor forward: a hit already in
+    # the window before the action starts cannot be the action's, while moving the floor to
+    # "now" would give up the same-tick protection the second is there to provide.
+    $prior = @(Get-StudioCompilerEvents -Since $since -Until (Get-Date))
     # Opened here, with the 4688 window, and not before the baseline: a file the
     # machine creates during that recursive sweep predates the action.
     $watch = Start-StudioTempWatch
@@ -321,7 +441,13 @@ function Invoke-WithCompilerWatch {
     # Closed before the temp sweep, which can take seconds: anything the machine
     # starts during that walk belongs to nobody's measurement.
     $until = Get-Date
-    $compilers = @(Get-StudioCompilerEvents -Since $since -Until $until)
+    # Each hit string carries its own round-trip timestamp, image and message, so it
+    # identifies the record. Anything that was already there before the action ran is
+    # dropped by identity.
+    $compilers = @(
+        Get-StudioCompilerEvents -Since $since -Until $until |
+            Where-Object { $prior -notcontains $_ }
+    )
 
     $after = Get-StudioTempArtifacts
     $left = @($after | Where-Object { -not $before.Contains($_) })
@@ -333,7 +459,7 @@ function Invoke-WithCompilerWatch {
     foreach ($path in ($left + $transient)) {
         if ($union.Add($path)) { $newArtifacts += $path }
     }
-    $newLibraries = @($newArtifacts | Where-Object { $_ -match $script:LibraryPattern })
+    $newLibraries = @(Select-StudioCompilerLibraries -Artifacts ([string[]]$newArtifacts))
 
     $stem = Join-Path $EvidenceRoot $Name
     $compilers | Out-File -FilePath "$stem-compilers.txt" -Encoding utf8

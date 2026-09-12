@@ -143,29 +143,39 @@ jobs:
               # that. Not --tauri, which refuses the UNSLOTH_STUDIO_HOME that keeps
               # every step reading one tree.
               New-Item -ItemType Directory -Force -Path logs | Out-Null
+              # 'Continue' only around the child. Under 'Stop', a native command writing
+              # ANY line to stderr raises NativeCommandError, so one progress line the
+              # installer reports there kills the measurement before the detectors are
+              # read. The exit code below is the gate, which is what this is measuring.
+              $outer = $ErrorActionPreference
+              $ErrorActionPreference = 'Continue'
               & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
                   -File "$env:GITHUB_WORKSPACE\install.ps1" --no-torch *>&1 |
                   Tee-Object -FilePath "$env:UNSLOTH_EVIDENCE\install.log"
               $exit = $LASTEXITCODE
+              $ErrorActionPreference = $outer
               $global:LASTEXITCODE = 0
               if ($exit -ne 0) { throw "install.ps1 exited $exit" }
           }
           $seen = Invoke-WithCompilerWatch -Name 'installer' -Action $install `
               -EvidenceRoot $env:UNSLOTH_EVIDENCE
 
+          # Interpolated, not -f: the format operator binds tighter than the string
+          # concatenation above it, so it applied to the last fragment only and the
+          # message reported a literal "{0}" every time it fired.
           if ($seen.Compilers) {
               $seen.Compilers | ForEach-Object { Write-Host "COMPILER: $_" }
-              throw ("the installer spawned {0} compiler process(es). This is the chain that was " +
-                     "blocked in the field: a windowless PowerShell launching csc.exe and dropping " +
-                     "a DLL in TEMP. Declare native methods with New-StudioEmittedNativeType." -f `
-                     $seen.Compilers.Count)
+              throw ("the installer spawned $($seen.Compilers.Count) compiler process(es). This is " +
+                     "the chain that was blocked in the field: a windowless PowerShell launching " +
+                     "csc.exe and dropping a DLL in TEMP. Declare native methods with " +
+                     "New-StudioEmittedNativeType.")
           }
           if ($seen.TempLibraries) {
               $seen.TempLibraries | ForEach-Object { Write-Host "TEMP DLL: $_" }
-              throw ("the installer wrote {0} DLL(s) into a temporary directory. Even without a " +
-                     "compiler process this is the artefact half of the same shape. Cleaning one " +
-                     "up does not clear it: the watcher records the creation." -f `
-                     $seen.TempLibraries.Count)
+              throw ("the installer left $($seen.TempLibraries.Count) compiler artefact(s) in a " +
+                     "temporary directory. Even without a compiler process this is the artefact " +
+                     "half of the same shape. Cleaning one up does not clear it: the watcher " +
+                     "records the creation.")
           }
           Write-Host "no compiler, no temporary DLL"
 
@@ -189,10 +199,18 @@ jobs:
           # void, not clean.
           $desktop = {
               Remove-Item Env:\UNSLOTH_STUDIO_HOME -ErrorAction SilentlyContinue
+              # Same reason as the shell leg, and this leg needs it more: it deliberately
+              # does NOT gate on exit 0, yet a single stderr line from the child raised
+              # NativeCommandError under 'Stop' and failed the step anyway. The observed
+              # one was "[TAURI:ERROR_CLEAR] create virtual environment recovered", which
+              # is the installer reporting that it recovered.
+              $outer = $ErrorActionPreference
+              $ErrorActionPreference = 'Continue'
               & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass `
                   -File "$env:GITHUB_WORKSPACE\install.ps1" --tauri --local --no-torch *>&1 |
                   Tee-Object -FilePath "$env:UNSLOTH_EVIDENCE\install-tauri.log"
               $exit = $LASTEXITCODE
+              $ErrorActionPreference = $outer
               $global:LASTEXITCODE = 0
               # Not gated on exit 0: a desktop-mode install can decline for unrelated
               # reasons, and the question is only whether a compiler ran on the way.
