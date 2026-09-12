@@ -1879,21 +1879,11 @@ def _openai_llama_admission_output_allowance(
 def _extra_args_image_max_tokens(extra_args) -> Optional[int]:
     """The ``--image-max-tokens N`` a load passed through, or None. Last wins.
 
-    Both spellings, since llama-server accepts ``--flag N`` and ``--flag=N``.
+    Delegates so the admission ceiling and the micro-batch sizing read the flag the
+    same way; see :func:`extra_args_image_max_tokens`.
     """
-    args = [str(arg) for arg in (extra_args or ())]
-    found = None
-    for index, raw in enumerate(args):
-        if raw.startswith("--image-max-tokens="):
-            value = raw.partition("=")[2]
-        elif raw == "--image-max-tokens" and index + 1 < len(args):
-            value = args[index + 1]
-        else:
-            continue
-        parsed = _positive_int_or_none(value)
-        if parsed is not None:
-            found = parsed
-    return found
+    from core.inference.llama_server_args import extra_args_image_max_tokens
+    return extra_args_image_max_tokens(extra_args)
 
 
 # Embeddings one image may become, per projector family, from llama.cpp's own
@@ -9956,17 +9946,17 @@ def _inherited_ctx_size() -> int:
         return 0
 
 
-def _launch_raises_ubatch(
+def _launch_required_ubatch_for_config(
     config,
     llama_extra_args: Optional[list[str]] = None,
     disable_vision: bool = False,
-) -> bool:
-    """``_launch_needs_bigger_ubatch`` for a local GGUF, from what the panel knows.
+) -> int:
+    """``_launch_required_ubatch`` for a local GGUF, from what the panel knows.
 
     Same question ``load_model`` asks, projector resolved the same way, so the panel
     and the admission guard price the micro-batch the child launches at.
     """
-    from core.inference.llama_cpp import _launch_needs_bigger_ubatch
+    from core.inference.llama_cpp import _launch_required_ubatch
     from utils.models.gguf_metadata import read_gguf_embedding_length
 
     gguf_file = str(getattr(config, "gguf_file", "") or "")
@@ -9977,7 +9967,7 @@ def _launch_raises_ubatch(
             model_path = gguf_file,
             mmproj_path = str(own),
         )
-    return _launch_needs_bigger_ubatch(
+    return _launch_required_ubatch(
         resolved,
         # Only the text n_embd tells Gemma 4 E2B and E4B, which decode causally, from
         # the rest. Its own cached read: the estimator's full metadata walk runs after
@@ -9989,12 +9979,12 @@ def _launch_raises_ubatch(
     )
 
 
-def _remote_raises_ubatch(
+def _remote_required_ubatch(
     config,
     llama_extra_args: Optional[list[str]] = None,
     disable_vision: bool = False,
-) -> bool:
-    """``_launch_raises_ubatch`` for a repository nothing has downloaded yet.
+) -> int:
+    """``_launch_required_ubatch_for_config`` for a repo nothing has downloaded yet.
 
     Coarser on purpose: with no file to read, a vision repo is charged as if its
     projector needs the bigger micro-batch, the direction ``include_mmproj`` already
@@ -10004,16 +9994,18 @@ def _remote_raises_ubatch(
     listing, because ``_gguf_resident_file_gb`` subtracts this term and pairs with it
     on every settings change.
     """
-    from core.inference.llama_cpp import _launch_needs_bigger_ubatch, extra_args_disable_mmproj
+    from core.inference.llama_cpp import _launch_required_ubatch, extra_args_disable_mmproj
+
+    from core.inference.llama_cpp import _MMPROJ_UNKNOWN_UBATCH
 
     if (
         bool(getattr(config, "is_vision", False))
         and not disable_vision
         and not extra_args_disable_mmproj(llama_extra_args)
     ):
-        return True
+        return _MMPROJ_UNKNOWN_UBATCH
     # No repo projector in play, but the extras or the environment may still name one.
-    return _launch_needs_bigger_ubatch(
+    return _launch_required_ubatch(
         None,
         None,
         llama_extra_args,
@@ -10036,7 +10028,7 @@ def _gguf_runtime_bytes(
     is_diffusion: bool = False,
     ctx_last_wins: bool = False,
     model_identifier: Optional[str] = None,
-    launch_raises_ubatch: bool = False,
+    launch_required_ubatch: int = 0,
 ) -> _GgufRuntimeBytes:
     """KV-cache and compute-buffer VRAM (bytes) at the larger of max_seq_length and
     any `--ctx-size`/`-c` override, over n_parallel slots at the effective
@@ -10065,7 +10057,7 @@ def _gguf_runtime_bytes(
         # Price the pair load_model raises, or the panel quotes and admission approves
         # a micro-batch the child does not run at.
         n_batch, n_ubatch = _batch_ubatch_for_mmproj(
-            launch_raises_ubatch and not is_diffusion,
+            0 if is_diffusion else launch_required_ubatch,
             n_batch,
             n_ubatch,
             llama_extra_args,
@@ -10349,7 +10341,7 @@ def _estimate_gguf_kv_gb(
     n_devices: int = 1,
     is_diffusion: bool = False,
     model_identifier: Optional[str] = None,
-    launch_raises_ubatch: bool = False,
+    launch_required_ubatch: int = 0,
 ) -> float:
     """``_gguf_runtime_bytes`` summed into GB, for the training guard.
 
@@ -10369,7 +10361,7 @@ def _estimate_gguf_kv_gb(
         n_devices = n_devices,
         is_diffusion = is_diffusion,
         model_identifier = model_identifier,
-        launch_raises_ubatch = launch_raises_ubatch,
+        launch_required_ubatch = launch_required_ubatch,
     )
     return (runtime.kv_bytes + runtime.compute_bytes) / (1024**3)
 
@@ -10383,7 +10375,7 @@ def _remote_gguf_compute_reserve_gb(
     n_devices: int = 1,
     tensor_parallel: bool = False,
     is_diffusion: bool = False,
-    opens_vision_mmproj: bool = False,
+    required_ubatch: int = 0,
 ) -> float:
     """Compute buffers a remote GGUF will reserve, in GB.
 
@@ -10391,7 +10383,7 @@ def _remote_gguf_compute_reserve_gb(
     else, a drafter for instance, can hold it at zero the way it already holds
     _estimate_gguf_kv_gb at zero. The arithmetic is unchanged.
 
-    ``opens_vision_mmproj`` is the raise load_model applies once the download finishes;
+    ``required_ubatch`` is the raise load_model applies once the download finishes;
     without it the guard admits an uncached vision load against a micro-batch four times
     smaller than the one it launches with.
     """
@@ -10400,7 +10392,7 @@ def _remote_gguf_compute_reserve_gb(
     from core.inference.llama_server_args import parse_ctx_override
 
     n_batch, n_ubatch = _batch_ubatch_for_mmproj(
-        opens_vision_mmproj and not is_diffusion,
+        0 if is_diffusion else required_ubatch,
         n_batch,
         n_ubatch,
         llama_extra_args,
@@ -10786,7 +10778,7 @@ def _estimate_gguf_required_gb(
                 n_devices = n_devices,
                 is_diffusion = is_diffusion,
                 model_identifier = getattr(config, "identifier", None),
-                launch_raises_ubatch = _launch_raises_ubatch(
+                launch_required_ubatch = _launch_required_ubatch_for_config(
                     config, llama_extra_args, disable_vision
                 ),
             )
@@ -10843,7 +10835,7 @@ def _estimate_gguf_required_gb(
                 n_devices = n_devices,
                 tensor_parallel = tensor_parallel,
                 is_diffusion = is_diffusion,
-                opens_vision_mmproj = _remote_raises_ubatch(config, llama_extra_args, disable_vision),
+                required_ubatch = _remote_required_ubatch(config, llama_extra_args, disable_vision),
             )
             return total_gb
         return None
@@ -11273,13 +11265,15 @@ def _gguf_resident_file_gb(
             model_identifier = getattr(config, "identifier", None),
             # Paired with the arm above: a term added at 2048 and taken away at 512
             # would move the weights figure by the difference.
-            launch_raises_ubatch = _launch_raises_ubatch(config, llama_extra_args, disable_vision),
+            launch_required_ubatch = _launch_required_ubatch_for_config(
+                config, llama_extra_args, disable_vision
+            ),
         )
     else:
         context_term_gb = _remote_gguf_compute_reserve_gb(
             llama_extra_args = llama_extra_args,
             max_seq_length = 0,
-            opens_vision_mmproj = _remote_raises_ubatch(config, llama_extra_args, disable_vision),
+            required_ubatch = _remote_required_ubatch(config, llama_extra_args, disable_vision),
         )
     files_gb = max(0.0, required_gb - context_term_gb)
     # Under the lock: the route body runs in an asyncio.to_thread worker, so two panel
@@ -11832,7 +11826,9 @@ def _gguf_memory_breakdown(
         # An embedding model is recognised from its identifier, not its header, so the
         # panel has to hand over the same one /load does or it prices a generation model.
         model_identifier = getattr(config, "identifier", None),
-        launch_raises_ubatch = _launch_raises_ubatch(config, llama_extra_args, disable_vision),
+        launch_required_ubatch = _launch_required_ubatch_for_config(
+            config, llama_extra_args, disable_vision
+        ),
     )
     files_gb = _gguf_resident_file_gb(
         config,

@@ -88,6 +88,7 @@ from core.inference.llama_server_args import (
     apply_model_memory_policy,
     resolve_ctx_checkpoints,
     extra_args_disable_mmproj,
+    extra_args_image_max_tokens,
     extra_args_mmproj_auto,
     extra_args_select_load_mode,
     fit_is_enabled_in,
@@ -4294,10 +4295,17 @@ _DEFAULT_LLAMA_N_BATCH = 2048
 _DEFAULT_LLAMA_N_UBATCH = 512
 # mtmd cuts an image into chunks of min(n_batch, its tokens) and asserts n_ubatch >=
 # the chunk while attention is non-causal (llama-context.cpp:1749): 862 against 512 on
-# Gemma 4 12B, and the server aborts. A bound, not a guess: clip.cpp caps one Gemma 4
-# image at set_limit_image_tokens(70, 1120). Only a hand-raised --image-max-tokens gets
-# past it, and that flag documents raising -ub alongside.
-_MMPROJ_DEFAULT_N_BATCH_UBATCH = 2048
+# Gemma 4 12B, and the server aborts.
+#
+# The micro-batch only has to hold ONE image, so the target is the projector's own
+# per-image ceiling rather than a round number. clip.cpp caps a Gemma 4 image at
+# set_limit_image_tokens(70, 1120), so 1120 is exactly sufficient, and the difference is
+# not cosmetic: the ubatch scales _estimate_compute_buffer_bytes, which feeds
+# model_size_fit, so 2048 prices Gemma 4 12B at 13.45 GiB against 10.27 GiB at 1120 and
+# puts it over the budget of a 16 GB Mac and a 12 GB card that both hold it today.
+_MMPROJ_IMAGE_TOKEN_CEILING = {"gemma4v": 1120, "gemma4uv": 1120}
+# A projector whose family we cannot read gets headroom instead of a ceiling.
+_MMPROJ_UNKNOWN_UBATCH = 2048
 # Which projectors reach that assert. mtmd_decode_use_non_causal is True for exactly
 # gemma4v (outside E2B/E4B, told apart by the TEXT n_embd), gemma4uv, gemma3 and
 # deepseek4v; of those only the Gemma 4 towers exceed 512 tokens per image, gemma3
@@ -4305,7 +4313,6 @@ _MMPROJ_DEFAULT_N_BATCH_UBATCH = 2048
 # image size. Raising for them anyway is not free: _estimate_compute_buffer_bytes
 # scales with the ubatch and feeds model_size_fit, so a blanket raise costs ~5 GiB on a
 # four-slot default and spills a Qwen3-VL onto the CPU for an assert it cannot hit.
-_MMPROJ_NON_CAUSAL_OVER_UBATCH = frozenset({"gemma4v", "gemma4uv"})
 _GEMMA4V_CAUSAL_TEXT_N_EMBD = frozenset({1536, 2560})  # E2B and E4B
 _LLAMA_ARG_TRUE_VALUES = frozenset({"on", "enabled", "true", "1"})
 _LLAMA_ARG_FALSE_VALUES = frozenset({"off", "disabled", "false", "0"})
@@ -5833,38 +5840,36 @@ def _read_gguf_embedding_length(path: Optional[str]) -> Optional[int]:
         return None
 
 
-def _mmproj_emits_oversized_chunks(
-    mmproj_path: Optional[str], n_embd_text: Optional[int] = None
-) -> bool:
-    """Whether the projector at *mmproj_path* can emit an image chunk over 512 tokens.
+def _mmproj_required_ubatch(mmproj_path: Optional[str], n_embd_text: Optional[int] = None) -> int:
+    """Micro-batch this projector's largest image needs, or 0 when none does.
 
     Keyed on ``clip.vision.projector_type``, not ``is_vision``: ModelConfig sets that
     flag for ANY discovered mmproj, so an audio-only encoder (ultravox, Voxtral,
     Qwen3-ASR) reads as vision while producing no image chunk. An unreadable family
-    stays oversized, since being wrong that way is a crash rather than a smaller
-    offload.
+    gets ``_MMPROJ_UNKNOWN_UBATCH``, since being wrong that way is a crash rather than
+    a smaller offload.
     """
     if not mmproj_path:
-        return False
+        return 0
     try:
         from utils.models.gguf_metadata import (
             mmproj_accepts_image,
             read_mmproj_vision_projector_type,
         )
         if not mmproj_accepts_image(mmproj_path):
-            return False
+            return 0
         family = (read_mmproj_vision_projector_type(mmproj_path) or "").strip().lower()
     except Exception as e:
         logger.debug(f"mmproj capability read failed: {e}")
-        return True
+        return _MMPROJ_UNKNOWN_UBATCH
     if not family:
-        return True
-    if family == "gemma4v":
-        return n_embd_text not in _GEMMA4V_CAUSAL_TEXT_N_EMBD
-    return family in _MMPROJ_NON_CAUSAL_OVER_UBATCH
+        return _MMPROJ_UNKNOWN_UBATCH
+    if family == "gemma4v" and n_embd_text in _GEMMA4V_CAUSAL_TEXT_N_EMBD:
+        return 0
+    return _MMPROJ_IMAGE_TOKEN_CEILING.get(family, 0)
 
 
-def _launch_needs_bigger_ubatch(
+def _launch_required_ubatch(
     mmproj_path: Optional[str],
     n_embd_text: Optional[int] = None,
     extra_args: Optional[Iterable[str]] = None,
@@ -5872,28 +5877,28 @@ def _launch_needs_bigger_ubatch(
     is_vision: bool = True,
     vision_off: bool = False,
     env: Optional[Mapping[str, str]] = None,
-) -> bool:
-    """Whether this launch can hand llama.cpp an image chunk the 512 default aborts on.
+) -> int:
+    """Micro-batch the largest image this launch can decode needs, or 0 for none.
 
-    One question with one answer, asked with the same arguments by ``load_model`` and
-    by the estimators that price what it launches.
+    One question, asked with the same arguments by ``load_model`` and by the estimators
+    that price what it launches.
 
-    Deliberately "can ANY projector in play do this", not "which one would llama.cpp
-    keep". Modelling that precedence -- a URL download overwriting mmproj.path after
-    argv, a pass-through --mmproj appended after the managed flags, an inherited
-    LLAMA_ARG_MMPROJ filling a gap under --no-mmproj -- is a second copy of llama.cpp's
-    argument handling to keep correct, and it changes no answer worth having: the only
-    case where the winner differs from the union is a user replacing one image tower
-    with another, where the union merely over-reserves.
+    Deliberately "what does ANY projector in play need", not "which one would llama.cpp
+    keep". That precedence is a second copy of llama.cpp's argument handling to keep
+    correct, and the only case where the winner differs from the maximum is a user
+    replacing one image tower with another, where the maximum merely over-reserves.
+
+    ``vision_off`` is the request's ``disable_vision``, named apart because the switch
+    does not simply mean "no projector": it suppresses Unsloth's own and scrubs the
+    environment pair, leaving a pass-through ``--mmproj`` untouched.
     """
-    sources: list[str] = []
-    unknown = False
+    required = 0
 
     # Appended after the managed flags, and stripped by neither the vision switch nor
     # --no-mmproj, so it opens an image tower whatever else the request says.
     override = _extra_args_device(extra_args, {"--mmproj", "-mm"})
     if override:
-        sources.append(str(override))
+        required = max(required, _mmproj_required_ubatch(str(override), n_embd_text))
 
     if not vision_off:
         # The switch scrubs this pair. Without it they open whatever they name even
@@ -5901,40 +5906,44 @@ def _launch_needs_bigger_ubatch(
         # mmproj.path. A URL names a download that has not happened, so it is unknown.
         source_env = os.environ if env is None else env
         if (source_env.get("LLAMA_ARG_MMPROJ_URL") or "").strip():
-            unknown = True
+            required = max(required, _MMPROJ_UNKNOWN_UBATCH)
         inherited = (source_env.get("LLAMA_ARG_MMPROJ") or "").strip()
         if inherited:
-            sources.append(inherited)
+            required = max(required, _mmproj_required_ubatch(inherited, n_embd_text))
 
     if is_vision and not vision_off and not extra_args_disable_mmproj(extra_args):
         if mmproj_path:
-            sources.append(str(mmproj_path))
+            required = max(required, _mmproj_required_ubatch(str(mmproj_path), n_embd_text))
         elif extra_args_mmproj_auto(extra_args):
             # --mmproj-auto leaves llama-server discovering an adjacent projector
             # this process was never told about.
-            unknown = True
+            required = max(required, _MMPROJ_UNKNOWN_UBATCH)
 
-    if unknown:
-        return True
-    return any(_mmproj_emits_oversized_chunks(p, n_embd_text) for p in sources)
+    if required:
+        # clip.cpp lets --image-max-tokens raise a family's own ceiling, and the chunk
+        # grows with it, so the flag has to raise this target too.
+        requested = extra_args_image_max_tokens(extra_args)
+        if requested:
+            required = max(required, requested)
+    return required
 
 
 def _batch_ubatch_for_mmproj(
-    opens_vision_mmproj: bool,
+    required_ubatch: int,
     n_batch: Optional[int],
     n_ubatch: Optional[int],
     extra_args: Optional[Iterable[str]],
     env: Optional[Mapping[str, str]] = None,
 ) -> tuple[Optional[int], Optional[int]]:
-    """Raise the default batch/ubatch for a launch that opens an image projector.
+    """Raise the micro-batch to *required_ubatch* when nothing else has set one.
 
-    See ``_MMPROJ_DEFAULT_N_BATCH_UBATCH`` for why the chunk has to fit the ubatch.
-
-    Only the micro-batch aborts, so only it is raised, and only while nobody has named
-    one. A named BATCH caps the raise rather than cancelling it, since it also caps the
-    chunk mtmd cuts: at ``-b 256`` the chunk is 256 and the default 512 holds it.
+    See ``_MMPROJ_IMAGE_TOKEN_CEILING`` for where the number comes from. Only the
+    micro-batch aborts, so only it is raised; the batch is left alone, and llama.cpp's
+    own 2048 default already exceeds every ceiling here. A named BATCH caps the raise
+    rather than cancelling it, since it also caps the chunk mtmd cuts: at ``-b 256``
+    the chunk is 256 and the stock 512 holds it.
     """
-    if not opens_vision_mmproj:
+    if required_ubatch <= 0:
         return n_batch, n_ubatch
     batch, ubatch, batch_named, ubatch_named = _named_batch_sizes(
         extra_args, env, n_batch, n_ubatch
@@ -5946,10 +5955,10 @@ def _batch_ubatch_for_mmproj(
     # child as 4294967295. Comparing the raw -1 would read as a batch below the ubatch
     # and skip the raise.
     batch &= 0xFFFFFFFF
-    target = min(_MMPROJ_DEFAULT_N_BATCH_UBATCH, batch)
+    target = min(required_ubatch, batch)
     if target <= ubatch:
         return n_batch, n_ubatch
-    return (n_batch if batch_named else _MMPROJ_DEFAULT_N_BATCH_UBATCH), target
+    return n_batch, target
 
 
 def _build_ngram_mod_flags(
@@ -20085,7 +20094,7 @@ class LlamaCppBackend:
             # own until the companion download above, and Phase 3's fit has to price the
             # micro-batch the child launches with.
             n_batch, n_ubatch = _batch_ubatch_for_mmproj(
-                _launch_needs_bigger_ubatch(
+                _launch_required_ubatch(
                     None
                     if (disable_vision or not is_vision)
                     else self._resolve_launch_mmproj_path(
