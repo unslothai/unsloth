@@ -4289,9 +4289,9 @@ class TestSplitModeNoneFollowsTheMainGpu:
             "_enumerated_gpu_devices",
             classmethod(lambda cls, binary = None, e = None: list(devices)),
         )
-        return B._effective_gpu_selection(
-            "llama-server", env or {}, gpu_indices, extra_args, True
-        )[0]
+        return B._effective_gpu_selection("llama-server", env or {}, gpu_indices, extra_args, True)[
+            0
+        ]
 
     def test_main_gpu_replaces_the_plan(self, monkeypatch):
         assert self._eff(monkeypatch, [0], ["--split-mode", "none", "--main-gpu", "1"]) == [1]
@@ -4521,12 +4521,19 @@ class TestTheSelectionCarriesBothOrdinalSpaces:
     broke one or the other: `_amd_apu_wants_unified_memory` is documented to take
     physical ids, while `--list-devices` reports the child's compact ordinals."""
 
-    def _sel(self, monkeypatch, gpu_indices, env = None, extra_args = None,
-             devices = ("CUDA0",), is_vulkan = False):
+    def _sel(
+        self,
+        monkeypatch,
+        gpu_indices,
+        env = None,
+        extra_args = None,
+        devices = ("CUDA0",),
+        is_vulkan = False,
+    ):
         from core.inference.llama_cpp import LlamaCppBackend as B
-
         monkeypatch.setattr(
-            B, "_enumerated_gpu_devices",
+            B,
+            "_enumerated_gpu_devices",
             classmethod(lambda cls, binary = None, e = None: list(devices)),
         )
         return B._effective_gpu_selection(
@@ -4535,9 +4542,7 @@ class TestTheSelectionCarriesBothOrdinalSpaces:
 
     def test_a_mask_splits_the_two_spaces(self, monkeypatch):
         """Physical APU 1 exposed as compact 0: residency must still classify 1."""
-        physical, compact = self._sel(
-            monkeypatch, [1], {"CUDA_VISIBLE_DEVICES": "1"}
-        )
+        physical, compact = self._sel(monkeypatch, [1], {"CUDA_VISIBLE_DEVICES": "1"})
         assert physical == [1]
         assert compact == [0]
 
@@ -4548,15 +4553,20 @@ class TestTheSelectionCarriesBothOrdinalSpaces:
     def test_a_device_override_is_mapped_back_to_physical(self, monkeypatch):
         """`--device` names compact ids, so the physical form is the derived one."""
         physical, compact = self._sel(
-            monkeypatch, [0], {"CUDA_VISIBLE_DEVICES": "2,3"},
-            ["--device", "CUDA1"], devices = ("CUDA0", "CUDA1"),
+            monkeypatch,
+            [0],
+            {"CUDA_VISIBLE_DEVICES": "2,3"},
+            ["--device", "CUDA1"],
+            devices = ("CUDA0", "CUDA1"),
         )
         assert compact == [1]
         assert physical == [3]
 
     def test_main_gpu_is_physical_and_gets_a_compact_twin(self, monkeypatch):
         physical, compact = self._sel(
-            monkeypatch, [0], {"CUDA_VISIBLE_DEVICES": "1"},
+            monkeypatch,
+            [0],
+            {"CUDA_VISIBLE_DEVICES": "1"},
             ["--split-mode", "none", "--main-gpu", "1"],
         )
         assert physical == [1]
@@ -4564,8 +4574,11 @@ class TestTheSelectionCarriesBothOrdinalSpaces:
 
     def test_vulkan_keeps_the_two_identical(self, monkeypatch):
         physical, compact = self._sel(
-            monkeypatch, [1], {"GGML_VK_VISIBLE_DEVICES": "1,2"},
-            devices = ("Vulkan0", "Vulkan1"), is_vulkan = True,
+            monkeypatch,
+            [1],
+            {"GGML_VK_VISIBLE_DEVICES": "1,2"},
+            devices = ("Vulkan0", "Vulkan1"),
+            is_vulkan = True,
         )
         assert physical == compact == [1]
 

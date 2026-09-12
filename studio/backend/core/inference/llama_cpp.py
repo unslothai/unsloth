@@ -8732,7 +8732,11 @@ class LlamaCppBackend:
         return gpu_indices
 
     @staticmethod
-    def _physical_ordinals(compact, env: Optional[Mapping[str, str]], is_vulkan = False):
+    def _physical_ordinals(
+        compact,
+        env: Optional[Mapping[str, str]],
+        is_vulkan = False,
+    ):
         """The inverse of `_compact_ordinals`: compact ordinals back to physical ids.
 
         `--device` names compact ids, but `_amd_apu_wants_unified_memory` is documented
