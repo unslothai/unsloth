@@ -5297,6 +5297,206 @@ async def reveal_cached_model(
     return {"status": "ok", "path": str(path)}
 
 
+def _resolve_local_path_inside_allowlist(raw_path: str) -> Path:
+    """Resolve a user-supplied local model path and ensure it sits inside the browse allowlist."""
+    from storage.studio_db import (
+        contains_sensitive_path_component,
+        is_denied_system_path,
+    )
+
+    if not raw_path or not raw_path.strip():
+        raise HTTPException(status_code = 400, detail = "path is required")
+    expanded = os.path.expanduser(raw_path.strip())
+    if not os.path.isabs(expanded):
+        raise HTTPException(status_code = 400, detail = "path must be absolute")
+    target = Path(os.path.normpath(expanded))
+    try:
+        resolved = target.resolve()
+    except OSError:
+        raise HTTPException(status_code = 400, detail = "Invalid path")
+    allowed_roots = _build_browse_allowlist()
+    if not _is_path_inside_allowlist(resolved, allowed_roots):
+        raise HTTPException(
+            status_code = 403,
+            detail = (
+                "Path is not in an indexed location. Register it via "
+                "POST /api/models/scan-folders first."
+            ),
+        )
+    if contains_sensitive_path_component(str(resolved)):
+        raise HTTPException(
+            status_code = 403,
+            detail = "Credential or configuration directories are not openable.",
+        )
+    if is_denied_system_path(str(resolved)):
+        raise HTTPException(
+            status_code = 403,
+            detail = "System directories are not openable.",
+        )
+    return resolved
+
+
+@router.post("/reveal-local-path")
+async def reveal_local_path(
+    path: str = Body(...),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Reveal a local model file or directory (custom folders, LM Studio, models dir) in the OS file manager."""
+    from utils.paths.path_utils import reveal_in_file_manager
+
+    resolved = _resolve_local_path_inside_allowlist(path)
+    if not resolved.exists():
+        raise HTTPException(status_code = 404, detail = "Path not found on disk")
+    try:
+        await asyncio.to_thread(reveal_in_file_manager, resolved)
+    except FileNotFoundError:
+        raise HTTPException(status_code = 404, detail = "Path not found on disk")
+    except Exception as e:
+        logger.error(f"Failed to reveal {resolved}: {e}")
+        raise HTTPException(status_code = 500, detail = "Failed to open file manager")
+    return {"status": "ok", "path": str(resolved)}
+
+
+_LOCAL_DELETE_FILE_SUFFIXES = frozenset(
+    {".gguf", ".safetensors", ".bin", ".pt", ".pth", ".onnx", ".ckpt", ".ggml"}
+)
+
+_LOCAL_DELETE_DIR_MARKERS = frozenset(
+    {"config.json", "adapter_config.json", "model_index.json"}
+)
+
+
+def _local_delete_target_is_model_file(target: Path) -> bool:
+    return target.is_file() and target.suffix.lower() in _LOCAL_DELETE_FILE_SUFFIXES
+
+
+def _local_delete_target_is_model_dir(target: Path) -> bool:
+    if not target.is_dir() or target.is_symlink():
+        return False
+    try:
+        top = list(target.iterdir())
+    except OSError:
+        return False
+    for child in top:
+        try:
+            name = child.name
+            if child.is_file():
+                lowered = name.lower()
+                if lowered in _LOCAL_DELETE_DIR_MARKERS:
+                    return True
+                if Path(name).suffix.lower() in _LOCAL_DELETE_FILE_SUFFIXES:
+                    return True
+            elif child.is_dir():
+                try:
+                    for grandchild in child.iterdir():
+                        if not grandchild.is_file():
+                            continue
+                        gname = grandchild.name.lower()
+                        if gname in _LOCAL_DELETE_DIR_MARKERS:
+                            return True
+                        if Path(gname).suffix.lower() in _LOCAL_DELETE_FILE_SUFFIXES:
+                            return True
+                except OSError:
+                    continue
+        except OSError:
+            continue
+    return False
+
+
+@router.delete("/delete-local-path")
+async def delete_local_path(
+    path: str = Body(...),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Delete a single local model file (.gguf, weights) or a model directory from custom folders, LM Studio, or the models dir."""
+    resolved = _resolve_local_path_inside_allowlist(path)
+    allowed_roots = _build_browse_allowlist()
+    try:
+        resolved_real = os.path.normcase(os.path.realpath(str(resolved)))
+    except OSError:
+        raise HTTPException(status_code = 400, detail = "Invalid path")
+    for root in allowed_roots:
+        try:
+            root_real = os.path.normcase(os.path.realpath(str(root)))
+        except OSError:
+            continue
+        if resolved_real == root_real:
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    "Refusing to delete an indexed location itself. Remove it from "
+                    "On-device locations instead."
+                ),
+            )
+    if not resolved.exists() and not resolved.is_symlink():
+        raise HTTPException(status_code = 404, detail = "Path not found on disk")
+    is_file_target = _local_delete_target_is_model_file(resolved)
+    is_dir_target = _local_delete_target_is_model_dir(resolved)
+    if not is_file_target and not is_dir_target:
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                "Only model files (.gguf, weights) or model directories can be deleted here."
+            ),
+        )
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        llama_backend = get_llama_cpp_backend()
+        identifier = getattr(llama_backend, "model_identifier", None)
+        if (getattr(llama_backend, "is_active", False) or getattr(llama_backend, "is_loaded", False)) and identifier:
+            if _loaded_model_matches_deleted_path(str(identifier), resolved):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the model before deleting",
+                )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"Could not check llama.cpp loaded model before local delete: {e}")
+    try:
+        from core.inference.orchestrator import peek_inference_backend
+
+        inference_backend = peek_inference_backend()
+        if inference_backend is not None and getattr(inference_backend, "active_model_name", None):
+            if _loaded_model_matches_deleted_path(
+                str(inference_backend.active_model_name),
+                resolved,
+            ):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Unload the model before deleting",
+                )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"Could not check inference backend before local delete: {e}")
+    try:
+        if is_file_target:
+            try:
+                from hub.utils.gguf import remove_appledouble_sidecar
+            except Exception:
+                remove_appledouble_sidecar = None
+            resolved.unlink()
+            if remove_appledouble_sidecar is not None:
+                try:
+                    remove_appledouble_sidecar(resolved)
+                except Exception:
+                    pass
+        else:
+            await asyncio.to_thread(shutil.rmtree, str(resolved))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete local model {resolved}: {e}")
+        raise HTTPException(status_code = 500, detail = "Failed to delete model from disk")
+    try:
+        await _invalidate_local_scans()
+    except Exception as e:
+        logger.warning(f"Local scan invalidation failed after deleting {resolved}: {e}")
+    return {"status": "deleted", "path": str(resolved)}
+
+
 @router.get("/checkpoints", response_model = CheckpointListResponse)
 async def list_checkpoints(
     outputs_dir: str = Query(

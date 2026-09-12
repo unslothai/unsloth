@@ -18,6 +18,7 @@ import {
   type ScanFolderInfo,
   addScanFolder,
   deleteFineTunedModel,
+  deleteLocalPath,
   listGgufVariants,
   listRecommendedFolders,
   listScanFolders,
@@ -6186,6 +6187,18 @@ export function HubModelPicker({
                           "custom-folder",
                           m.id,
                         );
+                        const customDisplayName =
+                          m.model_id ?? m.display_name;
+                        const customLoaded = isRuntimeLoadedModel(
+                          loadedModelId,
+                          activeGgufVariant,
+                          m.id,
+                          isDirectGguf
+                            ? "ignore"
+                            : isGguf
+                              ? "required"
+                              : "none",
+                        );
                         return (
                           <div key={m.id}>
                             <div className="group flex items-center">
@@ -6198,17 +6211,7 @@ export function HubModelPicker({
                                     m.path,
                                   )}
                                   selected={value === m.id}
-                                  loaded={isRuntimeLoadedModel(
-                                    loadedModelId,
-                                    activeGgufVariant,
-                                    m.id,
-                                    // Direct loads set no active variant, so requiring one never reads as loaded.
-                                    isDirectGguf
-                                      ? "ignore"
-                                      : isGguf
-                                        ? "required"
-                                        : "none",
-                                  )}
+                                  loaded={customLoaded}
                                   optionProps={hubModelList.getOptionProps(
                                     optionKey,
                                     value === m.id,
@@ -6270,6 +6273,29 @@ export function HubModelPicker({
                                     }
                                   />
                                 )}
+                                <ModelRowMenu
+                                  ariaLabel={`More options for ${customDisplayName}`}
+                                  iconClassName="size-3"
+                                  localPath={{ path: m.path }}
+                                  del={{
+                                    title: "Delete local model?",
+                                    description: (
+                                      <>
+                                        This will remove{" "}
+                                        <span className="font-medium text-foreground">
+                                          {customDisplayName}
+                                        </span>{" "}
+                                        from disk. This cannot be undone.
+                                      </>
+                                    ),
+                                    successMessage: `Deleted ${customDisplayName}`,
+                                    disabled: customLoaded,
+                                    onConfirm: async () => {
+                                      await deleteLocalPath(m.path);
+                                    },
+                                    onDeleted: refreshCachedLists,
+                                  }}
+                                />
                               </span>
                             </div>
                             {isGguf &&
@@ -6327,6 +6353,17 @@ export function HubModelPicker({
                         // filter and load path to agree.
                         const isGguf = localModelIsGguf(m);
                         const optionKey = makeModelOptionKey("lm-studio", m.id);
+                        const lmDisplayName = m.model_id ?? m.display_name;
+                        const lmLoaded = isRuntimeLoadedModel(
+                          loadedModelId,
+                          activeGgufVariant,
+                          m.id,
+                          isGgufFile
+                            ? "ignore"
+                            : isGguf
+                              ? "required"
+                              : "none",
+                        );
                         return (
                           <div key={m.id}>
                             <div className="group flex items-center">
@@ -6339,16 +6376,7 @@ export function HubModelPicker({
                                     m.path,
                                   )}
                                   selected={value === m.id}
-                                  loaded={isRuntimeLoadedModel(
-                                    loadedModelId,
-                                    activeGgufVariant,
-                                    m.id,
-                                    isGgufFile
-                                      ? "ignore"
-                                      : isGguf
-                                        ? "required"
-                                        : "none",
-                                  )}
+                                  loaded={lmLoaded}
                                   optionProps={hubModelList.getOptionProps(
                                     optionKey,
                                     value === m.id,
@@ -6410,6 +6438,29 @@ export function HubModelPicker({
                                     }
                                   />
                                 )}
+                                <ModelRowMenu
+                                  ariaLabel={`More options for ${lmDisplayName}`}
+                                  iconClassName="size-3"
+                                  localPath={{ path: m.path }}
+                                  del={{
+                                    title: "Delete local model?",
+                                    description: (
+                                      <>
+                                        This will remove{" "}
+                                        <span className="font-medium text-foreground">
+                                          {lmDisplayName}
+                                        </span>{" "}
+                                        from disk. This cannot be undone.
+                                      </>
+                                    ),
+                                    successMessage: `Deleted ${lmDisplayName}`,
+                                    disabled: lmLoaded,
+                                    onConfirm: async () => {
+                                      await deleteLocalPath(m.path);
+                                    },
+                                    onDeleted: refreshCachedLists,
+                                  }}
+                                />
                               </span>
                             </div>
                             {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
@@ -6458,6 +6509,17 @@ export function HubModelPicker({
                           .endsWith(".gguf");
                         const isGguf = localModelIsGguf(m);
                         const optionKey = makeModelOptionKey("local-dir", m.id);
+                        const localDisplayName = m.model_id ?? m.display_name;
+                        const localLoaded = isRuntimeLoadedModel(
+                          loadedModelId,
+                          activeGgufVariant,
+                          m.id,
+                          isGgufFile
+                            ? "ignore"
+                            : isGguf
+                              ? "required"
+                              : "none",
+                        );
                         return (
                           <div key={m.id}>
                             <div className="group flex items-center">
@@ -6470,16 +6532,7 @@ export function HubModelPicker({
                                     m.path,
                                   )}
                                   selected={value === m.id}
-                                  loaded={isRuntimeLoadedModel(
-                                    loadedModelId,
-                                    activeGgufVariant,
-                                    m.id,
-                                    isGgufFile
-                                      ? "ignore"
-                                      : isGguf
-                                        ? "required"
-                                        : "none",
-                                  )}
+                                  loaded={localLoaded}
                                   optionProps={hubModelList.getOptionProps(
                                     optionKey,
                                     value === m.id,
@@ -6537,6 +6590,29 @@ export function HubModelPicker({
                                     }
                                   />
                                 )}
+                                <ModelRowMenu
+                                  ariaLabel={`More options for ${localDisplayName}`}
+                                  iconClassName="size-3"
+                                  localPath={{ path: m.path }}
+                                  del={{
+                                    title: "Delete local model?",
+                                    description: (
+                                      <>
+                                        This will remove{" "}
+                                        <span className="font-medium text-foreground">
+                                          {localDisplayName}
+                                        </span>{" "}
+                                        from disk. This cannot be undone.
+                                      </>
+                                    ),
+                                    successMessage: `Deleted ${localDisplayName}`,
+                                    disabled: localLoaded,
+                                    onConfirm: async () => {
+                                      await deleteLocalPath(m.path);
+                                    },
+                                    onDeleted: refreshCachedLists,
+                                  }}
+                                />
                               </span>
                             </div>
                             {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
