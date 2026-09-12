@@ -5338,8 +5338,7 @@ def _resolve_local_path_inside_allowlist(raw_path: str) -> Path:
 
 @router.post("/reveal-local-path")
 async def reveal_local_path(
-    path: str = Body(..., embed = True),
-    current_subject: str = Depends(get_current_subject),
+    path: str = Body(..., embed = True), current_subject: str = Depends(get_current_subject)
 ):
     """Reveal a local model file or directory (custom folders, LM Studio, models dir) in the OS file manager."""
     from utils.paths.path_utils import reveal_in_file_manager
@@ -5361,9 +5360,7 @@ _LOCAL_DELETE_FILE_SUFFIXES = frozenset(
     {".gguf", ".safetensors", ".bin", ".pt", ".pth", ".onnx", ".ckpt", ".ggml"}
 )
 
-_LOCAL_DELETE_DIR_MARKERS = frozenset(
-    {"config.json", "adapter_config.json", "model_index.json"}
-)
+_LOCAL_DELETE_DIR_MARKERS = frozenset({"config.json", "adapter_config.json", "model_index.json"})
 
 
 def _local_delete_target_is_model_file(target: Path) -> bool:
@@ -5405,8 +5402,7 @@ def _local_delete_target_is_model_dir(target: Path) -> bool:
 
 @router.delete("/delete-local-path")
 async def delete_local_path(
-    path: str = Body(..., embed = True),
-    current_subject: str = Depends(get_current_subject),
+    path: str = Body(..., embed = True), current_subject: str = Depends(get_current_subject)
 ):
     """Delete a single local model file (.gguf, weights) or a model directory from custom folders, LM Studio, or the models dir."""
     resolved = _resolve_local_path_inside_allowlist(path)
@@ -5435,16 +5431,16 @@ async def delete_local_path(
     if not is_file_target and not is_dir_target:
         raise HTTPException(
             status_code = 400,
-            detail = (
-                "Only model files (.gguf, weights) or model directories can be deleted here."
-            ),
+            detail = ("Only model files (.gguf, weights) or model directories can be deleted here."),
         )
     try:
         from routes.inference import get_llama_cpp_backend
 
         llama_backend = get_llama_cpp_backend()
         identifier = getattr(llama_backend, "model_identifier", None)
-        if (getattr(llama_backend, "is_active", False) or getattr(llama_backend, "is_loaded", False)) and identifier:
+        if (
+            getattr(llama_backend, "is_active", False) or getattr(llama_backend, "is_loaded", False)
+        ) and identifier:
             if _loaded_model_matches_deleted_path(str(identifier), resolved):
                 raise HTTPException(
                     status_code = 400,
@@ -5456,7 +5452,6 @@ async def delete_local_path(
         logger.warning(f"Could not check llama.cpp loaded model before local delete: {e}")
     try:
         from core.inference.orchestrator import peek_inference_backend
-
         inference_backend = peek_inference_backend()
         if inference_backend is not None and getattr(inference_backend, "active_model_name", None):
             if _loaded_model_matches_deleted_path(
