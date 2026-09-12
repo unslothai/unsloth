@@ -17349,9 +17349,13 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         is_audio = False
         audio_type = None
         has_audio_input = False
+        # One snapshot for the whole response. Resolving trust_remote_code below awaits,
+        # and a load or unload completing in that window would otherwise pair the new
+        # model's identity with this one's capabilities and trust requirement.
+        _active = backend.active_model_name
         model_info = {}
-        if backend.active_model_name:
-            model_info = backend.models.get(backend.active_model_name, {})
+        if _active:
+            model_info = backend.models.get(_active, {})
             is_vision = model_info.get("is_vision", False)
             is_audio = model_info.get("is_audio", False)
             audio_type = model_info.get("audio_type")
@@ -17363,9 +17367,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
 
         # Non-GGUF: classify from the loaded template.
         _sf_flags = _detect_safetensors_features(backend, chat_template)
-        inference_config = (
-            load_inference_config(backend.active_model_name) if backend.active_model_name else None
-        )
+        inference_config = load_inference_config(_active) if _active else None
 
         # The backend and the attempt registry name the same load, so compare public ids
         # or a model loaded from a path is listed twice.
@@ -17377,24 +17379,22 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
 
         # The auto_map fallback reads raw config JSON, so guarded and off-loop like validate_model.
         _requires_trc = False
-        if backend.active_model_name:
+        if _active:
             _requires_trc = await asyncio.to_thread(
                 _offline_guarded,
-                [backend.active_model_name],
+                [_active],
                 _resolve_loaded_trust_remote_code,
-                backend.active_model_name,
+                _active,
                 model_info,
                 inference_config,
             )
 
         return InferenceStatusResponse(
-            active_model = backend.active_model_name,
-            model_identifier = backend.active_model_name,
+            active_model = _active,
+            model_identifier = _active,
             is_vision = is_vision,
             is_gguf = False,
-            is_local_model = bool(
-                backend.active_model_name and is_local_path(backend.active_model_name)
-            ),
+            is_local_model = bool(_active and is_local_path(_active)),
             is_audio = is_audio,
             audio_type = audio_type,
             has_audio_input = has_audio_input,
