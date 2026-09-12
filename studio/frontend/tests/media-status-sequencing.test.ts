@@ -21,13 +21,36 @@ const PAGES = [
   ["video", "features/video/video-page.tsx", "getVideoStatus", "unloadVideoModel"],
 ] as const;
 
+/** The argument list of `const NAME = useCallback(...)`, parentheses balanced. */
+function callbackBody(source: string, name: string): string {
+  const declaration = `const ${name} = useCallback`;
+  const at = source.indexOf(declaration);
+  assert.ok(at >= 0, `${name} is not declared as a useCallback`);
+  const start = source.indexOf("(", at + declaration.length);
+  let depth = 0;
+  for (let i = start; i < source.length; i += 1) {
+    if (source[i] === "(") depth += 1;
+    else if (source[i] === ")") {
+      depth -= 1;
+      if (depth === 0) return source.slice(start + 1, i);
+    }
+  }
+  assert.fail(`${name}'s callback never closes`);
+}
+
 for (const [name, path, read, unload] of PAGES) {
   test(`the ${name} page lets only the newest status read write`, () => {
     const page = readSrc(path);
     assert.match(page, /const statusTicket = useRef\(0\);/);
-    assert.match(
-      page,
-      /if \(ticket === statusTicket\.current\) setStatus\(next\);/,
+    // Read the GUARD, not the one line that spelled it. #10788 rewrote this as an early
+    // return, which admits exactly the same reads, and the exact-text form went red over a
+    // refactor that changed nothing. Both spellings are checked against the callback's own
+    // body, so a guard that lives somewhere else in the file cannot stand in for it.
+    const body = callbackBody(page, "setStatusIfNewest");
+    assert.match(body, /setStatus\(/, "setStatusIfNewest no longer writes the status");
+    assert.ok(
+      /if\s*\(\s*ticket\s*===\s*statusTicket\.current\s*\)[\s{]*setStatus\(/.test(body) ||
+        /if\s*\(\s*ticket\s*!==\s*statusTicket\.current\s*\)[\s{]*return\b/.test(body),
       "a superseded read must not write",
     );
     // Every writer goes through it, so none can be the one that slips past.
