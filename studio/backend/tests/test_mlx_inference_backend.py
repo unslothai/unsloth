@@ -4898,3 +4898,159 @@ def test_mlx_keeps_a_think_closer_whose_opener_came_from_the_prefill(monkeypatch
     final = snapshots[-1]
     assert final.startswith("<think>"), final
     assert "</think>" in final, f"the closer was trimmed, leaving the block open: {final!r}"
+
+
+# ── Unset generation budget ──────────────────────────────────────────────
+
+_BUDGET_WINDOW = 2048
+_BUDGET_PROMPT_N = 37
+_BUDGET_BOS = "<s>"
+_IMAGE_TURN = [{"role": "user", "content": [{"type": "image"}]}]
+_TEXT_TURN = [{"role": "user", "content": "hi"}]
+
+
+def _budget_backend(
+    monkeypatch,
+    served = _BUDGET_WINDOW,
+    marker_tokens = 0,
+):
+    from core.inference import mlx_inference
+
+    @contextmanager
+    def _adapter_state(_model, _state):
+        yield
+
+    monkeypatch.setattr(mlx_inference, "_temporary_mlx_adapter_state", _adapter_state)
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "llama"})
+    backend._tokenizer = SimpleNamespace(
+        all_special_tokens = [],
+        # The text and vision marker rules only disagree once the template emits the BOS.
+        bos_token = _BUDGET_BOS if marker_tokens else None,
+        encode = lambda _p, add_special_tokens = True: list(
+            range(_BUDGET_PROMPT_N + (marker_tokens if add_special_tokens else 0))
+        ),
+        decode = lambda _ids, **_k: "ok",
+    )
+    backend._served_context = served
+    return backend
+
+
+def _run_text_budget(
+    monkeypatch,
+    max_new_tokens,
+    served = _BUDGET_WINDOW,
+    cached = None,
+):
+    from core.inference import mlx_inference
+
+    seen = {}
+    mlx_lm = types.ModuleType("mlx_lm")
+    sample_utils = types.ModuleType("mlx_lm.sample_utils")
+    sample_utils.make_sampler = lambda **_k: object()
+    mlx_lm.sample_utils = sample_utils
+
+    def _stream(_model, _tokenizer, **kwargs):
+        seen["max_tokens"] = kwargs.get("max_tokens")
+        yield _Resp("ok", 1)
+
+    mlx_lm.stream_generate = _stream
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", sample_utils)
+    monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **_k: None)
+
+    backend = _budget_backend(monkeypatch, served = served)
+    monkeypatch.setattr(
+        backend,
+        "_render_text_prompt",
+        lambda *_a, **_k: SimpleNamespace(prompt = "P", reasoning_channel_markers = None),
+        raising = False,
+    )
+    if cached is not None:
+        # A cache hit: the full token list beside the uncached remainder.
+        monkeypatch.setattr(
+            backend,
+            "_prepare_prompt_cache",
+            lambda _p, _a: ("TAIL", object(), "k", cached, len(cached) - 4),
+        )
+    list(backend._generate_text(_TEXT_TURN, 0.0, 1.0, 0, 0.0, max_new_tokens, 1.0, None))
+    return seen["max_tokens"]
+
+
+def _run_vlm_budget(
+    monkeypatch,
+    messages,
+    image,
+    max_new_tokens,
+    served = _BUDGET_WINDOW,
+    marker_tokens = 0,
+):
+    seen = {}
+    mlx_vlm = types.ModuleType("mlx_vlm")
+
+    def _stream(*_a, **kwargs):
+        seen["max_tokens"] = kwargs.get("max_tokens")
+        yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = _stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, _m, **_k: f"{_BUDGET_BOS}<image> p",
+    )
+
+    backend = _budget_backend(monkeypatch, served = served, marker_tokens = marker_tokens)
+    backend._is_vlm = True
+    backend._model = SimpleNamespace()
+    backend._processor = SimpleNamespace(tokenizer = backend._tokenizer)
+    args = (messages, image, 0, 1, 0, 0, max_new_tokens, 1, None)
+    list(backend._generate_vlm(*args, _adapter_state = False))
+    return seen["max_tokens"]
+
+
+def test_mlx_text_resolves_an_unset_budget_against_the_served_window(monkeypatch):
+    assert _run_text_budget(monkeypatch, None) == _BUDGET_WINDOW - _BUDGET_PROMPT_N
+
+
+def test_mlx_text_budget_counts_the_cached_prefix_too(monkeypatch):
+    # Sizing from the 4-token uncached tail would treat the cached prefix as free room.
+    budget = _run_text_budget(monkeypatch, None, served = 4096, cached = list(range(300)))
+
+    assert budget == 4096 - 300
+
+
+def test_mlx_vlm_does_not_size_a_budget_from_a_prompt_carrying_an_image(monkeypatch):
+    # An image is one placeholder token in the rendered prompt and many once expanded.
+    from core.inference.runtime_context import UNSET_GENERATION_BUDGET
+    budget = _run_vlm_budget(monkeypatch, _IMAGE_TURN, object(), None, served = 32768)
+
+    assert budget == UNSET_GENERATION_BUDGET
+
+
+def test_mlx_vlm_image_budget_stays_inside_a_narrow_served_window(monkeypatch):
+    # A load pinned below the default rotates its KV cache at the served window, so a flat
+    # 2048 would evict the image it is still answering about.
+    budget = _run_vlm_budget(monkeypatch, _IMAGE_TURN, object(), None, served = 1024)
+
+    assert budget == 1024 - _BUDGET_PROMPT_N
+
+
+def test_mlx_vlm_counts_a_text_only_turn_by_the_vision_marker_rule(monkeypatch):
+    # A vision model still counts a text-only turn, by mlx_vlm's marker rule, not the text one.
+    budget = _run_vlm_budget(monkeypatch, _TEXT_TURN, None, None, served = 32768, marker_tokens = 1)
+
+    assert budget == 32768 - _BUDGET_PROMPT_N - 1
+
+
+def test_mlx_passes_an_explicit_budget_through_both_paths(monkeypatch):
+    assert _run_text_budget(monkeypatch, 4096) == 4096
+    assert _run_vlm_budget(monkeypatch, _IMAGE_TURN, object(), 4096) == 4096
+
+
+def test_mlx_unset_budget_falls_back_when_the_prompt_cannot_be_counted(monkeypatch):
+    from core.inference.runtime_context import UNSET_GENERATION_BUDGET
+
+    backend = _budget_backend(monkeypatch)
+    backend._tokenizer = None
+
+    assert backend._unset_generation_budget("P") == UNSET_GENERATION_BUDGET
