@@ -16,6 +16,7 @@ import sys
 import time
 from pathlib import Path
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -109,9 +110,24 @@ def open_bar(page, mod: str) -> None:
     )
 
 
+def settle(page, condition: str, *, timeout: int = 10000) -> None:
+    """Give `condition` until `timeout` to hold, and do not fail here if it never does.
+
+    A flat sleep before reading the state asserts the runner's speed alongside the
+    behaviour, and a busy runner failed the chord re-focus check on a build that only
+    touched a PowerShell script. Waiting on the condition lets a slow machine take its
+    time, while a genuinely broken one spends the timeout and then fails on the SAME check
+    with the same message, so nothing is swallowed here.
+    """
+    try:
+        page.wait_for_function(condition, timeout = timeout)
+    except PlaywrightTimeout:
+        pass
+
+
 def close_bar(page) -> None:
     page.keyboard.press("Escape")
-    page.wait_for_timeout(250)
+    settle(page, "() => !window.__findSmoke.state().open")
 
 
 def check_chord(page, engine: str, mode: str, mod: str) -> None:
@@ -134,7 +150,10 @@ def check_chord(page, engine: str, mode: str, mod: str) -> None:
         state(page).get("focused") is False,
     )
     page.keyboard.press(f"{mod}+f")
-    page.wait_for_timeout(200)
+    settle(
+        page,
+        "() => { const s = window.__findSmoke.state(); return s.open && s.focused; }",
+    )
     check(
         engine,
         mode,
