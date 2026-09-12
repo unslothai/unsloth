@@ -462,6 +462,15 @@ export interface ApiMonitorEntry {
   reason?: "manual" | "idle" | "api" | null;
   // 0-100 while a download row is running.
   progress?: number | null;
+  // Current inference sub-phase while the request is running.
+  running_phase?: "prompt_processing" | "token_generation" | null;
+  prompt_progress?: {
+    total: number | null;
+    processed: number | null;
+    cached: number | null;
+    time_ms: number | null;
+    percent: number | null;
+  } | null;
   // Server-side time to first token (measured, else engine prefill).
   ttft_ms?: number | null;
   tok_per_sec?: number | null;
