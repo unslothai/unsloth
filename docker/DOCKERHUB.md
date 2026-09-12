@@ -101,10 +101,16 @@ Turing has no bfloat16; Unsloth falls back to float16 there. AMD GPUs are not su
 | `JUPYTER_PASSWORD` | JupyterLab password. Unset: generated once and printed in the logs. |
 | `JUPYTER_PORT` | JupyterLab port inside the container. Default `8888`. |
 | `SSH_KEY` or `PUBLIC_KEY` | OpenSSH public key for root login. Enables sshd on port 22. Password login is never enabled. |
-| `UNSLOTH_ALLOW_CPU=1` | Allow starting without a GPU (`latest` already does). Ignored when a GPU is visible, where it would turn off Unsloth's training patches. |
+| `UNSLOTH_ALLOW_CPU=1` | Allow starting without a GPU (`latest` already does). Dropped for everything the container starts when a GPU is visible, where it would turn off Unsloth's training patches; shells opened later with `docker exec` still receive whatever you passed. |
 | `UNSLOTH_JUPYTER_CLOUDFLARE=1` | Publish JupyterLab through a Cloudflare quick tunnel and print the URL. |
 | `UNSLOTH_SKIP_NOTEBOOK_SYNC=1` | Do not refresh the notebooks from GitHub on start. |
 | `HF_TOKEN`, `WANDB_API_KEY` | Forwarded to Hugging Face and Weights and Biases. |
+
+On a host with no GPU, Studio, JupyterLab and its kernels, and login shells all run in
+CPU mode. A non-login `docker exec` does not: it is built from the image, not from the
+container's first process, so `docker exec <c> python -c "import unsloth"` reports that
+it needs a GPU. Use a login shell, `docker exec <c> bash -lc '...'`, or pass the
+variable for that one command with `docker exec -e UNSLOTH_ALLOW_CPU=1 <c> ...`.
 
 ## Volumes
 

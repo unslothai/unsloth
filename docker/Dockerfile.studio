@@ -231,6 +231,14 @@ RUN chmod +x /usr/local/bin/unsloth-studio-launch \
 # Studio, JupyterLab, sshd. All bind 0.0.0.0 in the container; publish with -p.
 EXPOSE 8000 8888 22
 
+# UNSLOTH_IMAGE_ALLOW_CPU only means anything to an entrypoint that reads it, and
+# BASE_IMAGE defaults to the PUBLISHED unsloth/unsloth:core, whose baked entrypoint
+# predates the name. A standalone `docker build -f docker/Dockerfile.studio` would
+# otherwise opt in above and still exit 1 on a CPU-only host. CI pins BASE_IMAGE to
+# the core digest from the same run and so never saw it.
+COPY entrypoint.sh /usr/local/bin/unsloth-entrypoint
+RUN chmod +x /usr/local/bin/unsloth-entrypoint
+
 # The base ENTRYPOINT (unsloth-entrypoint) still runs its GPU pre-flight
 # first, then hands off to the service launcher.
 CMD ["/usr/local/bin/unsloth-studio-launch"]

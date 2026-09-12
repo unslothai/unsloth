@@ -59,6 +59,13 @@ warn() { printf "\033[1;33mWARN:\033[0m %s\n"  "$*" >&2; }
 # "no GPU attached", same as an empty -L
 gpu_visible() {
     local listing
+    # nvidia-smi -L lists the hardware and ignores CUDA_VISIBLE_DEVICES, but torch
+    # honours it: an empty value or -1 leaves torch.cuda.device_count() == 0. Both
+    # are the documented way to hide every device, so answering "visible" here would
+    # take the GPU path for processes that have no GPU.
+    case "${CUDA_VISIBLE_DEVICES-unset}" in
+        ""|-1) return 1 ;;
+    esac
     command -v nvidia-smi >/dev/null 2>&1 || return 1
     listing="$(nvidia-smi -L 2>/dev/null || true)"
     grep -q '^GPU' <<< "${listing}"
@@ -67,7 +74,9 @@ gpu_visible() {
 # The unsloth library reads UNSLOTH_ALLOW_CPU=1 as CPU-only CI and skips its TRL
 # trainer patches, so it may only reach processes that have no GPU. An image opts in to
 # the CPU fallback with UNSLOTH_IMAGE_ALLOW_CPU=1; an explicit -e still decides.
-allow_cpu="${UNSLOTH_ALLOW_CPU:-${UNSLOTH_IMAGE_ALLOW_CPU:-0}}"
+# `-`, not `:-`: `-e UNSLOTH_ALLOW_CPU=` sets it to empty, which is a way of saying
+# off, so it must not fall through to the image opt-in and start anyway.
+allow_cpu="${UNSLOTH_ALLOW_CPU-${UNSLOTH_IMAGE_ALLOW_CPU:-0}}"
 if gpu_visible; then
     has_gpu=1
     if [[ "${UNSLOTH_ALLOW_CPU:-}" == "1" ]]; then

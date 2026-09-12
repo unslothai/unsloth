@@ -61,10 +61,14 @@ mkdir -p "$HF_CACHE" "$TRITON_CACHE"
 # regression tests can stage a fake device tree; leave it unset in normal use.
 DEV_ROOT="${UNSLOTH_DEV_ROOT:-}"
 host_has_nvidia() {
+    local listing
     [[ -e "$DEV_ROOT/dev/nvidiactl" ]] && return 0
-    command -v nvidia-smi >/dev/null 2>&1 \
-        && nvidia-smi -L 2>/dev/null | grep -q '^GPU' && return 0
-    return 1
+    command -v nvidia-smi >/dev/null 2>&1 || return 1
+    # buffer before matching: under `set -o pipefail` a `grep -q` that exits on the
+    # first line can turn the producer's SIGPIPE into the pipeline's status, which
+    # would read as "no GPU" and silently drop --gpus. Same reason as entrypoint.sh.
+    listing="$(nvidia-smi -L 2>/dev/null || true)"
+    grep -q '^GPU' <<< "${listing}"
 }
 
 if [[ ${#GPU_FLAG[@]} -gt 0 ]] && ! host_has_nvidia; then
