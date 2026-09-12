@@ -648,8 +648,9 @@ def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
         and isinstance(node.func, ast.Name)
         and node.func.id == "_ubatch_for_slots"
     ]
-    # sizing pass, embedding slot clamp, fit-time reduction, then the post-launch record
-    assert len(calls) == 4, f"expected four re-derivations, found {len(calls)}"
+    # sizing pass, embedding slot clamp, projector batch floor, fit-time reduction,
+    # then the post-launch record
+    assert len(calls) == 5, f"expected five re-derivations, found {len(calls)}"
     # the record must not reuse the sizing pass's value
     compact = "".join(src.split())
     assert "self._n_ubatch=max(0,int(self._DEFAULT_N_UBATCHif_launched_ubatchisNone" in compact
@@ -734,3 +735,26 @@ def test_the_remote_guard_charges_the_flat_output_buffer():
     assert layer_2 - layer_1 < 30.0
     # tensor mode replicates the whole buffer on every card, so it does roughly double
     assert tensor_2 > tensor_1 * 1.8
+
+
+def test_the_text_only_retry_unwinds_the_projector_floor_in_the_fields_too():
+    """self._n_ubatch is re-derived from the load_model locals AFTER the retry, so
+    rewriting only the argv leaves the record at the projector's 2048 while the child
+    runs llama.cpp's default. That stale value enters the slot fingerprint and the
+    prompt-cache size estimate, where a fourfold overstatement silently skips saves
+    under the cap. Pinned on the source, since reaching the retry needs a real spawn."""
+    import inspect
+    import textwrap
+
+    src = textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model))
+    compact = "".join(src.split())
+    # The fields are put back, not just the command line...
+    assert "n_batch,n_ubatch=_requested_batch_pair" in compact
+    # ...and before the argv rewrite that reads them.
+    assert compact.index("n_batch,n_ubatch=_requested_batch_pair") < compact.index(
+        "self._restore_batch_args("
+    )
+    # And the pair it restores is captured before the floor is applied.
+    assert compact.index("_requested_batch_pair=(n_batch,n_ubatch)") < compact.index(
+        "n_batch,n_ubatch=_mmproj_batch_floor("
+    )
