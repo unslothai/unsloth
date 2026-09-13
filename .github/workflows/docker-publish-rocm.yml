@@ -1,0 +1,212 @@
+# Builds and publishes the AMD ROCm Unsloth Docker image.
+#
+# The build runs on free GitHub-hosted Ubuntu runners with NO GPU attached.
+# This is possible because:
+#   1. ROCm PyTorch wheels from download.pytorch.org/whl/rocmX.Y are
+#      self-contained — they do not introspect the host GPU at install time.
+#   2. The build-time sanity check uses torch.version.hip (a string constant
+#      baked into the wheel), which does NOT require a ROCm device.
+#   3. UNSLOTH_DOCKER_ROCM=1 + UNSLOTH_TORCH_INDEX_URL prevent unsloth's
+#      install logic from probing the (absent) GPU during pip install.
+#
+# Architecture: amd64 only.
+#   pytorch.org does not publish ROCm wheels for aarch64 as of ROCm 6.2.
+#   When official arm64 ROCm wheels land, add an arm64 matrix leg here.
+#
+# Required repository secrets:
+#   DOCKERHUB_USERNAME, DOCKERHUB_TOKEN
+#
+# Optional repository variable (gates the smoke-test job):
+#   HAS_AMD_GPU_RUNNER = 'true' if a self-hosted AMD GPU runner is available
+
+name: Publish ROCm Docker image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  schedule:
+    - cron: '23 5 * * 2'   # weekly Tue 05:23 UTC (offset from CUDA workflow)
+  workflow_dispatch:
+    inputs:
+      unsloth_ref:
+        description: 'unsloth git ref to bake in'
+        required: false
+        default: 'main'
+      unsloth_zoo_ref:
+        description: 'unsloth-zoo git ref to bake in'
+        required: false
+        default: 'main'
+      rocm_version:
+        description: 'ROCm base image version (e.g. 6.2.4)'
+        required: false
+        default: '6.2.4'
+      torch_index_url:
+        description: 'PyTorch ROCm wheel index URL'
+        required: false
+        default: 'https://download.pytorch.org/whl/rocm6.2'
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: unsloth/unsloth-rocm
+
+# Serialise per-ref runs so two pushes don't both retag :latest from different
+# commits simultaneously. Don't cancel in-progress runs — a half-built image
+# on Docker Hub is worse than a slightly stale :latest for a few minutes.
+concurrency:
+  group: docker-publish-rocm-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Build the ROCm image on an amd64 runner and push it by digest.
+  # No GPU is required — the build-time verification checks torch.version.hip,
+  # which is set in the wheel metadata, not by querying a device.
+  # ---------------------------------------------------------------------------
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Free up ~20 GB so the ROCm base image + wheel cache fit.
+      - name: Reclaim disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /opt/hostedtoolcache/CodeQL "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Resolve labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      - name: Build and push (by digest)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker
+          file: ./docker/Dockerfile.rocm
+          platforms: linux/amd64
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=build-rocm-amd64
+          cache-to:   type=gha,scope=build-rocm-amd64,mode=max
+          outputs:    type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            ROCM_VERSION=${{ github.event.inputs.rocm_version || '6.2.4' }}
+            PYTHON_VERSION=3.12
+            TORCH_INDEX_URL=${{ github.event.inputs.torch_index_url || 'https://download.pytorch.org/whl/rocm6.2' }}
+            UNSLOTH_REF=${{ github.event.inputs.unsloth_ref || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || github.sha || 'main' }}
+            UNSLOTH_ZOO_REF=${{ github.event.inputs.unsloth_zoo_ref || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || 'main' }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest='${{ steps.build.outputs.digest }}'
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-rocm-amd64
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Attach human-readable tags to the digest pushed above.
+  # ---------------------------------------------------------------------------
+  tag:
+    runs-on: ubuntu-latest
+    needs: build
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-rocm-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Resolve tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
+            type=ref,event=tag
+            type=schedule,pattern=nightly
+            type=sha,prefix=sha-,format=short
+
+      - name: Create manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+              $(jq -cr '.tags | map("-t " + .) | join(" ")' <<<"$DOCKER_METADATA_OUTPUT_JSON") \
+              $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+
+      - name: Inspect the result
+        run: |
+          for tag in $(jq -r '.tags[]' <<<"$DOCKER_METADATA_OUTPUT_JSON"); do
+              echo "=== $tag ==="
+              docker buildx imagetools inspect "$tag"
+          done
+
+  # ---------------------------------------------------------------------------
+  # Optional: pull the image onto a self-hosted AMD GPU runner and smoke test.
+  # Gated by the HAS_AMD_GPU_RUNNER repository variable.
+  # ---------------------------------------------------------------------------
+  smoke-test:
+    needs: tag
+    if: ${{ vars.HAS_AMD_GPU_RUNNER == 'true' }}
+    runs-on: [self-hosted, amd-gpu]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve published tag
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' }}
+            type=ref,event=tag
+            type=schedule,pattern=nightly
+            type=sha,prefix=sha-,format=short
+
+      - name: Pull and smoke-test
+        run: |
+          TAG="$(jq -r '.tags[0] // ""' <<<"$DOCKER_METADATA_OUTPUT_JSON")"
+          if [ -z "$TAG" ]; then
+              TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          fi
+          echo "smoke-testing $TAG"
+          docker pull "$TAG"
+          docker run --rm \
+              --device /dev/kfd --device /dev/dri --group-add video \
+              "$TAG" python /workspace/smoke_test_rocm.py
