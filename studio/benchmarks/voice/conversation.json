@@ -1,0 +1,33 @@
+{
+  "system": "You are a helpful voice assistant. Keep replies concise and conversational, suitable for being spoken aloud. Two or three sentences at most.",
+  "notes": [
+    "Each turn is one user utterance in a single multi-turn conversation.",
+    "`text` is the ground-truth transcript, used both to synthesize the input",
+    "audio fixture (when no real recording is supplied) and to score STT WER.",
+    "`expect_any` is a soft topical check: at least one phrase should appear in",
+    "the assistant reply. It is NOT a factual-correctness gate (the model has no",
+    "live tools); it just flags a reply that wandered completely off topic."
+  ],
+  "turns": [
+    {
+      "id": 1,
+      "text": "Hello, what is the weather today?",
+      "expect_any": ["weather", "temperature", "forecast", "real-time", "real time", "current", "don't have", "cannot", "can't", "access"]
+    },
+    {
+      "id": 2,
+      "text": "How about tomorrow then?",
+      "expect_any": ["tomorrow", "forecast", "weather", "predict", "don't have", "cannot", "can't"]
+    },
+    {
+      "id": 3,
+      "text": "Can you make me a hotel trip plan to the Great Barrier Reef? I'm in New York now.",
+      "expect_any": ["reef", "great barrier", "hotel", "australia", "cairns", "flight", "itinerary", "trip", "day"]
+    },
+    {
+      "id": 4,
+      "text": "How about the weather, would that cause issues?",
+      "expect_any": ["weather", "rain", "season", "wet", "cyclone", "reef", "conditions", "travel", "month", "best time"]
+    }
+  ]
+}

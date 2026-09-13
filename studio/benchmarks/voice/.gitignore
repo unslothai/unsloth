@@ -1,0 +1,11 @@
+__pycache__/
+
+# Minted API key for the local benchmark client (never commit).
+.bench_token
+
+# Generated report JSONs.
+reports/
+
+# Cached input-audio fixtures. Delete a turn_N.wav to re-synthesize it, or drop
+# your own real recording in with that name to benchmark against authentic speech.
+audio_fixtures/
