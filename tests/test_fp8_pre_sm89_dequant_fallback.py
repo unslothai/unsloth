@@ -7,8 +7,9 @@ triton adds fp8e4nv (torch.float8_e4m3fn) to its supported dtypes at compute cap
 instead of falling back. sm89 -- 4090, L40S, L4 -- is on the supported side of that line, and a
 major-only "< 9" test silently drops all of Ada onto a path that costs several times the memory.
 
-The capability is monkeypatched so the routing is pinned on any CUDA GPU, not just on the cards
-being simulated.
+The capability is monkeypatched and the triton entry point is stubbed, so the routing cases run
+on any CUDA GPU including the pre-sm89 ones under discussion, which cannot compile the kernel
+they are asserted to select. Only the value comparison needs real fp8 hardware, and it skips.
 """
 
 import pytest
@@ -37,18 +38,32 @@ def _route(
     scale,
     hip = None,
 ):
-    """Return ("triton"|"torch", output) for a simulated device."""
+    """Return "triton" or "torch" for a simulated device.
+
+    The kernel is stubbed rather than wrapped: these cases assert which branch is chosen, and
+    letting the real one run would need a GPU that can compile fp8e4nv, so every "routes to
+    triton" case would fail on exactly the pre-sm89 cards this file is about. Values are
+    covered separately by test_fallback_matches_the_triton_kernel_bit_for_bit, which skips
+    when the hardware cannot run both sides.
+    """
     from unsloth.kernels import fp8
 
     calls = []
-    original = fp8.weight_dequant_block
-    monkeypatch.setattr(
-        fp8, "weight_dequant_block", lambda *a, **k: (calls.append(1), original(*a, **k))[1]
-    )
+
+    def _stub(
+        x,
+        s,
+        block_size = 128,
+        dtype = torch.bfloat16,
+    ):
+        calls.append(1)
+        return torch.empty(x.shape, dtype = dtype, device = x.device)
+
+    monkeypatch.setattr(fp8, "weight_dequant_block", _stub)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: capability)
     monkeypatch.setattr(torch.version, "hip", hip)
-    out = fp8._blockwise_weight_dequant_any_shape(weight, scale, BLOCK, torch.bfloat16)
-    return ("triton" if calls else "torch"), out
+    fp8._blockwise_weight_dequant_any_shape(weight, scale, BLOCK, torch.bfloat16)
+    return "triton" if calls else "torch"
 
 
 @pytest.mark.parametrize(
@@ -66,14 +81,14 @@ def _route(
 )
 def test_divert_boundary_is_sm89_not_sm90(monkeypatch, capability, expected):
     weight, scale = _make()
-    assert _route(monkeypatch, capability, weight, scale)[0] == expected
+    assert _route(monkeypatch, capability, weight, scale) == expected
 
 
 @pytest.mark.parametrize("capability", [(7, 0), (8, 0), (8, 9), (9, 0)])
 def test_float8_e5m2_is_never_diverted(monkeypatch, capability):
     # fp8e5 compiles on every arch triton supports, so the guard must not touch it.
     weight, scale = _make(dtype = torch.float8_e5m2)
-    assert _route(monkeypatch, capability, weight, scale)[0] == "triton"
+    assert _route(monkeypatch, capability, weight, scale) == "triton"
 
 
 @pytest.mark.parametrize("capability", [(8, 0), (9, 0), (11, 5)])
@@ -81,7 +96,7 @@ def test_rocm_is_never_diverted(monkeypatch, capability):
     # get_device_capability is gfx-derived on ROCm, not an SM number, and AMD's triton backend
     # lists fp8e4nv unconditionally, so the NVIDIA-only guard must not fire there.
     weight, scale = _make()
-    assert _route(monkeypatch, capability, weight, scale, hip = "6.2.0")[0] == "triton"
+    assert _route(monkeypatch, capability, weight, scale, hip = "6.2.0") == "triton"
 
 
 @pytest.mark.parametrize(
@@ -108,7 +123,7 @@ def test_fallback_matches_the_triton_kernel_bit_for_bit(monkeypatch, shape, bloc
 
     from unsloth.kernels import fp8
 
-    monkeypatch.setattr(fp8, "_DEQUANT_CHUNK_ELEMS", 4096, raising = False)  # force multi-chunk
+    monkeypatch.setattr(fp8, "_DEQUANT_CHUNK_ELEMS", 4096)  # force the chunk loop to iterate
 
     with monkeypatch.context() as mp:
         mp.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (9, 0))
