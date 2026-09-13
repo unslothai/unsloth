@@ -40,7 +40,7 @@ def test_two_unrelated_mapping_names_and_schema_aliases_are_validated():
         ],
         [
             _tool("inspect_picture", "picture_blob"),
-            _tool("classify_frame", "frame_data", required=False, alias=True),
+            _tool("classify_frame", "frame_data", required = False, alias = True),
         ],
     )
     assert [mapping["field"] for mapping in mappings] == ["picture_blob", "frame_data"]
@@ -82,7 +82,7 @@ def test_model_schema_offers_only_the_issued_opaque_reference():
     ],
 )
 def test_unsupported_mapping_schemas_fail_closed(schema, message):
-    with pytest.raises(McpImageDisclosureError, match=message):
+    with pytest.raises(McpImageDisclosureError, match = message):
         validate_image_input_mappings(
             [{"tool": "inspect", "field": "image", "encoding": "base64"}],
             [{"name": "inspect", "inputSchema": schema}],
@@ -93,47 +93,47 @@ def test_reference_is_conversation_bound_and_live_bytes_are_rechecked(monkeypatc
     import core.inference.mcp_image_disclosure as disclosure
 
     image = ResolvedImageAttachment(
-        message_id="message-a",
-        attachment_id="attachment-a",
-        mime_type="image/png",
-        size_bytes=3,
-        width=1,
-        height=1,
-        sha256="a" * 64,
-        data=b"abc",
+        message_id = "message-a",
+        attachment_id = "attachment-a",
+        mime_type = "image/png",
+        size_bytes = 3,
+        width = 1,
+        height = 1,
+        sha256 = "a" * 64,
+        data = b"abc",
     )
     monkeypatch.setattr(disclosure, "resolve_tool_only_image", lambda **_kwargs: image)
     record = issue_mcp_image_reference(
-        subject="alice",
-        thread_id="thread-a",
-        generation_id="generation-a",
-        message_id=image.message_id,
-        attachment_id=image.attachment_id,
+        subject = "alice",
+        thread_id = "thread-a",
+        generation_id = "generation-a",
+        message_id = image.message_id,
+        attachment_id = image.attachment_id,
     )
     assert "abc" not in repr(image)
     assert (
         resolve_mcp_image_reference(
             record.reference,
-            subject="alice",
-            thread_id="thread-a",
-            generation_id="generation-a",
+            subject = "alice",
+            thread_id = "thread-a",
+            generation_id = "generation-a",
         )[0]
         == record
     )
-    with pytest.raises(McpImageDisclosureError, match="invalid or expired"):
+    with pytest.raises(McpImageDisclosureError, match = "invalid or expired"):
         resolve_mcp_image_reference(
             record.reference,
-            subject="alice",
-            thread_id="thread-b",
-            generation_id="generation-a",
+            subject = "alice",
+            thread_id = "thread-b",
+            generation_id = "generation-a",
         )
     changed = ResolvedImageAttachment(**{**image.__dict__, "sha256": "b" * 64, "data": b"xyz"})
     monkeypatch.setattr(disclosure, "resolve_tool_only_image", lambda **_kwargs: changed)
-    with pytest.raises(McpImageDisclosureError, match="changed"):
+    with pytest.raises(McpImageDisclosureError, match = "changed"):
         resolve_mcp_image_reference(
             record.reference,
-            subject="alice",
-            thread_id="thread-a",
-            generation_id="generation-a",
+            subject = "alice",
+            thread_id = "thread-a",
+            generation_id = "generation-a",
         )
-    assert revoke_mcp_image_references(subject="alice", generation_id="generation-a") == 1
+    assert revoke_mcp_image_references(subject = "alice", generation_id = "generation-a") == 1

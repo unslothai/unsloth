@@ -52,7 +52,7 @@ def http_recipient():
             self.wfile.write(data)
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target = server.serve_forever, daemon = True)
     thread.start()
     yield f"http://127.0.0.1:{server.server_port}/mcp", calls
     server.shutdown()
@@ -60,7 +60,7 @@ def http_recipient():
     thread.join()
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def cleanup_recipients():
     yield
     with mcp_client._private_recipients_lock:
@@ -73,15 +73,15 @@ def cleanup_recipients():
 def test_http_send_is_one_use_and_redacts_echoes(http_recipient, caplog):
     url, calls = http_recipient
     identity = mcp_client.prepare_mcp_image_recipient(url)
-    context = make_context(recipient=identity)
+    context = make_context(recipient = identity)
     result = mcp_client.call_tool_sync(
-        url, None, "inspect_picture", PUBLIC, disclosure_context=context, config_check=lambda: True
+        url, None, "inspect_picture", PUBLIC, disclosure_context = context, config_check = lambda: True
     )
     assert len(calls) == 1
     assert calls[0]["params"]["arguments"]["picture"] == ENCODED
     assert REDACTED_IMAGE in result and ENCODED not in result + caplog.text
     assert (
-        mcp_client.call_tool_sync(url, None, "inspect_picture", PUBLIC, disclosure_context=context)
+        mcp_client.call_tool_sync(url, None, "inspect_picture", PUBLIC, disclosure_context = context)
         == PRIVATE_CALL_ERROR
     )
     assert len(calls) == 1
@@ -102,7 +102,7 @@ for line in sys.stdin:
         result = {'content':[{'type':'text','text':image}, {'type':'text','text':'safe stdio label'}]}
     print(json.dumps({'jsonrpc':'2.0','id':message['id'],'result':result}), flush=True)
 """,
-        encoding="utf-8",
+        encoding = "utf-8",
     )
     monkeypatch.setattr(mcp_client, "stdio_mcp_enabled", lambda: True)
     url = mcp_client.join_stdio_command([sys.executable, "-u", str(script)])
@@ -112,8 +112,8 @@ for line in sys.stdin:
         None,
         "classify_frame",
         PUBLIC,
-        disclosure_context=make_context(recipient=identity, tool_name="classify_frame"),
-        timeout=5,
+        disclosure_context = make_context(recipient = identity, tool_name = "classify_frame"),
+        timeout = 5,
     )
     assert "safe stdio label" in result and REDACTED_IMAGE in result
     assert ENCODED not in result + "".join(capfd.readouterr())

@@ -9899,10 +9899,7 @@ def execute_tool(
             return (
                 row is not None
                 and bool(row.get("is_enabled"))
-                and (
-                    mcp_image_context is None
-                    or bool(row.get("allow_image_attachments"))
-                )
+                and (mcp_image_context is None or bool(row.get("allow_image_attachments")))
                 and row.get("url") == url
                 and parse_server_headers(row) == headers
                 and bool(row.get("use_oauth")) == use_oauth

@@ -32,10 +32,10 @@ def make_context(**kwargs):
         **{
             "public_arguments": PUBLIC,
             "image": SimpleNamespace(
-                data=DATA,
-                size_bytes=len(DATA),
-                sha256=hashlib.sha256(DATA).hexdigest(),
-                mime_type="image/png",
+                data = DATA,
+                size_bytes = len(DATA),
+                sha256 = hashlib.sha256(DATA).hexdigest(),
+                mime_type = "image/png",
             ),
             "field": "picture",
             "encoding": "base64",
@@ -50,7 +50,7 @@ def make_context(**kwargs):
 
 @pytest.mark.parametrize("encoding", ["base64", "data_url"])
 def test_only_ephemeral_copy_gets_encoded_image(encoding):
-    context = make_context(encoding=encoding)
+    context = make_context(encoding = encoding)
     wire = context.prepare_wire(PUBLIC)
     assert wire["picture"] == (
         ENCODED if encoding == "base64" else "data:image/png;base64," + ENCODED
@@ -65,19 +65,19 @@ def test_changed_ordinary_arguments_and_original_schema_fail_closed():
     with pytest.raises(McpImageDisclosureError):
         make_context().prepare_wire({**PUBLIC, "options": {"limit": 3}})
     restricted = {"type": "object", "properties": {"picture": {"type": "string", "maxLength": 2}}}
-    with pytest.raises(McpImageDisclosureError, match="wire arguments are invalid"):
-        make_context(original_schema=restricted).prepare_wire(PUBLIC)
+    with pytest.raises(McpImageDisclosureError, match = "wire arguments are invalid"):
+        make_context(original_schema = restricted).prepare_wire(PUBLIC)
 
 
 def test_remote_schema_references_never_resolve():
     schema = {"type": "object", "properties": {"options": {"$ref": "https://never.invalid/schema"}}}
-    with pytest.raises(McpImageDisclosureError, match="wire arguments are invalid"):
-        make_context(original_schema=schema).prepare_wire(PUBLIC)
+    with pytest.raises(McpImageDisclosureError, match = "wire arguments are invalid"):
+        make_context(original_schema = schema).prepare_wire(PUBLIC)
 
 
 def test_commit_checks_actual_recipient_and_is_one_use_under_race():
     calls = []
-    context = make_context(commit=lambda recipient: calls.append(recipient) is None)
+    context = make_context(commit = lambda recipient: calls.append(recipient) is None)
     with pytest.raises(McpImageDisclosureError):
         context.commit_at_send("recipient-b")
     barrier = threading.Barrier(2)
@@ -117,7 +117,7 @@ def test_nested_keys_values_uris_resources_and_images_are_sanitized():
             {"type": "text", "text": "safe output"},
             {"type": "image", "data": ENCODED, "mimeType": "image/png"},
             {"type": "resource", "resource": {"blob": ENCODED, "mimeType": "image/png"}},
-            {"type": "resource_link", "uri": "https://example.test/" + quote(ENCODED, safe="")},
+            {"type": "resource_link", "uri": "https://example.test/" + quote(ENCODED, safe = "")},
         ],
         "structuredContent": {ENCODED: ["safe", {"value": ENCODED}]},
         "isError": True,

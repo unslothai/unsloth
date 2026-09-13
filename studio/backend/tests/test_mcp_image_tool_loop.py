@@ -26,7 +26,7 @@ def image_request(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
     monkeypatch.setattr(studio_db, "_schema_ready", set())
     output = io.BytesIO()
-    Image.new("RGB", (2, 3), "red").save(output, format="PNG")
+    Image.new("RGB", (2, 3), "red").save(output, format = "PNG")
     encoded = base64.b64encode(output.getvalue()).decode("ascii")
     data_url = "data:image/png;base64," + encoded
     studio_db.upsert_chat_thread(
@@ -85,35 +85,35 @@ def image_request(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp_client, "close_mcp_image_recipient", lambda _: None)
     monkeypatch.setattr(mcp_client, "parse_server_headers", lambda _: {})
     fixture = SimpleNamespace(
-        payload=SimpleNamespace(
-            mcp_image_attachment=SimpleNamespace(message_id="message", attachment_id="image"),
-            messages=[{"role": "user", "content": "Find this image"}],
-            stream=True,
-            mcp_enabled=True,
-            thread_id="thread",
-            session_id="session",
-            cancel_id="generation",
+        payload = SimpleNamespace(
+            mcp_image_attachment = SimpleNamespace(message_id = "message", attachment_id = "image"),
+            messages = [{"role": "user", "content": "Find this image"}],
+            stream = True,
+            mcp_enabled = True,
+            thread_id = "thread",
+            session_id = "session",
+            cancel_id = "generation",
         ),
-        tools=tools,
-        rows=rows,
-        encoded=encoded,
-        data_url=data_url,
-        cancel=threading.Event(),
+        tools = tools,
+        rows = rows,
+        encoded = encoded,
+        data_url = data_url,
+        cancel = threading.Event(),
     )
     yield fixture
     from core.inference.mcp_image_disclosure import revoke_mcp_image_references
 
-    revoke_mcp_image_references(subject="subject")
-    tool_approvals.revoke_mcp_image_disclosures(subject="subject")
+    revoke_mcp_image_references(subject = "subject")
+    tool_approvals.revoke_mcp_image_disclosures(subject = "subject")
 
 
 def prepare(fixture):
     return image_loop.prepare_image_tool_request(
         fixture.payload,
-        subject="subject",
-        tools=fixture.tools,
-        cancel_event=fixture.cancel,
-        ui_events=True,
+        subject = "subject",
+        tools = fixture.tools,
+        cancel_event = fixture.cancel,
+        ui_events = True,
     )
 
 
@@ -134,7 +134,7 @@ def test_two_mappings_share_only_after_exact_one_use_approval(image_request, too
     assert approval.metadata["expiresInMs"] == 300_000
     assert not tool_approvals.resolve_tool_decision(approval.approval_id, "allow", "session")
     assert tool_approvals.resolve_mcp_image_disclosure(
-        approval.approval_id, "allow", current_subject="subject", session_id="session"
+        approval.approval_id, "allow", current_subject = "subject", session_id = "session"
     )
     wire = approval.context.prepare_wire(arguments)
     assert wire[field] == (f.data_url if tool_index else f.encoded)
@@ -152,7 +152,7 @@ def test_changed_approval_binding_never_commits(image_request, change):
     arguments = {"picture_blob": run.reference.reference}
     approval = run.prepare_call("mcp__inspect__inspect", arguments, "call")
     assert tool_approvals.resolve_mcp_image_disclosure(
-        approval.approval_id, "allow", current_subject="subject", session_id="session"
+        approval.approval_id, "allow", current_subject = "subject", session_id = "session"
     )
     if change == "server":
         f.rows["mcp__inspect__inspect"][0]["config_revision"] += 1
