@@ -243,11 +243,14 @@ def test_the_installer_pins_come_from_the_audited_pin_list():
 
     ps1 = SETUP_PS1.read_text(encoding = "utf-8")
     start = ps1.index("function Install-T5Sidecar {")
-    body = ps1[start : ps1.index("\nfunction ", start + 1)] if "\nfunction " in ps1[start + 1:] \
+    body = (
+        ps1[start : ps1.index("\nfunction ", start + 1)]
+        if "\nfunction " in ps1[start + 1 :]
         else ps1[start:]
-    assert "$SidecarCommonPins" in body, (
-        "Install-T5Sidecar hardcodes the common pins instead of reading $SidecarCommonPins."
     )
+    assert (
+        "$SidecarCommonPins" in body
+    ), "Install-T5Sidecar hardcodes the common pins instead of reading $SidecarCommonPins."
     assert "huggingface_hub==" not in body, "a second copy of the pins crept back in"
 
 
