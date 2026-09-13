@@ -16,6 +16,7 @@
 #   * a caller's set -f                  -> the scan still expands its own globs
 #   * a dangling bucket link             -> studio; mkdir(2) answers EEXIST on it
 #   * a bucket-name lookalike            -> ignored; only <kind>-v<N> is uv's to write
+#   * a name ending in `-v`               -> ignored; the version cannot be empty
 #   * UV_NO_CACHE                        -> studio, with nothing probed or recorded
 #   * --isolated-uv-cache                -> isolated, whatever else is true
 #   * unwritable STUDIO_HOME             -> the early block unsets, and the choice still runs
@@ -162,6 +163,14 @@ _lookalike_kind="$_TMP/uvlookalikekind"
 mkdir -p "$_lookalike_kind/archive-backup-v0/pkg"
 : > "$_lookalike_kind/archive-backup-v0/pkg/payload.so"
 : > "$_lookalike_kind/CACHEDIR.TAG"
+# `##*-v` strips through the LAST `-v`, so a name ending in one leaves an EMPTY suffix that no
+# `*[!0-9]*` can match: `archive-v1-v` read as a bucket, the write probe covered it, and one
+# read-only directory a user happened to name that way condemned an otherwise usable warm cache.
+_empty_version="$_TMP/uvemptyver"
+mkdir -p "$_empty_version/archive-v0/torch" "$_empty_version/archive-v1-v"
+: > "$_empty_version/archive-v0/torch/libtorch.so"
+: > "$_empty_version/CACHEDIR.TAG"
+chmod a-w "$_empty_version/archive-v1-v"
 # uv mutates interpreter-v4 too, so the verdict cannot stop at the five artifact families.
 _denied_meta="$_TMP/uvmeta2"
 mkdir -p "$_denied_meta/archive-v0/torch" "$_denied_meta/interpreter-v4"
@@ -219,6 +228,8 @@ else
     assert_eq "a denied metadata bucket too"  "studio" "$(echo "$_out" | cut -d' ' -f1)"
     _out=$(_run "$_TMP/q" '' "$_alien")
     assert_eq "lost+found does not condemn it" "shared" "$(echo "$_out" | cut -d' ' -f1)"
+    _out=$(_run "$_TMP/v1" '' "$_empty_version")
+    assert_eq "an empty -v suffix is not a bucket" "shared" "$(echo "$_out" | cut -d' ' -f1)"
 fi
 _out=$(_run "$_TMP/r" '' "$_lookalike")
 assert_eq "a bucket lookalike is not a bucket" "shared" "$(echo "$_out" | cut -d' ' -f1)"
@@ -246,7 +257,7 @@ done
 chmod 700 "$_alien/lost+found"
 chmod 700 "$_denied_bucket/archive-v0"
 chmod u+w "$_readonly" "$_readonly_bucket/archive-v0" "$_readonly_late/sdists-v9" \
-    "$_denied_meta/interpreter-v4"
+    "$_denied_meta/interpreter-v4" "$_empty_version/archive-v1-v"
 # The probe writes into a directory uv is about to fill, so it has to leave nothing behind.
 _run "$_TMP/g" '' "$_populated" >/dev/null
 assert_eq "write probe cleaned up" "" "$(ls -A "$_populated" | grep 'unsloth-write-probe' || true)"

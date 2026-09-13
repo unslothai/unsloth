@@ -1209,6 +1209,13 @@ class TestInstallUvCacheRootParity:
         #   3. only <kind>-v<N> is uv's to write, so a lookalike is neither probed nor warmth
         assert "_uv_is_bucket_name() {" in sh
         assert "function Test-StudioUvBucketName" in ps1
+        # and the version cannot be EMPTY on either side. `##*-v` strips through the last `-v`,
+        # so `archive-v1-v` leaves "" behind, which no `*[!0-9]*` matches; PowerShell rejected it
+        # on IsNullOrEmpty from the start, so this was a real split, not a spelling difference.
+        bucket_sh = sh.split("_uv_is_bucket_name() {", 1)[1].split("\n}", 1)[0]
+        assert "''|*[!0-9]*) return 1 ;;" in bucket_sh, bucket_sh
+        bucket_ps1 = ps1.split("function Test-StudioUvBucketName", 1)[1].split("\n}", 1)[0]
+        assert "IsNullOrEmpty($suffix)" in bucket_ps1, bucket_ps1
         #   4. readable is not usable: a real create-and-delete, root and every bucket
         assert ".unsloth-write-probe." in sh
         assert ".unsloth-write-probe." in ps1

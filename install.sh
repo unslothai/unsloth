@@ -579,8 +579,13 @@ _uv_is_bucket_name() {
         *-v[0-9]*) ;;
         *) return 1 ;;
     esac
+    # '' as well as a non-digit: `##*-v` strips through the LAST `-v`, so `archive-v1-v`
+    # matches the pattern above on its `-v1` and then leaves an EMPTY suffix, which no
+    # `*[!0-9]*` can match. Without this it read as a bucket, the write probe covered it, and
+    # one read-only directory a user happened to name that way condemned the whole warm cache.
+    # Test-StudioUvBucketName rejects it (IsNullOrEmpty), so this was also an sh/ps1 split.
     case "${1##*-v}" in
-        *[!0-9]*) return 1 ;;
+        ''|*[!0-9]*) return 1 ;;
     esac
     return 0
 }
