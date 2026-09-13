@@ -4057,6 +4057,7 @@ def _ensure_xpu_triton() -> None:
                 )
             )
             return
+        _count_install_action()
         removed = subprocess.run(
             [sys.executable, "-m", "pip", "uninstall", "-y", "triton"],
             stdout = subprocess.DEVNULL,
@@ -5714,6 +5715,7 @@ def _ensure_rocm_torch() -> None:
         # (present before the base install) is left untouched.
         if _GFX906_BNB_ABSENT_BEFORE_BASE and _bitsandbytes_installed():
             _safe_print(_dim("   gfx906: removing generic bitsandbytes pulled in as a dependency"))
+            _count_install_action()
             subprocess.run(
                 [sys.executable, "-m", "pip", "uninstall", "-y", "bitsandbytes"],
                 capture_output = True,
@@ -6309,6 +6311,7 @@ def _remove_rejected_flash_attn() -> bool:
         cmd.extend(["--python", sys.executable, "flash-attn"])
     else:
         cmd = [sys.executable, "-m", "pip", "uninstall", "-y", "flash-attn"]
+    _count_install_action()
     removed = subprocess.run(cmd, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
     return removed.returncode == 0
 
@@ -6326,6 +6329,9 @@ def _ensure_flash_attn() -> None:
     env = probe_torch_wheel_env()
     wheel_url = _build_flash_attn_wheel_url(env) if env else None
     if wheel_url and url_exists(wheel_url):
+        # Counted like every other install: it lands a distribution in the venv, so the
+        # caches keyed on the counter must be rebuilt and the final pip check must be paid.
+        _count_install_action()
         for installer, wheel_result in install_wheel(
             wheel_url,
             python_executable = sys.executable,
@@ -8059,8 +8065,12 @@ def _closure_record() -> "dict[str, list[str]]":
         return record
     previous = (_PASS_EVIDENCE or {}).get("known_unmet") or {}
     for key, req in _AUDITED_STEPS.items():
-        effective, temps = _effective_requirements(req)
+        # Every install has already landed by the time this runs -- it is an argument to
+        # write_manifest -- so nothing here may raise. The requirements tree can have MOVED
+        # under us: the core step installs the new release over the one whose paths these are.
+        temps: list[Path] = []
         try:
+            effective, temps = _effective_requirements(req)
             unmet = install_manifest.closure_unmet_requirements(effective, _installed_index())
         except Exception:  # noqa: BLE001 - nothing recorded means nothing ignored next time
             unmet = ["<audit failed>"]
@@ -8319,6 +8329,12 @@ def _installed_index() -> "dict | None":
     """
     global _CLOSURE_INDEX_CACHE
     if _CLOSURE_INDEX_CACHE is None or _CLOSURE_INDEX_CACHE[0] != _INSTALL_ACTIONS:
+        # importlib.metadata memoises each directory listing and revalidates it on the
+        # directory's mtime, whose granularity is a whole second on some filesystems. A
+        # rebuild triggered by an install that landed in the same tick would otherwise
+        # read the listing from before it. The gate does this before its own on-disk
+        # check; the record taken at write time reaches this function without one.
+        importlib.invalidate_caches()
         try:
             index = install_manifest.installed_dependency_index()
         except Exception:  # noqa: BLE001 - None is "cannot audit", which installs
@@ -8396,9 +8412,12 @@ def _requirements_satisfied(
         return _refuse_step(key, "an input file changed")
     # (c) the output is still on disk.
     importlib.invalidate_caches()
-    effective, temps = _effective_requirements(req)
-    # Inside the try: `effective` can be a temp copy the finally unlinks.
+    # Inside the try as well: on a filtering host this reads and copies the file, and a
+    # requirements tree the core step replaced mid-pass is a reason to run the step, not to
+    # end the update.
+    temps: list[Path] = []
     try:
+        effective, temps = _effective_requirements(req)
         missing = install_manifest.missing_requirements(effective)
         if missing:
             return _refuse_step(key, f"not installed or outside the pin: {missing[:5]}")
@@ -8466,9 +8485,11 @@ def _direct_reference_in_requirements(req: Path) -> "tuple[str, str, str] | None
     The fragment is NOT an inline comment here: ``#subdirectory=`` is part of the URL,
     and a different subdirectory is a different package.
     """
+    # ValueError as well: a requirements file that is not UTF-8 raises UnicodeDecodeError,
+    # and this runs inside a step that could not fail this way before.
     try:
         lines = req.read_text(encoding = "utf-8-sig").splitlines()
-    except OSError:
+    except (OSError, ValueError):
         return None
     for line in lines:
         stripped = line.strip()
