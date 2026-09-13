@@ -2502,6 +2502,346 @@ def test_unload_sets_cancel_event(fake_runtime):
     assert backend._cancel_event.is_set()
 
 
+@pytest.mark.parametrize(
+    "phase",
+    [
+        "validation",
+        "preinstall",
+        "transformer_error",
+        "pipeline_error",
+        "dense_error",
+        "dense_fallback",
+        "transformer",
+        "pipeline",
+        "dense",
+        "attention_error",
+        "cache_error",
+        "attention",
+        "step_cache",
+        "compile_cache",
+        "speed",
+        "quantize",
+        "placement",
+        "publication",
+    ],
+)
+def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatch, phase):
+    import gc
+    import weakref
+    from core.inference import diffusion as diff_mod
+    from core.inference import diffusion_eager_patches as ep
+
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    backend = DiffusionBackend()
+    entered, release = threading.Event(), threading.Event()
+    outcome = {}
+    live = weakref.WeakSet()
+    reclaimed = []
+    pipelines = []
+    transformer_calls = []
+    setup_calls = []
+
+    def tracked():
+        value = _FakePipe()
+        value.cycle = value
+        live.add(value)
+        return value
+
+    def reclaim():
+        gc.collect()
+        reclaimed.append((len(live), backend._transition_owns_slot, backend._lock.locked()))
+
+    def park(value):
+        entered.set()
+        assert release.wait(5)
+        return value
+
+    def transformer(cls, *args, **kwargs):
+        transformer_calls.append(True)
+        value = tracked()
+        if phase == "transformer_error":
+            park(None)
+            raise RuntimeError("setup failed")
+        return park(value) if phase == "transformer" else value
+
+    def pipeline(cls, *args, **kwargs):
+        value = tracked()
+        value.transformer = kwargs["transformer"]
+        value.text_encoder = kwargs["text_encoder"]
+        pipelines.append(weakref.ref(value))
+        if phase == "pipeline_error":
+            park(None)
+            raise RuntimeError("setup failed")
+        return park(value) if phase == "pipeline" else value
+
+    def dense(*args, **kwargs):
+        value = tracked()
+        value.transformer = tracked()
+        pipelines.append(weakref.ref(value))
+        if phase in ("dense_error", "dense_fallback"):
+            park(None)
+            raise RuntimeError("setup failed")
+        return park(value), "int8"
+
+    def load():
+        try:
+            outcome["loaded"] = _load_into(
+                backend,
+                tmp_path,
+                speed_mode = "default" if phase == "compile_cache" else "eager",
+                transformer_quant = None
+                if phase == "dense_fallback"
+                else "int8"
+                if phase.startswith("dense")
+                else "off",
+            )
+        except Exception as exc:
+            outcome["error"] = str(exc)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(diff_mod, "clear_gpu_cache", reclaim)
+        mp.setattr(_FakeTransformer, "from_single_file", classmethod(transformer))
+        mp.setattr(_FakePipeline, "from_pretrained", classmethod(pipeline))
+        mp.setattr(diff_mod, "te_prequant_pipe_kwargs", lambda *a, **k: {"text_encoder": tracked()})
+        if phase in ("attention", "step_cache", "compile_cache", "speed"):
+            if phase == "compile_cache":
+                mp.setattr(diff_mod, "compile_eligible", lambda *a, **k: True)
+                mp.setattr(diff_mod.compile_cache, "begin", lambda **k: None)
+            for stage, owner, name in (
+                ("attention", diff_mod, "apply_attention_backend"),
+                ("step_cache", diff_mod, "apply_step_cache"),
+                ("compile_cache", diff_mod.compile_cache, "begin"),
+                ("speed", diff_mod, "apply_speed_optims"),
+                ("quantize", diff_mod, "quantize_text_encoders"),
+            ):
+                original = getattr(owner, name)
+
+                def setup(
+                    *args,
+                    _stage = stage,
+                    _original = original,
+                    **kwargs,
+                ):
+                    setup_calls.append(_stage)
+                    result = _original(*args, **kwargs)
+                    return park(result) if phase == _stage else result
+
+                mp.setattr(owner, name, setup)
+        if phase.startswith("dense"):
+            mp.setattr(diff_mod, "dense_transformer_supported", lambda target: True)
+            mp.setattr(diff_mod, "select_transformer_quant_scheme", lambda *a, **k: "int8")
+            mp.setattr(backend, "_dense_transformer_resident_bytes", lambda *a, **k: 0)
+            mp.setattr(backend, "_load_dense_quant_pipeline", dense)
+        elif phase in ("validation", "preinstall"):
+            if phase == "validation":
+                original = backend.validate_load_request
+                mp.setattr(
+                    backend, "validate_load_request", lambda *a, **k: park(original(*a, **k))
+                )
+            else:
+                mp.setattr(diff_mod, "select_attention_backend", lambda *a, **k: "test")
+                mp.setattr(
+                    diff_mod, "_ensure_attention_backend_installed", lambda *a, **k: park(None)
+                )
+        elif phase in ("attention_error", "cache_error"):
+
+            def fail_setup(*args, **kwargs):
+                park(None)
+                raise RuntimeError("setup failed")
+
+            name = "apply_attention_backend" if phase == "attention_error" else "apply_step_cache"
+            mp.setattr(diff_mod, name, fail_setup)
+        elif phase in ("quantize", "placement", "publication"):
+            name = {
+                "quantize": "quantize_text_encoders",
+                "placement": "apply_memory_plan",
+                "publication": "_LoadState",
+            }[phase]
+            original = getattr(diff_mod, name)
+
+            def parked(*args, **kwargs):
+                return park(original(*args, **kwargs))
+
+            mp.setattr(diff_mod, name, parked)
+
+        loader = threading.Thread(target = load, daemon = True)
+        ejector = threading.Thread(target = backend.unload, daemon = True)
+        loader.start()
+        try:
+            assert entered.wait(5), "load did not reach the blocked construction stage"
+            ejector.start()
+            assert backend._cancel_event.wait(2), "eject could not signal during construction"
+            if phase in ("validation", "preinstall"):
+                ejector.join(5)
+                assert not ejector.is_alive()
+            else:
+                assert ejector.is_alive(), "teardown must wait for the constructor to unwind"
+        finally:
+            release.set()
+            loader.join(5)
+            if ejector.ident is not None:
+                ejector.join(5)
+
+    assert not loader.is_alive() and not ejector.is_alive()
+    assert "loaded" not in outcome, "a cancelled pipeline was published as ready"
+    assert (
+        "setup failed" if phase.endswith("_error") and phase != "dense_error" else "cancelled"
+    ) in outcome["error"]
+    assert not backend.is_loaded
+    assert not ep.is_installed()
+    assert backend._teardown_waiters == 0
+    if phase in ("validation", "preinstall"):
+        assert not live and not reclaimed
+    else:
+        assert reclaimed and all(item == (0, True, True) for item in reclaimed), reclaimed
+    if phase == "dense_fallback":
+        assert not transformer_calls, "cancelled dense attempt started a GGUF fallback"
+    if phase == "transformer":
+        assert not pipelines, "cancelled load still constructed its companions"
+    if phase in ("attention", "step_cache", "compile_cache", "speed"):
+        assert setup_calls[-1] == phase, setup_calls
+
+    # A fresh load still serves consecutive generations.
+    _load_into(backend, tmp_path)
+    pipe = backend._state.pipe
+    for _ in range(2):
+        assert len(backend.generate(prompt = "a sloth", steps = 2)["images"]) == 1
+        assert backend._state.pipe is pipe
+    backend.unload()
+
+
+@pytest.mark.parametrize("phase", ["gpu", "validation", "precision"])
+def test_begin_load_remembers_an_eject_during_preflight(fake_runtime, tmp_path, monkeypatch, phase):
+    from core.inference import diffusion as diff_mod
+
+    backend = DiffusionBackend()
+    entered, release, dispatched = threading.Event(), threading.Event(), threading.Event()
+    errors = []
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    monkeypatch.setattr(backend, "_run_load", lambda **kwargs: dispatched.set())
+
+    def load():
+        return backend.begin_load(
+            str(tmp_path), gguf_filename = "model.gguf", family_override = "z-image", gpu_ids = [0]
+        )
+
+    def invoke():
+        try:
+            load()
+        except Exception as exc:
+            errors.append(str(exc))
+
+    with monkeypatch.context() as mp:
+        owner, name = {
+            "gpu": (diff_mod, "resolve_selected_cuda_ordinal"),
+            "validation": (backend, "validate_load_request"),
+            "precision": (backend, "assert_precision_available"),
+        }[phase]
+        original = getattr(owner, name)
+        if phase == "gpu":
+            mp.setattr(
+                diff_mod,
+                "resolve_diffusion_device_target",
+                lambda: types.SimpleNamespace(device = "cuda"),
+            )
+
+        def parked(*args, **kwargs):
+            entered.set()
+            assert release.wait(5)
+            return 0 if phase == "gpu" else original(*args, **kwargs)
+
+        mp.setattr(owner, name, parked)
+        worker = threading.Thread(target = invoke, daemon = True)
+        worker.start()
+        try:
+            assert entered.wait(5)
+            backend.unload()
+            assert backend._unload_waiters == 0
+        finally:
+            release.set()
+            worker.join(5)
+
+    assert not worker.is_alive()
+    assert errors and "cancelled" in errors[0], errors
+    assert not dispatched.is_set()
+    assert backend._loading is None
+    load()
+    assert dispatched.wait(5)
+    backend.unload()
+
+
+@pytest.mark.parametrize("load_method", ["begin_load", "load_pipeline"])
+def test_replacement_load_waits_for_every_unload(fake_runtime, tmp_path, monkeypatch, load_method):
+    backend = DiffusionBackend()
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    parked = [threading.Event(), threading.Event()]
+    release = [threading.Event(), threading.Event()]
+    real_lock = backend._lock
+    errors = []
+    dispatched = threading.Event()
+    monkeypatch.setattr(backend, "_run_load", lambda **kwargs: dispatched.set())
+
+    class GateLock:
+        def __init__(self):
+            self.waited = set()
+
+        def __enter__(self):
+            name = threading.current_thread().name
+            if name.startswith("eject-") and name not in self.waited:
+                self.waited.add(name)
+                index = int(name[-1])
+                parked[index].set()
+                assert release[index].wait(5)
+            real_lock.acquire()
+
+        def __exit__(self, *args):
+            real_lock.release()
+
+    monkeypatch.setattr(backend, "_lock", GateLock())
+
+    def eject():
+        try:
+            backend.unload()
+        except Exception as exc:
+            errors.append(str(exc))
+
+    def load():
+        return getattr(backend, load_method)(
+            str(tmp_path),
+            gguf_filename = "model.gguf",
+            base_repo = "base/repo",
+            family_override = "z-image",
+        )
+
+    ejectors = [threading.Thread(target = eject, name = f"eject-{i}", daemon = True) for i in range(2)]
+    for thread in ejectors:
+        thread.start()
+    try:
+        assert all(event.wait(5) for event in parked)
+        with pytest.raises(RuntimeError, match = "unload|cancelled"):
+            load()
+        release[0].set()
+        ejectors[0].join(5)
+        assert not ejectors[0].is_alive()
+        with pytest.raises(RuntimeError, match = "unload|cancelled"):
+            load()
+        assert not dispatched.is_set()
+    finally:
+        for event in release:
+            event.set()
+        for thread in ejectors:
+            thread.join(5)
+
+    assert not errors and all(not thread.is_alive() for thread in ejectors)
+    assert backend._teardown_waiters == 0
+    load()
+    if load_method == "begin_load":
+        assert dispatched.wait(5)
+        _load_into(backend, tmp_path)
+    assert backend.generate(prompt = "after eject", steps = 2)["images"]
+    backend.unload()
+
+
 def test_prefetch_aborts_when_cancelled(tmp_path):
     # A prefetch interrupted by unload raises instead of pulling the whole base, so the load can be preempted.
     backend = DiffusionBackend()
