@@ -368,12 +368,15 @@ def test_auto_switch_keeps_a_local_path_secondary_resident(monkeypatch, resident
         headers = {},
         url = None,
     )
-    asyncio.run(inference_route._maybe_auto_switch_model("/srv/models/model-b.gguf", request, "tester"))
+    asyncio.run(
+        inference_route._maybe_auto_switch_model("/srv/models/model-b.gguf", request, "tester")
+    )
 
     assert loads == []
     assert active.is_loaded
     assert secondary.is_loaded
     assert secondary._openai_advertised_id == "model-b"
+
 
 def test_auto_switch_short_circuits_for_a_resident_secondary(monkeypatch, residents):
     # Naming a resident must neither swap nor reload: the switch helper returns
@@ -817,9 +820,7 @@ def test_tts_budget_uses_the_named_secondary_context(residents):
     payload = SimpleNamespace(max_completion_tokens = 512, max_tokens = None)
 
     assert inference_route._monitor_context_length(secondary) == 128
-    assert inference_route._tts_max_new_tokens(
-        payload, text, llama_backend = secondary
-    ) == 32
+    assert inference_route._tts_max_new_tokens(payload, text, llama_backend = secondary) == 32
     with pytest.raises(HTTPException) as excinfo:
         inference_route._raise_if_prompt_leaves_no_speech_budget(text, llama_backend = secondary)
     assert excinfo.value.status_code == 400

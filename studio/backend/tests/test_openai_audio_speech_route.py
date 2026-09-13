@@ -252,9 +252,7 @@ def test_reload_only_tts_rechecks_the_context_after_restoring(monkeypatch):
         restored.backend = small_context
 
     monkeypatch.setattr(routes_module, "_maybe_auto_switch_model", _restore)
-    monkeypatch.setattr(
-        routes_module, "_serving_llama_backend", lambda _model: restored.backend
-    )
+    monkeypatch.setattr(routes_module, "_serving_llama_backend", lambda _model: restored.backend)
     monkeypatch.setattr(
         routes_module,
         "_monitor_context_length",
@@ -277,8 +275,6 @@ def test_reload_only_tts_rechecks_the_context_after_restoring(monkeypatch):
 
     assert excinfo.value.status_code == 400
     assert "128-token context" in str(excinfo.value.detail)
-
-
 
 
 def test_the_gallery_is_bounded_so_an_api_client_cannot_fill_the_disk(monkeypatch, tmp_path):

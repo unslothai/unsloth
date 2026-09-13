@@ -9276,10 +9276,7 @@ async def _maybe_auto_switch_model(
             )
             if loaded_companion_roots != gguf_companion_roots:
                 return False
-            if (
-                getattr(target_backend, "_openai_gguf_companion_state", ())
-                != gguf_companion_state
-            ):
+            if getattr(target_backend, "_openai_gguf_companion_state", ()) != gguf_companion_state:
                 return False
             if bare:
                 return True
