@@ -38,6 +38,7 @@ studio_app = typer.Typer(help = "Unsloth Studio commands.")
 def _enable_verbose_access_logs() -> None:
     os.environ["UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS"] = "0"
     os.environ["UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS"] = "0"
+    os.environ["LOG_LEVEL"] = "DEBUG"
 
 
 # Root order: UNSLOTH_STUDIO_HOME, STUDIO_HOME, sys.prefix, legacy ~/.unsloth/studio. Markers mirror install.ps1 / uninstall.ps1 and are matched as bytes.
