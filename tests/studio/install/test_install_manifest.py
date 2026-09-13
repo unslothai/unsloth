@@ -316,6 +316,7 @@ def test_remove_manifest_reports_whether_the_marker_is_really_gone(
     def _refuse(*_args, **_kwargs):
         raise PermissionError(13, "Access is denied")
 
+    monkeypatch.setattr(im.os, "replace", _refuse)
     monkeypatch.setattr(pathlib.Path, "unlink", _refuse)
     assert im.remove_manifest(install_root) is False
     monkeypatch.undo()
@@ -586,3 +587,52 @@ def test_the_venv_resolver_finds_both_layouts(tmp_path):
         reqs = root / layout / "studio" / "backend" / "requirements"
         reqs.mkdir(parents = True)
         assert im.installed_requirements_root(root) == reqs
+
+
+def test_remove_manifest_parks_the_file_as_evidence_only(install_root, req_root):
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    live = json.loads(im.manifest_path(install_root).read_text(encoding = "utf-8"))
+    assert im.remove_manifest(install_root) is True
+    assert not im.manifest_path(install_root).is_file()
+    # The parked copy is byte-for-byte the last completed pass...
+    assert im.read_previous_manifest(install_root) == live
+    # ...and nothing that decides whether the venv is finished can see it.
+    state = im.verify_install(root = install_root, req_root = req_root, package_name = "pytest")
+    assert state["reason"] == "studio_install_incomplete"
+    assert im.read_manifest(install_root) is None
+    # A pass that verifies against the parked copy gets the same verdict the live file gave.
+    parked = im.read_previous_manifest(install_root)
+    state = im.verify_install(
+        root = install_root, req_root = req_root, package_name = "pytest", manifest = parked
+    )
+    assert state["manifest_ok"] is True
+
+
+def test_remove_manifest_falls_back_to_deleting_when_the_rename_is_refused(
+    install_root, req_root, monkeypatch
+):
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+
+    def _refuse(*_args, **_kwargs):
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(im.os, "replace", _refuse)
+    assert im.remove_manifest(install_root) is True
+    assert not im.manifest_path(install_root).is_file()
+    assert im.read_previous_manifest(install_root) is None
+
+
+def test_write_manifest_drops_the_parked_copy(install_root, req_root):
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    im.remove_manifest(install_root)
+    assert im.previous_manifest_path(install_root).is_file()
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    assert im.manifest_path(install_root).is_file()
+    assert not im.previous_manifest_path(install_root).is_file()
+
+
+def test_a_parked_manifest_is_never_read_as_the_live_one(install_root, req_root):
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "pytest")
+    im.remove_manifest(install_root)
+    assert im.recorded_no_torch(root = install_root) is None
+    assert im.read_manifest(install_root) is None

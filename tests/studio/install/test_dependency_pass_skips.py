@@ -1,0 +1,1857 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""The dependency pass must be idempotent: a second `unsloth studio update` does no
+network work and leaves the install byte-identical.
+
+Every skip is legal only when (a) the previous run recorded that it did this exact work,
+(b) the inputs are byte-identical, and (c) a cheap on-disk check of the output passes.
+This file is the unit half of that; the end-to-end half is
+tests/studio/install/test_update_idempotency.py, which runs a real install.
+
+The direction that matters is asymmetric. A needless install costs seconds. A wrong skip
+ships a venv that answers `-h` and dies on `import structlog`, which is exactly the
+failure the manifest was added to catch -- so every case below that cannot prove the
+work was done asserts that the work runs.
+"""
+
+from __future__ import annotations
+
+import ast
+import importlib.util
+import json
+import pathlib
+import platform
+import re
+import sys
+import types
+
+import pytest
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
+STACK_PATH = REPO_ROOT / "studio" / "install_python_stack.py"
+
+
+def _load():
+    sys.path.insert(0, str(REPO_ROOT / "studio"))
+    try:
+        spec = importlib.util.spec_from_file_location("studio_stack_pass_skips", STACK_PATH)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+    finally:
+        if sys.path and sys.path[0] == str(REPO_ROOT / "studio"):
+            sys.path.pop(0)
+    return module
+
+
+stack = _load()
+
+
+# -- the plan ------------------------------------------------------------------
+
+
+@pytest.fixture
+def manifest(monkeypatch, tmp_path):
+    """A manifest and requirements tree that _plan_pass would accept."""
+    req_root = tmp_path / "requirements"
+    (req_root / "single-env").mkdir(parents = True)
+    for name in stack.install_manifest.PASS_INPUT_FILES:
+        (req_root / name).write_text(f"# {name}\n", encoding = "utf-8")
+    monkeypatch.setattr(stack, "REQ_ROOT", req_root)
+    monkeypatch.setattr(stack, "CONSTRAINTS", req_root / "single-env" / "constraints.txt")
+    monkeypatch.setattr(stack, "NO_TORCH", False)
+    monkeypatch.setattr(stack, "IS_MAC_ARM", False)
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack, "PLATFORM_LACKS_TORCHCODEC_WHEEL", False)
+    monkeypatch.setattr(stack, "_expected_torch_flavor_tag", lambda: "cpu")
+    monkeypatch.setattr(stack, "_recordable_torch_flavor_tag", lambda tag: tag)
+    payload = {
+        "schema": stack.install_manifest.MANIFEST_SCHEMA,
+        "python": platform.python_version(),
+        "platform": f"{sys.platform}-{platform.machine()}",
+        "no_torch": False,
+        "expected_torch_tag": "cpu",
+        "installer_python_tag": stack._installer_python_tag(),
+        "pass_inputs": stack.install_manifest.pass_input_digests(req_root),
+        "step_results": {name: "ran" for name in stack.install_manifest.PASS_INPUT_FILES},
+    }
+    monkeypatch.setattr(stack.install_manifest, "read_manifest", lambda *a, **k: dict(payload))
+    monkeypatch.setattr(
+        stack.install_manifest, "verify_install", lambda *a, **k: {"ok": True, "reason": None}
+    )
+    return payload, req_root
+
+
+def _plan(**kwargs):
+    return stack._plan_pass(
+        kwargs.pop("package_name", "unsloth"), kwargs.pop("local_repo", ""), kwargs.pop("ci", "")
+    )
+
+
+def test_a_clean_manifest_plans_a_skippable_pass(manifest) -> None:
+    plan = _plan()
+    assert plan is not None
+    assert plan["pass_inputs"] == manifest[0]["pass_inputs"]
+
+
+@pytest.mark.parametrize("value", ["1", "true", "YES", "on"])
+def test_full_deps_forces_everything(monkeypatch, manifest, value) -> None:
+    """The escape hatch. A skip nobody can turn off is a bug nobody can work around."""
+    monkeypatch.setenv(stack._FULL_DEPS_ENV, value)
+    assert _plan() is None
+
+
+@pytest.mark.parametrize("value", ["0", "false", "", "maybe"])
+def test_a_non_true_full_deps_value_changes_nothing(monkeypatch, manifest, value) -> None:
+    monkeypatch.setenv(stack._FULL_DEPS_ENV, value)
+    assert _plan() is not None
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"local_repo": "/checkout"},
+        {"ci": "1"},
+        {"package_name": "unsloth-nightly"},
+    ],
+)
+def test_dev_shapes_never_skip(manifest, kwargs) -> None:
+    """An editable overlay or another package name means the tree on disk is not the
+    tree the manifest describes, and its digests describe neither."""
+    assert _plan(**kwargs) is None
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"schema": 2},
+        {"pass_inputs": None},
+        {"step_results": None},
+        {"pass_inputs": "not a dict"},
+        {"python": "3.0.0"},
+        # A GIL and a free-threaded build share the version string; only the tag differs.
+        {"installer_python_tag": "999t"},
+        {"installer_python_tag": None},
+        {"platform": "sunos-vax"},
+        {"no_torch": True},
+        {"no_torch": None},
+        {"expected_torch_tag": "cu128"},
+        {"expected_torch_tag": None},
+    ],
+)
+def test_a_moved_input_forces_a_full_pass(monkeypatch, manifest, mutation) -> None:
+    payload, _req_root = manifest
+    payload.update(mutation)
+    monkeypatch.setattr(stack.install_manifest, "read_manifest", lambda *a, **k: dict(payload))
+    assert _plan() is None
+
+
+def test_no_manifest_at_all_forces_a_full_pass(monkeypatch, manifest) -> None:
+    monkeypatch.setattr(stack.install_manifest, "read_manifest", lambda *a, **k: None)
+    monkeypatch.setattr(stack.install_manifest, "read_previous_manifest", lambda *a, **k: None)
+    assert _plan() is None
+
+
+def test_a_parked_manifest_is_evidence_when_the_live_one_is_gone(monkeypatch, manifest) -> None:
+    """setup.ps1 parks the manifest before the installer starts; the pass still has to
+    find last run's evidence there, and verify the tree against that same copy."""
+    payload, _ = manifest
+    seen = {}
+    monkeypatch.setattr(stack.install_manifest, "read_manifest", lambda *a, **k: None)
+    monkeypatch.setattr(
+        stack.install_manifest, "read_previous_manifest", lambda *a, **k: dict(payload)
+    )
+
+    def _verify(*a, **k):
+        seen["manifest"] = k.get("manifest")
+        return {"ok": True, "reason": None}
+
+    monkeypatch.setattr(stack.install_manifest, "verify_install", _verify)
+    plan = _plan()
+    assert plan is not None
+    assert plan["pass_inputs"] == payload["pass_inputs"]
+    assert seen["manifest"] == payload
+
+
+def test_a_damaged_install_forces_a_full_pass(monkeypatch, manifest) -> None:
+    """verify_install(deep=True) is the only check that walks the filesystem, and it is
+    the one that catches a payload quarantined after the manifest was written."""
+    monkeypatch.setattr(
+        stack.install_manifest,
+        "verify_install",
+        lambda *a, **k: {"ok": False, "reason": "studio_install_damaged"},
+    )
+    assert _plan() is None
+
+
+def test_a_probe_that_raises_forces_a_full_pass(monkeypatch, manifest) -> None:
+    def boom(*_a, **_k):
+        raise RuntimeError("the venv is unreadable")
+
+    monkeypatch.setattr(stack.install_manifest, "verify_install", boom)
+    assert _plan() is None
+    monkeypatch.setattr(stack, "_expected_torch_flavor_tag", boom)
+    assert _plan() is None
+
+
+# -- one step's evidence -------------------------------------------------------
+
+
+@pytest.fixture
+def gated(monkeypatch, manifest):
+    payload, req_root = manifest
+    monkeypatch.setattr(stack, "_PASS_EVIDENCE", _plan())
+    monkeypatch.setattr(stack, "_CONSTRAINTS_CACHE", None)
+    monkeypatch.setattr(stack, "_INSTALL_ACTIONS", 0)
+    monkeypatch.setattr(stack.install_manifest, "missing_requirements", lambda *a, **k: [])
+    monkeypatch.setattr(stack.install_manifest, "violated_constraints", lambda *a, **k: [])
+    return payload, req_root
+
+
+def test_a_step_with_unchanged_inputs_is_skipped(gated) -> None:
+    _payload, req_root = gated
+    assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is True
+
+
+def test_nothing_is_skipped_without_evidence(monkeypatch, gated) -> None:
+    _payload, req_root = gated
+    monkeypatch.setattr(stack, "_PASS_EVIDENCE", None)
+    assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is False
+
+
+def test_a_step_the_last_run_never_reached_is_not_skipped(monkeypatch, gated) -> None:
+    """The manifest is written at the end, so a pass killed after step 8 records
+    nothing for step 9. Absent must never read as done."""
+    evidence = dict(stack._PASS_EVIDENCE)
+    evidence["step_results"] = {
+        key: value for key, value in evidence["step_results"].items() if key != "studio.txt"
+    }
+    monkeypatch.setattr(stack, "_PASS_EVIDENCE", evidence)
+    assert stack._requirements_satisfied(gated[1] / "studio.txt", no_deps = False) is False
+
+
+def test_a_one_byte_edit_to_the_file_runs_the_step(gated) -> None:
+    _payload, req_root = gated
+    (req_root / "studio.txt").write_text("# studio.txt \n", encoding = "utf-8")
+    assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is False
+
+
+def test_a_moved_constraint_runs_every_constrained_step(gated) -> None:
+    """A constraint that moved under an unchanged requirements file is exactly what
+    digest equality on the file alone cannot see."""
+    _payload, req_root = gated
+    (req_root / "single-env" / "constraints.txt").write_text("numpy<2\n", encoding = "utf-8")
+    assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is False
+    # ...but not the unconstrained one, which never reads that file.
+    assert (
+        stack._requirements_satisfied(
+            req_root / "triton-kernels.txt", no_deps = True, constrain = False
+        )
+        is True
+    )
+
+
+def test_the_mac_overrides_file_counts_on_mac_arm(monkeypatch, gated) -> None:
+    """It reaches uv through UV_OVERRIDE rather than the command line, so nothing else
+    in the recorded inputs would notice it moving."""
+    _payload, req_root = gated
+    monkeypatch.setattr(stack, "IS_MAC_ARM", True)
+    assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is True
+    (req_root / "single-env" / "overrides-darwin-arm64.txt").write_text("x\n", encoding = "utf-8")
+    assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is False
+
+
+def test_an_uninstalled_requirement_runs_the_step(monkeypatch, gated) -> None:
+    """(c): the output has to still be on disk. A venv edited after the install is the
+    case a recorded digest cannot see."""
+    _payload, req_root = gated
+    monkeypatch.setattr(stack.install_manifest, "missing_requirements", lambda *a, **k: ["rich"])
+    assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is False
+
+
+def test_a_violated_constraint_runs_the_step(monkeypatch, gated) -> None:
+    _payload, req_root = gated
+    monkeypatch.setattr(stack.install_manifest, "violated_constraints", lambda *a, **k: ["numpy"])
+    monkeypatch.setattr(stack, "_CONSTRAINTS_CACHE", None)
+    assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is False
+
+
+def test_a_file_outside_the_requirements_tree_is_never_skipped(gated) -> None:
+    """--local points base.txt somewhere else; there is no manifest key for it."""
+    _payload, req_root = gated
+    assert stack._requirements_satisfied(req_root.parent / "elsewhere.txt", no_deps = False) is False
+
+
+def test_the_constraint_scan_is_redone_after_an_install(monkeypatch, gated) -> None:
+    """Cached per pass, because every gated step asks -- but a step that installed
+    something can have satisfied or broken a constraint the next step reads."""
+    answers = iter([["numpy"], []])
+    monkeypatch.setattr(
+        stack.install_manifest, "violated_constraints", lambda *a, **k: next(answers)
+    )
+    monkeypatch.setattr(stack, "_CONSTRAINTS_CACHE", None)
+    assert stack._violated_constraints() == ["numpy"]
+    assert stack._violated_constraints() == ["numpy"]  # cached
+    stack._count_install_action()
+    assert stack._violated_constraints() == []
+
+
+def test_the_progress_slot_is_spent_either_way(monkeypatch, gated) -> None:
+    """The denominator cannot depend on how much of the install was already there."""
+    _payload, req_root = gated
+    seen: list[str] = []
+    monkeypatch.setattr(stack, "_progress", seen.append)
+    assert stack._skip_step(req_root / "studio.txt", "studio deps", no_deps = False) is True
+    monkeypatch.setattr(stack, "_PASS_EVIDENCE", None)
+    assert stack._skip_step(req_root / "studio.txt", "studio deps", no_deps = False) is False
+    assert seen == ["studio deps (satisfied, skipped)", "studio deps"]
+
+
+def test_an_extra_check_can_veto_a_skip(monkeypatch, gated) -> None:
+    _payload, req_root = gated
+    monkeypatch.setattr(stack, "_progress", lambda *_a: None)
+    assert (
+        stack._skip_step(
+            req_root / "studio.txt", "studio deps", no_deps = False, extra_check = lambda: False
+        )
+        is False
+    )
+    assert (
+        stack._skip_step(
+            req_root / "studio.txt", "studio deps", no_deps = False, extra_check = lambda: True
+        )
+        is True
+    )
+
+
+# -- the effective requirements file -------------------------------------------
+
+
+def test_the_gate_audits_the_file_the_install_would_use(monkeypatch, tmp_path) -> None:
+    """extras.txt names torchcodec and three platforms filter it out. Auditing the raw
+    file would report it missing on every one of them and never skip anything again."""
+    req = tmp_path / "extras.txt"
+    req.write_text("rich\ntorchcodec\n", encoding = "utf-8")
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack, "NO_TORCH", False)
+    monkeypatch.setattr(stack, "PLATFORM_LACKS_TORCHCODEC_WHEEL", True)
+    effective, temps = stack._effective_requirements(req)
+    try:
+        assert effective != req
+        assert effective.read_text(encoding = "utf-8") == "rich\n"
+    finally:
+        for temp in temps:
+            temp.unlink(missing_ok = True)
+
+
+def test_an_unfiltered_file_is_used_as_is(monkeypatch, tmp_path) -> None:
+    req = tmp_path / "extras.txt"
+    req.write_text("rich\n", encoding = "utf-8")
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack, "NO_TORCH", False)
+    monkeypatch.setattr(stack, "PLATFORM_LACKS_TORCHCODEC_WHEEL", False)
+    effective, temps = stack._effective_requirements(req)
+    assert effective == req and temps == []
+
+
+def test_pip_install_and_the_gate_share_one_filter() -> None:
+    """Two copies of the filter list is how the two would disagree, and a disagreement
+    here reads as "already installed" for a package the install never had."""
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    body = source[source.index("def pip_install(") : source.index("def download_file(")]
+    assert "_effective_requirements(req)" in body
+    assert "_filter_requirements(" not in body
+
+
+# -- the git requirement -------------------------------------------------------
+
+
+def test_a_git_requirement_is_matched_by_ref_not_version(monkeypatch, tmp_path) -> None:
+    """The same version is published from every branch, so a release/3.6.x pin is
+    satisfied on paper by a build from main. direct_url.json is the only place the ref
+    survives the install."""
+    req = tmp_path / "triton-kernels.txt"
+    req.write_text(
+        "# comment\n"
+        "triton_kernels @ git+https://example.invalid/triton.git@release/3.6.x"
+        "#subdirectory=python/triton_kernels\n",
+        encoding = "utf-8",
+    )
+    assert stack._direct_reference_in_requirements(req) == (
+        "https://example.invalid/triton.git",
+        "release/3.6.x",
+        "python/triton_kernels",
+    )
+
+    # A commit, the only ref that cannot move under the requirements text.
+    commit = "0123456789abcdef0123456789abcdef01234567"
+    req.write_text(
+        f"triton_kernels @ git+https://example.invalid/triton.git@{commit}"
+        "#subdirectory=python/triton_kernels\n",
+        encoding = "utf-8",
+    )
+    recorded = {
+        "url": "https://example.invalid/triton.git",
+        "subdirectory": "python/triton_kernels",
+        "vcs_info": {"vcs": "git", "requested_revision": commit},
+    }
+
+    class _Dist:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def read_text(self, _name):
+            return json.dumps(self._payload) if self._payload is not None else None
+
+    import importlib.metadata
+
+    def _distribution(payload):
+        return lambda _name: _Dist(payload)
+
+    monkeypatch.setattr(importlib.metadata, "distribution", _distribution(recorded))
+    assert stack._direct_reference_is_installed(req, "triton_kernels") is True
+
+    for broken in (
+        {**recorded, "vcs_info": {"vcs": "git", "requested_revision": "main"}},
+        {**recorded, "url": "https://example.invalid/other.git"},
+        {**recorded, "subdirectory": "python/other"},
+        {"url": recorded["url"]},
+        None,
+    ):
+        monkeypatch.setattr(importlib.metadata, "distribution", _distribution(broken))
+        assert stack._direct_reference_is_installed(req, "triton_kernels") is False
+
+
+def test_a_mutable_git_ref_is_evidence_only_while_the_remote_still_points_at_it(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """release/3.6.x advances without the requirements text changing, and
+    direct_url.json records the commit that landed, not whether the branch still points
+    at it. So the remote is asked (one ls-remote): the same commit is evidence, a moved
+    branch runs the step, and a remote that cannot be reached keeps the installed build
+    rather than failing the whole update over a training speedup."""
+    req = tmp_path / "t.txt"
+    req.write_text(
+        "triton_kernels @ git+https://example.invalid/triton.git@release/3.6.x"
+        "#subdirectory=python/triton_kernels\n",
+        encoding = "utf-8",
+    )
+    commit = "0123456789abcdef0123456789abcdef01234567"
+    recorded = {
+        "url": "https://example.invalid/triton.git",
+        "subdirectory": "python/triton_kernels",
+        "vcs_info": {"vcs": "git", "requested_revision": "release/3.6.x", "commit_id": commit},
+    }
+
+    class _Dist:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def read_text(self, _name):
+            return json.dumps(self._payload)
+
+    import importlib.metadata
+
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda _name: _Dist(recorded))
+    asked: list = []
+
+    def _remote(answer):
+        def _ask(
+            url,
+            revision,
+            timeout = 45,
+        ):
+            asked.append((url, revision))
+            return answer
+
+        return _ask
+
+    # The branch still points at the installed commit: evidence, no reinstall.
+    monkeypatch.setattr(stack, "_git_remote_commit", _remote(commit))
+    assert stack._direct_reference_is_installed(req, "triton_kernels") is True
+    assert asked == [("https://example.invalid/triton.git", "release/3.6.x")]
+
+    # The branch moved: the step runs.
+    monkeypatch.setattr(stack, "_git_remote_commit", _remote("f" * 40))
+    assert stack._direct_reference_is_installed(req, "triton_kernels") is False
+
+    # The remote cannot be reached: the installed build is kept, and the log says so.
+    monkeypatch.setattr(stack, "_git_remote_commit", _remote(None))
+    assert stack._direct_reference_is_installed(req, "triton_kernels") is True
+    assert "keeping the installed build 0123456789ab" in capsys.readouterr().out
+
+    # Without a recorded commit there is nothing to compare: the step runs, offline or not.
+    without_commit = {**recorded, "vcs_info": {"vcs": "git", "requested_revision": "release/3.6.x"}}
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda _name: _Dist(without_commit))
+    monkeypatch.setattr(stack, "_git_remote_commit", _remote(commit))
+    assert stack._direct_reference_is_installed(req, "triton_kernels") is False
+
+    # A different branch recorded: not this requirement's build, whatever the remote says.
+    other_branch = {**recorded, "vcs_info": {**recorded["vcs_info"], "requested_revision": "main"}}
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda _name: _Dist(other_branch))
+    assert stack._direct_reference_is_installed(req, "triton_kernels") is False
+
+
+def test_the_triton_step_keeps_a_current_build_even_on_a_full_pass(monkeypatch, capsys) -> None:
+    """With no usable recorded evidence `_skip_step` says "run"; the step still asks the
+    remote and keeps the resident build when the branch has not moved (or cannot be
+    asked), and installs only when it has. Nothing is asked twice."""
+    installs: list = []
+    recorded: list = []
+    asked: list = []
+    monkeypatch.setattr(stack, "_has_working_git", lambda: True)
+    monkeypatch.setattr(stack, "pip_install", lambda *a, **k: installs.append((a, k)))
+    monkeypatch.setattr(stack, "_record_step", lambda key, outcome: recorded.append((key, outcome)))
+    monkeypatch.setattr(stack, "_progress", lambda *_a, **_k: None)
+    # The keep also wants the payload intact and no forced pass; both at the end of this test.
+    payload_intact = {"value": True}
+    monkeypatch.setattr(stack, "_payload_recorded_intact", lambda dist: payload_intact["value"])
+    monkeypatch.setattr(stack, "_full_deps_requested", lambda: False)
+
+    def _skip(
+        req,
+        label,
+        *,
+        no_deps,
+        constrain,
+        extra_check = None,
+    ):
+        # A full pass: the requirement is not counted as satisfied, extra_check unasked.
+        return False
+
+    monkeypatch.setattr(stack, "_skip_step", _skip)
+
+    def _current(answer):
+        def _ask(req, dist):
+            asked.append((req.name, dist))
+            return answer
+
+        return _ask
+
+    monkeypatch.setattr(stack, "_direct_reference_is_installed", _current(True))
+    stack._triton_kernels_step()
+    assert installs == []
+    assert asked == [("triton-kernels.txt", "triton_kernels")]
+    assert recorded and recorded[-1][1] == "skipped"
+    assert "kept" in capsys.readouterr().out
+
+    asked.clear()
+    monkeypatch.setattr(stack, "_direct_reference_is_installed", _current(False))
+    stack._triton_kernels_step()
+    assert len(installs) == 1 and installs[0][0][0] == "Installing triton kernels"
+    assert (
+        installs[0][1]["req"].name == "triton-kernels.txt" and installs[0][1]["constrain"] is False
+    )
+    assert asked == [("triton-kernels.txt", "triton_kernels")]
+
+    # Evidence available and the extra check consulted by _skip_step: one question, no install.
+    installs.clear()
+    asked.clear()
+
+    def _skip_asking(
+        req,
+        label,
+        *,
+        no_deps,
+        constrain,
+        extra_check = None,
+    ):
+        return bool(extra_check())
+
+    monkeypatch.setattr(stack, "_skip_step", _skip_asking)
+    monkeypatch.setattr(stack, "_direct_reference_is_installed", _current(True))
+    stack._triton_kernels_step()
+    assert installs == [] and len(asked) == 1
+
+    # No git at all: nothing asked, nothing installed.
+    asked.clear()
+    monkeypatch.setattr(stack, "_has_working_git", lambda: False)
+    stack._triton_kernels_step()
+    assert installs == [] and asked == []
+
+    # A current commit keeps neither a damaged build (`pip show` still answers) nor one under
+    # UNSLOTH_FULL_DEPS.
+    monkeypatch.setattr(stack, "_has_working_git", lambda: True)
+    monkeypatch.setattr(stack, "_skip_step", _skip)
+    monkeypatch.setattr(stack, "_direct_reference_is_installed", _current(True))
+    payload_intact["value"] = False
+    stack._triton_kernels_step()
+    assert len(installs) == 1 and installs[0][0][0] == "Installing triton kernels"
+    installs.clear()
+    payload_intact["value"] = True
+    monkeypatch.setattr(stack, "_full_deps_requested", lambda: True)
+    stack._triton_kernels_step()
+    assert len(installs) == 1
+
+
+def test_the_remote_commit_probe_reads_ls_remote_and_fails_closed(monkeypatch) -> None:
+    """`git ls-remote -- URL REF` answers `sha<TAB>ref` rows; a peeled tag wins over the tag
+    object and a branch over a tag, and any failure (no git, non-zero exit, timeout, no
+    rows) answers None so the caller keeps the resident build."""
+    import subprocess as _sp
+
+    calls: list = []
+
+    class _Done:
+        def __init__(self, rc, out):
+            self.returncode = rc
+            self.stdout = out
+
+    def _fake_run(argv, **kwargs):
+        calls.append((list(argv), kwargs))
+        return _fake_run.answer
+
+    monkeypatch.setattr(stack.shutil, "which", lambda _name: "/usr/bin/git")
+    monkeypatch.setattr(stack.subprocess, "run", _fake_run)
+
+    _fake_run.answer = _Done(
+        0, "aaaa000000000000000000000000000000000001\trefs/heads/release/3.6.x\n"
+    )
+    assert stack._git_remote_commit("https://example.invalid/t.git", "release/3.6.x") == (
+        "aaaa000000000000000000000000000000000001"
+    )
+    argv, kwargs = calls[-1]
+    assert argv[:3] == ["/usr/bin/git", "ls-remote", "--"]
+    assert argv[3:] == ["https://example.invalid/t.git", "release/3.6.x"]
+    assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+
+    _fake_run.answer = _Done(
+        0,
+        "bbbb000000000000000000000000000000000002\trefs/tags/v1\n"
+        "cccc000000000000000000000000000000000003\trefs/tags/v1^{}\n",
+    )
+    assert stack._git_remote_commit("https://example.invalid/t.git", "v1") == (
+        "cccc000000000000000000000000000000000003"
+    )
+
+    _fake_run.answer = _Done(128, "")
+    assert stack._git_remote_commit("https://example.invalid/t.git", "release/3.6.x") is None
+    _fake_run.answer = _Done(0, "")
+    assert stack._git_remote_commit("https://example.invalid/t.git", "release/3.6.x") is None
+
+    def _timeout(argv, **kwargs):
+        raise _sp.TimeoutExpired(argv, 1)
+
+    monkeypatch.setattr(stack.subprocess, "run", _timeout)
+    assert stack._git_remote_commit("https://example.invalid/t.git", "release/3.6.x") is None
+    monkeypatch.setattr(stack.shutil, "which", lambda _name: None)
+    assert stack._git_remote_commit("https://example.invalid/t.git", "release/3.6.x") is None
+
+
+@pytest.mark.parametrize("name", ["UV_CONSTRAINT", "PIP_CONSTRAINT", "PIP_NO_DEPS", "UV_NO_DEPS"])
+def test_a_caller_supplied_resolver_input_forces_a_full_pass(monkeypatch, manifest, name) -> None:
+    """Additive constraints change which versions a step installs, and PIP_NO_DEPS makes
+    a with-deps step leave dependencies out; no digest the gate keeps sees either."""
+    payload, _req_root = manifest
+    monkeypatch.setattr(stack.install_manifest, "read_manifest", lambda *a, **k: dict(payload))
+    for other in stack._FOREIGN_RESOLVER_ENV:
+        monkeypatch.delenv(other, raising = False)
+    assert _plan() is not None
+    monkeypatch.setenv(name, "1" if "NO_DEPS" in name else "/tmp/constraints.txt")
+    assert _plan() is None
+    monkeypatch.setenv(name, "   ")
+    assert _plan() is not None
+
+
+def test_no_closure_record_is_kept_under_a_callers_no_deps(monkeypatch) -> None:
+    """A dependency PIP_NO_DEPS left out is not a known conflict; carrying it forward
+    would skip the step that installs it on the next run."""
+    monkeypatch.setenv("PIP_NO_DEPS", "1")
+    assert stack._closure_record() == {}
+
+
+def test_a_caller_supplied_uv_override_forces_a_full_pass(monkeypatch, manifest) -> None:
+    """uv applies UV_OVERRIDE to every step and its versions replace requirements
+    outright; the gate digests only the bundled macOS file, so a caller's own file is
+    an input the evidence cannot see."""
+    payload, req_root = manifest
+    monkeypatch.setattr(stack.install_manifest, "read_manifest", lambda *a, **k: dict(payload))
+    foreign = req_root / "my-overrides.txt"
+    foreign.write_text("numpy==1.0\n", encoding = "utf-8")
+    monkeypatch.setenv("UV_OVERRIDE", str(foreign))
+    assert _plan() is None
+    # The module's own setting, in either spelling, is the tracked input and not foreign.
+    monkeypatch.setenv("UV_OVERRIDE", str(stack._MLX_OVERRIDES))
+    assert _plan() is not None
+    monkeypatch.setenv("UV_OVERRIDE", stack._uv_safe_path(stack._MLX_OVERRIDES))
+    assert _plan() is not None
+    monkeypatch.delenv("UV_OVERRIDE")
+    assert _plan() is not None
+
+
+def test_userinfo_in_a_git_url_is_not_mistaken_for_a_ref(tmp_path) -> None:
+    req = tmp_path / "t.txt"
+    req.write_text("pkg @ git+ssh://git@example.invalid/repo.git\n", encoding = "utf-8")
+    assert stack._direct_reference_in_requirements(req) == (
+        "ssh://git@example.invalid/repo.git",
+        "",
+        "",
+    )
+
+
+def test_the_shipped_triton_requirement_still_parses() -> None:
+    parsed = stack._direct_reference_in_requirements(
+        REPO_ROOT / "studio" / "backend" / "requirements" / "triton-kernels.txt"
+    )
+    assert parsed is not None
+    url, revision, subdirectory = parsed
+    assert url.startswith("https://") and revision and subdirectory
+
+
+# -- local plugins -------------------------------------------------------------
+
+
+def test_a_plugin_digest_is_stable_and_content_addressed(tmp_path) -> None:
+    """A directory listing has no order, so a digest that depended on one would differ
+    between two byte-identical trees and reinstall both seed plugins every update."""
+    first = tmp_path / "a"
+    (first / "src").mkdir(parents = True)
+    (first / "pyproject.toml").write_text("name = 'x'\n", encoding = "utf-8")
+    (first / "src" / "mod.py").write_text("VALUE = 1\n", encoding = "utf-8")
+    second = tmp_path / "b"
+    (second / "src").mkdir(parents = True)
+    (second / "src" / "mod.py").write_text("VALUE = 1\n", encoding = "utf-8")
+    (second / "pyproject.toml").write_text("name = 'x'\n", encoding = "utf-8")
+
+    assert stack._local_plugin_digest(first) == stack._local_plugin_digest(second)
+    (second / "src" / "mod.py").write_text("VALUE = 2\n", encoding = "utf-8")
+    assert stack._local_plugin_digest(first) != stack._local_plugin_digest(second)
+
+
+def test_a_renamed_file_changes_the_plugin_digest(tmp_path) -> None:
+    """Path and bytes both, so moving a file between two names is not a no-op."""
+    plugin = tmp_path / "p"
+    plugin.mkdir()
+    (plugin / "one.py").write_text("x\n", encoding = "utf-8")
+    before = stack._local_plugin_digest(plugin)
+    (plugin / "one.py").rename(plugin / "two.py")
+    assert stack._local_plugin_digest(plugin) != before
+
+
+def test_what_a_build_writes_into_the_plugin_tree_does_not_move_its_digest(tmp_path) -> None:
+    """Installing the plugin from its directory leaves build/lib/... and
+    src/<name>.egg-info/ beside the sources (setuptools, observed with uv and pip). The
+    first pass after an install saw a tree the install had changed and rebuilt the
+    plugin; offline, that build asked the cache for setuptools and the pass exited 1
+    on a fresh install. Only the sources decide."""
+    plugin = tmp_path / "data-designer-unstructured-seed"
+    (plugin / "src" / "pkg").mkdir(parents = True)
+    (plugin / "pyproject.toml").write_text("name = 'x'\n", encoding = "utf-8")
+    (plugin / "src" / "pkg" / "__init__.py").write_text("VALUE = 1\n", encoding = "utf-8")
+    clean = stack._local_plugin_digest(plugin)
+
+    (plugin / "build" / "lib" / "pkg").mkdir(parents = True)
+    (plugin / "build" / "lib" / "pkg" / "__init__.py").write_text("VALUE = 1\n", encoding = "utf-8")
+    (plugin / "src" / "pkg.egg-info").mkdir()
+    (plugin / "src" / "pkg.egg-info" / "SOURCES.txt").write_text(
+        "pyproject.toml\n", encoding = "utf-8"
+    )
+    (plugin / "src" / "pkg.egg-info" / "PKG-INFO").write_text("Name: x\n", encoding = "utf-8")
+    (plugin / "src" / "pkg" / "__pycache__").mkdir()
+    (plugin / "src" / "pkg" / "__pycache__" / "__init__.cpython-313.pyc").write_bytes(b"\x00")
+    (plugin / "dist").mkdir()
+    (plugin / "dist" / "x-0.1-py3-none-any.whl").write_bytes(b"PK")
+    assert stack._local_plugin_digest(plugin) == clean
+
+    # The sources still count, wherever they sit.
+    (plugin / "src" / "pkg" / "__init__.py").write_text("VALUE = 2\n", encoding = "utf-8")
+    assert stack._local_plugin_digest(plugin) != clean
+
+
+def test_the_shipped_plugins_digest(tmp_path) -> None:
+    for plugin in (stack.LOCAL_DD_UNSTRUCTURED_PLUGIN, stack.LOCAL_DD_GITHUB_PLUGIN):
+        assert stack._local_plugin_digest(plugin)
+
+
+def test_an_unreadable_plugin_has_no_digest(tmp_path) -> None:
+    assert stack._local_plugin_digest(tmp_path / "gone") is None
+
+
+# -- the pip bootstrap ---------------------------------------------------------
+
+
+def test_the_uv_probe_resolves_nothing(monkeypatch) -> None:
+    """`uv pip install --dry-run pip` answered "can this uv address this interpreter"
+    by resolving pip against the index -- one PyPI round trip on every installer run,
+    and a hard failure on an offline host uv could have served from its cache."""
+    seen: list[list[str]] = []
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(stack.shutil, "which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr(stack.subprocess, "run", lambda cmd, **_k: (seen.append(cmd), _Result())[1])
+    assert stack._bootstrap_uv() is True
+    assert seen == [["uv", "pip", "freeze", "--python", sys.executable]]
+    assert not any("--dry-run" in cmd for cmd in seen)
+    assert not any("install" in cmd for cmd in seen)
+
+
+def test_the_uv_probe_still_retries_with_system(monkeypatch) -> None:
+    seen: list[list[str]] = []
+    codes = iter([1, 0])
+
+    class _Result:
+        def __init__(self, code):
+            self.returncode = code
+
+    monkeypatch.setattr(stack.shutil, "which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr(
+        stack.subprocess, "run", lambda cmd, **_k: (seen.append(cmd), _Result(next(codes)))[1]
+    )
+    monkeypatch.setattr(stack, "UV_NEEDS_SYSTEM", False)
+    assert stack._bootstrap_uv() is True
+    assert stack.UV_NEEDS_SYSTEM is True
+    assert seen[1] == ["uv", "pip", "freeze", "--system"]
+
+
+def test_a_broken_uv_still_falls_back_to_pip(monkeypatch) -> None:
+    class _Result:
+        returncode = 2
+
+    monkeypatch.setattr(stack.shutil, "which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr(stack.subprocess, "run", lambda cmd, **_k: _Result())
+    assert stack._bootstrap_uv() is False
+
+
+def test_a_venv_that_already_has_pip_does_not_reinstall_it(monkeypatch) -> None:
+    monkeypatch.setattr(
+        stack.subprocess, "run", lambda cmd, **_k: types.SimpleNamespace(returncode = 0)
+    )
+    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "24.2")
+    assert stack._venv_pip_is_usable() is True
+    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "22.0.4")
+    assert stack._venv_pip_is_usable() is False
+    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: None)
+    assert stack._venv_pip_is_usable() is False
+    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "not-a-version")
+    assert stack._venv_pip_is_usable() is False
+
+
+def test_a_fresh_uv_venv_still_bootstraps(monkeypatch) -> None:
+    """uv venvs omit pip entirely, and that is the case this step exists for."""
+    monkeypatch.setattr(stack.importlib.util, "find_spec", lambda _n: None)
+    assert stack._venv_pip_is_usable() is False
+
+
+def test_a_pip_that_cannot_run_is_bootstrapped_again(monkeypatch) -> None:
+    """Metadata survives a pip whose __main__.py is gone; `python -m pip` does not."""
+    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "24.2")
+    seen: list[list[str]] = []
+
+    def broken(cmd, **_k):
+        seen.append(list(cmd))
+        return types.SimpleNamespace(returncode = 1)
+
+    monkeypatch.setattr(stack.subprocess, "run", broken)
+    assert stack._venv_pip_is_usable() is False
+    assert seen and seen[0][1:] == ["-m", "pip", "--version"]
+
+    def hangs(cmd, **kw):
+        raise stack.subprocess.TimeoutExpired(cmd, kw.get("timeout", 60))
+
+    monkeypatch.setattr(stack.subprocess, "run", hangs)
+    assert stack._venv_pip_is_usable() is False
+
+
+# -- MLX and torchcodec --------------------------------------------------------
+
+
+def test_the_mlx_stack_is_current_only_when_all_four_hold(monkeypatch) -> None:
+    versions = {"mlx": "0.32.1", "mlx-metal": "0.32.1", "mlx-lm": "0.31.3", "mlx-vlm": "0.5.0"}
+    monkeypatch.setattr(stack, "_installed_distribution_version", lambda name: versions.get(name))
+    assert stack._mlx_stack_is_current() is True
+    for name, wrong in (
+        ("mlx", "0.32.0"),
+        ("mlx-metal", None),
+        ("mlx-lm", "0.31.2"),
+        ("mlx-vlm", "0.8.0"),
+        ("mlx-vlm", None),
+    ):
+        broken = dict(versions)
+        broken[name] = wrong
+        monkeypatch.setattr(stack, "_installed_distribution_version", lambda n, b = broken: b.get(n))
+        assert stack._mlx_stack_is_current() is False, name
+
+
+def test_the_mlx_pins_match_the_runtime_repair() -> None:
+    """One stack, two callers. The self-heal at startup reinstalls whatever this
+    installed, so a pin that drifts here is a repair loop there."""
+    names = {spec.partition("==")[0] for spec in stack._MLX_PINS} | {"mlx-vlm"}
+    assert set(stack._MLX_NAMES) == names
+    assert stack._MLX_VLM_SPEC.startswith("mlx-vlm")
+
+
+@pytest.mark.parametrize(
+    "spec,installed,expected",
+    [
+        ("torchcodec==0.8.0", "0.8.0", True),
+        ("torchcodec==0.8.0", "0.8.0+cu130", True),
+        ("torchcodec==0.8.0", "0.7.0", False),
+        ("torchcodec>=0.7,<0.9", "0.8.0+cpu", True),
+        ("torchcodec>=0.7,<0.9", "0.9.1", False),
+        ("torchcodec==0.8.0", "", False),
+    ],
+)
+def test_a_resident_codec_inside_the_window_needs_no_install(spec, installed, expected) -> None:
+    """The local tag is ignored here on purpose: provenance is the caller's separate
+    question, and a +cu130 suffix puts the version outside a PyPI-shaped specifier it
+    in fact satisfies."""
+    assert stack._codec_spec_is_satisfied(spec, installed) is expected
+
+
+# -- the pip fallback ----------------------------------------------------------
+
+
+def test_the_pip_fallback_never_names_one_project_twice() -> None:
+    """pip refuses `mlx==0.32.1 mlx` outright with "Double requirement given", which
+    would fail the very step the fallback exists to rescue."""
+    cmd = stack._build_pip_cmd(
+        (
+            "--upgrade-package",
+            "mlx",
+            "--upgrade-package",
+            "mlx-vlm",
+            "mlx==0.32.1",
+            "mlx-vlm>=0.4.4,<0.7.0",
+        )
+    )
+    assert "--upgrade" in cmd and "--upgrade-package" not in cmd
+    assert cmd.count("mlx") == 0 and cmd.count("mlx-vlm") == 0
+    assert "mlx==0.32.1" in cmd and "mlx-vlm>=0.4.4,<0.7.0" in cmd
+
+
+def test_a_package_named_only_by_the_flag_is_still_passed() -> None:
+    """pip would otherwise upgrade nothing at all."""
+    cmd = stack._build_pip_cmd(("--upgrade-package", "future-pkg", "other"))
+    assert "future-pkg" in cmd and "other" in cmd
+
+
+# -- accounting ----------------------------------------------------------------
+
+
+def test_every_install_entry_point_is_counted() -> None:
+    """`pip check` and the metadata patch are gated on this counter, so a new install
+    site that does not increment it makes both skip a venv that just changed.
+
+    The two repairs are here for the same reason and were the ones that got missed:
+    neither installs anything through pip_install*, and both leave the environment
+    different from the one the cached constraint answer describes.
+    """
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    counted = {
+        "pip_install",
+        "pip_install_try",
+        "_uninstall_distribution",
+        "_purge_recordless_distributions",
+        "_repair_duplicate_core_metadata",
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name in counted:
+            body = ast.dump(node)
+            assert "_count_install_action" in body, node.name
+            counted.discard(node.name)
+    assert not counted, f"install entry points are gone: {counted}"
+
+
+@pytest.fixture
+def counting(monkeypatch):
+    """A zeroed counter and a constraint answer that is already cached against it."""
+    monkeypatch.setattr(stack, "_INSTALL_ACTIONS", 0)
+    monkeypatch.setattr(stack, "_CONSTRAINTS_CACHE", None)
+    answers = iter([["numpy"], [], [], []])
+    monkeypatch.setattr(
+        stack.install_manifest, "violated_constraints", lambda *a, **k: next(answers)
+    )
+    monkeypatch.setattr(stack, "_safe_print", lambda *a, **k: None)
+    monkeypatch.setattr(stack, "_step", lambda *a, **k: None)
+    assert stack._violated_constraints() == ["numpy"]
+    return monkeypatch
+
+
+def _site_with_recordless_dist(monkeypatch, tmp_path):
+    site = tmp_path / "site-packages"
+    (site / "ghost-1.0.dist-info").mkdir(parents = True)
+    monkeypatch.setattr(stack.sysconfig, "get_path", lambda name: str(site))
+    return site
+
+
+_PIP_REFUSED = "Cannot uninstall ghost 1.0, RECORD file not found: no RECORD file was found"
+
+
+def test_purging_a_half_written_record_counts_as_an_install_action(counting, tmp_path) -> None:
+    """It rmtree's a dist-info pip was reading a moment ago. Nothing else on that path
+    touches the counter, so a constraint answer cached before it would survive it and
+    let a gated step skip on evidence about an environment that no longer exists."""
+    _site_with_recordless_dist(counting, tmp_path)
+    assert stack._purge_recordless_distributions(_PIP_REFUSED) == ["ghost-1.0.dist-info"]
+    assert stack._INSTALL_ACTIONS == 1
+    assert stack._violated_constraints() == []
+
+
+def test_a_purge_that_deletes_nothing_leaves_the_cache_alone(counting, tmp_path) -> None:
+    """The other direction, and the reason this is counted at the rmtree rather than at
+    the top of the function: `pip check` is gated on the same counter, so a spurious
+    increment buys a full metadata resolve of the venv on every no-op update."""
+    site = _site_with_recordless_dist(counting, tmp_path)
+    assert stack._purge_recordless_distributions("") == []
+    assert stack._purge_recordless_distributions("some unrelated pip failure") == []
+    # Named, but complete: whatever failed, it was not this.
+    (site / "ghost-1.0.dist-info" / "RECORD").write_text("", encoding = "utf-8")
+    assert stack._purge_recordless_distributions(_PIP_REFUSED) == []
+    assert stack._INSTALL_ACTIONS == 0
+    assert stack._violated_constraints() == ["numpy"], "the cached answer was discarded"
+
+
+class _ScriptedVersions:
+    """installed_versions(), draining a scripted sequence of record counts."""
+
+    def __init__(self, counts) -> None:
+        self.counts = list(counts)
+
+    def __call__(self, name, *args, **kwargs):
+        count = self.counts.pop(0) if len(self.counts) > 1 else self.counts[0]
+        return ["1.0"] * count
+
+
+def _metadata_repair_stubs(
+    monkeypatch,
+    counts,
+    *,
+    invalid = (),
+):
+    monkeypatch.setattr(stack.install_manifest, "installed_versions", _ScriptedVersions(counts))
+    monkeypatch.setattr(stack.install_manifest, "pip_backup_metadata_paths", lambda *a, **k: [])
+    monkeypatch.setattr(
+        stack.install_manifest, "invalid_metadata_paths", lambda *a, **k: list(invalid)
+    )
+    monkeypatch.setattr(
+        stack.install_manifest, "installed_version_probe", lambda *a, **k: ("1.0", False)
+    )
+    monkeypatch.setattr(stack, "_rewrite_minimal_metadata", lambda path, name: True)
+    monkeypatch.setattr(stack, "_stage_replacement", lambda name: "/staged")
+    monkeypatch.setattr(stack, "_run_ok", lambda label, cmd: True)
+    monkeypatch.setattr(stack, "pip_install_try", lambda *a, **k: True)
+
+
+def test_removing_a_duplicate_metadata_record_counts_as_an_install_action(counting) -> None:
+    """The uninstall loop goes through _run_ok, not _uninstall_distribution, so it was
+    the one removal path the counter never saw."""
+    _metadata_repair_stubs(counting, [2, 1, 0])
+    assert stack._repair_duplicate_core_metadata(("unsloth",)) is True
+    assert stack._INSTALL_ACTIONS == 2, "one per pip uninstall, as _uninstall_distribution"
+    assert stack._violated_constraints() == []
+
+
+def test_rewriting_unreadable_metadata_counts_even_if_the_repair_then_aborts(
+    counting, tmp_path
+) -> None:
+    """The rewrite happens before anything is staged and is not undone by returning
+    False: what importlib.metadata reports has already changed."""
+    _metadata_repair_stubs(counting, [2, 0], invalid = [str(tmp_path)])
+    assert stack._repair_duplicate_core_metadata(("unsloth",)) is False
+    assert stack._INSTALL_ACTIONS == 1
+    assert stack._violated_constraints() == []
+
+
+def test_a_repair_with_nothing_to_repair_leaves_the_cache_alone(counting) -> None:
+    """One readable record each and no damage: both repairs are pure inspection, and
+    an update that does nothing must not pay for a `pip check` because they ran."""
+    _metadata_repair_stubs(counting, [1])
+    monkeypatch = counting
+    monkeypatch.setattr(stack.install_manifest, "damaged_payload_files", lambda *a, **k: [])
+    assert stack._repair_duplicate_core_metadata(("unsloth", "unsloth-zoo")) is True
+    assert stack._repair_damaged_core_payload(("unsloth", "unsloth-zoo")) is True
+    assert stack._INSTALL_ACTIONS == 0
+    assert stack._violated_constraints() == ["numpy"], "the cached answer was discarded"
+
+
+def test_the_pass_state_is_reset_per_call() -> None:
+    """The suites call install_python_stack() several times in one interpreter, and a
+    counter that survived would make the second call skip what the first installed."""
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    entry = source[source.index("def install_python_stack() -> int:") :]
+    head = entry[: entry.index("# --package installs")]
+    for name in ("_INSTALL_ACTIONS = 0", "_PASS_EVIDENCE = None", "_STEP_RESULTS.clear()"):
+        assert name in head, name
+
+
+def test_the_plan_is_read_before_the_manifest_is_dropped() -> None:
+    """remove_manifest deletes the only copy of what the last run did."""
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    plan = source.index("_PASS_EVIDENCE = _plan_pass(")
+    drop = source.index("install_manifest.remove_manifest()")
+    assert plan < drop
+
+
+# The finalizing tail: three fixed costs a settled install has no reason to pay (the METADATA
+# rewrite, a discarded `pip check`, an out-of-process MLX import probe).
+
+
+class _FakePatchModule:
+    """Stands in for requirements/single-env/patch_metadata.py."""
+
+    TARGETS = ("data-designer",)
+    PATCHES = ((re.compile(r"^Requires-Dist: huggingface-hub<2,>=1\.0\.1$", re.MULTILINE), "x"),)
+
+    def __init__(
+        self,
+        path,
+        *,
+        raise_on_lookup = False,
+        raise_on_main = False,
+    ):
+        self._path = path
+        self._raise_on_lookup = raise_on_lookup
+        self._raise_on_main = raise_on_main
+        self.main_calls = 0
+
+    def metadata_path(self, _name):
+        if self._raise_on_lookup:
+            raise RuntimeError("distribution metadata is unreadable")
+        return self._path
+
+    def main(self):
+        self.main_calls += 1
+        if self._raise_on_main:
+            raise RuntimeError("cannot patch in process")
+        return 0
+
+
+PATCHED = "Requires-Dist: huggingface-hub<2,>=0.34.0\n"
+UNPATCHED = "Requires-Dist: huggingface-hub<2,>=1.0.1\n"
+
+
+def _patch_module(
+    monkeypatch,
+    tmp_path,
+    text = PATCHED,
+    **kwargs,
+):
+    metadata = tmp_path / "METADATA"
+    if text is not None:
+        metadata.write_text(text, encoding = "utf-8")
+    fake = _FakePatchModule(metadata if text is not None else None, **kwargs)
+    monkeypatch.setattr(stack, "SINGLE_ENV", tmp_path)
+    # Cached in sys.modules after the first pass, so the second call in one interpreter sees it too.
+    monkeypatch.setitem(sys.modules, "patch_metadata", fake)
+    return fake
+
+
+def test_a_settled_install_does_not_re_run_the_metadata_patch(monkeypatch, tmp_path) -> None:
+    _patch_module(monkeypatch, tmp_path, PATCHED)
+    assert stack._patch_metadata_is_pending() is False
+
+
+def test_an_unpatched_metadata_file_is_still_pending(monkeypatch, tmp_path) -> None:
+    _patch_module(monkeypatch, tmp_path, UNPATCHED)
+    assert stack._patch_metadata_is_pending() is True
+
+
+def test_a_distribution_that_is_not_installed_needs_no_patch(monkeypatch, tmp_path) -> None:
+    _patch_module(monkeypatch, tmp_path, None)
+    assert stack._patch_metadata_is_pending() is False
+
+
+@pytest.mark.parametrize("kwargs", [{"raise_on_lookup": True}])
+def test_anything_it_cannot_answer_runs_the_patch(monkeypatch, tmp_path, kwargs) -> None:
+    """Unknown means do the work: this replaces an unconditional run, so the failure
+    mode of the question must be the old behaviour, not a skip."""
+    _patch_module(monkeypatch, tmp_path, PATCHED, **kwargs)
+    assert stack._patch_metadata_is_pending() is True
+
+
+def test_an_unimportable_patch_module_runs_the_patch(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(stack, "SINGLE_ENV", tmp_path / "gone")
+    monkeypatch.delitem(sys.modules, "patch_metadata", raising = False)
+    assert stack._patch_metadata_is_pending() is True
+
+
+def test_the_patch_applies_in_process(monkeypatch, tmp_path) -> None:
+    fake = _patch_module(monkeypatch, tmp_path, UNPATCHED)
+    ran = []
+    monkeypatch.setattr(stack, "run", lambda *a, **k: ran.append(a))
+    stack._run_patch_metadata()
+    assert fake.main_calls == 1
+    assert ran == []
+
+
+def test_the_patch_still_falls_back_to_the_subprocess(monkeypatch, tmp_path) -> None:
+    """It is a supported standalone entry point, and an import failure inside the
+    installer must not turn into a failed install."""
+    fake = _patch_module(monkeypatch, tmp_path, UNPATCHED, raise_on_main = True)
+    ran = []
+    monkeypatch.setattr(stack, "run", lambda *a, **k: ran.append(a))
+    stack._run_patch_metadata()
+    assert fake.main_calls == 1
+    assert len(ran) == 1 and str(tmp_path / "patch_metadata.py") in [str(x) for x in ran[0][1]]
+
+
+@pytest.mark.parametrize("fn", ["_patch_metadata_is_pending", "_run_patch_metadata"])
+def test_neither_helper_leaves_single_env_on_sys_path(monkeypatch, tmp_path, fn) -> None:
+    """sys.path.insert(0, SINGLE_ENV) that outlives the call shadows stdlib names for
+    the rest of the install."""
+    _patch_module(monkeypatch, tmp_path, UNPATCHED)
+    monkeypatch.setattr(stack, "run", lambda *a, **k: None)
+    before = list(sys.path)
+    getattr(stack, fn)()
+    assert sys.path == before
+
+
+def test_the_metadata_patch_still_runs_whenever_data_designer_did() -> None:
+    """The pending scan reads the METADATA of packages the data-designer steps just
+    wrote, so a fresh install must not be gated on it at all."""
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    assert "_finalize_ran = _dd_deps_ran or _dd_ran or _patch_metadata_is_pending()" in source
+
+
+def test_pip_check_is_gated_on_this_pass_having_changed_something() -> None:
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    gate = source.index('_pip_check_ok = (_PASS_EVIDENCE or {}).get("pip_check_ok")')
+    tail = source[gate : gate + 400]
+    # Both halves: anything installed re-checks, and so does a last answer that was not a clean
+    # True.
+    assert "if _INSTALL_ACTIONS > 0 or _pip_check_ok is not True:" in tail
+    assert '"pip_check_ok": _pip_check_ok,' in source
+
+
+# -- the MLX verdict -----------------------------------------------------------
+
+
+class _FakeSubprocess:
+    def __init__(self, stdout = "[]"):
+        self.calls = 0
+        self._stdout = stdout
+
+    def run(self, *args, **kwargs):
+        self.calls += 1
+        return type("R", (), {"stdout": self._stdout, "stderr": "", "returncode": 0})()
+
+
+@pytest.fixture
+def mlx(monkeypatch):
+    fake = _FakeSubprocess()
+    monkeypatch.setattr(stack, "subprocess", fake)
+    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "0.4.5")
+    steps: list[tuple[str, str]] = []
+    monkeypatch.setattr(stack, "_step", lambda label, value, *a: steps.append((label, value)))
+    written: list[dict] = []
+    monkeypatch.setattr(
+        stack.install_manifest,
+        "update_manifest",
+        lambda **kw: written.append(kw.get("mlx_health")) or True,
+    )
+    healthy = {**stack._mlx_health_fingerprint(), "ok": True}
+    monkeypatch.setattr(stack, "_PASS_EVIDENCE", {"mlx_health": healthy})
+    monkeypatch.setattr(stack, "_mlx_payload_present", lambda: True)
+    return fake, steps, written, healthy
+
+
+def test_a_recorded_healthy_stack_is_not_re_probed(mlx) -> None:
+    fake, steps, written, _ = mlx
+    stack._report_mlx_stack_health(skipped = True)
+    assert fake.calls == 0
+    assert steps == [("mlx", "training stack ready")]
+    # Rewritten so the record does not age out of the manifest this pass just wrote.
+    assert written and written[0]["ok"] is True
+
+
+def test_a_recorded_verdict_needs_the_payload_on_disk(mlx, monkeypatch) -> None:
+    """Pins and interpreter survive a payload deleted after the pass; the recorded verdict
+    does not describe a package whose files are gone, so the probe runs."""
+    fake, steps, _written, _ = mlx
+    monkeypatch.setattr(stack, "_mlx_payload_present", lambda: False)
+    stack._report_mlx_stack_health(skipped = True)
+    # The probe ran; what it reported is the probe's business (the fake answers healthy).
+    assert fake.calls == 1
+
+
+def test_a_rebuilt_mlx_stack_is_always_probed(mlx) -> None:
+    fake, steps, _written, _ = mlx
+    stack._report_mlx_stack_health(skipped = False)
+    assert fake.calls == 1
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"ok": False},
+        {"ok": None},
+        {"pins": ["mlx==0.0.1"]},
+        {"python": "39"},
+        {"mlx_vlm": "0.4.4"},
+        # An imported dependency moved within its range between passes, and a record from before the
+        # imports were fingerprinted.
+        {
+            "imports": {
+                **{n: "0.4.5" for n in stack._MLX_IMPORTED_DEPENDENCIES},
+                "transformers": "4.0.0",
+            }
+        },
+        {"imports": None},
+    ],
+)
+def test_a_verdict_that_no_longer_describes_this_install_is_re_probed(mlx, mutation) -> None:
+    fake, _steps, _written, healthy = mlx
+    stack._PASS_EVIDENCE = {"mlx_health": {**healthy, **mutation}}
+    stack._report_mlx_stack_health(skipped = True)
+    assert fake.calls == 1
+
+
+def test_a_pass_that_installed_anything_re_probes(mlx, monkeypatch) -> None:
+    """The probe imports transformers and tokenizers through mlx_lm; a later step of the
+    same pass can move those with every MLX pin unchanged, so a recorded verdict only
+    stands for a pass that installed nothing at all."""
+    fake, _steps, _written, _ = mlx
+    monkeypatch.setattr(stack, "_INSTALL_ACTIONS", 1)
+    stack._report_mlx_stack_health(skipped = True)
+    assert fake.calls == 1
+
+
+def test_no_evidence_at_all_is_probed(mlx, monkeypatch) -> None:
+    fake, _steps, _written, _ = mlx
+    for evidence in (None, {}, {"mlx_health": "yes"}, {"mlx_health": {}}):
+        fake.calls = 0
+        monkeypatch.setattr(stack, "_PASS_EVIDENCE", evidence)
+        stack._report_mlx_stack_health(skipped = True)
+        assert fake.calls == 1, evidence
+
+
+def test_the_fingerprint_names_everything_a_verdict_depends_on(monkeypatch) -> None:
+    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: "0.4.5")
+    fingerprint = stack._mlx_health_fingerprint()
+    assert fingerprint["pins"] == list(stack._MLX_PINS) + [stack._MLX_VLM_SPEC]
+    assert fingerprint["python"] == stack._installer_python_tag()
+    assert fingerprint["imports"] == {n: "0.4.5" for n in stack._MLX_IMPORTED_DEPENDENCIES}
+    assert {"transformers", "tokenizers", "numpy", "huggingface-hub"} <= set(fingerprint["imports"])
+    # mlx-vlm floats inside a range: the pin string alone does not identify what is installed.
+    assert fingerprint["mlx_vlm"] == "0.4.5"
+    monkeypatch.setattr(stack, "_installed_distribution_version", lambda _n: None)
+    assert stack._mlx_health_fingerprint()["mlx_vlm"] == ""
+
+
+def test_a_probe_verdict_is_recorded_for_next_time(mlx) -> None:
+    fake, steps, written, _ = mlx
+    stack._report_mlx_stack_health(skipped = False)
+    assert written and written[0]["ok"] is True
+    fake._stdout = '["mlx-lm is not importable"]'
+    written.clear()
+    stack._report_mlx_stack_health(skipped = False)
+    assert written and written[0]["ok"] is False
+    assert ("", "mlx-lm is not importable") in steps
+
+
+def test_a_probe_that_cannot_answer_records_nothing(mlx) -> None:
+    fake, _steps, written, _ = mlx
+    fake._stdout = "null"
+    stack._report_mlx_stack_health(skipped = False)
+    assert written == []
+
+
+def test_the_verdict_is_recorded_after_the_manifest_is_written() -> None:
+    """The probe has a 180 s timeout. Writing through write_manifest would make a kill
+    during it lose a finished install; update_manifest never creates one."""
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    # rindex: the definition comes first in the file, the call site is what is ordered.
+    assert source.index("install_manifest.write_manifest(") < source.rindex(
+        "_report_mlx_stack_health("
+    )
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.FunctionDef) and node.name == "_report_mlx_stack_health":
+            called = {
+                child.func.attr
+                for child in ast.walk(node)
+                if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
+            }
+            assert "write_manifest" not in called
+            assert "update_manifest" in called
+            break
+    else:  # pragma: no cover - the function is the subject of this file
+        raise AssertionError("_report_mlx_stack_health is gone")
+
+
+def test_the_escape_hatch_reaches_the_pip_bootstrap_skip() -> None:
+    """UNSLOTH_STUDIO_FULL_DEPS is what a user is told to set when the install is
+    behaving oddly. A step it cannot turn off is a step they cannot work around, and the
+    pip bootstrap skip is not gated on the manifest, so nothing else would reach it."""
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    assert "if not _full_deps_requested() and _venv_pip_is_usable():" in source
+
+
+# -- the dependency closure ----------------------------------------------------
+
+
+def _closure_index(**dists):
+    """canonical name -> (version, Requires-Dist lines), as install_manifest builds it."""
+    return {name.replace("_", "-").lower(): value for name, value in dists.items()}
+
+
+def test_a_missing_transitive_dependency_is_not_satisfied(tmp_path) -> None:
+    """The file's own lines stay true after a dependency of a dependency is removed.
+    mammoth>=1.8.0 is satisfied by a mammoth whose cobble is gone, and importing it
+    raises; the step that would have repaired that is the one being skipped."""
+    req = tmp_path / "studio.txt"
+    req.write_text("mammoth>=1.8.0\n", encoding = "utf-8")
+    healthy = _closure_index(mammoth = ("1.12.1", ["cobble>=0.1.3"]), cobble = ("0.1.4", []))
+    assert stack.install_manifest.unsatisfied_closure_requirement(req, healthy) is None
+    damaged = _closure_index(mammoth = ("1.12.1", ["cobble>=0.1.3"]))
+    assert stack.install_manifest.unsatisfied_closure_requirement(req, damaged) == "cobble"
+
+
+def test_a_transitive_dependency_outside_its_window_is_not_satisfied(tmp_path) -> None:
+    req = tmp_path / "studio.txt"
+    req.write_text("cryptography\n", encoding = "utf-8")
+    index = _closure_index(cryptography = ("46.0.3", ["cffi>=1.14"]), cffi = ("1.9.0", []))
+    assert stack.install_manifest.unsatisfied_closure_requirement(req, index) == "cffi 1.9.0"
+
+
+def test_every_unmet_closure_requirement_is_collected(tmp_path) -> None:
+    """The gate needs the whole list, not the first hit: a step is skipped only when
+    everything left unmet is on the record the last pass wrote."""
+    req = tmp_path / "studio.txt"
+    req.write_text("mammoth>=1.8.0\ncryptography\n", encoding = "utf-8")
+    index = _closure_index(
+        mammoth = ("1.12.1", ["cobble>=0.1.3"]),
+        cryptography = ("46.0.3", ["cffi>=1.14"]),
+        cffi = ("1.9.0", []),
+    )
+    unmet = stack.install_manifest.closure_unmet_requirements(req, index)
+    assert sorted(unmet) == ["cffi 1.9.0", "cobble"]
+    assert stack.install_manifest.unsatisfied_closure_requirement(req, index) in unmet
+
+
+def test_a_conflict_the_last_pass_left_behind_does_not_run_the_step(monkeypatch, gated) -> None:
+    """sqlfluff 3.x pins click<=8.3.0 and huggingface-hub 1.23+ needs click>=8.4.2, so
+    the data-designer step's closure is unmet after every pass. The record the last
+    pass wrote of exactly that lets the gate skip; a new unmet requirement still runs."""
+    _payload, req_root = gated
+    monkeypatch.setattr(
+        stack.install_manifest, "closure_unmet_requirements", lambda *a, **k: ["click 8.5.0"]
+    )
+    monkeypatch.setattr(stack.install_manifest, "missing_requirements", lambda *a, **k: [])
+    assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is False
+    stack._PASS_EVIDENCE["known_unmet"] = {"studio.txt": ["click 8.5.0"]}
+    # The record is evidence about its own installed set only: a requirer moved since can have
+    # dropped the bound that made the conflict. No recorded set and a different one both run.
+    assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is False
+    stack._PASS_EVIDENCE["known_unmet_index"] = "not-the-installed-set"
+    assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is False
+    stack._PASS_EVIDENCE["known_unmet_index"] = stack._installed_index_digest()
+    assert stack._PASS_EVIDENCE["known_unmet_index"]
+    assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is True
+    monkeypatch.setattr(
+        stack.install_manifest,
+        "closure_unmet_requirements",
+        lambda *a, **k: ["click 8.5.0", "cobble"],
+    )
+    assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is False
+
+
+def test_the_closure_record_never_carries_an_audit_failure(monkeypatch, gated) -> None:
+    """A "<...>" entry means the audit could not run; recording it would let an
+    unreadable environment skip the step next time."""
+    _payload, req_root = gated
+    monkeypatch.setattr(stack, "_AUDITED_STEPS", {"studio.txt": req_root / "studio.txt"})
+    monkeypatch.setattr(stack, "_STEP_RESULTS", {"studio.txt": "ran"})
+    monkeypatch.setattr(
+        stack.install_manifest,
+        "closure_unmet_requirements",
+        lambda *a, **k: ["<metadata unreadable>", "click 8.5.0"],
+    )
+    assert stack._closure_record() == {"studio.txt": ["click 8.5.0"]}
+    monkeypatch.setattr(stack, "_STEP_RESULTS", {"studio.txt": "skipped"})
+    stack._PASS_EVIDENCE["known_unmet"] = {"studio.txt": ["click 8.3.0"]}
+    assert stack._closure_record() == {"studio.txt": ["click 8.3.0"]}
+
+
+def test_a_carried_known_unmet_record_drops_what_is_met_again(monkeypatch, gated) -> None:
+    """A skipped step carries its record, narrowed to what the closure still lacks: an
+    entry satisfied since it was recorded was no conflict, and keeping it would let a
+    later loss of that package pass as intentional."""
+    _payload, req_root = gated
+    monkeypatch.setattr(stack, "_AUDITED_STEPS", {"studio.txt": req_root / "studio.txt"})
+    monkeypatch.setattr(stack, "_STEP_RESULTS", {"studio.txt": "skipped"})
+    stack._PASS_EVIDENCE["known_unmet"] = {"studio.txt": ["click 8.3.0", "mammoth"]}
+    monkeypatch.setattr(
+        stack.install_manifest, "closure_unmet_requirements", lambda *a, **k: ["click 8.3.0"]
+    )
+    assert stack._closure_record() == {"studio.txt": ["click 8.3.0"]}
+    monkeypatch.setattr(stack.install_manifest, "closure_unmet_requirements", lambda *a, **k: [])
+    assert stack._closure_record() == {}
+    # A new unmet entry is not adopted by a skipped step: the step never ran for it.
+    monkeypatch.setattr(
+        stack.install_manifest, "closure_unmet_requirements", lambda *a, **k: ["numpy 1.0"]
+    )
+    assert stack._closure_record() == {}
+
+
+def test_the_closure_walk_follows_extras_and_survives_cycles(tmp_path) -> None:
+    req = tmp_path / "studio.txt"
+    req.write_text("alpha[fancy]\n", encoding = "utf-8")
+    # beta is only pulled in by the extra; gamma cycles back to alpha.
+    index = _closure_index(
+        alpha = ("1.0", ['beta ; extra == "fancy"', 'zeta ; extra == "other"', "gamma"]),
+        beta = ("2.0", []),
+        gamma = ("3.0", ["alpha"]),
+    )
+    assert stack.install_manifest.unsatisfied_closure_requirement(req, index) is None
+    # ...and the extra's own dependency is really required, not merely walked.
+    without_beta = dict(index)
+    without_beta.pop("beta")
+    assert stack.install_manifest.unsatisfied_closure_requirement(req, without_beta) == "beta"
+
+
+def test_an_extra_named_before_pep_685_is_still_followed(tmp_path) -> None:
+    """A wheel built before extras were normalised in the marker still says
+    extra == "all_files", and matching only the canonical spelling would drop that
+    extra's whole subtree without a word."""
+    req = tmp_path / "studio.txt"
+    req.write_text("alpha[all_files]\n", encoding = "utf-8")
+    index = _closure_index(alpha = ("1.0", ['beta ; extra == "all_files"']))
+    assert stack.install_manifest.unsatisfied_closure_requirement(req, index) == "beta"
+    both = dict(index, beta = ("2.0", []))
+    assert stack.install_manifest.unsatisfied_closure_requirement(req, both) is None
+
+
+def test_an_inapplicable_marker_is_not_a_missing_dependency(tmp_path) -> None:
+    req = tmp_path / "studio.txt"
+    req.write_text("alpha\n", encoding = "utf-8")
+    index = _closure_index(alpha = ("1.0", ['pywin32 ; sys_platform == "never-a-platform"']))
+    assert stack.install_manifest.unsatisfied_closure_requirement(req, index) is None
+
+
+@pytest.mark.parametrize(
+    "line,reason",
+    [
+        ("-r other.txt", "<flag line: -r other.txt>"),
+        ("--index-url https://example.invalid", "<flag line: --index-url https://example.invalid>"),
+    ],
+)
+def test_the_closure_audit_fails_closed(tmp_path, line, reason) -> None:
+    """Every answer that is not a proven-complete closure has to install. A flag line
+    can hide requirements from the walk entirely, and guessing the other way would let
+    a step skip on evidence nobody gathered."""
+    req = tmp_path / "studio.txt"
+    req.write_text(f"{line}\n", encoding = "utf-8")
+    assert stack.install_manifest.unsatisfied_closure_requirement(req, {}) == reason
+
+
+def test_a_direct_url_requirement_fails_closed(tmp_path) -> None:
+    """A version says nothing about which ref landed, and the one step that has such a
+    requirement is --no-deps and never reaches this audit."""
+    req = tmp_path / "studio.txt"
+    req.write_text("alpha @ https://example.invalid/alpha.whl\n", encoding = "utf-8")
+    index = _closure_index(alpha = ("1.0", []))
+    got = stack.install_manifest.unsatisfied_closure_requirement(req, index)
+    assert got == "alpha (direct reference)"
+
+
+def test_an_unreadable_requirements_file_fails_closed(tmp_path) -> None:
+    assert (
+        stack.install_manifest.unsatisfied_closure_requirement(tmp_path / "gone.txt", {})
+        == "<requirements unreadable>"
+    )
+
+
+def test_a_budget_overrun_fails_closed(monkeypatch, tmp_path) -> None:
+    """A site-packages on a wedged mount must cost one dependency pass, not a hang."""
+    req = tmp_path / "studio.txt"
+    req.write_text("alpha\n", encoding = "utf-8")
+    index = _closure_index(alpha = ("1.0", []))
+    clock = iter([0.0, 100.0, 200.0])
+    monkeypatch.setattr(stack.install_manifest.time, "monotonic", lambda: next(clock))
+    assert (
+        stack.install_manifest.unsatisfied_closure_requirement(req, index, budget_seconds = 1.0)
+        == "<closure audit timed out>"
+    )
+
+
+def test_a_broken_closure_runs_a_with_deps_step_but_not_a_no_deps_one(monkeypatch, gated) -> None:
+    """--no-deps steps leave their requirements' own dependencies unresolved on purpose,
+    so auditing one would report a conflict the installer created and force it forever."""
+    _payload, req_root = gated
+    monkeypatch.setattr(
+        stack.install_manifest,
+        "closure_unmet_requirements",
+        lambda *a, **k: ["botocore"],
+    )
+    assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is False
+    assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = True) is True
+
+
+def test_the_closure_audit_reads_the_filtered_file(monkeypatch, gated) -> None:
+    """The temp copy _effective_requirements builds is unlinked on the way out, so an
+    audit placed after that cleanup would read nothing and never skip again."""
+    _payload, req_root = gated
+    monkeypatch.setattr(stack, "PLATFORM_LACKS_TORCHCODEC_WHEEL", True)
+    seen: list[bool] = []
+
+    def audit(path, *_a, **_k):
+        seen.append(pathlib.Path(path).is_file())
+        return []
+
+    monkeypatch.setattr(stack.install_manifest, "closure_unmet_requirements", audit)
+    assert stack._requirements_satisfied(req_root / "studio.txt", no_deps = False) is True
+    assert seen == [True]
+
+
+def test_every_gated_step_states_whether_it_installs_with_deps() -> None:
+    """no_deps is keyword-only and required so a new step cannot inherit the weaker
+    check by forgetting to answer. Pinned on the source, since the failure is silent."""
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef) or node.name not in (
+            "_skip_step",
+            "_requirements_satisfied",
+        ):
+            continue
+        names = [arg.arg for arg in node.args.kwonlyargs]
+        assert "no_deps" in names, node.name
+        defaults = dict(zip(names, node.args.kw_defaults))
+        assert defaults["no_deps"] is None, f"{node.name}: no_deps must have no default"
+
+
+# -- the pin-shaped steps ask for the same evidence ----------------------------
+
+
+@pytest.mark.parametrize("value", ["1", "true", "YES", " on "])
+def test_the_escape_hatch_reaches_the_pin_shaped_steps(monkeypatch, value) -> None:
+    """torchao, MLX and torchcodec compare against the installed distribution rather
+    than a recorded digest, so a satisfied pin read as "nothing to do" even on the pass
+    that was asked to do everything."""
+    monkeypatch.setattr(stack, "_PASS_EVIDENCE", {"pass_inputs": {}, "step_results": {}})
+    assert stack._may_skip_on_evidence() is True
+    monkeypatch.setenv(stack._FULL_DEPS_ENV, value)
+    assert stack._may_skip_on_evidence() is False
+
+
+def test_a_rejected_manifest_reaches_the_pin_shaped_steps(monkeypatch) -> None:
+    monkeypatch.delenv(stack._FULL_DEPS_ENV, raising = False)
+    monkeypatch.setattr(stack, "_PASS_EVIDENCE", None)
+    assert stack._may_skip_on_evidence() is False
+
+
+def test_a_satisfied_torchao_pin_is_still_reinstalled_on_a_forced_pass(monkeypatch) -> None:
+    calls: list[tuple] = []
+    monkeypatch.setattr(stack, "_select_torchao_spec", lambda _v: "torchao==0.18.0")
+    monkeypatch.setattr(stack, "_torch_accelerator_index_url", lambda _v: "")
+    monkeypatch.setattr(stack, "_pin_needs_reinstall", lambda *_a: False)
+    monkeypatch.setattr(stack, "_note", lambda *_a, **_k: None)
+    monkeypatch.setattr(stack, "pip_install", lambda *a, **k: calls.append(a))
+
+    monkeypatch.setattr(stack, "_PASS_EVIDENCE", {"pass_inputs": {}, "step_results": {}})
+    monkeypatch.delenv(stack._FULL_DEPS_ENV, raising = False)
+    stack._install_torchao_for_torch("2.10.0")
+    assert calls == []
+    assert stack._STEP_RESULTS.get("torchao") == "skipped"
+
+    monkeypatch.setattr(stack, "_PASS_EVIDENCE", None)
+    stack._install_torchao_for_torch("2.10.0")
+    assert len(calls) == 1
+    assert stack._STEP_RESULTS.get("torchao") == "ran"
+
+
+def test_the_mlx_and_codec_skips_ask_for_the_evidence_too() -> None:
+    """Both skips live inside install_python_stack's body, so the guard is pinned on the
+    source: a satisfied pin must not outrank a forced or repair pass."""
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    mlx_guard = (
+        "                _may_skip_on_evidence()\n"
+        "                and _mlx_stack_is_current()\n"
+        '                and _inputs_unchanged(["single-env/overrides-darwin-arm64.txt"])\n'
+    )
+    # Moved arm64 overrides (UV_OVERRIDE) run the resolver even with the four pins satisfied.
+    assert mlx_guard in source
+    assert "_may_skip_on_evidence()\n            and not _codec_rebuild\n" in source
+
+
+def test_the_npp_repair_is_not_conditional_on_reinstalling_the_codec() -> None:
+    """NPP is a separate distribution with its own failure modes. While the repair was
+    gated on the codec step having run, a codec the skip accepted meant a missing NPP
+    was never looked at again, and torchcodec's CUDA build cannot import without it."""
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    assert "        elif _codec_index:\n" in source
+    # One occurrence left: the unpinned retry, which really does depend on an attempt.
+    assert source.count('_STEP_RESULTS.get("torchcodec") == "ran"') == 1
+    # A resident NPP short-circuits the install. The name comes from the spec: nvidia-npp-cu12
+    # through CUDA 12, plain nvidia-npp above.
+    assert '_npp_name = re.split(r"[<>=!~]", _npp_spec, maxsplit = 1)[0].strip()' in source
+    assert "if _npp_have and _spec_is_satisfied(_npp_spec, _npp_have):" in source
+
+
+# -- local seed plugins --------------------------------------------------------
+
+
+def test_a_damaged_plugin_payload_is_reinstalled(monkeypatch, tmp_path) -> None:
+    """A seed plugin is installed from a path, so its version never moves: deleting the
+    installed module leaves both the version and the source digest unchanged."""
+    monkeypatch.setattr(
+        stack.install_manifest, "damaged_payload_files", lambda *a, **k: ["plugin.py"]
+    )
+    assert stack._local_plugin_payload_is_damaged("data-designer-github-repo-seed") is True
+    monkeypatch.setattr(stack.install_manifest, "damaged_payload_files", lambda *a, **k: [])
+    assert stack._local_plugin_payload_is_damaged("data-designer-github-repo-seed") is False
+
+
+def test_an_unscannable_plugin_is_reinstalled(monkeypatch) -> None:
+    """Unlike install_manifest's own convention: this decides whether to skip a local
+    path install that costs well under a second, so the conservative answer is cheap."""
+
+    def boom(*_a, **_k):
+        raise OSError("no")
+
+    monkeypatch.setattr(stack.install_manifest, "damaged_payload_files", boom)
+    assert stack._local_plugin_payload_is_damaged("anything") is True
+
+
+def test_the_plugin_skip_consults_the_installed_payload() -> None:
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    assert "and not _local_plugin_payload_is_damaged(plugin_dir.name)" in source
+
+
+def test_an_unreadable_requires_dist_makes_the_whole_index_unreadable(monkeypatch) -> None:
+    """A distribution whose Requires-Dist cannot be read is not a leaf; calling it one
+    would let a step skip over a closure the audit never walked."""
+    import importlib.metadata
+
+    class _Dist:
+        metadata = {"Name": "broken"}
+        version = "1.0"
+
+        @property
+        def requires(self):
+            raise ValueError("unreadable METADATA")
+
+    monkeypatch.setattr(stack.install_manifest, "_metadata_scan_paths", lambda: [])
+    monkeypatch.setattr(importlib.metadata, "distributions", lambda **kw: [_Dist()])
+    assert stack.install_manifest.installed_dependency_index() is None
+
+
+def test_a_second_pass_in_one_process_starts_with_no_audited_steps() -> None:
+    """The reset block clears what the previous pass registered, so a step this pass
+    never reaches is not audited and recorded as known-unmet on its behalf."""
+    source = (stack.__file__ and open(stack.__file__, encoding = "utf-8").read()) or ""
+    reset = source.index("_STEP_RESULTS.clear()")
+    assert "_AUDITED_STEPS.clear()" in source[reset : reset + 400]
+
+
+def test_the_mlx_payload_check_walks_each_records_files(monkeypatch, tmp_path) -> None:
+    """find_spec sees only the top-level directory; a module the RECORD names that is
+    gone or truncated is what makes the recorded verdict false, so it is what is checked."""
+    import importlib.metadata
+    import importlib.util
+    from types import SimpleNamespace
+
+    payload = tmp_path / "mlx_lm" / "sample_utils.py"
+    payload.parent.mkdir()
+    payload.write_bytes(b"x" * 10)
+
+    # RECORD rows, not Distribution.files: CPython 3.13 drops missing paths from `files`.
+    record = {"text": "mlx_lm/sample_utils.py,sha256=x,10\nmlx_lm/__pycache__/x.pyc,,\n"}
+    dist = SimpleNamespace(
+        read_text = lambda name: record["text"] if name == "RECORD" else None,
+        locate_file = lambda f: tmp_path / str(f),
+    )
+    asked: list[str] = []
+
+    def distribution(name):
+        asked.append(name)
+        return dist
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(importlib.metadata, "distribution", distribution)
+    # The imported dependencies are walked too, except one not installed at all (the probe's).
+    monkeypatch.setattr(
+        stack,
+        "_installed_distribution_version",
+        lambda name: None if name == "sentencepiece" else "1.0",
+    )
+    assert stack._mlx_payload_present() is True
+    # Every pinned MLX distribution, the Metal library included.
+    assert set(asked) >= {"mlx", "mlx-metal", "mlx-lm", "mlx-vlm"}
+    assert set(asked) >= set(stack._MLX_IMPORTED_DEPENDENCIES) - {"sentencepiece"}
+    assert "sentencepiece" not in asked
+    payload.write_bytes(b"x" * 3)
+    assert stack._mlx_payload_present() is False
+    payload.write_bytes(b"x" * 10)
+    assert stack._mlx_payload_present() is True
+    payload.unlink()
+    assert stack._mlx_payload_present() is False
+    # No RECORD is not "present" either: nothing then vouches for the payload.
+    payload.write_bytes(b"x" * 10)
+    record["text"] = None
+    assert stack._mlx_payload_present() is False
+
+
+def test_the_parked_manifest_goes_right_after_the_live_one_is_removed(monkeypatch, tmp_path):
+    """remove_manifest parks the live copy for setup.ps1's ordering. On the path that
+    read the live manifest itself, the parked copy would otherwise outlive a pass killed
+    part-way and be read by the next run as evidence of a completed pass."""
+    manifest = stack.install_manifest
+    live = tmp_path / manifest.MANIFEST_NAME
+    parked = tmp_path / manifest.PREVIOUS_MANIFEST_NAME
+    live.write_text("{}", encoding = "utf-8")
+    monkeypatch.setattr(manifest, "manifest_path", lambda root = None: live)
+    monkeypatch.setattr(manifest, "previous_manifest_path", lambda root = None: parked)
+    assert manifest.remove_manifest() is True
+    assert not live.exists() and parked.exists()
+    manifest.consume_previous_manifest()
+    assert not parked.exists()
+    source = open(stack.__file__, encoding = "utf-8").read()
+    at = source.index("if install_manifest.remove_manifest():")
+    assert "install_manifest.consume_previous_manifest()" in source[at : at + 200]
+    assert "previous_manifest_path().exists()" in source[at : at + 400]
+
+
+def test_an_input_missing_from_the_record_or_unreadable_now_is_changed(monkeypatch, tmp_path):
+    """pass_input_digests leaves out a file it could not read and digest_file answers None
+    for one it cannot read now; compared with .get, the two Nones were equal and an
+    unreadable requirements file counted as unchanged."""
+    monkeypatch.setattr(stack, "REQ_ROOT", tmp_path)
+    monkeypatch.setattr(stack, "_PASS_EVIDENCE", {"pass_inputs": {"studio.txt": "abc"}})
+    digests = {"studio.txt": "abc"}
+    monkeypatch.setattr(stack.install_manifest, "digest_file", lambda p: digests.get(p.name))
+    assert stack._inputs_unchanged(["studio.txt"]) is True
+    assert stack._inputs_unchanged(["extras.txt"]) is False, "not recorded, not readable: unchanged"
+    digests["studio.txt"] = None
+    assert stack._inputs_unchanged(["studio.txt"]) is False, "recorded, unreadable now"
+    digests["studio.txt"] = "def"
+    assert stack._inputs_unchanged(["studio.txt"]) is False
+
+
+def test_the_parked_manifest_is_consumed_when_it_is_read_as_evidence(monkeypatch, tmp_path):
+    """The live manifest is removed before a pass so a killed pass leaves nothing that
+    verifies as complete; the parked copy follows the same rule once read."""
+    parked = tmp_path / "unsloth_install_manifest.previous.json"
+    parked.write_text("{}", encoding = "utf-8")
+    monkeypatch.setattr(stack.install_manifest, "previous_manifest_path", lambda root = None: parked)
+    stack.install_manifest.consume_previous_manifest()
+    assert not parked.exists()
+    stack.install_manifest.consume_previous_manifest()  # gone already: not an error
+    source = open(stack.__file__, encoding = "utf-8").read()
+    at = source.index("manifest = install_manifest.read_previous_manifest()")
+    assert "install_manifest.consume_previous_manifest()" in source[at : at + 700]
+    # And before every refusal: a forced pass killed part-way must not leave the parked copy behind.
+    planner = source[source.index("def _plan_pass(") :]
+    assert planner.index("consume_previous_manifest()") < planner.index("_full_deps_requested()")
+    assert planner.index("consume_previous_manifest()") < planner.index(
+        "_foreign_resolver_inputs()"
+    )
+
+
+def test_duplicate_constrained_metadata_is_a_violation_not_an_absence(monkeypatch, tmp_path):
+    """Two pyarrow records: importlib.metadata answers from whichever it meets first, so
+    the pinned one can hide the other; the step that puts one record back must run."""
+    manifest = stack.install_manifest
+    req = tmp_path / "constraints.txt"
+    req.write_text("pyarrow==15.0.0\nnumpy>=1.0\n", encoding = "utf-8")
+    versions = {"pyarrow": ["15.0.0", "16.0.0"], "numpy": ["2.0.0"]}
+    monkeypatch.setattr(manifest, "installed_versions", lambda name: versions.get(name, []))
+    assert manifest.violated_constraints(req_file = req) == ["pyarrow"]
+    versions["pyarrow"] = ["15.0.0"]
+    assert manifest.violated_constraints(req_file = req) == []
+    versions["pyarrow"] = [""]
+    assert manifest.violated_constraints(req_file = req) == ["pyarrow"]

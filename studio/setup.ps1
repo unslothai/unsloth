@@ -911,6 +911,16 @@ function Redact-InstallOutput {
     return $Text -replace '(https?://[^\s`#]+)#[^\s`]+', '$1#<redacted>'
 }
 
+# A credential-free identity for an index URL (no userinfo, query, fragment or trailing slash),
+# recorded beside the venv and compared across runs.
+function Get-IndexIdentity {
+    param([string]$Url)
+    if (-not $Url) { return "" }
+    $Url = $Url -replace '(https?://)[^/@\s`]+@', '$1'
+    $Url = ($Url -split '[?#]', 2)[0]
+    return $Url.TrimEnd('/')
+}
+
 # _grouped_mm bug: these leaves need the torch 2.11 floor. Must match the other installers.
 function Test-RocmGfx211Leaf {
     param([string]$Leaf)
@@ -5157,6 +5167,7 @@ if (-not $SkipPythonDeps) {
 # install_python_stack.py drops the manifest before its own dependency pass, but
 # pip, torch and triton are replaced first here. Drop it now so a run killed in
 # those leaves the venv marked half-built, not behind a marker that verifies.
+# remove_manifest parks the file, so the dependency pass can still read the last completed pass.
 $_ManifestDropped = $true
 try {
     & python -c "
@@ -5331,16 +5342,55 @@ if ($ROCmIndexUrl) {
             $_rocmKeptActive = $true
         }
     }
+    # As the XPU and CPU arms: force only when the resident torch is not this family, the pin moved
+    # or the import failed. Unconditional --force-reinstall re-resolved the trio every update.
+    $rocmForce = @()
+    if ($installedTorchTag -ne "rocm") { $rocmForce = @("--force-reinstall") }
+    if ($script:PinChangedForceReinstall) { $rocmForce = @("--force-reinstall") }
+    if ($script:TorchImportDefinitivelyFailed) { $rocmForce = @("--force-reinstall") }
+    # +rocm names the family, not the architecture: a changed UNSLOTH_ROCM_GFX_ARCH or replaced card
+    # moves $ROCmIndexUrl while the trio still satisfies its pins, so the index a trio came from is
+    # recorded; another index, or no record, takes the reinstall.
+    $script:RocmIndexRecord = Join-Path $VenvDir ".unsloth-rocm-index"
+    $_rocmIndexIdentity = Get-IndexIdentity $ROCmIndexUrl
+    $_recordedRocmIndex = ""
+    if (Test-Path -LiteralPath $script:RocmIndexRecord -PathType Leaf) {
+        try { $_recordedRocmIndex = Get-IndexIdentity ((Get-Content -LiteralPath $script:RocmIndexRecord -Raw -ErrorAction Stop).Trim()) } catch { $_recordedRocmIndex = "" }
+    }
+    if ($installedTorchTag -eq "rocm" -and $rocmForce.Count -eq 0 -and $_recordedRocmIndex -ne $_rocmIndexIdentity) {
+        if ($_recordedRocmIndex) {
+            substep "the ROCm trio was installed from $_recordedRocmIndex, this run selects $_rocmIndexIdentity; reinstalling the trio" "Yellow"
+        } else {
+            substep "no record of the index the ROCm trio came from; reinstalling the trio once to record it" "Yellow"
+        }
+        $rocmForce = @("--force-reinstall")
+    }
+    if ($installedTorchTag -eq "rocm" -and $rocmForce.Count -eq 0 -and $VenvPyExe -and (Test-Path -LiteralPath $VenvPyExe)) {
+        # torch alone names the family: a companion re-resolved from PyPI (no local tag, or +cpu /
+        # +cuNNN) satisfies its pin without linking ROCm and the pinned install leaves it. AMD tags
+        # all three +rocm; community wheels carry a git hash. Payload too: a dist-info without its
+        # package, or a RECORD row gone or resized, is damage the pinned install would not repair.
+        # RECORD rows, not Distribution.files (3.13 filters to existing files); bytecode left out.
+        # No answer forces the trio. Only the companions the trio installs: Windows on ARM has no
+        # torchaudio, so a leftover one there is not a repairable mismatch.
+        $_companionNames = if ($WinArm64NoAudio) { "('torchvision',)" } else { "('torchvision', 'torchaudio')" }
+        $_companionProbe = Invoke-BoundedPythonProbe -PythonExe $VenvPyExe -Code "import csv, io, importlib.util as u, importlib.metadata as m, os; out = []`nfor n in $($_companionNames):`n    try:`n        d = m.distribution(n)`n    except m.PackageNotFoundError:`n        continue`n    v = d.version`n    if u.find_spec(n) is None:`n        out.append(n + '==' + v + ' (payload missing)')`n        continue`n    rec = d.read_text('RECORD')`n    damaged = not rec`n    for row in csv.reader(io.StringIO(rec or '')):`n        if damaged or len(row) < 3 or not row[0] or row[0].endswith('.pyc') or not row[2]:`n            continue`n        try:`n            damaged = os.stat(d.locate_file(row[0])).st_size != int(row[2])`n        except (OSError, ValueError):`n            damaged = True`n    if damaged:`n        out.append(n + '==' + v + ' (payload damaged)')`n        continue`n    t = (v.split('+', 1) + [''])[1].lower()`n    if not t or t.startswith('cpu') or t.startswith('cu') or t.startswith('xpu'):`n        out.append(n + '==' + v)`nprint(' '.join(out))"
+        $_companionMismatch = if ($_companionProbe.Ok) { $_companionProbe.Output.Trim() } else { "probe did not answer" }
+        if ($_companionMismatch) {
+            substep "torchvision/torchaudio are not ROCm builds ($_companionMismatch); reinstalling the trio" "Yellow"
+            $rocmForce = @("--force-reinstall")
+        }
+    }
     while ($true) {
         # Built here, not in the verbose branch (a splat assigned there is unset on the other path).
         $_rocmTrio = @($ROCmTorchSpec, $ROCmVisionSpec, $ROCmAudioSpec)
         if ($WinArm64NoAudio) { $_rocmTrio = @($ROCmTorchSpec, $ROCmVisionSpec) }
         if ($script:UnslothVerbose) {
-            Fast-Install @_rocmTrio --force-reinstall --index-url $ROCmIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+            Fast-Install @_rocmTrio @rocmForce --index-url $ROCmIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
             $torchInstallExit = $LASTEXITCODE
             $output = ""
         } else {
-            $output = Fast-Install @_rocmTrio --force-reinstall --index-url $ROCmIndexUrl | Out-String
+            $output = Fast-Install @_rocmTrio @rocmForce --index-url $ROCmIndexUrl | Out-String
             $torchInstallExit = $LASTEXITCODE
         }
         if ($torchInstallExit -eq 0 -or -not $_rocmKeptActive) { break }
@@ -5357,6 +5407,10 @@ if ($ROCmIndexUrl) {
     } else {
         # Tell install_python_stack.py to skip the probe and the manual-install warning.
         $env:UNSLOTH_ROCM_TORCH_INSTALLED = "1"
+        # Recorded after the trio landed (see $rocmForce).
+        try {
+            if ($script:RocmIndexRecord) { Set-Content -LiteralPath $script:RocmIndexRecord -Value (Get-IndexIdentity $ROCmIndexUrl) -Encoding ascii -NoNewline }
+        } catch { }
         substep "GPU ROCm PyTorch installed ($ROCmGfxArch) -- training and GPU inference will use the GPU" "Cyan"
     }
 }

@@ -7257,3 +7257,192 @@ class TestRocmMiscomputingArchDemotion:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TEST: install_python_stack.py -- the AMD bitsandbytes reinstall is evidence-gated
+
+
+class TestBnbRocmProvenance:
+    """A no-op `studio update` on an AMD host must not refetch the bnb wheel.
+
+    Measured on gfx1151: two 43 MB downloads from release-assets.githubusercontent.com
+    per Linux update (39 MB twice on Windows), because --force-reinstall from a release
+    URL fetches the wheel before it can decide it already has it, and _ensure_rocm_torch
+    is called twice by one dependency pass.
+    """
+
+    URL = "https://example.invalid/bitsandbytes-1.33.7.preview-py3-none-manylinux.whl"
+    # What the release URL served when the last run looked: an ETag and a size.
+    ASSET = '"3f2a"|43000000'
+
+    @pytest.fixture(autouse = True)
+    def _healthy_payload(self, monkeypatch):
+        monkeypatch.setattr(stack_mod.install_manifest, "damaged_payload_files", lambda *a, **k: [])
+        monkeypatch.setattr(stack_mod, "_bnb_asset_identity", lambda _url: self.ASSET)
+        monkeypatch.setattr(stack_mod, "_BNB_ROCM_PASS_ASSET", None)
+
+    def _evidence(self, monkeypatch, **extra):
+        monkeypatch.setattr(
+            stack_mod,
+            "_PASS_EVIDENCE",
+            {"bnb_rocm": f"url:{self.URL}", "bnb_rocm_asset": self.ASSET, **extra},
+        )
+
+    def test_a_republished_wheel_at_the_same_url_is_fetched_again(self, monkeypatch):
+        """continuous-release_main replaces the bytes under a fixed asset path, so the URL
+        pip recorded says where the wheel came from, not which one it is."""
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        self._evidence(monkeypatch)
+        monkeypatch.setattr(stack_mod, "_bnb_asset_identity", lambda _url: '"9c1d"|43100000')
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is False
+
+    def test_an_unreachable_release_page_keeps_the_recorded_build(self, monkeypatch):
+        """Offline, the reinstall could not fetch anything either; the build on disk is one
+        the last run recorded landing deliberately."""
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        self._evidence(monkeypatch)
+        monkeypatch.setattr(stack_mod, "_bnb_asset_identity", lambda _url: None)
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is True
+        assert stack_mod._BNB_ROCM_PASS_ASSET == self.ASSET
+
+    def test_a_run_that_recorded_no_asset_identity_reinstalls_once(self, monkeypatch):
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        monkeypatch.setattr(stack_mod, "_PASS_EVIDENCE", {"bnb_rocm": f"url:{self.URL}"})
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is False
+
+    def test_the_kept_asset_identity_is_what_the_pass_records(self, monkeypatch):
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        self._evidence(monkeypatch)
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is True
+        assert stack_mod._BNB_ROCM_PASS_ASSET == self.ASSET
+        # A second HEAD would only repeat the first.
+        monkeypatch.setattr(
+            stack_mod,
+            "_bnb_asset_identity",
+            lambda _url: (_ for _ in ()).throw(AssertionError("second HEAD")),
+        )
+        stack_mod._record_bnb_rocm_provenance()
+        assert stack_mod._BNB_ROCM_PASS_ASSET == self.ASSET
+
+    def _installed(self, monkeypatch, version, direct_url):
+        monkeypatch.setattr(stack_mod, "_installed_distribution_version", lambda _n: version)
+        monkeypatch.setattr(stack_mod, "_installed_direct_url", lambda _n: direct_url)
+
+    def test_a_matching_direct_url_recorded_last_run_is_kept(self, monkeypatch):
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        self._evidence(monkeypatch)
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is True
+
+    def test_a_forced_pass_reinstalls(self, monkeypatch):
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        monkeypatch.setattr(stack_mod, "_PASS_EVIDENCE", None)
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is False
+
+    def test_the_escape_hatch_reinstalls(self, monkeypatch):
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        self._evidence(monkeypatch)
+        monkeypatch.setenv(stack_mod._FULL_DEPS_ENV, "1")
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is False
+
+    def test_a_damaged_payload_reinstalls(self, monkeypatch):
+        """Metadata survives a quarantined payload, and the reinstall this would skip is
+        the only thing that puts the shared objects back."""
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        monkeypatch.setattr(
+            stack_mod.install_manifest,
+            "damaged_payload_files",
+            lambda *a, **k: ["bitsandbytes/libbitsandbytes_rocm.so"],
+        )
+        self._evidence(monkeypatch)
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is False
+
+    def test_an_absent_bitsandbytes_reinstalls(self, monkeypatch):
+        self._installed(monkeypatch, None, None)
+        self._evidence(monkeypatch)
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is False
+
+    def test_a_wheel_url_that_moved_reinstalls(self, monkeypatch):
+        """A new installer release naming a newer wheel must fetch it exactly once."""
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        self._evidence(monkeypatch)
+        assert stack_mod._bnb_rocm_install_is_current(self.URL + ".new") is False
+
+    def test_a_wheel_nobody_recorded_reinstalls(self, monkeypatch):
+        """The PyPI wheel another step pulled in reads identically on disk to the one
+        this path installs on purpose, so only the manifest can tell them apart."""
+        self._installed(monkeypatch, "0.50.0", None)
+        monkeypatch.setattr(stack_mod, "_PASS_EVIDENCE", {"bnb_rocm": None})
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is False
+
+    def test_a_recorded_pypi_fallback_is_kept(self, monkeypatch):
+        """The fallback this path takes when the release page is unreachable. Recorded
+        deliberately last run, so reinstalling it every update buys nothing."""
+        self._installed(monkeypatch, "0.50.0", None)
+        monkeypatch.setattr(stack_mod, "_PASS_EVIDENCE", {"bnb_rocm": "version:0.50.0"})
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is True
+
+    def test_a_filename_version_match_stands_in_for_a_missing_direct_url(self, monkeypatch):
+        """1.33.7.preview in the filename is 1.33.7rc0 in the metadata."""
+        assert stack_mod._bnb_wheel_version(self.URL) == "1.33.7.preview"
+        assert stack_mod._versions_are_same_release("1.33.7rc0", "1.33.7.preview") is True
+        assert stack_mod._bnb_provenance_matches_request("version:1.33.7rc0", self.URL) is True
+
+    def test_the_second_call_of_one_pass_does_not_repeat_the_install(self, monkeypatch):
+        """_ensure_rocm_torch runs twice per dependency pass. The first call settles it."""
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        monkeypatch.setattr(stack_mod, "_PASS_EVIDENCE", None)
+        monkeypatch.setattr(stack_mod, "_BNB_ROCM_PASS_PROVENANCE", None)
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is False
+        stack_mod._record_bnb_rocm_provenance()
+        assert stack_mod._BNB_ROCM_PASS_PROVENANCE == f"url:{self.URL}"
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is True
+
+    def test_a_clobber_between_the_two_calls_is_still_repaired(self, monkeypatch):
+        """The with-deps steps run BETWEEN the two calls and can re-resolve bnb to a
+        generic wheel, which is the whole reason the torch repair runs twice."""
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        monkeypatch.setattr(stack_mod, "_PASS_EVIDENCE", None)
+        monkeypatch.setattr(stack_mod, "_BNB_ROCM_PASS_PROVENANCE", None)
+        stack_mod._record_bnb_rocm_provenance()
+        self._installed(monkeypatch, "0.50.0", None)
+        assert stack_mod._bnb_rocm_install_is_current(self.URL) is False
+
+    def test_a_kept_wheel_is_still_recorded_for_the_next_update(self, monkeypatch):
+        """Without this the manifest this pass writes forgets what is installed and the
+        next update fetches the wheel again."""
+        import ast
+
+        source = _STACK_PATH.read_text(encoding = "utf-8")
+        calls = [
+            node
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_record_bnb_rocm_provenance"
+        ]
+        # Two per platform path: the install arm and the keep arm.
+        assert len(calls) == 4
+        assert '"bnb_rocm": _BNB_ROCM_PASS_PROVENANCE,' in source
+
+    def test_a_current_wheel_makes_the_linux_path_install_nothing(self, monkeypatch):
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        monkeypatch.setattr(stack_mod, "_bnb_rocm_prerelease_url", lambda: self.URL)
+        self._evidence(monkeypatch)
+        pip, pip_try = run_ensure_rocm_torch(
+            probe = json.dumps({"version": "2.10.0+rocm7.1", "hip": "7.1", "cuda": None}),
+            _has_rocm_gpu = True,
+            _detect_rocm_version = (7, 1),
+        )
+        assert pip.call_count == 0
+        assert pip_try.call_count == 0
+
+    def test_a_current_wheel_makes_the_windows_path_install_nothing(self, monkeypatch):
+        self._installed(monkeypatch, "1.33.7rc0", self.URL)
+        monkeypatch.setitem(stack_mod._BNB_ROCM_PRERELEASE_URLS, "win_amd64", self.URL)
+        self._evidence(monkeypatch)
+        monkeypatch.setattr(stack_mod, "_persist_bnb_rocm_version", lambda _v: True)
+        monkeypatch.setattr(stack_mod, "_detect_bnb_rocm_dll_ver", lambda: "72")
+        with patch.object(stack_mod, "pip_install_try", return_value = True) as mock_pip:
+            assert stack_mod._install_bnb_windows_rocm() is True
+        assert mock_pip.call_count == 0

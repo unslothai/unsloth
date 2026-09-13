@@ -415,7 +415,7 @@ class TestManifestRecordsTheFlavor:
         read = _line_of(
             _STACK_SRC, "_RECORDED_TORCH_TAG = install_manifest.recorded_torch_flavor()"
         )
-        drop = _line_of(_STACK_SRC, "if not install_manifest.remove_manifest():")
+        drop = _line_of(_STACK_SRC, "if install_manifest.remove_manifest():")
         assert read < drop
         assert (
             "def install_python_stack"
@@ -497,9 +497,8 @@ class TestABrokenTorchForcesItsOwnReinstall:
             f"other order leaves the reinstall announced but unreachable"
         )
 
-    @pytest.mark.parametrize("force_var", ["$xpuForce", "$cpuForce"])
+    @pytest.mark.parametrize("force_var", ["$rocmForce", "$xpuForce", "$cpuForce"])
     def test_every_conditional_force_gate_reads_the_flag(self, force_var):
-        # The ROCm arm forces unconditionally, so only these two have a gate to miss.
         assignments = [
             line
             for line in _SETUP_SRC.splitlines()
@@ -515,13 +514,6 @@ class TestABrokenTorchForcesItsOwnReinstall:
             f"{force_var} never forces on a definitively unimportable wheel, so the "
             f"resolver keeps it: its on-disk tag is unchanged and the range is satisfied"
         )
-
-    def test_the_rocm_arm_needs_no_gate(self):
-        rocm = _SETUP_SRC[_SETUP_SRC.index("if ($ROCmIndexUrl) {") :]
-        rocm = rocm[: rocm.index("if ($XpuIndexUrl) {")]
-        assert (
-            "--force-reinstall" in rocm and "$rocmForce" not in rocm
-        ), "the ROCm arm forces every time, so a broken wheel is already replaced there"
 
     def test_the_flag_is_still_raised_where_the_import_definitively_failed(self):
         assert "$script:TorchImportDefinitivelyFailed = $true" in _SETUP_SRC
@@ -607,3 +599,58 @@ class TestPinProvenanceMustBeABoolean:
             encoding = "utf-8",
         )
         assert install_manifest.recorded_torch_flavor_was_pinned(tmp_path) is True
+
+
+def test_the_rocm_arm_forces_a_reinstall_only_when_the_other_arms_would():
+    """The ROCm arm used to pass --force-reinstall unconditionally, so every update on a
+    Windows ROCm venv re-resolved torch, torchvision and torchaudio against the ROCm index
+    and moved their resolved dependencies. It now keys the flag on the same three facts
+    the XPU and CPU arms read."""
+    text = _SETUP_PS1.read_text(encoding = "utf-8")
+    start = text.index('substep "installing PyTorch (AMD ROCm, $ROCmGfxArch)..."')
+    end = text.index('substep "GPU ROCm PyTorch installed', start)
+    arm = text[start:end]
+    assert "--force-reinstall --index-url $ROCmIndexUrl" not in arm
+    assert arm.count("@rocmForce --index-url $ROCmIndexUrl") == 2
+    assert 'if ($installedTorchTag -ne "rocm") { $rocmForce = @("--force-reinstall") }' in arm
+    assert "if ($script:PinChangedForceReinstall) { $rocmForce" in arm
+    assert "if ($script:TorchImportDefinitivelyFailed) { $rocmForce" in arm
+    # torch alone names the family: a companion re-resolved from PyPI satisfies its pin
+    # without linking ROCm, and only a forced reinstall replaces a satisfied package.
+    companion = arm[arm.index("$_companionNames = ") :]
+    companion = companion[: companion.index("while ($true)")]
+    # Both spellings: Windows on ARM installs no torchaudio, so it is not probed there.
+    assert "('torchvision', 'torchaudio')" in companion
+    assert "('torchvision',)" in companion
+    assert "$WinArm64NoAudio" in companion
+    # +cpu, +cuNNN and +xpu companions beside a ROCm torch all force the trio.
+    assert "t.startswith('cpu') or t.startswith('cu') or t.startswith('xpu')" in companion
+    assert '$rocmForce = @("--force-reinstall")' in companion
+    assert '"' not in companion[companion.index("-Code ") + 7 : companion.index("print(")]
+
+
+def test_the_rocm_trio_is_reinstalled_when_the_architecture_index_moves():
+    """The +rocm tag names the family, not the GPU architecture: AMD publishes one index
+    per architecture family, so a changed UNSLOTH_ROCM_GFX_ARCH or a replaced card moves
+    the index while the resident trio still satisfies its pins. The index a trio came
+    from is recorded after each successful install and compared before the fast path."""
+    text = _SETUP_PS1.read_text(encoding = "utf-8")
+    force = text.index("$_recordedRocmIndex -ne $_rocmIndexIdentity")
+    record = text.index("Set-Content -LiteralPath $script:RocmIndexRecord")
+    installed = text.index('$env:UNSLOTH_ROCM_TORCH_INSTALLED = "1"')
+    assert force < installed < record
+    # Recorded, compared and logged as a credential-free identity: a mirror URL can carry
+    # userinfo or a token, and the record and the reinstall message must carry neither.
+    record_line = text[record : text.index("\n", record)]
+    assert "Get-IndexIdentity $ROCmIndexUrl" in record_line
+    assert "$ROCmIndexUrl.TrimEnd" not in record_line
+    message = text.index("the ROCm trio was installed from $_recordedRocmIndex")
+    message_line = text[message : text.index("\n", message)]
+    assert "$ROCmIndexUrl" not in message_line
+    identity = text[
+        text.index("function Get-IndexIdentity") : text.index("function Test-RocmGfx211Leaf")
+    ]
+    assert "]+@', '$1'" in identity and "-split '[?#]'" in identity
+    # The record follows the install, never precedes it: a failed trio must not be recorded.
+    failed = text.index("AMD ROCm PyTorch install failed -- falling back to CPU")
+    assert failed < record

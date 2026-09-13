@@ -2040,6 +2040,31 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
             substep "$_setup_pin_leaf pinned over an XPU wheel -- forcing dependency pass to migrate..."
             _SKIP_PYTHON_DEPS=false
         fi
+        # As setup.ps1's "Torch-index pin changed" branch: an explicit cu*/rocm*/cpu pin over
+        # ANOTHER family's torch is a request only the dependency pass acts on, and the version
+        # compare would call it up to date. Labelled wheels only (an untagged torch names no
+        # family); custom leaves left alone.
+        _setup_pin_have_family=""
+        case "${_setup_pin_ver:-}" in
+            *+cu[0-9]*) _setup_pin_have_family=cu ;;
+            *+rocm*) _setup_pin_have_family=rocm ;;
+            *+cpu) _setup_pin_have_family=cpu ;;
+            *+xpu) _setup_pin_have_family=xpu ;;
+        esac
+        _setup_pin_want_family=""
+        if [ "$_setup_pin_known_nonxpu" = true ]; then
+            case "$_setup_pin_leaf" in
+                cu[0-9]*) _setup_pin_want_family=cu ;;
+                rocm[0-9]* | gfx[0-9]*) _setup_pin_want_family=rocm ;;
+                cpu) _setup_pin_want_family=cpu ;;
+            esac
+        fi
+        if [ "$_SKIP_PYTHON_DEPS" = true ] && [ -n "$_setup_pin_want_family" ] \
+            && [ -n "$_setup_pin_have_family" ] && [ "$_setup_pin_have_family" != xpu ] \
+            && [ "$_setup_pin_have_family" != "$_setup_pin_want_family" ]; then
+            substep "$_setup_pin_leaf pinned over a +$_setup_pin_have_family torch wheel -- forcing dependency pass to reinstall torch from the pin..."
+            _SKIP_PYTHON_DEPS=false
+        fi
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
         substep "$_PKG_NAME $INSTALLED_VER -> $LATEST_VER available, updating..."
     elif [ -z "$LATEST_VER" ]; then
