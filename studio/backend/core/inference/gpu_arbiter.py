@@ -38,6 +38,7 @@ def _evict_chat() -> None:
     import time
 
     from core.inference import get_inference_backend
+    from core.inference.resident_models import get_registry
     from routes.inference import get_llama_cpp_backend
 
     from core.inference.llama_cpp import chat_load_active
@@ -48,6 +49,13 @@ def _evict_chat() -> None:
     # the cancel event the download loop polls, so it aborts.
     if llama.is_active or chat_load_active():
         llama.unload_model()
+    # Secondary resident slots hold VRAM the handoff must free too: the exclusive
+    # owner grant is for the whole chat side, not just the active backend. Reached
+    # through core.inference (the registry lives there); None only before the
+    # route module has been imported, when no slot can exist yet.
+    registry = get_registry()
+    if registry is not None:
+        registry.teardown_all()
     orchestrator = get_inference_backend()
     if orchestrator.active_model_name:
         orchestrator.unload_model(orchestrator.active_model_name)

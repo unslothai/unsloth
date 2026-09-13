@@ -89,6 +89,12 @@ from core.inference.audio_errors import (
     AudioGenerationCancelledError,
 )
 from core.inference import context_refusal
+from core.inference import resident_models
+from core.inference.resident_models import (
+    ResidentCapacityError,
+    ResidentLlamaRegistry,
+    residency_enabled,
+)
 from core.inference.context_window import (
     estimate_message_tokens as _estimate_message_tokens,
     estimate_messages_tokens as _estimate_messages_tokens,
@@ -7246,12 +7252,117 @@ def _resolve_model_identifier_for_request(
     return str(grant.canonical_path), display_label, True
 
 
-# GGUF inference backend (llama-server)
+# GGUF inference backend (llama-server). The module-level object stays the
+# single-model server's backend and the idle fallback when residency is enabled;
+# the registry owns which resident backend is currently active.
 _llama_cpp_backend = LlamaCppBackend()
+_resident_registry = ResidentLlamaRegistry(default_backend = _llama_cpp_backend)
+resident_models.set_registry(_resident_registry)
 
 
 def get_llama_cpp_backend() -> LlamaCppBackend:
-    return _llama_cpp_backend
+    """The active GGUF backend.
+
+    With multi-residency off (the default) this is always the module-level
+    backend, as before. With it on, it is the backend of the slot the last
+    successful load activated -- so code that means "the active/default chat
+    backend" keeps working unchanged while a request that names another
+    resident model resolves that slot's backend explicitly.
+    """
+    return _resident_registry.active_backend()
+
+
+def get_resident_registry() -> ResidentLlamaRegistry:
+    """The resident-slot table for route-level and shutdown callers. Core
+    modules reach it through ``core.inference.resident_models.get_registry``
+    so no core module imports the route package for it."""
+    return _resident_registry
+
+
+def iter_resident_llama_backends() -> "list[LlamaCppBackend]":
+    """Every loaded GGUF backend, active first. Single-model servers list one.
+
+    Identity-style checks iterate this rather than reading the active backend
+    alone, so a request naming any resident model is recognised without changing
+    what an omitted model resolves to.
+    """
+    if not residency_enabled():
+        active = get_llama_cpp_backend()
+        return [active] if active.is_loaded else []
+    return _resident_registry.loaded_backends(active_first = True)
+
+
+def _resident_target_slot_needed(request: "LoadRequest", llama_backend) -> bool:
+    """Whether a GGUF load should run on a fresh resident slot, not the active backend.
+
+    True when residency is on and the load must not (or cannot) swap the active
+    backend in place: a keep-existing load with a different model currently
+    active, or any load while the idle default backend is what is current (a
+    session's first load under residency).
+    """
+    if not residency_enabled():
+        return False
+    return llama_backend is _resident_registry.default_backend or (
+        request.keep_existing_loaded and llama_backend.is_loaded
+    )
+
+
+def _resident_capacity_message() -> str:
+    from core.inference.resident_models import _MAX_SLOTS_ENV, max_resident_slots
+    return (
+        f"Cannot keep more than {max_resident_slots()} GGUF model(s) resident. "
+        f"Unload one first, or raise {_MAX_SLOTS_ENV}."
+    )
+
+
+def _resident_visible_to_caller(identifier, public_id) -> bool:
+    """Whether a resident model's identity may be shown to the current caller.
+
+    Unmanaged installs and the owner see everything. A managed caller sees a
+    resident only when a reference their account published (or shares) names
+    it: the per-modality record keeps the loader's request-facing ids, so
+    either spelling counts. Foreign residents stay unlisted -- a granted caller
+    naming one explicitly is still served, exactly as the single-model server
+    treats its one resident.
+    """
+    if not account_access.managed_account():
+        return True
+    for reference in (identifier, public_id):
+        if reference and not account_access.resident_hidden("chat", reference):
+            return True
+    return False
+
+
+def _resident_models_status_rows() -> "list[dict]":
+    """Additive per-resident rows for GET /api/inference/status.
+
+    One row per loaded slot, active flagged, identity read through each backend
+    at poll time (the registry mirrors nothing). Empty unless multi-residency is
+    on, so the single-model response shape is unchanged.
+    """
+    if not residency_enabled():
+        return []
+    rows = []
+    active_slot = _resident_registry.active_slot()
+    for backend in _resident_registry.loaded_backends(active_first = True):
+        slot = _resident_registry.slot_for_backend(backend)
+        if slot is None:
+            continue
+        identifier = getattr(backend, "model_identifier", None)
+        public_id = _llama_public_model_id(backend)
+        # A resident another account loaded is not this caller's to see listed.
+        if not _resident_visible_to_caller(identifier, public_id):
+            continue
+        rows.append(
+            {
+                "slot_id": slot.id,
+                "is_active": slot.id == active_slot.id if active_slot is not None else False,
+                "model_identifier": identifier,
+                "model": public_id,
+                "gguf_variant": getattr(backend, "hf_variant", None),
+            }
+        )
+    return rows
 
 
 # Serializes opt-in auto-switch loads so two requests can't race a swap. One
@@ -8232,13 +8343,17 @@ def _resident_id_is_namespaced() -> bool:
     namespaced request cannot be told apart from it. Refusing one there would 404
     the weights that are in fact serving, so treat it as undecidable instead.
     """
-    llama_backend = get_llama_cpp_backend()
-    if getattr(llama_backend, "is_loaded", False):
-        candidates = (
-            getattr(llama_backend, "model_identifier", None),
-            getattr(llama_backend, "_openai_advertised_id", None),
-            _llama_public_model_id(llama_backend),
+    _gguf_candidates: list = []
+    for _resident in iter_resident_llama_backends():
+        _gguf_candidates.extend(
+            (
+                getattr(_resident, "model_identifier", None),
+                getattr(_resident, "_openai_advertised_id", None),
+                _llama_public_model_id(_resident),
+            )
         )
+    if _gguf_candidates:
+        candidates = tuple(_gguf_candidates)
     else:
         orchestrator = get_inference_backend()
         active = getattr(orchestrator, "active_model_name", None)
@@ -8250,42 +8365,89 @@ def _resident_id_is_namespaced() -> bool:
     return any("/" in (public_model_id(c) or "") for c in candidates if c)
 
 
-def _loaded_satisfies(requested: str) -> bool:
-    """Whether what is serving right now actually answers to *requested*.
+def _llama_backend_satisfies(llama_backend, requested: str) -> bool:
+    """The GGUF half of :func:`_loaded_satisfies`, for ONE backend.
 
-    A bare ``org/model`` is satisfied by any loaded quant of that repo; an explicit
-    ``:QUANT`` must match the loaded one.
+    Split out so the predicate can iterate every resident backend without
+    duplicating the alias/quant rules a request-to-backend resolution also needs.
     """
     from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
     base, variant = split_model_ref(requested)
-    llama_backend = get_llama_cpp_backend()
-    if getattr(llama_backend, "is_loaded", False):
-        candidates = [
-            candidate
-            for candidate in (
-                getattr(llama_backend, "model_identifier", None),
-                getattr(llama_backend, "_openai_advertised_id", None),
-                _llama_public_model_id(llama_backend),
-            )
-            if candidate
-        ]
-        if not _matches_any(base, candidates):
-            return False
-        if not looks_like_quant(variant):
-            # An Ollama-style tag (":latest", ":8b") names no file, so the repo is enough.
+    candidates = [
+        candidate
+        for candidate in (
+            getattr(llama_backend, "model_identifier", None),
+            getattr(llama_backend, "_openai_advertised_id", None),
+            _llama_public_model_id(llama_backend),
+        )
+        if candidate
+    ]
+    if not _matches_any(base, candidates):
+        return False
+    if not looks_like_quant(variant):
+        # An Ollama-style tag (":latest", ":8b") names no file, so the repo is enough.
+        return True
+    return (getattr(llama_backend, "hf_variant", None) or "").lower() == variant.lower()
+
+
+def _loaded_satisfies(requested: str) -> bool:
+    """Whether what is serving right now actually answers to *requested*.
+
+    A bare ``org/model`` is satisfied by any loaded quant of that repo; an explicit
+    ``:QUANT`` must match the loaded one. With several models resident, any of
+    them answering is enough -- the request layer then resolves which one.
+    """
+    for _resident in iter_resident_llama_backends():
+        if _llama_backend_satisfies(_resident, requested):
             return True
-        return (getattr(llama_backend, "hf_variant", None) or "").lower() == variant.lower()
     backend = get_inference_backend()
     active = getattr(backend, "active_model_name", None)
     if not active:
         return False
+    from core.inference.openai_auto_download import looks_like_quant, split_model_ref
+
+    base, variant = split_model_ref(requested)
     # Only llama.cpp carries a quant identity, so this backend can only match on the repo.
     if looks_like_quant(variant):
         return False
     # The alias too: auto-switch records the repo id there, not in active_model_name.
     return _matches_any(
         base, [active, public_model_id(active), getattr(backend, "_openai_advertised_id", None)]
+    )
+
+
+def _llama_backend_identity_satisfies(llama_backend, requested: str) -> bool:
+    """The GGUF half of :func:`_loaded_identity_satisfies`, for ONE backend."""
+    from core.inference.openai_auto_download import split_model_ref
+
+    base, _ = split_model_ref(requested)
+    identifier = getattr(llama_backend, "model_identifier", None)
+    advertised = getattr(llama_backend, "_openai_advertised_id", None)
+    # A manual load of a local path advertises nothing, so only the path could match
+    # and answering from it would skip the recording: /v1/models and every response
+    # would report the filename. One request pays the resolver, the rest match the
+    # alias it recorded and land here.
+    if advertised is None and identifier and _looks_like_local_path(identifier):
+        return False
+    companion_roots = tuple(getattr(llama_backend, "_openai_gguf_companion_roots", ()) or ())
+    if companion_roots:
+        from core.inference.local_model_resolver import (
+            local_gguf_companion_roots,
+            local_gguf_companion_state,
+        )
+
+        # A revision pin drops repo scope; a repo alias must notice newly cached companions.
+        if _looks_like_local_path(base) or companion_roots != local_gguf_companion_roots(
+            identifier, repo_level = True
+        ):
+            return False
+        if getattr(llama_backend, "_openai_gguf_companion_state", ()) != local_gguf_companion_state(
+            companion_roots
+        ):
+            return False
+    return _matches_any(base, (identifier, advertised)) and _llama_backend_satisfies(
+        llama_backend, requested
     )
 
 
@@ -8298,45 +8460,106 @@ def _loaded_identity_satisfies(requested: str) -> bool:
     A request naming the load path itself is held back until that recording has
     happened, for the same reason.
     """
-    from core.inference.openai_auto_download import split_model_ref
-
-    base, _ = split_model_ref(requested)
-    llama_backend = get_llama_cpp_backend()
-    if getattr(llama_backend, "is_loaded", False):
-        identifier = getattr(llama_backend, "model_identifier", None)
-        advertised = getattr(llama_backend, "_openai_advertised_id", None)
-        # A manual load of a local path advertises nothing, so only the path could match
-        # and answering from it would skip the recording: /v1/models and every response
-        # would report the filename. One request pays the resolver, the rest match the
-        # alias it recorded and land here.
-        if advertised is None and identifier and _looks_like_local_path(identifier):
-            return False
-        companion_roots = tuple(getattr(llama_backend, "_openai_gguf_companion_roots", ()) or ())
-        if companion_roots:
-            from core.inference.local_model_resolver import (
-                local_gguf_companion_roots,
-                local_gguf_companion_state,
-            )
-
-            # A revision pin drops repo scope; a repo alias must notice newly cached companions.
-            if _looks_like_local_path(base) or companion_roots != local_gguf_companion_roots(
-                identifier, repo_level = True
-            ):
-                return False
-            if getattr(
-                llama_backend, "_openai_gguf_companion_state", ()
-            ) != local_gguf_companion_state(companion_roots):
-                return False
-        return _matches_any(base, (identifier, advertised)) and _loaded_satisfies(requested)
+    for _resident in iter_resident_llama_backends():
+        if _llama_backend_identity_satisfies(_resident, requested):
+            return True
     backend = get_inference_backend()
     active = getattr(backend, "active_model_name", None)
     if not active:
         return False
+    from core.inference.openai_auto_download import split_model_ref
+
+    base, _ = split_model_ref(requested)
     advertised = getattr(backend, "_openai_advertised_id", None)
     # Same rule as the llama branch: answering from the path alone skips the recording.
     if advertised is None and _looks_like_local_path(active):
         return False
     return _matches_any(base, (active, advertised)) and _loaded_satisfies(requested)
+
+
+class _ResolvedResident(NamedTuple):
+    """The resident backend a request's ``model`` field resolved to.
+
+    One answer for routing, response ids and monitoring, so a request cannot
+    match one backend with the predicate and generate against another.
+    """
+
+    backend: Any
+    slot_id: Optional[int]
+    model_identifier: Optional[str]
+    advertised_id: Optional[str]
+    public_model_id: Optional[str]
+    is_active: bool
+
+
+def resolve_resident_llama(requested_model: Any) -> Optional[_ResolvedResident]:
+    """Resolve a requested model id against every resident GGUF backend.
+
+    Uses the strict identity rules of :func:`_loaded_identity_satisfies`
+    (per-backend), so a path-derived alias still routes through the resolver's
+    recording path and a quant tag must match the resident variant. No
+    substring matching. Returns None for an omitted, non-string or unknown
+    model -- the caller then serves the active backend exactly as a
+    single-model server does, after its own refusal paths have run.
+    """
+    if not isinstance(requested_model, str) or not requested_model.strip():
+        return None
+    if requested_model == _RELOAD_ONLY_MODEL:
+        return None
+    active = get_llama_cpp_backend()
+    for backend in iter_resident_llama_backends():
+        identifier = getattr(backend, "model_identifier", None)
+        if _llama_backend_identity_satisfies(backend, requested_model):
+            matched = True
+        elif (
+            # Path parity for a manual local-path load: nothing is advertised
+            # yet, and the switch helper's alias recording only ever reaches
+            # the ACTIVE backend, so a request naming a secondary by its load
+            # path would otherwise be answered by the active model. Accept the
+            # exact path and record the clean public id -- the same effect
+            # _record_serving_alias has for the active backend -- so /v1/models
+            # and responses report the id and later requests match the alias.
+            identifier
+            and not getattr(backend, "_openai_advertised_id", None)
+            and _matches_any(requested_model, (identifier,))
+        ):
+            backend._openai_advertised_id = _llama_public_model_id(backend)
+            matched = True
+        else:
+            continue
+        slot = _resident_registry.slot_for_backend(backend)
+        return _ResolvedResident(
+            backend = backend,
+            slot_id = slot.id if slot is not None else None,
+            model_identifier = identifier,
+            advertised_id = getattr(backend, "_openai_advertised_id", None),
+            public_model_id = _llama_public_model_id(backend),
+            is_active = backend is active,
+        )
+    return None
+
+
+def _serving_llama_backend(requested_model: Any) -> Any:
+    """The backend a generation request must run on, after model resolution.
+
+    Exactly three outcomes, decided once per request:
+
+    * model omitted (None/blank/``_RELOAD_ONLY_MODEL``) -- the active backend,
+      preserving the single-model default;
+    * model names a resident backend -- that backend, active or secondary, and
+      every downstream read (capabilities, generation, monitoring labels) uses
+      the same object;
+    * model explicit but no resident answers -- the active backend. This is
+      NOT a silent wrong-model fallback: the switch helper has already run and
+      either raised (an attributable reference -- quantified, local, or known
+      to this server -- is refused 404/503, or was auto-loaded and is now
+      resident) or deliberately fell through. The fall-through is the
+      documented drop-in compatibility rule ("any model name serves the loaded
+      model"), so an unattributable name such as a LiteLLM vendor id keeps
+      working exactly as on a single-model server.
+    """
+    resolved = resolve_resident_llama(requested_model)
+    return resolved.backend if resolved is not None else get_llama_cpp_backend()
 
 
 def _raise_still_indexing(requested_model: str, fastapi_request) -> None:
@@ -8993,11 +9216,24 @@ async def _maybe_auto_switch_model(
         ):
             _refuse_non_gguf_endpoint()
         # Resolved once, off the loop: a cold orchestrator build waits on hardware detection.
-        target_backend = (
-            get_llama_cpp_backend()
-            if target_is_gguf
-            else await asyncio.to_thread(get_inference_backend)
-        )
+        # Residency: a request naming a SECONDARY resident must judge "already
+        # serving" (and record its alias) against THAT backend. Leaving the
+        # active one here would fail the already-serving check and swap the
+        # active model out to load weights the server already holds.
+        if target_is_gguf:
+            target_backend = (
+                next(
+                    (
+                        resident
+                        for resident in iter_resident_llama_backends()
+                        if _llama_backend_satisfies(resident, requested_model)
+                    ),
+                    None,
+                )
+                or get_llama_cpp_backend()
+            )
+        else:
+            target_backend = await asyncio.to_thread(get_inference_backend)
         backend = get_llama_cpp_backend()
         # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
         # repo, so it never reloads a different local quant that already serves it.
@@ -9515,6 +9751,9 @@ def release_chat_gpu_claim() -> bool:
         llama = get_llama_cpp_backend()
         # is_active, not is_loaded: a starting model holds VRAM, and an HF load has no process yet.
         if llama.is_active or chat_load_active():
+            return False
+        # Secondary residents hold the GPU even with nothing active.
+        if _resident_registry.any_slot_busy():
             return False
         backend = _peek_inference_backend()
         return not getattr(backend, "active_model_name", None) and not tuple(
@@ -12609,12 +12848,18 @@ class _NativeAudioAvailability(NamedTuple):
     owner_snapshot: tuple[Optional[str], int] = (None, 0)
 
 
-def _native_audio_post_handoff_free_gb() -> Optional[_NativeAudioAvailability]:
+def _native_audio_post_handoff_free_gb(
+    *, keep_resident: bool = False
+) -> Optional[_NativeAudioAvailability]:
     """Free VRAM after the outgoing Studio owner is torn down, or ``None``.
 
     Only memory attributable to a backend this CHAT handoff provably evicts is
     credited.  Training, STT, export and unknown/external processes remain in
     the live-used figure.  Missing attribution fails closed.
+
+    ``keep_resident`` marks a keep-existing load: the active llama-server stays
+    loaded, so its buffers are NOT credited -- only memory the handoff really
+    frees may enter the budget the incoming model is admitted against.
     """
     import utils.hardware as hardware
     from core.inference.gpu_arbiter import CHAT, DIFFUSION, VIDEO, owner_snapshot
@@ -12676,7 +12921,12 @@ def _native_audio_post_handoff_free_gb() -> Optional[_NativeAudioAvailability]:
         elif not _read_live():
             return None
         llama_backend = get_llama_cpp_backend()
-        if getattr(llama_backend, "is_loaded", False):
+        # A keep-existing load swaps no resident out: the active llama-server's
+        # buffers stay committed, so crediting them would admit a model onto
+        # memory this load does not actually free. Secondary residents were
+        # never credited (only the active backend's report merges), and the
+        # live reading already charges their usage.
+        if not keep_resident and getattr(llama_backend, "is_loaded", False):
             _merge_report(getattr(llama_backend, "reclaimable_gpu_memory_gb", lambda: None)())
     elif owner in (DIFFUSION, VIDEO):
         # Diffusers/Video normally live in this process; native sd.cpp instead
@@ -13094,7 +13344,12 @@ async def _preflight_native_audio_placement(
 
     automatic = not placement.requested_gpu_ids
     availability = (
-        await asyncio.to_thread(_native_audio_post_handoff_free_gb) if automatic else None
+        await asyncio.to_thread(
+            _native_audio_post_handoff_free_gb,
+            keep_resident = bool(getattr(request, "keep_existing_loaded", False)),
+        )
+        if automatic
+        else None
     )
 
     def _resolve() -> tuple[Optional[List[int]], Optional[float], Optional[dict[int, float]]]:
@@ -13546,7 +13801,9 @@ def _guard_chat_load_against_training(
         # Revalidate as one atomic post-handoff capacity snapshot.  Combining a
         # fresh free-memory read with older owner bytes can count a reset cache
         # twice, so the training policy consumes this value directly.
-        availability = _native_audio_post_handoff_free_gb()
+        availability = _native_audio_post_handoff_free_gb(
+            keep_resident = bool(getattr(request, "keep_existing_loaded", False))
+        )
         selected = list(placement.resolved_gpu_ids or ())
         if availability is None or len(selected) != 1:
             native_post_handoff_free_gb = None
@@ -13927,6 +14184,24 @@ def _names_the_resident_model(resident: Optional[str], model_path: str) -> bool:
     return bool(resident) and model_id_matches(model_path, resident)
 
 
+def _named_secondary_slot(model_path: str):
+    """The resident slot (other than the active backend) that ``model_path`` names.
+
+    Same naming rules as the active-backend unload branch, so an unload finds a
+    secondary under either its repo id or the snapshot path a cached row pinned.
+    None when nothing matches or multi-residency is off.
+    """
+    active = get_llama_cpp_backend()
+    for backend in iter_resident_llama_backends():
+        if backend is active:
+            continue
+        if _names_the_resident_model(getattr(backend, "model_identifier", None), model_path):
+            slot = _resident_registry.slot_for_backend(backend)
+            if slot is not None:
+                return slot
+    return None
+
+
 def _names_the_loading_model(loading: str, model_path: str) -> bool:
     """Whether a client's ``model_path`` names the load already in flight.
 
@@ -14017,6 +14292,12 @@ def _unload_may_evict(model_path: str) -> bool:
         or not llama_backend.is_loaded
     ):
         return True
+    # A secondary resident slot's teardown branch, mirroring the active one above.
+    for _resident in iter_resident_llama_backends():
+        if _resident is llama_backend:
+            continue
+        if _names_the_resident_model(getattr(_resident, "model_identifier", None), model_path):
+            return True
     return _unload_evicts_standard_backend(backend, model_path)
 
 
@@ -14463,6 +14744,31 @@ async def _load_model_impl(
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
+    # Before any teardown, drain or model resolution: a single-model server must
+    # refuse a keep-existing load without touching what is resident.
+    if request.keep_existing_loaded:
+        if not residency_enabled():
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    "keep_existing_loaded requires multi-residency, which is disabled "
+                    "(UNSLOTH_RESIDENT_MODEL_SLOTS is 1). Load without it to replace the "
+                    "current model, as before."
+                ),
+            )
+        # Account isolation is defined over ONE chat resident per install: the
+        # per-account visibility, sharing and control records describe a single
+        # residency. Several residents cannot be represented there, so
+        # multi-residency is only offered where those records do not exist.
+        from auth import policy as _account_policy
+        if _account_policy.installation_has_managed_accounts():
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    "keep_existing_loaded is not available on installs with managed "
+                    "accounts, which support one resident chat model at a time."
+                ),
+            )
     from core.inference.llama_cpp import LlamaServerNotFoundError
 
     def _raise_if_scoped_load_cancelled() -> None:
@@ -14611,20 +14917,23 @@ async def _load_model_impl(
         )
 
         def _reuse_loaded_gguf(
-            intent: GgufLoadIntent, *, display_name: Optional[str] = None
+            intent: GgufLoadIntent,
+            *,
+            display_name: Optional[str] = None,
+            resident = None,
         ) -> Optional[LoadResponse]:
+            resident = llama_backend if resident is None else resident
             if not (
                 # Case-sensitive filesystems keep two checkpoint paths that differ only by
                 # case distinct, so they must not dedup onto the already-loaded fast path
                 # (the intent match lowercases the identifier). Checked before the adopt so
                 # a mismatch never adopts the caller's placement.
-                _same_loaded_identifier(llama_backend.model_identifier, model_identifier)
-                and tuple(getattr(llama_backend, "_openai_gguf_companion_roots", ()) or ())
+                _same_loaded_identifier(resident.model_identifier, model_identifier)
+                and tuple(getattr(resident, "_openai_gguf_companion_roots", ()) or ())
                 == tuple(request._gguf_companion_roots)
-                and getattr(llama_backend, "_openai_gguf_companion_state", ())
-                == gguf_companion_state
-                and llama_backend.adopt_load_intent_if_matched(intent)
-                and getattr(llama_backend, "_audio_probed", True)
+                and getattr(resident, "_openai_gguf_companion_state", ()) == gguf_companion_state
+                and resident.adopt_load_intent_if_matched(intent)
+                and getattr(resident, "_audio_probed", True)
             ):
                 return None
             api_monitor.discard(_load_event)
@@ -14633,12 +14942,12 @@ async def _load_model_impl(
             _set_preview_resident(None)
             account_access.join_resident("chat")
             return _gguf_load_response(
-                llama_backend,
+                resident,
                 "already_loaded",
-                model_log_label if native_grant_backed else llama_backend.model_identifier,
+                model_log_label if native_grant_backed else resident.model_identifier,
                 display_name = model_log_label if native_grant_backed else display_name,
                 is_local_model = _loaded_is_local_model(
-                    llama_backend, native_grant_backed, llama_backend.model_identifier
+                    resident, native_grant_backed, resident.model_identifier
                 ),
                 inference_identifier = model_identifier,
             )
@@ -14661,6 +14970,60 @@ async def _load_model_impl(
                 # zero-VRAM one, which coexists with an image/video pipeline.
                 if not llama_backend.holds_no_vram:
                     await asyncio.to_thread(acquire_for_request, CHAT)
+                return reused
+
+        # Multi-residency: the requested model may already be resident on another
+        # slot. Promote that slot (an explicit load still means "make this model
+        # current") rather than loading a second copy of weights the server already
+        # holds. Without the keep flag the previously active model is unloaded, so
+        # /load's replace-the-current-model semantics survive residency.
+        if residency_enabled() and (request.gguf_variant or is_direct_gguf_request):
+            for _resident_backend in _resident_registry.loaded_backends(active_first = True):
+                if _resident_backend is llama_backend:
+                    continue
+                reused = _reuse_loaded_gguf(
+                    _active_gguf_intent(
+                        request,
+                        _resident_backend,
+                        model_identifier = public_model_identifier,
+                        chat_template_override = effective_chat_template_override,
+                        n_parallel = _n_parallel,
+                        native_grant_backed = native_grant_backed,
+                    ),
+                    resident = _resident_backend,
+                )
+                if reused is None:
+                    continue
+                _promoted_slot = _resident_registry.slot_for_backend(_resident_backend)
+                _prior_active_slot = _resident_registry.active_slot()
+                _replaces_active = (
+                    not request.keep_existing_loaded
+                    and _prior_active_slot is not None
+                    and _prior_active_slot is not _promoted_slot
+                    and _prior_active_slot.backend.is_loaded
+                )
+                if _replaces_active:
+                    # The promote-and-replace variant tears the prior active model
+                    # down, so it passes the same point of no return as a swap:
+                    # stop (or refuse on) the chats it interrupts and let them
+                    # unwind, BEFORE the active pointer moves or anything unloads.
+                    # The keep variant tears nothing down and needs none of this.
+                    _raise_if_scoped_load_cancelled()
+                    if on_reload_confirmed is not None:
+                        on_reload_confirmed(cancel = True)
+                    # Same shape the GGUF branch's drain uses for its forced swaps.
+                    if on_reload_confirmed is not None and request.force_cancel_active:
+                        await _wait_for_model_switch_idle(
+                            current_request_counted = current_request_counted,
+                            timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
+                        )
+                if _promoted_slot is not None:
+                    _resident_registry.set_active(_promoted_slot.id)
+                if not _resident_backend.holds_no_vram:
+                    await asyncio.to_thread(acquire_for_request, CHAT)
+                if _replaces_active:
+                    await asyncio.to_thread(_prior_active_slot.backend.unload_model)
+                    _resident_registry.drop_slot(_prior_active_slot.id, unload = False)
                 return reused
         if not (request.gguf_variant or is_direct_gguf_request):
             if (
@@ -15020,7 +15383,10 @@ async def _load_model_impl(
             # Refresh immediately before the arbiter handoff, then bind the
             # snapshot's epoch to the eviction so a same-owner media replacement
             # cannot swap in a smaller model between check and teardown.
-            final_availability = await asyncio.to_thread(_native_audio_post_handoff_free_gb)
+            final_availability = await asyncio.to_thread(
+                _native_audio_post_handoff_free_gb,
+                keep_resident = bool(request.keep_existing_loaded),
+            )
             selected = list(placement.resolved_gpu_ids or ())
             required = placement.native_required_gb
             if final_availability is None or len(selected) != 1 or required is None:
@@ -15114,6 +15480,22 @@ async def _load_model_impl(
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = await asyncio.to_thread(get_inference_backend)
 
+            # Multi-residency slot targeting. Under residency a load never runs on the
+            # idle default backend -- a session's first GGUF load opens a slot like any
+            # other, which keeps "residents remain but nothing is active" representable
+            # after the active slot is unloaded. A keep-existing load with a different
+            # model active opens a NEW slot instead of evicting it; a normal load still
+            # swaps the active slot in place, replacing only the current model.
+            _resident_target_slot = None
+            if _resident_target_slot_needed(request, llama_backend):
+                # Before the drain and the point of no return: a capacity refusal
+                # must not cancel or wait out anyone's generations.
+                if _resident_registry.at_capacity():
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = _resident_capacity_message(),
+                    )
+
             # Fast path only: a swap can still be reserved during the drain.
             _raise_if_sidecar_swap_in_progress()
 
@@ -15167,6 +15549,17 @@ async def _load_model_impl(
                 raise RuntimeError("GGUF load intent was not resolved")
             load_intent = gguf_intent
 
+            # Open the resident slot here, past every rejection: rebinding
+            # ``llama_backend`` redirects the load attempt, the cancel probe and
+            # all post-load bookkeeping below onto the new slot's backend in one
+            # place, while every other resident keeps its process untouched.
+            if _resident_target_slot_needed(request, llama_backend):
+                try:
+                    _resident_target_slot = _resident_registry.open_slot()
+                except ResidentCapacityError as exc:
+                    raise HTTPException(status_code = 400, detail = str(exc)) from exc
+                llama_backend = _resident_target_slot.backend
+
             # Run a single load attempt with the given tensor flag + extras.
             async def _attempt_gguf_load(
                 tensor_parallel: bool, attempt_extra_args: Optional[list[str]]
@@ -15202,6 +15595,11 @@ async def _load_model_impl(
                     cancelled = lambda: _gguf_load_cancelled(llama_backend, load_cancel_event),
                 )
             except Exception:
+                # A failed load on a fresh resident slot leaves it empty: drop it so
+                # the capacity it reserved is freed and the next load can retry,
+                # with every other resident untouched.
+                if _resident_target_slot is not None:
+                    await asyncio.to_thread(_resident_registry.drop_slot, _resident_target_slot.id)
                 # A GGUF load can raise before tearing down the old llama-server (e.g. an
                 # update-in-progress guard fires before _kill_process), leaving the prior
                 # preview-owned GGUF resident. Restore its marker so a later preview for
@@ -15210,6 +15608,8 @@ async def _load_model_impl(
                 raise
 
             if not success:
+                if _resident_target_slot is not None:
+                    await asyncio.to_thread(_resident_registry.drop_slot, _resident_target_slot.id)
                 _restore_marker_if_prior_preview_still_resident()
                 # A cancelled load is not a failed one. An automatic switch cancels
                 # through its own event without unloading, and the 500 built here
@@ -15228,6 +15628,8 @@ async def _load_model_impl(
                 chat_load_needs_gpu = False
             if chat_load_needs_gpu and current_owner() != CHAT:
                 await asyncio.to_thread(llama_backend.unload_model)
+                if _resident_target_slot is not None:
+                    _resident_registry.drop_slot(_resident_target_slot.id, unload = False)
                 raise HTTPException(
                     status_code = 409,
                     detail = (
@@ -15236,8 +15638,16 @@ async def _load_model_impl(
                     ),
                 )
             if not chat_load_needs_gpu:
-                # Drop the stale CHAT claim after any zero-VRAM load.
-                await asyncio.to_thread(release, CHAT)
+                # Drop the stale CHAT claim after any zero-VRAM load -- but only
+                # when nothing resident still holds the GPU: a surviving resident
+                # must keep the claim, or a later Images/Video acquire would skip
+                # chat eviction and allocate beside it.
+                await asyncio.to_thread(release_chat_gpu_claim)
+
+            # The load owns the slot table's "current" from here: an omitted model
+            # and every active-backend reader follow the freshly loaded backend.
+            if _resident_target_slot is not None:
+                _resident_registry.set_active(_resident_target_slot.id)
 
             logger.info(
                 f"Loaded GGUF model via llama-server: {model_log_label if native_grant_backed else config.identifier}"
@@ -15286,6 +15696,19 @@ async def _load_model_impl(
         # ── Standard path: load via Unsloth/transformers ──────────
         backend = await asyncio.to_thread(get_inference_backend)
 
+        # Residency is a GGUF concept: a Transformers/MLX load replaces the chat
+        # side wholesale, so "keep the other GGUF residents" has no meaning
+        # here. Refuse before the drain rather than destroy a model the flag
+        # promised to keep.
+        if request.keep_existing_loaded:
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    "keep_existing_loaded applies to GGUF models only. A Transformers or "
+                    "MLX load unloads every resident GGUF model."
+                ),
+            )
+
         # Same sidecar rejection as GGUF: fast path ahead of the drain, rechecked after.
         _raise_if_sidecar_swap_in_progress()
 
@@ -15313,6 +15736,12 @@ async def _load_model_impl(
         # 160s and on-loop would block _tunnel_safe_json's own padding.
         try:
             await _unload_llama_before_standard_load(llama_backend)
+            # A standard load means no GGUF is resident: sweep the secondary
+            # slots too, or they would hold VRAM under the new model and stay
+            # addressable as stale residents. The active slot's entry leaves
+            # with the same call (its backend was just unloaded; the redundant
+            # unload in the drop is a no-op).
+            await asyncio.to_thread(_resident_registry.teardown_all)
         except Exception:
             # This teardown runs after the marker was cleared above; if it raises with
             # the prior preview-owned GGUF still resident, restore its ownership so a
@@ -17015,6 +17444,39 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                     action = "Unloading the model",
                     cancel = False,
                 )
+            # A named secondary resident: unload just that slot. The active model,
+            # the idle-reload stash and the account's share of the active slot are
+            # all untouched -- and no other resident is promoted to active.
+            _secondary_slot = _named_secondary_slot(request.model_path)
+            if _secondary_slot is not None:
+                # Same control boundary the active teardown enforces: a managed
+                # caller may only unload a resident its account published (or
+                # shares). Judging the slot's own identity, either spelling,
+                # keeps a foreign resident from being ejected by name.
+                if not _resident_visible_to_caller(
+                    getattr(_secondary_slot.backend, "model_identifier", None),
+                    _llama_public_model_id(_secondary_slot.backend),
+                ):
+                    raise HTTPException(status_code = 404, detail = "Model not found")
+            if _secondary_slot is not None:
+                _unloaded = _llama_public_model_id(_secondary_slot.backend, request.model_path)
+                _unloaded_variant = getattr(_secondary_slot.backend, "hf_variant", None)
+                # Point of no return, same rule as the active branch: a manual unload
+                # is a deliberate user action, so it stops mid-stream requests rather
+                # than deferring to them.
+                _raise_or_cancel_active_generations(
+                    force = request.force_cancel_active, action = "Unloading the model"
+                )
+                await _drain_and_recancel_before_teardown(
+                    force = request.force_cancel_active, action = "Unloading the model"
+                )
+                await asyncio.to_thread(_resident_registry.drop_slot, _secondary_slot.id)
+                api_monitor.record_lifecycle(
+                    event = "unload",
+                    model = _lifecycle_model_label(_unloaded, _unloaded_variant),
+                    reason = "manual",
+                )
+                return UnloadResponse(status = "unloaded", model = request.model_path)
             # Check if the GGUF backend has this model loaded or is loading it.
             llama_backend = get_llama_cpp_backend()
             if llama_backend.is_active and (
@@ -17043,6 +17505,12 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 # Off-loop like the in-flight branch above: a 160s teardown on the
                 # loop would block this route's own padding.
                 await asyncio.to_thread(llama_backend.unload_model)
+                # The active slot leaves the table: no resident is promoted in its
+                # place, so with others still loaded the server answers "nothing
+                # active" until a load names one again.
+                _unloaded_slot = _resident_registry.slot_for_backend(llama_backend)
+                if _unloaded_slot is not None:
+                    _resident_registry.drop_slot(_unloaded_slot.id, unload = False)
                 note_model_unloaded()
                 account_access.clear_resident("chat")
                 await asyncio.to_thread(release_chat_gpu_claim)
@@ -17620,8 +18088,16 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 # Plus anything the Unsloth registry still holds: the GGUF load
                 # only unloaded the ACTIVE one, so a model cached behind it is
                 # still in VRAM and was invisible to every client reading this.
+                # Secondary residents appear here too: a load that kept them
+                # loaded leaves them serving by name.
                 loaded = ([_display_model_id] if _display_model_id else [])
+                + [
+                    row["model"]
+                    for row in _resident_models_status_rows()
+                    if row["model"] and row["model"] != _display_model_id
+                ]
                 + [name for name in _standard_models_still_held() if name != _display_model_id],
+                resident_models = _resident_models_status_rows() or None,
                 inference = _inference_cfg,
                 **_runtime_fields,
                 requested_context_length = llama_backend.requested_n_ctx,
@@ -17646,12 +18122,19 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         # Otherwise report Unsloth backend status. Peek rather than build: no singleton means
         # nothing is loaded, and the chat UI polls this from first paint.
         if backend is None:
+            _resident_rows = _resident_models_status_rows()
             return InferenceStatusResponse(
                 loading = _loading,
+                # Residents can outlive the active slot; a poll taken then must
+                # still show them in loaded (the same ids resident_models rows
+                # carry), or a client would read "nothing loaded" while a
+                # resident stays addressable by name.
+                loaded = [row["model"] for row in _resident_rows if row["model"]],
                 llama_cpp_supports_mtp = _supports_mtp,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
                 llama_cpp_latest_tag = _latest_tag,
+                resident_models = _resident_rows or None,
             )
 
         is_vision = False
@@ -17704,7 +18187,16 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             chat_template_override = model_info.get("chat_template_override_requested"),
             chat_template_override_reason = model_info.get("chat_template_override_reason"),
             loading = _loading_models,
-            loaded = list(backend.models.keys()),
+            # Standard models plus any surviving GGUF residents (the active
+            # fields describe the standard model; residents stay listed so
+            # loaded never contradicts resident_models).
+            loaded = list(backend.models.keys())
+            + [
+                row["model"]
+                for row in _resident_models_status_rows()
+                if row["model"] and row["model"] not in backend.models
+            ],
+            resident_models = _resident_models_status_rows() or None,
             inference = inference_config,
             requires_trust_remote_code = _resolve_loaded_trust_remote_code(
                 backend.active_model_name, model_info, inference_config
@@ -17863,8 +18355,10 @@ async def _generate_tts_wav(
     _audio_cancel = threading.Event()
     prompt_for_budget = text
 
-    # Pick backend - both return (wav_bytes, sample_rate)
-    llama_backend = get_llama_cpp_backend()
+    # Pick backend - both return (wav_bytes, sample_rate). Resolved from the
+    # requested model: a named secondary resident serves its own audio model,
+    # not whichever slot is active.
+    llama_backend = _serving_llama_backend(requested_model)
     # GGUF TTS goes straight to llama-server /completion, holding a slot with no
     # admission lease, so only the direct counter can show it in the slot readout.
     _direct_llama_tts = bool(llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False))
@@ -22433,7 +22927,11 @@ async def produce_openai_chat_completions(
         _predecoded_audio = _audio_preflight.get("decoded")
         _preprepared_audio = _audio_preflight.get("prepared")
 
-    llama_backend = get_llama_cpp_backend()
+    # Resolve once, after the switch helper has settled what (if anything) the
+    # request named: the named resident backend when the model answers to one,
+    # else the active backend. Everything downstream -- capability checks,
+    # generation, monitoring labels -- reads this one backend.
+    llama_backend = _serving_llama_backend(_switch_model_for_payload(payload))
     using_gguf = llama_backend.is_loaded
 
     # Clients that only know the OpenAI shape (data_designer recipe runs, etc.) control
@@ -23701,7 +24199,7 @@ async def produce_openai_chat_completions(
                     logger.error(f"Error during GGUF tool streaming: {e}", exc_info = True)
                     api_monitor.fail(monitor_id, _friendly_error(e))
                     # Recover if an MTP+tensor crash killed the server mid-stream.
-                    get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
+                    llama_backend._maybe_recover_from_mtp_crash(e)
                     error_chunk = _openai_stream_error_chunk(e)
                     yield _openai_stream_error_sse(error_chunk)
                 finally:
@@ -24080,7 +24578,7 @@ async def produce_openai_chat_completions(
                 logger.error(f"Error during GGUF tool completion: {e}", exc_info = True)
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 # Recover if an MTP+tensor crash killed the server.
-                get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
+                llama_backend._maybe_recover_from_mtp_crash(e)
                 # An over-context prompt makes llama-server return 400; map any
                 # upstream 4xx to a 400 client error rather than leaking a 500.
                 _cls = _classify_llama_generation_error(e)
@@ -24751,7 +25249,7 @@ async def produce_openai_chat_completions(
                 logger.error(f"Error during GGUF completion: {e}", exc_info = True)
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 # Recover if an MTP+tensor crash killed the server.
-                get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
+                llama_backend._maybe_recover_from_mtp_crash(e)
                 # An over-context prompt makes llama-server return 400; map any
                 # upstream 4xx to a 400 client error rather than leaking a 500.
                 _cls = _classify_llama_generation_error(e)
@@ -26556,9 +27054,15 @@ def _openai_model_objects() -> list[dict]:
     models: list[dict] = []
     _created = int(time.time())
 
-    # Check GGUF backend
-    llama_backend = get_llama_cpp_backend()
-    if llama_backend.is_loaded:
+    # Check GGUF backend(s): every resident under multi-residency, active first,
+    # so /v1/models names what a request can actually address by model id. A
+    # resident another account loaded stays unlisted for this caller.
+    for llama_backend in iter_resident_llama_backends():
+        if not _resident_visible_to_caller(
+            getattr(llama_backend, "model_identifier", None),
+            _llama_public_model_id(llama_backend),
+        ):
+            continue
         # Advertise the repo id an auto-switch load recorded, not the concrete
         # on-disk load path, so /v1/models never leaks a host path or lists a
         # model twice (path plus repo id).
@@ -27361,8 +27865,6 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     Proxies to the running llama-server's ``/v1/completions``. Only available
     when a GGUF model is loaded.
     """
-    llama_backend = get_llama_cpp_backend()
-
     # Reject a request with no prompt before any automatic load so an invalid request never
     # swaps or reloads the resident model (as chat/embeddings already validate before
     # switching). Gate on every automatic-load trigger, and on a preview-owned slot the switch
@@ -27390,6 +27892,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
 
     # Opt-in: load the requested local GGUF before the loaded-state check.
     body = await _auto_switch_from_request_body(request, current_subject, gguf_only = True)
+    # Re-resolve after the switch: with several models resident the named one may
+    # be a slot other than the backend fetched above.
+    llama_backend = _serving_llama_backend(_raw_body_model(body))
     if not llama_backend.is_loaded:
         _status, _detail = await _no_model_loaded_error(
             "No GGUF model loaded. Load a GGUF model first.",
@@ -28121,6 +28626,10 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         if default_body is not None and not await asyncio.to_thread(_stashed_gguf_embeds):
             return await _studio_embeddings(request, default_body, current_subject)
     body = await _auto_switch_from_request_body(request, current_subject, gguf_only = True)
+    # Re-resolve after the switch: with several models resident the named one may
+    # be a slot other than the backend fetched above, and embeddings from the
+    # wrong backend would silently return the wrong vectors.
+    llama_backend = _serving_llama_backend(_raw_body_model(body))
     if not llama_backend.is_loaded:
         # With the slot empty _reject_unservable_model defers to _no_model_loaded_error, so
         # without this the fallback would answer a decisive repo:QUANT this server does not
@@ -29133,7 +29642,9 @@ async def _responses_non_streaming(
             msg = choices[0].get("message", {}) or {}
             raw_content = msg.get("content", "") or ""
             raw_text = raw_content if isinstance(raw_content, str) else json.dumps(raw_content)
-            llama_backend = get_llama_cpp_backend()
+            # The backend the inner chat request resolved to (named resident or
+            # active), so marker parsing follows that model's reasoning style.
+            llama_backend = _serving_llama_backend(getattr(chat_req, "model", None))
             reasoning_text, text = _extract_responses_reasoning(
                 raw_text,
                 msg.get("reasoning_content"),
@@ -29252,7 +29763,10 @@ async def _responses_stream(
     chat_req = _build_chat_request(payload, messages, stream = True)
     custom_tool_names = _responses_custom_tool_names(payload.tools)
 
-    llama_backend = get_llama_cpp_backend()
+    # Named resident backend when the request names one, else the active model:
+    # the direct llama-server pass-through below must run on the same backend
+    # the request resolved to, not whichever slot is current.
+    llama_backend = _serving_llama_backend(_switch_model_for_payload(payload))
     if not llama_backend.is_loaded:
         # The direct pass-through is GGUF-only. Non-GGUF /v1/responses streaming
         # isn't a Codex-compatible path today, and wrapping the transformers
@@ -31078,7 +31592,9 @@ async def chat_count_tokens(
             detail = "Cannot count tokens for messages containing video.",
         )
 
-    llama_backend = get_llama_cpp_backend()
+    # Named resident backend when the request names one, else the active model's
+    # tokenizer -- a secondary resident counts with its own context window.
+    llama_backend = _serving_llama_backend(_switch_model_for_payload(payload))
     if not llama_backend.is_loaded:
         # The refusals above are about the request and so are shared; the ones below are
         # llama.cpp's own render concerns, so this returns rather than falling through.
@@ -31290,7 +31806,9 @@ async def anthropic_count_tokens(
         gguf_only = True,
     )
 
-    llama_backend = get_llama_cpp_backend()
+    # Resolved from the requested model like /messages: the count must use the
+    # named resident's tokenizer and capabilities, not the active slot's.
+    llama_backend = _serving_llama_backend(_switch_model_for_payload(payload))
     if not llama_backend.is_loaded:
         _status, _detail = await _no_model_loaded_error(
             "No GGUF model loaded. Load a GGUF model first.",
@@ -31552,6 +32070,9 @@ async def anthropic_messages(
             else None
         ),
     )
+    # Re-resolve after the switch: with several models resident the named one may
+    # be a slot other than the backend fetched above.
+    llama_backend = _serving_llama_backend(_switch_model_for_payload(payload))
     if not llama_backend.is_loaded:
         _status, _detail = await _no_model_loaded_error(
             "No GGUF model loaded. Load a GGUF model first.",
@@ -33455,7 +33976,7 @@ async def _anthropic_passthrough_stream(
         except Exception as e:
             if not cancel_event.is_set():
                 logger.error("anthropic_messages passthrough stream error: %s", e)
-                get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
+                llama_backend._maybe_recover_from_mtp_crash(e)
                 # The stream already sent HTTP 200, so flag the failure: the middleware must
                 # not claim a preview-owned model on a passthrough stream that errored
                 # mid-response.
@@ -35239,7 +35760,7 @@ async def _openai_passthrough_stream_admitted(
                     e,
                 )
                 api_monitor.fail(monitor_id, _friendly_error(e))
-                get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
+                llama_backend._maybe_recover_from_mtp_crash(e)
                 err = _openai_stream_error_chunk(e)
                 yield _openai_stream_error_sse(err)
             except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
@@ -35247,7 +35768,7 @@ async def _openai_passthrough_stream_admitted(
                 # initiated the cancel or already disconnected.
                 if not cancel_event.is_set():
                     api_monitor.fail(monitor_id, "Stream interrupted")
-                    get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
+                    llama_backend._maybe_recover_from_mtp_crash(e)
                     # 200 headers already flushed and we re-raise without an error SSE, so flag
                     # the failure: the middleware must not claim a preview-owned model on an
                     # interrupted stream.
@@ -35271,7 +35792,7 @@ async def _openai_passthrough_stream_admitted(
                 # 200 headers already flushed; errors must go in the SSE body.
                 logger.error("openai passthrough stream error: %s", e)
                 api_monitor.fail(monitor_id, _friendly_error(e))
-                get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
+                llama_backend._maybe_recover_from_mtp_crash(e)
                 err = _openai_stream_error_chunk(e)
                 yield _openai_stream_error_sse(err)
             finally:
@@ -35549,7 +36070,7 @@ async def _openai_passthrough_non_streaming_upstream(
             # don't see a bare 500 with no diagnostic.
             logger.error("openai passthrough non-streaming: upstream unreachable: %s", e)
             api_monitor.fail(monitor_id, _friendly_error(e))
-            get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
+            llama_backend._maybe_recover_from_mtp_crash(e)
             raise HTTPException(
                 status_code = 502,
                 detail = _friendly_error(e),
