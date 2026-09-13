@@ -4133,10 +4133,10 @@ class DiffusionDownloadPlanEntry(BaseModel):
 
 
 class DiffusionDownloadPlanResponse(BaseModel):
-    """What to download before a load, so the Hub download manager can fetch it with the
-    same file scope the loader would. Empty entries mean nothing to download (local path)."""
+    """Files to stage before loading; plan_failed marks an incomplete listing."""
 
     entries: List[DiffusionDownloadPlanEntry] = Field(default_factory = list)
+    plan_failed: bool = Field(False, description = "Metadata discovery left the file list incomplete")
     total_bytes: int = Field(
         0, description = "Sum of the remaining download entries, 0 when ready or unknown"
     )

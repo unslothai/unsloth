@@ -1598,7 +1598,11 @@ def test_a_dying_staged_download_only_rolls_back_its_own_pick():
     for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(rel)
         # Captured before the plan await, otherwise it is the newer pick's entry that gets stored.
-        own = re.search(r"const ownRevert = quantRevert\.current;\n(.*?)await ", src, re.S)
+        own = re.search(
+            r"const ownRevert = (?:downloadSnapshot \? null : )?quantRevert\.current;\n(.*?)await ",
+            src,
+            re.S,
+        )
         assert own, f"{rel}: loadOrStage does not capture its own rollback entry"
         assert "await" not in own.group(
             1
@@ -1625,7 +1629,7 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
     first plan is still in flight. Plans then resolve in RESPONSE order, not pick order: the older
     one would restage over the newer queue, or fall through and load the model the user left.
 
-    So each pick takes a sequence number and gives up if a newer one has been made since. It must
+    Each load pick takes a sequence number and gives up if a newer one has been made since. It must
     report started, not failed: returning false would send this pick's `.then` rollback at a label
     the newer pick now owns. Every exit that acts on the pick is covered, not just the one after a
     successful plan -- a rejected plan falls through to the load, and a pick that never asks for a
@@ -1635,9 +1639,12 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
         body = re.search(r"const loadOrStage = useCallback\(\n(.*?)\n  \);", src, re.S)
         assert body, f"{rel}: loadOrStage not found"
         text = body.group(1)
-        assert "const pick = ++pickSeq.current;" in text, f"{rel}: no pick sequence is taken"
+        sequence = re.search(
+            r"const pick = (?:downloadSnapshot \? pickSeq\.current : )?\+\+pickSeq\.current;", text
+        )
+        assert sequence, f"{rel}: no pick sequence is taken"
         # Before any real await, or two picks can share a number.
-        seq = text.index("const pick = ++pickSeq.current;")
+        seq = sequence.start()
         first_await = min(
             (
                 text.index(tok)
@@ -1649,19 +1656,20 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
         assert seq < first_await, f"{rel}: the sequence is taken after the plan await"
         # Before the non-hub return, so a local pick invalidates an in-flight hub plan.
         assert seq < text.index(
-            'if (source !== "hub")'
+            'if (source !== "hub"'
         ), f"{rel}: a non-hub pick returns without invalidating an in-flight hub plan"
         guards = re.findall(
-            r"if \(pick !== pickSeq\.current(?: \|\| !owns\(\))?\) return (\w+);", text
+            r"if \((?:!downloadOnly && \()?pick !== pickSeq\.current(?: \|\| !owns\(\))?\){1,2} return (\w+);",
+            text,
         )
         assert guards, f"{rel}: a superseded plan is not dropped"
         assert (
             set(guards) == {"true"}
         ), f"{rel}: a superseded pick reports failure, so its rollback fires at the newer pick's label"
         # The fallback load after a rejected plan is guarded too.
-        tail = text[text.rindex("} catch {") :]
+        tail = text[text.rindex("} catch") :]
         assert re.search(
-            r"if \(pick !== pickSeq\.current(?: \|\| !owns\(\))?\) return true;.*?return handleLoadRef",
+            r"if \((?:!downloadOnly && \()?pick !== pickSeq\.current(?: \|\| !owns\(\))?\){1,2} return true;.*?return handleLoadRef",
             tail,
             re.S,
         ), f"{rel}: a plan that rejected after a newer pick still reaches the fallback load"
@@ -1797,11 +1805,11 @@ def test_a_new_pick_drops_the_previous_staged_intent():
         text = body.group(1)
         cleared = text.index("pendingStagedLoad.current = null;")
         assert cleared < text.index(
-            'if (source !== "hub")'
+            'if (source !== "hub"'
         ), f"{rel}: a non-hub pick returns while the previous staged intent is still armed"
         assert cleared < text.index("await "), f"{rel}: the intent survives until the plan resolves"
         # The deferred re-fire and the rollback owner belong to that dead intent too.
-        head = text[: text.index('if (source !== "hub")')]
+        head = text[: text.index('if (source !== "hub"')]
         assert (
             "stagedLoadDeferred.current = false;" in head
         ), f"{rel}: a deferred staged load can still fire for the abandoned pick"

@@ -657,6 +657,17 @@ jobs:
           mkdir -p logs/playwright_image_cancel_retry_cold
           python tests/studio/playwright_image_download_cancel_retry.py
 
+      - name: Image download queue regression (Playwright)
+        if: matrix.shard == 'extra'
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          PW_ART_DIR: logs/playwright_image_download_queue
+        run: |
+          PW_ART_DIR="$PW_ART_DIR/queue" python tests/studio/playwright_image_download_queue.py
+          PW_ART_DIR="$PW_ART_DIR/load" PW_LOAD_SECOND=1 python tests/studio/playwright_image_download_queue.py
+          PW_ART_DIR="$PW_ART_DIR/late-plan" PW_LOAD_SECOND=1 PW_HOLD_FIRST_PLAN=1 python tests/studio/playwright_image_download_queue.py
+          PW_ART_DIR="$PW_ART_DIR/late-filename" PW_RESOLVE_FIRST=1 python tests/studio/playwright_image_download_queue.py
+
       - name: Tool activity collapse regression (Playwright)
         if: matrix.shard == 'extra'
         run: |
@@ -849,6 +860,7 @@ jobs:
             logs/playwright_image_footprint
             logs/playwright_image_cancel_retry
             logs/playwright_image_cancel_retry_cold
+            logs/playwright_image_download_queue
             logs/playwright_modelcfg
             logs/playwright_memory_estimate
             logs/playwright_ime
