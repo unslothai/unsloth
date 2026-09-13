@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-#
 # Run a command that talks to apt, bounded per attempt and retried.
-#
 # GitHub's Azure apt mirror stalls on these runners. Observed repeatedly in one
 # day: `playwright install --with-deps` sat in apt's download loop three times,
 # and `Linux deps` (a bare `apt-get update && apt-get install`) sat there for 28
@@ -11,44 +9,34 @@
 # it spends the job's whole timeout-minutes, GitHub scores the result as
 # "cancelled" rather than a failure, prints no reason, and skips every step after
 # it. A shard then reports nothing about its subject because a mirror hiccuped.
-#
 # Two things make the retry actually work, and both were learned the hard way:
-#
 #   1. The apt locks, PLURAL. apt runs as root, so killing the attempt leaves the
 #      apt-get child alive holding a lock, and the next attempt dies two seconds
 #      later with "Could not get lock". A retry that cannot succeed is worse than
 #      none: it buries the real reason under a second, different failure. So wait
 #      for the locks, then take them -- the holder is our own orphan and the
 #      runner is disposable.
-#
 #      There are four, and which one matters depends on what apt was doing.
 #      Waiting on only /var/lib/dpkg/lock-frontend is how the first version of
 #      this shipped, and it made the retry useless for exactly the case it was
 #      written for: `apt-get update` takes /var/lib/apt/lists/lock and nothing
 #      else, so the wait saw a free lock, retried immediately, and produced
-#
 #        E: Could not get lock /var/lib/apt/lists/lock. It is held by process 2420 (apt-get)
-#
 #      twice in a row in under two seconds. Three attempts, one real one.
-#
 #   2. `set -e`. GitHub runs `run:` blocks as `bash -e`, so a bare failing
 #      command aborts the step then and there. A retry loop written as
 #      `timeout ... ; rc=$?` never reaches its second attempt: the step exits 124
 #      with no output at all, which is exactly how the first version of this
 #      shipped and why it is a script now rather than eight inline copies.
-#
 #   3. apt's own timeouts, which is the part that makes the retry meaningful
 #      rather than merely survivable. Reading the logs of the four stalls above:
-#
 #        04:47:02  Get:5 https://archive.ubuntu.com/ubuntu noble-security InRelease [126 kB]
 #        05:16:29  ##[error]The operation was canceled.
-#
 #      Twenty-nine minutes of silence, mid-fetch of a 126 kB index file. Two of
 #      the four hung on that same file. What happened before it is the other half
 #      of the story: azure.archive.ubuntu.com was `Ign:`d four times over thirty
 #      seconds, so apt had already failed over through /etc/apt/apt-mirrors.txt to
 #      the public archive, which is not provisioned for this fleet.
-#
 #      apt did not consider any of that an error. `Acquire::http::Timeout`
 #      defaults to 120s AND is an idle timeout, so a connection that is open and
 #      trickling never trips it -- apt will wait out the heat death of the
@@ -57,24 +45,20 @@
 #      failure, which matters for a reason beyond speed: the wall-clock kill below
 #      is what orphans the dpkg lock in the first place, so an apt that fails on
 #      its own is an apt we never have to kill.
-#
 #      Deliberately NOT pinning a mirror. The evidence does not support it: in one
 #      stall Azure was dead and the public archive hung, in another Azure was
 #      serving fine and the transfer stalled at a 13.6 MB package. Neither is
 #      reliably better, and the mirrorlist failover is already the right mechanism
 #      -- it just needs to be allowed to give up.
-#
 # Usage:
 #   bash .github/scripts/retry-with-apt-lock.sh apt-get update
 #   bash .github/scripts/retry-with-apt-lock.sh apt-get install -y foo bar
 #   bash .github/scripts/retry-with-apt-lock.sh python -m playwright install --with-deps chromium
-#
 # Environment:
 #   RETRY_ATTEMPTS         attempts before giving up   (default 3)
 #   RETRY_ATTEMPT_TIMEOUT  seconds per attempt         (default 480)
 #   APT_ACQUIRE_TIMEOUT    seconds apt waits on a stalled transfer (default 20)
 #   APT_ACQUIRE_RETRIES    apt's own internal retries  (default 3)
-#
 # Deliberately no `set -e`: this script reads exit codes itself, and -e would
 # abort it on the very first failing attempt -- the bug described above.
 set -uo pipefail

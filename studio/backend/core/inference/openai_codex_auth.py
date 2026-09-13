@@ -896,9 +896,8 @@ async def resolve_access(
                 raise CodexAuthError("ChatGPT connection was disconnected during refresh.")
             if current.get("refresh_token") != previous_refresh_token:
                 return current["access_token"], current["account_id"]
-            # a refresh rotates credentials without rebinding the connection
-            # A refresh rotates credentials, it does not rebind the connection, so the record of which account the saved
-            # models were proven for carries over. _validate_token_payload only knows about the token fields.
+            # A refresh rotates credentials, it does not rebind the connection, so the record of which account the
+            # saved models were proven for carries over. _validate_token_payload only knows about the token fields.
             proof = current.get("catalog_account_id")
             if proof is not None and refreshed.get("account_id") == current.get("account_id"):
                 refreshed["catalog_account_id"] = proof
