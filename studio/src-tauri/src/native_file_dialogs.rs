@@ -566,6 +566,36 @@ const NOT_THE_LOG_EXPORT: &str = "Only the local log export endpoint can be down
 /// say "sign in" instead of showing a generic failure. Keep the two in step.
 const LOGIN_REQUIRED: &str = "Log export requires a signed-in Studio session.";
 
+/// Which bearer token the export is made with: a minted desktop session where one
+/// exists, otherwise the tab's own.
+///
+/// The fallback covers two cases that both leave a signed-in owner unable to export.
+/// `desktop-login` answers LoginRequired UNCONDITIONALLY on a multi-account install:
+/// the desktop secret proves the shell owns the backend, not which account is driving
+/// it (routes/auth.py). And minting can fail outright, because provisioning runs the
+/// backend CLI with UNSLOTH_STUDIO_HOME and STUDIO_HOME scrubbed, so an attached
+/// backend under a custom home writes its secret where this code does not read it.
+/// In both, the tab asking for the export is holding a session that reads that very
+/// endpoint perfectly well.
+///
+/// A minting error survives when there is nothing to fall back to: it says far more
+/// about what went wrong than the sentinel would.
+fn select_export_session(
+    minted: Result<crate::desktop_auth::DesktopAuthResponse, String>,
+    ui_token: Option<String>,
+) -> Result<String, String> {
+    let fallback = ui_token.filter(|token| !token.trim().is_empty());
+    match minted {
+        Ok(crate::desktop_auth::DesktopAuthResponse::Tokens { access_token, .. }) => {
+            Ok(access_token)
+        }
+        Ok(crate::desktop_auth::DesktopAuthResponse::LoginRequired { .. }) => {
+            fallback.ok_or_else(|| LOGIN_REQUIRED.to_string())
+        }
+        Err(error) => fallback.ok_or(error),
+    }
+}
+
 /// Refuse anything but the export route, before a token is minted for it.
 ///
 /// `Url::parse` normalises `..` segments, so a path that walks out of the route fails
@@ -695,28 +725,15 @@ pub async fn download_logs_to_downloads(
     require_loopback_url(&url)?;
     let target = require_log_export_route(&url)?;
 
-    // Minting also resolves and caches the live port, so read it back afterwards. The
-    // refresh token that comes with it is discarded unused; the backend has no
-    // access-token-only exchange to ask for instead.
-    // `desktop-login` answers LoginRequired UNCONDITIONALLY on a multi-account
-    // install: the desktop secret proves the shell owns the backend, not which
-    // account is driving it (routes/auth.py). So minting alone would make this
-    // command permanently fail there -- for an owner who is signed in and looking
-    // at the owner-only tab, with no way to resolve it by signing in again.
-    //
-    // Hence the fallback to the caller's own UI session. It grants the webview
-    // nothing it did not already have: the token is the one it is already holding,
-    // and this command pins the host, the port and the path, so the only thing it
-    // can be spent on is this one route on this install's backend. The minted
-    // desktop session is still preferred where one exists, and the call is made
-    // either way because it is also what resolves and caches the live port.
-    let minted = crate::desktop_auth::desktop_auth(state.clone(), diagnostics).await?;
-    let session = match minted {
-        crate::desktop_auth::DesktopAuthResponse::Tokens { access_token, .. } => access_token,
-        crate::desktop_auth::DesktopAuthResponse::LoginRequired { .. } => ui_token
-            .filter(|token| !token.trim().is_empty())
-            .ok_or_else(|| LOGIN_REQUIRED.to_string())?,
-    };
+    // Minting is attempted either way, because it also resolves and caches the live
+    // port. The refresh token that comes with it is discarded unused; the backend has
+    // no access-token-only exchange to ask for instead. `select_export_session` says
+    // when the tab's own token stands in, and why. Falling back grants the webview
+    // nothing it did not already have: the token is the one it is already holding, and
+    // this command pins the host, the port and the path, so the only thing it can be
+    // spent on is this one route on this install's backend.
+    let minted = crate::desktop_auth::desktop_auth(state.clone(), diagnostics).await;
+    let session = select_export_session(minted, ui_token)?;
     let pinned_url = pin_to_backend(target, live_backend_port(&state)?)?;
 
     let directory = log_archive_directory()?;
@@ -1460,6 +1477,64 @@ mod tests {
         }
         assert!(
             require_loopback_url("http://127.0.0.1:8888/api/settings/debug/logs/export").is_ok()
+        );
+    }
+
+    /// The four ways the export picks a bearer token. The two fallback rows are the
+    /// point: a signed-in owner on a multi-account install, and one whose minting
+    /// fails because the backend was attached under a custom home, both export with
+    /// the session their tab is already using rather than hitting a dead end.
+    #[test]
+    fn the_tab_token_stands_in_whenever_minting_cannot_produce_a_session() {
+        use crate::desktop_auth::{DesktopAuthResponse, LoginRequired, MultiLoginMode};
+
+        let minted = || {
+            Ok(DesktopAuthResponse::Tokens {
+                access_token: "minted".to_string(),
+                refresh_token: "unused".to_string(),
+            })
+        };
+        let login_required = || {
+            Ok(DesktopAuthResponse::LoginRequired {
+                login_required: LoginRequired,
+                login_mode: MultiLoginMode::Multi,
+            })
+        };
+        let failed = || Err("Desktop auth provisioning failed: no such file".to_string());
+
+        // A minted session always wins, even with a UI token to hand.
+        assert_eq!(
+            select_export_session(minted(), Some("ui".to_string())).unwrap(),
+            "minted"
+        );
+        assert_eq!(select_export_session(minted(), None).unwrap(), "minted");
+
+        // Multi-account install: minting refuses on principle, the tab's token works.
+        assert_eq!(
+            select_export_session(login_required(), Some("ui".to_string())).unwrap(),
+            "ui"
+        );
+        // Attached backend under UNSLOTH_STUDIO_HOME: minting errors, same answer.
+        assert_eq!(
+            select_export_session(failed(), Some("ui".to_string())).unwrap(),
+            "ui"
+        );
+
+        // Blank is not a token, so it must not be mistaken for one.
+        assert_eq!(
+            select_export_session(login_required(), Some("   ".to_string())).unwrap_err(),
+            LOGIN_REQUIRED
+        );
+        // Nothing to fall back to: say "sign in" where that is the reason, and keep
+        // the real error where it is not.
+        assert_eq!(
+            select_export_session(login_required(), None).unwrap_err(),
+            LOGIN_REQUIRED
+        );
+        assert!(
+            select_export_session(failed(), None)
+                .unwrap_err()
+                .starts_with("Desktop auth provisioning failed")
         );
     }
 
