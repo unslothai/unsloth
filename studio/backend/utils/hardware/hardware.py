@@ -2460,7 +2460,7 @@ def _smi_query(func_name: str, *args, **kwargs) -> Optional[Dict[str, Any]]:
 
 
 def _read_apple_gpu_stats() -> Dict[str, Any]:
-    """macOS IORegistry AGX live stats (utilization_pct, vram_used_bytes, system-wide), or {} on failure. No sudo needed."""
+    """macOS IORegistry AGX live stats (utilization_pct, and vram_used_bytes when reported; system-wide), or {} on failure. No sudo needed."""
     try:
         result = subprocess.run(
             ["ioreg", "-r", "-c", "AGXAccelerator"],
@@ -2479,10 +2479,10 @@ def _read_apple_gpu_stats() -> Dict[str, Any]:
     pairs = re.findall(r'"([^"]+)"=(\d+)', stats_str)
     stats = {k: int(v) for k, v in pairs}
 
-    return {
-        "utilization_pct": stats.get("Device Utilization %", 0),
-        "vram_used_bytes": stats.get("In use system memory", 0),
-    }
+    out = {"utilization_pct": stats.get("Device Utilization %", 0)}
+    if "In use system memory" in stats:
+        out["vram_used_bytes"] = stats["In use system memory"]
+    return out
 
 
 # ── CPU frequency on Apple Silicon ──────────────────────────────────────────
