@@ -171,17 +171,26 @@ function desktopExportError(error: unknown): LogExportError {
 }
 
 /**
- * The access token, refreshed if one can be. Falls back to whatever is stored:
- * a refresh that fails is not a reason to skip the attempt, since the stored
- * token may still be valid and the backend is the real judge.
+ * The access token, refreshed if one can be. A refresh that fails is not a
+ * reason to skip the attempt: the stored token may still be valid and the
+ * backend is the real judge.
+ *
+ * Hence the token is read BEFORE refreshing. `refreshSession` resolves false
+ * rather than throwing on any non-2xx, and clears the stored tokens on its way
+ * out, so reading only afterwards would turn a transient 500 on
+ * /api/auth/refresh into a null token -- and on a multi-account install, where
+ * Rust cannot mint a session of its own, into a signed-in owner being asked to
+ * sign in again. A stored value still wins, so a successful refresh is what
+ * gets used.
  */
 async function freshAuthToken(): Promise<string | null> {
+  const existing = getAuthToken();
   try {
     await refreshSession();
   } catch {
     // Ignored on purpose; see above.
   }
-  return getAuthToken();
+  return getAuthToken() ?? existing;
 }
 
 function pad2(value: number): string {

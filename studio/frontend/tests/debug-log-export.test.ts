@@ -73,9 +73,11 @@ function makeWorld(options: {
   isTauri: boolean;
   invoke?: (command: string, args: unknown) => Promise<unknown>;
   respond?: () => Response;
+  refreshFails?: boolean;
 }) {
   const invokes: InvokeCall[] = [];
   const refreshes: boolean[] = [];
+  let storedToken: string | null = UI_TOKEN;
   const requests: string[] = [];
   const downloads: { filename: string; bytes: number }[] = [];
   const toasts: ToastCall[] = [];
@@ -95,9 +97,15 @@ function makeWorld(options: {
         requests.push(input);
         return options.respond?.() ?? new Response(new Blob(["PK"]));
       },
-      getAuthToken: () => UI_TOKEN,
+      getAuthToken: () => storedToken,
       refreshSession: async () => {
         refreshes.push(true);
+        if (options.refreshFails) {
+          // What the real one does on ANY non-2xx: clear the stored tokens and
+          // resolve false, without throwing.
+          storedToken = null;
+          return false;
+        }
         return true;
       },
     },
@@ -262,6 +270,24 @@ test("the desktop export refreshes the session before handing the token to Rust"
 
   await world.api.exportAllLogs();
   assert.equal(world.refreshes.length, 1, "no refresh before the desktop export");
+});
+
+test("a refresh that fails does not cost the desktop export the token it had", async () => {
+  // refreshSession resolves false on any non-2xx and clears the stored tokens on
+  // its way out, so reading the token only afterwards would turn a transient 500
+  // on /api/auth/refresh into a null uiToken. On a multi-account install, where
+  // Rust cannot mint a session of its own, that is a signed-in owner being told
+  // to sign in again.
+  const world = makeWorld({
+    isTauri: true,
+    invoke: async () => SAVED_PATH,
+    refreshFails: true,
+  });
+
+  await world.api.exportAllLogs();
+  assert.equal(world.refreshes.length, 1);
+  const args = world.invokes[0].args as { uiToken?: string | null };
+  assert.equal(args.uiToken, UI_TOKEN, "the export gave up a token it still had");
 });
 
 test("openLogsFolder uses the reported root when no source is selected", async () => {
