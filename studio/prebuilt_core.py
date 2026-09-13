@@ -2264,6 +2264,12 @@ def write_prebuilt_metadata(ops: ModuleOps, install_dir: Path, selection: Instal
         paired_tree = paired_tree() if callable(paired_tree) else None
         if isinstance(paired_tree, str) and paired_tree:
             payload["paired_llama_ggml_tree"] = paired_tree
+        # ...and WHICH install of that tree, since one release publishes a bundle per gfx target:
+        # the tree id survives a reselection that replaces every byte behind these hardlinks.
+        paired_id = getattr(ops, "installed_paired_runtime_id", None)
+        paired_id = paired_id() if callable(paired_id) else None
+        if isinstance(paired_id, str) and paired_id:
+            payload["paired_llama_runtime_id"] = paired_id
         if selection.linked_libraries is not None:
             payload["linked_libraries"] = list(selection.linked_libraries)
         if selection.runtime_wiring_version is not None:

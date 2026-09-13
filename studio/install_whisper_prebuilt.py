@@ -1281,7 +1281,7 @@ def existing_install_matches(
 
 def kept_install_needs_settling(install_dir: Path) -> bool:
     """Whether settle_kept_install has anything to write: a marker with no payload
-    record, or a slim marker with no tree."""
+    record, or a slim marker missing either half of its pairing record."""
     marker = load_prebuilt_metadata(install_dir)
     if not marker:
         return False
@@ -1290,8 +1290,10 @@ def kept_install_needs_settling(install_dir: Path) -> bool:
         return True
     if marker.get("install_kind") != "slim":
         return False
-    recorded = marker.get("paired_llama_ggml_tree")
-    return not (isinstance(recorded, str) and recorded)
+    return not all(
+        isinstance(marker.get(key), str) and marker.get(key)
+        for key in ("paired_llama_ggml_tree", "paired_llama_runtime_id")
+    )
 
 
 def settle_kept_install(install_dir: Path) -> None:
@@ -1347,32 +1349,47 @@ def _backfill_runtime_file_records(install_dir: Path) -> None:
 
 
 def _backfill_slim_pairing_record(install_dir: Path) -> None:
-    """Record the paired ggml tree on a slim marker written before that key existed.
+    """Record the paired llama runtime on a slim marker written before those keys existed.
 
     existing_install_current_without_plan refuses a slim install whose marker cannot say
     which llama runtime it hardlinks, so without this an install made before this PR
     would fetch the release, its manifest and its checksum index on EVERY update rather
     than once. This is the only place that re-examines a slim install without
     reinstalling it, and it runs only after the fingerprint and the wiring have just been
-    confirmed, so the tree it writes describes a pairing it verified.
+    confirmed, so what it writes describes a pairing it verified.
 
-    Added, never corrected: a marker that already names a tree was written by a run that
+    Backfilled rather than re-wired on purpose. An older marker records nothing about which
+    gfx bundle it was paired against, so a swap that already happened cannot be detected
+    from it at all, and reinstalling every such install to find out would re-download the
+    bundle for every existing user to answer a question about a swap that almost never
+    happened. Recording the current pairing makes the NEXT one detectable, which is the
+    same trade paired_llama_ggml_tree already makes.
+
+    Added, never corrected: a marker that already names a pairing was written by a run that
     installed against it. Never raises -- the install is already valid, and a read-only
     marker must not fail setup over a metadata refresh.
     """
     marker = load_prebuilt_metadata(install_dir)
     if not marker or marker.get("install_kind") != "slim":
         return
-    recorded = marker.get("paired_llama_ggml_tree")
-    if isinstance(recorded, str) and recorded:
+    added: list[str] = []
+    for key, live in (
+        ("paired_llama_ggml_tree", installed_paired_runtime_tree),
+        ("paired_llama_runtime_id", installed_paired_runtime_id),
+    ):
+        recorded = marker.get(key)
+        if isinstance(recorded, str) and recorded:
+            continue
+        value = live()
+        if not value:
+            continue
+        marker[key] = value
+        added.append(f"{key}={value}")
+    if not added:
         return
-    tree = installed_paired_runtime_tree()
-    if not tree:
-        return
-    marker["paired_llama_ggml_tree"] = tree
     # llama's writer: same atomic temp-and-replace, mode and owner kept, never raises.
     if llama._write_marker(metadata_path(install_dir), marker):
-        log(f"existing {COMPONENT} install reused; recorded its paired ggml tree {tree}")
+        log(f"existing {COMPONENT} install reused; recorded its pairing ({', '.join(added)})")
 
 
 def installed_tree_is_intact(install_dir: Path, host: HostInfo) -> bool:
@@ -1416,6 +1433,20 @@ def installed_tree_is_intact(install_dir: Path, host: HostInfo) -> bool:
                 f"libraries ({', '.join(missing[:4])}); reinstalling"
             )
             return False
+        # The llama install these hardlinks point INTO, by install identity rather than by source
+        # tree. A per-gfx ROCm reselection swaps llama's asset within one release, so ggml_tree
+        # still matches, and _link_or_copy deliberately hardlinks to the inode so the wiring
+        # SURVIVES llama's directory swap: without this, the previous GPU's kernels stay wired
+        # while every other check passes. Absent is a marker written before this key, which
+        # settle_kept_install records rather than forcing a re-download.
+        recorded_runtime_id = marker.get("paired_llama_runtime_id")
+        if isinstance(recorded_runtime_id, str) and recorded_runtime_id:
+            if recorded_runtime_id != installed_paired_runtime_id():
+                log(
+                    f"existing slim install at {install_dir} is wired to a superseded llama "
+                    "runtime; reinstalling"
+                )
+                return False
         runtime_dirs = marker.get("linked_runtime_directories")
         # Subset plus required, not equality: a target without hipBLASLt kernels wires rocblas alone and is
         # complete (#8364), while an unknown name or a missing rocblas still means stale wiring.
@@ -1728,6 +1759,22 @@ def installed_paired_runtime_tree() -> str | None:
     """
     tree = installed_llama_ggml_tree()
     return tree if isinstance(tree, str) and tree else None
+
+
+def installed_paired_runtime_id(install_dir: "Path | None" = None) -> str | None:
+    """Which llama INSTALL the hardlinks point into, not which source tree built it.
+
+    ggml_tree cannot answer this: llama publishes a per-gfx ROCm bundle per release, so
+    re-selecting for another gfx target swaps the asset while the tree id stays put. Its
+    install_fingerprint covers asset, asset_sha256 and runtime_sha256, so it moves whenever
+    the bytes behind the hardlinks are superseded.
+    """
+    root = install_dir if install_dir is not None else llama.default_managed_llama_dir()
+    metadata = llama.load_prebuilt_metadata(root)
+    if not metadata:
+        return None
+    recorded = metadata.get("install_fingerprint")
+    return recorded if isinstance(recorded, str) and recorded else None
 
 
 def _existing_install_is_intact(

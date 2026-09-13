@@ -693,3 +693,108 @@ def test_a_marker_naming_a_traversing_runtime_directory_records_nothing_outside(
     )
     assert records, "the legitimate directory should still be recorded"
     assert all(not name.startswith("..") for name in records), sorted(records)
+
+
+# ── PART 5: which llama INSTALL the hardlinks point into ─────────────────────────────
+# The gap these close: a release publishes one llama bundle per gfx target, so re-selecting
+# ROCm for another GPU swaps the asset while ggml_tree -- a SOURCE-tree identity -- stays put.
+# _link_or_copy hardlinks to the inode on purpose, so whisper's wiring survives llama's
+# directory swap with the PREVIOUS GPU's kernels still behind it, and every other check
+# (tree id, whisper's own digests, library presence) passes.
+LLAMA_ID_GFX1100 = "f" * 64
+LLAMA_ID_GFX1151 = "e" * 64
+
+
+def _paired(monkeypatch, runtime_id: "str | None") -> None:
+    monkeypatch.setattr(WHISPER, "installed_paired_runtime_id", lambda *_a, **_k: runtime_id)
+
+
+def test_a_slim_marker_records_which_llama_install_it_was_wired_against(tmp_path, monkeypatch):
+    _paired(monkeypatch, LLAMA_ID_GFX1100)
+    install_dir = _install(tmp_path, monkeypatch, slim = True)
+    assert _marker(install_dir)["paired_llama_runtime_id"] == LLAMA_ID_GFX1100
+
+
+def test_a_fat_marker_records_no_pairing_at_all(tmp_path, monkeypatch):
+    _paired(monkeypatch, LLAMA_ID_GFX1100)
+    install_dir = _install(tmp_path, monkeypatch, slim = False)
+    assert "paired_llama_runtime_id" not in _marker(install_dir)
+
+
+def test_a_gfx_reselection_within_one_release_is_caught(tmp_path, monkeypatch):
+    """The reported case. llama's tag, its ggml tree and whisper's own bytes are all
+    unchanged; only the asset behind the hardlinks moved."""
+    _paired(monkeypatch, LLAMA_ID_GFX1100)
+    install_dir = _install(tmp_path, monkeypatch, slim = True)
+    assert _intact(install_dir) is True
+    assert _reuse(install_dir, slim = True, tmp_path = tmp_path) is True
+
+    _paired(monkeypatch, LLAMA_ID_GFX1151)
+    assert _marker(install_dir)["paired_llama_ggml_tree"] == GGML_TREE, "tree still matches"
+    assert _intact(install_dir) is False
+    assert _reuse(install_dir, slim = True, tmp_path = tmp_path) is False
+    assert _fast_path(install_dir) is False
+
+
+def test_the_ggml_tree_alone_does_not_catch_it(tmp_path, monkeypatch):
+    """Why a second key was needed: with the runtime id stripped, the same reselection is
+    invisible. This is the pre-fix behaviour, pinned so the guard cannot be quietly dropped."""
+    _paired(monkeypatch, LLAMA_ID_GFX1100)
+    install_dir = _install(tmp_path, monkeypatch, slim = True)
+    marker = _marker(install_dir)
+    marker.pop("paired_llama_runtime_id")
+    _rewrite_marker(install_dir, marker)
+
+    _paired(monkeypatch, LLAMA_ID_GFX1151)
+    assert _intact(install_dir) is True
+
+
+def test_an_unchanged_llama_install_still_takes_the_fast_path(tmp_path, monkeypatch):
+    _paired(monkeypatch, LLAMA_ID_GFX1100)
+    install_dir = _install(tmp_path, monkeypatch, slim = True)
+    assert _fast_path(install_dir) is True
+    assert _fast_path(install_dir) is True
+
+
+def test_a_marker_predating_the_key_is_backfilled_not_re_downloaded(tmp_path, monkeypatch):
+    """An older marker cannot say which bundle it was paired against, so a swap that ALREADY
+    happened is unanswerable from it. Reinstalling to find out would re-download the bundle
+    for every existing user; recording the current pairing makes the NEXT swap detectable."""
+    _paired(monkeypatch, LLAMA_ID_GFX1100)
+    install_dir = _install(tmp_path, monkeypatch, slim = True)
+    marker = _marker(install_dir)
+    marker.pop("paired_llama_runtime_id")
+    _rewrite_marker(install_dir, marker)
+
+    assert WHISPER.kept_install_needs_settling(install_dir) is True
+    assert _reuse(install_dir, slim = True, tmp_path = tmp_path) is True
+    WHISPER.settle_kept_install(install_dir)
+    assert _marker(install_dir)["paired_llama_runtime_id"] == LLAMA_ID_GFX1100
+    assert WHISPER.kept_install_needs_settling(install_dir) is False
+
+    _paired(monkeypatch, LLAMA_ID_GFX1151)
+    assert _intact(install_dir) is False
+
+
+def test_a_backfill_with_no_llama_install_to_read_writes_nothing(tmp_path, monkeypatch):
+    """Fails open, not closed: an unreadable llama marker must not stamp None as a pairing,
+    and must not fail setup over a metadata refresh either."""
+    _paired(monkeypatch, LLAMA_ID_GFX1100)
+    install_dir = _install(tmp_path, monkeypatch, slim = True)
+    marker = _marker(install_dir)
+    marker.pop("paired_llama_runtime_id")
+    _rewrite_marker(install_dir, marker)
+
+    _paired(monkeypatch, None)
+    WHISPER.settle_kept_install(install_dir)
+    assert "paired_llama_runtime_id" not in _marker(install_dir)
+    assert _intact(install_dir) is True
+
+
+def test_a_recorded_pairing_against_a_vanished_llama_install_is_rejected(tmp_path, monkeypatch):
+    """llama removed entirely, whisper's hardlinks still holding its last bytes: the recorded
+    id no longer matches anything, which is a reinstall rather than a keep."""
+    _paired(monkeypatch, LLAMA_ID_GFX1100)
+    install_dir = _install(tmp_path, monkeypatch, slim = True)
+    _paired(monkeypatch, None)
+    assert _intact(install_dir) is False
