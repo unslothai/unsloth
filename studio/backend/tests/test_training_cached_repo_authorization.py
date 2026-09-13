@@ -560,6 +560,24 @@ def test_a_streaming_start_skips_the_cached_dataset_check():
     assert "_refuse_unauthorized_cached_dataset" in guarded.split("\n\n", 1)[0]
 
 
+def test_a_metadata_less_probe_ignores_repo_boilerplate(cache_root):
+    """huggingface_hub fetches the model card and .gitattributes first, so a barely started
+    download leaves a revision holding nothing a loader reads. That must not read as cached."""
+    from hub.utils.hf_cache_state import repo_cache_has_usable_snapshot
+
+    revision = cache_root / "models--org--card-only" / "snapshots" / "abc"
+    revision.mkdir(parents = True)
+    (revision / "README.md").write_text("# model card")
+    (revision / ".gitattributes").write_text("*.safetensors filter=lfs")
+    (revision / "LICENSE").write_text("apache-2.0")
+    assert repo_cache_has_usable_snapshot("model", "org/card-only") is False
+
+    # Anything else counts, including a format the loaders here do not know: skipping the check is
+    # the failure that matters, so the denylist never grows into an allowlist of weight formats.
+    (revision / "weights.unknown-format").write_bytes(b"w")
+    assert repo_cache_has_usable_snapshot("model", "org/card-only") is True
+
+
 def test_a_shadowed_hub_dataset_is_not_the_source():
     """load_and_format_dataset takes local_datasets, then s3_config, ahead of dataset_source, so a
     payload carrying both never reads the Hub cache and must not be refused over it."""

@@ -429,6 +429,20 @@ def cached_repo_id_for_path(path: Path | str, repo_type: str = "model") -> Optio
     return ref[0]
 
 
+def _is_repo_boilerplate(path: Path) -> bool:
+    """Whether *path* is repository furniture rather than anything a load consumes.
+
+    Deliberately a denylist of things no loader reads, not an allowlist of weight formats: a name
+    this does not recognise still counts as content, so a private snapshot in an unusual format is
+    refused rather than waved through."""
+    name = path.name
+    if name in (".gitattributes", ".gitignore", ".gitmodules"):
+        return True
+    if name.split(".", 1)[0].upper() in ("LICENSE", "LICENCE", "NOTICE"):
+        return True
+    return path.suffix.lower() in (".md", ".txt")
+
+
 def repo_cache_has_usable_snapshot(
     repo_type: str,
     repo_id: str,
@@ -450,14 +464,19 @@ def repo_cache_has_usable_snapshot(
             return True
         if not metadata_filenames:
             # Some content, not merely a revision directory: an interrupted download leaves the
-            # latter empty. Any file at any depth, since a diffusers snapshot keeps its weights in
-            # per-component subdirectories and the metadata name varies by family. Short-circuits
-            # on the first hit; an unreadable tree counts, as above.
+            # latter empty, and a barely started one leaves the model card and .gitattributes that
+            # huggingface_hub fetches first. Any other file at any depth, since a diffusers
+            # snapshot keeps its weights in per-component subdirectories and the metadata name
+            # varies by family: an extension allowlist would skip the check for a private snapshot
+            # in a format not on it, which is the failure that matters. Short-circuits on the first
+            # hit; an unreadable tree counts, as above.
             for revision in revisions:
                 if revision.is_file():
                     return True
                 try:
-                    if next((p for p in revision.rglob("*") if p.is_file()), None) is not None:
+                    if any(
+                        p.is_file() and not _is_repo_boilerplate(p) for p in revision.rglob("*")
+                    ):
                         return True
                 except OSError:
                     return True
