@@ -9426,6 +9426,14 @@ class LlamaCppBackend:
         cached this early would outlive the condition that caused it."""
         if cls._NVLINK_TOPO_CACHE is not None:
             return
+        if os.environ.get("UNSLOTH_P2P_TOPO_CROSSCHECK") == "1":
+            # The cross-check lives in _probe_interconnect_matrix, which only the load
+            # path reaches. Publishing an NVML-only answer here would satisfy the cache
+            # first and silently retire the diagnostic in the one deployment that ships
+            # it, since the warm stage always primes before any load. Leaving the cache
+            # cold costs that process the slow probe inline, which is exactly what the
+            # variable already advertises.
+            return
         matrix = cls._probe_nvml_nvlink_topology()
         if matrix is None:
             return

@@ -127,7 +127,7 @@ at several sizes. Exit 0 means intact, 1 means data was lost, 2 means it could n
 | `UNSLOTH_DISABLE_DC_TUNING=1` | disables all data-center tuning, including FP32 accumulate |
 | `UNSLOTH_DISABLE_DC_P2P=1` | disables `GGML_CUDA_P2P` only, keeping FP32 accumulate and `CUDA_SCALE_LAUNCH_QUEUES`. Also removes an inherited `GGML_CUDA_P2P`, so it holds even if the variable is already set elsewhere in your environment |
 | `UNSLOTH_FORCE_DC_P2P=1` | enables P2P on an unverified fabric (use after the probe passes). It cannot override `UNSLOTH_DISABLE_DC_P2P=1`, an off-meaning `GGML_CUDA_P2P` in your environment, or the data-center gate itself |
-| `UNSLOTH_P2P_TOPO_CROSSCHECK=1` | runs both topology tiers and logs any disagreement, preferring `nvidia-smi topo -m` when they differ. Diagnostic only; costs the slow probe on every process |
+| `UNSLOTH_P2P_TOPO_CROSSCHECK=1` | runs both topology tiers and logs any disagreement, preferring `nvidia-smi topo -m` when they differ. Diagnostic only; costs the slow probe on every process. The startup prime stands down while it is set, since a primed NVML-only answer would satisfy the cache before the load path could compare the two |
 
 `CUDA_SCALE_LAUNCH_QUEUES` is deliberately not gated on the fabric: it sizes a CUDA command
 buffer, moves no data between devices, and the reporter of #10613 measured it clean in

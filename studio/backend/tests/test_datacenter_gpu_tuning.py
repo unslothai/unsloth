@@ -1582,3 +1582,64 @@ def test_the_prime_publishes_an_nvml_success(monkeypatch):
     LlamaCppBackend._NVLINK_TOPO_CACHE = None
     LlamaCppBackend.prime_nvlink_topology()
     assert LlamaCppBackend._NVLINK_TOPO_CACHE == (good,)
+
+
+def test_the_prime_does_not_retire_the_cross_check(monkeypatch):
+    """UNSLOTH_P2P_TOPO_CROSSCHECK=1 asks for both tiers to run and disagreements to
+    be logged. The cross-check lives in _probe_interconnect_matrix, which only the
+    load path reaches, so a prime that published an NVML-only answer would satisfy
+    the cache first and silently retire the diagnostic -- and the warm stage always
+    primes before any load, so that is the shipping configuration, not a corner case.
+
+    The pair below is the result the variable exists to surface: NVML says NVLink,
+    topo -m says SYS."""
+    monkeypatch.setenv("UNSLOTH_P2P_TOPO_CROSSCHECK", "1")
+    nvml = {(0, 1): "NVLINK", (1, 0): "NVLINK"}
+    topo = {(0, 1): "SYS", (1, 0): "SYS"}
+    monkeypatch.setattr(
+        LlamaCppBackend, "_probe_nvml_nvlink_topology", classmethod(lambda cls: nvml)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_probe_nvlink_topology", staticmethod(lambda: topo))
+
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    LlamaCppBackend.prime_nvlink_topology()
+    assert LlamaCppBackend._NVLINK_TOPO_CACHE is None, (
+        "the prime published under cross-check, so the load path will read the cache "
+        "and the two tiers will never be compared"
+    )
+
+    # The load path still answers, and the cross-check gets to do its job: topo -m
+    # wins the disagreement, so the gate vetoes rather than trusting the fast path.
+    assert LlamaCppBackend._nvlink_topology() == topo
+
+    # Without the variable the prime is unchanged.
+    monkeypatch.delenv("UNSLOTH_P2P_TOPO_CROSSCHECK", raising = False)
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    LlamaCppBackend.prime_nvlink_topology()
+    assert LlamaCppBackend._NVLINK_TOPO_CACHE == (nvml,)
+
+
+def test_cross_check_survives_the_full_warm_then_load_sequence(monkeypatch):
+    """End to end in the order Studio actually runs: warm stage primes on its own
+    thread, then a load hits the gate. Before the prime learned about the variable
+    this spawned zero nvidia-smi and reported the NVML verdict unchallenged."""
+    from utils import torch_warmup
+
+    monkeypatch.setenv("UNSLOTH_P2P_TOPO_CROSSCHECK", "1")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 8))
+    nvml = {(a, b): "NVLINK" for a in range(8) for b in range(8) if a != b}
+    topo_calls = []
+
+    def _topo():
+        topo_calls.append(1)
+        return {(a, b): "SYS" for a in range(8) for b in range(8) if a != b}
+
+    monkeypatch.setattr(
+        LlamaCppBackend, "_probe_nvml_nvlink_topology", classmethod(lambda cls: nvml)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_probe_nvlink_topology", staticmethod(_topo))
+
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    torch_warmup._prime_nvlink_topology().join(10)
+    assert LlamaCppBackend._p2p_veto_reason([0, 1], True, True) is not None
+    assert topo_calls, "the cross-check never ran the slow tier"
