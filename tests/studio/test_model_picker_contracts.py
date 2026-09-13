@@ -1359,6 +1359,141 @@ def test_diffusion_picker_hides_and_clears_unsupported_memory_modes():
         assert field in page
 
 
+def test_save_settings_waits_for_gguf_classification():
+    """The Save button that persists without loading (#10216) must carry Load's
+    classification gate.
+
+    Until the GGUF header probe settles, `resolvedIsDiffusion` is false, so the config
+    this page would commit has not been through
+    `withoutUnsupportedDiffusionSettings`. Load is blocked for exactly that window by
+    `stagedMetadataPending`. A Save that is not is worse than a bad load, not better:
+    it writes the unsanitized config to localStorage AND mirrors it to the override an
+    API auto-switch load reads later, where the picker's own later render -- which
+    strips those fields only from what it displays -- never reaches it.
+    """
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    # The block is identified by its handler, so a renamed button label does not
+    # silently stop guarding anything.
+    save_button = page.split("onClick={handleSave}", 1)[0].rsplit("<Button", 1)[1]
+    assert "disabled={" in save_button, "the Save button no longer has a disabled gate"
+    gate = save_button.split("disabled={", 1)[1].split("}", 1)[0]
+    assert "stagedMetadataPending" in gate, (
+        "Save settings is enabled while the GGUF classification is still pending; "
+        f"gate was: {gate.strip()!r}"
+    )
+
+
+def test_the_run_settings_footer_does_not_reflow_under_the_pointer():
+    """The footer must not wrap on demand, or a click can be swallowed (#10216).
+
+    Observed, not theorised: with `flex-wrap` on the page-variant footer, the
+    repo's own tests/studio/playwright_model_config.py "context length 4096
+    persists" step failed 5/5 on the PR head and passed 5/5 on its merge base,
+    same host, same script. No toast, no POST /api/inference/load, nothing in
+    unsloth_model_configs -- the click never dispatched.
+
+    The mechanism: mousedown blurs the Context Length input, whose blur handler
+    commits the draft. That commit takes `atBaseline` false, so `persistenceOnly`
+    flips false, which mounts the Save/Forget button. Three buttons plus the
+    "Remember for this model" label no longer fit on one line, the row wraps, and
+    the primary button moves ~30px down between mousedown and mouseup -- so the
+    two land on different elements and no click event is produced. A real
+    pointer loses the click exactly as Playwright's does.
+
+    Stacking unconditionally fixes it because the button row's position stops
+    depending on how many buttons are in it, and it gives the label the full
+    width that the wrap was reaching for.
+    """
+    src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    # Anchored on the checkbox, which is the footer's first child, so the two
+    # <div>s before it are the footer container and the label group.
+    before = src.split("<Checkbox id={rememberId}", 1)[0]
+    footer = before.rsplit("<div", 2)[1]
+    assert "flex-wrap" not in footer, (
+        "the run-settings footer wraps on demand, so its height changes while a "
+        f"click is in flight; container was: {footer.strip()[:200]!r}"
+    )
+    assert "flex flex-col" in footer, (
+        "the run-settings footer is no longer a stacked column, so the button row "
+        f"can move when a button mounts; container was: {footer.strip()[:200]!r}"
+    )
+
+
+def test_save_settings_waits_for_the_vram_budget_to_settle():
+    """The Save button (#10216) must carry Load's budget gate as well.
+
+    `handleRun` early-returns on `budgetSettling` and the Load button is disabled
+    by it, because between `settleVramBudgetSave()` and the load it stages the
+    click is answered by a network round trip rather than by the load it looks
+    like it started. The page stays mounted for that whole window. A Save landing
+    in it persists to localStorage AND to the API override and toasts "Settings
+    saved.", while the load already in flight carries `effectiveLoadConfig`,
+    captured before the click -- so the panel reports storing one config and the
+    model comes up on another.
+    """
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    # Keyed on the handler, not the label: a relabelled button must not silently
+    # stop being gated.
+    save_button = page.split("onClick={handleSave}", 1)[0].rsplit("<Button", 1)[1]
+    gate = save_button.split("disabled={", 1)[1].split("}", 1)[0]
+    assert "budgetSettling" in gate, (
+        "Save settings is clickable while a VRAM budget PUT is settling a load; "
+        f"gate was: {gate.strip()!r}"
+    )
+
+
+def test_save_settings_is_not_rendered_when_it_could_do_nothing():
+    """A model with nothing stored must not show a dead "Forget settings" (#10216).
+
+    `remember` and `savedRemember` both seed from `initial.remembered`, which
+    `readPerModelConfig` returns as false for any model with no stored config. So
+    `!remember && !savedRemember` is not an edge case, it is the resting state of
+    every model the user has never configured -- and a render gated only on
+    `persistenceOnly` puts a permanently disabled button labelled "Forget
+    settings" between Reset and Load for all of them, offering to forget
+    something that was never saved. The button is inert in exactly that
+    condition, so not rendering it changes no behaviour.
+    """
+    src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    # Tied to this button, not merely present in the file: the guard has to be the
+    # last thing opened before the <Button> that carries handleSave, with no other
+    # button closing in between.
+    before = src.split("onClick={handleSave}", 1)[0].rsplit("<Button", 1)[0]
+    guard = "!persistenceOnly && (remember || savedRemember) && ("
+    assert guard in before, (
+        "the Save/Forget button is rendered when there is nothing to save and "
+        "nothing to forget; JSX before it ended: " + before[-160:].strip()
+    )
+    assert (
+        "</Button>" not in before.rsplit(guard, 1)[1]
+    ), "the (remember || savedRemember) guard no longer wraps the handleSave button"
+
+
+def test_save_settings_reflects_the_context_it_pinned():
+    """A save that does not load must leave the panel showing what it stored (#10216).
+
+    `pinFixedLayerContext` writes the fitted context into the persisted config when fixed
+    GPU layers are staged against an auto-fitted model. Load could leave the displayed
+    config alone, because the load that follows re-derives the panel from the now-active
+    model. Save deliberately stays on the page, so without this the Context Length control
+    still reads "Auto" while localStorage and the API override hold a concrete number that
+    the next load applies.
+    """
+    src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
+    handler = src.split("const handleSave = () => {", 1)[1].split("const handleRun", 1)[0]
+    assert (
+        "effectiveRuntimeConfig.customContextLength !== config.customContextLength" in handler
+    ), "handleSave no longer compares the persisted context against the displayed one"
+    # Only the remember branch stored anything. A forget deleted the entry, so reflecting the
+    # pin there would turn "Forget settings" into a silent context pin the next reload uses.
+    assert (
+        "if ( remember && effectiveRuntimeConfig.customContextLength" in handler
+    ), "handleSave reflects the pinned context even when forgetting, which stored nothing"
+    assert (
+        "update({ customContextLength: effectiveRuntimeConfig.customContextLength, })" in handler
+    ), "handleSave no longer pushes the persisted context back into the panel"
+
+
 def test_legacy_migration_is_idempotent_and_non_destructive():
     """The v1->v2 localStorage migration (unsloth_load_settings -> unsloth_model_configs)
     is invoked on every store read, so it must be idempotent: repeated reads, browser
@@ -2662,11 +2797,11 @@ def test_only_gguf_configs_are_mirrored_to_the_server():
     resolver indexes GGUFs only."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert (
-        "if ( !saveFailed && (target.apiLoadable ?? target.isGguf) && !nativePathToken ) "
+        "if (saved && (target.apiLoadable ?? target.isGguf) && !nativePathToken) "
         "{ syncModelOverride(" in src
     )
     # The local save is not behind the same gate.
-    assert "if (remember) { saveFailed = !savePerModelConfig(" in src
+    assert "const saved = remember ? savePerModelConfig(" in src
 
 
 def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
@@ -2674,7 +2809,7 @@ def test_a_native_leased_gguf_is_not_mirrored_to_the_server():
     /api/inference/status reports model_identifier as null for it, so the checkpoint the
     browser keys settings by is the bare file name the backend echoes back."""
     page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert "&& !nativePathToken ) { syncModelOverride(" in page
+    assert "&& !nativePathToken) { syncModelOverride(" in page
     assert (
         "const nativePathToken = target.meta.nativePathToken ?? "
         "(isActiveModel ? activeNativePathToken : null);" in page
@@ -2868,14 +3003,15 @@ def test_the_settings_page_judges_the_config_storage_actually_keeps():
     """savePerModelConfig normalizes before deciding, and the runtime hands this page
     Speculative Decoding "auto", which canonicalizes to null."""
     src = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert (
-        "const normalizedRuntimeConfig = normalizePerModelConfig( effectiveRuntimeConfig, );" in src
-    )
-    assert "const defaultConfig = isDefaultConfig(normalizedRuntimeConfig);" in src
+    # Both committing paths -- Load and the Save that does not load (#10216) -- go
+    # through persistConfig, so the normalization is asserted once, where it lives.
+    assert "const normalized = normalizePerModelConfig(next);" in src
+    assert "defaultConfig: isDefaultConfig(normalized)" in src
     # The same object goes to storage and to the server, or they disagree again.
-    assert "target.ggufVariant, normalizedRuntimeConfig, evicted," in src
-    assert "remember ? normalizedRuntimeConfig : null," in src
+    assert "savePerModelConfig(configId, target.ggufVariant, normalized, evicted)" in src
+    assert "remember ? normalized : null," in src
     assert "isDefaultConfig(effectiveRuntimeConfig)" not in src
+    assert "isDefaultConfig(next)" not in src
 
     store = " ".join(_read("features/model-picker/model-config/per-model-config.ts").split())
     assert "export function normalizePerModelConfig(" in store
