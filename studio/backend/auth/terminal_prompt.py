@@ -271,37 +271,29 @@ def prompt_for_password_change(
     out: "TextIO | None" = None,
     exposure: str = "on the public internet",
     first_key_timeout: "float | None" = None,
-    refusal_aborts: bool = True,
-) -> bool:
-    """Force a new admin password before exposure; True on success.
+) -> "bool | None":
+    """Force a new admin password before exposure.
 
     Loops until a valid, confirmed password is committed via ``apply_change``.
-    Ctrl-C / EOF returns False; ``refusal_aborts`` tells the banner what the
-    caller does with that, so it never promises an abort that will not happen:
-    True for a tunnel (caller aborts), False for a raw bind (launch proceeds,
-    because it worked before this prompt existed).
+    Returns True on success, False when the operator aborts with Ctrl-C / EOF,
+    and None when the first-key deadline detects an unattended terminal.
 
     ``exposure`` names where this launch is reachable: a tunnel really is the
     public internet, a raw bind is every interface (LAN behind NAT, or the
     internet on a cloud box). Claiming the wrong one trains people to ignore it.
 
     ``first_key_timeout`` bounds the wait for the FIRST keystroke, returning
-    False if it never comes. Only a caller that must not block a launch passes
+    None if it never comes. Only a caller that must not block a launch passes
     it: a detached pty (``tmux new -d``, ``docker run -dt``) looks exactly like
     an attended terminal, so undeadlined it waits forever and never binds its
     socket. Unset (the tunnel) blocks indefinitely.
     """
     if out is None:
         out = sys.stderr
-    refusal = (
-        "Ctrl+C to abort."
-        if refusal_aborts
-        else "Ctrl+C to skip, and Unsloth starts with the auto-generated password."
-    )
     out.write(
         "\n"
         f"Unsloth Studio will be reachable {exposure}, so set a\n"
-        f"password now. {refusal}\n\n"
+        "password now. Ctrl+C to abort.\n\n"
     )
     out.flush()
     # Only the first read is deadlined; a key arriving proves someone is there.
@@ -340,13 +332,9 @@ def prompt_for_password_change(
             "No response at the terminal; leaving the auto-generated admin password in place.\n"
         )
         out.flush()
-        return False
+        return None
     except (KeyboardInterrupt, EOFError):
-        out.write(
-            "Password change aborted; not exposing Unsloth.\n"
-            if refusal_aborts
-            else "Password change skipped; leaving the auto-generated admin password in place.\n"
-        )
+        out.write("Password change aborted; not exposing Unsloth.\n")
         out.flush()
         return False
 
