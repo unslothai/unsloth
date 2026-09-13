@@ -75,6 +75,20 @@ def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 def _default_target(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
     # First thing in the child (before torch): self-bind to parent death and scrub the native path
     # secret, like the other workers.
+    if not config.get("allow_ambient", True):
+        # Before any huggingface_hub import, as core/training/worker.py does for the LLM worker: a
+        # child env is seeded from the parent's, so not setting a token is not denying one. Without
+        # this an API key that sent no token fetched a private base model under the operator's
+        # saved login.
+        import os
+
+        from hub.utils.hf_tokens import apply_token_to_child_env, hf_token_arg, is_anonymous
+
+        hf_token = hf_token_arg(config.get("hf_token"), allow_ambient_token = False)
+        apply_token_to_child_env(os.environ, hf_token)
+        if is_anonymous(hf_token):
+            os.environ["HF_TOKEN_PATH"] = os.devnull
+
     from utils.native_path_leases import run_without_native_path_secret
     run_without_native_path_secret(
         _run_diffusion_child, event_queue = event_queue, stop_queue = stop_queue, config = config

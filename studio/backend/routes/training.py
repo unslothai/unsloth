@@ -569,6 +569,40 @@ def _refuse_unauthorized_cached_dataset(
         )
 
 
+def _refuse_unauthorized_cached_local_paths(
+    paths: list[str],
+    hf_token: HfTokenArg,
+    label: str = "dataset",
+) -> None:
+    """Refuse a local path that is really a snapshot inside the operator's Hub cache.
+
+    ``local_datasets`` takes any readable path, so pointing it at
+    ``.../datasets--org--private/snapshots/<rev>/data.parquet`` trained on the operator's private
+    dataset with no token at all. Same leak the model leg closes above, on the one input that
+    reaches the trainer without ever naming a repo.
+    """
+    from hub.utils.hf_cache_state import cached_repo_ref_for_path
+    for dataset_path in paths:
+        cached_ref = cached_repo_ref_for_path(dataset_path)
+        if cached_ref is None:
+            continue
+        if cached_read_refused(
+            hf_token,
+            repo_id = cached_ref[0],
+            repo_type = cached_ref[1],
+            is_cached = lambda: True,
+            offline = hf_env_offline(),
+        ):
+            raise _hf_preflight_error(
+                422,
+                f"hf_{label}_access_denied",
+                (
+                    f"Hugging Face denied access to this cached {label}. "
+                    "Add a token with repository access."
+                ),
+            )
+
+
 def _preflight_hf_dataset_request(request: TrainingStartRequest) -> None:
     dataset_id = request.hf_dataset
     if not dataset_id:
@@ -761,13 +795,16 @@ def _reject_untrainable_model_request(
                 if request.model_local_path == request.model_name
                 else normalize_path(request.model_local_path)
             )
-        from hub.utils.hf_cache_state import cached_repo_id_for_path
+        from hub.utils.hf_cache_state import cached_repo_ref_for_path
 
-        # A snapshot path inside the Hub cache is still that repository's cached weights.
-        cached_repo = cached_repo_id_for_path(path)
-        if cached_repo is not None and cached_read_refused(
+        # A snapshot path inside the Hub cache is still that repository's cached weights. Any repo
+        # type counts: a private dataset or space snapshot can hold config.json plus weights, and
+        # is just as much the operator's to grant as a model is.
+        cached_ref = cached_repo_ref_for_path(path)
+        if cached_ref is not None and cached_read_refused(
             hf_token,
-            repo_id = cached_repo,
+            repo_id = cached_ref[0],
+            repo_type = cached_ref[1],
             is_cached = lambda: True,
             offline = hf_env_offline(),
         ):
@@ -1470,6 +1507,16 @@ async def start_training(
                 )
         allow_ambient = via_api_key is not True
         hf_token = hf_token_arg(request.hf_token, allow_ambient_token = allow_ambient)
+        # The local dataset paths were resolved above for existence only; authorize them now that
+        # the caller's token is known, before anything reads them.
+        for _local_paths, _label in (
+            (request.local_datasets, "dataset"),
+            (request.local_eval_datasets, "eval_dataset"),
+        ):
+            if _local_paths:
+                await asyncio.to_thread(
+                    _refuse_unauthorized_cached_local_paths, _local_paths, hf_token, _label
+                )
         model_preflight = await asyncio.to_thread(
             _reject_untrainable_model_request,
             request,
@@ -2795,6 +2842,10 @@ async def start_diffusion_training(
     # Resolve + contain the dataset and output paths BEFORE spawning: the trainer subprocess would otherwise resolve
     # them relative to its own cwd.
     config = body.model_dump()
+    # Same rule the LLM start applies: an API key that sent no token of its own must not reach the
+    # operator's saved Hugging Face login. Diffusion is training too, and its child resolved a
+    # bare `None` token against the server's login for the base-model fetch.
+    config["allow_ambient"] = via_api_key is not True
     try:
         from utils.paths import outputs_root, resolve_output_dir
 

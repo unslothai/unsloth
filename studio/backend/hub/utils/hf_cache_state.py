@@ -369,34 +369,73 @@ def validated_repo_cache_path(
         return None
 
 
-def cached_repo_id_for_path(path: Path | str, repo_type: str = "model") -> Optional[str]:
-    prefix = f"{repo_type}s--"
+# Every repo type huggingface_hub serialises into a cache dir, as `repo_folder_name` builds it:
+# f"{repo_type}s--" + repo_id.split("/") joined by "--". A cached private DATASET or SPACE holds
+# readable bytes exactly as a model does, so a path check that only knows "models--" hands the
+# other two out unauthorized.
+_CACHE_REPO_TYPES = ("model", "dataset", "space")
+
+
+def cached_repo_ref_for_path(path: Path | str) -> Optional[tuple[str, str]]:
+    """Map a path inside a Hub cache to the ``(repo_id, repo_type)`` that owns it.
+
+    ``None`` means "not the operator's cache", which every caller reads as "no authorization check
+    needed", so a miss here is fail-OPEN. Two consequences drive the shape below:
+
+    * Every repo type is tried, not just models. A private dataset snapshot can hold config.json
+      plus weights and would otherwise be trainable with no access check at all.
+    * Candidates are walked from the deepest component OUTWARD and each is tested against the
+      roots, rather than committing to the deepest match. Repo file paths are arbitrary, so a
+      private snapshot may itself contain a directory named ``models--foo--bar``; stopping at that
+      decoy returned ``None`` for a path that is plainly inside ``models--org--private``.
+    """
     try:
         resolved = Path(path).expanduser().resolve(strict = True)
     except (OSError, RuntimeError, ValueError):
         return None
-    repo_dir = next(
-        (
-            candidate
-            for candidate in (resolved, *resolved.parents)
-            if candidate.name.lower().startswith(prefix) and len(candidate.name) > len(prefix)
-        ),
-        None,
-    )
-    if repo_dir is None:
-        return None
-    repo_id = repo_dir.name[len(prefix) :].replace("--", "/")
     scan_errors: list = []
-    roots = []
-    for root in hf_cache_roots(scan_errors):
-        try:
-            roots.append(root.resolve(strict = True))
-        except (OSError, RuntimeError):
-            scan_errors.append(root)
-    if any(same_existing_path(repo_dir.parent, root) for root in roots):
-        return repo_id
-    # An unreadable root may be this path's: authorize rather than skip the check.
-    return repo_id if scan_errors else None
+    resolved_roots: Optional[list] = None
+
+    def roots() -> list:
+        # Lazily, and only once: an ordinary local model path matches no prefix below, and
+        # enumerating every remembered cache home for it both wastes the stat calls and drags
+        # hf_cache_roots into callers that never monkeypatch it.
+        nonlocal resolved_roots
+        if resolved_roots is None:
+            resolved_roots = []
+            for root in hf_cache_roots(scan_errors):
+                try:
+                    resolved_roots.append(root.resolve(strict = True))
+                except (OSError, RuntimeError):
+                    scan_errors.append(root)
+        return resolved_roots
+
+    fallback: Optional[tuple[str, str]] = None
+    for candidate in (resolved, *resolved.parents):
+        name = candidate.name
+        lowered = name.lower()
+        for repo_type in _CACHE_REPO_TYPES:
+            prefix = f"{repo_type}s--"
+            if not lowered.startswith(prefix) or len(name) <= len(prefix):
+                continue
+            # "--" is forbidden inside a repo id (huggingface_hub.validate_repo_id rejects it), so
+            # this round-trip is unambiguous and matches _scan_cached_repo upstream.
+            ref = (name[len(prefix) :].replace("--", "/"), repo_type)
+            if any(same_existing_path(candidate.parent, root) for root in roots()):
+                return ref
+            # An unreadable root may be this path's: authorize rather than skip the check. Held as
+            # a fallback so an outer candidate that really is under a readable root still wins.
+            if scan_errors and fallback is None:
+                fallback = ref
+    return fallback
+
+
+def cached_repo_id_for_path(path: Path | str, repo_type: str = "model") -> Optional[str]:
+    """The *repo_type*-restricted view of :func:`cached_repo_ref_for_path`."""
+    ref = cached_repo_ref_for_path(path)
+    if ref is None or ref[1] != repo_type:
+        return None
+    return ref[0]
 
 
 def latest_snapshot_from_cache_path(
