@@ -746,6 +746,24 @@ def load_metadata(install_dir: Path) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
+_PREBUILT_FULL_CHECK_ENV = "UNSLOTH_PREBUILT_FULL_CHECK"
+
+
+def prebuilt_full_check_requested() -> bool:
+    """The escape hatch for the recorded-runtime shortcut, spelled as llama and whisper spell it.
+
+    Defined here rather than imported: this installer bootstraps the managed Node runtime and must
+    not depend on the llama module. A user told to set one variable to force a full revalidation
+    would otherwise still get Node answered from its marker.
+    """
+    return os.environ.get(_PREBUILT_FULL_CHECK_ENV, "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 def _file_record(path: Path) -> dict | None:
     """size, mtime_ns and sha256 for one file, or None when it cannot be read."""
     # Streamed: node is ~110 MB.
@@ -826,6 +844,8 @@ def _recorded_runtime_matches(install_dir: Path, host: HostInfo, meta: dict, ver
     npm_major_checked only as "that probe cleared the floor" -- the caller still pays the
     npm probe, because only npm can show npm's own module tree still loads.
     """
+    if prebuilt_full_check_requested():
+        return False
     if meta.get("node_version_checked") != version:
         return False
     npm_major = meta.get("npm_major_checked")

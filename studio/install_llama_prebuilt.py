@@ -6796,13 +6796,13 @@ def _write_marker(marker_path: Path, marker: dict) -> bool:
             os.fsync(handle.fileno())
         if original is not None:
             os.chmod(tmp_path, stat.S_IMODE(original.st_mode))
-            # Best effort: os.replace installs the temp file's ownership, so a
-            # shared marker would otherwise pick up the invoking user's group.
-            # A no-op for a non-root user; the mode above is what keeps the
-            # marker readable, and declining the refresh instead would leave a
-            # deliberate --force-cpu unrecorded, which is the #7213 crash.
+            # Group only (uid -1), as prebuilt_core.write_live_marker and the Node writer do:
+            # chown is all-or-nothing, so asking a non-root member of a group-shared install for
+            # the owner too refuses the call before the group is applied, and os.replace then
+            # installs the member's primary group. os.replace installs the temp file's ownership,
+            # so a shared marker would otherwise lose the group its readers rely on.
             try:
-                os.chown(tmp_path, original.st_uid, original.st_gid)
+                os.chown(tmp_path, -1, original.st_gid)
             except (OSError, AttributeError):
                 pass
         atomic_replace_from_tempfile(tmp_path, marker_path)
