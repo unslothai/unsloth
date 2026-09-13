@@ -1220,6 +1220,7 @@ def test_the_pre_lock_record_is_written_under_the_lock_and_only_over_the_marker_
     assert "node_version_checked" not in after
 
 
+@pytest.mark.skipif(not hasattr(os, "chown"), reason = "os.chown is POSIX only")
 def test_a_refreshed_marker_keeps_its_owner_and_group(tmp_path, monkeypatch):
     """os.replace installs the temp file's ownership; a group-shared marker refreshed by
     another member must not take that member's group and stop being readable."""

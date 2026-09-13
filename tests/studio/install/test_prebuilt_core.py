@@ -1000,6 +1000,7 @@ def test_a_kept_install_that_changes_under_the_lock_is_re_validated(tmp_path):
     assert "installed" in events
 
 
+@pytest.mark.skipif(not hasattr(core.os, "chown"), reason = "os.chown is POSIX only")
 def test_a_live_marker_rewrite_keeps_the_group_without_asking_for_the_owner(tmp_path, monkeypatch):
     """A non-root member of a group-shared install can hand the temp file to the
     marker's group, but not to its owner; asking for both refuses the call before the
