@@ -876,10 +876,8 @@ def test_zero_based_shard_numbering_uses_complete_cache(tmp_path, shards, comple
     ],
 )
 def test_persisted_cache_path_starts_again_with_zero_based_shards(tmp_path, shards, persisted):
-    """The reported flow: run one leaves a modelLocalPath behind, so every later run takes the
-    local branch with that path instead of the hub one. Both the cache repo dir the frontend
-    persists and an already-resolved snapshot must reach the same verdict, and the 1-based
-    shard names keep the answer they had."""
+    """From run two on Studio sends a modelLocalPath, so the preflight takes the local branch:
+    the persisted cache repo dir and a resolved snapshot must agree, and 1-based names must not move."""
     route = _load_route_module(f"training_route_persisted_{len(shards)}_{shards[0]}_{persisted}")
     snapshot = _model_repo_with_ref(tmp_path, "unsloth/test")
     for shard in shards:
@@ -901,7 +899,7 @@ def test_persisted_cache_path_starts_again_with_zero_based_shards(tmp_path, shar
         )
 
     assert result.model_name == "unsloth/test"
-    # normalize_path hands back forward slashes, so a Windows tmp_path never compares as str().
+    # The route posix-normalizes this field, so compare against the same shape.
     assert result.model_local_path == target.as_posix()
 
 

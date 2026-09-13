@@ -390,10 +390,8 @@ def _has_complete_indexed_weights(path: Path, index_name: str, expected_suffix: 
                 total,
             )
             families.setdefault(family, set()).add(part)
-    # Shards usually count 1..total, but some exporters count from zero
-    # (model-00000-of-00001.safetensors). Accept either complete run, never a mix.
-    # Parts are distinct and within [0, total], so count, min and max identify the
-    # run without building a range from the total in an untrusted file name.
+    # Some exporters number from zero (model-00000-of-00001.safetensors), so accept either
+    # complete run and never a mix; count/min/max avoids a range built from an untrusted total.
     return all(
         len(parts) == total and (min(parts), max(parts)) in ((1, total), (0, total - 1))
         for (_, _, _, total), parts in families.items()
