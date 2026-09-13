@@ -4465,6 +4465,7 @@ class DiffusionBackend:
 
                     # Apply the planned placement; apply_memory_plan returns what ACTUALLY engaged so status stays
                     # honest.
+                    self._raise_if_load_cancelled(_load_token)
                     effective_policy, effective_tiling = apply_memory_plan(
                         pipe,
                         plan,

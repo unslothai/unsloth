@@ -2524,6 +2524,8 @@ def test_unload_sets_cancel_event(fake_runtime):
         "compile_cache",
         "speed",
         "quantize",
+        "component_plan",
+        "conditioning",
         "placement",
         "publication",
     ],
@@ -2662,6 +2664,21 @@ def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatc
 
             name = "apply_attention_backend" if phase == "attention_error" else "apply_step_cache"
             mp.setattr(diff_mod, name, fail_setup)
+        elif phase in ("component_plan", "conditioning"):
+            owner, name = (
+                (diff_mod, "refine_memory_plan_for_components")
+                if phase == "component_plan"
+                else (diff_mod.cond_cache, "install")
+            )
+            original = getattr(owner, name)
+            mp.setattr(owner, name, lambda *a, **k: park(original(*a, **k)))
+            place = diff_mod.apply_memory_plan
+
+            def placement(*args, **kwargs):
+                setup_calls.append("placement")
+                return place(*args, **kwargs)
+
+            mp.setattr(diff_mod, "apply_memory_plan", placement)
         elif phase in ("quantize", "placement", "publication"):
             name = {
                 "quantize": "quantize_text_encoders",
@@ -2713,6 +2730,8 @@ def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatc
         assert not pipelines, "cancelled load still constructed its companions"
     if phase in ("attention", "step_cache", "compile_cache", "speed"):
         assert setup_calls[-1] == phase, setup_calls
+    if phase in ("component_plan", "conditioning"):
+        assert not setup_calls, "cancelled setup still placed the pipeline"
 
     # A fresh load still serves consecutive generations.
     _load_into(backend, tmp_path)
