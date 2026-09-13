@@ -2980,6 +2980,65 @@ def test_create_run_rejects_binding_to_populated_reply(research_home):
     assert run["assistantMessageId"] == "empty-placeholder"
 
 
+def test_create_run_binds_through_a_preamble_beside_the_handoff(research_home):
+    # A thinking model narrates before it calls a tool, so both arrive in one message.
+    studio_db.upsert_chat_message(
+        {
+            "id": "preamble-and-call",
+            "threadId": "thread-1",
+            "parentId": "user-1",
+            "role": "assistant",
+            "content": [
+                {"type": "reasoning", "text": "the user wants research"},
+                {"type": "text", "text": "I'll research that now."},
+                {"type": "tool-call", "toolName": "deep_research", "toolCallId": "c1"},
+            ],
+            "createdAt": 6,
+        }
+    )
+    run = _create(assistant_message_id = "preamble-and-call")
+    assert run["assistantMessageId"] == "preamble-and-call"
+
+
+def test_create_run_still_rejects_an_answer_beside_an_unrelated_tool_call(research_home):
+    studio_db.upsert_chat_message(
+        {
+            "id": "answer-and-other-call",
+            "threadId": "thread-1",
+            "parentId": "user-1",
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "existing answer"},
+                {"type": "tool-call", "toolName": "search_knowledge_base", "toolCallId": "c2"},
+            ],
+            "createdAt": 7,
+        }
+    )
+    with pytest.raises(research_db.ResearchConflictError):
+        _create(assistant_message_id = "answer-and-other-call")
+    assert research_db.get_run("run-1") is None
+
+
+def test_create_run_rejects_a_completed_answer_even_beside_the_handoff(research_home):
+    studio_db.upsert_chat_message(
+        {
+            "id": "sources-and-call",
+            "threadId": "thread-1",
+            "parentId": "user-1",
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "existing answer"},
+                {"type": "source", "sourceType": "url", "url": "https://kept.example"},
+                {"type": "tool-call", "toolName": "deep_research", "toolCallId": "c3"},
+            ],
+            "createdAt": 8,
+        }
+    )
+    with pytest.raises(research_db.ResearchConflictError):
+        _create(assistant_message_id = "sources-and-call")
+    assert research_db.get_run("run-1") is None
+
+
 def test_update_assistant_replaces_report_parts_without_duplication(research_home):
     from core.research_runs import _update_assistant
 

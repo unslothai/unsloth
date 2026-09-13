@@ -60,9 +60,11 @@ import {
 } from "./window-layout";
 import {
   type MeasuredWindowLayout,
+  type PixelRatioSource,
   type WindowLayoutGuard,
   finalizeAppWindowLayout,
   measureWindowLayout,
+  observeDevicePixelRatio,
   shouldFinishWindowLayoutWait,
 } from "./window-layout-lifecycle";
 
@@ -174,6 +176,7 @@ function measureTauriWindowLayout(
       outerSize: () => win.outerSize(),
     },
     isCurrent,
+    logicalPerCssPx,
   );
 }
 
@@ -198,6 +201,47 @@ async function placeWindow(
     height: Math.round(size.height * scaleFactor) + frameSize.height,
   });
   await win.setPosition(new PhysicalPosition(position.x, position.y));
+}
+
+function windowPixelRatioSource(): PixelRatioSource | null {
+  if (
+    typeof window === "undefined" ||
+    typeof window.matchMedia !== "function"
+  ) {
+    return null;
+  }
+  return {
+    devicePixelRatio: () => window.devicePixelRatio,
+    matchResolution: (dppx) => window.matchMedia(`(resolution: ${dppx}dppx)`),
+  };
+}
+
+/**
+ * Reapplies the floor after a zoom change, which Windows text scaling is. The
+ * floor is a CSS-pixel floor scaled into logical pixels, so the ratio it was
+ * scaled by at launch goes stale.
+ */
+async function reapplyWindowSizeConstraints(
+  isCurrent: WindowLayoutGuard,
+): Promise<void> {
+  const windowModule = await import("@tauri-apps/api/window");
+  if (!isCurrent()) return;
+
+  const win = windowModule.getCurrentWindow();
+  const measured = await measureTauriWindowLayout(windowModule, win, isCurrent);
+  if (!measured || !isCurrent()) return;
+
+  const { minimum } = measured.bounds;
+  await win.setSizeConstraints({
+    minWidth: minimum.width,
+    minHeight: minimum.height,
+  });
+  if (!isCurrent()) return;
+  // Grows a window now under the floor. No maximum: the work area has not
+  // changed, and capping here would fight a user's own larger size.
+  await enforceWindowSizeBounds(win, windowModule.LogicalSize, isCurrent, {
+    minimum,
+  });
 }
 
 async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
@@ -641,6 +685,33 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       }
     });
   }, [status, windowRevealRevision]);
+
+  // Mounted once, deliberately: the layout effect above returns early on a
+  // status change that keeps the window mode, so a listener living there would
+  // be disposed on the first one and never armed again.
+  useEffect(() => {
+    if (!isTauri) return;
+    const ratioSource = windowPixelRatioSource();
+    if (!ratioSource) return;
+
+    let disposed = false;
+    const stop = observeDevicePixelRatio(ratioSource, () => {
+      // The setup window has no constraints to keep current.
+      if (disposed || appliedWindowModeRef.current !== "app") return;
+      // Read on the change, not on mount: a layout pass that starts after this
+      // one owns the constraints, and this one stands down.
+      const generation = windowLayoutGenerationRef.current;
+      reapplyWindowSizeConstraints(
+        () => !disposed && windowLayoutGenerationRef.current === generation,
+      ).catch(() => {
+        /* swallow; the floor in force stands */
+      });
+    });
+    return () => {
+      disposed = true;
+      stop();
+    };
+  }, []);
 
   useEffect(() => {
     if (!isTauri) {
