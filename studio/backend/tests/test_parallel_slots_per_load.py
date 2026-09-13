@@ -233,7 +233,7 @@ def test_load_model_commits_requested_from_intent():
     # first, so a failed start cannot poison the next inheritance check.
     # Matched without the argument list, so adding one does not break this again.
     healthy = src.find("self._publish_healthy(", 0, commit if commit != -1 else None)
-    snapshot = src.find("self._last_load_intent = replace(intent")
+    snapshot = src.find("self._last_load_intent = replace(intent", commit)
     assert commit != -1, "load_model must commit the requested slot count"
     assert healthy != -1 and healthy < commit < snapshot
 

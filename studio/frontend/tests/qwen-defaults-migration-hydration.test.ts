@@ -41,6 +41,17 @@ const LEGACY_GLOBAL = {
   presencePenalty: 0.0,
   maxTokens: 8192,
 };
+const LEGACY_EXPLICIT_FIELDS = [
+  "temperature",
+  "top_p",
+  "top_k",
+  "min_p",
+  "repetition_penalty",
+  "presence_penalty",
+];
+const legacyMaskPut = {
+  inferenceParams: { samplingFieldsExplicit: LEGACY_EXPLICIT_FIELDS },
+};
 const BUILTIN_DEFAULT = {
   activePreset: "Default",
   activePresetSource: "builtin-default",
@@ -154,9 +165,13 @@ test("active-model adoption retries a migration deferred during hydration", asyn
   const migrated = useChatRuntimeStore.getState();
   assert.equal(migrated.paramsByModel[QWEN38]?.minP, 0);
   assert.equal(migrated.paramsByModel[QWEN38]?.presencePenalty, 1.5);
-  assert.equal(
-    settingsHttp.puts.some((put) => put.inferenceParams !== undefined),
-    false,
+  assert.deepEqual(
+    settingsHttp.puts.find((put) => put.inferenceParams !== undefined),
+    {
+      inferenceParams: {
+        samplingFieldsExplicit: LEGACY_EXPLICIT_FIELDS,
+      },
+    },
   );
   assert.equal(hasModelPut(), true);
 });
@@ -447,6 +462,7 @@ test("resident-model adoption migrates a deferred global-only snapshot", async (
     (put) => put.inferenceParams !== undefined,
   );
   assert.deepEqual(globalPut?.inferenceParams, {
+    samplingFieldsExplicit: [],
     minP: 0,
     presencePenalty: 1.5,
   });
@@ -524,7 +540,7 @@ test("a retry cannot overwrite an edit made after its confirming read", async ()
   );
   await sleep(50);
 
-  assert.equal(settingsHttp.puts.length, 0);
+  assert.deepEqual(settingsHttp.puts, [legacyMaskPut]);
   assert.equal(persistedRow().presencePenalty, 0.4);
 });
 
@@ -569,7 +585,7 @@ test("a retry revalidates the checkpoint after its confirming read", async () =>
   releaseConfirmation(legacySettings);
   await sleep(50);
 
-  assert.equal(settingsHttp.puts.length, 0);
+  assert.deepEqual(settingsHttp.puts, [legacyMaskPut]);
   assert.equal(persistedRow().presencePenalty, 0);
 });
 
@@ -599,7 +615,7 @@ test("a retry fences reasoning added after a confirming read", async () => {
   );
   await sleep(50);
 
-  assert.equal(settingsHttp.puts.length, 0);
+  assert.deepEqual(settingsHttp.puts, [legacyMaskPut]);
   assert.equal(settingsHttp.settings.reasoningEnabled, false);
   assert.equal(persistedRow().presencePenalty, 0);
 });
@@ -834,6 +850,7 @@ test("deferred adoption migrates the authoritative global when memory is off", a
     (put) => put.inferenceParams !== undefined,
   );
   assert.deepEqual(globalPatch?.inferenceParams, {
+    samplingFieldsExplicit: [],
     minP: 0,
     presencePenalty: 1.5,
   });
@@ -878,7 +895,9 @@ test("a retry fences optional global fields added after confirmation", async () 
   );
   await sleep(50);
 
-  assert.equal(settingsHttp.puts.length, 0);
+  assert.deepEqual(settingsHttp.puts, [
+    { inferenceParams: { samplingFieldsExplicit: [] } },
+  ]);
   assert.equal(
     (
       settingsHttp.settings.inferenceParams as Record<string, unknown>

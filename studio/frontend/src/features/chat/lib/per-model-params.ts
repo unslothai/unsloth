@@ -9,32 +9,18 @@ import type {
   InferenceParams,
   PersistedInferenceParams,
 } from "../types/runtime";
+import { explicitSamplingFields } from "../../model-picker/model-config/llama-cpp-config.ts";
+import {
+  PERSISTED_INFERENCE_PARAM_KEYS,
+  REMEMBERED_INFERENCE_PARAM_KEYS,
+  type PersistedInferenceParamKey,
+} from "./persisted-inference-param-keys.ts";
 
-export type PersistedInferenceParamKey = keyof PersistedInferenceParams;
-
-/** Params that persist across a reload. `checkpoint` is the key, not a value. */
-export const PERSISTED_INFERENCE_PARAM_KEYS = [
-  "temperature",
-  "topP",
-  "topK",
-  "minP",
-  "repetitionPenalty",
-  "presencePenalty",
-  "maxSeqLength",
-  "maxTokens",
-  "systemPrompt",
-  "systemVariables",
-  "trustRemoteCode",
-  "fastMode",
-  "seed",
-] as const satisfies readonly PersistedInferenceParamKey[];
-
-/** What the memory records. `maxSeqLength` is left out: the context belongs to the load config,
- *  and a second copy would advertise one never loaded. */
-export const REMEMBERED_INFERENCE_PARAM_KEYS =
-  PERSISTED_INFERENCE_PARAM_KEYS.filter(
-    (key): key is PersistedInferenceParamKey => key !== "maxSeqLength",
-  );
+export {
+  PERSISTED_INFERENCE_PARAM_KEYS,
+  REMEMBERED_INFERENCE_PARAM_KEYS,
+  type PersistedInferenceParamKey,
+} from "./persisted-inference-param-keys.ts";
 
 export function setInferenceParam(
   params: InferenceParams,
@@ -125,6 +111,9 @@ export function getReplayedParams(
   // Key by key, not a spread: the row accepts every persisted key from any writer, and a spread
   // would carry maxSeqLength and stale keys into params.
   const replayed = { ...current };
+  if (current.samplingFieldsExplicit !== undefined || remembered.samplingFieldsExplicit !== undefined) {
+    replayed.samplingFieldsExplicit = explicitSamplingFields(remembered as Record<string, unknown>);
+  }
   for (const key of REMEMBERED_INFERENCE_PARAM_KEYS) {
     const value = remembered[key];
     if (value !== undefined) {

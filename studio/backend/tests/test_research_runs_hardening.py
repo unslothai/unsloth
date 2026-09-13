@@ -1724,6 +1724,45 @@ def test_stream_completion_opts_out_of_the_tool_loop(monkeypatch):
     assert sent[0]["json"]["thread_id"] == "research:run-1"
 
 
+@pytest.mark.parametrize("fields", [[], ["temperature", "top_p"]])
+@pytest.mark.parametrize("thinking", [None, False, True])
+def test_research_sampling_provenance_survives_durable_config_and_worker(
+    monkeypatch, fields, thinking
+):
+    config = _sanitize_config(
+        _make_payload(inferenceRequest = {"model": "m", "samplingFieldsExplicit": fields}),
+        {"modelId": "m"},
+    )
+    sent = _install_fake_client(monkeypatch, [_response(200, body = _stream_body())])
+    supervisor = _make_supervisor(_noop_check_active)
+    run = _waiting_run(30.0)
+    run["config"]["inferenceRequest"] = config["inferenceRequest"]
+    asyncio.run(
+        supervisor._stream_completion(
+            run,
+            [{"role": "user"}],
+            report_progress = False,
+            enable_thinking = thinking,
+        )
+    )
+    expected = fields + ([] if thinking is None else ["enable_thinking"])
+    if thinking is False:
+        expected.append("reasoning_effort")
+    assert sent[0]["json"]["sampling_fields_explicit"] == expected
+
+
+@pytest.mark.parametrize(
+    "fields", [None, "temperature", [1], [{}], ["unknown"], ["temperature"] * 17]
+)
+def test_research_sampling_provenance_rejects_invalid_values(fields):
+    with pytest.raises(HTTPException) as exc:
+        _sanitize_config(
+            _make_payload(inferenceRequest = {"model": "m", "samplingFieldsExplicit": fields}),
+            {"modelId": "m"},
+        )
+    assert exc.value.status_code == 400
+
+
 def test_codex_research_hops_route_saved_provider_with_run_scoped_cache(monkeypatch):
     sent = _install_fake_client(monkeypatch, [_response(200, body = _stream_body())])
     supervisor = _make_supervisor(_noop_check_active)

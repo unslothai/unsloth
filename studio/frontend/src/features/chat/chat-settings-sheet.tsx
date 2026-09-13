@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// eslint-disable-next-line no-restricted-imports -- Keep sampling provenance independent of the picker UI barrel.
+import {
+  SAMPLING_WIRE_FIELDS,
+  explicitSamplingFields,
+} from "@/features/model-picker/model-config/llama-cpp-config";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -805,7 +810,22 @@ export function ChatSettingsPanel({
 
   function set<K extends keyof InferenceParams>(key: K) {
     return (v: InferenceParams[K]) => {
-      const nextParams = { ...params, [key]: v };
+      const wire = SAMPLING_WIRE_FIELDS[key as keyof typeof SAMPLING_WIRE_FIELDS];
+      const nextParams = {
+        ...params,
+        [key]: v,
+        ...(wire
+          ? {
+              samplingFieldsExplicit: [
+                ...new Set([
+                  ...(params.samplingFieldsExplicit ??
+                    Object.values(SAMPLING_WIRE_FIELDS)),
+                  wire,
+                ]),
+              ],
+            }
+          : {}),
+      };
       const nextSource = isSamePresetConfig(activePresetBaseline, nextParams)
         ? getPresetSource(activePreset)
         : "modified";
@@ -852,6 +872,9 @@ export function ChatSettingsPanel({
     presetParams: Parameters<typeof applyPresetParams>[1],
   ): InferenceParams {
     const nextParams = applyPresetParams(params, presetParams);
+    nextParams.samplingFieldsExplicit = explicitSamplingFields(
+      presetParams as unknown as Record<string, unknown>,
+    );
     // Same reason the effect waits for a provider: without one `maxTokensMax` is the fallback, so
     // applying a preset here would lower the value for good.
     if (!isExternalModel || activeExternalProvider == null) return nextParams;

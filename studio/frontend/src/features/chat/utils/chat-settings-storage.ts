@@ -22,6 +22,7 @@ import {
 } from "../presets/preset-policy";
 import type { ReasoningEffort } from "../stores/chat-runtime-store";
 import { MAX_SAMPLING_SEED } from "../types/runtime";
+import { explicitSamplingFields } from "../../model-picker/model-config/llama-cpp-config";
 import {
   sanitizeCompactionHeadroomRatio,
   sanitizeContextPolicy,
@@ -144,6 +145,13 @@ function sanitizeInferenceParams(
   if (!isRecord(value)) return undefined;
 
   const params: PersistedInferenceParams = {};
+  if (Array.isArray(value.samplingFieldsExplicit)) {
+    // Presence is meaningful: [] says these are automatic defaults, while an absent
+    // mask identifies a legacy snapshot whose explicit fields must be inferred.
+    params.samplingFieldsExplicit = [
+      ...new Set(explicitSamplingFields(value)),
+    ];
+  }
   for (const field of NUMERIC_INFERENCE_FIELDS) {
     const fieldValue = value[field];
     if (typeof fieldValue === "number" && Number.isFinite(fieldValue)) {

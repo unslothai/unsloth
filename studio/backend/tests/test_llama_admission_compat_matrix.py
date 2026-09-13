@@ -235,8 +235,8 @@ class TestOldCallers:
             inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         )
         assert (
-            names[-1] == "on_conversation_grew"
-        ), f"the hook must be last; signature ends {names[-3:]}"
+            names.index("on_conversation_grew") == names.index("tool_choice") + 1
+        ), "the hook must retain its original positional slot after tool_choice"
 
     def test_the_wait_timeout_has_a_sane_default(self):
         import inspect

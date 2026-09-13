@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// eslint-disable-next-line no-restricted-imports -- The picker barrel imports chat; this payload helper is import-free.
+import { llamaCppConfigPayload } from "@/features/model-picker/model-config/llama-cpp-config";
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import {
   type ServerTuningValues,
@@ -1428,6 +1430,12 @@ export function useChatModelRuntime() {
           // them", and the route preserves the stored flags when the field is omitted, so a fallback
           // would clear flags the user set elsewhere.
           const loadLlamaExtraArgs = pendingLoadConfig?.llamaExtraArgs;
+          const loadLlamaCppConfig =
+            pendingLoadConfig?.llamaCppConfig ??
+            (currentCheckpoint === modelId &&
+            previousVariant === (ggufVariant ?? null)
+              ? stateBeforeUnload.llamaCppConfig
+              : undefined);
           let loadNBatch =
             pendingLoadConfig?.nBatch ?? stateBeforeUnload.nBatch;
           let loadNUbatch =
@@ -1542,6 +1550,9 @@ export function useChatModelRuntime() {
                     // The same list the load below sends: a --ctx-size or cache override changes the memory this
                     // preflight estimates, so omitting it approves a different command and /load then refuses
                     // the target with the real arguments.
+                    ...(!targetIsDiffusion
+                      ? llamaCppConfigPayload(loadLlamaCppConfig)
+                      : {}),
                     ...(!targetIsDiffusion && loadLlamaExtraArgs !== undefined
                       ? { llama_extra_args: loadLlamaExtraArgs ?? [] }
                       : {}),
@@ -1606,7 +1617,9 @@ export function useChatModelRuntime() {
               // preflight, so a rejected target truncates replies for a model that never loads. Idle,
               // unload first and free VRAM early.
               if (!forceCancelActive) {
-                await unloadModel({ model_path: currentCheckpoint });
+                if (loadLlamaCppConfig?.mode !== "custom") {
+                  await unloadModel({ model_path: currentCheckpoint });
+                }
               }
               // Set either way: /load can still leave no model resident, and an unneeded rollback hits
               // already_loaded before the gate.
@@ -1742,6 +1755,7 @@ export function useChatModelRuntime() {
             const loadResponse = await loadModel({
               model_path: loadPath,
               nativePathLease: loadNativePathLease,
+              nativePathToken,
               hf_token: hfToken,
               max_seq_length: loadMaxSeqLength,
               load_in_4bit: true,
@@ -1758,6 +1772,9 @@ export function useChatModelRuntime() {
               n_parallel: isGguf ? loadNParallel : null,
               // Sent only once known, and [] is the explicit "launch with none": the flags are llama-server's,
               // so neither a transformers load nor a diffusion GGUF carries them.
+              ...(isGguf && !targetIsDiffusion
+                ? llamaCppConfigPayload(loadLlamaCppConfig)
+                : {}),
               ...(isGguf && !targetIsDiffusion && loadLlamaExtraArgs !== undefined
                 ? { llama_extra_args: loadLlamaExtraArgs ?? [] }
                 : {}),
@@ -1974,6 +1991,13 @@ export function useChatModelRuntime() {
               // process's list, so the last thing we knew still holds unless this was a different model. An
               // explicit empty list is recorded as empty, not null, since omitting the field is what makes /load
               // inherit. The server's echo comes first, as the only account of what the launch carried.
+              loadedLlamaCppConfig:
+                loadResponse.requested_llama_cpp_config ??
+                loadLlamaCppConfig ??
+                null,
+              llamaCppConfig:
+                loadResponse.requested_llama_cpp_config ?? loadLlamaCppConfig,
+              llamaCppConfigSummary: loadResponse.llama_cpp_config_summary ?? null,
               loadedLlamaExtraArgs:
                 loadResponse.requested_llama_extra_args !== undefined
                   ? (loadResponse.requested_llama_extra_args ?? [])
@@ -2068,6 +2092,7 @@ export function useChatModelRuntime() {
                   // The pin it loaded from: without it this retries the ref that needed pinning.
                   model_path: previousActiveLoadId || previousCheckpoint,
                   nativePathLease: rollbackNativePathLease,
+                  nativePathToken: previousActiveNativePathToken,
                   hf_token: hfToken,
                   max_seq_length: rollbackMaxSeqLength,
                   load_in_4bit: true,
@@ -2103,6 +2128,9 @@ export function useChatModelRuntime() {
                   }),
                   // Explicit, unlike the batch pair above: the failed switch left the TARGET resident, so an
                   // omitted field here inherits across models, which the route refuses.
+                  ...llamaCppConfigPayload(
+                    stateBeforeUnload.loadedLlamaCppConfig ?? undefined,
+                  ),
                   ...(stateBeforeUnload.loadedLlamaExtraArgs != null
                     ? { llama_extra_args: stateBeforeUnload.loadedLlamaExtraArgs }
                     : {}),
@@ -2128,6 +2156,13 @@ export function useChatModelRuntime() {
                   rollbackResponse.speculative_type,
                 );
                 useChatRuntimeStore.setState({
+                  llamaCppConfig:
+                    stateBeforeUnload.loadedLlamaCppConfig ?? undefined,
+                  loadedLlamaCppConfig: stateBeforeUnload.loadedLlamaCppConfig,
+                  llamaCppConfigSummary:
+                    rollbackResponse.llama_cpp_config_summary ??
+                    stateBeforeUnload.llamaCppConfigSummary,
+                  params: stateBeforeUnload.params,
                   activeModelIsLocal: rollbackResponse.is_local_model ?? false,
                   activeLoadId: previousActiveLoadId ?? null,
                   activeNativePathToken: previousActiveNativePathToken ?? null,

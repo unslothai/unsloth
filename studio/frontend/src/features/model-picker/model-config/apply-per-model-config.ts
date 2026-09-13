@@ -47,6 +47,7 @@ export function applyPerModelConfigToRuntime(
         )
       : { ids: null, indexKind: null };
   useChatRuntimeStore.setState({
+    llamaCppConfig: options.isDiffusion ? undefined : config.llamaCppConfig,
     customContextLength: config.customContextLength ?? null,
     mlxKvBits: config.mlxKvBits ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
@@ -104,6 +105,7 @@ export function currentRuntimePerModelConfig(
 ): PerModelConfig {
   const s = useChatRuntimeStore.getState();
   return {
+    llamaCppConfig: s.llamaCppConfig,
     customContextLength: s.customContextLength ?? null,
     maxSeqLength: options.includeMaxSeqLength
       ? normalizeMaxSeqLength(s.params.maxSeqLength)
@@ -137,6 +139,7 @@ export function perModelConfigsEqual(
   b: PerModelConfig,
 ): boolean {
   return (
+    JSON.stringify(a.llamaCppConfig) === JSON.stringify(b.llamaCppConfig) &&
     (a.customContextLength ?? null) === (b.customContextLength ?? null) &&
     normalizeMaxSeqLength(a.maxSeqLength) ===
       normalizeMaxSeqLength(b.maxSeqLength) &&

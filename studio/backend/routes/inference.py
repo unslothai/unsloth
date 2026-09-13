@@ -6838,6 +6838,8 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         # running with no extras would come back carrying the arguments of the load
         # that just failed. None stays for "nothing was ever set", which is the only
         # case where inheriting is the right answer.
+        requested_llama_cpp_config = getattr(llama_backend, "requested_llama_cpp_config", None),
+        llama_cpp_config_summary = getattr(llama_backend, "llama_cpp_config_summary", None),
         requested_llama_extra_args = (
             None
             if llama_backend.is_diffusion
@@ -12822,6 +12824,8 @@ async def _prepare_load_placement(
     request: LoadRequest | ValidateModelRequest,
     extra_args: Optional[list[str]],
 ) -> _LoadPlacement:
+    if _custom_llama_config(request):
+        return _LoadPlacement(None, None, False, _classify_diffusion_gguf(config))
     requested = request.gpu_ids or None
     if not config.is_gguf:
         return _LoadPlacement(requested, None, False, False)
@@ -13206,6 +13210,12 @@ def _guard_chat_load_against_training(
             )
         return
 
+    if _custom_llama_config(request):
+        raise HTTPException(
+            status_code = 409,
+            detail = "Custom llama.cpp placement cannot be verified beside active training. Stop training before loading this configuration.",
+        )
+
     from core.inference.llama_cpp import _diffusion_manual_ngl, _scale_diffusion_required_gb
 
     is_gguf = bool(getattr(config, "is_gguf", False))
@@ -13423,6 +13433,86 @@ def _guard_chat_load_against_training(
     raise HTTPException(status_code = 409, detail = detail)
 
 
+def _custom_llama_config(request) -> bool:
+    source = getattr(request, "llama_cpp_config", None)
+    return isinstance(source, dict) and source.get("mode") == "custom"
+
+
+def _resolve_llama_cpp_config(
+    request,
+    config = None,
+    model_identifier = None,
+):
+    """Resolve one source without combining configuration from different model rows."""
+    from core.inference.llama_custom_config import parse_config_source
+    from utils.openai_auto_switch_settings import resolve_override_for_load
+
+    source = getattr(request, "llama_cpp_config", None)
+    identifier = model_identifier or request.model_path
+    variant = getattr(request, "gguf_variant", None) or getattr(config, "gguf_variant", None)
+    if source is None:
+        _, override = resolve_override_for_load(
+            identifier, getattr(config, "identifier", None), variant
+        )
+        source = override.get("llama_cpp_config")
+    if source is None:
+        resident = get_llama_cpp_backend()
+        intent = getattr(resident, "last_load_intent", None)
+        if (
+            intent is not None
+            and _same_loaded_identifier(getattr(intent, "model_identifier", None), identifier)
+            and (getattr(intent, "hf_variant", None) or "").casefold() == (variant or "").casefold()
+        ):
+            source = getattr(intent, "llama_cpp_config", None)
+    if source is None:
+        return request
+    source = parse_config_source(source)
+    return request.model_copy(update = {"llama_cpp_config": source.to_wire()})
+
+
+async def _preflight_custom_llama_config(
+    request,
+    config,
+    *,
+    native_grant_backed = False,
+):
+    """Validate custom intent before any backend or GPU owner can be evicted."""
+    if not _custom_llama_config(request):
+        return None
+    if not config.is_gguf:
+        raise HTTPException(
+            status_code = 400, detail = "Custom llama.cpp configuration requires a GGUF model."
+        )
+    if _classify_diffusion_gguf(config) is True:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Custom llama.cpp configuration cannot launch a diffusion model.",
+        )
+    model_path = getattr(config, "gguf_file", None)
+    mmproj_path = getattr(config, "gguf_mmproj_file", None)
+    if native_grant_backed and mmproj_path:
+        _validate_native_gguf_companion(mmproj_path, model_path, "vision companion")
+    intent = GgufLoadIntent(
+        model_identifier = _public_model_identifier(request.model_path, config.identifier),
+        gguf_path = model_path,
+        mmproj_path = mmproj_path,
+        hf_repo = getattr(config, "gguf_hf_repo", None),
+        hf_variant = getattr(config, "gguf_variant", None),
+        hf_token = request.hf_token,
+        is_vision = getattr(config, "is_vision", False),
+        disable_vision = getattr(request, "disable_vision", False),
+        llama_cpp_config = request.llama_cpp_config,
+    )
+    try:
+        return await asyncio.to_thread(
+            get_llama_cpp_backend().prepare_custom_config,
+            intent,
+            validate_resources = bool(model_path),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc))) from exc
+
+
 def _resolve_inherited_extra_args(
     request,
     config: ModelConfig,
@@ -13433,6 +13523,8 @@ def _resolve_inherited_extra_args(
     """Effective pass-through extras for a GGUF request that omitted the field:
     the previous same-model load's extras, shadow-stripped, so a settings-Apply
     reload (which does not round-trip the extras field) keeps them (#5401)."""
+    if _custom_llama_config(request):
+        return []
     if getattr(request, "llama_extra_args", None) is not None:
         return extra_llama_args
     if not getattr(config, "is_gguf", False):
@@ -14280,10 +14372,14 @@ async def _load_model_impl(
     model_log_label = request.model_path
     gguf_load_stack = ExitStack()
     try:
+        requested_llama_cpp_config = request.llama_cpp_config
+        request = _resolve_llama_cpp_config(request)
         # Validate user pass-through args up front so a managed-flag collision
         # returns 400 before any model work.
         try:
-            extra_llama_args = validate_extra_args(request.llama_extra_args)
+            extra_llama_args = validate_extra_args(
+                [] if _custom_llama_config(request) else request.llama_extra_args
+            )
         except ValueError as exc:
             # Keep the curated validation message (names the flag); just strip paths.
             logger.warning("inference.validate_extra_args_failed: %s", exc)
@@ -14421,7 +14517,12 @@ async def _load_model_impl(
             )
 
         is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
-        if llama_backend.is_loaded and (request.gguf_variant or is_direct_gguf_request):
+        if (
+            llama_backend.is_loaded
+            and (request.gguf_variant or is_direct_gguf_request)
+            and getattr(request, "llama_cpp_config", None) is None
+            and getattr(llama_backend, "requested_llama_cpp_config", None) is None
+        ):
             reused = _reuse_loaded_gguf(
                 _active_gguf_intent(
                     request,
@@ -14439,7 +14540,9 @@ async def _load_model_impl(
                 if not llama_backend.holds_no_vram:
                     await asyncio.to_thread(acquire_for, CHAT)
                 return reused
-        if not (request.gguf_variant or is_direct_gguf_request):
+        if not (request.gguf_variant or is_direct_gguf_request) and not _custom_llama_config(
+            request
+        ):
             if (
                 _same_loaded_identifier(backend.active_model_name, model_identifier)
                 and _mlx_runtime_settings_match(backend, request)
@@ -14544,6 +14647,24 @@ async def _load_model_impl(
                 status_code = 400,
                 detail = f"Invalid model identifier: {model_log_label}",
             )
+
+        request = _resolve_llama_cpp_config(
+            request.model_copy(update = {"llama_cpp_config": requested_llama_cpp_config}),
+            config,
+            public_model_identifier,
+        )
+        try:
+            extra_llama_args = validate_extra_args(
+                [] if _custom_llama_config(request) else request.llama_extra_args
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc))) from exc
+        custom_compiled = await _preflight_custom_llama_config(
+            request, config, native_grant_backed = native_grant_backed
+        )
+        if custom_compiled is not None:
+            _n_parallel = custom_compiled.n_parallel
+            effective_chat_template_override = None
 
         # Resolve inherited extras once before command-dependent preflights.
         extra_llama_args = _resolve_inherited_extra_args(
@@ -14765,6 +14886,17 @@ async def _load_model_impl(
                 request.speculative_type,
             )
         )
+        if custom_compiled is not None:
+            # Custom mode ignores managed placement, including a saved CPU-only
+            # choice. Only explicit native CPU placement can skip the handoff.
+            chat_load_needs_gpu = not (
+                custom_compiled.explicit_cpu_only
+                and not (
+                    _load_keeps_a_projector(config, disable_vision = request.disable_vision)
+                    if config.is_vision
+                    else bool(getattr(config, "gguf_mmproj_file", None))
+                )
+            )
         # Ahead of the arbiter: acquire_for evicts a resident Images/Video pipeline and the
         # confirmation below cancels the running generations, both before load_model's own
         # copy of this check runs. A header-sized read spares them. Fails open into that copy.
@@ -14968,13 +15100,18 @@ async def _load_model_impl(
             # loading; the response reports the backend's actual tensor_parallel
             # state so the UI toggle reflects the fallback.
             try:
-                success = await load_with_tensor_fallback(
-                    _attempt_gguf_load,
-                    requested_tensor = request.tensor_parallel,
-                    extra_args = extra_llama_args,
-                    label = config.identifier,
-                    cancelled = lambda: _gguf_load_cancelled(llama_backend, load_cancel_event),
-                )
+                if custom_compiled is not None:
+                    success = await _run_gguf_load_attempt(
+                        llama_backend, load_intent, load_cancel_event
+                    )
+                else:
+                    success = await load_with_tensor_fallback(
+                        _attempt_gguf_load,
+                        requested_tensor = request.tensor_parallel,
+                        extra_args = extra_llama_args,
+                        label = config.identifier,
+                        cancelled = lambda: _gguf_load_cancelled(llama_backend, load_cancel_event),
+                    )
             except Exception:
                 # A GGUF load can raise before tearing down the old llama-server (e.g. an
                 # update-in-progress guard fires before _kill_process), leaving the prior
@@ -15543,6 +15680,13 @@ async def validate_model(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
+        request = _resolve_llama_cpp_config(
+            request, config, _public_model_identifier(request.model_path, model_identifier)
+        )
+        custom_compiled = await _preflight_custom_llama_config(
+            request, config, native_grant_backed = native_grant_backed
+        )
+
         # The caller's own list when it sent one, or the resolver hands back this
         # fourth argument unchanged and a --ctx-size the load is about to use would
         # be missing from the estimate that approves it.
@@ -15817,6 +15961,9 @@ async def validate_model(
 
         return ValidateModelResponse(
             valid = True,
+            llama_cpp_config_summary = custom_compiled.summary()
+            if custom_compiled is not None
+            else None,
             message = "Model identifier is valid.",
             identifier = model_log_label if native_grant_backed else config.identifier,
             display_name = model_log_label
@@ -16450,6 +16597,10 @@ async def estimate_memory(
     from core.inference.llama_cpp import _args_place_tensors_on_cpu
     from core.inference.llama_server_args import _effective_tensor_parallel
 
+    request = _resolve_llama_cpp_config(request)
+    if _custom_llama_config(request):
+        # Managed memory estimates include policies that strict mode does not apply.
+        return EstimateMemoryResponse(available = False, reason = "unsizable")
     if is_ollama_manifest_ref(request.model_path):
         # Resolving one writes a .gguf link to disk; that belongs to the load path.
         return EstimateMemoryResponse(available = False, reason = "unsupported_source")
@@ -21435,6 +21586,19 @@ async def delete_openai_container(
         await client.close()
 
 
+def _custom_request_defaults(model_id) -> dict:
+    backend = get_llama_cpp_backend()
+    summary = getattr(backend, "llama_cpp_config_summary", None)
+    if not isinstance(summary, dict) or not _same_loaded_identifier(
+        getattr(backend, "model_identifier", None), model_id
+    ):
+        return {}
+    defaults = dict(summary.get("request_defaults") or {})
+    if "repeat_penalty" in defaults:
+        defaults["repetition_penalty"] = defaults.pop("repeat_penalty")
+    return defaults
+
+
 def _fill_recommended_sampling_openai(payload, model_id) -> None:
     """Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to a
     ChatCompletionRequest in place.
@@ -21446,13 +21610,42 @@ def _fill_recommended_sampling_openai(payload, model_id) -> None:
     """
     from utils.inference.inference_config import resolve_effective_sampling, SAMPLING_FIELD_NAMES
 
-    explicit = {
-        f: (getattr(payload, f) if f in payload.model_fields_set else None)
-        for f in SAMPLING_FIELD_NAMES
-    }
-    effective = resolve_effective_sampling(model_id, explicit)
+    preset = _custom_request_defaults(model_id)
+    fields = getattr(payload, "_sampling_original_fields", None)
+    if fields is None:
+        fields = frozenset(payload.model_fields_set)
+        hint = getattr(payload, "sampling_fields_explicit", None)
+        if preset and hint is not None:
+            provenance_fields = frozenset(
+                (
+                    *SAMPLING_FIELD_NAMES,
+                    "frequency_penalty",
+                    "enable_thinking",
+                    "reasoning_effort",
+                    "preserve_thinking",
+                )
+            )
+            fields = (fields - provenance_fields) | fields.intersection(hint)
+        object.__setattr__(payload, "_sampling_original_fields", fields)
+    explicit = {f: (getattr(payload, f) if f in fields else None) for f in SAMPLING_FIELD_NAMES}
+    effective = resolve_effective_sampling(model_id, explicit, preset_defaults = preset)
     for field, value in effective.items():
         setattr(payload, field, value)
+    if preset:
+        predict = preset.get("n_predict")
+        if (
+            payload.max_tokens is None
+            and payload.max_completion_tokens is None
+            and isinstance(predict, int)
+            and predict >= 0
+        ):
+            payload.max_tokens = predict
+        for field in ("frequency_penalty", "seed"):
+            if field not in fields and field in preset:
+                setattr(payload, field, preset[field])
+        for field in ("enable_thinking", "reasoning_effort", "preserve_thinking"):
+            if field not in fields:
+                setattr(payload, field, None)
 
 
 # /v1/completions is proxied to llama-server verbatim; its repetition knob is "repeat_penalty",
@@ -21475,9 +21668,19 @@ def _fill_recommended_sampling_completions(body: dict, model_id) -> None:
     from utils.inference.inference_config import resolve_effective_sampling, SAMPLING_FIELD_NAMES
 
     explicit = {f: body.get(_COMPLETIONS_SAMPLING_BODY_KEY.get(f, f)) for f in SAMPLING_FIELD_NAMES}
-    effective = resolve_effective_sampling(model_id, explicit, fill_defaults = False)
+    preset = _custom_request_defaults(model_id)
+    effective = resolve_effective_sampling(
+        model_id, explicit, fill_defaults = False, preset_defaults = preset
+    )
     for field, value in effective.items():
         body[_COMPLETIONS_SAMPLING_BODY_KEY.get(field, field)] = value
+    for field, value in preset.items():
+        if field == "repetition_penalty":
+            continue
+        if field == "chat_template_kwargs":
+            body[field] = {**value, **(body.get(field) or {})}
+        else:
+            body.setdefault(field, value)
 
 
 class _DisconnectPolicyRequest:
@@ -22817,6 +23020,7 @@ async def produce_openai_chat_completions(
 
             def gguf_generate_with_tools():
                 return llama_backend.generate_chat_completion_with_tools(
+                    request_template_kwargs = payload.chat_template_kwargs,
                     messages = gguf_messages,
                     tools = tools_to_use,
                     temperature = payload.temperature,
@@ -23579,6 +23783,7 @@ async def produce_openai_chat_completions(
         def gguf_generate(choice_index: int = 0):
             _seed = _choice_seed(payload.seed, choice_index, negative_is_random = True)
             return llama_backend.generate_chat_completion(
+                request_template_kwargs = payload.chat_template_kwargs,
                 messages = gguf_messages,
                 image_b64 = image_b64,
                 temperature = payload.temperature,
@@ -33646,6 +33851,11 @@ def _build_openai_passthrough_body(
             payload.enable_thinking,
             payload.reasoning_effort,
             payload.preserve_thinking,
+            **(
+                {"request_template_kwargs": payload.chat_template_kwargs}
+                if payload.chat_template_kwargs is not None
+                else {}
+            ),
         )
         if llama_backend is not None
         else None

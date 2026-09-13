@@ -103,6 +103,7 @@ def _run(script: str, harness: str):
 _HARNESS_TEMPLATE = """\
 // Real classification block, sliced verbatim from chat-adapter.ts.
 export async function classify(ctx: any) {{
+  const fetchLoadModelOverride = async () => undefined;
   const {{
     candidate,
     config,

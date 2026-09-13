@@ -100,7 +100,13 @@ test("a chat left mid-read keeps its edits, and the next chat gets the defaults"
   // The edits went to the chat they were made in.
   assert.deepEqual(
     threadRows.writesFor(CHAT_A).map((write) => write.settingsPatch),
-    [{ temperature: EDITED_TEMPERATURE, systemPrompt: EDITED_PROMPT }],
+    [
+      {
+        samplingFieldsExplicit: ["temperature"],
+        temperature: EDITED_TEMPERATURE,
+        systemPrompt: EDITED_PROMPT,
+      },
+    ],
     "the held edits did not reach the chat they were made in",
   );
 

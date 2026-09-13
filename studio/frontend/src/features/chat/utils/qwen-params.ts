@@ -12,6 +12,7 @@ import { resolveQwenThinkingParams } from "./qwen-sampling-table";
  *  both the thread assistant UI and the shared chat composer. */
 export function applyQwenThinkingParams(thinkingOn: boolean): void {
   const store = useChatRuntimeStore.getState();
+  if (store.loadedLlamaCppConfig?.mode === "custom") return;
   const checkpoint = store.params.checkpoint?.toLowerCase() ?? "";
   const params = resolveQwenThinkingParams(checkpoint, thinkingOn);
   if (params === null || store.activePresetSource !== "builtin-default") {
