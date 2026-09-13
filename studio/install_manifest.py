@@ -309,6 +309,41 @@ def _installed_version(dist_name: str, installed: Optional[Dict[str, str]] = Non
     return installed_version_probe(dist_name)[0] or None
 
 
+def _publish_json(path: Path, payload: dict, *, only_if_present: bool = False) -> bool:
+    """Write *payload* to *path* through a temp file of this writer's own, then replace.
+
+    The temp name is unique per call. A shared one (the old MANIFEST_NAME + ".tmp") is a
+    second writer's file as much as this one's: two writers on one venv could clobber each
+    other's copy between the write and the replace, and publish the wrong payload.
+
+    *only_if_present* declines to recreate a manifest another updater removed while this one
+    gathered what it merges. Callers hold the lock; this raises nothing they do not catch.
+    """
+    import tempfile  # noqa: PLC0415 - stdlib, and not needed to read a manifest
+
+    text = json.dumps(payload, indent = 2, sort_keys = True)
+    descriptor, name = tempfile.mkstemp(dir = str(path.parent), prefix = path.name + ".", suffix = ".tmp")
+    tmp = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding = "utf-8") as handle:
+            handle.write(text)
+        if only_if_present and not path.exists():
+            return False
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+    return True
+
+
 @contextlib.contextmanager
 def _manifest_lock(root: Optional[Path] = None):
     """Hold an exclusive lock on LOCK_NAME for the block. Never raises, never blocks forever.
@@ -533,12 +568,11 @@ def write_manifest(
         payload[key] = value
     path = manifest_path(root)
     try:
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, indent = 2, sort_keys = True), encoding = "utf-8")
         # The same lock the other two writers take: this is the marker that says the install
-        # finished, and it must not interleave with another process dropping it.
+        # finished, and it must not interleave with another process dropping it. The temp copy
+        # is written under it too, since the name belongs to whichever writer holds the lock.
         with _manifest_lock(root):
-            os.replace(tmp, path)
+            _publish_json(path, payload)
     # TypeError/ValueError too: `extra` is caller-composed, and raising here would abort a pass
     # that has already installed everything, leaving a venv with no manifest at all.
     except (OSError, TypeError, ValueError):
@@ -583,15 +617,11 @@ def update_manifest(root: Optional[Path] = None, **extra: object) -> bool:
             if data is None:
                 return False
             data.update(values)
-            tmp = path.with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(data, indent = 2, sort_keys = True), encoding = "utf-8")
-            # A peer running an older build of this module removes without taking the lock, so
-            # the presence of the file is still checked as late as it can be: recreating it over
+            # only_if_present: a peer running an older build of this module removes without
+            # taking the lock, so the file is checked as late as it can be. Recreating it over
             # a half-built venv is the one outcome this must never have.
-            if not path.exists():
-                tmp.unlink(missing_ok = True)
+            if not _publish_json(path, data, only_if_present = True):
                 return False
-            os.replace(tmp, path)
     except (OSError, TypeError, ValueError):
         return False
     return True

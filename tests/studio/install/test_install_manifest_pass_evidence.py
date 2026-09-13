@@ -21,7 +21,9 @@ import pathlib
 import subprocess
 import sys
 import sysconfig
+import tempfile
 import textwrap
+import unittest.mock
 import time
 
 import pytest
@@ -337,27 +339,83 @@ def test_remove_manifest_parks_over_a_stale_copy_it_can_clear(tmp_path: pathlib.
     assert im.read_previous_manifest(root = tmp_path)["schema"] == im.MANIFEST_SCHEMA
 
 
+def test_two_writers_do_not_share_a_temp_file(tmp_path: pathlib.Path) -> None:
+    """A temp name shared between writers is a second writer's file as much as this one's:
+    one could remove or overwrite the other's copy between the write and the replace, and
+    publish the wrong payload into the manifest that says the install finished."""
+    seen: list[str] = []
+    real_mkstemp = tempfile.mkstemp
+
+    def _record(*args, **kwargs):
+        descriptor, name = real_mkstemp(*args, **kwargs)
+        seen.append(pathlib.Path(name).name)
+        return descriptor, name
+
+    with unittest.mock.patch.object(tempfile, "mkstemp", _record):
+        im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+        assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is True
+    assert len(seen) == 2 and seen[0] != seen[1], seen
+    assert all(name.startswith(im.MANIFEST_NAME + ".") for name in seen)
+    # Neither copy outlives its writer.
+    assert not list(tmp_path.glob("*.tmp"))
+    assert _payload(tmp_path)["mlx_health"] == {"ok": True}
+
+
 def test_update_manifest_does_not_recreate_one_removed_while_it_worked(
     tmp_path: pathlib.Path, monkeypatch
 ) -> None:
-    """The evidence this merges takes minutes to gather -- the MLX probe waits up to 180 s
-    -- and a second updater that dropped the manifest in that window is mid-pass. Writing
-    it back would put a completion marker over a half-built venv."""
+    """A peer running an older build of this module removes the manifest without taking the
+    lock. Writing it back would put a completion marker over the venv that peer is part-way
+    through rebuilding."""
     im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
     live = tmp_path / im.MANIFEST_NAME
-    real_write_text = pathlib.Path.write_text
+    real_read = im.read_manifest
 
-    def _write_text(self, *args, **kwargs):
-        result = real_write_text(self, *args, **kwargs)
-        # Stands in for the other updater: it lands after the read, before the replace.
+    def _read_then_the_peer_removes_it(root = None):
+        data = real_read(root)
         live.unlink(missing_ok = True)
-        return result
+        return data
 
-    monkeypatch.setattr(pathlib.Path, "write_text", _write_text)
+    monkeypatch.setattr(im, "read_manifest", _read_then_the_peer_removes_it)
     assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is False
     monkeypatch.undo()
     assert not live.exists()
-    assert not list(tmp_path.glob("*.json.tmp"))
+    assert not list(tmp_path.glob("*.tmp")), "the temp copy outlived the call"
+
+
+def test_remove_manifest_refuses_an_unclearable_parked_copy_with_no_live_manifest(
+    tmp_path: pathlib.Path,
+) -> None:
+    """An interrupted run already took the live manifest. Nothing is parked by this call, so
+    a surviving copy is that dead run's, and answering True would send setup.ps1 into its
+    pip/torch mutations ahead of the refusal the pass makes on exactly that path."""
+    blocked = tmp_path / im.PREVIOUS_MANIFEST_NAME
+    blocked.mkdir()
+    (blocked / "keep.txt").write_text("x", encoding = "utf-8")
+    assert im.remove_manifest(root = tmp_path) is False
+
+    (blocked / "keep.txt").unlink()
+    blocked.rmdir()
+    assert im.remove_manifest(root = tmp_path) is True
+
+
+def test_a_dead_runs_parked_copy_does_not_outlive_the_next_invalidation(
+    tmp_path: pathlib.Path,
+) -> None:
+    """It would otherwise be read as this pass's evidence."""
+    (tmp_path / im.PREVIOUS_MANIFEST_NAME).write_text("{}", encoding = "utf-8")
+    assert im.remove_manifest(root = tmp_path) is True
+    assert not (tmp_path / im.PREVIOUS_MANIFEST_NAME).exists()
+
+
+def test_remove_manifest_parks_over_a_stale_copy_it_can_clear(tmp_path: pathlib.Path) -> None:
+    """The ordinary case the fallback must not punish: a leftover file from a run that died
+    is replaced, not treated as an obstruction."""
+    im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+    (tmp_path / im.PREVIOUS_MANIFEST_NAME).write_text("{}", encoding = "utf-8")
+    assert im.remove_manifest(root = tmp_path) is True
+    assert not (tmp_path / im.MANIFEST_NAME).exists()
+    assert im.read_previous_manifest(root = tmp_path)["schema"] == im.MANIFEST_SCHEMA
 
 
 def test_update_manifest_with_nothing_to_say_is_a_no_op(tmp_path: pathlib.Path) -> None:
