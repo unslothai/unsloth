@@ -834,10 +834,12 @@ def test_client_error_probe_uses_complete_sharded_cache(tmp_path):
         (["model-00000-of-00002.safetensors", "model-00001-of-00002.safetensors"], True),
         (["model-00000-of-00002.safetensors"], False),
         (["model-00000-of-00002.safetensors", "model-00002-of-00002.safetensors"], False),
+        (["model-00000-of-1000000000.safetensors"], False),
     ],
 )
 def test_zero_based_shard_numbering_uses_complete_cache(tmp_path, shards, complete):
-    route = _load_route_module(f"training_route_zero_based_shards_{len(shards)}_{complete}")
+    total = shards[0].rsplit("-", 1)[-1].split(".")[0]
+    route = _load_route_module(f"training_route_zero_based_shards_{len(shards)}_{total}_{complete}")
     snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
     snapshot.mkdir(parents = True)
     (snapshot / "config.json").write_text("{}")
