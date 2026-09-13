@@ -673,9 +673,10 @@ def search_dense(
         widen: list[str] = []
         for s in pending:
             fetch = fetches[s]
+            # SQLite < 3.41 does not pass LIMIT to vec0's KNN planner; bind k explicitly.
             rows = conn.execute(
                 "SELECT chunk_id, distance FROM chunks_vec "
-                "WHERE scope=? AND embedding MATCH ? ORDER BY distance LIMIT ?",
+                "WHERE scope=? AND embedding MATCH ? AND k=? ORDER BY distance",
                 (s, _f32(vector), fetch),
             ).fetchall()
             kept[s] = _drop_incompatible(
