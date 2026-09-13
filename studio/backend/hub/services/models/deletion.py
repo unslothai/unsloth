@@ -592,6 +592,7 @@ def _llama_cpp_blocks_delete(repo_id: str, variant: Optional[str]) -> bool:
     """Whether the llama.cpp backend holds *repo_id* (/variant). Acquiring fails open (import error means nothing loaded); reading load state is unguarded so a raise propagates and the caller fails closed rather than delete a live model."""
     try:
         from routes.inference import get_llama_cpp_backend, get_resident_registry
+
         # The active backend plus every registry slot: a secondary resident's
         # repo is as live as the active one's, and a slot still loading holds
         # its identifier too. Slots the table already dropped are gone.
