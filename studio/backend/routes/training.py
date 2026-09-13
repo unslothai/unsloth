@@ -1577,9 +1577,15 @@ async def start_training(
         hf_token = hf_token_arg(request.hf_token, allow_ambient_token = allow_ambient)
         # The local dataset paths were resolved above for existence only; authorize them now that
         # the caller's token is known, before anything reads them.
+        # Eval paths only while evaluation is on, matching the validation above and the trainer,
+        # which reads them under the same condition: a stale eval path nothing will open must not
+        # refuse an otherwise valid run.
         for _local_paths, _label in (
             (request.local_datasets, "dataset"),
-            (request.local_eval_datasets, "eval_dataset"),
+            (
+                request.local_eval_datasets if evaluation_enabled(request.eval_steps) else [],
+                "eval_dataset",
+            ),
         ):
             if _local_paths:
                 await asyncio.to_thread(
@@ -3094,9 +3100,13 @@ async def start_diffusion_training(
     # as it is a real pipeline directory, so a base ALREADY in the operator's cache reached the
     # trainer unchecked. Scrubbing the child environment does not help there: from_pretrained reads
     # those files off disk and asks for no credential. Same authorization the LLM start applies.
+    # The EFFECTIVE target only, the same value the gated preflight above is given. The DiT trainer
+    # loads it (diffusion_dit_trainer replaces base_model with fetch_base_model) and for SDXL
+    # normalization makes the two equal, so the original base_model is metadata once a mirror is
+    # chosen: authorizing it as well can refuse a public mirror over a stray upstream snapshot.
     await asyncio.to_thread(
         _refuse_unauthorized_cached_local_paths,
-        [normalized_cfg.fetch_base_model or "", normalized_cfg.base_model or ""],
+        [normalized_cfg.fetch_base_model or normalized_cfg.base_model or ""],
         hf_token_arg(normalized_cfg.hf_token, allow_ambient_token = config["allow_ambient"]),
         "model",
     )

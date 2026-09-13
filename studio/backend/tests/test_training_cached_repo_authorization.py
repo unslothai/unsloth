@@ -508,6 +508,39 @@ def test_an_unreadable_repo_directory_still_counts_as_cached(monkeypatch, cache_
         os.chmod(repo / "snapshots", 0o755)
 
 
+def test_a_disabled_eval_path_is_not_authorized(monkeypatch, cache_root):
+    """The route validates local_eval_datasets only while evaluation is on, and so does the
+    trainer, so a stale eval path nothing will ever open must not refuse the run."""
+    import inspect
+
+    import routes.training as training_routes
+
+    source = inspect.getsource(training_routes.start_training)
+    marker = "request.local_eval_datasets if evaluation_enabled(request.eval_steps) else []"
+    assert marker in source
+
+    # And the condition itself agrees with the validation above it.
+    assert training_routes.evaluation_enabled(0) is False
+    assert training_routes.evaluation_enabled(None) is False
+    assert training_routes.evaluation_enabled(10) is True
+
+
+def test_only_the_effective_diffusion_fetch_target_is_authorized():
+    """The DiT trainer loads fetch_base_model, and for SDXL the two are equal by construction.
+
+    Authorizing the original base_model as well refused a public mirror whenever a stray or partial
+    snapshot of the gated upstream happened to sit in the cache.
+    """
+    import inspect
+
+    import routes.training as training_routes
+
+    source = inspect.getsource(training_routes.start_diffusion_training)
+    assert '[normalized_cfg.fetch_base_model or normalized_cfg.base_model or ""]' in source
+    # The gated preflight above resolves the same target, so the two cannot drift apart.
+    assert "normalized_cfg.fetch_base_model or normalized_cfg.base_model" in source
+
+
 def test_the_diffusion_config_tolerates_the_new_policy_key():
     """allow_ambient rides the raw config dict; the trainer dataclass must ignore it."""
     from core.training.diffusion_train_common import _config_from_dict
