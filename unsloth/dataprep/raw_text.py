@@ -304,10 +304,9 @@ def _iter_column(dataset, column):
 class _TextCharTable(dict):
     """str.translate table for clean_text, filled in the first time each character is seen."""
 
-    # Drop only invisible junk: control, private-use and surrogate code points, noncharacters and the
-    # format characters below. Other format characters (Arabic number and ayah signs, ZWJ, ZWNJ, emoji
-    # tags, invisible math operators, hieroglyph controls) are part of the text, and unassigned (Cn) code
-    # points are characters newer than this interpreter's Unicode database.
+    # Drop only the invisible: control, private-use and surrogate code points, noncharacters, and the
+    # format characters below. Every other format character (ZWJ, ZWNJ, ayah signs, emoji tags) is text,
+    # and Cn just means newer than this interpreter's Unicode database.
     _DROP_CATEGORIES = frozenset(("Cc", "Co", "Cs"))
     _JUNK_CHARS = frozenset(
         chr(codepoint)

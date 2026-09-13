@@ -228,24 +228,19 @@ def test_raw_text_loader():
         assert stats["total_samples"] > 0, "Should count samples"
         assert "warnings" in stats, "Should include warnings"
 
-        # Plain ASCII: Windows consoles default to cp1252, which cannot encode the
-        # check mark, so `python tests/test_raw_text.py` died here with a
-        # UnicodeEncodeError before reaching most of the file. pytest hides it by
-        # capturing stdout as UTF-8, so only contributors running the driver saw it.
+        # Plain ASCII: a Windows console is cp1252 and cannot encode a check mark, so one
+        # here killed the driver mid-file. pytest hid it, capturing stdout as UTF-8.
         print("All tests passed!")
         return True
 
-    # No `except Exception: return False` here. Swallowing the failure printed a
-    # tidy message and still reported a pass to pytest, so every assertion in this
-    # function -- including the whitespace and non-ASCII ones above -- ran in CI
-    # without being able to fail it. That is how clean_text came to delete every
-    # non-ASCII character unnoticed.
+    # No `except Exception: return False` here: it swallowed the failure and still reported a
+    # pass, so every assertion above ran in CI unable to fail it. That is how this shipped.
     finally:
         os.unlink(test_file)
 
 
 def test_clean_text_keeps_text_in_any_script():
-    """Top level on purpose: test_raw_text_loader's try/except swallows assertion failures."""
+    """Top level on purpose: an assertion inside test_raw_text_loader used to be swallowed."""
     preprocessor = TextPreprocessor()
     for script_text in [
         "Le caf\u00e9 \u00e9tait tr\u00e8s bon.",
@@ -294,16 +289,9 @@ def test_clean_text_drops_invisible_characters():
 
 
 def test_clean_text_decision_cannot_drift_between_interpreters():
-    """clean_text must clean a corpus identically on every supported Python.
-
-    unicodedata is compiled into CPython, so its database version moves with the
-    interpreter (3.9 ships Unicode 13.0, 3.14 ships 16.0) and most General_Category
-    values are free to change between them. Unicode's stability policy freezes
-    exactly three: Cc, Co and Cs. Keying the drop set on only those is what makes
-    the same corpus clean the same way on 3.9 and on 3.14, so pin it here: widening
-    _DROP_CATEGORIES to any other category silently reintroduces that drift.
-
-    https://www.unicode.org/policies/property_value_stability_table.html
+    """unicodedata ships with the interpreter (3.9 has Unicode 13.0, 3.14 has 16.0), and
+    Unicode freezes only Cc, Co and Cs. Keying on any other category would clean the same
+    corpus differently per Python. https://www.unicode.org/policies/property_value_stability_table.html
     """
     immutable = {"Cc", "Co", "Cs"}
     assert set(raw_text_module._TextCharTable._DROP_CATEGORIES) <= immutable, (
@@ -311,14 +299,12 @@ def test_clean_text_decision_cannot_drift_between_interpreters():
         f"({sorted(immutable)}); the rest differ between Python versions."
     )
 
-    # Everything else that is dropped is named explicitly rather than derived from
-    # the database, for the same reason.
+    # Everything else dropped is named explicitly, not derived from the database.
     preprocessor = TextPreprocessor()
     for codepoint in (0x00AD, 0x200B, 0x200E, 0x2060, 0x2066, 0xFEFF, 0xFFFD, 0xE0001):
         assert preprocessor.clean_text(f"a{chr(codepoint)}b") == "ab", hex(codepoint)
 
-    # Unassigned (Cn) code points are characters newer than the running
-    # interpreter's database, so they have to survive rather than be deleted.
+    # Unassigned (Cn) means newer than this interpreter's database, so it must survive.
     unassigned = [
         cp
         for cp in range(0x10D40, 0x10D90)
