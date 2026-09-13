@@ -6,6 +6,7 @@
 Uses the rendered UI with deterministic API responses; no model bytes or GPU.
 PW_LOAD_SECOND=1 also checks loading the same model after its queued download.
 PW_HOLD_FIRST_PLAN=1 delays the first plan until the second selection has staged.
+PW_RESOLVE_FIRST=1 delays the first selection's GGUF filename lookup.
 """
 
 import json
@@ -21,6 +22,7 @@ from playwright_image_download_cancel_retry import _open_quant
 
 LOAD_SECOND = os.environ.get("PW_LOAD_SECOND", "0") == "1"
 HOLD_FIRST_PLAN = os.environ.get("PW_HOLD_FIRST_PLAN", "0") == "1"
+RESOLVE_FIRST = os.environ.get("PW_RESOLVE_FIRST", "0") == "1"
 SECOND = REPO_ID if LOAD_SECOND else "Tongyi-MAI/Z-Image-Turbo"
 COMPANION = "black-forest-labs/FLUX.2-klein-4B"
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright_image_download_queue"))
@@ -31,6 +33,7 @@ def main() -> None:
     state = {"jobs": {}, "starts": [], "calls": [], "plans": [], "release": False}
     errors = []
     held_plans = []
+    held_listings = []
     hold_plans = HOLD_FIRST_PLAN
 
     def plan(repo):
@@ -137,6 +140,9 @@ def main() -> None:
                 result = _api_payload(path, query, full_footprint = True)
                 if path in ("/api/hub/gguf-variants", "/api/models/gguf-variants"):
                     result["variants"][0]["downloaded"] = False
+                    if RESOLVE_FIRST:
+                        held_listings.append((r, result))
+                        return
                 _json(r, result)
 
         context.route("**/*", route)
@@ -154,8 +160,20 @@ def main() -> None:
         page.get_by_role("combobox", name = "On model selection").click()
         page.get_by_role("option", name = "Download only", exact = True).click()
         page.get_by_role("button", name = "Advanced", exact = True).click()
-        _open_quant(page, navigate = False)
-        if HOLD_FIRST_PLAN:
+        if RESOLVE_FIRST:
+            page.evaluate(
+                """url => {
+                history.pushState(null, '', url);
+                dispatchEvent(new PopStateEvent('popstate'));
+            }""",
+                f"/images?model={REPO_ID}&ggufQuant=Q4_K_M",
+            )
+            wait_for(lambda: len(held_listings) > 0)
+        else:
+            _open_quant(page, navigate = False)
+        if RESOLVE_FIRST:
+            assert not state["starts"]
+        elif HOLD_FIRST_PLAN:
             wait_for(lambda: state["plans"].count(REPO_ID) >= 2)
         else:
             wait_for(lambda: REPO_ID in state["starts"])
@@ -176,13 +194,16 @@ def main() -> None:
             ).filter(has_text = "BF16").first.click()
         wait_for(lambda: len(state["plans"]) > plan_count and SECOND in state["plans"])
         page.wait_for_timeout(300)
-        assert state["starts"] == [SECOND if HOLD_FIRST_PLAN else REPO_ID], state
+        assert state["starts"] == [SECOND if HOLD_FIRST_PLAN or RESOLVE_FIRST else REPO_ID], state
+        for route, result in held_listings:
+            _json(route, result)
+        held_listings.clear()
         for route, selected in held_plans:
             _json(route, plan(selected))
         held_plans.clear()
         state["release"] = True
         expected = [REPO_ID, COMPANION] if LOAD_SECOND else [REPO_ID, COMPANION, SECOND]
-        if HOLD_FIRST_PLAN and not LOAD_SECOND:
+        if (HOLD_FIRST_PLAN or RESOLVE_FIRST) and not LOAD_SECOND:
             expected = [SECOND, REPO_ID, COMPANION]
         try:
             wait_for(
@@ -199,7 +220,9 @@ def main() -> None:
             assert state["calls"] == expected_calls, state
             assert not errors, errors
         finally:
-            (ART / "result.json").write_text(json.dumps({**state, "page_errors": errors}, indent = 2))
+            (ART / "result.json").write_text(
+                json.dumps({**state, "page_errors": errors}, indent = 2), encoding = "utf-8"
+            )
             page.screenshot(path = str(ART / "queue.png"), full_page = True)
             browser.close()
         print(f'PASS download-only queue: {state["starts"]}', flush = True)

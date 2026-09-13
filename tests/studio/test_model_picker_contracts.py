@@ -1598,7 +1598,11 @@ def test_a_dying_staged_download_only_rolls_back_its_own_pick():
     for rel in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(rel)
         # Captured before the plan await, otherwise it is the newer pick's entry that gets stored.
-        own = re.search(r"const ownRevert = quantRevert\.current;\n(.*?)await ", src, re.S)
+        own = re.search(
+            r"const ownRevert = (?:downloadSnapshot \? null : )?quantRevert\.current;\n(.*?)await ",
+            src,
+            re.S,
+        )
         assert own, f"{rel}: loadOrStage does not capture its own rollback entry"
         assert "await" not in own.group(
             1
@@ -1635,9 +1639,12 @@ def test_a_plan_that_lands_after_a_newer_pick_is_dropped():
         body = re.search(r"const loadOrStage = useCallback\(\n(.*?)\n  \);", src, re.S)
         assert body, f"{rel}: loadOrStage not found"
         text = body.group(1)
-        assert "const pick = ++pickSeq.current;" in text, f"{rel}: no pick sequence is taken"
+        sequence = re.search(
+            r"const pick = (?:downloadSnapshot \? pickSeq\.current : )?\+\+pickSeq\.current;", text
+        )
+        assert sequence, f"{rel}: no pick sequence is taken"
         # Before any real await, or two picks can share a number.
-        seq = text.index("const pick = ++pickSeq.current;")
+        seq = sequence.start()
         first_await = min(
             (
                 text.index(tok)
