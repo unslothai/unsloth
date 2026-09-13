@@ -174,16 +174,17 @@ better suited to a supported GPU system.
 CUDA-free build for ARM64 CPU hosts (Ampere, Graviton, Raspberry Pi 5, etc.):
 
 ```bash
-docker run -d -p 8888:8888 \
+docker run -d -p 8000:8000 \
   -e UNSLOTH_STUDIO_PASSWORD="choose-a-password" \
-  -e JUPYTER_PASSWORD="choose-a-password" \
   -v "$PWD":/workspace/host \
   unsloth/unsloth:cpu-arm64
 ```
 
 This image runs natively on `linux/arm64` without requiring `nvidia-container-toolkit`.
-It includes Studio, JupyterLab, notebooks, and GGUF tooling (llama.cpp, whisper.cpp).
-Training is not supported.
+It provides Unsloth Studio for GGUF inference and data recipes. Training and
+JupyterLab are not included.
+
+> **Bind mount permissions:** The CPU container runs as non-root user `unsloth` (UID `10001`). If you mount a host directory to `/workspace/host` on Linux, ensure the directory is writable by UID `10001` (e.g. `chmod 777 ./host-dir` or `sudo chown -R 10001:10001 ./host-dir`), or run with `--user "$(id -u):$(id -g)"` along with a writable home/config directory.
 
 **Docker (GPU):** The official `unsloth/unsloth` image is multi-arch
 (`linux/amd64` and `linux/arm64`), but the ARM64 variant targets GH200/DGX

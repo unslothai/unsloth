@@ -581,6 +581,84 @@ jobs:
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
           echo "studio manifest: ${TAG} @ ${DIGEST}"
 
+  # ARM64 CPU-only image (:cpu-arm64)
+  build-cpu-arm64:
+    needs: prepare
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ env.REGISTRY_USERNAME }}
+          password: ${{ secrets.DOCKER_API_KEY }}
+
+      - name: Resolve tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=cpu-arm64,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') }}
+            type=ref,event=tag,prefix=cpu-arm64-
+            type=schedule,pattern=cpu-arm64-nightly-${{ needs.prepare.outputs.pin_date }}
+
+      - name: Build and load CPU ARM64 image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./docker
+          file: ./docker/Dockerfile.cpu-arm64
+          platforms: linux/arm64
+          load: true
+          tags: unsloth/unsloth:cpu-arm64-test
+          build-args: |
+            UNSLOTH_REF=${{ needs.prepare.outputs.unsloth_ref }}
+            UNSLOTH_ZOO_REF=${{ needs.prepare.outputs.zoo_ref }}
+
+      - name: Smoke test CPU ARM64 image (boot, health, and restart)
+        run: |
+          CID="$(docker run -d -p 8000:8000 -e UNSLOTH_STUDIO_PASSWORD=smoketest unsloth/unsloth:cpu-arm64-test)"
+          trap 'docker logs --tail 100 "$CID" || true; docker rm -f "$CID" || true' EXIT
+          echo "Waiting for Studio to respond on http://localhost:8000/api/health..."
+          ok=0
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8000/api/health >/dev/null 2>&1; then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          [ "$ok" = 1 ] || { echo "Studio /api/health never became healthy on initial start"; exit 1; }
+          echo "Initial boot healthy. Verifying restart persistence..."
+          docker restart "$CID"
+          ok_restart=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8000/api/health >/dev/null 2>&1; then
+              ok_restart=1
+              break
+            fi
+            sleep 2
+          done
+          [ "$ok_restart" = 1 ] || { echo "Studio failed to respond on /api/health after docker restart"; exit 1; }
+          echo "CPU ARM64 Studio boot, healthcheck, and restart verified successfully!"
+          docker rm -f "$CID"
+          trap - EXIT
+
+      - name: Push CPU ARM64 image
+        if: ${{ steps.meta.outputs.tags != '' }}
+        run: |
+          for tag in ${{ steps.meta.outputs.tags }}; do
+            docker tag unsloth/unsloth:cpu-arm64-test "$tag"
+            docker push "$tag"
+          done
+
   # The Docker Hub page is not written by any push: it is repository metadata that
   # only the Hub API changes, so without this it stays whatever was pasted in by
   # hand. Synced from docker/DOCKERHUB.md whenever :latest moved, i.e. the same
@@ -677,7 +755,7 @@ jobs:
   # Namespace-scoped route: the legacy /v2/repositories path rejects the organization
   # token. A dispatch with an overridden input keeps its handles, its only names.
   cleanup:
-    needs: [merge, merge-studio, hub-readme, smoke-test]
+    needs: [merge, merge-studio, hub-readme, smoke-test, build-cpu-arm64]
     if: ${{ always() && (github.event_name != 'workflow_dispatch' || (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.inputs.unsloth_ref == '' && (github.event.inputs.unsloth_zoo_ref == '' || github.event.inputs.unsloth_zoo_ref == 'main') && (github.event.inputs.notebooks_ref == '' || github.event.inputs.notebooks_ref == 'main') && github.event.inputs.llama_prebuilt_tag == '')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -718,7 +796,7 @@ jobs:
             done
             for name in $names; do
               case "$name" in
-                nightly-[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9]|core-nightly-[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9])
+                nightly-[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9]|core-nightly-[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9]|cpu-arm64-nightly-[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9])
                   stamp="${name##*nightly-}"
                   if [ "$stamp" \< "$cutoff" ]; then drop "$name"; fi ;;
               esac

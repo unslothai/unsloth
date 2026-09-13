@@ -78,6 +78,19 @@ ARCH_LIST="$(sed -n 's/^[[:space:]]*TORCH_CUDA_ARCH_LIST="\([^"]*\)".*/\1/p' \
 echo "  arch list      ${ARCH_LIST:-unknown}"
 echo
 
+if [[ "${BUILD_TARGET:-}" == "cpu-arm64" ]]; then
+    echo "Building ARM64 CPU-only image..."
+    DOCKER_BUILDKIT=1 docker build \
+        --progress=plain \
+        --build-arg UNSLOTH_REF="${UNSLOTH_REF}" \
+        --build-arg UNSLOTH_ZOO_REF="${UNSLOTH_ZOO_REF}" \
+        -f Dockerfile.cpu-arm64 \
+        -t "unsloth-cpu-arm64:${TAG}" \
+        .
+    echo "Built unsloth-cpu-arm64:${TAG}"
+    exit 0
+fi
+
 DOCKER_BUILDKIT=1 docker build \
     --progress=plain \
     --build-arg CUDA_VERSION="${CUDA_VERSION}" \
@@ -89,16 +102,6 @@ DOCKER_BUILDKIT=1 docker build \
     --build-arg UNSLOTH_NOTEBOOKS_REF="${UNSLOTH_NOTEBOOKS_REF}" \
     -t "${IMAGE_NAME}:${TAG}" \
     .
-
-if [[ "${BUILD_TARGET:-}" == "cpu-arm64" ]]; then
-    echo "Building ARM64 CPU-only image..."
-    DOCKER_BUILDKIT=1 docker build \
-        --progress=plain \
-        -f Dockerfile.cpu-arm64 \
-        -t "unsloth-cpu-arm64:${TAG}" \
-        .
-    echo "Built unsloth-cpu-arm64:${TAG}"
-fi
 
 echo
 echo "Built ${IMAGE_NAME}:${TAG}"
