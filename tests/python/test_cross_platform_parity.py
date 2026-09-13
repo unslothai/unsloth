@@ -1230,10 +1230,12 @@ class TestInstallUvCacheRootParity:
         # the probe file behind in the user's cache.
         root_sh = sh.split("_uv_cache_root_is_writable() {", 1)[1].split("\n}", 1)[0]
         assert 'if ! rm -f "$_uv_root_probe" 2>/dev/null; then' in root_sh, root_sh
-        root_ps1 = ps1.split("function Test-StudioUvCacheRootWritable", 1)[1].split(
-            "\n    }", 1)[0]
-        removal = [ln for ln in root_ps1.splitlines()
-                   if "Remove-Item" in ln and not ln.strip().startswith("#")]
+        root_ps1 = ps1.split("function Test-StudioUvCacheRootWritable", 1)[1].split("\n    }", 1)[0]
+        removal = [
+            ln
+            for ln in root_ps1.splitlines()
+            if "Remove-Item" in ln and not ln.strip().startswith("#")
+        ]
         assert len(removal) == 1, root_ps1
         assert "-ErrorAction Stop" in removal[0], removal[0]
 
