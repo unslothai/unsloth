@@ -4682,6 +4682,18 @@ function Get-SetupUvExecutableVerdict {
     }
 }
 
+function Get-UvInstallDir {
+    # astral's destination priority. Shared with the probe below, so "where uv was put" and "where
+    # uv is looked for" cannot drift.
+    foreach ($candidate in @($env:UV_INSTALL_DIR, $env:UV_UNMANAGED_INSTALL, $env:XDG_BIN_HOME)) {
+        if ($candidate) { return $candidate }
+    }
+    if ($env:XDG_DATA_HOME) { return (Join-Path $env:XDG_DATA_HOME "../bin") }
+    $userHome = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
+    if (-not $userHome) { return $null }
+    return (Join-Path $userHome ".local\bin")
+}
+
 function Install-UvFromPinnedRelease {
     $arch = Get-UvHostArch
     if (-not $UvPinnedAssets.ContainsKey($arch)) {
@@ -4693,18 +4705,10 @@ function Install-UvFromPinnedRelease {
 
     # astral's destination priority, so an existing uv is replaced in place and the Get-Command
     # probe after Refresh-Environment still finds it.
-    $destDir = $null
-    foreach ($candidate in @($env:UV_INSTALL_DIR, $env:UV_UNMANAGED_INSTALL, $env:XDG_BIN_HOME)) {
-        if ($candidate) { $destDir = $candidate; break }
-    }
-    if (-not $destDir -and $env:XDG_DATA_HOME) { $destDir = Join-Path $env:XDG_DATA_HOME "../bin" }
+    $destDir = Get-UvInstallDir
     if (-not $destDir) {
-        $userHome = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
-        if (-not $userHome) {
-            Write-Output "Could not determine a home directory to install uv into."
-            return $false
-        }
-        $destDir = Join-Path $userHome ".local\bin"
+        Write-Output "Could not determine a home directory to install uv into."
+        return $false
     }
 
     # astral's sources in astral's order, each exclusive when set. UV_DOWNLOAD_URL (and its older
@@ -4830,6 +4834,11 @@ Assert-VenvActivated -VenvDir $VenvDir
 # Try to use uv (much faster than pip), fall back to pip if unavailable
 $UseUv = $false
 if (Get-Command uv -ErrorAction SilentlyContinue) {
+    $UseUv = $true
+} elseif ((Get-UvInstallDir) -and (Test-Path -LiteralPath (Join-Path (Get-UvInstallDir) "uv.exe"))) {
+    # Already installed, just not on this process's PATH: the pinned installer writes uv.exe here
+    # and only astral's own installer edits the registry PATH, so every update re-downloaded it.
+    $env:PATH = (Get-UvInstallDir) + ";" + $env:PATH
     $UseUv = $true
 } elseif (-not $StageRoot) {
     substep "installing uv package manager..."

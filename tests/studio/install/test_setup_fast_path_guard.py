@@ -398,3 +398,22 @@ def test_the_ps1_offline_flag_is_initialised_before_its_unconditional_reads():
     init = text.index("$script:OfflineFastPath = $false")
     assert init < text.index("$script:OfflineFastPath = $true")
     assert init < text.index("if ($script:OfflineFastPath)")
+
+
+def test_the_windows_uv_probe_looks_where_the_pinned_installer_put_uv():
+    """setup.ps1 installs uv into $USERPROFILE\\.local\\bin, and only astral's own installer
+    edits the registry PATH. Probing PATH alone therefore missed it in every fresh update
+    process, so Windows re-downloaded uv on every run: the idempotency harness measured two
+    files.pythonhosted.org connections on an update with nothing to do, where Linux and macOS
+    had none. The probe and the installer must resolve the same directory."""
+    text = SETUP_PS1.read_text(encoding = "utf-8")
+    assert "function Get-UvInstallDir" in text, (
+        "the install directory is no longer a shared helper; the probe and the installer can "
+        "now disagree about where uv lives"
+    )
+    start = text.index("$UseUv = $false")
+    probe = text[start : start + 700]
+    assert (
+        "Get-UvInstallDir" in probe
+    ), "the uv probe checks PATH only again; on Windows that reinstalls uv every update"
+    assert 'Join-Path (Get-UvInstallDir) "uv.exe"' in probe
