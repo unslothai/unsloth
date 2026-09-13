@@ -798,6 +798,35 @@ def test_text_model_stream_without_metadata_keeps_packing():
     assert next(iter(dataset))["text"] == "first"
 
 
+def _fake_sft_self():
+    """A stand-in `self` for the three `SFTTrainer._prepare_dataset` tests below
+    (four cases; the last one is parameterized).
+
+    Fails first, and by name, if `SFTTrainer` is not Unsloth's. Those tests call
+    `_prepare_dataset` unbound with a SimpleNamespace, which is fine against the
+    patched implementation (it reads `data_collator` and nothing else) and is not
+    fine against TRL's own, which reaches for `self._is_vlm`. So when the patch
+    silently falls back -- `import unsloth` warns and continues, see
+    `_patch_trl_rl_trainers` in unsloth/models/rl.py -- all four report
+
+        AttributeError: 'types.SimpleNamespace' object has no attribute '_is_vlm'
+
+    which names the fake object and not the patcher. That is what unsloth-zoo
+    #1192 vs the source anchor fixed in #10854 actually looked like from here,
+    and it is why 16 failures across five files took a while to add up to one
+    cause. Padding the namespace out with `_is_vlm` would be worse than the
+    AttributeError: the tests would then quietly pass against TRL's trainer and
+    assert nothing about Unsloth's.
+    """
+    assert SFTTrainer.__name__ == "UnslothSFTTrainer", (
+        f"trl.SFTTrainer is {SFTTrainer.__name__!r}, so Unsloth's SFT patch did not "
+        "apply and these tests would be exercising TRL's _prepare_dataset instead of "
+        "the patched one. `import unsloth` reports the cause as a warning "
+        "('Could not build the patched trl.trainer.sft_trainer'), not an error."
+    )
+    return SimpleNamespace(model = None)
+
+
 def test_bfd_packing_truncates_before_packing(monkeypatch):
     args = SimpleNamespace(
         dataset_num_proc = 1,
@@ -805,7 +834,7 @@ def test_bfd_packing_truncates_before_packing(monkeypatch):
         max_length = 4,
         packing_strategy = "bfd",
     )
-    trainer = SimpleNamespace(model = None)
+    trainer = _fake_sft_self()
     dataset = Dataset.from_dict({"prompt": ["abc"], "completion": ["defghij"]})
     prepare_globals = SFTTrainer._prepare_dataset.__globals__
 
@@ -833,7 +862,7 @@ def test_wrapped_strategy_without_packing_still_truncates():
         max_length = 4,
         packing_strategy = "wrapped",
     )
-    trainer = SimpleNamespace(model = None)
+    trainer = _fake_sft_self()
     dataset = Dataset.from_dict({"text": ["abcdefghi"]})
 
     prepared = SFTTrainer._prepare_dataset(
@@ -859,7 +888,7 @@ def test_wrapped_packing_preserves_overlength_tokens(monkeypatch, legacy_api):
     if not legacy_api:
         args_kwargs["packing_strategy"] = "wrapped"
     args = SimpleNamespace(**args_kwargs)
-    trainer = SimpleNamespace(model = None)
+    trainer = _fake_sft_self()
     dataset = Dataset.from_dict({"text": ["abcdefghi"]})
     prepare_globals = SFTTrainer._prepare_dataset.__globals__
     pack_dataset = prepare_globals["pack_dataset"]
