@@ -9117,23 +9117,19 @@ class LlamaCppBackend:
     # One probe per process, not per launch. None = not yet probed; otherwise a
     # 1-tuple whose value may itself be None ("probed and unavailable").
     _NVLINK_TOPO_CACHE = None
-    # Bumped on refresh so a slow background prime cannot publish over a newer
-    # invalidation.
+    # Bumped on refresh so a slow prime cannot publish over a newer invalidation.
     _NVLINK_TOPO_GENERATION = 0
     _NVLINK_TOPO_LOCK = threading.Lock()
 
-    # NVML answers yes/no per pair, so it gets its own vocabulary rather than a
-    # fabricated NV18 that downstream code could misread as a link count.
+    # Its own vocabulary: a fabricated NV18 could be misread as a link count.
     _NVML_NVLINK_LABEL = "NVLINK"
     _NVML_NO_NVLINK_LABEL = "NO-NVLINK"
 
-    # nvml.h. Only scalars and opaque handles cross this boundary, so there is no
-    # struct layout to get wrong across driver versions.
+    # nvml.h. Only scalars and opaque handles cross, so no struct layout to get wrong.
     _NVML_SUCCESS = 0
     _NVML_P2P_CAPS_INDEX_NVLINK = 2
     _NVML_P2P_STATUS_OK = 0
-    # 1..5 are the documented "not supported, and here is why" answers. UNKNOWN (6),
-    # or anything past the end of the enum, is not a denial and must not become one.
+    # 1..5 are the documented denials; UNKNOWN (6) and anything past the enum are not.
     _NVML_P2P_STATUS_DEFINITE_NEGATIVES = frozenset({1, 2, 3, 4, 5})
     _NVML_FEATURE_ENABLED = 1
     # Link enumeration stops at the first error; this only bounds a runaway loop.
@@ -9159,9 +9155,8 @@ class LlamaCppBackend:
         no Python dependency (nvidia-ml-py is NOT installed in a Studio env). None
         when it cannot be loaded."""
         if os.name == "nt":
-            # A driver install can leave nvml.dll in the NVSMI directory rather than a
-            # DLL search path, as it does nvidia-smi.exe (see _nvidia_smi_executable
-            # in utils/hardware/nvidia.py).
+            # nvml.dll can sit in NVSMI\ rather than a DLL search path, as nvidia-smi.exe
+            # does (see _nvidia_smi_executable in utils/hardware/nvidia.py).
             names = ["nvml.dll"]
             for root in (os.environ.get("ProgramFiles"), os.environ.get("ProgramW6432")):
                 if root:
@@ -9178,9 +9173,7 @@ class LlamaCppBackend:
                 continue
         return None
 
-    # `nvidia-smi topo -m` runs under subprocess timeout; ctypes has no equivalent,
-    # and a wedged driver can block nvmlInit_v2 forever. Bound the whole walk so a
-    # stalled call costs a fallback instead of the load.
+    # ctypes has no subprocess timeout and a wedged driver blocks nvmlInit_v2 forever.
     _NVML_PROBE_TIMEOUT_SECONDS = 10
 
     @classmethod
@@ -9228,8 +9221,7 @@ class LlamaCppBackend:
                 get_link_state = lib.nvmlDeviceGetNvLinkState
                 nvml_init = lib.nvmlInit_v2
             except AttributeError as e:
-                # An older driver missing these is not worth a warning; the
-                # shell-out still works.
+                # An older driver missing these still has the working shell-out.
                 logger.debug(f"NVML lacks a required symbol: {e}")
                 return None
             for fn in (get_status, get_count, get_handle, get_link_state, nvml_init):
@@ -9280,17 +9272,14 @@ class LlamaCppBackend:
                         return None  # unknown for one pair is unknown for all
                     linked = status.value == cls._NVML_P2P_STATUS_OK
                     if not linked and status.value not in cls._NVML_P2P_STATUS_DEFINITE_NEGATIVES:
-                        # UNKNOWN, or a status this build has never heard of. Recording
-                        # it as NO-NVLINK would look conclusive and rob `topo -m` of the
-                        # chance to confirm a fabric that is really there.
+                        # NO-NVLINK would read as conclusive and rob `topo -m` of the say.
                         logger.debug(
                             f"NVML P2P status {status.value} for GPU {a}<->{b} is not a "
                             "definite answer; treating the topology as unreadable"
                         )
                         return None
-                    # A pair cannot be NVLinked if an endpoint has no live NVLink. The
-                    # guard for hardware not testable here: an OK on a PCIe-only box
-                    # becomes unknown, not a false positive that enables P2P (#10613).
+                    # No live NVLink on an endpoint means the pair cannot be NVLinked.
+                    # An OK on a PCIe-only box becomes unknown, not a false positive (#10613).
                     if linked and not (active_links[a] and active_links[b]):
                         logger.debug(
                             f"NVML says GPU {a}<->{b} is NVLink but they report "
@@ -9300,8 +9289,7 @@ class LlamaCppBackend:
                         return None
                     matrix[(a, b)] = cls._NVML_NVLINK_LABEL if linked else cls._NVML_NO_NVLINK_LABEL
 
-            # By key, not by count: a matrix of the right size built from the wrong
-            # keys would still pass a length check.
+            # By key, not count: right-sized with wrong keys passes a length check.
             expected = {(a, b) for a in range(count.value) for b in range(count.value) if a != b}
             if set(matrix) != expected:
                 return None
@@ -9428,11 +9416,8 @@ class LlamaCppBackend:
             return
         if os.environ.get("UNSLOTH_P2P_TOPO_CROSSCHECK") == "1":
             # The cross-check lives in _probe_interconnect_matrix, which only the load
-            # path reaches. Publishing an NVML-only answer here would satisfy the cache
-            # first and silently retire the diagnostic in the one deployment that ships
-            # it, since the warm stage always primes before any load. Leaving the cache
-            # cold costs that process the slow probe inline, which is exactly what the
-            # variable already advertises.
+            # path reaches, and the warm stage always primes first: publishing here
+            # would retire the diagnostic. Cold cache costs the inline slow probe.
             return
         matrix = cls._probe_nvml_nvlink_topology()
         if matrix is None:
@@ -9466,21 +9451,16 @@ class LlamaCppBackend:
         with cls._NVLINK_TOPO_LOCK:
             if generation == cls._NVLINK_TOPO_GENERATION:
                 if probed is None and not cache_failure:
-                    # The startup prime may have probed mid driver initialisation.
-                    # Caching the miss would keep P2P off for the life of the process
-                    # even once the topology becomes readable, so leave the cache cold.
+                    # A miss probed mid driver init would keep P2P off for the process.
                     return None
                 existing = cls._NVLINK_TOPO_CACHE
                 if probed is None and existing is not None and existing[0] is not None:
-                    # A concurrent pass (typically the startup prime) already published
-                    # a good matrix. The generation only guards against a refresh, so
-                    # without this a racing transient failure would erase it and keep
-                    # P2P off for every later load.
+                    # The generation only guards a refresh, so without this a racing
+                    # transient failure would erase a concurrent pass's good matrix.
                     return existing[0]
                 cls._NVLINK_TOPO_CACHE = (probed,)
                 return probed
-            # A refresh started mid-pass owns the current answer; discard this one
-            # rather than publish it stale.
+            # A refresh started mid-pass owns the answer; discard this one as stale.
             cached = cls._NVLINK_TOPO_CACHE
         return probed if cached is None else cached[0]
 
@@ -9654,18 +9634,14 @@ class LlamaCppBackend:
                     "the ones it runs on; set CUDA_DEVICE_ORDER=PCI_BUS_ID to "
                     "enable P2P here"
                 )
-            # A usable `topo -m` proves nvidia-smi enumerated the selection, so the ids
-            # index the matrix verbatim. NVML does not carry that implication, and
-            # _get_gpu_memory's torch fallback hands back CUDA ordinals, which index
-            # this matrix wrongly under FASTEST_FIRST (#10613).
+            # A usable `topo -m` proved nvidia-smi enumerated the selection; NVML does
+            # not, and torch ordinals index this matrix wrongly under FASTEST_FIRST (#10613).
             pci_ids = (
                 cls._GPU_IDS_ARE_PCI_INDICES is True
                 if ids_are_pci_indices is None
                 else ids_are_pci_indices
             )
-            # Same escape as the ordering check above, for the same reason: on a
-            # uniformly NVLinked box every mapping gives the same verdict, and ids
-            # that fall outside the matrix still veto on the lookup below.
+            # As above: every mapping agrees on a uniform box, and stray ids still veto.
             if cls._matrix_is_nvml(matrix) and not pci_ids and not uniformly_nvlinked:
                 return _pcie(
                     "the GPU selection came from torch rather than nvidia-smi, so "
@@ -24552,13 +24528,9 @@ class LlamaCppBackend:
                     os.environ.get("CUDA_VISIBLE_DEVICES") is None
                     and LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is True
                 )
-                # Whether THESE ids live in the matrix's index space. Explicitness is
-                # not evidence of that: with nvidia-smi unavailable the picker lists
-                # what torch enumerated, so an explicit pick is PCI-indexed only
-                # because hardware.py setdefaults CUDA_DEVICE_ORDER=PCI_BUS_ID, which
-                # a user can override. Ask the two things that actually answer it:
-                # nvidia-smi produced the ids, or this process pins PCI order so
-                # torch's ordinals coincide with it.
+                # Whether THESE ids live in the matrix's index space. An explicit pick
+                # is not evidence: with nvidia-smi gone the picker lists torch ordinals.
+                # Ask instead: nvidia-smi produced the ids, or PCI order is pinned.
                 _p2p_ids_are_pci = (
                     LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is True
                     or os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID"
