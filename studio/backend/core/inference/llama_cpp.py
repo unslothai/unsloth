@@ -9346,6 +9346,9 @@ class LlamaCppBackend:
         skipping a page-lock may treat "no APU" and "could not tell" alike, choosing
         a loader may not. DirectIO over a unified-memory APU replaces a pageable
         mapping with a model-sized allocated buffer.
+
+        Answering it means reading every device, not finding the machinery to read
+        them with, so this repeats the classify call rather than trusting a count.
         """
         try:
             import torch
@@ -9354,10 +9357,19 @@ class LlamaCppBackend:
                 return False
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return False
-            # Importable too, or every device is skipped by its `except: continue`.
-            from core.training.worker import _rocm_classify_unified_memory  # noqa: F401
+            from core.training.worker import _rocm_classify_unified_memory
 
-            return torch.cuda.device_count() > 0
+            count = torch.cuda.device_count()
+            if count <= 0:
+                return False
+            # Actually classify them. An enumerable device is not a classified one: the
+            # loop below skips whatever it cannot read with `except: continue`, so that
+            # device is simply absent from the unified set, which reads as discrete.
+            # Every VISIBLE device, not just the selected ones, because mapping a ggml
+            # ordinal onto a torch one is a translation this does not own.
+            for ordinal in range(count):
+                _rocm_classify_unified_memory(torch.cuda.get_device_properties(ordinal))
+            return True
         except Exception:
             return False
 
