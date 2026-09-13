@@ -260,14 +260,52 @@ class _GenerationThreadError(RuntimeError):
     """Generation worker failures that should propagate through stream routes."""
 
 
-# clean_up_tokenization_spaces deletes the space in " .", " ?", " !", " ,", " ' ",
-# " n't", " 'm", " 's", " 've" and " 're" -- every rule is a space followed by one of
-# these characters, and the longest is four characters long.
-_CLEANUP_AFTER_SPACE = ".?!,'n"
+# What clean_up_tokenization_spaces deletes a space before. Every rule is a space plus
+# one of these, and the longest is three characters, so a rule spans at most four.
+_CLEANUP_TAILS = (".", "?", "!", ",", "' ", "n't", "'m", "'s", "'ve", "'re")
 _CLEANUP_SPAN_CHARS = 4
-# Tokens, not characters: a rewrite four characters wide can be spread over four
-# one-character tokens, and eight covers that with room for tokens that decode to "".
+# Tokens, not characters: those four characters can arrive as four one-character tokens,
+# and eight leaves room for tokens that decode to "".
 _CLEANUP_SPAN_TOKENS = 8
+
+
+def _cleanup_join_pending(text: str) -> bool:
+    """Could a cleanup rule still be completed at the end of ``text``?
+
+    Only the last few characters can matter, and only after a space: a rule whose space is
+    further back than that is already settled either way. A trailing space counts, since the
+    next token can start any of the rules.
+    """
+    window = text[-_CLEANUP_SPAN_CHARS:]
+    for i, char in enumerate(window):
+        if char != " ":
+            continue
+        rest = window[i + 1 :]
+        if not rest or any(tail.startswith(rest) for tail in _CLEANUP_TAILS):
+            return True
+    return False
+
+
+def _decoder_cleans_up(streamer) -> bool:
+    """Does this streamer's decode apply clean_up_tokenization_spaces?
+
+    Read once, because the widened re-decode below is pure cost for the tokenizers that do
+    not (Qwen, Gemma, Mistral, gpt-oss ship it off, and transformers 5.17 ignores it for
+    every BPE tokenizer). The streamer's own kwargs win, then the tokenizer's default,
+    unwrapping NativeToolTokenDecoder to reach it.
+    """
+    kwargs = getattr(streamer, "decode_kwargs", None) or {}
+    if "clean_up_tokenization_spaces" in kwargs:
+        return bool(kwargs["clean_up_tokenization_spaces"])
+    tokenizer = getattr(streamer, "tokenizer", None)
+    for _ in range(4):
+        if tokenizer is None:
+            break
+        flag = getattr(tokenizer, "clean_up_tokenization_spaces", None)
+        if flag is not None:
+            return bool(flag)
+        tokenizer = getattr(tokenizer, "tokenizer", None)
+    return False
 
 
 class _StopSequenceStreamer:
@@ -287,6 +325,7 @@ class _StopSequenceStreamer:
         self.finished = False
         self.next_tokens_are_prompt = bool(getattr(streamer, "skip_prompt", False))
         self.is_harmony = isinstance(streamer, HarmonyTextStreamer)
+        self.cleans_up = _decoder_cleans_up(streamer)
 
     def __next__(self):
         return next(self.streamer)
@@ -344,18 +383,16 @@ class _StopSequenceStreamer:
         prefix = self._decode(self.token_ids[self.prefix_offset : self.read_offset])
         window = self._decode(self.token_ids[self.prefix_offset :])
         if (
-            window.startswith(prefix)
-            and " " in self.settled[-_CLEANUP_SPAN_CHARS:]
-            and window[len(prefix) :][:1] in _CLEANUP_AFTER_SPACE
+            self.cleans_up
+            and window.startswith(prefix)
+            and _cleanup_join_pending(self.settled + window[len(prefix) :])
         ):
-            # A cleanup rewrite that spans the join is invisible from this window: every
-            # clean_up_tokenization_spaces rule deletes a space before one of ".?!,'n"
-            # (" n't" -> "n't"), and split across tokens each half decodes unchanged, so
+            # A cleanup rewrite that spans the join is invisible from this window: split
+            # across tokens (" ", "'", "v", "e") each half decodes unchanged, so
             # ``startswith`` holds and the concatenation keeps a space the full decode
             # drops. Settled text then diverges permanently and a stop written across the
-            # join never matches. Re-read the few tokens behind the join, but only for a
-            # join that looks like one of those rules, so ordinary text keeps the short
-            # window.
+            # join never matches. Re-read the few tokens behind the join while a rule could
+            # still complete there, so ordinary text keeps the short window.
             wider = max(0, self.read_offset - _CLEANUP_SPAN_TOKENS)
             if wider < self.prefix_offset:
                 wide_prefix = self._decode(self.token_ids[wider : self.read_offset])

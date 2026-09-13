@@ -305,27 +305,41 @@ def test_a_stop_created_by_decode_cleanup_of_settled_text_still_matches():
     assert "".join(wrapped) == "Hello world "
 
 
-def test_a_cleanup_rewrite_split_across_tokens_still_matches_a_stop():
+@pytest.mark.parametrize(
+    "pieces, rule, stop",
+    [
+        # " n't" completes one character after the apostrophe, " 've" three characters
+        # after the space, so a guard that only watches the character right after the
+        # space catches the first and misses the second.
+        ({2: "I", 3: " ca", 4: " ", 5: "n", 6: "'t"}, (" n't", "n't"), "can't"),
+        ({2: "we", 3: " ", 4: "'", 5: "v", 6: "e"}, (" 've", "'ve"), "we've"),
+        ({2: "it", 3: " ", 4: "'", 5: "s"}, (" 's", "'s"), "it's"),
+    ],
+)
+def test_a_cleanup_rewrite_split_across_tokens_still_matches_a_stop(pieces, rule, stop):
     inf = pytest.importorskip("core.inference.inference")
     torch = pytest.importorskip("torch")
 
     class Tokenizer(_Tokenizer):
-        pieces = {2: "I", 3: " ca", 4: " ", 5: "n", 6: "'t", 7: " go"}
+        # Reported as well as applied: the wider re-decode is gated on this, since it is
+        # pure cost for the tokenizers that ship cleanup off.
+        clean_up_tokenization_spaces = True
 
         def decode(self, ids, **kwargs):
-            # Mirrors clean_up_tokenization_spaces, which rewrites " n't" as "n't".
-            return super().decode(ids, **kwargs).replace(" n't", "n't")
+            return super().decode(ids, **kwargs).replace(*rule)
 
-    # Split over three tokens the rewrite is invisible from a short window: " " and "n"
-    # and "'t" each decode unchanged, so the concatenation keeps the space the full
-    # decode drops and the stop is never found.
-    streamer = inf.TextIteratorStreamer(Tokenizer(), skip_prompt = False)
-    wrapped = inf._StopSequenceStreamer(streamer, ["can't"])
-    for token in (2, 3, 4, 5, 6):
+    # Split across tokens the rewrite is invisible from a short window: each half decodes
+    # unchanged, so the concatenation keeps the space the full decode drops and the stop
+    # is never found.
+    tokenizer = Tokenizer()
+    tokenizer.pieces = pieces
+    streamer = inf.TextIteratorStreamer(tokenizer, skip_prompt = False)
+    wrapped = inf._StopSequenceStreamer(streamer, [stop])
+    for token in sorted(pieces):
         wrapped.put(torch.tensor([token]))
     assert wrapped.matched.is_set()
     wrapped.end()
-    assert "can't" not in "".join(wrapped)
+    assert stop not in "".join(wrapped)
 
 
 def test_an_unfinished_byte_run_is_not_settled_before_it_completes():
