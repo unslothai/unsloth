@@ -1,10 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Bounded, fail-closed handling of a single approved MCP image operation.
+"""Redact approved MCP image bytes before results reach public arguments or events.
 
-Approval policy and attachment lookup belong to the approval subsystem. These
-objects must never be serialized into controller events or public tool arguments.
+Approval and attachment lookup stay in their own subsystems.
 """
 
 from __future__ import annotations

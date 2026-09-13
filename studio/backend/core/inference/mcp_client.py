@@ -42,9 +42,8 @@ from utils.account_context import (
 
 logger = get_logger(__name__)
 
-# Private image calls use an isolated, deliberately small JSON-RPC transport.
-# SDK clients remain unchanged for ordinary traffic. The SDK's background writers
-# and raw diagnostics cannot enforce the private disclosure boundary.
+# Private image calls use an isolated JSON-RPC transport because SDK background
+# writers and diagnostics cannot enforce the disclosure boundary.
 _private_recipients = {}
 _private_recipients_lock = threading.Lock()
 _private_reaper_started = False

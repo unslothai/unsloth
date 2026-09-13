@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Contracts for private image inputs to configured MCP tools.
+"""Validate configured image inputs and resolve tool-only attachments.
 
-This module contains no transport or approval state. It validates the narrow
-schema subset, resolves persisted tool-only attachments, and keeps private
-bytes in an object that callers must never serialize into model arguments.
+Private bytes stay in objects that callers must not serialize into model arguments.
 """
 
 from __future__ import annotations
