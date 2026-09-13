@@ -228,7 +228,11 @@ def test_raw_text_loader():
         assert stats["total_samples"] > 0, "Should count samples"
         assert "warnings" in stats, "Should include warnings"
 
-        print("✅ All tests passed!")
+        # Plain ASCII: Windows consoles default to cp1252, which cannot encode the
+        # check mark, so `python tests/test_raw_text.py` died here with a
+        # UnicodeEncodeError before reaching most of the file. pytest hides it by
+        # capturing stdout as UTF-8, so only contributors running the driver saw it.
+        print("All tests passed!")
         return True
 
     # No `except Exception: return False` here. Swallowing the failure printed a
@@ -375,7 +379,7 @@ def test_smart_chunk_text_single_chunk_no_eos_returns_plain_list():
         input_ids, list
     ), f"input_ids should be a plain list even without an eos_token_id, got {type(input_ids)}"
     assert input_ids == [0, 1, 2, 3], f"unexpected input_ids: {input_ids}"
-    print("✅ test_smart_chunk_text_single_chunk_no_eos_returns_plain_list passed!")
+    print("test_smart_chunk_text_single_chunk_no_eos_returns_plain_list passed")
     return True
 
 
