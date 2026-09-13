@@ -183,8 +183,16 @@ class CoercedArguments:
 
 
 def canonical_arguments_text(arguments: Any) -> str:
-    """The one JSON encoding of an argument mapping, so the card and the replay agree."""
-    return json.dumps(arguments, ensure_ascii = False, sort_keys = True, separators = (",", ":"))
+    """The one JSON encoding of an argument mapping, so the card and the replay agree.
+
+    Key order is preserved, not sorted: this text is replayed to the model as the
+    assistant tool call, and the model generated the arguments in its own order.
+    Re-sorting them renders a different token sequence than the one already in the
+    server's prompt cache, so every multi-parameter call re-processes from its first
+    parameter. Duplicate detection keeps its own sorted key in
+    `canonical_tool_call_key`.
+    """
+    return json.dumps(arguments, ensure_ascii = False, sort_keys = False, separators = (",", ":"))
 
 
 @dataclass(frozen = True)

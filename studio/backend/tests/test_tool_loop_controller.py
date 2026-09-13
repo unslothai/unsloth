@@ -545,7 +545,42 @@ def test_an_mcp_tool_call_parsed_from_xml_arrives_typed():
     }
     # The turn replayed to the model carries the typed values too, not the strings.
     assert decision.as_assistant_tool_call()["function"]["arguments"] == (
-        '{"depth":null,"fuzzy":false,"limit":25,"query":"ship dates","tags":["a","b"]}'
+        '{"query":"ship dates","limit":25,"fuzzy":false,"tags":["a","b"],"depth":null}'
+    )
+
+
+def test_replayed_arguments_keep_the_order_the_model_generated():
+    """The replay is the text the model is told it wrote, so its key order must survive.
+
+    `edit_file` is written as `path` then `edits`, and each edit as `old_string` then
+    `new_string`. A sorted replay renders a different token sequence than the one already
+    in llama-server's prompt cache, and every multi-parameter call re-processes from its
+    first parameter (#10791).
+    """
+    edit_file = next(t for t in ALL_TOOLS if t["function"]["name"] == "edit_file")
+    arguments = {
+        "path": "calc.py",
+        "edits": [{"new_string": "def subtract", "old_string": "def add"}],
+    }
+    controller = ToolLoopController(tools = [edit_file])
+    decision = controller.prepare_call(
+        {"function": {"name": "edit_file", "arguments": json.dumps(arguments)}}
+    )
+
+    replayed = decision.as_assistant_tool_call()["function"]["arguments"]
+    assert (
+        replayed
+        == '{"path":"calc.py","edits":[{"new_string":"def subtract","old_string":"def add"}]}'
+    )
+    # The card and the replay still share one encoder, so the two stay identical.
+    assert decision.tool_start_payload()["arguments_text"] == replayed
+    # Duplicate detection keeps its own sorted key, so it is order-insensitive.
+    flipped = {
+        "path": "calc.py",
+        "edits": [{"old_string": "def add", "new_string": "def subtract"}],
+    }
+    assert canonical_tool_call_key("edit_file", decision.arguments) == (
+        canonical_tool_call_key("edit_file", flipped)
     )
 
 
