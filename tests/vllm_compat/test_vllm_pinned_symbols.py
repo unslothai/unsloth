@@ -100,18 +100,23 @@ VLLM_TAGS = _stable_release_tags() + ["main"]
 
 
 @functools.lru_cache(maxsize = None)
-def _tag_exists(tag: str) -> bool:
+def _ref_resolves(repo: str, ref: str) -> bool:
     """Does this ref resolve? Asked of the ref itself, not of a file in it.
 
     Probing a path conflates "ref is gone" with "that one file was renamed",
-    and a false negative here skips the whole tag, `main` included, which is
-    the ref that catches drift before release. Fall back to the path probe
-    only when the API cannot answer.
+    and a false negative skips the whole tag, `main` included, which is the ref
+    that catches drift before release. Only an explicit success counts: a
+    rate-limited or unreachable API knows nothing, so fall back to the path
+    probe rather than treating "not a 404" as resolved.
     """
-    status = _api_status(f"repos/vllm-project/vllm/commits/{tag}")
+    status = _api_status(f"repos/{repo}/commits/{ref}")
     if status is not None:
-        return status != 404
-    return _fetch_text("vllm-project/vllm", tag, "README.md") is not None
+        return status == 200
+    return _fetch_text(repo, ref, "README.md") is not None
+
+
+def _tag_exists(tag: str) -> bool:
+    return _ref_resolves("vllm-project/vllm", tag)
 
 
 # vLLM 0.28 (PR #43529) moved bitsandbytes out of tree to vllm-bnb-plugin. The
@@ -142,7 +147,7 @@ def _plugin_ref() -> str | None:
     except (urllib.error.URLError, TimeoutError, ValueError, KeyError):
         pass
     for ref in (f"v{version}" if version else None, VLLM_BNB_PLUGIN_FALLBACK_REF):
-        if ref and _api_status(f"repos/{VLLM_BNB_PLUGIN_REPO}/commits/{ref}") != 404:
+        if ref and _ref_resolves(VLLM_BNB_PLUGIN_REPO, ref):
             return ref
     return None
 
