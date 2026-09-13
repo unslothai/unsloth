@@ -158,3 +158,41 @@ def test_fallback_does_not_materialize_a_full_size_scale(monkeypatch):
     # Two m*n float32 tensors plus the output is 10+ bytes/element; chunking holds it near the
     # 2-byte output itself.
     assert peak < 5 * m * n, f"fallback peaked at {peak / m / n:.1f} bytes/element"
+
+
+def test_pre_sm89_forward_never_reaches_the_fp8_only_kernels(monkeypatch):
+    # Fixing the weight dequant alone is not enough to run a model: the forward also calls
+    # act_quant and the w8a8 gemm, and both take fp8e4nv pointers, so on a pre-sm89 card the
+    # public path kept raising with the dequant helper already fixed. Assert the forward
+    # reaches neither, rather than only that it returns.
+    from unsloth.kernels import fp8
+
+    called = []
+    monkeypatch.setattr(
+        fp8,
+        "act_quant",
+        lambda *a, **k: called.append("act_quant")
+        or (_ for _ in ()).throw(AssertionError("act_quant reached on a pre-sm89 device")),
+    )
+    monkeypatch.setattr(
+        fp8,
+        "fp8_block_matmul",
+        lambda *a, **k: called.append("fp8_block_matmul")
+        or (_ for _ in ()).throw(AssertionError("fp8_block_matmul reached on a pre-sm89 device")),
+    )
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 0))
+
+    torch.manual_seed(0)
+    bs, m, k = 128, 512, 1024
+    weight = (torch.randn(m, k, device = "cuda") * 0.3).to(torch.float8_e4m3fn)
+    scale = torch.rand(m // bs, k // bs, device = "cuda", dtype = torch.float32) + 0.5
+    scale.block_size = [bs, bs]
+    X = (torch.randn(32, k, device = "cuda", dtype = torch.bfloat16) * 0.5).requires_grad_(True)
+
+    out = fp8.FP8BlockQuantLinear.apply(X, weight, scale)
+    out.float().pow(2).mean().backward()
+    torch.cuda.synchronize()
+
+    assert called == [], f"pre-sm89 forward reached fp8-only kernels: {called}"
+    assert out.shape == (32, m) and torch.isfinite(out.float()).all()
+    assert X.grad is not None and torch.isfinite(X.grad).all()

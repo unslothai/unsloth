@@ -347,6 +347,23 @@ fp8_block_matmul = (
 _DEQUANT_CHUNK_ELEMS = 8 * 1024 * 1024
 
 
+def _fp8_kernel_unsupported(tensor):
+    """True when this device's triton cannot compile `tensor`'s fp8 dtype.
+
+    triton only adds fp8e4nv (torch.float8_e4m3fn) to its supported dtypes from sm89 on, so
+    every kernel below that takes an fp8e4nv pointer fails to compile on anything older.
+    Compare the full (major, minor): sm89 (4090, L40S, L4) does support it. ROCm's triton
+    lists fp8e4nv on every gfx it supports, and the capability there is gfx-derived rather
+    than an SM number, so the check does not apply.
+    """
+    return (
+        tensor.is_cuda
+        and torch.version.hip is None
+        and tensor.dtype == torch.float8_e4m3fn
+        and torch.cuda.get_device_capability(tensor.device) < (8, 9)
+    )
+
+
 def _torch_blockwise_dequant(weight, weight_scale, block_size, out_dtype):
     m, n = weight.shape
     out = torch.empty(m, n, dtype = out_dtype, device = weight.device)
@@ -372,15 +389,9 @@ def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dt
         # Per-tensor scale: the normal forward stashes the un-expanded scalar, which repeat_interleave
         # cannot grow to (m, n).
         return (weight.to(torch.float32) * weight_scale.float()).to(out_dtype)
-    # triton only adds fp8e4nv (torch.float8_e4m3fn) to its supported dtypes from sm89 on, so the
-    # kernel below cannot be compiled for anything older; expand the scales in torch rather than
-    # failing to fall back. Compare the full (major, minor): sm89 (4090, L40S, L4) does support it.
-    kernel_fp8_unsupported = (
-        weight.is_cuda
-        and torch.version.hip is None  # ROCm's triton takes fp8e4nv on every gfx it supports
-        and weight.dtype == torch.float8_e4m3fn
-        and torch.cuda.get_device_capability(weight.device) < (8, 9)
-    )
+    # An fp8 dtype this device cannot compile: expand the scales in torch rather than failing
+    # to fall back, which is the opposite of what this helper is for.
+    kernel_fp8_unsupported = _fp8_kernel_unsupported(weight)
     if (
         m % block_size[0] != 0
         or n % block_size[1] != 0
@@ -436,8 +447,11 @@ class FP8BlockQuantLinear(torch.autograd.Function):
         if not weight.is_contiguous():
             weight = weight.contiguous()
 
-        if X.shape[-1] % block_size[1] != 0:
-            # Hidden dim not divisible by the activation block: dequant plus plain matmul, using the un-expanded
+        if X.shape[-1] % block_size[1] != 0 or _fp8_kernel_unsupported(weight):
+            # Hidden dim not divisible by the activation block, or a device whose triton cannot
+            # compile this fp8 dtype (act_quant and the w8a8 gemm below both take fp8e4nv
+            # pointers, so pre-sm89 has to avoid the pair, not just the weight dequant):
+            # dequant plus plain matmul, using the un-expanded
             # scale so a scalar per-tensor scale keeps the fast path in forward and backward.
             W_deq = _blockwise_weight_dequant_any_shape(
                 weight, original_weight_scale, block_size, X.dtype
@@ -592,6 +606,9 @@ class FP8_fbgemm_block_linear(torch.autograd.Function):
         # fbgemm 1.4.0) in_features % 16 == 0, out_features % 8 == 0; anything else raises.
         kernel_supported = (
             not per_tensor
+            # triton_quantize_fp8_block below emits fp8e4nv, so a pre-sm89 device has to take
+            # the dequant path here too, not just when fbgemm rejects the shape.
+            and not _fp8_kernel_unsupported(weight)
             and weight_scale.dtype == torch.float32
             and (bs_m, bs_n, bs_k) == (128, 128, 128)
             and X.shape[-1] % 16 == 0
