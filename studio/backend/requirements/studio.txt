@@ -20,6 +20,8 @@ pyjwt==2.13.0
 # gradio>=4.0.0                  # 148 MB - Unsloth uses React + FastAPI, not Gradio
 huggingface-hub>=1.23.0,<2.0; python_version >= "3.10"
 huggingface-hub==0.36.2; python_version < "3.10"
+# Large / Xet-backed Hub blobs need hf-xet; huggingface-hub only pulls it transitively on a with-deps install.
+hf-xet>=1.5.1,<2.0; python_version >= "3.10"
 # truststore is vendored at backend/vendor/, deliberately not a dependency.
 # Transitive via requests, pinned here for one reason: the GGUF header range-read
 # preflight bounds itself by half-closing the socket, and HTTPResponse.shutdown is
