@@ -418,13 +418,22 @@ def test_the_reasoning_flag_is_not_itself_a_saved_field(override_store):
     assert settings.get_model_override(MODEL) == {}
 
 
-def test_a_reset_tombstone_outlives_a_later_default_save(override_store):
+@pytest.mark.parametrize(
+    "fallback",
+    [
+        {"llama_extra_args": ["--reasoning-budget", "512"]},
+        {"reasoning_budget": 512},
+        {"reasoning_budget": 0},
+        {"reasoning_budget_message": "Wrap up."},
+    ],
+)
+def test_a_reset_tombstone_outlives_a_later_default_save(override_store, fallback):
     """The -1/"" pair is stored so a qualified row shadows a reasoning flag on a broader entry.
     A later save with the controls at their defaults omits the pair, and the row must not empty
     out and be deleted, or the load falls back and hands the reset value straight back."""
     bare = "unsloth/Repo-GGUF"
     # The legacy fallback every quant without a row of its own reads.
-    settings.set_model_override(bare, llama_extra_args = ["--reasoning-budget", "512"])
+    settings.set_model_override(bare, **fallback)
 
     # The user resets the control on the quant: a tombstone, not an empty row.
     _put(MODEL, reasoning_budget = -1, mirrors_server_tuning = True, mirrors_reasoning_budget = True)
@@ -440,6 +449,27 @@ def test_a_reset_tombstone_outlives_a_later_default_save(override_store):
     # And it still strips the shadowed flag off the load.
     kwargs = settings.model_override_load_kwargs(after, is_gguf = True)
     assert kwargs["reasoning_budget"] == -1
+    key, resolved = settings.resolve_override_for_load(bare, variant = "Q4_K_M")
+    assert key == MODEL
+    assert resolved.get("reasoning_budget") == -1
+    assert resolved.get("reasoning_budget_message", "") == ""
+    # Another quant still inherits the original fallback.
+    _, sibling = settings.resolve_override_for_load(bare, variant = "Q8_0")
+    assert sibling == fallback
+
+
+@pytest.mark.parametrize(
+    "fallback", [{"reasoning_budget": 512}, {"reasoning_budget_message": "Stop"}]
+)
+def test_standalone_reasoning_reset_survives_a_later_default_save(override_store, fallback):
+    path = "/srv/models/model-Q4_K_M.gguf"
+    settings.set_model_override(f"{path}:Q4_K_M", **fallback)
+    _put(path, reasoning_budget = -1, reasoning_budget_message = "", mirrors_reasoning_budget = True)
+    _put(path, mirrors_reasoning_budget = True)
+    key, resolved = settings.resolve_override_for_load(path)
+    assert key == path
+    assert resolved.get("reasoning_budget") == -1
+    assert resolved.get("reasoning_budget_message") == ""
 
 
 def test_no_tombstone_is_invented_without_a_fallback_to_shadow(override_store):

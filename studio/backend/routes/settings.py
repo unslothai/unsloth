@@ -1536,7 +1536,10 @@ def _fallback_supplies_reasoning_flag(model_id: str, target_id: str) -> bool:
     ):
         if not candidate or candidate == target_id:
             continue
-        stored_args = get_model_override(candidate).get("llama_extra_args")
+        stored = get_model_override(candidate)
+        if stored.get("reasoning_budget", -1) != -1 or stored.get("reasoning_budget_message"):
+            return True
+        stored_args = stored.get("llama_extra_args")
         if not stored_args:
             continue
         try:
