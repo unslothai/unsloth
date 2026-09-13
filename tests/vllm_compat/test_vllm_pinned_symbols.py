@@ -130,13 +130,13 @@ def _plugin_ref() -> str:
     outcome says anything about an installable pair.
     """
     try:
-        with urllib.request.urlopen(
-            "https://pypi.org/pypi/vllm-bnb-plugin/json", timeout = 20
-        ) as r:
+        with urllib.request.urlopen("https://pypi.org/pypi/vllm-bnb-plugin/json", timeout = 20) as r:
             version = json.loads(r.read().decode("utf-8"))["info"]["version"]
     except (urllib.error.URLError, TimeoutError, ValueError, KeyError):
         return "main"
-    return f"v{version}" if _fetch_text(VLLM_BNB_PLUGIN_REPO, f"v{version}", "README.md") else "main"
+    return (
+        f"v{version}" if _fetch_text(VLLM_BNB_PLUGIN_REPO, f"v{version}", "README.md") else "main"
+    )
 
 
 # Only these two are REQUIRED. unsloth_zoo subclasses BitsAndBytesConfig and
