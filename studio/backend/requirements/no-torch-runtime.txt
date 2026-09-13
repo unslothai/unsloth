@@ -48,7 +48,12 @@ accelerate>=0.34.1
 peft>=0.18.0,!=0.11.0
 huggingface_hub>=1.23.0,<2.0; python_version >= "3.10"
 huggingface_hub==0.36.2; python_version < "3.10"
+<<<<<<< HEAD
 hf_transfer==0.1.9
+=======
+hf-xet>=1.5.1,<2.0; python_version >= "3.10"
+hf_transfer
+>>>>>>> 55fd805a8 (fix(studio): bundle hf-xet for Desktop large Hub downloads)
 # diffusers: see diffusers-pin.txt, installed by its own step (this file is
 # installed --no-deps, and the pin has to apply on the torch path too).
 
