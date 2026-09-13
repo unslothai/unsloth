@@ -449,8 +449,18 @@ def repo_cache_has_usable_snapshot(
         except OSError:
             return True
         if not metadata_filenames:
-            if any(revision.is_dir() for revision in revisions):
-                return True
+            # Some content, not merely a revision directory: an interrupted download leaves the
+            # latter empty. Any file at any depth, since a diffusers snapshot keeps its weights in
+            # per-component subdirectories and the metadata name varies by family. Short-circuits
+            # on the first hit; an unreadable tree counts, as above.
+            for revision in revisions:
+                if revision.is_file():
+                    return True
+                try:
+                    if next((p for p in revision.rglob("*") if p.is_file()), None) is not None:
+                        return True
+                except OSError:
+                    return True
             continue
         for revision in revisions:
             if any((revision / name).is_file() for name in metadata_filenames):

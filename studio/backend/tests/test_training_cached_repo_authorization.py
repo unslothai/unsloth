@@ -532,6 +532,34 @@ def test_only_the_effective_diffusion_fetch_target_is_authorized():
     assert "normalized_cfg.fetch_base_model or normalized_cfg.base_model" in source
 
 
+def test_a_metadata_less_probe_needs_content_not_just_a_revision_dir(cache_root):
+    """The diffusion preflight probes without a metadata name, since it varies by family, so an
+    empty snapshots/<rev>/ left by an interrupted download must not read as usable."""
+    from hub.utils.hf_cache_state import repo_cache_has_usable_snapshot
+
+    (cache_root / "models--org--empty-rev" / "snapshots" / "abc").mkdir(parents = True)
+    assert repo_cache_has_usable_snapshot("model", "org/empty-rev") is False
+
+    # Weights in a per-component subdirectory, as diffusers lays a pipeline out, do count.
+    unet = cache_root / "models--org--pipeline" / "snapshots" / "abc" / "unet"
+    unet.mkdir(parents = True)
+    (unet / "diffusion_pytorch_model.safetensors").write_text("w")
+    assert repo_cache_has_usable_snapshot("model", "org/pipeline") is True
+
+
+def test_a_streaming_start_skips_the_cached_dataset_check():
+    """Streaming reads the Hub (load_dataset(streaming = True)) and never the materialized cache,
+    and the preflight already verified the repo remotely, so asking again only adds a refusal."""
+    import inspect
+
+    import routes.training as training_routes
+
+    source = inspect.getsource(training_routes.start_training)
+    assert "if not request.dataset_streaming:" in source
+    guarded = source.split("if not request.dataset_streaming:", 1)[1]
+    assert "_refuse_unauthorized_cached_dataset" in guarded.split("\n\n", 1)[0]
+
+
 def test_the_diffusion_config_tolerates_the_new_policy_key():
     """allow_ambient rides the raw config dict; the trainer dataclass must ignore it."""
     from core.training.diffusion_train_common import _config_from_dict

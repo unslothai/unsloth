@@ -1606,7 +1606,12 @@ async def start_training(
         if request.hf_dataset:
             await asyncio.to_thread(_preflight_hf_dataset_request, request)
             # After the preflight: a cache it pinned is still on disk for this scan to refuse.
-            await asyncio.to_thread(_refuse_unauthorized_cached_dataset, request, hf_token)
+            # Not for a streaming start: it reads the Hub (load_dataset(streaming = True)) and never
+            # the materialized cache, the preflight above always verified the repo remotely, and
+            # the route already refuses streaming with a pinned cache. Asking anyway would refuse a
+            # valid start over an unrelated cached copy whenever /auth-check cannot be reached.
+            if not request.dataset_streaming:
+                await asyncio.to_thread(_refuse_unauthorized_cached_dataset, request, hf_token)
 
         training_kwargs = {
             "model_name": model_preflight.model_name,
