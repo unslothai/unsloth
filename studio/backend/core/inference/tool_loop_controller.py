@@ -1122,7 +1122,15 @@ class ToolLoopController:
             )
         )
         if not failed:
-            self._successful_keys.add(decision.key)
+            # Only the MOST RECENT successful call stays blocked. An immediate identical
+            # repeat is still a no-op, but `run -> edit_file -> run` must execute: the
+            # file changed in between, and the guard cannot tell a pointless repeat from
+            # a legitimate re-run after a state change (#10792).
+            self._successful_keys = {decision.key}
+            # A fresh execution reopens the key, so its accumulated duplicate no-ops no
+            # longer count toward the terminal limit: one duplicate after each of two
+            # executions is two separate recoveries, not a stuck loop.
+            self._duplicate_noop_counts.pop(decision.key, None)
             if decision.tool_name in self._one_shot_tools:
                 self._completed_one_shot_tools.add(decision.tool_name)
         return ToolCallCompletion(
