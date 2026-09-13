@@ -30,7 +30,10 @@ from utils.hardware import (
     get_visible_gpu_count,
 )
 from core.inference.audio_codecs import AudioCodecManager
-from core.inference.runtime_context import runtime_context_length
+from core.inference.runtime_context import (
+    generation_budget_within_context,
+    runtime_context_length,
+)
 from core.inference.message_content import content_to_text
 from core.inference.chat_eos import (
     chat_eos_repair,
@@ -1026,7 +1029,7 @@ class InferenceBackend:
         top_p: float = 0.9,
         top_k: int = 40,
         min_p: float = 0.0,
-        max_new_tokens: int = 2048,
+        max_new_tokens: Optional[int] = 2048,
         repetition_penalty: float = 1.0,
         cancel_event = None,
         enable_thinking: Optional[bool] = None,
@@ -1152,7 +1155,7 @@ class InferenceBackend:
         top_p: float = 0.9,
         top_k: int = 40,
         min_p: float = 0.0,
-        max_new_tokens: int = 256,
+        max_new_tokens: Optional[int] = 256,
         repetition_penalty: float = 1.0,
         cancel_event = None,
         tools: Optional[list] = None,
@@ -1201,7 +1204,7 @@ class InferenceBackend:
         top_p: float = 0.9,
         top_k: int = 40,
         min_p: float = 0.0,
-        max_new_tokens: int = 256,
+        max_new_tokens: Optional[int] = 256,
         repetition_penalty: float = 1.0,
         cancel_event = None,
         _adapter_state = None,
@@ -1633,6 +1636,12 @@ class InferenceBackend:
                 preserve_tool_tokens = _preserve_tool_tokens,
             )
 
+            _vision_input_ids = inputs.get("input_ids") if hasattr(inputs, "get") else None
+            prompt_len = int(_vision_input_ids.shape[1]) if _vision_input_ids is not None else None
+            max_new_tokens = generation_budget_within_context(
+                model, prompt_len or 0, max_new_tokens
+            )
+
             generation_kwargs = dict(
                 **inputs,
                 streamer = streamer,
@@ -1645,8 +1654,6 @@ class InferenceBackend:
                 min_p = min_p,
             )
             # Presence penalty (GGUF parity) for VLM chat.
-            _vision_input_ids = inputs.get("input_ids") if hasattr(inputs, "get") else None
-            prompt_len = int(_vision_input_ids.shape[1]) if _vision_input_ids is not None else None
             _pp = (
                 _make_presence_penalty_processor(presence_penalty, prompt_len)
                 if _vision_input_ids is not None
@@ -1849,6 +1856,12 @@ class InferenceBackend:
                 timeout = 0.2,
             )
 
+            _audio_input_ids = inputs.get("input_ids") if hasattr(inputs, "get") else None
+            prompt_len = int(_audio_input_ids.shape[1]) if _audio_input_ids is not None else None
+            max_new_tokens = generation_budget_within_context(
+                model, prompt_len or 0, max_new_tokens
+            )
+
             # Notebook uses do_sample=False (greedy) for ASR accuracy
             generation_kwargs = dict(
                 **inputs,
@@ -1858,8 +1871,6 @@ class InferenceBackend:
                 do_sample = False,
             )
 
-            _audio_input_ids = inputs.get("input_ids") if hasattr(inputs, "get") else None
-            prompt_len = int(_audio_input_ids.shape[1]) if _audio_input_ids is not None else None
             timer = GenerationTimer()
             generation_kwargs["logits_processor"] = with_prefill_boundary_processor(None, timer)
             active_stop_token_ids = self._generation_stop_token_ids(model, generation_kwargs)
@@ -2069,7 +2080,7 @@ class InferenceBackend:
         top_p: float = 0.9,
         top_k: int = 40,
         min_p: float = 0.0,
-        max_new_tokens: int = 256,
+        max_new_tokens: Optional[int] = 256,
         repetition_penalty: float = 1.0,
         cancel_event = None,
         _adapter_state = None,
@@ -2143,6 +2154,9 @@ class InferenceBackend:
                 preserve_tool_tokens = preserve_tool_tokens,
             )
 
+            prompt_len = int(inputs["input_ids"].shape[1])
+            max_new_tokens = generation_budget_within_context(model, prompt_len, max_new_tokens)
+
             generation_kwargs = dict(
                 **inputs,
                 streamer = streamer,
@@ -2160,7 +2174,6 @@ class InferenceBackend:
                 else tokenizer.pad_token_id,
             )
             active_stop_token_ids = self._generation_stop_token_ids(model, generation_kwargs)
-            prompt_len = int(inputs["input_ids"].shape[1])
             # Presence penalty (GGUF parity); prompt_len excludes prompt tokens.
             _pp = _make_presence_penalty_processor(presence_penalty, prompt_len)
             timer = GenerationTimer()

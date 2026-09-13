@@ -354,8 +354,22 @@ jobs:
     # succeeds on CPU.
     name: Repo tests (CPU)
     runs-on: ubuntu-latest
-    # Same reason as the matrix above: this one measured 13.4 minutes against the same 15.
-    timeout-minutes: 30
+    # Same reason as the matrix above, and now the same number. The comment this replaces
+    # claimed 13.4 minutes. Across the last 40 runs of this job on main the pytest step
+    # alone measured 852s to 1683s (14.2 to 28.1 minutes), and the install plus the four
+    # steps after it add a further 351s. So the worst measured run needs 33.9 minutes and
+    # the cap was 30: it sat inside the spread rather than above it. The clearest single
+    # run is 0eedeeeb, which passed -- at 1738s, 62 seconds under the limit.
+    #
+    # Which run loses is therefore a property of the runner, not of the PR. #10849 and
+    # #10861 were both cancelled at 30m1x against a green main, on branches that touch
+    # none of this.
+    #
+    # A cancelled job is also worse than a slow one, twice over. The cap fires mid-step, so
+    # the run blames whichever step was unlucky -- on both of those it was "Shell installer
+    # tests", 84s in and unrelated -- and the shell, CLI and Docker steps never run at all,
+    # so the PR loses that coverage silently. The suite is not the problem; the budget was.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -393,7 +407,10 @@ jobs:
           pip install \
             python-multipart aiofiles sqlalchemy cryptography psutil \
             pyyaml jinja2 mammoth unpdf requests typer \
-            'numpy<3' pytest pytest-asyncio pytest-xdist httpx
+            'numpy<3' pytest pytest-asyncio pytest-xdist pytest-timeout httpx
+          # pytest-timeout: the --timeout flag on the pytest step below. Same reason as the
+          # backend pytest job -- without it a test that never returns is reported as the
+          # job being "cancelled", naming nothing.
           # torchvision: unsloth_zoo.vision_utils imports it at module scope.
           pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
             'torch>=2.4,<2.11' 'torchvision<0.26' 'torchaudio<2.11'
@@ -465,8 +482,27 @@ jobs:
         # steps below stay serial deliberately: the hardware-spoof step exists precisely
         # because those files mutate hardware.py module globals, and all three already measure
         # under 0.1 minutes on the runner, so there is nothing to win and isolation to lose.
+        #
+        # --timeout / the outer `timeout`: the job cap above went from 30 to 45 minutes, and
+        # a backstop is only worth raising if something below it can still name a hang. Both
+        # mirror the backend pytest job for the reasons written out there; the numbers are
+        # this suite's own.
+        #
+        # 330s per test comes off this suite's measured tail, not off taste. Under -n 4 over
+        # the whole discovered set the slowest is test_source_read_encoding.py::
+        # test_checked_in_file_reads_name_an_encoding at 63.6s, then 48.3s, then a run of
+        # ~31s docker-notebook durability cases. This step runs ~2.2x slower on a 4-vCPU
+        # runner than on the box those came off, so call the worst legitimate test ~140s:
+        # the cap is ~2.4x that. It is also the same 330 the backend pytest job settled on
+        # against its own tail. Nothing here is near it, and a deadlock is named in minutes.
+        #
+        # --timeout arms inside each xdist worker, so a wedged CONTROLLER escapes it. 2100s
+        # bounds the session from outside, where it cannot: 1.25x the worst of the 40 runs
+        # measured above, and 2100 + the 351s of surrounding steps still lands 4 minutes
+        # under the job cap, so this fires first and says where it was stuck.
         run: |
-          python -m pytest tests/ -q --tb=short -n 4 \
+          timeout --signal=INT --kill-after=60 2100 \
+          python -m pytest tests/ -q --tb=short -n 4 --timeout=330 \
             --ignore=tests/qlora \
             --ignore=tests/saving \
             --ignore=tests/utils \

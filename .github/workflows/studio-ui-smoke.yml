@@ -593,6 +593,16 @@ jobs:
           mkdir -p logs/playwright_fontscale
           python tests/studio/playwright_ui_font_scale.py
 
+      # The owner creates an account, its setup code is private, and switching accounts in one
+      # browser clears account data; the account is deleted at the end, so the owner is back alone.
+      - name: Multi-account switch flow (Playwright)
+        if: matrix.shard == 'extra'
+        env:
+          STUDIO_E2E_URL: http://127.0.0.1:18894
+          STUDIO_E2E_OWNER_PASSWORD: ${{ env.STUDIO_EXTRA_NEW_PW }}
+        run: |
+          python tests/studio/playwright_multi_account.py
+
       - name: Update banner layout regression (Playwright)
         if: matrix.shard == 'chat'
         env:
