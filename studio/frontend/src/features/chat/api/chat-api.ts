@@ -252,8 +252,12 @@ export interface ActiveGenerationsResponse {
 
 /** Chats generating on the backend right now. Authoritative where `runningByThreadId` is not: that
  *  map is per-tab, empty after a reload and blind to a second tab, and /load 409s on these. */
-export async function getActiveGenerations(): Promise<ActiveGenerationsResponse> {
-  const response = await authFetch("/api/inference/active-generations");
+export async function getActiveGenerations(
+  signal?: AbortSignal,
+): Promise<ActiveGenerationsResponse> {
+  const response = await authFetch("/api/inference/active-generations", {
+    signal,
+  });
   return parseJsonOrThrow<ActiveGenerationsResponse>(response);
 }
 
