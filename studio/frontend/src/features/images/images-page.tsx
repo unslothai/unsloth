@@ -2027,10 +2027,15 @@ export function ImagesPage({
   // page has no periodic poll to correct it, so only the newest ticket may write.
   const statusTicket = useRef(0);
   const encoderSeedKey = useRef<string | null>(null);
+  const encoderCompletion = useRef<{ load: number; cancel: number; seeded: boolean } | null>(null);
   const setStatusIfNewest = useCallback(
-    (ticket: number, next: DiffusionStatus, completedLoad = false) => {
+    (ticket: number, next: DiffusionStatus) => {
       if (ticket !== statusTicket.current) return;
       setStatus(next);
+      const completion = encoderCompletion.current;
+      const completedLoad = completion && !completion.seeded &&
+        completion.load === loadSeq.current && completion.cancel === cancelSeq.current;
+      if (completedLoad) completion.seeded = true;
       const key = next.loaded
         ? JSON.stringify([next.repo_id, next.model_kind, next.gguf_variant, next.resolved?.text_encoder_quant])
         : null;
@@ -2132,11 +2137,17 @@ export function ImagesPage({
   const pollLoadProgress = useCallback(async () => {
     // This tick's cancellation fence: clearing pollTimer stops the next tick, not the awaits below.
     const seq = cancelSeq.current;
+    const load = loadSeq.current;
     try {
       const p = await getDiffusionLoadProgress();
       if (seq !== cancelSeq.current) return;
       if (p.phase === "ready") {
         dismissLoadToast();
+        // Completion survives a newer status request, but never a different load or eject.
+        const previous = encoderCompletion.current;
+        if (load === loadSeq.current && (previous?.load !== load || previous.cancel !== seq)) {
+          encoderCompletion.current = { load, cancel: seq, seeded: false };
+        }
         const ticket = ++statusTicket.current;
         const loaded = await getDiffusionStatus();
         if (seq !== cancelSeq.current) {
@@ -2144,7 +2155,7 @@ export function ImagesPage({
           // it and refresh NOTHING: the unload's own response is authoritative.
           return;
         }
-        setStatusIfNewest(ticket, loaded, true);
+        setStatusIfNewest(ticket, loaded);
         toast.success("Model loaded");
         setBusy(null);
         // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.

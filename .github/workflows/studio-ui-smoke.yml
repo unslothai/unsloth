@@ -657,6 +657,15 @@ jobs:
           mkdir -p logs/playwright_image_cancel_retry_cold
           python tests/studio/playwright_image_download_cancel_retry.py
 
+      - name: Image text encoder precision regression (Playwright)
+        if: matrix.shard == 'extra'
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          PW_ART_DIR: logs/playwright_image_text_encoder
+        run: |
+          python tests/studio/playwright_image_text_encoder.py
+          PW_COMPLETION_FIRST=1 python tests/studio/playwright_image_text_encoder.py
+
       - name: Tool activity collapse regression (Playwright)
         if: matrix.shard == 'extra'
         run: |

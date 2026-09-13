@@ -15,6 +15,8 @@ from playwright_image_model_footprint import BASE_URL, REPO_ID, _api_payload, _j
 def main():
     state = {"cached": False, "complete": False, "started": False, "loaded": False}
     plans, loads, errors = [], [], []
+    hold_status = False
+    held_status = []
 
     def status():
         result = _api_payload("/api/inference/images/status", {}, full_footprint = True)
@@ -128,7 +130,10 @@ def main():
                 state["loaded"] = True
                 _json(route, status())
             elif path == "/api/inference/images/status":
-                _json(route, status())
+                if hold_status:
+                    held_status.append(route)
+                else:
+                    _json(route, status())
             elif path == "/api/inference/images/load-progress":
                 _json(
                     route,
@@ -199,10 +204,32 @@ def main():
         with page.expect_request(lambda request: urlparse(request.url).path == "/api/hub/download"):
             page.locator("button[data-model-picker-option]").filter(has_text = "Q4_K_M").click()
         choose("FP8 (storage)")
+        hold_status = True
         with page.expect_request(
             lambda request: urlparse(request.url).path == "/api/inference/images/load"
         ):
             state["complete"] = True
+        for _ in range(200):
+            if held_status:
+                break
+            page.wait_for_timeout(50)
+        assert len(held_status) == 1
+        page.get_by_test_id("nav-row-hub").click()
+        expect(page).to_have_url(f"{BASE_URL}/hub")
+        page.get_by_test_id("nav-row-images").click()
+        expect(page).to_have_url(f"{BASE_URL}/images")
+        for _ in range(200):
+            if len(held_status) >= 2:
+                break
+            page.wait_for_timeout(50)
+        assert len(held_status) == 2
+        hold_status = False
+        replies = (
+            held_status if os.environ.get("PW_COMPLETION_FIRST") == "1" else reversed(held_status)
+        )
+        for response in replies:
+            _json(response, status())
+        held_status.clear()
         expect(encoder).to_have_text("Default")
         assert "text_encoder_quant" not in loads[-1], loads[-1]
         assert not errors, errors
