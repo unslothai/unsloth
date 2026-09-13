@@ -1487,14 +1487,14 @@ def test_the_desktop_frontend_gate_admits_the_lan_listener():
     import main
 
     scope = {"type": "http", "headers": [], "server": ("10.0.0.7", 8888)}
+    loopback = {"type": "http", "headers": [], "server": ("127.0.0.1", 8888)}
     state = SimpleNamespace(cloudflare_url = None)
+    assert main._is_remote_frontend_request(loopback, state) is True
     assert main._is_remote_frontend_request(scope, state) is False
     original = lan_access._bound_addresses
     lan_access._bound_addresses = ("10.0.0.7",)
     try:
         assert main._is_remote_frontend_request(scope, state) is True
-        loopback = {"type": "http", "headers": [], "server": ("127.0.0.1", 8888)}
-        assert main._is_remote_frontend_request(loopback, state) is False
     finally:
         lan_access._bound_addresses = original
 
@@ -1526,12 +1526,13 @@ def test_the_desktop_assets_mount_admits_the_lan_listener():
     lan = {"type": "http", "headers": [], "server": ("10.0.0.7", 8888)}
     loopback = {"type": "http", "headers": [], "server": ("127.0.0.1", 8888)}
     assert asyncio.run(_drive(lan)) == 404
+    assert asyncio.run(_drive(loopback)) == 200
 
     original = lan_access._bound_addresses
     lan_access._bound_addresses = ("10.0.0.7",)
     try:
         assert asyncio.run(_drive(lan)) == 200
-        assert asyncio.run(_drive(loopback)) == 404, "loopback keeps the api-only surface"
+        assert asyncio.run(_drive(loopback)) == 200
     finally:
         lan_access._bound_addresses = original
     assert served
