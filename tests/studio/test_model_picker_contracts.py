@@ -3752,7 +3752,7 @@ def test_a_refused_load_after_staging_rolls_the_pick_back():
     the same bug."""
     for page in ("features/images/images-page.tsx", "features/video/video-page.tsx"):
         src = _read(page)
-        helper = src.split("const runStagedLoad = useCallback(", 1)[1].split("[revertPick],", 1)[0]
+        helper = src.split("const runStagedLoad = useCallback(", 1)[1].split("\n  );", 1)[0]
         # Fire-and-forget is precisely the defect: the boolean has to be observed.
         assert ".then((started) => {" in helper, page
         assert "if (started) return;" in helper, page
@@ -3761,8 +3761,21 @@ def test_a_refused_load_after_staging_rolls_the_pick_back():
         assert "const owned = stagedQuantRevert.current;" in helper, page
         assert "quantRevert.current === owned" in helper, page
         assert "revertPick(quantRevert.current);" in helper, page
-        # One implementation, reached from both deferred paths, so neither can drift.
-        assert src.count("if (pending) runStagedLoad(pending);") == 2, page
+        # Both visible and deferred loads must use the rollback helper.
+        ready = re.search(r"onReady: \(\) => \{.*?\n    \},", src, re.S)
+        assert ready, page
+        continuation = ready.group(0)
+        if "resumePendingLoad();" in continuation:
+            resume = re.search(r"function resumePendingLoad\(\) \{.*?\n  \}", src, re.S)
+            assert resume, page
+            continuation = resume.group(0)
+        assert "runStagedLoad(pending);" in continuation, page
+        deferred = re.search(
+            r"if \(!active \|\| !stagedLoadDeferred\.current\) return;.*?\n  \}, \[[^\]]*\]\);",
+            src,
+            re.S,
+        )
+        assert deferred and "runStagedLoad(pending);" in deferred.group(0), page
         # Exactly one direct call left, the one inside the helper itself.
         assert len(re.findall(r"void handleLoadRef\s*\.current\(\s*pending\.", src)) == 1, page
 
