@@ -87,7 +87,7 @@ test("attachment and send gates forward projector fallback state", () => {
   const attachmentGate = sourceBetween(
     "../src/features/chat/runtime-provider.tsx",
     "const unavailableReason = getImageInputUnavailableReason({",
-    "const mcpToolOnly =",
+    "let mcpToolOnly = false;",
   );
   assert.match(
     attachmentGate,
