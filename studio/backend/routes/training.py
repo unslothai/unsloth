@@ -598,19 +598,23 @@ def _refuse_unauthorized_cached_local_paths(
     dataset with no token at all. Same leak the model leg closes above, on the one input that
     reaches the trainer without ever naming a repo.
     """
-    from hub.utils.hf_cache_state import cached_repo_ref_for_path, iter_repo_cache_dirs
+    from hub.utils.hf_cache_state import (
+        cached_repo_ref_for_path,
+        repo_cache_has_usable_snapshot,
+    )
 
     repo_type = "dataset" if label.endswith("dataset") else label
 
     def cached_under_its_own_id(repo_id: str):
         # A Hub id rather than a path. The remote probe that would normally cover it can fail open
         # (a HEAD that cannot be sent is not a denial), and an offline worker then loads the cached
-        # copy with no credential, so ask the disk directly. Errors count as present: the guard's
-        # own failure must not open the path it guards.
+        # copy with no credential, so ask the disk directly -- but for a SNAPSHOT, not for the repo
+        # directory: an interrupted download leaves the latter behind holding nothing, and refusing
+        # on it costs a public base a download it was entitled to. No metadata filter, because the
+        # name differs by family (model_index.json for diffusers, config.json for a text model) and
+        # guessing wrong here would fail open. Unreadable still counts.
         def probe() -> bool:
-            scan_errors: list = []
-            hit = next(iter_repo_cache_dirs(repo_type, repo_id, scan_errors = scan_errors), None)
-            return hit is not None or bool(scan_errors)
+            return repo_cache_has_usable_snapshot(repo_type, repo_id)
 
         return probe
 

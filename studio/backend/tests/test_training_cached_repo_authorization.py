@@ -402,6 +402,16 @@ def test_a_remote_named_cached_base_is_authorized_when_the_hub_probe_fails_open(
     )
     assert seen["is_cached"] is False
 
+    # Nor does an interrupted download that left the repo directory and nothing under it: a
+    # public base would otherwise be refused the download it was entitled to.
+    (cache_root / "models--org--interrupted-base").mkdir()
+    training_routes._refuse_unauthorized_cached_local_paths(
+        ["org/interrupted-base"],
+        False,
+        "model",
+    )
+    assert seen["is_cached"] is False
+
     # A bare model name (no owner) is not a repo id; it must not be probed as one.
     seen.clear()
     training_routes._refuse_unauthorized_cached_local_paths(["gpt2", ""], False, "model")
