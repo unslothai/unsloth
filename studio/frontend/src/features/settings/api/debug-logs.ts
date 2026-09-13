@@ -159,11 +159,22 @@ function failureForStatus(status: number): LogExportFailure {
 // after that prefix, never at position 0.
 const DESKTOP_STATUS_PATTERN = /^Download failed with status (\d{3})\./;
 
+// Desktop auth can answer "this account has to log in" rather than returning a
+// session, which per-account isolation made reachable on a shared install. No
+// request is made in that case, so there is no status to read: the command
+// returns this exact sentence (`LOGIN_REQUIRED` in native_file_dialogs.rs).
+// Treated as `forbidden`, which is the copy that already says a signed-in
+// Studio session is what this needs. Keep the two strings in step.
+const DESKTOP_LOGIN_REQUIRED = "Log export requires a signed-in Studio session.";
+
 function desktopExportError(error: unknown): LogExportError {
   const message =
     typeof error === "string"
       ? error
       : ((error as Error | undefined)?.message ?? String(error));
+  if (message === DESKTOP_LOGIN_REQUIRED) {
+    return new LogExportError("forbidden", message);
+  }
   const status = Number(message.match(DESKTOP_STATUS_PATTERN)?.[1] ?? 0);
   return new LogExportError(failureForStatus(status), message);
 }

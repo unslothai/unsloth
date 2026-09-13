@@ -560,6 +560,12 @@ fn unique_destination(directory: &Path, file_name: &str) -> Result<PathBuf, Stri
 
 const NOT_THE_LOG_EXPORT: &str = "Only the local log export endpoint can be downloaded.";
 
+/// Returned when desktop auth says this account has to log in rather than handing
+/// back a session. A fixed sentence, matched structurally on the TypeScript side
+/// (`DESKTOP_LOGIN_REQUIRED` in features/settings/api/debug-logs.ts) so the tab can
+/// say "sign in" instead of showing a generic failure. Keep the two in step.
+const LOGIN_REQUIRED: &str = "Log export requires a signed-in Studio session.";
+
 /// Refuse anything but the export route, before a token is minted for it.
 ///
 /// `Url::parse` normalises `..` segments, so a path that walks out of the route fails
@@ -622,6 +628,10 @@ fn live_backend_port(state: &State<'_, crate::process::BackendState>) -> Result<
 /// `UNC` spelling today, but a lowercase one would otherwise fall through to the
 /// second arm and come out as `unc\server\share`, which is worse than leaving it
 /// alone -- it looks like a relative path.
+// Off Windows the only caller is the test above, and an ordinary build would
+// otherwise warn that it is never used. Kept compiled rather than cfg'd away,
+// which is the entire point: that is what lets the UNC case be tested here.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn strip_verbatim_prefix_inner(text: String) -> String {
     const UNC: &str = r"\\?\UNC\";
     if text.len() >= UNC.len() && text[..UNC.len()].eq_ignore_ascii_case(UNC) {
@@ -686,7 +696,17 @@ pub async fn download_logs_to_downloads(
     // Minting also resolves and caches the live port, so read it back afterwards. The
     // refresh token that comes with it is discarded unused; the backend has no
     // access-token-only exchange to ask for instead.
-    let session = crate::desktop_auth::desktop_auth(state.clone(), diagnostics).await?;
+    // Per-account isolation made this an enum: on a shared install the backend can
+    // legitimately answer "this account has to log in" instead of handing back a
+    // session. There is no token to spend in that case and the export cannot be
+    // silently attempted without one, so it stops here with a message the UI can
+    // tell apart from a transport failure.
+    let session = match crate::desktop_auth::desktop_auth(state.clone(), diagnostics).await? {
+        crate::desktop_auth::DesktopAuthResponse::Tokens { access_token, .. } => access_token,
+        crate::desktop_auth::DesktopAuthResponse::LoginRequired { .. } => {
+            return Err(LOGIN_REQUIRED.to_string())
+        }
+    };
     let pinned_url = pin_to_backend(target, live_backend_port(&state)?)?;
 
     let directory = log_archive_directory()?;
@@ -697,7 +717,7 @@ pub async fn download_logs_to_downloads(
         &pinned_url,
         &destination,
         DOWNLOAD_READ_TIMEOUT,
-        Some(&session.access_token),
+        Some(&session),
     )
     .await?;
     Ok(display_path(&destination))
@@ -1430,6 +1450,18 @@ mod tests {
         }
         assert!(
             require_loopback_url("http://127.0.0.1:8888/api/settings/debug/logs/export").is_ok()
+        );
+    }
+
+    /// The login-required sentinel is matched by its exact text on the TypeScript
+    /// side, so a reworded constant here would silently downgrade the toast from
+    /// "sign in" to a generic failure. This fails if the two drift apart.
+    #[test]
+    fn the_login_required_sentinel_matches_what_the_frontend_looks_for() {
+        let frontend = include_str!("../../frontend/src/features/settings/api/debug-logs.ts");
+        assert!(
+            frontend.contains(&format!("\"{LOGIN_REQUIRED}\"")),
+            "debug-logs.ts no longer matches LOGIN_REQUIRED ({LOGIN_REQUIRED:?})"
         );
     }
 
