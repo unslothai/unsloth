@@ -420,8 +420,7 @@ def _temp_rooted_names(tree: ast.Module) -> set:
         if value is None:
             continue
         if any(
-            isinstance(n, ast.Call) and _callee_name(n.func) in TEMP_FACTORIES
-            for n in _walk(value)
+            isinstance(n, ast.Call) and _callee_name(n.func) in TEMP_FACTORIES for n in _walk(value)
         ):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             names.update(t.id for t in targets if isinstance(t, ast.Name))
@@ -476,8 +475,7 @@ def _module_level_names(tree: ast.Module) -> set:
 
     def _is_temp(value) -> bool:
         return value is not None and any(
-            isinstance(n, ast.Call) and _callee_name(n.func) in TEMP_FACTORIES
-            for n in _walk(value)
+            isinstance(n, ast.Call) and _callee_name(n.func) in TEMP_FACTORIES for n in _walk(value)
         )
 
     names = set()
