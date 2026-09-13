@@ -1070,3 +1070,47 @@ class TestGatedTensorModeStillDeduplicates:
         backend._tensor_parallel = True
         request = dict(_GATED_REQUEST, tensor_parallel = False)
         assert backend.adopt_load_intent_if_matched(GgufLoadIntent(**request)) is False
+
+
+class TestArchRetryAsksResidencyTheSameWayTheLaunchDid:
+    """The rung's residency question has to be the launch's question.
+
+    `_weights_in_host_memory` answers the conservative "host resident" whenever
+    its Vulkan probe is switched off, and under no-reserve `_mem_should_mlock` is
+    always False. So gating the rung's probe on the mlock flag alone made it
+    contradict, for the same devices, the verdict the launch had just reached
+    through the two sites that were widened with `_mem_probe_for_dio` -- and a
+    contradiction here is not cosmetic: it re-records the placement.
+    """
+
+    def _load_model_source(self):
+        import inspect
+
+        from core.inference.llama_cpp import LlamaCppBackend
+        return inspect.getsource(LlamaCppBackend.load_model)
+
+    def test_every_probe_vulkan_gate_admits_the_directio_probe(self):
+        """Asserted across all three sites, because the defect was that they
+        disagreed -- not that any one of them is spelled a particular way."""
+        gates = [
+            line.strip()
+            for line in self._load_model_source().splitlines()
+            if line.strip().startswith("probe_vulkan = ")
+        ]
+        assert len(gates) == 3, gates
+        assert all("_mem_probe_for_dio" in gate for gate in gates), gates
+
+    def test_the_residency_arm_records_from_the_argv(self):
+        """`cmd` may carry the managed DirectIO pair by the time this arm runs,
+        and `_mem_extras + _retry_managed` does not add up to it. Rebuilding from
+        the parts recorded a mapped load for a streaming child, which the
+        no-reserve comparator reads as needing a reload that the relaunch then
+        reproduces exactly."""
+        src = self._load_model_source()
+        marker = "Arch-crash retry changed where the weights live"
+        assert marker in src
+        arm = src[: src.index(marker)]
+        arm = arm[arm.rindex("_retry_host_resident and not _mem_host_resident") :]
+        compact = "".join(arm.split())
+        assert "self._record_memory_state(cmd,env)" in compact
+        assert "self._record_memory_state(list(_mem_extras)" not in compact

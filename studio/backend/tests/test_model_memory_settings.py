@@ -3793,6 +3793,7 @@ class TestOnlyAClassifiableDeviceConfirms:
         monkeypatch,
         devices,
         discrete = True,
+        rocm_classified = True,
     ):
         from core.inference.llama_cpp import LlamaCppBackend
 
@@ -3806,11 +3807,30 @@ class TestOnlyAClassifiableDeviceConfirms:
             "_vulkan_offload_is_discrete",
             staticmethod(lambda binary, idx = None: discrete),
         )
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_rocm_classification_answered",
+            staticmethod(lambda: rocm_classified),
+        )
         return LlamaCppBackend._gpu_offload_confirmed("llama-server", {}, None, False, True)
 
     @pytest.mark.parametrize("device", ["CUDA0", "ROCm0", "HIP0"])
     def test_a_backend_classified_upstream_confirms(self, monkeypatch, device):
         assert self._confirm(monkeypatch, [device]) is True
+
+    @pytest.mark.parametrize("device", ["ROCm0", "HIP0"])
+    def test_an_amd_device_nothing_classified_declines(self, monkeypatch, device):
+        """`_rocm_unified_memory_gpu_ids` answers the empty set both for "no APU
+        here" and for "there is no ROCm torch to ask", and only the first is a
+        fact about the hardware. PyTorch ships no Windows ROCm wheel, so on the
+        one platform this decision runs on the second is the usual case, and
+        reading it as discrete hands DirectIO to a Strix Halo whose VRAM is
+        system RAM. Same rule Vulkan applies through `type_known`."""
+        assert self._confirm(monkeypatch, [device], rocm_classified = False) is False
+
+    def test_cuda_does_not_need_the_rocm_classifier(self, monkeypatch):
+        """It has its own upstream answer, so the AMD gate must not narrow it."""
+        assert self._confirm(monkeypatch, ["CUDA0"], rocm_classified = False) is True
 
     @pytest.mark.parametrize("device", ["SYCL0", "OpenCL0", "MUSA0", "CANN0", "Metal0"])
     def test_a_backend_that_can_be_integrated_declines(self, monkeypatch, device):

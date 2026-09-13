@@ -6203,10 +6203,19 @@ def _load_probe_memo_scope():
 _MISSING = object()
 
 # Backends whose devices are discrete by construction, because `_weights_in_host_memory`
-# already classifies them upstream, AMD APUs included. Everything else must be proven: a
-# Vulkan id gets the shared-memory probe, and a SYCL, OpenCL, MUSA or CANN id can be an
-# integrated GPU nothing here recognises, so it declines.
-_SELF_EVIDENTLY_DISCRETE = frozenset({"cuda", "rocm", "hip"})
+# already classifies them upstream. Everything else must be proven: a Vulkan id gets the
+# shared-memory probe, and a SYCL, OpenCL, MUSA or CANN id can be an integrated GPU
+# nothing here recognises, so it declines.
+_SELF_EVIDENTLY_DISCRETE = frozenset({"cuda"})
+
+# AMD is NOT self-evident, despite having an upstream classifier. That classifier reads
+# the driver through a ROCm torch, and `_rocm_unified_memory_gpu_ids` folds "torch is not
+# a ROCm build" into the same empty set as "no APU here" -- correct for its own caller,
+# which only skips a page-lock, and wrong for a loader choice. It matters on the only
+# platform this decision runs on: there is no Windows ROCm torch wheel, so on Windows the
+# classifier never answers, and reading that as "discrete" hands DirectIO to a Strix Halo
+# whose VRAM is system RAM. Same rule the Vulkan branch applies through `type_known`.
+_NEEDS_ROCM_CLASSIFICATION = frozenset({"rocm", "hip"})
 
 # What the child enumerates depends on these as much as on the binary, and the
 # recovery rungs narrow exactly these, so a memo keyed on the binary alone answered a
@@ -8685,7 +8694,10 @@ class LlamaCppBackend:
         # weights on an integrated GPU.
         selected = cls._selected_devices(devices, gpu_indices)
         backends = {cls._device_backend(d) for d in selected}
-        if backends - {"vulkan"} - _SELF_EVIDENTLY_DISCRETE:
+        if backends - {"vulkan"} - _SELF_EVIDENTLY_DISCRETE - _NEEDS_ROCM_CLASSIFICATION:
+            return False
+        # An AMD id only counts once something has actually looked at the device.
+        if (backends & _NEEDS_ROCM_CLASSIFICATION) and not cls._rocm_classification_answered():
             return False
         if "vulkan" in backends:
             # Only the VULKAN ordinals. The probe reports Vulkan rows, so passing every
@@ -9376,6 +9388,35 @@ class LlamaCppBackend:
         try:
             import torch
             return LlamaCppBackend._torch_is_rocm(torch)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _rocm_classification_answered() -> bool:
+        """Whether `_rocm_unified_memory_gpu_ids` could actually look at the devices.
+
+        It returns an empty set both for "no APU here" and for "there is no ROCm
+        torch to ask", so its own caller -- which only decides whether to skip a
+        page-lock -- may treat the two alike. A loader choice may not: DirectIO
+        over a unified-memory APU replaces a pageable mapping with a model-sized
+        allocated buffer, which is the reservation the setting exists to avoid.
+
+        Separate from the classifier rather than folded into it, because the two
+        questions have opposite safe answers and every existing caller wants the
+        permissive one.
+        """
+        try:
+            import torch
+
+            if not LlamaCppBackend._torch_is_rocm(torch):
+                return False
+            if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
+                return False
+            # The classifier itself has to be importable, or every device below
+            # would be skipped by the `except: continue` and read as discrete.
+            from core.training.worker import _rocm_classify_unified_memory  # noqa: F401
+
+            return torch.cuda.device_count() > 0
         except Exception:
             return False
 
@@ -26609,7 +26650,13 @@ class LlamaCppBackend:
                             is_vulkan_backend = is_vulkan_backend,
                             binary = binary,
                             env = env,
-                            probe_vulkan = _mem_should_mlock,
+                            # Widened like the other two sites: under no-reserve
+                            # _mem_should_mlock is always False, so gating on it
+                            # alone asked this question with the Vulkan probe off,
+                            # and the predicate errs towards host-resident when it
+                            # cannot see. That answered True for the same discrete
+                            # card the launch had just confirmed as a full offload.
+                            probe_vulkan = _mem_should_mlock or _mem_probe_for_dio,
                             fit_active = fit_is_effectively_on([*cmd, *(_mem_extra_args or [])], env),
                         )
                         # Lock-ADDING direction only: `cmd` carries a policy-emitted
@@ -26647,9 +26694,13 @@ class LlamaCppBackend:
                             self._memory_policy_active = (
                                 bool(_retry_managed) or self._memory_policy_active
                             )
-                            # In argv order -- extras first, then the appended
-                            # lock -- because the resolver is last-wins too.
-                            self._record_memory_state(list(_mem_extras) + list(_retry_managed), env)
+                            # From `cmd`, for the reason the rung above gives: by
+                            # here it may carry the managed DirectIO pair, and the
+                            # parts no longer add up to it. Rebuilding from them
+                            # recorded a mapped load for a streaming child, which
+                            # the no-reserve comparator reads as a placement that
+                            # needs a reload -- one the relaunch reproduces.
+                            self._record_memory_state(cmd, env)
                             logger.info(
                                 "Arch-crash retry changed where the weights live; "
                                 "recomputed Model Memory (%s).",
