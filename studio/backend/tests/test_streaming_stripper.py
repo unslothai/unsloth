@@ -673,3 +673,46 @@ def test_openers_far_past_the_closer_do_not_reopen_the_quadratic_scan():
 
     growth = elapsed(8000) / max(elapsed(2000), 1e-9)
     assert growth < 8.0, f"4x the openers cost {growth:.1f}x; expected roughly linear"
+
+
+def test_an_unterminated_blocked_body_is_not_rescanned_per_snapshot():
+    """A long blocked call keeps the stripper on its whole-buffer path, so anything quadratic
+    here stalls the display. Counted rather than timed, so it cannot flake: the body scan must
+    not run once per snapshot while the call is still unterminated."""
+    from core import tool_healing
+    from core.inference.tool_call_parser import StreamingMarkupStripper
+
+    calls = {"n": 0}
+    real = tool_healing._balanced_json_span
+
+    def counting(text, start):
+        calls["n"] += 1
+        return real(text, start)
+
+    text = 'terminal[ARGS]{"command":"%s"}' % ("A" * 2048)
+    snapshots = 0
+    tool_healing._balanced_json_span = counting
+    try:
+        stripper = StreamingMarkupStripper({"terminal", "python"})
+        i = 0
+        while i < len(text):
+            i += 16
+            stripper.strip(text[:i])
+            snapshots += 1
+    finally:
+        tool_healing._balanced_json_span = real
+
+    # Roughly one scan per snapshot is the design; two per snapshot means the kept call's
+    # body end is being resolved eagerly again, which is what made this quadratic.
+    assert calls["n"] < 1.5 * snapshots, f"{calls['n']} scans for {snapshots} snapshots"
+
+
+def test_a_body_scan_with_no_closing_brace_short_circuits():
+    """The span can only close on a ``}``; with none present the walk cannot succeed, so the
+    early return is exactly equivalent and keeps the streaming rescan cheap."""
+    from core.tool_healing import _balanced_json_span
+
+    assert _balanced_json_span('{"command":"' + "A" * 4096, 0) is None
+    assert _balanced_json_span('{"command":"x"}', 0) == 14
+    # A brace inside a string still does not close it.
+    assert _balanced_json_span('{"c":"}"}', 0) == 8

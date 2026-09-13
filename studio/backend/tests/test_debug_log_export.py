@@ -351,6 +351,30 @@ def test_the_archive_is_never_written_to_the_browser_cache(client):
     assert "private" in directives, response.headers.get("cache-control")
 
 
+def test_the_export_is_owner_gated_exactly_like_the_routes_it_sits_beside():
+    """Per-account isolation put the two debug log routes behind
+    `_require_installation_owner`. The bundle has to sit behind the same guard,
+    or a non-owner account on a shared install can download EVERY log on the
+    host while being refused each one individually -- which is the wrong way
+    round. Asserted against the sibling routes rather than by naming the router,
+    so the three cannot drift apart again.
+    """
+    routers = {}
+    for path in ("/debug/logs", "/debug/logs/sources", "/debug/logs/export"):
+        for name in ("router", "_owner_settings_router"):
+            candidate = getattr(settings_route, name)
+            if any(route.path == path for route in candidate.routes):
+                routers[path] = name
+    assert routers["/debug/logs/export"] == routers["/debug/logs"] == routers["/debug/logs/sources"]
+    owner_router = settings_route._owner_settings_router
+    assert routers["/debug/logs/export"] == "_owner_settings_router"
+    # And that router is the one carrying the owner check.
+    assert any(
+        getattr(dependency.dependency, "__name__", "") == "_require_installation_owner"
+        for dependency in owner_router.dependencies
+    )
+
+
 def test_an_api_key_session_cannot_download_the_logs():
     """A bundle of every log on the host is UI-operator material, exactly like
     the single-file read next to it."""

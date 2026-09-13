@@ -389,8 +389,13 @@ def _fit_with_instruction_pins(
 # catches Llama-3 / Mistral / Gemma 4 (legacy helper only knew <tool_call> / <function=).
 from core.inference.tool_call_parser import (
     _GEMMA_BARE_TC_PREFIX_RE,
-    _GEMMA_BARE_TC_RE,
     _balanced_brace_end,
+    blocked_bare_json_chain_may_continue,
+    blocked_gemma_chain_may_continue,
+    held_bare_gemma_tail_len,
+    blocked_markerless_prefix_end,
+    leading_bare_gemma_call_is_promotable,
+    promotable_gemma_call_pos,
     TOOL_XML_SIGNALS as _SHARED_TOOL_XML_SIGNALS,
     StreamingMarkupStripper as _StreamingMarkupStripper,
     RAG_MAX_SEARCHES_PER_TURN,
@@ -400,6 +405,9 @@ from core.inference.tool_call_parser import (
     strip_leading_bare_json_call,
     strip_llama3_leading_sentinels,
     strip_tool_markup as _shared_strip_tool_markup,
+)
+from core.tool_healing import (
+    _markerless_promotable,
 )
 
 from utils.native_path_leases import child_env_without_native_path_secret
@@ -2059,14 +2067,14 @@ _GGUF_REHEARSAL_ARGS_RE = re.compile(r"(?<!\[CALL_ID\])\b([\w-]+)\[ARGS\]")
 
 
 def _gguf_rehearsal_signal_pos(text: str, active_tools: list[dict]) -> int:
-    """Index of the first ``NAME[ARGS]`` whose NAME is an active tool, else -1. A
-    bare/inactive-name ``foo[ARGS]`` in prose is not a call; mirrors the safetensors
-    ``_earliest_tool_signal`` name-gating (no unrestricted GGUF mode)."""
+    """Index of the first ``NAME[ARGS]`` whose NAME is markerless-promotable, else -1. An
+    inactive-name ``foo[ARGS]`` in prose is not a call, nor is a bare execution-class
+    ``terminal[ARGS]``; mirrors the safetensors ``_earliest_tool_signal`` gating."""
     active = set(_gguf_active_tool_names(active_tools))
     if not active:
         return -1
     for m in _GGUF_REHEARSAL_ARGS_RE.finditer(text):
-        if m.group(1) in active:
+        if _markerless_promotable(m.group(1), active):
             return m.start()
     return -1
 
@@ -2084,7 +2092,9 @@ def _gguf_has_genuine_tool_signal(text: str, signals, active_tools: list[dict]) 
             continue
         if sig in text:
             return True
-    return False
+    # Bare Gemma is not in ``signals``, but the parser promotes it wherever it sits, so a
+    # mid-prose one is a boundary too.
+    return promotable_gemma_call_pos(text, lambda: set(_gguf_active_tool_names(active_tools))) >= 0
 
 
 _TEXT_TOOL_NAME_RE = re.compile(r'"name"\s*:\s*"([\w.\-]+)"')
@@ -2095,26 +2105,40 @@ _TEXT_TOOL_REHEARSAL_RE = re.compile(r"\s*([\w.\-]+)\s*\[ARGS\]")
 def _sniff_text_tool_name(text: str, enabled_names: set) -> str:
     """Best-effort tool name from a partially drained TEXT tool call, gated on
     enabled names so prose can never spawn a card. Used only to open the live
-    argument pane early; the authoritative parse still happens at stream end."""
+    argument pane early; the authoritative parse still happens at stream end.
+
+    The two anchored arms only match a MARKERLESS leading call (a wrapper pushes the shape
+    off position 0), so they take the parser's gate: a card for a bare ``call:terminal{``
+    would show a call that never runs. The ``"name":`` arm searches the whole prefix and so
+    also sees a trusted ``[TOOL_CALLS][{"name":"terminal",..}]``; the markerless bare-JSON
+    form cannot reach it, since ``strip_leading_bare_json_call`` refuses to drain it."""
+    # A blocked leading call will NOT run, so naming the card after it hands the client a card
+    # the real call then reuses by id. Every markerless format is skipped, not just bare JSON.
+    text = text[blocked_markerless_prefix_end(text, 0, enabled_names) :]
     m = _TEXT_TOOL_NAME_RE.search(text[:4096])
     if m and m.group(1) in enabled_names:
         return m.group(1)
     m = _TEXT_TOOL_GEMMA_RE.match(text[:256])
-    if m and m.group(1) in enabled_names:
+    if m and _markerless_promotable(m.group(1), enabled_names):
         return m.group(1)
     m = _TEXT_TOOL_REHEARSAL_RE.match(text[:256])
-    if m and m.group(1) in enabled_names:
+    if m and _markerless_promotable(m.group(1), enabled_names):
         return m.group(1)
     return ""
 
 
 def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
-    """True if ``stripped`` is a (possibly partial) prefix of ``NAME[ARGS]`` for an
-    active tool -- the bare tool name arriving in its own chunk before ``[ARGS]{...}``.
-    Mirrors the safetensors loop so the split rehearsal call is not streamed."""
+    """True if ``stripped`` is a (possibly partial) prefix of ``NAME[ARGS]`` for a
+    markerless-promotable tool: the bare name arriving in its own chunk before
+    ``[ARGS]{...}``. An execution-class name is prose here, so it streams rather than being
+    held. Mirrors the safetensors loop so the split rehearsal is not leaked."""
     if not stripped or any(ch.isspace() for ch in stripped):
         return False
     for name in _gguf_active_tool_names(active_tools):
+        # Active by construction, so only the class is left. The shared gate, not the built-in
+        # three: an mcp__* name is refused too, and holding its suffix withholds visible text.
+        if not _markerless_promotable(name, None):
+            continue
         if stripped == name or f"{name}[ARGS]".startswith(stripped):
             return True
     return False
@@ -2123,12 +2147,16 @@ def _is_rehearsal_prefix(stripped: str, active_tools: list[dict]) -> bool:
 def _held_rehearsal_tail_len(text: str, active_tools: list[dict]) -> int:
     """Length of a trailing bare tool-name token that may be a split rehearsal call
     (``...web_search`` with ``[ARGS]{...}`` still to arrive), so STREAMING can hold it
-    instead of leaking the name. Returns 0 for ordinary prose. Mirrors safetensors."""
+    instead of leaking the name. Returns 0 for ordinary prose. Mirrors safetensors, including
+    the trailing bare-Gemma ``call:NAME{..`` the signal scan misses until its ``{``."""
     i = len(text)
     while i > 0 and not text[i - 1].isspace():
         i -= 1
     tail = text[i:]
-    return len(tail) if tail and _is_rehearsal_prefix(tail, active_tools) else 0
+    held = len(tail) if tail and _is_rehearsal_prefix(tail, active_tools) else 0
+    return max(
+        held, held_bare_gemma_tail_len(text, lambda: set(_gguf_active_tool_names(active_tools)))
+    )
 
 
 def _should_suppress_forced_no_tool_output(text: str, previous: str = "") -> bool:
@@ -6220,6 +6248,23 @@ def _metal_capable_host() -> bool:
         return sys.platform == "darwin"
 
 
+def _write_direct_stream_key(key: str) -> "Path":
+    """Store the direct-streaming key where only the server user can read it."""
+    from utils.paths.storage_roots import auth_root
+
+    directory = auth_root()
+    directory.mkdir(parents = True, exist_ok = True)
+    path = directory / "llama_api_key"
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding = "utf-8") as handle:
+        handle.write(key)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return path
+
+
 class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
@@ -7028,9 +7073,7 @@ class LlamaCppBackend:
 
     @property
     def reasoning_effort_levels(self) -> list:
-        """Discrete reasoning_effort levels the template offers (e.g. GLM-5.2's
-        ['high', 'max']). Empty unless the style is 'enable_thinking_effort' or
-        'reasoning_effort' over a ladder wider than low/medium/high."""
+        """Discrete reasoning_effort levels the template offers; empty for the plain low/medium/high ladder."""
         return self._reasoning_effort_levels
 
     @property
@@ -7091,8 +7134,6 @@ class LlamaCppBackend:
                 if not thinking_off and effort_on:
                     kwargs["reasoning_effort"] = reasoning_effort
             elif self._reasoning_style == "reasoning_effort":
-                # The advertised ladder widens this list, never replaces it: a template
-                # exposing only ['high', 'max'] must keep gpt-oss's own levels and 'none'.
                 _levels = getattr(self, "_reasoning_effort_levels", None) or ()
                 if reasoning_effort in ("none", "low", "medium", "high") or (
                     reasoning_effort in _levels
@@ -10676,7 +10717,7 @@ class LlamaCppBackend:
         return min(usable_mib, backed_mib)
 
     @staticmethod
-    def _cgroup_available_memory_mib() -> Optional[int]:
+    def _cgroup_memory_budgets() -> list[tuple[int, int]]:
         """Memory this process can still charge to an enforcing cgroup.
 
         ``psutil`` and ``/proc/meminfo`` expose host-wide availability in many
@@ -10742,7 +10783,7 @@ class LlamaCppBackend:
         except OSError:
             lines = []
 
-        remaining: list[int] = []
+        budgets: list[tuple[int, int]] = []
         v2_relative = next((line[3:] for line in lines if line.startswith("0::")), None)
         for directory in _directories(_CGROUP_ROOT, v2_relative):
             limit = _integer(_first_line(os.path.join(directory, "memory.max")), limit = True)
@@ -10756,7 +10797,7 @@ class LlamaCppBackend:
                 used = max(
                     0, used - _stat_integer(os.path.join(directory, "memory.stat"), "inactive_file")
                 )
-            remaining.append(limit if used is None else limit - used)
+            budgets.append((limit if used is None else limit - used, limit))
 
         v1_root = os.path.join(_CGROUP_ROOT, "memory")
         v1_relative = None
@@ -10785,9 +10826,28 @@ class LlamaCppBackend:
                         "inactive_file",
                     ),
                 )
-            remaining.append(limit if used is None else limit - used)
+            budgets.append((limit if used is None else limit - used, limit))
 
-        return max(min(remaining), 0) // (1024 * 1024) if remaining else None
+        return budgets
+
+    @staticmethod
+    def _cgroup_available_memory_mib() -> Optional[int]:
+        """What this process can still charge, i.e. the tightest REMAINDER."""
+        budgets = LlamaCppBackend._cgroup_memory_budgets()
+        if not budgets:
+            return None
+        return max(min(remaining for remaining, _limit in budgets), 0) // (1024 * 1024)
+
+    @staticmethod
+    def _cgroup_memory_limit_mib() -> Optional[int]:
+        """The CAPACITY an enforcing cgroup allows, i.e. the tightest LIMIT.
+
+        Not interchangeable with the remainder above, which shrinks as the container
+        fills and would price against memory that is merely busy rather than absent."""
+        budgets = LlamaCppBackend._cgroup_memory_budgets()
+        if not budgets:
+            return None
+        return min(limit for _remaining, limit in budgets) // (1024 * 1024)
 
     @staticmethod
     def _available_system_memory_mib() -> Optional[int]:
@@ -23517,8 +23577,9 @@ class LlamaCppBackend:
 
                 if os.getenv("UNSLOTH_DIRECT_STREAM", "0") == "1":
                     self._api_key = _secrets.token_urlsafe(32)
-                    cmd.extend(["--api-key", self._api_key])
-                    logger.info("llama-server started with --api-key for direct streaming")
+                    # Through a file, not argv: a command line is readable by every process of this Unix user, and the auth directory is not.
+                    cmd.extend(["--api-key-file", str(_write_direct_stream_key(self._api_key))])
+                    logger.info("llama-server started with --api-key-file for direct streaming")
                 else:
                     self._api_key = None
 
@@ -30250,14 +30311,12 @@ class LlamaCppBackend:
         # "auto"; unknown falls back to the stricter "ask". An explicit
         # confirm_tool_calls=True with no mode is already resolved to "ask" at the
         # request layer, so it never arrives here as an ambiguous unset.
-        if permission_mode == "full":
-            bypass_permissions = True
-        elif bypass_permissions:
-            permission_mode = "full"
-        elif permission_mode is None:
-            permission_mode = "auto"
-        elif permission_mode not in ("ask", "auto", "off"):
-            permission_mode = "ask"
+        from state.tool_policy import account_tool_stream, normalize_tool_permissions
+
+        permission_mode, bypass_permissions = normalize_tool_permissions(
+            permission_mode, bypass_permissions
+        )
+        stream_tool_execution = account_tool_stream(stream_tool_execution)
 
         if not self.is_loaded:
             raise RuntimeError("llama-server is not loaded")
@@ -30372,6 +30431,10 @@ class LlamaCppBackend:
         # names stay visible). Set per iteration; None = pre-loop name-agnostic.
         _enabled_tool_names = None
 
+        def _gemma_lead_promotable(text: str) -> bool:
+            # Reads _enabled_tool_names at call time: it is rebound each tool iteration.
+            return leading_bare_gemma_call_is_promotable(text, _enabled_tool_names)
+
         def _strip_tool_markup(
             text: str,
             *,
@@ -30439,7 +30502,7 @@ class LlamaCppBackend:
             """Close a live-streamed <think> block (or emit the buffered reasoning
             as one block if it never streamed), then append the held
             content_buffer to the cumulative display text."""
-            nonlocal cumulative_display, in_thinking, _prov_entry
+            nonlocal cumulative_display, in_thinking, _prov_entry, _buffer_in_display
             if in_thinking:
                 cumulative_display += "</think>"
                 in_thinking = False
@@ -30456,6 +30519,25 @@ class LlamaCppBackend:
                     )
                 cumulative_display += "<think>" + reasoning_accum + "</think>"
             cumulative_display += content_buffer
+            # Not cleared: the callers measure len(content_buffer) right after to place the
+            # live-args window. Recorded instead, so the cancel flush does not re-add it.
+            _buffer_in_display = True
+
+        def _cancelled_hold_text() -> str:
+            """Display text the guards are still holding, which a cancel would drop.
+
+            Mirrors the safetensors loop: a completed blocked markerless object keeps the
+            chain guard true while its suffix is empty, so the whole object sits in
+            ``content_buffer`` as ordinary display text the parser will never promote, and
+            returning on cancellation lost the reply outright. The final strip removes
+            genuinely promotable markup, so an aborted real call contributes only prose."""
+            if _suppress_visible_output:
+                return ""
+            held = cumulative_display + ("" if _buffer_in_display else content_buffer)
+            if not held:
+                return ""
+            cleaned = _strip_tool_markup(held, final = True, force = True)
+            return cleaned if len(cleaned) > len(_last_emitted) else ""
 
         def _close_streamed_think() -> bool:
             """Close a live-streamed <think> before a tool call drains, so
@@ -31042,6 +31124,8 @@ class LlamaCppBackend:
 
                 detect_state = _S_BUFFERING
                 content_buffer = ""  # Raw content held during BUFFERING
+                # Whether content_buffer has already been added to cumulative_display.
+                _buffer_in_display = False
                 content_accum = ""  # All content tokens (for tool parsing)
                 reasoning_accum = ""
                 _prov_entry = None
@@ -31581,15 +31665,44 @@ class LlamaCppBackend:
                                                     enabled_tool_names = _enabled_tool_names,
                                                 ):
                                                     _drain_silently = True
+                                                elif blocked_bare_json_chain_may_continue(
+                                                    content_buffer, _enabled_tool_names
+                                                ):
+                                                    if len(stripped_buf) < _MAX_BARE_JSON_BUFFER:
+                                                        _hold_buffer = True
+                                                    else:
+                                                        # Bounded buffer: fail closed rather
+                                                        # than expose text a later peer
+                                                        # could make executable.
+                                                        _drain_silently = True
                                             elif (
                                                 "call:".startswith(stripped_buf)
                                                 or _GEMMA_BARE_TC_PREFIX_RE.match(stripped_buf)
                                                 is not None
-                                                or _GEMMA_BARE_TC_RE.match(stripped_buf) is not None
+                                                or _gemma_lead_promotable(stripped_buf)
+                                                or blocked_gemma_chain_may_continue(
+                                                    stripped_buf, _enabled_tool_names
+                                                )
                                             ):
-                                                # Whitespace-tolerant like the parser.
-                                                if _GEMMA_BARE_TC_RE.match(stripped_buf):
+                                                # Whitespace-tolerant like the parser, and on
+                                                # its gate: a rejected name streams as prose.
+                                                if _gemma_lead_promotable(stripped_buf):
                                                     _drain_silently = True
+                                                elif blocked_gemma_chain_may_continue(
+                                                    stripped_buf, _enabled_tool_names
+                                                ):
+                                                    # A promotable peer behind a blocked
+                                                    # call must not stream first.
+                                                    if self._parse_tool_calls_from_text(
+                                                        content_buffer,
+                                                        allow_incomplete = auto_heal_tool_calls,
+                                                        enabled_tool_names = _enabled_tool_names,
+                                                    ):
+                                                        _drain_silently = True
+                                                    elif len(stripped_buf) < _MAX_BARE_JSON_BUFFER:
+                                                        _hold_buffer = True
+                                                    else:
+                                                        _drain_silently = True
                                                 elif len(stripped_buf) < _MAX_BUFFER_CHARS:
                                                     _hold_buffer = True
 
@@ -33224,6 +33337,9 @@ class LlamaCppBackend:
                 continue
 
             except _LlamaStreamCancelled:
+                _held = _cancelled_hold_text()
+                if _held:
+                    yield {"type": "content", "text": _held}
                 return
             except httpx.ConnectError:
                 # Mark unresolved provisional cards as failed before raising.
@@ -34094,6 +34210,10 @@ class LlamaCppBackend:
                 break
 
             except _LlamaStreamCancelled:
+                # No flush here: the buffers ``_cancelled_hold_text`` reads are bound inside the
+                # TOOL LOOP and are never rebound for this pass, which emits incrementally and
+                # holds nothing back. Flushing them replayed the previous iteration's planning
+                # text as this pass's answer, after the status boundary reset the route cursor.
                 return
             except httpx.ConnectError:
                 raise RuntimeError("Lost connection to llama-server")

@@ -1,15 +1,12 @@
 #!/bin/sh
 # Build whisper.cpp's whisper-server for Unsloth's GGUF dictation engine.
-#
 # Installs into the managed Unsloth home so the backend's binary discovery
 # (core/inference/stt_ggml_sidecar.py::find_whisper_server_binary) picks it up:
 #   <UNSLOTH_STUDIO_HOME>/whisper.cpp/build/bin/whisper-server   (custom home)
 #   ~/.unsloth/whisper.cpp/build/bin/whisper-server              (default)
-#
 # Usage:
 #   ./scripts/build_whisper_cpp.sh              # build the pinned tag
 #   WHISPER_CPP_TAG=v1.9.0 ./scripts/build_whisper_cpp.sh
-#
 # Requires: git, cmake, a C/C++ toolchain (the same prerequisites as a
 # llama.cpp source build). GPU backends are auto-detected by whisper.cpp's
 # CMake (Metal on macOS; set GGML_CUDA=1 to force a CUDA build on Linux).

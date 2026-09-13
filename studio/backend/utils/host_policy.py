@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Bind-host trust policy for the Unsloth backend.
-
-Stdlib only -- safe to import without the rest of the backend.
-
-`is_external_host` mirrors the CLI's `unsloth_cli/_tool_policy.py`: a loopback
-bind is the user's own machine, any other address is network-reachable. The
-logic is duplicated rather than shared because the backend is self-contained
-(see run.py: "can be moved to any directory") and runs from a venv that may not
-have `unsloth_cli` on sys.path. Keep the two in sync.
-"""
+"""Bind-host trust policy for the Unsloth backend. Stdlib only, so it is safe to import without the rest of the backend. `is_external_host` mirrors the CLI's `unsloth_cli/_tool_policy.py`: a loopback bind is the user's own machine, any other address is network-reachable. The logic is duplicated rather than shared because the backend is self-contained (see run.py: "can be moved to any directory") and runs from a venv that may not have `unsloth_cli` on sys.path. Keep the two in sync."""
 
 from __future__ import annotations
 
@@ -18,14 +9,10 @@ import ipaddress
 import os
 import socket
 
-# Only the exact aliases the rest of the stack hard-codes for loopback: other 127.0.0.0/8 addresses are deliberately
-# left out, since they are not supported launch hosts.
-# Health checks, banner URLs and run.py all hard-code 127.0.0.1.
+# Only the exact aliases the rest of the stack hard-codes for loopback (health checks, banner URLs and run.py all hard-code 127.0.0.1); other 127.0.0.0/8 addresses are deliberately left out, since they are not supported launch hosts.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
-# Whether a loopback launch in THIS process auto-enabled the gate.
-# run_server normally runs once per process, but if it is reused with a different host (embedders, tests) we only ever
-# take back a value we set ourselves.
+# Whether a loopback launch in THIS process auto-enabled the gate. run_server normally runs once per process, but if it is reused with a different host (embedders, tests) we only ever take back a value we set ourselves.
 _auto_enabled = False
 _remote_connector_active = False
 _lan_connector_active = False
@@ -186,13 +173,11 @@ def published_url_host(host: str) -> str:
 
 
 def dial_host(host: str) -> str:
-    """Authority host for a URL this process dials itself. The IPv6 zone id stays literal: httpx
-    hands the RFC 6874 escaping `published_url_host` applies to the resolver unchanged."""
+    """Authority host for a URL this process dials itself. The IPv6 zone id stays literal: httpx hands the RFC 6874 escaping `published_url_host` applies to the resolver unchanged."""
     return f"[{host}]" if ":" in host else host
 
 
-# Self-call address resolution. A `--host` other than a wildcard binds one interface only, so
-# loopback is not served and a hardcoded `127.0.0.1` self-call cannot connect.
+# Self-call address resolution. A `--host` other than a wildcard binds one interface only, so loopback is not served and a hardcoded `127.0.0.1` self-call cannot connect.
 LOOPBACK_FALLBACK_HOST = "127.0.0.1"
 
 
@@ -214,24 +199,21 @@ def scope_request_host(server) -> "str | None":
 
 
 def prefer_loopback(current: "str | None", candidate: str) -> str:
-    """Keep loopback once seen: a wildcard bind reports whichever interface each request arrived
-    on, and that address can change while the loopback it also serves stays valid."""
+    """Keep loopback once seen: a wildcard bind reports whichever interface each request arrived on, and that address can change while the loopback it also serves stays valid."""
     if current is not None and is_loopback_host(current):
         return current
     return candidate
 
 
 def self_request_host(app_state, server = None) -> str:
-    """`server_request_host` is authoritative - run_server publishes it from the live listener
-    sockets; the scope pair covers running outside run_server."""
+    """`server_request_host` is authoritative, since run_server publishes it from the live listener sockets; the scope pair covers running outside run_server."""
     published = getattr(app_state, "server_request_host", None)
     if isinstance(published, str) and published:
         return published
     return scope_request_host(server) or LOOPBACK_FALLBACK_HOST
 
 
-# Tauri desktop webview origins. api-only serving (the desktop app calling a
-# local backend) locks CORS to these.
+# Tauri desktop webview origins. api-only serving (the desktop app calling a local backend) locks CORS to these.
 _TAURI_CORS_ORIGINS = (
     "tauri://localhost",
     "http://tauri.localhost",
@@ -242,30 +224,17 @@ _TAURI_CORS_ORIGINS = (
 
 
 def cors_origins_for_mode(*, api_only: bool, secure: bool) -> list[str]:
-    """Allowed CORS origins. Default is any-origin (["*"]); api-only locks down
-    to the Tauri desktop app, except in secure mode where the API is published
-    over Cloudflare and must stay reachable from remote browser origins."""
+    """Allowed CORS origins. Default is any-origin (["*"]); api-only locks down to the Tauri desktop app, except in secure mode where the API is published over Cloudflare and must stay reachable from remote browser origins."""
     if api_only and not secure:
         return list(_TAURI_CORS_ORIGINS)
     return ["*"]
 
 
 def apply_stdio_mcp_loopback_default(host: str, *, is_colab: bool = False) -> None:
-    """Default stdio MCP servers on when bound to loopback.
-
-    A loopback bind is the user's own machine -- the same trust boundary the
-    Tauri desktop app relies on (see main.py, which uses this same helper).
-    Colab is excluded: even its loopback is a hosted VM
-    reachable through Colab's proxy, so it stays off unless opted in. An explicit
-    operator value wins: a pre-set `UNSLOTH_STUDIO_ALLOW_STDIO_MCP=0`
-    force-disables and `=1` opts in, including on a network bind. We only ever
-    set or clear a default we applied ourselves, so reusing run_server with a
-    public host after a loopback one does not leave the gate on.
-    """
+    """Default stdio MCP servers on when bound to loopback. A loopback bind is the user's own machine, the same trust boundary the Tauri desktop app relies on (see main.py, which uses this same helper). Colab is excluded: even its loopback is a hosted VM reachable through Colab's proxy, so it stays off unless opted in. An explicit operator value wins: a pre-set `UNSLOTH_STUDIO_ALLOW_STDIO_MCP=0` force-disables and `=1` opts in, including on a network bind. We only ever set or clear a default we applied ourselves, so reusing run_server with a public host after a loopback one does not leave the gate on."""
     global _auto_enabled
     current = os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP")
-    # If our prior auto-default was changed out from under us, relinquish ownership: an explicit =0 is then a sticky
-    # force-disable, while a cleared var falls back to the host default.
+    # If our prior auto-default was changed out from under us, relinquish ownership: an explicit =0 is then a sticky force-disable, while a cleared var falls back to the host default.
     if _auto_enabled and current != "1":
         _auto_enabled = False
     # An explicit operator value is one we did not set; never touch it.
@@ -281,8 +250,7 @@ def apply_stdio_mcp_loopback_default(host: str, *, is_colab: bool = False) -> No
 
 
 def loopback_default_active() -> bool:
-    """True when stdio MCP is on only because a loopback bind auto-enabled it,
-    rather than an explicit operator opt-in. Lets the gate tell the two apart."""
+    """True when stdio MCP is on only because a loopback bind auto-enabled it, rather than an explicit operator opt-in. Lets the gate tell the two apart."""
     return _auto_enabled
 
 
