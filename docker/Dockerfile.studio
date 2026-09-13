@@ -13,6 +13,12 @@
 # Studio on :8000 (user unsloth; UNSLOTH_STUDIO_PASSWORD env, else a generated one
 # is printed in the logs; persisted under /opt/unsloth-studio/auth/); JupyterLab on
 # :8888 (JUPYTER_PASSWORD env, else a random one is printed). Without a GPU it starts on CPU: no training, but Studio chat / Data Recipes / GGUF / Jupyter work.
+# /opt/unsloth-studio (UNSLOTH_STUDIO_HOME) holds only Studio's data; the code lives in
+# /opt/unsloth-studio-app (UNSLOTH_STUDIO_APP) and unsloth-studio-home links it into the
+# home at build time and at every start, so a named volume on the home keeps accounts,
+# chats and outputs without pinning the first image's code. Real code directories that
+# an older image left on the volume are moved to .unsloth-studio-legacy/ (not deleted;
+# UNSLOTH_STUDIO_KEEP_LEGACY=0 deletes them), which is also the way back to that image.
 # CI pins BASE_IMAGE to the published base digest so both images ship the same stack.
 
 ARG BASE_IMAGE=unsloth/unsloth:core

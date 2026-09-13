@@ -30,6 +30,9 @@
 #   HF_HOME=$HOME/.cache/huggingface        host HF cache dir to mount
 #   TRITON_CACHE_DIR=...unsloth-triton      host Triton cache dir to mount
 #   UNSLOTH_WORKDIR=$PWD                    host dir mounted at /workspace/host
+#   UNSLOTH_STUDIO_VOLUME=unsloth-studio    named volume for Studio's data (accounts,
+#                                           chats, outputs) at /opt/unsloth-studio;
+#                                           set it empty to run without one
 set -euo pipefail
 
 IMAGE="${UNSLOTH_IMAGE:-unsloth/unsloth:latest}"
@@ -49,6 +52,16 @@ esac
 HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}"
 TRITON_CACHE="${TRITON_CACHE_DIR:-$HOME/.cache/unsloth-triton}"
 WORK_DIR="${UNSLOTH_WORKDIR:-$PWD}"
+# Studio's accounts, chats and trained models live under /opt/unsloth-studio. The
+# image links its own code into that directory at every start, so the volume keeps
+# the data across `docker rm` without pinning the first image's code. `-` (not `:-`)
+# so an explicitly empty value disables the mount. On :core the volume is an empty
+# directory the image never reads.
+STUDIO_VOLUME="${UNSLOTH_STUDIO_VOLUME-unsloth-studio}"
+STUDIO_MOUNT=()
+if [ -n "$STUDIO_VOLUME" ]; then
+    STUDIO_MOUNT=(-v "$STUDIO_VOLUME":/opt/unsloth-studio)
+fi
 
 mkdir -p "$HF_CACHE" "$TRITON_CACHE"
 
@@ -166,6 +179,7 @@ exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
     -v "$HF_CACHE":/workspace/.cache/huggingface \
     -v "$TRITON_CACHE":/workspace/.cache/triton \
     -v "$WORK_DIR":/workspace/host \
+    ${STUDIO_MOUNT[@]+"${STUDIO_MOUNT[@]}"} \
     "${ENV_FORWARD[@]}" \
     ${PORT_FLAGS[@]+"${PORT_FLAGS[@]}"} \
     "$IMAGE" "$@"

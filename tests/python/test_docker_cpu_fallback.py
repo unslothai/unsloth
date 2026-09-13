@@ -46,6 +46,7 @@ def _invoke_run_sh(
     nvidia,
     amd,
     groups = "both",
+    extra_env = None,
 ):
     """Run docker/run.sh with a recording `docker` stub and a staged /dev tree.
 
@@ -99,8 +100,15 @@ def _invoke_run_sh(
     env["UNSLOTH_DEV_ROOT"] = str(dev_root)
     env["HOME"] = str(tmp_path / "home")
     env["UNSLOTH_WORKDIR"] = str(tmp_path)
-    for leak in ("HF_TOKEN", "WANDB_API_KEY", "UNSLOTH_GPUS", "UNSLOTH_ALLOW_CPU"):
+    for leak in (
+        "HF_TOKEN",
+        "WANDB_API_KEY",
+        "UNSLOTH_GPUS",
+        "UNSLOTH_ALLOW_CPU",
+        "UNSLOTH_STUDIO_VOLUME",
+    ):
         env.pop(leak, None)
+    env.update(extra_env or {})
 
     # absolute: the "absent" case strips /usr/bin from PATH, so `bash` itself would
     # not resolve either
@@ -162,6 +170,52 @@ class TestRunShDegradesWithoutNvidia:
         assert "--gpus" in argv
         assert "all" in argv
         assert "/dev/kfd" not in argv
+
+
+def _studio_mounts(argv):
+    return [
+        argv[i + 1]
+        for i, a in enumerate(argv)
+        if a == "-v" and argv[i + 1].endswith(":/opt/unsloth-studio")
+    ]
+
+
+@_posix_shell
+class TestRunShMountsTheStudioVolume:
+    """Studio's accounts, chats and trained models live under /opt/unsloth-studio.
+    The image links its own code in there at every start, so a named volume keeps
+    the data across `docker rm` without pinning the first image's code. The helper
+    has to mount it, or the quick start in DOCKERHUB.md keeps data and the helper
+    does not."""
+
+    def test_the_default_is_a_named_volume(self, tmp_path):
+        argv, _ = _invoke_run_sh(tmp_path, nvidia = True, amd = False)
+        assert _studio_mounts(argv) == ["unsloth-studio:/opt/unsloth-studio"], argv
+
+    @pytest.mark.parametrize("nvidia, amd", [(False, True), (False, False)])
+    def test_the_amd_and_cpu_paths_mount_it_too(self, tmp_path, nvidia, amd):
+        argv, _ = _invoke_run_sh(tmp_path, nvidia = nvidia, amd = amd)
+        assert _studio_mounts(argv) == ["unsloth-studio:/opt/unsloth-studio"], argv
+
+    def test_an_empty_value_disables_the_mount(self, tmp_path):
+        """`${VAR-default}`, not `${VAR:-default}`: an explicitly empty value is an
+        opt-out, for example on :core or for a throwaway run."""
+        argv, _ = _invoke_run_sh(
+            tmp_path, nvidia = True, amd = False, extra_env = {"UNSLOTH_STUDIO_VOLUME": ""}
+        )
+        assert _studio_mounts(argv) == [], argv
+
+    def test_a_custom_name_or_host_path_is_one_argv(self, tmp_path):
+        """A bind mount path with a space must not be word-split."""
+        host = str(tmp_path / "studio home")
+        argv, _ = _invoke_run_sh(
+            tmp_path, nvidia = True, amd = False, extra_env = {"UNSLOTH_STUDIO_VOLUME": host}
+        )
+        assert _studio_mounts(argv) == [f"{host}:/opt/unsloth-studio"], argv
+
+    def test_the_flag_is_documented_in_the_header(self):
+        body = open(_RUN_SH, encoding = "utf-8").read()
+        assert "UNSLOTH_STUDIO_VOLUME=unsloth-studio" in body
 
 
 class TestStudioImageAllowsCpu:
