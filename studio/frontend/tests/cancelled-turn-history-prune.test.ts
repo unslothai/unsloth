@@ -72,7 +72,10 @@ test("a stopped empty assistant is filled before the prune sees it", () => {
 test("the fill leaves a refusal suppressed", () => {
   // Every other assistant shape force-flushes, so an empty serialization is a refusal and
   // nothing else. tests/studio/test_cancelled_turn_history_prune.py pins the behaviour.
-  assert.match(adapter, /if \(serialized\.length === 0\) \{\s*\/\//);
+  assert.match(
+    adapter,
+    /if \(serialized\.length === 0\) \{[\s\S]{0,200}?return serialized;/,
+  );
   assert.doesNotMatch(
     adapter,
     /serialized\.length === 0[\s\S]{0,200}content: stoppedAssistantReplayText/,
