@@ -1299,7 +1299,7 @@ class TestInstallUvCacheRootParity:
         _sh_restore = sh[sh.index("_restore_uv_cache_marker() {") :]
         _sh_restore = _sh_restore[: _sh_restore.index("\n}\n")]
         assert (
-            "printf '%s' \"$_UV_MARKER_PREVIOUS\" > \"$_uv_marker_file\"" in _sh_restore
+            'printf \'%s\' "$_UV_MARKER_PREVIOUS" > "$_uv_marker_file"' in _sh_restore
         ), _sh_restore
 
         # One flag decides both rollbacks. Clearing them separately leaves a window either
