@@ -334,7 +334,7 @@ def test_a_cached_diffusion_base_requires_caller_authorization(monkeypatch, cach
         offline = False,
     ):
         seen["repo_id"] = repo_id
-        return hf_token is False
+        return hf_token is False and is_cached()
 
     monkeypatch.setattr(training_routes, "cached_read_refused", refuse)
 
@@ -348,12 +348,64 @@ def test_a_cached_diffusion_base_requires_caller_authorization(monkeypatch, cach
     assert error.value.detail["code"] == "hf_model_access_denied"
     assert seen["repo_id"] == "org/private-sdxl"
 
-    # A Hub id rather than a path resolves to nothing on disk and must not be probed as one.
+    # A Hub id for a base this disk does not hold has nothing to disclose.
     training_routes._refuse_unauthorized_cached_local_paths(
         ["black-forest-labs/FLUX.2-klein-4B", ""],
         False,
         "model",
     )
+
+
+def test_a_remote_named_cached_base_is_authorized_when_the_hub_probe_fails_open(
+    monkeypatch, cache_root
+):
+    """`org/private` names no path, and the HEAD that would cover it is best-effort.
+
+    `_preflight_gated_base` treats an unreachable Hub as "not a denial", so on an offline box the
+    scrubbed child still loaded the cached private copy. The disk is asked directly instead.
+    """
+    import routes.training as training_routes
+    from fastapi import HTTPException
+
+    _make_repo(cache_root, "models--org--private-sdxl")
+    seen = {}
+
+    def refuse(
+        hf_token,
+        *,
+        repo_id,
+        is_cached,
+        repo_type = "model",
+        offline = False,
+    ):
+        seen["repo_id"] = repo_id
+        seen["repo_type"] = repo_type
+        seen["is_cached"] = is_cached()
+        return hf_token is False and seen["is_cached"]
+
+    monkeypatch.setattr(training_routes, "cached_read_refused", refuse)
+
+    with pytest.raises(HTTPException) as error:
+        training_routes._refuse_unauthorized_cached_local_paths(
+            ["org/private-sdxl"],
+            False,
+            "model",
+        )
+    assert error.value.status_code == 422
+    assert seen == {"repo_id": "org/private-sdxl", "repo_type": "model", "is_cached": True}
+
+    # A repo that is NOT on this disk has nothing to leak, so it is not refused.
+    training_routes._refuse_unauthorized_cached_local_paths(
+        ["org/never-downloaded"],
+        False,
+        "model",
+    )
+    assert seen["is_cached"] is False
+
+    # A bare model name (no owner) is not a repo id; it must not be probed as one.
+    seen.clear()
+    training_routes._refuse_unauthorized_cached_local_paths(["gpt2", ""], False, "model")
+    assert seen == {}
 
 
 def test_the_diffusion_config_tolerates_the_new_policy_key():

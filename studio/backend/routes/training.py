@@ -598,16 +598,39 @@ def _refuse_unauthorized_cached_local_paths(
     dataset with no token at all. Same leak the model leg closes above, on the one input that
     reaches the trainer without ever naming a repo.
     """
-    from hub.utils.hf_cache_state import cached_repo_ref_for_path
+    from hub.utils.hf_cache_state import cached_repo_ref_for_path, iter_repo_cache_dirs
+
+    repo_type = "dataset" if label.endswith("dataset") else label
+
+    def cached_under_its_own_id(repo_id: str):
+        # A Hub id rather than a path. The remote probe that would normally cover it can fail open
+        # (a HEAD that cannot be sent is not a denial), and an offline worker then loads the cached
+        # copy with no credential, so ask the disk directly. Errors count as present: the guard's
+        # own failure must not open the path it guards.
+        def probe() -> bool:
+            scan_errors: list = []
+            hit = next(iter_repo_cache_dirs(repo_type, repo_id, scan_errors = scan_errors), None)
+            return hit is not None or bool(scan_errors)
+
+        return probe
+
     for dataset_path in paths:
-        cached_ref = cached_repo_ref_for_path(dataset_path)
-        if cached_ref is None:
+        candidate = (dataset_path or "").strip()
+        if not candidate:
             continue
+        cached_ref = cached_repo_ref_for_path(candidate)
+        if cached_ref is None:
+            if is_local_path(candidate) or candidate.count("/") != 1:
+                continue
+            cached_ref = (candidate, repo_type)
+            is_cached = cached_under_its_own_id(candidate)
+        else:
+            is_cached = lambda: True  # noqa: E731 -- the path itself is the evidence
         if cached_read_refused(
             hf_token,
             repo_id = cached_ref[0],
             repo_type = cached_ref[1],
-            is_cached = lambda: True,
+            is_cached = is_cached,
             offline = hf_env_offline(),
         ):
             raise _hf_preflight_error(
