@@ -24,7 +24,9 @@ import pytest
 # is how 0.28 moving bitsandbytes out of tree went unnoticed.
 _VLLM_MIN_VERSION = (0, 9, 0)
 
-# Only for an unreachable PyPI. Stale by design.
+# Only for an unreachable PyPI, and it must reach the current frontier: a
+# fallback that stopped early would skip the very releases a new guard exists
+# for (0.28's bitsandbytes move) and still report green. Extend when adding one.
 _VLLM_TAGS_FALLBACK = [
     "v0.9.0",
     "v0.9.1",
@@ -33,9 +35,12 @@ _VLLM_TAGS_FALLBACK = [
     "v0.10.1",
     "v0.10.2",
     "v0.11.0",
+    "v0.11.1",
+    "v0.11.2",
     "v0.12.0",
     "v0.13.0",
     "v0.14.0",
+    "v0.14.1",
     "v0.15.0",
     "v0.15.1",
     "v0.16.0",
@@ -48,6 +53,18 @@ _VLLM_TAGS_FALLBACK = [
     "v0.20.0",
     "v0.20.1",
     "v0.20.2",
+    "v0.21.0",
+    "v0.22.0",
+    "v0.22.1",
+    "v0.23.0",
+    "v0.24.0",
+    "v0.25.0",
+    "v0.25.1",
+    "v0.26.0",
+    "v0.27.0",
+    "v0.27.1",
+    "v0.28.0",
+    "v0.29.0",
 ]
 
 
@@ -355,4 +372,24 @@ def test_weights_mapper_unstack_helper_is_named_as_expected(tag: str):
         f"exposes none of {VLLM_UNSTACK_HELPERS}; unsloth_zoo's "
         f"_drop_stacked_weight_maps falls back to clearing the field, so add "
         f"the new spelling there"
+    )
+
+
+VLLM_QUANT_REGISTRY_PATH = "vllm/model_executor/layers/quantization/__init__.py"
+
+
+@pytest.mark.parametrize("tag", VLLM_TAGS)
+def test_out_of_tree_quant_registry_is_still_a_dict(tag: str):
+    """unsloth_zoo rewrites the registered bnb config through this dict.
+
+    An out-of-tree plugin registers the CLASS OBJECT, so swapping the module
+    attribute alone leaves vLLM building the unpatched config and ignoring
+    UNSLOTH_bnb_4bit_compute_dtype.
+    """
+    src = _fetch_text("vllm-project/vllm", tag, VLLM_QUANT_REGISTRY_PATH)
+    if src is None:
+        pytest.skip(f"{tag}: {VLLM_QUANT_REGISTRY_PATH} not present")
+    assert "_CUSTOMIZED_METHOD_TO_QUANT_CONFIG" in src, (
+        f"{tag}: the out-of-tree quantization registry was renamed; "
+        f"unsloth_zoo._set_registered_quant_config no longer reaches it"
     )
