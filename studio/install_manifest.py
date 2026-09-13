@@ -159,7 +159,8 @@ def _installed_metadata_records(dist_name: str) -> List[Tuple[str, Optional[Path
     # scan in this process stays invisible while that mtime holds (two writes in one tick; exFAT 2s,
     # HFS+ 1s), and a damaged install verifies as healthy. Via an INSTANCE: invalidate_caches only
     # became a classmethod in 3.11.9 / 3.12.3 (gh-116811), and importlib.invalidate_caches() gained
-    # its delegation there too, so before those neither the class call nor the caller works.
+    # its delegation there too, so before those neither the class call nor the caller works. 3.9
+    # resolves it to MetaPathFinder's no-op, which is right: its FastPath does not cache.
     if getattr(MetadataPathFinder, "invalidate_caches", None) is not None:
         MetadataPathFinder().invalidate_caches()
     kwargs = {"path": paths} if paths else {}
