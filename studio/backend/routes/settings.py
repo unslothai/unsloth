@@ -11,6 +11,8 @@ from typing import Any, Literal, Optional, get_args
 from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from starlette.background import BackgroundTask
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -3569,4 +3571,66 @@ def get_debug_log(
         more_pending = result.more_pending,
         file_logging_disabled = debug_log_sources.source_is_frozen(source_id),
         size_bytes = result.size_bytes,
+    )
+
+
+# One build at a time, process-wide.
+#
+# The route is a sync `def`, so FastAPI runs it in the anyio worker pool -- 40
+# threads, shared with every other sync endpoint in the backend. A build is
+# seconds of CPU, so a handful of concurrent exports starve that pool and every
+# sync route stops answering. anyio cannot cancel a running thread, so the pool
+# does not recover on its own. One user pressing a button needs exactly one
+# build in flight; a second gets told to wait rather than queued behind it.
+_DEBUG_LOG_EXPORT_LOCK = threading.Semaphore(1)
+
+
+@router.get("/debug/logs/export")
+def export_debug_logs(
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> StreamingResponse:
+    """Every log the picker lists, redacted, as one ZIP.
+
+    The same two dependencies as the routes above, for the same reason: a
+    bundle of log files and the paths they came from is UI-operator material,
+    so an API-key or keyless caller is refused here too.
+
+    Built before the response exists rather than inside the generator: the
+    archive is bounded by size AND wall clock in debug_log_export, and building
+    eagerly is what lets a failure be a 500 instead of a truncated download.
+    """
+    from utils import debug_log_export
+
+    if not _DEBUG_LOG_EXPORT_LOCK.acquire(blocking = False):
+        raise HTTPException(
+            status_code = 429,
+            detail = "A log export is already running. Wait for it to finish and try again.",
+        )
+    try:
+        archive = debug_log_export.build_log_archive()
+    finally:
+        _DEBUG_LOG_EXPORT_LOCK.release()
+
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+
+    def _chunks():
+        try:
+            while True:
+                chunk = archive.read(debug_log_export.STREAM_CHUNK_BYTES)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            archive.close()
+
+    return StreamingResponse(
+        _chunks(),
+        media_type = "application/zip",
+        headers = {"Content-Disposition": f'attachment; filename="unsloth-logs-{stamp}.zip"'},
+        # Belt and braces with the `finally` above. On a client abort Starlette
+        # cancels the task group without driving the generator to GeneratorExit,
+        # so that `finally` does not run until a cyclic GC pass -- leaving up to
+        # SPOOL_MAX_BYTES per aborted download on the heap for an unbounded time.
+        background = BackgroundTask(archive.close),
     )
