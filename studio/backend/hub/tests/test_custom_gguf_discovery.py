@@ -630,6 +630,24 @@ def test_symlinked_model_directory_stays_grouped(tmp_path):
     assert [Path(row.path) for row in _custom_rows(root)] == [alias]
 
 
+def test_two_symlink_aliases_to_one_model_stay_distinct(tmp_path):
+    """Issue #10605: symlink aliases are separate Hub rows so each can remember settings."""
+    real_model = tmp_path / "outside" / "model"
+    _write_gguf(real_model / "model-Q4_K_M.gguf")
+    _write_gguf(real_model / "model-Q8_0.gguf")
+    root = tmp_path / "root"
+    root.mkdir()
+    alias_a = root / "alias-a"
+    alias_b = root / "alias-b"
+    _symlink_dir(alias_a, real_model)
+    _symlink_dir(alias_b, real_model)
+
+    rows = _custom_rows(root)
+
+    assert {Path(row.path) for row in rows} == {alias_a, alias_b}
+    assert {row.load_id for row in rows} == {str(alias_a), str(alias_b)}
+
+
 def test_physical_identity_preserves_native_posix_names(tmp_path):
     if os.sep == "\\":
         pytest.skip("names are not distinct on Windows")

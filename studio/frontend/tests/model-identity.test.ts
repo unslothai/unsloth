@@ -266,6 +266,26 @@ test("a POSIX path is case sensitive, so its two spellings stay separate", () =>
   );
 });
 
+test("symlink alias paths keep independent remembered settings", () => {
+  store.clear();
+  savePerModelConfig("/models/alias-a", "Q4_K_M", config(4096));
+  savePerModelConfig("/models/alias-b", "Q4_K_M", config(32768, "q8_0"));
+
+  assert.equal(storedKeys().length, 2);
+  assert.equal(
+    resolveInitialConfig("/models/alias-a", "Q4_K_M").config.maxSeqLength,
+    4096,
+  );
+  assert.equal(
+    resolveInitialConfig("/models/alias-b", "Q4_K_M").config.maxSeqLength,
+    32768,
+  );
+  assert.equal(
+    resolveInitialConfig("/models/alias-b", "Q4_K_M").config.kvCacheDtype,
+    "q8_0",
+  );
+});
+
 // Every answer below is the backend's split_quant_suffix. The backfill folds a stored key with
 // this before comparing, so a disagreement collapses two models onto one key.
 const CASES: [string, [string, string] | null][] = [
