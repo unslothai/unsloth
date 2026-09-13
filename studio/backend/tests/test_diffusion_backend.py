@@ -3746,6 +3746,125 @@ def _stub_dense_quant(monkeypatch, *, scheme = "fp8"):
     return calls
 
 
+@pytest.mark.parametrize(
+    "stage",
+    [
+        "prequant",
+        "prequant_miss",
+        "transformer",
+        "encoder",
+        "pipeline",
+        "placement",
+        "lora_resolve",
+        "lora_first",
+        "lora_last",
+        "lora_set",
+        "quantize",
+    ],
+)
+@pytest.mark.parametrize("cancel", [False, True])
+def test_dense_build_cancellation_boundaries(fake_runtime, tmp_path, monkeypatch, stage, cancel):
+    import gc
+    import weakref
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _stub_dense_quant(monkeypatch, scheme = "int8")
+    monkeypatch.setattr(backend, "_dense_transformer_resident_bytes", lambda *a, **k: 0)
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    entered, release = threading.Event(), threading.Event()
+    calls, outcome = [], {}
+    live = weakref.WeakSet()
+
+    def record(name, value = None):
+        calls.append(name)
+        if name == stage:
+            entered.set()
+            assert release.wait(5)
+        return value
+
+    def transformer(*args, **kwargs):
+        value = _FakePipe()
+        live.add(value)
+        return record("transformer", value)
+
+    class Pipe(_FakePipe):
+        def to(self, device):
+            return record("placement", super().to(device))
+
+        def load_lora_weights(self, path, adapter_name):
+            record("lora_first" if adapter_name == "first" else "lora_last")
+
+        def set_adapters(self, *args, **kwargs):
+            record("lora_set")
+
+    def pipeline(cls, base, **kwargs):
+        value = Pipe()
+        value.transformer = kwargs["transformer"]
+        live.add(value)
+        return record("pipeline", value)
+
+    monkeypatch.setattr(
+        _FakeTransformer, "from_pretrained", staticmethod(transformer), raising = False
+    )
+    monkeypatch.setattr(_FakePipeline, "from_pretrained", classmethod(pipeline))
+    monkeypatch.setattr(dmod, "te_prequant_pipe_kwargs", lambda *a, **k: record("encoder", {}))
+    monkeypatch.setattr(
+        backend,
+        "_resolve_lora_set",
+        lambda *a, **k: record("lora_resolve", (("first", "one", 1.0), ("last", "two", 0.5))),
+    )
+    monkeypatch.setattr(dmod, "quantize_transformer", lambda *a, **k: record("quantize", "int8"))
+    prequant = stage.startswith("prequant")
+    if prequant:
+        monkeypatch.setattr(dmod, "resolve_prequant_source", lambda *a, **k: object())
+        monkeypatch.setattr(
+            dmod,
+            "load_prequantized_transformer",
+            lambda *a, **k: record(stage, None if stage == "prequant_miss" else _FakePipe()),
+        )
+
+    def load():
+        try:
+            outcome["result"] = _load_into(
+                backend,
+                tmp_path,
+                transformer_quant = "int8",
+                local_files_only = True,
+                loras = None if prequant else [("one", 1.0), ("two", 0.5)],
+            )
+        except Exception as exc:
+            outcome["error"] = str(exc)
+
+    loader = threading.Thread(target = load, daemon = True)
+    ejector = threading.Thread(target = backend.unload, daemon = True)
+    loader.start()
+    try:
+        assert entered.wait(5), outcome
+        if cancel:
+            ejector.start()
+            assert backend._cancel_event.wait(2)
+    finally:
+        release.set()
+        loader.join(5)
+        if ejector.ident is not None:
+            ejector.join(5)
+    assert not loader.is_alive() and not ejector.is_alive()
+    assert backend._unload_waiters == backend._teardown_waiters == 0
+    if cancel:
+        assert "cancelled" in outcome.get("error", ""), outcome
+        assert calls[-1] == stage, calls
+        assert not backend.is_loaded
+        gc.collect()
+        assert not live
+    else:
+        assert "error" not in outcome, outcome
+        assert backend.is_loaded
+        assert backend.status()["transformer_quant"] == "int8"
+        assert calls.count("quantize") == (0 if stage == "prequant" else 1)
+        backend.unload()
+
+
 def test_default_load_autos_dense_gate_and_falls_back(fake_runtime, tmp_path, monkeypatch):
     # An unset dtype follows the hardware ladder: the dense gate is consulted, and a device without dense support falls back to GGUF.
     from core.inference import diffusion as dmod

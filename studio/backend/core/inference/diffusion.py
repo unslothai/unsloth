@@ -4046,6 +4046,7 @@ class DiffusionBackend:
                                 text_encoder_quant = text_encoder_quant,
                                 fetch_base = fetch_base,
                                 local_files_only = local_files_only,
+                                _load_token = _load_token,
                             )
                         except Exception as exc:  # noqa: BLE001 - fall back to the GGUF build
                             self._raise_if_load_cancelled(_load_token)
@@ -4679,6 +4680,7 @@ class DiffusionBackend:
         text_encoder_quant: Optional[str] = None,
         fetch_base: Optional[str] = None,
         local_files_only: bool = False,
+        _load_token: Optional[int] = None,
     ) -> tuple[Any, str]:
         """Build the opt-in fast pipeline and return ``(pipe, engaged_scheme)``.
 
@@ -4702,6 +4704,13 @@ class DiffusionBackend:
         download uses ``fetch_base``. A gated base 401s on both the prequant config read and the
         dense pull, and a nonzero baked LoRA refuses the GGUF fallback, so that 401 fails the load.
         """
+        if _load_token is None:
+            _load_token = self._load_token
+
+        def check_cancelled() -> None:
+            self._raise_if_load_cancelled(_load_token)
+
+        check_cancelled()
         fetch_base = fetch_base or prefer_ungated_mirror(base, hf_token)
         # 1. Pre-quantized checkpoint, when one is configured for the resolved scheme.
         scheme = select_transformer_quant_scheme(target, mode, family = getattr(fam, "name", None))
@@ -4716,6 +4725,7 @@ class DiffusionBackend:
             source = resolve_prequant_source(
                 fam, scheme, path_override = prequant_path, base_repo = base
             )
+            check_cancelled()
             if source is not None:
                 transformer = load_prequantized_transformer(
                     transformer_cls,
@@ -4739,6 +4749,7 @@ class DiffusionBackend:
                     cache_dir = hub_cache_dir(),
                     logger = logger,
                 )
+                check_cancelled()
                 if transformer is not None:
                     pipe = self._assemble_pipe(
                         pipeline_cls,
@@ -4753,7 +4764,9 @@ class DiffusionBackend:
                         target = target,
                         fetch_base = fetch_base,
                         local_files_only = local_files_only,
+                        check_cancelled = check_cancelled,
                     )
+                    check_cancelled()
                     return pipe, scheme
 
         # 2. Fallback: materialise the dense bf16 transformer and quantise it on-device.
@@ -4767,6 +4780,7 @@ class DiffusionBackend:
         # raises rather than falling back to the hub) and a sharded load raises per missing shard, so a partial
         # snapshot would drop a build the hub id completes. Off the hub id a base only the other root holds costs a
         # re-download, or 401s into the GGUF fallback.
+        check_cancelled()
         transformer = transformer_cls.from_pretrained(
             fetch_base,
             subfolder = "transformer",
@@ -4777,6 +4791,7 @@ class DiffusionBackend:
             # refused here rather than allowed to pull it.
             local_files_only = local_files_only,
         )
+        check_cancelled()
         pipe = self._assemble_pipe(
             pipeline_cls,
             base,
@@ -4790,7 +4805,9 @@ class DiffusionBackend:
             target = target,
             fetch_base = fetch_base,
             local_files_only = local_files_only,
+            check_cancelled = check_cancelled,
         )
+        check_cancelled()
         if _has_active_lora(lora_specs):
             # Bake the adapters BEFORE quantize_: peft wraps the dense Linears (post-quant torchao dispatch would
             # TypeError), then quantize_ converts only each wrapper's frozen base_layer while the "lora_" side path
@@ -4801,7 +4818,9 @@ class DiffusionBackend:
                 hf_token = hf_token,
             )
             for name, path, _weight in baked:
+                check_cancelled()
                 pipe.load_lora_weights(path, adapter_name = name)
+            check_cancelled()
             pipe.set_adapters(
                 [n for (n, _p, _w) in baked],
                 adapter_weights = [w for (_n, _p, w) in baked],
@@ -4813,6 +4832,7 @@ class DiffusionBackend:
                 len(baked),
                 scheme,
             )
+        check_cancelled()
         scheme = quantize_transformer(
             pipe,
             target,
@@ -4821,6 +4841,7 @@ class DiffusionBackend:
             fast_accum = fast_accum,
             logger = logger,
         )
+        check_cancelled()
         if scheme is None:
             raise RuntimeError("transformer quant unsupported for this device/scheme")
         return pipe, scheme
@@ -4839,11 +4860,14 @@ class DiffusionBackend:
         target: Any = None,
         fetch_base: Optional[str] = None,
         local_files_only: bool = False,
+        check_cancelled: Optional[Callable[[], None]] = None,
     ) -> Any:
         """Assemble the diffusers pipeline around ``transformer`` and place it on ``device`` (a
         no-op for an already-placed pre-quantized transformer; it moves the companions).
         Everything below reads the base only to FETCH, so it uses ``fetch_base``. Matters when
         ``base_local_dir`` is None: nothing was staged, so a gated upstream would 401 here."""
+        check_cancelled = check_cancelled or (lambda: None)
+        check_cancelled()
         base = fetch_base or prefer_ungated_mirror(base, hf_token)
         if getattr(fam, "name", None) == KREA2_FAMILY_NAME:
             # krea ships transformers-5.x configs and no top-level tokenizer files, so assemble per-component.
@@ -4859,6 +4883,7 @@ class DiffusionBackend:
                     logger = logger,
                     local_files_only = local_files_only,
                 ).get("text_encoder")
+            check_cancelled()
             pipe = load_krea2_pipeline(
                 base_local_dir or base,
                 dtype,
@@ -4869,6 +4894,7 @@ class DiffusionBackend:
                 # the pipe_kwargs below carry for every other family.
                 local_files_only = local_files_only,
             )
+            check_cancelled()
             pipe.to(device)
             return pipe
         pipe_kwargs: dict[str, Any] = {
@@ -4891,6 +4917,7 @@ class DiffusionBackend:
                 )
             )
         if target is not None:
+            check_cancelled()
             pipe_kwargs.update(
                 te_prequant_pipe_kwargs(
                     fam,
@@ -4903,7 +4930,9 @@ class DiffusionBackend:
                     local_files_only = local_files_only,
                 )
             )
+        check_cancelled()
         pipe = pipeline_cls.from_pretrained(base_local_dir or base, **pipe_kwargs)
+        check_cancelled()
         pipe.to(device)
         return pipe
 
