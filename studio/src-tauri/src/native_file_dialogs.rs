@@ -664,7 +664,15 @@ fn live_backend_port(state: &State<'_, crate::process::BackendState>) -> Result<
 #[cfg_attr(not(windows), allow(dead_code))]
 fn strip_verbatim_prefix_inner(text: String) -> String {
     const UNC: &str = r"\\?\UNC\";
-    if text.len() >= UNC.len() && text[..UNC.len()].eq_ignore_ascii_case(UNC) {
+    // `get` rather than `text[..UNC.len()]`: a Downloads folder directly under a
+    // drive root with a non-ASCII first component canonicalises to `\\?\C:\下载\...`,
+    // where byte 8 falls inside a multibyte character and slicing would panic --
+    // after the archive had already been saved, so the download succeeds and the
+    // command still fails. `get` answers None there instead.
+    if text
+        .get(..UNC.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(UNC))
+    {
         return format!(r"\\{}", &text[UNC.len()..]);
     }
     match text.strip_prefix(r"\\?\") {
@@ -1547,18 +1555,22 @@ mod tests {
     #[test]
     fn the_tab_sends_a_ui_token_for_the_multi_account_fallback() {
         let frontend = include_str!("../../frontend/src/features/settings/api/debug-logs.ts");
-        // Which helper supplies the token is the frontend's business (it went
-        // from `getAuthToken()` to a refreshing wrapper without changing the
-        // contract), so pin the part that is ours: the payload carries a
-        // `uiToken` whose value is a call, not a literal `null` or `""`.
-        let value = frontend
-            .split("uiToken:")
-            .nth(1)
-            .map(|rest| rest.split(',').next().unwrap_or("").trim().to_string());
+        // How the token is spelled at the call site is the frontend's business:
+        // it has already gone from `uiToken: getAuthToken()` to a refreshing
+        // wrapper to a shorthand property, none of which changed the contract.
+        // So pin the part that is ours -- the payload of THIS command names
+        // `uiToken` -- and that the tab still reads a token to put in it.
+        let payload = frontend
+            .split_once("\"download_logs_to_downloads\"")
+            .map(|(_, rest)| rest.chars().take(200).collect::<String>());
         assert!(
-            value.as_deref().is_some_and(|value| value.ends_with("()")),
-            "debug-logs.ts no longer sends a uiToken value ({value:?}), so a \
+            payload.as_deref().is_some_and(|p| p.contains("uiToken")),
+            "debug-logs.ts no longer sends uiToken ({payload:?}), so a \
              multi-account desktop install can never export logs"
+        );
+        assert!(
+            frontend.contains("getAuthToken("),
+            "debug-logs.ts no longer reads a token to send"
         );
     }
 
@@ -1599,6 +1611,19 @@ mod tests {
         assert_eq!(
             strip_verbatim_prefix_inner(r"\\?\unc\server\share\a.zip".to_string()),
             r"\\server\share\a.zip"
+        );
+        // A non-ASCII first component under a drive root: byte 8 lands inside the
+        // first multibyte character, so a plain `text[..8]` panics here rather
+        // than deciding the prefix does not match.
+        assert_eq!(
+            strip_verbatim_prefix_inner(r"\\?\C:\下载\a.zip".to_string()),
+            r"C:\下载\a.zip"
+        );
+        // The same shape, but long enough that a byte slice would reach past the
+        // character rather than stopping inside the first one.
+        assert_eq!(
+            strip_verbatim_prefix_inner(r"\\?\C:\ダウンロード\a.zip".to_string()),
+            r"C:\ダウンロード\a.zip"
         );
         // Anything without the prefix is handed back untouched, including a path
         // shorter than the prefix itself, which must not panic on the slice.

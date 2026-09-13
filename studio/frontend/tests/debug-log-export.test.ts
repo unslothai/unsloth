@@ -36,6 +36,7 @@ const TAB_URL = new URL(
 );
 const API_BASE = "http://127.0.0.1:7860";
 const UI_TOKEN = "ui-session-token";
+const REFRESHED_TOKEN = "ui-session-token-refreshed";
 const EXPORT_PATH = "/api/settings/debug/logs/export";
 const SAVED_PATH = "/home/tester/Downloads/unsloth-logs-20260910-101112.zip";
 const ARCHIVE_NAME = /^unsloth-logs-\d{8}-\d{6}\.zip$/;
@@ -102,10 +103,12 @@ function makeWorld(options: {
         refreshes.push(true);
         if (options.refreshFails) {
           // What the real one does on ANY non-2xx: clear the stored tokens and
-          // resolve false, without throwing.
+          // resolve false, without throwing. That is why nothing here refreshes
+          // speculatively -- it would sign the user out of the whole app.
           storedToken = null;
           return false;
         }
+        storedToken = REFRESHED_TOKEN;
         return true;
       },
     },
@@ -259,35 +262,71 @@ test("openLogsFolder falls back to open_logs_dir when nothing is selected", asyn
   ]);
 });
 
-test("the desktop export refreshes the session before handing the token to Rust", async () => {
-  // Rust uses the token once and as-is: it cannot retry a 401 by refreshing the
-  // way authFetch does. Without this, a desktop left idle past the access-token
-  // lifetime exports with a dead token while holding a good refresh token.
+test("an export that works does not touch the session", async () => {
+  // refreshSession clears both stored tokens on ANY non-2xx, so refreshing
+  // before every export would let a transient 500 on /api/auth/refresh sign the
+  // user out of the whole app just for clicking Download all logs.
   const world = makeWorld({
     isTauri: true,
     invoke: async () => SAVED_PATH,
   });
 
   await world.api.exportAllLogs();
-  assert.equal(world.refreshes.length, 1, "no refresh before the desktop export");
+  assert.equal(world.refreshes.length, 0, "the export refreshed for no reason");
 });
 
-test("a refresh that fails does not cost the desktop export the token it had", async () => {
-  // refreshSession resolves false on any non-2xx and clears the stored tokens on
-  // its way out, so reading the token only afterwards would turn a transient 500
-  // on /api/auth/refresh into a null uiToken. On a multi-account install, where
-  // Rust cannot mint a session of its own, that is a signed-in owner being told
-  // to sign in again.
+test("a rejected token is refreshed once and the export retried", async () => {
+  // Rust uses the token once and as-is: it cannot retry a 401 by refreshing the
+  // way authFetch does. Without this, a desktop left idle past the access-token
+  // lifetime fails while holding a perfectly good refresh token. A 401 is also
+  // the one case where refreshing costs nothing, the token having already been
+  // rejected.
+  let attempts = 0;
   const world = makeWorld({
     isTauri: true,
-    invoke: async () => SAVED_PATH,
+    invoke: async () => {
+      attempts += 1;
+      if (attempts === 1) throw "Download failed with status 401.";
+      return SAVED_PATH;
+    },
+  });
+
+  assert.equal(await world.api.exportAllLogs(), SAVED_PATH);
+  assert.equal(world.refreshes.length, 1);
+  assert.equal(world.invokes.length, 2);
+  const retried = world.invokes[1].args as { uiToken?: string | null };
+  assert.equal(retried.uiToken, REFRESHED_TOKEN, "retried with the dead token");
+});
+
+test("a 401 that cannot be refreshed is reported, not retried", async () => {
+  let attempts = 0;
+  const world = makeWorld({
+    isTauri: true,
+    invoke: async () => {
+      attempts += 1;
+      throw "Download failed with status 401.";
+    },
     refreshFails: true,
   });
 
-  await world.api.exportAllLogs();
-  assert.equal(world.refreshes.length, 1);
-  const args = world.invokes[0].args as { uiToken?: string | null };
-  assert.equal(args.uiToken, UI_TOKEN, "the export gave up a token it still had");
+  await assert.rejects(
+    () => world.api.exportAllLogs(),
+    (error: Error) => error.message.includes("401"),
+  );
+  assert.equal(attempts, 1, "retried with a session that could not be renewed");
+});
+
+test("a failure that is not a 401 never reaches for the refresh token", async () => {
+  const world = makeWorld({
+    isTauri: true,
+    invoke: async () => {
+      throw "Download failed with status 500.";
+    },
+  });
+
+  await assert.rejects(() => world.api.exportAllLogs());
+  assert.equal(world.refreshes.length, 0, "a 500 is not an authentication problem");
+  assert.equal(world.invokes.length, 1);
 });
 
 test("openLogsFolder uses the reported root when no source is selected", async () => {

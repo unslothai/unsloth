@@ -154,8 +154,15 @@ def test_a_file_replaced_between_the_stat_and_the_open_is_refused(monkeypatch):
     def open_after_a_swap(*args, **kwargs):
         if not swapped and args and str(args[0]).endswith(path.name):
             swapped.append(True)
-            path.unlink()
-            path.write_text("SOMEONE ELSE'S FILE\n", encoding = "utf-8")
+            # Renamed over the entry rather than unlinked and rewritten in place:
+            # freeing an inode and immediately creating a file in the same
+            # directory can hand the number straight back, which leaves the
+            # device/inode compare nothing to see and the test asserting on a
+            # coincidence. A rename of a file that already exists alongside is a
+            # different inode by construction, on every filesystem.
+            impostor = path.parent / "impostor.log"
+            impostor.write_text("SOMEONE ELSE'S FILE\n", encoding = "utf-8")
+            os.replace(impostor, path)
         return real_open(*args, **kwargs)
 
     monkeypatch.setattr(os, "open", open_after_a_swap)
@@ -664,14 +671,17 @@ def test_an_undecodable_filename_does_not_take_the_export_down():
     encode them, and the raise is not an OSError so both handlers miss it."""
     directory = Path(os.environ["UNSLOTH_STUDIO_HOME"]) / "logs" / "server"
     directory.mkdir(parents = True, exist_ok = True)
-    raw = os.fsdecode(b"server-\xff\xfe.log")
     try:
+        # fsdecode itself is the first thing that can refuse: Windows decodes
+        # filenames as utf-8/surrogatepass, which has no way to carry a lone
+        # 0xff, where POSIX surrogateescape does.
+        raw = os.fsdecode(b"server-\xff\xfe.log")
         (directory / raw).write_bytes(b"a line\n")
-    except OSError:
+    except (OSError, UnicodeError):
         # Tried rather than guessed from the platform: macOS has every POSIX
         # call this would test for and still refuses the byte sequence, so the
         # capability is the only honest gate.
-        pytest.skip("this filesystem refuses undecodable filenames")
+        pytest.skip("this platform cannot name a file with undecodable bytes")
     members = _members()
     assert any(name.startswith("server/") for name in members)
 

@@ -170,27 +170,12 @@ function desktopExportError(error: unknown): LogExportError {
   return new LogExportError(failureForStatus(status), message);
 }
 
-/**
- * The access token, refreshed if one can be. A refresh that fails is not a
- * reason to skip the attempt: the stored token may still be valid and the
- * backend is the real judge.
- *
- * Hence the token is read BEFORE refreshing. `refreshSession` resolves false
- * rather than throwing on any non-2xx, and clears the stored tokens on its way
- * out, so reading only afterwards would turn a transient 500 on
- * /api/auth/refresh into a null token -- and on a multi-account install, where
- * Rust cannot mint a session of its own, into a signed-in owner being asked to
- * sign in again. A stored value still wins, so a successful refresh is what
- * gets used.
- */
-async function freshAuthToken(): Promise<string | null> {
-  const existing = getAuthToken();
-  try {
-    await refreshSession();
-  } catch {
-    // Ignored on purpose; see above.
-  }
-  return getAuthToken() ?? existing;
+function desktopExportStatus(error: unknown): number {
+  const message =
+    typeof error === "string"
+      ? error
+      : ((error as Error | undefined)?.message ?? String(error));
+  return Number(message.match(DESKTOP_STATUS_PATTERN)?.[1] ?? 0);
 }
 
 function pad2(value: number): string {
@@ -213,30 +198,47 @@ export async function exportAllLogs(): Promise<string | null> {
   const filename = logArchiveFilename();
 
   if (isTauri) {
+    // `filename` is one word because Tauri maps camelCase onto snake_case
+    // parameters. It is only a suggestion: the command picks the destination and
+    // the realpath it returns is the answer.
+    //
+    // `uiToken` is the fallback for a multi-account install, where
+    // `desktop-login` refuses to mint unconditionally because the desktop secret
+    // says which SHELL owns the backend, not which account is using it. The
+    // command prefers a minted session and only falls back to this, and it pins
+    // host, port and path, so the token can reach nothing the tab could not
+    // already reach itself.
     const { invoke } = await import("@tauri-apps/api/core");
-    try {
-      // `filename` is one word because Tauri maps camelCase onto snake_case
-      // parameters. It is only a suggestion: the command picks the destination
-      // and the realpath it returns is the answer.
-      //
-      // `uiToken` is the fallback for a multi-account install, where
-      // `desktop-login` refuses to mint unconditionally because the desktop
-      // secret says which SHELL owns the backend, not which account is using
-      // it. The command prefers a minted session and only falls back to this,
-      // and it pins host, port and path, so the token can reach nothing the tab
-      // could not already reach itself.
-      //
-      // Refreshed first because Rust cannot do it. `authFetch` retries a 401 by
-      // refreshing, but the token handed over IPC is used once and as-is, so a
-      // desktop left idle past the access-token lifetime would export with a
-      // dead token and fail while holding a perfectly good refresh token.
-      return await invoke<string>("download_logs_to_downloads", {
+    const run = (uiToken: string | null) =>
+      invoke<string>("download_logs_to_downloads", {
         url: apiUrl(LOG_EXPORT_ENDPOINT),
         filename,
-        uiToken: await freshAuthToken(),
+        uiToken,
       });
+
+    try {
+      return await run(getAuthToken());
     } catch (error) {
-      throw desktopExportError(error);
+      // Rust uses the token once and as-is, so it cannot retry a 401 by
+      // refreshing the way `authFetch` does; a desktop left idle past the
+      // access-token lifetime would fail while holding a good refresh token.
+      // Refreshing only HERE, rather than before every export, is what keeps a
+      // transient 500 on /api/auth/refresh from signing the whole app out:
+      // `refreshSession` clears both stored tokens on any non-2xx, so doing it
+      // speculatively would end the session of a user whose token was fine. A
+      // 401 means the token really was rejected, which is the one case where
+      // losing it costs nothing that was not already lost.
+      if (desktopExportStatus(error) !== 401) throw desktopExportError(error);
+      try {
+        if (!(await refreshSession())) throw error;
+      } catch {
+        throw desktopExportError(error);
+      }
+      try {
+        return await run(getAuthToken());
+      } catch (retryError) {
+        throw desktopExportError(retryError);
+      }
     }
   }
 
