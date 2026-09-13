@@ -36,6 +36,7 @@ export function useExportRuntimeLifecycle(): void {
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let logPolling = false;
     let logPollTimer: ReturnType<typeof setTimeout> | null = null;
+    let statusPolling = false;
 
     const store = useExportRuntimeStore;
 
@@ -151,7 +152,8 @@ export function useExportRuntimeLifecycle(): void {
     };
 
     const pollStatus = async () => {
-      if (!hasAuthToken()) return;
+      if (!hasAuthToken() || statusPolling) return;
+      statusPolling = true;
       try {
         const status = await getExportStatus();
         if (disposed) return;
@@ -162,6 +164,8 @@ export function useExportRuntimeLifecycle(): void {
         }
       } catch {
         // ignore transient status failures
+      } finally {
+        statusPolling = false;
       }
     };
 
