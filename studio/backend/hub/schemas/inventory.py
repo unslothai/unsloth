@@ -281,6 +281,16 @@ class CachedModelRepo(CachedRepoBase):
     # An sd.cpp companion mirror is never a pick on any page, but still gets a row, because these run to
     # tens of GB and the row is how they are seen and deleted.
     companion: bool = False
+    # A GGUF image load prefetched this pipeline repo's VAE / text encoders but skipped the denoiser.
+    # Not a partial download: every requested file arrived. Standalone pipeline load stays blocked.
+    companion_prefetch: bool = False
+    cached_components: Optional[List[str]] = Field(
+        None,
+        description = (
+            "Non-denoiser pipeline components present on disk when companion_prefetch is true "
+            "(for example vae, text_encoder)."
+        ),
+    )
     # An unrecognised pipeline carries no task and no root config for can_chat, so this flag is all
     # that keeps it out of a chat picker. Declared because response_model drops undeclared keys, which
     # left the CLI and the frontend disagreeing about the same row.

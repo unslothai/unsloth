@@ -25,6 +25,7 @@ import {
   formatModelParamLabel,
   formatPipelineTag,
 } from "@/features/hub/lib/view-models";
+import { formatCachedComponentsSummary } from "../lib/pipeline-components.ts";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn, formatCompact } from "@/lib/utils";
 import {
@@ -331,6 +332,7 @@ function TitleMarkers({
   gated,
   isPrivate,
   partial,
+  companionPrefetch = false,
   unsupported,
   onDevice,
 }: {
@@ -338,6 +340,7 @@ function TitleMarkers({
   gated?: false | "auto" | "manual";
   isPrivate?: boolean;
   partial: boolean;
+  companionPrefetch?: boolean;
   unsupported: boolean;
   onDevice: boolean;
 }) {
@@ -363,6 +366,13 @@ function TitleMarkers({
           role="img"
           aria-label="Partial download"
           className={cn(STATUS_DOT_CLASS, "bg-status-warning")}
+        />
+      )}
+      {companionPrefetch && (
+        <span
+          role="img"
+          aria-label="Cached assets"
+          className={cn(STATUS_DOT_CLASS, "bg-status-info")}
         />
       )}
       {unsupported && (
@@ -581,8 +591,10 @@ function useResultRowModel(
   return {
     support,
     unsupported,
-    partial: row.isAvailableOnDevice && row.isPartialOnDevice,
+    partial:
+      row.isAvailableOnDevice && row.isPartialOnDevice && !row.companionPrefetch,
     onDevice: row.isAvailableOnDevice && !row.isPartialOnDevice,
+    companionPrefetch: row.companionPrefetch === true,
     sizeLabel: sizeLabel !== "N/A" ? sizeLabel : null,
     taskLabel,
   };
@@ -599,11 +611,20 @@ export const ResultCard = memo(function ResultCard({
   isDataset: boolean;
   onSelect: (id: string) => void;
 }) {
-  const { support, unsupported, partial, onDevice, sizeLabel, taskLabel } =
-    useResultRowModel(row, deviceType, isDataset);
+  const {
+    support,
+    unsupported,
+    partial,
+    onDevice,
+    companionPrefetch,
+    sizeLabel,
+    taskLabel,
+  } = useResultRowModel(row, deviceType, isDataset);
   const format = isDataset ? null : row.result.isGguf ? "gguf" : "checkpoint";
   const tip = buildRowStatusTooltip({
     partialRepoId: partial ? row.result.id : undefined,
+    companionPrefetchRepoId: companionPrefetch ? row.result.id : undefined,
+    cachedComponentsSummary: formatCachedComponentsSummary(row.cachedComponents),
     unsupported,
     unsupportedReason: support?.reason ?? null,
     resourceLabel: isDataset ? "dataset" : "model",
@@ -656,6 +677,7 @@ export const ResultCard = memo(function ResultCard({
             gated={row.result.gated}
             isPrivate={row.result.private}
             partial={partial}
+            companionPrefetch={companionPrefetch}
             unsupported={unsupported}
             onDevice={onDevice}
           />
@@ -722,12 +744,21 @@ export const ResultGridRow = memo(function ResultGridRow({
   isDataset: boolean;
   onSelect: (id: string) => void;
 }) {
-  const { support, unsupported, partial, onDevice, sizeLabel, taskLabel } =
-    useResultRowModel(row, deviceType, isDataset);
+  const {
+    support,
+    unsupported,
+    partial,
+    onDevice,
+    companionPrefetch,
+    sizeLabel,
+    taskLabel,
+  } = useResultRowModel(row, deviceType, isDataset);
   const sizeDisplay = isDataset ? null : sizeLabel;
   const format = isDataset ? null : row.result.isGguf ? "gguf" : "checkpoint";
   const tip = buildRowStatusTooltip({
     partialRepoId: partial ? row.result.id : undefined,
+    companionPrefetchRepoId: companionPrefetch ? row.result.id : undefined,
+    cachedComponentsSummary: formatCachedComponentsSummary(row.cachedComponents),
     unsupported,
     unsupportedReason: support?.reason ?? null,
     resourceLabel: isDataset ? "dataset" : "model",
@@ -860,7 +891,8 @@ export const ResultSplitRow = memo(function ResultSplitRow({
   selected: boolean;
   onSelect: (id: string) => void;
 }) {
-  const { support, unsupported, partial, onDevice } = useResultRowModel(
+  const { support, unsupported, partial, onDevice, companionPrefetch } =
+    useResultRowModel(
     row,
     deviceType,
     isDataset,
@@ -897,6 +929,7 @@ export const ResultSplitRow = memo(function ResultSplitRow({
             gated={row.result.gated}
             isPrivate={row.result.private}
             partial={partial}
+            companionPrefetch={companionPrefetch}
             unsupported={unsupported}
             onDevice={onDevice}
           />

@@ -163,6 +163,8 @@ export function buildCachedInventoryRow(
     audio_type?: string | null;
     single_file?: boolean;
     companion?: boolean;
+    companion_prefetch?: boolean;
+    cached_components?: string[] | null;
     tags?: string[];
     library_name?: string | null;
     quant_method?: string | null;
@@ -220,6 +222,8 @@ export function buildCachedInventoryRow(
     audioType: row.audio_type ?? null,
     singleFile: row.single_file ?? false,
     companion: row.companion ?? false,
+    companionPrefetch: row.companion_prefetch === true,
+    cachedComponents: row.cached_components ?? undefined,
     tags: row.tags,
     libraryName: row.library_name ?? null,
     quantMethod: row.quant_method ?? null,

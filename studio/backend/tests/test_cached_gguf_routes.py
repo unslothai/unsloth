@@ -1986,8 +1986,10 @@ def test_list_cached_models_marks_companion_only_pipeline_partial(monkeypatch, t
 
     result = asyncio.run(models_route.list_cached_models(current_subject = "test-user"))
     by_repo = {c["repo_id"]: c for c in result["cached"]}
-    assert by_repo["black-forest-labs/FLUX.1-dev"].get("partial") is True
+    assert by_repo["black-forest-labs/FLUX.1-dev"].get("partial") is None
+    assert by_repo["black-forest-labs/FLUX.1-dev"].get("companion_prefetch") is True
     assert by_repo["Tongyi-MAI/Z-Image-Turbo"].get("partial") is None
+    assert by_repo["Tongyi-MAI/Z-Image-Turbo"].get("companion_prefetch") is None
 
 
 def test_list_cached_gguf_includes_vision_repo_with_main_gguf_and_mmproj(monkeypatch, tmp_path):

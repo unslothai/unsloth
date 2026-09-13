@@ -1505,6 +1505,80 @@ def snapshot_pipeline_missing_denoiser(snapshot: Optional[Path]) -> bool:
         return False
 
 
+_COMPONENT_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".ckpt", ".pt", ".pth")
+
+
+def _component_dir_has_weights(component: Path) -> bool:
+    """Whether *component* holds any weight file the inventory can name."""
+    try:
+        if not component.is_dir():
+            return False
+        for path in component.iterdir():
+            if not path.is_file():
+                continue
+            lowered = path.name.lower()
+            if lowered.endswith(_COMPONENT_WEIGHT_SUFFIXES):
+                return True
+            if lowered.endswith(".index.json"):
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _manifest_component_dirs(snapshot: Path) -> Optional[tuple[str, ...]]:
+    """Component subdirs this pipeline's root manifest declares, or None when unreadable."""
+    try:
+        manifest_path = snapshot / "model_index.json"
+        if not manifest_path.is_file():
+            manifest_path = snapshot / "modular_model_index.json"
+        with manifest_path.open("r", encoding = "utf-8") as fh:
+            manifest = json.load(fh)
+    except (OSError, ValueError, RecursionError):
+        return None
+    if not isinstance(manifest, dict):
+        return None
+    found = []
+    for key, value in manifest.items():
+        if not isinstance(key, str) or key.startswith("_"):
+            continue
+        if not isinstance(value, (list, tuple)) or not any(v for v in value):
+            continue
+        found.append(key)
+    return tuple(found)
+
+
+def snapshot_cached_pipeline_components(snapshot: Optional[Path]) -> tuple[str, ...]:
+    """Non-denoiser pipeline components with weights on disk.
+
+    Used when a GGUF image load prefetched VAE / text-encoder weights from the base repo but
+    skipped the multi-GB denoiser: the download is complete for what was requested, yet the
+    pipeline is not loadable standalone.
+    """
+    if not snapshot_has_pipeline_index(snapshot):
+        return ()
+    try:
+        root = Path(snapshot)
+        manifest_components = _manifest_component_dirs(root)
+        if manifest_components is None:
+            return ()
+        declared_denoisers = _manifest_denoiser_components(root)
+        if declared_denoisers is None:
+            denoiser_names = {name.lower() for name in _DENOISER_DIRS}
+        else:
+            denoiser_names = {name.lower() for name in declared_denoisers}
+        present = []
+        for name in manifest_components:
+            if name.lower() in denoiser_names:
+                continue
+            component = root / name
+            if component.is_dir() and _component_dir_has_weights(component):
+                present.append(name)
+        return tuple(present)
+    except OSError:
+        return ()
+
+
 def repo_has_pipeline_index(repo_info) -> bool:
     """Whether the cached snapshot carries a ROOT model_index.json, i.e. is loadable as a full diffusers pipeline (from_pretrained reads only the repo root). A nested subdir/model_index.json does not count: loading the repo root still fails, so the row must keep its single_file flag. CachedFileInfo.file_name is the basename, so a name match alone would also claim nested copies; scope by file_path when the scan provides it."""
     try:

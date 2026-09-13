@@ -10,6 +10,7 @@ import { classifyUnslothSupport } from "@/features/hub/hooks/use-hub-model-searc
 import { ownerPaletteColor } from "@/features/hub/lib/avatar-theme";
 import { buildAdaptiveCardAccentStyle } from "@/features/hub/lib/card-accent";
 import { useDominantColor } from "@/features/hub/lib/use-dominant-color";
+import { formatCachedComponentsSummary } from "@/features/hub/lib/pipeline-components.ts";
 import { formatModelParamLabel } from "@/features/hub/lib/view-models";
 import { formatCompact } from "@/lib/utils";
 import { Download01Icon, FavouriteIcon } from "@hugeicons/core-free-icons";
@@ -250,13 +251,17 @@ export const ModelCard = memo(function ModelCard({
     [isDataset, row.id, row.result, deviceType],
   );
   const unsupported = support?.status === "unsupported" && !support?.supportedIn;
-  const partial = row.isAvailableOnDevice && row.isPartialOnDevice;
+  const companionPrefetch = row.companionPrefetch === true;
+  const partial =
+    row.isAvailableOnDevice && row.isPartialOnDevice && !companionPrefetch;
   const onDevice = row.isAvailableOnDevice && !row.isPartialOnDevice;
   const topCapability = row.capabilities[0] ?? null;
   const sizeLabel = formatModelParamLabel(row.repo, row.result.totalParams);
   const hasSize = sizeLabel !== "N/A";
   const tip = buildRowStatusTooltip({
     partialRepoId: partial ? row.result.id : undefined,
+    companionPrefetchRepoId: companionPrefetch ? row.result.id : undefined,
+    cachedComponentsSummary: formatCachedComponentsSummary(row.cachedComponents),
     unsupported,
     unsupportedReason: support?.reason ?? null,
     resourceLabel: isDataset ? "dataset" : "model",
@@ -310,6 +315,13 @@ export const ModelCard = memo(function ModelCard({
               role="img"
               aria-label="Partial download"
               className="inline-block size-[5px] rounded-full bg-status-warning"
+            />
+          )}
+          {companionPrefetch && (
+            <span
+              role="img"
+              aria-label="Cached assets"
+              className="inline-block size-[5px] rounded-full bg-status-info"
             />
           )}
           {unsupported && (
