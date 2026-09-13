@@ -8072,7 +8072,12 @@ def _closure_record() -> "dict[str, list[str]]":
             unmet = ["<audit failed>"]
         finally:
             for temp in temps:
-                temp.unlink(missing_ok = True)
+                # An unlink that raises here would end the pass between the last install and
+                # the manifest write. A temp file left behind is the cheaper outcome.
+                try:
+                    temp.unlink(missing_ok = True)
+                except OSError:
+                    pass
         audited = not any(entry.startswith("<") for entry in unmet)
         if _STEP_RESULTS.get(key) == "skipped" and isinstance(previous.get(key), list):
             # Narrowed to what is still unmet, or a later loss of a since-satisfied package would
@@ -8433,7 +8438,10 @@ def _requirements_satisfied(
         return _refuse_step(key, f"audit raised {exc!r}")
     finally:
         for temp in temps:
-            temp.unlink(missing_ok = True)
+            try:
+                temp.unlink(missing_ok = True)
+            except OSError:
+                pass
     if constrain and _violated_constraints():
         return _refuse_step(key, f"constraints violated: {_violated_constraints()[:5]}")
     return True
@@ -8854,9 +8862,24 @@ def install_python_stack() -> int:
     # interrupted run left the venv half-built. Stop if it survives rather than mutate the venv
     # behind a marker that still verifies. The evidence is already in memory here, so the copy
     # remove_manifest parks for setup.ps1's ordering goes before anything is mutated.
+    # Clear a stale parked copy FIRST, while the live manifest is still there: _plan_pass
+    # consumes the one it reads, so anything left is from a run that died. A path that cannot
+    # be cleared (a directory on the name, a Windows handle held open) must refuse here rather
+    # than after the live manifest is gone, or the venv is left unable to verify AND unable to
+    # finish, with every later update refusing at the same point.
+    _parked = install_manifest.previous_manifest_path()
+    install_manifest.consume_previous_manifest()
+    if _parked.exists():
+        _safe_print(
+            f"error: could not remove the parked {install_manifest.PREVIOUS_MANIFEST_NAME} "
+            f"in {install_manifest.venv_root()}; refusing to install behind evidence the "
+            "next run would read as a completed pass",
+            file = sys.stderr,
+        )
+        return 1
     if install_manifest.remove_manifest():
         install_manifest.consume_previous_manifest()
-        if install_manifest.previous_manifest_path().exists():
+        if _parked.exists():
             _safe_print(
                 f"error: could not remove the parked {install_manifest.PREVIOUS_MANIFEST_NAME} "
                 f"in {install_manifest.venv_root()}; refusing to install behind evidence the "

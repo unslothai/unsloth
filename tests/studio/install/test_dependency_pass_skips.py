@@ -1806,7 +1806,9 @@ def test_the_parked_manifest_goes_right_after_the_live_one_is_removed(monkeypatc
     source = open(stack.__file__, encoding = "utf-8").read()
     at = source.index("if install_manifest.remove_manifest():")
     assert "install_manifest.consume_previous_manifest()" in source[at : at + 200]
-    assert "previous_manifest_path().exists()" in source[at : at + 400]
+    # The path is bound above the removal so the same check can run BEFORE it as well; the
+    # invariant here is that the parked copy is read for and gone within this window.
+    assert "_parked.exists()" in source[at : at + 400]
 
 
 def test_an_input_missing_from_the_record_or_unreadable_now_is_changed(monkeypatch, tmp_path):
@@ -2010,3 +2012,49 @@ def test_the_installed_index_is_rebuilt_against_a_fresh_metadata_listing(monkeyp
     stack._count_install_action()
     stack._installed_index()
     assert calls == [1, 1]
+
+
+def test_an_unclearable_parked_copy_refuses_before_the_live_manifest_is_dropped(
+    monkeypatch, tmp_path
+) -> None:
+    """A parked path that cannot be removed -- a directory on the name, a Windows handle
+    held open by an indexer -- used to be found only AFTER remove_manifest had taken the
+    live manifest away. The pass then exited 1 with the venv reading as half-built and
+    every later update refusing at the same point, on an install that was complete a
+    moment earlier. The refusal now happens while the manifest is still there.
+    """
+    live = tmp_path / stack.install_manifest.MANIFEST_NAME
+    live.write_text("{}", encoding = "utf-8")
+    parked = tmp_path / stack.install_manifest.PREVIOUS_MANIFEST_NAME
+    parked.mkdir()  # cannot be unlinked, and os.replace onto it raises
+
+    monkeypatch.setattr(stack.install_manifest, "venv_root", lambda *a, **k: tmp_path)
+    monkeypatch.setattr(stack.install_manifest, "manifest_path", lambda *a, **k: live)
+    monkeypatch.setattr(stack.install_manifest, "previous_manifest_path", lambda *a, **k: parked)
+    monkeypatch.setattr(stack, "_plan_pass", lambda *a, **k: None)
+    monkeypatch.setattr(stack, "_safe_print", lambda *a, **k: None)
+    monkeypatch.setattr(stack, "_step", lambda *a, **k: None)
+    monkeypatch.setattr(stack, "_progress", lambda *a, **k: None)
+
+    assert stack.install_python_stack() == 1
+    assert live.exists(), "the live manifest was dropped before the refusal"
+    assert stack.install_manifest.read_manifest(tmp_path) is not None
+
+
+def test_a_temp_copy_that_cannot_be_unlinked_does_not_end_the_pass(audited, monkeypatch) -> None:
+    """The audit's own cleanup runs after the last install and before the manifest write.
+    A Windows sharing violation on its temp copy -- an indexer or scanner holding the file
+    -- used to escape from the `finally` and end the update there, with everything
+    installed and no manifest written."""
+    real = stack.Path.unlink
+
+    def _locked(self, *a, **k):
+        if "-filtered-" in self.name:
+            raise PermissionError(32, "The process cannot access the file")
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(stack.Path, "unlink", _locked)
+    assert isinstance(stack._closure_record(), dict)
+    # The gate's own cleanup is the same shape, one step earlier: it must answer, not raise.
+    stack._PASS_EVIDENCE = {"pass_inputs": {}, "step_results": {}}
+    assert stack._requirements_satisfied(audited / "studio.txt", no_deps = False) is False
