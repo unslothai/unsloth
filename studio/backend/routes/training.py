@@ -555,6 +555,19 @@ def _remote_untrainable_model_format(model_name: str, hf_token: HfTokenArg) -> O
     return None
 
 
+def _hf_dataset_is_the_source(request: Any) -> bool:
+    """Whether the run will actually read ``hf_dataset``.
+
+    Mirrors the precedence in UnslothTrainer.load_and_format_dataset: local_datasets wins, then
+    s3_config, and only then dataset_source. A payload carrying a Hub id alongside either never
+    loads the Hub repo, so nothing about it can gate the start."""
+    if getattr(request, "local_datasets", None):
+        return False
+    if getattr(request, "s3_config", None):
+        return False
+    return bool(getattr(request, "hf_dataset", None))
+
+
 def _refuse_unauthorized_cached_dataset(
     request: TrainingStartRequest, hf_token: HfTokenArg
 ) -> None:
@@ -1610,7 +1623,11 @@ async def start_training(
             # the materialized cache, the preflight above always verified the repo remotely, and
             # the route already refuses streaming with a pinned cache. Asking anyway would refuse a
             # valid start over an unrelated cached copy whenever /auth-check cannot be reached.
-            if not request.dataset_streaming:
+            # And only when the Hub repo is the EFFECTIVE source: load_and_format_dataset takes
+            # local_datasets (and s3_config below it) ahead of dataset_source, so a payload carrying
+            # both never reads the Hub cache, and refusing over it fails a run on a dataset it does
+            # not use. The local paths took their own authorization pass above.
+            if not request.dataset_streaming and _hf_dataset_is_the_source(request):
                 await asyncio.to_thread(_refuse_unauthorized_cached_dataset, request, hf_token)
 
         training_kwargs = {

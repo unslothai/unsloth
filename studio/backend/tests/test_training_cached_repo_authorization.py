@@ -555,9 +555,63 @@ def test_a_streaming_start_skips_the_cached_dataset_check():
     import routes.training as training_routes
 
     source = inspect.getsource(training_routes.start_training)
-    assert "if not request.dataset_streaming:" in source
-    guarded = source.split("if not request.dataset_streaming:", 1)[1]
+    assert "not request.dataset_streaming" in source
+    guarded = source.split("not request.dataset_streaming", 1)[1]
     assert "_refuse_unauthorized_cached_dataset" in guarded.split("\n\n", 1)[0]
+
+
+def test_a_shadowed_hub_dataset_is_not_the_source():
+    """load_and_format_dataset takes local_datasets, then s3_config, ahead of dataset_source, so a
+    payload carrying both never reads the Hub cache and must not be refused over it."""
+    from types import SimpleNamespace
+
+    from routes.training import _hf_dataset_is_the_source
+
+    def request(**kwargs):
+        base = dict(hf_dataset = "org/private", local_datasets = [], s3_config = None)
+        base.update(kwargs)
+        return SimpleNamespace(**base)
+
+    assert _hf_dataset_is_the_source(request()) is True
+    assert _hf_dataset_is_the_source(request(local_datasets = ["/data/train.jsonl"])) is False
+    assert _hf_dataset_is_the_source(request(s3_config = {"bucket": "b"})) is False
+    assert _hf_dataset_is_the_source(request(hf_dataset = "")) is False
+
+
+def test_the_shadowed_dataset_gate_is_wired_into_the_start():
+    import inspect
+
+    import routes.training as training_routes
+
+    source = inspect.getsource(training_routes.start_training)
+    assert "_hf_dataset_is_the_source(request)" in source
+    guarded = source.split("_hf_dataset_is_the_source(request)", 1)[1]
+    assert "_refuse_unauthorized_cached_dataset" in guarded.split("\n\n", 1)[0]
+
+
+def test_a_diffusion_data_dir_cannot_name_a_cached_repo(tmp_path, monkeypatch):
+    """The diffusion data_dir is contained to the dataset roots, so it cannot name a path in the
+    operator's Hugging Face cache: absolute, traversing and symlinked forms are all refused."""
+    import routes.training as training_routes
+    from utils.paths import datasets_root
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    cache = tmp_path / "hfcache" / "datasets--org--private" / "snapshots" / "abc"
+    cache.mkdir(parents = True)
+    (cache / "0001.png").write_bytes(b"x")
+
+    with pytest.raises(ValueError):
+        training_routes._resolve_diffusion_data_dir(str(cache))
+    with pytest.raises(ValueError):
+        training_routes._resolve_diffusion_data_dir(
+            "../hfcache/datasets--org--private/snapshots/abc"
+        )
+
+    datasets_root().mkdir(parents = True, exist_ok = True)
+    (datasets_root() / "shadow").symlink_to(cache)
+    with pytest.raises(Exception) as caught:
+        training_routes._resolve_diffusion_data_dir("shadow")
+    assert "symbolic link" in str(caught.value)
 
 
 def test_the_diffusion_config_tolerates_the_new_policy_key():
