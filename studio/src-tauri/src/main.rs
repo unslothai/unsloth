@@ -1710,10 +1710,18 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
     app.manage(TrayServerToggle(toggle));
 
+    // macOS renders tray images at 18 points. Embed the 36 px scale for crisp Retina output;
+    // template mode lets AppKit choose the correct monochrome color for the current menu bar.
+    #[cfg(target_os = "macos")]
+    let tray_icon = tauri::include_image!("./icons/tray-icon@2x.png");
+    #[cfg(not(target_os = "macos"))]
+    let tray_icon = app.default_window_icon().unwrap().clone();
+
     TrayIconBuilder::new()
         .menu(&menu)
         .tooltip("Unsloth")
-        .icon(app.default_window_icon().unwrap().clone())
+        .icon(tray_icon)
+        .icon_as_template(cfg!(target_os = "macos"))
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "open" => show_main_window(app),
             "toggle" => {
