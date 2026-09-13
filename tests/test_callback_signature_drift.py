@@ -102,18 +102,22 @@ def _producer_arities(tree: ast.AST) -> dict[str, int]:
     out: dict[str, int] = {}
     for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
         cb_lists = _callback_list_attrs_in_class(cls)
+        # Walk the class once rather than once per callback list. Which
+        # `for cb in self.<x>:` loops the class contains does not depend on the
+        # name being asked about, and re-deriving it per name is what made this
+        # quadratic in classes that declare several lists.
+        dispatch_loops = [
+            node
+            for node in ast.walk(cls)
+            if isinstance(node, ast.For)
+            and isinstance(node.iter, ast.Attribute)
+            and isinstance(node.iter.value, ast.Name)
+            and node.iter.value.id == "self"
+            and isinstance(node.target, ast.Name)
+        ]
         for cb_list in cb_lists:
-            for node in ast.walk(cls):
-                if not isinstance(node, ast.For):
-                    continue
-                if not (
-                    isinstance(node.iter, ast.Attribute)
-                    and isinstance(node.iter.value, ast.Name)
-                    and node.iter.value.id == "self"
-                    and node.iter.attr == cb_list
-                ):
-                    continue
-                if not isinstance(node.target, ast.Name):
+            for node in dispatch_loops:
+                if node.iter.attr != cb_list:
                     continue
                 cb_name = node.target.id
                 for inner in ast.walk(node):
@@ -184,22 +188,24 @@ def check_registrations(
             tree = _safe_parse(src)
             if tree is None:
                 continue
+            # One walk, collecting both. The definitions still have to be
+            # complete before any call is judged, so the calls are held and
+            # processed after, exactly as the second walk used to do.
             defs_by_name: dict[str, ast.AST] = {}
+            registrations: list[ast.Call] = []
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     defs_by_name[node.name] = node
-                if isinstance(node, ast.Assign):
+                elif isinstance(node, ast.Assign):
                     if (
                         isinstance(node.value, ast.Lambda)
                         and len(node.targets) == 1
                         and isinstance(node.targets[0], ast.Name)
                     ):
                         defs_by_name[node.targets[0].id] = node.value
-            for call in ast.walk(tree):
-                if not isinstance(call, ast.Call):
-                    continue
-                if not isinstance(call.func, ast.Attribute):
-                    continue
+                elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                    registrations.append(node)
+            for call in registrations:
                 cb_list = _registration_attr_to_list(call.func.attr)
                 if cb_list is None:
                     continue
