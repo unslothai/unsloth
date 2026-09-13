@@ -2516,6 +2516,10 @@ def test_unload_sets_cancel_event(fake_runtime):
         "dense",
         "attention_error",
         "cache_error",
+        "attention",
+        "step_cache",
+        "compile_cache",
+        "speed",
         "quantize",
         "placement",
         "publication",
@@ -2535,6 +2539,7 @@ def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatc
     reclaimed = []
     pipelines = []
     transformer_calls = []
+    setup_calls = []
 
     def tracked():
         value = _FakePipe()
@@ -2583,7 +2588,7 @@ def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatc
             outcome["loaded"] = _load_into(
                 backend,
                 tmp_path,
-                speed_mode = "eager",
+                speed_mode = "default" if phase == "compile_cache" else "eager",
                 transformer_quant = None
                 if phase == "dense_fallback"
                 else "int8"
@@ -2598,6 +2603,30 @@ def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatc
         mp.setattr(_FakeTransformer, "from_single_file", classmethod(transformer))
         mp.setattr(_FakePipeline, "from_pretrained", classmethod(pipeline))
         mp.setattr(diff_mod, "te_prequant_pipe_kwargs", lambda *a, **k: {"text_encoder": tracked()})
+        if phase in ("attention", "step_cache", "compile_cache", "speed"):
+            if phase == "compile_cache":
+                mp.setattr(diff_mod, "compile_eligible", lambda *a, **k: True)
+                mp.setattr(diff_mod.compile_cache, "begin", lambda **k: None)
+            for stage, owner, name in (
+                ("attention", diff_mod, "apply_attention_backend"),
+                ("step_cache", diff_mod, "apply_step_cache"),
+                ("compile_cache", diff_mod.compile_cache, "begin"),
+                ("speed", diff_mod, "apply_speed_optims"),
+                ("quantize", diff_mod, "quantize_text_encoders"),
+            ):
+                original = getattr(owner, name)
+
+                def setup(
+                    *args,
+                    _stage = stage,
+                    _original = original,
+                    **kwargs,
+                ):
+                    setup_calls.append(_stage)
+                    result = _original(*args, **kwargs)
+                    return park(result) if phase == _stage else result
+
+                mp.setattr(owner, name, setup)
         if phase.startswith("dense"):
             mp.setattr(diff_mod, "dense_transformer_supported", lambda target: True)
             mp.setattr(diff_mod, "select_transformer_quant_scheme", lambda *a, **k: "int8")
@@ -2669,6 +2698,8 @@ def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatc
         assert not transformer_calls, "cancelled dense attempt started a GGUF fallback"
     if phase == "transformer":
         assert not pipelines, "cancelled load still constructed its companions"
+    if phase in ("attention", "step_cache", "compile_cache", "speed"):
+        assert setup_calls[-1] == phase, setup_calls
 
     # A fresh load still serves consecutive generations.
     _load_into(backend, tmp_path)
@@ -2676,6 +2707,66 @@ def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatc
     for _ in range(2):
         assert len(backend.generate(prompt = "a sloth", steps = 2)["images"]) == 1
         assert backend._state.pipe is pipe
+    backend.unload()
+
+
+@pytest.mark.parametrize("phase", ["gpu", "validation", "precision"])
+def test_begin_load_remembers_an_eject_during_preflight(fake_runtime, tmp_path, monkeypatch, phase):
+    from core.inference import diffusion as diff_mod
+
+    backend = DiffusionBackend()
+    entered, release, dispatched = threading.Event(), threading.Event(), threading.Event()
+    errors = []
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+    monkeypatch.setattr(backend, "_run_load", lambda **kwargs: dispatched.set())
+
+    def load():
+        return backend.begin_load(
+            str(tmp_path), gguf_filename = "model.gguf", family_override = "z-image", gpu_ids = [0]
+        )
+
+    def invoke():
+        try:
+            load()
+        except Exception as exc:
+            errors.append(str(exc))
+
+    with monkeypatch.context() as mp:
+        owner, name = {
+            "gpu": (diff_mod, "resolve_selected_cuda_ordinal"),
+            "validation": (backend, "validate_load_request"),
+            "precision": (backend, "assert_precision_available"),
+        }[phase]
+        original = getattr(owner, name)
+        if phase == "gpu":
+            mp.setattr(
+                diff_mod,
+                "resolve_diffusion_device_target",
+                lambda: types.SimpleNamespace(device = "cuda"),
+            )
+
+        def parked(*args, **kwargs):
+            entered.set()
+            assert release.wait(5)
+            return 0 if phase == "gpu" else original(*args, **kwargs)
+
+        mp.setattr(owner, name, parked)
+        worker = threading.Thread(target = invoke, daemon = True)
+        worker.start()
+        try:
+            assert entered.wait(5)
+            backend.unload()
+            assert backend._unload_waiters == 0
+        finally:
+            release.set()
+            worker.join(5)
+
+    assert not worker.is_alive()
+    assert errors and "cancelled" in errors[0], errors
+    assert not dispatched.is_set()
+    assert backend._loading is None
+    load()
+    assert dispatched.wait(5)
     backend.unload()
 
 

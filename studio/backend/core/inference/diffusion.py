@@ -1979,6 +1979,9 @@ class DiffusionBackend:
         gpu_ordinal: Optional[int] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
+        with self._load_cancel_lock:
+            entry_token = self._load_token
+            self._raise_if_load_cancelled(entry_token)
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
         # Resolved ONCE, here, and carried to the worker: outside it so a bad pick is the route's 400 rather than a
         # load that dies mid-download, and only once so free VRAM cannot re-rank the choice after the weights land.
@@ -2010,8 +2013,7 @@ class DiffusionBackend:
         )
 
         with self._lock, self._load_cancel_lock:
-            if self._unload_waiters:
-                raise RuntimeError("A diffusion unload is in progress.")
+            self._raise_if_load_cancelled(entry_token)
             # Allow starting over a previously-failed load, but not over a live one.
             if self._loading is not None and self._loading.error is None:
                 raise RuntimeError("A diffusion load is already in progress.")
@@ -4298,6 +4300,7 @@ class DiffusionBackend:
                         logger = logger,
                         target = target,
                     )
+                    self._raise_if_load_cancelled(_load_token)
                     # Step caching (First-Block-Cache), also before compile: reuses the transformer tail across steps and
                     # drops compile fullgraph. Tri-state: unset/auto -> FBCACHE_MIN_STEPS policy; off/fbcache pinned.
                     cache_request = normalize_transformer_cache(transformer_cache)
@@ -4319,6 +4322,7 @@ class DiffusionBackend:
                         quant_active = cache_quant_active,
                         logger = logger,
                     )
+                    self._raise_if_load_cancelled(_load_token)
                     # An auto decision can flip at generation time, but only on a cache-capable transformer
                     cache_may_toggle = cache_auto and callable(
                         getattr(getattr(pipe, "transformer", None), "enable_cache", None)
@@ -4351,6 +4355,7 @@ class DiffusionBackend:
                         uninstall_patches()
                         uninstall_arch_patches()
 
+                    self._raise_if_load_cancelled(_load_token)
                     # Pre-warmed torch.compile cache: a per-fingerprint inductor dir plus a bundle loaded before the
                     # first compiled forward pays the 25-58s compile once.
                     if effective_speed in (SPEED_DEFAULT, SPEED_MAX) and compile_eligible(
@@ -4379,6 +4384,7 @@ class DiffusionBackend:
                             logger = logger,
                         )
 
+                    self._raise_if_load_cancelled(_load_token)
                     speed_applied = apply_speed_optims(
                         pipe,
                         target,
@@ -4390,6 +4396,7 @@ class DiffusionBackend:
                         offload_active = plan.offload_policy != OFFLOAD_NONE,
                         logger = logger,
                     )
+                    self._raise_if_load_cancelled(_load_token)
                     if transformer_quant_engaged is not None and not speed_applied.get("compiled"):
                         # Compile could not engage: the quantized transformer runs eager, far slower than the GGUF it
                         # replaced
