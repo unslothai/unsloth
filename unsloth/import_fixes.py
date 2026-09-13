@@ -2540,6 +2540,8 @@ def _torchcodec_version_mismatch_hint() -> str | None:
         # Non-PEP440 version strings must never break `import unsloth`.
         return None
     if torch_at_abi and codec_at_abi:
+        # Already installed: index publication cannot unsay a wheel that loaded.
+        # The notebook validator owns the cu128 "pip cannot download 0.12+" gap.
         return None  # ABI-stable pairing, not locked to one torch minor
     torch_minor = ".".join(str(p) for p in torch_release)
     codec_minor = ".".join(str(p) for p in codec_release)
@@ -2562,7 +2564,7 @@ def _torchcodec_version_mismatch_hint() -> str | None:
     allowed = _TORCH_TORCHCODEC_MINORS.get(torch_minor)
     if allowed is None:
         # No lockstep row: below the table stays silent; at or past the ABI floor this is a
-        # pre-0.12 codec, since 0.12+ already returned above.
+        # pre-0.12 codec (the ABI-stable pair already returned above).
         if not torch_at_abi:
             return None
         abi_pin = ".".join(str(p) for p in _TORCHCODEC_ABI_STABLE_CODEC)

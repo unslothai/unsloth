@@ -2124,6 +2124,41 @@ def test_the_2_11_row_does_not_flag_an_abi_stable_codec():
     assert [f.rule for f in old_torch] == ["R-INST-004"]
 
 
+def test_the_abi_exemption_uses_the_codec_index_not_torchs_build_tag():
+    """cu128 on the resident torch must not reject a 0.12 pin that pip will fetch from PyPI."""
+    from scripts import notebook_validator as nv
+
+    colab = {"torch": "2.11.0+cu128", "torchcodec": "0.11.0+cu128"}
+    pypi = '!pip install "torchcodec>=0.12"'
+    assert nv.rule_inst_004_torchcodec_torch(pypi, colab, "nb.ipynb", 0) == []
+
+    cu128 = '!pip install --index-url https://download.pytorch.org/whl/cu128 "torchcodec>=0.12"'
+    flagged = nv.rule_inst_004_torchcodec_torch(cu128, colab, "nb.ipynb", 0)
+    assert [f.rule for f in flagged] == ["R-INST-004"]
+
+    post_table = (
+        "!pip install --index-url https://download.pytorch.org/whl/cu128 "
+        '"torch==2.12.0" "torchcodec==0.12.0"'
+    )
+    past = nv.rule_inst_004_torchcodec_torch(post_table, colab, "nb.ipynb", 0)
+    assert [f.rule for f in past] == ["R-INST-004"]
+    assert "pin a lockstep torchcodec release this index carries" not in past[0].hint
+
+
+def test_an_inexact_torch_floor_still_sees_a_missing_codec_index():
+    """`torch>=2.11` plus an ABI codec on cu128 used to skip the missing-index check."""
+    from scripts import notebook_validator as nv
+
+    older = {"torch": "2.10.0+cu128", "torchcodec": "0.10.0+cu128"}
+    cell = (
+        "!pip install --index-url https://download.pytorch.org/whl/cu128 "
+        '"torch>=2.11" "torchcodec==0.12.0"'
+    )
+    flagged = nv.rule_inst_004_torchcodec_torch(cell, older, "nb.ipynb", 0)
+    assert [f.rule for f in flagged] == ["R-INST-004"]
+    assert nv._codec_works_above("2.11", "0.12", index_publishes_abi_stable = False) is False
+
+
 def test_a_requested_codec_range_beats_the_preinstalled_oracle():
     """resolved_set overrides the oracle only on an exact `==`, so a cell asking for a RANGE still
     read as the preinstalled codec. Both bounds matter: `>=0.12.0,<0.13.0` on torch 2.12 was
