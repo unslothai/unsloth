@@ -5,6 +5,7 @@ import type { ReactElement, RefObject, UIEvent } from "react";
 import {
   Database01Icon,
   Database02Icon,
+  Download01Icon,
   Flag02Icon,
   GithubIcon,
 } from "@hugeicons/core-free-icons";
@@ -63,6 +64,9 @@ type ExecutionOverviewTabProps = {
   onTerminalScroll: (event: UIEvent<HTMLDivElement>) => void;
   canPublish: boolean;
   onOpenPublish: () => void;
+  canDownload: boolean;
+  downloadingDataset: boolean;
+  onDownloadDataset: () => void;
 };
 
 export function ExecutionOverviewTab({
@@ -82,6 +86,9 @@ export function ExecutionOverviewTab({
   onTerminalScroll,
   canPublish,
   onOpenPublish,
+  canDownload,
+  downloadingDataset,
+  onDownloadDataset,
 }: ExecutionOverviewTabProps): ReactElement {
   const sourceProgress = execution.source_progress;
 
@@ -89,17 +96,35 @@ export function ExecutionOverviewTab({
     <div className="mt-3 space-y-3">
       {showSummaryCards && (
         <div className="space-y-3">
-          {canPublish && (
+          {(canDownload || canPublish) && (
             <div className="flex flex-col gap-3 rounded-xl border border-border/60 bg-card/55 p-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="space-y-1">
                 <p className="text-sm font-medium text-foreground">Next step</p>
                 <p className="text-xs text-muted-foreground">
-                  This run is complete. Publish the generated dataset to Hugging Face.
+                  {canPublish
+                    ? "Download the generated dataset locally or publish it to Hugging Face."
+                    : "Download the generated dataset as JSONL for training or inspection."}
                 </p>
               </div>
-              <Button type="button" variant="outline" size="sm" onClick={onOpenPublish}>
-                Publish to Hugging Face
-              </Button>
+              <div className="flex flex-wrap items-center gap-2">
+                {canDownload && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={downloadingDataset}
+                    onClick={onDownloadDataset}
+                  >
+                    <HugeiconsIcon icon={Download01Icon} className="mr-2 size-4" />
+                    {downloadingDataset ? "Downloading..." : "Download Dataset"}
+                  </Button>
+                )}
+                {canPublish && (
+                  <Button type="button" variant="outline" size="sm" onClick={onOpenPublish}>
+                    Publish to Hugging Face
+                  </Button>
+                )}
+              </div>
             </div>
           )}
           <div className="grid gap-3 md:grid-cols-2">

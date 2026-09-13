@@ -354,6 +354,21 @@ async def credentials_for_token(
     return _KEYLESS_CREDENTIALS if keyless else None
 
 
+async def subject_for_header_or_query_token(request: Any, token: Optional[str]) -> str:
+    """The subject of the bearer in ``Authorization``, or failing that in a ``?token=`` the route
+    read for itself. An ``<img src>`` and the native save command fetch without a header."""
+    header = request.headers.get("authorization") or ""
+    header_token = header[7:] if header.lower().startswith("bearer ") else ""
+    # A blank header is the absent header, so the `?token=` such a caller sends is still owed.
+    credentials = await credentials_for_token(request, header_token.strip() or token or None)
+    if credentials is None:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Missing authentication token",
+        )
+    return await get_current_subject(credentials)
+
+
 async def authenticated_without_credential(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> bool:

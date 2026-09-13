@@ -6,23 +6,38 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import hmac
+import secrets
+import tempfile
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Annotated, Any, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 
 from auth.authentication import (
     allow_ambient_hf_token,
     authenticated_via_api_key,
     get_current_credential,
+    request_admitted_without_credential,
     require_ui_session_for_local_commands,
+    subject_for_header_or_query_token,
 )
 from auth.storage import CredentialRotated
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
+from core.data_recipe.export import (
+    ExportFormat,
+    RecipeDatasetExportError,
+    _safe_filename_stem,
+    _write_jsonl_rows,
+    build_dataset_download,
+    download_filename,
+)
 from core.data_recipe.huggingface import (
     RecipeDatasetPublishError,
     publish_recipe_dataset,
@@ -41,6 +56,63 @@ from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_err
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+# Fetched without an Authorization header, so the link carries an HMAC capability rather than the
+# session token, which download history would keep. Same shape as the signed video links.
+# The native save dialog opens before the request, so this outlasts a user sitting on it.
+_DOWNLOAD_LINK_TTL = 30 * 60
+_DOWNLOAD_LINK_SECRET = secrets.token_bytes(32)
+
+
+def _download_link_payload(
+    *, job_id: str, export_format: str, artifact_path: str | None, filename: str | None
+) -> str:
+    # Every parameter the export reads, or the holder could swap artifact_path for another run's.
+    parts = [job_id, export_format, artifact_path or "", filename or ""]
+    return "\x1f".join(parts)
+
+
+def _sign_download_link(**parts: Any) -> str:
+    expires_at = int(time.time()) + _DOWNLOAD_LINK_TTL
+    payload = f"{_download_link_payload(**parts)}\x1f{expires_at}"
+    signature = hmac.new(_DOWNLOAD_LINK_SECRET, payload.encode(), hashlib.sha256).hexdigest()
+    return f"{expires_at}.{signature}"
+
+
+def _download_link_authorizes(token: str, **parts: Any) -> bool:
+    try:
+        expires_at, signature = token.rsplit(".", 1)
+        if int(expires_at) < int(time.time()):
+            return False
+    except ValueError:
+        return False
+    payload = f"{_download_link_payload(**parts)}\x1f{expires_at}"
+    expected = hmac.new(_DOWNLOAD_LINK_SECRET, payload.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature, expected)
+
+
+async def _authorize_dataset_download(
+    request: Request,
+    job_id: str,
+    export_format: ExportFormat = Query(default = "jsonl", alias = "format"),
+    artifact_path: str | None = Query(default = None),
+    filename: str | None = Query(default = None),
+    token: str | None = Query(default = None),
+) -> None:
+    """A signed link for exactly this export, or the ordinary Authorization header for an API
+    client. The session bearer is deliberately not read from the query."""
+    if token and _download_link_authorizes(
+        token,
+        job_id = job_id,
+        export_format = export_format,
+        artifact_path = artifact_path,
+        filename = filename,
+    ):
+        return
+    await subject_for_header_or_query_token(request, None)
+
+
+download_router = APIRouter(dependencies = [Depends(_authorize_dataset_download)])
 
 # Keepalive cadence, well inside the ~100s a quick tunnel allows between body bytes.
 _KEEPALIVE_EVERY_S = 15.0
@@ -524,6 +596,208 @@ def job_dataset(
         "limit": limit,
         "offset": offset,
     }
+
+
+def _content_disposition_attachment(filename: str) -> str:
+    ascii_name = "".join(
+        ch if 32 <= ord(ch) < 127 and ch not in {'"', "\\"} else "_" for ch in filename
+    )
+    if not ascii_name.strip("_"):
+        ascii_name = "dataset.jsonl"
+    from urllib.parse import quote
+
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
+
+
+_IN_MEMORY_DOWNLOAD_PAGE_SIZE = 10_000
+
+
+def _build_in_memory_job_dataset_download(
+    mgr, job_id: str, *, filename_stem: str
+) -> tuple[Path, str, str]:
+    tmp = tempfile.NamedTemporaryFile(delete = False, suffix = ".jsonl")
+    tmp.close()
+    jsonl_path = Path(tmp.name)
+    offset = 0
+    total: int | None = None
+    # Nothing has registered the temp file for cleanup yet, so an early return has to unlink it.
+    try:
+        with jsonl_path.open("w", encoding = "utf-8") as handle:
+            while True:
+                result = mgr.get_dataset(
+                    job_id,
+                    limit = _IN_MEMORY_DOWNLOAD_PAGE_SIZE,
+                    offset = offset,
+                )
+                if result is None:
+                    raise HTTPException(status_code = 404, detail = "dataset not ready")
+                if "error" in result:
+                    raise HTTPException(status_code = 422, detail = result["error"])
+                rows = result.get("dataset")
+                if not isinstance(rows, list):
+                    raise HTTPException(status_code = 404, detail = "dataset not ready")
+                if total is None:
+                    total_value = result.get("total")
+                    total = int(total_value) if isinstance(total_value, int) else len(rows)
+                if not rows:
+                    break
+                _write_jsonl_rows(handle, rows)
+                offset += len(rows)
+                if offset >= total:
+                    break
+        if offset == 0:
+            raise HTTPException(status_code = 404, detail = "dataset not ready")
+    except BaseException:
+        jsonl_path.unlink(missing_ok = True)
+        raise
+    stem = _safe_filename_stem(filename_stem.strip() or job_id)
+    return jsonl_path, "application/x-ndjson", f"{stem}.jsonl"
+
+
+def _resolve_download_artifact_path(*, job_id: str, artifact_path: str | None) -> str | None:
+    resolved = (
+        artifact_path.strip() if isinstance(artifact_path, str) and artifact_path.strip() else None
+    )
+    mgr = get_job_manager()
+    status = mgr.get_status(job_id)
+    if status is not None:
+        if status.get("status") != "completed":
+            raise HTTPException(
+                status_code = 409,
+                detail = "Only completed runs can be downloaded.",
+            )
+        status_artifact = status.get("artifact_path")
+        if isinstance(status_artifact, str) and status_artifact.strip():
+            resolved = status_artifact.strip()
+    return resolved
+
+
+@router.get("/jobs/{job_id}/download-url")
+def create_job_dataset_download_url(
+    job_id: str,
+    export_format: ExportFormat = Query(default = "jsonl", alias = "format"),
+    artifact_path: str | None = Query(default = None),
+    filename: str | None = Query(default = None),
+    no_credential: Annotated[bool, Depends(request_admitted_without_credential)] = False,
+):
+    """Mint the signed link the browser or the native downloader then fetches.
+
+    Bearer-gated like the rest of the package. It settles here whether the run can be exported at
+    all, and under what name, so a failure lands in the UI instead of after the save dialog has
+    opened. The URL is relative, so it survives whatever proxy the page itself came through."""
+    if no_credential:
+        # The capability outlives the setting that admitted this caller. As the video links do.
+        raise HTTPException(
+            status_code = 403,
+            detail = "Dataset download links can only be created from the Unsloth UI or with an API key.",
+        )
+    resolved = _resolve_download_artifact_path(job_id = job_id, artifact_path = artifact_path)
+    stem = _safe_filename_stem(
+        filename.strip() if isinstance(filename, str) and filename.strip() else job_id
+    )
+    if resolved:
+        try:
+            name = download_filename(artifact_path = resolved, export_format = export_format, stem = stem)
+        except RecipeDatasetExportError as exc:
+            raise log_and_http_error(
+                exc,
+                400,
+                safe_curated_detail(exc),
+                event = "data_recipe.jobs.download_url_failed",
+                log = logger,
+            ) from exc
+    else:
+        if export_format == "parquet":
+            raise HTTPException(
+                status_code = 400,
+                detail = "Parquet download requires persisted recipe artifacts.",
+            )
+        # An in-memory preview lives only while its job is current: ask before the chooser opens.
+        if get_job_manager().get_dataset(job_id, limit = 1, offset = 0) is None:
+            raise HTTPException(status_code = 404, detail = "dataset not ready")
+        name = f"{stem}.jsonl"
+
+    token = _sign_download_link(
+        job_id = job_id,
+        export_format = export_format,
+        artifact_path = artifact_path,
+        filename = filename,
+    )
+    query = {"format": export_format, "token": token}
+    if artifact_path:
+        query["artifact_path"] = artifact_path
+    if filename:
+        query["filename"] = filename
+    # Relative to this router: the frontend's data-recipe base is configurable.
+    return {"path": f"/jobs/{job_id}/download?{urlencode(query)}", "filename": name}
+
+
+@download_router.get("/jobs/{job_id}/download")
+def download_job_dataset(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    export_format: ExportFormat = Query(default = "jsonl", alias = "format"),
+    artifact_path: str | None = Query(default = None),
+    filename: str | None = Query(default = None),
+):
+    resolved_artifact = _resolve_download_artifact_path(
+        job_id = job_id,
+        artifact_path = artifact_path,
+    )
+    filename_stem = filename.strip() if isinstance(filename, str) and filename.strip() else job_id
+
+    try:
+        if resolved_artifact:
+            if export_format == "parquet":
+                file_path, media_type, download_name = build_dataset_download(
+                    artifact_path = resolved_artifact,
+                    export_format = "parquet",
+                    filename_stem = filename_stem,
+                )
+            else:
+                file_path, media_type, download_name = build_dataset_download(
+                    artifact_path = resolved_artifact,
+                    export_format = "jsonl",
+                    filename_stem = filename_stem,
+                )
+        else:
+            if export_format == "parquet":
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Parquet download requires persisted recipe artifacts.",
+                )
+            mgr = get_job_manager()
+            file_path, media_type, download_name = _build_in_memory_job_dataset_download(
+                mgr,
+                job_id,
+                filename_stem = filename_stem,
+            )
+    except RecipeDatasetExportError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc),
+            event = "data_recipe.jobs.download_failed",
+            log = logger,
+        ) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            safe_error_detail(exc),
+            event = "data_recipe.jobs.download_error",
+            log = logger,
+        ) from exc
+
+    background_tasks.add_task(file_path.unlink, missing_ok = True)
+    return FileResponse(
+        file_path,
+        media_type = media_type,
+        filename = download_name,
+        headers = {"Content-Disposition": _content_disposition_attachment(download_name)},
+    )
 
 
 @router.post(
