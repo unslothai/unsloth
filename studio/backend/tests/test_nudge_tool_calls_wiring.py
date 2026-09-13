@@ -13,8 +13,7 @@ Mechanism (verified here without loading a model):
   * the external route forwards the request flag into ``ToolLoopPolicy``;
   * the API request models default the flag to ``None`` (opt-in / off);
   * the Unsloth-facing routes forward the request's flag;
-  * the frontend sends the user setting locally and an explicit ``false`` externally
-    (omission would follow the launchers' ``UNSLOTH_TOOL_CALL_NUDGE=1``).
+  * the frontend sends the user setting locally and an explicit ``false`` externally.
 """
 
 import inspect
@@ -138,8 +137,7 @@ def test_studio_external_adapter_disables_the_nudge_on_the_external_loop():
     src = _CHAT_ADAPTER_SOURCE.read_text(encoding = "utf-8")
     external_body = _external_request_body(src)
 
-    # Explicit false, not omission: omission follows UNSLOTH_TOOL_CALL_NUDGE, which the
-    # launchers set to 1 when unset, so it would leave this loop nudging (#9686).
+    # false, not omitted (#9686); chat-adapter.ts carries the why.
     assert "nudge_tool_calls: false" in external_body
     assert "nudge_tool_calls: runtime.nudgeToolCalls" not in external_body
 

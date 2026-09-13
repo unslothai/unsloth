@@ -785,8 +785,7 @@ def test_a_stalled_model_is_not_nudged_by_default(executed, monkeypatch):
 
 
 def test_an_explicit_false_beats_a_process_default_of_on(executed, monkeypatch):
-    """What chat-adapter.ts sends externally: false must beat the launchers'
-    UNSLOTH_TOOL_CALL_NUDGE=1 (#9686)."""
+    """What chat-adapter.ts sends externally, and it must beat a default of on."""
     monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", True)
     transport = FakeTransport(
         [
