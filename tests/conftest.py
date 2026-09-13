@@ -62,21 +62,17 @@ def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
 
 
 def _has_real_accelerator() -> bool:
-    try:
-        import torch
-    except Exception:
-        return False
-    for probe in (
-        lambda: hasattr(torch, "cuda") and torch.cuda.is_available(),
-        lambda: hasattr(torch, "xpu") and torch.xpu.is_available(),
-        lambda: hasattr(torch, "accelerator") and torch.accelerator.is_available(),
-    ):
-        try:
-            if probe():
-                return True
-        except Exception:
-            pass
-    return False
+    """Mechanism: tests/_shared/real_accelerator.py.
+
+    The probe moved there so test modules can ask the same question, and so the
+    answer is recorded once. Calling it here, before the pre-load window below and
+    long before any test module imports the aggressive spoof, is what makes the
+    recorded answer the pre-spoof one for everybody. Kept as a function of this
+    name because tests/python/test_conftest_bitsandbytes_preimport.py reads the
+    `if not _has_real_accelerator():` block out of this file's AST.
+    """
+    from real_accelerator import has_real_accelerator
+    return has_real_accelerator()
 
 
 def _preload_device_type(package: str, prereqs: tuple[str, ...] = ()) -> bool:

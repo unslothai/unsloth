@@ -3,6 +3,13 @@
 
 """Export API routes: checkpoint discovery and model export operations."""
 
+from core.training.account_jobs import (
+    account_event_stream,
+    job_busy,
+    job_is_foreign,
+    require_job_owner,
+    validate_job_paths,
+)
 import asyncio
 import json
 import os
@@ -21,6 +28,7 @@ if str(backend_path) not in sys.path:
     sys.path.insert(0, str(backend_path))
 
 from auth.authentication import allow_ambient_hf_token, get_current_subject
+from hub.services.models import account_access
 from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 
 from utils.utils import safe_error_detail
@@ -91,6 +99,18 @@ def _resolve_export_hf_token(
     return hf_token_arg(token, allow_ambient_token = allow_ambient)
 
 
+def _authorized_adapter_base(checkpoint_path: str) -> Optional[str]:
+    """The adapter's config names the base the worker loads, so it is authorized like the checkpoint."""
+    if not account_access.managed_account():
+        return None
+    from utils.models import get_base_model_from_lora
+
+    base = get_base_model_from_lora(checkpoint_path)
+    if base:
+        account_access.require_model_access(base)
+    return base or None
+
+
 @router.post("/load-checkpoint", response_model = ExportOperationResponse)
 async def load_checkpoint(
     request: LoadCheckpointRequest,
@@ -104,6 +124,8 @@ async def load_checkpoint(
     chat model here -- if the GPU runs out of memory the load/export fails with
     a clear error instead of tearing down the user's other running workloads.
     """
+    validate_job_paths(request.model_dump())
+    base_model = await asyncio.to_thread(_authorized_adapter_base, request.checkpoint_path)
     try:
         await _ensure_export_supported()
         backend = get_export_backend()
@@ -112,6 +134,7 @@ async def load_checkpoint(
         success, message = await asyncio.to_thread(
             backend.load_checkpoint,
             checkpoint_path = request.checkpoint_path,
+            base_model = base_model,
             max_seq_length = request.max_seq_length,
             load_in_4bit = request.load_in_4bit,
             trust_remote_code = request.trust_remote_code,
@@ -175,6 +198,7 @@ async def cancel_export(current_subject: str = Depends(get_current_subject)):
     Only the export subprocess is killed; training and inference run in their
     own subprocesses and keep going.
     """
+    require_job_owner(get_export_backend())
     try:
         backend = get_export_backend()
         cancelled = await asyncio.to_thread(backend.cancel_export)
@@ -193,6 +217,14 @@ async def cancel_export(current_subject: str = Depends(get_current_subject)):
 @router.get("/status", response_model = ExportStatusResponse)
 async def get_export_status(current_subject: str = Depends(get_current_subject)):
     """Get export backend status (loaded checkpoint, model type, PEFT flag)."""
+    if job_is_foreign(get_export_backend()):
+        return ExportStatusResponse(
+            current_checkpoint = None,
+            is_vision = False,
+            is_peft = False,
+            is_export_active = bool(get_export_backend().is_export_active()),
+            active_op_kind = "busy" if job_busy(get_export_backend()) else None,
+        )
     try:
         backend = get_export_backend()
         last_op = backend.get_last_op()
@@ -330,6 +362,7 @@ async def export_merged_model(
 
     Wraps ExportBackend.export_merged_model.
     """
+    validate_job_paths(request.model_dump())
     try:
         await _ensure_export_supported()
         backend = get_export_backend()
@@ -380,6 +413,7 @@ async def export_base_model(
 
     Wraps ExportBackend.export_base_model.
     """
+    validate_job_paths(request.model_dump())
     try:
         await _ensure_export_supported()
         backend = get_export_backend()
@@ -429,6 +463,7 @@ async def export_gguf(
 
     Wraps ExportBackend.export_gguf.
     """
+    validate_job_paths(request.model_dump())
     try:
         await _ensure_export_supported()
         backend = get_export_backend()
@@ -482,6 +517,7 @@ async def export_lora_adapter(
 
     Wraps ExportBackend.export_lora_adapter.
     """
+    validate_job_paths(request.model_dump())
     try:
         await _ensure_export_supported()
         backend = get_export_backend()
@@ -591,6 +627,9 @@ async def stream_export_logs(
         idle_since: Optional[float] = None
         try:
             while True:
+                if job_is_foreign(backend):
+                    yield _format_sse('{"status":"busy"}', event = "busy")
+                    return
                 if await request.is_disconnected():
                     return
 
@@ -647,7 +686,7 @@ async def stream_export_logs(
                 pass
 
     return StreamingResponse(
-        event_generator(),
+        account_event_stream(get_export_backend(), event_generator()),
         media_type = "text/event-stream",
         headers = {
             "Cache-Control": "no-cache",
