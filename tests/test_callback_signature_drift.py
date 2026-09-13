@@ -84,13 +84,12 @@ def _safe_parse(path: pathlib.Path):
     return tree
 
 
-def _callback_list_attrs_in_class(cls: ast.ClassDef) -> set[str]:
-    """Find self._<name>_callbacks attributes assigned or appended-to inside cls."""
-    return _callback_list_attrs_in_nodes(ast.walk(cls))
-
-
 def _callback_list_attrs_in_nodes(nodes) -> set[str]:
-    """The same, over an already-walked class, so the walk can be shared."""
+    """self._<name>_callbacks attributes assigned or appended-to in a class.
+
+    Takes the already-walked nodes rather than the class, so the caller's walk
+    is shared instead of repeated.
+    """
     found = set()
     for node in nodes:
         if isinstance(node, ast.Assign):
