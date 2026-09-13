@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import pathlib
 import sysconfig
 
@@ -209,6 +210,102 @@ def test_malformed_matching_metadata_invalidates_the_manifest(
     state = im.verify_install(root = install_root, req_root = req_root, package_name = "demo")
     assert state["manifest_ok"] is False
     assert state["reason"] == "studio_install_metadata_conflict"
+
+
+def test_a_metadata_record_added_since_the_last_scan_is_seen(tmp_path, monkeypatch):
+    """The same regression as the test above, made filesystem-independent.
+
+    importlib.metadata memoises each directory listing against the directory's st_mtime, so a
+    second scan only re-reads the directory when that mtime moved. Creating a dist-info does move
+    it on a nanosecond-granularity filesystem, which is why this hides on ext4 / XFS / APFS and
+    bites on exFAT (2s) and HFS+ (1s), or whenever two writes land inside one tick. Restoring the
+    mtime reproduces it everywhere, so this test does not depend on the runner's filesystem.
+    """
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "1.0")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    assert im.installed_versions("demo") == ["1.0"]
+    unchanged = site.stat().st_mtime_ns
+
+    malformed = site / "demo-2.0.dist-info"
+    malformed.mkdir()
+    (malformed / "METADATA").write_bytes(b"\xff\xfe")
+    os.utime(site, ns = (unchanged, unchanged))
+
+    versions = im.installed_versions("demo")
+    assert versions == ["", "1.0"]
+    assert im.metadata_conflict(versions) is True
+
+
+def test_the_metadata_scan_survives_a_pre_classmethod_invalidate_caches(tmp_path, monkeypatch):
+    """CPython only made MetadataPathFinder.invalidate_caches a classmethod in 3.11.9 and 3.12.3
+    (gh-116811). On 3.10, and on every earlier 3.11 / 3.12 patch release, calling it on the CLASS
+    raises TypeError for a missing `cls`, which took out every caller of this scan --
+    installed_versions, invalid_metadata_paths and so verify_install too. No CI leg runs those
+    interpreters, so the shape is reproduced here instead.
+    """
+    import importlib.metadata
+
+    fast_path = getattr(importlib.metadata, "FastPath", None)
+    if fast_path is None or not hasattr(fast_path.__new__, "cache_clear"):
+        pytest.skip("this interpreter has no importlib.metadata directory listing cache")
+
+    def invalidate_caches(cls):
+        fast_path.__new__.cache_clear()
+
+    monkeypatch.setattr(
+        importlib.metadata.MetadataPathFinder, "invalidate_caches", invalidate_caches
+    )
+
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "1.0")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    assert im.installed_versions("demo") == ["1.0"]
+    unchanged = site.stat().st_mtime_ns
+    _write_dist_metadata(site, "demo", "2.0")
+    os.utime(site, ns = (unchanged, unchanged))
+
+    assert im.installed_versions("demo") == ["1.0", "2.0"]
+
+
+def test_the_metadata_scan_survives_a_finder_without_invalidate_caches(tmp_path, monkeypatch):
+    """Python 3.9's MetadataPathFinder has no invalidate_caches, and its FastPath caches nothing,
+    so there is nothing to drop there -- but the scan itself still has to answer.
+    """
+    import importlib.metadata
+
+    monkeypatch.delattr(importlib.metadata.MetadataPathFinder, "invalidate_caches", raising = False)
+
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "1.0")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+
+    assert im.installed_versions("demo") == ["1.0"]
+
+
+def test_a_healthy_install_still_verifies_after_repeated_checks(
+    tmp_path, monkeypatch, install_root, req_root
+):
+    """Dropping the listing cache makes every scan re-read the directory, so it must not turn one
+    healthy record into a conflict on the second look. A false conflict is expensive: the desktop
+    preflight treats studio_install_metadata_conflict as auto-repairable and starts a full managed
+    reinstall on launch.
+    """
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    _write_dist_metadata(site, "demo", "1.0")
+    monkeypatch.setattr(im, "_metadata_scan_paths", lambda: [str(site)])
+    im.write_manifest(root = install_root, req_root = req_root, package_name = "demo")
+
+    for _ in range(3):
+        state = im.verify_install(root = install_root, req_root = req_root, package_name = "demo")
+        assert state["manifest_ok"] is True
+        assert im.installed_versions("demo") == ["1.0"]
 
 
 def test_duplicate_package_metadata_invalidates_the_manifest(

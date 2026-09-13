@@ -155,10 +155,21 @@ def _installed_metadata_records(dist_name: str) -> List[Tuple[str, Optional[Path
 
     wanted = _canonical(dist_name)
     paths = _metadata_scan_paths()
-    # importlib.metadata caches each directory listing. A dist-info that appeared after an
-    # earlier scan in this process -- a manifest write, an interrupted uninstall -- would
-    # stay invisible, and a damaged install would verify as healthy.
-    MetadataPathFinder.invalidate_caches()
+    # importlib.metadata memoises each directory listing against that directory's st_mtime, so a
+    # dist-info that appeared after an earlier scan in this process -- a manifest write, an
+    # interrupted uninstall -- stays invisible whenever the mtime did not move, and a damaged
+    # install verifies as healthy. Two writes inside one mtime tick do it, as does any coarse
+    # timestamp: exFAT rounds to 2s, HFS+ to 1s.
+    #
+    # Through an INSTANCE, not the class: CPython only made
+    # MetadataPathFinder.invalidate_caches a classmethod in 3.11.9 and 3.12.3 (gh-116811), so the
+    # class call raises TypeError on 3.10 and on every earlier 3.11 / 3.12 patch release. 3.9 has
+    # no listing cache and no such method, hence the getattr. The installer's own
+    # importlib.invalidate_caches() reaches this cache only through PathFinder's delegation, added
+    # by that same patch, so it no-ops on exactly those releases -- which is why the scan clears
+    # the cache here instead of trusting the caller.
+    if getattr(MetadataPathFinder, "invalidate_caches", None) is not None:
+        MetadataPathFinder().invalidate_caches()
     kwargs = {"path": paths} if paths else {}
     found: List[Tuple[str, Optional[Path]]] = []
     for dist in distributions(**kwargs):
