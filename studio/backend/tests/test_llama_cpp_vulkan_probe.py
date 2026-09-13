@@ -84,8 +84,8 @@ def test_missing_description_symbol_keeps_igpu_detection():
 
     assert flags == [True]
     assert names == ["Legacy Vulkan iGPU"]
-    # The type WAS read here, which is what separates a real "not integrated" from a
-    # failed query; a DirectIO decision may only trust the former.
+    # The type WAS read, which separates a real "not integrated" from a failed query;
+    # only the former may be trusted for a DirectIO decision.
     assert known == [True]
 
 

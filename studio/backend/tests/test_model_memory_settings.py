@@ -2331,11 +2331,9 @@ class TestFitOffRetryClearsPolicyActivity:
         import inspect
 
         src = inspect.getsource(LlamaCppBackend.load_model)
-        # Whitespace-normalised: a formatter may rewrap any of these, and pinning the
-        # wrapping made pre-commit.ci's reflow look like a behaviour change.
-        # The managed half is no longer bare bool(_mem_managed): a DirectIO pair a
-        # later mmap shadows changes nothing the child can observe, so it does not
-        # count as activity either. The non-managed half is what the retry reuses.
+        # Whitespace-normalised, or pre-commit.ci's reflow reads as a behaviour change.
+        # No longer bare bool(_mem_managed): a pair a later mmap shadows changes nothing
+        # observable, so it is not activity. The other half is what the retry reuses.
         flat = "".join(src.split())
         assert (
             "self._memory_policy_active=_mem_managed_is_effectiveor_mem_policy_touched_extras"
@@ -2746,9 +2744,8 @@ class TestTheLaunchWithdrawsTheDio:
             self._src(),
             inspect.getsource(LlamaCppBackend._prepare_cpu_fallback_launch),
         )
-        # --fit on retry, arch-crash retry and the proactive arch gate here; the CPU
-        # replay is in the builder. The gate strips as well as adds, like the reactive
-        # rung, or a narrowed set that loses the offload keeps the pair.
+        # --fit on retry, arch-crash retry and the proactive arch gate here, CPU replay in
+        # the builder. The gate strips as well as adds, or a narrowed set keeps the pair.
         assert launch.count("self._drop_managed_dio(") == 3
         assert replay.count("self._drop_managed_dio(") == 1
         # Only the rung that strips `cmd` itself may forget the tokens.
@@ -2886,8 +2883,7 @@ class TestEveryDeviceSetChangeReAsks:
         arm = arm[: arm.index("return pair,")]
         flat = "".join(arm.split())
         assert "host_resident=self._weights_in_host_memory(" in flat
-        # host residency is carried INTO the confirmation, which declines on it, and
-        # the rung probes its OWN visibility rather than the pre-gate snapshot
+        # residency is carried INTO the confirmation, and the rung probes its OWN visibility
         assert "_rung_env=_mem_env_for(child_env)" in flat
         assert (
             "self._gpu_offload_confirmed(binary,_rung_env,_rung_compact,host_resident,"
@@ -2917,8 +2913,8 @@ class TestEveryDeviceSetChangeReAsks:
         """A pair redundant with a loader the user picked changes nothing a
         relaunch could undo, so appending it is not activity."""
         src = self._src()
-        # Each dio rung ORs its own answer against the existing value rather than
-        # asserting True. (A fourth such OR belongs to the pre-existing mlock re-arm.)
+        # Each dio rung ORs its answer in rather than asserting True. (A fourth OR is the
+        # pre-existing mlock re-arm.)
         for marker in ("_gate_active", "_retry_active", "_arch_active"):
             assert f"{marker} or self._memory_policy_active" in src, marker
 
@@ -2988,8 +2984,7 @@ class TestTheSnapshotCarriesTheDioTokens:
         import inspect
 
         src = inspect.getsource(LlamaCppBackend.load_model)
-        # One snapshot helper, which copies on the way in so a later strip cannot
-        # reach back into it.
+        # One snapshot helper, copying in so a later strip cannot reach back into it.
         assert "list(self._memory_dio_flags)," in src
         assert "self._memory_dio_flags,\n" in src  # the restore
         # every site that takes the snapshot goes through the helper
@@ -3007,14 +3002,13 @@ class TestASaveDuringPlacementIsAnswered:
         import inspect
 
         src = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        # Capture and publication are ONE act, so there is no window between them for
-        # a save to fall through, and no ordering to get wrong.
+        # Capture and publication are ONE act: no window, no ordering to get wrong.
         assert (
             'capture_model_memory_settings(lambdapair:setattr(self,"_memory_pending_launch",pair))'
             in src
         )
-        # and nothing re-publishes it between the capture and the placement work; the
-        # recovery rungs further down legitimately re-arm it after a failed attempt
+        # and nothing re-publishes it before the placement work; the recovery rungs
+        # further down legitimately re-arm after a failed attempt
         head = src[
             src.index("capture_model_memory_settings(") : src.index("_arm_load_probe_memo()")
         ]
@@ -3327,8 +3321,8 @@ class TestOneLaunchReadsOneSettingsSnapshot:
             monkeypatch.setattr(model_memory_settings, "get_keep_resident", lambda: keep_resident)
             monkeypatch.setattr(model_memory_settings, "get_no_ram_reserve", lambda: no_ram_reserve)
 
-        # Live settings own placement; the snapshot says neither toggle was on, so
-        # the launch that snapshotted must leave the inherited value alone.
+        # Live settings own placement, but the snapshot says neither toggle was on, so
+        # this launch leaves the inherited value alone.
         _live(True, False)
         env = {"LLAMA_ARG_MLOCK": "1"}
         assert scrub_memory_env(env, (False, False)) == []
@@ -3340,8 +3334,7 @@ class TestOneLaunchReadsOneSettingsSnapshot:
         assert scrub_memory_env(env, (True, False)) == ["LLAMA_ARG_MLOCK"]
         assert env == {}
 
-        # with no snapshot it falls back to the live pair, which is what the other
-        # scrub sites (outside a launch) rely on
+        # with no snapshot it falls back to the live pair, as the other scrub sites do
         _live(True, False)
         env = {"LLAMA_ARG_MLOCK": "1"}
         assert scrub_memory_env(env) == ["LLAMA_ARG_MLOCK"]
@@ -3436,9 +3429,9 @@ class TestAnyInstalledGpuPluginMustBeLoadable:
         return [str(libs)]
 
 
-# Real `llama-server --list-devices` output, captured from installed builds rather
-# than invented: a CUDA build with two cards, and the two ways a build with nothing
-# to offer prints it. The noise above the header is what ggml_cuda_init writes.
+# Real `llama-server --list-devices` output, captured not invented: a CUDA build with
+# two cards, and the two ways a build with nothing prints it. The noise above the
+# header is what ggml_cuda_init writes.
 _LIST_DEVICES_GPU = """ggml_cuda_init: found 2 CUDA devices (Total VRAM: 72627 MiB):
   Device 0: NVIDIA RTX 6000 Ada Generation, compute capability 8.9, VMM: yes, VRAM: 48504 MiB
   Device 1: NVIDIA GeForce RTX 3090, compute capability 8.6, VMM: yes, VRAM: 24123 MiB
@@ -3697,8 +3690,7 @@ class TestTheCaptureAndThePublicationAreOneAct:
         monkeypatch.setattr(mm, "_pair_generations", lambda: gens.pop(0))
         seen = []
         final = mm.capture_model_memory_settings(seen.append)
-        # the stale pair was published, then corrected, and the published value and
-        # the returned value agree at the end
+        # published stale, then corrected, and both values agree at the end
         assert seen == [(True, False), (False, True)]
         assert final == (False, True) == seen[-1]
 
@@ -4727,7 +4719,7 @@ class TestAForcedProbeKeepsMlockConservative:
         monkeypatch.setattr(B, "_run_vulkan_probe", staticmethod(lambda binary = None: []))
         assert B._vulkan_probe_answered("llama-server") is False
         # and the iGPU question still answers False for the same empty probe, which is
-        # exactly why it cannot be read as a measurement
+        # why it cannot be read as a measurement
         assert B._vulkan_targets_are_igpus("llama-server", None) is False
 
         monkeypatch.setattr(

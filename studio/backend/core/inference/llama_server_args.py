@@ -1121,7 +1121,7 @@ def strip_context_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
     )
 
 
-# The exact managed block the policy emits, named so the launch can spot its own tokens in an argv and
+# The managed block the policy emits, named so the launch can spot its own tokens and
 # take them back out when the placement they were chosen for stops holding.
 MANAGED_DIO_FLAGS: tuple[str, ...] = ("--load-mode", "dio")
 
@@ -1239,8 +1239,8 @@ def apply_model_memory_policy(
             # Settings unavailable (bare unit-test import): behave as before.
             return [], list(extra_args or [])
 
-        # One snapshot for both decisions: read separately, a save landing between them strips for one setting and
-        # locks for the other, so a saved --mlock could survive a committed no-reserve.
+        # One snapshot for both decisions: read separately, a save landing between them
+        # let a saved --mlock survive a committed no-reserve.
         settings = get_model_memory_settings()
     keep_resident, no_ram_reserve = settings
     tokens = list(extra_args or [])
@@ -1264,14 +1264,12 @@ def apply_model_memory_policy(
             supports_load_mode = supports_load_mode,
             gpu_offload_confirmed = gpu_offload_confirmed,
         )
-        # An inherited loader choice that survives the scrub is a non-reserving one
-        # the settings disclaim, and argv beats the environment in llama.cpp, so the
-        # managed pair stands aside for it the way the fit's own mode does.
+        # An inherited choice surviving the scrub is a non-reserving one the settings
+        # disclaim, and argv beats the environment, so the pair stands aside for it.
         and not memory_env_selects_load_mode(env)
     ):
-        # Windows cannot partially unmap the GGUF after offload: unmap_fragment
-        # is a no-op in llama.cpp. Stream instead for this confirmed placement.
-        # Explicit per-model mmap/dio and surviving extras still resolve afterward.
+        # Windows cannot partially unmap the GGUF after offload (unmap_fragment is a
+        # no-op), so stream for this confirmed placement. Per-model modes still win later.
         managed.extend(MANAGED_DIO_FLAGS)
     if keep_resident and not no_ram_reserve and weights_in_host_memory:
         # Before the extras, like the rest of the managed block. mmap+mlock, not bare mlock: it matches what --mlock
@@ -1934,15 +1932,11 @@ def memory_state_satisfies_settings(
             return False
         return not (dio_applicable and direct_io is False)
     if get_keep_resident():
-        # A no-reserve launch's managed DirectIO has to go when no-reserve does: with
-        # residency on the policy emits a page-lock or nothing, never dio, so a
-        # streaming child contradicts the settings however the lock reads.
-        # `not mlock_applicable` was accepting exactly that child.
-        #
-        # `dio_managed`, not `policy_active`: the latter is an aggregate that a
-        # scrubbed env var or a vetoed extra also sets, so a user's own `dio` beside an
-        # inherited LLAMA_ARG_MLOCK matched it and every relaunch produced the same
-        # child and set it again, leaving reload_required permanently true.
+        # The managed DirectIO has to go when no-reserve does: with residency on the
+        # policy emits a page-lock or nothing, so a streaming child contradicts the
+        # settings however the lock reads, and `not mlock_applicable` accepted it.
+        # `dio_managed`, not `policy_active`: that aggregate is also set by a scrubbed
+        # env var, so a user's own `dio` left reload_required permanently true.
         if direct_io and dio_applicable and dio_managed:
             return False
         return mlock or not mlock_applicable

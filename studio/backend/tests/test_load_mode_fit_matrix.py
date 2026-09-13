@@ -1752,8 +1752,7 @@ def test_an_inherited_loader_mode_wins_over_the_fits_pick():
     ]
     # Asked of the child's environment AFTER the same scrub it gets, so a var a
     # Model Memory toggle drops vetoes nothing.
-    # Now handed the launch's coherent settings snapshot explicitly, which is the
-    # same value it read for itself before.
+    # Now handed the launch's snapshot explicitly, the same value it read before.
     assert "scrub_memory_env(_fit_load_mode_env_view,_mem_settings)" in arm
     # Assert the CONDITIONS, not one rendering: the formatter is free to wrap this,
     # which breaks a single-string pin. Each clause is asserted on its own.
