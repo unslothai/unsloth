@@ -12,6 +12,8 @@ export type ImageDisclosure = {
   encoding: "base64" | "data_url";
   status?: "pending" | "expired" | "cancelled";
   expiresAt?: number;
+  expiresInMs?: number;
+  receivedAt?: number;
 };
 
 export function isMcpToolOnly(value: unknown): boolean {
@@ -98,8 +100,22 @@ export function disclosureExpired(
   return (
     value.status === "expired" ||
     value.status === "cancelled" ||
-    (value.expiresAt !== undefined && now >= value.expiresAt)
+    (value.receivedAt !== undefined &&
+      value.expiresInMs !== undefined &&
+      now >= value.receivedAt + value.expiresInMs) ||
+    (value.receivedAt === undefined &&
+      value.expiresInMs === undefined &&
+      value.expiresAt !== undefined &&
+      now >= value.expiresAt)
   );
+}
+
+export function markImageDisclosureReceived(
+  value: ImageDisclosure | undefined,
+  now = Date.now(),
+): ImageDisclosure | undefined {
+  if (!value) return undefined;
+  return { ...value, receivedAt: now };
 }
 
 export function mayAutoApproveTool(

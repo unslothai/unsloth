@@ -261,9 +261,6 @@ export function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   if (!isRecord(value)) return {};
 
   const settings: PersistedChatSettings = {};
-  if (typeof value.mcpImageAttachmentsEnabled === "boolean") {
-    settings.mcpImageAttachmentsEnabled = value.mcpImageAttachmentsEnabled;
-  }
   const inferenceParams = sanitizeInferenceParams(value.inferenceParams);
   const inferenceParamsByModel = sanitizeInferenceParamsByModel(
     value.inferenceParamsByModel,
@@ -523,7 +520,7 @@ export async function loadChatSettingsWithLegacyImport(): Promise<LoadedChatSett
   };
   try {
     const savedSettings = sanitizeChatSettings(
-      await saveChatSettingsPatch({ ...mergedSettings, mcpImageAttachmentsEnabled: undefined }),
+      await saveChatSettingsPatch(mergedSettings),
     );
     markLegacySettingsImportDone();
     return { settings: savedSettings, fromServer: true, persisted: true };

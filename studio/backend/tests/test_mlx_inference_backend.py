@@ -3785,7 +3785,7 @@ def test_an_mlx_count_rewrites_a_mapped_image_payload_to_an_opaque_reference(tmp
     from core.inference.mcp_image_disclosure import validate_image_input_mappings
     from routes import inference as route
     from state import tool_policy
-    from storage import mcp_servers_db, studio_db
+    from storage import mcp_servers_db
 
     schema = {
         "type": "object",
@@ -3817,9 +3817,9 @@ def test_an_mlx_count_rewrites_a_mapped_image_payload_to_an_opaque_reference(tmp
         {
             "image_input_mappings_json": json.dumps([mapping]),
             "image_input_schema_digest": digest,
+            "allow_image_attachments": True,
         },
     )
-    studio_db.upsert_chat_settings({"mcpImageAttachmentsEnabled": True})
 
     async def _no_builtin_tools(_payload, *, tools_on, mcp_allowed):
         assert tools_on is True

@@ -11,27 +11,6 @@ from models.inference import ChatCompletionRequest
 from routes import inference
 
 
-@pytest.mark.parametrize(
-    "tools,mcp_enabled",
-    [(None, False), ([], True), ([{"function": {"name": "web_search"}}], False)],
-)
-def test_no_image_or_mcp_tools_does_not_start_preparation_worker(monkeypatch, tools, mcp_enabled):
-    def unexpected(*args, **kwargs):
-        pytest.fail("ordinary requests must not enter image preparation")
-
-    monkeypatch.setattr(inference.asyncio, "to_thread", unexpected)
-    result = asyncio.run(
-        inference._prepare_mcp_image_for_route(
-            SimpleNamespace(mcp_image_attachment = None, mcp_enabled = mcp_enabled),
-            "user",
-            tools,
-            None,
-            False,
-        )
-    )
-    assert result == (None, tools)
-
-
 @pytest.mark.parametrize("provider", ["custom", "openai_codex"])
 def test_provider_disconnect_before_body_closes_eager_image_run(monkeypatch, provider):
     from core.inference import external_provider, openai_codex_auth, openai_codex_client

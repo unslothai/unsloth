@@ -29,6 +29,7 @@ class McpServerCreate(BaseModel):
     headers: Optional[dict[str, str]] = None
     is_enabled: bool = True
     use_oauth: bool = False
+    allow_image_attachments: bool = False
     image_input_mappings: list[McpImageInputMapping] = Field(default_factory = list, max_length = 256)
 
 
@@ -39,6 +40,7 @@ class McpServerUpdate(BaseModel):
     headers: Optional[dict[str, str]] = None
     is_enabled: Optional[bool] = None
     use_oauth: Optional[bool] = None
+    allow_image_attachments: Optional[bool] = None
     # Absent = preserve; [] = clear. Null is rejected by the route.
     image_input_mappings: Optional[list[McpImageInputMapping]] = Field(default = None, max_length = 256)
 
@@ -51,6 +53,7 @@ class McpServerResponse(BaseModel):
     headers: dict[str, str] = Field(default_factory = dict)
     is_enabled: bool = True
     use_oauth: bool = False
+    allow_image_attachments: bool = False
     image_input_mappings: list[McpImageInputMapping] = Field(default_factory = list)
     config_revision: int = 1
     created_at: str

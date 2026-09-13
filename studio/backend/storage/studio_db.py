@@ -4271,43 +4271,6 @@ def get_chat_attachment_for_thread(
     return _chat_attachment_from_row(row, attachment_id)
 
 
-def get_latest_chat_user_message_id(thread_id: str) -> Optional[str]:
-    """Return the newest persisted user message eligible for a new tool run."""
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            """
-            SELECT id FROM chat_messages
-            WHERE thread_id = ? AND role = 'user'
-            ORDER BY created_at DESC, id DESC
-            LIMIT 1
-            """,
-            (thread_id,),
-        ).fetchone()
-        return str(row["id"]) if row is not None else None
-    finally:
-        conn.close()
-
-
-def get_chat_setting_with_revision(key: str) -> tuple[Any, Optional[str]]:
-    """Return a setting and its write revision without accepting corrupt JSON.
-
-    MCP image consent uses a value-change revision, preserved by all three writers
-    when the feature flag is unchanged.
-    """
-    conn = get_connection()
-    try:
-        row = conn.execute(
-            "SELECT value_json, updated_at FROM chat_settings WHERE key = ?", (key,)
-        ).fetchone()
-    finally:
-        conn.close()
-    if row is None:
-        return None, None
-    valid, value = _parse_chat_setting_json(key, row["value_json"])
-    return (value, row["updated_at"]) if valid else (None, row["updated_at"])
-
-
 def _record_chat_attachment_tombstone(
     conn: sqlite3.Connection, thread_id: str, message_id: str, attachment_id: str
 ) -> None:
@@ -4629,8 +4592,6 @@ def upsert_chat_settings(settings: dict[str, Any]) -> dict[str, Any]:
             ON CONFLICT(key) DO UPDATE SET
                 value_json = excluded.value_json,
                 updated_at = excluded.updated_at
-            WHERE chat_settings.key != 'mcpImageAttachmentsEnabled'
-               OR chat_settings.value_json IS NOT excluded.value_json
             """,
             [(key, json.dumps(value), now) for key, value in settings.items()],
         )
@@ -4691,8 +4652,6 @@ def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
             ON CONFLICT(key) DO UPDATE SET
                 value_json = excluded.value_json,
                 updated_at = excluded.updated_at
-            WHERE chat_settings.key != 'mcpImageAttachmentsEnabled'
-               OR chat_settings.value_json IS NOT excluded.value_json
             """,
             [(key, json.dumps(value), now) for key, value in merged.items()],
         )
@@ -4779,8 +4738,6 @@ def upsert_chat_settings_merge_if_current(
             ON CONFLICT(key) DO UPDATE SET
                 value_json = excluded.value_json,
                 updated_at = excluded.updated_at
-            WHERE chat_settings.key != 'mcpImageAttachmentsEnabled'
-               OR chat_settings.value_json IS NOT excluded.value_json
             """,
             [(key, json.dumps(value), now) for key, value in merged.items()],
         )

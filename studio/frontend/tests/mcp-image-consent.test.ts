@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   type ImageDisclosure,
   disclosureExpired,
+  markImageDisclosureReceived,
   mayAutoApproveTool,
 } from "../src/features/chat/api/mcp-image-privacy.ts";
 
@@ -14,11 +15,14 @@ const card: ImageDisclosure = {
   destination: "stdio",
   field: "blob",
   encoding: "base64",
-  expiresAt: 100,
+  expiresAt: 1,
+  expiresInMs: 100,
 };
-test("expired and cancelled image decisions remain terminal", () => {
-  assert.equal(disclosureExpired(card, 99), false);
-  assert.equal(disclosureExpired(card, 100), true);
+test("expiry is relative to receipt instead of the server or client wall clock", () => {
+  const received = markImageDisclosureReceived(card, 1_000);
+  assert.ok(received);
+  assert.equal(disclosureExpired(received, 1_099), false);
+  assert.equal(disclosureExpired(received, 1_100), true);
   assert.equal(disclosureExpired({ ...card, status: "cancelled" }, 0), true);
   assert.equal(disclosureExpired({ ...card, status: "expired" }, 0), true);
 });

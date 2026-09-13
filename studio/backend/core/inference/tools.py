@@ -9884,17 +9884,7 @@ def execute_tool(
             isinstance(value, str) and value.startswith("mcp-image-ref-")
             for value in arguments.values()
         )
-        private_enabled = False
-        if mapped_image_tool:
-            from storage.studio_db import get_chat_setting_with_revision
-            try:
-                private_enabled = (
-                    get_chat_setting_with_revision("mcpImageAttachmentsEnabled")[0] is True
-                )
-            except Exception:
-                # An unreadable authoritative flag cannot authorize a configured
-                # image field, even if its argument looks like ordinary base64.
-                return "Error: The image sharing setting is unavailable. Nothing was sent."
+        private_enabled = mapped_image_tool and bool(server.get("allow_image_attachments"))
         if (
             private_selector or (mapped_image_tool and private_enabled)
         ) and mcp_image_context is None:
@@ -9909,6 +9899,10 @@ def execute_tool(
             return (
                 row is not None
                 and bool(row.get("is_enabled"))
+                and (
+                    mcp_image_context is None
+                    or bool(row.get("allow_image_attachments"))
+                )
                 and row.get("url") == url
                 and parse_server_headers(row) == headers
                 and bool(row.get("use_oauth")) == use_oauth

@@ -485,8 +485,6 @@ class ChatSettingsPayload(BaseModel):
     artifactsEnabled: Optional[bool] = None
     showCanvasMenuItem: Optional[bool] = None
     mcpEnabledForChat: Optional[bool] = None
-    # Separate account-wide authority from ordinary MCP enablement. Missing values are disabled.
-    mcpImageAttachmentsEnabled: Optional[bool] = None
     confirmToolCalls: Optional[bool] = None
     # "full" (Full access) is session-only by design and never persisted.
     permissionMode: Optional[Literal["ask", "auto", "off"]] = None
@@ -1571,16 +1569,6 @@ def compare_and_set_settings(
             parsed.expectedAbsent,
             parsed.expectedAbsentPaths,
         )
-        if (
-            applied
-            and "mcpImageAttachmentsEnabled" in parsed.patch.model_fields_set
-            and parsed.patch.mcpImageAttachmentsEnabled is not True
-        ):
-            from core.inference.mcp_image_disclosure import revoke_mcp_image_references
-            from state.tool_approvals import revoke_mcp_image_disclosures
-
-            revoke_mcp_image_references(subject = current_subject)
-            revoke_mcp_image_disclosures(subject = current_subject)
         return ConditionalChatSettingsResponse(settings = settings, applied = applied)
     except CorruptSettingsError as exc:
         raise log_and_http_error(
@@ -1603,15 +1591,6 @@ def put_settings(payload: dict[str, Any], current_subject: str = Depends(get_cur
     # Atomic read + deep-merge + write in one BEGIN IMMEDIATE so concurrent updates don't clobber.
     try:
         settings = upsert_chat_settings_merge(parsed.model_dump(exclude_unset = True))
-        if (
-            "mcpImageAttachmentsEnabled" in parsed.model_fields_set
-            and parsed.mcpImageAttachmentsEnabled is not True
-        ):
-            from core.inference.mcp_image_disclosure import revoke_mcp_image_references
-            from state.tool_approvals import revoke_mcp_image_disclosures
-
-            revoke_mcp_image_references(subject = current_subject)
-            revoke_mcp_image_disclosures(subject = current_subject)
         return ChatSettingsResponse(settings = settings)
     except CorruptSettingsError as exc:
         raise log_and_http_error(

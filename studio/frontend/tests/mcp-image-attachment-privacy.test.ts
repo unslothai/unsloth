@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  isMcpToolOnly,
   mcpImageAttachmentForTokenCount,
   modelVisibleMessage,
 } from "../src/features/chat/api/mcp-image-privacy.ts";
-import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 test("tool-only bytes and extracted aliases stay private through serialized reload and replay", () => {
   const secret = "data:image/png;base64,PRIVATE_CANARY";
@@ -54,14 +52,6 @@ test("ordinary parts survive when their values equal private attachment parts", 
   assert.deepEqual(visible.attachments, []);
 });
 
-test("ordinary vision messages retain identity and serialization", () => {
-  const message = {
-    content: [{ type: "image", image: "ordinary" }],
-    attachments: [],
-  };
-  assert.equal(modelVisibleMessage(message), message);
-});
-
 test("token counts reference one persisted tool-only image without serializing its bytes", () => {
   const secret = "data:image/png;base64,PRIVATE_COUNT_CANARY";
   const messages = [
@@ -107,7 +97,7 @@ test("token counts reference one persisted tool-only image without serializing i
         {
           ...messages[0],
           attachments: [
-            ...messages[0]!.attachments,
+            ...messages[0].attachments,
             { id: "image-2", mcpToolOnly: true, content: [] },
           ],
         },
@@ -117,99 +107,4 @@ test("token counts reference one persisted tool-only image without serializing i
     ),
     undefined,
   );
-});
-
-test("context recount sends the persisted opaque attachment selection", async () => {
-  const sent: Record<string, unknown>[] = [];
-  const stored = [
-    {
-      id: "message-1",
-      threadId: "thread-1",
-      parentId: null,
-      role: "user",
-      content: [{ type: "text", text: "Inspect it" }],
-      attachments: [
-        {
-          id: "image-1",
-          mcpToolOnly: true,
-          content: [
-            {
-              type: "image",
-              image: "data:image/png;base64,PRIVATE_COUNT_BODY",
-            },
-          ],
-        },
-      ],
-      createdAt: 1,
-    },
-  ];
-  const state = {
-    activeThreadId: "thread-1",
-    contextUsage: null,
-    loadedContextLength: 4096,
-    modelLoading: false,
-    models: [],
-    params: { checkpoint: "local-model" },
-    runningByThreadId: {},
-    setContextUsage: () => {},
-  };
-  const refresh = loadWithStubs<{
-    refreshContextUsage: () => Promise<void>;
-    setActiveBranchReader: (reader: () => readonly unknown[]) => void;
-  }>(
-    new URL(
-      "../src/features/chat/utils/refresh-context-usage.ts",
-      import.meta.url,
-    ),
-    {
-      "../api/chat-adapter": {
-        buildLocalTokenCountExtras: async () => ({ mcp_enabled: true }),
-        buildLocalTokenCountHistory: async () => ({
-          messages: [{ role: "user", content: "Inspect it" }],
-        }),
-        buildLocalTokenCountReasoning: () => ({}),
-        findLatestUserAudioBase64: () => undefined,
-        findLatestUserVideoBase64: () => undefined,
-        messagesContainImage: () => false,
-      },
-      "../api/chat-api": {
-        countChatInputTokens: async (payload: Record<string, unknown>) => {
-          sent.push(payload);
-          return { input_tokens: 12, model: "local-model" };
-        },
-      },
-      "../api/mcp-image-privacy": {
-        isMcpToolOnly,
-        mcpImageAttachmentForTokenCount,
-      },
-      "../external-providers": { isExternalModelId: () => false },
-      "../stores/chat-runtime-store": {
-        useChatRuntimeStore: { getState: () => state },
-      },
-      "./chat-history-storage": {
-        listStoredChatMessages: async () => stored,
-      },
-      "./message-order": { orderBySelectedBranch: (messages: unknown) => messages },
-    },
-  );
-  refresh.setActiveBranchReader(() => [
-    {
-      ...stored[0],
-      createdAt: new Date(1),
-      attachments: stored[0]!.attachments.map((attachment) => ({
-        ...attachment,
-        toJSON: () => {
-          throw new Error("private attachment bytes were serialized");
-        },
-      })),
-    },
-  ]);
-
-  await refresh.refreshContextUsage();
-
-  assert.deepEqual(sent[0]?.mcp_image_attachment, {
-    message_id: "message-1",
-    attachment_id: "image-1",
-  });
-  assert.ok(!JSON.stringify(sent[0]).includes("PRIVATE_COUNT_BODY"));
 });

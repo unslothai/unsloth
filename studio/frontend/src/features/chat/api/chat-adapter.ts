@@ -2,7 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
-import { isMcpToolOnly, modelVisibleMessage, type ImageDisclosure } from "./mcp-image-privacy";
+import {
+  isMcpToolOnly,
+  markImageDisclosureReceived,
+  modelVisibleMessage,
+  type ImageDisclosure,
+} from "./mcp-image-privacy";
 import {
   clearedServerTuningState,
   committedServerTuningState,
@@ -6704,7 +6709,9 @@ export function createOpenAIStreamAdapter(
                         approvalId,
                         sandboxSessionId ?? "",
                         toolConfirmationScopeId,
-                        toolEvent.image_disclosure as ImageDisclosure | undefined,
+                        markImageDisclosureReceived(
+                          toolEvent.image_disclosure as ImageDisclosure | undefined,
+                        ),
                       );
                   }
                 } else if (toolEvent.type === "tool_end") {

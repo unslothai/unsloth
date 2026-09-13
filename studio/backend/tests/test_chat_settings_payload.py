@@ -45,7 +45,6 @@ def test_mirrored_settings_round_trip():
             "speculativeType": "ngram",
             "gpuMemoryMode": "manual",
             "fitOnDeviceOnly": True,
-            "mcpImageAttachmentsEnabled": False,
         }
     )
 
@@ -66,7 +65,6 @@ def test_mirrored_settings_round_trip():
         "speculativeType": "ngram",
         "gpuMemoryMode": "manual",
         "fitOnDeviceOnly": True,
-        "mcpImageAttachmentsEnabled": False,
     }
 
 

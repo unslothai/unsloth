@@ -66,7 +66,6 @@ def _image_binding(**changes):
         "encoding": "base64",
         "schema_digest": "2" * 64,
         "public_arguments_digest": "3" * 64,
-        "feature_revision": "rev-a",
         "recipient": "recipient-a",
     }
     values.update(changes)

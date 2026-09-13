@@ -52,7 +52,6 @@ class McpImageDisclosureBinding:
     encoding: str
     schema_digest: str
     public_arguments_digest: str
-    feature_revision: str
     recipient: str
 
 

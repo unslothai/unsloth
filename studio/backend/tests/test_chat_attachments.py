@@ -212,15 +212,6 @@ def test_list_chat_attachments_orders_newest_first(tmp_path, monkeypatch):
     assert [r["id"] for r in studio_db.list_chat_attachments()] == ["att-new", "att-old"]
 
 
-def test_latest_user_message_identity_is_thread_scoped(tmp_path, monkeypatch):
-    _reset_studio_db(tmp_path, monkeypatch)
-    studio_db.upsert_chat_thread(_thread())
-    studio_db.upsert_chat_message(_message("msg-old", 1_700_000_000_000))
-    studio_db.upsert_chat_message(_message("msg-new", 1_700_000_100_000))
-    assert studio_db.get_latest_chat_user_message_id("thread-1") == "msg-new"
-    assert studio_db.get_latest_chat_user_message_id("missing") is None
-
-
 def test_list_chat_attachments_survives_missing_thread_row(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())

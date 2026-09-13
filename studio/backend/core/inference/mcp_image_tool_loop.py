@@ -10,7 +10,6 @@ import functools
 import inspect
 import json
 import secrets
-import time
 import threading
 from urllib.parse import quote
 
@@ -44,25 +43,17 @@ def prepare_image_tool_request(payload, *, subject, tools, cancel_event, ui_even
     selection = getattr(payload, "mcp_image_attachment", None)
     if selection is None:
         if tools is not None and getattr(payload, "mcp_enabled", False):
-            from storage.studio_db import get_chat_setting_with_revision
-            enabled, _ = get_chat_setting_with_revision("mcpImageAttachmentsEnabled")
-            if enabled is True:
-                return None, rewrite_image_tool_schemas(tools)
+            return None, rewrite_image_tool_schemas(tools)
         return None, tools
-    _feature_revision()
     if not payload.stream or not ui_events or not payload.mcp_enabled:
         raise McpImageDisclosureError("Private MCP images require a Studio interactive tool stream")
-    from storage.studio_db import get_latest_chat_user_message_id
-
-    if (
-        not payload.thread_id
-        or get_latest_chat_user_message_id(payload.thread_id) != selection.message_id
-    ):
+    if not payload.thread_id:
         raise McpImageDisclosureError("Select an image from the current conversation message")
     durable_id = getattr(payload, "generation_run_id", None)
     if durable_id:
         from storage.chat_generation_runs_db import get_run
-        durable = get_run(durable_id, owner_subject = subject)
+
+        durable = get_run(durable_id, owner_subject=subject)
         if (
             not durable
             or durable.get("thread_id") != payload.thread_id
@@ -70,9 +61,9 @@ def prepare_image_tool_request(payload, *, subject, tools, cancel_event, ui_even
         ):
             raise McpImageDisclosureError("The image does not belong to this generation")
     image = resolve_tool_only_image(
-        thread_id = payload.thread_id,
-        message_id = selection.message_id,
-        attachment_id = selection.attachment_id,
+        thread_id=payload.thread_id,
+        message_id=selection.message_id,
+        attachment_id=selection.attachment_id,
     )
     from core.inference.mcp_image_redaction import contains_mcp_image_echo
 
@@ -95,27 +86,18 @@ def prepare_image_tool_request(payload, *, subject, tools, cancel_event, ui_even
     if tools is None:
         return None, None
     run = McpImageToolRun(
-        subject = subject,
-        thread_id = payload.thread_id,
-        session_id = payload.session_id,
-        generation_id = durable_id or payload.cancel_id,
-        selection = selection,
-        cancel_event = cancel_event,
+        subject=subject,
+        thread_id=payload.thread_id,
+        session_id=payload.session_id,
+        generation_id=durable_id or payload.cancel_id,
+        selection=selection,
+        cancel_event=cancel_event,
     )
     try:
         return run, run.rewrite_tools(tools)
     except BaseException:
         run.close()
         raise
-
-
-def _feature_revision():
-    from storage.studio_db import get_chat_setting_with_revision
-
-    enabled, revision = get_chat_setting_with_revision("mcpImageAttachmentsEnabled")
-    if enabled is not True or not revision:
-        raise McpImageDisclosureError("Private MCP image sharing is disabled")
-    return revision
 
 
 def _mapping_for_name(name):
@@ -128,7 +110,7 @@ def _mapping_for_name(name):
     if len(parts) != 3:
         return None
     server = mcp_servers_db.get_server_for_tool(parts[1])
-    if not server or not server.get("is_enabled"):
+    if not server or not server.get("is_enabled") or not server.get("allow_image_attachments"):
         return None
     try:
         mappings = json.loads(server.get("image_input_mappings_json") or "[]")
@@ -154,9 +136,9 @@ def _mapping_for_name(name):
 
 def rewrite_image_tool_schemas(
     tools,
-    attachment_ref = None,
+    attachment_ref=None,
     *,
-    require_mapped = False,
+    require_mapped=False,
 ):
     """Copy tool schemas and replace configured image payload fields with public selectors."""
     public = copy.deepcopy(tools)
@@ -179,19 +161,13 @@ def rewrite_image_tool_schemas_for_count(payload, tools):
     """Render the same public MCP schemas a generation will put in the model prompt."""
     selection = getattr(payload, "mcp_image_attachment", None)
     if selection is not None:
-        _feature_revision()
         # Generation references contain 32 urlsafe bytes (43 encoded characters). The count
         # must not mint a live disclosure reference, but it still prices the enum and description
         # that the model will receive.
         attachment_ref = _COUNT_ATTACHMENT_REFERENCE
     else:
-        from storage.studio_db import get_chat_setting_with_revision
-
-        enabled, _ = get_chat_setting_with_revision("mcpImageAttachmentsEnabled")
-        if enabled is not True:
-            return tools
         attachment_ref = None
-    return rewrite_image_tool_schemas(tools, attachment_ref, require_mapped = selection is not None)
+    return rewrite_image_tool_schemas(tools, attachment_ref, require_mapped=selection is not None)
 
 
 class McpImageToolRun:
@@ -203,20 +179,19 @@ class McpImageToolRun:
         self.session_id = session_id or ""
         self.generation_id = generation_id or secrets.token_urlsafe(24)
         self.cancel_event = cancel_event
-        self.feature_revision = _feature_revision()
         self.reference = issue_mcp_image_reference(
-            subject = subject,
-            thread_id = thread_id,
-            generation_id = self.generation_id,
-            message_id = selection.message_id,
-            attachment_id = selection.attachment_id,
+            subject=subject,
+            thread_id=thread_id,
+            generation_id=self.generation_id,
+            message_id=selection.message_id,
+            attachment_id=selection.attachment_id,
         )
         self.approvals = []
         self._lock = threading.Lock()
         self.closed = False
 
     def rewrite_tools(self, tools):
-        return rewrite_image_tool_schemas(tools, self.reference.reference, require_mapped = True)
+        return rewrite_image_tool_schemas(tools, self.reference.reference, require_mapped=True)
 
     def prepare_call(self, name, arguments, call_id):
         match = _mapping_for_name(name)
@@ -224,17 +199,15 @@ class McpImageToolRun:
             return None
         if self.closed or (self.cancel_event is not None and self.cancel_event.is_set()):
             raise McpImageDisclosureError("Image sharing was cancelled")
-        if _feature_revision() != self.feature_revision:
-            raise McpImageDisclosureError("Image sharing settings changed")
         server, mapping, schema, digest = match
         if arguments.get(mapping["field"]) != self.reference.reference:
             raise McpImageDisclosureError("Select the supplied image attachment reference")
         arguments_digest = canonical_arguments_digest(arguments)
         ref, image = resolve_mcp_image_reference(
             self.reference.reference,
-            subject = self.subject,
-            thread_id = self.thread_id,
-            generation_id = self.generation_id,
+            subject=self.subject,
+            thread_id=self.thread_id,
+            generation_id=self.generation_id,
         )
         from core.inference.mcp_client import (
             prepare_mcp_image_recipient,
@@ -248,10 +221,10 @@ class McpImageToolRun:
             recipient = prepare_mcp_image_recipient(
                 server["url"],
                 parse_server_headers(server),
-                scope = "s={}:t={}".format(
-                    quote(self.session_id, safe = ""), quote(self.thread_id, safe = "")
+                scope="s={}:t={}".format(
+                    quote(self.session_id, safe=""), quote(self.thread_id, safe="")
                 ),
-                use_oauth = bool(server.get("use_oauth")),
+                use_oauth=bool(server.get("use_oauth")),
             )
             destination = mcp_image_recipient_location(recipient)
             current = _mapping_for_name(name)
@@ -260,7 +233,6 @@ class McpImageToolRun:
                 or current is None
                 or current[0].get("config_revision") != server["config_revision"]
                 or current[3] != digest
-                or _feature_revision() != self.feature_revision
                 or (self.cancel_event is not None and self.cancel_event.is_set())
             ):
                 raise McpImageDisclosureError("The approved MCP recipient changed")
@@ -271,26 +243,25 @@ class McpImageToolRun:
                 "This MCP transport cannot safely share an image"
             ) from None
         binding = McpImageDisclosureBinding(
-            subject = self.subject,
-            session_id = self.session_id,
-            thread_id = self.thread_id,
-            generation_id = self.generation_id,
-            call_id = call_id or secrets.token_urlsafe(16),
-            attachment_ref = ref.reference,
-            message_id = ref.message_id,
-            attachment_id = ref.attachment_id,
-            attachment_sha256 = image.sha256,
-            mime_type = image.mime_type,
-            size_bytes = image.size_bytes,
-            server_id = server["id"],
-            config_revision = server["config_revision"],
-            tool_name = mapping["tool"],
-            field = mapping["field"],
-            encoding = mapping["encoding"],
-            schema_digest = digest,
-            public_arguments_digest = arguments_digest,
-            feature_revision = self.feature_revision,
-            recipient = recipient,
+            subject=self.subject,
+            session_id=self.session_id,
+            thread_id=self.thread_id,
+            generation_id=self.generation_id,
+            call_id=call_id or secrets.token_urlsafe(16),
+            attachment_ref=ref.reference,
+            message_id=ref.message_id,
+            attachment_id=ref.attachment_id,
+            attachment_sha256=image.sha256,
+            mime_type=image.mime_type,
+            size_bytes=image.size_bytes,
+            server_id=server["id"],
+            config_revision=server["config_revision"],
+            tool_name=mapping["tool"],
+            field=mapping["field"],
+            encoding=mapping["encoding"],
+            schema_digest=digest,
+            public_arguments_digest=arguments_digest,
+            recipient=recipient,
         )
         try:
             approval = McpImageApproval(self, binding, arguments, image, schema)
@@ -300,7 +271,7 @@ class McpImageToolRun:
         approval.metadata = {
             "purpose": "mcp_image_disclosure",
             "previewUrl": "/api/chat/attachments/{}/{}/file".format(
-                quote(ref.message_id, safe = ""), quote(ref.attachment_id, safe = "")
+                quote(ref.message_id, safe=""), quote(ref.attachment_id, safe="")
             ),
             "sizeBytes": image.size_bytes,
             "serverName": server.get("display_name") or server["id"],
@@ -309,7 +280,7 @@ class McpImageToolRun:
             "field": mapping["field"],
             "encoding": mapping["encoding"],
             "status": "pending",
-            "expiresAt": int((time.time() + 300) * 1000),
+            "expiresInMs": 300_000,
         }
         with self._lock:
             if self.closed:
@@ -324,8 +295,8 @@ class McpImageToolRun:
             approvals, self.approvals = self.approvals, []
         for approval in approvals:
             approval.close()
-        revoke_mcp_image_references(subject = self.subject, generation_id = self.generation_id)
-        revoke_mcp_image_disclosures(subject = self.subject, generation_id = self.generation_id)
+        revoke_mcp_image_references(subject=self.subject, generation_id=self.generation_id)
+        revoke_mcp_image_disclosures(subject=self.subject, generation_id=self.generation_id)
 
 
 class McpImageApproval:
@@ -340,13 +311,11 @@ class McpImageApproval:
             try:
                 if run.closed or (run.cancel_event is not None and run.cancel_event.is_set()):
                     return False
-                if _feature_revision() != binding.feature_revision:
-                    return False
                 ref, live_image = resolve_mcp_image_reference(
                     binding.attachment_ref,
-                    subject = run.subject,
-                    thread_id = run.thread_id,
-                    generation_id = run.generation_id,
+                    subject=run.subject,
+                    thread_id=run.thread_id,
+                    generation_id=run.generation_id,
                 )
                 match = _mapping_for_name(
                     "mcp__{}__{}".format(binding.server_id, binding.tool_name)
@@ -369,14 +338,14 @@ class McpImageApproval:
 
         try:
             self.context = McpImageCallContext(
-                public_arguments = arguments,
-                image = image,
-                field = binding.field,
-                encoding = binding.encoding,
-                original_schema = schema,
-                recipient = binding.recipient,
-                commit = commit,
-                tool_name = binding.tool_name,
+                public_arguments=arguments,
+                image=image,
+                field=binding.field,
+                encoding=binding.encoding,
+                original_schema=schema,
+                recipient=binding.recipient,
+                commit=commit,
+                tool_name=binding.tool_name,
             )
         except BaseException:
             abort_mcp_image_disclosure(self.slot, self.approval_id)
@@ -394,11 +363,11 @@ def wait_call_decision(
     image_approval,
     slot,
     approval_id,
-    cancel_event = None,
-    ordinary_wait = wait_tool_decision,
+    cancel_event=None,
+    ordinary_wait=wait_tool_decision,
 ):
     if image_approval is not None:
-        decision = wait_mcp_image_disclosure(slot, approval_id, cancel_event, timeout = 300)
+        decision = wait_mcp_image_disclosure(slot, approval_id, cancel_event, timeout=300)
         if decision != "allow":
             image_approval.close()
         return decision
@@ -409,7 +378,7 @@ def abort_call_decision(
     image_approval,
     slot,
     approval_id,
-    ordinary_abort = abort_tool_decision,
+    ordinary_abort=abort_tool_decision,
 ):
     if image_approval is not None:
         image_approval.close()

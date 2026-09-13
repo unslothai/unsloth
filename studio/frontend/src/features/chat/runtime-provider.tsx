@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
-import { clearSelectedMcpImage, isSelectedMcpImage } from "./api/mcp-image-selection";
+import { listMcpServers } from "./api/mcp-servers-api";
 import { authFetch } from "@/features/auth";
 import {
   classifiedAttachmentFile,
@@ -314,11 +314,21 @@ class VisionImageAdapter implements AttachmentAdapter {
       visionDisabledByUser: state.loadedVisionDisabledByUser,
       mmprojFallbackReason: state.mmprojFallbackReason,
     });
-    if (unavailableReason) {
-      if (!state.mcpImageAttachmentsEnabled) {
-        toast.error(unavailableReason);
-        throw new Error(unavailableReason);
-      }
+    const mcpToolOnly = state.mcpEnabledForChat
+      ? await listMcpServers()
+          .then((servers) =>
+            servers.some(
+              (server) =>
+                server.is_enabled &&
+                server.allow_image_attachments &&
+                (server.image_input_mappings?.length ?? 0) > 0,
+            ),
+          )
+          .catch(() => false)
+      : false;
+    if (unavailableReason && !mcpToolOnly) {
+      toast.error(unavailableReason);
+      throw new Error(unavailableReason);
     }
 
     const maxSize = 20 * 1024 * 1024;
@@ -332,17 +342,27 @@ class VisionImageAdapter implements AttachmentAdapter {
       name: file.name,
       contentType: file.type,
       file,
+      ...(mcpToolOnly ? { mcpToolOnly: true } : {}),
       status: { type: "requires-action", reason: "composer-send" },
     };
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-    const toolOnly = isSelectedMcpImage(attachment.id);
-    if (toolOnly && (attachment.file.size > 10 * 1024 * 1024 || !["image/png", "image/jpeg", "image/webp"].includes(attachment.file.type))) {
-      throw new Error("Tool-only images must be PNG, JPEG or WebP and at most 10 MiB.");
+    const toolOnly =
+      (attachment as PendingAttachment & { mcpToolOnly?: boolean })
+        .mcpToolOnly === true;
+    if (
+      toolOnly &&
+      (attachment.file.size > 10 * 1024 * 1024 ||
+        !["image/png", "image/jpeg", "image/webp"].includes(
+          attachment.file.type,
+        ))
+    ) {
+      throw new Error(
+        "Tool-only images must be PNG, JPEG or WebP and at most 10 MiB.",
+      );
     }
     const image = await this.fileToBase64DataURL(attachment.file);
-    if (toolOnly) clearSelectedMcpImage(attachment.id);
     return {
       id: attachment.id,
       type: "image",

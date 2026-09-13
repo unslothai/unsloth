@@ -2256,7 +2256,6 @@ type ChatRuntimeStore = {
   // web_search also returns images the model can place inline; read by the backend per call.
   searchImages: boolean;
   mcpEnabledForChat: boolean;
-  mcpImageAttachmentsEnabled: boolean;
   ragEnabled: boolean;
   ragSource: RagSource;
   projectAttachmentTarget: ProjectAttachmentTarget;
@@ -3927,7 +3926,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ),
   searchImages: loadBool(CHAT_SEARCH_IMAGES_KEY, false),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
-  mcpImageAttachmentsEnabled: false,
   // Mirrors permissionMode (gate requested for ask/auto) so both controls agree on load.
   confirmToolCalls:
     INITIAL_PERMISSION_MODE === "ask" || INITIAL_PERMISSION_MODE === "auto",
@@ -4059,7 +4057,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           fromServer,
           persisted: settingsArePersisted,
         } = await loadChatSettingsWithLegacyImport();
-        set({ mcpImageAttachmentsEnabled: fromServer && settings.mcpImageAttachmentsEnabled === true });
         // Assigned by the confirming read below, so the failure path can prefer
         // it over the older hydration response.
         let confirmed: PersistedChatSettings | undefined;

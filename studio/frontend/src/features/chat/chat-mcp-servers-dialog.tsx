@@ -41,6 +41,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { subscribeToMcpServerMutationSettlements } from "./api/mcp-server-mutation-tracker";
 import {
+  type McpImageInputMapping,
   type McpServerConfig,
   createMcpServer,
   decodeMcpStdioCommand,
@@ -58,7 +59,7 @@ import {
   resolveMcpStdioUrl,
 } from "./mcp-server-form";
 import { BlenderMcpSetup } from "./blender-mcp-setup";
-import { McpImageSharingSetting, McpImageMappingSettings } from "./api/mcp-image-settings-controls";
+import { McpImageMappingSettings } from "./api/mcp-image-settings-controls";
 
 type HeaderRow = { id: string; key: string; value: string };
 type ArgumentRow = { id: string; value: string };
@@ -73,6 +74,8 @@ type FormState = {
   headers: HeaderRow[];
   credentialTransport: Exclude<FormTransport, "unknown"> | null;
   useOauth: boolean;
+  allowImageAttachments: boolean;
+  imageInputMappings: McpImageInputMapping[];
 };
 
 const EMPTY_FORM: FormState = {
@@ -84,6 +87,8 @@ const EMPTY_FORM: FormState = {
   headers: [],
   credentialTransport: null,
   useOauth: false,
+  allowImageAttachments: false,
+  imageInputMappings: [],
 };
 
 function newRowId(): string {
@@ -508,6 +513,8 @@ export function ChatMcpServersDialog({
       headers: headersFromObject(server.headers ?? {}),
       credentialTransport: isHttpAddress(server.url) ? "http" : "stdio",
       useOauth: server.use_oauth ?? false,
+      allowImageAttachments: server.allow_image_attachments === true,
+      imageInputMappings: server.image_input_mappings ?? [],
     };
 
     if (isHttpAddress(server.url)) {
@@ -701,6 +708,10 @@ export function ChatMcpServersDialog({
           url,
           headers: headers ?? null,
           useOauth: stdio ? false : form.useOauth,
+          allowImageAttachments: form.allowImageAttachments,
+          ...(form.allowImageAttachments
+            ? { imageInputMappings: form.imageInputMappings }
+            : {}),
         });
         if (formGenerationRef.current !== generation) return;
         toast.success("MCP server updated");
@@ -711,6 +722,7 @@ export function ChatMcpServersDialog({
           url,
           headers: headers,
           useOauth: stdio ? false : form.useOauth,
+          allowImageAttachments: form.allowImageAttachments,
         });
         if (formGenerationRef.current !== generation) return;
         toast.success("MCP server added");
@@ -895,7 +907,6 @@ export function ChatMcpServersDialog({
             Register remote (HTTP) or local (stdio command) MCP servers.
           </DialogDescription>
         </DialogHeader>
-        <McpImageSharingSetting />
         <input
           ref={fileInputRef}
           type="file"
@@ -1061,6 +1072,41 @@ export function ChatMcpServersDialog({
               />
             )}
 
+            <div className="space-y-3 rounded-[14px] bg-muted/50 p-3">
+              <label
+                htmlFor="mcp-image-attachments"
+                className="flex cursor-pointer items-start justify-between gap-3"
+              >
+                <span className="space-y-0.5">
+                  <span className="block text-sm font-medium">
+                    Allow tool-only image attachments
+                  </span>
+                  <span className="block max-w-[70ch] text-xs text-muted-foreground">
+                    Let this server receive one image after you approve the exact
+                    tool call. Attached image data stays hidden from the model.
+                  </span>
+                </span>
+                <Switch
+                  id="mcp-image-attachments"
+                  checked={form.allowImageAttachments}
+                  disabled={formPending}
+                  onCheckedChange={(allowImageAttachments) =>
+                    setForm((prev) => ({ ...prev, allowImageAttachments }))
+                  }
+                />
+              </label>
+              {form.allowImageAttachments && (
+                <McpImageMappingSettings
+                  serverId={view.kind === "edit" ? view.id : undefined}
+                  value={form.imageInputMappings}
+                  onChange={(imageInputMappings) =>
+                    setForm((prev) => ({ ...prev, imageInputMappings }))
+                  }
+                  disabled={formPending}
+                />
+              )}
+            </div>
+
             <div className="flex items-center justify-between gap-2 pt-2">
               <Button
                 type="button"
@@ -1140,7 +1186,6 @@ export function ChatMcpServersDialog({
                       <div className="truncate text-xs text-muted-foreground">
                         {server.url}
                       </div>
-                      <McpImageMappingSettings server={server} />
                     </div>
                     <div className="flex items-center gap-1">
                       <Switch

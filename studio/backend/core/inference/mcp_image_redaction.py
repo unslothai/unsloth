@@ -30,7 +30,7 @@ _NORMALIZE_BASE64 = str.maketrans("-_", "+/", " \t\r\n\v\f=")
 
 
 def _canonical_arguments(arguments):
-    return json.dumps(arguments, sort_keys = True, separators = (",", ":"), allow_nan = False)
+    return json.dumps(arguments, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 class McpImageCallContext:
@@ -152,9 +152,10 @@ class McpImageCallContext:
 
 
 class _ImageEchoSanitizer:
-    def __init__(self, fingerprint, data):
+    def __init__(self, fingerprint, data, *, string_charge_factor=4):
         self.fingerprint = fingerprint
         self.data = data
+        self.string_charge_factor = string_charge_factor
         self.nodes = 0
         self.material = 0
         self.ancestors = set()
@@ -174,7 +175,7 @@ class _ImageEchoSanitizer:
     def _match_span(
         self,
         compact,
-        start = 0,
+        start=0,
     ):
         prefix = self.fingerprint[:-1]
         while True:
@@ -189,7 +190,7 @@ class _ImageEchoSanitizer:
     def _echo(
         self,
         value,
-        uri = False,
+        uri=False,
     ):
         # Base64 is canonical apart from alphabet, padding and ASCII whitespace.
         # A matching canonical encoding therefore represents the same bytes.
@@ -331,8 +332,8 @@ class _ImageEchoSanitizer:
 
         def collect(
             node,
-            owner = None,
-            key = None,
+            owner=None,
+            key=None,
         ):
             if type(node) is str:
                 compact = self._normalized_text(node)
@@ -364,8 +365,8 @@ class _ImageEchoSanitizer:
     def sanitize(
         self,
         value,
-        depth = 0,
-        uri = False,
+        depth=0,
+        uri=False,
     ):
         self.nodes += 1
         if self.nodes > MAX_REDACTION_NODES or depth > MAX_REDACTION_DEPTH:
@@ -374,7 +375,7 @@ class _ImageEchoSanitizer:
             return value
         if type(value) is str:
             # Charge conservatively before creating normalized/unquoted strings.
-            self._charge(len(value) * 4)
+            self._charge(len(value) * self.string_charge_factor)
             if self._echo(value, uri):
                 self.found_echo = True
                 return REDACTED_IMAGE
@@ -425,7 +426,7 @@ class _ImageEchoSanitizer:
                         raise ValueError("unsupported private result key")
                     clean_key = self.sanitize(key, depth + 1)
                     clean[clean_key] = self.sanitize(
-                        child, depth + 1, uri = key.lower() in {"uri", "url", "href"}
+                        child, depth + 1, uri=key.lower() in {"uri", "url", "href"}
                     )
                 if clean.get("type") == "image" and clean.get("data") == REDACTED_IMAGE:
                     clean = {"type": "text", "text": REDACTED_IMAGE}
@@ -447,6 +448,6 @@ class _ImageEchoSanitizer:
 def contains_mcp_image_echo(value, data):
     """Return whether a public value contains the selected image, including fragments."""
     fingerprint = base64.b64encode(data).decode("ascii").rstrip("=")
-    sanitizer = _ImageEchoSanitizer(fingerprint, data)
-    sanitizer.sanitize(copy.deepcopy(value))
+    sanitizer = _ImageEchoSanitizer(fingerprint, data, string_charge_factor=1)
+    sanitizer.sanitize(value)
     return sanitizer.found_echo

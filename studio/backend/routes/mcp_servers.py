@@ -172,6 +172,7 @@ def _row_to_response(row: dict, *, include_headers: bool = True) -> McpServerRes
         headers = (parse_server_headers(row) or {}) if include_headers else {},
         is_enabled = bool(row["is_enabled"]),
         use_oauth = bool(row.get("use_oauth")),
+        allow_image_attachments = bool(row.get("allow_image_attachments")),
         image_input_mappings = image_input_mappings,
         config_revision = int(row.get("config_revision") or 1),
         created_at = row["created_at"],
@@ -431,6 +432,7 @@ async def create_mcp_server(
         headers_json = json.dumps(headers) if headers else None,
         is_enabled = payload.is_enabled,
         use_oauth = use_oauth,
+        allow_image_attachments = payload.allow_image_attachments,
         image_input_mappings_json = json.dumps(mappings, sort_keys = True),
         image_input_schema_digest = schema_digest,
     )
@@ -459,6 +461,13 @@ def _changes_from_payload(payload: McpServerUpdate) -> dict:
         if payload.use_oauth is None:
             raise HTTPException(status_code = 400, detail = "use_oauth must be true or false")
         changes["use_oauth"] = payload.use_oauth
+    if "allow_image_attachments" in sent:
+        if payload.allow_image_attachments is None:
+            raise HTTPException(
+                status_code = 400,
+                detail = "allow_image_attachments must be true or false",
+            )
+        changes["allow_image_attachments"] = payload.allow_image_attachments
     if "image_input_mappings" in sent and payload.image_input_mappings is None:
         raise HTTPException(
             status_code = 400, detail = "image_input_mappings must be a list; use [] to clear it"

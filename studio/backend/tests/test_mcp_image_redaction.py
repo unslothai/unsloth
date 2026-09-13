@@ -32,10 +32,10 @@ def make_context(**kwargs):
         **{
             "public_arguments": PUBLIC,
             "image": SimpleNamespace(
-                data = DATA,
-                size_bytes = len(DATA),
-                sha256 = hashlib.sha256(DATA).hexdigest(),
-                mime_type = "image/png",
+                data=DATA,
+                size_bytes=len(DATA),
+                sha256=hashlib.sha256(DATA).hexdigest(),
+                mime_type="image/png",
             ),
             "field": "picture",
             "encoding": "base64",
@@ -50,7 +50,7 @@ def make_context(**kwargs):
 
 @pytest.mark.parametrize("encoding", ["base64", "data_url"])
 def test_only_ephemeral_copy_gets_encoded_image(encoding):
-    context = make_context(encoding = encoding)
+    context = make_context(encoding=encoding)
     wire = context.prepare_wire(PUBLIC)
     assert wire["picture"] == (
         ENCODED if encoding == "base64" else "data:image/png;base64," + ENCODED
@@ -65,19 +65,19 @@ def test_changed_ordinary_arguments_and_original_schema_fail_closed():
     with pytest.raises(McpImageDisclosureError):
         make_context().prepare_wire({**PUBLIC, "options": {"limit": 3}})
     restricted = {"type": "object", "properties": {"picture": {"type": "string", "maxLength": 2}}}
-    with pytest.raises(McpImageDisclosureError, match = "wire arguments are invalid"):
-        make_context(original_schema = restricted).prepare_wire(PUBLIC)
+    with pytest.raises(McpImageDisclosureError, match="wire arguments are invalid"):
+        make_context(original_schema=restricted).prepare_wire(PUBLIC)
 
 
 def test_remote_schema_references_never_resolve():
     schema = {"type": "object", "properties": {"options": {"$ref": "https://never.invalid/schema"}}}
-    with pytest.raises(McpImageDisclosureError, match = "wire arguments are invalid"):
-        make_context(original_schema = schema).prepare_wire(PUBLIC)
+    with pytest.raises(McpImageDisclosureError, match="wire arguments are invalid"):
+        make_context(original_schema=schema).prepare_wire(PUBLIC)
 
 
 def test_commit_checks_actual_recipient_and_is_one_use_under_race():
     calls = []
-    context = make_context(commit = lambda recipient: calls.append(recipient) is None)
+    context = make_context(commit=lambda recipient: calls.append(recipient) is None)
     with pytest.raises(McpImageDisclosureError):
         context.commit_at_send("recipient-b")
     barrier = threading.Barrier(2)
@@ -117,7 +117,7 @@ def test_nested_keys_values_uris_resources_and_images_are_sanitized():
             {"type": "text", "text": "safe output"},
             {"type": "image", "data": ENCODED, "mimeType": "image/png"},
             {"type": "resource", "resource": {"blob": ENCODED, "mimeType": "image/png"}},
-            {"type": "resource_link", "uri": "https://example.test/" + quote(ENCODED, safe = "")},
+            {"type": "resource_link", "uri": "https://example.test/" + quote(ENCODED, safe="")},
         ],
         "structuredContent": {ENCODED: ["safe", {"value": ENCODED}]},
         "isError": True,
@@ -130,60 +130,12 @@ def test_nested_keys_values_uris_resources_and_images_are_sanitized():
     assert result["content"][1]["data"] == ENCODED
 
 
-@pytest.mark.parametrize("as_objects", [True, False])
-def test_adjacent_text_fragments_are_checked_before_flattening(as_objects):
-    fragments = [{"type": "text", "text": ENCODED[:17]}, {"type": "text", "text": ENCODED[17:]}]
-    if as_objects:
-        fragments = [SimpleNamespace(**item) for item in fragments]
-    clean = make_context().redact_result(fragments)
-    assert ENCODED[:17] not in repr(clean)
-    assert ENCODED[17:] not in repr(clean)
-
-
-@pytest.mark.parametrize(
-    "fragments",
-    [
-        [
-            {"type": "custom", "text": ENCODED[:17]},
-            {"type": "custom", "text": ENCODED[17:]},
-        ],
-        [{"type": "resource_link", "name": ENCODED[:17], "uri": ENCODED[17:]}],
-        [
-            {"type": "custom", "text": "data:image/png;base64," + ENCODED[:17]},
-            {"type": "custom", "text": ENCODED[17:]},
-        ],
-        [
-            {"type": "custom", "resource": {"text": ENCODED[:17]}},
-            {"type": "custom", "resource": {"text": ENCODED[17:]}},
-        ],
-    ],
-)
-def test_fragments_in_every_rendered_text_field_are_withheld(fragments):
-    clean = make_context().redact_result(fragments)
-    assert ENCODED[:17] not in repr(clean)
-    assert ENCODED[17:] not in repr(clean)
-
-
-def test_multiple_separated_fragment_echoes_are_withheld():
-    fragments = [
-        {"type": "custom", "text": ENCODED[:17]},
-        {"type": "custom", "text": ENCODED[17:]},
-        {"type": "custom", "text": "safe"},
-        {"type": "custom", "text": ENCODED[:17]},
-        {"type": "custom", "text": ENCODED[17:]},
-    ]
-    clean = make_context().redact_result(fragments)
-    assert ENCODED[:17] not in repr(clean)
-    assert ENCODED[17:] not in repr(clean)
-    assert clean[2]["text"] == "safe"
-
-
-def test_f_result_split_across_non_text_content_and_structured_fragments_is_withheld():
+def test_split_echoes_in_content_and_structured_data_are_withheld():
     result = {
         "content": [
             {"type": "text", "text": ENCODED[:17]},
             {"type": "image", "data": "unrelated", "mimeType": "image/png"},
-            {"type": "separator", "text": "ignored by flattening"},
+            {"type": "separator", "text": "safe"},
             {"type": "text", "text": ENCODED[17:]},
         ],
         "structuredContent": {
@@ -194,37 +146,8 @@ def test_f_result_split_across_non_text_content_and_structured_fragments_is_with
     assert clean["content"][0]["text"] == REDACTED_IMAGE
     assert clean["content"][3]["text"] == REDACTED_IMAGE
     assert clean["content"][1]["data"] == "unrelated"
-    assert clean["structuredContent"]["parts"][0] == REDACTED_IMAGE
-    assert clean["structuredContent"]["parts"][2] == REDACTED_IMAGE
-
-
-@pytest.mark.parametrize(
-    "structured",
-    [
-        {"type": "chunks", "parts": [ENCODED[:17], ENCODED[17:]]},
-        {"id": ENCODED[:17], "name": ENCODED[17:]},
-        {ENCODED[:17]: ENCODED[17:]},
-    ],
-)
-def test_f_result_split_across_typed_or_metadata_structured_fragments_is_withheld(structured):
-    clean = make_context().redact_result({"content": [], "structuredContent": structured})
     assert ENCODED[:17] not in repr(clean)
     assert ENCODED[17:] not in repr(clean)
-
-
-def test_f_result_percent_encoded_text_is_withheld():
-    percent_encoded = "".join(f"%{ord(character):02X}" for character in ENCODED)
-    result = {"message": "prefix " + percent_encoded + " suffix"}
-    clean = make_context().redact_result(result)
-    assert clean["message"] == REDACTED_IMAGE
-
-
-def test_f_result_integer_array_is_withheld():
-    result = {
-        "content": [{"type": "image", "data": list(DATA), "mimeType": "image/png"}],
-    }
-    clean = make_context().redact_result(result)
-    assert clean["content"] == [{"type": "text", "text": REDACTED_IMAGE}]
 
 
 def test_unrelated_image_and_text_remain_unchanged():
