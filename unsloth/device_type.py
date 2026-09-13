@@ -69,6 +69,8 @@ def get_device_type():
         if is_hip():
             return "hip"
         return "cuda"
+    elif hasattr(torch, "npu") and torch.npu.is_available():
+        return "npu"
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
     if hasattr(torch, "accelerator"):
@@ -81,7 +83,11 @@ def get_device_type():
                 f"But `torch.accelerator.current_accelerator()` works with it being = `{accelerator}`\n"
                 f"Please reinstall torch - it's most likely broken :("
             )
-    raise NotImplementedError("Unsloth currently only works on NVIDIA, AMD and Intel GPUs.")
+        if accelerator == "npu":
+            return "npu"
+    raise NotImplementedError(
+        "Unsloth currently only works on NVIDIA, AMD, Intel and Ascend NPU GPUs."
+    )
 
 
 DEVICE_TYPE: str = get_device_type()
@@ -99,6 +105,8 @@ def get_device_count():
         return torch.cuda.device_count()
     elif DEVICE_TYPE == "xpu":
         return torch.xpu.device_count()
+    elif DEVICE_TYPE == "npu":
+        return torch.npu.device_count()
     else:
         return 1
 
@@ -244,6 +252,9 @@ def get_device_stats() -> tuple[str, str, float]:
     elif DEVICE_TYPE == "xpu":
         name = gpu_stats.name + ". " if gpu_stats.name else "Intel XPU Device. "
         snippet = f"Intel Toolkit: {torch.version.xpu}."
+    elif DEVICE_TYPE == "npu":
+        name = gpu_stats.name + ". " if gpu_stats.name else "Ascend NPU Device. "
+        snippet = "Ascend NPU: " + name
     else:
         name = gpu_stats.name + ". " if gpu_stats.name else "NVIDIA GPU Device. "
         snippet = f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}."
