@@ -432,10 +432,8 @@ def write_manifest(
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload, indent = 2, sort_keys = True), encoding = "utf-8")
         os.replace(tmp, path)
-    # TypeError/ValueError as well as OSError: `extra` is composed by the caller, and json
-    # refuses a value it cannot encode. Raising here would abort a pass that has already
-    # installed everything, leaving a venv with no manifest at all. update_manifest below
-    # catches the same three.
+    # TypeError/ValueError too: `extra` is caller-composed, and raising here would abort a pass
+    # that has already installed everything, leaving a venv with no manifest at all.
     except (OSError, TypeError, ValueError):
         return None
     # The parked copy described the previous pass; the live file now does.
