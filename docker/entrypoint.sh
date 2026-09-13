@@ -9,9 +9,13 @@ set -euo pipefail
 
 # Studio image: relink its code into the Studio home, which may be a volume from an
 # earlier image. Before the CUDA tool selection below, which reads the Studio venv.
+# A failure here means Studio would start against a half-linked home, so it is fatal;
+# the base image has no app dir and the linker is a no-op there.
 if [[ -x /usr/local/bin/unsloth-studio-home ]]; then
-    /usr/local/bin/unsloth-studio-home \
-        || echo "WARN: could not link Studio's code into ${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}" >&2
+    /usr/local/bin/unsloth-studio-home || {
+        echo "ERROR: could not link Studio's code into ${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}; see the messages above" >&2
+        exit 1
+    }
 fi
 
 # CUDA 13 ptxas + NVRTC are baked only for sm_103 and sm_121, which cu12.8 cannot
