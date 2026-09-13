@@ -32359,11 +32359,14 @@ class LlamaCppBackend:
                 if tool_calls and not has_structured_tc and len(tool_calls) > 1:
                     _seen_keys: set = set()
                     _last_workspace_key = None
-                    # Verifying an edit needs ONE re-run. Past that the batch is a repeating
-                    # block, which this filter used to collapse wholesale: without a bound,
-                    # `read, edit, read, edit` applies the edit twice and `(read, edit) * 4`
-                    # fills the cap and drops whatever the model asked for afterwards.
-                    _workspace_repeats_left = 1
+                    # A repeat is a verification, so it is worth running once per piece of new
+                    # work and no more. Counting calls that have not run before is what
+                    # separates `test, edit A, test, edit B, test` (every test verifies a
+                    # different edit) from `read, edit, read, edit` (a repeating block, which
+                    # replayed the edit) and from `(read, edit) * 4` (which filled the 8-call
+                    # cap and dropped the tool the model asked for last).
+                    _novel_kept = 0
+                    _novel_at_last_keep: dict = {}
                     _deduped: list = []
                     for _tc in tool_calls:
                         _fn = _tc.get("function", {}) or {}
@@ -32373,9 +32376,11 @@ class LlamaCppBackend:
                             if _key == _last_workspace_key:
                                 continue
                             if _key in _seen_keys:
-                                if _workspace_repeats_left <= 0:
+                                if _novel_kept <= _novel_at_last_keep.get(_key, 0):
                                     continue
-                                _workspace_repeats_left -= 1
+                            else:
+                                _novel_kept += 1
+                            _novel_at_last_keep[_key] = _novel_kept
                             _last_workspace_key = _key
                         elif _key in _seen_keys:
                             continue

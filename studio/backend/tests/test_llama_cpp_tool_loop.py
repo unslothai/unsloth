@@ -6490,3 +6490,36 @@ def test_textual_alternating_workspace_block_does_not_crowd_out_a_later_tool(mon
         )
     )
     assert calls == ["terminal", "edit_file", "terminal", "web_search"]
+
+
+def test_textual_every_independent_edit_gets_its_own_verification_rerun(monkeypatch):
+    """Two edit-and-verify cycles in one turn: the test after the second edit must run."""
+    test = '<tool_call>{"name":"terminal","arguments":{"command":"pytest -q"}}</tool_call>'
+    edit_a = '<tool_call>{"name":"edit_file","arguments":{"path":"a.py","edits":[]}}</tool_call>'
+    edit_b = '<tool_call>{"name":"edit_file","arguments":{"path":"b.py","edits":[]}}</tool_call>'
+    backend, _ = _backend_and_payloads(
+        monkeypatch,
+        [
+            [_sse({"content": test + edit_a + test + edit_b + test}), _done()],
+            [_sse({"content": "Done."}), _done()],
+        ],
+    )
+    calls = []
+    results = iter(["1 failed", "Edited a.py", "1 failed", "Edited b.py", "1 passed"])
+
+    def execute(name, arguments, **kwargs):
+        calls.append(name)
+        return next(results)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute)
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Fix the test"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            max_tool_iterations = 3,
+        )
+    )
+    assert calls == ["terminal", "edit_file", "terminal", "edit_file", "terminal"]
