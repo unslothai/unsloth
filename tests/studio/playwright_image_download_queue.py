@@ -7,6 +7,7 @@ Uses the rendered UI with deterministic API responses; no model bytes or GPU.
 PW_LOAD_SECOND=1 also checks loading the same model after its queued download.
 PW_HOLD_FIRST_PLAN=1 delays the first plan until the second selection has staged.
 PW_RESOLVE_FIRST=1 delays the first selection's GGUF filename lookup.
+PW_DIFFERENT_QUANT=1 selects another quant with PW_LOAD_SECOND=1.
 """
 
 import json
@@ -17,12 +18,21 @@ from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import sync_playwright
 
-from playwright_image_model_footprint import BASE_URL, REPO_ID, FILENAME, _api_payload, _json
+from playwright_image_model_footprint import (
+    BASE_URL,
+    REPO_ID,
+    FILENAME,
+    _api_payload,
+    _json,
+    klein_row,
+)
 from playwright_image_download_cancel_retry import _open_quant
 
 LOAD_SECOND = os.environ.get("PW_LOAD_SECOND", "0") == "1"
 HOLD_FIRST_PLAN = os.environ.get("PW_HOLD_FIRST_PLAN", "0") == "1"
 RESOLVE_FIRST = os.environ.get("PW_RESOLVE_FIRST", "0") == "1"
+DIFFERENT_QUANT = os.environ.get("PW_DIFFERENT_QUANT", "0") == "1"
+SECOND_FILENAME = FILENAME.replace("Q4_K_M", "Q8_0")
 SECOND = REPO_ID if LOAD_SECOND else "Tongyi-MAI/Z-Image-Turbo"
 COMPANION = "black-forest-labs/FLUX.2-klein-4B"
 ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright_image_download_queue"))
@@ -30,17 +40,19 @@ ART.mkdir(parents = True, exist_ok = True)
 
 
 def main() -> None:
-    state = {"jobs": {}, "starts": [], "calls": [], "plans": [], "release": False}
+    state = {"jobs": {}, "starts": [], "calls": [], "plans": [], "release": False, "files": []}
     errors = []
     held_plans = []
     held_listings = []
     hold_plans = HOLD_FIRST_PLAN
 
-    def plan(repo):
+    def plan(repo, filename = None):
         entries = [
             {
                 "repo_id": repo,
-                "files": [FILENAME if repo == REPO_ID else "transformer/model.safetensors"],
+                "files": [filename or FILENAME]
+                if repo == REPO_ID
+                else ["transformer/model.safetensors"],
                 "bytes": 1024,
                 "checkpoint": True,
             }
@@ -83,10 +95,11 @@ def main() -> None:
             if path == "/api/inference/images/download-plan":
                 selected = payload["model_path"]
                 state["plans"].append(selected)
+                result = plan(selected, payload.get("gguf_filename"))
                 if hold_plans:
-                    held_plans.append((r, selected))
+                    held_plans.append((r, result))
                 else:
-                    _json(r, plan(selected))
+                    _json(r, result)
             elif path == "/api/studio/download-transport-capabilities":
                 _json(
                     r,
@@ -101,6 +114,7 @@ def main() -> None:
             elif path == "/api/hub/download" and r.request.method == "POST":
                 assert payload["scope_id"] == "diffusion", payload
                 state["starts"].append(repo)
+                state["files"].append(payload.get("files", []))
                 job = {"state": "running", "generation": len(state["starts"]), "polls": 0}
                 state["jobs"][repo] = job
                 _json(
@@ -140,6 +154,10 @@ def main() -> None:
                 result = _api_payload(path, query, full_footprint = True)
                 if path in ("/api/hub/gguf-variants", "/api/models/gguf-variants"):
                     result["variants"][0]["downloaded"] = False
+                    if DIFFERENT_QUANT:
+                        result["variants"].append(
+                            {**result["variants"][0], "filename": SECOND_FILENAME, "quant": "Q8_0"}
+                        )
                     if RESOLVE_FIRST:
                         held_listings.append((r, result))
                         return
@@ -184,7 +202,17 @@ def main() -> None:
             page.get_by_role("combobox", name = "On model selection").click()
             page.get_by_role("option", name = "Download and load", exact = True).click()
             page.get_by_role("button", name = "Advanced", exact = True).click()
-            _open_quant(page, navigate = False)
+            if DIFFERENT_QUANT:
+                trigger = page.locator(".unsloth-model-selector-trigger:visible")
+                trigger.scroll_into_view_if_needed()
+                trigger.click()
+                klein_row(page).click()
+                gguf = page.get_by_text("GGUF", exact = True)
+                if gguf.count() == 1:
+                    gguf.click()
+                page.locator("button[data-model-picker-option]").filter(has_text = "Q8_0").click()
+            else:
+                _open_quant(page, navigate = False)
         else:
             trigger = page.locator(".unsloth-model-selector-trigger:visible")
             trigger.scroll_into_view_if_needed()
@@ -198,9 +226,10 @@ def main() -> None:
         for route, result in held_listings:
             _json(route, result)
         held_listings.clear()
-        for route, selected in held_plans:
-            _json(route, plan(selected))
+        for route, result in held_plans:
+            _json(route, result)
         held_plans.clear()
+        page.wait_for_timeout(300)
         state["release"] = True
         expected = [REPO_ID, COMPANION] if LOAD_SECOND else [REPO_ID, COMPANION, SECOND]
         if (HOLD_FIRST_PLAN or RESOLVE_FIRST) and not LOAD_SECOND:
@@ -218,6 +247,9 @@ def main() -> None:
                 assert state["starts"] == expected, state
             expected_calls = ["/api/inference/images/load"] if LOAD_SECOND else []
             assert state["calls"] == expected_calls, state
+            if DIFFERENT_QUANT:
+                assert [FILENAME] in state["files"], state
+                assert [SECOND_FILENAME] in state["files"], state
             assert not errors, errors
         finally:
             (ART / "result.json").write_text(

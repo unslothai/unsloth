@@ -2536,14 +2536,17 @@ export function ImagesPage({
   // Each download-only selection keeps its complete plan until it finishes or is cancelled.
   const downloadOnlyPlans = useRef<StagedDownloadEntry[][]>([]);
   const pendingLoadEntries = useRef<StagedDownloadEntry[] | null>(null);
+  const stagedPlan = useRef<"download" | { token: number } | null>(null);
 
   const { stage } = useStagedDownload({
     scopeId: "diffusion",
     onReady: () => {
-      if (downloadOnlyPlans.current.length > 0) {
+      if (stagedPlan.current === "download") {
         finishDownloadOnlyPlan();
         return;
       }
+      stagedPlan.current = null;
+      if (startQueuedDownload()) return;
       pendingLoadEntries.current = null;
       if (!active) {
         stagedLoadDeferred.current = true;
@@ -2553,8 +2556,14 @@ export function ImagesPage({
       if (pending) runStagedLoad(pending);
     },
     onCancelled: () => {
-      if (downloadOnlyPlans.current.length > 0) {
+      const cancelled = stagedPlan.current;
+      if (cancelled === "download") {
         finishDownloadOnlyPlan();
+        return;
+      }
+      stagedPlan.current = null;
+      if (pendingStagedLoad.current?.token !== cancelled?.token) {
+        startQueuedDownload();
         return;
       }
       pendingLoadEntries.current = null;
@@ -2569,19 +2578,26 @@ export function ImagesPage({
         quantRevert.current = null;
       }
       stagedQuantRevert.current = null;
+      startQueuedDownload();
     },
   });
 
-  function finishDownloadOnlyPlan() {
-    downloadOnlyPlans.current.shift();
+  function startQueuedDownload() {
     const next = downloadOnlyPlans.current[0];
-    if (next) {
-      stage(next);
-      return;
-    }
+    if (!next) return false;
+    stagedPlan.current = "download";
+    stage(next);
+    return true;
+  }
+
+  function finishDownloadOnlyPlan() {
+    stagedPlan.current = null;
+    downloadOnlyPlans.current.shift();
+    if (startQueuedDownload()) return;
     const entries = pendingLoadEntries.current;
     const pending = pendingStagedLoad.current;
     if (entries && pending && pickGuard.isLatest(pending.token)) {
+      stagedPlan.current = { token: pending.token };
       stage(entries);
     } else {
       pendingLoadEntries.current = null;
@@ -2698,10 +2714,18 @@ export function ImagesPage({
           }));
           if (downloadOnly) {
             downloadOnlyPlans.current.push(entries);
-            if (downloadOnlyPlans.current.length === 1) stage(entries);
+            // A late plan waits for the active file set, including a normal load's download.
+            if (stagedPlan.current === null) {
+              stagedPlan.current = "download";
+              stage(entries);
+            }
           } else {
             pendingLoadEntries.current = entries;
-            if (downloadOnlyPlans.current.length === 0) stage(entries);
+            const pending = pendingStagedLoad.current;
+            if (downloadOnlyPlans.current.length === 0 && pending) {
+              stagedPlan.current = { token: pending.token };
+              stage(entries);
+            }
           }
           return true;
         }
