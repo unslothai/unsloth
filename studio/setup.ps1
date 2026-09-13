@@ -4688,7 +4688,12 @@ function Get-UvInstallDir {
     foreach ($candidate in @($env:UV_INSTALL_DIR, $env:UV_UNMANAGED_INSTALL, $env:XDG_BIN_HOME)) {
         if ($candidate) { return $candidate }
     }
-    if ($env:XDG_DATA_HOME) { return (Join-Path $env:XDG_DATA_HOME "../bin") }
+    # Only if Join-Path actually produced one: on a nonexistent drive it returns null under
+    # ErrorActionPreference Continue, and the inline original fell through to the home fallback.
+    if ($env:XDG_DATA_HOME) {
+        $fromData = Join-Path $env:XDG_DATA_HOME "../bin" -ErrorAction SilentlyContinue
+        if ($fromData) { return $fromData }
+    }
     $userHome = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
     if (-not $userHome) { return $null }
     return (Join-Path $userHome ".local\bin")
