@@ -152,17 +152,19 @@ def test_the_manifest_lock_is_exclusive_across_processes(tmp_path: pathlib.Path)
     """The writers serialise against another PROCESS, not just another thread: setup.sh,
     setup.ps1, the installer and the CLI are separate processes on one venv."""
     order = tmp_path / "order.txt"
-    child_code = "\n".join([
-        f"import sys, time, pathlib",
-        f"sys.path.insert(0, {str(pathlib.Path(im.__file__).resolve().parent)!r})",
-        f"import install_manifest as im",
-        f"with im._manifest_lock(pathlib.Path({str(tmp_path)!r})):",
-        f"    pathlib.Path({str(tmp_path / 'held')!r}).write_text('1', encoding='utf-8')",
-        f"    time.sleep(1.5)",
-        f"    fh = open({str(order)!r}, 'a', encoding='utf-8')",
-        f"    fh.write('child-released\\n')",
-        f"    fh.close()",
-    ])
+    child_code = "\n".join(
+        [
+            f"import sys, time, pathlib",
+            f"sys.path.insert(0, {str(pathlib.Path(im.__file__).resolve().parent)!r})",
+            f"import install_manifest as im",
+            f"with im._manifest_lock(pathlib.Path({str(tmp_path)!r})):",
+            f"    pathlib.Path({str(tmp_path / 'held')!r}).write_text('1', encoding='utf-8')",
+            f"    time.sleep(1.5)",
+            f"    fh = open({str(order)!r}, 'a', encoding='utf-8')",
+            f"    fh.write('child-released\\n')",
+            f"    fh.close()",
+        ]
+    )
     child = subprocess.Popen([sys.executable, "-c", child_code])
     try:
         held = tmp_path / "held"

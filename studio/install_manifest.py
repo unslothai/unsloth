@@ -323,7 +323,6 @@ def _manifest_lock(root: Optional[Path] = None):
     if handle is not None:
         try:
             import fcntl  # noqa: PLC0415 - POSIX only, and absent on Windows
-
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             locked = True
         except ImportError:
@@ -347,11 +346,9 @@ def _manifest_lock(root: Optional[Path] = None):
                 try:
                     try:
                         import fcntl  # noqa: PLC0415
-
                         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                     except ImportError:
                         import msvcrt  # noqa: PLC0415
-
                         handle.seek(0)
                         msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
                 except (OSError, ValueError):
