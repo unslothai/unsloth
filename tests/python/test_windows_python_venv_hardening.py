@@ -128,6 +128,14 @@ def _uv_cache_functions(source: str) -> str:
         for name in (
             "Resolve-StudioUvCachePath",
             "Write-StudioUvCacheMarker",
+            # The selector's own helpers. Every one of them must be listed: the selector wraps
+            # its candidate loop in a try/catch that treats any failure as an uninspectable
+            # cache, so a helper missing here does not raise -- it quietly turns every case in
+            # this file into "studio, could not be inspected", which reads as a product bug.
+            "Test-StudioUvBucketName",
+            "Test-StudioUvCacheWritable",
+            "Test-StudioUvCachePopulated",
+            "Read-StudioUvCacheMarker",
             "Set-StudioUvCacheEnvironment",
             "Set-StudioUvCacheForLaunch",
             "Restore-StudioUvCacheEnvironment",

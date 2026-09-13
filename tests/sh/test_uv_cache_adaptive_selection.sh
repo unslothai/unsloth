@@ -19,6 +19,11 @@
 #   * UV_NO_CACHE                        -> studio, with nothing probed or recorded
 #   * --isolated-uv-cache                -> isolated, whatever else is true
 #   * unwritable STUDIO_HOME             -> the early block unsets, and the choice still runs
+#   * an unmarked warm Studio cache      -> kept; that is every install from before the marker
+#   * a BOM/CRLF marker                  -> honoured; install.ps1 writes one, WSL shares a home
+#   * a trailing slash in the marker     -> the same directory, so still `studio`
+#   * shared with an unwritable root     -> the launch keeps the shared cache, not a dead one
+#   * every shell that can be /bin/sh    -> same answers, with and without errexit
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -53,13 +58,15 @@ _SH="${BASH:-/bin/bash}"
 # $1 = STUDIO_HOME, $2 = preset UV_CACHE_DIR ("" for unset), $3 = uv's default cache dir,
 # $4 = "true" to isolate, $5 = UV_WORKING_DIR (also runs from $_TMP/cwd, so a relative $3
 # resolved against the wrong base is visible), $6 = "true" to run under pipefail, $7 = "true"
-# to run under set -f. Prints "<mode> <UV_CACHE_DIR> <after-launch-repoint>".
+# to run under set -f, $8 = "true" to run under set -e.
+# Prints "<mode> <UV_CACHE_DIR> <after-launch-repoint>".
 _run() {
     _stub_bin=$(mktemp -d)
     printf '#!/bin/sh\ncase "$1 $2" in "cache dir") printf "%%s\\n" "%s" ;; esac\n' \
         "$3" > "$_stub_bin/uv"
     chmod +x "$_stub_bin/uv"
     "$_SH" -c "
+        [ '${8:-false}' = true ] && set -e
         [ '${6:-false}' = true ] && set -o pipefail
         [ '${7:-false}' = true ] && set -f
         STUDIO_HOME='$1'
@@ -222,7 +229,7 @@ assert_eq "a lookalike KIND is not warmth"     "studio" "$(echo "$_out" | cut -d
 echo "=== UV_NO_CACHE stands the selection down, in every spelling uv honours ==="
 # uv takes this case-insensitively, so matching a fixed spelling would leave us probing and
 # recording a cache uv is not using.
-for _nc in 1 true True TRUE tRuE yes Yes on On; do
+for _nc in 1 y Y true True TRUE tRuE t T yes Yes on On; do
     UV_NO_CACHE="$_nc"; export UV_NO_CACHE
     assert_eq "UV_NO_CACHE=$_nc -> studio" "studio" \
         "$(_run "$_TMP/nc$_nc" '' "$_populated" | cut -d' ' -f1)"
@@ -278,6 +285,85 @@ echo "=== an unwritable STUDIO_HOME still reaches the selection ==="
 : > "$_TMP/blocked"
 _out=$(_run "$_TMP/blocked" '' "$_populated")
 assert_eq "unwritable home -> shared"    "shared" "$(echo "$_out" | cut -d' ' -f1)"
+
+echo "=== an install that predates the marker keeps the cache it already has ==="
+# The installed base from before the marker shipped has a populated $STUDIO_HOME/cache/uv and
+# nothing recording it. One unrelated wheel in uv's default reads as warm, and without this the
+# selection abandons gigabytes of Torch and CUDA to "avoid duplicate downloads".
+mkdir -p "$_TMP/pre/cache/uv/archive-v0/torch"
+: > "$_TMP/pre/cache/uv/archive-v0/torch/libtorch.so"
+: > "$_TMP/pre/cache/uv/CACHEDIR.TAG"
+_out=$(_run "$_TMP/pre" '' "$_populated")
+assert_eq "an unmarked warm Studio cache is kept" "studio" "$(echo "$_out" | cut -d' ' -f1)"
+assert_eq "and it is the one that is used"        "$_TMP/pre/cache/uv" "$(echo "$_out" | cut -d' ' -f2)"
+# An unmarked but EMPTY Studio cache is not a reason to skip the shared one.
+assert_eq "an unmarked cold Studio cache does not" "shared" \
+    "$(_run "$_TMP/pre2" '' "$_populated" | cut -d' ' -f1)"
+
+echo "=== a marker written by the Windows installer is readable here ==="
+# install.ps1 writes it with Set-Content -Encoding utf8: a BOM and CRLF under PowerShell 5.1.
+# A WSL install shares $STUDIO_HOME with the Windows one, so this file crosses over.
+mkdir -p "$_TMP/crlf/cache/uv/archive-v0/torch"
+: > "$_TMP/crlf/cache/uv/archive-v0/torch/libtorch.so"
+printf '\357\273\277%s\r\n' "$_TMP/crlf/cache/uv" > "$_TMP/crlf/cache/uv-cache-dir"
+_out=$(_run "$_TMP/crlf" '' "$_populated")
+assert_eq "a BOM+CRLF marker is honoured"  "studio" "$(echo "$_out" | cut -d' ' -f1)"
+assert_eq "and names the right directory"  "$_TMP/crlf/cache/uv" "$(echo "$_out" | cut -d' ' -f2)"
+
+echo "=== a trailing slash in the marker is the same directory ==="
+mkdir -p "$_TMP/slash/cache/uv/archive-v0/torch"
+: > "$_TMP/slash/cache/uv/archive-v0/torch/libtorch.so"
+printf '%s/\n' "$_TMP/slash/cache/uv" > "$_TMP/slash/cache/uv-cache-dir"
+# studio, not shared: otherwise the launch repoint the studio branch exists to avoid fires.
+assert_eq "a trailing slash still reads as ours" "studio" \
+    "$(_run "$_TMP/slash" '' "$_populated" | cut -d' ' -f1)"
+
+echo "=== the launch repoint refuses a Studio cache the backend could not fill ==="
+# shared with an unwritable STUDIO_HOME is reachable only because the early block failed its
+# own write probe, so repointing would hand the autostarted backend a cache uv aborts on.
+if [ "$(id -u)" = "0" ]; then
+    echo "  SKIP: unwritable-root launch case (root writes through the mode bits)"
+else
+    mkdir -p "$_TMP/lockedhome"
+    chmod a-w "$_TMP/lockedhome"
+    _out=$(_run "$_TMP/lockedhome" '' "$_populated")
+    assert_eq "unwritable root still selects shared" "shared" "$(echo "$_out" | cut -d' ' -f1)"
+    assert_eq "and the launch keeps that cache"      "$_populated" "$(echo "$_out" | cut -d' ' -f3)"
+    chmod u+w "$_TMP/lockedhome"
+fi
+
+echo "=== the same answers under a real /bin/sh, and under the errexit install.sh runs with ==="
+# Everything above runs one shell without errexit, and install.sh is `#!/bin/sh` with `set -e`
+# on line 5. So the arrangement the cases above use is the one arrangement the installer never
+# uses: on Debian and Ubuntu /bin/sh is dash, on Alpine it is busybox ash, and a construct whose
+# status leaks would abort the install rather than answer. The core verdicts are re-run here
+# across every /bin/sh this box has, with errexit both ways.
+_SH_SAVED="$_SH"
+for _alt in /bin/sh /bin/bash; do
+    [ -x "$_alt" ] || continue
+    _SH="$_alt"
+    _alt_name=$(basename "$_alt")
+    for _ee in false true; do
+        _tag="$_alt_name errexit=$_ee"
+        _out=$(_run "$_TMP/ee.$_alt_name.$_ee.a" '' "$_populated" false '' false false "$_ee")
+        assert_eq "$_tag: populated default -> shared" "shared" "$(echo "$_out" | cut -d' ' -f1)"
+        assert_eq "$_tag: and the launch repoints"     "$_TMP/ee.$_alt_name.$_ee.a/cache/uv" \
+            "$(echo "$_out" | cut -d' ' -f3)"
+        assert_eq "$_tag: empty default -> studio"     "studio" \
+            "$(_run "$_TMP/ee.$_alt_name.$_ee.b" '' "$_empty" false '' false false "$_ee" | cut -d' ' -f1)"
+        assert_eq "$_tag: caller value -> custom"      "custom" \
+            "$(_run "$_TMP/ee.$_alt_name.$_ee.c" "$_TMP/mine" "$_populated" false '' false false "$_ee" | cut -d' ' -f1)"
+        assert_eq "$_tag: isolation is honoured"       "isolated" \
+            "$(_run "$_TMP/ee.$_alt_name.$_ee.d" '' "$_populated" true '' false false "$_ee" | cut -d' ' -f1)"
+        assert_eq "$_tag: a lookalike is not warmth"   "studio" \
+            "$(_run "$_TMP/ee.$_alt_name.$_ee.e" '' "$_lookalike_dir" false '' false false "$_ee" | cut -d' ' -f1)"
+        UV_NO_CACHE=1; export UV_NO_CACHE
+        assert_eq "$_tag: UV_NO_CACHE -> studio"       "studio" \
+            "$(_run "$_TMP/ee.$_alt_name.$_ee.f" '' "$_populated" false '' false false "$_ee" | cut -d' ' -f1)"
+        unset UV_NO_CACHE
+    done
+done
+_SH="$_SH_SAVED"
 
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"

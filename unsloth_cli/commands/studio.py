@@ -3193,14 +3193,20 @@ def _uv_platform_cache_dir() -> Optional[Path]:
     return Path(home) / ".cache" / "uv" if home else None
 
 
-# uv's boolish spelling. Anything outside it is a value uv refuses to run on.
-_UV_TRUE = ("1", "true", "yes", "on")
+# uv's boolish spelling. Anything outside it is a value uv refuses to run on. These are clap's
+# literals, which is what uv binds UV_NO_CACHE to (BoolishValueParser); `y` and `t` are real
+# spellings uv honours and were missing here, in install.sh and in install.ps1 alike.
+_UV_TRUE = ("1", "y", "yes", "t", "true", "on")
 
 
 def _uv_no_cache_requested() -> bool:
     """uv --no-cache caches in a temporary directory and discards it, outranks --cache-dir,
-    and recording it would aim later updates at a cache that never existed."""
-    return (os.environ.get("UV_NO_CACHE") or "").strip().lower() in _UV_TRUE
+    and recording it would aim later updates at a cache that never existed.
+
+    Not stripped, matching clap and therefore both installers: uv rejects a padded value
+    outright rather than reading it as true, so ` true ` leaves uv's cache ON and this must
+    not stand the selection down for it."""
+    return (os.environ.get("UV_NO_CACHE") or "").lower() in _UV_TRUE
 
 
 def _uv_default_cache_dir(cwd: Optional[Path] = None) -> Optional[Path]:

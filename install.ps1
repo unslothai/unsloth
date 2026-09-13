@@ -1579,17 +1579,29 @@ exit 1
     # Set-Location does not move. Mirrors _absolutize_uv_cache_dir in install.sh.
     function Resolve-StudioUvCachePath {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Cache)
-        if ([string]::IsNullOrEmpty($Cache) -or [System.IO.Path]::IsPathRooted($Cache)) {
-            return $Cache
+        if ([string]::IsNullOrEmpty($Cache)) { return $Cache }
+        if (-not [System.IO.Path]::IsPathRooted($Cache)) {
+            try {
+                $base = if (-not [string]::IsNullOrWhiteSpace($env:UV_WORKING_DIR)) {
+                    if ([System.IO.Path]::IsPathRooted($env:UV_WORKING_DIR)) {
+                        $env:UV_WORKING_DIR
+                    } else { Join-Path $PWD.Path $env:UV_WORKING_DIR }
+                } else { $PWD.Path }
+                $Cache = [System.IO.Path]::GetFullPath((Join-Path $base $Cache))
+            } catch { return $Cache }
         }
+        # A trailing separator names the same directory and compares unequal to one written
+        # without it, and that comparison is what picks `studio` over `shared` in the selector.
+        # Never past the root (`C:\`, `\\server\share\`, `/`), which is a real directory:
+        # GetPathRoot says where to stop. Mirrors the same trim in _absolutize_uv_cache_dir.
         try {
-            $base = if (-not [string]::IsNullOrWhiteSpace($env:UV_WORKING_DIR)) {
-                if ([System.IO.Path]::IsPathRooted($env:UV_WORKING_DIR)) {
-                    $env:UV_WORKING_DIR
-                } else { Join-Path $PWD.Path $env:UV_WORKING_DIR }
-            } else { $PWD.Path }
-            return [System.IO.Path]::GetFullPath((Join-Path $base $Cache))
-        } catch { return $Cache }
+            $root = [System.IO.Path]::GetPathRoot($Cache)
+            while ($Cache.Length -gt $root.Length -and
+                   ($Cache.EndsWith("\") -or $Cache.EndsWith("/"))) {
+                $Cache = $Cache.Substring(0, $Cache.Length - 1)
+            }
+        } catch { }
+        return $Cache
     }
 
     # Claim the root before anything of ours goes into it: the uv cache, the venv and the venv's
@@ -1719,6 +1731,109 @@ exit 1
         $script:StudioUvMarkerSaved = $false
     }
 
+    # True for a name uv itself creates: <kind>-v<N>, whole suffix numeric. `archive-v0.backup`
+    # and `archive-v0.tar.gz` are not uv's, so neither the write probe nor the warmth scan may
+    # treat them as buckets. Mirrors _uv_is_bucket_name in install.sh, including its rule that
+    # the suffix runs from the LAST `-v`.
+    function Test-StudioUvBucketName {
+        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Name)
+        $at = $Name.LastIndexOf("-v")
+        if ($at -lt 0) { return $false }
+        $suffix = $Name.Substring($at + 2)
+        if ([string]::IsNullOrEmpty($suffix)) { return $false }
+        return ($suffix -match '^[0-9]+$')
+    }
+
+    # Readable is not usable: uv writes CACHEDIR.TAG into the root and renames distributions into
+    # the buckets, aborting on either, and an ACL answers a different question than a real create
+    # does. So create and delete for real, in the root and in every <kind>-v<N> bucket -- uv
+    # mutates interpreter-v4 too, and a curated list would miss the next one it adds. Creating is
+    # not enough either: an ACL that grants create but denies delete leaves uv's own renames to
+    # fail later. Mirrors the probe loop in _configure_uv_cache.
+    function Test-StudioUvCacheWritable {
+        param([Parameter(Mandatory = $true)][string]$Cache)
+        $probeDirs = [System.Collections.Generic.List[string]]::new()
+        $probeDirs.Add($Cache)
+        try {
+            foreach ($entry in [System.IO.Directory]::GetFileSystemEntries($Cache)) {
+                $name = [System.IO.Path]::GetFileName($entry)
+                # Only where a BUCKET should be. Anything else at the top level is not uv's to
+                # write: CACHEDIR.TAG and .gitignore are its own files, and a cache-dir pointed at
+                # a mount point has a root-owned lost+found that must not condemn the whole cache.
+                if (-not (Test-StudioUvBucketName -Name $name)) { continue }
+                # A file, or a link dangling or not, is still an existing path to the create that
+                # uv makes, which answers "already exists", so uv refuses it.
+                if (-not [System.IO.Directory]::Exists($entry)) { return $false }
+                $probeDirs.Add($entry)
+            }
+        } catch { return $false }
+        foreach ($dir in $probeDirs) {
+            # A generated name, not a fixed one: a predictable path can be pre-created as a link
+            # for the write to follow.
+            $probe = Join-Path $dir (".unsloth-write-probe." + [guid]::NewGuid().ToString("N").Substring(0, 8))
+            try { [System.IO.File]::WriteAllText($probe, "") } catch { return $false }
+            try { Remove-Item -LiteralPath $probe -Force -ErrorAction Stop } catch { return $false }
+        }
+        return $true
+    }
+
+    # Warm means package BYTES: wheels-* is metadata only (.msgpack/.http on uv 0.10), so a bare
+    # `--dry-run` used to read as warm. Stricter than the probe above, and deliberately so: the
+    # KIND must be one of uv's own artifact buckets, because `archive-backup-v0` and
+    # `archive-v0.backup` hold bytes uv cannot reuse, so counting them picks a cache that is empty
+    # in practice. Under-detecting a future bucket kind only costs a fallback to the Studio cache,
+    # whereas under-PROBING one would let an unwritable cache through.
+    # [ref] $Blocked: unreadable is not empty, and the caller's message says why.
+    function Test-StudioUvCachePopulated {
+        param(
+            [Parameter(Mandatory = $true)][string]$Cache,
+            [ref]$Blocked
+        )
+        try {
+            $buckets = Get-ChildItem -LiteralPath $Cache -Directory -Force -ErrorAction Stop |
+                Where-Object {
+                    (Test-StudioUvBucketName -Name $_.Name) -and
+                    ($_.Name.Substring(0, $_.Name.LastIndexOf("-v")) -in
+                        @("archive", "builds", "built-wheels", "wheels", "sdists"))
+                }
+        } catch {
+            $Blocked.Value = $true
+            return $false
+        }
+        foreach ($bucket in $buckets) {
+            # SilentlyContinue, not Stop: one denied subdirectory must not make a populated cache
+            # read as empty. `find` also skips and continues.
+            $scanErrors = $null
+            $entry = Get-ChildItem -LiteralPath $bucket.FullName -File -Recurse -Force `
+                    -ErrorAction SilentlyContinue -ErrorVariable scanErrors |
+                Where-Object {
+                    $_.Name -notin @("CACHEDIR.TAG", ".git", ".gitignore") -and
+                    -not $_.Name.StartsWith(".unsloth-write-probe.") -and
+                    $_.Extension -notin @(".lock", ".msgpack", ".http", ".rev")
+                } |
+                Select-Object -First 1
+            if ($null -ne $entry) { return $true }
+            if ($scanErrors -and $scanErrors.Count -gt 0) { $Blocked.Value = $true }
+        }
+        return $false
+    }
+
+    # The cache THIS install last recorded, absolute, or "" when there is none to read. Read
+    # before the selector writes its own. Mirrors the marker read in _configure_uv_cache and the
+    # reader in unsloth_cli/commands/studio.py, BOM and all: Windows PowerShell 5.1 writes
+    # -Encoding utf8 WITH a BOM, and the update writes the same file BOM-less.
+    function Read-StudioUvCacheMarker {
+        param([Parameter(Mandatory = $true)][string]$StudioRoot)
+        $markerFile = Join-Path (Join-Path $StudioRoot "cache") "uv-cache-dir"
+        try {
+            $recorded = Get-Content -LiteralPath $markerFile -Raw -Encoding UTF8 -ErrorAction Stop
+        } catch { return "" }
+        if ($null -eq $recorded) { return "" }
+        $recorded = ([string]$recorded).Trim([char]0xFEFF).Trim()
+        if ([string]::IsNullOrWhiteSpace($recorded)) { return "" }
+        return (Resolve-StudioUvCachePath -Cache $recorded)
+    }
+
     function Set-StudioUvCacheEnvironment {
         param(
             [Parameter(Mandatory = $true)][string]$StudioRoot,
@@ -1738,68 +1853,108 @@ exit 1
         }
 
         if ($Isolated) {
-            $selectedCache = $studioCache
+            Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $studioCache
             $script:StudioUvCacheMode = "isolated"
-        } else {
-            $sharedCache = $null
-            $sharedCachePopulated = $false
-            $scanBlocked = $false
-            try {
-                # Ask uv so uv.toml / UV_CONFIG_FILE / the default count; remove a
-                # blank inherited value so it cannot override them.
-                Remove-Item -LiteralPath Env:UV_CACHE_DIR -ErrorAction SilentlyContinue
-                if ($UvExecutable) {
-                    $resolvedCache = @(& $UvExecutable cache dir 2>$null)
-                    $uvCacheExit = $LASTEXITCODE
-                    # Last nonblank line, not [0]: a notice would become the path.
-                    $resolvedLine = $resolvedCache |
-                        Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
-                        Select-Object -Last 1
-                    if ($uvCacheExit -eq 0 -and $null -ne $resolvedLine) {
-                        $sharedCache = ([string]$resolvedLine).Trim()
-                    }
-                }
-                if (-not $sharedCache -and -not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-                    $sharedCache = Join-Path (Join-Path $env:LOCALAPPDATA "uv") "cache"
-                }
-                if ($sharedCache -and (Test-Path -LiteralPath $sharedCache -PathType Container)) {
-                    # Warm means package BYTES: wheels-* is metadata only (.msgpack/
-                    # .http on uv 0.10), so a bare `--dry-run` used to read as warm.
-                    $buckets = Get-ChildItem -LiteralPath $sharedCache -Directory -Force -ErrorAction Stop |
-                        Where-Object { $_.Name -match '^(archive|builds|built-wheels|wheels|sdists)-' }
-                    foreach ($bucket in $buckets) {
-                        # SilentlyContinue, not Stop: one denied subdirectory must not
-                        # make a populated cache read as empty. `find` also skips and continues.
-                        $scanErrors = $null
-                        $entry = Get-ChildItem -LiteralPath $bucket.FullName -File -Recurse -Force `
-                                -ErrorAction SilentlyContinue -ErrorVariable scanErrors |
-                            Where-Object {
-                                $_.Name -notin @("CACHEDIR.TAG", ".git", ".gitignore") -and
-                                $_.Extension -notin @(".lock", ".msgpack", ".http", ".rev")
-                            } |
-                            Select-Object -First 1
-                        if ($null -ne $entry) {
-                            $sharedCachePopulated = $true
-                            break
-                        }
-                        # Unreadable is not empty; remembered so the message says why.
-                        if ($scanErrors -and $scanErrors.Count -gt 0) { $scanBlocked = $true }
-                    }
-                }
-            } catch {
-                # An uninspectable cache is not an install error; isolation is safe.
-                $sharedCache = $null
-                $sharedCachePopulated = $false
-                $scanBlocked = $true
-            }
+            Write-StudioUvCacheMarker -StudioRoot $StudioRoot -Cache $studioCache
+            step "uv cache" "forced Studio cache isolation ($studioCache); already-cached packages may download again" "Yellow"
+            return
+        }
 
-            if ($sharedCachePopulated) {
-                $selectedCache = $sharedCache
-                $script:StudioUvCacheMode = "shared"
-            } else {
-                $selectedCache = $studioCache
-                $script:StudioUvCacheMode = "studio"
+        # uv --no-cache neither reads nor writes a cache, so there is nothing to select: probing
+        # would touch a cache the caller told uv to leave alone, and a marker written here would
+        # name one this install never filled. Mirrors _uv_no_cache_requested() in
+        # unsloth_cli/commands/studio.py and the UV_NO_CACHE branch in install.sh. Lowercased,
+        # because uv takes this case-insensitively; not trimmed, since uv rejects a padded value
+        # outright rather than reading it as true.
+        # The literals are clap's, which is what uv binds this to (BoolishValueParser over
+        # `y yes t true on 1`); `y` and `t` are real spellings uv honours.
+        if (([string]$env:UV_NO_CACHE).ToLowerInvariant() -in @("1", "y", "yes", "t", "true", "on")) {
+            Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $studioCache
+            $script:StudioUvCacheMode = "studio"
+            step "uv cache" "uv caching is off (UV_NO_CACHE); nothing to select or record"
+            return
+        }
+
+        $defaultCache = $null
+        $scanBlocked = $false
+        $blockedCache = ""
+        $warnCache = ""
+        $chosenCache = ""
+        try {
+            # Ask uv so uv.toml / UV_CONFIG_FILE / the default count; remove a
+            # blank inherited value so it cannot override them.
+            Remove-Item -LiteralPath Env:UV_CACHE_DIR -ErrorAction SilentlyContinue
+            if ($UvExecutable) {
+                $resolvedCache = @(& $UvExecutable cache dir 2>$null)
+                $uvCacheExit = $LASTEXITCODE
+                # Last nonblank line, not [0]: a notice would become the path.
+                $resolvedLine = $resolvedCache |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+                    Select-Object -Last 1
+                if ($uvCacheExit -eq 0 -and $null -ne $resolvedLine) {
+                    $defaultCache = ([string]$resolvedLine).Trim()
+                }
             }
+            if (-not $defaultCache -and -not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+                $defaultCache = Join-Path (Join-Path $env:LOCALAPPDATA "uv") "cache"
+            }
+            # A relative cache-dir comes back verbatim and uv resolves it against its working
+            # directory, so scanning it as written inspects a same-named directory beside us.
+            if ($defaultCache) { $defaultCache = Resolve-StudioUvCachePath -Cache $defaultCache }
+
+            # The cache THIS install last recorded outranks uv's default, while it is still warm.
+            # A rerun or a Desktop repair would otherwise abandon a Studio cache holding Torch and
+            # CUDA the moment one unrelated wheel made uv's default read as warm, re-downloading
+            # gigabytes to "avoid duplicate downloads". Content cannot decide it -- the launch
+            # repoint below leaves backend bytes in the losing cache -- which is why the marker
+            # exists. Same precedence the update path already uses on Windows
+            # (unsloth_cli/commands/studio.py:_with_studio_uv_cache), and the same order
+            # _configure_uv_cache uses in install.sh.
+            # An install from before the marker existed has a populated Studio cache and nothing
+            # recording it, and the marker is the only thing keeping the loop from abandoning
+            # it. Nothing but this product writes there, so a warm one is self-evidently ours.
+            # Only when there is no marker: a marker naming somewhere else is a decision.
+            $recorded = Read-StudioUvCacheMarker -StudioRoot $StudioRoot
+            $unmarkedStudio = if ($recorded) { $null } else { $studioCache }
+            foreach ($candidate in @($recorded, $unmarkedStudio, $defaultCache)) {
+                if ([string]::IsNullOrWhiteSpace([string]$candidate)) { continue }
+                if ($chosenCache) { continue }
+                # SilentlyContinue: under $ErrorActionPreference = "Stop" a Test-Path inside an
+                # ACL-denied directory THROWS (see Write-StudioUvCacheMarker above), and a throw
+                # here escapes to the outer catch and kills the whole loop -- so one unreachable
+                # marker would also cost us uv's default. install.sh's `[ -d ] && [ -r ]` simply
+                # reads false and moves on, which is the behaviour to match.
+                if (-not (Test-Path -LiteralPath $candidate -PathType Container -ErrorAction SilentlyContinue)) { continue }
+                # Per candidate: Test-StudioUvCachePopulated can report blocked and still return
+                # $true, so a shared flag would pin the NEXT candidate's name into $blockedCache
+                # and suppress the one message that names the cache actually refused.
+                $candidateBlocked = $false
+                $populated = Test-StudioUvCachePopulated -Cache $candidate -Blocked ([ref]$candidateBlocked)
+                if ($candidateBlocked) {
+                    $scanBlocked = $true
+                    if (-not $blockedCache) { $blockedCache = $candidate }
+                }
+                if (-not $populated) { continue }
+                if (Test-StudioUvCacheWritable -Cache $candidate) {
+                    $chosenCache = $candidate
+                } elseif (-not $warnCache) {
+                    $warnCache = $candidate
+                }
+            }
+        } catch {
+            # An uninspectable cache is not an install error; isolation is safe.
+            $chosenCache = ""
+            $scanBlocked = $true
+        }
+
+        if ($chosenCache) {
+            $selectedCache = $chosenCache
+            # studio, not shared, when the choice IS the Studio cache: the launch repoint below
+            # only has to move a cache that is not already ours.
+            $script:StudioUvCacheMode = if ($chosenCache -eq $studioCache) { "studio" } else { "shared" }
+        } else {
+            $selectedCache = $studioCache
+            $script:StudioUvCacheMode = "studio"
         }
         Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $selectedCache
         Write-StudioUvCacheMarker -StudioRoot $StudioRoot -Cache $selectedCache
@@ -1808,14 +1963,19 @@ exit 1
             "shared" {
                 step "uv cache" "reusing existing shared cache ($selectedCache) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate"
             }
-            "isolated" {
-                step "uv cache" "forced Studio cache isolation ($selectedCache); already-cached packages may download again" "Yellow"
-            }
             "studio" {
-                if ($scanBlocked -and -not [string]::IsNullOrWhiteSpace([string]$sharedCache)) {
-                    step "uv cache" "using new Studio-owned cache ($selectedCache); part of $sharedCache could not be read, so cached packages may download again" "Yellow"
-                } elseif ($scanBlocked) {
+                if ($chosenCache) {
+                    step "uv cache" "reusing this install's Studio cache ($selectedCache)"
+                # Never about the directory we are falling back TO. The Studio cache is a
+                # candidate itself now, so it can be the one that was refused, and "using X; X is
+                # populated but not writable" claims a fallback that did not happen.
+                } elseif ($scanBlocked -and -not [string]::IsNullOrWhiteSpace([string]$blockedCache) -and $blockedCache -ne $selectedCache) {
+                    step "uv cache" "using new Studio-owned cache ($selectedCache); part of $blockedCache could not be read, so cached packages may download again" "Yellow"
+                } elseif ($scanBlocked -and [string]::IsNullOrWhiteSpace([string]$blockedCache)) {
                     step "uv cache" "using new Studio-owned cache ($selectedCache); the existing uv cache could not be inspected, so cached packages may download again" "Yellow"
+                # Warm and still here means the write probe refused it.
+                } elseif ($warnCache -and $warnCache -ne $selectedCache) {
+                    step "uv cache" "using new Studio-owned cache ($selectedCache); $warnCache is populated but not writable, so cached packages may download again" "Yellow"
                 } else {
                     step "uv cache" "using new Studio-owned cache ($selectedCache)"
                 }
@@ -1825,9 +1985,19 @@ exit 1
 
     function Set-StudioUvCacheForLaunch {
         param([Parameter(Mandatory = $true)][string]$StudioRoot)
-        if ($script:StudioUvCacheMode -eq "shared") {
-            Set-Item -LiteralPath Env:UV_CACHE_DIR -Value (Join-Path (Join-Path $StudioRoot "cache") "uv")
-        }
+        if ($script:StudioUvCacheMode -ne "shared") { return }
+        # Only to a cache the backend can actually fill: repointing at one we cannot create or
+        # write hands the autostarted backend a cache uv aborts on, after an install that
+        # succeeded. Keeping the shared one is the honest fallback -- it is the cache this
+        # install just filled. Mirrors _prepare_studio_uv_cache_for_launch in install.sh.
+        $launchCache = Join-Path (Join-Path $StudioRoot "cache") "uv"
+        try {
+            [System.IO.Directory]::CreateDirectory($launchCache) | Out-Null
+            $probe = Join-Path $launchCache (".unsloth-write-probe." + [guid]::NewGuid().ToString("N").Substring(0, 8))
+            [System.IO.File]::WriteAllText($probe, "")
+            Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+        } catch { return }
+        Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $launchCache
     }
 
     function Restore-StudioUvCacheEnvironment {

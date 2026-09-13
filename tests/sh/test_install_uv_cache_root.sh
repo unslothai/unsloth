@@ -484,10 +484,15 @@ EXPORTED
     # An unwritable STUDIO_HOME is a reason to skip the marker, never to fail the install.
     rm -rf "$ROOT/cache"
     if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && mkdir -p "$ROOT" && chmod 500 "$ROOT" 2>/dev/null; then
+        # ...and the launch keeps the shared cache rather than repointing at the Studio one.
+        # This is the ONLY way shared is reachable with an unwritable root -- the early block
+        # has to have failed its own write probe for the selection to run at all -- so the
+        # repoint would hand the autostarted backend a cache uv aborts on, after an install
+        # that just succeeded. The shared cache is the one this install actually filled.
         run_case "$shell" "an unwritable Studio root still installs" unset "" false \
             "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$BUILDS_CACHE" shared \
             "reusing existing shared cache ($BUILDS_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
-            "$STUDIO_CACHE"
+            "$BUILDS_CACHE"
         chmod 755 "$ROOT" 2>/dev/null || true
     fi
 done

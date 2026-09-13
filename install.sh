@@ -588,14 +588,28 @@ _uv_is_bucket_name() {
 _absolutize_uv_cache_dir() {
     _uv_cache_path="${1-$UV_CACHE_DIR}"
     case "$_uv_cache_path" in
-        /*) printf '%s\n' "$_uv_cache_path" ; return 0 ;;
-    esac
-    _uv_cache_base="${UV_WORKING_DIR:-$PWD}"
-    case "$_uv_cache_base" in
         /*) ;;
-        *) _uv_cache_base="$PWD/$_uv_cache_base" ;;
+        *)
+            _uv_cache_base="${UV_WORKING_DIR:-$PWD}"
+            case "$_uv_cache_base" in
+                /*) ;;
+                *) _uv_cache_base="$PWD/$_uv_cache_base" ;;
+            esac
+            _uv_cache_path="$_uv_cache_base/$_uv_cache_path"
+            ;;
     esac
-    printf '%s\n' "$_uv_cache_base/$_uv_cache_path"
+    # A trailing slash names the same directory and compares unequal to one written without
+    # it, and that string comparison is what picks `studio` over `shared` below -- a marker
+    # reading `$STUDIO_HOME/cache/uv/` would otherwise be announced as a shared cache and get
+    # the launch repoint the `studio` branch exists to avoid. Never down to the empty string:
+    # the loop stops at the root, which is a real directory.
+    while [ "$_uv_cache_path" != / ]; do
+        case "$_uv_cache_path" in
+            */) _uv_cache_path="${_uv_cache_path%/}" ;;
+            *) break ;;
+        esac
+    done
+    printf '%s\n' "$_uv_cache_path"
 }
 
 _record_uv_cache_choice() {
@@ -673,9 +687,12 @@ _configure_uv_cache() {
     # the cache off, and matching a fixed spelling would leave us probing and recording a
     # cache uv is not using. Not trimmed, since uv rejects a padded value outright rather
     # than reading it as true.
+    # The literals are clap's, which is what uv binds this to (BoolishValueParser over
+    # `y yes t true on 1`); `y` and `t` are real spellings uv honours, and missing one leaves
+    # us probing and recording a cache uv is not using.
     _uv_no_cache=$(printf '%s' "${UV_NO_CACHE:-}" | tr '[:upper:]' '[:lower:]')
     case "$_uv_no_cache" in
-        1|true|yes|on)
+        1|y|yes|t|true|on)
             unset _uv_no_cache
             UV_CACHE_DIR="$_uv_studio_cache"
             _UV_CACHE_MODE=studio
@@ -707,11 +724,30 @@ _configure_uv_cache() {
     # to "avoid duplicate downloads". Content cannot decide it -- the launch repoint below
     # leaves backend bytes in the losing cache -- which is why the marker exists. Same
     # precedence the update path uses (unsloth_cli/commands/studio.py:_with_studio_uv_cache).
-    _uv_recorded=$(cat "$STUDIO_HOME/cache/uv-cache-dir" 2>/dev/null) || _uv_recorded=""
+    # tr and the BOM strip: install.ps1 writes this file with Set-Content -Encoding utf8,
+    # which on Windows PowerShell 5.1 means a BOM and CRLF, and a WSL install shares
+    # $STUDIO_HOME with the Windows one. The other two readers already defend
+    # (Read-StudioUvCacheMarker in install.ps1, utf-8-sig in unsloth_cli/commands/studio.py);
+    # without it here a trailing CR fails [ -d ] and the warm cache is abandoned in silence,
+    # and a BOM makes the value non-absolute so $PWD gets prepended to it.
+    _uv_recorded=$(cat "$STUDIO_HOME/cache/uv-cache-dir" 2>/dev/null | tr -d '\r') || _uv_recorded=""
+    _uv_bom=$(printf '\357\273\277')
+    _uv_recorded="${_uv_recorded#"$_uv_bom"}"
+    unset _uv_bom
     case "$_uv_recorded" in
         *[![:space:]]*) _uv_recorded=$(_absolutize_uv_cache_dir "$_uv_recorded") ;;
         *) _uv_recorded="" ;;
     esac
+
+    # An install from before the marker existed has a populated $STUDIO_HOME/cache/uv and
+    # nothing recording it, and the marker is the ONLY thing keeping the loop below from
+    # abandoning it: one unrelated wheel anywhere in uv's default reads as warm, and the
+    # install then re-downloads the Torch and CUDA it already holds while announcing that it
+    # is avoiding duplicate downloads. Nothing but this product writes to that directory, so a
+    # warm one is self-evidently ours and belongs in the list. Only when there is no marker: a
+    # marker that names somewhere else is a decision, and it outranks a leftover.
+    _uv_unmarked_studio=""
+    [ -n "$_uv_recorded" ] || _uv_unmarked_studio="$_uv_studio_cache"
 
     # Readable is not usable: uv writes CACHEDIR.TAG into the root and renames distributions
     # into the buckets, aborting on either. Nested entries are deliberately NOT probed -- that
@@ -721,7 +757,7 @@ _configure_uv_cache() {
     _uv_blocked_cache=""
     _uv_warn_cache=""
     _uv_chosen_cache=""
-    for _uv_candidate in "$_uv_recorded" "$_uv_default_cache"; do
+    for _uv_candidate in "$_uv_recorded" "$_uv_unmarked_studio" "$_uv_default_cache"; do
         { [ -n "$_uv_candidate" ] && [ -z "$_uv_chosen_cache" ]; } || continue
         _uv_cand_populated=false
         _uv_cand_writable=true
@@ -813,7 +849,7 @@ _configure_uv_cache() {
             _uv_warn_cache="$_uv_candidate"
         fi
     done
-    unset _uv_candidate _uv_cand_populated _uv_cand_writable
+    unset _uv_candidate _uv_cand_populated _uv_cand_writable _uv_unmarked_studio
 
     if [ -n "$_uv_chosen_cache" ]; then
         UV_CACHE_DIR="$_uv_chosen_cache"
@@ -838,10 +874,13 @@ _configure_uv_cache() {
         studio)
             if [ -n "$_uv_chosen_cache" ]; then
                 step "uv cache" "reusing this install's Studio cache ($UV_CACHE_DIR)"
-            elif [ "$_uv_scan_blocked" = true ]; then
+            # Never about the directory we are falling back TO. The Studio cache is a candidate
+            # itself now, so it can be the one that was refused, and "using X; X is populated
+            # but not writable" claims a fallback that did not happen.
+            elif [ "$_uv_scan_blocked" = true ] && [ "$_uv_blocked_cache" != "$UV_CACHE_DIR" ]; then
                 step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); part of $_uv_blocked_cache could not be read, so cached packages may download again" "$C_WARN"
             # Warm and still here means the write probe refused it.
-            elif [ -n "$_uv_warn_cache" ]; then
+            elif [ -n "$_uv_warn_cache" ] && [ "$_uv_warn_cache" != "$UV_CACHE_DIR" ]; then
                 step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR); $_uv_warn_cache is populated but not writable, so cached packages may download again" "$C_WARN"
             else
                 step "uv cache" "using new Studio-owned cache ($UV_CACHE_DIR)"
@@ -852,7 +891,18 @@ _configure_uv_cache() {
 
 _prepare_studio_uv_cache_for_launch() {
     [ "${_UV_CACHE_MODE:-}" = shared ] || return 0
-    UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
+    # Only to a cache the backend can actually fill. shared is reachable exactly when the early
+    # block failed its own write probe on $STUDIO_HOME/cache/uv, unset UV_CACHE_DIR and cleared
+    # the flag -- which is what lets the selection run at all -- so repointing unconditionally
+    # hands the autostarted backend a cache uv aborts on, after an install that succeeded.
+    # Keeping the shared one is the honest fallback: it is the cache this install just filled.
+    _uv_launch_cache="$STUDIO_HOME/cache/uv"
+    mkdir -p "$_uv_launch_cache" 2>/dev/null || return 0
+    _uv_launch_probe=$(mktemp "$_uv_launch_cache/.unsloth-write-probe.XXXXXX" 2>/dev/null) \
+        || return 0
+    rm -f "$_uv_launch_probe" 2>/dev/null || true
+    unset _uv_launch_probe
+    UV_CACHE_DIR="$_uv_launch_cache"
     export UV_CACHE_DIR
 }
 _resolve_studio_destinations

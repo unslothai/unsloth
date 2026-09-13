@@ -1163,11 +1163,18 @@ class TestInstallUvCacheRootParity:
             < min(call_sites)
             < sh.index("_UV_CACHE_MODE=isolated")
         ), "the custom branch records before it returns"
-        assert ps1.count("Write-StudioUvCacheMarker -StudioRoot") == 2
+        # Three on the ps1 side too, one per recording mode: custom, isolated, and the
+        # selection. UV_NO_CACHE is the deliberate fourth branch that records NOTHING, on both
+        # sides, because a marker written there would name a cache the install never filled.
+        assert ps1.count("Write-StudioUvCacheMarker -StudioRoot") == 3, ps1.count(
+            "Write-StudioUvCacheMarker -StudioRoot"
+        )
         # A marker is a preference, not a requirement, so neither installer may fail on it.
+        # Sliced at the first selection helper, not at the selector: the helpers between them
+        # do use -ErrorAction Stop, and on purpose.
         marker_write = ps1[
             ps1.index("function Write-StudioUvCacheMarker") : ps1.index(
-                "function Set-StudioUvCacheEnvironment"
+                "function Test-StudioUvBucketName"
             )
         ]
         # Covers both marker functions, which sit together above the selector.
@@ -1181,6 +1188,31 @@ class TestInstallUvCacheRootParity:
         assert "_absolutize_uv_cache_dir() {" in sh
         assert "UV_CACHE_DIR=$(_absolutize_uv_cache_dir)" in sh
         assert "IsPathRooted" in ps1
+
+        # The four selection rules, on both installers. install.sh gained them first and
+        # install.ps1 did not have them, which left Windows abandoning a warm Studio cache on
+        # every rerun and selecting caches uv aborts on. The behaviour is asserted by running
+        # each installer -- tests/sh/test_uv_cache_adaptive_selection.sh and
+        # tests/python/test_windows_uv_cache_selection.py -- and the pairing is asserted here,
+        # so a rule added to one side alone fails even where no shell can run the other.
+        #   1. the marker outranks uv's default while it is still warm
+        assert "cache/uv-cache-dir" in sh
+        assert "function Read-StudioUvCacheMarker" in ps1
+        #   2. UV_NO_CACHE stands the selection down, in every spelling uv honours
+        for source in (sh, ps1):
+            assert "UV_NO_CACHE" in source
+        # clap's literals, which is what uv binds UV_NO_CACHE to. All three copies, or one of
+        # them probes and records a cache uv is not using.
+        assert "1|y|yes|t|true|on)" in sh
+        assert '@("1", "y", "yes", "t", "true", "on")' in ps1
+        assert '_UV_TRUE = ("1", "y", "yes", "t", "true", "on")' in cli
+        #   3. only <kind>-v<N> is uv's to write, so a lookalike is neither probed nor warmth
+        assert "_uv_is_bucket_name() {" in sh
+        assert "function Test-StudioUvBucketName" in ps1
+        #   4. readable is not usable: a real create-and-delete, root and every bucket
+        assert ".unsloth-write-probe." in sh
+        assert ".unsloth-write-probe." in ps1
+        assert "function Test-StudioUvCacheWritable" in ps1
 
         # The reset must precede both consumers, the selector that writes the marker and
         # every Exit-InstallFailure that restores it. Under `irm | iex` the script scope is
@@ -1239,11 +1271,13 @@ class TestInstallUvCacheRootParity:
             assert '[ -L "$_uv_marker_file" ]' in body[unlink:write], body[unlink:write]
         ps1_marker = ps1[
             ps1.index("function Write-StudioUvCacheMarker") : ps1.index(
-                "function Set-StudioUvCacheEnvironment"
+                "function Test-StudioUvBucketName"
             )
         ]
-        # One helper for both, or they disagree the moment UV_WORKING_DIR is set.
-        assert ps1.count("Resolve-StudioUvCachePath -Cache") == 2, ps1.count(
+        # One helper for every path that has to end up absolute, or they disagree the moment
+        # UV_WORKING_DIR is set: the caller's value, the marker write, the marker READ, and
+        # uv's own answer, which comes back verbatim and may be relative.
+        assert ps1.count("Resolve-StudioUvCachePath -Cache") == 4, ps1.count(
             "Resolve-StudioUvCachePath -Cache"
         )
         assert "$env:UV_CACHE_DIR = Resolve-StudioUvCachePath -Cache $env:UV_CACHE_DIR" in ps1
@@ -1292,14 +1326,22 @@ class TestInstallUvCacheRootParity:
         assert "${XDG_CACHE_HOME}/uv" in sh
         assert "${HOME}/.cache/uv" in sh
         assert 'Join-Path (Join-Path $env:LOCALAPPDATA "uv") "cache"' in ps1
-        selector = ps1.split("function Set-StudioUvCacheEnvironment", 1)[1].split(
+        # The selector and the helpers it was split into: the warmth scan lives in
+        # Test-StudioUvCachePopulated now, so slicing at Set-StudioUvCacheEnvironment alone
+        # would assert on a body that no longer holds the scan and pass for the wrong reason.
+        selector = ps1.split("function Test-StudioUvBucketName", 1)[1].split(
             "function Set-StudioUvCacheForLaunch", 1
         )[0]
-        assert "Get-ChildItem -LiteralPath $sharedCache -Directory -Force" in selector
+        assert "Get-ChildItem -LiteralPath $Cache -Directory -Force" in selector
         assert "Get-ChildItem -LiteralPath $bucket.FullName -File -Recurse -Force" in selector
         # Must not fail closed: one denied subdirectory would read as an empty cache.
         assert "-ErrorAction SilentlyContinue -ErrorVariable scanErrors" in selector
-        assert "-ErrorAction Stop" not in selector.split("foreach ($bucket in $buckets)", 1)[1]
+        # The scan only. The helpers after it DO use Stop, and have to: a marker or a write
+        # probe that fails is an answer, where a bucket that cannot be read is not.
+        bucket_loop = selector.split("foreach ($bucket in $buckets)", 1)[1].split(
+            "function Read-StudioUvCacheMarker", 1
+        )[0]
+        assert "-ErrorAction Stop" not in bucket_loop, bucket_loop
         # -L on the sh side for the same reason Get-ChildItem -Recurse follows links.
         assert "find -L " in sh
 
