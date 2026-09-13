@@ -23,6 +23,28 @@ function zIndex(block: string): number {
   return Number(match[1] ?? match[2]);
 }
 
+test("chat decorations are isolated without raising Settings above child portals", async () => {
+  const [chat, settings, dialog, alertDialog, dropdown] = await Promise.all([
+    readSrc("features/chat/chat-page.tsx"),
+    readSrc("features/settings/settings-dialog.tsx"),
+    readSrc("components/ui/dialog.tsx"),
+    readSrc("components/ui/alert-dialog.tsx"),
+    readSrc("components/ui/dropdown-menu.tsx"),
+  ]);
+  assert.match(chat, /className="chat-artifact-split\s+isolate\s/);
+  const surface = settings.match(/"settings-surface[^"]*"/);
+  const overlay = settings.match(/overlayClassName="[^"]*"/);
+  assert.ok(surface);
+  assert.ok(overlay);
+  assert.doesNotMatch(surface[0] + overlay[0], /\bz-(?:\[\d+\]|\d+)/);
+  assert.match(dialog, /<DialogPortal container=/);
+  assert.match(alertDialog, /<AlertDialogPortal>/);
+  assert.match(dropdown, /<DropdownMenuPrimitive\.Portal>/);
+  for (const portal of [dialog, alertDialog, dropdown]) {
+    assert.match(portal, /\bz-50\b/);
+  }
+});
+
 test("titlebar decoration stays below modal backdrops and window controls", async () => {
   const [titlebar, dialog, alertDialog] = await Promise.all([
     readSrc("components/tauri/window-titlebar.tsx"),
