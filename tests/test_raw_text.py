@@ -435,7 +435,7 @@ def test_smart_chunk_text_no_eos_on_intermediate_full_chunks():
             chunk.endswith("</s>") == is_last
         ), f"chunk {i} (last={is_last}) eos suffix mismatch: {chunk!r}"
 
-    print("✅ test_smart_chunk_text_no_eos_on_intermediate_full_chunks passed!")
+    print("test_smart_chunk_text_no_eos_on_intermediate_full_chunks passed")
     return True
 
 
