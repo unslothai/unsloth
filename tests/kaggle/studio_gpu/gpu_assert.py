@@ -106,6 +106,58 @@ def parse_compute_apps(csv_text: str) -> dict[int, int]:
     return apps
 
 
+def count_listed_pids(csv_text: str) -> int:
+    """How many processes ``--query-compute-apps`` LISTED, whether or not it could say
+    how much memory each holds.
+
+    On Windows (WDDM) and on unified-memory parts such as the GB10, nvidia-smi lists
+    every CUDA process but reports ``[N/A]`` for all of them, and it lists a
+    ``-ngl 0`` server too, since a CUDA build creates a context regardless. So a
+    listing with no readable figure is not "nothing on the card" and not proof of
+    offload either: it is "cannot attribute", and the caller falls back to the
+    device-wide delta, which does move on those parts (measured on a GB10: +140 MiB
+    for a bare context, +428 MiB with a 270M model offloaded)."""
+    n = 0
+    for line in csv_text.splitlines():
+        line = line.strip()
+        if not line or line.lower().startswith("pid"):
+            continue
+        parts = [p.strip() for p in line.split(",")]
+        if not parts:
+            continue
+        try:
+            int(parts[0])
+        except ValueError:
+            continue
+        n += 1
+    return n
+
+
+def listed_pids(csv_text: str) -> set[int]:
+    """Every pid ``--query-compute-apps`` LISTED, whether or not it carried a figure.
+
+    count_listed_pids answers "how many", which is enough to tell an empty listing from
+    an all-``[N/A]`` one. It is not enough for a MIXED listing: a readable row on one GPU
+    and the newly launched server as ``[N/A]`` on another leaves the parsed mapping
+    nonempty, so the caller saw a normal result and the server's pid simply was not in
+    it. Naming the pids lets the caller notice that the process it cares about is the
+    unattributed one, rather than concluding it never reached the card.
+    """
+    pids: set[int] = set()
+    for line in csv_text.splitlines():
+        line = line.strip()
+        if not line or line.lower().startswith("pid"):
+            continue
+        parts = [p.strip() for p in line.split(",")]
+        if not parts:
+            continue
+        try:
+            pids.add(int(parts[0]))
+        except ValueError:
+            continue
+    return pids
+
+
 def offloaded_layers(log_text: str) -> tuple[int, int] | None:
     """The last ``offloaded N/M layers to GPU`` in a llama.cpp log.
 
