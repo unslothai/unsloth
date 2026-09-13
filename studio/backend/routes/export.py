@@ -111,12 +111,49 @@ def _authorized_adapter_base(checkpoint_path: str) -> Optional[str]:
     return base or None
 
 
-def _is_unquantized_full_finetune(checkpoint_dir: Path) -> bool:
+def _hub_config(repo_id: str, hf_token: HfTokenArg) -> Optional[dict]:
+    """config.json for a Hub repo id, or None when it cannot be resolved.
+
+    The worker loads remote checkpoints too, so a Hub id that never touches the local
+    filesystem would otherwise keep the 4-bit default and re-introduce the very export
+    this function exists to prevent. Only config.json is fetched -- a few KB against the
+    gigabytes the load is about to pull anyway, and cached by huggingface_hub after the
+    first call.
+
+    Every failure (offline, gated without a token, no such repo, no network) returns
+    None, which the caller reads as "unknown" and leaves on the historical default.
+    """
+    try:
+        from huggingface_hub import file_exists, hf_hub_download
+
+        # An adapter repo carries a base config.json as well, so this has to be asked
+        # first or a remote LoRA reads as a full model.
+        if file_exists(repo_id, "adapter_config.json", token = hf_token):
+            return None
+        path = hf_hub_download(repo_id, "config.json", token = hf_token)
+        return json.loads(Path(path).read_text(encoding = "utf-8-sig"))
+    except Exception:
+        return None
+
+
+def _is_unquantized_full_finetune(checkpoint_path: str, hf_token: HfTokenArg = None) -> bool:
+    """Whether this checkpoint is a full model that is not already quantized.
+
+    Only ever used to turn 4-bit OFF, so every uncertain answer here is False and
+    behaves exactly as the code did before.
+    """
+    checkpoint_dir = Path(checkpoint_path)
     config_file = checkpoint_dir / "config.json"
     try:
-        if not config_file.is_file() or (checkpoint_dir / "adapter_config.json").exists():
+        if config_file.is_file():
+            if (checkpoint_dir / "adapter_config.json").exists():
+                return False
+            config = json.loads(config_file.read_text(encoding = "utf-8-sig"))
+        elif checkpoint_dir.exists():
+            # A local directory without a config.json is not a full model.
             return False
-        config = json.loads(config_file.read_text(encoding = "utf-8-sig"))
+        else:
+            config = _hub_config(checkpoint_path, hf_token)
     except (OSError, ValueError):
         return False
     return isinstance(config, dict) and "quantization_config" not in config
@@ -139,9 +176,12 @@ async def load_checkpoint(
     base_model = await asyncio.to_thread(_authorized_adapter_base, request.checkpoint_path)
     try:
         await _ensure_export_supported()
+        export_hf_token = _resolve_export_hf_token(request.hf_token, allow_ambient = allow_ambient)
         load_in_4bit = request.load_in_4bit
-        if "load_in_4bit" not in request.model_fields_set and _is_unquantized_full_finetune(
-            Path(request.checkpoint_path)
+        # Off-loop: a Hub id makes this reach the network, and the SSE log stream is
+        # served from this same event loop.
+        if "load_in_4bit" not in request.model_fields_set and await asyncio.to_thread(
+            _is_unquantized_full_finetune, request.checkpoint_path, export_hf_token
         ):
             load_in_4bit = False
             logger.info(
@@ -159,7 +199,7 @@ async def load_checkpoint(
             load_in_4bit = load_in_4bit,
             trust_remote_code = request.trust_remote_code,
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
-            hf_token = _resolve_export_hf_token(request.hf_token, allow_ambient = allow_ambient),
+            hf_token = export_hf_token,
             # A supplied token cannot say whether it came from a session or an API key.
             allow_ambient = allow_ambient,
             subject = current_subject,
