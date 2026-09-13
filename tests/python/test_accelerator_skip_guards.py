@@ -27,6 +27,10 @@ Scanned with ast rather than grep so a reformatted decorator, a multi-line
 from __future__ import annotations
 
 import ast
+import json
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -105,16 +109,13 @@ def test_no_skip_guard_reads_a_spoofable_accelerator_probe():
     )
 
 
-def test_the_recorded_answer_survives_the_spoof():
-    """The property the helper exists for, asserted rather than assumed.
-
-    Primed by conftest before collection, so by the time this runs the aggressive
-    spoof may or may not have been applied depending on what else is in the
-    session. Apply it here and check the recorded answer does not move.
+_SURVIVES_THE_SPOOF_PROBE = textwrap.dedent(
     """
-    import sys
+    import json, sys
 
-    sys.path.insert(0, str(_TESTS_ROOT))
+    sys.path.insert(0, {tests_root!r})
+    sys.path.insert(0, {shared_dir!r})
+
     from real_accelerator import has_real_accelerator
 
     before = has_real_accelerator()
@@ -125,13 +126,87 @@ def test_the_recorded_answer_survives_the_spoof():
 
     import torch
 
-    assert torch.cuda.is_available() is True, (
+    print("SPOOF_PROBE " + json.dumps({{
+        "before": before,
+        "after": has_real_accelerator(),
+        "spoof_patched_is_available": bool(torch.cuda.is_available()),
+    }}))
+    """
+)
+
+
+def test_the_recorded_answer_survives_the_spoof():
+    """The property the helper exists for, asserted rather than assumed.
+
+    In a SUBPROCESS, and that is not incidental. `spoof.apply()` sets
+    `torch.cuda.is_available` to return True and never restores it, so calling it
+    in-process poisons the rest of the xdist worker: every later test on that
+    worker sees a machine with a CUDA card that is not there. peft's
+    `infer_device()` is one of the things that reads it, so
+    tests/test_save_lora_without_vllm.py then asks safetensors to load onto CUDA
+    and dies with
+
+        NotImplementedError: Could not run 'aten::empty_strided' with arguments
+        from the 'CUDA' backend
+
+    which is the exact class of cross-test damage this file exists to prevent. An
+    earlier version of this test did apply the spoof in-process and caused that
+    failure; it reproduces deterministically with just this file and that one, in
+    that order.
+
+    Same subprocess pattern as tests/vllm_compat/test_unsloth_zoo_imports.py
+    (#10855), for the same reason: a question about global state has to be asked
+    somewhere the answer cannot leak back.
+    """
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _SURVIVES_THE_SPOOF_PROBE.format(
+                tests_root = str(_TESTS_ROOT),
+                shared_dir = str(_TESTS_ROOT / "_shared"),
+            ),
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 300,
+        cwd = str(_TESTS_ROOT.parent),
+    )
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode == 0, f"the spoof probe failed to run:\n{combined[-4000:]}"
+
+    marker = "SPOOF_PROBE "
+    line = next((l for l in proc.stdout.splitlines() if l.startswith(marker)), None)
+    assert line is not None, f"probe produced no verdict:\n{combined[-4000:]}"
+    verdict = json.loads(line[len(marker) :])
+
+    assert verdict["spoof_patched_is_available"] is True, (
         "the spoof no longer patches torch.cuda.is_available, so this test is not "
         "checking anything; re-point it at whatever it patches now"
     )
-    assert has_real_accelerator() is before, (
+    assert verdict["after"] == verdict["before"], (
         "has_real_accelerator() moved after the spoof was applied, which is the whole "
-        "thing it is supposed to be immune to"
+        f"thing it is supposed to be immune to: {verdict}"
+    )
+
+
+def test_this_file_never_applies_the_spoof_in_process():
+    """The regression guard for the bug the test above used to be.
+
+    Applying the spoof in-process is invisible here and fails somewhere else
+    entirely, on whichever test the xdist scheduler happens to put next on the
+    same worker. So pin it structurally rather than trusting it to stay fixed.
+    """
+    tree = ast.parse(Path(__file__).read_text(encoding = "utf-8"))
+    offenders = [
+        f"line {node.lineno}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and _dotted(node.func)[-2:] == ("spoof", "apply")
+    ]
+    assert not offenders, (
+        "this file calls spoof.apply() in-process. That leaves torch.cuda.is_available "
+        "patched for every later test on this xdist worker. Ask it in a subprocess "
+        f"instead, as _SURVIVES_THE_SPOOF_PROBE does: {offenders}"
     )
 
 
