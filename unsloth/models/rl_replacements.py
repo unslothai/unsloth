@@ -471,10 +471,7 @@ def _comment_tolerant_anchor(old):
     drift this survives.
     """
     return re.compile(
-        "\n".join(
-            re.escape(line.rstrip()) + r"[ \t]*(?:\#[^\n]*)?"
-            for line in old.split("\n")
-        )
+        "\n".join(re.escape(line.rstrip()) + r"[ \t]*(?:\#[^\n]*)?" for line in old.split("\n"))
     )
 
 
@@ -498,7 +495,9 @@ def _require_replace(
         return function.replace(old, new, count)
 
     function, applied = _comment_tolerant_anchor(old).subn(
-        lambda _match: new, function, count = count,
+        lambda _match: new,
+        function,
+        count = count,
     )
     if applied:
         return function

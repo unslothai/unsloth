@@ -1272,7 +1272,9 @@ def test_require_replace_survives_a_trailing_comment_on_the_anchor():
     # Tolerance must not reach across a real code change: `b` -> `c` still raises.
     with pytest.raises(RuntimeError):
         _require_replace(
-            "dataset = pack_dataset(\n    a,\n    c,\n)", anchor, replacement,
+            "dataset = pack_dataset(\n    a,\n    c,\n)",
+            anchor,
+            replacement,
             where = "changed argument",
         )
 
