@@ -10,10 +10,11 @@ Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker) in th
 |---|---|---|
 | `latest`, `studio` | Unsloth Studio web UI + JupyterLab + notebooks + key-only SSH | Most users. Train and chat in the browser. |
 | `core` | Training stack + JupyterLab + notebooks, no Studio | Notebooks, scripts, CI, slimmer pulls. |
-| `nightly-<YYYY.MM.DD>`, `core-nightly-<YYYY.MM.DD>` | The same two images, one immutable pin per daily rebuild, kept 60 days | Reproducible runs. |
-| `<version>`, `core-<version>` | Release builds | Pin a release. |
+| `cpu-arm64` | Studio, no CUDA, ARM64 native | ARM64 CPU hosts (Ampere, Graviton, Pi 5, etc.). GGUF inference, data recipes. |
+| `nightly-<YYYY.MM.DD>`, `core-nightly-<YYYY.MM.DD>`, `cpu-arm64-nightly-<YYYY.MM.DD>` | The same images, one immutable pin per daily rebuild, kept 60 days | Reproducible runs. |
+| `<version>`, `core-<version>`, `cpu-arm64-<version>` | Release builds | Pin a release. |
 
-`latest` and `core` move with every push to `main` and on a daily rebuild. Both images are multi-arch: `linux/amd64` and `linux/arm64` (GH200, DGX Spark).
+`latest` and `core` move with every push to `main` and on a daily rebuild. Both images are multi-arch: `linux/amd64` and `linux/arm64` (GH200, DGX Spark). The `cpu-arm64` image is `linux/arm64` only and contains no CUDA toolkit.
 
 ## Quick start
 
@@ -73,6 +74,21 @@ Without a GPU the container refuses to start unless you opt in. Studio chat with
 docker run -d -e UNSLOTH_ALLOW_CPU=1 -p 8000:8000 -p 8888:8888 unsloth/unsloth
 ```
 
+#### ARM64 CPU hosts (Ampere, Graviton, Raspberry Pi 5, etc.)
+
+For ARM64 CPU-only hosts, use the dedicated `cpu-arm64` image which is smaller and has no CUDA dependencies:
+
+```bash
+docker run -d -p 8000:8000 \
+  -e UNSLOTH_STUDIO_PASSWORD="choose-a-password" \
+  -v "$PWD":/workspace/host \
+  unsloth/unsloth:cpu-arm64
+```
+
+This image runs natively on `linux/arm64` without requiring `nvidia-container-toolkit` or `UNSLOTH_ALLOW_CPU=1`. It provides Unsloth Studio for GGUF inference and data recipes. Training and JupyterLab are not included.
+
+> **Bind mount permissions:** The CPU container runs as non-root user `unsloth` (UID `10001`). If you mount a host directory to `/workspace/host` on Linux, ensure the directory is writable by UID `10001` (e.g. `chmod 777 ./host-dir` or `sudo chown -R 10001:10001 ./host-dir`), or run with `--user "$(id -u):$(id -g)"` along with a writable home/config directory.
+
 ## Supported GPUs
 
 Compiled for `sm_75 sm_80 sm_86 sm_90 sm_100 sm_120`: Turing (T4, RTX 20), Ampere (A100, A10, RTX 30), Ada (L4, L40, RTX 40), Hopper (H100, H200, GH200) and Blackwell (B200, GB200, RTX 50, RTX PRO 6000). GB10 (DGX Spark, `sm_121`) runs the `sm_120` binaries through Blackwell forward compatibility; only kernels compiled at run time, such as Triton, use the CUDA 13 compiler the container switches to on that GPU. The container prints the detected GPU on start and explains what to do when the driver is too old.
@@ -89,8 +105,8 @@ Turing has no bfloat16; Unsloth falls back to float16 there. AMD GPUs are not su
 
 | Port | Service | Image |
 |---|---|---|
-| 8000 | Unsloth Studio | `latest` |
-| 8888 | JupyterLab | both |
+| 8000 | Unsloth Studio | `latest`, `cpu-arm64` |
+| 8888 | JupyterLab | `latest`, `core` |
 | 22 | SSH, key only, off unless `SSH_KEY` or `PUBLIC_KEY` is set | `latest` |
 
 ## Environment variables

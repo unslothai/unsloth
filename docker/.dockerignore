@@ -1,5 +1,6 @@
 **
 !Dockerfile
+!Dockerfile.cpu-arm64
 !entrypoint.sh
 !smoke_test.py
 !fetch_llama_prebuilt.py

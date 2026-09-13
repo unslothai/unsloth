@@ -1,0 +1,54 @@
+# Dockerfile for Unsloth Studio on ARM64 CPU (non-GPU)
+# This image provides a lightweight, CUDA-free environment for CPU-based
+# inference (GGUF) and Studio tools on aarch64 Linux hosts.
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    git \
+    cmake \
+    build-essential \
+    libcurl4-openssl-dev \
+    python3 \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd --gid 10001 unsloth \
+ && useradd --uid 10001 --gid 10001 --create-home --shell /bin/sh unsloth \
+ && mkdir -p /workspace \
+ && chown -R unsloth:unsloth /workspace
+
+COPY studio_run.sh /usr/local/bin/unsloth-studio-run
+RUN chmod 755 /usr/local/bin/unsloth-studio-run
+
+USER unsloth
+ENV HOME=/home/unsloth
+ENV UNSLOTH_STUDIO_HOME=/home/unsloth/.unsloth/studio
+ENV UNSLOTH_ALLOW_CPU=1
+ENV UNSLOTH_STUDIO_INITIAL_PASSWORD_FILE=/home/unsloth/.unsloth/studio-initial-password
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+ARG UNSLOTH_REF=main
+ARG UNSLOTH_ZOO_REF=main
+
+RUN mkdir -p "${UNSLOTH_STUDIO_HOME}/src" \
+ && cd "${UNSLOTH_STUDIO_HOME}/src" \
+ && git init -q \
+ && git remote add origin https://github.com/unslothai/unsloth \
+ && git fetch -q --depth 1 origin "${UNSLOTH_REF}" \
+ && git checkout -q FETCH_HEAD \
+ && UNSLOTH_NO_TORCH=1 \
+    UNSLOTH_SKIP_AUTOSTART=1 \
+    UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME}" \
+    UNSLOTH_ZOO_REF="${UNSLOTH_ZOO_REF}" \
+    bash install.sh --local \
+ && rm -rf "${UNSLOTH_STUDIO_HOME}/src/.git" "${HOME}/.cache" "${UNSLOTH_STUDIO_HOME}/cache" "${HOME}/.bun/install/cache"
+
+EXPOSE 8000
+WORKDIR /workspace
+
+CMD ["/bin/bash", "-c", "INITIAL_FILE=\"${UNSLOTH_STUDIO_INITIAL_PASSWORD_FILE:-/home/unsloth/.unsloth/studio-initial-password}\"; if [[ -n \"${UNSLOTH_STUDIO_PASSWORD:-}\" ]]; then mkdir -p \"$(dirname \"$INITIAL_FILE\")\" && (umask 077 && printf '%s' \"$UNSLOTH_STUDIO_PASSWORD\" > \"$INITIAL_FILE\"); fi; unset UNSLOTH_STUDIO_PASSWORD; export UNSLOTH_STUDIO_INITIAL_PASSWORD_FILE=\"$INITIAL_FILE\"; exec /usr/local/bin/unsloth-studio-run"]

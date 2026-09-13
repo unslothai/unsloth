@@ -161,6 +161,35 @@ docker run -d --gpus all --ipc=host \
 ```
 Follow startup with `docker logs -f`. Studio is at `http://localhost:8000` (user `unsloth`), JupyterLab at `http://localhost:8888`. Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
 
+#### Linux ARM64 / AArch64
+
+Unsloth Studio supports native Linux ARM64 devices for CPU-based chat and
+data-recipe workflows. For local inference, use GGUF-quantized models sized
+for the available system RAM.
+
+ARM64 CPU devices are primarily intended for inference. Fine-tuning is usually
+better suited to a supported GPU system.
+
+**Docker (CPU-only):** Use the dedicated `cpu-arm64` image — a lightweight,
+CUDA-free build for ARM64 CPU hosts (Ampere, Graviton, Raspberry Pi 5, etc.):
+
+```bash
+docker run -d -p 8000:8000 \
+  -e UNSLOTH_STUDIO_PASSWORD="choose-a-password" \
+  -v "$PWD":/workspace/host \
+  unsloth/unsloth:cpu-arm64
+```
+
+This image runs natively on `linux/arm64` without requiring `nvidia-container-toolkit`.
+It provides Unsloth Studio for GGUF inference and data recipes. Training and
+JupyterLab are not included.
+
+> **Bind mount permissions:** The CPU container runs as non-root user `unsloth` (UID `10001`). If you mount a host directory to `/workspace/host` on Linux, ensure the directory is writable by UID `10001` (e.g. `chmod 777 ./host-dir` or `sudo chown -R 10001:10001 ./host-dir`), or run with `--user "$(id -u):$(id -g)"` along with a writable home/config directory.
+
+**Docker (GPU):** The official `unsloth/unsloth` image is multi-arch
+(`linux/amd64` and `linux/arm64`), but the ARM64 variant targets GH200/DGX
+Spark GPU systems. For GPU-enabled ARM64, use the standard image with `--gpus all`.
+
 #### Remote HTTPS & LAN Access
 Server-side tools are on by default - so **be careful**! Keep your password safe, or use `--disable-tools` when exposing Unsloth.
 
