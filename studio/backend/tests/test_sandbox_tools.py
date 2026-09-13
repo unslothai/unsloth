@@ -832,6 +832,26 @@ class TestBashBlocklistPosition:
             # Only the long spellings carry an attached command; -x belongs to too
             # many other utilities to read its neighbour as one.
             pytest.param("grep -x rm file.txt", id = "short_flag_neighbour_not_read_as_command"),
+            # A name-resolving lookup for one literal binary (`$(which python)`)
+            # leaves the executed name visible in the body, so it stays out, as do
+            # substitutions that only feed text to their outer command.
+            pytest.param("$(which python) script.py", id = "which_lookup_allowed"),
+            pytest.param("env $(which python) script.py", id = "wrapper_which_lookup_allowed"),
+            pytest.param("echo $(date)", id = "arg_position_subst_allowed"),
+            pytest.param("echo $(ls /tmp)", id = "arg_position_listing_allowed"),
+            pytest.param("$(echo hello)", id = "subst_benign_literal_allowed"),
+            pytest.param("FOO=$(date) echo hi", id = "assignment_value_subst_allowed"),
+            pytest.param("echo $((1+2))", id = "arithmetic_expansion_allowed"),
+            # Same slots, benign bodies: brace groups, branches, loops, -exec
+            # without a substitution, and variables never bound to anything
+            # dangerous stay out.
+            pytest.param("{ echo hi; }", id = "brace_group_benign_allowed"),
+            pytest.param("if true; then echo hi; fi", id = "branch_body_benign_allowed"),
+            pytest.param("for f in a b; do echo $f; done", id = "loop_var_benign_allowed"),
+            pytest.param("find . -name x -exec echo {} \\;", id = "find_exec_benign_allowed"),
+            pytest.param("c=hello; echo $c", id = "benign_var_arg_allowed"),
+            pytest.param("c=reboot; echo $c", id = "blocked_var_arg_allowed"),
+            pytest.param("PATH=/usr/bin; ls", id = "path_assignment_allowed"),
         ],
     )
     def test_bash_blocklist_finds_nothing_in_safe_commands(self, command):
@@ -863,6 +883,102 @@ class TestBashBlocklistPosition:
             pytest.param("curl", "if true; then curl --version; fi", id = "if_then_blocked"),
             pytest.param(
                 "curl", "while true; do curl --version; break; done", id = "while_do_blocked"
+            ),
+            # A command-position substitution synthesizes the executed word, so the
+            # blocked name never appears literally: `$(echo reboot)` runs reboot.
+            pytest.param("reboot", "$(echo reboot)", id = "subst_synthesized_literal_blocked"),
+            pytest.param(
+                "shutdown",
+                '$(printf "%s" shutdown)',
+                id = "subst_printf_literal_blocked",
+            ),
+            # An executable enumeration piped through a selector (`ls` of a bin
+            # dir, compgen, find) produces an unknowable command name: fail closed.
+            pytest.param(
+                "command substitution",
+                '$(ls /usr/bin/ | grep "^reb")',
+                id = "subst_enumerated_name_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                '$(ls /usr/bin/ | grep "^rm$") -rf ~/Downloads/can_delete',
+                id = "subst_enumerated_rm_with_args_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                '`ls /usr/bin/ | grep "^reb"`',
+                id = "backtick_enumerated_name_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "sudo $(ls /usr/bin | grep reb)",
+                id = "wrapper_prefixed_subst_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "env $(ls /usr/bin | grep reb)",
+                id = "env_wrapper_subst_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                '$(compgen -c | grep "^rm$")',
+                id = "subst_compgen_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "$(find /usr/bin -name 'r*')",
+                id = "subst_find_bin_dir_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "$(echo /usr/bin/r*)",
+                id = "subst_glob_expansion_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                '"$(ls /usr/bin | grep reb)"',
+                id = "quoted_subst_enumeration_blocked",
+            ),
+            # The same synthesis smuggled past separators: brace groups, branch
+            # bodies, loop bodies, and find -exec payloads all execute it.
+            pytest.param(
+                "command substitution",
+                "{ $(ls /usr/bin|grep reb); }",
+                id = "brace_group_subst_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "if true; then $(ls /usr/bin|grep reb); fi",
+                id = "branch_body_subst_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "while true; do $(ls /usr/bin|grep reb); done",
+                id = "loop_body_subst_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "find /tmp -name x -exec $(ls /usr/bin | grep reb) \\;",
+                id = "find_exec_subst_blocked",
+            ),
+            # A variable launders the synthesis (`c=$(...); $c`), a printf -v
+            # assignment, or even a plain blocked literal (`c=reboot; $c`).
+            pytest.param(
+                "command substitution",
+                "c=$(ls /usr/bin|grep reb); $c",
+                id = "laundered_subst_var_blocked",
+            ),
+            pytest.param("reboot", "c=$(echo reboot); ${c}", id = "laundered_literal_precise"),
+            pytest.param("reboot", "c=reboot; $c", id = "laundered_plain_literal_blocked"),
+            pytest.param(
+                "command substitution",
+                "printf -v c reboot; $c",
+                id = "printf_v_laundered_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "export c=$(compgen -c | grep rm); $c",
+                id = "exported_laundered_subst_blocked",
             ),
         ],
     )

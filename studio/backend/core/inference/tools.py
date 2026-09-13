@@ -1544,6 +1544,87 @@ def _find_blocked_commands(command: str) -> set[str]:
         )
         blocked.update(re.findall(pattern, lowered))
 
+    # A command substitution at command position synthesizes the executed word, so a blocked name
+    # it produces (`$(echo reboot)`) or an executable enumeration it selects from
+    # (`$(ls /usr/bin | grep "^reb")`) never appears literally for the scan above. Screen the body
+    # instead: a blocked literal anywhere in it may become the command, and an enumeration
+    # primitive makes the result unknowable. Argument-position substitutions (`echo $(date)`)
+    # only feed text to their outer command and stay out.
+    #
+    # A variable launders the same shapes one step further (`c=$(ls ... | grep x); $c`,
+    # `printf -v c reboot; $c`, `c=reboot; $c`): the assignment binds an unscreenable value and a
+    # later `$c` at command position executes it. The mapping is collected first so bodies can
+    # reference it too (`$(echo $c)` runs echo over unknown text, whose output is the command).
+    if _BLOCKED_COMMANDS:
+        words_alt = "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS))
+        body_word_pattern = (
+            rf"(?:^|[^\w./\\-])(?:[\w./\\-]*/)?" rf"({words_alt})(?:\.(?:exe|com|bat|cmd))?\b"
+        )
+        # Laundered names to the blocked literal they are known to hold, or None when the value
+        # is unscreenable (a substitution, `printf -v`). Keyed case-sensitively: `$C` is not `$c`.
+        laundered: "dict[str, str | None]" = {}
+        for assign in _SUBST_ASSIGN_RE.finditer(command):
+            if assign.group(1) in laundered:
+                continue
+            # The value starts a substitution (the regex guarantees it): screen its body like a
+            # command-position one. An enumerating body (ls/compgen/find/glob) makes the output
+            # unknowable even when a blocked literal (usually the grep selector) is visible, so
+            # those stay unknown; otherwise report the literal found, if any.
+            opener = assign.end() - 1  # `(` of `$(`, or the backtick
+            assign_body = _command_subst_body(command, opener).lower()
+            if _SUBST_ENUMERATES_COMMANDS_RE.search(assign_body):
+                laundered[assign.group(1)] = None
+                continue
+            found = re.findall(body_word_pattern, assign_body)
+            laundered[assign.group(1)] = found[0] if found else None
+        for printf_v in _PRINTF_V_ASSIGN_RE.finditer(command):
+            laundered.setdefault(printf_v.group(1), None)
+        for literal in _ASSIGN_BLOCKED_LITERAL_RE.finditer(command):
+            name, value = literal.group(1), literal.group(2).strip("\"'")
+            first = value.split()[0] if value.split() else ""
+            base = os.path.basename(first)
+            stem, ext = os.path.splitext(base)
+            if ext.lower() in {".exe", ".com", ".bat", ".cmd"}:
+                base = stem
+            if base.lower() in _BLOCKED_COMMANDS:
+                laundered.setdefault(name, base.lower())
+        laundered_refs = "|".join(sorted({re.escape(n) for n in laundered}, key = len, reverse = True))
+        laundered_in_body_pattern = (
+            rf"\$(?:{laundered_refs}|\{{(?:{laundered_refs})\}})" if laundered_refs else None
+        )
+        sites = list(_SUBST_AT_CMD_SITE_RE.finditer(command)) + list(
+            _SUBST_EXEC_DIRECTIVE_RE.finditer(command)
+        )
+        for site in sites:
+            opener = site.end() - 1  # `(` of `$(`, or the backtick
+            body = _command_subst_body(command, opener)
+            lowered_body = body.lower()
+            blocked.update(re.findall(body_word_pattern, lowered_body))
+            if _SUBST_ENUMERATES_COMMANDS_RE.search(lowered_body):
+                blocked.add(_BLOCKED_SYNTHESIZED_COMMAND)
+            elif laundered_in_body_pattern is not None and re.search(
+                laundered_in_body_pattern, body
+            ):
+                # The body runs over laundered text (`$(echo $c)`), so its output - the
+                # executed word - is unknowable.
+                blocked.add(_BLOCKED_SYNTHESIZED_COMMAND)
+        if laundered_refs:
+            var_exec_pattern = (
+                _SUBST_CMD_SEP
+                + r"\s*"
+                + _SUBST_WRAPPER_RUN
+                + r"\"?\$(?:("
+                + laundered_refs
+                + r")|\{("
+                + laundered_refs
+                + r")\})"
+                r"(?=\s|$|[;&|)\]}])"
+            )
+            for hit in re.finditer(var_exec_pattern, command):
+                name = hit.group(1) or hit.group(2)
+                precise = laundered.get(name)
+                blocked.add(precise if precise is not None else _BLOCKED_SYNTHESIZED_COMMAND)
+
     # Nested shell invocations (bash -c, cmd /c): on a -c/-/c flag, look back for a shell name (skipping flags) and
     # recursively scan the nested command string.
     _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
@@ -4941,6 +5022,79 @@ _SHELL_C_INTERPRETERS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish", "
 # statically. A substitution in argument position (echo $(date)) is left alone.
 _COMMAND_SUBST_AT_CMD_RE = re.compile(
     r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=[^\s;&|()]*\s+)*(?:\$\(|`)"
+)
+# Command-position separators shared by the substitution screens below: statement
+# separators, `&&`/`||`, brace-group openers, and shell keywords whose following word the shell
+# executes (conditions, branch bodies, negation). `:` is deliberately absent: its arguments are
+# expanded but never executed as the command, so only a blocked literal inside them matters and
+# that is already caught.
+_SUBST_CMD_SEP = r"(?:^|[;&|\n({]|&&|\|\||\b(?:then|do|else|elif|if|while|until)\b\s*|!\s*)"
+# Wrappers that forward to their operand, so the operand sits at command position behind them.
+# Bounded flat repetitions (no nested stars): up to 3 wrapper words, each followed by up to 4
+# plain argument words. Unbounded nesting here caused catastrophic backtracking on long lines.
+_SUBST_WRAPPER_RUN = r"(?:(?:env|command|builtin|exec|time|nohup|nice|setsid|stdbuf|timeout|ionice|chroot|setpriv|sudo|doas|su|xargs)\s+(?:[^\s;&|()]+\s+){0,4}){0,3}"
+# A command substitution or backtick substitution at command position synthesizes the word Bash
+# executes, so a blocked name it produces (`$(ls /usr/bin | grep "^reb")` reboots the host) never
+# appears literally for the token scan. VAR=x prefixes are stepped over like the token scan does;
+# a leading double quote is allowed (`"$(...)"` still substitutes), a single quote is not (no
+# substitution inside it); arithmetic `$((...))` evaluates to a number and is not a command.
+_SUBST_AT_CMD_SITE_RE = re.compile(
+    _SUBST_CMD_SEP + r"\s*"
+    r"(?:[A-Za-z_]\w*=[^\s;&|()]*\s+)*" + _SUBST_WRAPPER_RUN + r"(?:\"\$\((?!\()|\$\((?!\()|`)",
+    re.IGNORECASE,
+)
+# A substitution synthesizing the command a find/fd -exec payload runs: the words after the
+# directive are the executed argv, so `find . -exec $(...) \;` runs whatever the body prints.
+_SUBST_EXEC_DIRECTIVE_RE = re.compile(
+    r"(?:-exec(?:dir)?|--exec(?:-batch)?|-ok(?:dir)?)\s+"
+    r"(?:[A-Za-z_]\w*=[^\s;&|()]*\s+)*" + _SUBST_WRAPPER_RUN + r"(?:\"\$\((?!\()|\$\((?!\()|`)",
+    re.IGNORECASE,
+)
+# An assignment (optionally behind export/local/readonly/declare/typeset) whose value starts a
+# substitution or backticks: the name is laundered, its content unscreenable.
+_SUBST_ASSIGN_RE = re.compile(
+    r"(?:^|[;&|\n])\s*(?:(?:export|local|readonly)\s+|(?:declare|typeset)(?:\s+[-\w+]+)*\s+)?"
+    r"([A-Za-z_]\w*)=[\"']?(?:\$\(|`)",
+)
+# `printf -v NAME ...` stores its formatted output in NAME without running anything, but a
+# later `$NAME` at command position executes it: equally laundered.
+_PRINTF_V_ASSIGN_RE = re.compile(r"(?:^|[;&|\n])\s*\bprintf\s+-v\s+([A-Za-z_]\w*)\b")
+# A plain assignment whose value starts with a blocked command name: `c=reboot` makes `$c` at
+# command position run reboot. Only the value's first word counts (`c="my rm"` tries to run
+# `my`, which does not exist), and arrays never match (the value class excludes parens).
+_ASSIGN_BLOCKED_LITERAL_RE = re.compile(
+    r"(?:^|[;&|\n])\s*(?:(?:export|local|readonly)\s+|(?:declare|typeset)(?:\s+[-\w+]+)*\s+)?"
+    r"([A-Za-z_]\w*)=([^\s;&|()]+)"
+)
+
+
+def _command_subst_body(command: str, opener: int) -> str:
+    """The body text of the `$(...)` (``opener`` = index of ``(``) or backtick (``opener`` = index
+    of the backtick) substitution opening there. A backtick span ends at the next unescaped
+    backtick; an unterminated span of either kind runs to the end of the string."""
+    if command[opener] == "`":
+        closer = opener + 1
+        while True:
+            closer = command.find("`", closer)
+            if closer < 0:
+                return command[opener + 1 :]
+            if command[closer - 1] != "\\":
+                return command[opener + 1 : closer]
+            closer += 1
+    end = _substitution_span(command, opener - 1)
+    return command[opener + 1 : end if end >= len(command) else end - 1]
+
+
+# Label recorded when a command-position substitution synthesizes its command from an executable
+# enumeration, so there is no literal name to report. Reads as
+# "Blocked command(s) for safety: command substitution" downstream.
+_BLOCKED_SYNTHESIZED_COMMAND = "command substitution"
+# Primitives that enumerate executable names when they appear in a command-position substitution
+# body: listing binaries, compgen, find, or expanding a pathname glob with echo/printf. A
+# name-resolving lookup for one literal binary (`$(which python)`) stays out: the executed name
+# is visible in the body itself.
+_SUBST_ENUMERATES_COMMANDS_RE = re.compile(
+    r"(?:\bcompgen\b|\b(?:ls|dir|find)\b|\b(?:echo|printf)\b[^\n;&|]*[*?[])"
 )
 
 # A command substitution appearing anywhere ($(...) that is not arithmetic, or a backtick). Used to catch a
