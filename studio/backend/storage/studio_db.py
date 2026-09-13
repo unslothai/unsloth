@@ -98,6 +98,43 @@ def contains_sensitive_path_component(path: str) -> bool:
 
 _schema_lock = threading.Lock()
 _schema_ready = False
+
+# Python's sqlite3 wrapper can enter SQLite's close path while another connection is
+# being opened or closed in a different worker thread. SQLite normally serializes its
+# own file access, but a close can hold one internal mutex while waiting for another;
+# serializing close paths avoids that close/close cycle without
+# serializing ordinary queries or transactions.
+_CONNECTION_CLOSE_LOCK = threading.Lock()
+
+
+class _StudioDbConnection(sqlite3.Connection):
+    """Serialize explicit close calls; callers must close connections they own.
+
+    sqlite3's native finalizer does not dispatch this Python override. Factory
+    setup failures close before propagating; successful callers use finally or
+    contextlib.closing rather than relying on garbage collection.
+    """
+
+    def close(self) -> None:
+        with _CONNECTION_CLOSE_LOCK:
+            super().close()
+
+
+def _connect_studio_db(
+    database: "str | os.PathLike[str]",
+    *,
+    timeout: float,
+    check_same_thread: bool = True,
+) -> sqlite3.Connection:
+    """Open a studio.db connection with a shared close gate."""
+    return sqlite3.connect(
+        str(database),
+        timeout = timeout,
+        check_same_thread = check_same_thread,
+        factory = _StudioDbConnection,
+    )
+
+
 _SQLITE_IN_CHUNK_SIZE = 900
 _PROJECT_WORKSPACE_SUBDIRS = ("sandbox",)
 _CHAT_ATTACHMENT_INVENTORY_VERSION = 1
@@ -1218,23 +1255,23 @@ def get_connection(
     global _schema_ready
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
-    conn = sqlite3.connect(
-        str(db_path), timeout = busy_timeout_seconds, check_same_thread = check_same_thread
+    conn = _connect_studio_db(
+        db_path, timeout = busy_timeout_seconds, check_same_thread = check_same_thread
     )
-    conn.row_factory = sqlite3.Row
-    # foreign_keys is session-scoped; set per connection
-    conn.execute("PRAGMA foreign_keys=ON")
-    if not _schema_ready:
-        with _schema_lock:
-            if not _schema_ready:
-                try:
+    try:
+        conn.row_factory = sqlite3.Row
+        # foreign_keys is session-scoped; set per connection
+        conn.execute("PRAGMA foreign_keys=ON")
+        if not _schema_ready:
+            with _schema_lock:
+                if not _schema_ready:
                     _ensure_schema(conn)
                     conn.commit()
                     _schema_ready = True
-                except Exception:
-                    conn.close()
-                    raise
-    _apply_wal_synchronous(conn)
+        _apply_wal_synchronous(conn)
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 

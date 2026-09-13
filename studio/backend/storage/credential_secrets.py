@@ -18,6 +18,7 @@ from typing import Optional
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from auth.storage import get_or_create_credential_encryption_key
+from storage.studio_db import _connect_studio_db
 from utils.paths import ensure_dir, studio_db_path
 
 logger = logging.getLogger(__name__)
@@ -64,22 +65,22 @@ def get_connection() -> sqlite3.Connection:
     global _schema_ready
     db_path = studio_db_path()
     ensure_dir(db_path.parent)
-    conn = sqlite3.connect(str(db_path), timeout = 5.0)
-    conn.row_factory = sqlite3.Row
+    conn = _connect_studio_db(db_path, timeout = 5.0)
     try:
-        os.chmod(db_path.parent, 0o700)
-        os.chmod(db_path, 0o600)
-    except OSError:
-        pass
-    if not _schema_ready:
-        with _schema_lock:
-            if not _schema_ready:
-                try:
+        conn.row_factory = sqlite3.Row
+        try:
+            os.chmod(db_path.parent, 0o700)
+            os.chmod(db_path, 0o600)
+        except OSError:
+            pass
+        if not _schema_ready:
+            with _schema_lock:
+                if not _schema_ready:
                     _ensure_schema(conn)
                     _schema_ready = True
-                except Exception:
-                    conn.close()
-                    raise
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 

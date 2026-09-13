@@ -192,6 +192,127 @@ def test_concurrent_openers_all_get_normal(db):
     assert results == [NORMAL] * 16
 
 
+def test_studio_db_factories_serialize_connection_close(db, monkeypatch):
+    """All studio.db factories must share one close gate across worker threads.
+
+    SQLite can deadlock when concurrent close calls take its connection and VFS mutexes
+    in opposite order. The application still gets one connection per operation, so this
+    test protects the lifecycle boundary without requiring a shared transaction lock.
+    """
+    from storage import credential_secrets, mcp_servers_db, providers_db
+
+    modules = (providers_db, mcp_servers_db, credential_secrets)
+    for module in modules:
+        monkeypatch.setattr(module, "studio_db_path", lambda db = db: db)
+        monkeypatch.setattr(module, "_schema_ready", False)
+
+    factories = [
+        studio_db.get_connection,
+        providers_db.get_connection,
+        mcp_servers_db.get_connection,
+        credential_secrets.get_connection,
+    ]
+    for factory in factories:
+        conn = factory()
+        assert isinstance(conn, studio_db._StudioDbConnection)
+        conn.close()
+
+    class TrackingLock:
+        def __init__(self):
+            self._lock = threading.Lock()
+            self._state = threading.Lock()
+            self.active = 0
+            self.maximum = 0
+
+        def __enter__(self):
+            self._lock.acquire()
+            with self._state:
+                self.active += 1
+                self.maximum = max(self.maximum, self.active)
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            with self._state:
+                self.active -= 1
+            self._lock.release()
+
+    close_lock = TrackingLock()
+    monkeypatch.setattr(studio_db, "_CONNECTION_CLOSE_LOCK", close_lock)
+    ready = threading.Barrier(len(factories) + 1)
+    release = threading.Barrier(len(factories) + 1)
+    errors = []
+
+    def open_and_close(factory):
+        try:
+            conn = factory()
+            ready.wait(timeout = 5)
+            release.wait(timeout = 5)
+            conn.close()
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target = open_and_close, args = (factory,)) for factory in factories]
+    for thread in threads:
+        thread.start()
+    ready.wait(timeout = 5)
+    release.wait(timeout = 5)
+    for thread in threads:
+        thread.join(timeout = 5)
+
+    assert not errors, errors
+    assert not any(thread.is_alive() for thread in threads)
+    assert close_lock.maximum == 1
+
+
+# --- failed factory setup must not defer connection cleanup to garbage collection -----
+
+
+@pytest.mark.parametrize(
+    "module_name", ["studio_db", "providers_db", "mcp_servers_db", "credential_secrets"]
+)
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt])
+def test_factory_closes_connections_when_schema_setup_fails(
+    db, monkeypatch, module_name, error_type
+):
+    import importlib
+
+    module = importlib.import_module(f"storage.{module_name}")
+    connection = studio_db._connect_studio_db(db, timeout = 5.0)
+    monkeypatch.setattr(module, "_connect_studio_db", lambda *args, **kwargs: connection)
+    monkeypatch.setattr(module, "_schema_ready", False)
+
+    def fail_schema(conn):
+        raise error_type("schema setup failed")
+
+    monkeypatch.setattr(module, "_ensure_schema", fail_schema)
+    try:
+        with pytest.raises(error_type, match = "schema setup failed"):
+            module.get_connection()
+        with pytest.raises(sqlite3.ProgrammingError, match = "closed"):
+            connection.execute("SELECT 1")
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("pragma", ["PRAGMA foreign_keys=ON", "PRAGMA synchronous=NORMAL"])
+def test_studio_factory_closes_connections_when_pragma_setup_fails(db, monkeypatch, pragma):
+    class FailingPragmaConnection(studio_db._StudioDbConnection):
+        def execute(self, sql, *args):
+            if sql == pragma:
+                raise sqlite3.OperationalError("pragma setup failed")
+            return super().execute(sql, *args)
+
+    connection = sqlite3.connect(str(db), factory = FailingPragmaConnection)
+    monkeypatch.setattr(studio_db, "_connect_studio_db", lambda *args, **kwargs: connection)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match = "pragma setup failed"):
+            studio_db.get_connection()
+        with pytest.raises(sqlite3.ProgrammingError, match = "closed"):
+            connection.execute("SELECT 1")
+    finally:
+        connection.close()
+
+
 # --- the attachment inventory is dirtied by attachments, not by bookkeeping -------------
 
 
