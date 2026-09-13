@@ -95,6 +95,10 @@ from core.inference.llama_server_args import (
     memory_state_satisfies_settings,
     fit_is_effectively_on,
     fit_target_margin_in,
+    MANAGED_DIO_FLAGS,
+    no_reserve_requires_dio,
+    resolve_launch_load_mode,
+    resolve_effective_load_state,
     resolve_effective_memory_state,
     scrub_denied_env,
     scrub_memory_env,
@@ -3535,7 +3539,13 @@ def _with_gguf_load_marker(load: Callable):
         load_cancel_event: Optional[threading.Event] = None,
     ):
         hf_repo = intent.hf_repo
-        with gguf_load_in_flight(hf_repo):
+        # The launch probe memo, which must not leak however this exits: several
+        # placement decisions want the same rows and each probe is a subprocess, while
+        # system-info polling outside a load needs LIVE VRAM and must never be served
+        # the snapshot. Arming is narrower; see _arm_load_probe_memo. The pre-spawn
+        # placement marker is released by `_serial_load_scope` instead, on the way out
+        # of the LOCK, so a finished load cannot blank a queued one that published.
+        with _load_probe_memo_scope(), gguf_load_in_flight(hf_repo):
             if hf_repo and _hub_download_blocks_gguf_load(
                 hf_repo,
                 intent.hf_variant,
@@ -5522,6 +5532,21 @@ def _without_subsequence(tokens: List[str], run: List[str]) -> List[str]:
     return list(tokens)
 
 
+def _count_subsequence(tokens: List[str], run: List[str]) -> int:
+    """How many non-overlapping contiguous occurrences of ``run`` are in ``tokens``."""
+    if not run:
+        return 0
+    total = 0
+    i = 0
+    while i <= len(tokens) - len(run):
+        if tokens[i : i + len(run)] == run:
+            total += 1
+            i += len(run)
+        else:
+            i += 1
+    return total
+
+
 def _subsequence_index(tokens: List[str], run: List[str], hint: int) -> int:
     """Where ``run`` sits in ``tokens``, given it was appended at ``hint``.
 
@@ -6122,8 +6147,126 @@ def _prepend_loader_dir(existing: str, lib_dir: str) -> str:
 _CPU_RUNTIME_OWNER_FILE = "UNSLOTH_OWNER_PID"
 
 # GPU backends the staged CPU-only runtime must not carry over. Module level: compiled once.
+# Vulkan probe rows for the placement decision in progress. THREAD-LOCAL: the probe
+# is also reached from system-info polling through `vulkan_device_inventory`, on other
+# threads and at any time, and those callers want live free/used VRAM. A shared dict
+# let such a poll seed the load's memo with rows that were minutes old by the time the
+# fitter read them.
+_LOAD_PROBE_STATE = threading.local()
+
+
+def _load_probe_memo_armed() -> bool:
+    return getattr(_LOAD_PROBE_STATE, "armed", False)
+
+
+def _load_probe_memo_get(kind, binary):
+    rows = getattr(_LOAD_PROBE_STATE, "rows", None)
+    return rows.get((kind, binary)) if rows else None
+
+
+def _load_probe_memo_put(kind, binary, rows) -> None:
+    if not _load_probe_memo_armed():
+        return
+    store = getattr(_LOAD_PROBE_STATE, "rows", None)
+    if store is None:
+        store = _LOAD_PROBE_STATE.rows = {}
+    store[(kind, binary)] = rows
+
+
+def _arm_load_probe_memo() -> None:
+    """Start memoising the launch probes for the placement decision, on this thread
+    only. Keyed by kind: the placement asks two different subprocesses, the device
+    enumeration and, for a Vulkan target, the discrete-versus-shared probe.
+
+    Called at the placement work rather than at the load call, which also covers the
+    Hub download: rows captured before a multi-minute download would price the fit
+    against VRAM that has since been allocated. `_load_probe_memo_scope` on the load
+    call owns the lifetime, so this never has to be unwound by hand.
+    """
+    _LOAD_PROBE_STATE.armed = True
+    _LOAD_PROBE_STATE.rows = {}
+
+
+@contextlib.contextmanager
+def _load_probe_memo_scope():
+    """Guarantee the memo cannot outlive a load however it exits. Arming is the
+    narrower `_arm_load_probe_memo`, taken around the placement decision."""
+    try:
+        yield
+    finally:
+        _LOAD_PROBE_STATE.armed = False
+        _LOAD_PROBE_STATE.rows = None
+
+
+# Sentinel for "this probe ran and had no usable answer", so a memo can hold that
+# apart from "not probed yet". None means the latter to every reader.
+_MISSING = object()
+
+# Backends whose devices are discrete by construction, because `_weights_in_host_memory`
+# already classifies them upstream, AMD APUs included. Everything else must be proven: a
+# Vulkan id gets the shared-memory probe, and a SYCL, OpenCL, MUSA or CANN id can be an
+# integrated GPU nothing here recognises, so it declines.
+_SELF_EVIDENTLY_DISCRETE = frozenset({"cuda", "rocm", "hip"})
+
+# What the child enumerates depends on these as much as on the binary, and the
+# recovery rungs narrow exactly these, so a memo keyed on the binary alone answered a
+# narrowed set with the original set's verdict.
+_DEVICE_VISIBILITY_ENV = (
+    "CUDA_VISIBLE_DEVICES",
+    "HIP_VISIBLE_DEVICES",
+    "ROCR_VISIBLE_DEVICES",
+    "GGML_VK_VISIBLE_DEVICES",
+    "GGML_BACKEND_PATH",
+    "LLAMA_ARG_DEVICE",
+    "LLAMA_ARG_MAIN_GPU",
+)
+
+# `llama-server --list-devices` prints a header, then one indented `<id>: <desc>
+# (<total> MiB, <free> MiB free)` line per device. Observed across builds: CPU-only
+# ones print the header followed by `  (none)` or by nothing. The id has no internal
+# spaces, which is what excludes the `  Device 0: ...` lines ggml_cuda_init writes
+# ABOVE the header.
+_LISTED_DEVICE_RE = re.compile(r"^\s+(\S+):\s")
+_LIST_DEVICES_HEADER = "Available devices:"
+
+
+def _parse_listed_devices(text: Optional[str]) -> Optional[list[str]]:
+    """Device ids from ``--list-devices`` output, or None when it had no answer.
+
+    Only lines BELOW the header count: backends log their own initialisation above it,
+    which is noise that happens to contain colons.
+    """
+    if not text:
+        return None
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() == _LIST_DEVICES_HEADER:
+            break
+    else:
+        # No header at all: an older build that does not know the flag, or output we
+        # cannot read. Neither is evidence that there are no devices.
+        return None
+    devices = []
+    for line in lines[index + 1 :]:
+        if not line.strip():
+            continue
+        if not line[:1].isspace():
+            break  # dedent ends the block
+        match = _LISTED_DEVICE_RE.match(line)
+        if match:
+            devices.append(match.group(1))
+    return devices
+
+
+# Strict filename match for a ggml GPU backend plugin, anchored on a name the dynamic
+# loader can actually open rather than on the stem alone. A bare prefix also matched
+# `ggml-cuda.dll.bak`, `ggml-cuda.dll.disabled` and `ggml-cuda-notes.txt`, which are
+# exactly the names left behind by disabling a backend -- the case where the build
+# genuinely ships none. Same rule `_lib_dir_has_ggml_backend` applies: exact soname, or
+# a versioned form the platform really uses (`libggml-cuda.so.1`, `libggml-metal.1.dylib`).
 _GGML_GPU_BACKEND_RE = re.compile(
-    r"^(?:lib)?ggml-(?:cuda|hip|vulkan|metal|sycl|opencl|musa|cann|virtgpu)"
+    r"^(?:lib)?ggml-(?:cann|cuda|hip|metal|musa|opencl|sycl|virtgpu|vulkan)"
+    r"(?:\.dll|\.so(?:\.\d+)*|(?:\.\d+)*\.dylib)$"
 )
 
 
@@ -6374,7 +6517,7 @@ class LlamaCppBackend:
         # settings route reports a stale budget instead of nagging on every save.
         self._vram_fraction_launched: Optional[float] = None
         # Budget a load has committed to but not published, covering planning ->
-        # Popen as _memory_launch_pending does for Model Memory placement.
+        # Popen as _memory_pending_launch does for Model Memory placement.
         self._vram_fraction_pending: Optional[float] = None
         # --batch-size / --ubatch-size the last load asked for; none = defaults or extras / env
         self._requested_n_batch: Optional[int] = None
@@ -6540,17 +6683,36 @@ class LlamaCppBackend:
         # load-mode). _memory_policy_active records that the launch differed
         # from an unmanaged one, so disabling the toggles can undo it.
         self._memory_state: Optional[tuple[bool, bool]] = None
+        # Whether it streams: mmap and dio are the same pair above, so without
+        # this the comparator cannot tell a launch that owes dio from one on mmap.
+        self._memory_direct_io: Optional[bool] = None
+        # Whether a relaunch under no-reserve would really stream: the same policy
+        # chain this launch ran, one toggle apart. Compared against
+        # _memory_direct_io, that is exactly "would reloading change the loader".
+        self._memory_dio_applicable: bool = False
+        # The managed DirectIO tokens, so a rung that gives up the confirmed full
+        # offload can take them back out. _fit_load_mode_flags' role, one setting up.
+        self._memory_dio_flags: list[str] = []
+        # The user's own extras for this launch. The managed strip compares against
+        # them so it can never remove a hand-typed `--load-mode dio`.
+        self._memory_dio_user_tokens: list[str] = []
         self._memory_policy_active: bool = False
+        # What would still mark this launch with the managed flags removed: a scrubbed
+        # env var or a vetoed extra. Recorded so a rung that withdraws the DirectIO pair
+        # can tell a child that is now equal to an unmanaged one from one that is not.
+        self._memory_policy_extras_touched: bool = False
         # False when a launch is fully offloaded to a discrete GPU, where
         # page-locking host RAM is skipped on purpose.
         self._memory_mlock_applicable: bool = True
         # The "--load-mode none" tokens the FIT emitted, so paths that replace the
         # placement can take them back out. Empty for a mode the user asked for.
         self._fit_load_mode_flags: list[str] = []
-        # True between recording a launch's placement and the child being
-        # spawned, so a save landing in that window still has a launch to
-        # compare against.
-        self._memory_launch_pending: bool = False
+        # The (keep_resident, no_ram_reserve) pair a launch in flight is committed to,
+        # None when none is pending. ONE attribute, because a separate marker and
+        # snapshot could be read out of step -- marker before the publish, snapshot
+        # after -- and answer a save with reload_required=false about a child already
+        # committed to the pre-save flags. A single assignment is atomic.
+        self._memory_pending_launch: Optional[tuple[bool, bool]] = None
         # True when the resident model came from an explicit UI load rather than
         # the OpenAI API, so the idle unload can be scoped to API-loaded models.
         # Not on GgufLoadIntent: that is compared for equality to detect
@@ -8376,6 +8538,458 @@ class LlamaCppBackend:
                 backends.add(backend)
         return frozenset(backends)
 
+    def _record_memory_state(
+        self,
+        argv,
+        env = None,
+    ) -> None:
+        """Record the ``(mlock, reserves_ram)`` a launch really runs with, and
+        whether it streams, from ONE parse. A dozen paths record a state; a
+        second parse at each of them would drift from this one."""
+        mlock, reserves_ram, direct_io = resolve_effective_load_state(argv, env)
+        self._memory_state = (mlock, reserves_ram)
+        self._memory_direct_io = direct_io
+
+    def _drop_managed_dio(
+        self,
+        argv,
+        reason: str,
+        clear_record: bool = True,
+    ):
+        """Take the no-reserve DirectIO pair back out of an argv whose placement
+        is no longer the confirmed full offload it was chosen for.
+
+        ``use_mmap`` covers mmap / mmap+mlock / auto only, so under dio every
+        layer llama.cpp leaves on the CPU is read into an allocated buffer
+        instead of a mapping the kernel can page: the reservation the setting
+        exists to avoid. Only Unsloth's own tokens; a user's --load-mode is
+        theirs, exactly as with the fit's mode.
+
+        ``clear_record`` False when the caller strips a COPY and `cmd` still
+        carries the pair, which is the arm the fit's own mode already takes for
+        the same reason: the arch-crash and CPU rungs respawn from `cmd`, and
+        forgetting the tokens here leaves their own strip a no-op on an argv that
+        still has them. The applicable flag goes either way, because it describes
+        the child about to spawn, and the `_mem_policy_for_cmd` snapshot restores
+        `cmd`'s value for the rung that goes back to it.
+        """
+        if not self._memory_dio_flags:
+            self._memory_dio_applicable = False
+            return argv
+        # The record says a managed pair exists SOMEWHERE, not that it is in THIS argv:
+        # a rung that strips a copy keeps the record for `cmd`, so an argv built from
+        # that copy matched again and took the user's own pair. Strip only while this
+        # argv holds more of it than the user wrote.
+        if _count_subsequence(list(argv), self._memory_dio_flags) <= _count_subsequence(
+            list(getattr(self, "_memory_dio_user_tokens", []) or []), self._memory_dio_flags
+        ):
+            if clear_record:
+                self._memory_dio_flags = []
+            self._memory_dio_applicable = False
+            return argv
+        stripped = _without_subsequence(argv, self._memory_dio_flags)
+        if clear_record:
+            self._memory_dio_flags = []
+        self._memory_dio_applicable = False
+        # The pair may have been this policy's only mark, and a child equal to an
+        # unmanaged one must not be torn down when the toggles go off. The same
+        # recompute the --fit off retry makes when it drops the page-lock; the
+        # _mem_policy_for_cmd snapshot puts `cmd`'s answer back for the rung that
+        # respawns from it.
+        self._memory_policy_active = self._memory_policy_extras_touched
+        logger.info("Model Memory: dropping the managed --load-mode dio; %s", reason)
+        return stripped
+
+    @staticmethod
+    def _vulkan_offload_is_discrete(binary: Optional[str], gpu_indices = None) -> bool:
+        """True only when the probe ANSWERED and every device in play is discrete.
+
+        ``_vulkan_targets_are_igpus`` folds "probe failed" into "not an iGPU",
+        which is the safe direction for its own caller (that one only skips a
+        page-lock) and the wrong one here: an iGPU's VRAM is system RAM, so
+        confirming an offload we could not read hands DirectIO to weights that
+        are really host-backed. Absence of an answer declines.
+        """
+        try:
+            rows = LlamaCppBackend._run_vulkan_probe(binary)
+        except Exception:
+            return False
+        if not rows:
+            return False
+        wanted = set(gpu_indices) if gpu_indices else None
+        selected = [r for r in rows if wanted is None or r["index"] in wanted]
+        if not selected:
+            return False
+        # Every ordinal asked about has to be present, not merely some of them: a
+        # partial intersection left the missing device unclassified and confirmed.
+        if wanted is not None and wanted - {r["index"] for r in selected}:
+            return False
+        # The probe reports all-False when the type query fails, so "not integrated"
+        # and "could not read the type" share a value. That default is right for the
+        # page-lock caller and wrong here: an unread type is not discrete evidence.
+        if not all(r.get("type_known") for r in selected):
+            return False
+        return not any(r["is_igpu"] for r in selected)
+
+    @classmethod
+    def _gpu_offload_confirmed(
+        cls,
+        binary: Optional[str],
+        env: Optional[Mapping[str, str]],
+        gpu_indices,
+        host_resident: bool,
+        dio_possible: bool,
+        extra_args = None,
+    ) -> bool:
+        """Whether this launch really puts the weights on a discrete GPU.
+
+        The one predicate behind managed DirectIO. Confirming wrongly is worse than
+        not acting: DirectIO over host-resident weights replaces a pageable mapping
+        with a model-sized allocated buffer. Two questions, and anything unanswered
+        declines:
+
+        1. Will these devices exist for the child? ``--list-devices`` is the loader's
+           own verdict, so a missing runtime, a disabled plugin, a wrong-vendor plugin
+           and a ``GGML_BACKEND_PATH`` plugin all resolve without reading a filename.
+        2. Is the device discrete? ggml does not report it. Vulkan has the separate
+           probe, CUDA and ROCm are classified upstream by `_weights_in_host_memory`,
+           and a SYCL or OpenCL id can be an integrated GPU nothing here recognises.
+
+        ``dio_possible`` is the platform-and-build gate, NOT the toggle: off Windows
+        no answer can reach a flag, so the probes are not worth spawning. Gating on
+        the toggle would be wrong, because the verdict is recorded as this launch's
+        placement and compared against a later save.
+        """
+        if not dio_possible or host_resident:
+            return False
+        devices = cls._enumerated_gpu_devices(binary, env)
+        # A pass-through `--device` is appended last and decides where the child really
+        # puts the weights, so the auto-selected ordinals are not what runs. Its values
+        # are ggml ids, so they check directly against what the build enumerated.
+        override = cls._effective_device_ids(extra_args, env)
+        if override is not None:
+            if any(d.lower() in _CPU_DEVICE_VALUES for d in override):
+                return False
+            listed = {d.lower() for d in (devices or [])}
+            if not override or not {d.lower() for d in override} <= listed:
+                return False
+            gpu_indices = [
+                cls._device_ordinal(d) for d in override if cls._device_ordinal(d) is not None
+            ]
+            devices = [d for d in (devices or []) if d.lower() in {o.lower() for o in override}]
+        if not cls._offload_devices_are_live(devices, gpu_indices):
+            return False
+        # EVERY selected device, not whichever kind was found first. A multi-backend
+        # build can enumerate a discrete Vulkan device beside an unclassifiable SYCL
+        # one, and returning the Vulkan verdict there confirmed a set that still had
+        # weights on an integrated GPU.
+        selected = cls._selected_devices(devices, gpu_indices)
+        backends = {cls._device_backend(d) for d in selected}
+        if backends - {"vulkan"} - _SELF_EVIDENTLY_DISCRETE:
+            return False
+        if "vulkan" in backends:
+            # Only the VULKAN ordinals. The probe reports Vulkan rows, so passing every
+            # selected ordinal let a CUDA target's 0 satisfy Vulkan row 0 and leave the
+            # actual Vulkan device unprobed but treated as discrete.
+            vulkan_ordinals = [
+                cls._device_ordinal(d) for d in selected if cls._device_backend(d) == "vulkan"
+            ]
+            if any(o is None for o in vulkan_ordinals):
+                return False
+            return cls._vulkan_offload_is_discrete(binary, vulkan_ordinals)
+        return True
+
+    @staticmethod
+    def _device_ordinal(device: str) -> Optional[int]:
+        """The trailing ordinal of a ggml device id, or None."""
+        match = re.search(r"(\d+)$", device)
+        return int(match.group(1)) if match else None
+
+    @staticmethod
+    def _compact_ordinals(
+        gpu_indices,
+        env: Optional[Mapping[str, str]],
+        is_vulkan = False,
+    ):
+        """Physical ordinals translated into the child's COMPACT space.
+
+        A mask reindexes survivors from 0, so the adapter this launch calls physical 1
+        is ``CUDA0`` to the child, and comparing the two rejected a narrowed launch that
+        was fully offloaded. The mask lists survivors in order, so a physical id's
+        position in it IS its compact ordinal. Unchanged with no mask, or one we cannot
+        map.
+        """
+        if not gpu_indices or not env or is_vulkan:
+            return gpu_indices
+        # GGML_VK_VISIBLE_DEVICES is deliberately absent. ggml passes it through and
+        # enumerates what survives, so a Vulkan ordinal is ALREADY compact -- the same
+        # thing `_run_vulkan_probe` documents about its own rows, and what
+        # `_get_gpu_memory` and `_vulkan_pin_args` work in. Translating one again
+        # pointed the residency and discreteness checks at a different probe row.
+        for name in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            raw = env.get(name)
+            if not raw or not str(raw).strip():
+                continue
+            try:
+                order = [int(part.strip()) for part in str(raw).split(",") if part.strip()]
+            except ValueError:
+                return gpu_indices
+            if not order:
+                return gpu_indices
+            try:
+                mapped = [order.index(int(i)) for i in gpu_indices if int(i) in order]
+            except (TypeError, ValueError):
+                return gpu_indices
+            return mapped or gpu_indices
+        return gpu_indices
+
+    @staticmethod
+    def _physical_ordinals(
+        compact,
+        env: Optional[Mapping[str, str]],
+        is_vulkan = False,
+    ):
+        """The inverse of `_compact_ordinals`: compact ordinals back to physical ids.
+
+        `--device` names compact ids, but `_amd_apu_wants_unified_memory` is documented
+        to take PHYSICAL ones, so a selection that arrives compact has to be mapped
+        back before residency can classify it.
+        """
+        if not compact or not env or is_vulkan:
+            return compact
+        for name in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            raw = env.get(name)
+            if not raw or not str(raw).strip():
+                continue
+            try:
+                order = [int(part.strip()) for part in str(raw).split(",") if part.strip()]
+            except ValueError:
+                return compact
+            if not order:
+                return compact
+            try:
+                mapped = [order[int(i)] for i in compact if 0 <= int(i) < len(order)]
+            except (TypeError, ValueError):
+                return compact
+            return mapped or compact
+        return compact
+
+    @classmethod
+    def _effective_main_gpu(cls, extra_args, env) -> Optional[int]:
+        """The sole device a ``--split-mode none`` launch puts every weight on.
+
+        llama.cpp keeps only ``devices[main_gpu]``, and ``--main-gpu`` can name a device
+        OUTSIDE the automatic plan, so it replaces the selection rather than narrowing
+        it. Missing that confirmed a discrete card while the child put the weights on a
+        shared-memory iGPU.
+        """
+        if not _split_mode_confines_to_one_device(extra_args, env):
+            return None
+        value = _extra_args_device(extra_args, {"--main-gpu", "-mg"})
+        if value is None and env:
+            value = env.get("LLAMA_ARG_MAIN_GPU")
+        if value is None:
+            return None
+        try:
+            return int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _effective_gpu_selection(
+        cls,
+        binary,
+        env,
+        gpu_indices,
+        extra_args,
+        dio_possible = True,
+        is_vulkan = False,
+    ):
+        """The ordinals the child will really use.
+
+        A pass-through ``--device`` is appended last, so it beats the auto selection.
+        Resolved once and handed to every consumer, because the host-residency verdict
+        and the confirmation must be about the SAME devices: computed apart, an override
+        onto a unified-memory APU was priced against the discrete card it replaced.
+
+        Returns ``(physical, compact)``, because the consumers need the SAME selection
+        in DIFFERENT spaces and collapsing them broke one or the other:
+        `_amd_apu_wants_unified_memory` is documented to take physical ids, while
+        `--list-devices` reports the child's compact ordinals.
+
+        Unchanged when there is no override, when it names no GPU, or when it names a
+        device the build never enumerated; the confirmation declines those on their own
+        terms, and answering them here would hide the reason.
+        """
+        # Gated like the confirmation itself: where no DirectIO decision can follow,
+        # nothing here can change an outcome and the enumeration is not worth a
+        # subprocess. Off that path the selection stays exactly what it was.
+        if not dio_possible:
+            return gpu_indices, gpu_indices
+        override = cls._effective_device_ids(extra_args, env)
+        if override and not any(d.lower() in _CPU_DEVICE_VALUES for d in override):
+            listed = {d.lower() for d in (cls._enumerated_gpu_devices(binary, env) or [])}
+            if {d.lower() for d in override} <= listed:
+                # `--device` names compact ids, so this arrives compact and the
+                # physical form is the one that has to be derived.
+                ordinals = [cls._device_ordinal(d) for d in override]
+                compact = [o for o in ordinals if o is not None]
+                if not compact:
+                    return gpu_indices, cls._compact_ordinals(gpu_indices, env, is_vulkan)
+                return cls._physical_ordinals(compact, env, is_vulkan), compact
+            return gpu_indices, cls._compact_ordinals(gpu_indices, env, is_vulkan)
+        # Otherwise the ordinals are PHYSICAL, and `--main-gpu` under `-sm none`
+        # replaces the selection outright.
+        main_gpu = cls._effective_main_gpu(extra_args, env)
+        if main_gpu is not None:
+            # `--main-gpu` indexes the child's FILTERED device list, so it arrives
+            # compact like `--device` and the physical form is the derived one.
+            return cls._physical_ordinals([main_gpu], env, is_vulkan), [main_gpu]
+        return gpu_indices, cls._compact_ordinals(gpu_indices, env, is_vulkan)
+
+    @classmethod
+    def _effective_device_ids(cls, extra_args, env) -> Optional[list[str]]:
+        """The explicit ``--device`` selection, or None when there is none.
+
+        Same precedence llama.cpp uses and `_device_selection_is_cpu` already mirrors:
+        the last argv value, then ``LLAMA_ARG_DEVICE``. The values are ggml device ids,
+        the same namespace ``--list-devices`` prints, so they compare directly.
+        """
+        value = _extra_args_main_device(extra_args)
+        if value is None and env:
+            value = env.get("LLAMA_ARG_DEVICE")
+        if value is None:
+            return None
+        return [d.strip() for d in str(value).split(",") if d.strip()]
+
+    @staticmethod
+    def _selected_devices(devices: Optional[list[str]], gpu_indices) -> list[str]:
+        """The enumerated GPU devices this launch will use. ggml ids are
+        ``<Backend><ordinal>``; the CPU device is not a placement target, and with no
+        pin every GPU device is in play."""
+        if not devices:
+            return []
+        gpu = [d for d in devices if not d.upper().startswith("CPU")]
+        if not gpu_indices:
+            return gpu
+        wanted = {int(i) for i in gpu_indices}
+        picked = []
+        for device in gpu:
+            match = re.search(r"(\d+)$", device)
+            if match and int(match.group(1)) in wanted:
+                picked.append(device)
+        return picked
+
+    @classmethod
+    def _offload_devices_are_live(cls, devices: Optional[list[str]], gpu_indices) -> bool:
+        """Whether every device this launch pins was enumerated by the build.
+
+        Replaces "do the host's GPUs exist": a device the host reports but the child
+        cannot open is the case that confirmed an offload which never happened.
+
+        By ORDINAL COVERAGE, not device count: a multi-backend build can enumerate the
+        same ordinal twice (``CUDA0`` and ``Vulkan0``), and counting ids rejected a
+        pinned launch whose devices were all live.
+        """
+        selected = cls._selected_devices(devices, gpu_indices)
+        if not selected:
+            return False
+        if not gpu_indices:
+            return True
+        covered = {cls._device_ordinal(d) for d in selected}
+        return {int(i) for i in gpu_indices} <= covered
+
+    @staticmethod
+    def _device_backend(device: str) -> str:
+        """The ggml backend behind a device id, lowercased. What `_is_vulkan_backend`
+        and the plugin-root scan approximated from filenames: the build reports what it
+        actually loaded, so an external ``GGML_BACKEND_PATH`` plugin names itself too."""
+        return re.sub(r"\d+$", "", device).strip().lower()
+
+    @classmethod
+    def _devices_are_vulkan(cls, devices: Optional[list[str]], gpu_indices) -> bool:
+        """Whether any device in play is a Vulkan one, read off the build's own ids."""
+        return any(
+            cls._device_backend(d) == "vulkan" for d in cls._selected_devices(devices, gpu_indices)
+        )
+
+    @classmethod
+    def _enumerated_gpu_devices(
+        cls,
+        binary: Optional[str] = None,
+        env: Optional[Mapping[str, str]] = None,
+    ) -> Optional[list[str]]:
+        """The ggml device ids ``--list-devices`` reports, or None for no usable answer.
+
+        Tri-state like ``sd_cpp_accelerator_device_verdict``: ``[]`` is the build
+        saying it has no devices, None is an older build rejecting the flag, a timeout
+        or a crash. Both decline, but empty is a real answer and is not folded in.
+        """
+        binary = binary or cls._find_llama_server_binary()
+        if not binary:
+            return None
+        key = (binary, cls._device_visibility_key(env))
+        memo = _load_probe_memo_get("devices", key)
+        if memo is not None:
+            return None if memo is _MISSING else memo
+        devices = cls._run_list_devices(binary, env)
+        _load_probe_memo_put("devices", key, _MISSING if devices is None else devices)
+        return devices
+
+    @staticmethod
+    def _device_visibility_key(env: Optional[Mapping[str, str]]):
+        """What this environment lets the child see, as a memo key. A rung that masks
+        an adapter has a different answer coming, and without this a narrowing onto a
+        usable discrete GPU kept the original set's failure."""
+        source = os.environ if env is None else env
+        return tuple((name, source.get(name)) for name in _DEVICE_VISIBILITY_ENV)
+
+    @staticmethod
+    def _run_list_devices(
+        binary: str, env: Optional[Mapping[str, str]] = None
+    ) -> Optional[list[str]]:
+        """``--list-devices`` once, parsed. The flag prints and exits, so this leaves no
+        server behind; it is on the argv denylist for that reason, which does not apply
+        to Unsloth calling it deliberately."""
+        try:
+            probe_env = LlamaCppBackend._llama_server_env_for_binary(binary)
+        except Exception:
+            probe_env = child_env_without_native_path_secret()
+        # The probe must see what the CHILD sees or it answers about a different
+        # process: on Windows the CUDA runtime comes from the managed venv and only
+        # `_llama_server_env_for_binary` puts it on PATH. The caller's view is that
+        # environment with placement variables REMOVED, so its removals are replayed
+        # rather than its whole mapping, which would drop the native paths again.
+        if env is not None:
+            # BOTH directions: removals alone left a narrowing rung's new mask out,
+            # so the probe re-enumerated the original set and repeated the failure the
+            # narrowing existed to clear.
+            for name in _DEVICE_VISIBILITY_ENV:
+                if name in env:
+                    probe_env[name] = env[name]
+                else:
+                    probe_env.pop(name, None)
+            for name in list(probe_env):
+                if name not in env and name in os.environ:
+                    probe_env.pop(name, None)
+        try:
+            result = subprocess.run(
+                [binary, "--list-devices"],
+                capture_output = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 30,
+                env = utf8_child_env(probe_env),
+                **_windows_hidden_subprocess_kwargs(),
+            )
+        except Exception as e:
+            logger.debug(f"llama-server --list-devices failed: {e}")
+            return None
+        if result.returncode != 0:
+            logger.debug(f"llama-server --list-devices exited {result.returncode}")
+            return None
+        return _parse_listed_devices(result.stdout)
+
     @staticmethod
     def _is_vulkan_backend(binary: Optional[str] = None) -> bool:
         """True if the installed llama.cpp build is Vulkan-only.
@@ -8558,6 +9172,19 @@ class LlamaCppBackend:
             env, ",".join(str(i) for i in order), prefer_rocr = prefer_rocr
         )
         return tuple(int(i) for i in order)
+
+    @staticmethod
+    def _vulkan_probe_answered(binary: Optional[str]) -> bool:
+        """Whether the Vulkan device probe produced rows at all.
+
+        `_vulkan_targets_are_igpus` folds "no answer" into "not integrated", which is
+        right for the page-lock question it was written for and not something the
+        bookkeeping can read as a measurement.
+        """
+        try:
+            return bool(LlamaCppBackend._run_vulkan_probe(binary))
+        except Exception:
+            return False
 
     @staticmethod
     def _vulkan_targets_are_igpus(binary: Optional[str], gpu_indices = None) -> bool:
@@ -10565,8 +11192,18 @@ class LlamaCppBackend:
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if not binary:
             return []
+        # Memoised for the current load. The probe spawns a subprocess that loads the
+        # Vulkan backend and carries a 15s timeout, and one load now asks for the rows
+        # from several places: the host-residency verdict, the DirectIO confirmation,
+        # and again per rung that narrows the device set. Cleared by
+        # _load_probe_memo_scope for the duration of one load, so a driver or
+        # device change between loads is never answered from cache.
+        _memo = _load_probe_memo_get("vulkan", binary)
+        if _memo is not None:
+            return _memo
         binary_dir = _llama_lib_dir(binary)
         if not _lib_dir_has_ggml_backend(binary_dir, "vulkan"):
+            _load_probe_memo_put("vulkan", binary, [])
             return []
 
         env = child_env_without_native_path_secret()
@@ -10597,16 +11234,22 @@ class LlamaCppBackend:
                 logger.debug(
                     f"vulkan GPU probe exited {result.returncode}: {result.stderr.strip()}"
                 )
+                _load_probe_memo_put("vulkan", binary, [])
                 return []
         except Exception as e:
             logger.debug(f"vulkan GPU probe failed: {e}")
+            # Memoised like any other answer: an unanswered probe folds into
+            # "not an iGPU" upstream, which sends the DirectIO confirmation
+            # straight back here, so an uncached timeout is paid twice over
+            # and again per device-set rung.
+            _load_probe_memo_put("vulkan", binary, [])
             return []
 
         rows: list[dict] = []
         for line in result.stdout.strip().splitlines():
             parts = line.split("\t")
             # 4 columns from an older probe (no name); 5 with the name column.
-            if len(parts) not in (4, 5):
+            if len(parts) not in (4, 5, 6):
                 continue
             try:
                 rows.append(
@@ -10615,12 +11258,16 @@ class LlamaCppBackend:
                         "free_mib": int(parts[1]) // (1024 * 1024),
                         "is_igpu": parts[2] == "1",
                         "total_mib": int(parts[3]) // (1024 * 1024),
-                        "name": parts[4].strip() if len(parts) == 5 else "",
+                        "name": parts[4].strip() if len(parts) >= 5 else "",
+                        # Absent on an older staged probe, which cannot tell "discrete"
+                        # from "type unread", so it reads as unknown and declines.
+                        "type_known": len(parts) >= 6 and parts[5].strip() == "1",
                     }
                 )
             except ValueError:
                 continue
         rows.sort(key = lambda r: r["index"])
+        _load_probe_memo_put("vulkan", binary, rows)
         return rows
 
     @staticmethod
@@ -12504,10 +13151,8 @@ class LlamaCppBackend:
             # Warn against the FULL search path, inherited entries included: a hand-installed CUDA
             # toolkit puts cudart64_*.dll on PATH without the venv or CUDA_PATH knowing, and warning
             # on the prepended directories alone told working custom setups to repair a fine install.
-            LlamaCppBackend._warn_missing_windows_cuda_runtime(
-                binary_dir,
-                path_dirs + [d for d in existing_path.split(";") if d],
-            )
+            _full_search_path = path_dirs + [d for d in existing_path.split(";") if d]
+            LlamaCppBackend._warn_missing_windows_cuda_runtime(binary_dir, _full_search_path)
 
             # ROCm: the prebuilt bundles rocblas.dll but NOT the Tensile
             # kernel files (rocblas/library/*.dat + *.hsaco); the DLL searches
@@ -15034,10 +15679,15 @@ class LlamaCppBackend:
         self._swa_full = False
         self._kv_cache_unified = False
         self._memory_state = None
+        self._memory_direct_io = None
+        self._memory_dio_applicable = False
+        self._memory_dio_flags = []
+        self._memory_dio_user_tokens = []
         self._memory_policy_active = False
+        self._memory_policy_extras_touched = False
         self._memory_mlock_applicable = True
         self._fit_load_mode_flags = []
-        self._memory_launch_pending = False
+        self._memory_pending_launch = None
         self._n_ubatch = self._DEFAULT_N_UBATCH
         self._requested_n_batch = None
         self._requested_n_ubatch = None
@@ -18930,6 +19580,11 @@ class LlamaCppBackend:
                 "Load mode: dropping the fit's --load-mode none for the CPU "
                 "fallback; it runs entirely from host RAM."
             )
+        # And the managed DirectIO, for the same reason: it was emitted for a
+        # confirmed full offload, and this replay appends "--device none".
+        replay = self._drop_managed_dio(
+            replay, "the CPU fallback runs entirely from host RAM", clear_record = False
+        )
         # A user's own "--load-mode none" / "--no-mmap" survives that strip, by design,
         # and on this rung it is no longer the mode they were priced for: the replay
         # appends "--gpu-layers 0 --fit off --device none", so nothing credits VRAM and
@@ -19245,6 +19900,12 @@ class LlamaCppBackend:
             finally:
                 self._vram_fraction_pending = None
                 self._binary_revision_pending = None
+                # Same reasoning for the Model Memory placement marker: it is armed
+                # before the spawn and read by the settings route ahead of is_active,
+                # so it has to be given back on the way out of the LOCK. Released at
+                # the end of the call instead, a finished load could blank the marker
+                # of a queued one that had already taken the lock and published.
+                self._memory_pending_launch = None
 
     @_with_gguf_load_marker
     def load_model(
@@ -23698,7 +24359,7 @@ class LlamaCppBackend:
                 # GPU with full offload it would hold a second copy of the model
                 # in system RAM and do nothing for VRAM, so it is not emitted
                 # and the idle-unload veto carries residency by itself.
-                from utils.model_memory_settings import should_mlock
+                from utils.model_memory_settings import capture_model_memory_settings
 
                 # fully_gpu_offloaded is only set by the auto branch. Manual mode
                 # and a user -ngl reach the same placement by their own routes,
@@ -23726,16 +24387,62 @@ class LlamaCppBackend:
                 if gpu_ids is not None:
                     _mem_extra_args = self._strip_device_extra_args(extra_args)
                     self._clear_device_placement_env(_mem_env)
+                # ONE read for every decision below, captured and published as one
+                # act: the window a save must not fall through opens at the capture,
+                # not at the spawn. It carries the pair rather than just saying "busy"
+                # because `_memory_state` is None until the flags resolve, which the
+                # comparator reads as "not governed" and answers satisfied.
+                # `_with_gguf_load_marker` clears the marker however this exits.
+                _mem_settings = capture_model_memory_settings(
+                    lambda pair: setattr(self, "_memory_pending_launch", pair)
+                )
+                _mem_keep_resident, _mem_no_reserve = _mem_settings
+                _mem_should_mlock = _mem_keep_resident and not _mem_no_reserve
+                # Armed HERE, not at the load call: that also covers the Hub download,
+                # and rows captured before it would price the fit against VRAM that has
+                # since been allocated. The scope on the load call only guarantees the
+                # memo cannot outlive the load.
+                _arm_load_probe_memo()
+                _mem_dio_possible = no_reserve_requires_dio(
+                    supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                    gpu_offload_confirmed = True,
+                )
+                # NOT gated on the toggle. The answer is recorded as this launch's
+                # placement and a LATER save is compared against it, so gating the probe
+                # on the toggle made the record mean "we did not look", and repairing
+                # that from the outside either missed a real change or demanded a reload
+                # for a placement the probe never decided (--device cpu, -ngl 0, a manual
+                # partial count). Probing costs one subprocess, and only on Windows
+                # Vulkan builds that understand --load-mode.
+                _mem_probe_for_dio = _mem_dio_possible
+                # The ordinals the CHILD will use, resolved once and given to every
+                # consumer. A pass-through `--device` is appended last and wins, so the
+                # host-residency verdict has to be about the same devices the
+                # confirmation checks, or an override onto a unified-memory APU is
+                # priced against the discrete card it replaced.
+                # Physical for the residency classifier, compact for matching the
+                # build's own device list. Same selection, two spaces.
+                _mem_physical_indices, _mem_compact_indices = self._effective_gpu_selection(
+                    binary,
+                    _mem_env,
+                    gpu_indices,
+                    _mem_extra_args,
+                    _mem_dio_possible,
+                    is_vulkan_backend,
+                )
                 _mem_host_resident = self._weights_in_host_memory(
                     fully_gpu_offloaded = fully_gpu_offloaded,
                     gpu_memory_mode = gpu_memory_mode,
                     gpu_layers = gpu_layers,
                     extra_args = _mem_extra_args,
-                    gpu_indices = gpu_indices,
+                    gpu_indices = _mem_physical_indices,
                     is_vulkan_backend = is_vulkan_backend,
                     binary = binary,
                     env = _mem_env,
-                    probe_vulkan = should_mlock(),
+                    # An unprobed Vulkan device answers the conservative True, and
+                    # _mem_should_mlock is always False under no-reserve, so gating on it
+                    # alone made the DirectIO branch unreachable on the Vulkan build.
+                    probe_vulkan = _mem_should_mlock or _mem_probe_for_dio,
                     # Over the built cmd AND the extras, so Unsloth's own --fit
                     # counts and a later user --fit still wins by last-arg.
                     fit_active = fit_is_effectively_on([*cmd, *(_mem_extra_args or [])], _mem_env),
@@ -23747,10 +24454,44 @@ class LlamaCppBackend:
                 # relaunch undoes.
                 if _arch_gate_forced_cpu:
                     _mem_host_resident = True
+                # Built here, not at its old place below, because the managed DirectIO
+                # defers to an inherited mode like the fit's does and runs first.
+                _fit_load_mode_env_view = dict(_mem_env)
+                scrub_memory_env(_fit_load_mode_env_view, _mem_settings)
+                # The same view as it would be under no-reserve. The scrub is what the
+                # SETTINGS do to the environment, so asking the hypothetical against the
+                # live view answered for the wrong toggle.
+                _mem_env_view_no_reserve = dict(_mem_env)
+                scrub_memory_env(_mem_env_view_no_reserve, (_mem_keep_resident, True))
+                # POSITIVE, not "not host-resident": that predicate only gates skipping
+                # a page-lock, so it errs True for an unprobed device and stays False
+                # for an -ngl a cpu-only prebuilt accepts and ignores.
+                # Deliberately NOT gated on where the projector lands. --load-mode is a
+                # main-model loader setting: mtmd_context_params carries no use_mmap or
+                # load_mode field, and clip.cpp reads the mmproj through an ifstream into
+                # buffers it allocates, so the projector is an allocated copy whatever
+                # this resolves to. Gating on it only withheld dio from the multi-GB
+                # weights that DO respond to it.
+                _mem_gpu_offload_confirmed = self._gpu_offload_confirmed(
+                    binary,
+                    _mem_env,
+                    _mem_compact_indices,
+                    _mem_host_resident,
+                    _mem_dio_possible,
+                    _mem_extra_args,
+                )
                 _mem_managed, _mem_extras = apply_model_memory_policy(
                     extra_args,
                     supports_load_mode = bool(server_caps.get("supports_load_mode")),
                     weights_in_host_memory = _mem_host_resident,
+                    gpu_offload_confirmed = _mem_gpu_offload_confirmed,
+                    env = _fit_load_mode_env_view,
+                    settings = _mem_settings,
+                )
+                # What the user wrote, so the strip can tell their pair from ours.
+                self._memory_dio_user_tokens = list(_mem_extras or [])
+                self._memory_dio_flags = (
+                    list(_mem_managed) if tuple(_mem_managed) == MANAGED_DIO_FLAGS else []
                 )
                 # After Model Memory and on the extras it returned, because it
                 # defers to those settings: while either one owns host placement
@@ -23767,8 +24508,6 @@ class LlamaCppBackend:
                 # beat one silently. Only the FIT's mode stands aside, since a per-model
                 # pick is a choice made for THIS model. Asked AFTER the same scrub the
                 # child gets, so a var a Model Memory toggle drops vetoes nothing.
-                _fit_load_mode_env_view = dict(_mem_env)
-                scrub_memory_env(_fit_load_mode_env_view)
                 if (
                     _fit_load_mode
                     and not load_mode
@@ -23800,7 +24539,124 @@ class LlamaCppBackend:
                     supports_load_mode = bool(server_caps.get("supports_load_mode")),
                     weights_in_host_memory = _mem_host_resident,
                     requested_load_mode = _resolved_load_mode,
+                    settings = _mem_settings,
                 )
+
+                # Whether a relaunch under no-reserve would really stream. Placement
+                # alone is not enough: a per-model mmap, an extra or an inherited
+                # choice lands after the managed pair and wins by last-arg, so asking
+                # placement alone demanded a reload no relaunch could satisfy. `_ask`
+                # differs only in the pair, so the answers cannot disagree about one
+                # child, and the chain is toggle-independent so a LATER save is
+                # compared against this launch instead of reading as satisfied.
+                def _ask(pair, env_view):
+                    return resolve_launch_load_mode(
+                        extra_args,
+                        supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                        weights_in_host_memory = _mem_host_resident,
+                        gpu_offload_confirmed = _mem_gpu_offload_confirmed,
+                        requested_load_mode = _resolved_load_mode,
+                        env = env_view,
+                        settings = pair,
+                    )
+
+                # Would a relaunch under no-reserve ADD the pair. The policy having
+                # emitted it is the question, not the effective mode: a user's own
+                # "dio" already streams, and asking for a reload to arrive at the mode
+                # the child is already in is a notice that never clears.
+                _hypo_emitted, _hypo_effective = _ask(
+                    (_mem_keep_resident, True), _mem_env_view_no_reserve
+                )
+                self._memory_dio_applicable = _hypo_emitted and _hypo_effective
+
+                # The child as it would be with the policy off entirely, for the
+                # "does this differ from unmanaged" question activity really asks.
+                _off_view = dict(_mem_env)
+                scrub_memory_env(_off_view, (False, False))
+
+                def _mem_env_for(child_env):
+                    """`_mem_env`'s placement scrubbing with the CHILD's current
+                    visibility. `_mem_env` predates the gate, so probing with it reused
+                    the unnarrowed set's verdict."""
+                    if child_env is None:
+                        return _mem_env
+                    view = dict(_mem_env)
+                    for _name in _DEVICE_VISIBILITY_ENV:
+                        if _name in child_env:
+                            view[_name] = child_env[_name]
+                        else:
+                            view.pop(_name, None)
+                    return view
+
+                def _dio_decision_for(
+                    devices,
+                    *,
+                    fully_offloaded,
+                    child_env = None,
+                ):
+                    """``(pair, applicable, active)`` for a CHANGED device set.
+
+                    Everything the launch above asks, asked again for the devices a
+                    rung has just narrowed to: the host-residency verdict, the
+                    backend and probe confirmation, the live and forced-on answers,
+                    and the toggles-off comparison that decides activity. The rungs
+                    used to ask a subset each, and every missing piece became its own
+                    review round: a partial offload getting the pair, a narrowed set
+                    never gaining it, a redundant pair recorded as activity.
+                    """
+                    _rung_env = _mem_env_for(child_env)
+                    _rung_physical, _rung_compact = self._effective_gpu_selection(
+                        binary,
+                        _rung_env,
+                        devices,
+                        _mem_extra_args,
+                        _mem_dio_possible,
+                        is_vulkan_backend,
+                    )
+                    host_resident = self._weights_in_host_memory(
+                        fully_gpu_offloaded = fully_offloaded,
+                        gpu_memory_mode = gpu_memory_mode,
+                        gpu_layers = gpu_layers,
+                        extra_args = _mem_extra_args,
+                        gpu_indices = _rung_physical,
+                        is_vulkan_backend = is_vulkan_backend,
+                        binary = binary,
+                        env = _rung_env,
+                        probe_vulkan = _mem_probe_for_dio or _mem_should_mlock,
+                        fit_active = fit_is_effectively_on(
+                            [*cmd, *(_mem_extra_args or [])], _rung_env
+                        ),
+                    )
+                    confirmed = self._gpu_offload_confirmed(
+                        binary,
+                        _rung_env,
+                        _rung_compact,
+                        host_resident,
+                        _mem_dio_possible,
+                        _mem_extra_args,
+                    )
+
+                    def _for(pair, env_view):
+                        return resolve_launch_load_mode(
+                            extra_args,
+                            supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                            weights_in_host_memory = host_resident,
+                            gpu_offload_confirmed = confirmed,
+                            requested_load_mode = _resolved_load_mode,
+                            env = env_view,
+                            settings = pair,
+                        )
+
+                    live_emitted, live_effective = _for(_mem_settings, _fit_load_mode_env_view)
+                    hypo_emitted, hypo_effective = _for(
+                        (_mem_keep_resident, True), _mem_env_view_no_reserve
+                    )
+                    pair = list(MANAGED_DIO_FLAGS) if (live_emitted and live_effective) else []
+                    # Redundant with a loader the user picked themselves changes nothing
+                    # a relaunch could undo, so it is not activity.
+                    active = bool(pair) and live_effective != _for((False, False), _off_view)[1]
+                    return pair, (hypo_emitted and hypo_effective), active
+
                 # Only when the FIT chose it: a user's own pick survives every fallback
                 # below, but a conclusion about a placement has to go when that
                 # placement does.
@@ -23809,8 +24665,18 @@ class LlamaCppBackend:
                 )
                 # Remembered so the reload hint and the duplicate-load comparator do
                 # not demand an mlock this launch deliberately skipped.
-                self._memory_mlock_applicable = _mem_host_resident
-                if should_mlock() and not _mem_host_resident:
+                # A probe forced for the DirectIO decision must not leave the page-lock
+                # bookkeeping less conservative than it would have been unprobed: an
+                # unreadable Vulkan probe answers "not an iGPU", which turned residency
+                # off, recorded the lock as inapplicable, and let the comparator excuse
+                # a missing lock on weights that may be host-backed.
+                self._memory_mlock_applicable = _mem_host_resident or (
+                    _mem_probe_for_dio
+                    and not _mem_should_mlock
+                    and is_vulkan_backend
+                    and not self._vulkan_probe_answered(binary)
+                )
+                if _mem_should_mlock and not _mem_host_resident:
                     logger.info(
                         "Model Memory: skipping page-lock, the weights are fully "
                         "offloaded to a discrete GPU; residency is kept by not "
@@ -23819,11 +24685,19 @@ class LlamaCppBackend:
                 if _mem_managed:
                     cmd.extend(_mem_managed)
                     logger.info(
-                        "Model Memory: keeping weights pinned in place (%s)",
+                        "Model Memory: applying loading policy (%s)",
                         " ".join(_mem_managed),
                     )
                 if _load_mode_managed:
                     cmd.extend(_load_mode_managed)
+                    # Protected like the extras: the per-model selection is the user's
+                    # choice too, so a later managed strip must not count it as ours.
+                    # Without this, a rung that strips a COPY left only the per-model
+                    # pair behind and the next strip took that one instead.
+                    self._memory_dio_user_tokens = [
+                        *self._memory_dio_user_tokens,
+                        *_load_mode_managed,
+                    ]
                     logger.info("Load mode: %s", " ".join(_load_mode_managed))
 
                 # User pass-through args go last. Placement flags are removed
@@ -23914,7 +24788,11 @@ class LlamaCppBackend:
                 # llama.cpp reads LLAMA_ARG_MLOCK / _MMAP / _LOAD_MODE before argv,
                 # so stripping the tokens alone would leave an inherited value in
                 # force. Only when a toggle is on, so existing setups are untouched.
-                _mem_scrubbed = scrub_memory_env(env)
+                # _mem_settings, not the live toggles: a save landing between the
+                # snapshot and here would scrub the child's environment under the new
+                # pair while its argv was already chosen from the old one, so the
+                # process would run a mix of the two. One launch, one snapshot.
+                _mem_scrubbed = scrub_memory_env(env, _mem_settings)
                 if _mem_scrubbed:
                     logger.info(
                         "Model Memory owns placement; dropped inherited %s",
@@ -23938,7 +24816,7 @@ class LlamaCppBackend:
                 # mmap/mmap+mlock/auto), so leaving it out records the launch as
                 # non-reserving and a later "Don't reserve system RAM" is judged already
                 # satisfied, keeping the reservation instead of relaunching with mmap.
-                self._memory_state = resolve_effective_memory_state(
+                self._record_memory_state(
                     list(_mem_managed) + list(_load_mode_managed) + list(_mem_extras), env
                 )
                 # Did the policy change this launch at all: emitted a flag,
@@ -23950,17 +24828,47 @@ class LlamaCppBackend:
                 _mem_policy_touched_extras = bool(_mem_scrubbed) or _mem_extras != list(
                     extra_args or []
                 )
-                self._memory_policy_active = bool(_mem_managed) or _mem_policy_touched_extras
+                # Activity is "would turning the toggles off change this child".
+                # bool(_mem_managed) is not that: a later mmap shadows the DirectIO
+                # pair and a user's own "dio" makes it redundant, both leaving the
+                # child running the command it would run unmanaged, so counting either
+                # made turning no-reserve OFF demand an inert reload. The keep-resident
+                # block cannot be shadowed; it strips the extras' load-mode flags and
+                # marks the launch through _mem_policy_touched_extras anyway.
+                _mem_managed_is_effective = bool(_mem_managed) and (
+                    tuple(_mem_managed) != MANAGED_DIO_FLAGS
+                    or self._memory_direct_io != _ask((False, False), _off_view)[1]
+                )
+                self._memory_policy_active = _mem_managed_is_effective or _mem_policy_touched_extras
+                self._memory_policy_extras_touched = _mem_policy_touched_extras
+
                 # What `cmd` itself means, snapshotted before any respawn edits it.
+                # The dio TOKENS are in it, not just the applicability: the fit-off
+                # retry appends the pair to its OWN run_cmd and records it while `cmd`
+                # never carried one, and the fallback respawning `cmd` then read that
+                # stale record as "already has it" and could not append the pair its
+                # own devices confirm. Copied, so a later strip cannot reach back in.
                 # _spawn_and_wait's --fit retries append a page-lock to THEIR argv
                 # and write the policy back; the arch-crash retry (#7624) respawns
                 # `cmd`, which never carried that lock, so it restores these.
-                _mem_policy_for_cmd = (
-                    _mem_host_resident,
-                    self._memory_state,
-                    self._memory_policy_active,
-                    self._memory_mlock_applicable,
-                )
+                def _snapshot_policy_for_cmd():
+                    """What `cmd` means RIGHT NOW, for the arch-crash retry to restore.
+
+                    A function because every site that mutates `cmd`'s managed pair has
+                    to retake it, and the proactive gate did not: the retry restored a
+                    pre-gate snapshot over a post-gate command, appending a second pair
+                    after an addition or believing an absent one was still there."""
+                    return (
+                        _mem_host_resident,
+                        self._memory_state,
+                        self._memory_direct_io,
+                        self._memory_dio_applicable,
+                        list(self._memory_dio_flags),
+                        self._memory_policy_active,
+                        self._memory_mlock_applicable,
+                    )
+
+                _mem_policy_for_cmd = _snapshot_policy_for_cmd()
                 # Omitting --threads relies on llama.cpp's physical-core default, so
                 # drop an inherited LLAMA_ARG_THREADS that would otherwise feed the
                 # arg handler and silently force hardware_concurrency(). #5692
@@ -24496,6 +25404,41 @@ class LlamaCppBackend:
                         _child_gpu_physical_ids = tuple(int(i) for i in _survivors)
                         # Narrower than any pin above, so it replaces it.
                         _launch_pinned_ids = list(_survivors)
+                        # The decision was taken against the UNNARROWED set, where an
+                        # unsupported unified-memory APU answers host-resident for the
+                        # whole launch; this gate removes it, so the child can be a
+                        # confirmed discrete full offload after all. fully_offloaded
+                        # False because the fitter still owns placement here, so the
+                        # decision re-runs the host-residency check.
+                        _gate_dio, _gate_applicable, _gate_active = _dio_decision_for(
+                            _survivors, fully_offloaded = False, child_env = env
+                        )
+                        self._memory_dio_applicable = _gate_applicable
+                        # BOTH directions, like the reactive rung: narrowing can also
+                        # take the offload away, and leaving the pair on a child that
+                        # now partially offloads reads its CPU-resident layers into
+                        # allocated buffers instead of pageable mappings.
+                        if self._memory_dio_flags and not _gate_dio:
+                            cmd = self._drop_managed_dio(
+                                cmd,
+                                "the arch gate's surviving GPU(s) no longer confirm a "
+                                "full offload",
+                            )
+                            self._memory_dio_applicable = _gate_applicable
+                            self._record_memory_state(cmd, env)
+                            _mem_policy_for_cmd = _snapshot_policy_for_cmd()
+                        elif _gate_dio and not self._memory_dio_flags:
+                            cmd = [*cmd, *_gate_dio]
+                            self._memory_dio_flags = list(_gate_dio)
+                            self._memory_policy_active = _gate_active or self._memory_policy_active
+                            self._record_memory_state(cmd, env)
+                            _mem_policy_for_cmd = _snapshot_policy_for_cmd()
+                            logger.info(
+                                "Model Memory: applying %s; the arch gate pins this "
+                                "launch to discrete GPU(s) %s.",
+                                " ".join(_gate_dio),
+                                _survivors,
+                            )
                         # And the carve-out advice with it: upstream priced the
                         # UNNARROWED set, which _rocm_selected_pool_mib declines on a
                         # mixed host, so a model outgrowing the surviving APU's
@@ -24612,13 +25555,8 @@ class LlamaCppBackend:
                     # reload comparator judges this child against a mode it no longer
                     # runs. The snapshot too: the arch-crash retry restores it over
                     # `cmd`, which now carries the override.
-                    self._memory_state = resolve_effective_memory_state(cmd, env)
-                    _mem_policy_for_cmd = (
-                        _mem_host_resident,
-                        self._memory_state,
-                        self._memory_policy_active,
-                        self._memory_mlock_applicable,
-                    )
+                    self._record_memory_state(cmd, env)
+                    _mem_policy_for_cmd = _snapshot_policy_for_cmd()
                 self._record_load_warning(_offload_msg)
 
                 # Captured before any text-only fallback strips it from cmd.
@@ -24675,7 +25613,7 @@ class LlamaCppBackend:
                         # system RAM". From the argv, not _mem_managed + _mem_extras:
                         # this descends from _last_spawn_cmd, which carries any page-lock
                         # the --fit on retry appended, and rebuilding would drop it.
-                        self._memory_state = resolve_effective_memory_state(stripped, env)
+                        self._record_memory_state(stripped, env)
                         logger.info(
                             "Load mode: dropping the fit's --load-mode none for the "
                             "--flash-attn off retry; the no-flash launch has a "
@@ -24788,7 +25726,12 @@ class LlamaCppBackend:
                             self._health_wait_cancelled = True
                             return False
                         # is_active covers it from here, so drop the pre-spawn flag.
-                        self._memory_launch_pending = False
+                        # Re-armed below if this attempt does not come up: a crashed
+                        # child is not active either, and the retry rungs redo the
+                        # placement work and spawn again from the SAME captured
+                        # settings, so a save landing in that window must not be told
+                        # the child already honours it.
+                        self._memory_pending_launch = None
 
                         # Background thread to drain stdout (prevents pipe deadlock)
                         self._stdout_thread = threading.Thread(
@@ -24803,6 +25746,13 @@ class LlamaCppBackend:
                             return True
                         if getattr(self, "_health_wait_cancelled", False):
                             return False
+                        # This attempt did not come up, so the window the marker covers
+                        # is open again: the rungs below redo the placement work and
+                        # spawn from the SAME captured settings, while a crashed child
+                        # leaves is_active false. Re-armed here rather than per rung so
+                        # a rung added later cannot forget it; `_serial_load_scope`
+                        # still releases it on the way out of the lock.
+                        self._memory_pending_launch = _mem_settings
                         # Read once, like the wait itself: a cleared reference is a
                         # teardown, not a startup crash, and re-reading the
                         # attribute per term would race the shutdown thread again.
@@ -24883,7 +25833,7 @@ class LlamaCppBackend:
                                     self._llama_log_path,
                                 )
                                 run_cmd = _reverted
-                                self._memory_state = resolve_effective_memory_state(run_cmd, env)
+                                self._record_memory_state(run_cmd, env)
                                 _did_fit_retry = True
                                 continue
                         if (
@@ -24931,12 +25881,19 @@ class LlamaCppBackend:
                                     "for the --fit on retry; the fit it was derived "
                                     "from did not hold."
                                 )
+                            # And the managed DirectIO: the retry hands placement back
+                            # because the offload it was chosen for did not hold.
+                            _run = self._drop_managed_dio(
+                                _run,
+                                "the --fit on retry gives up the confirmed full offload",
+                                clear_record = False,
+                            )
                             # The full-offload prediction that suppressed the
                             # page-lock was the very thing that just proved
                             # wrong, so llama.cpp may now leave weights in host
                             # RAM. Re-arm residency for the retry (last-wins, so
                             # appending is enough) and re-record the state.
-                            if should_mlock() and not _mem_host_resident:
+                            if _mem_should_mlock and not _mem_host_resident:
                                 _run.extend(
                                     ["--load-mode", "mmap+mlock"]
                                     if server_caps.get("supports_load_mode")
@@ -24951,7 +25908,7 @@ class LlamaCppBackend:
                                     "prediction did not hold."
                                 )
                             run_cmd = _run
-                            self._memory_state = resolve_effective_memory_state(_run, env)
+                            self._record_memory_state(_run, env)
                             _did_fit_retry = True
                             continue
                         if (
@@ -24976,23 +25933,23 @@ class LlamaCppBackend:
                             # host-resident verdict can stop holding. Drop a
                             # page-lock the retry no longer needs rather than
                             # reserving a full host copy of a fully offloaded model.
-                            if _mem_managed and _mem_host_resident:
-                                if not self._weights_in_host_memory(
-                                    fully_gpu_offloaded = True,
-                                    gpu_memory_mode = gpu_memory_mode,
-                                    gpu_layers = gpu_layers,
-                                    extra_args = _mem_extra_args,
-                                    gpu_indices = gpu_indices,
-                                    is_vulkan_backend = is_vulkan_backend,
-                                    binary = binary,
-                                    env = _mem_env,
-                                ):
+                            if _mem_host_resident and not self._weights_in_host_memory(
+                                fully_gpu_offloaded = True,
+                                gpu_memory_mode = gpu_memory_mode,
+                                gpu_layers = gpu_layers,
+                                extra_args = _mem_extra_args,
+                                gpu_indices = gpu_indices,
+                                is_vulkan_backend = is_vulkan_backend,
+                                binary = binary,
+                                env = _mem_env,
+                            ):
+                                _mem_host_resident = False
+                                # Recorded so a later "keep resident" save is not
+                                # compared against a lock this launch dropped,
+                                # which would demand a pointless reload.
+                                self._memory_mlock_applicable = False
+                                if _mem_managed:
                                     run_cmd = _without_subsequence(run_cmd, _mem_managed)
-                                    _mem_host_resident = False
-                                    # Recorded so a later "keep resident" save is not
-                                    # compared against a lock this launch dropped,
-                                    # which would demand a pointless reload.
-                                    self._memory_mlock_applicable = False
                                     # The managed flag was the policy's only mark on
                                     # this child unless it also scrubbed or stripped,
                                     # and a child equal to an unmanaged one must not
@@ -25002,7 +25959,30 @@ class LlamaCppBackend:
                                         "Model Memory: dropping the page-lock for "
                                         "the --fit off retry; it offloads every layer."
                                     )
-                                self._memory_state = resolve_effective_memory_state(run_cmd, env)
+
+                                # And the other direction, which the page-lock arm cannot
+                                # reach: under no-reserve nothing was emitted BECAUSE the
+                                # fitted attempt read as host-resident, and that is the
+                                # verdict this retry just overturned. Appended, so the
+                                # last-wins parse still leaves a hand-typed flag on top.
+                                # This rung turned the fitter OFF, so -ngl falls back to
+                                # every layer: that is the full offload to establish.
+                                _retry_dio, _retry_applicable, _retry_active = _dio_decision_for(
+                                    gpu_indices, fully_offloaded = True, child_env = env
+                                )
+                                self._memory_dio_applicable = _retry_applicable
+                                if _retry_dio and not self._memory_dio_flags:
+                                    run_cmd = [*run_cmd, *_retry_dio]
+                                    self._memory_dio_flags = list(_retry_dio)
+                                    self._memory_policy_active = (
+                                        _retry_active or self._memory_policy_active
+                                    )
+                                    logger.info(
+                                        "Model Memory: applying %s for the --fit off "
+                                        "retry; it offloads every layer.",
+                                        " ".join(_retry_dio),
+                                    )
+                                self._record_memory_state(run_cmd, env)
                             _did_fit_retry = True
                             continue
                         return False
@@ -25124,8 +26104,13 @@ class LlamaCppBackend:
                     # with: the record has to describe the argv that started, whichever
                     # of the two changed it, or the reload comparator judges this child
                     # against a mode it does not have.
-                    if self._fit_load_mode_flags or _cpu_pageable_note:
-                        self._memory_state = resolve_effective_memory_state(_last_spawn_cmd, env)
+                    #
+                    # Unconditional now, not gated on the two rewrites that used to be the
+                    # only ones: the replay also withdraws the managed DirectIO, which was
+                    # a third way for the record to go stale, and every source of staleness
+                    # here ends up in _last_spawn_cmd anyway. Recording from the argv that
+                    # really started is truthful whether or not anything rewrote it.
+                    self._record_memory_state(_last_spawn_cmd, env)
                     intent = self._apply_cpu_fallback_state(
                         intent,
                         is_vision = fallback_has_mmproj,
@@ -25248,9 +26233,12 @@ class LlamaCppBackend:
                         # `cmd` before anything spawns. The arch-crash rung re-derives it
                         # from `cmd` too, so the _mem_policy_for_cmd snapshot it restores
                         # cannot put the stale pair back. The pageable override rewrites
-                        # the same field, so either one having fired makes the record stale.
-                        if self._fit_load_mode_flags or _replay_pageable_note:
-                            self._memory_state = resolve_effective_memory_state(cmd, env)
+                        # the same field, and so does the managed DirectIO withdrawal, so
+                        # the record simply follows the argv that is about to spawn.
+                        # The snapshot with it: this replay REPLACED `cmd`, so one taken
+                        # for the old argv describes a command that no longer exists.
+                        self._record_memory_state(cmd, env)
+                        _mem_policy_for_cmd = _snapshot_policy_for_cmd()
                         # The preflight above priced and, where needed, rewrote the argv
                         # this replay was built FROM; an override settled here is news it
                         # could not have carried. Appended to whatever notice is recorded,
@@ -25298,13 +26286,21 @@ class LlamaCppBackend:
                 # window sees no active backend and reports no reload while the
                 # child is already committed. Popen clears it, and so does every
                 # exit below, so a failed spawn cannot leave it stuck on.
-                self._memory_launch_pending = True
+                self._memory_pending_launch = _mem_settings
                 self._vram_fraction_pending = _budget_priced_placement()
                 healthy = False
                 try:
                     healthy = _spawn_and_wait(cmd)
                 finally:
-                    self._memory_launch_pending = False
+                    # Only once a child is actually up, where is_active takes over.
+                    # An unconditional clear here undid the re-arm and left the outer
+                    # recovery rungs -- arch gate, KV-unified, flash-attention -- doing
+                    # their placement work and respawning from the SAME captured
+                    # settings with nothing marking the window. `_serial_load_scope`
+                    # releases it on the way out of the lock either way, so a load that
+                    # never comes up cannot strand it.
+                    if healthy:
+                        self._memory_pending_launch = None
                 if not healthy and _finish_cancelled_health_wait(
                     "Load cancelled during the llama-server health wait"
                 ):
@@ -25550,17 +26546,52 @@ class LlamaCppBackend:
                         (
                             _mem_host_resident,
                             self._memory_state,
+                            self._memory_direct_io,
+                            self._memory_dio_applicable,
+                            self._memory_dio_flags,
                             self._memory_policy_active,
                             self._memory_mlock_applicable,
                         ) = _mem_policy_for_cmd
+                        # AFTER the restore: the snapshot still carried the pair, so
+                        # restoring over the strip put back the applicability the strip
+                        # had cleared. The pair asks about PLACEMENT, and this retry
+                        # only narrows visibility, so it is re-asked on the narrowed set
+                        # in BOTH directions and unconditionally. Narrowing onto the
+                        # surviving discrete card can GAIN a full offload the original
+                        # set never had, so guarding on an existing pair left the
+                        # successful retry on mmap with nothing to correct it.
+                        _arch_dio, _arch_applicable, _arch_active = _dio_decision_for(
+                            _remaining, fully_offloaded = fully_gpu_offloaded, child_env = env
+                        )
+                        self._memory_dio_applicable = _arch_applicable
+                        _dio_left_cmd = False
+                        if self._memory_dio_flags and not _arch_dio:
+                            _dio_left_cmd = True
+                            cmd = self._drop_managed_dio(
+                                cmd,
+                                "the arch-crash retry's remaining devices no longer "
+                                "confirm a full offload",
+                            )
+                            self._memory_dio_applicable = _arch_applicable
+                        elif _arch_dio and not self._memory_dio_flags:
+                            _dio_left_cmd = True
+                            cmd = [*cmd, *_arch_dio]
+                            self._memory_dio_flags = list(_arch_dio)
+                            self._memory_policy_active = _arch_active or self._memory_policy_active
+                            logger.info(
+                                "Model Memory: applying %s; the arch-crash retry's "
+                                "remaining GPU(s) %s confirm a full offload.",
+                                " ".join(_arch_dio),
+                                _remaining,
+                            )
                         # ...except the load-mode pair just removed: the snapshot was
                         # taken while `cmd` still carried it, so restoring it would
                         # record a reservation this respawn no longer makes. From the
                         # stripped argv, NOT rebuilt from _mem_managed + _mem_extras: by
                         # here `cmd` may be a fallback argv those parts no longer add up
                         # to, dropping whatever memory-relevant flags they added.
-                        if _fit_mode_left_cmd:
-                            self._memory_state = resolve_effective_memory_state(cmd, env)
+                        if _fit_mode_left_cmd or _dio_left_cmd:
+                            self._record_memory_state(cmd, env)
                         # Residency is a property of the DEVICES, which the retry just
                         # changed: crash on the discrete card, land on the
                         # unified-memory APU, and the weights are host-backed after
@@ -25578,7 +26609,7 @@ class LlamaCppBackend:
                             is_vulkan_backend = is_vulkan_backend,
                             binary = binary,
                             env = env,
-                            probe_vulkan = should_mlock(),
+                            probe_vulkan = _mem_should_mlock,
                             fit_active = fit_is_effectively_on([*cmd, *(_mem_extra_args or [])], env),
                         )
                         # Lock-ADDING direction only: `cmd` carries a policy-emitted
@@ -25598,6 +26629,10 @@ class LlamaCppBackend:
                                 # copy would land after the extras and mark
                                 # _memory_policy_active for a launch it never touched.
                                 weights_in_host_memory = _retry_host_resident,
+                                # The launch's own pair, not the live one: a save
+                                # landing before this retry would otherwise pick flags
+                                # from toggles the rest of this launch never saw.
+                                settings = _mem_settings,
                             )
                             if _retry_managed:
                                 # After the user extras, so llama.cpp's last-wins parse
@@ -25614,9 +26649,7 @@ class LlamaCppBackend:
                             )
                             # In argv order -- extras first, then the appended
                             # lock -- because the resolver is last-wins too.
-                            self._memory_state = resolve_effective_memory_state(
-                                list(_mem_extras) + list(_retry_managed), env
-                            )
+                            self._record_memory_state(list(_mem_extras) + list(_retry_managed), env)
                             logger.info(
                                 "Arch-crash retry changed where the weights live; "
                                 "recomputed Model Memory (%s).",
@@ -25652,7 +26685,7 @@ class LlamaCppBackend:
                             self._amend_load_warning(_retry_pageable_note)
                             # From the argv, like the fit-strip above: `cmd` is what
                             # the respawn runs, and the record has to match it.
-                            self._memory_state = resolve_effective_memory_state(cmd, env)
+                            self._record_memory_state(cmd, env)
                         # And the carve-out advice with them. _begin_load_warnings()
                         # dropped the one priced for the crashed placement, but the
                         # respawn can land on a unified-memory APU whose allocation the
@@ -25996,15 +27029,19 @@ class LlamaCppBackend:
                                     # Same as the no-flash rung: the record follows the
                                     # argv, or a stale "reserving" spends a full reload
                                     # the running server already satisfies.
-                                    self._memory_state = resolve_effective_memory_state(
-                                        _stripped_cpu_projector_cmd, env
-                                    )
+                                    self._record_memory_state(_stripped_cpu_projector_cmd, env)
                                     logger.info(
                                         "Load mode: dropping the fit's --load-mode none "
                                         "for the CPU-projector retry; it moves the "
                                         "projector into host RAM the fit credited to VRAM."
                                     )
                                 _cpu_projector_cmd = _stripped_cpu_projector_cmd
+                            # The managed DirectIO stays: this retry moves the PROJECTOR,
+                            # and clip.cpp loads that through its own ifstream with no
+                            # use_mmap or load_mode to consult, so the pair says nothing
+                            # about it. The main model is still fully offloaded, which is
+                            # what the pair was chosen for. The block above is about the
+                            # fit's VRAM accounting, which the move really does void.
                             logger.warning(
                                 "llama-server failed while loading this model's GPU "
                                 "vision projector (--mmproj); retrying with the "
@@ -27049,6 +28086,9 @@ class LlamaCppBackend:
             self._memory_state,
             self._memory_policy_active,
             self._memory_mlock_applicable,
+            self._memory_direct_io,
+            self._memory_dio_applicable,
+            bool(self._memory_dio_flags),
         ):
             logger.info("Model Memory policy changed since launch; forcing a reload")
             return False
@@ -27247,9 +28287,14 @@ class LlamaCppBackend:
             self._swa_full = False
             self._kv_cache_unified = False
             self._memory_state = None
+            self._memory_direct_io = None
+            self._memory_dio_applicable = False
+            self._memory_dio_flags = []
+            self._memory_dio_user_tokens = []
             self._memory_policy_active = False
+            self._memory_policy_extras_touched = False
             self._memory_mlock_applicable = True
-            self._memory_launch_pending = False
+            self._memory_pending_launch = None
             self._vram_fraction_pending = None
             self._loaded_by_user_action = False
             self._n_ubatch = self._DEFAULT_N_UBATCH

@@ -191,8 +191,8 @@ const LOAD_MODE_LABELS: Record<(typeof LOAD_MODES)[number], string> = {
   dio: "DirectIO",
 };
 
-// What "Don't reserve system RAM" vetoes: mmap maps and dio streams, so neither holds a full
-// host copy. Mirrors _LOAD_MODE_MLOCK_VALUES and _LOAD_MODE_RESERVING_VALUES.
+// What "Don't reserve system RAM" vetoes: allocated or locked host weight buffers. Windows mmap can still hold the
+// file pages resident, which is what the DirectIO policy is for.
 // Mirrors _LOAD_MODE_MLOCK_VALUES | _LOAD_MODE_RESERVING_VALUES in llama_server_args.py.
 const RAM_RESERVING_LOAD_MODES = new Set(["none", "mlock", "mmap+mlock"]);
 
@@ -212,7 +212,7 @@ function loadModeOverrideNotice(
       : "This will be replaced by mmap+mlock: Keep model in GPU memory, in Settings, owns how the weights are held.";
   }
   if (settings.noRamReserve && RAM_RESERVING_LOAD_MODES.has(mode)) {
-    return "This will be removed and the load runs the default mmap path: Don't reserve system RAM, in Settings, owns how the weights are held.";
+    return "This will be removed: Don't reserve system RAM, in Settings, chooses the loading policy. Supported Windows builds use DirectIO for full GPU offload; other placements use the default mmap path.";
   }
   return null;
 }

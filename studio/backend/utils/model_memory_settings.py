@@ -6,8 +6,9 @@
 ``keep_resident``  -- weights never go back to system RAM while loaded: no idle
 auto-unload, and ``--mlock`` so the OS cannot page them out and re-fault them in.
 
-``no_ram_reserve`` -- no full host-RAM copy: keeps llama.cpp's default mmap path
-and drops ``--no-mmap`` / ``--mlock``.
+``no_ram_reserve`` -- avoids locked or reserved weight buffers. Uses DirectIO on
+supported Windows builds when full GPU offload is confirmed, otherwise keeps
+llama.cpp's default mmap path. Required CPU buffers can still use host RAM.
 
 Both on means "live in VRAM, keep no RAM copy, never idle-unload". ``--mlock`` is
 itself a full-model RAM reservation, so ``no_ram_reserve`` wins on that flag.
@@ -114,6 +115,27 @@ def _pair_generations() -> tuple[int, int]:
             _generation.get(KEEP_RESIDENT_SETTING_KEY, 0),
             _generation.get(NO_RAM_RESERVE_SETTING_KEY, 0),
         )
+
+
+def capture_model_memory_settings(publish) -> tuple[bool, bool]:
+    """Read the pair and publish it, with no window in between for a save to fall through.
+
+    ``get_model_memory_settings`` closes the window INSIDE the read; this closes the one
+    after it. A launch is committed to the pair from the moment it reads it, so a save
+    landing before the publication is answered from a state where the launch does not
+    exist yet: ``reload_required=false`` about a child that will run the pre-save flags.
+
+    Detected rather than locked, as this module already handles the read: the write
+    bumps a generation, so a capture whose generation moved republishes the newer pair.
+    Holding ``_cache_lock`` instead would mean holding it across the read's DB I/O.
+    """
+    for _attempt in range(_MAX_REREADS):
+        before = _pair_generations()
+        pair = get_model_memory_settings()
+        publish(pair)
+        if _pair_generations() == before:
+            return pair
+    return pair
 
 
 def get_model_memory_settings() -> tuple[bool, bool]:

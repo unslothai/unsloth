@@ -902,40 +902,88 @@ _NO_LAUNCH = object()
 
 
 def _active_launch_placement():
-    """``(state, policy_active, mlock_applicable)`` for the running child. ``state`` is ``_NO_LAUNCH``
-    when nothing is running or coming up, so the caller can tell "no process" from "a process with no
-    load-mode"."""
+    """``(state, policy_active, mlock_applicable, direct_io, dio_applicable, dio_managed,
+    pending_settings)`` for the running child.
+
+    ``state`` is ``_NO_LAUNCH`` when nothing is running or coming up, so the
+    caller can tell "no process" apart from "a process with no load-mode".
+    """
     try:
         from routes.inference import get_llama_cpp_backend
 
         backend = get_llama_cpp_backend()
-        pending = bool(getattr(backend, "_memory_launch_pending", False))
-        if not backend.is_active and not pending:
-            return _NO_LAUNCH, False, True
+        # Read ONCE: two reads can straddle the marker clear, and a replacement load
+        # finishing in between left the killed child's placement answering for the
+        # launch that replaced it. One attribute carries both "is a launch pending"
+        # and "what is it committed to", so this cannot catch the two out of step.
+        pending = getattr(backend, "_memory_pending_launch", None)
+        if not backend.is_active and pending is None:
+            return _NO_LAUNCH, False, True, None, False, False, None
         return (
             getattr(backend, "_memory_state", None),
             bool(getattr(backend, "_memory_policy_active", False)),
             bool(getattr(backend, "_memory_mlock_applicable", True)),
+            getattr(backend, "_memory_direct_io", None),
+            bool(getattr(backend, "_memory_dio_applicable", False)),
+            # The pair the POLICY emitted, apart from the aggregate activity bit: a
+            # user's own `dio` must not be withdrawn on their behalf.
+            bool(getattr(backend, "_memory_dio_flags", None)),
+            pending,
         )
     except Exception:
-        return _NO_LAUNCH, False, True
+        return _NO_LAUNCH, False, True, None, False, False, None
+
+
+def _launch_effect_of(settings):
+    """The part of ``(keep_resident, no_ram_reserve)`` a launch can express.
+
+    Mirrors ``should_mlock``: the page-lock is emitted only when residency is on and
+    no-reserve is off, so with no-reserve on the residency toggle reaches no flag.
+    """
+    keep_resident, no_ram_reserve = settings
+    return (keep_resident and not no_ram_reserve, no_ram_reserve)
 
 
 def _model_memory_reload_required() -> bool:
-    """True when the loaded process's memory placement contradicts the settings. Compares the state the child
-    ACTUALLY launched with (env defaults plus last-wins argv, so a user-supplied --mlock / --no-mmap counts)
-    against what the current settings would produce. The idle-unload veto applies immediately, so only
-    placement can be stale. Keyed on is_active, not is_loaded: a save that lands while a load is still
-    passing its health check would otherwise report no reload while the child is already committed to the
-    pre-save flags."""
-    state, policy_active, mlock_applicable = _active_launch_placement()
+    """True when the loaded process's memory placement contradicts the settings.
+
+    Compares the state the child ACTUALLY launched with -- env defaults plus
+    last-wins argv, so a user-supplied --mlock / --no-mmap counts -- against
+    what the current settings would produce. The idle-unload veto applies
+    immediately (the loop re-reads each poll), so only placement can be stale.
+
+    Keyed on is_active, not is_loaded: a save that lands while a load is still
+    passing its health check would otherwise report no reload while the child is
+    already committed to the pre-save flags. _memory_launch_pending covers the
+    same window before Popen, where the placement is decided but _process is
+    still None.
+    """
+    state, policy_active, mlock_applicable, direct_io, dio_applicable, dio_managed, pending = (
+        _active_launch_placement()
+    )
     if state is _NO_LAUNCH:
         return False
+
+    # A launch in flight has no resolved flags to compare, and the comparator reads
+    # None as "not governed", so answer from the snapshot it is committed to. Whenever
+    # one is pending, NOT only when `state` is None: replacing a model kills the old
+    # process without clearing its `_memory_state`, whose stale placement would
+    # otherwise answer for the launch replacing it.
+    if pending is not None:
+        from utils.model_memory_settings import get_model_memory_settings
+
+        # By EFFECT, not the literal pair: no-reserve wins over keep-resident for every
+        # loader flag, so flipping keep-resident under it changes only the idle-unload
+        # veto, which the loop re-reads each poll. The raw tuple asked for a reload the
+        # launch cannot express.
+        return _launch_effect_of(get_model_memory_settings()) != _launch_effect_of(pending)
 
     # Same predicate the duplicate-load comparator uses.
     from core.inference.llama_server_args import memory_state_satisfies_settings
 
-    return not memory_state_satisfies_settings(state, policy_active, mlock_applicable)
+    return not memory_state_satisfies_settings(
+        state, policy_active, mlock_applicable, direct_io, dio_applicable, dio_managed
+    )
 
 
 def _model_memory_mlock_active(want_mlock: bool) -> bool:
@@ -946,7 +994,9 @@ def _model_memory_mlock_active(want_mlock: bool) -> bool:
     user's own --mlock counts, since the resolver reads the launched argv."""
     if not want_mlock:
         return False
-    state, _policy_active, _applicable = _active_launch_placement()
+    state, _policy_active, _applicable, _direct_io, _dio_applicable, _dio_managed, _pending = (
+        _active_launch_placement()
+    )
     if state is _NO_LAUNCH:
         return True
     return bool(state and state[0])

@@ -47,6 +47,8 @@ def policy(monkeypatch):
         extras,
         supports_load_mode = False,
         weights_in_host_memory = True,
+        gpu_offload_confirmed = False,
+        env = None,
     ):
         monkeypatch.setattr(mm, "get_keep_resident", lambda: keep_resident)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_ram_reserve)
@@ -55,6 +57,8 @@ def policy(monkeypatch):
             extras,
             supports_load_mode = supports_load_mode,
             weights_in_host_memory = weights_in_host_memory,
+            gpu_offload_confirmed = gpu_offload_confirmed,
+            env = env,
         )
 
     return run
@@ -1212,23 +1216,32 @@ class TestVulkanIgpuDetection:
         return LlamaCppBackend._vulkan_targets_are_igpus
 
     def test_all_igpus(self, monkeypatch):
-        rows = [{"index": 0, "is_igpu": True}]
+        rows = [{"index": 0, "is_igpu": True, "type_known": True}]
         assert self._probe(monkeypatch, rows)("bin", None) is True
 
     def test_a_mixed_set_still_has_host_weights(self, monkeypatch):
         """A split puts part of the model on the iGPU, whose VRAM is system RAM,
         so those pages are as evictable as if it were the only device."""
-        rows = [{"index": 0, "is_igpu": True}, {"index": 1, "is_igpu": False}]
+        rows = [
+            {"index": 0, "is_igpu": True, "type_known": True},
+            {"index": 1, "is_igpu": False, "type_known": True},
+        ]
         assert self._probe(monkeypatch, rows)("bin", None) is True
 
     def test_only_the_selected_devices_count(self, monkeypatch):
-        rows = [{"index": 0, "is_igpu": True}, {"index": 1, "is_igpu": False}]
+        rows = [
+            {"index": 0, "is_igpu": True, "type_known": True},
+            {"index": 1, "is_igpu": False, "type_known": True},
+        ]
         assert self._probe(monkeypatch, rows)("bin", [0]) is True
         assert self._probe(monkeypatch, rows)("bin", [1]) is False
         assert self._probe(monkeypatch, rows)("bin", [0, 1]) is True
 
     def test_discrete_only_stays_no(self, monkeypatch):
-        rows = [{"index": 0, "is_igpu": False}, {"index": 1, "is_igpu": False}]
+        rows = [
+            {"index": 0, "is_igpu": False, "type_known": True},
+            {"index": 1, "is_igpu": False, "type_known": True},
+        ]
         assert self._probe(monkeypatch, rows)("bin", None) is False
 
     def test_an_unreadable_probe_answers_no(self, monkeypatch):
@@ -1377,7 +1390,7 @@ class TestPreSpawnWindow:
 
         backend = _fake_backend(
             is_active = False,
-            _memory_launch_pending = True,
+            _memory_pending_launch = (True, False),
             _memory_state = (True, False),
             _memory_policy_active = True,
         )
@@ -1395,7 +1408,7 @@ class TestPreSpawnWindow:
         import routes.settings as rs
 
         backend = _fake_backend(
-            _memory_launch_pending = True,
+            _memory_pending_launch = (True, False),
             _memory_state = (True, False),
             _memory_policy_active = True,
         )
@@ -2285,7 +2298,7 @@ class TestFitOffRetryDropsTheLock:
             "_without_subsequence(run_cmd, _mem_managed)",
             "_mem_host_resident = False",
             "self._memory_mlock_applicable = False",
-            "resolve_effective_memory_state(run_cmd, env)",
+            "self._record_memory_state(run_cmd, env)",
         ):
             assert needle in tail, needle
 
@@ -2318,9 +2331,17 @@ class TestFitOffRetryClearsPolicyActivity:
         import inspect
 
         src = inspect.getsource(LlamaCppBackend.load_model)
+        # Whitespace-normalised: a formatter may rewrap any of these, and pinning the
+        # wrapping made pre-commit.ci's reflow look like a behaviour change.
+        # The managed half is no longer bare bool(_mem_managed): a DirectIO pair a
+        # later mmap shadows changes nothing the child can observe, so it does not
+        # count as activity either. The non-managed half is what the retry reuses.
+        flat = "".join(src.split())
         assert (
-            "self._memory_policy_active = bool(_mem_managed) or _mem_policy_touched_extras" in src
+            "self._memory_policy_active=_mem_managed_is_effectiveor_mem_policy_touched_extras"
+            in flat
         )
+        assert "self._memory_policy_extras_touched=_mem_policy_touched_extras" in flat
         branch = src.find('run_cmd = [*run_cmd, "--fit", "off"]')
         assert branch != -1
         end = src.find("return False", branch)
@@ -2443,3 +2464,2258 @@ class TestTheEffectiveFitterState:
         src = inspect.getsource(LlamaCppBackend.load_model)
         assert "fit_active = fit_is_effectively_on(" in src
         assert "[*cmd, *(_mem_extra_args or [])], _mem_env" in src
+
+
+class TestWindowsNoReserveStreaming:
+    @pytest.mark.parametrize("keep_resident", [False, True])
+    def test_full_offload_streams_and_none_cannot_restore_mmap(
+        self, policy, monkeypatch, keep_resident
+    ):
+        monkeypatch.setattr(_lsa.sys, "platform", "win32")
+        managed, extras = policy(
+            keep_resident,
+            True,
+            ["--no-mmap", "--temp", "0.7"],
+            supports_load_mode = True,
+            weights_in_host_memory = False,
+            gpu_offload_confirmed = True,
+        )
+        selected, extras = _lsa.apply_load_mode_policy(
+            extras,
+            supports_load_mode = True,
+            weights_in_host_memory = False,
+            requested_load_mode = "none",
+        )
+        assert managed + selected + extras == ["--load-mode", "dio", "--temp", "0.7"]
+
+    @pytest.mark.parametrize(
+        "platform,host,supported",
+        [
+            ("linux", False, True),
+            ("darwin", False, True),
+            ("win32", True, True),
+            ("win32", False, False),
+        ],
+    )
+    def test_other_placements_and_legacy_builds_keep_their_policy(
+        self, policy, monkeypatch, platform, host, supported
+    ):
+        monkeypatch.setattr(_lsa.sys, "platform", platform)
+        managed, extras = policy(
+            False,
+            True,
+            ["--mlock"],
+            supports_load_mode = supported,
+            weights_in_host_memory = host,
+            gpu_offload_confirmed = not host,
+        )
+        assert managed == []
+        assert extras == []
+
+    def test_explicit_mmap_remains_an_override(self, policy, monkeypatch):
+        monkeypatch.setattr(_lsa.sys, "platform", "win32")
+        managed, extras = policy(
+            False,
+            True,
+            [],
+            supports_load_mode = True,
+            weights_in_host_memory = False,
+            gpu_offload_confirmed = True,
+        )
+        selected, extras = _lsa.apply_load_mode_policy(
+            extras,
+            supports_load_mode = True,
+            weights_in_host_memory = False,
+            requested_load_mode = "mmap",
+        )
+        assert managed + selected == ["--load-mode", "dio", "--load-mode", "mmap"]
+
+
+def _dio(
+    extras = None,
+    *,
+    supports = True,
+    host = False,
+    confirmed = True,
+    requested = None,
+    env = None,
+    no_reserve = True,
+    keep = False,
+):
+    """``(policy_emitted, effective)`` through the real policy chain."""
+    return _lsa.resolve_launch_load_mode(
+        extras or [],
+        supports_load_mode = supports,
+        weights_in_host_memory = host,
+        gpu_offload_confirmed = confirmed,
+        requested_load_mode = requested,
+        env = env,
+        settings = (keep, no_reserve),
+    )
+
+
+class TestTheDioPolicy:
+    """The whole feature: on Windows, a confirmed full offload under no-reserve
+    streams instead of mapping, because Windows keeps the GGUF mapping resident
+    after offload (unmap_fragment is a no-op there, #9033). Everything else keeps
+    llama.cpp's default."""
+
+    @pytest.fixture(autouse = True)
+    def _win(self, monkeypatch):
+        monkeypatch.setattr(_lsa.sys, "platform", "win32")
+
+    def test_a_confirmed_full_offload_streams(self):
+        assert _dio() == (True, True)
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"no_reserve": False},  # the setting is off
+            {"supports": False},  # a build with no --load-mode
+            {"confirmed": False},  # placement not established, incl. host-resident
+        ],
+        ids = ["toggle-off", "legacy-build", "unconfirmed"],
+    )
+    def test_every_leg_is_required(self, kwargs):
+        assert _dio(**kwargs) == (False, False)
+
+    def test_host_residency_reaches_the_branch_as_an_unconfirmed_offload(self):
+        """The launch hands host residency to the confirmation, so the two cannot
+        disagree; the policy takes the confirmation and does not re-derive it."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "_mem_gpu_offload_confirmed=self._gpu_offload_confirmed(" in flat
+        assert "binary,_mem_env,_mem_compact_indices,_mem_host_resident," in flat
+        # and host residency was priced against those SAME ordinals
+        assert "gpu_indices=_mem_physical_indices," in flat
+        # and the owner declines on host residency before probing anything
+        owner = "".join(inspect.getsource(LlamaCppBackend._gpu_offload_confirmed).split())
+        assert owner.index("ifnotdio_possibleorhost_resident:returnFalse") < owner.index(
+            "_enumerated_gpu_devices("
+        )
+
+    def test_other_platforms_keep_mmap(self, monkeypatch):
+        for platform in ("linux", "darwin"):
+            monkeypatch.setattr(_lsa.sys, "platform", platform)
+            assert _dio() == (False, False)
+
+    @pytest.mark.parametrize(
+        "env",
+        [
+            {"LLAMA_ARG_MMAP": "1"},
+            {"LLAMA_ARG_LOAD_MODE": "mmap"},
+            {"LLAMA_ARG_DIO": "1"},
+        ],
+    )
+    def test_an_inherited_loader_choice_wins(self, env):
+        """no-reserve owns the RESERVATION, not the loader, so these survive the
+        scrub, and argv beats the environment in llama.cpp."""
+        assert _lsa.scrub_memory_env(dict(env), (False, True)) == []
+        emitted, effective = _dio(env = env)
+        # The pair stands aside for any of them; only an inherited dio still streams.
+        assert emitted is False
+        assert effective is (env.get("LLAMA_ARG_DIO") == "1")
+
+    def test_a_reserving_env_var_is_scrubbed_and_does_not_veto(self):
+        scrubbed = {"LLAMA_ARG_NO_MMAP": "1"}
+        assert _lsa.scrub_memory_env(scrubbed, (False, True)) == ["LLAMA_ARG_NO_MMAP"]
+        assert _dio(env = scrubbed) == (True, True)
+
+    def test_a_per_model_mmap_wins_by_last_arg(self):
+        # The policy still emits; the user's selector wins the resolve.
+        assert _dio(requested = "mmap") == (True, False)
+
+    def test_a_per_model_reserving_mode_is_dropped_and_dio_stands(self):
+        """no-reserve vetoes none/mlock/mmap+mlock, so they cannot shadow it."""
+        for mode in ("none", "mlock", "mmap+mlock"):
+            assert _dio(requested = mode) == (True, True)
+
+    def test_a_hand_typed_extra_wins_by_last_arg(self):
+        assert _dio(["--load-mode", "mmap"]) == (True, False)
+
+    def test_a_reserving_extra_is_stripped_and_dio_stands(self):
+        assert _dio(["--no-mmap"]) == (True, True)
+
+    @pytest.mark.parametrize("how", ["requested", "extras", "env"])
+    def test_a_user_dio_streams_without_the_policy_emitting(self, how):
+        """The two halves are different questions. Conflating them made a retry
+        append a redundant pair and mark the launch active, and with both toggles
+        off `not policy_active` then fails forever: an endless reload of a healthy
+        child. The user's own dio streams; the policy contributed nothing."""
+        kw = {"no_reserve": False}
+        if how == "requested":
+            kw["requested"] = "dio"
+        elif how == "extras":
+            kw["extras"] = ["--load-mode", "dio"]
+        else:
+            kw["env"] = {"LLAMA_ARG_DIO": "1"}
+        emitted, effective = _dio(**kw)
+        assert (emitted, effective) == (False, True)
+
+
+class TestTheReloadComparator:
+    """mmap and dio are both "no full host copy", so the reservation bits alone
+    cannot tell them apart. The launch records both what it runs and what a
+    relaunch under no-reserve would run; the difference is the whole question."""
+
+    @staticmethod
+    def _no_reserve(monkeypatch, on = True):
+        import utils.model_memory_settings as mm
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: on)
+
+    def test_the_pair_alone_cannot_tell_the_two_apart(self):
+        assert resolve_effective_memory_state([]) == (False, False)
+        assert resolve_effective_memory_state(["--load-mode", "dio"]) == (False, False)
+        assert _lsa.resolve_effective_direct_io([]) is False
+        assert _lsa.resolve_effective_direct_io(["--load-mode", "dio"]) is True
+
+    def test_a_mapped_child_that_would_stream_needs_a_reload(self, monkeypatch):
+        self._no_reserve(monkeypatch)
+        assert not memory_state_satisfies_settings((False, False), False, False, False, True)
+
+    def test_a_streaming_child_is_satisfied(self, monkeypatch):
+        self._no_reserve(monkeypatch)
+        assert memory_state_satisfies_settings((False, False), True, False, True, True)
+
+    def test_a_child_a_relaunch_would_not_change_is_satisfied(self, monkeypatch):
+        """Linux, a legacy build, an explicit mmap: reloading resolves to the same
+        loader, so demanding it would be a notice that never clears."""
+        self._no_reserve(monkeypatch)
+        assert memory_state_satisfies_settings((False, False), False, True, False, False)
+
+    def test_a_caller_that_does_not_track_it_never_forces_a_reload(self, monkeypatch):
+        self._no_reserve(monkeypatch)
+        assert memory_state_satisfies_settings((False, False), False, False, None, True)
+
+    def test_a_live_reservation_still_loses(self, monkeypatch):
+        self._no_reserve(monkeypatch)
+        assert not memory_state_satisfies_settings((False, True), True, False, True, True)
+
+    def test_a_shadowed_pair_is_not_policy_activity(self, monkeypatch):
+        """With the toggle off, a child whose only mark was an inert pair is equal
+        to an unmanaged one and must not be torn down."""
+        self._no_reserve(monkeypatch, on = False)
+        assert memory_state_satisfies_settings((False, False), False, False)
+
+
+class TestTheLaunchAsksTheSameQuestionTwice:
+    def test_the_applicability_comes_from_the_policy_chain(self):
+        """Not hand-assembled: the env view and the surviving extras are scrubbed
+        and stripped BY the settings, so a hypothetical built from the live ones
+        answers for the wrong toggle. That was the root of six review rounds."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        flat = "".join(src.split())
+        assert "self._memory_dio_applicable=_hypo_emittedand_hypo_effective" in flat
+        assert "_ask((_mem_keep_resident,True),_mem_env_view_no_reserve)" in flat
+        # activity asks the same way, for the toggles-off child
+        assert "_ask((False,False),_off_view)" in flat
+        # the hypothetical env view is scrubbed for the hypothetical toggle
+        assert "scrub_memory_env(_mem_env_view_no_reserve,(_mem_keep_resident,True))" in flat
+        # and the machinery it replaced is gone
+        for retired in (
+            "managed_dio_applies",
+            "_mem_dio_survives_chain",
+            "_mem_dio_placement_unlooked",
+        ):
+            assert retired not in flat, retired
+
+
+class TestTheLaunchWithdrawsTheDio:
+    """The pair is chosen for a confirmed full offload. Under dio llama.cpp does
+    not map the file (use_mmap covers mmap / mmap+mlock / auto only), so every
+    rung that hands the placement back must take it with it, or the layers left
+    on the CPU are allocated buffers instead of a pageable mapping."""
+
+    @staticmethod
+    def _src():
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+        return inspect.getsource(LlamaCppBackend.load_model)
+
+    def test_the_three_weight_moving_rungs_strip_it(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        launch, replay = (
+            self._src(),
+            inspect.getsource(LlamaCppBackend._prepare_cpu_fallback_launch),
+        )
+        # --fit on retry, arch-crash retry and the proactive arch gate here; the CPU
+        # replay is in the builder. The gate strips as well as adds, like the reactive
+        # rung, or a narrowed set that loses the offload keeps the pair.
+        assert launch.count("self._drop_managed_dio(") == 3
+        assert replay.count("self._drop_managed_dio(") == 1
+        # Only the rung that strips `cmd` itself may forget the tokens.
+        assert launch.count("clear_record = False") == 1
+        assert replay.count("clear_record = False") == 1
+
+    def test_the_projector_retry_does_not(self):
+        """It moves the PROJECTOR, and clip.cpp loads that through its own ifstream
+        with no use_mmap or load_mode to consult (mtmd_context_params has neither),
+        so the pair says nothing about it and the weights are still offloaded."""
+        arm = self._src()
+        arm = arm[: arm.index('"-mmproj-cpu"')]
+        arm = arm[arm.rindex("_with_mmproj_offload_disabled") :]
+        assert "_drop_managed_dio" not in arm
+
+    def test_the_arch_retry_re_asks_instead_of_dropping(self):
+        """It only narrows visibility and keeps the all-layer --fit off command, so
+        a surviving discrete GPU can still be a confirmed full offload. Dropping
+        unconditionally left a healthy child on mmap with applicability cleared."""
+        src = self._src()
+        arm = src[src.index("_arch_dio, _arch_applicable, _arch_active =") :]
+        arm = arm[: arm.index("self._record_memory_state(cmd, env)")]
+        assert "_dio_decision_for(" in arm
+        assert "_remaining" in arm
+        # and the restore still precedes any bookkeeping the strip would clear
+        assert src.index(") = _mem_policy_for_cmd") < src.index("_dio_left_cmd = False")
+
+    def test_a_copy_strip_leaves_the_tokens_nameable(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        b = LlamaCppBackend.__new__(LlamaCppBackend)
+        b._memory_dio_flags = list(_lsa.MANAGED_DIO_FLAGS)
+        b._memory_dio_applicable = True
+        b._memory_policy_active = True
+        b._memory_policy_extras_touched = False
+        cmd = ["--model", "m.gguf", *_lsa.MANAGED_DIO_FLAGS]
+        assert b._drop_managed_dio(list(cmd), "copy", clear_record = False) == ["--model", "m.gguf"]
+        assert b._memory_dio_flags == list(_lsa.MANAGED_DIO_FLAGS)
+        # ...and the pair was this policy's only mark, so the child is unmanaged now.
+        assert b._memory_policy_active is False
+        assert b._drop_managed_dio(cmd, "cmd") == ["--model", "m.gguf"]
+        assert b._memory_dio_flags == []
+
+    def test_a_scrubbed_var_or_vetoed_extra_keeps_activity(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        b = LlamaCppBackend.__new__(LlamaCppBackend)
+        b._memory_dio_flags = list(_lsa.MANAGED_DIO_FLAGS)
+        b._memory_dio_applicable = True
+        b._memory_policy_active = True
+        b._memory_policy_extras_touched = True
+        b._drop_managed_dio(["-m", "x", *_lsa.MANAGED_DIO_FLAGS], "cpu")
+        assert b._memory_policy_active is True
+
+
+class TestThePlacementProbes:
+    """Two ways to mistake a placement, both of which handed DirectIO to weights
+    that really sit in host RAM or withheld it from weights that do not."""
+
+    def test_an_unanswered_vulkan_probe_declines(self, monkeypatch):
+        """_vulkan_targets_are_igpus folds "probe failed" into "not an iGPU",
+        which is safe where it only skips a page-lock and wrong here: an iGPU's
+        VRAM is system RAM."""
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        def boom(binary = None):
+            raise OSError("probe timed out")
+
+        monkeypatch.setattr(LlamaCppBackend, "_run_vulkan_probe", staticmethod(boom))
+        assert not LlamaCppBackend._vulkan_offload_is_discrete("llama-server")
+        monkeypatch.setattr(
+            LlamaCppBackend, "_run_vulkan_probe", staticmethod(lambda binary = None: [])
+        )
+        assert not LlamaCppBackend._vulkan_offload_is_discrete("llama-server")
+
+    def test_an_igpu_in_play_declines(self, monkeypatch):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        rows = [
+            {"index": 0, "is_igpu": True, "type_known": True},
+            {"index": 1, "is_igpu": False, "type_known": True},
+        ]
+        monkeypatch.setattr(
+            LlamaCppBackend, "_run_vulkan_probe", staticmethod(lambda binary = None: rows)
+        )
+        assert not LlamaCppBackend._vulkan_offload_is_discrete("llama-server")
+        assert not LlamaCppBackend._vulkan_offload_is_discrete("llama-server", [0])
+        assert LlamaCppBackend._vulkan_offload_is_discrete("llama-server", [1])
+
+    def test_the_probe_is_never_gated_on_the_toggle(self):
+        """Gating it made the recorded placement mean "we did not look", which is
+        not the same as "not applicable"."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "_mem_probe_for_dio=_mem_dio_possible" in flat
+        assert "_mem_probe_for_dio=_mem_dio_possibleand_mem_no_reserve" not in flat
+
+
+class TestEveryDeviceSetChangeReAsks:
+    """A rung that changes the effective device set changes the placement, and the
+    pair is a question about placement. Each rung used to ask a SUBSET of what the
+    launch asks, and every missing piece became its own review round: a partial
+    offload getting the pair, a narrowed set never gaining it, a redundant pair
+    recorded as activity. They now share one decision."""
+
+    @staticmethod
+    def _src():
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+        return inspect.getsource(LlamaCppBackend.load_model)
+
+    def test_the_partial_helpers_are_gone(self):
+        src = self._src()
+        for retired in ("_managed_dio_for_confirmed_offload", "_refresh_dio_for_devices"):
+            assert retired not in src, retired
+
+    def test_all_three_rungs_use_the_one_decision(self):
+        src = self._src()
+        assert src.count("_dio_decision_for(") == 4  # 1 def + 3 rungs
+        flat = "".join(src.split())
+        assert "_dio_decision_for(_survivors,fully_offloaded=False,child_env=env)" in flat
+        assert "_dio_decision_for(gpu_indices,fully_offloaded=True,child_env=env)" in flat
+        assert (
+            "_dio_decision_for(_remaining,fully_offloaded=fully_gpu_offloaded,child_env=env)"
+            in flat
+        )
+
+    def test_the_decision_re_runs_the_placement_check(self):
+        """Backend and probe discreteness are not a full offload: the fitter may
+        still leave layers on the CPU, where dio buffers them."""
+        src = self._src()
+        arm = src[src.index("def _dio_decision_for(") :]
+        arm = arm[: arm.index("return pair,")]
+        flat = "".join(arm.split())
+        assert "host_resident=self._weights_in_host_memory(" in flat
+        # host residency is carried INTO the confirmation, which declines on it, and
+        # the rung probes its OWN visibility rather than the pre-gate snapshot
+        assert "_rung_env=_mem_env_for(child_env)" in flat
+        assert (
+            "self._gpu_offload_confirmed(binary,_rung_env,_rung_compact,host_resident,"
+            "_mem_dio_possible,_mem_extra_args,)" in flat
+        )
+        assert "fully_gpu_offloaded=fully_offloaded," in flat
+
+    def test_the_decision_answers_all_three_questions(self):
+        src = self._src()
+        arm = src[src.index("def _dio_decision_for(") :]
+        arm = arm[: arm.index("return pair,")]
+        flat = "".join(arm.split())
+        assert "_for(_mem_settings,_fit_load_mode_env_view)" in flat  # live
+        assert "_for((_mem_keep_resident,True),_mem_env_view_no_reserve)" in flat  # forced on
+        assert "_for((False,False),_off_view)" in flat  # toggles off
+
+    def test_the_reactive_gate_can_gain_the_pair_not_only_lose_it(self):
+        """Narrowing onto the surviving discrete card can gain a full offload the
+        original set (with an unsupported APU in it) never had."""
+        src = self._src()
+        arm = src[src.index("_arch_dio, _arch_applicable, _arch_active = _dio_decision_for") :]
+        arm = arm[: arm.index("self._record_memory_state(cmd, env)")]
+        assert "elif _arch_dio and not self._memory_dio_flags:" in arm
+        assert "cmd = [*cmd, *_arch_dio]" in arm
+
+    def test_no_rung_sets_activity_unconditionally(self):
+        """A pair redundant with a loader the user picked changes nothing a
+        relaunch could undo, so appending it is not activity."""
+        src = self._src()
+        # Each dio rung ORs its own answer against the existing value rather than
+        # asserting True. (A fourth such OR belongs to the pre-existing mlock re-arm.)
+        for marker in ("_gate_active", "_retry_active", "_arch_active"):
+            assert f"{marker} or self._memory_policy_active" in src, marker
+
+
+class TestTheVulkanProbeMemoIsScopedToThePlacement:
+    """Several placement decisions in one launch want the same rows and each probe
+    is a subprocess behind a 15s timeout. The memo is armed only around that work
+    and is THREAD-LOCAL: system-info polling reaches the same probe from other
+    threads at any time and needs live free/used VRAM, and the load call also spans
+    the Hub download, so rows taken before it would price a fit against VRAM that
+    has since been allocated."""
+
+    @staticmethod
+    def _count_probes(
+        monkeypatch,
+        m,
+        *,
+        raising = False,
+    ):
+        calls = []
+        monkeypatch.setattr(m, "_llama_lib_dir", lambda b: Path("/nope"))
+        monkeypatch.setattr(m, "_lib_dir_has_ggml_backend", lambda d, n: True)
+
+        def run(*a, **k):
+            calls.append(1)
+            if raising:
+                raise OSError("probe timed out")
+            return type("R", (), {"returncode": 0, "stdout": "0 1 2 0 dGPU", "stderr": ""})()
+
+        monkeypatch.setattr(m.subprocess, "run", run)
+        return calls
+
+    def test_outside_a_load_every_ask_is_live(self, monkeypatch):
+        """Stale rows here would report free/used VRAM captured before llama-server
+        allocated, and a transient empty result would stick indefinitely."""
+        import core.inference.llama_cpp as m
+
+        calls = self._count_probes(monkeypatch, m)
+        for _ in range(3):
+            m.LlamaCppBackend._run_vulkan_probe("llama-server")
+        assert len(calls) == 3
+
+
+class TestTheBackendPathIsEvidenceOnlyWhenItHoldsAPlugin:
+    """_binary_ships_no_gpu_backend answering False means "I cannot say it ships
+    none", not "it ships one": it returns False for a static layout, an unreadable
+    directory, and any nonempty GGML_BACKEND_PATH. Reading that as a positive is
+    the fail-open this check exists to prevent."""
+
+    @staticmethod
+    def _no_verdict(monkeypatch):
+        from core.inference.llama_cpp import LlamaCppBackend
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_binary_ships_no_gpu_backend",
+            staticmethod(lambda binary = None, env = None: False),
+        )
+
+
+class TestTheSnapshotCarriesTheDioTokens:
+    def test_the_flags_round_trip_with_the_base_command(self):
+        """The fit-off retry can append the pair to its OWN run_cmd and record it
+        while `cmd` never carried one; the fallback respawning `cmd` then read that
+        stale record as "already has it" and could not append what its own devices
+        confirm."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        # One snapshot helper, which copies on the way in so a later strip cannot
+        # reach back into it.
+        assert "list(self._memory_dio_flags)," in src
+        assert "self._memory_dio_flags,\n" in src  # the restore
+        # every site that takes the snapshot goes through the helper
+        assert src.count("_mem_policy_for_cmd = _snapshot_policy_for_cmd()") >= 4
+
+
+class TestASaveDuringPlacementIsAnswered:
+    """The marker makes the route see a pending launch, but `_memory_state` is None
+    until the flags resolve and the comparator reads None as "not governed". What
+    the child is committed to from the snapshot onwards is the toggle pair, so the
+    route answers from that."""
+
+    def test_the_launch_publishes_what_it_is_committed_to(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        # Capture and publication are ONE act, so there is no window between them for
+        # a save to fall through, and no ordering to get wrong.
+        assert (
+            'capture_model_memory_settings(lambdapair:setattr(self,"_memory_pending_launch",pair))'
+            in src
+        )
+        # and nothing re-publishes it between the capture and the placement work; the
+        # recovery rungs further down legitimately re-arm it after a failed attempt
+        head = src[
+            src.index("capture_model_memory_settings(") : src.index("_arm_load_probe_memo()")
+        ]
+        assert "self._memory_pending_launch=" not in head
+
+    def test_a_save_that_changes_a_toggle_asks_for_a_reload(self, monkeypatch):
+        import routes.settings as rs
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(
+            rs,
+            "_active_launch_placement",
+            lambda: (None, False, True, None, False, False, (False, False)),
+        )
+        monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))
+        assert rs._model_memory_reload_required() is True
+
+    def test_a_save_matching_the_committed_pair_does_not(self, monkeypatch):
+        import routes.settings as rs
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(
+            rs,
+            "_active_launch_placement",
+            lambda: (None, False, True, None, False, False, (False, True)),
+        )
+        monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))
+        assert rs._model_memory_reload_required() is False
+
+
+class TestTheMarkerIsReleasedWithTheLoadLock:
+    """A token assigned at decorator entry was installed before the call had the
+    lock, so a merely queued load stole ownership. `_serial_load_scope` already
+    solves this shape for the fraction marker: release on the way out of the LOCK,
+    because a queued load arms its own the instant it takes it."""
+
+    def test_the_scope_releases_it(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend._serial_load_scope)
+        assert "self._memory_pending_launch = None" in src
+        # released beside the markers that already had this treatment
+        assert "self._vram_fraction_pending = None" in src
+
+    def test_the_load_call_no_longer_owns_it(self):
+        import core.inference.llama_cpp as m
+        import inspect
+
+        assert not hasattr(m, "_pending_placement_cleared")
+        src = inspect.getsource(m._with_gguf_load_marker)
+        assert "_pending_placement_cleared" not in src
+        assert "_memory_pending_token" not in inspect.getsource(m.LlamaCppBackend.load_model)
+
+    def test_the_publish_is_inside_the_lock(self):
+        """Releasing on lock-exit is only correct if the publish is inside it."""
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        assert src.index("with self._serial_load_scope():") < src.index(
+            "self._memory_pending_launch = _mem_settings"
+        )
+
+
+class TestAReplacementLoadIsNotAnsweredByTheOldChild:
+    """Replacing a model kills the old process without clearing its `_memory_state`,
+    so a save during the new launch's probe was compared against a placement that
+    belongs to a child already gone."""
+
+    def test_the_pending_snapshot_wins_over_a_stale_state(self, monkeypatch):
+        import routes.settings as rs
+        import utils.model_memory_settings as mm
+
+        # the killed child's state is still present and non-None
+        monkeypatch.setattr(
+            rs,
+            "_active_launch_placement",
+            lambda: ((False, False), False, True, False, False, False, (False, False)),
+        )
+        monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))
+        assert rs._model_memory_reload_required() is True
+
+    def test_the_route_does_not_gate_on_a_none_state(self):
+        import routes.settings as rs
+        import inspect
+
+        src = inspect.getsource(rs._model_memory_reload_required)
+        assert "if pending is not None:" in src
+        assert "if state is None and pending is not None:" not in src
+        # one read, so the two cannot straddle the marker clear
+        assert "_pending_launch_settings" not in src
+        assert src.count("_active_launch_placement()") == 1
+
+
+class TestAllThreeCudaFamiliesAreRequired:
+    """ggml-cuda imports cublas64, which imports cublasLt64; LoadLibrary returns
+    NULL unless all three resolve. Same set REAL_UPSTREAM_CUDART_BUNDLE pins in
+    test_windows_gpu_detection_mock.py."""
+
+    @staticmethod
+    def _cuda_build(tmp_path):
+        (tmp_path / "ggml-cuda.dll").write_text("")
+        libs = tmp_path / "libs"
+        libs.mkdir()
+        return libs
+
+
+class TestARetryKeepsThePlacementWindowOpen:
+    """The marker is dropped after Popen because is_active covers it, but a crashed
+    child is not active either, and the retry rungs redo the placement work and
+    spawn from the SAME captured settings."""
+
+    def test_a_failed_attempt_re_arms_it(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        drop = src.index("# is_active covers it from here, so drop the pre-spawn flag.")
+        rearm = src.index("self._memory_pending_launch = _mem_settings", drop)
+        crashed = src.index("_crashed_proc = self._process", drop)
+        # re-armed before the crash is even classified, so every rung inherits it
+        assert drop < rearm < crashed
+
+    def test_the_lock_still_owns_the_release(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+        import inspect
+        assert "self._memory_pending_launch = None" in inspect.getsource(
+            LlamaCppBackend._serial_load_scope
+        )
+
+
+class TestThePendingCompareIsByEffect:
+    """no-reserve wins over keep-resident for every loader flag, so flipping
+    residency while no-reserve is on changes nothing the child launches with. Only
+    the idle-unload veto moves, and the loop re-reads that each poll."""
+
+    @pytest.mark.parametrize(
+        "live,pending,reload_required",
+        [
+            ((True, True), (False, True), False),  # residency flip under no-reserve
+            ((False, True), (True, True), False),  # ...either direction
+            ((False, True), (False, False), True),  # no-reserve itself changed
+            ((True, False), (False, False), True),  # the page-lock changed
+            ((False, False), (False, False), False),
+        ],
+    )
+    def test_only_a_change_the_launch_can_express_asks_for_a_reload(
+        self, monkeypatch, live, pending, reload_required
+    ):
+        import routes.settings as rs
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(
+            rs,
+            "_active_launch_placement",
+            lambda: (None, False, True, None, False, False, pending),
+        )
+        monkeypatch.setattr(mm, "get_model_memory_settings", lambda: live)
+        assert rs._model_memory_reload_required() is reload_required
+
+    def test_the_effect_mirrors_should_mlock(self):
+        import routes.settings as rs
+        for keep in (True, False):
+            for no_res in (True, False):
+                mlock_bit, _ = rs._launch_effect_of((keep, no_res))
+                assert mlock_bit == (keep and not no_res)
+
+
+class TestNoNestedHelperIsUsedBeforeItsDef:
+    """A nested `def` in `load_model` binds the name as a local, so a call above it
+    raises UnboundLocalError at runtime rather than failing import or lint. That
+    shipped once and aborted every full-offload launch."""
+
+    def test_every_nested_def_precedes_its_calls(self):
+        import ast
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        tree = ast.parse(inspect.cleandoc("\n".join(src.splitlines()[1:])))
+        fn = tree.body[0]
+
+        defined_at = {}
+        for node in ast.walk(fn):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node is not fn:
+                defined_at.setdefault(node.name, node.lineno)
+
+        offenders = []
+        for node in ast.walk(fn):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in defined_at
+                and node.lineno < defined_at[node.func.id]
+            ):
+                offenders.append(
+                    f"{node.func.id} called at {node.lineno}, defined at "
+                    f"{defined_at[node.func.id]}"
+                )
+        assert not offenders, "UnboundLocalError at runtime: " + "; ".join(offenders)
+
+
+class TestThePendingWindowHasNoGaps:
+    """Three ways the window closed early: the publish order, the spawn caller's
+    unconditional clear, and the outer recovery rungs. The first is closed by
+    construction now. Two attributes held one fact between them, so every writer had
+    to order its stores and the reader had to mirror that; one attribute (None, or
+    the pair) is assigned atomically, leaving no ordering to assert."""
+
+    def test_the_two_attribute_marker_is_gone(self):
+        import inspect
+        import routes.settings as rs
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        for src in (
+            inspect.getsource(LlamaCppBackend.load_model),
+            inspect.getsource(LlamaCppBackend._serial_load_scope),
+            inspect.getsource(rs._active_launch_placement),
+        ):
+            assert "_memory_launch_pending" not in src
+            assert "_memory_pending_settings" not in src
+
+    def test_the_reader_takes_one_value(self):
+        import ast
+        import inspect
+        import routes.settings as rs
+
+        # module-level function, so its source already sits at column 0
+        tree = ast.parse(inspect.getsource(rs._active_launch_placement))
+        reads = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and node.value == "_memory_pending_launch"
+        ]
+        assert len(reads) == 1, "the pending launch must be sampled exactly once"
+
+    def test_every_arming_site_carries_the_snapshot(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        armed = [
+            line.strip() for line in src.splitlines() if "self._memory_pending_launch =" in line
+        ]
+        assert armed, "the launch must publish its pending window"
+        for line in armed:
+            # either it arms WITH the captured pair, or it clears
+            assert line.endswith("= _mem_settings") or line.endswith("= None"), line
+
+    def test_the_spawn_caller_clears_only_on_success(self):
+        """An unconditional clear undid the in-spawn re-arm and left the outer
+        recovery rungs respawning from the captured settings unmarked."""
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        arm = src[src.index("healthy = _spawn_and_wait(cmd)") :][:900]
+        flat = "".join(arm.split())
+        assert "ifhealthy:self._memory_pending_launch=None" in flat
+
+    def test_the_lock_is_still_the_backstop(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+        assert "self._memory_pending_launch = None" in inspect.getsource(
+            LlamaCppBackend._serial_load_scope
+        )
+
+
+class TestOneLaunchReadsOneSettingsSnapshot:
+    """`load_model` captures the pair once and decides the argv from it, so every
+    consumer inside the launch must read that snapshot. The child-environment scrub
+    read the live settings, so a save landing mid-launch gave the process flags from
+    one pair and an environment scrubbed under the other."""
+
+    def test_no_scrub_in_load_model_reads_the_live_settings(self):
+        import ast
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        tree = ast.parse(inspect.cleandoc("\n".join(src.splitlines()[1:])))
+
+        bare = [
+            node.lineno
+            for node in ast.walk(tree.body[0])
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "scrub_memory_env"
+            and len(node.args) < 2
+            and not any(kw.arg == "settings" for kw in node.keywords)
+        ]
+        assert not bare, (
+            "scrub_memory_env called without the launch's settings snapshot at "
+            f"line(s) {bare}; it would re-read the live toggles mid-launch"
+        )
+
+    def test_the_child_environment_scrub_uses_the_snapshot(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "_mem_scrubbed=scrub_memory_env(env,_mem_settings)" in src
+
+    def test_an_explicit_snapshot_overrides_the_live_settings(self, monkeypatch):
+        from core.inference.llama_server_args import scrub_memory_env
+        from utils import model_memory_settings
+
+        def _live(keep_resident, no_ram_reserve):
+            monkeypatch.setattr(model_memory_settings, "get_keep_resident", lambda: keep_resident)
+            monkeypatch.setattr(model_memory_settings, "get_no_ram_reserve", lambda: no_ram_reserve)
+
+        # Live settings own placement; the snapshot says neither toggle was on, so
+        # the launch that snapshotted must leave the inherited value alone.
+        _live(True, False)
+        env = {"LLAMA_ARG_MLOCK": "1"}
+        assert scrub_memory_env(env, (False, False)) == []
+        assert env == {"LLAMA_ARG_MLOCK": "1"}
+
+        # and the converse: the snapshot owns placement even though the live pair does not
+        _live(False, False)
+        env = {"LLAMA_ARG_MLOCK": "1"}
+        assert scrub_memory_env(env, (True, False)) == ["LLAMA_ARG_MLOCK"]
+        assert env == {}
+
+        # with no snapshot it falls back to the live pair, which is what the other
+        # scrub sites (outside a launch) rely on
+        _live(True, False)
+        env = {"LLAMA_ARG_MLOCK": "1"}
+        assert scrub_memory_env(env) == ["LLAMA_ARG_MLOCK"]
+
+
+class TestOnlyALoadablePluginCountsAsAGpuBackend:
+    """A disabled backend leaves `ggml-cuda.dll.bak` behind, which is precisely when
+    the build ships none. A prefix match read those as a backend, so a CPU-only install
+    could be confirmed for full offload and take DirectIO over host-resident weights."""
+
+    LOADABLE = (
+        "ggml-cuda.dll",
+        "ggml-vulkan.dll",
+        "libggml-cuda.so",
+        "libggml-cuda.so.1",
+        "libggml-cuda.so.0.0.1",
+        "libggml-hip.so.2",
+        "libggml-metal.dylib",
+        "libggml-metal.1.dylib",
+    )
+    NOT_LOADABLE = (
+        "ggml-cuda.dll.bak",
+        "ggml-cuda.dll.disabled",
+        "ggml-cuda.dll.old",
+        "ggml-cuda-notes.txt",
+        "ggml-cuda.txt",
+        "ggml-cudafoo.dll",
+        "ggml-cuda",
+        "libggml-cuda.so.x",
+    )
+
+    def test_the_gpu_backend_pattern_matches_only_loadable_names(self):
+        from core.inference.llama_cpp import _GGML_GPU_BACKEND_RE
+        for name in self.LOADABLE:
+            assert _GGML_GPU_BACKEND_RE.match(name), name
+        for name in self.NOT_LOADABLE:
+            assert not _GGML_GPU_BACKEND_RE.match(name), name
+
+
+class TestRecoveryRungsReadTheLaunchSnapshot:
+    """Every rung of one launch decides from the pair that launch captured. The fit-on
+    and arch-crash recoveries called live `should_mlock()` and passed no `settings`, so
+    a save mid-launch gave the retry toggles the rest of the launch never saw."""
+
+    def test_load_model_never_calls_the_live_mlock_helper(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "should_mlock()" not in src
+
+    def test_the_live_helper_is_not_even_imported_into_the_launch(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "importshould_mlock" not in src
+        assert ",should_mlock" not in src
+
+    def test_every_policy_call_in_load_model_carries_the_snapshot(self):
+        import ast
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        tree = ast.parse(inspect.cleandoc("\n".join(src.splitlines()[1:])))
+        bare = [
+            node.lineno
+            for node in ast.walk(tree.body[0])
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "apply_model_memory_policy"
+            and not any(kw.arg == "settings" for kw in node.keywords)
+        ]
+        assert not bare, f"apply_model_memory_policy without the launch snapshot at line(s) {bare}"
+
+
+class TestAnyInstalledGpuPluginMustBeLoadable:
+    """A CUDA-only runtime check was the single fail-OPEN path into
+    `_mem_gpu_offload_confirmed`. `ggml-hip.dll` present with `amdhip64*.dll` absent
+    loads no more than a CUDA build without cudart: llama.cpp reports no devices and
+    keeps the weights on the CPU, while the host inventory still lists the card. The
+    launch was then confirmed for full offload and given managed DirectIO, trading a
+    pageable mapping for a model-sized allocated buffer."""
+
+    def _install(self, tmp_path, plugin, runtime_names):
+        (tmp_path / plugin).write_text("")
+        libs = tmp_path / "libs"
+        libs.mkdir(exist_ok = True)
+        for name in runtime_names:
+            (libs / name).write_text("")
+        return [str(libs)]
+
+
+# Real `llama-server --list-devices` output, captured from installed builds rather
+# than invented: a CUDA build with two cards, and the two ways a build with nothing
+# to offer prints it. The noise above the header is what ggml_cuda_init writes.
+_LIST_DEVICES_GPU = """ggml_cuda_init: found 2 CUDA devices (Total VRAM: 72627 MiB):
+  Device 0: NVIDIA RTX 6000 Ada Generation, compute capability 8.9, VMM: yes, VRAM: 48504 MiB
+  Device 1: NVIDIA GeForce RTX 3090, compute capability 8.6, VMM: yes, VRAM: 24123 MiB
+Available devices:
+  CUDA0: NVIDIA RTX 6000 Ada Generation (48504 MiB, 47172 MiB free)
+  CUDA1: NVIDIA GeForce RTX 3090 (24123 MiB, 21855 MiB free)
+"""
+_LIST_DEVICES_NONE = "Available devices:\n  (none)\n"
+_LIST_DEVICES_BARE = "Available devices:\n"
+_LIST_DEVICES_VULKAN = (
+    "Available devices:\n  Vulkan0: AMD Radeon 8060S (16384 MiB, 15000 MiB free)\n"
+)
+
+
+class TestTheBuildsOwnDeviceListIsTheEvidence:
+    """The confirmation used to be six filename checks standing in for one question:
+    will the child place the weights on a discrete GPU. Each was a proxy that a build
+    enumerating nothing could still satisfy. `--list-devices` is the loader's own
+    verdict, so a missing runtime, a disabled plugin, a wrong-vendor plugin and a
+    GGML_BACKEND_PATH plugin all resolve without reading a filename."""
+
+    def test_it_parses_a_real_gpu_listing(self):
+        from core.inference.llama_cpp import _parse_listed_devices
+        assert _parse_listed_devices(_LIST_DEVICES_GPU) == ["CUDA0", "CUDA1"]
+
+    def test_the_init_noise_above_the_header_is_not_a_device(self):
+        """`  Device 0: ...` is indented and has a colon, so only the header keeps it out."""
+        from core.inference.llama_cpp import _parse_listed_devices
+        assert "Device" not in "".join(_parse_listed_devices(_LIST_DEVICES_GPU))
+
+    @pytest.mark.parametrize("text", [_LIST_DEVICES_NONE, _LIST_DEVICES_BARE])
+    def test_both_renderings_of_no_devices_are_an_answer(self, text):
+        """Different builds print `(none)` or nothing at all. Both mean zero devices,
+        which is a real answer and must not collapse into "could not tell"."""
+        from core.inference.llama_cpp import _parse_listed_devices
+        assert _parse_listed_devices(text) == []
+
+    @pytest.mark.parametrize(
+        "text", ["", None, "error: unknown argument --list-devices\n", "garbage\n"]
+    )
+    def test_no_header_is_no_answer(self, text):
+        """An older build that rejects the flag is not evidence of having no devices."""
+        from core.inference.llama_cpp import _parse_listed_devices
+        assert _parse_listed_devices(text) is None
+
+
+class TestOnlyEnumeratedDevicesConfirmAnOffload:
+    def _confirm(
+        self,
+        monkeypatch,
+        devices,
+        gpu_indices = None,
+        host_resident = False,
+        discrete = True,
+        dio_possible = True,
+    ):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_enumerated_gpu_devices",
+            classmethod(lambda cls, binary = None, env = None: devices),
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_vulkan_offload_is_discrete",
+            staticmethod(lambda binary, idx = None: discrete),
+        )
+        return LlamaCppBackend._gpu_offload_confirmed(
+            "llama-server", {}, gpu_indices, host_resident, dio_possible
+        )
+
+    def test_an_enumerated_gpu_confirms(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["CUDA0"]) is True
+
+    def test_a_build_reporting_no_devices_declines(self, monkeypatch):
+        """The CUDA-without-cudart, HIP-without-amdhip64, disabled-plugin and
+        wrong-vendor cases all arrive here as an empty list."""
+        assert self._confirm(monkeypatch, []) is False
+
+    def test_an_unanswered_probe_declines(self, monkeypatch):
+        assert self._confirm(monkeypatch, None) is False
+
+    def test_host_resident_weights_decline_without_probing(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["CUDA0"], host_resident = True) is False
+
+    def test_a_platform_that_cannot_use_dio_never_probes(self, monkeypatch):
+        """Off Windows no answer can reach a flag, now or after a later save, so the
+        subprocess is not worth spawning."""
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        def _boom(
+            cls,
+            binary = None,
+            env = None,
+        ):
+            raise AssertionError("probed when the answer cannot matter")
+
+        monkeypatch.setattr(LlamaCppBackend, "_enumerated_gpu_devices", classmethod(_boom))
+        assert (
+            LlamaCppBackend._gpu_offload_confirmed("llama-server", {}, None, False, False) is False
+        )
+
+    def test_a_cpu_only_listing_is_not_an_offload_target(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["CPU"]) is False
+
+    def test_a_pinned_device_the_build_never_listed_declines(self, monkeypatch):
+        """The stale-pin case: the host reports a card the child cannot open."""
+        assert self._confirm(monkeypatch, ["CUDA0"], gpu_indices = [1]) is False
+
+    def test_every_pinned_device_must_be_listed(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["CUDA0"], gpu_indices = [0, 1]) is False
+        assert self._confirm(monkeypatch, ["CUDA0", "CUDA1"], gpu_indices = [0, 1]) is True
+
+    def test_a_vulkan_target_still_needs_the_discreteness_probe(self, monkeypatch):
+        """--list-devices does not say whether the VRAM is carved out of system RAM,
+        and an iGPU full offload is still host-backed."""
+        assert self._confirm(monkeypatch, ["Vulkan0"], discrete = False) is False
+        assert self._confirm(monkeypatch, ["Vulkan0"], discrete = True) is True
+
+    def test_a_non_vulkan_target_does_not_pay_for_that_probe(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["CUDA0"], discrete = False) is True
+
+    def test_an_external_vulkan_plugin_names_itself_like_any_other(self):
+        """What the plugin-root scan was approximating: the build lists the device it
+        loaded, wherever the plugin came from."""
+        from core.inference.llama_cpp import LlamaCppBackend, _parse_listed_devices
+
+        devices = _parse_listed_devices(_LIST_DEVICES_VULKAN)
+        assert LlamaCppBackend._devices_are_vulkan(devices, None) is True
+
+
+class TestTheDeviceListIsProbedOncePerLoad:
+    def test_while_armed_repeated_asks_spawn_one_probe(self, monkeypatch):
+        import core.inference.llama_cpp as m
+
+        calls = []
+        monkeypatch.setattr(
+            m.LlamaCppBackend,
+            "_run_list_devices",
+            staticmethod(lambda binary, env = None: calls.append(binary) or ["CUDA0"]),
+        )
+        m._arm_load_probe_memo()
+        try:
+            for _ in range(3):
+                assert m.LlamaCppBackend._enumerated_gpu_devices("llama-server", {}) == ["CUDA0"]
+            assert len(calls) == 1
+        finally:
+            m._LOAD_PROBE_STATE.armed = False
+            m._LOAD_PROBE_STATE.rows = None
+
+    def test_an_unanswered_probe_is_memoised_too(self, monkeypatch):
+        """Otherwise a build that hangs on the flag pays the timeout once per rung."""
+        import core.inference.llama_cpp as m
+
+        calls = []
+        monkeypatch.setattr(
+            m.LlamaCppBackend,
+            "_run_list_devices",
+            staticmethod(lambda binary, env = None: calls.append(binary) or None),
+        )
+        m._arm_load_probe_memo()
+        try:
+            for _ in range(3):
+                assert m.LlamaCppBackend._enumerated_gpu_devices("llama-server", {}) is None
+            assert len(calls) == 1
+        finally:
+            m._LOAD_PROBE_STATE.armed = False
+            m._LOAD_PROBE_STATE.rows = None
+
+    def test_the_two_probes_do_not_share_a_slot(self, monkeypatch):
+        """One memo, two kinds: the device list and the Vulkan discreteness rows."""
+        import core.inference.llama_cpp as m
+
+        m._arm_load_probe_memo()
+        try:
+            m._load_probe_memo_put("devices", "b", ["CUDA0"])
+            m._load_probe_memo_put("vulkan", "b", [{"index": 0}])
+            assert m._load_probe_memo_get("devices", "b") == ["CUDA0"]
+            assert m._load_probe_memo_get("vulkan", "b") == [{"index": 0}]
+        finally:
+            m._LOAD_PROBE_STATE.armed = False
+            m._LOAD_PROBE_STATE.rows = None
+
+    def test_before_arming_every_ask_is_live(self, monkeypatch):
+        import core.inference.llama_cpp as m
+
+        calls = []
+        monkeypatch.setattr(
+            m.LlamaCppBackend,
+            "_run_list_devices",
+            staticmethod(lambda binary, env = None: calls.append(binary) or ["CUDA0"]),
+        )
+        m._LOAD_PROBE_STATE.armed = False
+        m._LOAD_PROBE_STATE.rows = None
+        for _ in range(2):
+            m.LlamaCppBackend._enumerated_gpu_devices("llama-server", {})
+        assert len(calls) == 2
+
+    def test_the_load_owns_the_scope_and_the_placement_arms_it(self):
+        import inspect
+        import core.inference.llama_cpp as m
+
+        assert "_load_probe_memo_scope()" in inspect.getsource(m._with_gguf_load_marker)
+        assert "_arm_load_probe_memo()" in inspect.getsource(m.LlamaCppBackend.load_model)
+
+    def test_the_scope_clears_at_the_end(self):
+        import core.inference.llama_cpp as m
+
+        m._arm_load_probe_memo()
+        with m._load_probe_memo_scope():
+            pass
+        assert m._load_probe_memo_armed() is False
+        assert m._load_probe_memo_get("devices", "b") is None
+
+
+class TestTheLaunchPublishesItsPlacementWindow:
+    """Kept from the class that also held the old CUDA-runtime checks: the window
+    itself is still real, the filename checks that shared the class are not."""
+
+    def test_the_snapshot_is_published_before_any_placement_work(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        set_at = src.index("capture_model_memory_settings(")
+        assert set_at < src.index("_arm_load_probe_memo()")
+        assert set_at < src.index("_mem_gpu_offload_confirmed = self._gpu_offload_confirmed(")
+
+
+class TestTheCaptureAndThePublicationAreOneAct:
+    """A launch is committed to the pair from the moment it READS it, so publishing
+    afterwards, however soon, left a window where a save was answered from a state in
+    which the launch did not exist yet."""
+
+    def _mod(self):
+        import utils.model_memory_settings as mm
+        return mm
+
+    def test_it_publishes_the_pair_it_read(self, monkeypatch):
+        mm = self._mod()
+        monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (True, False))
+        monkeypatch.setattr(mm, "_pair_generations", lambda: (0, 0))
+        seen = []
+        assert mm.capture_model_memory_settings(seen.append) == (True, False)
+        assert seen[-1] == (True, False)
+
+    def test_a_save_inside_the_window_republishes_the_newer_pair(self, monkeypatch):
+        """The write bumps a generation, which is how this module already detects a
+        save racing a read."""
+        mm = self._mod()
+        pairs = [(True, False), (False, True), (False, True)]
+        gens = [(0, 0), (0, 1), (0, 1), (0, 1), (0, 1)]
+
+        monkeypatch.setattr(mm, "get_model_memory_settings", lambda: pairs.pop(0))
+        monkeypatch.setattr(mm, "_pair_generations", lambda: gens.pop(0))
+        seen = []
+        final = mm.capture_model_memory_settings(seen.append)
+        # the stale pair was published, then corrected, and the published value and
+        # the returned value agree at the end
+        assert seen == [(True, False), (False, True)]
+        assert final == (False, True) == seen[-1]
+
+    def test_a_quiet_capture_publishes_once(self, monkeypatch):
+        mm = self._mod()
+        monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (False, True))
+        monkeypatch.setattr(mm, "_pair_generations", lambda: (3, 7))
+        seen = []
+        mm.capture_model_memory_settings(seen.append)
+        assert len(seen) == 1
+
+    def test_a_write_storm_still_terminates(self, monkeypatch):
+        """Bounded like the read it mirrors, so a pathological writer cannot spin."""
+        mm = self._mod()
+        counter = iter(range(10_000))
+        monkeypatch.setattr(mm, "get_model_memory_settings", lambda: (True, True))
+        monkeypatch.setattr(mm, "_pair_generations", lambda: (next(counter), 0))
+        seen = []
+        assert mm.capture_model_memory_settings(seen.append) == (True, True)
+        assert len(seen) == mm._MAX_REREADS
+
+
+class TestTheProbeSeesWhatTheChildWillSee:
+    """On Windows the CUDA runtime comes from the managed venv, and only
+    `_llama_server_env_for_binary` puts it on PATH. Probing the raw environment
+    reported no devices for installs whose child loads CUDA perfectly."""
+
+    def test_the_probe_builds_the_child_env(self, monkeypatch):
+        import core.inference.llama_cpp as m
+
+        seen = {}
+        monkeypatch.setattr(
+            m.LlamaCppBackend,
+            "_llama_server_env_for_binary",
+            staticmethod(lambda b, **kw: {"PATH": "/venv/torch/lib", "KEEP": "1"}),
+        )
+
+        class _R:
+            returncode = 0
+            stdout = "Available devices:\n  CUDA0: x (1 MiB, 1 MiB free)\n"
+
+        monkeypatch.setattr(m.subprocess, "run", lambda *a, **kw: seen.update(kw) or _R())
+        assert m.LlamaCppBackend._run_list_devices("llama-server", None) == ["CUDA0"]
+        assert seen["env"]["PATH"] == "/venv/torch/lib"
+
+    def test_the_callers_placement_removals_are_replayed(self, monkeypatch):
+        """A manual-mode or gpu_ids load hides devices from the child on purpose, so
+        the probe must not see them either -- while keeping the native paths."""
+        import core.inference.llama_cpp as m
+
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+        monkeypatch.setattr(
+            m.LlamaCppBackend,
+            "_llama_server_env_for_binary",
+            staticmethod(lambda b, **kw: {"PATH": "/venv/torch/lib", "CUDA_VISIBLE_DEVICES": "1"}),
+        )
+        seen = {}
+
+        class _R:
+            returncode = 0
+            stdout = "Available devices:\n"
+
+        monkeypatch.setattr(m.subprocess, "run", lambda *a, **kw: seen.update(kw) or _R())
+        # the caller's view dropped the pin, so the probe drops it too
+        m.LlamaCppBackend._run_list_devices("llama-server", {"PATH": "ignored"})
+        assert "CUDA_VISIBLE_DEVICES" not in seen["env"]
+        assert seen["env"]["PATH"] == "/venv/torch/lib"
+
+    def test_an_unbuildable_env_still_probes(self, monkeypatch):
+        import core.inference.llama_cpp as m
+
+        def _boom(b, **kw):
+            raise OSError("no")
+
+        monkeypatch.setattr(m.LlamaCppBackend, "_llama_server_env_for_binary", staticmethod(_boom))
+
+        class _R:
+            returncode = 0
+            stdout = "Available devices:\n  CUDA0: x (1 MiB, 1 MiB free)\n"
+
+        monkeypatch.setattr(m.subprocess, "run", lambda *a, **kw: _R())
+        assert m.LlamaCppBackend._run_list_devices("llama-server", None) == ["CUDA0"]
+
+
+class TestOnlyAClassifiableDeviceConfirms:
+    """`--list-devices` proves a device is LIVE, not discrete. A SYCL or OpenCL build
+    on an integrated Intel GPU enumerates `SYCL0` happily, and nothing here can tell
+    its VRAM is system RAM."""
+
+    def _confirm(
+        self,
+        monkeypatch,
+        devices,
+        discrete = True,
+    ):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_enumerated_gpu_devices",
+            classmethod(lambda cls, binary = None, env = None: devices),
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_vulkan_offload_is_discrete",
+            staticmethod(lambda binary, idx = None: discrete),
+        )
+        return LlamaCppBackend._gpu_offload_confirmed("llama-server", {}, None, False, True)
+
+    @pytest.mark.parametrize("device", ["CUDA0", "ROCm0", "HIP0"])
+    def test_a_backend_classified_upstream_confirms(self, monkeypatch, device):
+        assert self._confirm(monkeypatch, [device]) is True
+
+    @pytest.mark.parametrize("device", ["SYCL0", "OpenCL0", "MUSA0", "CANN0", "Metal0"])
+    def test_a_backend_that_can_be_integrated_declines(self, monkeypatch, device):
+        assert self._confirm(monkeypatch, [device]) is False
+
+    def test_a_mixed_set_needs_every_device_classifiable(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["CUDA0", "SYCL1"]) is False
+
+    def test_vulkan_still_goes_through_its_probe(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["Vulkan0"], discrete = False) is False
+        assert self._confirm(monkeypatch, ["Vulkan0"], discrete = True) is True
+
+    def test_the_backend_is_read_off_the_id(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        assert B._device_backend("CUDA0") == "cuda"
+        assert B._device_backend("Vulkan10") == "vulkan"
+        assert B._device_backend("ROCm0") == "rocm"
+        assert B._device_backend("SYCL0") == "sycl"
+
+
+class TestEverySelectedBackendMustBeClassifiable:
+    """A multi-backend build can enumerate a discrete Vulkan device beside an
+    unclassifiable SYCL one. Returning whichever kind was found first confirmed a set
+    that still had weights on an integrated GPU."""
+
+    def _confirm(
+        self,
+        monkeypatch,
+        devices,
+        discrete = True,
+    ):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_enumerated_gpu_devices",
+            classmethod(lambda cls, binary = None, env = None: devices),
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_vulkan_offload_is_discrete",
+            staticmethod(lambda binary, idx = None: discrete),
+        )
+        return LlamaCppBackend._gpu_offload_confirmed("llama-server", {}, None, False, True)
+
+    def test_a_discrete_vulkan_beside_an_unclassifiable_device_declines(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["Vulkan0", "SYCL1"], discrete = True) is False
+
+    def test_a_discrete_vulkan_beside_a_known_discrete_device_confirms(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["Vulkan0", "CUDA1"], discrete = True) is True
+
+    def test_that_pair_still_obeys_the_vulkan_probe(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["Vulkan0", "CUDA1"], discrete = False) is False
+
+    def test_an_unclassifiable_device_alone_declines(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["OpenCL0"]) is False
+
+
+class TestTheDeviceMemoFollowsVisibility:
+    """The child enumerates what the environment lets it see, so the memo is keyed on
+    that too. Keyed on the binary alone, a rung that masks an unsupported adapter kept
+    the original set's failure and could never gain DirectIO."""
+
+    def test_a_changed_mask_re_probes(self, monkeypatch):
+        import core.inference.llama_cpp as m
+
+        calls = []
+
+        def _run(binary, env = None):
+            calls.append(dict(env or {}))
+            return ["CUDA0"] if (env or {}).get("ROCR_VISIBLE_DEVICES") else None
+
+        monkeypatch.setattr(m.LlamaCppBackend, "_run_list_devices", staticmethod(_run))
+        m._arm_load_probe_memo()
+        try:
+            assert m.LlamaCppBackend._enumerated_gpu_devices("b", {}) is None
+            # the gate masks the bad adapter; the narrowed child is a new question
+            assert m.LlamaCppBackend._enumerated_gpu_devices(
+                "b", {"ROCR_VISIBLE_DEVICES": "1"}
+            ) == ["CUDA0"]
+            assert len(calls) == 2
+        finally:
+            m._LOAD_PROBE_STATE.armed = False
+            m._LOAD_PROBE_STATE.rows = None
+
+    def test_the_same_visibility_is_still_probed_once(self, monkeypatch):
+        import core.inference.llama_cpp as m
+
+        calls = []
+        monkeypatch.setattr(
+            m.LlamaCppBackend,
+            "_run_list_devices",
+            staticmethod(lambda binary, env = None: calls.append(1) or ["CUDA0"]),
+        )
+        m._arm_load_probe_memo()
+        try:
+            for _ in range(3):
+                m.LlamaCppBackend._enumerated_gpu_devices("b", {"CUDA_VISIBLE_DEVICES": "0"})
+            assert len(calls) == 1
+        finally:
+            m._LOAD_PROBE_STATE.armed = False
+            m._LOAD_PROBE_STATE.rows = None
+
+    def test_the_key_covers_the_masks_that_matter(self):
+        from core.inference.llama_cpp import _DEVICE_VISIBILITY_ENV
+        assert {
+            "CUDA_VISIBLE_DEVICES",
+            "HIP_VISIBLE_DEVICES",
+            "ROCR_VISIBLE_DEVICES",
+            "GGML_VK_VISIBLE_DEVICES",
+            "GGML_BACKEND_PATH",
+        } <= set(_DEVICE_VISIBILITY_ENV)
+
+
+class TestANarrowingRungProbesItsOwnVisibility:
+    """`_mem_env` is the snapshot from before the gate, so probing with it reused the
+    unnarrowed set's verdict. Keying the memo on visibility only helps if the rung
+    actually passes the narrowed environment in."""
+
+    def test_every_rung_passes_the_child_environment(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert flat.count("child_env=env") == 3
+
+    def test_the_view_takes_visibility_from_the_child(self, monkeypatch):
+        import core.inference.llama_cpp as m
+
+        # the helper is a closure, so exercise its rule directly
+        base = {"KEEP": "1", "CUDA_VISIBLE_DEVICES": "0,1"}
+        child = {"CUDA_VISIBLE_DEVICES": "1"}
+        view = dict(base)
+        for name in m._DEVICE_VISIBILITY_ENV:
+            if name in child:
+                view[name] = child[name]
+            else:
+                view.pop(name, None)
+        assert view == {"KEEP": "1", "CUDA_VISIBLE_DEVICES": "1"}
+        assert m.LlamaCppBackend._device_visibility_key(
+            view
+        ) != m.LlamaCppBackend._device_visibility_key(base)
+
+
+class TestTheStripNeverEatsAUserAuthoredPair:
+    """The record says a managed pair exists somewhere, not that it is in THIS argv.
+    A rung that strips a copy keeps the record for `cmd`, so an argv built from that
+    copy matched again and removed the user's own `--load-mode dio`."""
+
+    def _backend(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        b = LlamaCppBackend.__new__(LlamaCppBackend)
+        b._memory_dio_flags = ["--load-mode", "dio"]
+        b._memory_dio_user_tokens = []
+        b._memory_dio_applicable = True
+        b._memory_policy_active = True
+        b._memory_policy_extras_touched = False
+        return b
+
+    def test_the_managed_pair_is_still_removed(self):
+        b = self._backend()
+        argv = ["llama-server", "--load-mode", "dio"]
+        assert b._drop_managed_dio(argv, "test") == ["llama-server"]
+
+    def test_a_user_pair_alone_survives(self):
+        b = self._backend()
+        b._memory_dio_user_tokens = ["--load-mode", "dio"]
+        argv = ["llama-server", "--load-mode", "dio"]
+        # only the user's occurrence is left, so there is nothing of ours to take
+        assert b._drop_managed_dio(argv, "test") == argv
+
+    def test_ours_goes_and_theirs_stays_when_both_are_present(self):
+        b = self._backend()
+        b._memory_dio_user_tokens = ["--load-mode", "dio"]
+        argv = ["llama-server", "--load-mode", "dio", "--load-mode", "dio"]
+        out = b._drop_managed_dio(argv, "test")
+        assert out == ["llama-server", "--load-mode", "dio"]
+
+    def test_the_applicability_still_clears_either_way(self):
+        b = self._backend()
+        b._memory_dio_user_tokens = ["--load-mode", "dio"]
+        b._drop_managed_dio(["llama-server", "--load-mode", "dio"], "test")
+        assert b._memory_dio_applicable is False
+
+    def test_the_counter_is_non_overlapping(self):
+        from core.inference.llama_cpp import _count_subsequence
+
+        assert _count_subsequence(["a", "a", "a"], ["a", "a"]) == 1
+        assert _count_subsequence(["a", "a", "a", "a"], ["a", "a"]) == 2
+        assert _count_subsequence(["x"], ["a"]) == 0
+        assert _count_subsequence(["a"], []) == 0
+
+
+class TestTheProbeSeesTheNarrowedVisibility:
+    """Removals alone left a narrowing rung's new mask out of the probe, so it
+    re-enumerated the original adapter set and repeated the failure the narrowing
+    existed to clear."""
+
+    def test_a_new_mask_reaches_the_probe(self, monkeypatch):
+        import core.inference.llama_cpp as m
+
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+        monkeypatch.setattr(
+            m.LlamaCppBackend,
+            "_llama_server_env_for_binary",
+            staticmethod(lambda b, **kw: {"PATH": "/venv/lib"}),
+        )
+        seen = {}
+
+        class _R:
+            returncode = 0
+            stdout = "Available devices:\n  CUDA0: x (1 MiB, 1 MiB free)\n"
+
+        monkeypatch.setattr(m.subprocess, "run", lambda *a, **kw: seen.update(kw) or _R())
+        m.LlamaCppBackend._run_list_devices("b", {"CUDA_VISIBLE_DEVICES": "1", "PATH": "x"})
+        assert seen["env"]["CUDA_VISIBLE_DEVICES"] == "1"
+        assert seen["env"]["PATH"] == "/venv/lib"
+
+    def test_a_changed_mask_overrides_the_inherited_one(self, monkeypatch):
+        import core.inference.llama_cpp as m
+
+        monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "0,1")
+        monkeypatch.setattr(
+            m.LlamaCppBackend,
+            "_llama_server_env_for_binary",
+            staticmethod(lambda b, **kw: {"ROCR_VISIBLE_DEVICES": "0,1"}),
+        )
+        seen = {}
+
+        class _R:
+            returncode = 0
+            stdout = "Available devices:\n"
+
+        monkeypatch.setattr(m.subprocess, "run", lambda *a, **kw: seen.update(kw) or _R())
+        m.LlamaCppBackend._run_list_devices("b", {"ROCR_VISIBLE_DEVICES": "1"})
+        assert seen["env"]["ROCR_VISIBLE_DEVICES"] == "1"
+
+
+class TestLivenessCountsOrdinalsNotIds:
+    """A multi-backend build can enumerate one ordinal twice, as CUDA0 and Vulkan0.
+    Counting ids rejected a pinned launch whose devices were all live."""
+
+    def test_one_ordinal_under_two_backends_is_still_covered(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+        assert B._offload_devices_are_live(["CUDA0", "Vulkan0"], [0]) is True
+
+    def test_a_missing_ordinal_still_declines(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+        assert B._offload_devices_are_live(["CUDA0", "Vulkan0"], [0, 1]) is False
+
+    def test_every_requested_ordinal_must_appear(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+        assert B._offload_devices_are_live(["CUDA0", "CUDA1"], [0, 1]) is True
+
+
+class TestAPassThroughDeviceOverrideDecidesPlacement:
+    """`--device` is appended last and decides where the child really puts the
+    weights, so confirming against the auto-selected ordinals could emit DirectIO for
+    a host-backed device the user pinned."""
+
+    def _confirm(
+        self,
+        monkeypatch,
+        devices,
+        gpu_indices,
+        extra_args = None,
+        env = None,
+        discrete = True,
+    ):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_enumerated_gpu_devices",
+            classmethod(lambda cls, binary = None, e = None: devices),
+        )
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_vulkan_offload_is_discrete",
+            staticmethod(lambda binary, idx = None: discrete),
+        )
+        return LlamaCppBackend._gpu_offload_confirmed(
+            "llama-server", env or {}, gpu_indices, False, True, extra_args
+        )
+
+    def test_an_override_onto_an_unclassifiable_device_declines(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["CUDA0", "SYCL1"], [0], ["--device", "SYCL1"]) is False
+
+    def test_an_override_onto_a_discrete_device_confirms(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["CUDA0", "SYCL1"], [1], ["--device", "CUDA0"]) is True
+
+    def test_an_override_naming_a_device_the_build_lacks_declines(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["CUDA0"], [0], ["--device", "CUDA3"]) is False
+
+    def test_a_cpu_override_declines(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["CUDA0"], [0], ["--device", "none"]) is False
+
+    def test_the_env_twin_is_honoured(self, monkeypatch):
+        assert (
+            self._confirm(monkeypatch, ["CUDA0", "SYCL1"], [0], None, {"LLAMA_ARG_DEVICE": "SYCL1"})
+            is False
+        )
+
+    def test_argv_beats_the_env_twin(self, monkeypatch):
+        assert (
+            self._confirm(
+                monkeypatch,
+                ["CUDA0", "SYCL1"],
+                [1],
+                ["--device", "CUDA0"],
+                {"LLAMA_ARG_DEVICE": "SYCL1"},
+            )
+            is True
+        )
+
+    def test_no_override_still_uses_the_auto_selection(self, monkeypatch):
+        assert self._confirm(monkeypatch, ["CUDA0", "SYCL1"], [0]) is True
+
+
+class TestOneEffectiveDeviceSetFeedsEveryConsumer:
+    """The host-residency verdict and the confirmation have to be about the SAME
+    devices. Resolved apart, an override onto a unified-memory APU was priced against
+    the discrete card it replaced, and DirectIO went to weights in host RAM."""
+
+    def _resolve(
+        self,
+        monkeypatch,
+        devices,
+        gpu_indices,
+        extra_args = None,
+        env = None,
+    ):
+        from core.inference.llama_cpp import LlamaCppBackend
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_enumerated_gpu_devices",
+            classmethod(lambda cls, binary = None, e = None: devices),
+        )
+        return LlamaCppBackend._effective_gpu_selection(
+            "llama-server", env or {}, gpu_indices, extra_args, True
+        )[1]
+
+    def test_an_override_replaces_the_auto_selection(self, monkeypatch):
+        assert self._resolve(monkeypatch, ["CUDA0", "ROCm1"], [0], ["--device", "ROCm1"]) == [1]
+
+    def test_the_env_twin_counts(self, monkeypatch):
+        assert self._resolve(
+            monkeypatch, ["CUDA0", "ROCm1"], [0], None, {"LLAMA_ARG_DEVICE": "ROCm1"}
+        ) == [1]
+
+    def test_no_override_leaves_the_auto_selection(self, monkeypatch):
+        assert self._resolve(monkeypatch, ["CUDA0", "ROCm1"], [0]) == [0]
+
+    def test_a_cpu_override_leaves_it_for_the_confirmation_to_decline(self, monkeypatch):
+        assert self._resolve(monkeypatch, ["CUDA0"], [0], ["--device", "none"]) == [0]
+
+    def test_an_unlisted_override_leaves_it_for_the_confirmation_to_decline(self, monkeypatch):
+        assert self._resolve(monkeypatch, ["CUDA0"], [0], ["--device", "CUDA7"]) == [0]
+
+    def test_both_consumers_get_the_resolved_set(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        # main path: resolved once, then used for residency AND confirmation
+        assert "_mem_physical_indices,_mem_compact_indices=self._effective_gpu_selection(" in flat
+        assert "gpu_indices=_mem_physical_indices," in flat
+        assert "binary,_mem_env,_mem_compact_indices,_mem_host_resident," in flat
+        # the rung resolves its own narrowed set the same way
+        assert (
+            "_rung_physical,_rung_compact=self._effective_gpu_selection(binary,_rung_env,"
+            "devices,_mem_extra_args,_mem_dio_possible,is_vulkan_backend,)" in flat
+        )
+
+
+class TestTheSnapshotIsRetakenAfterEveryCmdMutation:
+    """The arch-crash retry restores `_mem_policy_for_cmd` over `cmd`. Any site that
+    adds or removes the managed pair on `cmd` has to retake it first, or the retry
+    appends a second pair after an addition, or believes an absent one is still there
+    after a removal."""
+
+    def _src(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+        return inspect.getsource(LlamaCppBackend.load_model)
+
+    def test_the_snapshot_comes_from_one_helper(self):
+        src = self._src()
+        assert "def _snapshot_policy_for_cmd():" in src
+        assert "_mem_policy_for_cmd = (" not in src  # no inline copies left
+
+    def test_the_proactive_gate_retakes_it_on_both_arms(self):
+        src = self._src()
+        gate = src[src.index("the arch gate's surviving GPU(s) no longer confirm a") :]
+        gate = gate[: gate.index("_gated_carveout_need")]
+        # once for the removal arm, once for the addition arm
+        assert gate.count("_mem_policy_for_cmd = _snapshot_policy_for_cmd()") == 2
+
+    def test_every_mutation_before_the_restore_retakes_it(self):
+        """A `_record_memory_state(cmd, ...)` means `cmd` changed meaning. Only the
+        mutations BEFORE the arch-crash restore matter; the ones inside the retry run
+        after the snapshot has been consumed and have nothing left to feed."""
+        src = self._src()
+        lines = [ln.strip() for ln in src.splitlines()]
+        restore = next(i for i, ln in enumerate(lines) if ln.endswith("= _mem_policy_for_cmd"))
+        checked = 0
+        for i, line in enumerate(lines[:restore]):
+            if line == "self._record_memory_state(cmd, env)":
+                checked += 1
+                window = lines[i + 1 : i + 4]
+                assert any(
+                    "_mem_policy_for_cmd = _snapshot_policy_for_cmd()" in w for w in window
+                ), f"no retake after the cmd mutation at offset {i}"
+        assert checked >= 4, "expected several pre-restore cmd mutations to guard"
+
+
+class TestMaskedDevicesCompareInCompactSpace:
+    """A visibility mask reindexes survivors from 0, so the adapter this launch calls
+    physical 1 is `CUDA0` to the child. Comparing physical against compact rejected a
+    narrowed launch that was fully offloaded, the opposite of the narrowing's purpose."""
+
+    def test_a_survivor_is_translated_to_its_compact_ordinal(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+        assert B._compact_ordinals([1], {"CUDA_VISIBLE_DEVICES": "1"}) == [0]
+
+    def test_the_position_in_the_mask_is_the_ordinal(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+        assert B._compact_ordinals([3], {"ROCR_VISIBLE_DEVICES": "2,3"}) == [1]
+        assert B._compact_ordinals([2, 3], {"ROCR_VISIBLE_DEVICES": "2,3"}) == [0, 1]
+
+    def test_no_mask_leaves_the_ordinals_alone(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+        assert B._compact_ordinals([1], {}) == [1]
+        assert B._compact_ordinals([1], {"CUDA_VISIBLE_DEVICES": ""}) == [1]
+
+    def test_an_unmappable_mask_leaves_them_alone(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+        assert B._compact_ordinals([1], {"CUDA_VISIBLE_DEVICES": "GPU-abc"}) == [1]
+
+    def test_a_masked_survivor_now_reads_as_live(self, monkeypatch):
+        """The end-to-end shape of the bug: mask keeps physical 1, the child reports
+        CUDA0, and the launch must still see its pinned device as enumerated."""
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        monkeypatch.setattr(
+            B,
+            "_enumerated_gpu_devices",
+            classmethod(lambda cls, binary = None, env = None: ["CUDA0"]),
+        )
+        effective = B._effective_gpu_selection(
+            "llama-server", {"CUDA_VISIBLE_DEVICES": "1"}, [1], None, True
+        )[1]
+        assert effective == [0]
+        assert B._offload_devices_are_live(["CUDA0"], effective) is True
+
+
+class TestSplitModeNoneFollowsTheMainGpu:
+    """llama.cpp keeps only `devices[main_gpu]`, and `--main-gpu` can name a device
+    OUTSIDE the automatic plan, so it replaces the selection rather than narrowing it.
+    Confirming the plan's discrete card while the child used a shared-memory iGPU is
+    exactly the case DirectIO must not take."""
+
+    def _eff(
+        self,
+        monkeypatch,
+        gpu_indices,
+        extra_args = None,
+        env = None,
+        devices = ("CUDA0", "Vulkan1"),
+    ):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+        monkeypatch.setattr(
+            B,
+            "_enumerated_gpu_devices",
+            classmethod(lambda cls, binary = None, e = None: list(devices)),
+        )
+        return B._effective_gpu_selection("llama-server", env or {}, gpu_indices, extra_args, True)[
+            0
+        ]
+
+    def test_main_gpu_replaces_the_plan(self, monkeypatch):
+        assert self._eff(monkeypatch, [0], ["--split-mode", "none", "--main-gpu", "1"]) == [1]
+
+    def test_the_short_flag_counts(self, monkeypatch):
+        assert self._eff(monkeypatch, [0], ["-sm", "none", "-mg", "1"]) == [1]
+
+    def test_the_env_twin_counts(self, monkeypatch):
+        assert self._eff(
+            monkeypatch, [0], ["--split-mode", "none"], {"LLAMA_ARG_MAIN_GPU": "1"}
+        ) == [1]
+
+    def test_without_split_mode_none_it_is_not_a_replacement(self, monkeypatch):
+        """With a layer split the weights spread over the whole selection, so the plan
+        is still what to check."""
+        assert self._eff(monkeypatch, [0], ["--main-gpu", "1"]) == [0]
+
+    def test_an_unparsable_main_gpu_leaves_the_plan(self, monkeypatch):
+        assert self._eff(monkeypatch, [0], ["--split-mode", "none", "--main-gpu", "nope"]) == [0]
+
+    def test_the_redirected_device_is_what_gets_classified(self, monkeypatch):
+        """The whole point: a Vulkan iGPU target must reach the Vulkan probe rather
+        than being confirmed off the plan's CUDA card."""
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        monkeypatch.setattr(
+            B,
+            "_enumerated_gpu_devices",
+            classmethod(lambda cls, binary = None, e = None: ["CUDA0", "Vulkan1"]),
+        )
+        monkeypatch.setattr(
+            B, "_vulkan_offload_is_discrete", staticmethod(lambda binary, idx = None: False)
+        )
+        effective = B._effective_gpu_selection(
+            "llama-server", {}, [0], ["--split-mode", "none", "--main-gpu", "1"], True
+        )[1]
+        assert effective == [1]
+        assert (
+            B._gpu_offload_confirmed(
+                "llama-server",
+                {},
+                effective,
+                False,
+                True,
+                ["--split-mode", "none", "--main-gpu", "1"],
+            )
+            is False
+        )
+
+    def test_a_main_gpu_override_is_also_gated(self, monkeypatch):
+        """Off the DirectIO path nothing is resolved, so no behaviour changes."""
+        from core.inference.llama_cpp import LlamaCppBackend as B
+        assert B._effective_gpu_selection(
+            "llama-server", {}, [0], ["--split-mode", "none", "--main-gpu", "1"], False
+        )[1] == [0]
+
+
+class TestVulkanOrdinalsAreAlreadyCompact:
+    """ggml passes GGML_VK_VISIBLE_DEVICES through and enumerates what survives, so a
+    Vulkan ordinal is already compact, the same thing `_run_vulkan_probe` documents
+    about its own rows. Translating one again pointed the residency and discreteness
+    checks at a different probe row."""
+
+    def test_a_vulkan_launch_is_not_translated(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+        assert B._compact_ordinals([1], {"GGML_VK_VISIBLE_DEVICES": "1,2"}, True) == [1]
+
+    def test_the_vulkan_mask_is_not_even_consulted(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+        assert B._compact_ordinals([1], {"GGML_VK_VISIBLE_DEVICES": "1,2"}) == [1]
+
+    def test_a_cuda_launch_is_still_translated(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+        assert B._compact_ordinals([1], {"CUDA_VISIBLE_DEVICES": "1,2"}) == [0]
+
+    def test_the_resolver_passes_the_backend_through(self, monkeypatch):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        monkeypatch.setattr(
+            B,
+            "_enumerated_gpu_devices",
+            classmethod(lambda cls, binary = None, env = None: ["Vulkan0", "Vulkan1"]),
+        )
+        env = {"GGML_VK_VISIBLE_DEVICES": "1,2"}
+        assert B._effective_gpu_selection("b", env, [1], None, True, True)[1] == [1]
+
+
+class TestAnUnreadDeviceTypeIsNotDiscreteEvidence:
+    """The probe reports all-False when the type query fails, so "not integrated" and
+    "could not read the type" shared a value. That default is right for the page-lock
+    caller and wrong for a loader choice."""
+
+    def _rows(self, monkeypatch, rows):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+        monkeypatch.setattr(B, "_run_vulkan_probe", staticmethod(lambda binary = None: rows))
+        return B._vulkan_offload_is_discrete("llama-server", None)
+
+    def test_a_known_discrete_device_confirms(self, monkeypatch):
+        assert self._rows(monkeypatch, [{"index": 0, "is_igpu": False, "type_known": True}]) is True
+
+    def test_an_unread_type_declines(self, monkeypatch):
+        assert (
+            self._rows(monkeypatch, [{"index": 0, "is_igpu": False, "type_known": False}]) is False
+        )
+
+    def test_one_unread_device_declines_the_set(self, monkeypatch):
+        assert (
+            self._rows(
+                monkeypatch,
+                [
+                    {"index": 0, "is_igpu": False, "type_known": True},
+                    {"index": 1, "is_igpu": False, "type_known": False},
+                ],
+            )
+            is False
+        )
+
+    def test_a_known_igpu_still_declines(self, monkeypatch):
+        assert self._rows(monkeypatch, [{"index": 0, "is_igpu": True, "type_known": True}]) is False
+
+    def test_an_older_probe_without_the_column_reads_as_unknown(self):
+        """A staged probe predating the column cannot tell the two apart, so it
+        declines rather than being trusted."""
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        assert B._vulkan_offload_is_discrete.__doc__  # predicate still documented
+        row = {"index": 0, "is_igpu": False}
+        assert row.get("type_known") is None
+
+    def test_the_probe_emits_the_column(self):
+        import inspect
+        from core.inference import _vulkan_probe
+
+        src = inspect.getsource(_vulkan_probe)
+        assert "known[i] = True" in src
+        assert "int(known[i])" in src
+
+
+class TestThePerModelPairIsUserAuthoredToo:
+    """A per-model `dio` selection is the user's choice as much as a hand-typed flag.
+    Counting only the extras, a rung that stripped a COPY left the per-model pair
+    behind and the next strip took that one instead."""
+
+    def test_the_launch_records_the_per_model_pair(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert (
+            "self._memory_dio_user_tokens=[*self._memory_dio_user_tokens,*_load_mode_managed,]"
+            in flat
+        )
+
+    def test_a_per_model_pair_alone_survives_the_strip(self):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        b = LlamaCppBackend.__new__(LlamaCppBackend)
+        b._memory_dio_flags = ["--load-mode", "dio"]
+        # extras empty, but the per-model selection put one pair on the command
+        b._memory_dio_user_tokens = ["--load-mode", "dio"]
+        b._memory_dio_applicable = True
+        b._memory_policy_active = True
+        b._memory_policy_extras_touched = False
+        argv = ["llama-server", "--load-mode", "dio"]
+        assert b._drop_managed_dio(argv, "test") == argv
+
+
+class TestResidencyWithdrawsTheNoReserveDio:
+    """A no-reserve launch's managed DirectIO has to go when no-reserve does: with
+    residency on and no-reserve off the policy emits a page-lock or nothing, never
+    dio, so a streaming child contradicts the new settings."""
+
+    def _satisfied(
+        self,
+        monkeypatch,
+        *,
+        direct_io,
+        dio_applicable,
+        policy_active,
+        mlock_applicable = False,
+        state = (False, False),
+        dio_managed = None,
+    ):
+        import utils.model_memory_settings as mm
+        from core.inference.llama_server_args import memory_state_satisfies_settings
+
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
+        return memory_state_satisfies_settings(
+            state,
+            policy_active,
+            mlock_applicable,
+            direct_io,
+            dio_applicable,
+            policy_active if dio_managed is None else dio_managed,
+        )
+
+    def test_the_aggregate_activity_bit_is_not_what_decides(self, monkeypatch):
+        """A scrubbed env var or a vetoed extra also sets `policy_active`, so a user's
+        own dio beside an inherited LLAMA_ARG_MLOCK matched it and every relaunch
+        produced the same child and set it again, leaving reload_required stuck on."""
+        assert (
+            self._satisfied(
+                monkeypatch,
+                direct_io = True,
+                dio_applicable = True,
+                policy_active = True,
+                dio_managed = False,
+            )
+            is True
+        )
+
+    def test_an_active_managed_dio_demands_a_reload(self, monkeypatch):
+        assert (
+            self._satisfied(monkeypatch, direct_io = True, dio_applicable = True, policy_active = True)
+            is False
+        )
+
+    def test_a_user_authored_dio_does_not(self, monkeypatch):
+        """Theirs to keep; the policy never touched this child."""
+        assert (
+            self._satisfied(monkeypatch, direct_io = True, dio_applicable = True, policy_active = False)
+            is True
+        )
+
+    def test_a_non_streaming_child_is_unaffected(self, monkeypatch):
+        assert (
+            self._satisfied(monkeypatch, direct_io = False, dio_applicable = True, policy_active = True)
+            is True
+        )
+
+    def test_the_mlock_case_still_answers_as_before(self, monkeypatch):
+        assert (
+            self._satisfied(
+                monkeypatch,
+                direct_io = None,
+                dio_applicable = False,
+                policy_active = False,
+                mlock_applicable = True,
+                state = (True, False),
+            )
+            is True
+        )
+
+
+class TestTheSelectionCarriesBothOrdinalSpaces:
+    """The consumers need the SAME selection in DIFFERENT spaces, and collapsing them
+    broke one or the other: `_amd_apu_wants_unified_memory` is documented to take
+    physical ids, while `--list-devices` reports the child's compact ordinals."""
+
+    def _sel(
+        self,
+        monkeypatch,
+        gpu_indices,
+        env = None,
+        extra_args = None,
+        devices = ("CUDA0",),
+        is_vulkan = False,
+    ):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+        monkeypatch.setattr(
+            B,
+            "_enumerated_gpu_devices",
+            classmethod(lambda cls, binary = None, e = None: list(devices)),
+        )
+        return B._effective_gpu_selection(
+            "llama-server", env or {}, gpu_indices, extra_args, True, is_vulkan
+        )
+
+    def test_a_mask_splits_the_two_spaces(self, monkeypatch):
+        """Physical APU 1 exposed as compact 0: residency must still classify 1."""
+        physical, compact = self._sel(monkeypatch, [1], {"CUDA_VISIBLE_DEVICES": "1"})
+        assert physical == [1]
+        assert compact == [0]
+
+    def test_no_mask_leaves_them_equal(self, monkeypatch):
+        physical, compact = self._sel(monkeypatch, [1])
+        assert physical == compact == [1]
+
+    def test_a_device_override_is_mapped_back_to_physical(self, monkeypatch):
+        """`--device` names compact ids, so the physical form is the derived one."""
+        physical, compact = self._sel(
+            monkeypatch,
+            [0],
+            {"CUDA_VISIBLE_DEVICES": "2,3"},
+            ["--device", "CUDA1"],
+            devices = ("CUDA0", "CUDA1"),
+        )
+        assert compact == [1]
+        assert physical == [3]
+
+    def test_main_gpu_is_compact_and_maps_back_to_physical(self, monkeypatch):
+        """`--main-gpu` indexes the child's FILTERED list, so with one masked survivor
+        `--main-gpu 0` is physical 1."""
+        physical, compact = self._sel(
+            monkeypatch,
+            [0],
+            {"CUDA_VISIBLE_DEVICES": "1"},
+            ["--split-mode", "none", "--main-gpu", "0"],
+        )
+        assert compact == [0]
+        assert physical == [1]
+
+    def test_vulkan_keeps_the_two_identical(self, monkeypatch):
+        physical, compact = self._sel(
+            monkeypatch,
+            [1],
+            {"GGML_VK_VISIBLE_DEVICES": "1,2"},
+            devices = ("Vulkan0", "Vulkan1"),
+            is_vulkan = True,
+        )
+        assert physical == compact == [1]
+
+    def test_the_inverse_round_trips(self):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        env = {"CUDA_VISIBLE_DEVICES": "2,3"}
+        assert B._compact_ordinals([3], env) == [1]
+        assert B._physical_ordinals([1], env) == [3]
+        assert B._physical_ordinals(B._compact_ordinals([2, 3], env), env) == [2, 3]
+
+    def test_each_consumer_gets_its_own_space(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        # residency classifies physical ids
+        assert "gpu_indices=_mem_physical_indices," in flat
+        # the confirmation matches the build's compact device list
+        assert "binary,_mem_env,_mem_compact_indices,_mem_host_resident," in flat
+        # and the rung does the same with its narrowed set
+        assert "gpu_indices=_rung_physical," in flat
+        assert "self._gpu_offload_confirmed(binary,_rung_env,_rung_compact,host_resident," in flat
+
+
+class TestTheVulkanProbeMustCoverItsOwnTargets:
+    """`gpu_indices` carries ordinals from every selected backend, but the probe
+    reports Vulkan rows. Passing all of them let a CUDA target's 0 satisfy Vulkan row
+    0 and leave the real Vulkan device unprobed but treated as discrete."""
+
+    def _confirm(self, monkeypatch, devices, rows):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        monkeypatch.setattr(
+            B,
+            "_enumerated_gpu_devices",
+            classmethod(lambda cls, binary = None, env = None: list(devices)),
+        )
+        monkeypatch.setattr(B, "_run_vulkan_probe", staticmethod(lambda binary = None: rows))
+        return B._gpu_offload_confirmed("llama-server", {}, None, False, True)
+
+    def test_a_cuda_ordinal_cannot_satisfy_a_vulkan_row(self, monkeypatch):
+        """Selected CUDA0 and Vulkan1, probe holds only Vulkan0: the Vulkan target is
+        unprobed, so this must decline."""
+        assert (
+            self._confirm(
+                monkeypatch,
+                ["CUDA0", "Vulkan1"],
+                [{"index": 0, "is_igpu": False, "type_known": True}],
+            )
+            is False
+        )
+
+    def test_covering_the_vulkan_target_confirms(self, monkeypatch):
+        assert (
+            self._confirm(
+                monkeypatch,
+                ["CUDA0", "Vulkan1"],
+                [{"index": 1, "is_igpu": False, "type_known": True}],
+            )
+            is True
+        )
+
+    def test_an_igpu_on_the_covered_target_still_declines(self, monkeypatch):
+        assert (
+            self._confirm(
+                monkeypatch,
+                ["CUDA0", "Vulkan1"],
+                [{"index": 1, "is_igpu": True, "type_known": True}],
+            )
+            is False
+        )
+
+    def test_the_predicate_requires_full_coverage(self, monkeypatch):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        monkeypatch.setattr(
+            B,
+            "_run_vulkan_probe",
+            staticmethod(lambda binary = None: [{"index": 0, "is_igpu": False, "type_known": True}]),
+        )
+        assert B._vulkan_offload_is_discrete("llama-server", [0]) is True
+        assert B._vulkan_offload_is_discrete("llama-server", [0, 1]) is False
+
+
+class TestAForcedProbeKeepsMlockConservative:
+    """The probe is forced for the DirectIO decision even when the page-lock question
+    would not have run it. An unreadable Vulkan probe answers "not an iGPU", which
+    turned host residency off and recorded the lock as inapplicable, and the
+    comparator then excused a missing lock on weights that may be host-backed."""
+
+    def test_an_unanswered_probe_keeps_the_lock_applicable(self):
+        import inspect
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        flat = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert (
+            "self._memory_mlock_applicable=_mem_host_residentor("
+            "_mem_probe_for_dioandnot_mem_should_mlockandis_vulkan_backendand"
+            "notself._vulkan_probe_answered(binary))" in flat
+        )
+
+    def test_the_answered_predicate_is_not_the_igpu_one(self, monkeypatch):
+        from core.inference.llama_cpp import LlamaCppBackend as B
+
+        monkeypatch.setattr(B, "_run_vulkan_probe", staticmethod(lambda binary = None: []))
+        assert B._vulkan_probe_answered("llama-server") is False
+        # and the iGPU question still answers False for the same empty probe, which is
+        # exactly why it cannot be read as a measurement
+        assert B._vulkan_targets_are_igpus("llama-server", None) is False
+
+        monkeypatch.setattr(
+            B,
+            "_run_vulkan_probe",
+            staticmethod(lambda binary = None: [{"index": 0, "is_igpu": False, "type_known": True}]),
+        )
+        assert B._vulkan_probe_answered("llama-server") is True
