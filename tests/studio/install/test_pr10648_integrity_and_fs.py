@@ -69,15 +69,13 @@ CORE = _load("studio_prebuilt_core_pr10648_integrity", "prebuilt_core.py")
 NODE = _load("studio_install_node_prebuilt_pr10648_integrity", "install_node_prebuilt.py")
 WHISPER = _load("studio_install_whisper_prebuilt_pr10648_integrity", "install_whisper_prebuilt.py")
 
-# build_install writes a real install tree (both binary copies, the payload libraries each
-# platform's health groups require, convert_hf_to_gguf.py, gguf-py). Imported rather than
-# re-implemented: a private copy is how a fixture drifts from the tree the installer makes.
+# build_install writes a real install tree. Imported rather than re-implemented: a private
+# copy is how a fixture drifts from the tree the installer actually makes.
 import test_keep_install_backcompat_9979 as KEEP  # noqa: E402
 
 MARKER_NAME = "UNSLOTH_PREBUILT_INFO.json"
 
 
-# ── llama fixtures ───────────────────────────────────────────────────────────────────
 LINUX = llama_host(LLAMA.HostInfo)
 _UPSTREAM = ("ggml-org/llama.cpp", "upstream-prebuilt")
 _SOURCE = ("ggml-org/llama.cpp", "upstream-source")
@@ -194,7 +192,6 @@ def _rewrite_marker(install_dir: Path, payload: dict) -> None:
     (install_dir / MARKER_NAME).write_text(json.dumps(payload, indent = 2) + "\n", encoding = "utf-8")
 
 
-# ── corruptions ──────────────────────────────────────────────────────────────────────
 def _truncate_half(path: Path) -> None:
     data = path.read_bytes()
     assert len(data) > 2
@@ -237,9 +234,8 @@ _CORRUPTIONS = {
     "delete": _delete,
 }
 
-# Everything write_prebuilt_metadata records at the digest tier on a Linux install:
-# both copies of each binary (_runtime_record_paths walks the root and build/bin layouts,
-# which can rot independently), plus the DiffusionGemma visual server the bundle ships.
+# The digest tier on a Linux install: both copies of each binary, since the root and build/bin
+# layouts can rot independently, plus the DiffusionGemma visual server.
 HASHED_TIER = (
     "llama-server",
     "llama-quantize",

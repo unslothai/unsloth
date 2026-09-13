@@ -610,9 +610,8 @@ def test_a_released_older_studio_ignores_the_new_key(tmp_path, monkeypatch):
     assert result["matches"] is True
 
 
-# The ROCm kernel catalogs. installed_tree_is_intact asks only that each linked runtime
-# directory hold ANY file, so damage inside one that leaves a sibling behind satisfied it,
-# and the offline keep then reported an install whose catalog no longer loads.
+# The ROCm kernel catalogs. installed_tree_is_intact asks only that each linked directory hold
+# ANY file, so the offline keep blessed an install whose catalog no longer loads.
 ROCM_DIRS = ("rocblas", "hipblaslt")
 
 
@@ -696,11 +695,9 @@ def test_a_marker_naming_a_traversing_runtime_directory_records_nothing_outside(
 
 
 # ── PART 5: which llama INSTALL the hardlinks point into ─────────────────────────────
-# The gap these close: a release publishes one llama bundle per gfx target, so re-selecting
-# ROCm for another GPU swaps the asset while ggml_tree -- a SOURCE-tree identity -- stays put.
-# _link_or_copy hardlinks to the inode on purpose, so whisper's wiring survives llama's
-# directory swap with the PREVIOUS GPU's kernels still behind it, and every other check
-# (tree id, whisper's own digests, library presence) passes.
+# The gap these close: a release publishes one llama bundle per gfx target, so re-selecting ROCm
+# for another GPU swaps the asset while ggml_tree, a SOURCE-tree identity, stays put. The
+# hardlinks survive llama's directory swap on purpose, so the old GPU's kernels stay wired.
 LLAMA_ID_GFX1100 = "f" * 64
 LLAMA_ID_GFX1151 = "e" * 64
 

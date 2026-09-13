@@ -47,8 +47,7 @@ from unsloth_pwsh_runner import run_pwsh
 MODULE_PATH = PACKAGE_ROOT / "studio" / "install_whisper_prebuilt.py"
 
 # A DISTINCT sys.modules name: test_install_whisper_prebuilt_logic.py owns
-# "studio_install_whisper_prebuilt", and sharing it would make the two files' monkeypatches
-# visible to each other under -n 4's per-worker module cache.
+# "studio_install_whisper_prebuilt", and -n 4's per-worker cache would share the monkeypatches.
 M = load_studio_module(
     "studio_install_whisper_prebuilt_pr10648_offline", "install_whisper_prebuilt.py"
 )
@@ -68,9 +67,6 @@ STUDIO_PROTOCOL = "inference/multipart-v1"
 KEEP_TOKEN = "keeping the existing complete install"
 MATCH_TOKEN = "already matches"
 FAIL_TOKEN = "prebuilt install failed"
-
-
-# ══ Part 1 helpers ═══════════════════════════════════════════════════════════════════
 
 
 def _host(
@@ -226,9 +222,8 @@ class _InjectedNetwork:
         url = getattr(request, "full_url", str(request))
         self.calls.append(("head", url))
         self._raise_transport(url)
-        # Every remaining mode is about what api.github.com does, so the CDN shortcut has to
-        # decline first: a 404 is exactly how download_host_latest_release_tag reports "this
-        # host cannot name the release", and it returns None rather than raising.
+        # Every remaining mode is about api.github.com, so the CDN shortcut declines first. A 404
+        # is how download_host_latest_release_tag says "cannot name the release": None, not a raise.
         raise _http_error(404, url)
 
     # ── every JSON GET ──
@@ -511,9 +506,6 @@ def test_a_release_compatibility_error_is_never_papered_over(tmp_path, monkeypat
     assert KEEP_TOKEN not in log, log
 
 
-# ── The macOS first_error question ───────────────────────────────────────────────────
-
-
 def _macos_listing_failure(tmp_path, monkeypatch, host):
     """Newest published release incompatible with this Mac, release LISTING unavailable.
 
@@ -527,9 +519,8 @@ def _macos_listing_failure(tmp_path, monkeypatch, host):
     archive, asset, sha256 = _build_cpu_bundle(newer_dir, host)
     # A newest release whose only artifact needs a macOS this host does not have.
     newest = _bundle(host, asset, sha256, min_os = "26.0")
-    # Control: the SAME bundle is selectable on a new enough Mac, so the rejection below is
-    # the min_os floor and not a manifest this test accidentally built wrong. Without this,
-    # the scenario would still pass while exercising nothing about first_error.
+    # Control: the SAME bundle is selectable on a new enough Mac, so the rejection below is the
+    # min_os floor, not a manifest built wrong. Without it the scenario passes exercising nothing.
     M.select_artifact_with_cpu_fallback(
         newest.manifest, _host("macos", host.whisper_arch, macos_version = (26, 0)), "cpu"
     )
@@ -610,9 +601,8 @@ def test_macos_keep_refuses_an_install_below_this_hosts_floor(tmp_path, monkeypa
     install_dir = _seed_install(tmp_path, build_host, min_os = "15.0")
     older_mac = _host("macos", "arm64", macos_version = (13, 0))
 
-    # The floor, and only the floor, is what changed: the same tree is intact on the Mac it
-    # was installed on. Asserting the predicate directly keeps the exit-1 below from passing
-    # for some unrelated reason (a tampered marker, a missing server, a different backend).
+    # Only the floor changed: the same tree is intact on the Mac it was installed on. Asserting the
+    # predicate keeps the exit-1 below from passing for an unrelated reason.
     intact = dict(
         published_repo = M.DEFAULT_PUBLISHED_REPO,
         requested_backend = "cpu",
@@ -725,9 +715,8 @@ _PS1_WHISPER_START = "if ($whisperExit -eq 0) {"
 _SH_LLAMA_START = 'if [ "$_PREBUILT_STATUS" -eq 0 ]; then'
 _PS1_LLAMA_START = "if ($prebuiltExit -eq 0) {"
 
-# Stand-ins for the setup helpers the blocks call. `step` echoes both arguments so the test
-# reads the component AND the label back out, which is what distinguishes "llama reported the
-# keep" from "whisper reported it".
+# Stand-ins for the setup helpers the blocks call. `step` echoes both arguments, which is what
+# distinguishes "llama reported the keep" from "whisper reported it".
 _SH_HARNESS = """
 set -u
 C_OK=""; C_WARN=""; C_ERR=""
@@ -867,9 +856,8 @@ requires_bash = pytest.mark.skipif(
     reason = "setup.sh is the POSIX installer",
 )
 
-# One table, run in both shells. `output` is what the installer printed; `label` is what the
-# user must be told. The last three rows are the traps: a failure carrying success words, and
-# a success token buried in an unrelated diagnostic.
+# One table, run in both shells: `output` is what the installer printed, `label` what the user
+# must be told. The last three rows are the traps, where the two disagree.
 STATUS_CASES = [
     (
         "up-to-date",
@@ -1073,8 +1061,6 @@ def test_setup_ps1_routes_the_remaining_whisper_exit_codes(tmp_path):
     assert "existing prebuilt kept" not in label, label
 
 
-# ── Two components, one setup run ────────────────────────────────────────────────────
-
 _LLAMA_KEEP_LOG = (
     "[llama-prebuilt] llama.cpp update unavailable, existing prebuilt kept; keeping the "
     "existing complete install of b1000"
@@ -1145,9 +1131,6 @@ def test_setup_ps1_reports_each_component_separately(tmp_path):
     assert steps["llama.cpp"] == "update unavailable, existing prebuilt kept", steps
     assert steps["whisper.cpp"].startswith(_FAILURE_LABEL_PREFIX), steps
     assert "setup_fail|" not in result.stdout, result.stdout
-
-
-# ── The installer and the scripts, checked against each other ────────────────────────
 
 
 def test_the_installer_emits_exactly_the_substrings_the_scripts_grep(tmp_path, monkeypatch, capsys):

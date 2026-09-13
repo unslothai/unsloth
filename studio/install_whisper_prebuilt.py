@@ -1047,10 +1047,8 @@ def metadata_path(install_dir: Path) -> Path:
     return install_dir / METADATA_FILENAME
 
 
-# Every bin layout this installer produces, walked whatever the host says. A record is only ever
-# taken of a file that is actually there, and the backfill runs from settle_kept_install, which
-# prebuilt_core hands the install directory alone -- a host argument threaded through every caller
-# is how this would go stale on the one platform nobody runs the tests on.
+# Every bin layout this installer produces, walked whatever the host says: the backfill runs from
+# settle_kept_install, which prebuilt_core hands the install directory alone.
 _RUNTIME_RECORD_BIN_DIRS = (("build", "bin"), ("build", "bin", "Release"))
 _RUNTIME_RECORD_SERVER_NAMES = ("whisper-server", "whisper-server.exe")
 
@@ -1103,24 +1101,21 @@ def _runtime_file_records(
     for parts in _RUNTIME_RECORD_BIN_DIRS:
         bin_dir = install_dir.joinpath(*parts)
         for name in linked_libraries or ():
-            # Bare filenames only, the same shape installed_tree_is_intact demands of the wiring:
-            # a marker naming ../.. must not send the record outside the install.
+            # Bare filenames only: a marker naming ../.. must not send the record outside the install.
             if not isinstance(name, str) or not name or Path(name).name != name:
                 continue
             record = _stat_record(bin_dir / name)
             if record is not None:
                 records[(bin_dir / name).relative_to(install_dir).as_posix()] = record
         for name in linked_runtime_directories or ():
-            # Same bare-name rule as the libraries: a marker naming ../.. must not walk out
-            # of the install, and rglob on an attacker-chosen path would do exactly that.
+            # Same bare-name rule: rglob on a marker-supplied path would walk out of the install.
             if not isinstance(name, str) or not name or Path(name).name != name:
                 continue
             runtime_dir = bin_dir / name
             if not runtime_dir.is_dir():
                 continue
             for path in sorted(runtime_dir.rglob("*")):
-                # Files only: a directory has no size worth recording, and a symlink is
-                # followed by stat, which is what the loader does too.
+                # Files only; stat follows symlinks, which is what the loader does too.
                 if not path.is_file():
                     continue
                 record = _stat_record(path)
@@ -1135,8 +1130,7 @@ def _runtime_file_records(
             try:
                 record["sha256"] = sha256_file(candidate)
             except (OSError, MemoryError) as exc:
-                # Statted but unreadable (a scanner holding it open): no record at all, rather
-                # than a size-only tier that would keep a same-size corrupt server forever.
+                # No record at all: a size-only tier would keep a same-size corrupt server forever.
                 log(f"could not hash {name} for the runtime record ({exc}); not recording")
                 return {}
             records[candidate.relative_to(install_dir).as_posix()] = record
@@ -1207,8 +1201,7 @@ def _runtime_files_match(install_dir: Path, marker: "dict[str, Any]") -> bool:
         except OSError as exc:
             log(f"existing install at {install_dir} rejected: {relative} is unreadable ({exc})")
             return False
-    # A file that appeared since, or was never recorded, is not evidence against the install; a
-    # RECORDED one that vanished is, and the loop above caught that.
+    # An unrecorded file is not evidence against the install; a RECORDED one that vanished is.
     return True
 
 
@@ -1433,12 +1426,10 @@ def installed_tree_is_intact(install_dir: Path, host: HostInfo) -> bool:
                 f"libraries ({', '.join(missing[:4])}); reinstalling"
             )
             return False
-        # The llama install these hardlinks point INTO, by install identity rather than by source
-        # tree. A per-gfx ROCm reselection swaps llama's asset within one release, so ggml_tree
-        # still matches, and _link_or_copy deliberately hardlinks to the inode so the wiring
-        # SURVIVES llama's directory swap: without this, the previous GPU's kernels stay wired
-        # while every other check passes. Absent is a marker written before this key, which
-        # settle_kept_install records rather than forcing a re-download.
+        # Which llama INSTALL, not which source tree: a per-gfx ROCm reselection swaps the asset
+        # within one release, and the hardlinks survive llama's directory swap on purpose, so the
+        # previous GPU's kernels stay wired while every other check passes. Absent is a pre-key
+        # marker, which settle_kept_install records rather than re-downloading.
         recorded_runtime_id = marker.get("paired_llama_runtime_id")
         if isinstance(recorded_runtime_id, str) and recorded_runtime_id:
             if recorded_runtime_id != installed_paired_runtime_id():
@@ -1474,10 +1465,9 @@ def installed_tree_is_intact(install_dir: Path, host: HostInfo) -> bool:
                 f"({', '.join(str(name) for name in missing_dirs[:4])}); reinstalling"
             )
             return False
-    # Last, and the only check here that looks at the payload's bytes rather than its shape: a
-    # whisper-server truncated to a non-zero length is still a non-empty executable file. Absent on
-    # every marker written before the record existed, which is KEPT here and backfilled once under
-    # the lock, so upgrading from an older Studio never re-downloads.
+    # The only check here that reads the payload's BYTES: a whisper-server truncated to a non-zero
+    # length is still a non-empty executable. Absent on a pre-record marker, which is kept and
+    # backfilled under the lock, so upgrading from an older Studio never re-downloads.
     return _runtime_files_match(install_dir, marker)
 
 
@@ -1502,8 +1492,7 @@ def fetch_release_for_install(
     except PrebuiltFallback:
         raise
     except (OSError, ValueError, RuntimeError) as exc:
-        # URLError / OSError / ValueError, and fetch_json's RuntimeError for an HTTP 403/429:
-        # install_prebuilt's keep path reads only PrebuiltFallback, and without this wrap an offline
+        # install_prebuilt's keep path reads only PrebuiltFallback, so without this wrap an offline
         # update printed "prebuilt install failed" over an intact tree.
         raise PrebuiltFallback(
             f"could not fetch release {repo}@{published_release_tag or 'latest'}: {exc}"
@@ -1666,8 +1655,7 @@ def _release_plan_for_host(
         assert first_error is not None
         raise first_error
 
-    # An API limit (RuntimeError) or network failure (OSError) is the "could not answer" the
-    # keep-existing path handles, not a failed update.
+    # An API limit or network failure is "could not answer", which the keep path handles.
     try:
         compatible_tags = _published_release_tags(published_repo)
     except (OSError, RuntimeError) as exc:
@@ -1706,8 +1694,7 @@ def _release_plan_for_host(
             else None
         )
         if walk_back is not None:
-            # Recorded so the marker-only check holds the install current while that release is
-            # still the newest on this macOS version.
+            # So the marker-only check holds the install while that release is newest for this macOS.
             plan = replace(
                 plan,
                 walk_back = walk_back,
@@ -1802,9 +1789,8 @@ def _existing_install_is_intact(
         return None
     if marker.get("backend") != requested_backend:
         return None
-    # A bundle for another architecture (a home directory carried between machines) is not intact
-    # here. The marker records the manifest's os/arch; one written before that is read from its
-    # asset name, whisper-<tag>-<os>-<arch>-<accel><ext> (asset_name_for), a convention a custom
+    # A bundle for another architecture (a home directory carried between machines) is not intact.
+    # A marker predating the recorded os/arch is read from its asset name, a convention a custom
     # repository need not follow.
     os_token, arch_token = host_platform_tokens(host)
     recorded_os, recorded_arch = marker.get("os"), marker.get("arch")
@@ -1818,8 +1804,7 @@ def _existing_install_is_intact(
             or f"-{os_token}-{arch_token}-" not in recorded_asset
         ):
             return None
-    # The bundle's macOS floor (min_os, top level or under coverage): an install restored onto an
-    # older Mac has the right tokens and fails at load time.
+    # An install restored onto an older Mac has the right tokens and fails at load time.
     min_os = marker.get("min_os")
     coverage = marker.get("coverage")
     if min_os is None and isinstance(coverage, dict):
@@ -1834,25 +1819,20 @@ def _existing_install_is_intact(
     recorded_fingerprint = marker.get("install_fingerprint")
     if not isinstance(recorded_fingerprint, str) or not recorded_fingerprint:
         return None
-    # ...and self-consistent: without a plan to compare against, the recomputed fingerprint is what
-    # stands between a release_tag edited over an old binary and "current". A marker predating
-    # fingerprint_coverage recomputes to None: full path once, which settles it.
+    # ...and self-consistent: with no plan to compare against, this is what stands between a
+    # release_tag edited over an old binary and "current". Predating it recomputes to None.
     if core.marker_install_fingerprint(marker) != recorded_fingerprint:
         return None
-    # A slim install is only as intact as the llama runtime it hardlinks: a llama update that moved
-    # ggml invalidates it. A marker predating the recorded tree takes the full path once.
+    # A slim install is only as intact as the llama ggml it hardlinks; predating the key is full path once.
     if marker.get("install_kind") == "slim":
         recorded_tree = marker.get("paired_llama_ggml_tree")
         if not isinstance(recorded_tree, str) or not recorded_tree:
             return None
         if recorded_tree != installed_llama_ggml_tree():
             return None
-    # ...and the payload record itself. This path keeps an install without asking any network and
-    # without ever starting whisper-server, so the recorded sizes and digests are the only evidence
-    # that the bytes on disk are the bytes that were installed; an install whose marker records
-    # nothing about them is not something to bless offline. A marker predating the record takes the
-    # full path once, which settles it (_backfill_runtime_file_records), exactly as a slim marker
-    # predating paired_llama_ggml_tree does above.
+    # ...and the payload record itself: this path never asks the network and never starts
+    # whisper-server, so the recorded digests are the only evidence the bytes are the installed
+    # ones. Predating the record is full path once, as with paired_llama_ggml_tree above.
     if not marker.get("runtime_files") or not isinstance(marker.get("runtime_files"), dict):
         return None
     if not installed_tree_is_intact(install_dir, host):

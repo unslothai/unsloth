@@ -391,7 +391,6 @@ MARKER_SPEC = {
 }
 
 
-# ── Fixtures ──
 @pytest.fixture(scope = "session")
 def legacy_markers(tmp_path_factory) -> dict:
     """One marker per component, per released tag, written by that tag's own code."""
@@ -449,7 +448,6 @@ def _offline(monkeypatch):
                 monkeypatch.setattr(module, name, refuse)
 
 
-# ── Install-tree builders ──
 def _llama_install(root: Path, marker):
     """A healthy published Vulkan tree, with *marker* written verbatim."""
     return CORPUS.build_install(root, host = LINUX, marker = marker, payload_backend = "vulkan")

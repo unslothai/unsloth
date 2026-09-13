@@ -162,9 +162,8 @@ def test_the_node_bypass_stays_off_for_anything_else(monkeypatch, value):
     assert LLAMA.prebuilt_full_check_requested() is False
 
 
-# The migration run: the marker predates the runtime record, so there is no digest to check
-# and, on Windows, no loader preflight either. That run is what decides whether the bytes on
-# disk become the record every later run is compared against.
+# The migration run: a pre-record marker has no digest and, on Windows, no loader preflight, so
+# this run decides whether the bytes on disk become the reference every later run is held to.
 _LOGIC = _load("studio_install_llama_prebuilt_pr10648_logic", "install_llama_prebuilt.py")
 
 
@@ -191,9 +190,8 @@ def _legacy_marker_install(tmp_path, helpers, windows: bool):
     checksums = helpers.release_checksums((choice.name, choice.expected_sha256, repo))
     plan = helpers.release_plan([choice], checksums)
     helpers.write_metadata(install_dir, choice, checksums)
-    # Strip the keys that did not exist before this work, which is what every marker on disk
-    # from an older Studio actually looks like. runtime_files is not a fingerprint input, so
-    # removing it leaves the marker self-consistent -- exactly the legacy shape.
+    # Strip the keys that postdate this work, which is what an older Studio's marker looks like.
+    # runtime_files is not a fingerprint input, so the stripped marker stays self-consistent.
     import json as _json
 
     marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
@@ -323,9 +321,8 @@ def test_a_blocked_marker_swap_is_retried_then_reported(tmp_path, monkeypatch):
             raise blocked
         Path(src).rename(dst)
 
-    # Pose as Windows by swapping the MODULE's os reference, never os.name itself: pathlib
-    # reads os.name at runtime, so setting it globally turns every path in the process into a
-    # backslash one and the rename fails for an entirely unrelated reason.
+    # Swap the MODULE's os reference, never os.name itself: pathlib reads os.name at runtime, so
+    # setting it globally makes every path in the process a backslash one.
     class FakeOs:
         name = "nt"
         replace = staticmethod(blocked_then_ok)

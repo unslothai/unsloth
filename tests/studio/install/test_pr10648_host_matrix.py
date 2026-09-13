@@ -49,9 +49,8 @@ from _pr10648_helpers import llama_host, load_studio_module  # noqa: E402
 # re-implemented so a change to what a real tree contains reaches this file too.
 from test_keep_install_backcompat_9979 import build_install  # noqa: E402
 
-# A distinct sys.modules name: the sibling suites load the same file under
-# "studio_install_llama_prebuilt", and monkeypatching a module another file is also
-# using would leak across an xdist worker's tests.
+# A distinct sys.modules name: the sibling suites load this file under
+# "studio_install_llama_prebuilt", and a shared module leaks monkeypatches across xdist tests.
 ILP = load_studio_module(
     "studio_install_llama_prebuilt_pr10648_matrix", "install_llama_prebuilt.py"
 )
@@ -60,9 +59,8 @@ HostInfo = ILP.HostInfo
 host_profile = ILP.host_profile
 existing_install_current_without_plan = ILP.existing_install_current_without_plan
 
-# Every environment variable that can move routing or the fast path. Cleared per test so
-# the answer never depends on the shell this suite was started from -- CUDA_VISIBLE_DEVICES
-# in particular is set on any GPU box.
+# Every variable that can move routing or the fast path, cleared per test: CUDA_VISIBLE_DEVICES
+# in particular is set on any GPU box, so the answer would depend on the calling shell.
 _ENV_KEYS = (
     "UNSLOTH_PREBUILT_FULL_CHECK",
     "UNSLOTH_LLAMA_DISABLE_DOWNLOAD_HOST_RESOLVE",
@@ -86,14 +84,11 @@ def make_host(**overrides) -> HostInfo:
     return llama_host(HostInfo, **overrides)
 
 
-# --------------------------------------------------------------------------------------
 # The matrix. Rows are operating systems, columns are accelerators.
 
-# WSL reports itself as Linux and HostInfo carries no WSL flag -- deliberately, see
-# test_keep_install_backcompat_9979.test_wsl_is_treated_exactly_like_linux_by_the_keep_path.
-# It is a row here anyway because it is a distinct user population running a distinct
-# routing path upstream of this decision, and "WSL is judged by the Linux tables" is the
-# assumption this matrix would otherwise leave unstated.
+# WSL reports itself as Linux and HostInfo carries no WSL flag, deliberately (see
+# test_keep_install_backcompat_9979.test_wsl_is_treated_exactly_like_linux_by_the_keep_path).
+# A row anyway, so "WSL is judged by the Linux tables" is stated rather than assumed.
 ROWS = {
     "linux": dict(system = "Linux", machine = "x86_64"),
     "windows": dict(system = "Windows", machine = "AMD64"),
@@ -120,9 +115,8 @@ NVIDIA_CUDA13 = dict(
     driver_cuda_version = (13, 0),
     compute_caps = ["8.9"],
 )
-# gfx1100 (Navi 31, discrete) rather than an integrated part: the integrated archs are
-# routed to Vulkan by _should_prefer_vulkan_for_amd_igpu, which would make the cell test
-# the router instead of the profile.
+# gfx1100 (Navi 31, discrete): _should_prefer_vulkan_for_amd_igpu routes the integrated archs
+# to Vulkan, which would make the cell test the router instead of the profile.
 AMD_ROCM = dict(has_rocm = True, rocm_gfx_target = "gfx1100", rocm_gfx_targets = ["gfx1100"])
 AMD_NO_ROCM = dict(has_amd_gpu_without_rocm = True)
 INTEL = dict(has_intel_gpu = True)
@@ -223,10 +217,6 @@ REACHABLE = [(row, column) for row, column in MATRIX if _skip_reason(row, column
 REACHABLE_IDS = [f"{row}-{column}" for row, column in REACHABLE]
 
 
-# --------------------------------------------------------------------------------------
-# Probes and fixtures.
-
-
 class Probe:
     """The hardware answers this run gives, pinned on the loaded module.
 
@@ -250,9 +240,8 @@ class Probe:
             ILP, "detected_windows_runtime_lines", lambda: (list(self.cuda_lines), {})
         )
         monkeypatch.setattr(ILP, "_detect_host_rocm_version", lambda: self.rocm_runtime)
-        # torch.cuda.is_available() on a real box is slow, and whether torch is installed
-        # is not what this file is about. The preference only has to be STABLE: a moved
-        # one is _runtime_preference_moved's subject, covered elsewhere.
+        # torch.cuda.is_available() is slow and beside the point here; the preference only has
+        # to be STABLE, since a moved one is _runtime_preference_moved's subject.
         monkeypatch.setattr(
             ILP,
             "detect_torch_cuda_runtime_preference",
@@ -440,7 +429,6 @@ def assert_reinstall_forced(monkeypatch, install_dir: Path) -> None:
     )
 
 
-# --------------------------------------------------------------------------------------
 # (A) the matrix itself: which cells exist.
 
 
@@ -458,7 +446,6 @@ def test_every_cell_of_the_matrix_is_reachable_or_explicitly_impossible(row, col
     assert cell.install_kind.startswith(prefix), cell.cell_id
 
 
-# --------------------------------------------------------------------------------------
 # (B) the acceptance half: an unchanged box keeps its install, in every reachable cell.
 
 
@@ -486,7 +473,6 @@ def test_a_second_update_on_the_same_box_is_still_current(tmp_path, probe, row, 
     assert check(install_dir) is True, cell.cell_id
 
 
-# --------------------------------------------------------------------------------------
 # (C) the rejection half: one axis flipped at a time, each its own user scenario.
 
 
@@ -734,7 +720,6 @@ def test_a_mac_home_directory_restored_onto_apple_silicon_is_not_current(
     assert_reinstall_forced(monkeypatch, install_dir)
 
 
-# --------------------------------------------------------------------------------------
 # (D) the guard is load-bearing, not incidental.
 
 
@@ -812,7 +797,6 @@ def test_a_cuda_line_move_is_rejected_by_the_host_profile_and_nothing_else(
     ), "without the host_profile guard this box keeps its cuda12 bundle after moving to cuda13"
 
 
-# --------------------------------------------------------------------------------------
 # (E) the JSON round trip. A profile that never equals itself takes the full path forever.
 
 

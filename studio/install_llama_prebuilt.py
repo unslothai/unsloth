@@ -519,8 +519,7 @@ class InstallReleasePlan:
     release_tag: str
     attempts: list[AssetChoice]
     approved_checksums: ApprovedReleaseChecksums
-    # The macOS release walk-back behind release_tag (prebuilt_core.WalkBack), None when it is the
-    # newest; lets the no-network re-check tell a walk-back from an install that fell behind.
+    # None when release_tag is the newest: tells a macOS walk-back from an install that fell behind.
     walk_back: "_core.WalkBack | None" = None
 
 
@@ -6591,8 +6590,7 @@ def host_profile(host: HostInfo) -> dict[str, Any]:
         return sorted({str(value).strip() for value in (values or []) if str(value).strip()})
 
     return {
-        # A home directory carried to another CPU architecture (or Rosetta) keeps a bundle the
-        # loader cannot run, with every GPU field equal.
+        # A home directory carried to another arch (or Rosetta) keeps every GPU field equal.
         "machine": str(host.machine or "").strip().lower(),
         "has_usable_nvidia": bool(host.has_usable_nvidia),
         # The Vulkan routes are gated on there being no NVIDIA adapter at all, usable or not.
@@ -6602,8 +6600,7 @@ def host_profile(host: HostInfo) -> dict[str, Any]:
         ),
         "compute_caps": _sorted_labels(host.compute_caps),
         "has_rocm": bool(host.has_rocm),
-        # Upstream ROCm assets are chosen by the runtime's major.minor (_detect_host_rocm_version),
-        # which the GPU fields do not carry.
+        # Upstream ROCm assets go by the runtime's major.minor, which the GPU fields do not carry.
         "rocm_runtime": _rocm_runtime_for_profile(host),
         "rocm_gfx_target": host.rocm_gfx_target or None,
         "rocm_gfx_targets": _sorted_labels(host.rocm_gfx_targets),
@@ -6721,8 +6718,7 @@ def write_prebuilt_metadata(
         "ggml_tree": recorded_ggml_tree(approved_checksums, choice),
         "bundle_profile": choice.bundle_profile,
         "runtime_line": choice.runtime_line,
-        # The torch CUDA preference this choice was made under: the fast path treats only a moved
-        # preference as movement. Not in the fingerprint, so existing installs stay valid.
+        # Only a MOVED torch preference is movement. Not fingerprinted: existing installs stay valid.
         "torch_runtime_preference": _torch_runtime_preference_for_marker(host),
         "coverage_class": choice.coverage_class,
         # ROCm bundles: concrete built archs, so runtime GPU selection can gate
@@ -6733,20 +6729,15 @@ def write_prebuilt_metadata(
         "mapped_targets": list(choice.mapped_targets or []),
         # CUDA analog of mapped_targets: SM coverage for the same runtime gate.
         "supported_sms": [str(s) for s in (choice.supported_sms or [])],
-        # In the fingerprint since #5106 but never written, so existing_install_current_without_plan
-        # could not recompute it offline.
+        # Fingerprinted since #5106 but never written, so the offline re-check could not recompute it.
         "runtime_sha256": choice.runtime_sha256,
         "install_fingerprint": fingerprint,
-        # The macOS walk-back behind release_tag; absent when it is the newest. Not in the
-        # fingerprint.
+        # The macOS walk-back behind release_tag; absent when it is the newest. Not fingerprinted.
         **(walk_back.marker_fields() if walk_back is not None else {}),
-        # size + sha256 of the binaries a reuse decision would otherwise RUN (`llama-server
-        # --version` loads the CUDA runtime, most of an update's cost on macOS and Windows), plus
-        # size + mtime_ns of every other allowlisted file. Absent on a pre-PR marker: full path
-        # once.
+        # size + sha256 of the binaries a reuse would otherwise RUN, size + mtime_ns of the rest.
+        # Absent on a pre-PR marker: full path once.
         "runtime_files": runtime_file_records(install_dir, host, _runtime_patterns),
-        # The box this bundle was chosen for. Absent reads as "cannot say": full path
-        # (host_profile).
+        # The box this bundle was chosen for. Absent reads as "cannot say": full path.
         **({"host_profile": host_profile(host)} if host is not None else {}),
         "prebuilt_fallback_used": prebuilt_fallback_used,
         "installed_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -6796,11 +6787,8 @@ def _write_marker(marker_path: Path, marker: dict) -> bool:
             os.fsync(handle.fileno())
         if original is not None:
             os.chmod(tmp_path, stat.S_IMODE(original.st_mode))
-            # Group only (uid -1), as prebuilt_core.write_live_marker and the Node writer do:
-            # chown is all-or-nothing, so asking a non-root member of a group-shared install for
-            # the owner too refuses the call before the group is applied, and os.replace then
-            # installs the member's primary group. os.replace installs the temp file's ownership,
-            # so a shared marker would otherwise lose the group its readers rely on.
+            # Group only (uid -1), as core and node do (e8d128d24): chown is all-or-nothing, so
+            # asking for the owner too refuses the call and os.replace installs the caller's group.
             try:
                 os.chown(tmp_path, -1, original.st_gid)
             except (OSError, AttributeError):
@@ -6896,24 +6884,20 @@ def _marker_selection_patch(
     # Set, never cleared: reuse needs a fingerprint match, so a pair-less bundle matches.
     if choice.runtime_name and marker.get("runtime_asset") != choice.runtime_name:
         patch["runtime_asset"] = choice.runtime_name
-    # Catch an older marker up to what the no-network re-check needs, or it fails closed on EVERY
-    # update rather than once. ADDED only, never corrected: overwriting a present key from a reused
-    # bundle would re-bless bytes this run did not hash. prebuilt_fallback_used: a later candidate
-    # reused after the preferred one failed is a fallback, and a stale False would keep it forever
-    # with the preferred bundle never retried.
+    # ADDED only, never corrected: overwriting a present key from a reused bundle would re-bless
+    # bytes this run did not hash. prebuilt_fallback_used is the exception, since a stale False
+    # keeps a fallback forever with the preferred bundle never retried.
     if prebuilt_fallback_used is not None and marker.get("prebuilt_fallback_used") is not (
         prebuilt_fallback_used
     ):
         patch["prebuilt_fallback_used"] = prebuilt_fallback_used
     if "runtime_sha256" not in marker:
-        # None (no paired runtime archive) is what expected_install_fingerprint hashed: null, not
-        # absent.
+        # None is what expected_install_fingerprint hashed: null, not absent.
         patch["runtime_sha256"] = choice.runtime_sha256
-    # The walk-back this plan made: an older marker gains the keys, a plan no longer walking back
-    # retires them.
+    # A plan no longer walking back retires the keys.
     patch.update(_core.walk_back_patch(marker, walk_back))
-    # An empty record counts as absent: runtime_file_records answers {} for an unreadable binary,
-    # and a marker carrying that would fail closed on every update.
+    # Empty counts as absent: runtime_file_records answers {} for an unreadable binary, and a
+    # marker carrying that would fail closed on every update.
     if install_dir is not None and not marker.get("runtime_files"):
         try:
             backfill_patterns: list[str] | None = runtime_patterns_for_choice(choice)
@@ -6923,12 +6907,10 @@ def _marker_selection_patch(
         # An empty record is not evidence.
         if records:
             patch["runtime_files"] = records
-    # host_profile is the exception to "added only": it is this run's own probe, and a stale one
-    # would send every later update down the full path.
+    # host_profile is this run's own probe: a stale one sends every later update down the full path.
     if host is not None and marker.get("host_profile") != host_profile(host):
         patch["host_profile"] = host_profile(host)
-    # Likewise the torch preference: written whenever missing or moved, so the fast path compares
-    # against what the selectors saw, not the line they routed to.
+    # Likewise the torch preference: the fast path compares what the selectors SAW, not where they routed.
     if host is not None and (host.is_linux or host.is_windows):
         preference = _torch_runtime_preference_for_marker(host)
         if (
@@ -7352,8 +7334,7 @@ def runtime_file_records(
             # Streamed: a CUDA llama-server is large.
             record["sha256"] = sha256_file(candidate)
         except (OSError, MemoryError) as exc:
-            # Statted but unreadable (a scanner holding it): no record at all, or the fast path
-            # would trust a same-size corrupt binary at the size-only tier.
+            # No record at all: the size-only tier would trust a same-size corrupt binary.
             log(f"could not hash {relative} for the runtime record ({exc}); not recording")
             return {}
         records[relative] = record
@@ -7391,8 +7372,7 @@ def _runtime_files_match(install_dir: Path, host: HostInfo, marker: "dict[str, A
         except OSError as exc:
             log(f"kept install rejected: {relative} is unreadable ({exc})")
             return False
-    # A binary that appeared since, or was never recorded, is not evidence against the install; a
-    # RECORDED one that vanished is, and the loop above caught that.
+    # An unrecorded binary is not evidence against the install; a RECORDED one that vanished is.
     return True
 
 
@@ -7544,15 +7524,13 @@ def _runtime_preference_moved(marker: "dict[str, Any]", host: HostInfo) -> bool:
         return False
     preferred = detect_torch_cuda_runtime_preference(host).runtime_line
     if "torch_runtime_preference" in marker:
-        # The preference the install was chosen under. The selectors do not always follow it
-        # (Blackwell routing, a release without that line), so only the preference itself moving is
-        # movement.
+        # The selectors do not always follow the preference (Blackwell routing, a release without
+        # that line), so only the preference itself moving is movement.
         recorded_preference = marker.get("torch_runtime_preference")
         if preferred == recorded_preference:
             return False
         if not preferred:
-            # The preference is gone (torch removed, a CPU build): the selectors fall back to the
-            # host's runtime order, movement only when it starts elsewhere than the install.
+            # Preference gone (torch removed): the selectors fall back to the host's runtime order.
             fallback = _fallback_runtime_line(host)
             if fallback is None or fallback == recorded_line:
                 return False
@@ -7568,12 +7546,10 @@ def _runtime_preference_moved(marker: "dict[str, Any]", host: HostInfo) -> bool:
             f"the install was chosen under {recorded_preference or 'no preference'}"
         )
         return True
-    # A marker written before the preference was recorded: only the installed line to compare
-    # against. The full path records the preference, so this is paid once.
+    # A marker predating the preference has only the installed line; the full path records it once.
     if not preferred or preferred == recorded_line:
         return False
-    # A preference the selectors cannot act on is ignored by them and must be here too, or every
-    # update would take the full path to the same install.
+    # A preference the selectors cannot act on must be ignored here too, or every update is full.
     if not _runtime_line_selectable(host, preferred):
         return False
     log(
@@ -7701,23 +7677,18 @@ def _expected_release_tag_without_plan(
             # Upstream publishes one release per build under the build's own tag.
             return recorded_release
         if repo != DEFAULT_PUBLISHED_REPO and is_release_tag_like(requested):
-            # Any other repository is fetched by iter_release_payloads_by_time as that exact
-            # release, never a "<pin>-<packaging>" one; expecting the newest packaging would redo
-            # the selection on every update.
+            # Any other repo is fetched as that exact release, never a "<pin>-<packaging>" one.
             return requested
-        # The fork can package one upstream build more than once and the selector installs the
-        # newest, so a pinned build still asks the API.
+        # The fork can package one build more than once, so a pinned build still asks the API.
         return _api_newest_release_tag_for_upstream(repo, requested, recorded_release)
-    # On a Mac below the floor the selector answers "latest" for the upstream repo with the pinned
-    # fallback release (resolve_simple_install_release_plans); a current marker names it.
+    # Below the macOS floor the selector answers the pinned upstream fallback; a current marker names it.
     if host is not None:
         pinned_macos = pinned_macos_release_tag(host, repo)
         if pinned_macos is not None:
             return pinned_macos
     if not _download_host_resolve_enabled() or repo != DEFAULT_PUBLISHED_REPO:
-        # The caller asked for the API path, or named a repo the selector never resolves through the
-        # download host. None would make the escape hatch mean "never skip", and /releases/latest
-        # for a custom repo could disagree with the selector forever.
+        # The API path, or a repo the selector never resolves through the download host:
+        # /releases/latest for a custom repo could disagree with the selector forever.
         return _api_newest_release_tag(repo)
     try:
         resolved = _download_host_latest_release_tag(repo)
@@ -7850,20 +7821,17 @@ def existing_install_current_without_plan(
     # (1) the marker describes an install this run would have made.
     if not isinstance(marker.get("install_fingerprint"), str):
         return False
-    # An explicit --force-cpu or --llama-backend differing from the record is a request to change
-    # the install.
+    # --force-cpu or --llama-backend differing from the record is a request to change the install.
     recorded_request = marker.get("backend_request")
     if not isinstance(recorded_request, str) or recorded_request != backend_request:
         return False
     if bool(marker.get("force_cpu")) != bool(force_cpu):
         return False
-    # A fallback bundle is a stopgap: the full path retries the preferred one, so a fallback marker
-    # keeps taking it.
+    # A fallback bundle is a stopgap: its marker keeps taking the full path, which retries the preferred.
     if marker.get("prebuilt_fallback_used") is True:
         log("kept install rejected: it is a fallback bundle; the preferred one is retried")
         return False
-    # (2) the hardware. Local probes only, before the HEAD below; the caller passes the route it
-    # hands _select, so the probes run once per update.
+    # (2) the hardware. Local probes only, and the caller's route, so they run once per update.
     if route is None:
         route = route_backend_request(
             backend = backend_request,
@@ -7874,16 +7842,14 @@ def existing_install_current_without_plan(
             cpu_mechanism = force_cpu,
         )
     host = route.host
-    # The ROUTED repo and tag: routing sends a Linux arm64 Vulkan host to the upstream repo, and the
-    # marker records where the bundle came from.
+    # The ROUTED repo: a Linux arm64 Vulkan host goes upstream, and the marker records that.
     if (marker.get("published_repo") or "") != (route.published_repo or DEFAULT_PUBLISHED_REPO):
         return False
     if not _marker_backend_fits_host(marker, host):
         return False
     recorded_profile = marker.get("host_profile")
     if not isinstance(recorded_profile, dict):
-        # Written before host_profile existed: "cannot tell". The full path re-decides it and
-        # (sync_marker_selection) records the profile, so this is paid once.
+        # Written before host_profile: "cannot tell". The full path records it, so this is paid once.
         return False
     if recorded_profile != host_profile(host):
         log("kept install rejected: this host no longer matches the one it was installed for")
@@ -7924,8 +7890,7 @@ def existing_install_current_without_plan(
     # The one backfill that is not a release change, so it has to be asked separately.
     if _diffusion_visual_server_missing_for_marker(install_dir, host, marker):
         return False
-    # "already matches" is the substring setup.sh and setup.ps1 grep for to report "prebuilt up to
-    # date and validated".
+    # "already matches" is what setup.sh and setup.ps1 grep for to report the install up to date.
     log(
         "existing llama.cpp install already matches selected release "
         f"{expected_release} upstream_tag={marker.get('tag')}; skipping download and install"
@@ -8098,8 +8063,7 @@ def existing_install_matches_choice(
     if not runtime_payload_is_healthy(install_dir, host, choice):
         return False
 
-    # Primary executables exist and are non-empty: a zero-byte llama-server.exe under a marker
-    # predating the runtime record was reused as current.
+    # Non-empty: a zero-byte llama-server.exe under a pre-record marker was reused as current.
     runtime_dir = install_runtime_dir(install_dir, host)
     ext = ".exe" if host.is_windows else ""
     for binary in ("llama-server", "llama-quantize"):
@@ -8108,20 +8072,17 @@ def existing_install_matches_choice(
                 return False
         except OSError:
             return False
-    # The recorded sizes and digests: Windows has no image-reading preflight, so a truncated
-    # llama-server.exe kept its fingerprint match. Only a marker carrying the record is held to it.
+    # Windows has no image-reading preflight, so a truncated llama-server.exe kept its fingerprint
+    # match. Only a marker carrying the record is held to it.
     recorded_files = metadata.get("runtime_files")
     if isinstance(recorded_files, dict) and recorded_files:
         if not _runtime_files_match(install_dir, host, metadata):
             return False
     elif not (host.is_linux or host.is_macos):
-        # The migration run, on the one platform with no loader preflight below. A marker written
-        # before the runtime record exists has no digest to check, and this call is what decides
-        # whether sync_marker_selection may bless the bytes on disk as that record -- so a
-        # llama-server.exe damaged under the old marker would become the reference it is later
-        # compared against. Ask the OS to start it instead, once, before it is recorded; every
-        # later run reads the digest. _binary_image_runs treats a timeout or an ordinary non-zero
-        # exit as healthy, so this cannot cost a working install a needless reinstall.
+        # The migration run, on the one platform with no loader preflight below: a pre-record
+        # marker has no digest, so damaged bytes would become the reference they are later
+        # compared against. Start them once instead. _binary_image_runs treats a timeout or an
+        # ordinary non-zero exit as healthy, so this costs a working install nothing.
         if not all(
             _binary_image_runs(
                 runtime_dir / f"{binary}{ext}",
@@ -9674,8 +9635,7 @@ def install_prebuilt(
                 # network call, so letting it be caught here would report a bug in
                 # host detection as a release-listing failure and source build over
                 # it.
-                # A route the caller computed is reused: routing runs nvidia-smi and the ROCm
-                # probes, and the re-check needs the same answer.
+                # Reused: routing runs nvidia-smi and the ROCm probes, and the re-check needs the same answer.
                 if route is None:
                     route = route_backend_request(
                         backend = requested_backend,
@@ -9709,11 +9669,9 @@ def install_prebuilt(
                         f"{published_repo or DEFAULT_PUBLISHED_REPO}: {exc}"
                     ) from exc
 
-            # Before the release listing, manifest fetch and checksum download, which on a current
-            # install resolve back to the bundle on disk and re-validate it by starting llama-server
-            # (13-63 s per macOS update, ~5 s on Windows). One HEAD instead. Routed once and handed
-            # to both: the re-check compares the profile the install was recorded from, and _select
-            # would repeat the probes.
+            # Before the listing, manifest and checksum fetches, which on a current install resolve
+            # back to the bundle on disk. One HEAD instead. Routed once and handed to both, since
+            # _select would otherwise repeat the probes.
             initial_route = route_backend_request(
                 backend = backend,
                 published_repo = published_repo,
@@ -9727,9 +9685,8 @@ def install_prebuilt(
                 llama_tag = llama_tag,
                 published_repo = published_repo,
                 published_release_tag = published_release_tag,
-                # The request as effective_backend_request resolved it, as recorded; an explicit
-                # --llama-backend or UNSLOTH_LLAMA_CPP_BACKEND naming another is a request to CHANGE
-                # the install.
+                # As effective_backend_request resolved it: an explicit --llama-backend naming
+                # another is a request to CHANGE the install.
                 backend_request = backend,
                 force_cpu = force_cpu,
                 route = initial_route,
@@ -9767,8 +9724,7 @@ def install_prebuilt(
                 sync_marker_selection(
                     install_dir,
                     choice = reused,
-                    # Whether the kept bundle is THIS run's preferred one: a later candidate reused
-                    # after the preferred failed is a fallback the pre-check must keep retrying.
+                    # A later candidate reused after the preferred failed is a fallback to retry.
                     prebuilt_fallback_used = used_fallback,
                     backend_request = persist_backend_request,
                     persist_force_cpu = persist_force_cpu,
@@ -9776,8 +9732,7 @@ def install_prebuilt(
                     ggml_tree = recorded_ggml_tree(plan.approved_checksums, reused),
                     rocm_gfx = persist_rocm_gfx,
                     walk_back = plan.walk_back,
-                    # The routed host this reuse was decided on, so an older marker gains
-                    # host_profile and runtime_files here.
+                    # The routed host, so an older marker gains host_profile and runtime_files here.
                     host = host,
                 )
 
@@ -9828,8 +9783,7 @@ def install_prebuilt(
                                 "existing llama.cpp install already matches fallback release "
                                 f"{plan.release_tag} upstream_tag={plan.llama_tag}; skipping reinstall"
                             )
-                            # As a fresh install of this plan would record: an older release kept
-                            # after the newest failed is a fallback.
+                            # An older release kept after the newest failed is a fallback.
                             _record_reused_selection(plan, choice, release_index > 0)
                             return
                     log(
