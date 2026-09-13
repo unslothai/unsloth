@@ -34,10 +34,35 @@ VLLM_TAGS = [
     "v0.17.1",
     "v0.18.1",
     "v0.19.1",
-    "v0.20.1",
+    "v0.20.2",
+    "v0.21.0",
+    "v0.22.1",
+    "v0.23.0",
+    "v0.24.0",
+    "v0.25.1",
+    "v0.26.0",
+    "v0.27.1",
+    "v0.28.0",
+    "v0.29.0",
     # `main` catches drift before it ships to PyPI.
     "main",
 ]
+
+# vLLM 0.28 (PR #43529) moved bitsandbytes out of tree to vllm-bnb-plugin. The
+# plugin re-exports the same names, so unsloth_zoo resolves whichever is
+# installed; the symbols must keep existing in one home or the other.
+VLLM_BNB_IN_TREE = "vllm/model_executor/layers/quantization/bitsandbytes.py"
+VLLM_BNB_PLUGIN_REPO = "vllm-project/vllm-bnb-plugin"
+VLLM_BNB_PLUGIN_PATH = "vllm_bnb_plugin/bitsandbytes.py"
+# Only these two are REQUIRED. unsloth_zoo subclasses BitsAndBytesConfig and
+# replaces BitsAndBytesLinearMethod._apply_4bit_weight, so both must exist.
+# `apply_bnb_4bit` is hasattr-checked (the in-tree module has never defined it
+# directly, and unsloth_zoo carries a branch for each case), and
+# `is_layer_skipped_bnb` is assigned onto the module rather than read from it.
+VLLM_BNB_SYMBOLS = (
+    "BitsAndBytesConfig",
+    "BitsAndBytesLinearMethod",
+)
 
 
 def _fetch_text(repo: str, ref: str, path: str) -> str | None:
@@ -216,4 +241,35 @@ def test_unsloth_zoo_standby_guards_present():
         "version-gate against vLLM 0.10.x / 0.14.x; that re-introduces the "
         "std::bad_alloc and cudaErrorIllegalAddress crashes the team fixed "
         "in unsloth-zoo commits 664e52ea / fa82dcc2."
+    )
+
+
+@pytest.mark.parametrize("tag", VLLM_TAGS)
+def test_vllm_bitsandbytes_symbols_have_a_home(tag: str):
+    """The bnb symbols unsloth_zoo patches must exist in tree OR in the plugin.
+
+    This is the check that was missing when vLLM 0.28 moved bitsandbytes out of
+    tree: `import unsloth_zoo.vllm_utils` raised ModuleNotFoundError at module
+    scope, taking out every fast_inference GRPO run on 0.28+ rather than only
+    the 4-bit ones, and the tag list here stopped at v0.20.1 so nothing noticed.
+    """
+    in_tree = _fetch_text("vllm-project/vllm", tag, VLLM_BNB_IN_TREE)
+    if in_tree is not None:
+        missing = [s for s in VLLM_BNB_SYMBOLS if not _has_def(in_tree, s)]
+        assert not missing, f"{tag}: in-tree bitsandbytes is missing {missing}"
+        return
+
+    # Out of tree from 0.28. The plugin is versioned separately, so check its
+    # main rather than trying to map a vLLM tag onto a plugin release.
+    plugin = _fetch_text(VLLM_BNB_PLUGIN_REPO, "main", VLLM_BNB_PLUGIN_PATH)
+    assert plugin is not None, (
+        f"{tag}: bitsandbytes is absent in tree AND {VLLM_BNB_PLUGIN_PATH} could "
+        f"not be fetched from {VLLM_BNB_PLUGIN_REPO}; unsloth_zoo has nowhere to "
+        f"resolve the bnb linear method from, so load_in_4bit + fast_inference "
+        f"has no path on this version"
+    )
+    missing = [s for s in VLLM_BNB_SYMBOLS if s not in plugin]
+    assert not missing, (
+        f"{tag}: bitsandbytes moved out of tree and the plugin's compat module "
+        f"no longer re-exports {missing}"
     )
