@@ -7864,9 +7864,7 @@ def _mlx_closure_unmet() -> bool:
     try:
         import tempfile as _tempfile  # noqa: PLC0415
 
-        handle = Path(
-            _tempfile.mkstemp(prefix = "unsloth-mlx-", suffix = ".txt", text = True)[1]
-        )
+        handle = Path(_tempfile.mkstemp(prefix = "unsloth-mlx-", suffix = ".txt", text = True)[1])
         handle.write_text("\n".join([*_MLX_PINS, _MLX_VLM_SPEC]) + "\n", encoding = "utf-8")
         unmet = install_manifest.closure_unmet_requirements(handle, _installed_index())
     except Exception:  # noqa: BLE001 - an audit that cannot run is a reason to run the step

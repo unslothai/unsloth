@@ -930,7 +930,11 @@ def test_a_satisfied_mlx_pin_with_a_broken_closure_is_not_current(monkeypatch, t
 def test_the_mlx_closure_audit_reads_the_pins_and_cleans_up(monkeypatch, tmp_path) -> None:
     seen: list[str] = []
 
-    def _closure(req, _index = None, **_kwargs):
+    def _closure(
+        req,
+        _index = None,
+        **_kwargs,
+    ):
         seen.append(req.read_text(encoding = "utf-8"))
         assert req.exists()
         return ["miniaudio"]
