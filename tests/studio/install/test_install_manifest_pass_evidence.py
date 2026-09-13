@@ -14,17 +14,15 @@ install nobody can tell apart from a finished one.
 from __future__ import annotations
 
 import ast
+import contextlib
 import importlib.util
 import json
 import pathlib
 import subprocess
 import sys
+import sysconfig
 import textwrap
 import time
-import textwrap
-import subprocess
-import sys
-import sysconfig
 
 import pytest
 
@@ -146,6 +144,38 @@ def test_update_manifest_never_creates_one(tmp_path: pathlib.Path) -> None:
     must not be able to claim that on its own."""
     assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is False
     assert not (tmp_path / im.MANIFEST_NAME).exists()
+
+
+def test_update_manifest_merges_into_the_manifest_it_replaces(
+    tmp_path: pathlib.Path, monkeypatch
+) -> None:
+    """The caller spends minutes gathering this evidence (the MLX probe waits up to 180 s).
+    If a second updater removed the manifest and finished a new pass in that time, merging
+    into a copy read before the probe would put the old pass's fields back -- including
+    no_torch and the torch flavour, which a later update acts on."""
+    im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest", no_torch = True)
+    assert _payload(tmp_path)["no_torch"] is True
+    real_lock = im._manifest_lock
+    done: list[int] = []
+
+    @contextlib.contextmanager
+    def _lock_with_a_peer_ahead_of_us(root = None):
+        # The second updater got there first: it removed the manifest, ran its pass and wrote
+        # a new one. Everything it did is complete before this call takes the lock.
+        if not done:
+            done.append(1)
+            assert im.remove_manifest(root = tmp_path) is True
+            im.write_manifest(
+                root = tmp_path, req_root = tmp_path, package_name = "pytest", no_torch = False
+            )
+        with real_lock(root):
+            yield
+
+    monkeypatch.setattr(im, "_manifest_lock", _lock_with_a_peer_ahead_of_us)
+    assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is True
+    after = _payload(tmp_path)
+    assert after["mlx_health"] == {"ok": True}
+    assert after["no_torch"] is False, "the newer pass's fields were overwritten"
 
 
 def test_the_manifest_lock_is_exclusive_across_processes(tmp_path: pathlib.Path) -> None:

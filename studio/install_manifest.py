@@ -556,20 +556,23 @@ def update_manifest(root: Optional[Path] = None, **extra: object) -> bool:
     }
     if not values:
         return False
-    data = read_manifest(root)
-    if data is None:
-        return False
-    data.update(values)
     path = manifest_path(root)
     try:
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, indent = 2, sort_keys = True), encoding = "utf-8")
-        # Checked again right before the replace, not just at the read above: the evidence this
-        # merges can take minutes to gather (the MLX import probe waits up to 180 s), and another
-        # updater that removed the manifest in the meantime is mid-pass. Recreating it there would
-        # put a completion marker over a half-built venv. Under the lock the check and the replace
-        # are one step against every other writer here, so the marker cannot come back.
+        # Read, merge and replace inside the lock. The caller gathers this evidence first and
+        # that takes minutes (the MLX import probe waits up to 180 s), so a manifest read before
+        # it started can be a different one by now: another updater may have removed it and
+        # finished a new pass, and merging into the copy read back then would put its fields
+        # back. Reading here means the merge is always into the manifest being replaced.
         with _manifest_lock(root):
+            data = read_manifest(root)
+            if data is None:
+                return False
+            data.update(values)
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(data, indent = 2, sort_keys = True), encoding = "utf-8")
+            # A peer running an older build of this module removes without taking the lock, so
+            # the presence of the file is still checked as late as it can be: recreating it over
+            # a half-built venv is the one outcome this must never have.
             if not path.exists():
                 tmp.unlink(missing_ok = True)
                 return False
