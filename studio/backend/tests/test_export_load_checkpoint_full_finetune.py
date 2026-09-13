@@ -87,7 +87,11 @@ def _hub_client(monkeypatch, backend):
     "adapter_on_hub,hub_config,expected",
     [
         (False, {"model_type": "llama"}, False),
-        (False, {"model_type": "llama", "quantization_config": {"quant_method": "bitsandbytes"}}, True),
+        (
+            False,
+            {"model_type": "llama", "quantization_config": {"quant_method": "bitsandbytes"}},
+            True,
+        ),
         (True, {"model_type": "llama"}, True),
     ],
     ids = ["remote_full_finetune", "remote_bnb_quantized", "remote_lora_adapter"],
@@ -101,7 +105,8 @@ def test_load_checkpoint_resolves_hub_ids_before_choosing_4bit(
     config_file.write_text(json.dumps(hub_config), encoding = "utf-8")
 
     monkeypatch.setattr(
-        export_routes, "_hub_config",
+        export_routes,
+        "_hub_config",
         lambda repo_id, hf_token: None if adapter_on_hub else hub_config,
     )
     backend = MagicMock()
@@ -119,7 +124,12 @@ def test_load_checkpoint_resolves_hub_ids_before_choosing_4bit(
 def test_hub_lookup_failure_keeps_the_old_default(monkeypatch):
     """Offline, gated without a token, or no such repo: fail OPEN to the historical 4-bit
     default rather than guessing 16-bit and OOMing a load that used to fit."""
-    def _boom(repo_id, filename, token = None):
+
+    def _boom(
+        repo_id,
+        filename,
+        token = None,
+    ):
         raise OSError("no network")
 
     import huggingface_hub
