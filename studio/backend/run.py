@@ -2378,7 +2378,6 @@ def run_server(
     logger.info("run_server startup begin api_only=%s host=%s port=%s", api_only, host, port)
     try:
         from utils.paths.storage_roots import studio_root
-
         _studio_home = studio_root()
     except Exception:
         _studio_home = None
