@@ -154,8 +154,7 @@ def test_every_documented_error_type_has_a_streamed_status():
     ],
 )
 def test_malformed_error_frame_still_reaches_the_client(monkeypatch, error):
-    # An unhashable ``type`` used to raise out of the generator, so the chat showed
-    # "An internal error occurred" instead of what the provider actually said.
+    # An unhashable ``type`` used to raise, and the chat showed "An internal error occurred".
     payloads = _payloads_from_lines(_stream_lines(monkeypatch, [*_TEXT, error]))
 
     reported = payloads[-1]["error"]
