@@ -207,7 +207,8 @@ export function WindowTitlebar({
   // The titlebar sits outside the sidebar wrapper, so it cannot inherit
   // --sidebar-width. Read the resized width from the same store instead.
   const { width } = useSidebarWidth();
-  const sidebarWidth = showSidebarSurface
+  const showDesktopSidebarSurface = showSidebarSurface && !isMobile;
+  const sidebarWidth = showDesktopSidebarSurface
     ? pinned
       ? // The live value only exists mid-drag; otherwise the committed width.
         `var(--studio-sidebar-live-width, ${width}px)`
@@ -215,8 +216,11 @@ export function WindowTitlebar({
     : "0px";
 
   const titlebarNavigationWidth =
-    showSidebarSurface && !pinned ? "7rem" : sidebarWidth;
-  const contentBorderLeft = pinned ? `calc(${sidebarWidth} + 12px)` : "0px";
+    showSidebarSurface && (isMobile || !pinned) ? "7rem" : sidebarWidth;
+  const contentBorderLeft =
+    showDesktopSidebarSurface && pinned
+      ? `calc(${sidebarWidth} + 12px)`
+      : "0px";
 
   const refreshMaximized = useCallback(async () => {
     if (!enabled) {
@@ -358,7 +362,7 @@ export function WindowTitlebar({
           aria-hidden="true"
           className="pointer-events-none absolute inset-x-0 top-[var(--studio-custom-titlebar-height)] z-[45] h-3"
         >
-          {pinned && (
+          {showDesktopSidebarSurface && pinned && (
             <div
               className="absolute top-0 size-3 -translate-x-px bg-sidebar"
               style={{ left: sidebarWidth }}
@@ -368,7 +372,7 @@ export function WindowTitlebar({
             className="absolute top-0 h-px bg-sidebar-border"
             style={{ left: contentBorderLeft, right: 0 }}
           />
-          {pinned && (
+          {showDesktopSidebarSurface && pinned && (
             <div
               className="absolute top-0 size-3 -translate-x-px rounded-tl-[12px] border-l border-t border-sidebar-border bg-background"
               style={{ left: sidebarWidth }}
