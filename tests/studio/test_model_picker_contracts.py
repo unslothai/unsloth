@@ -486,17 +486,22 @@ def test_active_model_config_round_trips_gpu_fields():
         "nCpuMoe",
         "selectedGpuIds",
         "selectedGpuIndexKind",
+        "llamaExtraArgs",
+        "loadedLlamaExtraArgs",
     ):
         assert field in src, field
     assert "if (!isGguf)" in src and "return base" in src
     assert "useActiveModelConfig(" in _read("features/chat/chat-page.tsx")
-    # The GPU knobs are in the editor's instance key, so a reload re-seeds instead of keeping.
+    # Live config sync is in the shared draft store; React keys are model + quant only.
     shared = _read("features/model-picker/model-config/config-signature.ts")
     assert "export function gpuFieldsSignature" in shared
     assert "gpuFieldsSignature(config)," in shared
-    assert "export function modelConfigInstanceKey" in shared
+    assert "export function loadedConfigSignature" in shared
+    draft = _read("features/model-picker/model-config/model-config-draft.ts")
+    assert "export function modelConfigEditorKey" in draft
+    assert "export function primeModelConfigDraft" in draft
     sidebar = _read("features/model-picker/components/sidebar-model-config.tsx")
-    assert "modelConfigInstanceKey(" in sidebar
+    assert "modelConfigEditorKey(" in sidebar
     # apply-per-model-config re-exports it, so its own callers are unchanged.
     reexport = _read("features/model-picker/model-config/apply-per-model-config.ts")
     assert "export { gpuFieldsSignature };" in reexport
@@ -2140,7 +2145,7 @@ def test_parallel_slots_setting_wired_end_to_end():
     signature = _read("features/model-picker/model-config/config-signature.ts")
     assert 'config.nParallel ?? "",' in signature
     sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
-    assert "key={modelConfigInstanceKey(modelId, settingsGgufVariant, loadedConfig)}" in sidebar
+    assert "key={modelConfigEditorKey(modelId, settingsGgufVariant)}" in sidebar
 
 
 def test_parallel_slots_reach_an_api_load_through_the_server_mirror():
@@ -2962,7 +2967,7 @@ def test_the_sidebar_settings_editor_reseeds_when_the_live_config_lands():
     """ModelConfigPage reads loadedConfig in a useState initializer, so it seeds once per
     mounted instance."""
     sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
-    assert "key={modelConfigInstanceKey(modelId, settingsGgufVariant, loadedConfig)}" in sidebar
+    assert "key={modelConfigEditorKey(modelId, settingsGgufVariant)}" in sidebar
 
     signature = " ".join(_read("features/model-picker/model-config/config-signature.ts").split())
     # "No live config yet" needs its own value: that transition is the one that must remount.

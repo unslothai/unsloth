@@ -313,7 +313,7 @@ test("the Run handoff opens configuration immediately and remains nonce-scoped",
   );
   assert.match(
     modelSelector,
-    /modelConfigInstanceKey\(\s*visibleConfigTarget\.configId \?\? visibleConfigTarget\.id,\s*visibleConfigTarget\.ggufVariant,\s*visibleLoadedConfig,/,
+    /modelConfigEditorKey\(\s*visibleConfigTarget\.configId \?\? visibleConfigTarget\.id,\s*visibleConfigTarget\.ggufVariant,\s*\)/,
   );
   assert.match(
     modelSelector,
