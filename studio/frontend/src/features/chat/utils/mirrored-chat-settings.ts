@@ -31,6 +31,7 @@ const MIRRORED_ENUM_VALUES = {
   // "full" (Full access) is session-only and never persisted.
   permissionMode: ["ask", "auto", "off"],
   ragMode: ["hybrid", "lexical", "dense"],
+  webSearchProvider: ["duckduckgo", "parallel"],
   ragAutoInject: ["auto", "on", "off"],
   speculativeType: ["auto", "ngram", "off"],
   gpuMemoryMode: ["auto", "manual"],
@@ -72,12 +73,14 @@ export const MIRRORED_SETTING_KEYS = [
   ) as (keyof typeof MIRRORED_NUMBER_BOUNDS)[]),
   "researchWebsitePolicy",
   "ragSource",
+  "parallelSearchApiKey",
 ] as const satisfies readonly (keyof PersistedChatSettings)[];
 
 const MAX_RESEARCH_POLICY_DOMAINS = 1000;
 // 253 is the maximum length of a DNS name.
 const MAX_DOMAIN_LENGTH = 253;
 const MAX_RAG_KB_ID_LENGTH = 256;
+const MAX_PARALLEL_KEY_LENGTH = 500;
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === "object" && !Array.isArray(value);
@@ -167,6 +170,13 @@ export function assignSanitizedMirroredSettings(
   }
   const ragSource = sanitizeRagSource(value.ragSource);
   if (ragSource) settings.ragSource = ragSource;
+  // Empty string survives on purpose: it is how a cleared key reaches the
+  // backend, whose validator maps it to unset. Responses carrying null drop it.
+  if (typeof value.parallelSearchApiKey === "string") {
+    settings.parallelSearchApiKey = value.parallelSearchApiKey
+      .trim()
+      .slice(0, MAX_PARALLEL_KEY_LENGTH);
+  }
 }
 
 /** Map a stored RAG auto-inject value onto the three-way control. Storage predating that control

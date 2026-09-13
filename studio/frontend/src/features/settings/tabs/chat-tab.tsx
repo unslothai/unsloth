@@ -8,6 +8,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import {
   type PlusMenuItemId,
@@ -202,6 +203,24 @@ export function ChatTab() {
   const setSearchImages = useChatRuntimeStore(
     (state) => state.setSearchImages,
   );
+  const webSearchProvider = useChatRuntimeStore(
+    (state) => state.webSearchProvider,
+  );
+  const setWebSearchProvider = useChatRuntimeStore(
+    (state) => state.setWebSearchProvider,
+  );
+  const parallelSearchApiKey = useChatRuntimeStore(
+    (state) => state.parallelSearchApiKey,
+  );
+  const setParallelSearchApiKey = useChatRuntimeStore(
+    (state) => state.setParallelSearchApiKey,
+  );
+  const [parallelKeyDraft, setParallelKeyDraft] = useState(
+    parallelSearchApiKey ?? "",
+  );
+  useEffect(() => {
+    setParallelKeyDraft(parallelSearchApiKey ?? "");
+  }, [parallelSearchApiKey]);
   const networkAccessRowRef = useRef<HTMLDivElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
   const consumeScrollTarget = useSettingsDialogStore(
@@ -618,6 +637,69 @@ export function ChatTab() {
         >
           <Switch checked={searchImages} onCheckedChange={setSearchImages} />
         </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.webSearch.provider")}
+          description={t("settings.chat.webSearch.providerDescription")}
+        >
+          <Select
+            value={webSearchProvider}
+            onValueChange={(provider) =>
+              setWebSearchProvider(
+                provider === "parallel" ? "parallel" : "duckduckgo",
+              )
+            }
+          >
+            <SelectTrigger
+              aria-label={t("settings.chat.webSearch.provider")}
+              className="w-full rounded-lg"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              <SelectItem value="duckduckgo">
+                {t("settings.chat.webSearch.duckduckgo")}
+              </SelectItem>
+              <SelectItem value="parallel">
+                {t("settings.chat.webSearch.parallel")}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </SettingsRow>
+        {webSearchProvider === "parallel" && (
+          <SettingsRow
+            label={t("settings.chat.webSearch.apiKey")}
+            description={
+              <>
+                {t("settings.chat.webSearch.apiKeyDescription")}{" "}
+                <a
+                  href="https://platform.parallel.ai"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-medium text-foreground underline decoration-border underline-offset-2 transition-colors hover:decoration-foreground"
+                >
+                  {t("settings.chat.webSearch.apiKeyLink")}
+                </a>
+              </>
+            }
+          >
+            <Input
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder={t("settings.chat.webSearch.apiKeyPlaceholder")}
+              aria-label={t("settings.chat.webSearch.apiKey")}
+              value={parallelKeyDraft}
+              onChange={(event) => setParallelKeyDraft(event.target.value)}
+              onBlur={() => setParallelSearchApiKey(parallelKeyDraft)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  setParallelSearchApiKey(parallelKeyDraft);
+                  event.currentTarget.blur();
+                }
+              }}
+            />
+          </SettingsRow>
+        )}
       </SettingsSection>
     </div>
   );

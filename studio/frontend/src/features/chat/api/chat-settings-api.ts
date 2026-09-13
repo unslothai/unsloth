@@ -43,6 +43,10 @@ export interface PersistedChatSettings {
   allowArtifactNetworkAccess?: boolean;
   /** web_search also returns image results the model can place inline. */
   searchImages?: boolean;
+  /** web_search backend: DuckDuckGo (default) or Parallel's Search MCP. */
+  webSearchProvider?: "duckduckgo" | "parallel";
+  /** optional Parallel Bearer key for higher limits; never logged. */
+  parallelSearchApiKey?: string;
   autoHealToolCalls?: boolean;
   nudgeToolCalls?: boolean;
   maxToolCallsPerMessage?: number;
