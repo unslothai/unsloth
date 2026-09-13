@@ -51,18 +51,14 @@ logger = get_logger(__name__)
 # a chunk of it ends, counting forwards. Driven through public kwargs only: prompt_cache, prompt_cache_state,
 # prefill_step_size.
 
-# mlx-vlm's default prefill step, when it cannot be read: a prompt no longer than the step
-# has no boundary at all.
+# mlx-vlm's default step, for when it cannot be read: a prompt no longer than it has no boundary.
 VLM_PREFILL_STEP = 2048
 VLM_PROMPT_CACHE_ENTRIES = 6
 
 
 def vlm_prefill_step():
-    """The grid: mlx-vlm's default step, so an unreused request prefills as mlx-vlm does.
-
-    Anything a grid cannot be built on falls back rather than raising: the step divides
-    the boundary on every request, so a ``None`` default (a release that stops chunking by
-    default) or a zero would break generation, not just the reuse."""
+    """mlx-vlm's own step, so an unreused request prefills as mlx-vlm does. It divides every
+    boundary, so a step no grid can be built on falls back here rather than reaching a request."""
     try:
         from mlx_vlm.generate.common import DEFAULT_PREFILL_STEP_SIZE
         step = int(DEFAULT_PREFILL_STEP_SIZE)
@@ -260,8 +256,7 @@ def _recording_class(base):
                 record.resume_offset = offset or 0
                 if record.on_resume is not None:
                     record.on_resume(record.resume_offset)
-            # Only a resumed prompt: mlx-vlm's own kwargs are right for an unreused one, and
-            # Qwen VL models fed none reuse the positions of the request before.
+            # Only after a resume: a Qwen VL model fed no positions reuses the previous request's.
             if record.resume_offset and _prompt_wide_position_ids(args, kwargs):
                 kwargs.pop("position_ids")
             _place_per_layer_inputs(
