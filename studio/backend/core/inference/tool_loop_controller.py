@@ -1031,8 +1031,7 @@ class ToolLoopController:
         self._one_shot_tools = one_shot_tools
         self._completed_one_shot_tools: set[str] = set()
         self._successful_keys: set[str] = set()
-        # Workspace bookkeeping: which calls have run at all, how many DISTINCT ones have,
-        # and what that count stood at when each last ran. See `record_result`.
+        # `_workspace_novel_at[key]` is the distinct-call count when `key` last ran.
         self._workspace_ran: set[str] = set()
         self._workspace_novel = 0
         self._workspace_novel_at: dict[str, int] = {}
@@ -1127,14 +1126,9 @@ class ToolLoopController:
                 action = decision.action,
             )
         )
-        # A workspace call invalidates what ran before it, so an earlier read is worth taking
-        # again -- once per piece of NEW work, not once per call. Counting the workspace calls
-        # that have never run is what separates `read, edit A, read, edit B, read`, where each
-        # read verifies a different edit, from `read, edit, read, edit`, where the second edit
-        # is a repeating block replaying itself and a non-idempotent one corrupts the
-        # workspace. This is the batch-shaped guard the textual prefilters apply, kept here as
-        # well because a structured GGUF batch never reaches them.
-        # Failed commands can still have changed files before they exited, so they count too.
+        # One rerun per piece of NEW work, not per call: `read, edit, read, edit` would
+        # otherwise apply the edit twice. Here as well as in the prefilters, which a
+        # structured batch skips. A failed command can still have written, so it counts too.
         if decision.tool_name in _WORKSPACE_TOOLS:
             if decision.key not in self._workspace_ran:
                 self._workspace_ran.add(decision.key)

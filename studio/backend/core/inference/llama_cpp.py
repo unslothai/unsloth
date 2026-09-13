@@ -32359,12 +32359,9 @@ class LlamaCppBackend:
                 if tool_calls and not has_structured_tc and len(tool_calls) > 1:
                     _seen_keys: set = set()
                     _last_workspace_key = None
-                    # A repeat is a verification, so it is worth running once per piece of new
-                    # work and no more. Counting calls that have not run before is what
-                    # separates `test, edit A, test, edit B, test` (every test verifies a
-                    # different edit) from `read, edit, read, edit` (a repeating block, which
-                    # replayed the edit) and from `(read, edit) * 4` (which filled the 8-call
-                    # cap and dropped the tool the model asked for last).
+                    # One rerun per piece of new work: `test, edit A, test, edit B, test` keeps
+                    # every test, while `read, edit, read, edit` stops replaying and cannot
+                    # fill the cap.
                     _novel_kept = 0
                     _novel_at_last_keep: dict = {}
                     _deduped: list = []
@@ -32372,7 +32369,6 @@ class LlamaCppBackend:
                         _fn = _tc.get("function", {}) or {}
                         _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
                         if _fn.get("name") in _WORKSPACE_TOOLS:
-                            # A workspace repeat only matters after a different workspace call.
                             if _key == _last_workspace_key:
                                 continue
                             if _key in _seen_keys:
