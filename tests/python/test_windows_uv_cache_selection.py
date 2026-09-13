@@ -53,6 +53,18 @@ def _selector_source() -> str:
     )
 
 
+def _ps_literal(value: str) -> str:
+    """A PowerShell single-quoted string.
+
+    Not json.dumps: a JSON string is double-quoted, and PowerShell does not treat `\\` in a
+    double-quoted string as an escape, so `C:\\Users\\x` arrives as a path with DOUBLED
+    separators. Every Windows assertion in this file then compared a doubled path against a
+    real one, and the whole file only passed because POSIX paths have no backslashes to
+    double. A single-quoted PowerShell string is literal; `''` is the only escape it has.
+    """
+    return "'" + value.replace("'", "''") + "'"
+
+
 def _script(studio_root: Path, uv_stub: Path, isolated: bool) -> str:
     """Run the real selector once and print its verdict as JSON."""
     return f"""
@@ -63,8 +75,8 @@ $script:StudioUvMarkerExisted = $false
 $script:StudioUvMarkerPrevious = $null
 $script:StudioInstallCommitted = $false
 {_selector_source()}
-$root = {json.dumps(str(studio_root))}
-$stub = {json.dumps(str(uv_stub))}
+$root = {_ps_literal(str(studio_root))}
+$stub = {_ps_literal(str(uv_stub))}
 Set-StudioUvCacheEnvironment -StudioRoot $root -Isolated ${str(isolated).lower()} -UvExecutable $stub
 $mode = $script:StudioUvCacheMode
 $dir = $env:UV_CACHE_DIR
@@ -90,7 +102,7 @@ def _select(
     # A .ps1 rather than a shell script, so this runs on the Windows agents too; `exit 0` so
     # $LASTEXITCODE is set, which is what the selector reads before trusting the answer.
     stub = studio_root.parent / "uv-stub.ps1"
-    stub.write_text(f"Write-Output {json.dumps(uv_answer)}\nexit 0\n", encoding = "utf-8")
+    stub.write_text(f"Write-Output {_ps_literal(uv_answer)}\nexit 0\n", encoding = "utf-8")
     merged = {
         key: value
         for key, value in os.environ.items()
@@ -403,3 +415,35 @@ def test_the_launch_does_not_repoint_at_a_studio_cache_it_cannot_fill(tmp_path):
         root.chmod(0o755)
     assert verdict["mode"] == "shared", verdict
     assert verdict["launch"] == str(default), verdict
+
+
+# ── the harness's own guard ────────────────────────────────────────────────────────────────
+
+
+@requires_pwsh
+@pytest.mark.parametrize(
+    "value",
+    [
+        r"C:\Users\runneradmin\AppData\Local\Temp\studio\cache\uv",
+        r"\\server\share\uv",
+        "/tmp/plain/posix/uv",
+        "with a space/uv",
+        "with'a'quote/uv",
+    ],
+)
+def test_the_harness_hands_powershell_the_path_it_was_given(value):
+    """A path handed to pwsh must arrive byte-identical.
+
+    json.dumps looked right and was not: a JSON string is double-quoted, and PowerShell does
+    not read `\\` in a double-quoted string as an escape, so every Windows path arrived with
+    DOUBLED separators and every assertion in this file compared a doubled path against a real
+    one. It passed anyway on Linux and macOS, where paths have no backslashes to double, so
+    only a Windows runner could see it. This case is the Windows runner, in one line.
+    """
+    result = run_pwsh(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", f"Write-Output {_ps_literal(value)}"],
+        check = True,
+        capture_output = True,
+        text = True,
+    )
+    assert result.stdout.strip("\r\n") == value
