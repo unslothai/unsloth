@@ -1472,10 +1472,18 @@ mod tests {
     #[test]
     fn the_tab_sends_a_ui_token_for_the_multi_account_fallback() {
         let frontend = include_str!("../../frontend/src/features/settings/api/debug-logs.ts");
+        // Which helper supplies the token is the frontend's business (it went
+        // from `getAuthToken()` to a refreshing wrapper without changing the
+        // contract), so pin the part that is ours: the payload carries a
+        // `uiToken` whose value is a call, not a literal `null` or `""`.
+        let value = frontend
+            .split("uiToken:")
+            .nth(1)
+            .map(|rest| rest.split(',').next().unwrap_or("").trim().to_string());
         assert!(
-            frontend.contains("uiToken: getAuthToken()"),
-            "debug-logs.ts no longer sends uiToken, so a multi-account desktop \
-             install can never export logs"
+            value.as_deref().is_some_and(|value| value.ends_with("()")),
+            "debug-logs.ts no longer sends a uiToken value ({value:?}), so a \
+             multi-account desktop install can never export logs"
         );
     }
 
