@@ -27,6 +27,7 @@ import os as _os
 import re as _re
 import sys as _sys
 import threading as _threading
+from dataclasses import dataclass
 from typing import Any, Optional
 
 # stdlib-only module (no torch), so this stays inside the "imported lazily" promise above.
@@ -190,6 +191,54 @@ def apply_small_m_padding(
     return wrapped
 
 
+# NVFP4 PER-FAMILY zero-row guard list: torchao's NVFP4 dynamic-activation path reduces over the WHOLE input and
+# raises on numel() == 0, which HunyuanVideo-1.5 reaches on every default t2v render through the attention trim.
+_HUNYUAN15_NVFP4_ZERO_ROW_TOKENS = ("image_embedder", "context_embedder_2")
+_NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS: dict[str, tuple[str, ...]] = {
+    "hunyuanvideo-1.5": _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS,
+    "hunyuanvideo-1.5-720p": _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS,
+}
+
+
+def zero_row_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
+    """Name tokens whose quantized Linears need the empty-activation guard, per family.
+
+    nvfp4 only: fp8 and mxfp8 reduce per-row along dim=-1, which is well defined for zero rows, and
+    int8 has its own answer through ``PadToMinM``."""
+    if scheme != TQ_NVFP4:
+        return ()
+    return _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS.get(str(family or "").strip().lower(), ())
+
+
+def apply_zero_row_guard(
+    transformer: Any,
+    scheme: str,
+    family: Optional[str] = None,
+    *,
+    logger: Any = None,
+) -> tuple[str, ...]:
+    """Wrap this family's zero-row-reachable quantized Linears so an empty activation never
+    reaches the GEMM. Returns the fqns wrapped, empty for a family with no list.
+
+    Call AFTER the weights are quantized and in place, next to ``apply_small_m_padding``, which
+    reparents the Linears too. Not best-effort: a raise here means the transformer is quantized but
+    crashes on the first t2v render."""
+    tokens = zero_row_tokens_for_scheme(scheme, family)
+    if not tokens:
+        return ()
+    from .diffusion_quant_pad import matching_linear_fqns, wrap_zero_row_linears
+
+    wrapped = wrap_zero_row_linears(transformer, matching_linear_fqns(transformer, tokens))
+    if wrapped and logger is not None:
+        logger.info(
+            "diffusion.transformer_quant: zero-row guarded %d %s linears on %s",
+            len(wrapped),
+            scheme,
+            family,
+        )
+    return wrapped
+
+
 def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tuple[str, ...]:
     """Name tokens to exclude from quantisation for ``scheme`` (optionally family-specific). int8
     (M>16) skips the M=1 modulation / conditioning-embedder projections
@@ -203,6 +252,16 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
             str(family or "").strip().lower(), ()
         )
     return ()
+
+
+# GEMM tiling floors per scheme, as the number every quantized Linear's in/out features must divide by. Public because
+# the runtime filter, the offline builder and the checkpoint validator must read the same number.
+_SCHEME_DIVISIBLE: dict[str, int] = {TQ_FP8: 16, TQ_NVFP4: 16, TQ_MXFP8: 32}
+
+
+def divisible_for_scheme(scheme: str) -> int:
+    """The in/out feature alignment ``scheme``'s GEMM requires, 0 when it has none."""
+    return _SCHEME_DIVISIBLE.get(scheme, 0)
 
 
 # Per-arch preference for ``auto``, best first. On Blackwell fp8 leads: on B200 plain fp8 dynamic is faster AND more
@@ -234,6 +293,23 @@ _FAMILY_SCHEME_DENY: dict[str, frozenset[str]] = {
     "qwen-image": frozenset({TQ_MXFP8, TQ_NVFP4}),
     "qwen-image-edit": frozenset({TQ_MXFP8, TQ_NVFP4}),  # same DiT
 }
+
+
+@dataclass(frozen = True)
+class _AutoPrefer:
+    """A family's own head of the ``auto`` order, tried AHEAD of the global ``_AUTO_LADDER`` tier.
+
+    ``_AUTO_LADDER`` is per-arch and family-blind. The head is dropped below ``floor`` and, unless
+    ``consumer_ok``, on consumer-class GPUs: the measurements behind a row were taken on datacenter
+    Blackwell and the ordering does not carry over untested."""
+
+    floor: tuple[int, int]
+    schemes: tuple[str, ...]
+    consumer_ok: bool = False
+
+
+# Keys are lowercased family names, so the 480p and 720p HunyuanVideo-1.5 tiers are separate rows. An empty table is the pre-measurement state and leaves the ladder exactly as it was.
+_FAMILY_AUTO_PREFER: dict[str, _AutoPrefer] = {}
 
 
 # Schemes denied for TRAINING on top of the inference table. Training holds a stricter bar because the evidence above
@@ -494,14 +570,11 @@ def select_transformer_quant_scheme(
     cap = _capability()
     if cap is None:
         return None
-    for floor, schemes in _AUTO_LADDER:
-        if cap >= floor:
-            for scheme in _prefer_consumer_scheme(schemes, device):
-                if _family_denied(family, scheme):
-                    continue
-                if _scheme_supported(scheme, device):
-                    return scheme
-            return None
+    for scheme in _auto_scheme_order(family, device, cap):
+        if _family_denied(family, scheme):
+            continue
+        if _scheme_supported(scheme, device):
+            return scheme
     return None
 
 
@@ -518,14 +591,37 @@ def auto_scheme_candidates(target: Any, family: Optional[str] = None) -> tuple[s
     cap = _capability()
     if cap is None:
         return ()
+    return tuple(
+        scheme
+        for scheme in _auto_scheme_order(family, device, cap)
+        if not _family_denied(family, scheme) and _scheme_supported(scheme, device)
+    )
+
+
+def _auto_scheme_order(family: Optional[str], device: Any, cap: tuple[int, int]) -> tuple[str, ...]:
+    """The schemes ``auto`` would try on this GPU for this family, best first, before the deny
+    list and the smoke probe have their say.
+
+    Empty when no tier matches, head or not: a capability below every tier has no dense quant path
+    at all. Shared by ``select_transformer_quant_scheme`` and ``auto_scheme_candidates`` so the two
+    can never disagree."""
+    tier: tuple[str, ...] = ()
     for floor, schemes in _AUTO_LADDER:
         if cap >= floor:
-            return tuple(
-                scheme
-                for scheme in _prefer_consumer_scheme(schemes, device)
-                if not _family_denied(family, scheme) and _scheme_supported(scheme, device)
-            )
-    return ()
+            tier = _prefer_consumer_scheme(schemes, device)
+            break
+    if not tier:
+        return ()
+    prefer = _FAMILY_AUTO_PREFER.get(str(family or "").strip().lower())
+    head: tuple[str, ...] = ()
+    if prefer is not None and cap >= prefer.floor:
+        if prefer.consumer_ok or not _is_consumer_gpu(device):
+            head = prefer.schemes
+    order: list[str] = []
+    for scheme in head + tier:
+        if scheme not in order:
+            order.append(scheme)
+    return tuple(order)
 
 
 def _prefer_consumer_scheme(schemes: tuple[str, ...], device: Any) -> tuple[str, ...]:
@@ -1133,9 +1229,7 @@ def quantize_transformer(
         # non-bf16 ones. "lora_" keeps a baked adapter's side path high precision. Runtime only: NOT part of
         # exclude_tokens_for_scheme, whose list is baked into prequant metadata.
         exclude = exclude_tokens_for_scheme(scheme, family) + ("lora_",)
-        # GEMM tiling floors per scheme: scaled_mm needs 16-aligned dims, MX block scaling 32. int8's _int_mm has no
-        # such floor and keeps the historical filter.
-        divisible = {TQ_FP8: 16, TQ_NVFP4: 16, TQ_MXFP8: 32}.get(scheme, 0)
+        divisible = divisible_for_scheme(scheme)
         quantize_(
             transformer,
             _make_quant_config(scheme, fast_accum = fast_accum),
@@ -1150,6 +1244,7 @@ def quantize_transformer(
         # here means the transformer is quantized but not safely compilable, so it falls into the except below and the
         # caller loads GGUF.
         apply_small_m_padding(transformer, scheme, family, logger = logger)
+        apply_zero_row_guard(transformer, scheme, family, logger = logger)
         try:
             transformer._unsloth_runtime_quant = scheme
         except Exception:  # noqa: BLE001 - marker is best-effort

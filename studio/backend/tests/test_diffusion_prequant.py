@@ -84,6 +84,18 @@ def test_prequant_repo_filename_convention():
     )
     assert prequant_repo_filename("org/Some-Model-quantized", "fp8") == "Some-Model-FP8.pt"
     assert prequant_repo_filename("org/PlainRepo", "int8") == "PlainRepo-INT8.pt"
+    assert (
+        prequant_repo_filename("unsloth/Wan2.2-TI2V-5B-NVFP4", "nvfp4") == "Wan2.2-TI2V-5B-NVFP4.pt"
+    )
+    assert prequant_repo_filename("unsloth/Model-MXFP8", "mxfp8") == "Model-MXFP8.pt"
+    assert (
+        prequant_repo_filename("unsloth/Wan2.2-T2V-A14B-NVFP4", "nvfp4", component = "transformer_2")
+        == "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"
+    )
+    assert (
+        prequant_repo_filename("unsloth/Wan2.2-T2V-A14B-NVFP4", "nvfp4", component = "transformer")
+        == "Wan2.2-T2V-A14B-NVFP4.pt"
+    )
 
 
 def test_resolve_variant_base_picks_variant_repo():
@@ -289,6 +301,171 @@ def test_usable_source_repo_unaffected_by_allowlist(monkeypatch, restricted_load
     assert src is not None and src.kind == "repo" and src.location == "org/hosted-fp8"
 
 
+_UINT8 = object()  # the stub torch's uint8, so the fingerprint's dtype view is a no-op here
+
+
+class _Bytes:
+    """Enough of a tensor for the fingerprint: it views the payload as uint8 and hashes it."""
+
+    dtype = _UINT8
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def detach(self):
+        return self
+
+    def contiguous(self):
+        return self
+
+    def dim(self):
+        return 1
+
+    def view(self, dtype):
+        return self
+
+    def cpu(self):
+        return self
+
+    def numpy(self):
+        import numpy as np
+        return np.frombuffer(self._payload, dtype = np.uint8)
+
+
+class Float8Tensor:
+    """A quantized weight as far as the fingerprint is concerned: the class NAME is the key."""
+
+    def __init__(self, qdata):
+        self.qdata = _Bytes(qdata)
+        self.scale = _Bytes(b"scale")
+
+
+class _Recorder:
+    """A logger that keeps what it was told, so a refusal can be asserted to NAME the weight."""
+
+    def __init__(self):
+        self.lines: list = []
+
+    def _record(self, msg, *args):
+        self.lines.append(msg % args if args else msg)
+
+    debug = info = warning = error = _record
+
+    @property
+    def text(self):
+        return "\n".join(self.lines)
+
+
+def _fingerprinted_ckpt(payloads, *, recorded = None):
+    """A checkpoint whose state dict holds ``payloads`` and whose metadata fingerprints them."""
+    from core.inference.diffusion_prequant import packed_weight_fingerprint
+
+    state_dict = {fqn: Float8Tensor(data) for fqn, data in payloads.items()}
+    ckpt = _good_ckpt()
+    ckpt["state_dict"] = state_dict
+    ckpt["metadata"]["fingerprint"] = recorded or packed_weight_fingerprint(state_dict)
+    return ckpt
+
+
+def test_a_flipped_byte_in_a_packed_weight_is_refused_and_named(monkeypatch, tmp_path):
+    good = _fingerprinted_ckpt(
+        {"blocks.0.attn1.to_q.weight": b"q0", "blocks.1.attn1.to_q.weight": b"q1"}
+    )
+    logger = _Recorder()
+    assert _load(monkeypatch, tmp_path, good, logger = logger) is not None
+    corrupt = _fingerprinted_ckpt(
+        {"blocks.0.attn1.to_q.weight": b"q0", "blocks.1.attn1.to_q.weight": b"q1"}
+    )
+    corrupt["state_dict"]["blocks.1.attn1.to_q.weight"].qdata = _Bytes(b"Q1")
+    logger = _Recorder()
+    assert _load(monkeypatch, tmp_path, corrupt, logger = logger) is None
+    assert "blocks.1.attn1.to_q.weight" in logger.text
+    assert "blocks.0.attn1.to_q.weight" not in logger.text
+
+
+def test_a_checkpoint_without_a_fingerprint_block_still_loads(monkeypatch, tmp_path):
+    ckpt = _good_ckpt()
+    ckpt["state_dict"] = {"blocks.0.attn1.to_q.weight": Float8Tensor(b"q0")}
+    assert _load(monkeypatch, tmp_path, ckpt) is not None
+    ckpt["metadata"]["fingerprint"] = {"algo": "md5-packed-v1", "count": 0, "modules": {}}
+    assert _load(monkeypatch, tmp_path, ckpt) is not None
+
+
+def test_the_fingerprint_mode_env_picks_how_much_is_checked(monkeypatch, tmp_path):
+    from core.inference.diffusion_prequant import (
+        FINGERPRINT_MODE_ENV,
+        _fingerprint_sampled,
+    )
+
+    sampled = [f"blocks.{i}.attn1.to_q.weight" for i in range(64)]
+    checked = [fqn for fqn in sampled if _fingerprint_sampled(fqn)]
+    assert 0 < len(checked) < len(sampled)
+    assert checked == [fqn for fqn in sampled if _fingerprint_sampled(fqn)]
+
+    payloads = {fqn: fqn.encode("utf-8") for fqn in sampled}
+    corrupt = _fingerprinted_ckpt(payloads)
+    missed = next(fqn for fqn in sampled if not _fingerprint_sampled(fqn))
+    corrupt["state_dict"][checked[0]].qdata = _Bytes(b"flipped")
+    monkeypatch.setenv(FINGERPRINT_MODE_ENV, "sample")
+    assert _load(monkeypatch, tmp_path, corrupt) is None
+    only_missed = _fingerprinted_ckpt(payloads)
+    only_missed["state_dict"][missed].qdata = _Bytes(b"flipped")
+    assert _load(monkeypatch, tmp_path, only_missed) is not None
+    monkeypatch.setenv(FINGERPRINT_MODE_ENV, "full")
+    assert _load(monkeypatch, tmp_path, only_missed) is None
+    monkeypatch.setenv(FINGERPRINT_MODE_ENV, "off")
+    assert _load(monkeypatch, tmp_path, only_missed) is not None
+    monkeypatch.setenv(FINGERPRINT_MODE_ENV, "sometimes")
+    assert _load(monkeypatch, tmp_path, only_missed) is None
+
+
+class _CountedBytes(_Bytes):
+    """A payload that records the fqn whose bytes were actually read."""
+
+    def __init__(self, fqn, payload, hashed):
+        super().__init__(payload)
+        self._fqn = fqn
+        self._hashed = hashed
+
+    def numpy(self):
+        self._hashed.append(self._fqn)
+        return super().numpy()
+
+
+def test_a_class_whose_payload_slots_all_read_none_is_not_fingerprinted():
+    # A torchao release that keeps the class name and renames every payload attribute must read as
+    # uncovered, not as the md5 of an empty stream (the same digest for every weight).
+    from core.inference.diffusion_prequant import packed_weight_fingerprint
+
+    renamed = Float8Tensor(b"q0")
+    renamed.qdata = None
+    renamed.scale = None
+    fingerprint = packed_weight_fingerprint({"blocks.0.attn1.to_q.weight": renamed})
+    assert fingerprint["modules"] == {}
+    assert fingerprint["skipped"] == ["blocks.0.attn1.to_q.weight"]
+    assert fingerprint["count"] == 0
+
+
+def test_sample_mode_hashes_only_the_weights_it_compares(monkeypatch, tmp_path):
+    from core.inference.diffusion_prequant import FINGERPRINT_MODE_ENV, _fingerprint_sampled
+
+    fqns = [f"blocks.{i}.attn1.to_q.weight" for i in range(64)]
+    ckpt = _fingerprinted_ckpt({fqn: fqn.encode("utf-8") for fqn in fqns})
+    hashed: list = []
+    for fqn, tensor in ckpt["state_dict"].items():
+        tensor.qdata = _CountedBytes(fqn, fqn.encode("utf-8"), hashed)
+        tensor.scale = _CountedBytes(fqn, b"scale", hashed)
+    monkeypatch.setenv(FINGERPRINT_MODE_ENV, "sample")
+    assert _load(monkeypatch, tmp_path, ckpt) is not None
+    assert sorted(set(hashed)) == sorted(fqn for fqn in fqns if _fingerprint_sampled(fqn))
+
+
+def test_a_build_that_recognises_no_quantized_weight_loads_unverified(monkeypatch, tmp_path):
+    ckpt = _fingerprinted_ckpt({"blocks.0.attn1.to_q.weight": b"q0"})
+    ckpt["state_dict"] = {"blocks.0.attn1.to_q.weight": object()}
+    assert _load(monkeypatch, tmp_path, ckpt) is not None
+
+
 # ── load_prequantized_transformer ────────────────────────────────────────────────
 class _FakeTransformer:
     calls: dict = {}
@@ -367,6 +544,7 @@ def _stub_torch_accelerate(
         seen["safe_globals"] = list(entries)
 
     torch.load = _load
+    torch.uint8 = _UINT8
     # A stub without this namespace would let a regression to an unrestricted load pass silently.
     torch.serialization = types.SimpleNamespace(add_safe_globals = _add_safe_globals)
     monkeypatch.setitem(sys.modules, "torch", torch)
@@ -400,6 +578,8 @@ def _load(
     exists = True,
     allow_local = True,
     fast_accum = None,
+    component = None,
+    logger = None,
 ):
     _FakeTransformer.calls = {}
     _stub_torch_accelerate(monkeypatch, ckpt, load_raises = load_raises)
@@ -421,7 +601,8 @@ def _load(
         hf_token = None,
         scheme = scheme,
         fast_accum = fast_accum,
-        logger = None,
+        component = component,
+        logger = logger,
     )
 
 
@@ -575,6 +756,38 @@ def test_load_require_bf16_nvfp4_true_is_none(monkeypatch, tmp_path):
     ckpt = _good_ckpt(scheme = "nvfp4")
     ckpt["metadata"]["require_bf16"] = True
     assert _load(monkeypatch, tmp_path, ckpt, scheme = "nvfp4") is None
+
+
+def test_load_require_divisible_mismatch_is_none(monkeypatch, tmp_path):
+    ckpt = _good_ckpt(scheme = "fp8")
+    ckpt["metadata"]["require_divisible"] = 0
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "fp8") is None
+
+
+def test_load_require_divisible_match_ok(monkeypatch, tmp_path):
+    ckpt = _good_ckpt(scheme = "fp8")
+    ckpt["metadata"]["require_divisible"] = 16
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "fp8") is not None
+
+
+def test_load_require_divisible_absent_is_accepted(monkeypatch, tmp_path):
+    ckpt = _good_ckpt(scheme = "fp8")
+    assert "require_divisible" not in ckpt["metadata"]
+    assert _load(monkeypatch, tmp_path, ckpt, scheme = "fp8") is not None
+
+
+def test_load_component_mismatch_is_none(monkeypatch, tmp_path):
+    ckpt = _good_ckpt()
+    ckpt["metadata"]["component"] = "transformer_2"
+    assert _load(monkeypatch, tmp_path, ckpt, component = "transformer") is None
+    assert _load(monkeypatch, tmp_path, ckpt, component = "transformer_2") is not None
+
+
+def test_load_component_absent_is_accepted(monkeypatch, tmp_path):
+    ckpt = _good_ckpt()
+    assert _load(monkeypatch, tmp_path, ckpt, component = "transformer") is not None
+    ckpt["metadata"]["component"] = "transformer_2"
+    assert _load(monkeypatch, tmp_path, ckpt) is not None
 
 
 def test_resolve_checkpoint_path_expands_user(monkeypatch, tmp_path):
@@ -1865,3 +2078,61 @@ def test_the_floor_check_ignores_dense_and_unreadable_state_dicts():
     assert pq._fp8_activation_floor_present({"w": object()}, None) is True
     assert pq._fp8_activation_floor_present(None, None) is True
     assert pq._fp8_activation_floor_present({}, None) is True
+
+
+def test_the_checkpoint_is_released_before_the_device_copy(monkeypatch, tmp_path):
+    """The CPU checkpoint must be unreferenced by the time ``.to(device)`` allocates.
+
+    ``assign = True`` gives the module the checkpoint's own tensors, so ckpt/state_dict hold only a
+    second reference to them. On a unified-memory host (DGX Spark) the host copy and the device copy
+    are the same physical memory, so keeping that reference across the move doubles the transient
+    peak the artifact-sized admission check was told to expect.
+    """
+    import weakref
+
+    seen: dict = {}
+
+    class _StateDict(dict):
+        """A weak-referenceable state dict: plain dicts cannot be weakly referenced."""
+
+    class _ReleaseProbe(_FakeTransformer):
+        def load_state_dict(
+            self,
+            sd,
+            strict = True,
+            assign = False,
+        ):
+            _FakeTransformer.calls["load_state_dict"] = {"strict": strict, "assign": assign}
+            seen["state_dict"] = weakref.ref(sd)
+
+        def to(self, device):
+            seen["alive_at_move"] = seen["state_dict"]() is not None
+            return super().to(device)
+
+    _FakeTransformer.calls = {}
+    _stub_torch_accelerate(monkeypatch, None)
+    # Built per call so the stub itself holds no reference: what stays alive is what the loader kept.
+    monkeypatch.setattr(
+        pq,
+        "_torch_load_prequant",
+        lambda path, **kwargs: {
+            "format": PREQUANT_FORMAT,
+            "metadata": {"scheme": "int8", "base_model_id": "Tongyi-MAI/Z-Image-Turbo"},
+            "state_dict": _StateDict(weight = object()),
+        },
+    )
+    monkeypatch.setenv(pq.ALLOW_LOCAL_PREQUANT_PATH_ENV, str(tmp_path))
+    path = tmp_path / "ckpt.pt"
+    path.write_bytes(b"x")
+
+    out = load_prequantized_transformer(
+        _ReleaseProbe,
+        "Tongyi-MAI/Z-Image-Turbo",
+        PrequantSource(kind = "path", location = str(path), filename = None),
+        device = "cuda",
+        dtype = "bfloat16",
+        scheme = "int8",
+    )
+
+    assert out is not None
+    assert seen["alive_at_move"] is False

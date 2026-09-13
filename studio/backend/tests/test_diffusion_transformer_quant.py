@@ -1379,6 +1379,112 @@ def test_apply_small_m_padding_is_inert_without_a_pad_list(monkeypatch):
         apply_small_m_padding(object(), TQ_INT8, "minimax-h3")
 
 
+def test_the_zero_row_guard_is_nvfp4_only():
+    """The zero-row guard is nvfp4 only."""
+    from core.inference.diffusion_transformer_quant import zero_row_tokens_for_scheme
+    for scheme in (TQ_FP8, TQ_INT8, TQ_MXFP8, "auto"):
+        for family in ("hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"):
+            assert zero_row_tokens_for_scheme(scheme, family) == (), (scheme, family)
+
+
+def test_both_hunyuan_tiers_guard_their_trimmable_streams():
+    """Both HunyuanVideo-1.5 tiers guard the streams the attention trim can empty."""
+    from core.inference.diffusion_transformer_quant import zero_row_tokens_for_scheme
+    for family in ("hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"):
+        tokens = zero_row_tokens_for_scheme(TQ_NVFP4, family)
+        assert "image_embedder" in tokens
+        assert "context_embedder_2" in tokens
+
+
+def test_an_unlisted_family_has_no_zero_row_guard():
+    """Scoped to the families whose attention path is measured to produce an empty activation."""
+    from core.inference.diffusion_transformer_quant import zero_row_tokens_for_scheme
+    for family in ("z-image", "qwen-image", "wan2.2-ti2v-5b", "minimax-h3", None):
+        assert zero_row_tokens_for_scheme(TQ_NVFP4, family) == ()
+
+
+def test_the_guard_list_does_not_double_up_with_the_pad_or_exclude_lists():
+    """The guard list does not double up with the pad or exclude lists."""
+    from core.inference.diffusion_transformer_quant import (
+        _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS,
+        exclude_tokens_for_scheme,
+        pad_tokens_for_scheme,
+        zero_row_tokens_for_scheme,
+    )
+    for family in _NVFP4_FAMILY_ZERO_ROW_NAME_TOKENS:
+        guarded = zero_row_tokens_for_scheme(TQ_NVFP4, family)
+        assert guarded
+        assert exclude_tokens_for_scheme(TQ_NVFP4, family) == ()
+        assert pad_tokens_for_scheme(TQ_NVFP4, family) == ()
+
+
+def test_quantize_transformer_guards_after_padding(monkeypatch):
+    """quantize_transformer applies the guard after the padding."""
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_NVFP4})
+    order = []
+    tqz = types.ModuleType("torchao.quantization")
+    tqz.quantize_ = lambda module, config, filter_fn = None: order.append("quantize_")
+    monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
+    monkeypatch.setattr(tq, "_make_quant_config", lambda scheme, fast_accum = None: "cfg")
+    monkeypatch.setattr(
+        tq,
+        "apply_small_m_padding",
+        lambda transformer, scheme, family = None, logger = None: (order.append("pad") or ()),
+    )
+    monkeypatch.setattr(
+        tq,
+        "apply_zero_row_guard",
+        lambda transformer, scheme, family = None, logger = None: (
+            order.append(("guard", scheme, family)) or ()
+        ),
+    )
+    transformer = types.SimpleNamespace()
+    pipe = types.SimpleNamespace(transformer = transformer)
+    assert (
+        quantize_transformer(pipe, _target(), mode = "nvfp4", family = "hunyuanvideo-1.5") == TQ_NVFP4
+    )
+    assert order == ["quantize_", "pad", ("guard", TQ_NVFP4, "hunyuanvideo-1.5")]
+    assert transformer._unsloth_runtime_quant == TQ_NVFP4
+
+
+def test_a_guard_failure_fails_the_whole_quantise(monkeypatch):
+    """A guard failure fails the whole quantise."""
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_NVFP4})
+    tqz = types.ModuleType("torchao.quantization")
+    tqz.quantize_ = lambda module, config, filter_fn = None: None
+    monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
+    monkeypatch.setattr(tq, "_make_quant_config", lambda scheme, fast_accum = None: "cfg")
+
+    def _boom(
+        transformer,
+        scheme,
+        family = None,
+        logger = None,
+    ):
+        raise RuntimeError("cannot resolve the guard list")
+
+    monkeypatch.setattr(tq, "apply_zero_row_guard", _boom)
+    pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
+    assert quantize_transformer(pipe, _target(), mode = "nvfp4", family = "hunyuanvideo-1.5") is None
+    assert not hasattr(pipe.transformer, "_unsloth_runtime_quant")
+
+
+def test_apply_zero_row_guard_is_inert_without_a_guard_list(monkeypatch):
+    """apply_zero_row_guard is inert, and imports nothing, without a guard list."""
+    from core.inference.diffusion_transformer_quant import apply_zero_row_guard
+
+    stub = types.ModuleType("core.inference.diffusion_quant_pad")  # no names to import
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_quant_pad", stub)
+
+    assert apply_zero_row_guard(object(), TQ_NVFP4, "z-image") == ()
+    assert apply_zero_row_guard(object(), TQ_FP8, "hunyuanvideo-1.5") == ()
+    assert apply_zero_row_guard(object(), TQ_NVFP4, None) == ()
+    with pytest.raises(ImportError):
+        apply_zero_row_guard(object(), TQ_NVFP4, "hunyuanvideo-1.5")
+
+
 def test_the_training_deny_is_a_superset_of_the_inference_deny():
     # The two tables are separate because rendering evidence is not training evidence, but the
     # relationship must only ever go one way: anything inference refuses, training refuses too.
@@ -1440,6 +1546,159 @@ def test_the_candidate_list_agrees_with_the_selector_on_the_winner(monkeypatch):
         chosen = select_transformer_quant_scheme(_target(), "auto", family = family)
         candidates = auto_scheme_candidates(_target(), family)
         assert (candidates[0] if candidates else None) == chosen, (cc, family)
+
+
+def _prefer(
+    monkeypatch,
+    row,
+    family = "fake-video",
+):
+    """Install one ``_FAMILY_AUTO_PREFER`` row."""
+    monkeypatch.setattr(tq, "_FAMILY_AUTO_PREFER", {family: row})
+
+
+def _nvfp4_head(**kw):
+    return tq._AutoPrefer(floor = (10, 0), schemes = (TQ_NVFP4,), **kw)
+
+
+def test_a_prefer_row_leads_the_tier_on_datacenter_blackwell(monkeypatch):
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    _prefer(monkeypatch, _nvfp4_head())
+    assert select_transformer_quant_scheme(_target(), "auto", family = "fake-video") == TQ_NVFP4
+    assert tq.auto_scheme_candidates(_target(), "fake-video") == (
+        TQ_NVFP4,
+        TQ_FP8,
+        TQ_MXFP8,
+        TQ_INT8,
+    )
+    assert select_transformer_quant_scheme(_target(), "auto", family = "z-image") == TQ_FP8
+    assert tq.auto_scheme_candidates(_target()) == (TQ_FP8, TQ_MXFP8, TQ_INT8)
+
+
+def test_a_prefer_row_is_dropped_below_its_capability_floor(monkeypatch):
+    _stub_torch(monkeypatch, cc = (8, 9), device_name = "NVIDIA L40S")
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_INT8})
+    _prefer(monkeypatch, _nvfp4_head())
+    assert select_transformer_quant_scheme(_target(), "auto", family = "fake-video") == TQ_FP8
+    assert tq.auto_scheme_candidates(_target(), "fake-video") == (TQ_FP8, TQ_INT8)
+
+
+def test_a_head_the_probe_rejects_falls_through_to_the_tier(monkeypatch):
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_FP8, TQ_MXFP8, TQ_INT8})
+    _prefer(monkeypatch, _nvfp4_head())
+    assert select_transformer_quant_scheme(_target(), "auto", family = "fake-video") == TQ_FP8
+    assert tq.auto_scheme_candidates(_target(), "fake-video") == (TQ_FP8, TQ_MXFP8, TQ_INT8)
+
+
+def test_the_deny_list_outranks_a_prefer_row(monkeypatch):
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    _prefer(monkeypatch, _nvfp4_head(), family = "qwen-image")
+    assert select_transformer_quant_scheme(_target(), "auto", family = "qwen-image") == TQ_FP8
+    assert TQ_NVFP4 not in tq.auto_scheme_candidates(_target(), "qwen-image")
+
+
+def test_a_prefer_row_needs_consumer_ok_to_apply_to_a_consumer_gpu(monkeypatch):
+    _stub_torch(monkeypatch, cc = (12, 0), device_name = "NVIDIA GeForce RTX 5090")
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    _prefer(monkeypatch, _nvfp4_head())
+    assert select_transformer_quant_scheme(_target(), "auto", family = "fake-video") == TQ_INT8
+    _prefer(monkeypatch, _nvfp4_head(consumer_ok = True))
+    assert select_transformer_quant_scheme(_target(), "auto", family = "fake-video") == TQ_NVFP4
+    assert tq.auto_scheme_candidates(_target(), "fake-video") == (
+        TQ_NVFP4,
+        TQ_INT8,
+        TQ_FP8,
+        TQ_MXFP8,
+    )
+
+
+def test_a_head_already_in_the_tier_is_not_listed_twice(monkeypatch):
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_FP8, TQ_MXFP8, TQ_INT8})
+    _prefer(monkeypatch, tq._AutoPrefer(floor = (10, 0), schemes = (TQ_INT8,)))
+    assert tq.auto_scheme_candidates(_target(), "fake-video") == (TQ_INT8, TQ_FP8, TQ_MXFP8)
+
+
+def test_a_capability_below_every_tier_has_no_order_even_with_a_head(monkeypatch):
+    _stub_torch(monkeypatch, cc = (7, 5))
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_INT8})
+    _prefer(monkeypatch, tq._AutoPrefer(floor = (7, 0), schemes = (TQ_NVFP4,)))
+    assert tq._auto_scheme_order("fake-video", "cuda", (7, 5)) == ()
+    assert select_transformer_quant_scheme(_target(), "auto", family = "fake-video") is None
+    assert tq.auto_scheme_candidates(_target(), "fake-video") == ()
+
+
+@pytest.mark.parametrize("family", [None, "fake-video", "z-image", "qwen-image"])
+@pytest.mark.parametrize(
+    "allowed",
+    [
+        {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8},
+        {TQ_FP8, TQ_MXFP8, TQ_INT8},
+        {TQ_NVFP4, TQ_INT8},
+        {TQ_INT8},
+        set(),
+    ],
+)
+def test_the_candidate_head_stays_the_selector_winner_with_a_prefer_row(
+    monkeypatch, family, allowed
+):
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, allowed)
+    _prefer(monkeypatch, _nvfp4_head())
+    candidates = tq.auto_scheme_candidates(_target(), family)
+    chosen = select_transformer_quant_scheme(_target(), "auto", family = family)
+    assert (candidates[0] if candidates else None) == chosen, (family, allowed)
+
+
+def test_the_shipped_prefer_table_keeps_the_ladder_as_it_was(monkeypatch):
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_NVFP4, TQ_FP8, TQ_MXFP8, TQ_INT8})
+    assert tq._FAMILY_AUTO_PREFER == {}
+    for family in (None, "hunyuanvideo-1.5", "hunyuanvideo-1.5-720p", "wan2.2-ti2v-5b"):
+        assert select_transformer_quant_scheme(_target(), "auto", family = family) == TQ_FP8
+
+
+def test_divisible_for_scheme_matches_each_gemm():
+    """scaled_mm (fp8, and torchao's nvfp4 path) needs 16-aligned dims and MX block scaling 32."""
+    from core.inference.diffusion_transformer_quant import divisible_for_scheme
+
+    assert divisible_for_scheme(TQ_FP8) == 16
+    assert divisible_for_scheme(TQ_NVFP4) == 16
+    assert divisible_for_scheme(TQ_MXFP8) == 32
+    assert divisible_for_scheme(TQ_INT8) == 0
+    assert divisible_for_scheme("auto") == 0
+
+
+def test_quantize_transformer_filters_on_the_scheme_alignment(monkeypatch):
+    """quantize_transformer filters on the alignment divisible_for_scheme publishes."""
+    torch_stub = _stub_torch(monkeypatch, cc = (10, 0))
+
+    class _Linear:
+        def __init__(self, in_features, out_features):
+            self.in_features, self.out_features = in_features, out_features
+            self.weight = types.SimpleNamespace(dtype = torch_stub.bfloat16)
+
+    torch_stub.nn = types.SimpleNamespace(Linear = _Linear)
+    monkeypatch.setattr(tq, "_make_quant_config", lambda scheme, fast_accum = None: "cfg")
+    tqz = types.ModuleType("torchao.quantization")
+    seen: list = []
+    tqz.quantize_ = lambda module, config, filter_fn = None: seen.append(filter_fn)
+    monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
+
+    filters = {}
+    for scheme in (TQ_NVFP4, TQ_MXFP8):
+        _allow(monkeypatch, {scheme})
+        pipe = types.SimpleNamespace(transformer = types.SimpleNamespace())
+        assert quantize_transformer(pipe, _target(), mode = scheme) == scheme
+        filters[scheme] = seen[-1]
+
+    aligned_16 = _Linear(528, 2048)  # 528 % 16 == 0, 528 % 32 == 16
+    assert filters[TQ_NVFP4](aligned_16, "image_embedder.linear_2") is True
+    assert filters[TQ_MXFP8](aligned_16, "image_embedder.linear_2") is False
+    assert filters[TQ_NVFP4](_Linear(520, 2048), "blocks.0.ff.net.0") is False
 
 
 def test_the_pre_eviction_gate_does_not_refuse_on_an_indeterminate_probe(monkeypatch):
