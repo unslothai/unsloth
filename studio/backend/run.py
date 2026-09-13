@@ -2376,6 +2376,19 @@ def run_server(
     )
 
     logger.info("run_server startup begin api_only=%s host=%s port=%s", api_only, host, port)
+    try:
+        from utils.paths.storage_roots import studio_root
+        _studio_home = studio_root()
+    except Exception:
+        _studio_home = None
+    logger.info(
+        "troubleshooting_context log_level=%s session_log=%s studio_home=%s python=%s pid=%s",
+        os.getenv("LOG_LEVEL", "INFO"),
+        _session_log,
+        _studio_home,
+        sys.version.split()[0],
+        os.getpid(),
+    )
     cloudflare_intent = _consume_cloudflare_intent(cloudflare, secure)
 
     # Reap every child if the parent dies abnormally (terminal close, Task Manager kill, SIGKILL); must

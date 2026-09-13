@@ -414,6 +414,7 @@ from utils.native_path_leases import child_env_without_native_path_secret
 from utils.child_stdio import utf8_child_env
 from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 from utils.log_retention import prune_log_dir
+from utils.llama_server_log_lines import llama_server_line_uses_info_level
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
@@ -14006,15 +14007,23 @@ class LlamaCppBackend:
                         health_probe_event = getattr(self, "_health_probe_event", None)
                         if health_probe_event is not None:
                             health_probe_event.set()
-                    logger.debug(f"[llama-server] {line}")
+                    if llama_server_line_uses_info_level(line):
+                        logger.info(f"[llama-server] {line}")
+                    else:
+                        logger.debug(f"[llama-server] {line}")
                     fh = getattr(self, "_llama_log_fh", None)
                     if fh is not None:
                         try:
                             fh.write(line + "\n")
                             fh.flush()
                         except (ValueError, OSError):
-                            # Log file closed under us; tee silently.
-                            pass
+                            if not getattr(self, "_llama_log_tee_failed", False):
+                                self._llama_log_tee_failed = True
+                                logger.warning(
+                                    "Could not write to llama-server log file %s; "
+                                    "output remains in memory only",
+                                    getattr(self, "_llama_log_path", None),
+                                )
         except Exception:
             # Never let the drain thread die: a full stdout pipe can deadlock
             # llama-server (Windows). Pipe-closed on exit is the common case.
@@ -19177,7 +19186,7 @@ class LlamaCppBackend:
             logger.info(f"llama-server stdout/stderr -> {self._llama_log_path}")
         except (OSError, UnicodeDecodeError) as e:
             # Best-effort; never block the load on logging.
-            logger.debug(f"Could not open llama-server log file: {e}")
+            logger.warning(f"Could not open llama-server log file: {e}")
             self._llama_log_path = None
 
         # Log the argv per attempt (the text-only mmproj retry re-enters here
@@ -27384,7 +27393,12 @@ class LlamaCppBackend:
             self._healthy = True
             return True
 
-    def _close_attempt_log(self) -> None:
+    def _close_attempt_log(
+        self,
+        *,
+        reason: str = "closed",
+        exit_code: "Optional[int]" = None,
+    ) -> None:
         """Close the per-attempt tee log opened just before a spawn.
 
         A refusal publishes no process and _kill_process returns early when there is
@@ -27392,6 +27406,30 @@ class LlamaCppBackend:
         on Windows, holds the file lock an update needs.
         """
         fh = getattr(self, "_llama_log_fh", None)
+        path = getattr(self, "_llama_log_path", None)
+        proc = getattr(self, "_process", None)
+        if exit_code is None and proc is not None:
+            try:
+                exit_code = proc.poll()
+            except Exception:
+                exit_code = None
+        if fh is not None:
+            try:
+                footer = f"--- unsloth llama attempt end reason={reason}"
+                if exit_code is not None:
+                    footer += f" exit_code={exit_code}"
+                footer += " ---\n"
+                fh.write(footer)
+                fh.flush()
+            except Exception:
+                pass
+        if path is not None:
+            logger.info(
+                "llama-server attempt log closed reason=%s exit_code=%s path=%s",
+                reason,
+                exit_code,
+                path,
+            )
         if fh is not None:
             try:
                 fh.close()
@@ -27525,7 +27563,8 @@ class LlamaCppBackend:
             # next startup sweep cannot reap it. The record stores a start-time
             # identity, so a recycled pid is never signalled either way.
             _killed_pid = getattr(self._process, "pid", None)
-            _exited = getattr(self._process, "poll", lambda: None)() is not None
+            _exit_code = getattr(self._process, "poll", lambda: None)()
+            _exited = _exit_code is not None
             if _killed_pid is not None and _exited:
                 try:
                     from utils.process_lifetime import forget_pid
@@ -27548,13 +27587,8 @@ class LlamaCppBackend:
             if stdout_thread is not None:
                 stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
-            fh = getattr(self, "_llama_log_fh", None)
-            if fh is not None:
-                try:
-                    fh.close()
-                except Exception:
-                    pass
-                self._llama_log_fh = None
+            if getattr(self, "_llama_log_fh", None) is not None:
+                self._close_attempt_log(reason = "killed", exit_code = _exit_code)
 
     @staticmethod
     def _server_pidfile_path() -> Optional[Path]:
