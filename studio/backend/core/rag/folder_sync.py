@@ -817,7 +817,13 @@ def reconcile_retired_scopes(project_exists) -> dict[str, list[str]]:
 
 
 def unretire_scope(scope: str) -> bool:
-    """Drop the tombstone of a scope whose owner exists again, so it can be used."""
+    """Drop the tombstone of a scope whose owner exists again, so it can be used.
+
+    A purged tombstone is included: project ids are reusable, and leaving
+    ``purged_at`` set would refuse every later link and upload with no
+    reconciler path back. Creation clears it under the scope lock so a
+    ``delete_retired_scope`` that has not yet committed will refuse itself.
+    """
     with _scope_lock(scope):
         conn = _retirement_connection()
         try:
