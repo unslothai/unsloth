@@ -253,6 +253,7 @@ test("the live adapter saves identities for ordinary, approval and provider card
         scopedToolOutputKey: (id: string) => id,
         toolCallArgumentsText: (_text: unknown, args: unknown) =>
           JSON.stringify(args),
+        markImageDisclosureReceived: (value: unknown) => value,
         mergeToolProvenance: () => undefined,
         useChatRuntimeStore: {
           getState: () => ({

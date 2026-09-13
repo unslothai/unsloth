@@ -746,6 +746,7 @@ test("every list consumer uses the shared pending-mutation read barrier", () => 
     "api/mcp-servers-api.ts",
     "chat-mcp-servers-dialog.tsx",
     "mcp-composer-button.tsx",
+    "runtime-provider.tsx",
   ]);
 
   assert.equal(
