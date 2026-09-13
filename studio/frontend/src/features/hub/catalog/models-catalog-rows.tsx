@@ -14,6 +14,7 @@ import {
   listGgufVariants,
   useGgufVariantsCacheVersion,
 } from "../inventory";
+import { deleteLocalPath } from "@/features/chat";
 import {
   classifyUnslothSupport,
   formatBytes,
@@ -693,6 +694,20 @@ export const InventoryRow = memo(function InventoryRow({
     cacheDeletableRepoId != null &&
     pinnedKeys.includes(pinKey(cacheDeletableRepoId));
   const deletableRepoId = canDelete ? cacheDeletableRepoId : null;
+  const localRowPath =
+    row.kind === "local" && !isDataset ? (row.path?.trim() || null) : null;
+  const localSource = row.kind === "local" ? row.source : null;
+  const localDeletablePath =
+    localRowPath &&
+    (localSource === "custom" ||
+      localSource === "lmstudio" ||
+      localSource === "models_dir")
+      ? localRowPath
+      : null;
+  const localRevealPath = localRowPath;
+  const localTitle = row.kind === "local" ? title : rowModelId;
+  const localPinned =
+    localRowPath != null && pinnedKeys.includes(pinKey(localRowPath));
   const deleteAction =
     deletableRepoId ? (
       <ModelRowMenu
@@ -750,6 +765,36 @@ export const InventoryRow = memo(function InventoryRow({
               // its per-quant pins so stale rows don't linger up top.
               usePinnedModelsStore.getState().unpinRepo(deletableRepoId);
             }
+          },
+          onDeleted: onChange,
+        } : undefined}
+      />
+    ) : localDeletablePath || localRevealPath ? (
+      <ModelRowMenu
+        ariaLabel={`More options for ${localTitle}`}
+        buttonClassName="pointer-events-auto hub-modal-pe-guard size-8 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
+        iconClassName="size-4"
+        pin={localRowPath ? {
+          pinned: localPinned,
+          pinLabel: "Pin to top",
+          unpinLabel: "Unpin",
+          onToggle: () => togglePinned(localRowPath),
+        } : undefined}
+        localPath={localRevealPath ? { path: localRevealPath } : undefined}
+        del={localDeletablePath ? {
+          title: "Delete local model?",
+          description: (
+            <>
+              This will remove{" "}
+              <span className="font-medium text-foreground">
+                {localTitle}
+              </span>{" "}
+              from disk. This cannot be undone.
+            </>
+          ),
+          successMessage: `Deleted ${localTitle}`,
+          onConfirm: async () => {
+            await deleteLocalPath(localDeletablePath);
           },
           onDeleted: onChange,
         } : undefined}

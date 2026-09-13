@@ -55,14 +55,23 @@ import {
   ResultSplitRow,
 } from "./models-table";
 
+/** Pin key for an inventory row. Cached rows pin by repo id; local rows
+ *  (custom folders, LM Studio) often have no repo id, so they pin by on-disk
+ *  path: the same key the picker menus and row menus pin with. */
+export function inventoryRowPinKey(
+  row: CachedInventoryRow | LocalInventoryRow,
+): string | null {
+  if (row.kind === "local") return row.path ? pinKey(row.path) : null;
+  return row.repoId ? pinKey(row.repoId) : null;
+}
+
 export function InventoryWarningRow({
   isDataset,
   onRetry,
 }: {
   isDataset: boolean;
   onRetry: () => void;
-}) {
-  return (
+}) {  return (
     <div className="mx-5 mt-2 rounded-[8px] border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-ui-12p5 text-muted-foreground">
       <div className="flex items-center justify-between gap-3">
         <span>
@@ -311,9 +320,13 @@ export function DownloadedList({
       ...localRows.map((row) => ({ variant: "local" as const, row })),
     ];
     // Pinned rows order by pin recency, not the active sort, so "Pin to top" lands where expected.
+    // Local rows (custom folders, LM Studio) often have no repo id, so they
+    // rank by on-disk path: the same key the row menus pin with.
     const rank = makePinRank(pinnedIds);
-    const pinRank = (item: InventoryItem) =>
-      item.row.repoId ? rank(pinKey(item.row.repoId)) : Number.MAX_SAFE_INTEGER;
+    const pinRank = (item: InventoryItem) => {
+      const key = inventoryRowPinKey(item.row);
+      return key ? rank(key) : Number.MAX_SAFE_INTEGER;
+    };
     if (inventoryTokens.length > 0) {
       return merged
         .map((item, index) => ({
@@ -358,9 +371,10 @@ export function DownloadedList({
   // Pinned repos get their own labelled section; inventoryItems already sorts them first.
   const pinnedCount = useMemo(
     () =>
-      inventoryItems.filter(
-        (item) => item.row.repoId && pinnedSet.has(pinKey(item.row.repoId)),
-      ).length,
+      inventoryItems.filter((item) => {
+        const key = inventoryRowPinKey(item.row);
+        return key ? pinnedSet.has(key) : false;
+      }).length,
     [inventoryItems, pinnedSet],
   );
   const pinnedItems = inventoryItems.slice(0, pinnedCount);

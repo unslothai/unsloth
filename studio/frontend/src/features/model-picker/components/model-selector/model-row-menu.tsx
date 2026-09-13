@@ -12,7 +12,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { usePlatformStore } from "@/config/env";
-import { revealCachedModel } from "@/features/chat";
+import { revealCachedModel, revealLocalPath } from "@/features/chat";
 import {
   DeleteConfirmDialog,
   DeleteImpactSummary,
@@ -77,11 +77,17 @@ interface ModelRowMenuCachePath {
   variant?: string;
 }
 
+/** Direct on-disk path for "Reveal in Finder" (custom folders, LM Studio, local models). */
+interface ModelRowMenuLocalPath {
+  path: string;
+}
+
 export function ModelRowMenu({
   ariaLabel,
   buttonClassName,
   iconClassName,
   cachePath,
+  localPath,
   pin,
   update,
   del,
@@ -91,6 +97,8 @@ export function ModelRowMenu({
   iconClassName?: string;
   /** Enables "Reveal in Finder" for cached repos. */
   cachePath?: ModelRowMenuCachePath;
+  /** Enables "Reveal in Finder" for local files/dirs. Takes precedence over cachePath when both are set. */
+  localPath?: ModelRowMenuLocalPath;
   pin?: ModelRowMenuPin;
   update?: ModelRowMenuUpdate;
   del?: ModelRowMenuDelete;
@@ -162,16 +170,26 @@ export function ModelRowMenu({
 
   const cachePathRepoId = cachePath?.repoId;
   const cachePathVariant = cachePath?.variant;
+  const localRevealPath = localPath?.path?.trim() || null;
   const handleReveal = useCallback(() => {
+    if (localRevealPath) {
+      revealLocalPath(localRevealPath).catch((err) => {
+        toast.error(
+          err instanceof Error ? err.message : "Failed to open file manager",
+        );
+      });
+      return;
+    }
     if (!cachePathRepoId) return;
     revealCachedModel(cachePathRepoId, cachePathVariant).catch((err) => {
       toast.error(
         err instanceof Error ? err.message : "Failed to open file manager",
       );
     });
-  }, [cachePathRepoId, cachePathVariant]);
+  }, [localRevealPath, cachePathRepoId, cachePathVariant]);
 
-  if (!pin && !update && !del && !cachePath) return null;
+  const canReveal = Boolean(localRevealPath || cachePathRepoId);
+  if (!pin && !update && !del && !canReveal) return null;
 
   return (
     <>
@@ -215,7 +233,7 @@ export function ModelRowMenu({
               <span>{pin.pinned ? pin.unpinLabel : pin.pinLabel}</span>
             </DropdownMenuItem>
           )}
-          {cachePath && (
+          {canReveal && (
             <DropdownMenuItem
               onSelect={(e) => {
                 e.stopPropagation();
@@ -244,7 +262,7 @@ export function ModelRowMenu({
           )}
           {del && (
             <>
-              {(cachePath || pin || update) && <DropdownMenuSeparator />}
+              {(canReveal || pin || update) && <DropdownMenuSeparator />}
               <DropdownMenuItem
                 variant="destructive"
                 disabled={del.disabled}

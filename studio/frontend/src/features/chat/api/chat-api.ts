@@ -686,6 +686,26 @@ export async function revealCachedModel(
   await parseJsonOrThrow<unknown>(response);
 }
 
+/** Reveal a local model file or directory (custom folders, LM Studio, models dir) in the OS file manager. */
+export async function revealLocalPath(path: string): Promise<void> {
+  const response = await authFetch("/api/models/reveal-local-path", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  await parseJsonOrThrow<unknown>(response);
+}
+
+/** Delete a single local model file or model directory from custom folders, LM Studio, or the models dir. */
+export async function deleteLocalPath(path: string): Promise<void> {
+  const response = await authFetch("/api/models/delete-local-path", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  await parseJsonOrThrow<unknown>(response);
+}
+
 export async function deleteFineTunedModel(args: {
   modelPath: string;
   source: "training" | "exported";
