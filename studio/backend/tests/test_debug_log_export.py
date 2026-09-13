@@ -465,6 +465,22 @@ def test_a_record_cut_by_the_allowance_is_marked_not_presented_as_whole():
     assert whole and "password=" in whole[0]
     assert "SECRETVALUE12345" not in whole[0]
 
+    # The boundary between the two, which is where marking this naively gets it
+    # wrong. An allowance landing EXACTLY on the last byte means the loop stops
+    # on the allowance and never gets the read that would report EOF -- but the
+    # record IS complete and must be kept, not marked. Asking the descriptor is
+    # what separates "the file ended here" from "there is more".
+    exact = directory / "server-20260101-120001-pid1.log"
+    exact.write_bytes(b"a whole final record with no newline")
+    handle, fd = debug_log_export._open_verified(str(exact))
+    with handle:
+        flush = list(
+            debug_log_export._redacted_records(
+                handle, fd, exact.stat().st_size, time.monotonic() + 30
+            )
+        )
+    assert flush == ["a whole final record with no newline"], flush
+
 
 def test_a_source_that_cannot_get_a_useful_tail_blames_the_budget_not_the_file(monkeypatch):
     """With a handful of bytes left there is no room for a whole record, and

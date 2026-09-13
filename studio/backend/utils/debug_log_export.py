@@ -357,13 +357,21 @@ def _redacted_records(handle: IO[bytes], fd: int, limit: int, deadline: float) -
     # buffer after every chunk, so it cannot be over budget by this point.
     if dropping:
         yield OVERSIZED_MARKER
-    elif buffer and not at_eof:
-        # The allowance ran out inside a record rather than the file ending, so
-        # these bytes are the FRONT of a record whose remainder was never read.
-        # Emitting them would present a cut line as a whole one, in the file the
-        # reader is most likely to trust -- and `_KV_RE` needs six characters of
-        # value before it masks, so a cut landing inside a short value ships its
-        # first characters in the clear. A marker says what happened instead.
+    elif buffer:
+        # Whether these trailing bytes are a whole record or the front of one.
+        #
+        # `at_eof` alone is not enough to tell. The loop stops as soon as the
+        # allowance is spent, so a file whose last byte lands exactly on that
+        # boundary never gets the read that would have reported EOF -- and its
+        # final newline-less record is complete, not cut. Asking the descriptor
+        # is what separates the two: bytes beyond what we consumed mean the
+        # record continues into them, and none means the file ended here.
+        #
+        # Emitting a cut record as though it were whole matters because it is
+        # presented as a complete line in the file the reader is most likely to
+        # trust, and because `redact_log_text` needs several characters of value
+        # before it masks, so a cut landing just past a key ships the first few
+        # in the clear. A marker says what happened instead.
         #
         # Reachable, not theoretical: when `_seek_to_tail` takes the forward-scan
         # path it starts LATER than `size - allowance`, so `skipped + allowance`
@@ -371,9 +379,15 @@ def _redacted_records(handle: IO[bytes], fd: int, limit: int, deadline: float) -
         # appended to -- the active session log, which is live by definition when
         # someone is exporting it -- the read then runs into the new bytes and
         # stops on the allowance rather than on EOF.
-        yield CUT_MARKER
-    elif buffer:
-        yield _redact_record(buffer)
+        if at_eof:
+            cut = False
+        else:
+            try:
+                cut = os.fstat(fd).st_size > consumed
+            except OSError:
+                # No way to tell, so take the side that cannot mislead.
+                cut = True
+        yield CUT_MARKER if cut else _redact_record(buffer)
 
 
 def _newest_first_across_families(
