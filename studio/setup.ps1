@@ -4859,6 +4859,13 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
         # Re-activate venv since Refresh-Environment rebuilds PATH from
         # registry and drops the venv's Scripts directory
         Enter-StudioVenv
+        # Refresh-Environment rebuilt PATH from the registry, which the pinned installer does not
+        # edit, so the uv just written is still invisible. Without this the installing run falls
+        # back to pip and records a manifest with no uv_version, which the next run rewrites.
+        $uvDir = Get-UvInstallDir
+        if ($uvDir -and (Test-Path -LiteralPath (Join-Path $uvDir "uv.exe"))) {
+            $env:PATH = $uvDir + ";" + $env:PATH
+        }
         if (Get-Command uv -ErrorAction SilentlyContinue) { $UseUv = $true }
     } catch { }
 }

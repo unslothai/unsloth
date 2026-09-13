@@ -417,3 +417,10 @@ def test_the_windows_uv_probe_looks_where_the_pinned_installer_put_uv():
         "Get-UvInstallDir" in probe
     ), "the uv probe checks PATH only again; on Windows that reinstalls uv every update"
     assert 'Join-Path (Get-UvInstallDir) "uv.exe"' in probe
+    # And the run that installs uv has to use it, or it records a manifest with no uv_version and
+    # the next run rewrites it: a no-op update that is not one.
+    install_arm = text[text.index('substep "installing uv package manager..."') :][:2000]
+    assert "Get-UvInstallDir" in install_arm, (
+        "after installing uv, setup.ps1 relies on Refresh-Environment alone; it rebuilds PATH "
+        "from a registry the pinned installer never edits, so that run falls back to pip"
+    )
