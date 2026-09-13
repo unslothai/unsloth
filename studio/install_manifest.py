@@ -317,7 +317,13 @@ def remove_manifest(root: Optional[Path] = None) -> bool:
     try:
         os.replace(path, parked)
     except FileNotFoundError:
-        return True
+        # No live manifest: an interrupted run already took it. Nothing was parked by this
+        # call, so anything on the reserved name is from that dead run and has to go the same
+        # way -- a copy that survives would be read as this pass's evidence, and the pass
+        # refuses to run behind one it cannot clear, which on Windows lands after setup.ps1's
+        # mutations. Losing a dead run's evidence only costs a full pass; this cannot.
+        consume_previous_manifest(root)
+        return not parked.exists()
     except OSError:
         # The rename was refused. Clear whatever holds the reserved name and retry before
         # falling back to the unlink: setup.ps1 reads True here as permission to replace pip,
