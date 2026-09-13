@@ -86,6 +86,7 @@ except ImportError:
     from utils.paths import is_local_path, normalize_path, resolve_dataset_path
 
 from auth.authentication import authenticated_via_api_key, get_current_subject
+from hub.utils.hf_tokens import HfTokenArg, cached_read_refused, hf_token_arg
 
 from utils.utils import (
     canonical_model_repo_id,
@@ -460,7 +461,7 @@ def _has_adapter_metadata(path: Path) -> bool:
     return path.is_dir() and (path / "adapter_config.json").is_file()
 
 
-def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -> Optional[str]:
+def _remote_untrainable_model_format(model_name: str, hf_token: HfTokenArg) -> Optional[str]:
     from huggingface_hub import model_info as hf_model_info
     from hub.utils.hf_errors import hf_error_status
     from utils.security import load_scan_target
@@ -557,6 +558,111 @@ def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -
     if has_gguf and not has_trainable_weights:
         return "gguf"
     return None
+
+
+def _hf_dataset_is_the_source(request: Any) -> bool:
+    """Whether the run will actually read ``hf_dataset``.
+
+    Mirrors the precedence in UnslothTrainer.load_and_format_dataset: local_datasets wins, then
+    s3_config, and only then dataset_source. A payload carrying a Hub id alongside either never
+    loads the Hub repo, so nothing about it can gate the start."""
+    if getattr(request, "local_datasets", None):
+        return False
+    if getattr(request, "s3_config", None):
+        return False
+    return bool(getattr(request, "hf_dataset", None))
+
+
+def _refuse_unauthorized_cached_dataset(
+    request: TrainingStartRequest, hf_token: HfTokenArg
+) -> None:
+    from hub.utils.dataset_cache import dataset_cache_can_answer, training_dataset_cache_pin
+
+    dataset_id = request.hf_dataset
+
+    def has_cached_dataset():
+        if dataset_cache_can_answer(dataset_id):
+            return True
+        pin, _ = training_dataset_cache_pin(
+            dataset_id,
+            request.dataset_snapshot_path or request.dataset_local_path,
+        )
+        return pin is not None
+
+    # Cached and offline starts skip the Hub check below, and the worker then loads the cache.
+    if cached_read_refused(
+        hf_token,
+        repo_id = dataset_id,
+        repo_type = "dataset",
+        is_cached = has_cached_dataset,
+        offline = hf_env_offline(),
+    ):
+        raise _hf_preflight_error(
+            422,
+            "hf_dataset_access_denied",
+            "Hugging Face denied access to this cached dataset. Add a token with repository access.",
+        )
+
+
+def _refuse_unauthorized_cached_local_paths(
+    paths: list[str],
+    hf_token: HfTokenArg,
+    label: str = "dataset",
+) -> None:
+    """Refuse a local path that is really a snapshot inside the operator's Hub cache.
+
+    ``local_datasets`` takes any readable path, so pointing it at
+    ``.../datasets--org--private/snapshots/<rev>/data.parquet`` trained on the operator's private
+    dataset with no token at all. Same leak the model leg closes above, on the one input that
+    reaches the trainer without ever naming a repo.
+    """
+    from hub.utils.hf_cache_state import (
+        cached_repo_ref_for_path,
+        repo_cache_has_usable_snapshot,
+    )
+
+    repo_type = "dataset" if label.endswith("dataset") else label
+
+    def cached_under_its_own_id(repo_id: str):
+        # A Hub id rather than a path. The remote probe that would normally cover it can fail open
+        # (a HEAD that cannot be sent is not a denial), and an offline worker then loads the cached
+        # copy with no credential, so ask the disk directly -- but for a SNAPSHOT, not for the repo
+        # directory: an interrupted download leaves the latter behind holding nothing, and refusing
+        # on it costs a public base a download it was entitled to. No metadata filter, because the
+        # name differs by family (model_index.json for diffusers, config.json for a text model) and
+        # guessing wrong here would fail open. Unreadable still counts.
+        def probe() -> bool:
+            return repo_cache_has_usable_snapshot(repo_type, repo_id)
+
+        return probe
+
+    for dataset_path in paths:
+        candidate = (dataset_path or "").strip()
+        if not candidate:
+            continue
+        cached_ref = cached_repo_ref_for_path(candidate)
+        if cached_ref is None:
+            if is_local_path(candidate) or candidate.count("/") != 1:
+                continue
+            cached_ref = (candidate, repo_type)
+            is_cached = cached_under_its_own_id(candidate)
+        else:
+            is_cached = lambda: True  # noqa: E731 -- the path itself is the evidence
+        if cached_read_refused(
+            hf_token,
+            repo_id = cached_ref[0],
+            repo_type = cached_ref[1],
+            is_cached = is_cached,
+            offline = hf_env_offline(),
+        ):
+            raise _hf_preflight_error(
+                422,
+                f"hf_{label}_access_denied",
+                (
+                    f"Hugging Face denied access to this cached {label}. "
+                    "Add a token with repository access."
+                ),
+            )
 
 
 def _preflight_hf_dataset_request(request: TrainingStartRequest) -> None:
@@ -723,7 +829,9 @@ def _authorize_cache_fallback(model_name: str, repo_type: str = "model") -> None
 
 
 def _reject_untrainable_model_request(
-    request: TrainingStartRequest, actual_model_repo_id: Optional[str] = None
+    request: TrainingStartRequest,
+    actual_model_repo_id: Optional[str] = None,
+    hf_token: HfTokenArg = None,
 ) -> _ModelPreflightResult:
     model_format = (request.model_format or "").strip().lower()
     if model_format == "gguf":
@@ -759,6 +867,24 @@ def _reject_untrainable_model_request(
                 if request.model_local_path == request.model_name
                 else normalize_path(request.model_local_path)
             )
+        from hub.utils.hf_cache_state import cached_repo_ref_for_path
+
+        # A snapshot path inside the Hub cache is still that repository's cached weights. Any repo
+        # type counts: a private dataset or space snapshot can hold config.json plus weights, and
+        # is just as much the operator's to grant as a model is.
+        cached_ref = cached_repo_ref_for_path(path)
+        if cached_ref is not None and cached_read_refused(
+            hf_token,
+            repo_id = cached_ref[0],
+            repo_type = cached_ref[1],
+            is_cached = lambda: True,
+            offline = hf_env_offline(),
+        ):
+            raise _hf_preflight_error(
+                422,
+                "hf_model_access_denied",
+                "Hugging Face denied access to this cached model. Add a token with repository access.",
+            )
     else:
         model_local_path = (
             normalize_path(request.model_local_path) if request.model_local_path else None
@@ -792,6 +918,40 @@ def _reject_untrainable_model_request(
                     canonical_model_repo_id(request.model_name),
                     snapshot,
                 )
+        from hub.utils.hf_cache_state import repo_cache_has_usable_snapshot
+        from utils.security import load_scan_target
+
+        authorization_repo, _ = load_scan_target(
+            canonical_model_repo_id(actual_model_repo_id or request.model_name), ()
+        )
+
+        def has_cached_model():
+            if snapshot:
+                return True
+            # A repo DIRECTORY is not a cached read: an interrupted download leaves one with no
+            # snapshot under it, and refusing on that denies a public model over bytes that were
+            # never there. An unreadable root still counts, so the guard stays fail-closed.
+            return repo_cache_has_usable_snapshot(
+                "model",
+                authorization_repo,
+                with_load_subdirs(request.model_name, ("config.json", "adapter_config.json")),
+            )
+
+        def refuse_unauthorized_cache(is_cached):
+            # HF can reuse cached weights even when remote metadata/HEAD denies access.
+            if cached_read_refused(
+                hf_token,
+                repo_id = authorization_repo,
+                is_cached = is_cached,
+                offline = offline_mode,
+            ):
+                raise _hf_preflight_error(
+                    422,
+                    "hf_model_access_denied",
+                    "Hugging Face denied access to this cached model. Add a token with repository access.",
+                )
+
+        refuse_unauthorized_cache(has_cached_model)
     if path is None and offline_mode:
         raise _hf_preflight_error(
             409,
@@ -816,10 +976,7 @@ def _reject_untrainable_model_request(
                         "Retry before starting training."
                     ),
                 )
-            remote_format = _remote_untrainable_model_format(
-                request.model_name,
-                request.hf_token or None,
-            )
+            remote_format = _remote_untrainable_model_format(request.model_name, hf_token)
         except HTTPException as error:
             metadata_error = error
             from core.training.training import _resolve_model_snapshot
@@ -830,6 +987,10 @@ def _reject_untrainable_model_request(
             )
             if snapshot is None:
                 raise
+            # The snapshot can land while the metadata probe is in flight.
+            refuse_unauthorized_cache(lambda: True)
+            # Independent axes, so both: the check above asks whether this CALLER's Hugging Face
+            # token reaches the repo, this one whether a managed account was granted the model.
             _authorize_cache_fallback(request.model_name)
             path = Path(snapshot)
             cached_model_pin = (
@@ -1430,10 +1591,29 @@ async def start_training(
                         "dataset cache; disable streaming to train from the cached copy."
                     ),
                 )
+        allow_ambient = via_api_key is not True
+        hf_token = hf_token_arg(request.hf_token, allow_ambient_token = allow_ambient)
+        # The local dataset paths were resolved above for existence only; authorize them now that
+        # the caller's token is known, before anything reads them.
+        # Eval paths only while evaluation is on, matching the validation above and the trainer,
+        # which reads them under the same condition: a stale eval path nothing will open must not
+        # refuse an otherwise valid run.
+        for _local_paths, _label in (
+            (request.local_datasets, "dataset"),
+            (
+                request.local_eval_datasets if evaluation_enabled(request.eval_steps) else [],
+                "eval_dataset",
+            ),
+        ):
+            if _local_paths:
+                await asyncio.to_thread(
+                    _refuse_unauthorized_cached_local_paths, _local_paths, hf_token, _label
+                )
         model_preflight = await asyncio.to_thread(
             _reject_untrainable_model_request,
             request,
             resume_actual_model_repo_id,
+            hf_token,
         )
         cached_model_pin = model_preflight.cached_model_pin
         training_actual_model_repo_id = resume_actual_model_repo_id
@@ -1443,12 +1623,24 @@ async def start_training(
 
         if request.hf_dataset:
             await asyncio.to_thread(_preflight_hf_dataset_request, request)
+            # After the preflight: a cache it pinned is still on disk for this scan to refuse.
+            # Not for a streaming start: it reads the Hub (load_dataset(streaming = True)) and never
+            # the materialized cache, the preflight above always verified the repo remotely, and
+            # the route already refuses streaming with a pinned cache. Asking anyway would refuse a
+            # valid start over an unrelated cached copy whenever /auth-check cannot be reached.
+            # And only when the Hub repo is the EFFECTIVE source: load_and_format_dataset takes
+            # local_datasets (and s3_config below it) ahead of dataset_source, so a payload carrying
+            # both never reads the Hub cache, and refusing over it fails a run on a dataset it does
+            # not use. The local paths took their own authorization pass above.
+            if not request.dataset_streaming and _hf_dataset_is_the_source(request):
+                await asyncio.to_thread(_refuse_unauthorized_cached_dataset, request, hf_token)
 
         training_kwargs = {
             "model_name": model_preflight.model_name,
             "project_name": request.project_name,
             "training_type": request.training_type,
-            "hf_token": request.hf_token or "",
+            "hf_token": (request.hf_token or "").strip(),
+            "allow_ambient": allow_ambient,
             "load_in_4bit": request.load_in_4bit,
             "max_seq_length": request.max_seq_length,
             "vision_image_size": request.vision_image_size,
@@ -1550,7 +1742,7 @@ async def start_training(
                     effective_training_load_in_4bit,
                     training_kwargs,
                     model_load_target,
-                    training_kwargs["hf_token"] or None,
+                    hf_token,
                 )
             except ExactResumeResourcesUnavailable as exc:
                 raise HTTPException(status_code = 409, detail = str(exc))
@@ -1569,9 +1761,7 @@ async def start_training(
 
             model_defaults = load_model_defaults(request.model_name)
             yaml_trust = model_defaults.get("training", {}).get("trust_remote_code", False)
-            if yaml_trust and is_trusted_org_repo(
-                request.model_name, hf_token = request.hf_token or None
-            ):
+            if yaml_trust and is_trusted_org_repo(request.model_name, hf_token = hf_token):
                 logger.info(f"YAML config sets trust_remote_code=True for {request.model_name}")
                 training_kwargs["trust_remote_code"] = True
             elif yaml_trust:
@@ -1639,7 +1829,7 @@ async def start_training(
                 def _can_keep_resident_models():
                     return can_keep_chat_during_training(
                         model_name = training_kwargs["model_name"],
-                        hf_token = training_kwargs["hf_token"],
+                        hf_token = hf_token,
                         training_type = training_kwargs["training_type"],
                         load_in_4bit = training_kwargs["load_in_4bit"],
                         batch_size = training_kwargs["batch_size"],
@@ -2782,6 +2972,10 @@ async def start_diffusion_training(
     # Resolve + contain the dataset and output paths BEFORE spawning: the trainer subprocess would otherwise resolve
     # them relative to its own cwd.
     config = body.model_dump()
+    # Same rule the LLM start applies: an API key that sent no token of its own must not reach the
+    # operator's saved Hugging Face login. Diffusion is training too, and its child resolved a
+    # bare `None` token against the server's login for the base-model fetch.
+    config["allow_ambient"] = via_api_key is not True
     try:
         from utils.paths import outputs_root, resolve_output_dir
 
@@ -2927,6 +3121,21 @@ async def start_diffusion_training(
         _preflight_gated_base,
         normalized_cfg.fetch_base_model or normalized_cfg.base_model,
         normalized_cfg.hf_token,
+    )
+
+    # _preflight_gated_base skips a local path, and _assert_trusted_base_model accepts one as long
+    # as it is a real pipeline directory, so a base ALREADY in the operator's cache reached the
+    # trainer unchecked. Scrubbing the child environment does not help there: from_pretrained reads
+    # those files off disk and asks for no credential. Same authorization the LLM start applies.
+    # The EFFECTIVE target only, the same value the gated preflight above is given. The DiT trainer
+    # loads it (diffusion_dit_trainer replaces base_model with fetch_base_model) and for SDXL
+    # normalization makes the two equal, so the original base_model is metadata once a mirror is
+    # chosen: authorizing it as well can refuse a public mirror over a stray upstream snapshot.
+    await asyncio.to_thread(
+        _refuse_unauthorized_cached_local_paths,
+        [normalized_cfg.fetch_base_model or normalized_cfg.base_model or ""],
+        hf_token_arg(normalized_cfg.hf_token, allow_ambient_token = config["allow_ambient"]),
+        "model",
     )
 
     from core.training import diffusion_train_common as _dtc
