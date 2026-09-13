@@ -1,0 +1,40 @@
+name: Q-GaLore CPU tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "unsloth/optimizers/**"
+      - "tests/utils/test_q_galore.py"
+      - ".github/workflows/q-galore-tests.yml"
+  pull_request:
+    paths:
+      - "unsloth/optimizers/**"
+      - "tests/utils/test_q_galore.py"
+      - ".github/workflows/q-galore-tests.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  q-galore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install CPU optimizer test dependencies
+        run: |
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu 'torch==2.10.0'
+          python -m pip install 'pytest==9.0.3' 'bitsandbytes==0.50.2'
+      - name: Run Q-GaLore regressions without the GPU-spoof fixture
+        run: python -m pytest --confcutdir=tests/utils tests/utils/test_q_galore.py -q
