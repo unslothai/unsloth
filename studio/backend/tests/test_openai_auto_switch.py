@@ -5044,6 +5044,60 @@ def test_chat_count_tokens_prices_cached_mcp_schemas(tmp_path, monkeypatch):
     ), "a cached MCP schema is in the completion's prompt, so it must be in the count"
 
 
+def test_chat_count_tokens_rewrites_a_mapped_image_payload_to_an_opaque_reference(
+    tmp_path, monkeypatch
+):
+    from core.inference.mcp_image_disclosure import validate_image_input_mappings
+    from storage import mcp_servers_db, studio_db
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "image_payload": {
+                "type": "string",
+                "description": "raw base64 image bytes",
+                "default": "data:image/png;base64,PRIVATE_COUNT_CANARY",
+            },
+            "query": {"type": "string"},
+        },
+        "required": ["query"],
+        "example": {"image_payload": "PRIVATE_EXAMPLE", "query": "find"},
+    }
+    cached = [{"name": "lookup", "description": "d", "inputSchema": schema}]
+    mapping = {"tool": "lookup", "field": "image_payload", "encoding": "base64"}
+    _, digest = validate_image_input_mappings([mapping], cached)
+    _enabled_mcp_server(tmp_path, monkeypatch, cached = cached)
+    mcp_servers_db.update_server(
+        "s1",
+        {
+            "image_input_mappings_json": json.dumps([mapping]),
+            "image_input_schema_digest": digest,
+        },
+    )
+    studio_db.upsert_chat_settings({"mcpImageAttachmentsEnabled": True})
+    _switched, counted = _count_tokens_backend(monkeypatch, count = 1234, supports_tools = True)
+    payload = _count_request(
+        [{"role": "user", "content": "hello"}],
+        mcp_enabled = True,
+        enabled_tools = [],
+        mcp_image_attachment = {"message_id": "message-1", "attachment_id": "image-1"},
+    )
+
+    assert _counted_body(payload)["input_tokens"] == 1234
+    tool = next(tool for tool in counted["tools"] if tool["function"]["name"] == "mcp__s1__lookup")
+    public = tool["function"]["parameters"]
+    image_field = public["properties"]["image_payload"]
+    assert image_field["title"] == "Image attachment reference"
+    count_reference = image_field["enum"][0]
+    assert count_reference.startswith("mcp-image-ref-")
+    assert len(count_reference.removeprefix("mcp-image-ref-")) == 43
+    assert public["properties"]["query"] == {"type": "string"}
+    assert public["required"] == ["query", "image_payload"]
+    assert "example" not in public
+    assert "PRIVATE" not in json.dumps(public)
+    assert schema["properties"]["image_payload"]["default"].endswith("PRIVATE_COUNT_CANARY")
+
+
 def test_chat_count_tokens_ignores_an_mcp_server_the_request_did_not_enable(tmp_path, monkeypatch):
     # Control: the decline keys on the request asking for MCP, not on a server merely existing.
     # tool_choice "none" would NOT be a control here: _explicit_studio_tool_loop_requested treats

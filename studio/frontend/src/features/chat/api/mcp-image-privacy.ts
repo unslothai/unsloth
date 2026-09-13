@@ -30,8 +30,50 @@ type Part = {
 };
 type PrivateMessage = {
   content: readonly Part[];
-  attachments?: readonly { mcpToolOnly?: boolean; content?: readonly Part[] }[];
+  attachments?: readonly {
+    id?: unknown;
+    mcpToolOnly?: boolean;
+    content?: readonly Part[];
+  }[];
 };
+
+type IdentifiedMessage = PrivateMessage & { id?: unknown; role?: unknown };
+type PersistedMessage = {
+  id: string;
+  threadId: string;
+  attachments?: readonly { id?: unknown; mcpToolOnly?: boolean }[];
+};
+
+export type McpImageAttachmentSelection = {
+  message_id: string;
+  attachment_id: string;
+};
+
+/** Select only a tool-only image that is already durable in this exact conversation. */
+export function mcpImageAttachmentForTokenCount(
+  messages: readonly IdentifiedMessage[],
+  threadId: string | undefined,
+  persistedMessages: readonly PersistedMessage[],
+): McpImageAttachmentSelection | undefined {
+  if (!threadId) return undefined;
+  const latestUser = [...messages]
+    .reverse()
+    .find((message) => message.role === "user");
+  if (!latestUser || typeof latestUser.id !== "string" || !latestUser.id)
+    return undefined;
+  const privateImages = latestUser.attachments?.filter(isMcpToolOnly) ?? [];
+  if (privateImages.length !== 1) return undefined;
+  const attachmentId = privateImages[0]?.id;
+  if (typeof attachmentId !== "string" || !attachmentId) return undefined;
+
+  const persisted = persistedMessages.find(
+    (message) => message.threadId === threadId && message.id === latestUser.id,
+  );
+  const persistedPrivate = persisted?.attachments?.filter(isMcpToolOnly) ?? [];
+  if (persistedPrivate.length !== 1 || persistedPrivate[0]?.id !== attachmentId)
+    return undefined;
+  return { message_id: latestUser.id, attachment_id: attachmentId };
+}
 
 /** Remove explicitly marked private content and the private attachment itself. */
 export function modelVisibleMessage<T extends PrivateMessage>(message: T): T {

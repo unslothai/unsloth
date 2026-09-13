@@ -4290,7 +4290,11 @@ def get_latest_chat_user_message_id(thread_id: str) -> Optional[str]:
 
 
 def get_chat_setting_with_revision(key: str) -> tuple[Any, Optional[str]]:
-    """Return a setting and its write revision without accepting corrupt JSON."""
+    """Return a setting and its write revision without accepting corrupt JSON.
+
+    MCP image consent uses a value-change revision, preserved by all three writers
+    when the feature flag is unchanged.
+    """
     conn = get_connection()
     try:
         row = conn.execute(
@@ -4625,6 +4629,8 @@ def upsert_chat_settings(settings: dict[str, Any]) -> dict[str, Any]:
             ON CONFLICT(key) DO UPDATE SET
                 value_json = excluded.value_json,
                 updated_at = excluded.updated_at
+            WHERE chat_settings.key != 'mcpImageAttachmentsEnabled'
+               OR chat_settings.value_json IS NOT excluded.value_json
             """,
             [(key, json.dumps(value), now) for key, value in settings.items()],
         )
@@ -4685,6 +4691,8 @@ def upsert_chat_settings_merge(updates: dict[str, Any]) -> dict[str, Any]:
             ON CONFLICT(key) DO UPDATE SET
                 value_json = excluded.value_json,
                 updated_at = excluded.updated_at
+            WHERE chat_settings.key != 'mcpImageAttachmentsEnabled'
+               OR chat_settings.value_json IS NOT excluded.value_json
             """,
             [(key, json.dumps(value), now) for key, value in merged.items()],
         )
@@ -4771,6 +4779,8 @@ def upsert_chat_settings_merge_if_current(
             ON CONFLICT(key) DO UPDATE SET
                 value_json = excluded.value_json,
                 updated_at = excluded.updated_at
+            WHERE chat_settings.key != 'mcpImageAttachmentsEnabled'
+               OR chat_settings.value_json IS NOT excluded.value_json
             """,
             [(key, json.dumps(value), now) for key, value in merged.items()],
         )

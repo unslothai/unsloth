@@ -50,6 +50,7 @@ def image_request(tmp_path, monkeypatch):
             ],
         }
     )
+    real_setting_reader = studio_db.get_chat_setting_with_revision
     feature = [True, "revision-1"]
     monkeypatch.setattr(studio_db, "get_chat_setting_with_revision", lambda key: tuple(feature))
     tools = []
@@ -98,6 +99,7 @@ def image_request(tmp_path, monkeypatch):
         tools = tools,
         rows = rows,
         feature = feature,
+        real_setting_reader = real_setting_reader,
         encoded = encoded,
         url = url,
         closed = closed,
@@ -118,6 +120,46 @@ def prepare(fixture):
         cancel_event = fixture.cancel,
         ui_events = True,
     )
+
+
+@pytest.mark.parametrize("writer", ["direct", "merge", "conditional"])
+@pytest.mark.parametrize("toggle", [False, True])
+def test_feature_revision_tracks_only_feature_changes(image_request, monkeypatch, writer, toggle):
+    f = image_request
+    monkeypatch.setattr(studio_db, "get_chat_setting_with_revision", f.real_setting_reader)
+    studio_db.upsert_chat_settings({"mcpImageAttachmentsEnabled": True})
+    run, _ = prepare(f)
+    args = {"picture_blob": run.reference.reference}
+    approval = run.prepare_call("mcp__inspect__inspect", args, "call")
+    assert tool_approvals.resolve_mcp_image_disclosure(
+        approval.approval_id, "allow", current_subject = "subject", session_id = "session"
+    )
+
+    def save(updates):
+        if writer == "direct":
+            studio_db.upsert_chat_settings(updates)
+        elif writer == "merge":
+            studio_db.upsert_chat_settings_merge(updates)
+        else:
+            _, applied = studio_db.upsert_chat_settings_merge_if_current({}, updates)
+            assert applied
+
+    save({"temperature": 0.4})
+    assert image_loop._feature_revision() == run.feature_revision
+    save({"mcpImageAttachmentsEnabled": True, "temperature": 0.5})
+    assert image_loop._feature_revision() == run.feature_revision
+    if toggle:
+        save({"mcpImageAttachmentsEnabled": False})
+        with pytest.raises(McpImageDisclosureError):
+            image_loop._feature_revision()
+        save({"mcpImageAttachmentsEnabled": True})
+        assert image_loop._feature_revision() != run.feature_revision
+        with pytest.raises(McpImageDisclosureError):
+            approval.context.commit_at_send("recipient")
+    else:
+        assert approval.context.prepare_wire(args)["picture_blob"] == f.encoded
+        approval.context.commit_at_send("recipient")
+    run.close()
 
 
 @pytest.mark.parametrize("tool_index", [0, 1])

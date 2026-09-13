@@ -5200,7 +5200,9 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
 
 
 async def _prepare_mcp_image_for_route(payload, current_subject, tools, cancel_event, ui_events):
-    if getattr(payload, "mcp_image_attachment", None) is None and not tools:
+    if getattr(payload, "mcp_image_attachment", None) is None and (
+        not tools or not getattr(payload, "mcp_enabled", False)
+    ):
         return None, tools
     from core.inference.mcp_image_tool_loop import prepare_image_tool_request
     from core.inference.mcp_image_disclosure import McpImageDisclosureError
@@ -25199,9 +25201,15 @@ async def produce_openai_chat_completions(
         # Request-scoped usage/timings receptacle (filled at gen_done).
         _sf_stats_holder: dict = {}
 
-        _sf_image_run, _sf_tools_to_use = await _prepare_mcp_image_for_route(
-            payload, current_subject, _sf_tools_to_use, cancel_event, _ui_events
-        )
+        try:
+            _sf_image_run, _sf_tools_to_use = await _prepare_mcp_image_for_route(
+                payload, current_subject, _sf_tools_to_use, cancel_event, _ui_events
+            )
+        except asyncio.CancelledError:
+            cancel_event.set()
+            backend.reset_generation_state(cancel_event)
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
 
         def sf_generate_with_tools():
             return backend.generate_chat_completion_with_tools(
@@ -30851,6 +30859,16 @@ def _resident_context_satisfies(model_info: dict, max_seq_length: Any) -> bool:
     return _positive_int_or_none(max_seq_length) == _positive_int_or_none(recorded)
 
 
+def _rewrite_mcp_image_tools_for_count(payload, tools):
+    from core.inference.mcp_image_disclosure import McpImageDisclosureError
+    from core.inference.mcp_image_tool_loop import rewrite_image_tool_schemas_for_count
+
+    try:
+        return rewrite_image_tool_schemas_for_count(payload, tools)
+    except McpImageDisclosureError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+
+
 async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONResponse]:
     """Count with the resident MLX model's tokenizer, or None if MLX is not serving one.
 
@@ -30950,6 +30968,7 @@ async def _mlx_count_chat_tokens(payload, request = None) -> Optional[JSONRespon
         _tools_to_use = (
             await _select_request_tools(payload, tools_on = _tools_on, mcp_allowed = False)
         ) + _mcp_tools
+        _tools_to_use = _rewrite_mcp_image_tools_for_count(payload, _tools_to_use)
         # Nothing surviving means the completion skips the tool loop, so follow it back
         # to the plain render rather than passing an empty catalog.
         if not _tools_to_use:
@@ -31273,6 +31292,7 @@ async def chat_count_tokens(
         )
         # Appended in the position _select_request_tools would have used, so the order matches.
         tools_to_use = tools_to_use + _mcp_tools
+        tools_to_use = _rewrite_mcp_image_tools_for_count(payload, tools_to_use)
         if tools_to_use:
             openai_tools = tools_to_use
             openai_messages = _prepend_current_date_to_messages(

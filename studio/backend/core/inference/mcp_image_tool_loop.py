@@ -36,6 +36,9 @@ from state.tool_approvals import (
 )
 
 
+_COUNT_ATTACHMENT_REFERENCE = "mcp-image-ref-xQ7m9K2vP4sN8dF1hJ6cL0wR3tY5uB7eG9aZ2iC4oEU"
+
+
 def prepare_image_tool_request(payload, *, subject, tools, cancel_event, ui_events):
     """Validate the private selection before any model receives this request."""
     selection = getattr(payload, "mcp_image_attachment", None)
@@ -44,14 +47,7 @@ def prepare_image_tool_request(payload, *, subject, tools, cancel_event, ui_even
             from storage.studio_db import get_chat_setting_with_revision
             enabled, _ = get_chat_setting_with_revision("mcpImageAttachmentsEnabled")
             if enabled is True:
-                public = copy.deepcopy(tools)
-                for tool in public:
-                    function = tool.get("function", {})
-                    match = _mapping_for_name(function.get("name", ""))
-                    if match:
-                        _, mapping, schema, _ = match
-                        function["parameters"] = model_schema_for_mapping(schema, mapping["field"])
-                return None, public
+                return None, rewrite_image_tool_schemas(tools)
         return None, tools
     _feature_revision()
     if not payload.stream or not ui_events or not payload.mcp_enabled:
@@ -156,6 +152,48 @@ def _mapping_for_name(name):
     return server, mapping, schema, digest
 
 
+def rewrite_image_tool_schemas(
+    tools,
+    attachment_ref = None,
+    *,
+    require_mapped = False,
+):
+    """Copy tool schemas and replace configured image payload fields with public selectors."""
+    public = copy.deepcopy(tools)
+    mapped = 0
+    for tool in public:
+        function = tool.get("function", {})
+        match = _mapping_for_name(function.get("name", ""))
+        if match:
+            _, mapping, schema, _ = match
+            function["parameters"] = model_schema_for_mapping(
+                schema, mapping["field"], attachment_ref
+            )
+            mapped += 1
+    if require_mapped and not mapped:
+        raise McpImageDisclosureError("Enable a configured MCP image tool to share this image")
+    return public
+
+
+def rewrite_image_tool_schemas_for_count(payload, tools):
+    """Render the same public MCP schemas a generation will put in the model prompt."""
+    selection = getattr(payload, "mcp_image_attachment", None)
+    if selection is not None:
+        _feature_revision()
+        # Generation references contain 32 urlsafe bytes (43 encoded characters). The count
+        # must not mint a live disclosure reference, but it still prices the enum and description
+        # that the model will receive.
+        attachment_ref = _COUNT_ATTACHMENT_REFERENCE
+    else:
+        from storage.studio_db import get_chat_setting_with_revision
+
+        enabled, _ = get_chat_setting_with_revision("mcpImageAttachmentsEnabled")
+        if enabled is not True:
+            return tools
+        attachment_ref = None
+    return rewrite_image_tool_schemas(tools, attachment_ref, require_mapped = selection is not None)
+
+
 class McpImageToolRun:
     """Only opaque selectors and scope live on a run; image bytes stay per-call."""
 
@@ -178,20 +216,7 @@ class McpImageToolRun:
         self.closed = False
 
     def rewrite_tools(self, tools):
-        public = copy.deepcopy(tools)
-        mapped = 0
-        for tool in public:
-            function = tool.get("function", {})
-            match = _mapping_for_name(function.get("name", ""))
-            if match:
-                _, mapping, schema, _ = match
-                function["parameters"] = model_schema_for_mapping(
-                    schema, mapping["field"], self.reference.reference
-                )
-                mapped += 1
-        if not mapped:
-            raise McpImageDisclosureError("Enable a configured MCP image tool to share this image")
-        return public
+        return rewrite_image_tool_schemas(tools, self.reference.reference, require_mapped = True)
 
     def prepare_call(self, name, arguments, call_id):
         match = _mapping_for_name(name)

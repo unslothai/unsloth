@@ -313,6 +313,7 @@ export async function countChatInputTokens(payload: {
   enable_tools?: boolean;
   enabled_tools?: string[];
   mcp_enabled?: boolean;
+  mcp_image_attachment?: { message_id: string; attachment_id: string };
   rag_scope?: Record<string, unknown>;
   auto_heal_tool_calls?: boolean;
   studio_tool_history?: boolean;
