@@ -2270,6 +2270,15 @@ def write_prebuilt_metadata(ops: ModuleOps, install_dir: Path, selection: Instal
             payload["runtime_wiring_version"] = selection.runtime_wiring_version
         if selection.linked_runtime_directories is not None:
             payload["linked_runtime_directories"] = list(selection.linked_runtime_directories)
+    # Optional per component (whisper defines it; a descriptor-only component does not): size +
+    # sha256 of the payload files a later reuse decision would otherwise have to RUN to trust, so a
+    # no-network re-check can tell an intact tree from a truncated one. Written last so it covers
+    # the wiring recorded just above. Absent for a component with no hook, and on every marker
+    # written before it had one, which then takes the full path once.
+    records = getattr(ops, "runtime_file_records", None)
+    records = records(install_dir, selection) if callable(records) else None
+    if records:
+        payload["runtime_files"] = records
     ops.metadata_path(install_dir).write_text(
         json.dumps(payload, indent = 2) + "\n", encoding = "utf-8"
     )

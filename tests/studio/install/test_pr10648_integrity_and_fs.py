@@ -15,11 +15,14 @@ Three components, three different amounts of evidence, so three different answer
     Only the digest can see a corruption that preserves the byte count, which is why
     ``test_a_same_size_byte_flip_is_caught_only_by_the_digest`` is the load-bearing test
     in this file.
-  * whisper (``installed_tree_is_intact``) records NO payload digests at all. It asks
-    that the server is a non-empty executable file and that a slim bundle's wiring is
-    still there. A truncation that leaves bytes behind is invisible to it. That is
-    PRE-EXISTING -- whisper has never hashed its payload -- not something this PR
-    introduced, and the tests below say so where they land on it.
+  * whisper (``installed_tree_is_intact``) now records the same two tiers in the same
+    ``runtime_files`` shape: ``size + sha256`` for ``whisper-server``, ``size`` for the
+    ggml libraries a slim bundle hardlinks. It previously recorded NO payload digests at
+    all -- it asked only that the server was a non-empty executable file and that a slim
+    bundle's wiring was still there by name, so a truncation that left bytes behind was
+    invisible to it. The three tests below that used to pin that weaker boundary now pin
+    the digest one; a marker with no record (every install predating the key) is still
+    kept and backfilled once, which ``test_pr10648_whisper_payload_digests.py`` owns.
   * node (``_file_record_matches``) records ``sha256`` and never compares it: ``size``
     and ``mtime_ns`` only, deliberately (see its docstring). Not exercised here beyond
     its marker writer; ``test_install_node_prebuilt_logic.py`` owns that decision.
@@ -700,29 +703,30 @@ def test_whisper_a_healthy_install_is_kept(tmp_path, monkeypatch):
     assert _whisper_keep(install_dir) is True
 
 
-def test_whisper_records_no_payload_digests_at_all(tmp_path, monkeypatch):
+def test_whisper_records_the_digest_of_the_server_it_installed(tmp_path, monkeypatch):
     """The premise of the next test, asserted rather than assumed.
 
-    The only sha256 in a whisper marker is asset_sha256, the digest of the archive that
-    was downloaded -- checked once, at download time, against the release's checksum
-    index. Nothing records what the extracted files are, so nothing can later ask.
+    asset_sha256 is the digest of the ARCHIVE, checked once at download time against the
+    release's checksum index; it says nothing about what is on disk a month later. The
+    marker now also records the extracted payload -- size + sha256 for whisper-server --
+    so a later no-network re-check has something to ask.
     """
     install_dir = _whisper_install(tmp_path, monkeypatch)
     marker = _whisper_marker(install_dir)
     assert marker["asset_sha256"] == "c" * 64
-    assert "runtime_files" not in marker
-    server_digest = CORE.sha256_file(WHISPER.installed_server_path(install_dir, WHISPER_LINUX))
-    assert server_digest not in json.dumps(marker)
+    server = WHISPER.installed_server_path(install_dir, WHISPER_LINUX)
+    relative = server.relative_to(install_dir).as_posix()
+    assert marker["runtime_files"][relative]["sha256"] == CORE.sha256_file(server)
+    assert marker["runtime_files"][relative]["size"] == server.stat().st_size
 
 
-def test_whisper_a_truncated_server_with_bytes_left_is_still_kept(tmp_path, monkeypatch):
-    """PRE-EXISTING, not introduced by PR #10648: whisper has never hashed its payload.
+def test_whisper_a_truncated_server_with_bytes_left_is_rejected(tmp_path, monkeypatch):
+    """A whisper-server left half-written by a full disk or an interrupted extract.
 
-    installed_tree_is_intact asks for a non-empty executable file. Half a whisper-server
-    is a non-empty executable file. The install is kept, and the failure surfaces at
-    launch instead of at update. Worth knowing precisely because the precheck is what
-    decides an update does no work: there is no digest tier here to fall back on, so the
-    llama-side reasoning ("the record replaces starting the binary") has no whisper twin.
+    It is still a non-empty executable file, which is all the shape checks can see, so
+    before the payload record this install was KEPT and the failure surfaced when the
+    user pressed the dictation key instead of at update time. The recorded size and
+    digest are what turn it into a re-download, which is the repair the user wanted.
     """
     install_dir = _whisper_install(tmp_path, monkeypatch)
     server = WHISPER.installed_server_path(install_dir, WHISPER_LINUX)
@@ -732,8 +736,8 @@ def test_whisper_a_truncated_server_with_bytes_left_is_still_kept(tmp_path, monk
     server.write_bytes(data[: len(data) // 2])
     assert server.stat().st_size > 0
     assert os.name == "nt" or os.access(server, os.X_OK)
-    assert WHISPER.installed_tree_is_intact(install_dir, WHISPER_LINUX) is True
-    assert _whisper_keep(install_dir) is True
+    assert WHISPER.installed_tree_is_intact(install_dir, WHISPER_LINUX) is False
+    assert _whisper_keep(install_dir) is False
 
 
 def test_whisper_a_zero_byte_server_is_rejected(tmp_path, monkeypatch):
@@ -794,15 +798,19 @@ def test_whisper_a_slim_install_missing_a_wired_library_is_rejected(tmp_path, mo
     assert _whisper_keep(install_dir) is False
 
 
-def test_whisper_a_wired_library_may_be_any_bytes_at_all(tmp_path, monkeypatch):
-    """The same no-digest boundary, on the slim wiring: linked_libraries is checked for
-    PRESENCE by name. Truncating one to a single byte keeps the install "intact".
-    Pre-existing, and the reason the paired ggml tree above is the real slim guard."""
+def test_whisper_a_wired_library_truncated_to_one_byte_is_rejected(tmp_path, monkeypatch):
+    """A hardlinked ggml library left as a stub -- most of a CUDA or ROCm pairing's bytes.
+
+    linked_libraries is checked for PRESENCE by name, so before the payload record this
+    was "intact" and dictation failed at load time with a dynamic linker error. The
+    recorded size catches it for the price of a stat; the paired ggml tree above answers
+    the different question of whether llama's runtime moved out from under it.
+    """
     install_dir = _whisper_install(tmp_path, monkeypatch, slim = True)
     bin_dir = WHISPER.runtime_bin_dir(install_dir, WHISPER_LINUX)
     (bin_dir / "libggml.so.0").write_bytes(b"\x00")
-    assert WHISPER.installed_tree_is_intact(install_dir, WHISPER_LINUX) is True
-    assert _whisper_keep(install_dir) is True
+    assert WHISPER.installed_tree_is_intact(install_dir, WHISPER_LINUX) is False
+    assert _whisper_keep(install_dir) is False
 
 
 # ── PART 4: the marker rewrite as a filesystem operation ─────────────────────────────
