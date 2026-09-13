@@ -21,6 +21,7 @@ from fastapi import HTTPException
 from core import research_runs
 from core.research.citations import (
     _citation_title,
+    _validate_report,
     _validate_report_document_sources,
     _validate_report_sources,
 )
@@ -1144,6 +1145,66 @@ def test_dropped_raw_url_does_not_unbalance_prose():
     # An uncataloged URL is still removed, but the paren it swallowed belongs to the prose.
     out = _validate_report_sources("Claim (https://nope.com/x) here.", [])
     assert out == "Claim () here."
+
+
+def test_code_keeps_its_urls_and_brackets():
+    sources = [{"url": "https://a.com", "title": "A"}, {"url": "https://b.com", "title": "B"}]
+    code = (
+        "```bash\n"
+        "git clone https://github.com/unslothai/unsloth\n"
+        "pip install torch --index-url https://download.pytorch.org/whl/cu121\n"
+        "curl http://localhost:8888/api/health\n"
+        "```\n"
+        "~~~python\n"
+        'client = OpenAI(base_url = "http://localhost:8888/v1")\n'
+        "print(x.shape[1], [2](https://nope.com))\n"
+        "~~~"
+    )
+    report = (
+        f"{code}\n\n"
+        'Run `sys.argv[1]` or ``OpenAI(base_url="http://localhost:8888/v1")`` '
+        "as shown [1], not https://nope.com/x."
+    )
+    out = _validate_report_sources(report, sources)
+    assert out == (
+        f"{code}\n\n"
+        'Run `sys.argv[1]` or ``OpenAI(base_url="http://localhost:8888/v1")`` '
+        "as shown [A](https://a.com), not ."
+    )
+
+
+def test_unterminated_code_fence_keeps_its_urls():
+    report = "Install it:\n\n```bash\npip install torch --index-url https://download.pytorch.org/whl/cu121"
+    assert _validate_report_sources(report, []) == report
+
+
+def test_sources_heading_inside_code_does_not_cut_the_report():
+    code = "```markdown\n## Sources\n- https://example.com\n```"
+    report = f"Template:\n\n{code}\n\nMore [1].\n\n## Sources\n- [A](https://a.com)"
+    out = _validate_report_sources(report, [{"url": "https://a.com", "title": "A"}])
+    assert out == f"Template:\n\n{code}\n\nMore [A](https://a.com)."
+
+
+def test_prose_citations_without_code_are_unchanged():
+    sources = [
+        {"url": "https://a.com", "title": "A"},
+        {"url": "https://b.com/x_(y)", "title": "[PDF] B"},
+    ]
+    report = (
+        "## Findings\n\n"
+        "Claim one [1] and two [2], bad [9], footnote [^1].\n"
+        "Linked [label](https://a.com) and [fake](https://nope.example/z).\n"
+        "Auto <https://b.com/x_(y)> and <https://nope.example/q>.\n"
+        "Raw (https://a.com). Raw https://nope.example/r, then https://b.com/x_(y).\n"
+        "\n**Sources**\n- [A](https://a.com)\n"
+    )
+    assert _validate_report_sources(report, sources) == (
+        "## Findings\n\n"
+        "Claim one [A](https://a.com) and two [PDF B](https://b.com/x_(y)), bad [9], footnote [^1].\n"
+        "Linked [A](https://a.com) and fake.\n"
+        "Auto [PDF B](https://b.com/x_(y)) and .\n"
+        "Raw ([A](https://a.com)). Raw , then [PDF B](https://b.com/x_(y))."
+    )
 
 
 def _install_probe_backends(monkeypatch, llama, native) -> None:
@@ -3246,3 +3307,94 @@ def test_note_server_address_defers_to_run_server_published_state():
     supervisor.note_server_address(("127.0.0.1", 9999))
     assert getattr(state, "research_request_host", None) is None
     assert supervisor._endpoint() == "http://192.168.1.239:8889/v1/chat/completions"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "    git clone https://github.com/unslothai/unsloth\n    print(x[1])",
+        "\tgit clone https://github.com/unslothai/unsloth\n\tprint(x[1])",
+        "1. Install:\n\n    ```sh\n    git clone https://github.com/unslothai/unsloth\n    ```",
+        "- Install:\n\n      git clone https://github.com/unslothai/unsloth",
+    ],
+)
+def test_report_preserves_indented_and_list_code(code):
+    report = f"Setup:\n\n{code}\n\nUse this [1], not https://nope.example."
+    out = _validate_report_sources(report, [{"url": "https://a.com", "title": "A"}])
+    assert out == f"Setup:\n\n{code}\n\nUse this [A](https://a.com), not ."
+
+
+def test_report_starting_with_indented_code_keeps_its_indentation():
+    report = "    curl https://example.com/api\n\nExplanation."
+    assert _validate_report_sources(report, []) == report
+
+
+def test_indented_paragraph_continuation_is_still_validated():
+    report = "Explanation continues\n    at https://nope.example."
+    assert _validate_report_sources(report, []) == "Explanation continues\n    at ."
+
+
+def test_multiline_inline_code_keeps_urls_and_brackets():
+    code = "`pip install torch\n--index-url https://download.pytorch.org/whl/cu121`"
+    report = f"Use {code}, then [1]."
+    assert _validate_report_sources(report, [{"url": "https://a.com", "title": "A"}]) == (
+        f"Use {code}, then [A](https://a.com)."
+    )
+
+
+@pytest.mark.parametrize(
+    ("report", "expected"),
+    [
+        ("参见https://a.com的`pip install unsloth`命令。", "参见`pip install unsloth`命令。"),
+        (
+            "Clone https://nope.example/`git clone repo` then build [1].",
+            "Clone `git clone repo` then build [A](https://a.com).",
+        ),
+    ],
+)
+def test_url_glued_to_inline_code_keeps_the_code(report, expected):
+    assert _validate_report_sources(report, [{"url": "https://a.com", "title": "A"}]) == expected
+
+
+def test_literal_escaped_backticks_do_not_hide_prose_urls():
+    report = r"Literal \`https://nope.example\` then [1]."
+    out = _validate_report_sources(report, [{"url": "https://a.com", "title": "A"}])
+    assert "https://nope.example" not in out
+    assert out.endswith("then [A](https://a.com).")
+
+
+def test_unclosed_quote_fence_stops_at_the_quote_boundary():
+    code = "> ```sh\n> curl https://example.com/api"
+    report = f"{code}\n\nOutside https://nope.example and [1]."
+    assert _validate_report_sources(report, [{"url": "https://a.com", "title": "A"}]) == (
+        f"{code}\n\nOutside  and [A](https://a.com)."
+    )
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        '```python\npattern = "[Document: generated]"\n```',
+        '`pattern = "[Document: generated]"`',
+        '    pattern = "[Document: generated]"',
+    ],
+)
+def test_delivered_report_keeps_document_literals_in_code(code):
+    report = f"Example:\n\n{code}\n\nProse [Document: missing.pdf]."
+    expected = f"Example:\n\n{code}\n\nProse ."
+    assert _validate_report(report, [], []) == expected
+    assert _validate_report_document_sources(_validate_report_sources(report, []), []) == expected
+
+
+@pytest.mark.parametrize(
+    ("report", "expected"),
+    [
+        ("Context\nhttps://nope.example\n    [Document: hallucinated]", "Context\n\n    "),
+        (
+            "Findings [1]\nhttps://nope.example\n    [Document: made-up.pdf, p. 3] supports this.",
+            "Findings [A](https://a.com)\n\n     supports this.",
+        ),
+    ],
+)
+def test_removed_url_line_does_not_turn_a_document_citation_into_code(report, expected):
+    assert _validate_report(report, [{"url": "https://a.com", "title": "A"}], []) == expected

@@ -43,8 +43,7 @@ from core.research.citations import (
     _allowed_document_citations,
     _citation_title,
     _document_source_citation,
-    _validate_report_document_sources,
-    _validate_report_sources,
+    _validate_report,
 )
 from core.research.redaction import _sanitize_public_query, _shield_untrusted
 from core.research.prompts import (
@@ -2824,8 +2823,7 @@ class ResearchSupervisor:
             catalogs do not back, and a model that ran out of budget is exactly the one
             liable to pad with both, so raw length is not what the drafts should be judged
             on. Used only to compare them; whichever wins is stored as the model wrote it."""
-            validated = _validate_report_sources(draft, sources)
-            return _validate_report_document_sources(validated, document_sources)
+            return _validate_report(draft, sources, document_sources)
 
         if _synthesis_needs_recovery(report, synthesis_finish_reason):
             recovery_reason = (
@@ -2911,8 +2909,7 @@ class ResearchSupervisor:
                     requested_max_tokens = requested_max_tokens,
                     inference = _run_inference_request(run),
                 ).rstrip(".")
-        report = _validate_report_sources(report, sources)
-        report = _validate_report_document_sources(report, document_sources)
+        report = _validate_report(report, sources, document_sources)
         if not report:
             raise ValueError(
                 "Local model returned no safely identifiable final report. Disable thinking or "
