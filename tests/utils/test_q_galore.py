@@ -113,6 +113,13 @@ class TestGaLoreProjector:
         # INT4 values should be in range [0, 15]
         assert proj.ortho_matrix.max() <= 15
 
+    @pytest.mark.parametrize("n_bit", [4, 8])
+    def test_quantized_projection_preserves_constant_rank_one_gradient(self, n_bit):
+        grad = torch.ones(8, 4)
+        proj = GaLoreProjector(rank = 1, quant = True, n_bit = n_bit)
+        restored = proj.project_back(proj.project(grad, step = 0))
+        torch.testing.assert_close(restored, grad)
+
     def test_adaptive_scheduling(self):
         """update_proj_gap increases when cosine similarity exceeds threshold."""
         proj = GaLoreProjector(
@@ -154,6 +161,27 @@ class TestGaLoreProjector:
 
 class TestQuantizationUtils:
     """Tests for _quantize, _dequantize, _quantize_stochastic."""
+
+    @pytest.mark.parametrize("quantize", [_quantize, _quantize_stochastic])
+    @pytest.mark.parametrize("n_bit", [4, 8])
+    @pytest.mark.parametrize("group_size", [-1, 2])
+    def test_roundtrip_single_sign_groups(self, quantize, n_bit, group_size):
+        weights = torch.tensor(
+            [
+                [1.0, 1.5, 2.0, 2.5],
+                [-1.0, -1.5, -2.0, -2.5],
+                [0.5, 0.5, 0.5, 0.5],
+                [-0.5, -0.5, -0.5, -0.5],
+                [0.0, 0.0, 0.0, 0.0],
+                [-1.0, -0.5, 0.5, 1.0],
+            ]
+        )
+        quantized = quantize(weights, q_group_size = group_size, n_bit = n_bit)
+        restored = _dequantize(*quantized)
+        scales = quantized[1]
+        error = (restored - weights).abs().reshape(scales.shape[0], -1)
+        # Stochastic rounding may move by one quantization step, but must not clip a group.
+        assert torch.all(error <= scales + 1e-6)
 
     def test_quantize_dequantize_roundtrip(self):
         """Quantize → dequantize has bounded error."""
