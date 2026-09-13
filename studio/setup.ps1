@@ -4841,8 +4841,9 @@ $UseUv = $false
 if (Get-Command uv -ErrorAction SilentlyContinue) {
     $UseUv = $true
 } elseif ((Get-UvInstallDir) -and (Test-Path -LiteralPath (Join-Path (Get-UvInstallDir) "uv.exe"))) {
-    # Already installed, just not on this process's PATH: the pinned installer writes uv.exe here
-    # and only astral's own installer edits the registry PATH, so every update re-downloaded it.
+    # Already installed, just not on this process's PATH: the install writes uv.exe here and
+    # prepends the user registry PATH, which an update inheriting its parent's PATH never sees,
+    # so every update re-downloaded it.
     $env:PATH = (Get-UvInstallDir) + ";" + $env:PATH
     $UseUv = $true
 } elseif (-not $StageRoot) {
@@ -4864,9 +4865,10 @@ if (Get-Command uv -ErrorAction SilentlyContinue) {
         # Re-activate venv since Refresh-Environment rebuilds PATH from
         # registry and drops the venv's Scripts directory
         Enter-StudioVenv
-        # Refresh-Environment rebuilt PATH from the registry, which the pinned installer does not
-        # edit, so the uv just written is still invisible. Without this the installing run falls
-        # back to pip and records a manifest with no uv_version, which the next run rewrites.
+        # Refresh-Environment rebuilds PATH from the registry, and the user-PATH prepend does
+        # not always land there (UV_NO_MODIFY_PATH, UV_UNMANAGED_INSTALL, a runner that pins its
+        # own environment). Without this the installing run falls back to pip and records a
+        # manifest with no uv_version, which the next run rewrites.
         $uvDir = Get-UvInstallDir
         if ($uvDir -and (Test-Path -LiteralPath (Join-Path $uvDir "uv.exe"))) {
             $env:PATH = $uvDir + ";" + $env:PATH
@@ -4966,11 +4968,11 @@ except Exception:
     # escape: separating it from an old tree needs a RECORD walk here, and the
     # CLI already reports studio_install_manifest_missing.
     sys.exit(1 if os.path.isfile(os.path.join(sys.argv[1], 'install_manifest.py')) else 0)
-try:
-    ok = install_manifest.verify_install(deep = True)['ok']
-except TypeError:
-    ok = install_manifest.verify_install()['ok']  # older tree, no payload scan
-sys.exit(0 if ok else 1)
+import inspect
+# Only skip the payload scan on a tree too old to offer it. Catching TypeError instead
+# also swallowed one raised inside verify_install, and retried shallow on real damage.
+deep = {'deep': True} if 'deep' in inspect.signature(install_manifest.verify_install).parameters else {}
+sys.exit(0 if install_manifest.verify_install(**deep)['ok'] else 1)
 " "$PSScriptRoot" 2>$null
         return ($LASTEXITCODE -eq 0)
     } catch { return $false }

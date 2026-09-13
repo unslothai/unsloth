@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import pathlib
 import re
+import sys
 
 import pytest
 
@@ -270,7 +271,7 @@ def test_the_two_callers_share_one_definition_of_complete(script: pathlib.Path):
         else "_setup_install_is_verified() {"
     )
     assert helper in text
-    assert text.count("install_manifest.verify_install(deep = True)") == 1, (
+    assert text.count("install_manifest.verify_install(**deep)") == 1, (
         f"{script.name} has more than one deep verify; the offline rule and the "
         "incomplete-install guard must ask the same question"
     )
@@ -424,3 +425,33 @@ def test_the_windows_uv_probe_looks_where_the_pinned_installer_put_uv():
         "after installing uv, setup.ps1 relies on Refresh-Environment alone; it rebuilds PATH "
         "from a registry the pinned installer never edits, so that run falls back to pip"
     )
+
+
+@pytest.mark.parametrize(
+    "module_src, expected",
+    [
+        ("def verify_install(deep = False): return {'ok': True}", 0),
+        ("def verify_install(deep = False): return {'ok': False}", 1),
+        # The hole this replaced: `except TypeError` also caught one raised INSIDE a deep
+        # verify, and retried without the payload scan, so real damage read as verified.
+        ("def verify_install(deep = False): raise TypeError('inside')", 1),
+        ("def verify_install(): return {'ok': True}", 0),  # older tree, no such keyword
+        ("def verify_install(): return {'ok': False}", 1),
+    ],
+)
+def test_the_deep_verify_only_degrades_on_a_tree_that_lacks_the_keyword(
+    tmp_path, module_src, expected
+):
+    import subprocess
+
+    probe = re.search(
+        r'"\$VENV_DIR/bin/python" -c "\n(import os, sys\n.*?)" "\$SCRIPT_DIR"',
+        SETUP_SH.read_text(encoding = "utf-8"),
+        re.S,
+    )
+    assert probe, "the verify probe moved; this test is reading the wrong block"
+    (tmp_path / "install_manifest.py").write_text(module_src + "\n", encoding = "utf-8")
+    result = subprocess.run(
+        [sys.executable, "-c", probe.group(1), str(tmp_path)], capture_output = True
+    )
+    assert result.returncode == expected, result.stderr.decode()
