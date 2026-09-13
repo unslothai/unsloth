@@ -149,11 +149,14 @@ function failureForStatus(status: number): LogExportFailure {
 // exactly "Download failed with status 404." and nothing else in src-tauri
 // produces that phrase.
 //
-// Anchored to the whole message on purpose. Unanchored, two other error strings
-// can be made to contain the phrase: "Failed to save {path}: {error}" embeds a
-// path ending in the caller-supplied filename, and the desktop-auth failure
-// embeds raw subprocess stderr. Either could turn a disk-full error into a
-// "forbidden" toast.
+// Anchored to the START of the message on purpose. Unanchored, two other error
+// strings can be made to contain the phrase: "Failed to save {path}: {error}"
+// embeds a path ending in the caller-supplied filename, and the desktop-auth
+// failure embeds raw subprocess stderr. Either could turn a disk-full error into
+// a "forbidden" toast. A start anchor is enough rather than a full match because
+// every other error reachable from this command begins with its own fixed
+// literal prefix, and the environment-controlled part is always interpolated
+// after that prefix, never at position 0.
 const DESKTOP_STATUS_PATTERN = /^Download failed with status (\d{3})\./;
 
 function desktopExportError(error: unknown): LogExportError {

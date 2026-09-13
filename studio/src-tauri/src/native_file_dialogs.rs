@@ -614,17 +614,30 @@ fn live_backend_port(state: &State<'_, crate::process::BackendState>) -> Result<
         .ok_or_else(|| "Backend is not ready".to_string())
 }
 
-/// Windows canonicalisation returns the `\\?\` verbatim form, which is not the path a
-/// user recognises in a toast. Everywhere else this is the identity.
-#[cfg(windows)]
-fn strip_verbatim_prefix(text: String) -> String {
-    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
-        return format!(r"\\{rest}");
+/// The rewrite itself, compiled on EVERY platform so that a test for it runs in
+/// ordinary CI rather than only on a Windows runner. Gating the body behind
+/// `cfg(windows)` left the UNC branch below covered on no platform at all.
+///
+/// The prefix compare is case-insensitive: `fs::canonicalize` returns the uppercase
+/// `UNC` spelling today, but a lowercase one would otherwise fall through to the
+/// second arm and come out as `unc\server\share`, which is worse than leaving it
+/// alone -- it looks like a relative path.
+fn strip_verbatim_prefix_inner(text: String) -> String {
+    const UNC: &str = r"\\?\UNC\";
+    if text.len() >= UNC.len() && text[..UNC.len()].eq_ignore_ascii_case(UNC) {
+        return format!(r"\\{}", &text[UNC.len()..]);
     }
     match text.strip_prefix(r"\\?\") {
         Some(rest) => rest.to_string(),
         None => text,
     }
+}
+
+/// Windows canonicalisation returns the `\\?\` verbatim form, which is not the path a
+/// user recognises in a toast. Everywhere else this is the identity.
+#[cfg(windows)]
+fn strip_verbatim_prefix(text: String) -> String {
+    strip_verbatim_prefix_inner(text)
 }
 
 #[cfg(not(windows))]
@@ -1418,6 +1431,43 @@ mod tests {
         assert!(
             require_loopback_url("http://127.0.0.1:8888/api/settings/debug/logs/export").is_ok()
         );
+    }
+
+    /// The verbatim rewrite, exercised on whatever platform CI happens to be.
+    ///
+    /// `strip_verbatim_prefix` itself is `cfg(windows)`, so on a Linux or macOS
+    /// runner it is the identity and proves nothing; its only caller resolves to
+    /// the identity too. That left the UNC branch -- the one a user hits when
+    /// Downloads is on a network share -- covered on no platform at all. This
+    /// drives the inner function, which is compiled everywhere.
+    #[test]
+    fn a_verbatim_windows_path_is_shown_the_way_a_user_writes_it() {
+        // Drive-letter form, the ordinary case.
+        assert_eq!(
+            strip_verbatim_prefix_inner(r"\\?\C:\Users\u\Downloads\a.zip".to_string()),
+            r"C:\Users\u\Downloads\a.zip"
+        );
+        // UNC form: `\\?\UNC\server\share` names `\\server\share`, and dropping
+        // only the `\\?\` would leave the nonsense `UNC\server\share`.
+        assert_eq!(
+            strip_verbatim_prefix_inner(r"\\?\UNC\server\share\a.zip".to_string()),
+            r"\\server\share\a.zip"
+        );
+        // Lowercase spelling. canonicalize returns uppercase today, so this is
+        // about not degrading if that ever changes.
+        assert_eq!(
+            strip_verbatim_prefix_inner(r"\\?\unc\server\share\a.zip".to_string()),
+            r"\\server\share\a.zip"
+        );
+        // Anything without the prefix is handed back untouched, including a path
+        // shorter than the prefix itself, which must not panic on the slice.
+        assert_eq!(
+            strip_verbatim_prefix_inner(r"C:\Users\u\a.zip".to_string()),
+            r"C:\Users\u\a.zip"
+        );
+        assert_eq!(strip_verbatim_prefix_inner("/home/u/a.zip".to_string()), "/home/u/a.zip");
+        assert_eq!(strip_verbatim_prefix_inner(r"\\".to_string()), r"\\");
+        assert_eq!(strip_verbatim_prefix_inner(String::new()), "");
     }
 
     #[test]

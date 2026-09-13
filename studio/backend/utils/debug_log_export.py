@@ -54,6 +54,7 @@ _READ_CHUNK_BYTES = 256 * 1024
 MAX_RECORD_BYTES = 32 * 1024
 OVERSIZED_MARKER = "[oversized log record omitted]"
 TRUNCATED_MARKER = "[export time budget reached, rest of this log omitted]"
+CUT_MARKER = "[export size budget reached, end of this record omitted]"
 UNREADABLE_MARKER = "[log record omitted: not UTF-8 text the redactor can mask]"
 
 # The tail kept from any one log. A session log runs to gigabytes and the whole
@@ -103,8 +104,9 @@ def _safe_basename(label: str) -> str:
     name = label.replace("\\", "/").rsplit("/", 1)[-1].strip()
     # A newline would forge an entry in EXPORT_WARNINGS.txt, which is one line
     # per source; the rest are simply not filenames.
-    name = "".join("_" if character < " " or character == "\x7f" else character
-                   for character in name)
+    name = "".join(
+        "_" if character < " " or character == "\x7f" else character for character in name
+    )
     # POSIX filenames are bytes, so `Path.name` can hand back lone surrogates
     # from `surrogateescape`. zipfile cannot encode those, and the raise lands
     # outside both OSError handlers and takes the whole export down with a 500.
@@ -120,11 +122,21 @@ def _member_name(family: str, label: str, used: set[str]) -> str:
     Two studio homes can hold a same-named file in the same family, and a ZIP
     with a duplicated member extracts as whichever entry the tool happens to
     reach last, silently losing the other one.
+
+    The collision key is case-folded because the volume the archive is
+    EXTRACTED on decides what collides, not the one it was built on. Windows and
+    default APFS treat `Server.log` and `server.log` as one name, so comparing
+    case-sensitively here emits two members that land on top of each other --
+    the exact silent loss this function exists to prevent, just moved from the
+    builder to the extractor. `.lower()` rather than `.casefold()`: casefold
+    over-folds for a filename (Turkish dotless i, German sharp s), while
+    `.lower()` is what `ntpath.normcase` applies. Only the KEY is folded; the
+    member keeps the name the file actually has.
     """
     base = _safe_basename(label)
     candidate = f"{family}/{base}"
-    if candidate not in used:
-        used.add(candidate)
+    if candidate.lower() not in used:
+        used.add(candidate.lower())
         return candidate
     stem, dot, extension = base.rpartition(".")
     if not dot:
@@ -134,10 +146,10 @@ def _member_name(family: str, label: str, used: set[str]) -> str:
     index = 2
     # Loops: the first suffix can itself already be taken, by a real file named
     # that way or by an earlier collision.
-    while f"{family}/{stem}-{index}{extension}" in used:
+    while f"{family}/{stem}-{index}{extension}".lower() in used:
         index += 1
     candidate = f"{family}/{stem}-{index}{extension}"
-    used.add(candidate)
+    used.add(candidate.lower())
     return candidate
 
 
@@ -155,6 +167,21 @@ def _open_verified(path: str) -> tuple[IO[bytes], int]:
     window between enumeration and open without closing it entirely.
 
     Returns the handle and its raw descriptor.
+
+    One residual, on Windows only, that this cannot close. `O_NOFOLLOW` is
+    POSIX-only, so the `getattr` above collapses to 0 there and the open follows
+    whatever the entry is. A true symlink is still refused -- CPython sets
+    `S_IFLNK` for a reparse point whose tag is `IO_REPARSE_TAG_SYMLINK`, and a
+    junction resolves to a directory and fails `S_ISREG`. But for any OTHER file
+    reparse tag (AppExecLink, a OneDrive placeholder, dedup), `win32_xstat` falls
+    back to traversing, so `before` describes the TARGET, the flagless open
+    reaches the same target, and the device/inode compare matches. Closing that
+    needs `CreateFileW` with `FILE_FLAG_OPEN_REPARSE_POINT`, which `os.open`
+    cannot express. It is bounded rather than open: `debug_log_sources` resolves
+    every entry with `realpath` and refuses a target outside the log directory,
+    so only the enumeration-to-open window is exposed -- and anyone who can write
+    to that directory can already hard-link a file into it, which no platform
+    here refuses.
     """
     before = os.stat(path, follow_symlinks = False)
     if not stat.S_ISREG(before.st_mode):
@@ -258,9 +285,7 @@ def _seek_to_tail(handle: IO[bytes], fd: int, allowance: int) -> tuple[int, int]
     return size, size
 
 
-def _redacted_records(
-    handle: IO[bytes], fd: int, limit: int, deadline: float
-) -> Iterator[str]:
+def _redacted_records(handle: IO[bytes], fd: int, limit: int, deadline: float) -> Iterator[str]:
     """Every line of one log, masked, in bounded chunks, stopping after `limit`.
 
     Never `handle.read()`: a runner log can be gigabytes, and the export must
@@ -286,6 +311,12 @@ def _redacted_records(
     # The current record already blew the budget; everything up to the next
     # newline belongs to it and is dropped with it.
     dropping = False
+    # Whether the read stopped because the FILE ended or because the ALLOWANCE
+    # did. The trailing bytes mean different things in the two cases and cannot
+    # be told apart afterwards: at EOF they are a genuine last record written
+    # without a newline, and at the allowance they are the front of a record
+    # whose remainder was never read.
+    at_eof = False
     while consumed - start < limit:
         chunk = handle.read(min(_READ_CHUNK_BYTES, limit - (consumed - start)))
         if not chunk:
@@ -294,6 +325,7 @@ def _redacted_records(
             # not line up with the head. Growth is ordinary -- it is a live log.
             if os.fstat(fd).st_size < consumed:
                 raise OSError(errno.ESTALE, "log file shrank during export")
+            at_eof = True
             break
         consumed += len(chunk)
         buffer += chunk
@@ -325,6 +357,21 @@ def _redacted_records(
     # buffer after every chunk, so it cannot be over budget by this point.
     if dropping:
         yield OVERSIZED_MARKER
+    elif buffer and not at_eof:
+        # The allowance ran out inside a record rather than the file ending, so
+        # these bytes are the FRONT of a record whose remainder was never read.
+        # Emitting them would present a cut line as a whole one, in the file the
+        # reader is most likely to trust -- and `_KV_RE` needs six characters of
+        # value before it masks, so a cut landing inside a short value ships its
+        # first characters in the clear. A marker says what happened instead.
+        #
+        # Reachable, not theoretical: when `_seek_to_tail` takes the forward-scan
+        # path it starts LATER than `size - allowance`, so `skipped + allowance`
+        # is already past the size the descriptor reported. On a log being
+        # appended to -- the active session log, which is live by definition when
+        # someone is exporting it -- the read then runs into the new bytes and
+        # stops on the allowance rather than on EOF.
+        yield CUT_MARKER
     elif buffer:
         yield _redact_record(buffer)
 
@@ -409,10 +456,20 @@ def build_log_archive() -> tempfile.SpooledTemporaryFile:
                             # wrong story. `remaining` is deliberately NOT
                             # spent: this is a property of one file, and the
                             # next source may still fit.
-                            warnings.append(
-                                f"{member}: omitted, no complete record in the last "
-                                f"{allowance} bytes"
-                            )
+                            #
+                            # Which of the two caps produced the window decides
+                            # what to say. If the budget is what shrank it, the
+                            # file is not at fault and naming its byte count
+                            # reads as though it were -- and since `remaining` is
+                            # not spent here, that wrong message would then
+                            # repeat for every source after this one.
+                            if allowance < MAX_SOURCE_TAIL_BYTES:
+                                warnings.append(f"{member}: omitted, export size budget reached")
+                            else:
+                                warnings.append(
+                                    f"{member}: omitted, no complete record in the last "
+                                    f"{allowance} bytes"
+                                )
                             continue
                         with archive.open(member, "w") as destination:
                             if skipped:

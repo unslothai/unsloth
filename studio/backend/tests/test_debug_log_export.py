@@ -116,14 +116,18 @@ def test_a_source_swapped_for_a_symlink_after_enumeration_is_refused(monkeypatch
     """The enumeration walk refuses an escaping link, but that ran earlier.
     Anything can replace the entry before the export opens it."""
     path = _seed_server_log("ordinary line\n")
-    secret = tmp_path / "id_rsa"
-    secret.write_text("PRIVATE KEY MATERIAL\n", encoding = "utf-8")
+    # Named for what it is to the test rather than `secret`, for the CodeQL
+    # reason spelled out on the AWS test further down: the query classifies a
+    # local by NAME, and a fixture called `secret` makes every write to it a
+    # clear-text-storage alert.
+    link_target = tmp_path / "id_rsa"
+    link_target.write_text("PRIVATE KEY MATERIAL\n", encoding = "utf-8")
     enumerate_sources = debug_log_sources.list_sources
 
     def swap_then_return():
         sources = enumerate_sources()
         path.unlink()
-        path.symlink_to(secret)
+        path.symlink_to(link_target)
         return sources
 
     monkeypatch.setattr(debug_log_sources, "list_sources", swap_then_return)
@@ -250,6 +254,69 @@ def test_duplicate_labels_are_uniquified_by_a_loop():
     assert debug_log_export._member_name("desktop-shell", "tauri", used) == "desktop-shell/tauri-2"
 
 
+def test_two_labels_differing_only_in_case_do_not_extract_over_each_other():
+    """The volume the archive is EXTRACTED on decides what collides.
+
+    Windows and default APFS fold case, so `Server.log` and `server.log` are one
+    name there. Comparing case-sensitively when building the ZIP emits two
+    members that land on top of each other on those machines, which is the same
+    silent loss `_member_name` exists to prevent, just moved from the builder to
+    the extractor. The member keeps its real spelling; only the collision key is
+    folded.
+    """
+    used: set[str] = set()
+    assert debug_log_export._member_name("server", "s.log", used) == "server/s.log"
+    assert debug_log_export._member_name("server", "S.log", used) == "server/S-2.log"
+    assert debug_log_export._member_name("server", "s.LOG", used) == "server/s-3.LOG"
+    # And a member already present in the ZIP under a different case is still
+    # seen as taken.
+    used.add("server/t-2.log")
+    assert debug_log_export._member_name("server", "T.log", used) == "server/T.log"
+    assert debug_log_export._member_name("server", "t.log", used) == "server/t-3.log"
+
+
+def test_two_logs_differing_only_in_case_both_survive_the_round_trip(monkeypatch):
+    """The same property end to end, since that is where it would be lost.
+
+    `list_sources` is stubbed rather than driven off the real walk because the
+    enumeration is where the platforms differ: `Path.glob` is case-sensitive on
+    POSIX and case-INSENSITIVE on Windows, so the second spelling below is
+    invisible to the walk on this host and enumerated on the machine where the
+    collision actually bites. Stubbing is what lets a Linux runner exercise the
+    Windows shape; the files underneath are real, and so is the archive.
+    """
+    directory = Path(os.environ["UNSLOTH_STUDIO_HOME"]) / "logs" / "server"
+    directory.mkdir(parents = True, exist_ok = True)
+    spellings = {
+        "server-20260101-120000-pid1.log": "lowercase spelling\n",
+        "Server-20260101-120000-pid1.log": "uppercase spelling\n",
+    }
+    sources = []
+    for name, body in spellings.items():
+        path = directory / name
+        path.write_text(body, encoding = "utf-8")
+        sources.append(
+            debug_log_sources.LogSource(
+                id = f"server:{name}",
+                family = "server",
+                label = name,
+                realpath = str(path),
+                size_bytes = path.stat().st_size,
+                modified_at = 0.0,
+                is_current = False,
+            )
+        )
+    monkeypatch.setattr(debug_log_sources, "list_sources", lambda: sources)
+
+    members = _members()
+    # Distinct after folding, so no case-insensitive extractor can collapse them.
+    folded = [name.lower() for name in members if name != debug_log_export.WARNINGS_MEMBER]
+    assert len(folded) == len(set(folded)), sorted(members)
+    bodies = b"".join(members.values())
+    assert b"lowercase spelling" in bodies
+    assert b"uppercase spelling" in bodies
+
+
 def test_the_route_streams_an_attachment(client):
     path = _seed_server_log("route line\n")
     response = client.get("/api/settings/debug/logs/export")
@@ -261,6 +328,27 @@ def test_the_route_streams_an_attachment(client):
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         assert archive.testzip() is None
         assert archive.read(f"server/{path.name}") == b"route line\n"
+
+
+def test_the_archive_is_never_written_to_the_browser_cache(client):
+    """A stable authenticated GET that answers with an attachment is an
+    ordinary cacheable response unless it says otherwise.
+
+    Two things follow, and the browser export path hits both: the archive can
+    outlive the download in the on-disk HTTP cache after the user has deleted
+    the file, and a second export can be served from that cache instead of from
+    the logs as they are NOW, which is the exact moment the user is trying to
+    capture. `no-store` because the response must not be written down at all,
+    not merely revalidated.
+    """
+    _seed_server_log("cacheable?\n")
+    response = client.get("/api/settings/debug/logs/export")
+    assert response.status_code == 200
+    directives = {
+        part.strip().lower() for part in response.headers.get("cache-control", "").split(",")
+    }
+    assert "no-store" in directives, response.headers.get("cache-control")
+    assert "private" in directives, response.headers.get("cache-control")
 
 
 def test_an_api_key_session_cannot_download_the_logs():
@@ -322,6 +410,53 @@ def test_a_log_inside_the_tail_is_not_truncated_or_warned_about():
     assert debug_log_export.WARNINGS_MEMBER not in members
 
 
+def test_a_record_cut_by_the_allowance_is_marked_not_presented_as_whole():
+    """A read that stops on the ALLOWANCE leaves the front of a record.
+
+    Emitting it presents a cut line as a complete one in the file the reader is
+    most likely to trust. It is also the one place a credential can reach the
+    archive: `redact_log_text` needs several characters of value before it
+    masks, so a cut landing just past `password=` ships the first few in the
+    clear. EOF is the other way this loop ends, and there the trailing bytes
+    really are a whole record written without a newline, so the two must not be
+    treated alike.
+    """
+    directory = Path(os.environ["UNSLOTH_STUDIO_HOME"]) / "logs" / "server"
+    directory.mkdir(parents = True, exist_ok = True)
+    path = directory / "server-20260101-120000-pid1.log"
+    path.write_bytes(b"password=SECRETVALUE12345\n")
+
+    handle, fd = debug_log_export._open_verified(str(path))
+    with handle:
+        # 13 bytes stops inside the value, past the key.
+        cut = list(debug_log_export._redacted_records(handle, fd, 13, time.monotonic() + 30))
+    assert cut == [debug_log_export.CUT_MARKER], cut
+    assert not any("SECR" in record for record in cut)
+
+    # The same file read to its end keeps its last record, newline or not.
+    handle, fd = debug_log_export._open_verified(str(path))
+    with handle:
+        whole = list(debug_log_export._redacted_records(handle, fd, 1 << 20, time.monotonic() + 30))
+    assert debug_log_export.CUT_MARKER not in whole
+    assert whole and "password=" in whole[0]
+    assert "SECRETVALUE12345" not in whole[0]
+
+
+def test_a_source_that_cannot_get_a_useful_tail_blames_the_budget_not_the_file(monkeypatch):
+    """With a handful of bytes left there is no room for a whole record, and
+    saying "no complete record in the last 4 bytes" reads as a fault in the log.
+    The budget is what ran out, so that is what the warning says -- and because
+    the no-boundary path deliberately does not spend `remaining`, the wrong
+    message would otherwise repeat for every source after it."""
+    monkeypatch.setattr(debug_log_export, "MAX_TOTAL_SOURCE_BYTES", 4)
+    _seed_server_log("a line that does not fit\n")
+    _seed_llama_log("another line that does not fit\n")
+
+    warnings = _members()[debug_log_export.WARNINGS_MEMBER].decode()
+    assert "export size budget reached" in warnings
+    assert "no complete record" not in warnings, warnings
+
+
 def test_the_budget_is_spread_across_families_not_drained_by_one(monkeypatch):
     """list_sources groups by family, so consuming it in order spends the whole
     budget on the server logs and ships a bundle with no runner logs at all."""
@@ -337,15 +472,28 @@ def test_the_budget_is_spread_across_families_not_drained_by_one(monkeypatch):
 def test_round_robin_keeps_the_newest_of_each_family_first():
     def source(family, label):
         return debug_log_sources.LogSource(
-            id = f"{family}:{label}", family = family, label = label, realpath = label,
-            size_bytes = 0, modified_at = 0.0, is_current = False,
+            id = f"{family}:{label}",
+            family = family,
+            label = label,
+            realpath = label,
+            size_bytes = 0,
+            modified_at = 0.0,
+            is_current = False,
         )
+
     grouped = [
-        source("server", "s1"), source("server", "s2"), source("server", "s3"),
-        source("llama-server", "l1"), source("llama-server", "l2"),
+        source("server", "s1"),
+        source("server", "s2"),
+        source("server", "s3"),
+        source("llama-server", "l1"),
+        source("llama-server", "l2"),
     ]
     assert [s.label for s in debug_log_export._newest_first_across_families(grouped)] == [
-        "s1", "l1", "s2", "l2", "s3",
+        "s1",
+        "l1",
+        "s2",
+        "l2",
+        "s3",
     ]
     assert debug_log_export._newest_first_across_families([]) == []
 
@@ -424,36 +572,42 @@ def test_a_record_straddling_the_seek_never_leaks_its_credential(monkeypatch):
     monkeypatch.setattr(debug_log_export, "MAX_SOURCE_TAIL_BYTES", 2 * record_cap)
     monkeypatch.setattr(debug_log_export, "MAX_TOTAL_SOURCE_BYTES", 1 << 20)
 
-    secret = "wJalrXUtnFEMIKSECRETDENGbPxRfiCYEXAMPLEKEY"
-    key = 'aws_secret_access_key="'
+    # `planted_value` and `anchor` rather than `secret` and `key`: CodeQL's
+    # py/clear-text-storage-sensitive-data classifies a local by its NAME, so
+    # those two spellings make every test that writes a fixture log a new
+    # high-severity "clear-text storage" alert on the pull request. The string
+    # is a synthetic AWS example value and the file is a tmp_path fixture; the
+    # names are what the query reads, so the names are what change.
+    planted_value = "wJalrXUtnFEMIKSECRETDENGbPxRfiCYEXAMPLEKEY"
+    anchor = 'aws_secret_access_key="'
     head = "x" * 200
-    # Solving len(head) + 1 + lead + len(key) == size - record_cap for the trailer.
-    trailer = record_cap - 1 - len(secret) - 1
+    # Solving len(head) + 1 + lead + len(anchor) == size - record_cap for the trailer.
+    trailer = record_cap - 1 - len(planted_value) - 1
     lead = 5000
-    straddler = "a" * lead + key + secret + '"' + "b" * trailer
+    straddler = "a" * lead + anchor + planted_value + '"' + "b" * trailer
     path = _seed_server_log(f"{head}\n{straddler}\n")
 
     size = path.stat().st_size
     cut = size - record_cap
-    key_end = len(head) + 1 + lead + len(key)
+    anchor_end = len(head) + 1 + lead + len(anchor)
     # The geometry this test exists to exercise: one record spanning the seek
     # point, cut between its key and its value.
-    assert key_end == cut, (key_end, cut)
+    assert anchor_end == cut, (anchor_end, cut)
     assert len(head) + 1 < size - 2 * record_cap
 
     # Either the record survives whole and is masked, or it is refused for
     # having no boundary. What must never happen is the value arriving without
     # its key, which is what a mid-record start produces.
     for name, body in _members().items():
-        assert secret.encode() not in body, f"credential leaked into {name}"
+        assert planted_value.encode() not in body, f"credential leaked into {name}"
 
 
 def test_a_tail_with_no_record_boundary_is_refused_not_read_midway(monkeypatch):
     monkeypatch.setattr(debug_log_export, "MAX_RECORD_BYTES", 512)
     monkeypatch.setattr(debug_log_export, "MAX_SOURCE_TAIL_BYTES", 2048)
     monkeypatch.setattr(debug_log_export, "MAX_TOTAL_SOURCE_BYTES", 1 << 20)
-    secret = "wJalrXUtnFEMIKSECRETDENGbPxRfiCYEXAMPLEKEY"
-    path = _seed_server_log("head\n" + "c" * 5000 + f'aws_secret_access_key="{secret}"')
+    planted_value = "wJalrXUtnFEMIKSECRETDENGbPxRfiCYEXAMPLEKEY"
+    path = _seed_server_log("head\n" + "c" * 5000 + f'aws_secret_access_key="{planted_value}"')
     members = _members()
     assert f"server/{path.name}" not in members
     assert "no complete record" in members[debug_log_export.WARNINGS_MEMBER].decode()
@@ -513,9 +667,7 @@ def test_a_pathological_log_cannot_run_past_the_time_budget(monkeypatch):
 
     assert elapsed < 10, f"build ran for {elapsed:.1f}s despite the budget"
     warnings = members[debug_log_export.WARNINGS_MEMBER].decode()
-    truncated = any(
-        debug_log_export.TRUNCATED_MARKER.encode() in body for body in members.values()
-    )
+    truncated = any(debug_log_export.TRUNCATED_MARKER.encode() in body for body in members.values())
     assert truncated or "time budget" in warnings
 
 

@@ -3743,7 +3743,24 @@ def export_debug_logs(
     return StreamingResponse(
         _chunks(),
         media_type = "application/zip",
-        headers = {"Content-Disposition": f'attachment; filename="unsloth-logs-{stamp}.zip"'},
+        headers = {
+            # Neither shipping caller reads this back: the browser path turns the
+            # response into a Blob and names it with its own local-time stamp, and
+            # the desktop path names the file in Rust. It is here for someone who
+            # hits the route with curl or an address bar, so do not assume the
+            # button honours it.
+            "Content-Disposition": f'attachment; filename="unsloth-logs-{stamp}.zip"',
+            # The browser path fetches this same stable URL and turns the response
+            # into a Blob, so without this the archive is an ordinary cacheable GET.
+            # Two things follow from that, and neither is acceptable for a bundle of
+            # log files: it can sit in the browser's on-disk cache after the user has
+            # deleted the download, and a second export can be answered from that
+            # cache rather than from the logs as they are now, which is exactly the
+            # moment the user is trying to capture. `no-store` rather than `no-cache`
+            # because the file must not be WRITTEN, not merely revalidated.
+            "Cache-Control": "no-store, no-cache, must-revalidate, private",
+            "Pragma": "no-cache",
+        },
         # Belt and braces with the `finally` above. On a client abort Starlette
         # cancels the task group without driving the generator to GeneratorExit,
         # so that `finally` does not run until a cyclic GC pass -- leaving up to
