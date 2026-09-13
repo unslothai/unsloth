@@ -1067,7 +1067,9 @@ def _stat_record(path: Path) -> "dict[str, Any] | None":
 
 
 def _runtime_file_records(
-    install_dir: Path, linked_libraries: "Iterable[str] | None" = None
+    install_dir: Path,
+    linked_libraries: "Iterable[str] | None" = None,
+    linked_runtime_directories: "Iterable[str] | None" = None,
 ) -> "dict[str, dict[str, Any]]":
     """What the installed payload is made of, in a form a later run can re-check without
     running it.
@@ -1085,9 +1087,17 @@ def _runtime_file_records(
         comparison catches that for the price of a stat; hashing hundreds of MB of
         kernels on every update would not be worth it.
 
-    *linked_libraries* comes from the slim selection being installed (or from the marker
-    being backfilled); without it only the binary tier is recorded, which is what a fat
-    bundle -- and a caller with no wiring in hand -- can honestly say.
+      * the ROCm kernel catalogs a slim bundle links get size + mtime_ns, recursively.
+        installed_tree_is_intact asks only that each of those directories hold ANY file
+        (`rglob("*")`), so a rocblas/ that lost or truncated one TensileLibrary blob and
+        kept the rest satisfied it, and the keep-existing path then reported an install
+        whose catalog no longer loads. Stat only, for the same reason as the libraries:
+        rocblas is hundreds of MB and this runs on every update.
+
+    *linked_libraries* and *linked_runtime_directories* come from the slim selection being
+    installed (or from the marker being backfilled); without them only the binary tier is
+    recorded, which is what a fat bundle -- and a caller with no wiring in hand -- can
+    honestly say.
     """
     records: dict[str, dict[str, Any]] = {}
     for parts in _RUNTIME_RECORD_BIN_DIRS:
@@ -1100,6 +1110,22 @@ def _runtime_file_records(
             record = _stat_record(bin_dir / name)
             if record is not None:
                 records[(bin_dir / name).relative_to(install_dir).as_posix()] = record
+        for name in linked_runtime_directories or ():
+            # Same bare-name rule as the libraries: a marker naming ../.. must not walk out
+            # of the install, and rglob on an attacker-chosen path would do exactly that.
+            if not isinstance(name, str) or not name or Path(name).name != name:
+                continue
+            runtime_dir = bin_dir / name
+            if not runtime_dir.is_dir():
+                continue
+            for path in sorted(runtime_dir.rglob("*")):
+                # Files only: a directory has no size worth recording, and a symlink is
+                # followed by stat, which is what the loader does too.
+                if not path.is_file():
+                    continue
+                record = _stat_record(path)
+                if record is not None:
+                    records[path.relative_to(install_dir).as_posix()] = record
         # Last, so a server the wiring loop happened to match is upgraded to the hashed tier.
         for name in _RUNTIME_RECORD_SERVER_NAMES:
             candidate = bin_dir / name
@@ -1123,10 +1149,10 @@ def runtime_file_records(install_dir: Path, selection: Any) -> "dict[str, dict[s
     Slim bundles pass their wired ggml filenames through, so the marker describes the
     hardlinks it is about to claim as well as the server it shipped.
     """
-    linked = (
-        selection.linked_libraries if getattr(selection, "install_kind", None) == "slim" else None
-    )
-    return _runtime_file_records(install_dir, linked)
+    is_slim = getattr(selection, "install_kind", None) == "slim"
+    linked = selection.linked_libraries if is_slim else None
+    runtime_dirs = getattr(selection, "linked_runtime_directories", None) if is_slim else None
+    return _runtime_file_records(install_dir, linked, runtime_dirs)
 
 
 def _runtime_files_match(install_dir: Path, marker: "dict[str, Any]") -> bool:
@@ -1303,8 +1329,14 @@ def _backfill_runtime_file_records(install_dir: Path) -> None:
     marker = load_prebuilt_metadata(install_dir)
     if not marker or marker.get("runtime_files"):
         return
-    linked = marker.get("linked_libraries") if marker.get("install_kind") == "slim" else None
-    records = _runtime_file_records(install_dir, linked if isinstance(linked, list) else None)
+    is_slim = marker.get("install_kind") == "slim"
+    linked = marker.get("linked_libraries") if is_slim else None
+    runtime_dirs = marker.get("linked_runtime_directories") if is_slim else None
+    records = _runtime_file_records(
+        install_dir,
+        linked if isinstance(linked, list) else None,
+        runtime_dirs if isinstance(runtime_dirs, list) else None,
+    )
     # An empty record is not evidence, and writing one would fail closed on every later update.
     if not records:
         return

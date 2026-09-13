@@ -608,3 +608,88 @@ def test_a_released_older_studio_ignores_the_new_key(tmp_path, monkeypatch):
     # It read the whole marker, new key included, and kept the install.
     assert "runtime_files" in result["marker_keys"]
     assert result["matches"] is True
+
+
+# The ROCm kernel catalogs. installed_tree_is_intact asks only that each linked runtime
+# directory hold ANY file, so damage inside one that leaves a sibling behind satisfied it,
+# and the offline keep then reported an install whose catalog no longer loads.
+ROCM_DIRS = ("rocblas", "hipblaslt")
+
+
+def _rocm_install(tmp_path: Path, monkeypatch) -> Path:
+    """A slim ROCm install with a populated kernel catalog, marker by the real writer."""
+    install_dir = tmp_path / "whisper.cpp"
+    bin_dir = WHISPER.runtime_bin_dir(install_dir, LINUX)
+    bin_dir.mkdir(parents = True)
+    server = WHISPER.installed_server_path(install_dir, LINUX)
+    server.write_bytes(SERVER_BYTES)
+    server.chmod(0o755)
+    (bin_dir / "libwhisper.so.1").write_bytes(b"dummy-libwhisper")
+    for name in SLIM_LIBRARIES:
+        (bin_dir / name).write_bytes(b"ggml-payload-" + name.encode("utf-8"))
+    for directory in ROCM_DIRS:
+        library = bin_dir / directory / "library"
+        library.mkdir(parents = True)
+        # Two blobs, so removing one leaves the directory non-empty and the old
+        # "contains at least one file" check satisfied.
+        (library / "TensileLibrary_gfx1100.dat").write_bytes(b"kernel-catalog-gfx1100" * 8)
+        (library / "TensileLibrary_gfx90a.dat").write_bytes(b"kernel-catalog-gfx90a" * 8)
+    monkeypatch.setattr(WHISPER, "installed_llama_ggml_tree", lambda *_a, **_k: GGML_TREE)
+    WHISPER.write_prebuilt_metadata(
+        install_dir,
+        _selection(
+            install_kind = "slim",
+            paired_llama_tag = "b9001",
+            linked_from = str(tmp_path / "llama.cpp" / "build" / "bin"),
+            linked_libraries = SLIM_LIBRARIES,
+            runtime_wiring_version = WHISPER.SLIM_RUNTIME_WIRING_VERSION,
+            linked_runtime_directories = ROCM_DIRS,
+        ),
+    )
+    return install_dir
+
+
+def test_the_rocm_catalog_files_are_recorded(tmp_path: Path, monkeypatch):
+    """A record that stops at the top-level libraries cannot see inside rocblas/."""
+    install_dir = _rocm_install(tmp_path, monkeypatch)
+    recorded = _marker(install_dir)["runtime_files"]
+    catalog = [name for name in recorded if "/library/TensileLibrary" in name]
+    assert len(catalog) == 4, f"the kernel catalogs were not recorded: {sorted(recorded)}"
+    assert all(recorded[name]["size"] > 0 for name in catalog)
+
+
+def test_a_catalog_blob_removed_beside_a_sibling_is_rejected(tmp_path: Path, monkeypatch):
+    """A full disk or an interrupted extract takes SOME of rocblas/, not all of it.
+
+    The directory stays non-empty, so the existence check passed and an offline update
+    kept a tree whose kernel catalog no longer loads.
+    """
+    install_dir = _rocm_install(tmp_path, monkeypatch)
+    assert _intact(install_dir) is True
+    bin_dir = WHISPER.runtime_bin_dir(install_dir, LINUX)
+    victim = bin_dir / "rocblas" / "library" / "TensileLibrary_gfx1100.dat"
+    victim.unlink()
+    assert list((bin_dir / "rocblas" / "library").iterdir()), "the sibling must remain"
+    assert _intact(install_dir) is False
+    assert _fast_path(install_dir) is False
+
+
+def test_a_truncated_catalog_blob_is_rejected(tmp_path: Path, monkeypatch):
+    """Truncation leaves the file in place, so only a recorded size catches it."""
+    install_dir = _rocm_install(tmp_path, monkeypatch)
+    assert _intact(install_dir) is True
+    victim = WHISPER.runtime_bin_dir(install_dir, LINUX) / "rocblas" / "library"
+    (victim / "TensileLibrary_gfx90a.dat").write_bytes(b"x")
+    assert _intact(install_dir) is False
+
+
+def test_a_marker_naming_a_traversing_runtime_directory_records_nothing_outside(
+    tmp_path: Path, monkeypatch
+):
+    """rglob on a marker-supplied path would walk out of the install entirely."""
+    install_dir = _rocm_install(tmp_path, monkeypatch)
+    records = WHISPER._runtime_file_records(
+        install_dir, SLIM_LIBRARIES, ("../../../etc", "rocblas")
+    )
+    assert records, "the legitimate directory should still be recorded"
+    assert all(not name.startswith("..") for name in records), sorted(records)
