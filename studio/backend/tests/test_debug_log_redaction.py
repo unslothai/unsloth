@@ -392,11 +392,10 @@ def test_terminated_ansi_sequences_are_still_stripped():
         "\x1bPsome dcs\x1b\\api_key=abcdef123456",
         "\x9dbody\x9capi_key=abcdef123456",
         "\x9bmapi_key=abcdef123456",
-        # Charset designators and the DECSC pair, which the old single-character
-        # Fe class left in the text one byte at a time.
-        "\x1b(Bapi_key=abcdef123456",
+        # DECSC, which the old single-character Fe class left in the text as a
+        # bare "7" welded to whatever followed it.
         "\x1b7api_key=abcdef123456",
-        "api\x1b(B_key=abcdef123456",
+        "api\x1b7_key=abcdef123456",
     ):
         masked = redact_log_text(text)
         assert "abcdef123456" not in masked and "hunter2secret" not in masked, text
@@ -422,9 +421,6 @@ def test_a_stripped_sequence_costs_only_itself():
         "\x1bM",
         "\x1b7",
         "\x1b8",
-        "\x1b(B",
-        "\x1b)0",
-        "\x1b#8",
     ):
         assert redact_log_text(sequence + line + sequence) == line, sequence
     # A flag and a query parameter must survive an escape in front of them: the
@@ -435,17 +431,35 @@ def test_a_stripped_sequence_costs_only_itself():
 
 def test_a_cut_escape_does_not_eat_the_character_behind_it():
     """A writer cut after an introducer must not have the next character read as
-    the sequence's own final byte. "\\x1b(" in front of a key took the "a" with
-    it and left "pi_key", which is the welding bug the other way round: the key
-    is damaged rather than extended, and it stops matching either way."""
-    for text in (
-        "\x1b(api_key=abcdef123456",
-        "\x1b)api_key=abcdef123456",
-        "\x1b#api_key=abcdef123456",
-        "\x1b%api_key=abcdef123456",
-        "\x1b(password=abcdef123456",
-    ):
-        assert "abcdef123456" not in redact_log_text(text), text
+    the sequence's own final byte. That is the welding bug the other way round:
+    the key is damaged rather than extended, and it stops matching either way.
+
+    It is why there is no charset designator branch. Its final byte comes from a
+    range that also holds every plausible first character of a key, so a cut
+    "\\x1b(" ate the "a" of api_key, the "C" of "Cookie:", the "B" of "Bearer"
+    and the "?" of a presigned URL. Narrowing the range does not separate them.
+    """
+    for introducer in ("\x1b(", "\x1b)", "\x1b#", "\x1b%", "\x1b*", "\x1b+"):
+        for text in (
+            introducer + "api_key=abcdef123456",
+            introducer + "API_KEY=abcdef123456",
+            introducer + "password=abcdef123456",
+            introducer + "Cookie: session=abcdef123456",
+            introducer + "?token=abcdef123456&next=1",
+        ):
+            assert "abcdef123456" not in redact_log_text(text), text
+    assert "abcdef123456" not in redact_log_text("Authorization: \x1b(Bearer abcdef123456")
+
+
+def test_a_cut_seven_bit_string_stops_at_an_eight_bit_introducer():
+    """A control string cannot nest inside another, and that holds across the
+    two forms: a cut "\\x1b]" whose body accepted the C1 introducers swallowed
+    the 8 bit sequence after it and every visible character with it."""
+    from utils.log_redaction import _strip_ansi
+
+    assert _strip_ansi("open \x1b]cut\x9b36mdocs\x9b0m for help") == "open docs for help"
+    assert _strip_ansi("\x1bPcut\x9d0;t\x9ckept") == "kept"
+    assert "abcdef123456" not in redact_log_text("\x1b]cut\x9b36mapi_key=abcdef123456")
 
 
 def test_removing_a_lone_escape_keeps_the_boundary_it_provided():
