@@ -393,6 +393,7 @@ def prepare_mcp_image_recipient(
     *,
     scope = None,
     use_oauth = False,
+    cancel_event = None,
     timeout = 30.0,
 ):
     """Connect without image bytes before showing the recipient in a consent card.
@@ -414,13 +415,14 @@ def prepare_mcp_image_recipient(
                 "capabilities": {},
                 "clientInfo": {"name": "unsloth-private-image", "version": "1"},
             },
+            cancel_event = cancel_event,
         )
         if not isinstance(initialized, dict) or not isinstance(
             initialized.get("protocolVersion"), str
         ):
             raise _PrivateTransportUnavailable
         transport.protocol = initialized["protocolVersion"]
-        transport.exchange("notifications/initialized", {}, notify = True)
+        transport.exchange("notifications/initialized", {}, cancel_event = cancel_event, notify = True)
         with _private_recipients_lock:
             expired = [
                 identity

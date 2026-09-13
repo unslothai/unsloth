@@ -225,6 +225,7 @@ class McpImageToolRun:
                     quote(self.session_id, safe = ""), quote(self.thread_id, safe = "")
                 ),
                 use_oauth = bool(server.get("use_oauth")),
+                cancel_event = self.cancel_event,
             )
             destination = mcp_image_recipient_location(recipient)
             expires_in_ms = mcp_image_recipient_remaining_ms(recipient)

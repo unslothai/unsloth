@@ -279,6 +279,23 @@ class VisionImageAdapter implements AttachmentAdapter {
   accept = "image/jpeg,image/png,image/webp,image/gif";
   private readonly pendingToolOnly = new Set<string>();
 
+  private async mcpToolOnlyEnabled(): Promise<boolean> {
+    if (!useChatRuntimeStore.getState().mcpEnabledForChat) return false;
+    try {
+      const servers = await listMcpServers();
+      return servers.some(
+        (server) =>
+          server.is_enabled &&
+          server.allow_image_attachments &&
+          (server.image_input_mappings?.length ?? 0) > 0,
+      );
+    } catch {
+      const reason = "Could not verify MCP image attachment settings. Try again.";
+      toast.error(reason);
+      throw new Error(reason);
+    }
+  }
+
   async add({ file }: { file: File }): Promise<PendingAttachment> {
     const state = useChatRuntimeStore.getState();
     const checkpoint = state.params.checkpoint;
@@ -315,22 +332,7 @@ class VisionImageAdapter implements AttachmentAdapter {
       visionDisabledByUser: state.loadedVisionDisabledByUser,
       mmprojFallbackReason: state.mmprojFallbackReason,
     });
-    let mcpToolOnly = false;
-    if (state.mcpEnabledForChat) {
-      try {
-        const servers = await listMcpServers();
-        mcpToolOnly = servers.some(
-          (server) =>
-            server.is_enabled &&
-            server.allow_image_attachments &&
-            (server.image_input_mappings?.length ?? 0) > 0,
-        );
-      } catch {
-        const reason = "Could not verify MCP image attachment settings. Try again.";
-        toast.error(reason);
-        throw new Error(reason);
-      }
-    }
+    const mcpToolOnly = await this.mcpToolOnlyEnabled();
     if (unavailableReason && !mcpToolOnly) {
       toast.error(unavailableReason);
       throw new Error(unavailableReason);
@@ -375,6 +377,13 @@ class VisionImageAdapter implements AttachmentAdapter {
       (attachment as PendingAttachment & { mcpToolOnly?: boolean })
         .mcpToolOnly === true;
     try {
+      const currentToolOnly = await this.mcpToolOnlyEnabled();
+      if (currentToolOnly !== toolOnly) {
+        const reason =
+          "MCP image sharing settings changed. Remove and attach the image again.";
+        toast.error(reason);
+        throw new Error(reason);
+      }
       if (
         toolOnly &&
         (attachment.file.size > 10 * 1024 * 1024 ||

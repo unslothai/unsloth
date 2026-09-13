@@ -70,9 +70,19 @@ def cleanup_recipients():
         recipient.close()
 
 
-def test_http_send_is_one_use_and_redacts_echoes(http_recipient, caplog):
+def test_http_send_is_one_use_and_redacts_echoes(http_recipient, caplog, monkeypatch):
     url, calls = http_recipient
-    identity = mcp_client.prepare_mcp_image_recipient(url)
+    cancel = threading.Event()
+    initialization_events = []
+    original_exchange = mcp_client._PrivateMcpTransport.exchange
+
+    def exchange(transport, *args, **kwargs):
+        initialization_events.append(kwargs.get("cancel_event"))
+        return original_exchange(transport, *args, **kwargs)
+
+    monkeypatch.setattr(mcp_client._PrivateMcpTransport, "exchange", exchange)
+    identity = mcp_client.prepare_mcp_image_recipient(url, cancel_event = cancel)
+    assert initialization_events == [cancel, cancel]
     context = make_context(recipient = identity)
     result = mcp_client.call_tool_sync(
         url, None, "inspect_picture", PUBLIC, disclosure_context = context, config_check = lambda: True

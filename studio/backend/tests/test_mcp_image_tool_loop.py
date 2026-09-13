@@ -78,7 +78,12 @@ def image_request(tmp_path, monkeypatch):
         )
         tools.append({"type": "function", "function": {"name": name, "parameters": schema}})
     monkeypatch.setattr(image_loop, "_mapping_for_name", rows.get)
-    monkeypatch.setattr(mcp_client, "prepare_mcp_image_recipient", lambda *a, **k: "recipient")
+    recipient_events = []
+    monkeypatch.setattr(
+        mcp_client,
+        "prepare_mcp_image_recipient",
+        lambda *a, **k: recipient_events.append(k.get("cancel_event")) or "recipient",
+    )
     monkeypatch.setattr(
         mcp_client, "mcp_image_recipient_location", lambda _: "https://example.test/mcp"
     )
@@ -100,6 +105,7 @@ def image_request(tmp_path, monkeypatch):
         encoded = encoded,
         data_url = data_url,
         cancel = threading.Event(),
+        recipient_events = recipient_events,
     )
     yield fixture
     from core.inference.mcp_image_disclosure import revoke_mcp_image_references
@@ -127,6 +133,7 @@ def test_two_mappings_share_only_after_exact_one_use_approval(image_request, too
     field = f.rows[name][1]["field"]
     arguments = {field: run.reference.reference, "threshold": 0.3}
     approval = run.prepare_call(name, arguments, "call")
+    assert f.recipient_events[-1] is f.cancel
     assert tools[tool_index]["function"]["parameters"]["properties"][field]["enum"] == [
         run.reference.reference
     ]
