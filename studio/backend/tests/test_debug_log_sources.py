@@ -164,6 +164,33 @@ def test_the_default_source_prefers_the_running_session():
     assert debug_log_sources.resolve_source_id(default) == Path(os.path.realpath(path))
 
 
+def test_troubleshooting_bundle_includes_session_and_recent_llama_attempts():
+    _seed("llama-server", "llama-1765000100-port-8080.log")
+    _seed("llama-server", "llama-1765000200-port-8080.log")
+    server_path = _seed("server", f"server-20260813-101020-pid{os.getpid()}.log")
+    bundle = debug_log_sources.troubleshooting_source_ids()
+    assert bundle
+    assert debug_log_sources.resolve_source_id(bundle[0]) == Path(os.path.realpath(server_path))
+    llama_ids = {
+        s.id for s in debug_log_sources.list_sources() if s.family == "llama-server"
+    }
+    assert any(item in llama_ids for item in bundle[1:])
+
+
+def test_recent_llama_attempts_are_flagged():
+    paths = [
+        _seed("llama-server", f"llama-17650003{i:02d}-port-8080.log") for i in range(4)
+    ]
+    for index, path in enumerate(paths):
+        os.utime(path, (1_765_000_300 + index, 1_765_000_300 + index))
+    flagged = [
+        s.label
+        for s in debug_log_sources.list_sources()
+        if s.family == "llama-server" and s.is_recent_attempt
+    ]
+    assert len(flagged) == debug_log_sources.RECENT_LLAMA_ATTEMPTS
+
+
 def test_containment_survives_a_windows_extended_length_prefix(monkeypatch):
     """ntpath.realpath decides per call whether to keep the \\\\?\\ prefix, so
     the directory and the file in it can come back spelled differently. pathlib
