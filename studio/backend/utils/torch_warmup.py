@@ -207,6 +207,48 @@ def _warm_inference_backend() -> None:
     # Its constructor reaches hw.get_device(), so whoever builds it first pays for detection, which lazily is some request, and sync helpers call the getter inline from async handlers. Building it here makes the getter a dict read. After hardware, to reuse it.
     from core.inference import get_inference_backend
     get_inference_backend()
+    _prime_nvlink_topology()
+
+
+def _prime_nvlink_topology() -> Optional[threading.Thread]:
+    """Build the P2P gate's interconnect matrix so the load path does not pay the
+    probe inline. Returns the thread doing it, for tests to join.
+
+    Fire and forget, on a thread of its own. The probe can spend up to its NVML bound
+    plus the shell-out's timeout, and a warm stage that blocks that long delays every
+    stage behind it. Nothing here is on anyone's critical path: the gate re-probes on
+    demand, so a prime that never finishes costs one load its head start and nothing
+    else.
+
+    prime_nvlink_topology is NVML-only and publishes only a success: it must not
+    spawn the `nvidia-smi` fallback here, since a subprocess that can run for its
+    full timeout perturbs whatever else shares the process, and a miss cached this
+    early would keep P2P off for the life of it (#10613)."""
+
+    def _probe() -> None:
+        try:
+            from core.inference.llama_cpp import LlamaCppBackend
+
+            # Opted out, so the answer could never be used. The load path skips the
+            # probe for the same reason rather than pay its timeout to decide
+            # something the user already decided.
+            if os.environ.get("UNSLOTH_DISABLE_DC_TUNING") == "1":
+                return
+            if LlamaCppBackend._p2p_user_opted_out():
+                return
+            if LlamaCppBackend._effective_gpu_count() < 2:
+                return
+            if not LlamaCppBackend._all_selected_gpus_match(
+                LlamaCppBackend._NVLINK_FABRIC_GPU_RE, None
+            ):
+                return
+            LlamaCppBackend.prime_nvlink_topology()
+        except Exception as e:  # noqa: BLE001 -- a warm miss costs latency, never correctness
+            logger.debug("NVLink topology prime skipped: %r", e)
+
+    worker = threading.Thread(target = _probe, daemon = True, name = "nvlink-topology-prime")
+    worker.start()
+    return worker
 
 
 _STAGES = (

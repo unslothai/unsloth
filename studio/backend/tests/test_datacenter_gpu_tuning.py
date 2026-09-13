@@ -12,6 +12,8 @@ link across the selection and fails CLOSED on unknowns.
 
 from __future__ import annotations
 
+import ctypes
+import os
 import subprocess
 import sys
 import types
@@ -85,6 +87,7 @@ def _clear_cuda_visible_devices(monkeypatch):
 
 # Captured before the autouse fixture stubs it, so the probe can run for real.
 _REAL_IOMMU_IS_TRANSLATING = LlamaCppBackend.__dict__["_iommu_is_translating"].__func__
+_REAL_NVML_LIBRARY = LlamaCppBackend.__dict__["_nvml_library"].__func__
 
 
 def _no_nvidia_smi(*a, **k):
@@ -95,10 +98,17 @@ def _no_nvidia_smi(*a, **k):
 def _isolate_host_topology(monkeypatch):
     """Keep the P2P gate off the real host: only nvidia-smi's output is stubbed (the
     parser always runs), caches are dropped either side, and the platform probes are
-    pinned so a CI box with GPUs cannot colour the results."""
+    pinned so a CI box with GPUs cannot colour the results.
+
+    NVML is stubbed absent by default so the topo tests still exercise the parser;
+    with a real driver the fast path would answer first and the canned `nvidia-smi`
+    output would never be read. The NVML tests install their own fake."""
     LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    LlamaCppBackend._NVLINK_TOPO_GENERATION = 0
     LlamaCppBackend._IOMMU_CACHE = None
     monkeypatch.setattr(subprocess, "run", _no_nvidia_smi)
+    monkeypatch.setattr(LlamaCppBackend, "_nvml_library", staticmethod(lambda: None))
+    monkeypatch.delenv("UNSLOTH_P2P_TOPO_CROSSCHECK", raising = False)
     monkeypatch.setattr(LlamaCppBackend, "_iommu_is_translating", staticmethod(lambda *a: False))
     monkeypatch.setattr(LlamaCppBackend, "_running_virtualized", staticmethod(lambda: False))
     # Overrides off and the warn-once latch reset: no host env, no ordering leak.
@@ -110,6 +120,7 @@ def _isolate_host_topology(monkeypatch):
     LlamaCppBackend._warned_no_nvlink = False
     yield
     LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    LlamaCppBackend._NVLINK_TOPO_GENERATION = 0
     LlamaCppBackend._IOMMU_CACHE = None
     LlamaCppBackend._warned_no_nvlink = False
 
@@ -1060,3 +1071,514 @@ def test_gpu_id_provenance_is_recorded(monkeypatch):
     LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = None
     LlamaCppBackend._get_gpu_memory("llama-server")
     assert LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is not True
+
+
+# ---------------------------------------------------------------------------
+# NVML fast path: the same matrix from the driver's own NVML instead of
+# `nvidia-smi topo -m`. These drive a fake libnvidia-ml so the failure modes are
+# reachable without hardware.
+# ---------------------------------------------------------------------------
+
+_NVML_OK = 0
+_NVML_ERROR = 999
+
+
+class _FakeNvml:
+    """Stand-in for libnvidia-ml.so.1 with the real calling convention: rc out,
+    values written through byref pointers."""
+
+    def __init__(
+        self,
+        count = 2,
+        linked_pairs = None,
+        active_links = None,
+        status_rc = _NVML_OK,
+        status_value = None,
+        handle_rc = _NVML_OK,
+        init_rc = _NVML_OK,
+        count_rc = _NVML_OK,
+        missing = (),
+        fail_status_after = None,
+    ):
+        self.count = count
+        # None = every pair NVLinked.
+        self.linked_pairs = linked_pairs
+        # None = every device has links.
+        self.active_links = active_links
+        self.status_rc = status_rc
+        self.status_value = status_value
+        self.handle_rc = handle_rc
+        self.init_rc = init_rc
+        self.count_rc = count_rc
+        self.missing = set(missing)
+        self.fail_status_after = fail_status_after
+        self.status_calls = 0
+        self.shutdown_calls = 0
+
+    def _fn(self, name, impl):
+        if name in self.missing:
+            raise AttributeError(name)
+        return impl
+
+    # ctypes attribute lookups happen once, up front, in the probe.
+    @property
+    def nvmlInit_v2(self):
+        return self._fn("nvmlInit_v2", lambda: self.init_rc)
+
+    @property
+    def nvmlShutdown(self):
+        def _shutdown():
+            self.shutdown_calls += 1
+            return _NVML_OK
+
+        return _shutdown
+
+    @property
+    def nvmlDeviceGetCount_v2(self):
+        def _count(ref):
+            ref._obj.value = self.count
+            return self.count_rc
+
+        return self._fn("nvmlDeviceGetCount_v2", _count)
+
+    @property
+    def nvmlDeviceGetHandleByIndex_v2(self):
+        def _handle(index, ref):
+            ref._obj.value = 1000 + int(getattr(index, "value", index))
+            return self.handle_rc
+
+        return self._fn("nvmlDeviceGetHandleByIndex_v2", _handle)
+
+    @property
+    def nvmlDeviceGetNvLinkState(self):
+        def _state(handle, link, ref):
+            device = int(handle.value) - 1000
+            links = 4 if self.active_links is None else self.active_links[device]
+            if int(getattr(link, "value", link)) >= links:
+                return _NVML_ERROR
+            ref._obj.value = 1  # NVML_FEATURE_ENABLED
+            return _NVML_OK
+
+        return self._fn("nvmlDeviceGetNvLinkState", _state)
+
+    @property
+    def nvmlDeviceGetP2PStatus(self):
+        def _status(a, b, index, ref):
+            self.status_calls += 1
+            if self.fail_status_after is not None and self.status_calls > self.fail_status_after:
+                return _NVML_ERROR
+            if self.status_rc != _NVML_OK:
+                return self.status_rc
+            pair = (int(a.value) - 1000, int(b.value) - 1000)
+            linked = self.linked_pairs is None or pair in self.linked_pairs
+            if self.status_value is not None:
+                ref._obj.value = self.status_value
+            else:
+                ref._obj.value = 0 if linked else 5  # OK / NOT_SUPPORTED
+            return _NVML_OK
+
+        return self._fn("nvmlDeviceGetP2PStatus", _status)
+
+
+def _use_nvml(monkeypatch, fake):
+    monkeypatch.setattr(LlamaCppBackend, "_nvml_library", staticmethod(lambda: fake))
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    return fake
+
+
+def test_nvml_all_pairs_nvlinked_is_a_complete_matrix(monkeypatch):
+    _use_nvml(monkeypatch, _FakeNvml(count = 4))
+    matrix = LlamaCppBackend._probe_nvml_nvlink_topology()
+    assert set(matrix) == {(a, b) for a in range(4) for b in range(4) if a != b}
+    assert all(LlamaCppBackend._label_is_nvlink(v) for v in matrix.values())
+
+
+def test_nvml_is_preferred_over_the_shell_out(monkeypatch):
+    """The whole point: on a host where both answer, nvidia-smi is never spawned."""
+    _use_nvml(monkeypatch, _FakeNvml(count = 2))
+    calls = []
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: calls.append(a)
+        or types.SimpleNamespace(returncode = 0, stdout = TOPO_PCIE_2X, stderr = ""),
+    )
+    matrix = LlamaCppBackend._nvlink_topology()
+    assert LlamaCppBackend._matrix_is_nvml(matrix)
+    assert calls == []
+
+
+def test_nvml_absent_falls_back_to_topo(monkeypatch):
+    monkeypatch.setattr(LlamaCppBackend, "_nvml_library", staticmethod(lambda: None))
+    _use_topo(monkeypatch, TOPO_NVLINK_8X)
+    matrix = LlamaCppBackend._nvlink_topology()
+    assert matrix and not LlamaCppBackend._matrix_is_nvml(matrix)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"init_rc": _NVML_ERROR},
+        {"count_rc": _NVML_ERROR},
+        {"handle_rc": _NVML_ERROR},
+        {"status_rc": _NVML_ERROR},
+        {"missing": ("nvmlDeviceGetP2PStatus",)},
+        {"missing": ("nvmlDeviceGetNvLinkState",)},
+        {"count": 1},
+    ],
+)
+def test_nvml_unknown_falls_through_to_topo(monkeypatch, kwargs):
+    """Every way NVML can fail to answer must reach the shell-out, not a verdict."""
+    _use_nvml(monkeypatch, _FakeNvml(**kwargs))
+    assert LlamaCppBackend._probe_nvml_nvlink_topology() is None
+    _use_topo_after_nvml(monkeypatch, _FakeNvml(**kwargs), TOPO_NVLINK_8X)
+    matrix = LlamaCppBackend._nvlink_topology()
+    assert matrix and not LlamaCppBackend._matrix_is_nvml(matrix)
+
+
+def _use_topo_after_nvml(monkeypatch, fake, text):
+    monkeypatch.setattr(LlamaCppBackend, "_nvml_library", staticmethod(lambda: fake))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(returncode = 0, stdout = text, stderr = ""),
+    )
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+
+
+def test_nvml_partial_walk_is_not_a_partial_matrix(monkeypatch):
+    """A failure mid-walk must discard the successes, not approve the pairs that
+    happened to answer first."""
+    _use_nvml(monkeypatch, _FakeNvml(count = 4, fail_status_after = 3))
+    assert LlamaCppBackend._probe_nvml_nvlink_topology() is None
+
+
+def test_nvml_positive_without_active_links_is_a_contradiction(monkeypatch):
+    """Guard for hardware not available here: an OK on a box with no live NVLinks is
+    unknown, not a green light."""
+    _use_nvml(monkeypatch, _FakeNvml(count = 2, active_links = [0, 0]))
+    assert LlamaCppBackend._probe_nvml_nvlink_topology() is None
+
+
+def test_nvml_unlinked_pair_vetoes_p2p(monkeypatch):
+    """Two islands, 0-1 and 2-3. A cross-island selection must not get P2P."""
+    linked = {(0, 1), (1, 0), (2, 3), (3, 2)}
+    _use_nvml(monkeypatch, _FakeNvml(count = 4, linked_pairs = linked))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 4))
+    LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
+    assert LlamaCppBackend._p2p_veto_reason([0, 2]) is not None
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    assert LlamaCppBackend._p2p_veto_reason([0, 1]) is None
+
+
+def test_nvml_matrix_needs_nvidia_smi_provenance(monkeypatch):
+    """`topo -m` answering proves nvidia-smi enumerated the selection; NVML does not,
+    so torch-ordinal ids must not be matched against an NVML matrix. Partially
+    bridged, since on a uniform fabric the mapping cannot change the verdict and
+    provenance is deliberately not required."""
+    _use_nvml(
+        monkeypatch,
+        _FakeNvml(count = 4, linked_pairs = {(0, 1), (1, 0), (2, 3), (3, 2)}),
+    )
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 4))
+    LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
+    assert LlamaCppBackend._p2p_veto_reason([0, 1]) is not None
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
+    assert LlamaCppBackend._p2p_veto_reason([0, 1]) is None
+
+
+def test_nvml_shuts_down_what_it_started(monkeypatch):
+    fake = _use_nvml(monkeypatch, _FakeNvml(count = 2))
+    LlamaCppBackend._probe_nvml_nvlink_topology()
+    assert fake.shutdown_calls == 1
+    # A failed init owns no session, so it must not shut one down.
+    failed = _use_nvml(monkeypatch, _FakeNvml(count = 2, init_rc = _NVML_ERROR))
+    LlamaCppBackend._probe_nvml_nvlink_topology()
+    assert failed.shutdown_calls == 0
+
+
+def test_nvml_single_gpu_gives_no_verdict(monkeypatch):
+    """One device cannot make a pair, and an empty matrix must never read as
+    'everything is NVLinked' through a vacuous all()."""
+    _use_nvml(monkeypatch, _FakeNvml(count = 1))
+    assert LlamaCppBackend._probe_nvml_nvlink_topology() is None
+
+
+def test_crosscheck_prefers_topo_on_disagreement(monkeypatch):
+    """When both answer and differ, the slow one wins and it is logged."""
+    monkeypatch.setenv("UNSLOTH_P2P_TOPO_CROSSCHECK", "1")
+    _use_topo_after_nvml(monkeypatch, _FakeNvml(count = 2), TOPO_PCIE_2X)
+    records = _capture_warnings(monkeypatch)
+    matrix = LlamaCppBackend._probe_interconnect_matrix()
+    assert not LlamaCppBackend._matrix_is_nvml(matrix)
+    assert any("cross-check disagreement" in r for r in records)
+
+
+def test_nvml_unknown_status_is_not_a_denial(monkeypatch):
+    """UNKNOWN (6), or a status from a newer driver, is not evidence of no NVLink:
+    recording it as NO-NVLINK would deny topo -m the chance to confirm a real
+    fabric."""
+    for status in (6, 42):
+        _use_nvml(monkeypatch, _FakeNvml(count = 2, status_value = status))
+        assert LlamaCppBackend._probe_nvml_nvlink_topology() is None
+    # A documented "not supported, and here is why" IS a denial, and stays one.
+    for status in (1, 2, 3, 4, 5):
+        _use_nvml(monkeypatch, _FakeNvml(count = 2, status_value = status))
+        matrix = LlamaCppBackend._probe_nvml_nvlink_topology()
+        assert matrix and not any(LlamaCppBackend._label_is_nvlink(v) for v in matrix.values())
+
+
+def test_a_failed_prime_does_not_poison_the_cache(monkeypatch):
+    """The prime runs early, possibly mid driver init. A miss cached there would keep
+    P2P off for the whole process even once the topology is readable."""
+    monkeypatch.setattr(
+        LlamaCppBackend, "_probe_interconnect_matrix", classmethod(lambda cls: None)
+    )
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    assert LlamaCppBackend._nvlink_topology(cache_failure = False) is None
+    assert LlamaCppBackend._NVLINK_TOPO_CACHE is None, "a failed prime cached its miss"
+    # The load path still caches its own miss, as it did before this change.
+    assert LlamaCppBackend._nvlink_topology() is None
+    assert LlamaCppBackend._NVLINK_TOPO_CACHE == (None,)
+
+
+def test_a_successful_prime_is_still_cached(monkeypatch):
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_probe_interconnect_matrix",
+        classmethod(lambda cls: {(0, 1): "NVLINK", (1, 0): "NVLINK"}),
+    )
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    assert LlamaCppBackend._nvlink_topology(cache_failure = False) is not None
+    assert LlamaCppBackend._NVLINK_TOPO_CACHE is not None
+
+
+def test_windows_nvml_candidates_include_the_nvsmi_directory(monkeypatch):
+    """A driver install can leave nvml.dll in NVSMI rather than a DLL search path,
+    as it does nvidia-smi.exe."""
+    tried = []
+    # From the module-level capture, since the autouse fixture already replaced the
+    # class attribute with the absent stub.
+    monkeypatch.setattr(LlamaCppBackend, "_nvml_library", staticmethod(_REAL_NVML_LIBRARY))
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+
+    def _fake_cdll(name):
+        tried.append(name)
+        raise OSError("not here")
+
+    monkeypatch.setattr(ctypes, "CDLL", _fake_cdll)
+    assert LlamaCppBackend._nvml_library() is None
+    assert any("NVSMI" in t for t in tried), tried
+    assert tried[0] == "nvml.dll", "the search path should still be tried first"
+
+
+def test_an_explicit_pick_keeps_its_pci_provenance(monkeypatch):
+    """The UI's picker hands back PCI-ordered ids. A torch fallback in the unrelated
+    memory query sets _GPU_IDS_ARE_PCI_INDICES False process-wide, and that must not
+    cost an explicitly selected NVLinked pair its P2P. Partially bridged, so the
+    mapping matters and provenance is load-bearing."""
+    _use_nvml(
+        monkeypatch,
+        _FakeNvml(count = 4, linked_pairs = {(0, 1), (1, 0), (2, 3), (3, 2)}),
+    )
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 4))
+    LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
+
+    # Caller says nothing: fall back to the process-wide flag, which vetoes.
+    assert LlamaCppBackend._p2p_veto_reason([0, 1]) is not None
+
+    # Caller knows these ids came from the PCI-ordered picker: no veto.
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    assert LlamaCppBackend._p2p_veto_reason([0, 1], True, ids_are_pci_indices = True) is None
+
+    # And an explicit False from the caller still vetoes.
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    assert LlamaCppBackend._p2p_veto_reason([0, 1], True, ids_are_pci_indices = False) is not None
+
+
+def test_a_stalled_nvml_call_cannot_hang_the_load(monkeypatch):
+    """ctypes has no timeout and the shell-out it replaced had one, so a wedged
+    driver must cost a fallback rather than the load."""
+    import threading as _threading
+
+    release = _threading.Event()
+
+    def _hang(cls):
+        release.wait(30)
+        return {(0, 1): "NVLINK", (1, 0): "NVLINK"}
+
+    monkeypatch.setattr(LlamaCppBackend, "_probe_nvml_nvlink_topology_inner", classmethod(_hang))
+    monkeypatch.setattr(LlamaCppBackend, "_NVML_PROBE_TIMEOUT_SECONDS", 0.2)
+    try:
+        assert LlamaCppBackend._probe_nvml_nvlink_topology() is None
+        # And the caller still reaches the shell-out.
+        _use_topo(monkeypatch, TOPO_NVLINK_8X)
+        matrix = LlamaCppBackend._probe_interconnect_matrix()
+        assert matrix and not LlamaCppBackend._matrix_is_nvml(matrix)
+    finally:
+        release.set()
+
+
+def test_a_racing_failure_does_not_erase_a_published_matrix(monkeypatch):
+    """The prime publishes a good matrix; a load whose own probe fails transiently
+    must not overwrite it with a miss and disable P2P for every later load."""
+    good = {(0, 1): "NVLINK", (1, 0): "NVLINK"}
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    monkeypatch.setattr(
+        LlamaCppBackend, "_probe_interconnect_matrix", classmethod(lambda cls: good)
+    )
+    assert LlamaCppBackend._nvlink_topology() == good
+
+    # Now a pass that probes and fails while the good matrix is already published.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_probe_interconnect_matrix", classmethod(lambda cls: None)
+    )
+    assert LlamaCppBackend._nvlink_topology(refresh = True) == good
+    assert LlamaCppBackend._NVLINK_TOPO_CACHE == (good,)
+
+
+def test_the_prime_skips_work_the_opt_outs_make_useless(monkeypatch):
+    """UNSLOTH_DISABLE_DC_TUNING=1, UNSLOTH_DISABLE_DC_P2P=1 or a falsy GGML_CUDA_P2P
+    all mean the answer can never be used, so the prime must not pay for it."""
+    from utils import torch_warmup
+
+    probed = []
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_probe_nvml_nvlink_topology",
+        classmethod(lambda cls: (probed.append(1), {(0, 1): "NVLINK", (1, 0): "NVLINK"})[1]),
+    )
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 8))
+
+    for var, value in (
+        ("UNSLOTH_DISABLE_DC_TUNING", "1"),
+        ("UNSLOTH_DISABLE_DC_P2P", "1"),
+        ("GGML_CUDA_P2P", "0"),
+    ):
+        monkeypatch.setenv(var, value)
+        LlamaCppBackend._NVLINK_TOPO_CACHE = None
+        probed.clear()
+        torch_warmup._prime_nvlink_topology().join(10)
+        assert probed == [], f"{var}={value} still primed"
+        monkeypatch.delenv(var, raising = False)
+
+    # Without an opt-out it still primes.
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    probed.clear()
+    torch_warmup._prime_nvlink_topology().join(10)
+    assert probed == [1]
+
+
+def test_the_prime_never_blocks_the_warm_sequence(monkeypatch):
+    """The probe can spend its NVML bound plus the shell-out timeout. A warm stage
+    that waits that long delays every stage behind it, and on a loaded CI worker that
+    is enough to tip unrelated timing-sensitive tests over."""
+    from utils import torch_warmup
+    import threading as _threading
+    import time as _time
+
+    release = _threading.Event()
+
+    def _slow(cls, **kw):
+        release.wait(30)
+        return {(0, 1): "NVLINK", (1, 0): "NVLINK"}
+
+    monkeypatch.setattr(LlamaCppBackend, "_nvlink_topology", classmethod(_slow))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 8))
+    try:
+        started = _time.perf_counter()
+        worker = torch_warmup._prime_nvlink_topology()
+        elapsed = _time.perf_counter() - started
+        assert elapsed < 1.0, f"the prime blocked its caller for {elapsed:.2f}s"
+        assert worker.is_alive()
+    finally:
+        release.set()
+        worker.join(10)
+
+
+def test_a_uniform_fabric_does_not_need_pci_provenance(monkeypatch):
+    """On a box where every pair is NVLinked, which ids name which cards cannot
+    change the verdict, so torch-ordinal provenance must not veto. Same argument the
+    ordering check above already makes for an unpinned device order."""
+    _use_nvml(monkeypatch, _FakeNvml(count = 4))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 4))
+    LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
+    assert LlamaCppBackend._p2p_veto_reason([0, 1]) is None
+
+    # Partially bridged, so the mapping DOES matter: provenance is required again.
+    linked = {(0, 1), (1, 0), (2, 3), (3, 2)}
+    _use_nvml(monkeypatch, _FakeNvml(count = 4, linked_pairs = linked))
+    LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
+    assert LlamaCppBackend._p2p_veto_reason([0, 1]) is not None
+
+    # And with provenance it is allowed on the bridged pair.
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    assert LlamaCppBackend._p2p_veto_reason([0, 1], True, ids_are_pci_indices = True) is None
+
+
+def test_ids_outside_a_uniform_matrix_still_veto(monkeypatch):
+    """The uniform escape must not become a blanket pass: ids the matrix does not
+    cover are still unknown."""
+    _use_nvml(monkeypatch, _FakeNvml(count = 2))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 8))
+    LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
+    assert LlamaCppBackend._p2p_veto_reason([0, 5]) is not None
+
+
+def test_explicitness_is_not_evidence_of_pci_indexing(monkeypatch):
+    """An explicit pick is PCI-indexed only because hardware.py setdefaults
+    CUDA_DEVICE_ORDER=PCI_BUS_ID. Under a user override to FASTEST_FIRST with
+    nvidia-smi unavailable, the picker lists torch's ordinals, and on a partially
+    bridged host the same numbers can name different cards. Trusting explicitness
+    there would approve the wrong pair and enable P2P on a PCIe path."""
+    linked = {(0, 1), (1, 0), (2, 3), (3, 2)}
+    _use_nvml(monkeypatch, _FakeNvml(count = 4, linked_pairs = linked))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 4))
+    LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
+
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "FASTEST_FIRST")
+    assert LlamaCppBackend._p2p_veto_reason([0, 1], True, ids_are_pci_indices = False) is not None
+
+    # Pinned order: torch's ordinals and nvidia-smi's indices coincide, so the
+    # explicit pick is usable again. This is the default the backend sets.
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    assert LlamaCppBackend._p2p_veto_reason([0, 1], True, ids_are_pci_indices = True) is None
+
+
+def test_the_prime_never_spawns_the_shell_out(monkeypatch):
+    """A prime may pay the cheap path and nothing else. A subprocess that can run for
+    its full timeout, on a background thread, perturbs whatever else shares the
+    process, and that is how an earlier version of this tipped unrelated
+    timing-sensitive tests over in CI."""
+    calls = []
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: calls.append(a)
+        or types.SimpleNamespace(returncode = 0, stdout = TOPO_NVLINK_8X, stderr = ""),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_probe_nvml_nvlink_topology", classmethod(lambda cls: None)
+    )
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    LlamaCppBackend.prime_nvlink_topology()
+    assert calls == [], "the prime reached the nvidia-smi fallback"
+    assert LlamaCppBackend._NVLINK_TOPO_CACHE is None, "a failed prime cached its miss"
+
+    # The load path still gets its fallback.
+    assert LlamaCppBackend._nvlink_topology() is not None
+    assert calls
+
+
+def test_the_prime_publishes_an_nvml_success(monkeypatch):
+    good = {(0, 1): "NVLINK", (1, 0): "NVLINK"}
+    monkeypatch.setattr(
+        LlamaCppBackend, "_probe_nvml_nvlink_topology", classmethod(lambda cls: good)
+    )
+    LlamaCppBackend._NVLINK_TOPO_CACHE = None
+    LlamaCppBackend.prime_nvlink_topology()
+    assert LlamaCppBackend._NVLINK_TOPO_CACHE == (good,)
