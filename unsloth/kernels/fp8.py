@@ -340,6 +340,26 @@ fp8_block_matmul = (
 )
 
 
+# A whole-weight scale expansion needs two m*n float32 temporaries, which is ~6x the peak of the
+# triton kernel it stands in for; on the pre-sm89 cards below that is the difference between
+# dequantizing a flattened MoE expert stack and OOMing. Walk whole block-rows instead so the
+# float32 scratch stays bounded (values are identical either way).
+_DEQUANT_CHUNK_ELEMS = 8 * 1024 * 1024
+
+
+def _torch_blockwise_dequant(weight, weight_scale, block_size, out_dtype):
+    m, n = weight.shape
+    out = torch.empty(m, n, dtype = out_dtype, device = weight.device)
+    rows = max(block_size[0], (_DEQUANT_CHUNK_ELEMS // max(n, 1)) // block_size[0] * block_size[0])
+    for i in range(0, m, rows):
+        j = min(i + rows, m)
+        s = weight_scale[i // block_size[0] : -(-j // block_size[0])]
+        s = s.repeat_interleave(block_size[0], 0)[: j - i]
+        s = s.repeat_interleave(block_size[1], 1)[:, :n]
+        out[i:j] = weight[i:j].to(torch.float32) * s
+    return out
+
+
 def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dtype):
     """Blockwise fp8 weight dequant for any shape: triton when the weight tiles
     evenly into block_size and this GPU can compile its fp8 dtype, else a
@@ -352,12 +372,14 @@ def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dt
         # Per-tensor scale: the normal forward stashes the un-expanded scalar, which repeat_interleave
         # cannot grow to (m, n).
         return (weight.to(torch.float32) * weight_scale.float()).to(out_dtype)
-    # fp8e4nv (torch.float8_e4m3fn) only exists from sm89 on, so the triton kernel below cannot be
-    # compiled for older architectures; expand the scales in torch rather than failing to fall back.
+    # triton only adds fp8e4nv (torch.float8_e4m3fn) to its supported dtypes from sm89 on, so the
+    # kernel below cannot be compiled for anything older; expand the scales in torch rather than
+    # failing to fall back. Compare the full (major, minor): sm89 (4090, L40S, L4) does support it.
     kernel_fp8_unsupported = (
         weight.is_cuda
+        and torch.version.hip is None  # ROCm's triton takes fp8e4nv on every gfx it supports
         and weight.dtype == torch.float8_e4m3fn
-        and torch.cuda.get_device_capability(weight.device)[0] < 9
+        and torch.cuda.get_device_capability(weight.device) < (8, 9)
     )
     if (
         m % block_size[0] != 0
@@ -368,9 +390,7 @@ def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dt
         # Uneven tiling, rectangular blocks, or an fp8 dtype this GPU cannot compile: the triton kernel
         # uses a single BLOCK_SIZE for both axes and derives the column scale stride from it, so it
         # mis-indexes when block_size[0] != [1].
-        s_full = weight_scale.repeat_interleave(block_size[0], 0)[:m]
-        s_full = s_full.repeat_interleave(block_size[1], 1)[:, :n]
-        return (weight.to(torch.float32) * s_full).to(out_dtype)
+        return _torch_blockwise_dequant(weight, weight_scale, block_size, out_dtype)
     # Even tiling with square blocks: pass the real block size, since weight_dequant would silently
     # default to 128 and dequantize wrongly.
     return weight_dequant_block(weight, weight_scale, block_size = block_size[0], dtype = out_dtype)
