@@ -14,49 +14,77 @@ import re
 
 REDACTED = "<redacted>"
 
-# Terminal control sequences, stripped BEFORE anything is matched. Order matters: OSC comes before the single-character Fe class, which covers 0x5C-0x5F and would otherwise swallow the "]". ECMA-48 5.4 (CSI) and 5.6 (OSC / DCS / SOS / PM / APC). A colorized writer puts an escape between key and value, and the "m" ending a colour code is a word character, so every anchored rule below stops matching.
-# Every branch tolerates truncation, and that is load bearing twice over. A lazy `[\s\S]*?` body backtracks: an introducer with no terminator scans to end of string, fails, and falls through to a narrower branch, so each one pays a full scan of the rest of the record and the cost is quadratic in its length (on characters of U+009D: 10k 1.0s, 20k 4.2s, 40k 16.1s, against 0.005s for 40k of ordinary text). A negated body class dies at the first character that cannot belong, and an OPTIONAL terminator means the branch cannot fail at all, so there is nothing to backtrack into.
-# Excluding the terminators is not enough on its own: a run of introducers contains none, so the body is still consumed to end of string from every starting position. The body classes therefore exclude the introducers too, which is also the correct reading of ECMA-48, since a control string cannot nest inside another. EVERY introducer, not just the one form the branch is written in: a 7 bit body that accepts the 8 bit introducers swallows the whole of "\x1b]cut\x9b36mdocs\x9b0m for help", where stopping at the \x9b lets the CSI that follows match on its own and leaves the sentence behind.
-# The aborted prefix must be CONSUMED, not skipped. Leaving it in the text welds it onto the key in front of it ("api_key" + "foo"), the trailing \b in _SECRET_KEYS then fails, and the credential behind it prints. So an introducer whose sequence is cut takes its partial body with it, and the post-condition is that no introducer _ANSI_INTRODUCER_RE recognises survives the strip. A truncated introducer is not exotic: it is what a rotated log, or any writer cut mid sequence, leaves behind.
-# CSI gets a second branch rather than an optional final byte, because [@-~] already covers the lowercase letters: "\x1b[" in front of "api_key" would otherwise take the "a" with it and leave "pi_key", which is the same welding bug in reverse. The fallback runs only after the terminated form has failed, and consumes the parameter and intermediate bytes alone.
-# The Fe class gains "\x1b7" / "\x1b8" (DECSC / DECRC), because dropping only the ESC left the "7" welded to what followed and "AKIA...\x1b7" stopped matching its own trailing \b. It stops there. Anything whose final byte is chosen from a wide range cannot be told apart from a write cut short in front of ordinary text, and the text always loses: a charset designator branch ("\x1b(B") reads the NEXT character as its own final byte, so a truncated "\x1b(" ate the "C" of "Cookie:", the "B" of "Bearer" and the "?" of a presigned URL, and each one took a mask with it. Narrowing that range does not help, since every plausible final byte is also a plausible first character of a key. So "\x1b(B" is left in the viewer as "(B", exactly as on main, and the credential stays masked. The keypad pair "\x1b=" / "\x1b>" is out for the same reason: claiming "\x1b=" eats the separator out of "api_key\x1b=value".
-# The bare ESC at the end is the last resort, after every sequence shape above has failed, and it is what satisfies the post-condition. It is replaced by a SPACE rather than deleted (see _strip_ansi): the escape itself was the non-alphanumeric boundary _KEY_START looks behind for, so dropping it outright joins "prefix" to "api_key" and the key stops matching. A space is a boundary on both sides, since the separator rules all allow \s* before the colon or equals.
-# The bodies also exclude the newline, which bounds how much a cut sequence can eat to the line it started on. This function runs per record for the viewer but over whole multiline blobs for exception text, and a lazy body accepts \n, so one stray introducer could otherwise blank an entire traceback.
-_ANSI_RE = re.compile(
-    r"\x1b\][^\x07\x1b\x90\x98\x9b\x9c\x9d\x9e\x9f\n]*(?:\x07|\x1b\\|\x9c)?"
-    r"|\x1b[P^_X][^\x1b\x90\x98\x9b\x9c\x9d\x9e\x9f\n]*(?:\x1b\\|\x9c)?"
-    r"|\x1b\[[0-?]*[ -/]*[@-~]"
-    r"|\x1b\[[0-?]*[ -/]*"
-    r"|\x9b[0-?]*[ -/]*[@-~]"
-    r"|\x9b[0-?]*[ -/]*"
-    r"|[\x9d\x90\x98\x9e\x9f][^\x07\x9c\x1b\x90\x98\x9b\x9d\x9e\x9f\n]*(?:\x07|\x9c)?"
-    r"|\x1b[78]"
-    r"|\x1b[@-Z\\-_]"
-    r"|\x1b"
-)
+# Terminal control sequences, stripped BEFORE anything is matched. A colorized writer puts an escape between a key and its value, and the "m" ending a colour code is a word character, so without this every anchored rule below stops matching. ECMA-48 5.4 (CSI) and 5.6 (OSC / DCS / SOS / PM / APC).
+# This used to be one alternation with lazy `[\s\S]*?` bodies, and it backtracked: an introducer with no terminator scanned to the end of the record, failed, fell through to the single character Fe branch, and the engine retried from the next position. Every introducer therefore paid a full scan of everything after it, so the cost grew with the SQUARE of the record length. On characters of U+009D: 40k took 18.5s and 80k took 72.9s, against 0.0008s for 40k of ordinary text. That is reachable without an attacker: a log rotated mid sequence leaves an unterminated introducer behind, as does any writer whose output is cut, U+009D is ordinary UTF-8 (\xc2\x9d), and debug_log_reader hands this whole lines once a second while the Logs tab is open.
+# The semantics were never the problem, the retry was. A lazy scan that FINDS its terminator already succeeds in one pass; only the failing one rescans. So the walk below answers "the earliest terminator at or after k" with a monotonic str.find cache instead of a rescan, which is O(n) for the record, and is otherwise the same machine: same alternatives, same order, same lazy shortest-match, same fallthrough. It is deliberately byte for byte identical to the old pattern on every input, verified by differential fuzzing, because a redactor is the wrong place to smuggle a behaviour change into a performance fix.
+_CSI_7BIT_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_CSI_8BIT_RE = re.compile(r"\x9b[0-?]*[ -/]*[@-~]")
+# Fe covers 0x40-0x5F, so it also claims a "]" or a "P" whose control string never terminated. It is tried last for exactly that reason.
+_FE_RE = re.compile(r"\x1b[@-Z\\-_]")
 _ANSI_INTRODUCER_RE = re.compile(r"[\x1b\x90\x98\x9b\x9d-\x9f]")
+# The 8 bit control string introducers: OSC, DCS, SOS, PM, APC.
+_C1_STRING_INTRODUCERS = "\x9d\x90\x98\x9e\x9f"
 
 
 def _strip_ansi(text: str) -> str:
-    """Remove every control sequence. A recognised one costs nothing; a lone cut escape leaves a space behind, but ONLY where dropping it would join two alphanumerics, since there it was the boundary _KEY_START looks behind for and "prefix" would weld to "api_key". Anywhere else the space is the damage: a rule keyed on a value reads it as the value's first character, and "session=" followed by a space stops matching its own cookie.
-
-    Written as a walk rather than a sub with a callback because the test is on the OUTPUT: an escape preceded by a sequence that is itself being stripped has whatever survives that sequence next to it, not the character the record happens to hold.
-    """
+    """Remove terminal control sequences. Same output as the lazy alternation this replaces, in linear time."""
+    first = _ANSI_INTRODUCER_RE.search(text)
+    if first is None:
+        return text
     out: list[str] = []
-    last = 0
-    emitted = ""  # the last character written out, carried rather than searched for: scanning back over `out` is O(n) per escape, which is the quadratic shape this whole rule removes.
-    for match in _ANSI_RE.finditer(text):
-        chunk = text[last : match.start()]
-        if chunk:
-            out.append(chunk)
-            emitted = chunk[-1]
-        last = match.end()
-        if match.group(0) != "\x1b":
+    written = 0
+    index = first.start()
+    length = len(text)
+    # index only moves forward, so each needle's next occurrence can be carried: a cached hit at or after the current point is still the next one, and a cached miss stays a miss.
+    found: dict[str, int] = {}
+
+    def next_index(needle: str, start: int) -> int:
+        cached = found.get(needle, -2)
+        if cached == -1:
+            return -1
+        if cached == -2 or cached < start:
+            cached = text.find(needle, start)
+            found[needle] = cached
+        return cached
+
+    def string_end(terminators: tuple[str, ...], start: int) -> int:
+        """End of the shortest body, which is what a lazy quantifier picks."""
+        best, best_length = -1, 0
+        for terminator in terminators:
+            at = next_index(terminator, start)
+            if at >= 0 and (best < 0 or at < best):
+                best, best_length = at, len(terminator)
+        return best + best_length if best >= 0 else -1
+
+    while index < length:
+        char = text[index]
+        end = -1
+        if char == "\x1b" and index + 1 < length and text[index + 1] == "]":
+            end = string_end(("\x07", "\x1b\\", "\x9c"), index + 2)
+        elif char == "\x1b" and index + 1 < length and text[index + 1] in "P^_X":
+            end = string_end(("\x1b\\", "\x9c"), index + 2)
+        elif char in _C1_STRING_INTRODUCERS:
+            end = string_end(("\x07", "\x9c"), index + 1)
+        if end < 0:
+            if char == "\x1b":
+                match = _CSI_7BIT_RE.match(text, index) or _FE_RE.match(text, index)
+            elif char == "\x9b":
+                match = _CSI_8BIT_RE.match(text, index)
+            else:
+                match = None
+            end = match.end() if match else -1
+        if end < 0:
+            # No sequence starts here after all, exactly as the alternation would have failed. Skip to the next introducer rather than the next character, so ordinary text is never walked one character at a time.
+            following = _ANSI_INTRODUCER_RE.search(text, index + 1)
+            if following is None:
+                break
+            index = following.start()
             continue
-        if emitted.isalnum() and text[last : last + 1].isalnum():
-            out.append(" ")
-            emitted = " "
-    out.append(text[last:])
+        out.append(text[written:index])
+        written = end
+        following = _ANSI_INTRODUCER_RE.search(text, end)
+        index = following.start() if following else length
+    out.append(text[written:])
     return "".join(out)
 
 

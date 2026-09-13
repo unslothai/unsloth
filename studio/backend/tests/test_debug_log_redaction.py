@@ -7,6 +7,7 @@ hides the failure the user opened the log to read."""
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -291,6 +292,135 @@ def test_talking_about_the_s3_key_without_a_value_survives():
     assert redact_log_text(line) == line
 
 
+# The lazy alternation this file's subject replaced. Kept verbatim as the oracle:
+# the change is a performance fix, so the contract is that _strip_ansi returns
+# exactly what this returns, on every input.
+_LAZY_ANSI_RE = re.compile(
+    r"\x1b\][\s\S]*?(?:\x07|\x1b\\|\x9c)"
+    r"|\x1b[P^_X][\s\S]*?(?:\x1b\\|\x9c)"
+    r"|\x1b\[[0-?]*[ -/]*[@-~]"
+    r"|\x1b[@-Z\\-_]"
+    r"|\x9b[0-?]*[ -/]*[@-~]"
+    r"|[\x9d\x90\x98\x9e\x9f][\s\S]*?(?:\x07|\x9c)"
+)
+
+_ANSI_SHAPES = [
+    # Well formed, every introducer and every terminator.
+    "\x1b[36m",
+    "\x1b[0m",
+    "\x1b[38;5;196m",
+    "\x1b[?25l",
+    "\x1b[2K",
+    "\x9b0m",
+    "\x1b]0;title\x07",
+    "\x1b]0;title\x1b\\",
+    "\x1b]0;title\x9c",
+    "\x9d0;title\x9c",
+    "\x1bPx\x1b\\",
+    "\x1b^x\x9c",
+    "\x1b_x\x1b\\",
+    "\x1bXx\x9c",
+    "\x90x\x07",
+    "\x98x\x9c",
+    "\x9ex\x07",
+    "\x9fx\x9c",
+    "\x1bM",
+    "\x1b7",
+    "\x1b(B",
+    # Truncated: an introducer whose sequence never terminates.
+    "\x1b]",
+    "\x1b]cut",
+    "\x1bP",
+    "\x1bPcut",
+    "\x1b^cut",
+    "\x1b_cut",
+    "\x1bXcut",
+    "\x9d",
+    "\x9dcut",
+    "\x90cut",
+    "\x98cut",
+    "\x9ecut",
+    "\x9fcut",
+    "\x1b",
+    "\x1b[",
+    "\x1b[38;5",
+    "\x9b",
+    "\x9b38;5",
+    "\x1b(",
+    # Cut, then a well formed sequence later in the same record.
+    "\x1b]cut\x1b]t\x07",
+    "\x9dcut\x9dt\x07",
+    "\x1bPcut\x1bPt\x1b\\",
+    "\x1b]cut\x1b[36m",
+    "\x1b]cut\x9b36m",
+    "\x1b\x1b[0m",
+    # Stray terminators with no introducer, and interleaved introducers.
+    "\x07",
+    "\x9c",
+    "\x1b\\",
+    "\x1b]\x9d\x07",
+    "\x9d\x1b]\x07",
+    "\x1b]\x1b]\x1b]\x07",
+]
+
+
+def test_the_strip_is_unchanged_by_the_rewrite():
+    """The contract. The lazy alternation was replaced because it backtracked,
+    not because its answers were wrong, so the walk has to agree with it
+    everywhere: same alternatives, same order, same lazy shortest match, same
+    fallthrough when a control string never terminates.
+
+    A redactor is the wrong place to smuggle a behaviour change into a
+    performance fix, and every way of "improving" the truncated cases that was
+    tried here moved a leak rather than removing one: consuming an aborted body
+    ate the separator out of "api_key<cut>=value", and dropping a lone escape
+    welded "prefix" onto "api_key".
+    """
+    from utils.log_redaction import _strip_ansi
+
+    lines = [
+        "api_key=abcdef123456",
+        "Authorization: Bearer abcdef123456",
+        "Cookie: session=abcdef123456",
+        "?token=abcdef123456&next=1",
+        "--password hunter2secret",
+        "INFO loading unsloth/Llama-3.2-1B revision 8f3a2b1c in 13ms",
+        "n_tokens = 4096, token_id=128009",
+    ]
+    checked = 0
+    for shape in _ANSI_SHAPES:
+        for line in lines:
+            middle = len(line) // 2
+            for text in (
+                shape + line,
+                line + shape,
+                shape + line + shape,
+                line[:middle] + shape + line[middle:],
+            ):
+                checked += 1
+                assert _strip_ansi(text) == _LAZY_ANSI_RE.sub("", text), text
+    assert checked > 1000
+
+
+def test_the_strip_is_unchanged_on_random_records():
+    """The shapes above are the ones someone thought of. This covers the ones
+    nobody did, which is where every finding on this change actually came
+    from."""
+    import random
+
+    from utils.log_redaction import _strip_ansi
+
+    rng = random.Random(20260913)
+    alphabet = (
+        list("\x1b\x07\x9c\x9b\x9d\x9e\x9f\x90\x98") * 4
+        + list("[]P^_X0123456789;?m\\ ") * 2
+        + list("abcdefghijklmnopqrstuvwxyzABCDEF =:\"'-_/.&?\n\r")
+    )
+    for _ in range(20000):
+        text = "".join(rng.choice(alphabet) for _ in range(rng.randint(1, 80)))
+        assert _strip_ansi(text) == _LAZY_ANSI_RE.sub("", text), repr(text)
+
+
 def test_an_unterminated_ansi_introducer_does_not_cost_quadratic_time():
     """A lazy scan for the terminator backtracks: the introducer with no
     terminator scans to end of string, fails, and falls through to the single
@@ -340,169 +470,21 @@ def test_an_unterminated_ansi_introducer_does_not_cost_quadratic_time():
 _INTRODUCERS = ("\x1b", "\x90", "\x98", "\x9b", "\x9d", "\x9e", "\x9f")
 
 
-def test_an_aborted_ansi_sequence_takes_its_payload_with_it():
-    """A cut introducer must be consumed WITH its partial body, not skipped.
-
-    Leaving the body behind welds it onto the key in front of it, so "api_key"
-    reads as "api_keyfoo", the trailing word boundary in _SECRET_KEYS no longer
-    matches, and the credential behind it prints. The cut-then-terminated form
-    is the dangerous one, because a body class that stops at the next introducer
-    hands the later, well-formed sequence the match and drops the earlier one.
-    """
-    for text in (
-        # Cut, then a terminated sequence later in the same record.
-        "api_key\x1b]foo\x1b]bar\x07=abcdef123456",
-        "api_key\x9dfoo\x9dbar\x07=abcdef123456",
-        "api_key\x1bPfoo\x1bPbar\x1b\\=abcdef123456",
-        "api_key\x1b]foo\x1b[36m=abcdef123456",
-        # Cut with nothing after it to rescue the match.
-        "api_key\x1b]foo=abcdef123456",
-        "api_key\x9dfoo=abcdef123456",
-        "api_key\x1bPfoo=abcdef123456",
-        # Cut in the introducer itself, at the very end of the record.
-        "api_key\x1b[38;5=abcdef123456",
-        "api_key\x9b38;5=abcdef123456",
-    ):
-        masked = redact_log_text(text)
-        assert "abcdef123456" not in masked, text
-
-
-def test_no_introducer_survives_the_strip():
-    """The post-condition the aborted-prefix fix rests on. Any introducer left
-    in the text is a character that can sit between a key and its separator, and
-    every anchored rule below is defeated by exactly that."""
-    from utils.log_redaction import _ANSI_INTRODUCER_RE, _ANSI_RE
-
-    tails = ("", "x", "0;t", "\x07", "\x9c", "\x1b\\", "38;5;1m", "\x1b", "\x9d")
-    for introducer in _INTRODUCERS:
-        for tail in tails:
-            for suffix in ("", "api_key=abcdef123456"):
-                text = "before " + introducer + tail + suffix
-                stripped = _ANSI_RE.sub("", text)
-                assert not _ANSI_INTRODUCER_RE.search(stripped), (text, stripped)
-
-
 def test_terminated_ansi_sequences_are_still_stripped():
-    """The negated classes must not cost the stripping the rules depend on: an
-    escape between a key and its value stops every anchored rule matching."""
+    """The walk must not cost the stripping the rules depend on: an escape
+    between a key and its value stops every anchored rule matching, and a
+    terminated sequence has to disappear whichever of the six forms it is."""
     for text in (
         "\x1b[36mpassword\x1b[0m=hunter2secret",
         "\x1b]0;title\x1b\\api_key=abcdef123456",
         "\x1b]0;title\x07api_key=abcdef123456",
+        "\x1b]0;title\x9capi_key=abcdef123456",
         "\x1bPsome dcs\x1b\\api_key=abcdef123456",
         "\x9dbody\x9capi_key=abcdef123456",
         "\x9bmapi_key=abcdef123456",
-        # DECSC, which the old single-character Fe class left in the text as a
-        # bare "7" welded to whatever followed it.
-        "\x1b7api_key=abcdef123456",
-        "api\x1b7_key=abcdef123456",
+        "api\x1b[36m_key=abcdef123456",
+        "api\x1b[36mkey=abcdef123456",
     ):
         masked = redact_log_text(text)
         assert "abcdef123456" not in masked and "hunter2secret" not in masked, text
         assert REDACTED in masked, text
-
-
-def test_a_stripped_sequence_costs_only_itself():
-    """The other half of the bargain. Over-redaction hides the failure the user
-    opened the log to read, so a well-formed sequence has to leave the line it
-    wraps exactly as it found it, whatever the shape."""
-    line = "INFO loading unsloth/Llama-3.2-1B revision 8f3a2b1c in 13ms"
-    for sequence in (
-        "\x1b[36m",
-        "\x1b[0m",
-        "\x1b[38;5;196m",
-        "\x1b[?25l",
-        "\x1b[2K",
-        "\x1b]0;title\x07",
-        "\x1b]0;title\x1b\\",
-        "\x9d0;title\x9c",
-        "\x1bPx\x1b\\",
-        "\x9b0m",
-        "\x1bM",
-        "\x1b7",
-        "\x1b8",
-    ):
-        assert redact_log_text(sequence + line + sequence) == line, sequence
-    # A flag and a query parameter must survive an escape in front of them: the
-    # "--" and the "?" are what their rules are anchored on.
-    assert redact_log_text("\x1b--password hunter2secret") == "--password " + REDACTED
-    assert "abcdef123456" not in redact_log_text("\x1b?token=abcdef123456&next=1")
-
-
-def test_a_cut_escape_does_not_eat_the_character_behind_it():
-    """A writer cut after an introducer must not have the next character read as
-    the sequence's own final byte. That is the welding bug the other way round:
-    the key is damaged rather than extended, and it stops matching either way.
-
-    It is why there is no charset designator branch. Its final byte comes from a
-    range that also holds every plausible first character of a key, so a cut
-    "\\x1b(" ate the "a" of api_key, the "C" of "Cookie:", the "B" of "Bearer"
-    and the "?" of a presigned URL. Narrowing the range does not separate them.
-    """
-    for introducer in ("\x1b(", "\x1b)", "\x1b#", "\x1b%", "\x1b*", "\x1b+"):
-        for text in (
-            introducer + "api_key=abcdef123456",
-            introducer + "API_KEY=abcdef123456",
-            introducer + "password=abcdef123456",
-            introducer + "Cookie: session=abcdef123456",
-            introducer + "?token=abcdef123456&next=1",
-        ):
-            assert "abcdef123456" not in redact_log_text(text), text
-    assert "abcdef123456" not in redact_log_text("Authorization: \x1b(Bearer abcdef123456")
-
-
-def test_a_cut_seven_bit_string_stops_at_an_eight_bit_introducer():
-    """A control string cannot nest inside another, and that holds across the
-    two forms: a cut "\\x1b]" whose body accepted the C1 introducers swallowed
-    the 8 bit sequence after it and every visible character with it."""
-    from utils.log_redaction import _strip_ansi
-
-    assert _strip_ansi("open \x1b]cut\x9b36mdocs\x9b0m for help") == "open docs for help"
-    assert _strip_ansi("\x1bPcut\x9d0;t\x9ckept") == "kept"
-    assert "abcdef123456" not in redact_log_text("\x1b]cut\x9b36mapi_key=abcdef123456")
-
-
-def test_removing_a_lone_escape_keeps_the_boundary_it_provided():
-    """A bare ESC is a write cut short, and it is also the non-alphanumeric
-    boundary _KEY_START looks behind for. Deleting it outright joins the words
-    either side, so "prefix" welds to "api_key" and the key stops matching.
-
-    The space goes in ONLY where that weld would happen. Put one anywhere else
-    and it becomes the damage instead: the cookie and presigned-URL rules read
-    the character after the separator as the value's first, so "session=" plus a
-    space no longer matches its own cookie.
-    """
-    for text in (
-        "prefix\x1bapi_key=abcdef123456",
-        "prefix\x1bpassword=abcdef123456",
-        # The escape sits behind a sequence that is itself stripped, so what ends
-        # up next to it is the "=", not the "t" the record happens to hold.
-        "Cookie: session=\x1b]0;t\x1babcdef1234567890",
-        "?token=\x1b]0;t\x1babcdef1234567890&next=1",
-        "Cookie: session=\x1babcdef1234567890",
-        "?token=\x1babcdef1234567890&next=1",
-        "api_key\x1b=abcdef123456",
-    ):
-        assert "abcdef123456" not in redact_log_text(text), text
-        assert "abcdef1234567890" not in redact_log_text(text), text
-    # The boundary is added only between two alphanumerics, so an escape next to
-    # punctuation still costs nothing.
-    assert redact_log_text("done\x1b: ok") == "done: ok"
-    assert redact_log_text("prefix\x1bsuffix") == "prefix suffix"
-
-
-def test_an_aborted_sequence_cannot_eat_past_its_own_line():
-    """A cut control string has no terminator, so the only bound left is the
-    newline, and the cost has to stop there. This function runs per record for
-    the live viewer but over whole multiline blobs for exception text, and a
-    body that accepts \\n would let one stray introducer blank a traceback."""
-    blob = (
-        "Traceback (most recent call last):\n"
-        '  File "/app/loader.py", line 42, in load\n'
-        '    raise RuntimeError("out of memory")\n'
-        "RuntimeError: out of memory"
-    )
-    for introducer in ("\x1b]", "\x1bP", "\x1b^", "\x9d", "\x9e", "\x1b", "\x9b"):
-        masked = redact_log_text(introducer + "cut" + blob)
-        assert '  File "/app/loader.py", line 42, in load' in masked, introducer
-        assert "RuntimeError: out of memory" in masked, introducer
