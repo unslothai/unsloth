@@ -598,14 +598,20 @@ _probe_uv_cache_writable() {
     return 0
 }
 
-# uv unpacks distributions INTO the buckets, not just the cache root, so a root-only probe
-# passes on a cache uv then cannot use. Measured with uv 0.10.7: a 0555 archive-* bucket under a
-# writable root aborts the install with "failed to rename ... Permission denied (os error 13)".
-# Only an inferred cache needs this; a Studio cache we are about to create has no buckets yet.
+# uv writes into every directory it owns under the cache root, not just the package buckets, so
+# a probe over a hand-written bucket list passes on a cache uv then cannot use. Two measured
+# aborts with uv 0.10.7, both on a writable root: a 0555 archive-* gives "failed to rename ...
+# Permission denied" during install, and an empty 0555 interpreter-v4 gives "Failed to query
+# Python interpreter ... failed to create directory" before resolution even starts.
+#
+# Every existing immediate subdirectory, therefore, rather than a list that has to track uv's
+# layout (interpreter-v*, simple-v*, archive-v*, wheels-v*, ... change between releases). The
+# WARMTH scan still uses the package-bucket list: interpreter and index metadata are not
+# packages, and a cache holding only those has fetched nothing.
 _probe_uv_cache_usable() {
     _probe_uv_cache_writable "$1" || return 1
-    for _uv_probe_bucket in "$1"/archive-* "$1"/builds-* "$1"/built-wheels-* \
-        "$1"/wheels-* "$1"/sdists-*; do
+    for _uv_probe_bucket in "$1"/*/; do
+        _uv_probe_bucket=${_uv_probe_bucket%/}
         [ -d "$_uv_probe_bucket" ] || continue
         if ! _probe_uv_cache_writable "$_uv_probe_bucket"; then
             unset _uv_probe_bucket

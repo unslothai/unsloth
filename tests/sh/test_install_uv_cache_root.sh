@@ -566,6 +566,23 @@ ISOLATED
         chmod 0755 "$BUCKET_RO/archive-v0" 2>/dev/null || true
     fi
 
+    # ...and not only the package buckets. uv writes interpreter and index metadata under the
+    # same root, and an empty unwritable interpreter-v4 aborts uv 0.10.7 BEFORE resolution:
+    # "Failed to query Python interpreter ... failed to create directory ... Permission denied",
+    # exit 2. A probe over a hand-written bucket list passed that cache, so the probe walks every
+    # directory uv owns instead. Warmth is still package bytes only: this cache is cold, and the
+    # message says so.
+    INTERP_RO="$CASE/interpreter blocked/uv"
+    mkdir -p "$INTERP_RO/archive-v0/pkg" "$INTERP_RO/interpreter-v4"
+    : > "$INTERP_RO/archive-v0/pkg/payload.whl"
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0555 "$INTERP_RO/interpreter-v4" 2>/dev/null; then
+        run_case "$shell" "a warm cache with unwritable interpreter state is not adopted" unset "" false \
+            "$HOME_DIR" unset "" "$ROOT" "$INTERP_RO" "$STUDIO_CACHE" studio \
+            "using new Studio-owned cache ($STUDIO_CACHE); $INTERP_RO holds packages but is not writable, so cached packages may download again" \
+            "$STUDIO_CACHE"
+        chmod 0755 "$INTERP_RO/interpreter-v4" 2>/dev/null || true
+    fi
+
     # A relative uv.toml cache-dir resolves against UV_WORKING_DIR, not the installer's cwd.
     mkdir -p "$CASE/work/relcache/archive-v0/pkg"
     : > "$CASE/work/relcache/archive-v0/pkg/payload.whl"

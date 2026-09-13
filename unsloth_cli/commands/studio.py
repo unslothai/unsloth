@@ -3316,11 +3316,14 @@ def _uv_cache_is_writable(cache_dir: Path) -> bool:
 
     The buckets too, not just the root: uv unpacks distributions into them, so a root-only probe
     passes on a cache uv then cannot use. Measured with uv 0.10.7, a 0555 archive-* bucket under a
-    writable root aborts with "failed to rename ... Permission denied". Mirrors install.sh's
-    _probe_uv_cache_usable and setup.sh's _uv_cache_usable over the same bucket list."""
+    writable root aborts with "failed to rename ... Permission denied", and an empty 0555
+    interpreter-v4 aborts before resolution. Every directory uv owns, not a hand-written bucket
+    list that has to track uv's layout. Mirrors install.sh's _probe_uv_cache_usable."""
     probes = [cache_dir]
-    for pattern in ("archive-*", "builds-*", "built-wheels-*", "wheels-*", "sdists-*"):
-        probes.extend(p for p in cache_dir.glob(pattern) if p.is_dir())
+    try:
+        probes.extend(p for p in cache_dir.iterdir() if p.is_dir())
+    except OSError:
+        return False
     for target in probes:
         try:
             with tempfile.NamedTemporaryFile(dir = target, prefix = ".unsloth-write-probe."):
