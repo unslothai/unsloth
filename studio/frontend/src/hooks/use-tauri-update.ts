@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useRef, useState } from "react";
+import { flushPendingChatSettings } from "@/features/chat";
 import { isTauri } from "@/lib/api-base";
 import {
   copySupportDiagnostics,
@@ -387,6 +388,8 @@ export function useTauriUpdate(isExternalServer = false) {
 
     const cleanups: (() => void)[] = [];
     try {
+      // Tauri relaunch does not reliably deliver beforeunload/pagehide, so flush here.
+      await flushPendingChatSettings();
       // A retry re-enters here, and start_backend_update spawns a mutating child of its own.
       if (!(await crashCleanupReady())) return;
       const { policy } = await resolveUpdatePolicy();
