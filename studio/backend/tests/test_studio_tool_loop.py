@@ -17,6 +17,7 @@ import threading
 
 import pytest
 
+from core.inference import passthrough_healing
 from core.inference import studio_tool_loop as loop_mod
 from core.inference.studio_tool_loop import (
     ToolLoopPolicy,
@@ -765,8 +766,12 @@ def test_a_stalled_model_is_nudged_to_act(executed):
     assert second[-1]["role"] == "user"
 
 
-def test_a_stalled_model_is_not_nudged_by_default(executed):
+def test_a_stalled_model_is_not_nudged_by_default(executed, monkeypatch):
     """The external loop must not invent a retry for an omitted opt-in flag."""
+    # Pin the process default: _NUDGE_DEFAULT is read from UNSLOTH_TOOL_CALL_NUDGE at
+    # import, so without this the test only passes on a runner that happens to leave
+    # the variable unset, and silently stops testing "by default" under a launcher.
+    monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", False)
     transport = FakeTransport(
         [
             [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
@@ -778,6 +783,61 @@ def test_a_stalled_model_is_not_nudged_by_default(executed):
     assert executed == []
     assert len(transport.requests) == 1
     assert "SHOULD NOT APPEAR" not in _visible_text(lines)
+
+
+def test_an_explicit_false_beats_a_process_default_of_on(executed, monkeypatch):
+    """What the Studio frontend sends on the external path.
+
+    `unsloth studio run` and `unsloth start` write UNSLOTH_TOOL_CALL_NUDGE=1 when it is
+    unset, so an omitted flag nudges here. The external branch of chat-adapter.ts sends
+    an explicit false, which must win over that default (#9686).
+    """
+    monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", True)
+    transport = FakeTransport(
+        [
+            [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "SHOULD NOT APPEAR"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    lines = _run(transport, nudge_tool_calls = False)
+
+    assert executed == []
+    assert len(transport.requests) == 1
+    assert "SHOULD NOT APPEAR" not in _visible_text(lines)
+
+
+def test_an_omitted_flag_still_follows_a_process_default_of_on(executed, monkeypatch):
+    """The contract the explicit false above exists to work around.
+
+    Kept as a live guard: if omission ever stops following the process default this
+    test fails and the frontend's explicit false can be reconsidered.
+    """
+    monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", True)
+    transport = FakeTransport(
+        [
+            [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "function": {"name": "web_search", "arguments": "{}"},
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "answer"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport)
+
+    assert [c["name"] for c in executed] == ["web_search"]
+    assert len(transport.requests) == 3
 
 
 def test_a_finished_answer_is_not_nudged(executed):
