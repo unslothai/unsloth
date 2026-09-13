@@ -452,7 +452,14 @@ def test_out_of_tree_quant_registry_is_still_a_dict(tag: str):
     src = _fetch_text("vllm-project/vllm", tag, VLLM_QUANT_REGISTRY_PATH)
     if src is None:
         pytest.skip(f"{tag}: {VLLM_QUANT_REGISTRY_PATH} not present")
-    assert "_CUSTOMIZED_METHOD_TO_QUANT_CONFIG" in src, (
-        f"{tag}: the out-of-tree quantization registry was renamed; "
-        f"unsloth_zoo._set_registered_quant_config no longer reaches it"
+    # The name alone is not the contract: a read-only mapping or a registry
+    # object of its own would keep this green while item assignment breaks.
+    assert re.search(
+        r"^_CUSTOMIZED_METHOD_TO_QUANT_CONFIG\s*(?::[^=\n]+)?=\s*(?:\{|dict\()",
+        src,
+        re.MULTILINE,
+    ), (
+        f"{tag}: the out-of-tree quantization registry was renamed or is no "
+        f"longer a plain mutable dict; unsloth_zoo._set_registered_quant_config "
+        f"assigns into it by key"
     )
