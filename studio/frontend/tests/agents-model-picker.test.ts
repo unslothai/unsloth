@@ -11,6 +11,10 @@ import {
   isSpeechOnlyHubModel,
 } from "../src/features/settings/lib/agent-hub-model.ts";
 import { en } from "../src/i18n/locales/en.ts";
+import {
+  EXAMPLE_MODEL_REPO,
+  EXAMPLE_MODEL_VARIANT,
+} from "../src/features/settings/lib/example-model-id.ts";
 
 const TAB = readFileSync(
   fileURLToPath(
@@ -20,10 +24,12 @@ const TAB = readFileSync(
 );
 
 test("the default model demonstrates reasoning effort without sampling flags", () => {
-  assert.ok(
-    TAB.includes('const EXAMPLE_MODEL_REPO = "unsloth/Qwen3.8-27B-GGUF";'),
-  );
-  assert.ok(TAB.includes('const EXAMPLE_MODEL_VARIANT = "UD-Q4_K_XL";'));
+  assert.equal(EXAMPLE_MODEL_REPO, "unsloth/Qwen3.8-27B-GGUF");
+  assert.equal(EXAMPLE_MODEL_VARIANT, "UD-Q4_K_XL");
+  // The tab reads the pair rather than restating it, so the API usage examples, which
+  // read the same module, cannot name a retired model after a bump here.
+  assert.ok(TAB.includes('from "../lib/example-model-id"'));
+  assert.ok(!TAB.includes('const EXAMPLE_MODEL_REPO ='));
   const start = TAB.indexOf("const EXAMPLE_MODEL_FLAGS");
   const flags = TAB.slice(start, TAB.indexOf(";", start));
   assert.ok(flags.includes("--reasoning-effort medium"));

@@ -18,16 +18,34 @@ test("non-chat entries never reach the chat example picker", () => {
     ],
   });
   assert.deepEqual(models, [
-    { id: "unsloth/Qwen3-8B-GGUF", loaded: true, quant: "Q4_K_M" },
-    { id: "unsloth/Llama-3.2-1B-Instruct-GGUF", loaded: false, quant: undefined },
+    { id: "unsloth/Qwen3-8B-GGUF", loaded: true, quant: "Q4_K_M", quants: undefined },
+    {
+      id: "unsloth/Llama-3.2-1B-Instruct-GGUF",
+      loaded: false,
+      quant: undefined,
+      quants: undefined,
+    },
   ]);
 });
 
 test("older servers without a task field list every entry as before", () => {
   const models = chatModelsFromCatalog({ data: [{ id: "a", loaded: true }, { id: "b" }] });
   assert.deepEqual(models, [
-    { id: "a", loaded: true, quant: undefined },
-    { id: "b", loaded: false, quant: undefined },
+    { id: "a", loaded: true, quant: undefined, quants: undefined },
+    { id: "b", loaded: false, quant: undefined, quants: undefined },
+  ]);
+});
+
+test("every on-disk quant is kept beside the default pin", () => {
+  const models = chatModelsFromCatalog({
+    data: [
+      { id: "a", loaded: true, quant: "Q8_0", quants: ["Q8_0", "UD-Q4_K_XL", 7] },
+      { id: "b", quant: "Q4_K_M", quants: "Q4_K_M" },
+    ],
+  });
+  assert.deepEqual(models, [
+    { id: "a", loaded: true, quant: "Q8_0", quants: ["Q8_0", "UD-Q4_K_XL"] },
+    { id: "b", loaded: false, quant: "Q4_K_M", quants: undefined },
   ]);
 });
 
