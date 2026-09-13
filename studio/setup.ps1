@@ -5852,15 +5852,11 @@ function Test-TargetPackageVersion {
     return $false
 }
 
-# The pins, once, audited by install_manifest.sidecar_is_current and installed by Install-T5Sidecar;
-# mirrors _SIDECAR_COMMON_PINS in setup.sh. Every name must be one the audit can reach (a package
-# directory, or the RECORD's top-level names: six.py, PIL), or it reads stale forever and every
-# update refetches the sidecar. tiktoken is not a pin: its install is optional, so a sidecar without
-# it is finished; Repair-SidecarTiktoken retries it alone.
+# Audited AND installed from here; mirrors _SIDECAR_COMMON_PINS in setup.sh. A name the audit
+# cannot reach on disk reads stale forever.
 $SidecarCommonPins = @("huggingface_hub==1.8.0", "hf_xet==1.4.2")
 
-# Mirror of setup.sh's fast_install_sidecar: an inherited UV_OVERRIDE naming huggingface_hub would
-# replace the exact pin, the audit would reject it, and every setup would rebuild.
+# Mirrors fast_install_sidecar: an inherited UV_OVERRIDE would replace the pin and force rebuilds.
 function Fast-Install-Sidecar {
     param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
     $savedOverride = $env:UV_OVERRIDE
@@ -5873,10 +5869,7 @@ function Fast-Install-Sidecar {
 }
 
 function Remove-SidecarTiktoken {
-    # A failed tiktoken install's remnants shadow a working ambient copy from ahead of
-    # site-packages, and being unpinned nothing else clears them. Every entry the wheel owns, as the
-    # runtime's _remove_optional_remnants. $false when one would not go (held open, an ACL): the
-    # caller then retires the whole sidecar, which the predicate would still call current.
+    # Remnants of a failed tiktoken install shadow the ambient copy and nothing else clears them.
     param([Parameter(Mandatory = $true)][string]$TargetDir)
     foreach ($name in @("tiktoken", "tiktoken_ext", "tiktoken.libs")) {
         $entry = Join-Path $TargetDir $name
@@ -5892,7 +5885,6 @@ function Remove-SidecarTiktoken {
 }
 
 function Retire-SidecarAfterFailedTiktoken {
-    # Part of tiktoken remains: the sidecar goes, best effort; the runtime withholds the rest.
     param(
         [Parameter(Mandatory = $true)][string]$TargetDir,
         [Parameter(Mandatory = $true)][string]$DirName
@@ -5906,11 +5898,8 @@ function Repair-SidecarTiktoken {
         [Parameter(Mandatory = $true)][string]$TargetDir,
         [Parameter(Mandatory = $true)][string]$DirName
     )
-    # The payload AND a complete dist-info (RECORD is written last), as _sidecar_top_up_tiktoken and
-    # the runtime check: an interrupted install leaves either without the other, the predicate
-    # accepts both, and a weaker check would skip this top-up while Qwen tokenizers fail. A
-    # recordless dist-info goes first: uv cannot uninstall it and importlib.metadata may keep
-    # answering it.
+    # Payload AND dist-info (RECORD is written last): an interrupted install leaves one without the
+    # other. A recordless dist-info goes first; uv cannot uninstall it, metadata still reads it.
     Get-ChildItem -LiteralPath $TargetDir -Directory -Filter "tiktoken-*.dist-info" -ErrorAction SilentlyContinue |
         Where-Object { -not (Test-Path -LiteralPath (Join-Path $_.FullName "RECORD") -PathType Leaf) } |
         ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
@@ -5918,14 +5907,11 @@ function Repair-SidecarTiktoken {
         Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "RECORD") -PathType Leaf })
     $payload = Join-Path $TargetDir "tiktoken"
     if ($present.Count -gt 0 -and (Test-Path -LiteralPath (Join-Path $payload "__init__.py") -PathType Leaf)) { return }
-    # Not present, so every tiktoken dist-info here describes a missing or damaged payload and goes
-    # before the install: --upgrade lands the new dist-info beside the old one.
+    # Dropping the metadata is what makes uv reinstall instead of calling the pin satisfied.
     Get-ChildItem -LiteralPath $TargetDir -Directory -Filter "tiktoken-*.dist-info" -ErrorAction SilentlyContinue |
         ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
-    # --upgrade: a --target install without it keeps a damaged tiktoken\ under fresh metadata.
-    # Cleared first: if the install runs no native command (an unresolvable uv is non-terminating
-    # under the "Continue" preference in force here), a stale nonzero from an unrelated earlier
-    # step would retire a several-hundred-MB sidecar on a reading that never came from this call.
+    # Cleared first: an install that runs no native command would retire the sidecar on a stale
+    # nonzero (unresolvable uv is non-terminating under "Continue").
     $global:LASTEXITCODE = 0
     $output = Fast-Install-Sidecar --target $TargetDir --no-deps --upgrade tiktoken 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) {
@@ -5938,8 +5924,7 @@ function Repair-SidecarTiktoken {
 }
 
 function Test-SidecarCurrent {
-    # One predicate for both shells (install_manifest.py): the shell reimplementation called a
-    # half-written sidecar with a transformers 5.3.0 METADATA "current".
+    # One predicate for both shells: the shell reimplementation called a half-written sidecar current.
     param(
         [Parameter(Mandatory = $true)][string]$TargetDir,
         [Parameter(Mandatory = $true)][string]$Version
@@ -5951,13 +5936,9 @@ function Test-SidecarCurrent {
     }
     $pins = @("transformers==$Version") + $SidecarCommonPins
     $out = ""
-    # A bounded process, not a native command: the shim cannot interrupt a stalled RECORD read (a
-    # wedged mount), and a native nonzero exit ("stale") terminates under
-    # $PSNativeCommandUseErrorActionPreference. The argv travels base64-encoded so quotes and
-    # backslashes cannot break -c. A timeout reads as stale, and the rebuild follows.
-    # The venv interpreter first, as setup.sh does: a PATH `python` on Windows can be the
-    # Microsoft Store App Execution Alias stub, whose failure would read as "audit died" and
-    # rebuild all three tiers on every run.
+    # A bounded process, not a native command: a native nonzero exit terminates under
+    # $PSNativeCommandUseErrorActionPreference. argv is base64 so quoting cannot break -c.
+    # The venv interpreter first, as setup.sh does: a PATH `python` can be the Store alias stub.
     $pythonExe = $null
     $probe = $null
     if ($VenvPyExe -and (Test-Path -LiteralPath $VenvPyExe -PathType Leaf)) {
@@ -5976,21 +5957,18 @@ function Test-SidecarCurrent {
             $out = ([string]$probe.Output).Trim()
         }
     }
-    # The marker, not the exit code alone: an install_manifest.py predating the shim exits 0
-    # silently.
     if ($out -eq "sidecar: current") { return $true }
     if ($out -like "sidecar:*") {
-        # A regex, not Substring(9): `-like "sidecar:*"` also matches the bare marker, and
-        # Substring past the end throws. Mirrors `${_sc_out#sidecar: }` in setup.sh.
+        # A regex, not Substring: `-like` matches the bare marker too and Substring would throw.
         if ($script:UnslothVerbose) { substep "sidecar $TargetDir`: $($out -replace '^sidecar:\s*', '')" }
         return $false
     }
-    # No marker and a failure: the audit died, which is not the legacy silent exit 0. Stale.
+    # A failure with no marker is a dead audit, not the legacy silent exit 0.
     if ($null -ne $probe -and -not $probe.Ok) {
         if ($script:UnslothVerbose) { substep "sidecar $TargetDir`: audit failed" }
         return $false
     }
-    # An old shim (clean, silent exit 0): fall back to the version grep this replaced.
+    # An old shim exits 0 silently: fall back to the grep this replaced.
     return (Test-TargetPackageVersion -TargetDir $TargetDir -PackageName "transformers" -ExpectedVersion $Version)
 }
 
@@ -6007,8 +5985,7 @@ function Install-T5Sidecar {
     if (Test-Path -LiteralPath $TargetDir) { Remove-Item -LiteralPath $TargetDir -Recurse -Force }
     [System.IO.Directory]::CreateDirectory($TargetDir) | Out-Null
     Mark-StudioOwned -Path $TargetDir
-    # From $SidecarCommonPins, not a second copy of it: a pin the audit demands but the install
-    # never performs reads stale forever, so every update would rebuild all three tiers.
+    # From $SidecarCommonPins, not a copy: a pin demanded but never installed reads stale forever.
     foreach ($pkg in @("transformers==$Version") + $SidecarCommonPins) {
         if ($script:UnslothVerbose) {
             Fast-Install-Sidecar --target $TargetDir --no-deps $pkg
@@ -6043,14 +6020,11 @@ function Install-T5Sidecar {
     step "transformers" "$Version pre-installed"
 }
 
-# Per tier: the old single flag (with its `-not $SkipPythonDeps` clause) rebuilt all three sidecars
-# on every update that touched the dependency pass, 60-90 s on Windows for nothing.
 $_NeedT5_530 = $false
 $_NeedT5_550 = $false
 $_NeedT5_510 = $false
 if (Test-Path -LiteralPath $VenvT5Legacy) {
-    # Legacy layout, migrate. A staged run's tiered venvs may never be activated, so the live legacy
-    # one is removed by the live update, not here.
+    # Legacy layout. A staged run's venvs may never be activated, so only the live update migrates.
     if (-not $StageRoot) {
         Assert-StudioOwnedOrAbsent -Path $VenvT5Legacy -Label "legacy transformers sidecar venv"
         Remove-Item -LiteralPath $VenvT5Legacy -Recurse -Force

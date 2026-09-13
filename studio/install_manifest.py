@@ -1314,8 +1314,7 @@ def _sidecar_pin_ok(root: Path, spec: str) -> Optional[str]:
                 payload_present = _sidecar_payload_present(root, dist)
     except Exception:
         return f"{name} metadata unreadable"
-    # An optional package (tiktoken) absent or left as a bare dist-info is the top-up's business,
-    # not a reason to rebuild; present, it is held to its pin.
+    # An optional package absent, or a bare dist-info, is the top-up's business, not a rebuild.
     if canonical in OPTIONAL_SIDECAR_PACKAGES and (
         not found or (not directory_present and not payload_present)
     ):
@@ -1359,18 +1358,16 @@ def _sidecar_damaged_files(
         return []
     for dist_info in dist_infos:
         name = dist_info.name.split("-")[0]
-        # An optional package may be absent; present, its RECORD is held to the same standard
-        # (mirrors _sidecar_scan_impl in transformers_version.py).
+        # Stricter than _sidecar_scan_impl on purpose: setup can rebuild to converge, the runtime cannot.
         try:
             record = (dist_info / "RECORD").read_text(encoding = "utf-8", errors = "replace")
         except FileNotFoundError:
-            # No RECORD under a pinned dist-info is an interrupted install (written last) whose
-            # truncations the size check cannot see; an optional package's top-up clears its own.
+            # No RECORD under a pinned dist-info is an interrupted install the size check cannot see.
             if _canonical(name) in required_names:
                 recordless.append(f"{name}: RECORD is missing")
             continue
         except OSError:
-            # Unreadable RECORD says nothing about damage.
+            # Unreadable says nothing about damage.
             continue
         try:
             rows = list(csv.reader(io.StringIO(record)))
@@ -1446,9 +1443,7 @@ def _sidecar_damaged_files(
     return found
 
 
-# Mirror of transformers_version._sidecar_file_check_disabled: the escape hatch for a false positive
-# (a several-hundred-MB reinstall) must hold on the setup side too. Then the packages a sidecar is
-# complete without (transformers_version._OPTIONAL_SIDECAR_PACKAGES).
+# Mirrors transformers_version: the escape hatch for a false positive must hold on the setup side too.
 OPTIONAL_SIDECAR_PACKAGES = frozenset({"tiktoken"})
 SIDECAR_FILE_CHECK_ENV = "UNSLOTH_SKIP_SIDECAR_FILE_CHECK"
 
