@@ -216,6 +216,20 @@ def test_think_parsing_expected_gates_on_capability_and_request():
         _think_parsing_expected(_EffortBackend(), _basic_payload(reasoning_effort = "none")) is False
     )
 
+    # Inkling: _coerce_reasoning_effort rewrites the "none" sentinel to 0, so 0 reads as off.
+    class _NumericEffortBackend(_Backend):
+        def _request_reasoning_kwargs(self, enable_thinking, reasoning_effort, preserve_thinking):
+            return {"reasoning_effort": 0.0 if reasoning_effort == "none" else 0.2}
+
+    assert (
+        _think_parsing_expected(_NumericEffortBackend(), _basic_payload(reasoning_effort = "none"))
+        is False
+    )
+    assert (
+        _think_parsing_expected(_NumericEffortBackend(), _basic_payload(enable_thinking = False))
+        is True
+    )
+
 
 def test_anthropic_reasoning_args_maps_effort_only_to_enable_thinking():
     # Effort-only requests must drive enable_thinking-style templates the same

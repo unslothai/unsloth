@@ -9,13 +9,13 @@ import { SandboxFiles } from "./sandbox-files-view";
 import { isSandboxFileList, type SandboxFile } from "./sandbox-files";
 import {
   preferSanitizedFullToolOutput,
+  toolResultText,
   useChatRuntimeStore,
   useChatPreferencesStore,
   useToolAwaitingApproval,
   useToolOutputFor,
   useToolPaneScope,
 } from "@/features/chat";
-import { stringifyToolResult } from "@/lib/strip-ansi";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { useToolArgsStatus } from "@assistant-ui/react";
 import { CodeIcon } from "lucide-react";
@@ -100,7 +100,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
     files = result.files ?? [];
     sessionId = result.sessionId;
   } else if (result != null) {
-    output = stringifyToolResult(result);
+    output = toolResultText(result);
   } else {
     output = "";
   }
@@ -135,12 +135,11 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   ) : null;
 
   return (
-    // Status, output and images collapse from history; the executed script
-    // renders outside ToolFallbackContent so it stays visible on reopen
-    // (#7165) -- a script is an artifact, a one-line command is not.
-    // That holds only while collapseToolActivity is off; with it on the script
-    // moves inside the collapsible, behind one click. awaitingApproval is the
-    // exception: a decision about a script needs the script on screen.
+    // Status, output and images collapse from history; the executed script renders outside
+    // ToolFallbackContent so it stays visible on reopen (#7165) -- a script is an artifact, a
+    // one-line command is not. That holds only while collapseToolActivity is off; with it on the
+    // script moves inside the collapsible, behind one click. awaitingApproval is the exception: a
+    // decision about a script needs the script on screen.
     <ToolFallbackRoot
       defaultOpen={isRunning}
       awaitingApproval={awaitingApproval}

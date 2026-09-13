@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useIsAccountOwner } from "@/features/auth";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -100,6 +101,7 @@ const SUBPAGE_FOR_SHELF = {
 
 export function DataTab() {
   const t = useT();
+  const isOwner = useIsAccountOwner();
   const navigate = useNavigate();
   const archivedRequested = useSettingsDialogStore((s) => s.archivedRequested);
   const consumeArchivedChatsRequest = useSettingsDialogStore(
@@ -130,9 +132,8 @@ export function DataTab() {
   const [fineTuneExporting, setFineTuneExporting] = useState(false);
   const [openingRecipe, setOpeningRecipe] = useState(false);
   const [loadingTraining, setLoadingTraining] = useState(false);
-  // Chat-only hosts redirect /studio back to /chat, so loading a dataset in
-  // the Train tab would upload it and then strand the user; gate the action
-  // the same way the sidebar gates Train.
+  // Chat-only hosts redirect /studio back to /chat, so loading a dataset in the Train tab would
+  // upload it and then strand the user; gate the action the same way the sidebar gates Train.
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
   const ragAvailabilityUnknown = useRagAvailabilityStore((s) =>
@@ -393,10 +394,9 @@ export function DataTab() {
   const handleUseInTraining = async () => {
     setLoadingTraining(true);
     try {
-      // Same deferred module as above. The training store and datasets-api it also
-      // pulls stay eager either way, since __root.tsx imports the @/features/training
-      // barrel that re-exports both; Recipe Studio is what actually leaves the
-      // startup bundle.
+      // Same deferred module as above. The training store and datasets-api it also pulls stay eager
+      // either way, since __root.tsx imports the @/features/training barrel that re-exports both;
+      // Recipe Studio is what actually leaves the startup bundle.
       const { loadFineTuneDatasetInTrainTab } = await import(
         "../components/finetune-recipe"
       );
@@ -979,7 +979,8 @@ export function DataTab() {
         ) : null}
       </SettingsSection>
 
-      <DocumentsRagSection />
+      {/* Embedding model settings are installation-wide (owner-only routes). */}
+      {isOwner ? <DocumentsRagSection /> : null}
 
       <Dialog open={archiveConfirmOpen} onOpenChange={setArchiveConfirmOpen}>
         <DialogContent className="max-w-md">

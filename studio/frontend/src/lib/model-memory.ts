@@ -2,16 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Splits a downloaded model's VRAM footprint into weights and what the current
- * settings add on top: KV cache at the context it will load with, plus an MTP
- * draft reserve when speculative decoding is on.
- *
- * They're kept apart because the fixes differ. Oversized weights need a smaller
- * quant; a total that only overflows once context is added needs a shorter
- * context or a quantized KV cache.
- *
- * Budget matches `gguf-fit.ts` and the backend's `_select_gpus`, so the bar and
- * the fit badge on a row can't contradict each other.
+ * Splits a downloaded model's VRAM footprint into weights and what the current settings add on
+ * top: KV cache at the context it will load with, plus an MTP draft reserve when speculative
+ * decoding is on. They are kept apart because the fixes differ: oversized weights need a smaller
+ * quant, while a total that only overflows once context is added needs a shorter context or a
+ * quantized KV cache. Budget matches `gguf-fit.ts` and the backend's `_select_gpus`, so the bar
+ * and the fit badge on a row cannot contradict each other.
  */
 
 import {
@@ -30,31 +26,27 @@ export interface ModelMemoryInput {
   /** MTP draft reserve; null for ngram (which is free) or a model without one. */
   specBytes?: number | null;
   /**
-   * llama.cpp's compute buffers, from the load planner's own `compute_bytes`.
-   *
-   * Every launch reserves these, and they scale with slots and micro-batch, so a
-   * row near the budget could report a fit while omitting gigabytes the server
-   * allocates. Folded into the KV segment rather than drawn as a fourth sliver:
-   * it is context-linear in part and too small at default settings to resolve on
-   * its own, but it still has to count against the total.
-   */
+     * llama.cpp's compute buffers, from the load planner's own `compute_bytes`.
+     *
+     * Every launch reserves these and they scale with slots and micro-batch, so a row near the
+     * budget could report a fit while omitting gigabytes. Folded into the KV segment rather than
+     * drawn as a fourth sliver: it is context-linear in part and too small to resolve on its own.
+     */
   computeBytes?: number | null;
   /**
-   * The load planner's own GPU-resident total, which supersedes the sum of the
-   * segments when present.
-   *
-   * The segments are assembled here from separate fields and so can only include
-   * what this file knows to ask for; the planner's figure already applies the
-   * inherited environment, resolves companions through the loader's search roots
-   * and counts every buffer. Segment geometry still comes from the individual
-   * terms -- this decides the verdict, not the picture.
-   */
+     * The load planner's own GPU-resident total, which supersedes the sum of the segments.
+     *
+     * The segments are assembled here from separate fields and can only include what this file knows
+     * to ask for; the planner's figure applies the inherited environment, resolves companions through
+     * the loader's search roots and counts every buffer. Segment geometry still comes from the
+     * individual terms: this decides the verdict, not the picture.
+     */
   gpuTotalBytes?: number | null;
   /**
-   * What the planner still reserves at the shortest context: drafter weights,
-   * flat compute buffers, recurrent rollback state. None of it shrinks when the
-   * context does, so it is the floor an auto-fitted row is judged against.
-   */
+     * What the planner still reserves at the shortest context: drafter weights, flat compute buffers,
+     * recurrent rollback state. None of it shrinks when the context does, so it is the floor an
+     * auto-fitted row is judged against.
+     */
   gpuFloorBytes?: number | null;
   /** The share of specBytes a shorter context cannot reduce (drafter weights). */
   specFixedBytes?: number | null;
@@ -63,26 +55,25 @@ export interface ModelMemoryInput {
   /** Context the KV figure was measured at, for the per-token rate. */
   nCtx?: number | null;
   /**
-   * Fraction of that VRAM a load may claim, from /api/settings/vram-budget.
-   * Defaults to VRAM_HEADROOM_RATIO when unknown. This is the loader's own
-   * number and the user can change it, so a bar that hardcodes one warns at a
-   * line admission does not use.
-   */
+     * Fraction of that VRAM a load may claim, from /api/settings/vram-budget, defaulting to
+     * VRAM_HEADROOM_RATIO. This is the loader's own number and the user can change it, so a bar that
+     * hardcodes one warns at a line admission does not use.
+     */
   budgetFraction?: number | null;
   /**
-   * True when no context is pinned, so the loader will auto-fit rather than
-   * open the model's native length. The KV figure is then an upper bound on a
-   * context the load would have reduced, so it cannot justify an OOM verdict.
-   */
+     * True when no context is pinned, so the loader will auto-fit rather than open the model's native
+     * length. The KV figure is then an upper bound on a context the load would have reduced, so it
+     * cannot justify an OOM verdict.
+     */
   contextIsAutoFitted?: boolean | null;
 }
 
 /**
  * How close the total sits to the budget.
  *
- * Studio's live meters step at 70/90 (`resources-tab.tsx`), but they show usage
- * as it happens, where a sustained 70% is worth flagging. This is a reservation
- * you can see coming, so it holds the accent until 80.
+ * Studio's live meters step at 70/90 (`resources-tab.tsx`), but they show usage as it happens,
+ * where a sustained 70% is worth flagging. This is a reservation you can see coming, so it holds
+ * the accent until 80.
  */
 export type ModelMemoryPressure = "normal" | "high" | "critical";
 
@@ -144,25 +135,18 @@ function toGb(bytes?: number | null): number {
 }
 
 /**
- * Bar geometry and fit status for one row.
- *
- * Weights are required, KV is not: a row whose estimate hasn't arrived draws
- * its weights now and fills in the rest, instead of appearing late.
+ * Bar geometry and fit status for one row. Weights are required, KV is not: a row whose estimate
+ * has not arrived draws its weights now and fills in the rest, instead of appearing late.
  */
 export function computeModelMemory(
   input: ModelMemoryInput,
 ): ModelMemorySegments {
-  // A figure that is not a number cannot produce a verdict, only a confident
-  // looking one. `toGb` passes Infinity straight through, so an infinite
-  // weightsBytes reached the status ladder and came out "model-exceeds": a full
-  // red bar reading "Larger than VRAM" beside a weights figure of "0 GiB",
-  // because the formatter clamps what the verdict did not. JSON.parse turns
-  // 1e999 into Infinity, so a malformed response gets there without trying.
-  //
-  // `classifyMemoryFit` on the panel already answers "unknown" for exactly these
-  // inputs, so this was also the two surfaces disagreeing about the same bytes.
-  // Null and undefined are NOT covered here: those mean "has not arrived yet",
-  // which is an ordinary state the segments below already handle.
+  // A figure that is not a number cannot produce a verdict, only a confident looking one. `toGb`
+  // passes Infinity straight through, so an infinite weightsBytes reached the status ladder and came
+  // out "model-exceeds": a full red bar reading "Larger than VRAM" beside a weights figure of
+  // "0 GiB". JSON.parse turns 1e999 into Infinity, so a malformed response gets there without
+  // trying, and `classifyMemoryFit` on the panel already answers "unknown" for these inputs. Null
+  // and undefined are NOT covered: those mean "has not arrived yet", which the segments handle.
   if (
     [
       input.weightsBytes,
@@ -182,20 +166,15 @@ export function computeModelMemory(
   const gpuGb = input.gpuGb ?? 0;
   const modelGb = toGb(input.weightsBytes);
   if (gpuGb <= 0 || modelGb <= 0) return EMPTY;
-  // The planner says this launch puts nothing on the card. A VRAM bar has
-  // nothing to say about it, and drawing one implies a reservation that is not
-  // going to happen.
+  // The planner says this launch puts nothing on the card. A VRAM bar has nothing to say about it,
+  // and drawing one implies a reservation that is not going to happen.
   if (input.gpuTotalBytes === 0) return EMPTY;
 
-  // The loader's own budget when the caller knows it, so the bar warns at the
-  // line admission actually draws.
-  //
+  // The loader's own budget when the caller knows it, so the bar warns at the line admission draws.
   // The fallback is DEFAULT_VRAM_BUDGET_FRACTION (0.97), matching the loader's
-  // _CTX_FIT_VRAM_FRACTION and the Load Model panel. It used to be
-  // VRAM_HEADROOM_RATIO (0.90), which is not a safer guess but a measured wrong
-  // one: llama_cpp.py records "0.90 dropped 91-94% fits to CPU offload, #5106".
-  // Warning at a line admission does not draw is the same class of wrong answer
-  // as a false "fits", pointing the other way.
+  // _CTX_FIT_VRAM_FRACTION and the Load Model panel. It used to be VRAM_HEADROOM_RATIO (0.90),
+  // which is not a safer guess but a measured wrong one: llama_cpp.py records "0.90 dropped 91-94%
+  // fits to CPU offload, #5106".
   const fraction =
     input.budgetFraction && input.budgetFraction > 0
       ? input.budgetFraction
@@ -206,28 +185,20 @@ export function computeModelMemory(
   // The planner's total when it gave one, since it accounts for terms these
   // segments cannot see. Falls back to the sum for a backend too old to send it.
   const segmentSumGb = modelGb + kvGb + specGb;
-  // Explicitly null-checked, because zero is an answer rather than the absence
-  // of one: inherited placement can make the launch entirely CPU resident, and
-  // `||` would have quietly swapped that for the segment sum and drawn VRAM
-  // pressure for a load that touches no card.
+  // Explicitly null-checked, because zero is an answer rather than the absence of one: inherited
+  // placement can make the launch entirely CPU resident, and `||` would have swapped that for the
+  // segment sum and drawn VRAM pressure for a load that touches no card.
   const totalGb =
     input.gpuTotalBytes == null ? segmentSumGb : toGb(input.gpuTotalBytes);
 
-  // Only the weights are a hard verdict: they are what they are. The context
-  // term is a reservation the loader is free to shrink when nothing pinned it,
-  // so an unpinned row that only tips over because of KV reports "fits" rather
-  // than warning about a length the load would never have opened.
-  //
-  // The speculative segment is not wholly context-linear though: a separate
-  // drafter's own weights are resident whatever the context, and no auto-fit can
-  // shrink them. So the hard floor is the weights plus that fixed share -- if
-  // target and drafter weights together do not fit, saying "fits" because the
-  // context is unpinned describes a load that cannot open at any length.
-  // The planner's floor when it gave one: it names every fixed term, including
-  // the flat compute buffer and a Hybrid Mamba target's rollback state, which
-  // the drafter-weights figure alone misses. Both can be several GiB, and both
-  // survive any context reduction, so folding them into the reducible part let
-  // auto-fit suppress an overage nothing could fix.
+  // Only the weights are a hard verdict: they are what they are. The context term is a reservation
+  // the loader is free to shrink when nothing pinned it, so an unpinned row that only tips over
+  // because of KV reports "fits". The speculative segment is not wholly context-linear though: a
+  // separate drafter's own weights are resident whatever the context, so the hard floor is the
+  // weights plus that fixed share. The planner's floor when it gave one names every fixed term,
+  // including the flat compute buffer and a Hybrid Mamba target's rollback state, which the
+  // drafter-weights figure alone misses; both can be several GiB and both survive any context
+  // reduction, so folding them into the reducible part let auto-fit suppress an overage.
   const specFixedGb = toGb(input.specFixedBytes);
   const irreducibleGb =
     input.gpuFloorBytes == null
@@ -240,8 +211,7 @@ export function computeModelMemory(
         ? "context-exceeds"
         : "fits";
 
-  // Clamp to the track, so an oversized model can't push the later segments
-  // out of the row.
+  // Clamp to the track, so an oversized model can't push the later segments out of the row.
   const modelPct = Math.min(100, (modelGb / budgetGb) * 100);
   const kvPct = Math.min(100 - modelPct, (kvGb / budgetGb) * 100);
   const specPct = Math.min(100 - modelPct - kvPct, (specGb / budgetGb) * 100);
@@ -252,26 +222,19 @@ export function computeModelMemory(
   const kvBytesPerToken =
     nCtx > 0 && input.kvBytes && input.kvBytes > 0 ? input.kvBytes / nCtx : 0;
 
-  // Uncapped: widths clamp to the track, but pressure still needs to tell
-  // "just full" from "twice over".
-  //
-  // For an unpinned row the total is priced at the model's NATIVE context while
-  // the loader will reduce that context to fit, so this number is an upper bound
-  // on a length the load would never open. Suppressing only the textual verdict
-  // and leaving the picture alone gave a model that loads perfectly well a full
-  // destructive-red bar and an over-budget readout, which says "this will not
-  // work" louder than the words did. The floor is what the launch cannot avoid
-  // reserving, so it is the honest figure to draw pressure from; when the
-  // planner did not give one, the fill is capped at the budget rather than
-  // invented, since the true fitted total is not known here.
+  // Uncapped: widths clamp to the track, but pressure still needs to tell "just full" from "twice
+  // over". For an unpinned row the total is priced at the model's NATIVE context while the loader
+  // will reduce it to fit, so this number is an upper bound on a length the load would never open;
+  // suppressing only the textual verdict gave a model that loads perfectly well a full
+  // destructive-red bar. The floor is what the launch cannot avoid reserving, so it is the honest
+  // figure to draw pressure from; without one the fill is capped at the budget rather than invented.
   const autoFitted = Boolean(input.contextIsAutoFitted);
   const pressureGb =
     autoFitted && input.gpuFloorBytes != null
       ? // The floor alone. Auto-fit sizes the cache to whatever is left, so the
-        // useful signal is how much of the budget is spoken for before the
-        // context gets any: capping the native total at the budget instead just
-        // pins every such row at exactly 100%, which reads as critical for a
-        // load that is fine.
+        // useful signal is how much of the budget is spoken for before the context gets any:
+        // capping the native total at the budget instead just pins every such row at exactly 100%,
+        // which reads as critical for a load that is fine.
         Math.min(irreducibleGb, totalGb)
       : autoFitted
         ? Math.min(totalGb, budgetGb)
@@ -303,9 +266,8 @@ export function computeModelMemory(
 /**
  * Pass-through llama-server args that decide where the model is placed.
  *
- * Exported for the policy tests: these are the flags whose presence means the
- * VRAM total stops describing the load, so the bar has to abstain exactly as it
- * does for the equivalent structured controls.
+ * Exported for the policy tests: these are the flags whose presence means the VRAM total stops
+ * describing the load, so the bar has to abstain exactly as it does for the structured controls.
  */
 export const PLACEMENT_OWNING_ARGS = [
   // _GPU_LAYER_FLAGS and _FIT_FLAGS
@@ -347,29 +309,24 @@ export const PLACEMENT_OWNING_ARGS = [
 ];
 
 /**
- * Pass-through args that change the SIZE of the KV cache rather than where it
- * sits.
+ * Pass-through args that change the SIZE of the KV cache rather than where it sits.
  *
- * The bar prices the cache from the structured controls alone, so any of these
- * in the box means the launch reserves something other than what was priced.
- * `--swa-full` is the sharp one: on a sliding-window model it replaces the
- * compact window with a full-context cache, which the loader honours at
- * `_estimate_kv_cache_bytes` via `_swa_full_from_args_or_env`. Pricing the
- * window and reporting a fit for a launch that allocates the full context is the
- * exact false "fits" this bar exists to prevent, so it abstains instead.
+ * The bar prices the cache from the structured controls alone, so any of these in the box means
+ * the launch reserves something other than what was priced. `--swa-full` is the sharp one: on a
+ * sliding-window model it replaces the compact window with a full-context cache, which the loader
+ * honours at `_estimate_kv_cache_bytes`, so pricing the window would report the exact false "fits"
+ * this bar exists to prevent.
  */
 export const KV_SHAPING_ARGS = [
   "--swa-full",
   // Turning flash attention off changes the cache layout, not just its size:
-  // _estimate_kv_cache_bytes then pads variable-width V tensors to the
-  // model-wide maximum, which can reserve materially more than the default
-  // enabled layout this estimate prices.
+  // _estimate_kv_cache_bytes then pads variable-width V tensors to the model-wide maximum, which
+  // can reserve materially more than the default enabled layout this estimate prices.
   "--flash-attn",
   "-fa",
-  // The loader treats an extras --spec-type as authoritative over the
-  // structured mode, so a config saying "off" can still open an embedded NextN
-  // head. The request carries only the structured mode, so the draft KV and the
-  // target rollback state would both be missing from the total.
+  // The loader treats an extras --spec-type as authoritative over the structured mode, so a config
+  // saying "off" can still open an embedded NextN head. The request carries only the structured
+  // mode, so the draft KV and the target rollback state would both be missing from the total.
   "--spec-type",
   "--spec-default",
   // Draft depth in llama.cpp's spellings as well as Unsloth's: a recurrent
@@ -410,11 +367,9 @@ export const KV_SHAPING_ARGS = [
 /**
  * Pass-through args that make the launch hold files this estimate never sized.
  *
- * A LoRA, a control vector, an explicit projector or a hand-named drafter are
- * all resident bytes chosen in the extras box, and none of them reach the
- * planner through the structured settings. Unlike the KV-shaping flags these do
- * not reshape a term that was priced -- they add one that was not -- so the
- * total is a floor rather than an answer and the bar abstains.
+ * A LoRA, a control vector, an explicit projector or a hand-named drafter are all resident bytes
+ * chosen in the extras box, and none reach the planner through the structured settings. Unlike the
+ * KV-shaping flags these add a term rather than reshaping one, so the total is a floor.
  */
 export const RESIDENT_ADDING_ARGS = [
   // _LOCAL_DRAFT_FLAGS and _HF_DRAFT_FLAGS in full. A hand-named drafter is
@@ -456,12 +411,10 @@ export function extraArgsShapeKvCache(
 /**
  * A pass-through token reduced to the flag name the launch will parse.
  *
- * Mirrors the backend's `_flag_name`: peel `--key=value`, and normalise
- * underscores in long options, which llama.cpp accepts interchangeably with
- * dashes. Without the second step `--gpu_layers` or `--ctx_size` passed every
- * one of the three predicates below while still changing the real launch, so a
- * single spelling defeated the whole abstention policy rather than one entry in
- * one list.
+ * Mirrors the backend's `_flag_name`: peel `--key=value`, and normalise underscores in long
+ * options, which llama.cpp accepts interchangeably with dashes. Without the second step
+ * `--gpu_layers` passed every predicate below while still changing the real launch, so a single
+ * spelling defeated the whole abstention policy.
  */
 function flagName(arg: unknown): string {
   const token = String(arg ?? "").trim();
@@ -508,12 +461,10 @@ export interface EstimateCacheKeyParts {
 /**
  * Cache key for one estimate.
  *
- * Every field the request carries appears here, because two rows that would ask
- * the backend different questions must not share an answer. The slot count is
- * the one that is easy to get wrong: an omitted count is not one slot, it is
- * "whatever the server is configured for", which defaults above one. Joined with
- * a separator that cannot occur in a normalized repo id or quant label, since a
- * space can.
+ * Every field the request carries appears here, because two rows that would ask the backend
+ * different questions must not share an answer. The slot count is easy to get wrong: an omitted
+ * count is not one slot, it is "whatever the server is configured for", which defaults above one.
+ * Joined with a separator that cannot occur in a normalized repo id or quant label.
  */
 export function estimateCacheKey(parts: EstimateCacheKeyParts): string {
   return [
@@ -537,10 +488,9 @@ export function estimateCacheKey(parts: EstimateCacheKeyParts): string {
 /**
  * Whether a response says "I could not size this model".
  *
- * The route is best-effort: it answers 200 with every field null rather than
- * failing, so this arrives down the success path. Callers cache it as a failure
- * so it expires, because the usual cause is a backend that is briefly away, not
- * a model that can never be sized.
+ * The route is best-effort: it answers 200 with every field null rather than failing, so this
+ * arrives down the success path. Callers cache it as a failure so it expires, because the usual
+ * cause is a backend briefly away, not a model that can never be sized.
  */
 export function estimateIsUnsized(estimate: {
   kvBytes: number | null;
@@ -554,23 +504,18 @@ export function estimateIsUnsized(estimate: {
   );
 }
 
-// The unit formatting now lives in src/lib/memory/format.ts, shared with the
-// Load Model panel. Re-exported here because this module is the bar's entry
-// point and its call sites are unchanged.
-//
-// formatKvRate's labels have changed from KB/MB to KiB/MiB: the divide was
-// always by 1024, so the readout was printing kibibytes labelled as kilobytes,
-// the same mislabel #9570 fixed one scale up.
+// The unit formatting now lives in src/lib/memory/format.ts, shared with the Load Model panel.
+// Re-exported here because this module is the bar's entry point. formatKvRate's labels have
+// changed from KB/MB to KiB/MiB: the divide was always by 1024, so the readout was printing
+// kibibytes labelled as kilobytes.
 export { formatKvRate } from "./memory/format.ts";
 
 /**
  * Compact label for the bar's readout ("7.2 GiB").
  *
- * @deprecated Prefer `formatGiB` from `@/lib/memory/format`, whose name says
- * which unit it takes. This alias exists because there used to be a SECOND
- * exported `formatMemoryGb`, in `model-config/memory-fit.ts`, which took BYTES
- * rather than gigabytes -- the same name and the same `(number) => string`
- * signature for two incompatible things, so importing the wrong one was off by
- * 1024^3 and still typechecked.
+ * @deprecated Prefer `formatGiB` from `@/lib/memory/format`, whose name says which unit it takes.
+ * This alias exists because there used to be a SECOND exported `formatMemoryGb`, in
+ * `model-config/memory-fit.ts`, which took BYTES rather than gigabytes: same name and signature
+ * for two incompatible things, so importing the wrong one was off by 1024^3 and still typechecked.
  */
 export { formatGiB as formatMemoryGb } from "./memory/format.ts";

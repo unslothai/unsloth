@@ -133,9 +133,8 @@ function scheduleVulkanRetry(): void {
       vulkanRetrySubscribers,
     )
   ) {
-    // A cold subscription schedules before its first request settles. Cancel
-    // that pending retry as soon as discovery succeeds with a usable inventory
-    // or a non-Vulkan backend.
+    // A cold subscription schedules before its first request settles. Cancel that pending retry as
+    // soon as discovery succeeds with a usable inventory or a non-Vulkan backend.
     if (vulkanRetryId !== null) {
       window.clearTimeout(vulkanRetryId);
       vulkanRetryId = null;

@@ -80,6 +80,11 @@ make_home() {
              "$FIXTURE_HOME/.local/share/unsloth" \
              "$FIXTURE_HOME/.local/bin"
     : > "$FIXTURE_HOME/.unsloth/studio/unsloth_studio/bin/unsloth"
+    # What install.sh leaves behind, because the uninstaller's ownership gate reads it before it
+    # deletes the root: the marker at install.sh:3190, and the venv the marker sits in.
+    : > "$FIXTURE_HOME/.unsloth/studio/unsloth_studio/.unsloth-studio-owned"
+    : > "$FIXTURE_HOME/.unsloth/studio/unsloth_studio/pyvenv.cfg"
+    : > "$FIXTURE_HOME/.unsloth/studio/unsloth_studio/bin/python"
     : > "$FIXTURE_HOME/.unsloth/studio/auth/.desktop_secret"
     ln -s "$FIXTURE_HOME/.unsloth/studio/unsloth_studio/bin/unsloth" "$FIXTURE_HOME/.local/bin/unsloth"
 }

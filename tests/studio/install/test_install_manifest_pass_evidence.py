@@ -600,3 +600,53 @@ def test_an_absent_tiktoken_is_optional_but_a_present_one_is_held_to_its_record(
     (sidecar / "hf_xet" / "__init__.py").unlink()
     current, reason = im.sidecar_is_current(sidecar, PINS)
     assert current is False and "hf_xet" in reason
+
+
+def test_write_manifest_never_raises_on_a_payload_json_cannot_encode(
+    tmp_path: pathlib.Path,
+) -> None:
+    """`extra` is composed by the caller from what the pass observed, and the docstring
+    promises this never raises. It is called as the last act of a pass that has already
+    installed everything, so a TypeError out of json.dumps would end the update with a
+    traceback and leave the venv with no manifest -- which every reader takes for a
+    half-built install. update_manifest already catches the same three.
+    """
+    assert (
+        im.write_manifest(
+            root = tmp_path,
+            req_root = tmp_path,
+            package_name = "pytest",
+            extra = {"known_unmet": {"studio.txt"}},
+        )
+        is None
+    )
+    assert not (tmp_path / im.MANIFEST_NAME).exists()
+
+
+def test_an_unencodable_extra_leaves_an_existing_manifest_alone(tmp_path: pathlib.Path) -> None:
+    """Refusing is the safe direction: the previous record is still true of this venv."""
+    im.write_manifest(
+        root = tmp_path, req_root = tmp_path, package_name = "pytest", extra = {"pip_check_ok": True}
+    )
+    before = _payload(tmp_path)
+    assert (
+        im.write_manifest(
+            root = tmp_path,
+            req_root = tmp_path,
+            package_name = "pytest",
+            extra = {"bad": object()},
+        )
+        is None
+    )
+    assert _payload(tmp_path) == before
+
+
+def test_both_writers_refuse_the_same_unencodable_payload(tmp_path: pathlib.Path) -> None:
+    im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+    assert im.update_manifest(root = tmp_path, mlx_health = {1, 2}) is False
+    assert (
+        im.write_manifest(
+            root = tmp_path, req_root = tmp_path, package_name = "pytest", extra = {"x": {1, 2}}
+        )
+        is None
+    )

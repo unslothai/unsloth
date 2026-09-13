@@ -1047,9 +1047,9 @@ def _bnb_rocm_prerelease_url() -> str | None:
     return _BNB_ROCM_PRERELEASE_URLS.get(arch)
 
 
-# The provenance this pass last installed bitsandbytes from. The SECOND _ensure_rocm_torch() of a
-# pass must not repeat the download yet must still repair a bnb the steps in between re-resolved, so
-# this records WHAT landed, not merely THAT something did.
+# What this pass last installed bitsandbytes from. The second _ensure_rocm_torch() of a pass must
+# not repeat the download yet must still repair a bnb the steps between re-resolved, so this records
+# WHAT landed, not merely THAT something did.
 _BNB_ROCM_PASS_PROVENANCE: "str | None" = None
 # What the release URL served when this pass last looked (_bnb_asset_identity): the URL alone cannot
 # identify the build.
@@ -4057,6 +4057,7 @@ def _ensure_xpu_triton() -> None:
                 )
             )
             return
+        _count_install_action()
         removed = subprocess.run(
             [sys.executable, "-m", "pip", "uninstall", "-y", "triton"],
             stdout = subprocess.DEVNULL,
@@ -4630,9 +4631,8 @@ def _install_torchao_for_torch(torch_version: "str | None") -> None:
     if _may_skip_on_evidence() and not _pin_needs_reinstall(
         spec, _torch_index_tag(torch_version) if index else ""
     ):
-        # This exact version from this exact index is what the pin asserts; running the install
-        # resolved it against the index on every update, twice after the torch repair.
-        # _may_skip_on_evidence first: a forced pass or a failed deep verify asks for the install.
+        # This exact version from this exact index is what the pin asserts, and running it resolved
+        # against the index on every update. Evidence first: a forced pass asks for the install.
         _note(f"torch {torch_version or 'unknown'} detected -- {spec} is already installed")
         _record_step("torchao", "skipped")
         return
@@ -5714,6 +5714,7 @@ def _ensure_rocm_torch() -> None:
         # (present before the base install) is left untouched.
         if _GFX906_BNB_ABSENT_BEFORE_BASE and _bitsandbytes_installed():
             _safe_print(_dim("   gfx906: removing generic bitsandbytes pulled in as a dependency"))
+            _count_install_action()
             subprocess.run(
                 [sys.executable, "-m", "pip", "uninstall", "-y", "bitsandbytes"],
                 capture_output = True,
@@ -6309,6 +6310,7 @@ def _remove_rejected_flash_attn() -> bool:
         cmd.extend(["--python", sys.executable, "flash-attn"])
     else:
         cmd = [sys.executable, "-m", "pip", "uninstall", "-y", "flash-attn"]
+    _count_install_action()
     removed = subprocess.run(cmd, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
     return removed.returncode == 0
 
@@ -6326,6 +6328,8 @@ def _ensure_flash_attn() -> None:
     env = probe_torch_wheel_env()
     wheel_url = _build_flash_attn_wheel_url(env) if env else None
     if wheel_url and url_exists(wheel_url):
+        # Counted: it lands a distribution, so the caches keyed on the counter must be rebuilt.
+        _count_install_action()
         for installer, wheel_result in install_wheel(
             wheel_url,
             python_executable = sys.executable,
@@ -8010,10 +8014,9 @@ def _report_mlx_stack_health(skipped: bool = False) -> None:
 
 
 # The idempotent dependency pass. A skip is legal only when (a) the previous run recorded this exact
-# work, (b) the inputs are byte-identical and (c) a cheap on-disk check of the OUTPUT passes.
-# Anything that drops (a) (a repair, a damaged install, a version / python / platform /
-# torch-flavour change, a missing manifest, UNSLOTH_STUDIO_FULL_DEPS) forces the whole pass. When in
-# doubt, do the work: a wrong skip ships a venv that dies on `import structlog`.
+# work, (b) the inputs are byte-identical and (c) a cheap on-disk check of the OUTPUT passes; losing
+# any of the three runs the whole pass. When in doubt, do the work: a wrong skip ships a venv that
+# dies on `import structlog`.
 
 _FULL_DEPS_ENV = "UNSLOTH_STUDIO_FULL_DEPS"
 
@@ -8059,14 +8062,22 @@ def _closure_record() -> "dict[str, list[str]]":
         return record
     previous = (_PASS_EVIDENCE or {}).get("known_unmet") or {}
     for key, req in _AUDITED_STEPS.items():
-        effective, temps = _effective_requirements(req)
+        # An argument to write_manifest, so every install has already landed and nothing here may
+        # raise: the core step can have replaced the tree these paths came from.
+        temps: list[Path] = []
         try:
+            effective, temps = _effective_requirements(req)
             unmet = install_manifest.closure_unmet_requirements(effective, _installed_index())
         except Exception:  # noqa: BLE001 - nothing recorded means nothing ignored next time
             unmet = ["<audit failed>"]
         finally:
             for temp in temps:
-                temp.unlink(missing_ok = True)
+                # An unlink that raises here would end the pass between the last install and
+                # the manifest write. A temp file left behind is the cheaper outcome.
+                try:
+                    temp.unlink(missing_ok = True)
+                except OSError:
+                    pass
         audited = not any(entry.startswith("<") for entry in unmet)
         if _STEP_RESULTS.get(key) == "skipped" and isinstance(previous.get(key), list):
             # Narrowed to what is still unmet, or a later loss of a since-satisfied package would
@@ -8181,9 +8192,8 @@ def _plan_pass(package_name: str, local_repo: str, ci_source_overlay: str) -> "d
     # gate; a caller's own file is an input no digest covers.
     if _foreign_uv_override_in_effect():
         return _refuse_evidence("a caller-supplied UV_OVERRIDE is in effect")
-    # Other resolver inputs from the environment: UV_CONSTRAINT / PIP_CONSTRAINT change what a step
-    # installs without touching a digested file, and PIP_NO_DEPS would leave the closure record
-    # carrying deliberate gaps as known.
+    # UV_CONSTRAINT / PIP_CONSTRAINT change what a step installs without touching a digested file,
+    # and PIP_NO_DEPS would leave the closure record carrying deliberate gaps as known.
     foreign = _foreign_resolver_inputs()
     if foreign:
         return _refuse_evidence(f"caller-supplied resolver input in effect: {', '.join(foreign)}")
@@ -8319,6 +8329,9 @@ def _installed_index() -> "dict | None":
     """
     global _CLOSURE_INDEX_CACHE
     if _CLOSURE_INDEX_CACHE is None or _CLOSURE_INDEX_CACHE[0] != _INSTALL_ACTIONS:
+        # importlib.metadata revalidates its listing cache on mtime, one-second granular on
+        # some filesystems, so a rebuild in the same tick as its install reads the old one.
+        importlib.invalidate_caches()
         try:
             index = install_manifest.installed_dependency_index()
         except Exception:  # noqa: BLE001 - None is "cannot audit", which installs
@@ -8396,9 +8409,11 @@ def _requirements_satisfied(
         return _refuse_step(key, "an input file changed")
     # (c) the output is still on disk.
     importlib.invalidate_caches()
-    effective, temps = _effective_requirements(req)
-    # Inside the try: `effective` can be a temp copy the finally unlinks.
+    # Inside the try: on a filtering host this reads the file, and a tree the core step replaced
+    # mid-pass is a reason to run the step, not to end the update.
+    temps: list[Path] = []
     try:
+        effective, temps = _effective_requirements(req)
         missing = install_manifest.missing_requirements(effective)
         if missing:
             return _refuse_step(key, f"not installed or outside the pin: {missing[:5]}")
@@ -8407,9 +8422,8 @@ def _requirements_satisfied(
         if not no_deps:
             unmet = install_manifest.closure_unmet_requirements(effective, _installed_index())
             # What the last pass left unmet right after this step (disjoint pins) is not missing
-            # work; anything new is. Only while the installed set is the one the record was made
-            # against: a requirer that moved since can have dropped the bound that made the
-            # conflict.
+            # work; anything new is. Honoured only against the installed set it was recorded on,
+            # since a requirer that moved may have dropped the bound that made the conflict.
             known: set = set()
             if _PASS_EVIDENCE.get("known_unmet_index") == _installed_index_digest():
                 known = set((_PASS_EVIDENCE.get("known_unmet") or {}).get(key) or [])
@@ -8424,7 +8438,10 @@ def _requirements_satisfied(
         return _refuse_step(key, f"audit raised {exc!r}")
     finally:
         for temp in temps:
-            temp.unlink(missing_ok = True)
+            try:
+                temp.unlink(missing_ok = True)
+            except OSError:
+                pass
     if constrain and _violated_constraints():
         return _refuse_step(key, f"constraints violated: {_violated_constraints()[:5]}")
     return True
@@ -8466,9 +8483,10 @@ def _direct_reference_in_requirements(req: Path) -> "tuple[str, str, str] | None
     The fragment is NOT an inline comment here: ``#subdirectory=`` is part of the URL,
     and a different subdirectory is a different package.
     """
+    # ValueError too: a requirements file that is not UTF-8 raises UnicodeDecodeError here.
     try:
         lines = req.read_text(encoding = "utf-8-sig").splitlines()
-    except OSError:
+    except (OSError, ValueError):
         return None
     for line in lines:
         stripped = line.strip()
@@ -8840,14 +8858,28 @@ def install_python_stack() -> int:
     # runs.
     _PASS_EVIDENCE = _plan_pass(package_name, local_repo, ci_source_overlay)
 
-    # Drop it up front: a missing manifest is what tells the CLI, setup.sh and
-    # the preflight that an interrupted run left the venv half-built. Stop if it
-    # survives rather than mutate the venv behind a marker that still verifies.
-    # remove_manifest parks the live copy for setup.ps1's ordering; here the evidence is already in
-    # memory, so the parked copy goes before anything is mutated.
+    # Drop it up front: a missing manifest is what tells the CLI, setup.sh and the preflight that an
+    # interrupted run left the venv half-built. Stop if it survives rather than mutate the venv
+    # behind a marker that still verifies. The evidence is already in memory here, so the copy
+    # remove_manifest parks for setup.ps1's ordering goes before anything is mutated.
+    # Clear a stale parked copy FIRST, while the live manifest is still there: _plan_pass
+    # consumes the one it reads, so anything left is from a run that died. A path that cannot
+    # be cleared (a directory on the name, a Windows handle held open) must refuse here rather
+    # than after the live manifest is gone, or the venv is left unable to verify AND unable to
+    # finish, with every later update refusing at the same point.
+    _parked = install_manifest.previous_manifest_path()
+    install_manifest.consume_previous_manifest()
+    if _parked.exists():
+        _safe_print(
+            f"error: could not remove the parked {install_manifest.PREVIOUS_MANIFEST_NAME} "
+            f"in {install_manifest.venv_root()}; refusing to install behind evidence the "
+            "next run would read as a completed pass",
+            file = sys.stderr,
+        )
+        return 1
     if install_manifest.remove_manifest():
         install_manifest.consume_previous_manifest()
-        if install_manifest.previous_manifest_path().exists():
+        if _parked.exists():
             _safe_print(
                 f"error: could not remove the parked {install_manifest.PREVIOUS_MANIFEST_NAME} "
                 f"in {install_manifest.venv_root()}; refusing to install behind evidence the "

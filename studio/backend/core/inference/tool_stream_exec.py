@@ -21,6 +21,7 @@ and healing downstream are untouched.
 
 from __future__ import annotations
 
+import contextvars
 import inspect
 import queue
 import threading
@@ -150,11 +151,10 @@ def stream_tool_execution(
     done_sentinel = object()
     outcome: dict[str, Any] = {}
 
-    # bound at the PRODUCER boundary: the consumer-side cap alone would not stop a fast worker enqueuing unboundedly
-    # Bound accepted output at the PRODUCER boundary: the consumer-side cap alone wouldn't stop a fast worker enqueuing
-    # unboundedly while a slow SSE client backpressures. Accept at most one char past the cap (so the consumer still
-    # emits the capped notice) and drop the rest. The final result is captured independently, so this never changes the
-    # byte-identical result.
+    # Bound accepted output at the PRODUCER boundary: the consumer-side cap alone wouldn't stop a fast worker
+    # enqueuing unboundedly while a slow SSE client backpressures. Accept at most one char past the cap (so the
+    # consumer still emits the capped notice) and drop the rest. The final result is captured independently, so this
+    # never changes the byte-identical result.
     accepted_output_chars = 0
     accepted_output_lock = threading.Lock()
 
@@ -180,14 +180,15 @@ def stream_tool_execution(
             # poll-interval latency.
             output_queue.put(done_sentinel)
 
+    # The worker runs in the caller's context, so a tool started for one account cannot resolve another's roots.
     worker = threading.Thread(
-        target = _run,
+        target = contextvars.copy_context().run,
+        args = (_run,),
         daemon = True,
         name = f"tool-exec-{tool_name or 'unknown'}",
     )
     worker.start()
 
-    # paced by counting idle polls, not a wall clock: tests patch `time.monotonic` globally
     # Heartbeats are paced by counting idle queue polls rather than a wall clock (tests patch ``time.monotonic``
     # globally, so the wrapper must not read it).
     idle_polls_per_heartbeat = max(1, int(round(heartbeat_interval_s / poll_interval_s)))
@@ -293,7 +294,6 @@ def stream_tool_execution(
     error = outcome.get("error")
     if error is not None:
         raise error
-    # returned verbatim, so the final tool result is byte-identical to a direct execute_tool call
     # Returned verbatim (the loop's record_result handles non-str), so the final tool result is byte-identical to a
     # direct execute_tool call.
     return outcome.get("result")

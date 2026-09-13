@@ -479,7 +479,10 @@ def test_a_mutable_git_ref_is_evidence_only_while_the_remote_still_points_at_it(
     # The remote cannot be reached: the installed build is kept, and the log says so.
     monkeypatch.setattr(stack, "_git_remote_commit", _remote(None))
     assert stack._direct_reference_is_installed(req, "triton_kernels") is True
-    assert "keeping the installed build 0123456789ab" in capsys.readouterr().out
+    # Whitespace-normalised: _note wraps to the terminal width, so on an 80-column
+    # terminal -- every xdist worker, and CI runs this suite with -n 4 -- the sentence
+    # breaks mid-phrase and a literal substring match fails for no reason of substance.
+    assert "keeping the installed build 0123456789ab" in " ".join(capsys.readouterr().out.split())
 
     # Without a recorded commit there is nothing to compare: the step runs, offline or not.
     without_commit = {**recorded, "vcs_info": {"vcs": "git", "requested_revision": "release/3.6.x"}}
@@ -1803,7 +1806,9 @@ def test_the_parked_manifest_goes_right_after_the_live_one_is_removed(monkeypatc
     source = open(stack.__file__, encoding = "utf-8").read()
     at = source.index("if install_manifest.remove_manifest():")
     assert "install_manifest.consume_previous_manifest()" in source[at : at + 200]
-    assert "previous_manifest_path().exists()" in source[at : at + 400]
+    # The path is bound above the removal so the same check can run BEFORE it as well; the
+    # invariant here is that the parked copy is read for and gone within this window.
+    assert "_parked.exists()" in source[at : at + 400]
 
 
 def test_an_input_missing_from_the_record_or_unreadable_now_is_changed(monkeypatch, tmp_path):
@@ -1855,3 +1860,201 @@ def test_duplicate_constrained_metadata_is_a_violation_not_an_absence(monkeypatc
     assert manifest.violated_constraints(req_file = req) == []
     versions["pyarrow"] = [""]
     assert manifest.violated_constraints(req_file = req) == ["pyarrow"]
+
+
+# -- nothing the gate reads may end a pass that already installed everything ----
+
+
+@pytest.fixture
+def audited(monkeypatch, tmp_path):
+    """One audited with-deps step, on a host where _effective_requirements really copies.
+
+    Windows and --no-torch hosts filter the file, so the gate and the record both read it
+    from disk. The record is taken as an argument to write_manifest, after every install
+    has landed, and the branch's own comment there says REQ_ROOT may have been replaced by
+    the core step -- so the file these paths hold can be gone, or no longer UTF-8.
+    """
+    req_root = tmp_path / "requirements"
+    (req_root / "single-env").mkdir(parents = True)
+    for name in stack.install_manifest.PASS_INPUT_FILES:
+        (req_root / name).write_text(f"# {name}\n", encoding = "utf-8")
+    monkeypatch.setattr(stack, "REQ_ROOT", req_root)
+    monkeypatch.setattr(stack, "CONSTRAINTS", req_root / "single-env" / "constraints.txt")
+    monkeypatch.setattr(stack, "IS_WINDOWS", True)
+    monkeypatch.setattr(stack, "NO_TORCH", False)
+    monkeypatch.setattr(stack, "IS_MAC_ARM", False)
+    monkeypatch.setattr(stack, "PLATFORM_LACKS_TORCHCODEC_WHEEL", False)
+    monkeypatch.setattr(stack.install_manifest, "missing_requirements", lambda *a, **k: [])
+    monkeypatch.setattr(stack.install_manifest, "violated_constraints", lambda *a, **k: [])
+    monkeypatch.setattr(stack.install_manifest, "closure_unmet_requirements", lambda *a, **k: [])
+    monkeypatch.setattr(stack.install_manifest, "installed_dependency_index", lambda *a, **k: {})
+    stack._AUDITED_STEPS["studio.txt"] = req_root / "studio.txt"
+    return req_root
+
+
+def test_a_requirements_file_the_update_replaced_still_lets_the_manifest_be_written(
+    audited,
+) -> None:
+    """The failure this guards is the worst shape available: every package installed, the
+    pass then dies with a traceback, and the venv is left with no manifest at all -- which
+    every reader takes for a half-built install."""
+    (audited / "studio.txt").unlink()
+    assert isinstance(stack._closure_record(), dict)
+
+
+def test_a_requirements_file_that_is_not_utf8_still_lets_the_manifest_be_written(audited) -> None:
+    (audited / "studio.txt").write_bytes(b"\xff\xfe studio\n")
+    assert isinstance(stack._closure_record(), dict)
+
+
+def test_a_temp_copy_that_cannot_be_written_still_lets_the_manifest_be_written(
+    audited, monkeypatch
+) -> None:
+    """_filter_requirements already falls back from the requirements tree to the system
+    temp dir; a host that refuses both is a reason to record nothing, not to fail."""
+
+    def _refuse(*a, **k):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(stack.tempfile, "NamedTemporaryFile", _refuse)
+    assert isinstance(stack._closure_record(), dict)
+
+
+def test_a_step_whose_file_moved_mid_pass_runs_rather_than_raising(audited) -> None:
+    """The same read, one line earlier, inside the gate."""
+    target = audited / "studio.txt"
+    stack._PASS_EVIDENCE = {
+        "pass_inputs": {"studio.txt": stack.install_manifest.digest_file(target)},
+        "step_results": {"studio.txt": "ran"},
+    }
+    target.unlink()
+    assert stack._requirements_satisfied(target, no_deps = False) is False
+
+
+def test_a_triton_requirements_file_that_is_not_utf8_does_not_end_the_step(tmp_path) -> None:
+    """triton-kernels.txt is read for its git direct reference. utf-8-sig raises a
+    UnicodeDecodeError, not an OSError, and this step could not fail before."""
+    target = tmp_path / "triton-kernels.txt"
+    target.write_bytes(b"\xff\xfe git+https://example.invalid/x@abcdef1\n")
+    assert stack._direct_reference_in_requirements(target) is None
+
+
+def test_every_uninstall_is_counted() -> None:
+    """A mutation the counter does not see leaves the constraint and closure caches
+    describing a venv that no longer exists, and lets the final `pip check` be skipped
+    right after something was removed. Three sites removed distributions without saying
+    so: the XPU generic-triton swap, the gfx906 bitsandbytes drop and the flash-attn
+    rejection."""
+    tree = ast.parse(STACK_PATH.read_text(encoding = "utf-8"))
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        body = ast.dump(node)
+        if "'uninstall'" not in body and '"uninstall"' not in body:
+            continue
+        if "_count_install_action" not in body:
+            offenders.append(node.name)
+    assert not offenders, f"uninstalls that do not move the counter: {offenders}"
+
+
+def test_rejecting_a_flash_attn_wheel_counts_as_an_install_action(monkeypatch) -> None:
+    monkeypatch.setattr(stack, "_INSTALL_ACTIONS", 0)
+    monkeypatch.setattr(stack, "USE_UV", False)
+    monkeypatch.setattr(
+        stack.subprocess, "run", lambda *a, **k: types.SimpleNamespace(returncode = 0)
+    )
+    assert stack._remove_rejected_flash_attn() is True
+    assert stack._INSTALL_ACTIONS == 1
+
+
+def test_installing_a_flash_attn_wheel_counts_as_an_install_action(monkeypatch) -> None:
+    """install_wheel lands a distribution without going through pip_install, so nothing
+    else on that path moves the counter."""
+    monkeypatch.setattr(stack, "_INSTALL_ACTIONS", 0)
+    monkeypatch.setattr(stack, "NO_TORCH", False)
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack, "IS_MACOS", False)
+    monkeypatch.setattr(stack, "_flash_attn_install_disabled", lambda: False)
+    monkeypatch.setattr(stack, "_flash_attn_importable", lambda: False)
+    monkeypatch.setattr(stack, "probe_torch_wheel_env", lambda: {"torch": "2.8.0"})
+    monkeypatch.setattr(stack, "_build_flash_attn_wheel_url", lambda env: "https://x.invalid/w")
+    monkeypatch.setattr(stack, "url_exists", lambda url, **k: True)
+    monkeypatch.setattr(
+        stack,
+        "install_wheel",
+        lambda *a, **k: iter([("uv", types.SimpleNamespace(returncode = 1, stdout = "", stderr = ""))]),
+    )
+    monkeypatch.setattr(stack, "_print_optional_install_failure", lambda *a, **k: None)
+    monkeypatch.setattr(stack, "_step", lambda *a, **k: None)
+    stack._ensure_flash_attn()
+    assert stack._INSTALL_ACTIONS == 1
+
+
+def test_the_installed_index_is_rebuilt_against_a_fresh_metadata_listing(monkeypatch) -> None:
+    """importlib.metadata memoises directory listings and revalidates them on mtime, which
+    is one-second granular on some filesystems, so a rebuild in the same tick as the
+    install that triggered it can read the listing from before. The gate invalidates
+    before its own on-disk check; _closure_record reaches the index without one."""
+    calls = []
+    monkeypatch.setattr(stack, "_CLOSURE_INDEX_CACHE", None)
+    monkeypatch.setattr(stack, "_INSTALL_ACTIONS", 0)
+    monkeypatch.setattr(stack.importlib, "invalidate_caches", lambda: calls.append(1))
+    monkeypatch.setattr(
+        stack.install_manifest, "installed_dependency_index", lambda: {"a": ("1", [])}
+    )
+    assert stack._installed_index() == {"a": ("1", [])}
+    assert calls == [1]
+    # Cached while nothing moves: the invalidation is not paid per gated step.
+    stack._installed_index()
+    assert calls == [1]
+    # ...and paid again the moment something is installed.
+    stack._count_install_action()
+    stack._installed_index()
+    assert calls == [1, 1]
+
+
+def test_an_unclearable_parked_copy_refuses_before_the_live_manifest_is_dropped(
+    monkeypatch, tmp_path
+) -> None:
+    """A parked path that cannot be removed -- a directory on the name, a Windows handle
+    held open by an indexer -- used to be found only AFTER remove_manifest had taken the
+    live manifest away. The pass then exited 1 with the venv reading as half-built and
+    every later update refusing at the same point, on an install that was complete a
+    moment earlier. The refusal now happens while the manifest is still there.
+    """
+    live = tmp_path / stack.install_manifest.MANIFEST_NAME
+    live.write_text("{}", encoding = "utf-8")
+    parked = tmp_path / stack.install_manifest.PREVIOUS_MANIFEST_NAME
+    parked.mkdir()  # cannot be unlinked, and os.replace onto it raises
+
+    monkeypatch.setattr(stack.install_manifest, "venv_root", lambda *a, **k: tmp_path)
+    monkeypatch.setattr(stack.install_manifest, "manifest_path", lambda *a, **k: live)
+    monkeypatch.setattr(stack.install_manifest, "previous_manifest_path", lambda *a, **k: parked)
+    monkeypatch.setattr(stack, "_plan_pass", lambda *a, **k: None)
+    monkeypatch.setattr(stack, "_safe_print", lambda *a, **k: None)
+    monkeypatch.setattr(stack, "_step", lambda *a, **k: None)
+    monkeypatch.setattr(stack, "_progress", lambda *a, **k: None)
+
+    assert stack.install_python_stack() == 1
+    assert live.exists(), "the live manifest was dropped before the refusal"
+    assert stack.install_manifest.read_manifest(tmp_path) is not None
+
+
+def test_a_temp_copy_that_cannot_be_unlinked_does_not_end_the_pass(audited, monkeypatch) -> None:
+    """The audit's own cleanup runs after the last install and before the manifest write.
+    A Windows sharing violation on its temp copy -- an indexer or scanner holding the file
+    -- used to escape from the `finally` and end the update there, with everything
+    installed and no manifest written."""
+    real = stack.Path.unlink
+
+    def _locked(self, *a, **k):
+        if "-filtered-" in self.name:
+            raise PermissionError(32, "The process cannot access the file")
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(stack.Path, "unlink", _locked)
+    assert isinstance(stack._closure_record(), dict)
+    # The gate's own cleanup is the same shape, one step earlier: it must answer, not raise.
+    stack._PASS_EVIDENCE = {"pass_inputs": {}, "step_results": {}}
+    assert stack._requirements_satisfied(audited / "studio.txt", no_deps = False) is False

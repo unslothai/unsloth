@@ -11,8 +11,7 @@
 #
 # Studio on :8000 (user unsloth; UNSLOTH_STUDIO_PASSWORD env, else a generated one
 # is printed in the logs; persisted under /opt/unsloth-studio/auth/); JupyterLab on
-# :8888 (JUPYTER_PASSWORD env, else a random one is printed). Without GPU passthrough add -e UNSLOTH_ALLOW_CPU=1:
-# training is unavailable but Studio chat / Data Recipes / GGUF / Jupyter work.
+# :8888 (JUPYTER_PASSWORD env, else a random one is printed). Without a GPU it starts on CPU: no training, but Studio chat / Data Recipes / GGUF / Jupyter work.
 # CI pins BASE_IMAGE to the published base digest so both images ship the same stack.
 
 ARG BASE_IMAGE=unsloth/unsloth:core
@@ -51,16 +50,10 @@ ARG TARGETARCH
 # disabled unless PUBLIC_KEY/SSH_KEY is set (see studio_launch.sh). The
 # JUPYTER_PORT / UNSLOTH_ENABLE_SSHD defaults let supervisord's %(ENV_*)s resolve.
 USER root
-# UNSLOTH_ALLOW_CPU defaults to 1 on THIS image only. It publishes as :latest, so a
-# plain `docker run unsloth/unsloth` on a CPU-only, AMD or Docker-Desktop host would
-# otherwise exit 1 from entrypoint.sh before Studio ever starts. Most of what this
-# image offers (Studio chat over llama.cpp/GGUF, Data Recipes, JupyterLab, GGUF
-# tooling) needs no GPU. The entrypoint only takes the CPU path when no GPU is
-# visible, so this does not weaken the checks on a GPU host, and `-e
-# UNSLOTH_ALLOW_CPU=0` restores the strict behaviour. The base/training image keeps
-# the strict check: FastLanguageModel genuinely requires a GPU there.
+# UNSLOTH_IMAGE_ALLOW_CPU=1 lets THIS image (:latest) start without a GPU. The entrypoint turns it into
+# UNSLOTH_ALLOW_CPU=1 only when no GPU is visible, since that one disables the TRL patches. :core never opts in.
 ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
-    UNSLOTH_ALLOW_CPU=1 \
+    UNSLOTH_IMAGE_ALLOW_CPU=1 \
     JUPYTER_PORT=8888 \
     UNSLOTH_ENABLE_SSHD=false \
     DEBIAN_FRONTEND=noninteractive
@@ -89,6 +82,8 @@ RUN apt-get update \
 # nvidia-*-cu12 wheels are byte-identical and the dedup below can symlink them.
 #
 # fetch+checkout FETCH_HEAD, not `clone --branch`: CI passes a commit SHA.
+#
+# UNSLOTH_ALLOW_CPU=1 is inline for install.sh only: the build has no GPU, and the image ENV must not carry it (see above).
 RUN set -eux \
  && case "${TARGETARCH:-amd64}" in \
         amd64|arm64) TORCH_FAMILY="cu128" ;; \
@@ -108,6 +103,7 @@ RUN set -eux \
     UNSLOTH_LLAMA_TAG="${LLAMA_PREBUILT_TAG}" \
     UNSLOTH_LLAMA_KEEP_PREBUILT=1 \
     UNSLOTH_PYTHON=3.12 \
+    UNSLOTH_ALLOW_CPU=1 \
     bash install.sh --local \
     # Fail loud unless the Studio venv torch EXACTLY matches the base (version AND
     # CUDA family) before the dedup symlinks their CUDA libs. Compare to the base's
@@ -228,6 +224,11 @@ RUN chmod +x /usr/local/bin/unsloth-studio-launch \
 
 # Studio, JupyterLab, sshd. All bind 0.0.0.0 in the container; publish with -p.
 EXPOSE 8000 8888 22
+
+# BASE_IMAGE defaults to the PUBLISHED :core, whose baked entrypoint predates
+# UNSLOTH_IMAGE_ALLOW_CPU: without this copy a standalone build opts in above and still exits 1 on a CPU-only host.
+COPY entrypoint.sh /usr/local/bin/unsloth-entrypoint
+RUN chmod +x /usr/local/bin/unsloth-entrypoint
 
 # The base ENTRYPOINT (unsloth-entrypoint) still runs its GPU pre-flight
 # first, then hands off to the service launcher.

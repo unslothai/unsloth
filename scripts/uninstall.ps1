@@ -14,6 +14,14 @@ function Uninstall-UnslothStudio {
     # second run in the same window would otherwise inherit the first run's flags.
     $script:RemoveFailed = $false
     $script:StudioDbRemoved = $false
+    # The default root was REFUSED and still holds studio.db. Its own flag, not RemoveFailed:
+    # nothing failed, so "remove those paths by hand" is the wrong thing to say about it.
+    $script:StudioDbKept = $false
+    # ONE budget for the run: what _RemovePath waits out is wall clock and shared, so whatever
+    # the first blocked path waits, the next does not. Without it an undeletable root costs the
+    # full escalation at each of the 18 call sites. Classifying the error instead does not work:
+    # a delete-pending file and an antivirus hold both report access denied.
+    $script:RemoveWaitBudgetMs = 20000
 
     function _Usage {
         Write-Host @'
@@ -61,12 +69,39 @@ Environment:
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
         if (-not (Test-Path -LiteralPath $Path)) { return }
-        for ($attempt = 1; $attempt -le 4; $attempt++) {
+        # Escalating: torch inductor holds unattributable DATA handles under
+        # TORCHINDUCTOR_CACHE_DIR for seconds after the server stops.
+        $delays = @(250, 500, 1000, 2000, 4000, 4000, 4000, 4000)
+        # 2100ms per path is free, exactly the flat 700ms x3 this replaced, so no path is retried
+        # less than before: a lock only this path hits is not the shared wait. $false means both
+        # are spent, so stop rather than retry with no pause in between.
+        $freeLeft = 2100
+        function _Wait {
+            param([int]$Ms, [ref]$FreeLeft)
+            $free = [Math]::Min($Ms, [Math]::Max(0, $FreeLeft.Value))
+            $paid = $Ms - $free
+            if ($paid -gt 0) {
+                if ($script:RemoveWaitBudgetMs -le 0) {
+                    if ($free -le 0) { return $false }
+                    $paid = 0
+                } else {
+                    $paid = [Math]::Min($paid, $script:RemoveWaitBudgetMs)
+                    $script:RemoveWaitBudgetMs -= $paid
+                }
+            }
+            $FreeLeft.Value -= $free
+            Start-Sleep -Milliseconds ($free + $paid)
+            return $true
+        }
+        for ($attempt = 0; $attempt -le $delays.Count; $attempt++) {
+            $lastTry = ($attempt -eq $delays.Count)
             try {
                 Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
             } catch {
-                if ($attempt -lt 4) { Start-Sleep -Milliseconds 700; continue }
-                _Substep "could not remove: $Path ($($_.Exception.Message))" "Yellow"
+                # Read before $wait runs, so nothing can shadow the error record.
+                $failure = $_.Exception.Message
+                if (-not $lastTry -and (_Wait $delays[$attempt] ([ref]$freeLeft))) { continue }
+                _Substep "could not remove: $Path ($failure)" "Yellow"
                 # The closing summary must not promise the data is gone.
                 $script:RemoveFailed = $true
                 return
@@ -77,9 +112,10 @@ Environment:
                 _Substep "removed: $Path" "Green"
                 return
             }
-            if ($attempt -lt 4) { Start-Sleep -Milliseconds 700; continue }
+            if (-not $lastTry -and (_Wait $delays[$attempt] ([ref]$freeLeft))) { continue }
             _Substep "still present (files held open): $Path" "Yellow"
             $script:RemoveFailed = $true
+            return
         }
     }
 
@@ -100,18 +136,32 @@ Environment:
     # install passes the before-check through the link, but the delete unlinks only the reparse
     # point. Verifying rather than chasing the link is deliberate: following a reparse point out of
     # the expected location to delete its target is what the deny list exists to stop.
+    # A removal that got part way can take the sentinels and then fail on a locked child, leaving
+    # a root the next run's gate would refuse. Put the marker back so a retry recognises it.
+    function _RestoreOwnerMarker {
+        param([string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return }
+        if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
+        # Get-Item -Force, not Test-Path: the latter follows a dangling link and answers false,
+        # after which WriteAllText follows the link and writes outside the root.
+        $marker = Join-Path $Path ".unsloth-studio-owned"
+        if (Get-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue) { return }
+        try { [System.IO.File]::WriteAllText($marker, "") } catch { }
+    }
+
     function _RemoveRootRecordingDb {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
         # Anchor a relative reparse-point target to the link's own parent, or Join-Path
         # resolves it from the uninstaller's working directory and the db test reads false.
+        # -LiteralPath takes no -Parent (other parameter set; it throws) and already returns it.
         $resolveTarget = {
             param($Item, $Fallback)
             if (-not $Item -or -not $Item.Target) { return $Fallback }
             $t = @($Item.Target)[0]
             if ([string]::IsNullOrWhiteSpace($t)) { return $Fallback }
             if (-not [System.IO.Path]::IsPathRooted($t)) {
-                $t = Join-Path (Split-Path -LiteralPath $Item.FullName -Parent) $t
+                $t = Join-Path (Split-Path -LiteralPath $Item.FullName) $t
             }
             return $t
         }
@@ -130,6 +180,7 @@ Environment:
             } catch { }
         }
         _RemovePath $Path
+        _RestoreOwnerMarker $Path
         if ($hadDb) {
             if (Test-Path -LiteralPath $dbPath -PathType Leaf) {
                 $script:RemoveFailed = $true
@@ -364,13 +415,80 @@ Environment:
     #   <root>\bin\unsloth.exe, or a <root>\bin\unsloth.cmd this installer wrote.
     # The .cmd is the launcher written where an Application Control policy denies the generated
     # console script, so an install whose .exe that policy quarantined still owns its root.
-    function _IsStudioRoot {
+    # Plus the legacy venv shapes install.ps1 still migrates: share\studio.conf is never written
+    # on Windows, so every sentinel above postdates the bin\ shim dir.
+    # A sentinel this gate may trust. Deliberately a plain existence test, following links:
+    # refusing a reparse point here, or a marker inside one, buys nothing and costs a supported
+    # install. Nothing, because anyone who can plant a junction at that path can plant a plain
+    # file there instead, which this has always accepted. A supported install, because relocating
+    # a multi-gigabyte venv with a junction leaves a REAL marker behind one, and refusing it
+    # strands the install, which is the failure this gate exists to prevent. The link test belongs
+    # in install.ps1's claim, where following one would TRUNCATE the target rather than read it.
+    function _IsOwnerMarker {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
-        if (Test-Path -LiteralPath (Join-Path $Path "share\studio.conf") -PathType Leaf) { return $true }
-        if (Test-Path -LiteralPath (Join-Path $Path "unsloth_studio\.unsloth-studio-owned") -PathType Leaf) { return $true }
+        return (Test-Path -LiteralPath $Path -PathType Leaf)
+    }
+
+    # Is $Path a Python venv? What the gate reads out of one is evidence only if the directory
+    # really is one; a bare name at that path is somebody else's.
+    function _IsVenvDir {
+        param([string]$Path)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+        # No reparse check here either, and for the same reason: a relocated venv is still a
+        # venv. The leftover scan below rejects links on its own, where the name came from a
+        # wildcard rather than from us.
+        if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return $false }
+        if (Test-Path -LiteralPath (Join-Path $Path "pyvenv.cfg") -PathType Leaf) { return $true }
+        return (Test-Path -LiteralPath (Join-Path $Path "Scripts\python.exe") -PathType Leaf)
+    }
+
+    # The exact shape an installer gives a moved-aside venv. install.ps1 keeps every other
+    # spelling as the user's data (Test-StudioVenvRollbackMustBePreserved); do not be looser.
+    function _IsInstallerLeftoverName {
+        param([string]$Name)
+        # Two patterns: only the rollback name carries a collision counter (install.ps1:4171).
+        # No "time" alternative; that is install.sh's date(1) fallback and has no Windows twin.
+        # [0-9], not \d, which matches every Unicode decimal digit; install.ps1 writes ASCII.
+        if ($Name -match '^unsloth_studio\.rollback\.[0-9]{14}\.[0-9]+(\.[0-9]+)?$') { return $true }
+        return ($Name -match '^\.venv\.invalid\.[0-9]{14}\.[0-9]+$')
+    }
+
+    function _IsStudioRoot {
+        param([string]$Path, [switch]$ManagedDefaultRoot)
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+        # install.ps1 writes the first when it creates the root, before the uv cache and long
+        # before the venv, so a partial install identifies itself instead of being guessed at.
+        if (_IsOwnerMarker (Join-Path $Path ".unsloth-studio-owned")) { return $true }
+        if (_IsOwnerMarker (Join-Path $Path "share\studio.conf")) { return $true }
+        if (_IsOwnerMarker (Join-Path $Path "unsloth_studio\.unsloth-studio-owned")) { return $true }
+        if (_IsOwnerMarker (Join-Path $Path ".venv\.unsloth-studio-owned")) { return $true }
         if (Test-Path -LiteralPath (Join-Path $Path "bin\unsloth.exe") -PathType Leaf) { return $true }
         if (_IsUnslothCmdShim (Join-Path $Path "bin\unsloth.cmd")) { return $true }
+        # Below here is INSIDE a venv, where pip puts it for any install of the wheel: it names
+        # the wheel, not the owner. Proof only at the managed root, which install.ps1:4453 also
+        # makes the only root that can hold the layout, or a stale UNSLOTH_STUDIO_HOME deletes it.
+        if (-not $ManagedDefaultRoot) { return $false }
+        foreach ($venv in @("unsloth_studio", ".venv")) {
+            if (-not (_IsVenvDir (Join-Path $Path $venv))) { continue }
+            if (Test-Path -LiteralPath (Join-Path $Path "$venv\Scripts\unsloth.exe") -PathType Leaf) { return $true }
+            # Antivirus takes that .exe out of a venv that still runs; install.ps1:6412 repairs
+            # through it, so a pre-marker root has nothing else left.
+            foreach ($pkg in @("unsloth_cli", "unsloth")) {
+                if (Test-Path -LiteralPath (Join-Path $Path "$venv\Lib\site-packages\$pkg") -PathType Container) { return $true }
+            }
+        }
+        # An install that died between moving the old venv aside (install.ps1:4487, :4165) and
+        # writing the marker (install.ps1:4524) leaves only these, and only install.ps1 makes
+        # either name, always by renaming a venv.
+        foreach ($leftover in @("unsloth_studio.rollback.*", ".venv.invalid.*")) {
+            foreach ($dir in @(Get-ChildItem -LiteralPath $Path -Filter $leftover -Directory -Force -ErrorAction SilentlyContinue)) {
+                # Never a reparse point: install.ps1 refuses to prune a linked rollback either.
+                if (($dir.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+                if (-not (_IsInstallerLeftoverName $dir.Name)) { continue }
+                if (_IsVenvDir $dir.FullName) { return $true }
+            }
+        }
         return $false
     }
 
@@ -388,7 +506,7 @@ Environment:
             $userProfile = $userProfile.TrimEnd('\','/')
             if ($norm -ieq $userProfile) { return $true }
             try {
-                $parent = Split-Path -LiteralPath $userProfile -Parent
+                $parent = Split-Path -LiteralPath $userProfile
                 if ($parent -and ($norm -ieq $parent.TrimEnd('\','/'))) { return $true }
             } catch { }
         }
@@ -417,9 +535,9 @@ Environment:
         if ($line -match "^UNSLOTH_EXE\s*=\s*'(.*)'\s*$") {
             $exe = $Matches[1] -replace "''", "'"
             try {
-                $bin = Split-Path -LiteralPath $exe -Parent
-                $studio = Split-Path -LiteralPath $bin -Parent
-                $root = Split-Path -LiteralPath $studio -Parent
+                $bin = Split-Path -LiteralPath $exe
+                $studio = Split-Path -LiteralPath $bin
+                $root = Split-Path -LiteralPath $studio
                 if ($root) { return $root }
             } catch { }
         }
@@ -541,6 +659,9 @@ Environment:
     # Anchoring on the venv path avoids matching unrelated python.exe / studio.exe.
     function _StopStudioProcesses {
         param([string[]]$KnownRoots)
+        # An EXPLICIT empty list means "no root qualifies", not "do not scope". @() is false in
+        # PowerShell, so `if ($KnownRoots)` swept the whole machine on a run with nothing to delete.
+        $scoped = $PSBoundParameters.ContainsKey('KnownRoots')
         try {
             $procs = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
                 Where-Object {
@@ -549,7 +670,7 @@ Environment:
                 }
             foreach ($p in $procs) {
                 # Optional scope: only kill if the exe is under a known root.
-                if ($KnownRoots) {
+                if ($scoped) {
                     $match = $false
                     foreach ($r in $KnownRoots) {
                         if ($p.ExecutablePath -and ($p.ExecutablePath -ilike "$r\*")) { $match = $true; break }
@@ -595,7 +716,7 @@ Environment:
                 # A symlink target may be relative; a junction's never is. Anchor it on the link's
                 # own parent, or GetFullPath would read it from the uninstaller's working directory.
                 if (-not [System.IO.Path]::IsPathRooted($t)) {
-                    $t = Join-Path (Split-Path -LiteralPath $item.FullName -Parent) $t
+                    $t = Join-Path (Split-Path -LiteralPath $item.FullName) $t
                 }
                 $t = [System.IO.Path]::GetFullPath($t).TrimEnd('\', '/')
                 if (-not $t) { continue }
@@ -687,16 +808,29 @@ Environment:
     $knownRoots = @()
     if ($defaultStudioHome) { $knownRoots += $defaultStudioHome }
     $knownRoots += $customRoots
+    # The roots this run would actually delete. Everything that stops, deletes or edits on behalf
+    # of a root takes THIS list, never $knownRoots: all of it runs before the gates below, and a
+    # stale studio.conf can name a directory another application has taken over. _IsUnsafeRoot as
+    # well as _IsStudioRoot, because the removal loop refuses on either.
+    $ownedRoots = @()
+    if ($defaultStudioHome -and (_IsStudioRoot $defaultStudioHome -ManagedDefaultRoot) -and
+        -not (_IsUnsafeRoot $defaultStudioHome)) {
+        $ownedRoots += $defaultStudioHome
+    }
+    foreach ($r in $customRoots) {
+        if ((_IsStudioRoot $r) -and -not (_IsUnsafeRoot $r)) { $ownedRoots += $r }
+    }
 
     # ── Stop running servers ──
     _Step "Stopping any running Unsloth Studio servers..."
     if ($defaultDataDir) {
-        _StopByPortFile -PortFile (Join-Path $defaultDataDir "studio.port") -KnownRoots $knownRoots
+        _StopByPortFile -PortFile (Join-Path $defaultDataDir "studio.port") -KnownRoots $ownedRoots
     }
-    foreach ($r in $customRoots) {
-        _StopByPortFile -PortFile (Join-Path $r "share\studio.port") -KnownRoots $knownRoots
+    # $ownedRoots, not $customRoots: _StopByPortFile deletes the port file on its way out.
+    foreach ($r in $ownedRoots) {
+        _StopByPortFile -PortFile (Join-Path $r "share\studio.port") -KnownRoots $ownedRoots
     }
-    _StopStudioProcesses -KnownRoots $knownRoots
+    _StopStudioProcesses -KnownRoots $ownedRoots
     # The app and the WebView2 helpers holding its profile open must both exit before the
     # EBWebView delete below. Same resolver as that removal, or the sweep misses the profile
     # we then try to delete and the helpers keep holding locks.
@@ -767,17 +901,22 @@ Environment:
     # A custom/env-mode sd.cpp build now sits UNDER its root, which the $knownRoots prefix match
     # below already covers. Older builds put it BESIDE the root at <parent>\stable-diffusion.cpp,
     # outside $knownRoots; we delete those marker-owned dirs below, so scan them too.
+    # Gated too: a stale root's PARENT can hold another install's marked sd.cpp.
     $customSdCppToStop = @()
     foreach ($r in $customRoots) {
-        $sdc = Join-Path (Split-Path -LiteralPath $r -Parent) "stable-diffusion.cpp"
+        if (-not (_IsStudioRoot $r)) { continue }
+        if (_IsUnsafeRoot $r) { continue }
+        $sdc = Join-Path (Split-Path -LiteralPath $r) "stable-diffusion.cpp"
         if ((Test-Path -LiteralPath $sdc) -and (Test-Path -LiteralPath (Join-Path $sdc ".unsloth-studio-owned") -PathType Leaf)) {
             $customSdCppToStop += $sdc
         }
     }
     # Also stop anything holding a handle on the exact paths we delete (llama-server,
     # the CLI shim, an mp-fork python with a venv DLL) so the dir delete isn't refused.
-    $stopRoots = @($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop)
-    _StopProcessesLockingRoots -Roots ($stopRoots + @(_ManagedPathsUnderReparseTargets $knownRoots))
+    $stopRoots = @($ownedRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode, $defaultWhisperCpp) + @($defaultSdCppToStop | Where-Object { $_ }) + @($customSdCppToStop)
+    # The reparse expansion turns one path into generic subdirectories of wherever it points
+    # (node, bin, unsloth_studio), so it is gated for the same reason.
+    _StopProcessesLockingRoots -Roots ($stopRoots + @(_ManagedPathsUnderReparseTargets $ownedRoots))
 
     # ── Remove custom-root install trees ──
     _Step "Removing data and install directories..."
@@ -800,7 +939,7 @@ Environment:
         # exactly what a git clone of the upstream project produces, so require our owner marker
         # (install_sd_cpp_prebuilt) before rm and keep any unowned checkout. The derived parent
         # path gets the deny-list check too.
-        $customSdCpp = Join-Path (Split-Path -LiteralPath $r -Parent) "stable-diffusion.cpp"
+        $customSdCpp = Join-Path (Split-Path -LiteralPath $r) "stable-diffusion.cpp"
         if (_IsUnsafeRoot $customSdCpp) {
             _Substep "refusing to remove unsafe path: $customSdCpp" "Yellow"
         } elseif ((Test-Path -LiteralPath $customSdCpp) -and -not (Test-Path -LiteralPath (Join-Path $customSdCpp ".unsloth-studio-owned") -PathType Leaf)) {
@@ -809,8 +948,19 @@ Environment:
             _RemovePath $customSdCpp
         }
     }
-    # Default install dir (always at %USERPROFILE%\.unsloth\studio when present).
-    if ($defaultStudioHome) { _RemoveRootRecordingDb $defaultStudioHome }
+    # Default install dir (always at %USERPROFILE%\.unsloth\studio when present). Same sentinels
+    # as a custom root: an ungated run takes a hand-made one, then ~/.unsloth with the prune below.
+    if ($defaultStudioHome -and (Test-Path -LiteralPath $defaultStudioHome) -and
+        -not (_IsStudioRoot $defaultStudioHome -ManagedDefaultRoot)) {
+        _Substep "refusing to remove non-Unsloth path: $defaultStudioHome" "Yellow"
+        # A refused CUSTOM root is somebody else's by definition. This is our own default path,
+        # where a damaged install can sit, so a studio.db here is chat history.
+        if (Test-Path -LiteralPath (Join-Path $defaultStudioHome "studio.db") -PathType Leaf) {
+            $script:StudioDbKept = $true
+        }
+    } elseif ($defaultStudioHome) {
+        _RemoveRootRecordingDb $defaultStudioHome
+    }
     # Default data dir. The private temp sweep goes FIRST and hands back what it kept: the primary
     # temp directory lives under this data dir, so a wholesale removal here would erase a live
     # Unsloth's %TEMP% before the sweep ever looked at its owner.pid.
@@ -914,11 +1064,12 @@ Environment:
                     $removedAny = $false
                     # Only remove PATH entries inside an Unsloth root we actually own. A literal
                     # substring match on `unsloth_studio` would clobber unrelated user virtualenvs.
+                    # A root this run refused keeps its PATH entry, because it keeps its files.
                     foreach ($e in $entries) {
                         if ([string]::IsNullOrWhiteSpace($e)) { continue }
                         $expanded = [Environment]::ExpandEnvironmentVariables($e).TrimEnd('\','/')
                         $isStudio = $false
-                        foreach ($r in $knownRoots) {
+                        foreach ($r in $ownedRoots) {
                             if (-not $r) { continue }
                             $rNorm = $r.TrimEnd('\','/')
                             if ($expanded -ieq $rNorm -or $expanded -ilike "$rNorm\*") {
@@ -971,8 +1122,16 @@ Environment:
         Write-Host "Note: this also removed the app's WebView data, so the desktop app's session"
         Write-Host "      is gone. A browser session is not affected: its tokens live in the same"
         Write-Host "      localStorage as the API keys below."
-        Write-Host "      No studio.db was found, so any chat history in an install root this run"
-        Write-Host "      did not see is still on disk."
+        if ($script:StudioDbKept) {
+            # Named, and with no advice to delete it: the gate kept it precisely because it
+            # does not look like ours.
+            Write-Host "      $defaultStudioHome carries no Unsloth install marker, so it was"
+            Write-Host "      left alone. The studio.db inside it is still there; look at that"
+            Write-Host "      directory yourself before deciding what to do with it."
+        } else {
+            Write-Host "      No studio.db was found, so any chat history in an install root this run"
+            Write-Host "      did not see is still on disk."
+        }
     }
     Write-Host "Note: provider API keys are kept in the browser's localStorage, not in studio.db."
     Write-Host "      Unless you ran Unsloth as the desktop app, clear site data for the"

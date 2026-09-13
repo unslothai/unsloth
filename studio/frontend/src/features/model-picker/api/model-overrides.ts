@@ -115,9 +115,8 @@ export function foldOverrideKey(key: string): string {
     return path;
   }
   // splitQuantSuffix, not the last colon: a colon is legal in a POSIX filename, so
-  // "/models/foo:Bar.gguf" is a whole path and reading "Bar.gguf" as a quant would fold it
-  // onto the real, different file "/models/foo:bar.gguf". Mirrors the backend's
-  // split_quant_suffix.
+  // "/models/foo:Bar.gguf" is a whole path and reading "Bar.gguf" as a quant would fold it onto the
+  // real, different file "/models/foo:bar.gguf". Mirrors the backend's split_quant_suffix.
   const split = splitQuantSuffix(key);
   const id = split ? split[0] : key;
   const quant = split ? `:${split[1].toLowerCase()}` : "";
@@ -486,11 +485,10 @@ async function sendModelOverride(
     body: JSON.stringify({
       // biome-ignore lint/style/useNamingConvention: API schema
       model_id: modelOverrideKey(modelId, ggufVariant),
-      // This build mirrors the llama-server tuning group, so an omission here is the
-      // user clearing it rather than a client that predates the fields. Without this
-      // the backend preserves the stored values, which is what stops a cached older
-      // bundle from deleting settings it never knew to send. An older backend ignores
-      // the key.
+      // This build mirrors the llama-server tuning group, so an omission here is the user clearing
+      // it rather than a client that predates the fields. Without this the backend preserves the
+      // stored values, which is what stops a cached older bundle from deleting settings it never
+      // knew to send. An older backend ignores the key.
       // biome-ignore lint/style/useNamingConvention: API schema
       mirrors_server_tuning: true,
       // Only sent when set, so an older backend is not handed an unknown key every save.
