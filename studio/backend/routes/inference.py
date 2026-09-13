@@ -30862,7 +30862,6 @@ def _resident_context_satisfies(model_info: dict, max_seq_length: Any) -> bool:
 def _rewrite_mcp_image_tools_for_count(payload, tools):
     from core.inference.mcp_image_disclosure import McpImageDisclosureError
     from core.inference.mcp_image_tool_loop import rewrite_image_tool_schemas_for_count
-
     try:
         return rewrite_image_tool_schemas_for_count(payload, tools)
     except McpImageDisclosureError as exc:

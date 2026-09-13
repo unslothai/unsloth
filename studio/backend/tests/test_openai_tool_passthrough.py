@@ -9333,6 +9333,7 @@ class TestApiMonitorSafetensorsUsage:
     ):
         import routes.inference as inf_mod
         from core.inference import tools as tools_mod
+
         async def _run():
             reset_tool_policy()
             reset_called = False
@@ -9368,6 +9369,7 @@ class TestApiMonitorSafetensorsUsage:
                 raise asyncio.CancelledError()
 
             monitor = ApiMonitor(max_entries = 3)
+
             async def no_mcp_tools():
                 return []
 

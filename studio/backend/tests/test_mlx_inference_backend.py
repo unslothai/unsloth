@@ -3779,9 +3779,7 @@ def test_an_mlx_count_prices_the_tools_the_completion_would_render(
     assert backend.messages[-1]["content"] == "sure  done", "stale markup the completion removes"
 
 
-def test_an_mlx_count_rewrites_a_mapped_image_payload_to_an_opaque_reference(
-    tmp_path, monkeypatch
-):
+def test_an_mlx_count_rewrites_a_mapped_image_payload_to_an_opaque_reference(tmp_path, monkeypatch):
     from core.inference import mcp_client
     from core.inference import tools as tools_mod
     from core.inference.mcp_image_disclosure import validate_image_input_mappings
