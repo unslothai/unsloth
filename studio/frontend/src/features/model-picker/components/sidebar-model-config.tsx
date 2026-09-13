@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useMemo } from "react";
-import { modelConfigInstanceKey } from "../model-config/config-signature";
+import { modelConfigEditorKey } from "../model-config/model-config-draft";
 import {
   isOllamaLinkPath,
   isStandaloneGgufPath,
@@ -71,7 +71,7 @@ export function SidebarModelConfig({
 
   return (
     <ModelConfigPage
-      key={modelConfigInstanceKey(modelId, settingsGgufVariant, loadedConfig)}
+      key={modelConfigEditorKey(modelId, settingsGgufVariant)}
       target={target}
       onRun={onReload}
       loadedConfig={loadedConfig}
