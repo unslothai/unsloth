@@ -2417,6 +2417,11 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
         return True
 
     logger.warning("%s not found or incomplete at %s -- installing at runtime", label, venv_dir)
+    # The Docker image links its sidecars into the Studio home (UNSLOTH_STUDIO_APP). rmtree refuses a
+    # symlink and ignore_errors hides that, so the damaged files would survive the "wipe" and a
+    # version-satisfied install would leave them in place. Repair the directory the link points at.
+    if os.path.islink(venv_dir):
+        venv_dir = os.path.realpath(venv_dir)
     shutil.rmtree(venv_dir, ignore_errors = True)
     os.makedirs(venv_dir, exist_ok = True)
     _mark_studio_owned(venv_dir)

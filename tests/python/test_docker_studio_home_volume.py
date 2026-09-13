@@ -385,6 +385,34 @@ def test_the_code_moves_in_the_same_layer_that_installs_it():
     assert "UNSLOTH_STUDIO_APP=/opt/unsloth-studio-app" in body
 
 
+def test_the_uv_cache_goes_with_the_code_and_cache_stays_data():
+    """install.sh and setup.sh default the uv cache to $STUDIO_HOME/cache/uv only when
+    UV_CACHE_DIR is unset; the venv hardlinks into it (9 GB). Studio's runtime caches
+    (download-resume manifests, llama slots, dataset caches) also live under cache/, so
+    linking the whole directory into the app dir would have deleted a volume's runtime
+    state on upgrade and sent new state into the container layer. The image points uv
+    at the app dir before the install RUN and leaves cache/ in the home."""
+    body = STUDIO_DF.read_text(encoding = "utf-8")
+    env_block = body[
+        body.index("ENV UNSLOTH_STUDIO_HOME=") : body.index(
+            "\n\n", body.index("ENV UNSLOTH_STUDIO_HOME=")
+        )
+    ]
+    assert "UV_CACHE_DIR=/opt/unsloth-studio-app/uv-cache" in env_block
+    install = [
+        r
+        for r in re.split(r"\n(?=RUN |COPY |ENV |ARG |FROM |EXPOSE |CMD |USER )", body)
+        if r.startswith("RUN ") and "bash install.sh --local" in r
+    ]
+    assert (
+        env_block in body[: body.index(install[0])]
+    ), "UV_CACHE_DIR must be set before the install"
+    assert "! -name cache -exec mv -t" in install[0], "cache/ must not move to the app dir"
+    assert (
+        'test ! -e "${UNSLOTH_STUDIO_HOME}/cache/uv"' in install[0]
+    ), "the build must prove the uv cache did not land in the home"
+
+
 def test_the_entrypoint_relinks_before_it_touches_the_studio_venv_and_stops_on_failure():
     """A half-linked home must not reach Studio: the hook exits instead of warning."""
     body = ENTRYPOINT.read_text(encoding = "utf-8")
