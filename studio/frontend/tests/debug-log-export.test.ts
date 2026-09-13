@@ -371,6 +371,28 @@ test("openLogsFolder handles a Windows realpath", async () => {
   ]);
 });
 
+test("an archive saved at a filesystem root still reveals that root", async () => {
+  // Dropping the separator here changes the meaning rather than tidying the
+  // path: "" is not "/", and "C:" is the CURRENT directory on drive C: rather
+  // than "C:\", so Show in folder would open the wrong place or nowhere.
+  const unix = makeWorld({ isTauri: true });
+  await unix.api.revealSavedArchive("/unsloth-logs.zip");
+  assert.deepEqual(unix.invokes, [
+    { command: "open_models_dir", args: { path: "/" } },
+  ]);
+
+  const windows = makeWorld({ isTauri: true });
+  await windows.api.revealSavedArchive("C:\\unsloth-logs.zip");
+  assert.deepEqual(windows.invokes, [
+    { command: "open_models_dir", args: { path: "C:\\" } },
+  ]);
+
+  // A bare name has no directory at all, which is still nothing to open.
+  const bare = makeWorld({ isTauri: true });
+  await bare.api.revealSavedArchive("unsloth-logs.zip");
+  assert.deepEqual(bare.invokes, []);
+});
+
 test("a missing export route is reported as an outdated backend", async () => {
   const world = makeWorld({
     isTauri: false,

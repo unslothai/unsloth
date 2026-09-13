@@ -282,10 +282,19 @@ export async function openLogsFolder(
   await invoke("open_logs_dir");
 }
 
-/** The directory part of a path, on either separator. Empty when there is none. */
+/** The directory part of a path, on either separator. Null when there is none. */
 function parentDirectory(path: string): string | null {
   const separator = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-  return separator > 0 ? path.slice(0, separator) : null;
+  if (separator < 0) return null;
+  const parent = path.slice(0, separator);
+  // The separator is kept where dropping it would change the meaning rather
+  // than tidy the path: "" is the Unix root and opening nothing is not the same
+  // as opening "/", and "C:" is the CURRENT directory on drive C:, which is not
+  // "C:\" and is very unlikely to be where the archive went.
+  if (parent === "" || /^[A-Za-z]:$/.test(parent)) {
+    return path.slice(0, separator + 1);
+  }
+  return parent;
 }
 
 /**
