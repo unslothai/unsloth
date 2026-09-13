@@ -438,6 +438,38 @@ def cached_repo_id_for_path(path: Path | str, repo_type: str = "model") -> Optio
     return ref[0]
 
 
+def repo_cache_has_usable_snapshot(
+    repo_type: str,
+    repo_id: str,
+    metadata_filenames: tuple[str, ...] = (),
+) -> bool:
+    """Whether the cache holds a snapshot of *repo_id* that a load could actually consume.
+
+    Not the same question as "does a repo directory exist". An interrupted download leaves the
+    directory behind with no snapshot under it, so counting that as a cached read refuses a caller
+    over bytes that were never there -- and the anonymous public probe that would otherwise clear
+    the refusal needs ``/auth-check``, which an ``HF_ENDPOINT`` mirror need not serve.
+
+    A directory that cannot be listed cannot be shown to hold nothing, so it counts as usable:
+    this answers a guard, and the guard's own failure must not open the path it guards.
+    """
+    scan_errors: list = []
+    for repo_dir in iter_repo_cache_dirs(repo_type, repo_id, scan_errors = scan_errors):
+        snapshots = repo_dir / "snapshots"
+        try:
+            revisions = list(snapshots.iterdir()) if snapshots.is_dir() else []
+        except OSError:
+            return True
+        if not metadata_filenames:
+            if any(revision.is_dir() for revision in revisions):
+                return True
+            continue
+        for revision in revisions:
+            if any((revision / name).is_file() for name in metadata_filenames):
+                return True
+    return bool(scan_errors)
+
+
 def latest_snapshot_from_cache_path(
     local_path: Optional[str],
     repo_type: str,

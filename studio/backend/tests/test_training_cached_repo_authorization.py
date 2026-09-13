@@ -449,6 +449,55 @@ def test_the_worker_no_longer_launders_the_sentinel_through_or_none():
     assert 'config.get("hf_token") or None' not in source
 
 
+def test_an_interrupted_download_is_not_evidence_of_a_cached_read(monkeypatch, cache_root):
+    """A repo DIRECTORY with no usable snapshot has disclosed nothing, so refusing it protects
+    nothing and costs a legitimate caller its model.
+
+    Reachable because the anonymous rescue in cached_read_refused needs /auth-check, which an
+    HF_ENDPOINT mirror need not serve: there the refusal stands and a PUBLIC model is rejected
+    with hf_model_access_denied for bytes that were never on disk.
+    """
+    from hub.utils.hf_cache_state import repo_cache_has_usable_snapshot
+
+    metadata = ("config.json", "adapter_config.json")
+
+    def usable(repo_id: str) -> bool:
+        return repo_cache_has_usable_snapshot("model", repo_id, metadata)
+
+    # Interrupted: the repo dir exists, nothing under it does.
+    (cache_root / "models--org--interrupted").mkdir()
+    assert usable("org/interrupted") is False
+
+    # Present but empty: snapshots/<rev> with no metadata for the load to consume.
+    (cache_root / "models--org--partial" / "snapshots" / "abc").mkdir(parents = True)
+    assert usable("org/partial") is False
+
+    # A real one still counts, so the guard has not been blunted.
+    snapshot = _make_repo(cache_root, "models--org--usable")
+    assert (snapshot / "config.json").exists()
+    assert usable("org/usable") is True
+
+    # Never downloaded at all: nothing to disclose and nothing to refuse.
+    assert usable("org/absent") is False
+
+
+def test_an_unreadable_repo_directory_still_counts_as_cached(monkeypatch, cache_root):
+    """The predicate answers a guard, so its own failure must not open what it guards."""
+    import os
+
+    from hub.utils.hf_cache_state import repo_cache_has_usable_snapshot
+
+    repo = cache_root / "models--org--locked"
+    (repo / "snapshots").mkdir(parents = True)
+    os.chmod(repo / "snapshots", 0o000)
+    try:
+        if os.access(repo / "snapshots", os.R_OK):
+            pytest.skip("running as a user that ignores directory permissions")
+        assert repo_cache_has_usable_snapshot("model", "org/locked", ("config.json",)) is True
+    finally:
+        os.chmod(repo / "snapshots", 0o755)
+
+
 def test_the_diffusion_config_tolerates_the_new_policy_key():
     """allow_ambient rides the raw config dict; the trainer dataclass must ignore it."""
     from core.training.diffusion_train_common import _config_from_dict

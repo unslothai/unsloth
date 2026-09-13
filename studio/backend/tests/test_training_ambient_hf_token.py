@@ -416,6 +416,12 @@ def test_private_cached_model_requires_caller_authorization(
 
     (tmp_path / "config.json").write_text('{"model_type":"llama"}')
     (tmp_path / "model.safetensors").write_bytes(b"cached weights")
+    # Also as a real cache repo lays it out. has_cached_model asks for a snapshot the load could
+    # consume rather than for the repo directory alone, so a bare directory is not evidence.
+    _revision = tmp_path / "snapshots" / "abc"
+    _revision.mkdir(parents = True, exist_ok = True)
+    (_revision / "config.json").write_text('{"model_type":"llama"}')
+    (_revision / "model.safetensors").write_bytes(b"cached weights")
     monkeypatch.setattr(training_module, "_resolve_model_snapshot", lambda *a, **k: str(tmp_path))
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.iter_repo_cache_dirs", lambda *a, **k: iter([tmp_path])
@@ -455,6 +461,12 @@ def test_authorized_cached_models_remain_available(monkeypatch, tmp_path, token,
 
     (tmp_path / "config.json").write_text('{"model_type":"llama"}')
     (tmp_path / "model.safetensors").write_bytes(b"cached weights")
+    # Also as a real cache repo lays it out. has_cached_model asks for a snapshot the load could
+    # consume rather than for the repo directory alone, so a bare directory is not evidence.
+    _revision = tmp_path / "snapshots" / "abc"
+    _revision.mkdir(parents = True, exist_ok = True)
+    (_revision / "config.json").write_text('{"model_type":"llama"}')
+    (_revision / "model.safetensors").write_bytes(b"cached weights")
     monkeypatch.setattr(training_module, "_resolve_model_snapshot", lambda *a, **k: str(tmp_path))
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.iter_repo_cache_dirs", lambda *a, **k: iter([tmp_path])

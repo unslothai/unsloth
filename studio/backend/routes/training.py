@@ -896,7 +896,7 @@ def _reject_untrainable_model_request(
                     canonical_model_repo_id(request.model_name),
                     snapshot,
                 )
-        from hub.utils.hf_cache_state import iter_repo_cache_dirs
+        from hub.utils.hf_cache_state import repo_cache_has_usable_snapshot
         from utils.security import load_scan_target
 
         authorization_repo, _ = load_scan_target(
@@ -906,12 +906,14 @@ def _reject_untrainable_model_request(
         def has_cached_model():
             if snapshot:
                 return True
-            scan_errors = []
-            cached = next(
-                iter_repo_cache_dirs("model", authorization_repo, scan_errors = scan_errors),
-                None,
+            # A repo DIRECTORY is not a cached read: an interrupted download leaves one with no
+            # snapshot under it, and refusing on that denies a public model over bytes that were
+            # never there. An unreadable root still counts, so the guard stays fail-closed.
+            return repo_cache_has_usable_snapshot(
+                "model",
+                authorization_repo,
+                with_load_subdirs(request.model_name, ("config.json", "adapter_config.json")),
             )
-            return cached is not None or bool(scan_errors)
 
         def refuse_unauthorized_cache(is_cached):
             # HF can reuse cached weights even when remote metadata/HEAD denies access.
