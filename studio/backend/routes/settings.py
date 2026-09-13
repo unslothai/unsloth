@@ -14,6 +14,8 @@ from typing import Any, Literal, Optional, get_args
 from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import StreamingResponse
+from starlette.background import BackgroundTask
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -3495,6 +3497,12 @@ class DebugLogSourcesResponse(BaseModel):
     sources: list[DebugLogSourceModel]
     default_source_id: Optional[str] = None
     file_logging_disabled: bool = False
+    # Where the logs actually live, so a caller does not have to guess. The
+    # desktop "Open logs folder" button otherwise falls back to a hard-coded
+    # ~/.unsloth/studio, which is wrong whenever UNSLOTH_STUDIO_HOME or
+    # STUDIO_HOME is set AND there is no readable log to take a path from.
+    # Additive and optional: an older client ignores it.
+    log_root: Optional[str] = None
 
 
 class DebugLogResponse(BaseModel):
@@ -3530,10 +3538,14 @@ def get_debug_log_sources(
     from utils import debug_log_sources
 
     sources = debug_log_sources.list_sources()
+    # The first candidate root is the one the walk prefers, so it is the
+    # directory a user opening "the log folder" expects to land in.
+    roots = debug_log_sources.candidate_roots()
     return DebugLogSourcesResponse(
         sources = [DebugLogSourceModel(**vars(source)) for source in sources],
         default_source_id = debug_log_sources.default_source_id(),
         file_logging_disabled = debug_log_sources.file_logging_disabled(),
+        log_root = str(roots[0]) if roots else None,
     )
 
 
@@ -3601,6 +3613,75 @@ def get_debug_log(
         more_pending = result.more_pending,
         file_logging_disabled = debug_log_sources.source_is_frozen(source_id),
         size_bytes = result.size_bytes,
+    )
+
+
+# One build at a time, process-wide. The route is a sync `def`, so it runs in
+# the 40-thread anyio pool shared with every other sync endpoint; a few
+# concurrent exports starve it, and anyio cannot cancel a running thread, so it
+# does not recover. A second caller is told to wait rather than queued.
+_DEBUG_LOG_EXPORT_LOCK = threading.Semaphore(1)
+
+
+@_owner_settings_router.get("/debug/logs/export")
+def export_debug_logs(
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+) -> StreamingResponse:
+    """Every log the picker lists, redacted, as one ZIP.
+
+    Same two dependencies as the routes above: a bundle of logs and the paths
+    they came from is UI-operator material, so an API-key or keyless caller is
+    refused. On `_owner_settings_router` for the same reason they are, since
+    that router carries `_require_installation_owner`: on the bare `router` the
+    BUNDLE would be reachable by an account refused each log individually.
+
+    Built before the response exists rather than inside the generator, so a
+    failure is a 500 instead of a truncated download.
+    """
+    from utils import debug_log_export
+
+    if not _DEBUG_LOG_EXPORT_LOCK.acquire(blocking = False):
+        raise HTTPException(
+            status_code = 429,
+            detail = "A log export is already running. Wait for it to finish and try again.",
+        )
+    try:
+        archive = debug_log_export.build_log_archive()
+    finally:
+        _DEBUG_LOG_EXPORT_LOCK.release()
+
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+
+    def _chunks():
+        try:
+            while True:
+                chunk = archive.read(debug_log_export.STREAM_CHUNK_BYTES)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            archive.close()
+
+    return StreamingResponse(
+        _chunks(),
+        media_type = "application/zip",
+        headers = {
+            # Neither shipping caller reads this back: the browser names the Blob
+            # itself and the desktop path names the file in Rust. It is here for
+            # a curl or address-bar caller, so do not assume the button uses it.
+            "Content-Disposition": f'attachment; filename="unsloth-logs-{stamp}.zip"',
+            # A stable authenticated GET is otherwise cacheable: the archive could
+            # outlive the download in the on-disk cache, and a second export could
+            # be answered from it rather than from the logs as they are now.
+            # `no-store` not `no-cache`: it must not be WRITTEN, not revalidated.
+            "Cache-Control": "no-store, no-cache, must-revalidate, private",
+            "Pragma": "no-cache",
+        },
+        # Belt and braces with the `finally` above: on a client abort Starlette
+        # cancels the task group without raising GeneratorExit, so that `finally`
+        # waits for a cyclic GC pass, holding up to SPOOL_MAX_BYTES meanwhile.
+        background = BackgroundTask(archive.close),
     )
 
 
