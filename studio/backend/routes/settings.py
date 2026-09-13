@@ -3638,11 +3638,13 @@ class DebugLogSourceModel(BaseModel):
     size_bytes: int
     modified_at: float
     is_current: bool
+    is_recent_attempt: bool = False
 
 
 class DebugLogSourcesResponse(BaseModel):
     sources: list[DebugLogSourceModel]
     default_source_id: Optional[str] = None
+    troubleshooting_source_ids: list[str] = Field(default_factory = list)
     file_logging_disabled: bool = False
     # Where the logs actually live, so a caller does not have to guess. The
     # desktop "Open logs folder" button otherwise falls back to a hard-coded
@@ -3691,6 +3693,7 @@ def get_debug_log_sources(
     return DebugLogSourcesResponse(
         sources = [DebugLogSourceModel(**vars(source)) for source in sources],
         default_source_id = debug_log_sources.default_source_id(),
+        troubleshooting_source_ids = debug_log_sources.troubleshooting_source_ids(),
         file_logging_disabled = debug_log_sources.file_logging_disabled(),
         log_root = str(roots[0]) if roots else None,
     )
