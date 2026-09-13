@@ -1031,6 +1031,11 @@ class ToolLoopController:
         self._one_shot_tools = one_shot_tools
         self._completed_one_shot_tools: set[str] = set()
         self._successful_keys: set[str] = set()
+        # Workspace bookkeeping: which calls have run at all, how many DISTINCT ones have,
+        # and what that count stood at when each last ran. See `record_result`.
+        self._workspace_ran: set[str] = set()
+        self._workspace_novel = 0
+        self._workspace_novel_at: dict[str, int] = {}
         self._duplicate_noop_counts: dict[str, int] = {}
         self._duplicate_noop_limit = max(1, duplicate_noop_limit)
         self._history: list[_ToolCallRecord] = []
@@ -1122,14 +1127,27 @@ class ToolLoopController:
                 action = decision.action,
             )
         )
-        # Failed commands can still have changed files before they exited.
+        # A workspace call invalidates what ran before it, so an earlier read is worth taking
+        # again -- once per piece of NEW work, not once per call. Counting the workspace calls
+        # that have never run is what separates `read, edit A, read, edit B, read`, where each
+        # read verifies a different edit, from `read, edit, read, edit`, where the second edit
+        # is a repeating block replaying itself and a non-idempotent one corrupts the
+        # workspace. This is the batch-shaped guard the textual prefilters apply, kept here as
+        # well because a structured GGUF batch never reaches them.
+        # Failed commands can still have changed files before they exited, so they count too.
         if decision.tool_name in _WORKSPACE_TOOLS:
+            if decision.key not in self._workspace_ran:
+                self._workspace_ran.add(decision.key)
+                self._workspace_novel += 1
             stale = {
-                key for key in self._successful_keys if key.partition(":")[0] in _WORKSPACE_TOOLS
+                key for key in self._successful_keys
+                if key.partition(":")[0] in _WORKSPACE_TOOLS
+                and self._workspace_novel_at.get(key, 0) < self._workspace_novel
             }
             self._successful_keys -= stale
             for key in stale:
                 self._duplicate_noop_counts.pop(key, None)
+            self._workspace_novel_at[decision.key] = self._workspace_novel
         if not failed:
             self._successful_keys.add(decision.key)
             if decision.tool_name in self._one_shot_tools:

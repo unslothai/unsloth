@@ -221,8 +221,43 @@ def test_command_can_run_again_after_a_file_edit():
 
     controller.record_noop(controller.prepare_call(run))
     assert not controller.force_final_answer
-    assert controller.prepare_call(edit).action == "execute"
+    # The edit does NOT come back. Nothing new has run since it did -- only `run`, which was
+    # already spent -- so re-applying the identical edit is a repeating block replaying
+    # itself, and a non-idempotent one (an appending python/terminal call) would land twice.
+    assert controller.prepare_call(edit).action == "duplicate"
     assert controller.prepare_call(search).action == "duplicate"
+
+
+def test_each_independent_edit_buys_back_its_own_verification():
+    """A rerun is worth one piece of new work, not one per call, so B's check is not lost."""
+    controller = ToolLoopController(tools = [_tool("terminal"), _tool("edit_file")])
+    test = _call("terminal", {"command": "pytest -q"})
+    edit_a = _call("edit_file", {"path": "a.py", "edits": [{"old_string": "a", "new_string": "b"}]})
+    edit_b = _call("edit_file", {"path": "b.py", "edits": [{"old_string": "c", "new_string": "d"}]})
+
+    controller.record_result(controller.prepare_call(test), "1 failed")
+    controller.record_result(controller.prepare_call(edit_a), "Edited a.py")
+    after_a = controller.prepare_call(test)
+    assert after_a.action == "execute"
+    controller.record_result(after_a, "1 failed")
+
+    controller.record_result(controller.prepare_call(edit_b), "Edited b.py")
+    after_b = controller.prepare_call(test)
+    assert after_b.action == "execute"
+
+
+def test_a_repeating_workspace_block_stops_replaying_itself():
+    """read, edit, read, edit: the second edit is the block repeating, not new work."""
+    controller = ToolLoopController(tools = [_tool("terminal"), _tool("edit_file")])
+    read = _call("terminal", {"command": "cat notes.txt"})
+    edit = _call("edit_file", {"path": "notes.txt", "edits": [{"old_string": "a", "new_string": "b"}]})
+
+    controller.record_result(controller.prepare_call(read), "version one")
+    controller.record_result(controller.prepare_call(edit), "Edited notes.txt")
+    reread = controller.prepare_call(read)
+    assert reread.action == "execute"
+    controller.record_result(reread, "version two")
+    assert controller.prepare_call(edit).action == "duplicate"
 
 
 def test_failed_call_does_not_block_retry():

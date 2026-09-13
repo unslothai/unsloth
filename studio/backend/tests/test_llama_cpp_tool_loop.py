@@ -6523,3 +6523,57 @@ def test_textual_every_independent_edit_gets_its_own_verification_rerun(monkeypa
         )
     )
     assert calls == ["terminal", "edit_file", "terminal", "edit_file", "terminal"]
+
+
+def _structured_batch(spec: list) -> list:
+    """One assistant turn carrying `spec` as parallel structured tool_calls."""
+    frames = [
+        _tool_call_sse(name, args, f"call_{i}", index = i)
+        for i, (name, args) in enumerate(spec)
+    ]
+    return [frames + [_done()], [_sse({"content": "Done."}), _done()]]
+
+
+def _drive_structured(monkeypatch, spec, results):
+    backend, _ = _backend_and_payloads(monkeypatch, _structured_batch(spec))
+    calls: list[str] = []
+    supply = iter(results)
+
+    def execute(name, arguments, **kwargs):
+        calls.append(name)
+        return next(supply, "OK")
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute)
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Read, edit, and verify notes.txt"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            max_tool_iterations = 3,
+        )
+    )
+    return calls
+
+
+def test_structured_workspace_block_does_not_replay_the_edit(monkeypatch):
+    """Structured batches skip the textual prefilter, so the controller has to catch this."""
+    read = ("terminal", {"command": "cat notes.txt"})
+    edit = ("edit_file", {"path": "notes.txt", "edits": []})
+    calls = _drive_structured(
+        monkeypatch, [read, edit, read, edit], ["v1", "Edited notes.txt", "v2", "Edited"]
+    )
+    assert calls == ["terminal", "edit_file", "terminal"]
+
+
+def test_structured_every_independent_edit_keeps_its_verification(monkeypatch):
+    read = ("terminal", {"command": "cat notes.txt"})
+    edit_a = ("edit_file", {"path": "a.txt", "edits": []})
+    edit_b = ("edit_file", {"path": "b.txt", "edits": []})
+    calls = _drive_structured(
+        monkeypatch,
+        [read, edit_a, read, edit_b, read],
+        ["v1", "Edited a.txt", "v2", "Edited b.txt", "v3"],
+    )
+    assert calls == ["terminal", "edit_file", "terminal", "edit_file", "terminal"]
