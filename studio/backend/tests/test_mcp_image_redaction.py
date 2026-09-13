@@ -140,6 +140,41 @@ def test_adjacent_text_fragments_are_checked_before_flattening(as_objects):
     assert ENCODED[17:] not in repr(clean)
 
 
+def test_f_result_split_across_non_text_content_and_structured_fragments_is_withheld():
+    result = {
+        "content": [
+            {"type": "text", "text": ENCODED[:17]},
+            {"type": "image", "data": "unrelated", "mimeType": "image/png"},
+            {"type": "separator", "text": "ignored by flattening"},
+            {"type": "text", "text": ENCODED[17:]},
+        ],
+        "structuredContent": {
+            "parts": [ENCODED[:17], {"separator": "|"}, ENCODED[17:]],
+        },
+    }
+    clean = make_context().redact_result(result)
+    assert clean["content"][0]["text"] == REDACTED_IMAGE
+    assert clean["content"][3]["text"] == REDACTED_IMAGE
+    assert clean["content"][1]["data"] == "unrelated"
+    assert clean["structuredContent"]["parts"][0] == REDACTED_IMAGE
+    assert clean["structuredContent"]["parts"][2] == REDACTED_IMAGE
+
+
+def test_f_result_percent_encoded_text_is_withheld():
+    percent_encoded = "".join(f"%{ord(character):02X}" for character in ENCODED)
+    result = {"message": "prefix " + percent_encoded + " suffix"}
+    clean = make_context().redact_result(result)
+    assert clean["message"] == REDACTED_IMAGE
+
+
+def test_f_result_integer_array_is_withheld():
+    result = {
+        "content": [{"type": "image", "data": list(DATA), "mimeType": "image/png"}],
+    }
+    clean = make_context().redact_result(result)
+    assert clean["content"] == [{"type": "text", "text": REDACTED_IMAGE}]
+
+
 def test_unrelated_image_and_text_remain_unchanged():
     result = {
         "content": [{"type": "image", "data": "YW5vdGhlciBpbWFnZQ==", "mimeType": "image/png"}],

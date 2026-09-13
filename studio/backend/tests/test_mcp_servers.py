@@ -170,6 +170,99 @@ def test_create_route_rejects_mapping_without_discovered_string_field(tmp_path, 
     assert mcp_servers_db.list_servers() == []
 
 
+def test_mapping_only_updates_add_replace_and_clear(tmp_path, monkeypatch):
+    import asyncio
+    import routes.mcp_servers as routes_mcp
+    from models.mcp_servers import McpServerUpdate
+
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(id = "images", display_name = "Images", url = "https://example.test/mcp")
+    discovered = [
+        {
+            "name": "inspect",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "picture": {"type": "string"},
+                    "frame": {"type": "string"},
+                },
+            },
+        }
+    ]
+    monkeypatch.setattr(routes_mcp, "get_cached_tools", lambda server_id: discovered)
+    for revision, mappings in enumerate(
+        (
+            [{"tool": "inspect", "field": "picture", "encoding": "base64"}],
+            [{"tool": "inspect", "field": "frame", "encoding": "data_url"}],
+            [],
+        ),
+        start = 2,
+    ):
+        response = asyncio.run(
+            routes_mcp.update_mcp_server(
+                "images",
+                McpServerUpdate(image_input_mappings = mappings),
+                current_subject = "user",
+            )
+        )
+        assert [mapping.model_dump() for mapping in response.image_input_mappings] == mappings
+        row = mcp_servers_db.get_server("images")
+        assert row["config_revision"] == revision
+        assert (
+            row["image_input_schema_digest"]
+            if mappings
+            else row["image_input_schema_digest"] is None
+        )
+
+
+@pytest.mark.parametrize("change", ["clear", "replace", "endpoint", "aba"])
+def test_refresh_cannot_restore_a_mapping_changed_during_discovery(tmp_path, monkeypatch, change):
+    import asyncio
+    import routes.mcp_servers as routes_mcp
+
+    _reset_db(tmp_path, monkeypatch)
+    old_mapping = [{"tool": "inspect", "field": "picture", "encoding": "base64"}]
+    mcp_servers_db.create_server(
+        id = "images",
+        display_name = "Images",
+        url = "https://example.test/mcp",
+        image_input_mappings_json = json.dumps(old_mapping),
+        image_input_schema_digest = "old-digest",
+    )
+    expected = {}
+    cached = []
+    monkeypatch.setattr(routes_mcp, "cache_tools", lambda *args: cached.append(args))
+
+    async def discover(**kwargs):
+        if change == "clear":
+            changes = {"image_input_mappings_json": "[]", "image_input_schema_digest": None}
+        elif change == "replace":
+            changes = {
+                "image_input_mappings_json": json.dumps(
+                    [{**old_mapping[0], "encoding": "data_url"}]
+                ),
+                "image_input_schema_digest": "new-digest",
+            }
+        else:
+            changes = {"url": "https://new.example.test/mcp"}
+        mcp_servers_db.update_server("images", changes)
+        if change == "aba":
+            mcp_servers_db.update_server("images", {"url": "https://example.test/mcp"})
+        expected.update(mcp_servers_db.get_server("images"))
+        return [
+            {
+                "name": "inspect",
+                "inputSchema": {"type": "object", "properties": {"picture": {"type": "string"}}},
+            }
+        ]
+
+    monkeypatch.setattr(routes_mcp, "list_tools_async", discover)
+    result = asyncio.run(routes_mcp.refresh_mcp_server_tools("images", current_subject = "user"))
+    assert result.ok
+    assert mcp_servers_db.get_server("images") == expected
+    assert not cached
+
+
 def test_tools_endpoint_returns_exact_raw_names_and_schemas(tmp_path, monkeypatch):
     import asyncio
 

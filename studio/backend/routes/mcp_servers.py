@@ -489,7 +489,8 @@ async def update_mcp_server(
                 status_code = 400,
                 detail = "Use the managed integration setup to configure or enable this server.",
             )
-    if not changes:
+    mapping_sent = "image_input_mappings" in payload.model_fields_set
+    if not changes and not mapping_sent:
         raise HTTPException(status_code = 400, detail = "No fields to update")
     # Both directions, so an API key can neither repoint an http row at a command nor edit a stdio row's
     # env/name/enabled flag. Before every side effect, so a refusal leaves the row, its OAuth tokens, cache and
@@ -511,7 +512,6 @@ async def update_mcp_server(
     except (TypeError, ValueError):
         proposed_headers = None
     proposed_oauth = bool(changes.get("use_oauth", old.get("use_oauth")))
-    mapping_sent = "image_input_mappings" in payload.model_fields_set
     try:
         old_mappings = json.loads(old.get("image_input_mappings_json") or "[]")
         if not isinstance(old_mappings, list):
@@ -623,19 +623,17 @@ async def refresh_mcp_server_tools(
             exc_info = True,
         )
         current = mcp_servers_db.get_server(server_id)
-        if current is not None and not any(
-            current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
-        ):
+        if current == server:
             # Start the cool-off so the next chat send does not re-hang on this server's timeout. If the row changed
             # while the probe was awaiting, the FAILURE belongs to the old config and must not park the newly edited
             # server.
             record_probe_failure(server_id, use_oauth)
         return McpServerProbeResult(ok = False, error = safe_curated_detail(exc))
 
+    # The revision makes a change followed by a revert stale too. Discovery must
+    # never restore the mapping that existed before its network await.
     current = mcp_servers_db.get_server(server_id)
-    if current is not None and not any(
-        current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
-    ):
+    if current == server:
         cache_tools(server_id, tools)
     image_mapping_errors: list[str] = []
     try:
@@ -645,7 +643,7 @@ async def refresh_mcp_server_tools(
         if mappings:
             normalized, schema_digest = validate_image_input_mappings(mappings, tools)
             current = mcp_servers_db.get_server(server_id)
-            if current is not None and schema_digest != current.get("image_input_schema_digest"):
+            if current == server and schema_digest != current.get("image_input_schema_digest"):
                 from state.tool_approvals import revoke_mcp_image_disclosures
                 revoke_mcp_image_disclosures(subject = current_subject, server_id = server_id)
                 mcp_servers_db.update_server(

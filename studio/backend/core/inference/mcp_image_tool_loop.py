@@ -13,7 +13,7 @@ import json
 import secrets
 import time
 import threading
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from core.inference.mcp_image_disclosure import (
     McpImageDisclosureError,
@@ -89,7 +89,12 @@ def prepare_image_tool_request(payload, *, subject, tools, cancel_event, ui_even
             value = value.model_dump()
         if isinstance(value, str):
             compact = "".join(value.split())
-            return any(fingerprint in compact for fingerprint in fingerprints)
+            decoded = "".join(unquote(value).split()) if "%" in value else compact
+            return any(
+                fingerprint in candidate
+                for fingerprint in fingerprints
+                for candidate in (compact, decoded)
+            )
         if isinstance(value, dict):
             return any(contains_private(child) for child in value.values())
         if isinstance(value, (list, tuple)):

@@ -4,8 +4,8 @@ import { modelVisibleMessage } from "../src/features/chat/api/mcp-image-privacy.
 
 test("tool-only bytes and extracted aliases stay private through serialized reload and replay", () => {
   const secret = "data:image/png;base64,PRIVATE_CANARY";
-  const image = { type: "image", image: secret };
-  const extracted = { type: "text", text: "PRIVATE_OCR" };
+  const image = { type: "image", image: secret, mcpToolOnly: true };
+  const extracted = { type: "text", text: "PRIVATE_OCR", mcpToolOnly: true };
   const message = {
     content: [image, extracted, { type: "text", text: "Inspect it" }],
     attachments: [
@@ -23,6 +23,30 @@ test("tool-only bytes and extracted aliases stay private through serialized relo
   }
   assert.equal(message.attachments[0]?.mcpToolOnly, true);
   assert.ok(JSON.stringify(message).includes(secret));
+});
+
+test("ordinary parts survive when their values equal private attachment parts", () => {
+  const secret = "data:image/png;base64,SHARED_VALUE";
+  const text = "shared extracted text";
+  const message = {
+    content: [
+      { type: "image", image: secret },
+      { type: "text", text },
+    ],
+    attachments: [
+      {
+        mcpToolOnly: true,
+        content: [
+          { type: "image", image: secret },
+          { type: "text", text },
+        ],
+      },
+    ],
+  };
+
+  const visible = modelVisibleMessage(message);
+  assert.deepEqual(visible.content, message.content);
+  assert.deepEqual(visible.attachments, []);
 });
 
 test("ordinary vision messages retain identity and serialization", () => {

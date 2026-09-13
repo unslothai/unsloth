@@ -193,11 +193,124 @@ class _ImageEchoSanitizer:
     ):
         # Base64 is canonical apart from alphabet, padding and ASCII whitespace.
         # A matching canonical encoding therefore represents the same bytes.
-        if self._match_span(value.translate(_NORMALIZE_BASE64)) is not None:
+        normalized = (
+            unquote(value).translate(_NORMALIZE_BASE64)
+            if "%" in value
+            else value.translate(_NORMALIZE_BASE64)
+        )
+        if self._match_span(normalized) is not None:
             return True
-        if uri and "%" in value:
-            return self._match_span(unquote(value).translate(_NORMALIZE_BASE64)) is not None
         return False
+
+    @staticmethod
+    def _text_slot(value):
+        """Return a mutable text-bearing protocol field, if value flattens as text."""
+        if isinstance(value, dict):
+            value_type = value.get("type")
+            if value_type == "text" and isinstance(value.get("text"), str):
+                return value, "text", value["text"]
+            if value_type == "resource":
+                resource = value.get("resource")
+                if isinstance(resource, dict) and isinstance(resource.get("text"), str):
+                    return resource, "text", resource["text"]
+                resource_text = getattr(resource, "text", None)
+                if isinstance(resource_text, str):
+                    return resource, "text", resource_text
+            if value_type == "resource_link" and isinstance(value.get("uri"), str):
+                return value, "uri", value["uri"]
+            return None
+        value_type = getattr(value, "type", None)
+        if value_type == "text" and isinstance(getattr(value, "text", None), str):
+            return value, "text", value.text
+        if value_type == "resource":
+            resource = getattr(value, "resource", None)
+            resource_text = getattr(resource, "text", None)
+            if isinstance(resource_text, str):
+                return resource, "text", resource_text
+        if value_type == "resource_link" and isinstance(getattr(value, "uri", None), str):
+            return value, "uri", value.uri
+        return None
+
+    @staticmethod
+    def _set_slot(slot, value):
+        owner, key, _ = slot
+        if isinstance(owner, (dict, list)):
+            owner[key] = value
+        else:
+            setattr(owner, key, value)
+
+    def _redact_slots(self, slots):
+        slots = [slot for slot in slots if slot[2] != REDACTED_IMAGE]
+        if len(slots) < 2:
+            return
+        normalized = [
+            unquote(text).translate(_NORMALIZE_BASE64)
+            if "%" in text
+            else text.translate(_NORMALIZE_BASE64)
+            for _, _, text in slots
+        ]
+        combined = "".join(normalized)
+        span = self._match_span(combined)
+        while span is not None:
+            start = 0
+            for slot, text in zip(slots, normalized):
+                end = start + len(text)
+                if start < span[1] and end > span[0]:
+                    self._set_slot(slot, REDACTED_IMAGE)
+                start = end
+            span = self._match_span(combined, span[1])
+
+    @staticmethod
+    def _integer_image_echo(value, data):
+        if len(value) != len(data):
+            return False
+        if not all(type(item) is int and 0 <= item <= 255 for item in value):
+            return False
+        return bytes(value) == data
+
+    def _redact_structured_fragments(self, value):
+        """Check structured result fragments that are rendered through str()."""
+        slots = []
+        ignored_keys = {
+            "type",
+            "mimeType",
+            "mime_type",
+            "name",
+            "id",
+            "role",
+            "kind",
+            "separator",
+            "delimiter",
+        }
+
+        def collect(
+            node,
+            owner = None,
+            key = None,
+        ):
+            if type(node) is str:
+                if owner is not None and key not in ignored_keys:
+                    slots.append((owner, key, node))
+                return
+            if isinstance(node, dict):
+                node_type = node.get("type")
+                if node_type not in (None, "text", "resource"):
+                    return
+                for child_key, child in node.items():
+                    if child_key not in ignored_keys:
+                        collect(child, node, child_key)
+                return
+            if isinstance(node, (list, tuple)):
+                for index, child in enumerate(node):
+                    collect(child, node, index)
+                return
+            if isinstance(node, SimpleNamespace):
+                for child_key, child in vars(node).items():
+                    if child_key not in ignored_keys:
+                        collect(child, node, child_key)
+
+        collect(value)
+        self._redact_slots(slots)
 
     def sanitize(
         self,
@@ -224,50 +337,26 @@ class _ImageEchoSanitizer:
             if type(value) in (list, tuple):
                 if len(value) > MAX_REDACTION_NODES - self.nodes:
                     raise ValueError("private result node limit")
+                if self._integer_image_echo(value, self.data):
+                    return REDACTED_IMAGE
                 clean = [self.sanitize(child, depth + 1) for child in value]
-                # Check adjacent text content as one bounded candidate before
-                # flatten_result inserts newlines between the original blocks.
-                run = []
-
-                def finish_run():
-                    if len(run) > 1:
-                        texts = [
-                            item["text"] if isinstance(item, dict) else item.text for item in run
-                        ]
-                        combined_size = sum(len(text) for text in texts)
-                        self._charge(combined_size * 4)
-                        compact_texts = [text.translate(_NORMALIZE_BASE64) for text in texts]
-                        combined = "".join(compact_texts)
-                        span = self._match_span(combined)
-                        while span is not None:
-                            start = 0
-                            for item, text in zip(run, compact_texts):
-                                end = start + len(text)
-                                if start < span[1] and end > span[0]:
-                                    if isinstance(item, dict):
-                                        item["text"] = REDACTED_IMAGE
-                                    else:
-                                        item.text = REDACTED_IMAGE
-                                start = end
-                            span = self._match_span(combined, span[1])
-                    run.clear()
-
+                # flatten_result joins every text/link block, even when an image or
+                # another non-text block appears between them. Preserve one bounded
+                # candidate across those ignored blocks before it inserts newlines.
+                slots = []
                 for child in clean:
-                    child_type = (
-                        child.get("type")
-                        if isinstance(child, dict)
-                        else getattr(child, "type", None)
-                    )
-                    child_text = (
-                        child.get("text")
-                        if isinstance(child, dict)
-                        else getattr(child, "text", None)
-                    )
-                    if child_type == "text" and isinstance(child_text, str):
-                        run.append(child)
-                    else:
-                        finish_run()
-                finish_run()
+                    slot = self._text_slot(child)
+                    if slot is not None:
+                        slots.append(slot)
+                    elif isinstance(child, (dict, SimpleNamespace)):
+                        child_type = (
+                            child.get("type")
+                            if isinstance(child, dict)
+                            else getattr(child, "type", None)
+                        )
+                        if child_type is None:
+                            self._redact_structured_fragments(child)
+                self._redact_slots(slots)
                 return clean
             as_object = type(value) is SimpleNamespace
             if not as_object and not isinstance(value, dict):
@@ -294,6 +383,10 @@ class _ImageEchoSanitizer:
                 elif clean.get("blob") == REDACTED_IMAGE:
                     clean.pop("blob", None)
                     clean["text"] = REDACTED_IMAGE
+                if "structuredContent" in clean:
+                    self._redact_structured_fragments(clean["structuredContent"])
+                if "structured_content" in clean:
+                    self._redact_structured_fragments(clean["structured_content"])
                 # Protocol dictionaries need attributes for the existing public
                 # formatter; ordinary structured dictionaries remain dictionaries.
                 return SimpleNamespace(**clean) if as_object else clean

@@ -314,9 +314,11 @@ class VisionImageAdapter implements AttachmentAdapter {
       visionDisabledByUser: state.loadedVisionDisabledByUser,
       mmprojFallbackReason: state.mmprojFallbackReason,
     });
-    if (unavailableReason && !state.mcpImageAttachmentsEnabled) {
-      toast.error(unavailableReason);
-      throw new Error(unavailableReason);
+    if (unavailableReason) {
+      if (!state.mcpImageAttachmentsEnabled) {
+        toast.error(unavailableReason);
+        throw new Error(unavailableReason);
+      }
     }
 
     const maxSize = 20 * 1024 * 1024;
@@ -351,6 +353,7 @@ class VisionImageAdapter implements AttachmentAdapter {
         {
           type: "image",
           image,
+          ...(toolOnly ? { mcpToolOnly: true } : {}),
         },
       ],
       status: { type: "complete" },

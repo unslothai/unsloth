@@ -4,7 +4,7 @@
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { authFetch } from "@/features/auth";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { getChatSettings, saveChatSettingsPatch } from "./chat-settings-api";
@@ -19,12 +19,20 @@ import {
 export function McpImageSharingSetting() {
   const enabled = useChatRuntimeStore((s) => s.mcpImageAttachmentsEnabled);
   const [busy, setBusy] = useState(true);
+  const operationId = useRef(0);
+  const savePending = useRef(false);
   useEffect(() => {
     let active = true;
-    const refresh = () =>
+    const refresh = () => {
+      if (savePending.current) return;
+      const requestId = ++operationId.current;
       void getChatSettings()
         .then((settings) => {
-          if (active) {
+          if (
+            active &&
+            !savePending.current &&
+            requestId === operationId.current
+          ) {
             const savedEnabled = settings.mcpImageAttachmentsEnabled === true;
             useChatRuntimeStore.setState({
               mcpImageAttachmentsEnabled: savedEnabled,
@@ -35,7 +43,11 @@ export function McpImageSharingSetting() {
           }
         })
         .catch(() => {
-          if (active) {
+          if (
+            active &&
+            !savePending.current &&
+            requestId === operationId.current
+          ) {
             useChatRuntimeStore.setState({
               mcpImageAttachmentsEnabled: false,
             });
@@ -43,10 +55,11 @@ export function McpImageSharingSetting() {
           }
         })
         .finally(() => {
-          if (active) {
+          if (active && requestId === operationId.current) {
             setBusy(false);
           }
         });
+    };
     refresh();
     window.addEventListener("focus", refresh);
     return () => {
@@ -63,11 +76,14 @@ export function McpImageSharingSetting() {
           checked={enabled}
           disabled={busy}
           onCheckedChange={async (next) => {
+            const requestId = ++operationId.current;
+            savePending.current = true;
             setBusy(true);
             try {
               const saved = await saveChatSettingsPatch({
                 mcpImageAttachmentsEnabled: next,
               });
+              if (requestId !== operationId.current) return;
               const savedEnabled = saved.mcpImageAttachmentsEnabled === true;
               useChatRuntimeStore.setState({
                 mcpImageAttachmentsEnabled: savedEnabled,
@@ -76,9 +92,15 @@ export function McpImageSharingSetting() {
                 clearSelectedMcpImage();
               }
             } catch {
-              toast.error("Could not save image sharing setting. Try again.");
+              if (requestId === operationId.current) {
+                toast.error("Could not save image sharing setting. Try again.");
+              }
             } finally {
-              setBusy(false);
+              if (requestId === operationId.current) {
+                savePending.current = false;
+                operationId.current += 1;
+                setBusy(false);
+              }
             }
           }}
         />

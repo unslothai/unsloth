@@ -5200,8 +5200,11 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
 
 
 async def _prepare_mcp_image_for_route(payload, current_subject, tools, cancel_event, ui_events):
+    if getattr(payload, "mcp_image_attachment", None) is None and not tools:
+        return None, tools
     from core.inference.mcp_image_tool_loop import prepare_image_tool_request
     from core.inference.mcp_image_disclosure import McpImageDisclosureError
+
     try:
         return await asyncio.to_thread(
             prepare_image_tool_request,
@@ -21466,8 +21469,14 @@ async def _proxy_to_external_provider(
                             if not bucket:
                                 _CANCEL_REGISTRY.pop(key, None)
 
-        return StreamingResponse(
+        async def _codex_unstarted_cleanup():
+            cancel_event.set()
+            if _codex_image_run is not None:
+                _codex_image_run.close()
+
+        return _SameTaskStreamingResponse(
             _codex_stream(),
+            unstarted_cleanup = _codex_unstarted_cleanup,
             media_type = "text/event-stream",
             headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -21793,8 +21802,17 @@ async def _proxy_to_external_provider(
 
         return _wrapped()
 
-    return StreamingResponse(
+    async def _external_unstarted_cleanup():
+        cancel_event.set()
+        try:
+            if _external_image_run is not None:
+                _external_image_run.close()
+        finally:
+            await client.close()
+
+    return _SameTaskStreamingResponse(
         _tracked_stream(),
+        unstarted_cleanup = _external_unstarted_cleanup,
         media_type = "text/event-stream",
         headers = {
             "Cache-Control": "no-cache",

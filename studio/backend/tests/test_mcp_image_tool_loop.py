@@ -206,6 +206,16 @@ def test_request_validation_rejects_invalid_private_selection(image_request, cha
         prepare(f)
 
 
+def test_f_message_percent_encoded_private_image_is_rejected(image_request):
+    f = image_request
+    percent_encoded = "".join(f"%{ord(character):02X}" for character in f.encoded)
+    f.payload.messages[0]["content"] = [
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + percent_encoded}}
+    ]
+    with pytest.raises(McpImageDisclosureError, match = "removed from model messages"):
+        prepare(f)
+
+
 def test_unrelated_vision_image_is_preserved(image_request):
     f = image_request
     f.payload.messages[0]["content"] = [

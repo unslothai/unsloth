@@ -100,6 +100,17 @@ def seed_mcp(account) -> dict[str, str]:
     return {"server_id": SERVER_ID}
 
 
+@seeder("mcp-tools")
+def seed_mcp_tools(account) -> dict[str, str]:
+    from core.inference.mcp_client import cache_tools
+
+    params = seed_mcp(account)
+    run_as(
+        account, cache_tools, SERVER_ID, [{"name": "inspect", "inputSchema": {"type": "object"}}]
+    )
+    return params
+
+
 CORE_FACTORIES = {
     "routes.chat_history:GET:/threads/{thread_id}": Factory("chat", fragment = SENTINEL),
     "routes.chat_history:PATCH:/threads/{thread_id}": Factory(
@@ -127,6 +138,7 @@ CORE_FACTORIES = {
     "routes.mcp_servers:PUT:/{server_id}": Factory(
         "mcp", {"display_name": EDITED}, fragment = EDITED
     ),
+    "routes.mcp_servers:GET:/{server_id}/tools": Factory("mcp-tools", fragment = "inspect"),
     "routes.mcp_servers:DELETE:/{server_id}": Factory("mcp", success = 204),
 }
 

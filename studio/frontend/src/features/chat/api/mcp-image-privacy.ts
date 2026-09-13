@@ -22,44 +22,27 @@ export function isMcpToolOnly(value: unknown): boolean {
   );
 }
 
-type Part = { type: string; image?: unknown; text?: unknown };
+type Part = {
+  type: string;
+  image?: unknown;
+  text?: unknown;
+  mcpToolOnly?: boolean;
+};
 type PrivateMessage = {
   content: readonly Part[];
   attachments?: readonly { mcpToolOnly?: boolean; content?: readonly Part[] }[];
 };
 
-/** Remove duplicate content aliases as well as the private attachment itself. */
+/** Remove explicitly marked private content and the private attachment itself. */
 export function modelVisibleMessage<T extends PrivateMessage>(message: T): T {
-  const privateParts =
-    message.attachments
-      ?.filter(isMcpToolOnly)
-      .flatMap((attachment) => attachment.content ?? []) ?? [];
   const hasPrivateAttachment =
     message.attachments?.some(isMcpToolOnly) === true;
-  if (
-    privateParts.length === 0 &&
-    !hasPrivateAttachment &&
-    !message.content.some(isMcpToolOnly)
-  ) {
+  if (!(hasPrivateAttachment || message.content.some(isMcpToolOnly))) {
     return message;
   }
-  const imageIdentity = (value: unknown) =>
-    typeof value === "string" && value.startsWith("data:")
-      ? value.slice(value.indexOf(",") + 1)
-      : value;
-  const images = new Set(
-    privateParts.map((part) => imageIdentity(part.image)).filter(Boolean),
-  );
-  const texts = new Set(privateParts.map((part) => part.text).filter(Boolean));
   return {
     ...message,
-    content: message.content.filter(
-      (part) =>
-        !(
-          isMcpToolOnly(part) ||
-          (part.image && images.has(imageIdentity(part.image)))
-        ) && !(part.text && texts.has(part.text)),
-    ),
+    content: message.content.filter((part) => !isMcpToolOnly(part)),
     attachments: message.attachments?.filter(
       (attachment) => !isMcpToolOnly(attachment),
     ),
