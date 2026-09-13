@@ -111,7 +111,9 @@ def _pulls_in_vllm(module_name: str, *exports: str) -> tuple[bool, list[str]]:
         f"print(','.join(n for n in {list(exports)!r} if hasattr(m, n)))\n"
     )
     proc = subprocess.run(
-        [sys.executable, "-c", probe], capture_output = True, text = True,
+        [sys.executable, "-c", probe],
+        capture_output = True,
+        text = True,
     )
     if proc.returncode != 0:
         pytest.fail(
@@ -130,7 +132,9 @@ def test_rl_replacements_imports_without_vllm():
     """unsloth_zoo.rl_replacements must NOT pull in vllm at import time."""
     # A transitive vllm import crashes GRPOTrainer construction on Colab.
     pulled, exports = _pulls_in_vllm(
-        "unsloth_zoo.rl_replacements", "RL_REPLACEMENTS", "RL_FUNCTIONS",
+        "unsloth_zoo.rl_replacements",
+        "RL_REPLACEMENTS",
+        "RL_FUNCTIONS",
     )
     assert not pulled, (
         "unsloth_zoo.rl_replacements imported vllm transitively; this breaks "
@@ -145,11 +149,13 @@ def test_rl_replacements_imports_without_vllm():
 @pytest.mark.skipif(not _has_unsloth_zoo(), reason = "unsloth_zoo not installed")
 def test_empty_model_imports_without_vllm():
     pulled, exports = _pulls_in_vllm(
-        "unsloth_zoo.empty_model", "create_empty_causal_lm", "create_empty_model",
+        "unsloth_zoo.empty_model",
+        "create_empty_causal_lm",
+        "create_empty_model",
     )
-    assert not pulled, (
-        "unsloth_zoo.empty_model imported vllm transitively; expected to be vllm-free"
-    )
+    assert (
+        not pulled
+    ), "unsloth_zoo.empty_model imported vllm transitively; expected to be vllm-free"
     assert exports, "expected a create_empty_* helper in empty_model"
 
 
