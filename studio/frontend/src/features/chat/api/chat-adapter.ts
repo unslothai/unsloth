@@ -1391,7 +1391,9 @@ function fillStoppedAssistantReplay(
     return serialized;
   }
   if (serialized.length === 0) {
-    return [{ role: "assistant", content: stoppedAssistantReplayText(message) }];
+    // A refusal is the only turn that serialises to nothing, and it is suppressed on purpose.
+    // Filling it here would put a stop label back on the wire for a turn every caller drops.
+    return serialized;
   }
   const [only, ...rest] = serialized;
   if (rest.length !== 0 || only?.role !== "assistant") {
@@ -6241,10 +6243,17 @@ export function createOpenAIStreamAdapter(
                     releaseLiveGenerationRun(cancelId);
                   }
                   if (!generationRun) {
-                    // Null only when the Stop won the race; a bare return settles it "complete" (#10428).
+                    // Null when the Stop won the race, and also when admission answered 2xx with a
+                    // body json() could not parse. A bare return settles either "complete" (#10428),
+                    // so both throw, but only the Stop may be filed as one.
                     if (generationDecision === "durable") {
-                      throw runSignal.reason ??
-                        new DOMException("Aborted", "AbortError");
+                      if (runSignal.aborted) {
+                        throw runSignal.reason ??
+                          new DOMException("Aborted", "AbortError");
+                      }
+                      throw new Error(
+                        "The server accepted the request without starting a generation run",
+                      );
                     }
                   } else {
                     generationRunId = generationRun.id;

@@ -329,6 +329,22 @@ test("Stop during create cancels the run after its delayed reply", async () => {
   assert.equal(cancelled, 1);
 });
 
+test("a null admission does not mean the run was stopped", async () => {
+  // json() turns a body it cannot parse into null and `ok` keeps it, so a 2xx with an empty
+  // body resolves the create with null and the race returns null having never been aborted.
+  // The adapter's durable branch reads this null, so it cannot treat null as a Stop: doing so
+  // files a transport failure as a cancellation and drops the Retry the user needs.
+  globalThis.fetch = (async () =>
+    new Response("", { status: 200 })) as typeof fetch;
+  const controller = new AbortController();
+  const created = await createChatGenerationRunUntilAbort(
+    createInput(),
+    controller.signal,
+  );
+  assert.equal(created, null);
+  assert.equal(controller.signal.aborted, false);
+});
+
 test("Stop before admission resolves still reaches the server", () => {
   // Admission resolves long after the abort listener is installed (model auto-load,
   // RAG, attachment upload, first history save). A Stop in that window has no run id

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
@@ -68,6 +69,16 @@ test("a stopped empty assistant is filled before the prune sees it", () => {
   assert.match(adapter, /incompleteLabel\(info\?\.reason \?\? fromStatus\)/);
 });
 
+test("the fill leaves a refusal suppressed", () => {
+  // Every other assistant shape force-flushes, so an empty serialization is a refusal and
+  // nothing else. tests/studio/test_cancelled_turn_history_prune.py pins the behaviour.
+  assert.match(adapter, /if \(serialized\.length === 0\) \{\s*\/\//);
+  assert.doesNotMatch(
+    adapter,
+    /serialized\.length === 0[\s\S]{0,200}content: stoppedAssistantReplayText/,
+  );
+});
+
 test("a Stop while a model loads arrives as a Stop", () => {
   assert.match(
     adapter,
@@ -76,10 +87,44 @@ test("a Stop while a model loads arrives as a Stop", () => {
 });
 
 test("a Stop that beats the durable admission arrives as a Stop", () => {
+  assert.match(adapter, /if \(runSignal\.aborted\) \{/);
   assert.match(
     adapter,
     /throw runSignal\.reason \?\?\s*new DOMException\("Aborted", "AbortError"\)/,
   );
+});
+
+test("an admission that answered without a run is not replayed as a Stop", () => {
+  // createChatGenerationRunUntilAbort also returns null for a 2xx whose body does not parse,
+  // which is a failure and not a Stop. Ungated, the throw above would file it `cancelled`,
+  // hide Retry, and put "Response stopped" on the wire for something nobody stopped.
+  // chat-generation-reconnect.test.ts pins the null itself.
+  assert.match(
+    adapter,
+    /throw new Error\(\s*"The server accepted the request without starting a generation run",/,
+  );
+});
+
+test("assistant-ui still stops a run with an AbortError, not a bare detach marker", () => {
+  // The adapter forwards `signal.reason` as-is and assistant-ui classifies a cancellation by
+  // `name === "AbortError"`. Both only hold while cancelRun aborts with this class; if it ever
+  // switches to the plain `{ detach }` object the tests use as a stand-in, the reason has to be
+  // normalised before it is thrown. Skipped, not failed, when the dep is not installed.
+  const core = new URL(
+    "../node_modules/@assistant-ui/core/dist/runtimes/local/local-thread-runtime-core.js",
+    import.meta.url,
+  );
+  if (!existsSync(core)) return;
+  const source = readFileSync(core, "utf8");
+  assert.match(
+    source,
+    /class AbortError extends Error \{\s*name = "AbortError";/,
+  );
+  assert.match(
+    source,
+    /cancelRun\(\) \{\s*const error = new AbortError\(false\);/,
+  );
+  assert.match(source, /detach\(\) \{\s*const error = new AbortError\(true\);/);
 });
 
 test("only a deliberate Stop is replayed as one", () => {

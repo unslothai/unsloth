@@ -540,3 +540,35 @@ def test_whitespace_only_replies_leave_no_pair_for_the_backend_to_split():
     whitespace = '{ role: "assistant", content: [{ type: "text", text: "  " }] }'
     out = _run(_script(f"[{_user('first')}, {whitespace}, {_user('second')}]"))
     assert out["kept"] == ["user"]
+
+
+def test_a_refusal_is_never_filled_back_onto_the_wire():
+    """A refusal is the only turn that serialises to nothing, and that is deliberate.
+
+    ``serializeAssistantReplayMessages`` force-flushes every other assistant shape, so the
+    empty-list branch of the fill is reachable only for a refusal. Synthesising a turn there
+    puts a stop label back on the wire for the one message the serialiser suppressed, and the
+    refusal can carry an incomplete marker of its own: a context_window refusal stamps both
+    into the same ``custom`` object. Today ``pruneOutboundHistory`` drops it first either way,
+    so this pins the layer rather than an outcome the prune already fixes.
+    """
+    refusals = (
+        " metadata: { custom: { anthropicRefusal: true } } }",
+        ' status: { type: "incomplete", reason: "cancelled" },'
+        " metadata: { custom: { anthropicRefusal: true,"
+        ' incomplete: { reason: "cancelled" } } } }',
+    )
+    for tail in refusals:
+        refused = '{ role: "assistant", content: [],' + tail
+        out = _run(
+            textwrap.dedent(
+                f"""
+                // @ts-nocheck
+                import {{ toOpenAIMessages }} from "./harness.ts";
+                console.log(JSON.stringify({{
+                  serialized: toOpenAIMessages({refused}, true),
+                }}));
+                """
+            )
+        )
+        assert out["serialized"] == [], tail
