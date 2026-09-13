@@ -381,7 +381,7 @@ def _has_complete_indexed_weights(path: Path, index_name: str, expected_suffix: 
         if match is not None:
             part = int(match.group("part"))
             total = int(match.group("total"))
-            if total < 1 or part < 1 or part > total:
+            if total < 1 or part < 0 or part > total:
                 return False
             family = (
                 os.path.normcase(str(shard_path.parent)),
@@ -390,7 +390,12 @@ def _has_complete_indexed_weights(path: Path, index_name: str, expected_suffix: 
                 total,
             )
             families.setdefault(family, set()).add(part)
-    return all(len(parts) == family[3] for family, parts in families.items())
+    # Shards usually count 1..total, but some exporters count from zero
+    # (model-00000-of-00001.safetensors). Accept either complete run, never a mix.
+    return all(
+        parts in (set(range(1, total + 1)), set(range(total)))
+        for (_, _, _, total), parts in families.items()
+    )
 
 
 def _trainable_local_roots(path: Path, model_name: Optional[str] = None) -> list[Path]:

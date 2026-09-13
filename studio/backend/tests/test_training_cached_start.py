@@ -827,6 +827,42 @@ def test_client_error_probe_uses_complete_sharded_cache(tmp_path):
     assert result.cached_model_pin == ("unsloth/test", str(snapshot.resolve()))
 
 
+@pytest.mark.parametrize(
+    ("shards", "complete"),
+    [
+        (["model-00000-of-00001.safetensors"], True),
+        (["model-00000-of-00002.safetensors", "model-00001-of-00002.safetensors"], True),
+        (["model-00000-of-00002.safetensors"], False),
+        (["model-00000-of-00002.safetensors", "model-00002-of-00002.safetensors"], False),
+    ],
+)
+def test_zero_based_shard_numbering_uses_complete_cache(tmp_path, shards, complete):
+    route = _load_route_module(f"training_route_zero_based_shards_{len(shards)}_{complete}")
+    snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text("{}")
+    for shard in shards:
+        (snapshot / shard).write_bytes(b"x")
+    (snapshot / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {"weight_map": {f"layer.{index}": shard for index, shard in enumerate(shards)}},
+        )
+    )
+
+    if not complete:
+        _shared_setup_1(route)
+        return
+
+    with patch.object(
+        route,
+        "_remote_untrainable_model_format",
+        side_effect = HTTPException(status_code = 403, detail = "unavailable"),
+    ):
+        result = route._reject_untrainable_model_request(_request())
+
+    assert result.cached_model_pin == ("unsloth/test", str(snapshot.resolve()))
+
+
 def test_incomplete_safetensors_index_is_not_masked_by_pytorch_weights(tmp_path):
     route = _load_route_module("training_route_incomplete_safe_index_with_pytorch")
     first_shard, second_shard, snapshot = _shared_setup_7(tmp_path)
