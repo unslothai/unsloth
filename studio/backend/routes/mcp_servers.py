@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException
+from fastmcp.mcp_config import infer_transport_type_from_url
 from integrations.blender import service as blender
 from models.mcp_servers import BlenderSettings, BlenderSetup, McpBuiltinResponse
 
@@ -190,6 +191,16 @@ async def _validated_image_mappings(
 ) -> tuple[list[dict[str, str]], str | None]:
     if not mappings:
         return [], None
+    if use_oauth:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Image attachments are not supported for OAuth MCP servers.",
+        )
+    if not is_stdio(url) and infer_transport_type_from_url(url) == "sse":
+        raise HTTPException(
+            status_code = 400,
+            detail = "Image attachments require Streamable HTTP; legacy SSE is not supported.",
+        )
     tools = get_cached_tools(server_id) if server_id else None
     if tools is None:
         try:
@@ -521,6 +532,9 @@ async def update_mcp_server(
     except (TypeError, ValueError):
         proposed_headers = None
     proposed_oauth = bool(changes.get("use_oauth", old.get("use_oauth")))
+    proposed_image_permission = bool(
+        changes.get("allow_image_attachments", old.get("allow_image_attachments"))
+    )
     try:
         old_mappings = json.loads(old.get("image_input_mappings_json") or "[]")
         if not isinstance(old_mappings, list):
@@ -528,8 +542,13 @@ async def update_mcp_server(
     except (TypeError, ValueError):
         old_mappings = []
     proposed_mappings = payload.image_input_mappings if mapping_sent else old_mappings
-    mapping_inputs_changed = mapping_sent or any(
-        key in changes for key in TOOL_CACHE_INVALIDATING_FIELDS
+    mapping_transport_changed = any(
+        key in changes and changes[key] != old.get(key)
+        for key in ("url", "headers_json", "use_oauth")
+    )
+    mapping_inputs_changed = mapping_sent or (
+        proposed_image_permission
+        and (mapping_transport_changed or not bool(old.get("allow_image_attachments")))
     )
     if proposed_mappings and mapping_inputs_changed:
         mappings, schema_digest = await _validated_image_mappings(

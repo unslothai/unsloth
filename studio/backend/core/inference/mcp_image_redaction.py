@@ -314,15 +314,53 @@ class _ImageEchoSanitizer:
 
     @staticmethod
     def _integer_image_echo(value, data):
-        if len(value) != len(data):
-            return False
         if not all(type(item) is int and 0 <= item <= 255 for item in value):
             return False
-        return bytes(value) == data
+        return data in bytes(value)
+
+    def _redact_integer_fragments(self, slots):
+        """Redact byte arrays that reconstruct the image, allowing framing between fields."""
+        states = {0: ()}
+        matched_slots = set()
+        work = 0
+        for index, (_, _, value) in enumerate(slots):
+            chunk = bytes(value)
+            advanced = dict(states)
+            for position, path in states.items():
+                start = 0
+                while position < len(self.data):
+                    start = chunk.find(self.data[position : position + 1], start)
+                    if start < 0:
+                        break
+                    length = 0
+                    limit = min(len(chunk) - start, len(self.data) - position)
+                    while length < limit and chunk[start + length] == self.data[position + length]:
+                        length += 1
+                    work += length + 1
+                    if work > MAX_REDACTION_NODES * 32:
+                        for slot in slots:
+                            self._set_slot(slot, REDACTED_IMAGE)
+                        return
+                    if length:
+                        end = position + length
+                        candidate = path + (index,)
+                        if end == len(self.data):
+                            matched_slots.update(candidate)
+                        else:
+                            advanced.setdefault(end, candidate)
+                    start += 1
+            if len(advanced) > 4096:
+                for slot in slots:
+                    self._set_slot(slot, REDACTED_IMAGE)
+                return
+            states = advanced
+        for matched in matched_slots:
+            self._set_slot(slots[matched], REDACTED_IMAGE)
 
     def _redact_structured_fragments(self, value):
         """Check structured result fragments that are rendered through str()."""
         slots = []
+        integer_slots = []
         rekeys = []
         metadata_keys = {
             "type",
@@ -354,6 +392,10 @@ class _ImageEchoSanitizer:
                     collect(child, node, child_key)
                 return
             if isinstance(node, (list, tuple)):
+                if node and all(type(item) is int and 0 <= item <= 255 for item in node):
+                    if owner is not None:
+                        integer_slots.append((owner, key, node))
+                    return
                 for index, child in enumerate(node):
                     collect(child, node, index)
                 return
@@ -363,6 +405,7 @@ class _ImageEchoSanitizer:
 
         collect(value)
         self._redact_slots(slots)
+        self._redact_integer_fragments(integer_slots)
         for owner, original, holder in rekeys:
             if holder[0] != original and original in owner:
                 child = owner.pop(original)

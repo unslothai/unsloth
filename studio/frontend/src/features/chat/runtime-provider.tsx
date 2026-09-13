@@ -331,6 +331,17 @@ class VisionImageAdapter implements AttachmentAdapter {
       throw new Error(unavailableReason);
     }
 
+    if (
+      mcpToolOnly &&
+      (file.size > 10 * 1024 * 1024 ||
+        !["image/png", "image/jpeg", "image/webp"].includes(file.type))
+    ) {
+      const reason =
+        "Tool-only images must be PNG, JPEG or WebP and at most 10 MiB.";
+      toast.error(reason);
+      throw new Error(reason);
+    }
+
     const maxSize = 20 * 1024 * 1024;
     if (file.size > maxSize) {
       throw new Error("Image size exceeds 20MB limit");

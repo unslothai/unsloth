@@ -109,6 +109,62 @@ def test_create_route_validates_and_round_trips_image_mapping(tmp_path, monkeypa
     assert row["config_revision"] == 1
 
 
+@pytest.mark.parametrize(
+    ("url", "use_oauth", "detail"),
+    [
+        ("https://example.test/mcp", True, "OAuth"),
+        ("https://example.test/sse", False, "legacy SSE"),
+    ],
+)
+def test_image_mapping_rejects_unsupported_private_transport(url, use_oauth, detail):
+    import asyncio
+    from fastapi import HTTPException
+    import routes.mcp_servers as routes_mcp
+
+    with pytest.raises(HTTPException, match = detail):
+        asyncio.run(
+            routes_mcp._validated_image_mappings(
+                [{"tool": "inspect", "field": "image", "encoding": "base64"}],
+                url = url,
+                headers = None,
+                use_oauth = use_oauth,
+            )
+        )
+
+
+def test_disabling_image_permission_does_not_probe_offline_server(tmp_path, monkeypatch):
+    import asyncio
+    import routes.mcp_servers as routes_mcp
+    from models.mcp_servers import McpServerUpdate
+
+    _reset_db(tmp_path, monkeypatch)
+    mcp_servers_db.create_server(
+        id = "images",
+        display_name = "Images",
+        url = "https://offline.test/mcp",
+        allow_image_attachments = True,
+        image_input_mappings_json = '[{"tool":"inspect","field":"image","encoding":"base64"}]',
+    )
+
+    async def unexpected_probe(**kwargs):
+        raise AssertionError("permission revocation must not contact the server")
+
+    monkeypatch.setattr(routes_mcp, "list_tools_async", unexpected_probe)
+    updated = asyncio.run(
+        routes_mcp.update_mcp_server(
+            "images",
+            McpServerUpdate(
+                url = "https://offline.test/mcp",
+                headers = None,
+                use_oauth = False,
+                allow_image_attachments = False,
+            ),
+            current_subject = "user",
+        )
+    )
+    assert updated.allow_image_attachments is False
+
+
 def test_mapping_only_updates_add_replace_and_clear(tmp_path, monkeypatch):
     import asyncio
     import routes.mcp_servers as routes_mcp
