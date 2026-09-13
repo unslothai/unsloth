@@ -392,7 +392,9 @@ def test_vllm_bitsandbytes_symbols_have_a_home(tag: str):
     # to map onto; the published release is what a user ends up with.
     plugin_ref = _plugin_ref()
     if plugin_ref is None:
-        pytest.skip(f"no released {VLLM_BNB_PLUGIN_REPO} ref resolved; nothing reproducible to check")
+        pytest.skip(
+            f"no released {VLLM_BNB_PLUGIN_REPO} ref resolved; nothing reproducible to check"
+        )
     plugin = _fetch_text(VLLM_BNB_PLUGIN_REPO, plugin_ref, VLLM_BNB_PLUGIN_PATH)
     assert plugin is not None, (
         f"{tag}: bitsandbytes is absent in tree AND {VLLM_BNB_PLUGIN_PATH} could "
