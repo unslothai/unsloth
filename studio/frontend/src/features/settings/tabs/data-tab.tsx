@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useIsAccountOwner } from "@/features/auth";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -100,6 +101,7 @@ const SUBPAGE_FOR_SHELF = {
 
 export function DataTab() {
   const t = useT();
+  const isOwner = useIsAccountOwner();
   const navigate = useNavigate();
   const archivedRequested = useSettingsDialogStore((s) => s.archivedRequested);
   const consumeArchivedChatsRequest = useSettingsDialogStore(
@@ -977,7 +979,8 @@ export function DataTab() {
         ) : null}
       </SettingsSection>
 
-      <DocumentsRagSection />
+      {/* Embedding model settings are installation-wide (owner-only routes). */}
+      {isOwner ? <DocumentsRagSection /> : null}
 
       <Dialog open={archiveConfirmOpen} onOpenChange={setArchiveConfirmOpen}>
         <DialogContent className="max-w-md">
