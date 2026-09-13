@@ -101,6 +101,12 @@ backend_dir = Path(__file__).parent
 if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
 
+# Open the AOTriton gate before anything here can reach an SDPA call: torch latches it at its
+# first capability check, and a closed gate leaves ROCm on the O(N^2) math path (#8225). Stdlib only.
+from utils.rocm_attention import enable_rocm_aotriton_attention
+
+enable_rocm_aotriton_attention()
+
 # First, so these vars land before anything below can size an OpenMP/BLAS pool. Imports stdlib only.
 from utils.cpu_threads import configure_cpu_threads
 

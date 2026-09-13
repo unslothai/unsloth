@@ -166,6 +166,12 @@ _backend_dir = str(_Path(__file__).parent)
 if _backend_dir not in sys.path:
     sys.path.insert(0, _backend_dir)
 
+# `uvicorn main:app` bypasses run.py; open the AOTriton gate here too, before anything can
+# reach an SDPA call (#8225). Stdlib only.
+from utils.rocm_attention import enable_rocm_aotriton_attention
+
+enable_rocm_aotriton_attention()
+
 # OS trust store for TLS before anything opens a connection: behind a
 # TLS-inspecting proxy certifi alone rejects every Hub request.
 from utils.native_tls import activate_native_tls
