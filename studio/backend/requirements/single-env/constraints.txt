@@ -27,6 +27,14 @@ websockets>=15.0.1
 # later with-deps steps can't re-resolve it up.
 anyio<4.14.0
 
+# accelerate 1.15.0 made Accelerator.prepare_model call model_has_dtensor()
+# unconditionally, which imports torch.distributed.tensor -> torch._C._distributed_c10d.
+# AMD's Windows ROCm wheels ship no c10d, so every single-GPU run dies at trainer start
+# (huggingface/accelerate#4249). Markers cannot express "ROCm", so this caps Windows
+# generally; CUDA there loses only 1.15's DTensor placement fix. Global cap for the same
+# reason as anyio above. Lift once upstream guards the call.
+accelerate<1.15.0; sys_platform == "win32"
+
 pandas==2.3.3
 
 # av (PyAV) 16+ builds its macOS arm64 wheels against macosx_14_0, so on macOS 13 none
