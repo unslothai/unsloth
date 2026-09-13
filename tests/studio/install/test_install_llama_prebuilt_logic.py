@@ -41,6 +41,8 @@ activate_install_tree = INSTALL_LLAMA_PREBUILT.activate_install_tree
 activate_staged_dir = INSTALL_LLAMA_PREBUILT.activate_staged_dir
 create_install_staging_dir = INSTALL_LLAMA_PREBUILT.create_install_staging_dir
 replace_with_busy_retry = INSTALL_LLAMA_PREBUILT.replace_with_busy_retry
+blocked_replace_hint = INSTALL_LLAMA_PREBUILT.blocked_replace_hint
+blocked_replace_cause = INSTALL_LLAMA_PREBUILT.blocked_replace_cause
 remove_tree_logged = INSTALL_LLAMA_PREBUILT.remove_tree_logged
 prune_stale_install_side_paths = INSTALL_LLAMA_PREBUILT.prune_stale_install_side_paths
 sha256_file = INSTALL_LLAMA_PREBUILT.sha256_file
@@ -1116,6 +1118,179 @@ def test_replace_with_busy_retry_waits_out_a_transient_windows_lock(
     assert (destination / "payload.txt").read_text() == "payload\n"
 
 
+def test_blocked_replace_hint_offers_the_acl_repair_only_for_access_denied(tmp_path: Path):
+    """Only WinError 5 carries the ACL repair, and it keeps the lock cause too.
+
+    #9928 chased a scanner that did not exist; diagnosing broken ACLs instead is
+    the same mistake reversed, since is_busy_lock_error records 5 as a held handle.
+    """
+    target = tmp_path / "llama.cpp"
+    target.mkdir()
+
+    sharing_violation = blocked_replace_hint(32, target)
+    assert "scanner" in sharing_violation
+    assert "takeown" not in sharing_violation
+
+    denied = blocked_replace_hint(5, target)
+    assert "access is denied" in denied
+    assert "scanner" in denied
+    assert f'takeown /F "{target}" /R /D Y' in denied
+    # /C, as #9928 used: icacls stops at the first unreadable file without it.
+    assert f'icacls "{target}" /reset /T /C' in denied
+    # One command per line, as install.ps1 prints them.
+    command_lines = [line.strip() for line in denied.splitlines()]
+    assert f'takeown /F "{target}" /R /D Y' in command_lines
+    assert f'icacls "{target}" /reset /T /C' in command_lines
+
+    not_empty = blocked_replace_hint(145, target)
+    assert "scanner" not in not_empty
+    assert "takeown" not in not_empty
+    assert "not empty" in not_empty
+    # 145 says the destination is occupied and nothing more: on the aside-move the
+    # destination is a fresh path nothing ever wrote to, so "an earlier copy is still
+    # being removed" would have users waiting on an operation that never ran.
+    assert "being removed" not in not_empty
+
+
+def test_blocked_replace_hint_does_not_send_acl_repair_through_a_linked_root(tmp_path: Path):
+    """takeown /R and icacls without /L would reset the checkout behind the link."""
+    external = tmp_path / "external-llama.cpp"
+    external.mkdir()
+    linked_root = tmp_path / "llama.cpp"
+    try:
+        linked_root.symlink_to(external, target_is_directory = True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+
+    denied = blocked_replace_hint(5, linked_root)
+    assert "access is denied" in denied
+    assert "scanner" in denied
+    assert "takeown" not in denied
+    assert "icacls" not in denied
+    assert str(linked_root) in denied
+
+
+def test_blocked_replace_hint_keeps_the_acl_repair_when_the_path_cannot_be_probed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """ACLs that also deny lstat are the case the repair exists for, not a link."""
+    target = tmp_path / "llama.cpp"
+    target.mkdir()
+
+    def denied_lstat(_self):
+        raise PermissionError(errno.EACCES, "Access is denied")
+
+    monkeypatch.setattr(Path, "lstat", denied_lstat)
+
+    denied = blocked_replace_hint(5, target)
+    assert f'takeown /F "{target}" /R /D Y' in denied
+    assert f'icacls "{target}" /reset /T /C' in denied
+
+
+def _denied_replace_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, clears_after: int | None
+) -> tuple[list[str], Path, Path]:
+    """Drive replace_with_busy_retry against WinError 5, collecting what it logged."""
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "payload.txt").write_text("payload\n")
+    destination = tmp_path / "dst"
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+    attempts = {"count": 0}
+
+    def access_denied(src, dst):
+        attempts["count"] += 1
+        if clears_after is not None and attempts["count"] > clears_after:
+            return original_replace(src, dst)
+        exc = OSError(errno.EACCES, "Access is denied")
+        exc.winerror = 5
+        raise exc
+
+    logged: list[str] = []
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "name", "nt")
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", access_denied)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "log", logged.append)
+    return logged, source, destination
+
+
+def test_replace_with_busy_retry_does_not_advertise_the_acl_repair_while_retrying(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A lock that clears must never leave a recursive takeown/icacls on screen.
+
+    Most WinError 5s here are a scanner and resolve in a second or two, so a repair
+    printed per retry tells a user whose install then succeeds to reset ownership
+    and ACLs across the whole tree for nothing.
+    """
+    logged, source, destination = _denied_replace_run(tmp_path, monkeypatch, clears_after = 2)
+
+    replace_with_busy_retry(source, destination)
+
+    assert (destination / "payload.txt").read_text() == "payload\n"
+    retry_lines = [line for line in logged if "blocked (5)" in line]
+    assert retry_lines, logged
+    assert "access is denied" in retry_lines[0]
+    assert not [line for line in logged if "takeown" in line or "icacls" in line], logged
+
+
+def test_replace_with_busy_retry_prints_the_acl_repair_once_when_the_retries_are_spent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """#9928: the repair is earned only after the backoff fails, and then just once."""
+    logged, source, destination = _denied_replace_run(tmp_path, monkeypatch, clears_after = None)
+
+    with pytest.raises(OSError):
+        replace_with_busy_retry(source, destination, attempts = 4, repair_hint = True)
+
+    assert [line for line in logged if "takeown" in line] == [f'takeown /F "{source}" /R /D Y']
+    assert [line for line in logged if "icacls" in line] == [f'icacls "{source}" /reset /T /C']
+    # src, not dst: the aside-move's dst does not exist yet.
+    assert not [line for line in logged if str(destination) in line]
+    # log_lines, not one embedded-newline log call, so every line keeps the prefix.
+    assert not [line for line in logged if "\n" in line], logged
+    assert [line for line in logged if "still blocked (5) after 4 attempts" in line]
+
+
+def test_replace_with_busy_retry_withholds_the_repair_from_a_caller_that_can_recover(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The rollback restore answers the same OSError with a copytree, then deletes src.
+
+    Naming that path in a takeown/icacls hint would point the user at a tree the
+    recovery is about to remove, so only the aside-move opts in.
+    """
+    logged, source, destination = _denied_replace_run(tmp_path, monkeypatch, clears_after = None)
+
+    with pytest.raises(OSError):
+        replace_with_busy_retry(source, destination, attempts = 4)
+
+    assert not [line for line in logged if "takeown" in line or "icacls" in line], logged
+
+
+def test_move_install_dir_aside_asks_for_the_repair_hint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The aside-move is the caller with no fallback for a denied rename."""
+    seen: dict = {}
+
+    def fake_retry(src, dst, **kwargs):
+        seen.update(kwargs)
+        raise OSError(errno.EACCES, "Access is denied")
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "replace_with_busy_retry", fake_retry)
+    source = tmp_path / "llama.cpp"
+    source.mkdir()
+
+    with pytest.raises(OSError):
+        INSTALL_LLAMA_PREBUILT.move_install_dir_aside(
+            source, tmp_path / "llama.cpp.rollback", busy_retry = True
+        )
+
+    assert seen.get("repair_hint") is True
+
+
 def test_replace_with_busy_retry_does_not_retry_a_posix_permission_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -1740,6 +1915,43 @@ def test_activate_install_tree_keeps_existing_install_when_aside_move_hits_busy_
     assert (install_dir / "old.txt").read_text() == "old install\n"
     assert not staging_dir.exists()
     assert not (tmp_path / ".staging").exists()
+
+
+def test_activate_install_tree_summary_keeps_permissions_open_for_winerror_5(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The summary the desktop app shows must not re-assert the held-handle theory.
+
+    The retry lines name ACLs as the other half of a WinError 5; a terminal
+    "still in use" would send the user straight back to hunting a scanner.
+    """
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    (install_dir / "old.txt").write_text("old install\n")
+
+    staging_dir = create_install_staging_dir(install_dir)
+    (staging_dir / "new.txt").write_text("new install\n")
+
+    original_replace = INSTALL_LLAMA_PREBUILT.os.replace
+
+    def denied_replace(src, dst):
+        if Path(src) == install_dir:
+            exc = OSError(errno.EACCES, "Access is denied")
+            exc.winerror = 5
+            raise exc
+        return original_replace(src, dst)
+
+    # No os.name patch: the summary keys on the winerror the exception carries, and
+    # leaving os.name alone keeps the retry loop (and pytest's reporting) on POSIX.
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", denied_replace)
+
+    with pytest.raises(
+        BusyInstallConflict,
+        match = "appears to still be in use or has broken permissions",
+    ):
+        activate_install_tree(staging_dir, install_dir, linux_host())
+
+    assert (install_dir / "old.txt").read_text() == "old install\n"
 
 
 def test_activate_install_tree_restores_previous_install_when_failed_move_fails(

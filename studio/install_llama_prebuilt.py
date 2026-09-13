@@ -4231,21 +4231,101 @@ def unique_install_side_path(install_dir: Path, label: str) -> Path:
     return candidate
 
 
+def _confirmed_reparse_point(path: Path) -> bool:
+    """Whether ``path`` is *known* to redirect elsewhere.
+
+    Not ``_is_link_or_junction``, which answers True when it cannot probe: ACLs bad
+    enough to deny ``lstat`` are the case the WinError 5 hint exists for, so an
+    unprobeable path must keep the repair rather than be read as a link.
+
+    Only fires for a caller that passes the path as given. ``main`` hands
+    ``install_prebuilt`` an ``install_arg.resolve()``, so a junction supplied as
+    ``--install-dir`` arrives here already dereferenced -- the same assumption the
+    link guards in ``move_install_dir_aside`` and the rollback restore are written
+    against. Unpicking that belongs with those, not with a log line.
+    """
+    try:
+        if os.name == "nt":
+            attributes = getattr(path.lstat(), "st_file_attributes", 0)
+            return bool(attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+        return path.is_symlink()
+    except OSError:
+        return False
+
+
+def blocked_replace_cause(winerror: object) -> str:
+    """What blocked a replace, per the error Windows actually returned.
+
+    32 is a held handle and 145 is ERROR_DIR_NOT_EMPTY. 5 is both: Defender and the
+    indexer report it (``activate_staged_dir``, ``is_busy_lock_error``) and so do
+    broken ACLs (#9928). Cause only -- the repair for the ACL case is
+    ``blocked_replace_hint``, which is earned once the retries are spent.
+    """
+    if winerror == 5:
+        return (
+            "access is denied -- usually a scanner, indexer or running process still "
+            "holding a handle"
+        )
+    if winerror == 145:
+        # Only what 145 establishes. The rename line above already names both paths,
+        # and nothing here knows why the destination is occupied.
+        return "the destination directory is not empty"
+    return "a scanner is likely still holding the install open"
+
+
+def blocked_replace_hint(winerror: object, path: Path) -> str:
+    """``blocked_replace_cause`` plus, for a denied rename, how to repair it.
+
+    For the caller that has run out of options, never per retry and never where a
+    fallback still follows: most of these clear on their own, and a recursive
+    takeown/icacls is not something to put in front of a user whose install is about
+    to succeed anyway. Printed, never run.
+    """
+    cause = blocked_replace_cause(winerror)
+    if winerror != 5:
+        return cause
+    antivirus = "Antivirus or Controlled folder access can deny this path too"
+    if _confirmed_reparse_point(path):
+        # takeown /R walks through a linked root and icacls resolves one without /L,
+        # so the repair would rewrite a --with-llama-cpp-dir tree we do not own.
+        return (
+            f"{cause}, but it did not clear: the permissions are broken on {path} or on "
+            f"what it links to. That tree is not managed here, so repair it at the "
+            f"source. {antivirus}"
+        )
+    return (
+        f"{cause}, but it did not clear, so this tree's permissions are broken. In an "
+        "elevated PowerShell, run each command:\n"
+        f'takeown /F "{path}" /R /D Y\n'
+        # /C, as in #9928: without it icacls stops at the first file it cannot read,
+        # which on a tree this broken is usually the first one.
+        f'icacls "{path}" /reset /T /C\n'
+        f"{antivirus}"
+    )
+
+
 def replace_with_busy_retry(
     src: Path,
     dst: Path,
     *,
     attempts: int = 8,
+    repair_hint: bool = False,
 ) -> None:
     """``os.replace``, retried against transient Windows sharing violations.
 
-    WinError 5/32/145 means a scanner still holds a handle inside the tree,
-    which clears in a second or two; without a backoff that turns an update
+    WinError 5/32/145 blocks the rename and usually clears in a second or two, but
+    the cause differs per code, so the retry line says which (``blocked_replace_cause``).
+    Without a backoff that turns an update
     into a failure, and on the aside-move of the *existing* install that is the
     failure this installer most needs to avoid. Mirrors the Node installer's
     ``_replace_with_retry``. Other errors raise at once, and POSIX never
     retries because EACCES/EBUSY there mean a permission or mount problem no
     amount of waiting clears.
+
+    ``repair_hint`` is for the caller with nothing left to try, which is only the
+    aside-move: the rollback restore answers the same OSError with a copytree and
+    then deletes ``src``, so a repair aimed at ``src`` there would name a path that
+    recovery is about to remove.
     """
     if attempts < 1:
         raise ValueError("replace_with_busy_retry needs at least one attempt")
@@ -4256,11 +4336,24 @@ def replace_with_busy_retry(
             return
         except OSError as exc:
             transient = os.name == "nt" and getattr(exc, "winerror", None) in (5, 32, 145)
-            if not transient or attempt == attempts - 1:
+            if not transient:
+                raise
+            if attempt == attempts - 1:
+                if repair_hint:
+                    # src, not dst: the aside-move's dst is a rollback path that does
+                    # not exist yet. log_lines keeps the [llama-prebuilt] prefix on
+                    # every line.
+                    log_lines(
+                        (
+                            f"rename {src.name} -> {dst.name} still blocked "
+                            f"({exc.winerror}) after {attempts} attempts -- "
+                            f"{blocked_replace_hint(exc.winerror, src)}"
+                        ).splitlines()
+                    )
                 raise
             log(
                 f"rename {src.name} -> {dst.name} blocked ({exc.winerror}), retrying in "
-                f"{delay:.2f}s -- a scanner is likely still holding the install open"
+                f"{delay:.2f}s -- {blocked_replace_cause(exc.winerror)}"
             )
             time.sleep(delay)
             delay = min(delay * 2, 4.0)
@@ -4550,7 +4643,9 @@ def move_install_dir_aside(
     """
     try:
         if busy_retry:
-            replace_with_busy_retry(src, dst)
+            # Only EXDEV is answered below, so a denied rename here is the end of the
+            # line for the live install: this is the call that has earned the repair.
+            replace_with_busy_retry(src, dst, repair_hint = True)
         else:
             os.replace(src, dst)
     except OSError as exc:
@@ -4614,9 +4709,16 @@ def activate_install_tree(staging_dir: Path, install_dir: Path, host: HostInfo) 
             # install; it must not be moved or cleaned up.
             log("existing install could not be moved aside; leaving it in place")
             if is_busy_lock_error(exc):
+                # The summary is what the desktop app surfaces, so it must not put the
+                # held-handle theory back after the retry lines named ACLs as the other
+                # half of a WinError 5. Still BusyInstallConflict: the classification
+                # drives the caller's backoff and is right either way.
+                blocked = "appears to still be in use"
+                if getattr(exc, "winerror", None) == 5:
+                    blocked += " or has broken permissions"
                 raise BusyInstallConflict(
                     "staged prebuilt validation passed but the existing install could not be "
-                    "moved aside because llama.cpp appears to still be in use; previous install "
+                    f"moved aside because llama.cpp {blocked}; previous install "
                     f"left in place ({textwrap.shorten(str(exc), width = 200, placeholder = '...')})"
                 ) from exc
             raise PrebuiltFallback(
