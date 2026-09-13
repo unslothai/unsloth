@@ -28,10 +28,28 @@ _VLLM_MIN_VERSION = (0, 9, 0)
 # Used when PyPI is unreachable (offline CI, network blip). Stale by design: it
 # only needs to keep the suite meaningful, not current.
 _VLLM_TAGS_FALLBACK = [
-    "v0.9.0", "v0.9.1", "v0.9.2", "v0.10.0", "v0.10.1", "v0.10.2",
-    "v0.11.0", "v0.12.0", "v0.13.0", "v0.14.0", "v0.15.0", "v0.15.1",
-    "v0.16.0", "v0.17.0", "v0.17.1", "v0.18.0", "v0.18.1", "v0.19.0",
-    "v0.19.1", "v0.20.0", "v0.20.1", "v0.20.2",
+    "v0.9.0",
+    "v0.9.1",
+    "v0.9.2",
+    "v0.10.0",
+    "v0.10.1",
+    "v0.10.2",
+    "v0.11.0",
+    "v0.12.0",
+    "v0.13.0",
+    "v0.14.0",
+    "v0.15.0",
+    "v0.15.1",
+    "v0.16.0",
+    "v0.17.0",
+    "v0.17.1",
+    "v0.18.0",
+    "v0.18.1",
+    "v0.19.0",
+    "v0.19.1",
+    "v0.20.0",
+    "v0.20.1",
+    "v0.20.2",
 ]
 
 
@@ -71,6 +89,7 @@ VLLM_TAGS = _stable_release_tags() + ["main"]
 @functools.lru_cache(maxsize = None)
 def _tag_exists(tag: str) -> bool:
     return _fetch_text("vllm-project/vllm", tag, "README.md") is not None
+
 
 # vLLM 0.28 (PR #43529) moved bitsandbytes out of tree to vllm-bnb-plugin. The
 # plugin re-exports the same names, so unsloth_zoo resolves whichever is
@@ -346,8 +365,7 @@ def test_weights_mapper_unstack_helper_is_named_as_expected(tag: str):
         pytest.skip(f"{tag}: WeightsMapper has no stacked maps, nothing to strip")
     # A method, so indented: _has_def anchors at column 0 and would miss it.
     assert any(
-        re.search(rf"^\s*def\s+{name}\b", src, re.MULTILINE)
-        for name in VLLM_UNSTACK_HELPERS
+        re.search(rf"^\s*def\s+{name}\b", src, re.MULTILINE) for name in VLLM_UNSTACK_HELPERS
     ), (
         f"{tag}: WeightsMapper folds fused weights via orig_to_new_stacked but "
         f"exposes none of {VLLM_UNSTACK_HELPERS}; unsloth_zoo's "
