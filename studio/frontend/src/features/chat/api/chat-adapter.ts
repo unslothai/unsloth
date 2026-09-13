@@ -1391,8 +1391,7 @@ function fillStoppedAssistantReplay(
     return serialized;
   }
   if (serialized.length === 0) {
-    // A refusal is the only turn that serialises to nothing, and it is suppressed on purpose.
-    // Filling it here would put a stop label back on the wire for a turn every caller drops.
+    // Only a refusal serialises to nothing; filling it puts a stop label back on a dropped turn.
     return serialized;
   }
   const [only, ...rest] = serialized;
@@ -6243,9 +6242,8 @@ export function createOpenAIStreamAdapter(
                     releaseLiveGenerationRun(cancelId);
                   }
                   if (!generationRun) {
-                    // Null when the Stop won the race, and also when admission answered 2xx with a
-                    // body json() could not parse. A bare return settles either "complete" (#10428),
-                    // so both throw, but only the Stop may be filed as one.
+                    // Null when the Stop won the race AND when json() could not parse a 2xx body;
+                    // a bare return settles both "complete" (#10428).
                     if (generationDecision === "durable") {
                       if (runSignal.aborted) {
                         throw runSignal.reason ??

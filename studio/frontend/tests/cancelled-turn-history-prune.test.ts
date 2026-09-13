@@ -70,8 +70,7 @@ test("a stopped empty assistant is filled before the prune sees it", () => {
 });
 
 test("the fill leaves a refusal suppressed", () => {
-  // Every other assistant shape force-flushes, so an empty serialization is a refusal and
-  // nothing else. tests/studio/test_cancelled_turn_history_prune.py pins the behaviour.
+  // Every other assistant shape force-flushes, so an empty serialization is a refusal.
   assert.match(
     adapter,
     /if \(serialized\.length === 0\) \{[\s\S]{0,200}?return serialized;/,
@@ -98,10 +97,7 @@ test("a Stop that beats the durable admission arrives as a Stop", () => {
 });
 
 test("an admission that answered without a run is not replayed as a Stop", () => {
-  // createChatGenerationRunUntilAbort also returns null for a 2xx whose body does not parse,
-  // which is a failure and not a Stop. Ungated, the throw above would file it `cancelled`,
-  // hide Retry, and put "Response stopped" on the wire for something nobody stopped.
-  // chat-generation-reconnect.test.ts pins the null itself.
+  // Ungated, a transport failure files as a cancellation: no Retry, and a stop label on the wire.
   assert.match(
     adapter,
     /throw new Error\(\s*"The server accepted the request without starting a generation run",/,
@@ -109,10 +105,8 @@ test("an admission that answered without a run is not replayed as a Stop", () =>
 });
 
 test("assistant-ui still stops a run with an AbortError, not a bare detach marker", () => {
-  // The adapter forwards `signal.reason` as-is and assistant-ui classifies a cancellation by
-  // `name === "AbortError"`. Both only hold while cancelRun aborts with this class; if it ever
-  // switches to the plain `{ detach }` object the tests use as a stand-in, the reason has to be
-  // normalised before it is thrown. Skipped, not failed, when the dep is not installed.
+  // The forwarded reason only reads as a Stop while cancelRun throws this class, not the plain
+  // `{ detach }` our tests stand in with; otherwise it must be normalised before it is thrown.
   const core = new URL(
     "../node_modules/@assistant-ui/core/dist/runtimes/local/local-thread-runtime-core.js",
     import.meta.url,
