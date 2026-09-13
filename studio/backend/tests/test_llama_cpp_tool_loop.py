@@ -6425,3 +6425,68 @@ def test_textual_repeated_workspace_reads_do_not_crowd_out_a_later_edit(monkeypa
         )
     )
     assert calls == ["terminal", "edit_file", "terminal"]
+
+
+def test_textual_alternating_workspace_block_does_not_replay_the_edit(monkeypatch):
+    """One re-run verifies an edit. A repeating block past that applied the edit twice."""
+    read = '<tool_call>{"name":"terminal","arguments":{"command":"cat notes.txt"}}</tool_call>'
+    edit = '<tool_call>{"name":"edit_file","arguments":{"path":"notes.txt","edits":[]}}</tool_call>'
+    backend, _ = _backend_and_payloads(
+        monkeypatch,
+        [
+            [_sse({"content": (read + edit) * 2}), _done()],
+            [_sse({"content": "Done."}), _done()],
+        ],
+    )
+    calls = []
+    results = iter(["before", "Edited notes.txt", "after", "Edited notes.txt"])
+
+    def execute(name, arguments, **kwargs):
+        calls.append(name)
+        return next(results)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute)
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Read, edit, and verify notes.txt"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            max_tool_iterations = 3,
+        )
+    )
+    assert calls == ["terminal", "edit_file", "terminal"]
+
+
+def test_textual_alternating_workspace_block_does_not_crowd_out_a_later_tool(monkeypatch):
+    """The block used to fill the 8-call cap, so the search the model asked for never ran."""
+    read = '<tool_call>{"name":"terminal","arguments":{"command":"cat notes.txt"}}</tool_call>'
+    edit = '<tool_call>{"name":"edit_file","arguments":{"path":"notes.txt","edits":[]}}</tool_call>'
+    search = '<tool_call>{"name":"web_search","arguments":{"query":"gpu prices"}}</tool_call>'
+    backend, _ = _backend_and_payloads(
+        monkeypatch,
+        [
+            [_sse({"content": (read + edit) * 4 + search}), _done()],
+            [_sse({"content": "Done."}), _done()],
+        ],
+    )
+    calls = []
+    results = iter(["before", "Edited notes.txt", "after", "results"])
+
+    def execute(name, arguments, **kwargs):
+        calls.append(name)
+        return next(results)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute)
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Read, edit, verify, then search"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file", "web_search")
+            ],
+            max_tool_iterations = 3,
+        )
+    )
+    assert calls == ["terminal", "edit_file", "terminal", "web_search"]

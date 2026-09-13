@@ -5283,3 +5283,59 @@ def test_repeated_workspace_reads_do_not_crowd_out_a_later_edit():
         )
     )
     assert [name for name, _ in executor.calls] == ["terminal", "edit_file", "terminal"]
+
+
+def test_an_alternating_workspace_block_does_not_replay_the_edit():
+    """One re-run verifies an edit. A repeating block past that applied the edit twice."""
+    read = '<tool_call>{"name":"terminal","arguments":{"command":"cat notes.txt"}}</tool_call>'
+    edit = '<tool_call>{"name":"edit_file","arguments":{"path":"notes.txt","edits":[]}}</tool_call>'
+    turns = iter([(read + edit) * 2, "Done."])
+
+    def single_turn(messages, **kwargs):
+        yield next(turns)
+
+    executor = FakeExecuteTool(["before", "Edited notes.txt", "after", "Edited notes.txt"])
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "Read, edit, and verify notes.txt"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            execute_tool = executor,
+            max_tool_iterations = 3,
+        )
+    )
+    assert [name for name, _ in executor.calls] == ["terminal", "edit_file", "terminal"]
+
+
+def test_an_alternating_workspace_block_does_not_crowd_out_a_later_tool():
+    """The block used to fill the 8-call cap, so the search the model asked for never ran."""
+    read = '<tool_call>{"name":"terminal","arguments":{"command":"cat notes.txt"}}</tool_call>'
+    edit = '<tool_call>{"name":"edit_file","arguments":{"path":"notes.txt","edits":[]}}</tool_call>'
+    search = '<tool_call>{"name":"web_search","arguments":{"query":"gpu prices"}}</tool_call>'
+    turns = iter([(read + edit) * 4 + search, "Done."])
+
+    def single_turn(messages, **kwargs):
+        yield next(turns)
+
+    executor = FakeExecuteTool(["before", "Edited notes.txt", "after", "results"])
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "Read, edit, verify, then search"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file", "web_search")
+            ],
+            execute_tool = executor,
+            max_tool_iterations = 3,
+        )
+    )
+    assert [name for name, _ in executor.calls] == [
+        "terminal",
+        "edit_file",
+        "terminal",
+        "web_search",
+    ]

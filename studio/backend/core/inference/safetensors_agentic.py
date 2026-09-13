@@ -1307,6 +1307,11 @@ def run_safetensors_tool_loop(
         if tool_calls:
             seen_keys: set = set()
             last_workspace_key = None
+            # Verifying an edit needs ONE re-run. Past that the batch is a repeating block,
+            # which this filter used to collapse wholesale: without a bound, `read, edit,
+            # read, edit` applies the edit twice and `(read, edit) * 4` fills the cap and
+            # drops whatever the model asked for afterwards.
+            workspace_repeats_left = 1
             deduped: list = []
             for _tc in tool_calls:
                 _fn = _tc.get("function", {}) or {}
@@ -1315,6 +1320,10 @@ def run_safetensors_tool_loop(
                     # A workspace repeat only matters after a different workspace call.
                     if _key == last_workspace_key:
                         continue
+                    if _key in seen_keys:
+                        if workspace_repeats_left <= 0:
+                            continue
+                        workspace_repeats_left -= 1
                     last_workspace_key = _key
                 elif _key in seen_keys:
                     continue

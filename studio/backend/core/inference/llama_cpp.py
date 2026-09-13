@@ -32359,6 +32359,11 @@ class LlamaCppBackend:
                 if tool_calls and not has_structured_tc and len(tool_calls) > 1:
                     _seen_keys: set = set()
                     _last_workspace_key = None
+                    # Verifying an edit needs ONE re-run. Past that the batch is a repeating
+                    # block, which this filter used to collapse wholesale: without a bound,
+                    # `read, edit, read, edit` applies the edit twice and `(read, edit) * 4`
+                    # fills the cap and drops whatever the model asked for afterwards.
+                    _workspace_repeats_left = 1
                     _deduped: list = []
                     for _tc in tool_calls:
                         _fn = _tc.get("function", {}) or {}
@@ -32367,6 +32372,10 @@ class LlamaCppBackend:
                             # A workspace repeat only matters after a different workspace call.
                             if _key == _last_workspace_key:
                                 continue
+                            if _key in _seen_keys:
+                                if _workspace_repeats_left <= 0:
+                                    continue
+                                _workspace_repeats_left -= 1
                             _last_workspace_key = _key
                         elif _key in _seen_keys:
                             continue
