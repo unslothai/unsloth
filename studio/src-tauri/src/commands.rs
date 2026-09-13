@@ -1,5 +1,6 @@
 use crate::diagnostics::{self, DiagnosticsState};
 use crate::install;
+use crate::prefetch;
 use crate::process::{self, BackendState, ShutdownFlag};
 use crate::update;
 use log::{error, info, warn};
@@ -785,6 +786,7 @@ pub async fn start_backend_update(
     backend_state: tauri::State<'_, BackendState>,
     shutdown: tauri::State<'_, ShutdownFlag>,
     update_state: tauri::State<'_, update::UpdateState>,
+    prefetch_state: tauri::State<'_, update::PrefetchState>,
     install_state: tauri::State<'_, install::InstallState>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
 ) -> Result<(), String> {
@@ -798,13 +800,12 @@ pub async fn start_backend_update(
         return Err("Cannot update while installation is in progress.".to_string());
     }
 
-    if update_state
-        .lock()
-        .map(|s| s.child.is_some())
-        .unwrap_or(false)
-    {
-        return Err("Update is already running.".to_string());
-    }
+    // Held until this command returns, which is after the update has finished: from
+    // here on `is_update_running` answers yes, so a prefetch arriving while the old
+    // prefetch or the backend is still being stopped is refused rather than started
+    // beside the update. Taken under the one start lock the prefetch start uses too,
+    // and the running prefetch is stopped under it.
+    let _reservation = update::begin_update(update_state.inner(), prefetch_state.inner())?;
 
     let owned_port = owned_backend_port(&backend_state)?;
     let has_owned = has_owned_backend(&backend_state)?;
@@ -825,6 +826,88 @@ pub async fn start_backend_update(
     tokio::task::spawn_blocking(move || update::run_backend_update(app, state, diagnostics_state))
         .await
         .map_err(|e| format!("Update task panicked: {e}"))?
+}
+
+/// Warm the uv cache for the next update, in the background.
+///
+/// Fire and forget from the renderer's point of view: every failure here is a
+/// reason to fall back to the classic update, never a reason to stop offering one.
+#[tauri::command]
+pub async fn start_prefetch_update(
+    app: AppHandle,
+    prefetch_state: tauri::State<'_, update::PrefetchState>,
+    update_state: tauri::State<'_, update::UpdateState>,
+    install_state: tauri::State<'_, install::InstallState>,
+    shell_version: Option<String>,
+    backend_floor: Option<String>,
+) -> Result<(), String> {
+    info!("start_prefetch_update command called");
+
+    if install_state
+        .lock()
+        .map(|s| s.child.is_some())
+        .unwrap_or(false)
+    {
+        return Err("Cannot prepare an update while installation is in progress.".to_string());
+    }
+    // Claimed under the same start lock the update takes, so neither can slip between
+    // the other's check and its reservation. Owned by the runner for the whole prefetch.
+    let reservation = update::begin_prefetch(
+        prefetch_state.inner(),
+        update_state.inner(),
+        shell_version.clone(),
+    )?;
+
+    let state = prefetch_state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let _held = reservation;
+        update::run_prefetch_update(app, state, shell_version, backend_floor)
+    })
+    .await
+    .map_err(|e| format!("Prefetch task panicked: {e}"))?
+}
+
+/// Stop a running prefetch. Nothing to undo: the cache keeps whatever it fetched.
+#[tauri::command]
+pub fn cancel_prefetch_update(
+    prefetch_state: tauri::State<'_, update::PrefetchState>,
+) -> Result<(), String> {
+    if !update::is_prefetch_running(&prefetch_state) {
+        return Ok(());
+    }
+    update::stop_prefetch(&prefetch_state)
+}
+
+#[tauri::command]
+pub fn prefetch_status(
+    prefetch_state: tauri::State<'_, update::PrefetchState>,
+) -> prefetch::PrefetchStatus {
+    let home = diagnostics::studio_dir();
+    // An expired marker's payload is every fetched wheel, unpacked, held for an offer
+    // the status no longer calls prepared; an offer postponed for a week would keep it
+    // for as long as the same version stayed on offer. Gone here, where the renderer
+    // asks on every check, so it does not wait for another prefetch or the update.
+    if prefetch::marker_expired(&home) {
+        update::discard_prefetch_if_idle(prefetch_state.inner(), &home);
+    }
+    let mut status = prefetch::status(&home);
+    // One observation, not two reads: a prefetch completing in between would report
+    // running with no version, which the renderer reads as an older offer's run.
+    let (running, version) = update::prefetch_running_snapshot(&prefetch_state);
+    status.running = running;
+    status.running_shell_version = version;
+    status
+}
+
+/// Drop a prepared update the desktop no longer wants (a newer offer, or none).
+#[tauri::command]
+pub fn discard_prefetch(
+    prefetch_state: tauri::State<'_, update::PrefetchState>,
+) -> Result<(), String> {
+    // Stop first, and under the start lock: deleting the directory a running prefetch
+    // is writing into leaves it recreating what this call is removing, and a prefetch
+    // reserving its slot between the check and the deletion would do the same.
+    update::discard_prefetch(&prefetch_state, &diagnostics::studio_dir())
 }
 
 /// Repair a stale managed Unsloth install.
@@ -861,6 +944,7 @@ pub async fn start_managed_repair(
     backend_state: tauri::State<'_, BackendState>,
     shutdown: tauri::State<'_, ShutdownFlag>,
     update_state: tauri::State<'_, update::UpdateState>,
+    prefetch_state: tauri::State<'_, update::PrefetchState>,
     install_state: tauri::State<'_, install::InstallState>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
     force_installer: Option<bool>,
@@ -879,13 +963,11 @@ pub async fn start_managed_repair(
         return Err("Cannot repair while installation is in progress.".to_string());
     }
 
-    if update_state
-        .lock()
-        .map(|s| s.child.is_some())
-        .unwrap_or(false)
-    {
-        return Err("Repair is already running.".to_string());
-    }
+    // The repair rewrites the managed venv and uses the same uv cache, so a prefetch
+    // resolving against that venv is stopped and kept out for the whole repair, as the
+    // update does. Held until this command returns.
+    let _reservation = update::begin_update(update_state.inner(), prefetch_state.inner())
+        .map_err(|_| "Repair is already running.".to_string())?;
 
     let diagnostics_state = diagnostics.inner().clone();
 

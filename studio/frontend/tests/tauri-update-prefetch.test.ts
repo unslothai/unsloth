@@ -1,0 +1,432 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import test, { type TestContext } from "node:test";
+
+import { loadWithStubs } from "./helpers/module-stubs.ts";
+
+type PrefetchOutcome = "ready" | "unsupported" | "busy" | "failed";
+
+interface HarnessOptions {
+  pypiVersion?: string;
+  /** What `startPrefetch` settles on. */
+  outcome?: PrefetchOutcome;
+  /** The bundle is already on disk before anything is prepared. */
+  bundleReady?: boolean;
+  /** Hold `start_backend_update` open until this resolves. */
+  holdUpdate?: () => Promise<void>;
+  /** The first start_backend_update fails, as an update that broke midway does. */
+  failUpdateOnce?: boolean;
+}
+
+interface Controller {
+  checkForUpdate: () => Promise<void>;
+  installUpdate: () => Promise<void>;
+}
+
+/** Enough browser for the scheduling effect to mount, with timers that never fire (else the runner never exits). */
+function installBrowserStubs() {
+  const saved = new Map<PropertyKey, PropertyDescriptor | undefined>();
+  const define = (key: PropertyKey, value: unknown) => {
+    saved.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    Object.defineProperty(globalThis, key, {
+      configurable: true,
+      writable: true,
+      value,
+    });
+  };
+  const noListeners = { addEventListener: () => {}, removeEventListener: () => {} };
+  define("window", noListeners);
+  define("document", { ...noListeners, hidden: false });
+  define("setTimeout", () => 0);
+  define("clearTimeout", () => {});
+  define("setInterval", () => 0);
+  define("clearInterval", () => {});
+  return () => {
+    for (const [key, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else Reflect.deleteProperty(globalThis, key);
+    }
+  };
+}
+
+function createHookReact() {
+  const effects: Array<() => unknown> = [];
+  const cleanups: Array<() => void> = [];
+  const statusUpdates: string[] = [];
+  let stateIndex = 0;
+  return {
+    react: {
+      useState<T>(initial: T): [T, (next: unknown) => void] {
+        const index = stateIndex++;
+        return [
+          initial,
+          (next: unknown) => {
+            if (index === 0 && typeof next === "string") statusUpdates.push(next);
+          },
+        ];
+      },
+      useRef<T>(initial: T): { current: T } {
+        return { current: initial };
+      },
+      useEffect(effect: () => unknown): void {
+        effects.push(effect);
+      },
+    },
+    mount(): void {
+      for (const effect of effects) {
+        const cleanup = effect();
+        if (typeof cleanup === "function") cleanups.push(cleanup as () => void);
+      }
+    },
+    unmount(): void {
+      for (const cleanup of cleanups.splice(0)) cleanup();
+    },
+    statusUpdates,
+  };
+}
+
+/** The hook with a native side that answers, so both presses can be driven: prepare, then restart. */
+function harness(
+  t: TestContext,
+  {
+    outcome = "ready",
+    pypiVersion,
+    bundleReady = false,
+    holdUpdate,
+    failUpdateOnce = false,
+  }: HarnessOptions = {},
+) {
+  const host = createHookReact();
+  const calls: string[] = [];
+  const prefetchStarts: { shellVersion: string; backendFloor: string | null }[] = [];
+  let adopted = false;
+  let downloaded = bundleReady;
+  let failedOnce = false;
+  const listeners = new Map<string, (event: { payload: unknown }) => void>();
+
+  const updater = {
+    checkDesktopUpdate: () =>
+      Promise.resolve({
+        version: "2.0.0",
+        currentVersion: "1.0.0",
+        rawJson: pypiVersion ? { pypi_version: pypiVersion } : {},
+      }),
+    desktopUpdateBundleStatus: () =>
+      Promise.resolve({
+        version: "2.0.0",
+        downloaded,
+        downloading: false,
+      }),
+    downloadDesktopUpdate: (_version: string, onProgress: (p: number) => void) => {
+      calls.push("download_desktop_update");
+      downloaded = true;
+      onProgress(100);
+      return Promise.resolve();
+    },
+    installDesktopUpdate: () => {
+      calls.push("install_desktop_update");
+      return Promise.resolve();
+    },
+    sameUpdateVersion: (left: string | null | undefined, right: string) =>
+      Boolean(left) && left === right,
+    prefetchStatus: () => {
+      calls.push("prefetch_status");
+      // Once a winning run was adopted, its marker names this offer.
+      return Promise.resolve({
+        state: adopted ? "ready" : "none",
+        backendVersion: adopted ? "2026.9.9" : null,
+        shellVersion: adopted ? "2.0.0" : null,
+        cacheDir: null,
+        createdAt: adopted ? 1 : null,
+        running: false,
+        runningShellVersion: null,
+      });
+    },
+    startPrefetch: (
+      shellVersion: string,
+      _onLog: (line: string) => void,
+      backendFloor?: string,
+    ) => {
+      calls.push("start_prefetch_update");
+      prefetchStarts.push({ shellVersion, backendFloor: backendFloor ?? null });
+      return Promise.resolve(outcome);
+    },
+    adoptPrefetch: () => {
+      calls.push("adopt_prefetch");
+      adopted = true;
+      return Promise.resolve({ state: "ready" });
+    },
+    cancelPrefetch: () => {
+      calls.push("cancel_prefetch_update");
+      return Promise.resolve();
+    },
+    discardPrefetch: () => {
+      calls.push("discard_prefetch");
+      return Promise.resolve();
+    },
+  };
+  const preparation = loadWithStubs<Record<string, unknown>>(
+    new URL("../src/lib/update-preparation.ts", import.meta.url),
+    { "@/lib/tauri-updater": updater },
+  );
+
+  const hook = loadWithStubs<{ useTauriUpdate: () => Controller }>(
+    new URL("../src/hooks/use-tauri-update.ts", import.meta.url),
+    {
+      react: host.react,
+      "@/lib/api-base": { isTauri: true },
+      "@/lib/tauri-diagnostics": {
+        copySupportDiagnostics: async () => ({ copied: true }),
+      },
+      "@/lib/tauri-updater": updater,
+      "@/lib/update-preparation": preparation,
+      "@/lib/toast": { toast: { error: () => undefined } },
+      "@tauri-apps/api/core": {
+        invoke: async (command: string) => {
+          calls.push(command);
+          if (command === "desktop_update_policy") {
+            return {
+              mode: "in_app",
+              releasePageBaseUrl: "https://example.com/",
+              releaseTagPrefix: "v",
+            };
+          }
+          if (command === "desktop_update_cleanup_armed") return true;
+          if (command === "start_backend_update") {
+            // Listener registrations are promises in the same executor; a synchronous answer
+            // would emit into nothing.
+            await settleUntil(() => listeners.has("update-complete"));
+            if (holdUpdate) await holdUpdate();
+            if (failUpdateOnce && !failedOnce) {
+              failedOnce = true;
+              await settleUntil(() => listeners.has("update-failed"));
+              listeners.get("update-failed")?.({ payload: "the backend update broke" });
+              return undefined;
+            }
+            listeners.get("update-complete")?.({ payload: undefined });
+            return undefined;
+          }
+          return undefined;
+        },
+      },
+      "@tauri-apps/api/event": {
+        listen: async (
+          name: string,
+          handler: (event: { payload: unknown }) => void,
+        ) => {
+          listeners.set(name, handler);
+          return () => listeners.delete(name);
+        },
+      },
+      "@tauri-apps/plugin-process": {
+        relaunch: () => {
+          calls.push("relaunch");
+          return Promise.resolve();
+        },
+      },
+    },
+  );
+  const controller = hook.useTauriUpdate();
+  const restore = installBrowserStubs();
+  host.mount();
+  t.after(() => {
+    host.unmount();
+    restore();
+  });
+  return { calls, controller, prefetchStarts, statusUpdates: host.statusUpdates };
+}
+
+function settle(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+/** Give the microtask queue a bounded number of turns to make `ready` true. */
+async function settleUntil(ready: () => boolean): Promise<void> {
+  for (let turn = 0; turn < 100 && !ready(); turn += 1) await settle();
+}
+
+test("a prepared offer reaches ready without installing anything", async (t) => {
+  const hook = harness(t);
+  await hook.controller.checkForUpdate();
+  await settle();
+  assert.equal(hook.statusUpdates.at(-1), "available");
+
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+
+  assert.equal(hook.statusUpdates.at(-1), "ready");
+  assert.ok(hook.calls.includes("start_prefetch_update"));
+  // Preparation downloads; it must not start the update or touch the app bundle.
+  assert.ok(!hook.calls.includes("start_backend_update"));
+  assert.ok(!hook.calls.includes("install_desktop_update"));
+});
+
+test("the prefetch carries the offered backend floor, not the running shell's", async (t) => {
+  const hook = harness(t, { pypiVersion: "2026.9.9" });
+  await hook.controller.checkForUpdate();
+  await settle();
+
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+
+  assert.deepEqual(hook.prefetchStarts, [
+    { shellVersion: "2.0.0", backendFloor: "2026.9.9" },
+  ]);
+});
+
+test("an offer whose manifest names no backend release starts the prefetch without a floor", async (t) => {
+  const hook = harness(t);
+  await hook.controller.checkForUpdate();
+  await settle();
+
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+
+  assert.deepEqual(hook.prefetchStarts, [{ shellVersion: "2.0.0", backendFloor: null }]);
+});
+
+test("a prefetch that loses the start race joins the winner instead of settling skipped", async (t) => {
+  const hook = harness(t, { outcome: "busy" });
+  await hook.controller.checkForUpdate();
+  await settle();
+
+  await hook.controller.installUpdate();
+  await settleUntil(() => hook.statusUpdates.at(-1) === "ready");
+
+  assert.ok(hook.calls.includes("adopt_prefetch"));
+  // The slot was taken once; the second look found the winner's marker for this offer.
+  assert.equal(hook.calls.filter((c) => c === "start_prefetch_update").length, 1);
+  assert.equal(hook.statusUpdates.at(-1), "ready");
+});
+
+test("a backend without the command still gets the offer to ready", async (t) => {
+  const hook = harness(t, { outcome: "unsupported" });
+  await hook.controller.checkForUpdate();
+  await settle();
+
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+
+  // The previous backend has no such command: expected, not a fault.
+  assert.equal(hook.statusUpdates.at(-1), "ready");
+});
+
+test("a failed prefetch still reaches ready", async (t) => {
+  const hook = harness(t, { outcome: "failed" });
+  await hook.controller.checkForUpdate();
+  await settle();
+
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+
+  // Nothing warmed: the restart downloads its own wheels, as every earlier release did.
+  assert.equal(hook.statusUpdates.at(-1), "ready");
+});
+
+test("the restart never downloads the app bundle a second time", async (t) => {
+  const hook = harness(t);
+  await hook.controller.checkForUpdate();
+  await settle();
+
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+  const downloads = hook.calls.filter((c) => c === "download_desktop_update").length;
+  assert.equal(downloads, 1);
+
+  await hook.controller.installUpdate();
+  await settle();
+
+  assert.equal(
+    hook.calls.filter((c) => c === "download_desktop_update").length,
+    downloads,
+  );
+  assert.ok(hook.calls.includes("start_backend_update"));
+  assert.ok(hook.calls.includes("install_desktop_update"));
+  assert.ok(hook.calls.includes("relaunch"));
+  // The restart owns the environment from here, so nothing may be preparing.
+  const cancel = hook.calls.indexOf("cancel_prefetch_update");
+  assert.ok(cancel !== -1 && cancel < hook.calls.indexOf("start_backend_update"));
+});
+
+test("an offer whose bundle is already on disk prepares without downloading", async (t) => {
+  const hook = harness(t, { bundleReady: true });
+  await hook.controller.checkForUpdate();
+  await settle();
+
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+
+  assert.equal(hook.statusUpdates.at(-1), "ready");
+  assert.ok(!hook.calls.includes("download_desktop_update"));
+});
+
+test("a check already in flight cannot reopen the offer mid-install", async (t) => {
+  // Assigned inside the synchronous executor; the type stops TypeScript narrowing to `never`.
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const hook = harness(t, { holdUpdate: () => held });
+  await hook.controller.checkForUpdate();
+  await settle();
+
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+  assert.equal(hook.statusUpdates.at(-1), "ready");
+
+  const restart = hook.controller.installUpdate();
+  await settleUntil(() => hook.calls.includes("start_backend_update"));
+  assert.equal(hook.statusUpdates.at(-1), "updating-backend");
+
+  // The hourly check mid-update used to put the status back to "ready" and start a second download.
+  const downloads = hook.calls.filter((c) => c === "download_desktop_update").length;
+  await hook.controller.checkForUpdate();
+  await settle();
+  assert.equal(hook.statusUpdates.at(-1), "updating-backend");
+  assert.equal(
+    hook.calls.filter((c) => c === "download_desktop_update").length,
+    downloads,
+  );
+
+  release();
+  await restart;
+});
+
+test("a retained failure's retry installs instead of preparing again", async (t) => {
+  // After a failed install "Retry update" is a retry, not a first press: preparing on it
+  // would do nothing visible and demand a second click.
+  const hook = harness(t, { failUpdateOnce: true });
+  await hook.controller.checkForUpdate();
+  await settle();
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+  assert.equal(hook.statusUpdates.at(-1), "ready");
+
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+  assert.equal(hook.statusUpdates.at(-1), "error");
+  const installs = () => hook.calls.filter((c) => c === "start_backend_update").length;
+  assert.equal(installs(), 1);
+
+  await hook.controller.checkForUpdate();
+  await settle();
+  assert.equal(hook.statusUpdates.at(-1), "available");
+  const prefetches = hook.calls.filter((c) => c === "start_prefetch_update").length;
+  await hook.controller.installUpdate();
+  await settle();
+  await settle();
+  assert.equal(installs(), 2);
+  assert.equal(hook.calls.filter((c) => c === "start_prefetch_update").length, prefetches);
+});

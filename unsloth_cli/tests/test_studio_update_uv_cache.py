@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -70,6 +71,9 @@ def caches(monkeypatch, tmp_path):
 
 class _Result:
     returncode = 0
+    # The installed-version probe behind the prefetched core pins reads stdout; an empty
+    # answer is "unknown", which never counts against the plan.
+    stdout = ""
 
 
 def _run_posix(monkeypatch, tmp_path: Path) -> dict:
@@ -885,3 +889,115 @@ def test_files_outside_a_bucket_are_not_warm(tmp_path):
     (cache / "simple-v20" / "index.msgpack").write_bytes(b"\0")
 
     assert studio._uv_cache_has_packages(cache) is False
+
+
+# ── the prefetched core pins ──
+#
+# The swap after a background prefetch is this same update. Its core step asks the index
+# which unsloth and unsloth-zoo are newest before it can notice the wheels are cached, so
+# with the index unreachable it needs to be told what the prefetch already fetched, and
+# only for a marker written for this venv and the cache this run is about to read.
+
+
+def _prefetch_marker(studio, home: Path, cache: Path, venv_python: Path, **extra) -> None:
+    from unsloth_cli import _studio_prefetch
+
+    payload = {
+        "schema": _studio_prefetch.MARKER_SCHEMA,
+        "state": "ready",
+        "backend_version": "2026.9.5",
+        "cache_dir": str(cache),
+        "python": str(venv_python),
+        "core_plan": {"unsloth": "2026.9.5", "unsloth-zoo": "2026.9.4"},
+        # Fresh: a marker past the shell's seven-day limit names nothing (see
+        # marker_is_current), which the age case in test_studio_prefetch_update covers.
+        "created_at": int(time.time() * 1000),
+    }
+    payload.update(extra)
+    (home / _studio_prefetch.PREFETCH_DIR_NAME).mkdir(parents = True, exist_ok = True)
+    _studio_prefetch.write_marker(home, payload)
+
+
+def test_a_current_prefetch_names_its_core_pins_for_the_installer(monkeypatch, tmp_path, caches):
+    studio = _studio()
+    studio_cache, _default = caches
+    _fill(studio_cache)
+    python = tmp_path / "venv" / "bin" / "python"
+    monkeypatch.setattr(studio, "_studio_venv_python", lambda: python)
+    _prefetch_marker(studio, studio.STUDIO_HOME, studio_cache, python)
+    seen = _run_posix(monkeypatch, tmp_path)
+    assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache)
+    assert seen["env"]["UNSLOTH_PREFETCHED_CORE_PINS"] == "unsloth==2026.9.5 unsloth-zoo==2026.9.4"
+
+
+@pytest.mark.parametrize("mismatch", ["python", "cache", "state", "plan"])
+def test_a_prefetch_that_does_not_describe_this_update_names_nothing(
+    monkeypatch, tmp_path, caches, mismatch
+):
+    studio = _studio()
+    studio_cache, _default = caches
+    _fill(studio_cache)
+    python = tmp_path / "venv" / "bin" / "python"
+    monkeypatch.setattr(studio, "_studio_venv_python", lambda: python)
+    extra = {
+        "python": {"python": str(tmp_path / "other" / "python")},
+        "cache": {"cache_dir": str(tmp_path / "other-uv")},
+        "state": {"state": "stale"},
+        "plan": {"state": "noop", "core_plan": {}},
+    }[mismatch]
+    _prefetch_marker(studio, studio.STUDIO_HOME, studio_cache, python, **extra)
+    seen = _run_posix(monkeypatch, tmp_path)
+    assert "UNSLOTH_PREFETCHED_CORE_PINS" not in seen["env"]
+
+
+@pytest.mark.parametrize("planned_no_torch, named", [(False, True), (True, False)])
+def test_a_prefetch_planned_for_the_other_torch_mode_names_nothing(
+    monkeypatch, tmp_path, caches, planned_no_torch, named
+):
+    """The plan was resolved for one mode. Given to an update running in the other, the
+    offline retry would install torch from it with --no-deps (or be short of what the core
+    step needs). The mode is decided the way the installer decides it: environment, then
+    the manifest, then the marker; here neither is set, so the venv is a with-torch one."""
+    from unsloth_cli import _studio_prefetch
+
+    studio = _studio()
+    studio_cache, _default = caches
+    _fill(studio_cache)
+    python = tmp_path / "venv" / "bin" / "python"
+    monkeypatch.setattr(studio, "_studio_venv_python", lambda: python)
+    monkeypatch.delenv("UNSLOTH_NO_TORCH", raising = False)
+    monkeypatch.setattr(_studio_prefetch.platform, "system", lambda: "Linux")
+    _prefetch_marker(studio, studio.STUDIO_HOME, studio_cache, python, no_torch = planned_no_torch)
+    seen = _run_posix(monkeypatch, tmp_path)
+    assert ("UNSLOTH_PREFETCHED_CORE_PINS" in seen["env"]) is named
+    # Set the venv to no-torch through the installer's marker and the verdicts swap.
+    venv = _studio_prefetch.managed_venv(studio.STUDIO_HOME)
+    venv.mkdir(parents = True, exist_ok = True)
+    (venv / _studio_prefetch.NO_TORCH_MARKER).write_text("", encoding = "utf-8")
+    seen = _run_posix(monkeypatch, tmp_path)
+    assert ("UNSLOTH_PREFETCHED_CORE_PINS" in seen["env"]) is (not named)
+
+
+def test_no_prefetch_at_all_names_nothing(monkeypatch, tmp_path, caches):
+    studio = _studio()
+    studio_cache, _default = caches
+    _fill(studio_cache)
+    seen = _run_posix(monkeypatch, tmp_path)
+    assert "UNSLOTH_PREFETCHED_CORE_PINS" not in seen["env"]
+
+
+def test_a_prefetch_below_the_shells_floor_names_nothing(monkeypatch, tmp_path, caches):
+    """A marker an older shell left behind names pins below what this shell requires;
+    the offline retry would install them in place of unsloth>=floor."""
+    studio = _studio()
+    studio_cache, _default = caches
+    _fill(studio_cache)
+    python = tmp_path / "venv" / "bin" / "python"
+    monkeypatch.setattr(studio, "_studio_venv_python", lambda: python)
+    _prefetch_marker(studio, studio.STUDIO_HOME, studio_cache, python)
+    monkeypatch.setenv("UNSLOTH_DESKTOP_BACKEND_VERSION", "2026.9.6")
+    seen = _run_posix(monkeypatch, tmp_path)
+    assert "UNSLOTH_PREFETCHED_CORE_PINS" not in seen["env"]
+    monkeypatch.setenv("UNSLOTH_DESKTOP_BACKEND_VERSION", "2026.9.5")
+    seen = _run_posix(monkeypatch, tmp_path)
+    assert seen["env"]["UNSLOTH_PREFETCHED_CORE_PINS"] == "unsloth==2026.9.5 unsloth-zoo==2026.9.4"
