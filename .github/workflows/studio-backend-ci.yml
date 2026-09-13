@@ -42,6 +42,7 @@ on:
       - 'scripts/**'
       - 'pyproject.toml'
       - '.github/workflows/studio-backend-ci.yml'
+      - '.github/scripts/retry-with-apt-lock.sh'
   push:
     branches: [main]
 
@@ -165,6 +166,37 @@ jobs:
           key-files: |
             pyproject.toml
             studio/backend/requirements/*.txt
+
+      - name: Install bubblewrap, so the sandbox tests run instead of skipping
+        # Both apt calls go through the shared helper, so a stalled mirror fails
+        # this step instead of eating the job timeout and skipping what follows.
+        # 25 covers the worst case the two calls authorise, 1450s.
+        timeout-minutes: 25
+        env:
+          RETRY_ATTEMPTS: '2'
+          RETRY_ATTEMPT_TIMEOUT: '300'
+        run: |
+          bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+            'apt-get install -y --no-install-recommends bubblewrap || { apt-get update && apt-get install -y --no-install-recommends bubblewrap; }'
+          # ubuntu-latest is 24.04, which ships
+          # kernel.apparmor_restrict_unprivileged_userns=1. bwrap is then present
+          # and still cannot build a sandbox, which is the one configuration that
+          # makes the confinement tests skip while looking installed. The
+          # remediation this PR prints to users is a profile from apparmor-profiles,
+          # so apply the same one here rather than turning the sysctl off: CI then
+          # exercises the advice, and a regression in it is a red check.
+          if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = "1" ]; then
+            bash .github/scripts/retry-with-apt-lock.sh sudo sh -c \
+              'apt-get install -y --no-install-recommends apparmor-profiles || { apt-get update && apt-get install -y --no-install-recommends apparmor-profiles; }'
+            sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict || true
+          fi
+          # Report rather than require: a runner where this cannot work must skip
+          # honestly, not fail a PR for its host configuration.
+          if bwrap --ro-bind / / --unshare-user true; then
+            echo "bubblewrap can build a sandbox on this runner"
+          else
+            echo "::warning::bubblewrap cannot build a sandbox here; confinement tests will skip"
+          fi
 
       - name: Install backend test dependencies (CPU only)
         run: |
