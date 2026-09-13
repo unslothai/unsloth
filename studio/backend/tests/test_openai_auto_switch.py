@@ -1942,8 +1942,17 @@ def test_idle_loop_resets_timer_for_same_repo_different_variant(monkeypatch):
         task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = 0.01))
         await asyncio.sleep(0.03)
         assert unloads == []
-        kw._last_active = time.monotonic() - 60  # force idle
-        backend.hf_variant = "Q8_0"  # same id, new quant -> fresh identity
+        # Under the gate the loop itself holds: it reads the identity and decides idleness
+        # inside one _unload_gate, so an unguarded write can land between the two, be judged
+        # against the old identity, and unload on the forced idle -- the reset under test
+        # never happening. Acquired off the loop, never with a plain `with`: the loop awaits
+        # inside that gate, so blocking this thread on the lock it holds deadlocks both.
+        await asyncio.to_thread(kw._lifecycle_lock.acquire)
+        try:
+            kw._last_active = time.monotonic() - 60  # force idle
+            backend.hf_variant = "Q8_0"  # same id, new quant -> fresh identity
+        finally:
+            kw._lifecycle_lock.release()
         await asyncio.sleep(0.03)
         assert unloads == []  # timer reset by the variant change, not unloaded
         task.cancel()
@@ -4957,7 +4966,7 @@ def _enabled_mcp_server(
     from storage import mcp_servers_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
     monkeypatch.setattr(tools_mod, "stdio_mcp_enabled", lambda: True)
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
     monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
@@ -7846,7 +7855,6 @@ def test_scan_folder_removal_revokes_additions_only_cache_trust(monkeypatch):
 
 def test_scan_folder_storage_removals_report_if_a_row_changed(monkeypatch):
     from hub.storage import scan_folders
-
     class _Connection:
         def __init__(self, rowcount):
             self.rowcount = rowcount
@@ -7862,7 +7870,6 @@ def test_scan_folder_storage_removals_report_if_a_row_changed(monkeypatch):
         def close(self):
             self.closed = True
 
-    monkeypatch.setattr(scan_folders, "_ensure_schema", lambda _conn: None)
     for storage in (studio_db, scan_folders):
         for rowcount, expected in ((1, True), (0, False)):
             connection = _Connection(rowcount)
@@ -8148,7 +8155,7 @@ def test_map_entry_fill_reads_and_writes_in_one_transaction(tmp_path, monkeypatc
     """The real store, not the in-memory stand-in: the read has to share the write's
     transaction, or a concurrent writer still slips between them."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(db, "_schema_ready", False)
+    monkeypatch.setattr(db, "_schema_ready", set())
 
     key = "test_map_entry_create"
     assert db.upsert_app_setting_map_entry(key, "a", {"v": 1}) == {"a": {"v": 1}}
@@ -8188,7 +8195,7 @@ def test_a_fill_never_relabels_a_stored_gpu_pin_with_this_browser_s_index_space(
     then name devices in a space it was never written in.
     """
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(db, "_schema_ready", False)
+    monkeypatch.setattr(db, "_schema_ready", set())
 
     key = "test_map_entry_coupled"
     coupled = (("gpu_ids", "gpu_index_kind"),)
