@@ -369,25 +369,18 @@ def validated_repo_cache_path(
         return None
 
 
-# Every repo type huggingface_hub serialises into a cache dir, as `repo_folder_name` builds it:
-# f"{repo_type}s--" + repo_id.split("/") joined by "--". A cached private DATASET or SPACE holds
-# readable bytes exactly as a model does, so a path check that only knows "models--" hands the
-# other two out unauthorized.
+# repo_folder_name builds these: f"{repo_type}s--" + repo_id.split("/") joined by "--". A cached
+# private dataset or space holds readable bytes exactly as a model does.
 _CACHE_REPO_TYPES = ("model", "dataset", "space")
 
 
 def cached_repo_ref_for_path(path: Path | str) -> Optional[tuple[str, str]]:
     """Map a path inside a Hub cache to the ``(repo_id, repo_type)`` that owns it.
 
-    ``None`` means "not the operator's cache", which every caller reads as "no authorization check
-    needed", so a miss here is fail-OPEN. Two consequences drive the shape below:
-
-    * Every repo type is tried, not just models. A private dataset snapshot can hold config.json
-      plus weights and would otherwise be trainable with no access check at all.
-    * Candidates are walked from the deepest component OUTWARD and each is tested against the
-      roots, rather than committing to the deepest match. Repo file paths are arbitrary, so a
-      private snapshot may itself contain a directory named ``models--foo--bar``; stopping at that
-      decoy returned ``None`` for a path that is plainly inside ``models--org--private``.
+    ``None`` means "not the operator's cache", which every caller reads as "no check needed", so a
+    miss here is fail-OPEN. Hence every repo type rather than models alone, and candidates walked
+    OUTWARD rather than committing to the deepest match: repo file paths are arbitrary, so a
+    private snapshot may itself contain a directory named ``models--foo--bar``.
     """
     try:
         resolved = Path(path).expanduser().resolve(strict = True)
@@ -397,9 +390,8 @@ def cached_repo_ref_for_path(path: Path | str) -> Optional[tuple[str, str]]:
     resolved_roots: Optional[list] = None
 
     def roots() -> list:
-        # Lazily, and only once: an ordinary local model path matches no prefix below, and
-        # enumerating every remembered cache home for it both wastes the stat calls and drags
-        # hf_cache_roots into callers that never monkeypatch it.
+        # Lazily and once: an ordinary local path matches no prefix below, so the stat calls are
+        # wasted and hf_cache_roots reaches callers that never stub it.
         nonlocal resolved_roots
         if resolved_roots is None:
             resolved_roots = []
@@ -418,13 +410,12 @@ def cached_repo_ref_for_path(path: Path | str) -> Optional[tuple[str, str]]:
             prefix = f"{repo_type}s--"
             if not lowered.startswith(prefix) or len(name) <= len(prefix):
                 continue
-            # "--" is forbidden inside a repo id (huggingface_hub.validate_repo_id rejects it), so
-            # this round-trip is unambiguous and matches _scan_cached_repo upstream.
+            # "--" is forbidden in a repo id (validate_repo_id rejects it), so this is unambiguous.
             ref = (name[len(prefix) :].replace("--", "/"), repo_type)
             if any(same_existing_path(candidate.parent, root) for root in roots()):
                 return ref
-            # An unreadable root may be this path's: authorize rather than skip the check. Held as
-            # a fallback so an outer candidate that really is under a readable root still wins.
+            # An unreadable root may be this path's: authorize rather than skip. Held, so an outer
+            # candidate genuinely under a readable root still wins.
             if scan_errors and fallback is None:
                 fallback = ref
     return fallback
@@ -445,13 +436,10 @@ def repo_cache_has_usable_snapshot(
 ) -> bool:
     """Whether the cache holds a snapshot of *repo_id* that a load could actually consume.
 
-    Not the same question as "does a repo directory exist". An interrupted download leaves the
-    directory behind with no snapshot under it, so counting that as a cached read refuses a caller
-    over bytes that were never there -- and the anonymous public probe that would otherwise clear
-    the refusal needs ``/auth-check``, which an ``HF_ENDPOINT`` mirror need not serve.
-
-    A directory that cannot be listed cannot be shown to hold nothing, so it counts as usable:
-    this answers a guard, and the guard's own failure must not open the path it guards.
+    NOT "does a repo directory exist": an interrupted download leaves one with no snapshot under
+    it, and refusing on that costs a caller bytes that were never there, which the anonymous
+    ``/auth-check`` cannot clear on an ``HF_ENDPOINT`` mirror that does not serve it. An unlistable
+    directory counts as usable: the guard's own failure must not open the path it guards.
     """
     scan_errors: list = []
     for repo_dir in iter_repo_cache_dirs(repo_type, repo_id, scan_errors = scan_errors):

@@ -77,10 +77,8 @@ def test_snapshot_symlink_into_blobs_still_names_its_repo(cache_root):
 
 
 def test_cached_private_dataset_path_is_attributed_to_the_dataset_repo(cache_root):
-    """A dataset snapshot passed where a model is expected must still be authorized.
-
-    A dataset repo can hold config.json plus weights, so the model leg accepted it; matching only
-    "models--" returned None and skipped the access check on the operator's private dataset.
+    """A dataset snapshot passed where a model is expected must still be authorized: such a repo
+    can hold config.json plus weights, and matching only "models--" skipped the check entirely.
     """
     from hub.utils.hf_cache_state import cached_repo_id_for_path, cached_repo_ref_for_path
 
@@ -98,10 +96,8 @@ def test_cached_space_path_is_attributed(cache_root):
 
 
 def test_a_decoy_repo_dir_inside_a_snapshot_does_not_hide_the_real_repo(cache_root):
-    """Repo file paths are arbitrary, so a private snapshot may contain "models--foo--bar".
-
-    Committing to the DEEPEST match and giving up when its parent was not a cache root returned
-    None for a path plainly inside models--org--private, skipping the check.
+    """Repo file paths are arbitrary, so a private snapshot may contain "models--foo--bar", and
+    committing to the DEEPEST match returned None for a path plainly inside models--org--private.
     """
     from hub.utils.hf_cache_state import cached_repo_ref_for_path
 
@@ -315,9 +311,8 @@ def test_diffusion_child_leaves_a_studio_session_alone(monkeypatch):
 def test_a_cached_diffusion_base_requires_caller_authorization(monkeypatch, cache_root):
     """Scrubbing the child environment does not protect a base that is ALREADY cached.
 
-    `_preflight_gated_base` returns early for a local path and `_assert_trusted_base_model` accepts
-    any real pipeline directory, so a tokenless API key could name the operator's cached private
-    base and `from_pretrained` would read it off disk without asking for a credential.
+    _preflight_gated_base returns early for a local path and _assert_trusted_base_model accepts any
+    real pipeline directory, so from_pretrained read it off disk with no credential.
     """
     import routes.training as training_routes
     from fastapi import HTTPException
@@ -421,10 +416,9 @@ def test_a_remote_named_cached_base_is_authorized_when_the_hub_probe_fails_open(
 def test_the_worker_rebuilds_the_anonymous_sentinel_rather_than_none():
     """`or None` handed an API key the AMBIENT caller class inside the worker.
 
-    The environment scrub only makes the worker's network traffic anonymous. Every disk-cache guard
-    downstream discriminates on the ``False`` sentinel, and ``cache_reads_authorized(None)`` is
-    True, so the operator's cached private weights stayed readable for the repos the route never
-    authorized: a LoRA checkpoint's base, sibling scan targets, a fallback load target.
+    The scrub covers network traffic only, and cache_reads_authorized(None) is True, so cached
+    private weights stayed readable for the repos the route never authorized: a LoRA checkpoint's
+    base, sibling scan targets, a fallback load target.
     """
     from core.training.worker import _worker_hf_token
     from hub.utils.hf_tokens import AmbientAuthorizedToken, cache_reads_authorized, is_anonymous
@@ -461,11 +455,8 @@ def test_the_worker_no_longer_launders_the_sentinel_through_or_none():
 
 def test_an_interrupted_download_is_not_evidence_of_a_cached_read(monkeypatch, cache_root):
     """A repo DIRECTORY with no usable snapshot has disclosed nothing, so refusing it protects
-    nothing and costs a legitimate caller its model.
-
-    Reachable because the anonymous rescue in cached_read_refused needs /auth-check, which an
-    HF_ENDPOINT mirror need not serve: there the refusal stands and a PUBLIC model is rejected
-    with hf_model_access_denied for bytes that were never on disk.
+    nothing. Reachable because the anonymous rescue needs /auth-check, which an HF_ENDPOINT mirror
+    need not serve: there a PUBLIC model is rejected for bytes that were never on disk.
     """
     from hub.utils.hf_cache_state import repo_cache_has_usable_snapshot
 

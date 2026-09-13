@@ -142,15 +142,11 @@ def _resolve_cached_model_load_name(config: dict) -> str:
 def _worker_hf_token(config: dict):
     """The caller's credential as a three-valued ``HfTokenArg``, not a bare ``str | None``.
 
-    Scrubbing the environment makes the worker's NETWORK traffic anonymous, and nothing more. The
-    disk cache is still readable without a credential, so every cache guard downstream
-    (``cache_reads_authorized``, ``cached_read_refused``) discriminates on the ``False`` sentinel
-    rather than on the string. ``or None`` erased exactly that distinction and handed an API key
-    the ambient caller class, which reads the operator's cached private weights.
-
-    It matters for the repos the route never saw: it authorized the model that was REQUESTED, while
-    the worker goes on to resolve a LoRA checkpoint's base, sibling scan targets and fallback load
-    targets. ``core/export/worker.py`` rebuilds the sentinel per command for the same reason.
+    The environment scrub makes the worker's NETWORK traffic anonymous and nothing more: the disk
+    cache stays readable, and the guards over it discriminate on the ``False`` sentinel, so
+    ``or None`` handed an API key the ambient caller class and its cached private weights. It bites
+    on the repos the route never authorized -- a LoRA checkpoint's base, sibling scan targets, a
+    fallback load target. ``core/export/worker.py`` rebuilds it per command for the same reason.
     """
     from hub.utils.hf_tokens import hf_token_arg
     return hf_token_arg(
