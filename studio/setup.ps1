@@ -5852,139 +5852,217 @@ function Test-TargetPackageVersion {
     return $false
 }
 
-$_NeedT5Install = $false
+# Audited AND installed from here; mirrors _SIDECAR_COMMON_PINS in setup.sh. A name the audit
+# cannot reach on disk reads stale forever.
+$SidecarCommonPins = @("huggingface_hub==1.8.0", "hf_xet==1.4.2")
+
+# Mirrors fast_install_sidecar: an inherited UV_OVERRIDE would replace the pin and force rebuilds.
+function Fast-Install-Sidecar {
+    param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
+    $savedOverride = $env:UV_OVERRIDE
+    try {
+        Remove-Item Env:UV_OVERRIDE -ErrorAction SilentlyContinue
+        Fast-Install @Args_
+    } finally {
+        if ($null -ne $savedOverride) { $env:UV_OVERRIDE = $savedOverride }
+    }
+}
+
+function Remove-SidecarTiktoken {
+    # Remnants of a failed tiktoken install shadow the ambient copy and nothing else clears them.
+    param([Parameter(Mandatory = $true)][string]$TargetDir)
+    foreach ($name in @("tiktoken", "tiktoken_ext", "tiktoken.libs")) {
+        $entry = Join-Path $TargetDir $name
+        if (Test-Path -LiteralPath $entry) { Remove-Item -LiteralPath $entry -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+    Get-ChildItem -LiteralPath $TargetDir -Directory -Filter "tiktoken-*.dist-info" -ErrorAction SilentlyContinue |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+    foreach ($name in @("tiktoken", "tiktoken_ext", "tiktoken.libs")) {
+        if (Test-Path -LiteralPath (Join-Path $TargetDir $name)) { return $false }
+    }
+    $left = @(Get-ChildItem -LiteralPath $TargetDir -Directory -Filter "tiktoken-*.dist-info" -ErrorAction SilentlyContinue)
+    return ($left.Count -eq 0)
+}
+
+function Retire-SidecarAfterFailedTiktoken {
+    param(
+        [Parameter(Mandatory = $true)][string]$TargetDir,
+        [Parameter(Mandatory = $true)][string]$DirName
+    )
+    Remove-Item -LiteralPath $TargetDir -Recurse -Force -ErrorAction SilentlyContinue
+    substep "$DirName/ kept part of a failed tiktoken install; retired, rebuilt on the next update" "Yellow"
+}
+
+function Repair-SidecarTiktoken {
+    param(
+        [Parameter(Mandatory = $true)][string]$TargetDir,
+        [Parameter(Mandatory = $true)][string]$DirName
+    )
+    # Payload AND dist-info (RECORD is written last): an interrupted install leaves one without the
+    # other. A recordless dist-info goes first; uv cannot uninstall it, metadata still reads it.
+    Get-ChildItem -LiteralPath $TargetDir -Directory -Filter "tiktoken-*.dist-info" -ErrorAction SilentlyContinue |
+        Where-Object { -not (Test-Path -LiteralPath (Join-Path $_.FullName "RECORD") -PathType Leaf) } |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+    $present = @(Get-ChildItem -LiteralPath $TargetDir -Directory -Filter "tiktoken-*.dist-info" -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "RECORD") -PathType Leaf })
+    $payload = Join-Path $TargetDir "tiktoken"
+    if ($present.Count -gt 0 -and (Test-Path -LiteralPath (Join-Path $payload "__init__.py") -PathType Leaf)) { return }
+    # Dropping the metadata is what makes uv reinstall instead of calling the pin satisfied.
+    Get-ChildItem -LiteralPath $TargetDir -Directory -Filter "tiktoken-*.dist-info" -ErrorAction SilentlyContinue |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+    # Cleared first: an install that runs no native command would retire the sidecar on a stale
+    # nonzero (unresolvable uv is non-terminating under "Continue").
+    $global:LASTEXITCODE = 0
+    $output = Fast-Install-Sidecar --target $TargetDir --no-deps --upgrade tiktoken 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+        if (Remove-SidecarTiktoken -TargetDir $TargetDir) {
+            substep "Could not install tiktoken into $DirName/ -- Qwen tokenizers may fail" "Yellow"
+        } else {
+            Retire-SidecarAfterFailedTiktoken -TargetDir $TargetDir -DirName $DirName
+        }
+    }
+}
+
+function Test-SidecarCurrent {
+    # One predicate for both shells: the shell reimplementation called a half-written sidecar current.
+    param(
+        [Parameter(Mandatory = $true)][string]$TargetDir,
+        [Parameter(Mandatory = $true)][string]$Version
+    )
+    if (-not (Test-Path -LiteralPath $TargetDir -PathType Container)) { return $false }
+    $shim = Join-Path $PSScriptRoot "install_manifest.py"
+    if (-not (Test-Path -LiteralPath $shim -PathType Leaf)) {
+        return (Test-TargetPackageVersion -TargetDir $TargetDir -PackageName "transformers" -ExpectedVersion $Version)
+    }
+    $pins = @("transformers==$Version") + $SidecarCommonPins
+    $out = ""
+    # A bounded process, not a native command: a native nonzero exit terminates under
+    # $PSNativeCommandUseErrorActionPreference. argv is base64 so quoting cannot break -c.
+    # The venv interpreter first, as setup.sh does: a PATH `python` can be the Store alias stub.
+    $pythonExe = $null
+    $probe = $null
+    if ($VenvPyExe -and (Test-Path -LiteralPath $VenvPyExe -PathType Leaf)) {
+        $pythonExe = $VenvPyExe
+    } else {
+        try { $pythonExe = (Get-Command python -ErrorAction Stop).Source } catch { $pythonExe = $null }
+    }
+    if ($pythonExe) {
+        $argv = (@($shim, "sidecar", $TargetDir) + $pins) -join [char]0
+        $encoded = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($argv))
+        $code = "import sys, runpy, base64; sys.argv = base64.b64decode('$encoded').decode('utf-8').split(chr(0)); runpy.run_path(sys.argv[0], run_name='__main__')"
+        $probe = Invoke-BoundedPythonProbe -PythonExe $pythonExe -Code $code -TimeoutSec 60
+        if ($probe.TimedOut) {
+            $out = "sidecar: audit did not answer within 60 seconds"
+        } else {
+            $out = ([string]$probe.Output).Trim()
+        }
+    }
+    if ($out -eq "sidecar: current") { return $true }
+    if ($out -like "sidecar:*") {
+        # A regex, not Substring: `-like` matches the bare marker too and Substring would throw.
+        if ($script:UnslothVerbose) { substep "sidecar $TargetDir`: $($out -replace '^sidecar:\s*', '')" }
+        return $false
+    }
+    # A failure with no marker is a dead audit, not the legacy silent exit 0.
+    if ($null -ne $probe -and -not $probe.Ok) {
+        if ($script:UnslothVerbose) { substep "sidecar $TargetDir`: audit failed" }
+        return $false
+    }
+    # An old shim exits 0 silently: fall back to the grep this replaced.
+    return (Test-TargetPackageVersion -TargetDir $TargetDir -PackageName "transformers" -ExpectedVersion $Version)
+}
+
+function Install-T5Sidecar {
+    param(
+        [Parameter(Mandatory = $true)][string]$TargetDir,
+        [Parameter(Mandatory = $true)][string]$Version,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$DirName,
+        [Parameter(Mandatory = $true)][string]$Reason
+    )
+    substep "pre-installing transformers $Version $Reason..."
+    Assert-StudioOwnedOrAbsent -Path $TargetDir -Label "transformers $Label sidecar venv"
+    if (Test-Path -LiteralPath $TargetDir) { Remove-Item -LiteralPath $TargetDir -Recurse -Force }
+    [System.IO.Directory]::CreateDirectory($TargetDir) | Out-Null
+    Mark-StudioOwned -Path $TargetDir
+    # From $SidecarCommonPins, not a copy: a pin demanded but never installed reads stale forever.
+    foreach ($pkg in @("transformers==$Version") + $SidecarCommonPins) {
+        if ($script:UnslothVerbose) {
+            Fast-Install-Sidecar --target $TargetDir --no-deps $pkg
+            $t5PkgExit = $LASTEXITCODE
+            $output = ""
+        } else {
+            $output = Fast-Install-Sidecar --target $TargetDir --no-deps $pkg | Out-String
+            $t5PkgExit = $LASTEXITCODE
+        }
+        if ($t5PkgExit -ne 0) {
+            Write-StudioLine "[FAIL] Could not install $pkg into $DirName/" -ForegroundColor Red
+            Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red
+            $ErrorActionPreference = $script:PrevEAP_T5
+            Exit-SetupFailure "Could not install $pkg into $DirName"
+        }
+    }
+    if ($script:UnslothVerbose) {
+        Fast-Install-Sidecar --target $TargetDir --no-deps tiktoken
+        $tiktokenInstallExit = $LASTEXITCODE
+        $output = ""
+    } else {
+        $output = Fast-Install-Sidecar --target $TargetDir --no-deps tiktoken | Out-String
+        $tiktokenInstallExit = $LASTEXITCODE
+    }
+    if ($tiktokenInstallExit -ne 0) {
+        if (Remove-SidecarTiktoken -TargetDir $TargetDir) {
+            substep "Could not install tiktoken into $DirName/ -- Qwen tokenizers may fail" "Yellow"
+        } else {
+            Retire-SidecarAfterFailedTiktoken -TargetDir $TargetDir -DirName $DirName
+        }
+    }
+    step "transformers" "$Version pre-installed"
+}
+
+$_NeedT5_530 = $false
+$_NeedT5_550 = $false
+$_NeedT5_510 = $false
 if (Test-Path -LiteralPath $VenvT5Legacy) {
-    # Legacy layout -- migrate. The tiered venvs a staged run builds land under the
-    # stage root and may never be activated, so removing the live legacy one here
-    # would strip the running install of its only sidecar. The live update does it.
+    # Legacy layout. A staged run's venvs may never be activated, so only the live update migrates.
     if (-not $StageRoot) {
         Assert-StudioOwnedOrAbsent -Path $VenvT5Legacy -Label "legacy transformers sidecar venv"
         Remove-Item -LiteralPath $VenvT5Legacy -Recurse -Force
     }
-    $_NeedT5Install = $true
+    $_NeedT5_530 = $true
+    $_NeedT5_550 = $true
+    $_NeedT5_510 = $true
 }
-if (-not (Test-Path -LiteralPath $VenvT5_530Dir)) { $_NeedT5Install = $true }
-if (-not (Test-Path -LiteralPath $VenvT5_550Dir)) { $_NeedT5Install = $true }
-if (-not (Test-Path -LiteralPath $VenvT5_510Dir)) { $_NeedT5Install = $true }
-if (-not (Test-TargetPackageVersion -TargetDir $VenvT5_530Dir -PackageName "transformers" -ExpectedVersion "5.3.0")) { $_NeedT5Install = $true }
-if (-not (Test-TargetPackageVersion -TargetDir $VenvT5_550Dir -PackageName "transformers" -ExpectedVersion "5.5.0")) { $_NeedT5Install = $true }
-if (-not (Test-TargetPackageVersion -TargetDir $VenvT5_510Dir -PackageName "transformers" -ExpectedVersion "5.10.2")) { $_NeedT5Install = $true }
-# Also reinstall when python deps were updated
-if (-not $SkipPythonDeps) { $_NeedT5Install = $true }
+if (-not (Test-SidecarCurrent -TargetDir $VenvT5_530Dir -Version "5.3.0")) { $_NeedT5_530 = $true }
+if (-not (Test-SidecarCurrent -TargetDir $VenvT5_550Dir -Version "5.5.0")) { $_NeedT5_550 = $true }
+if (-not (Test-SidecarCurrent -TargetDir $VenvT5_510Dir -Version "5.10.2")) { $_NeedT5_510 = $true }
 
-if ($_NeedT5Install) {
+if ($_NeedT5_530 -or $_NeedT5_550 -or $_NeedT5_510) {
 Write-StudioLine ""
+}
 
-$prevEAP_t5 = $ErrorActionPreference
+$script:PrevEAP_T5 = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 
-# --- .venv_t5_530 (transformers 5.3.0) ---
-substep "pre-installing transformers 5.3.0 for newer model support..."
-Assert-StudioOwnedOrAbsent -Path $VenvT5_530Dir -Label "transformers 5.3 sidecar venv"
-if (Test-Path -LiteralPath $VenvT5_530Dir) { Remove-Item -LiteralPath $VenvT5_530Dir -Recurse -Force }
-[System.IO.Directory]::CreateDirectory($VenvT5_530Dir) | Out-Null
-Mark-StudioOwned -Path $VenvT5_530Dir
-foreach ($pkg in @("transformers==5.3.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
-    if ($script:UnslothVerbose) {
-        Fast-Install --target $VenvT5_530Dir --no-deps $pkg
-        $t5PkgExit = $LASTEXITCODE
-        $output = ""
-    } else {
-        $output = Fast-Install --target $VenvT5_530Dir --no-deps $pkg | Out-String
-        $t5PkgExit = $LASTEXITCODE
-    }
-    if ($t5PkgExit -ne 0) {
-        Write-StudioLine "[FAIL] Could not install $pkg into .venv_t5_530/" -ForegroundColor Red
-        Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red
-        $ErrorActionPreference = $prevEAP_t5
-        Exit-SetupFailure "Could not install $pkg into .venv_t5_530"
-    }
-}
-if ($script:UnslothVerbose) {
-    Fast-Install --target $VenvT5_530Dir --no-deps tiktoken
-    $tiktokenInstallExit = $LASTEXITCODE
-    $output = ""
+if ($_NeedT5_530) {
+    Install-T5Sidecar -TargetDir $VenvT5_530Dir -Version "5.3.0" -Label "5.3" -DirName ".venv_t5_530" -Reason "for newer model support"
 } else {
-    $output = Fast-Install --target $VenvT5_530Dir --no-deps tiktoken | Out-String
-    $tiktokenInstallExit = $LASTEXITCODE
+    step "transformers" "5.3.0 sidecar current"
+    Repair-SidecarTiktoken -TargetDir $VenvT5_530Dir -DirName ".venv_t5_530"
 }
-if ($tiktokenInstallExit -ne 0) {
-    substep "Could not install tiktoken into .venv_t5_530/ -- Qwen tokenizers may fail" "Yellow"
-}
-step "transformers" "5.3.0 pre-installed"
-
-# --- .venv_t5_550 (transformers 5.5.0) ---
-substep "pre-installing transformers 5.5.0 for Gemma 4 support..."
-Assert-StudioOwnedOrAbsent -Path $VenvT5_550Dir -Label "transformers 5.5 sidecar venv"
-if (Test-Path -LiteralPath $VenvT5_550Dir) { Remove-Item -LiteralPath $VenvT5_550Dir -Recurse -Force }
-[System.IO.Directory]::CreateDirectory($VenvT5_550Dir) | Out-Null
-Mark-StudioOwned -Path $VenvT5_550Dir
-foreach ($pkg in @("transformers==5.5.0", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
-    if ($script:UnslothVerbose) {
-        Fast-Install --target $VenvT5_550Dir --no-deps $pkg
-        $t5PkgExit = $LASTEXITCODE
-        $output = ""
-    } else {
-        $output = Fast-Install --target $VenvT5_550Dir --no-deps $pkg | Out-String
-        $t5PkgExit = $LASTEXITCODE
-    }
-    if ($t5PkgExit -ne 0) {
-        Write-StudioLine "[FAIL] Could not install $pkg into .venv_t5_550/" -ForegroundColor Red
-        Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red
-        $ErrorActionPreference = $prevEAP_t5
-        Exit-SetupFailure "Could not install $pkg into .venv_t5_550"
-    }
-}
-if ($script:UnslothVerbose) {
-    Fast-Install --target $VenvT5_550Dir --no-deps tiktoken
-    $tiktokenInstallExit = $LASTEXITCODE
-    $output = ""
+if ($_NeedT5_550) {
+    Install-T5Sidecar -TargetDir $VenvT5_550Dir -Version "5.5.0" -Label "5.5" -DirName ".venv_t5_550" -Reason "for Gemma 4 support"
 } else {
-    $output = Fast-Install --target $VenvT5_550Dir --no-deps tiktoken | Out-String
-    $tiktokenInstallExit = $LASTEXITCODE
+    step "transformers" "5.5.0 sidecar current"
+    Repair-SidecarTiktoken -TargetDir $VenvT5_550Dir -DirName ".venv_t5_550"
 }
-if ($tiktokenInstallExit -ne 0) {
-    substep "Could not install tiktoken into .venv_t5_550/ -- Qwen tokenizers may fail" "Yellow"
-}
-step "transformers" "5.5.0 pre-installed"
-
-# --- .venv_t5_510 (transformers 5.10.2) ---
-substep "pre-installing transformers 5.10.2 for Gemma 4 Unified support..."
-Assert-StudioOwnedOrAbsent -Path $VenvT5_510Dir -Label "transformers 5.10 sidecar venv"
-if (Test-Path -LiteralPath $VenvT5_510Dir) { Remove-Item -LiteralPath $VenvT5_510Dir -Recurse -Force }
-[System.IO.Directory]::CreateDirectory($VenvT5_510Dir) | Out-Null
-Mark-StudioOwned -Path $VenvT5_510Dir
-foreach ($pkg in @("transformers==5.10.2", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
-    if ($script:UnslothVerbose) {
-        Fast-Install --target $VenvT5_510Dir --no-deps $pkg
-        $t5PkgExit = $LASTEXITCODE
-        $output = ""
-    } else {
-        $output = Fast-Install --target $VenvT5_510Dir --no-deps $pkg | Out-String
-        $t5PkgExit = $LASTEXITCODE
-    }
-    if ($t5PkgExit -ne 0) {
-        Write-StudioLine "[FAIL] Could not install $pkg into .venv_t5_510/" -ForegroundColor Red
-        Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red
-        $ErrorActionPreference = $prevEAP_t5
-        Exit-SetupFailure "Could not install $pkg into .venv_t5_510"
-    }
-}
-if ($script:UnslothVerbose) {
-    Fast-Install --target $VenvT5_510Dir --no-deps tiktoken
-    $tiktokenInstallExit = $LASTEXITCODE
-    $output = ""
+if ($_NeedT5_510) {
+    Install-T5Sidecar -TargetDir $VenvT5_510Dir -Version "5.10.2" -Label "5.10" -DirName ".venv_t5_510" -Reason "for Gemma 4 Unified support"
 } else {
-    $output = Fast-Install --target $VenvT5_510Dir --no-deps tiktoken | Out-String
-    $tiktokenInstallExit = $LASTEXITCODE
+    step "transformers" "5.10.2 sidecar current"
+    Repair-SidecarTiktoken -TargetDir $VenvT5_510Dir -DirName ".venv_t5_510"
 }
-if ($tiktokenInstallExit -ne 0) {
-    substep "Could not install tiktoken into .venv_t5_510/ -- Qwen tokenizers may fail" "Yellow"
-}
-$ErrorActionPreference = $prevEAP_t5
-step "transformers" "5.10.2 pre-installed"
-
-} # end $_NeedT5Install
+$ErrorActionPreference = $script:PrevEAP_T5
 
 # ==========================================================================
 #  PHASE 3.4: Prefer prebuilt llama.cpp bundles before source build
