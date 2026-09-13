@@ -4006,6 +4006,7 @@ class DiffusionBackend:
                 state_committed = False
                 state = None
                 try:
+                    self._raise_if_load_cancelled(_load_token)
                     if (
                         kind == "gguf"
                         and normalize_transformer_quant(transformer_quant) is not None

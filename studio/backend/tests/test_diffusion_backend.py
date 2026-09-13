@@ -2507,6 +2507,9 @@ def test_unload_sets_cancel_event(fake_runtime):
     [
         "validation",
         "preinstall",
+        "resolution",
+        "memory_plan",
+        "dense_plan",
         "transformer_error",
         "pipeline_error",
         "dense_error",
@@ -2630,8 +2633,16 @@ def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatc
         if phase.startswith("dense"):
             mp.setattr(diff_mod, "dense_transformer_supported", lambda target: True)
             mp.setattr(diff_mod, "select_transformer_quant_scheme", lambda *a, **k: "int8")
-            mp.setattr(backend, "_dense_transformer_resident_bytes", lambda *a, **k: 0)
+            mp.setattr(
+                backend,
+                "_dense_transformer_resident_bytes",
+                lambda *a, **k: park(0) if phase == "dense_plan" else 0,
+            )
             mp.setattr(backend, "_load_dense_quant_pipeline", dense)
+        elif phase in ("resolution", "memory_plan"):
+            name = "_resolve_gguf_path" if phase == "resolution" else "_plan_memory"
+            original = getattr(backend, name)
+            mp.setattr(backend, name, lambda *a, **k: park(original(*a, **k)))
         elif phase in ("validation", "preinstall"):
             if phase == "validation":
                 original = backend.validate_load_request
@@ -2694,6 +2705,8 @@ def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatc
         assert not live and not reclaimed
     else:
         assert reclaimed and all(item == (0, True, True) for item in reclaimed), reclaimed
+    if phase in ("resolution", "memory_plan", "dense_plan"):
+        assert not transformer_calls and not pipelines, "cancelled planning constructed weights"
     if phase == "dense_fallback":
         assert not transformer_calls, "cancelled dense attempt started a GGUF fallback"
     if phase == "transformer":
