@@ -992,7 +992,7 @@ def finish(
         )
         actual_error = None if actual_status == "cancelled" else error
         report_text = None
-        if actual_status == "completed" and event_payload:
+        if actual_status in {"completed", "failed"} and event_payload:
             candidate = event_payload.get("report")
             if isinstance(candidate, str):
                 report_text = candidate
