@@ -249,9 +249,13 @@ class TestWaitForHealthResilience:
         b = _make_backend()
         b._shutting_down = True
         spawned = []
-        monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: spawned.append(1))
+        monkeypatch.setattr(subprocess, "Popen", lambda cmd = None, *a, **kw: spawned.append(cmd))
         assert b._start_llama_process(["llama-server"], {}, child_gpu_physical_ids = None) is False
-        assert spawned == [], "started a server after shutdown had begun"
+        # The argv, not the call count. The defensive kill at the top of
+        # _start_llama_process scans for descendants, and on macOS that scan shells out
+        # to `ps` through this same subprocess.Popen, so "nothing was spawned at all"
+        # fails there for a reason that has nothing to do with the spawn under test.
+        assert ["llama-server"] not in spawned, "started a server after shutdown had begun"
 
     def test_a_teardown_with_no_process_still_marks_shutdown(self):
         """Quitting during a download or staging has nothing to kill, so
