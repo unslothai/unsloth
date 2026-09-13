@@ -5923,6 +5923,10 @@ function Repair-SidecarTiktoken {
     Get-ChildItem -LiteralPath $TargetDir -Directory -Filter "tiktoken-*.dist-info" -ErrorAction SilentlyContinue |
         ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
     # --upgrade: a --target install without it keeps a damaged tiktoken\ under fresh metadata.
+    # Cleared first: if the install runs no native command (an unresolvable uv is non-terminating
+    # under the "Continue" preference in force here), a stale nonzero from an unrelated earlier
+    # step would retire a several-hundred-MB sidecar on a reading that never came from this call.
+    $global:LASTEXITCODE = 0
     $output = Fast-Install-Sidecar --target $TargetDir --no-deps --upgrade tiktoken 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) {
         if (Remove-SidecarTiktoken -TargetDir $TargetDir) {
@@ -5951,9 +5955,16 @@ function Test-SidecarCurrent {
     # wedged mount), and a native nonzero exit ("stale") terminates under
     # $PSNativeCommandUseErrorActionPreference. The argv travels base64-encoded so quotes and
     # backslashes cannot break -c. A timeout reads as stale, and the rebuild follows.
+    # The venv interpreter first, as setup.sh does: a PATH `python` on Windows can be the
+    # Microsoft Store App Execution Alias stub, whose failure would read as "audit died" and
+    # rebuild all three tiers on every run.
     $pythonExe = $null
     $probe = $null
-    try { $pythonExe = (Get-Command python -ErrorAction Stop).Source } catch { $pythonExe = $null }
+    if ($VenvPyExe -and (Test-Path -LiteralPath $VenvPyExe -PathType Leaf)) {
+        $pythonExe = $VenvPyExe
+    } else {
+        try { $pythonExe = (Get-Command python -ErrorAction Stop).Source } catch { $pythonExe = $null }
+    }
     if ($pythonExe) {
         $argv = (@($shim, "sidecar", $TargetDir) + $pins) -join [char]0
         $encoded = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($argv))
@@ -5969,7 +5980,9 @@ function Test-SidecarCurrent {
     # silently.
     if ($out -eq "sidecar: current") { return $true }
     if ($out -like "sidecar:*") {
-        if ($script:UnslothVerbose) { substep "sidecar $TargetDir`: $($out.Substring(9))" }
+        # A regex, not Substring(9): `-like "sidecar:*"` also matches the bare marker, and
+        # Substring past the end throws. Mirrors `${_sc_out#sidecar: }` in setup.sh.
+        if ($script:UnslothVerbose) { substep "sidecar $TargetDir`: $($out -replace '^sidecar:\s*', '')" }
         return $false
     }
     # No marker and a failure: the audit died, which is not the legacy silent exit 0. Stale.
@@ -5994,7 +6007,9 @@ function Install-T5Sidecar {
     if (Test-Path -LiteralPath $TargetDir) { Remove-Item -LiteralPath $TargetDir -Recurse -Force }
     [System.IO.Directory]::CreateDirectory($TargetDir) | Out-Null
     Mark-StudioOwned -Path $TargetDir
-    foreach ($pkg in @("transformers==$Version", "huggingface_hub==1.8.0", "hf_xet==1.4.2")) {
+    # From $SidecarCommonPins, not a second copy of it: a pin the audit demands but the install
+    # never performs reads stale forever, so every update would rebuild all three tiers.
+    foreach ($pkg in @("transformers==$Version") + $SidecarCommonPins) {
         if ($script:UnslothVerbose) {
             Fast-Install-Sidecar --target $TargetDir --no-deps $pkg
             $t5PkgExit = $LASTEXITCODE

@@ -2150,7 +2150,10 @@ _sidecar_drop_tiktoken() {
 
 _sidecar_retire_after_failed_tiktoken() {
     # Part of tiktoken remains: the sidecar goes, best effort; the runtime withholds the rest.
-    rm -rf "$1" 2>/dev/null
+    # `|| true` because this runs under `set -e`: the paths that reach here are the ones where
+    # something is already undeletable, and aborting the whole installer over a cleanup that was
+    # only ever best effort would fail an update whose sidecars are otherwise healthy.
+    rm -rf "$1" 2>/dev/null || true
     substep "the $2 sidecar kept part of a failed tiktoken install; retired, rebuilt on the next update"
 }
 
@@ -2164,7 +2167,9 @@ _sidecar_top_up_tiktoken() {
     # answering it.
     for _stt_info in "$_stt_dir"/tiktoken-*.dist-info; do
         if [ -d "$_stt_info" ] && [ ! -f "$_stt_info/RECORD" ]; then
-            rm -rf "$_stt_info"
+            # `|| true` under `set -e`: an entry that will not go is the reinstall's problem
+            # below, not a reason to abort an update whose sidecars are current.
+            rm -rf "$_stt_info" || true
         fi
     done
     unset _stt_info
@@ -2178,7 +2183,7 @@ _sidecar_top_up_tiktoken() {
     # Not present, so every tiktoken dist-info here describes a missing or damaged payload and goes
     # before the install: --upgrade lands the new dist-info beside the old one.
     for _stt_info in "$_stt_dir"/tiktoken-*.dist-info; do
-        [ -d "$_stt_info" ] && rm -rf "$_stt_info"
+        [ -d "$_stt_info" ] && { rm -rf "$_stt_info" || true; }
     done
     unset _stt_info
     # --upgrade: a --target install without it keeps a damaged tiktoken/ under fresh metadata.
@@ -2198,6 +2203,12 @@ _sidecar_current() {
     _sc_dir="$1"
     _sc_ver="$2"
     [ -d "$_sc_dir" ] || return 1
+    # A tree without the shim answers from the version grep, as setup.ps1 does. Treating the
+    # missing file as a failed audit instead would report every tier stale and rebuild all three.
+    if [ ! -f "$SCRIPT_DIR/install_manifest.py" ]; then
+        _target_has_pkg_version "$_sc_dir" "transformers" "$_sc_ver"
+        return $?
+    fi
     # No venv interpreter is the Colab path (_COLAB_NO_VENV); the stdlib-only shim runs under the
     # installer's own `python` there. Only a tree with no interpreter at all falls back to the grep,
     # which read an interrupted sidecar as current.
@@ -2212,7 +2223,7 @@ _sidecar_current() {
     fi
     # Bounded where a timeout exists: the shim cannot interrupt a stalled RECORD read (a wedged
     # mount). A timeout reads as stale, and the rebuild follows.
-    # shellcheck disable=SC2086 - the pins are a deliberate word-split list
+    # shellcheck disable=SC2086  # the pins are a deliberate word-split list
     if command -v timeout >/dev/null 2>&1; then
         _sc_out=$(timeout -k 5 60 "$_sc_python" "$SCRIPT_DIR/install_manifest.py" sidecar "$_sc_dir" \
             "transformers==$_sc_ver" $_SIDECAR_COMMON_PINS 2>/dev/null)
@@ -2261,8 +2272,12 @@ _install_sidecar() {
     mkdir -p "$_is_dir"
     : > "$_is_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     run_quiet "install transformers $_is_ver" fast_install_sidecar --target "$_is_dir" --no-deps "transformers==$_is_ver"
-    run_quiet "install huggingface_hub for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "huggingface_hub==1.8.0"
-    run_quiet "install hf_xet for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "hf_xet==1.4.2"
+    # From $_SIDECAR_COMMON_PINS, not a second copy of it: a pin the audit demands but the
+    # install never performs reads stale forever, so every update would rebuild all three tiers.
+    for _is_pin in $_SIDECAR_COMMON_PINS; do
+        run_quiet "install ${_is_pin%%==*} for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "$_is_pin"
+    done
+    unset _is_pin
     # Optional, as in setup.ps1: retried by _sidecar_top_up_tiktoken on later updates.
     if ! run_quiet_no_exit "install tiktoken for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "tiktoken"; then
         if _sidecar_drop_tiktoken "$_is_dir"; then
