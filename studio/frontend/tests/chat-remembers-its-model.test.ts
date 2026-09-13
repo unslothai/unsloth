@@ -19,10 +19,19 @@ import {
 registerBundlerResolver();
 const { store } = installLocalStorageFake();
 const {
+  chatModelIsResident,
+  chatModelIsSelectable,
+  chatModelSelectableId,
   chatModelSwitchMeta,
   createChatModelHistoryReader,
   resolveChatModelSwitchTarget,
 } = await import("../src/features/chat/components/chat-model-notice-switch.ts");
+const { compareModelDisplayName } = await import(
+  "../src/features/chat/lib/external-model-label.ts"
+);
+const { modelDisplayName, publicModelId } = await import(
+  "../src/features/hub/lib/model-identity.ts"
+);
 const { chatLocalModelOptions } = await import(
   "../src/features/chat/local-model-options.ts"
 );
@@ -85,21 +94,20 @@ test("the notice never switches a model on its own", () => {
   // Opening a chat must not evict what is resident: a local load is multi-gigabyte.
   assert.doesNotMatch(notice, /loadModel|setCheckpoint/);
   // The only way out of it is the button.
-  assert.match(notice, /onClick=\{\(\) => onSwitch\(createdModel\)\}/);
+  assert.match(notice, /onClick=\{\(\) => onSwitch\(switchTarget\)\}/);
 });
 
 test("the notice stays quiet when it has nothing to offer", () => {
   const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
-  // no stamp, already on the exact pick, or a model that has since gone away
+  // no stamp, already on the pick (including snapshot vs repo id), or a model that has since gone away
   assert.match(body, /if \(!createdModel\) return null;/);
-  assert.match(body, /createdModel\.modelId === checkpoint/);
   assert.match(
     body,
-    /ggufVariantsMatch\(createdModel\.ggufVariant, activeGgufVariant\)/,
+    /chatModelIsResident\(createdModel, checkpoint, activeGgufVariant\)/,
   );
   assert.match(
     body,
-    /if \(!selectableModelIds\.has\(createdModel\.modelId\)\) return null;/,
+    /chatModelSelectableId\(\s*createdModel\.modelId,\s*selectableModelIds,?\s*\)/,
   );
 });
 
@@ -183,6 +191,106 @@ test("only models that can actually be selected are offered", () => {
       `${source} is missing from the selectable set`,
     );
   }
+});
+
+test("a snapshot-path chat is selectable through its repo row", () => {
+  const snapshotPath =
+    "/home/u/.cache/huggingface/hub/models--unsloth--Repo-GGUF/snapshots/2f1c9ab";
+  const repoId = "unsloth/Repo-GGUF";
+  assert.equal(chatModelSelectableId(snapshotPath, new Set([repoId])), repoId);
+  assert.equal(
+    chatModelIsSelectable(snapshotPath, new Set([repoId])),
+    true,
+  );
+  assert.equal(
+    chatModelIsSelectable(snapshotPath, new Set(["unsloth/Other-GGUF"])),
+    false,
+  );
+  assert.equal(chatModelIsSelectable(repoId, new Set([repoId])), true);
+  assert.equal(
+    chatModelIsSelectable("/srv/models/a/Repo-Q4_K_M.gguf", new Set(["Repo-Q4_K_M"])),
+    false,
+  );
+});
+
+test("Switch Back loads the live picker row when the saved snapshot is gone", () => {
+  const snapshotA =
+    "/home/u/.cache/huggingface/hub/models--unsloth--Repo-GGUF/snapshots/aaa1111";
+  const snapshotB =
+    "/home/u/.cache/huggingface/hub/models--unsloth--Repo-GGUF/snapshots/bbb2222";
+  const repoId = "unsloth/Repo-GGUF";
+  assert.equal(chatModelSelectableId(snapshotA, new Set([snapshotA])), snapshotA);
+  assert.equal(chatModelSelectableId(snapshotA, new Set([snapshotB])), snapshotB);
+  assert.equal(chatModelSelectableId(snapshotA, new Set([repoId])), repoId);
+  assert.equal(
+    chatModelIsResident({ modelId: snapshotA, ggufVariant: "Q4_K_M" }, snapshotB, "Q4_K_M"),
+    true,
+  );
+  assert.equal(
+    chatModelSelectableId(
+      snapshotA,
+      new Set([
+        "/home/u/.cache/huggingface/hub/models--unsloth--Other-GGUF/snapshots/ccc3333",
+      ]),
+    ),
+    null,
+  );
+});
+
+test("a case-distinct external id is not already resident", () => {
+  const upper = `external::vendor::${encodeURIComponent("Vendor/Qwen3.8-27B")}`;
+  const lower = `external::vendor::${encodeURIComponent("vendor/qwen3.8-27b")}`;
+  assert.equal(chatModelIsResident({ modelId: upper }, upper, null), true);
+  assert.equal(chatModelIsResident({ modelId: upper }, lower, null), false);
+  assert.equal(chatModelIsSelectable(upper, new Set([lower])), false);
+  assert.equal(chatModelIsSelectable(upper, new Set([upper])), true);
+});
+
+test("a case-distinct ollama-manifest id is not already resident", () => {
+  const upper = `ollama-manifest:${encodeURIComponent(
+    "/home/u/.ollama/manifests/Llama",
+  )}`;
+  const lower = `ollama-manifest:${encodeURIComponent(
+    "/home/u/.ollama/manifests/llama",
+  )}`;
+  assert.equal(chatModelIsResident({ modelId: upper }, upper, null), true);
+  assert.equal(chatModelIsResident({ modelId: upper }, lower, null), false);
+  assert.equal(chatModelIsSelectable(upper, new Set([lower])), false);
+  assert.equal(chatModelIsSelectable(upper, new Set([upper])), true);
+});
+
+test("a snapshot-path chat is already on its repo-id checkpoint", () => {
+  const snapshotPath =
+    "/home/u/.cache/huggingface/hub/models--unsloth--Repo-GGUF/snapshots/2f1c9ab";
+  const repoId = "unsloth/Repo-GGUF";
+  const created = { modelId: snapshotPath, ggufVariant: "Q4_K_M" };
+  assert.equal(chatModelIsResident(created, repoId, "Q4_K_M"), true);
+  assert.equal(chatModelIsResident(created, snapshotPath, "Q4_K_M"), true);
+  assert.equal(
+    chatModelIsResident(
+      { modelId: repoId, ggufVariant: "Q4_K_M" },
+      snapshotPath,
+      "Q4_K_M",
+    ),
+    true,
+  );
+  assert.equal(chatModelIsResident(created, repoId, "Q8_0"), false);
+  assert.equal(
+    chatModelIsResident(created, "unsloth/Other-GGUF", "Q4_K_M"),
+    false,
+  );
+});
+
+test("a snapshot-path chat is labelled by its repo name, not the revision sha", () => {
+  const snapshotPath =
+    "/home/u/.cache/huggingface/hub/models--unsloth--Repo-GGUF/snapshots/2f1c9ab";
+  assert.equal(compareModelDisplayName(snapshotPath), "2f1c9ab");
+  assert.equal(publicModelId("org/model.gguf"), "model");
+  assert.equal(modelDisplayName(snapshotPath), "Repo-GGUF");
+  assert.equal(modelDisplayName("org/model.gguf"), "model.gguf");
+  const body = notice.slice(notice.indexOf("export function ChatModelNotice"));
+  assert.match(body, /externalModelLabel\(createdModel\.modelId\)/);
+  assert.match(body, /modelDisplayName\(createdModel\.modelId\)/);
 });
 
 test("the notice clears the chat header instead of rendering underneath it", () => {

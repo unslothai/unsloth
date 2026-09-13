@@ -1,20 +1,103 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  isHfCacheSnapshotPath,
+  isOllamaLinkPath,
+  modelIdsMatch,
+  publicModelId,
+} from "@/features/hub/lib/model-identity";
 import type {
   LoraModelOption,
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
 import {
   ggufQuantLabel,
+  ggufVariantsMatch,
   normalizeGgufVariantIdentity,
+  residentModelIdMatches,
 } from "../../model-picker/model-config/model-identity";
 import { resolveOnlyRememberedGgufVariant } from "../../model-picker/model-config/per-model-config";
+import { isExternalModelId } from "../external-providers";
 
 export type ChatModelSwitchTarget = {
   modelId: string;
   ggufVariant?: string | null;
 };
+
+function isExactOnlyIdentity(id: string): boolean {
+  return isExternalModelId(id) || isOllamaLinkPath(id);
+}
+
+function sameHfCacheIdentity(left: string, right: string): boolean {
+  if (left === right) {
+    return true;
+  }
+  // Opaque `external::<provider>::<id>` and `ollama-manifest:` values stay
+  // case-sensitive. Folding them through residentModelIdMatches would hide
+  // Switch Back across distinct models.
+  if (isExactOnlyIdentity(left) || isExactOnlyIdentity(right)) {
+    return false;
+  }
+  if (
+    residentModelIdMatches(left, right) ||
+    residentModelIdMatches(right, left)
+  ) {
+    return true;
+  }
+  if (!(isHfCacheSnapshotPath(left) && isHfCacheSnapshotPath(right))) {
+    return false;
+  }
+  const leftRepo = publicModelId(left);
+  return (
+    leftRepo.includes("/") && modelIdsMatch(leftRepo, publicModelId(right))
+  );
+}
+
+/** Snapshot path and repo id of the same HF cache row, either direction. */
+export function chatModelIsResident(
+  createdModel: ChatModelSwitchTarget,
+  checkpoint: string,
+  activeGgufVariant: string | null,
+): boolean {
+  if (!sameHfCacheIdentity(checkpoint, createdModel.modelId)) {
+    return false;
+  }
+  return (
+    createdModel.ggufVariant == null ||
+    ggufVariantsMatch(createdModel.ggufVariant, activeGgufVariant)
+  );
+}
+
+/** The picker id Switch Back should load. Exact match first, then the live HF
+ *  cache row that shares the same repo. External and Ollama ids never alias. */
+export function chatModelSelectableId(
+  modelId: string,
+  selectableModelIds: ReadonlySet<string>,
+): string | null {
+  if (selectableModelIds.has(modelId)) {
+    return modelId;
+  }
+  if (isExactOnlyIdentity(modelId)) {
+    return null;
+  }
+  for (const id of selectableModelIds) {
+    if (isExactOnlyIdentity(id)) {
+      continue;
+    }
+    if (sameHfCacheIdentity(id, modelId)) {
+      return id;
+    }
+  }
+  return null;
+}
+
+export function chatModelIsSelectable(
+  modelId: string,
+  selectableModelIds: ReadonlySet<string>,
+): boolean {
+  return chatModelSelectableId(modelId, selectableModelIds) != null;
+}
 
 type ChatModelThreadSnapshot = {
   id: string;
