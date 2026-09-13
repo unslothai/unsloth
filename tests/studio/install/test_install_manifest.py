@@ -213,13 +213,11 @@ def test_malformed_matching_metadata_invalidates_the_manifest(
 
 
 def test_a_metadata_record_added_since_the_last_scan_is_seen(tmp_path, monkeypatch):
-    """The same regression as the test above, made filesystem-independent.
+    """The test above, made filesystem-independent.
 
-    importlib.metadata memoises each directory listing against the directory's st_mtime, so a
-    second scan only re-reads the directory when that mtime moved. Creating a dist-info does move
-    it on a nanosecond-granularity filesystem, which is why this hides on ext4 / XFS / APFS and
-    bites on exFAT (2s) and HFS+ (1s), or whenever two writes land inside one tick. Restoring the
-    mtime reproduces it everywhere, so this test does not depend on the runner's filesystem.
+    The listing cache is keyed on the directory's st_mtime, so creating a dist-info normally
+    invalidates it by itself on a nanosecond-granularity filesystem. Restoring the mtime
+    reproduces the staleness everywhere instead of only on exFAT (2s) and HFS+ (1s).
     """
     site = tmp_path / "site-packages"
     site.mkdir()
@@ -240,11 +238,9 @@ def test_a_metadata_record_added_since_the_last_scan_is_seen(tmp_path, monkeypat
 
 
 def test_the_metadata_scan_survives_a_pre_classmethod_invalidate_caches(tmp_path, monkeypatch):
-    """CPython only made MetadataPathFinder.invalidate_caches a classmethod in 3.11.9 and 3.12.3
-    (gh-116811). On 3.10, and on every earlier 3.11 / 3.12 patch release, calling it on the CLASS
-    raises TypeError for a missing `cls`, which took out every caller of this scan --
-    installed_versions, invalid_metadata_paths and so verify_install too. No CI leg runs those
-    interpreters, so the shape is reproduced here instead.
+    """invalidate_caches only became a classmethod in 3.11.9 and 3.12.3 (gh-116811), so before
+    those a class-level call raised TypeError and took verify_install down with it. No CI leg runs
+    those interpreters, so the shape is reproduced here.
     """
     import importlib.metadata
 
@@ -273,8 +269,8 @@ def test_the_metadata_scan_survives_a_pre_classmethod_invalidate_caches(tmp_path
 
 
 def test_the_metadata_scan_survives_a_finder_without_invalidate_caches(tmp_path, monkeypatch):
-    """Python 3.9's MetadataPathFinder has no invalidate_caches, and its FastPath caches nothing,
-    so there is nothing to drop there -- but the scan itself still has to answer.
+    """3.9 has no invalidate_caches and no listing cache, so there is nothing to drop -- but the
+    scan itself still has to answer.
     """
     import importlib.metadata
 
@@ -291,10 +287,9 @@ def test_the_metadata_scan_survives_a_finder_without_invalidate_caches(tmp_path,
 def test_a_healthy_install_still_verifies_after_repeated_checks(
     tmp_path, monkeypatch, install_root, req_root
 ):
-    """Dropping the listing cache makes every scan re-read the directory, so it must not turn one
-    healthy record into a conflict on the second look. A false conflict is expensive: the desktop
-    preflight treats studio_install_metadata_conflict as auto-repairable and starts a full managed
-    reinstall on launch.
+    """Re-reading the directory every scan must not turn one healthy record into a conflict on the
+    second look: the desktop preflight treats studio_install_metadata_conflict as auto-repairable
+    and starts a full managed reinstall on launch.
     """
     site = tmp_path / "site-packages"
     site.mkdir()
