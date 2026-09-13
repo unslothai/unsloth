@@ -889,6 +889,26 @@ class _LoadingState:
     # Where the companion BYTES land: ``base_repo``, or its mirror when one was swapped in. Never surfaced
     # (``base_repo`` stays the id status() reports), but the cache scan and the delete guard must look here.
     fetch_repo: Optional[str] = None
+    account_id: Optional[str] = None
+
+
+def _account_owned_load(method):
+    @functools.wraps(method)
+    def wrapped(self, *args, **kwargs):
+        request = object()
+        with self._load_cancel_lock:
+            token = kwargs.get("_load_token")
+            if token is None:
+                token = self._load_token
+            self._raise_if_load_cancelled(token)
+            self._load_accounts[request] = (token, current_account_id())
+        try:
+            return method(self, *args, **{**kwargs, "_load_token": token})
+        finally:
+            with self._load_cancel_lock:
+                self._load_accounts.pop(request, None)
+
+    return wrapped
 
 
 @dataclass
@@ -1192,6 +1212,8 @@ class DiffusionBackend:
         self._loading: Optional[_LoadingState] = None
         # Bumped on begin_load/unload so a superseded worker neither commits nor stamps progress
         self._load_token = 0
+        # Includes preflight and direct loads that have no background marker.
+        self._load_accounts: dict[object, tuple[int, str]] = {}
         # Replaced per load so cancelled workers stay cancelled.
         self._cancel_event = threading.Event()
         # Keep Stop responsive while a replacement holds _lock.
@@ -1960,6 +1982,7 @@ class DiffusionBackend:
         # the Hub.
         assert_pick_is_not_speech(repo_id, gguf_filename, hf_token, allow_network)
 
+    @_account_owned_load
     def begin_load(
         self,
         repo_id: str,
@@ -1984,10 +2007,11 @@ class DiffusionBackend:
         gpu_ids: Optional[list[int]] = None,
         # The ordinal the ROUTE already ranked, so the preflight and the load agree on one card.
         gpu_ordinal: Optional[int] = None,
+        _load_token: Optional[int] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once."""
         with self._load_cancel_lock:
-            entry_token = self._load_token
+            entry_token = _load_token
             self._raise_if_load_cancelled(entry_token)
         hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
         # Resolved ONCE, here, and carried to the worker: outside it so a bad pick is the route's 400 rather than a
@@ -2032,7 +2056,9 @@ class DiffusionBackend:
             cancel_event = threading.Event()
             self._cancel_event = cancel_event
             # Seed with the family fallback; the worker resolves the real base and updates this.
-            self._loading = _LoadingState(repo_id = repo_id, base_repo = fam.base_repo)
+            self._loading = _LoadingState(
+                repo_id = repo_id, base_repo = fam.base_repo, account_id = current_account_id()
+            )
 
         account_thread(
             target = self._run_load,
@@ -3335,6 +3361,7 @@ class DiffusionBackend:
 
         return DiffusionBackend._union_over_cached_revs(base, _params, staged_dir) * 2
 
+    @_account_owned_load
     def load_pipeline(
         self,
         repo_id: str,
@@ -6324,6 +6351,16 @@ class DiffusionBackend:
                 ):
                     raise GpuBusyForAnotherAccountError(DIFFUSION, 1)
                 require_resident_control(DIFFUSION, getattr(self._state, "repo_id", None))
+                # CPU construction has neither a GPU claim nor a published resident.
+                if (
+                    self._loading is not None
+                    and self._loading.error is None
+                    and self._loading.account_id != expected_account
+                ) or any(
+                    token == self._load_token and account != expected_account
+                    for token, account in self._load_accounts.values()
+                ):
+                    raise GpuBusyForAnotherAccountError(DIFFUSION, 1)
             # Fence loads and generations before waiting for construction.
             self._unload_waiters += 1
             self._cancel_event.set()
