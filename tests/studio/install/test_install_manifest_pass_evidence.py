@@ -219,14 +219,16 @@ def test_a_stuck_peer_does_not_wedge_the_lock(tmp_path: pathlib.Path, monkeypatc
     the lock existed. Windows does this on its own (msvcrt's LK_LOCK gives up); POSIX flock
     waits forever unless asked not to."""
     monkeypatch.setattr(im, "LOCK_WAIT_SECONDS", 0.3)
-    holder = "\n".join([
-        "import sys, time, pathlib",
-        f"sys.path.insert(0, {str(pathlib.Path(im.__file__).resolve().parent)!r})",
-        "import install_manifest as im",
-        f"with im._manifest_lock(pathlib.Path({str(tmp_path)!r})):",
-        f"    pathlib.Path({str(tmp_path / 'held')!r}).write_text('1', encoding='utf-8')",
-        "    time.sleep(30)",
-    ])
+    holder = "\n".join(
+        [
+            "import sys, time, pathlib",
+            f"sys.path.insert(0, {str(pathlib.Path(im.__file__).resolve().parent)!r})",
+            "import install_manifest as im",
+            f"with im._manifest_lock(pathlib.Path({str(tmp_path)!r})):",
+            f"    pathlib.Path({str(tmp_path / 'held')!r}).write_text('1', encoding='utf-8')",
+            "    time.sleep(30)",
+        ]
+    )
     child = subprocess.Popen([sys.executable, "-c", holder])
     try:
         held = tmp_path / "held"

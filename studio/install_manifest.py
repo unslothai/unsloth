@@ -362,6 +362,7 @@ def _manifest_lock(root: Optional[Path] = None):
     if handle is not None:
         try:
             import fcntl  # noqa: PLC0415 - POSIX only, and absent on Windows
+
             # Non-blocking with a deadline, never a bare LOCK_EX: that waits forever on a peer
             # suspended or stopped while holding it, which is the one thing this must not do
             # to an update.
