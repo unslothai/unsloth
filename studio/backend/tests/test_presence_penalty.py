@@ -250,3 +250,107 @@ def test_worker_forwards_all_sampling_params_to_backend():
     assert backend.received is not None
     for key, val in _SAMPLING.items():
         assert backend.received[key] == val, f"{key} dropped/altered in worker gen_kwargs"
+
+
+def test_orchestrator_cmd_carries_the_tool_protocol_flag():
+    """Unrestricted mode runs with an EMPTY tool list, so the worker cannot infer that the
+    tool protocol is live from ``tools`` alone. Without the flag it stripped the wrappers it
+    was about to parse and the markerless guard then read genuine calls as prose."""
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    base = dict(messages = [{"role": "user", "content": "hi"}], tools = [])
+    assert (
+        o._build_generate_cmd("r", None, tool_protocol_active = True, **base)["tool_protocol_active"]
+        is True
+    )
+    # Omitted when unset, so an older worker keeps its bool(tools) default.
+    assert "tool_protocol_active" not in o._build_generate_cmd("r", None, **base)
+
+
+def test_the_orchestrator_single_turn_accepts_the_tool_protocol_flag():
+    """``_call_single_turn`` retries without the flag when the callback rejects it, so a
+    callback missing the parameter silently fell back to the stripping default."""
+    import inspect
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    src = inspect.getsource(InferenceOrchestrator.generate_chat_completion_with_tools)
+    signature = src[src.index("def _single_turn(") : src.index("turn_stats.clear()")]
+    assert (
+        "tool_protocol_active" in signature
+    ), "the orchestrator's _single_turn must accept the flag or _call_single_turn drops it"
+
+
+def test_the_worker_gates_the_tool_protocol_flag_on_the_backend_signature():
+    """MLX declares no such parameter and takes no ``**kwargs``, so the flag must ride the
+    declares-gated list; forwarding it unconditionally would raise instead of being ignored."""
+    import inspect
+
+    from core.inference import worker
+
+    src = inspect.getsource(worker._handle_generate)
+    gated = src[src.index("for gated in (") : src.index("for gated in (") + 200]
+    assert '"tool_protocol_active"' in gated, "the flag must be gated on _backend_declares"
+
+
+def test_the_mlx_backend_declares_the_tool_protocol_flag():
+    """The worker forwards this flag only to backends that declare it, so MLX not declaring
+    it meant the flag was silently dropped and the native token decoder stayed off in
+    unrestricted mode, stripping the wrappers the guard then rejected as prose."""
+    import inspect
+
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    for method in ("generate_chat_response", "_generate_text", "_generate_vlm"):
+        params = inspect.signature(getattr(MLXInferenceBackend, method)).parameters
+        assert "tool_protocol_active" in params, f"{method} drops the protocol flag"
+
+    # Both decoder gates must consult it, not bool(tools) alone.
+    for method in ("_generate_text", "_generate_vlm"):
+        src = inspect.getsource(getattr(MLXInferenceBackend, method))
+        after = src[src.index("NativeToolTokenDecoder(") :]
+        gate = after[: after.index("else None")]
+        assert "tool_protocol_active" in gate, f"{method}'s decoder gate ignores the flag"
+
+
+def test_the_mlx_think_prefill_predicate_matches_the_decoder_it_describes():
+    """The prefill predicate tells ``detect_think_prefill`` whether ``</think>`` will
+    survive. It has to name the same conditions as the decoder gate below it, or an
+    unrestricted turn re-emits no opener and the answer starts on a raw unmatched closer."""
+    import inspect
+
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    src = inspect.getsource(MLXInferenceBackend._generate_text)
+    after = src[src.index("preserves_think_close") :]
+    predicate = after[: after.index("decoder_preserves_token")]
+    assert "tool_protocol_active" in predicate, "the prefill predicate ignores unrestricted mode"
+
+
+def test_the_mlx_vlm_decoder_survives_a_reasoning_only_request():
+    """mlx-vlm strips native reasoning controls from ``response.text``, so a no-tools request
+    whose delimiters are special ids needs the decoder too or the reasoning is rendered as
+    ordinary answer text."""
+    import inspect
+
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    src = inspect.getsource(MLXInferenceBackend._generate_vlm)
+    after = src[src.index("vlm_token_decoder = ") :]
+    gate = after[: after.index("else None")]
+    assert "vlm_reasoning_markers is not None" in gate, "the VLM decoder gate ignores reasoning"
+
+
+def test_the_mlx_vlm_prefill_predicate_matches_its_decoder_gate():
+    """The VLM prefill predicate has to name the same activation as the VLM decoder gate, or
+    an unrestricted turn suppresses the opener and the stream ends on an orphan closer."""
+    import inspect
+
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    src = inspect.getsource(MLXInferenceBackend._generate_vlm)
+    after = src[src.index("preserves_think_close") :]
+    predicate = after[: after.index("decoder_preserves_token")]
+    for condition in ("tools", "tool_protocol_active", "vlm_reasoning_markers is not None"):
+        assert condition in predicate, f"the VLM prefill predicate omits {condition}"

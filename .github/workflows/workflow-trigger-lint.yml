@@ -146,6 +146,7 @@ jobs:
             tests/studio/test_gguf_smoke_phases_stay_independent.py \
             tests/studio/test_indicator_browsers_run_in_parallel.py \
             tests/studio/test_inference_smoke_http_diagnostics.py \
+            tests/studio/test_install_matrix_selection.py \
             tests/studio/test_install_phase_timing.py \
             tests/studio/test_installer_av_shapes.py \
             tests/studio/test_mac_bundled_job_phases.py \
@@ -160,6 +161,7 @@ jobs:
             tests/studio/test_short_job_absorption.py \
             tests/studio/test_smoke_workflows_share_one_script.py \
             tests/studio/test_stt_model_search_locator_contract.py \
+            tests/studio/test_studio_smokes_do_not_trigger_on_the_training_library.py \
             tests/studio/test_uv_cache_discipline.py \
             tests/studio/test_version_compat_bundle.py \
             tests/studio/test_windows_small_checks_stay_on_their_image.py \

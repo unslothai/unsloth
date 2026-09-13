@@ -62,9 +62,8 @@ export function CopyBtn({ text }: { text: string }) {
 }
 
 function DownloadBtn({ code, name }: { code: string; name: string }) {
-  // Route through the shared boundary: browsers keep the normal download,
-  // Tauri gets the native save chooser. A bare blob anchor is silently
-  // dropped by the desktop WebView2.
+  // Route through the shared boundary: browsers keep the normal download, Tauri gets the native
+  // save chooser. A bare blob anchor is silently dropped by the desktop WebView2.
   const download = useCallback(() => {
     void downloadFile(code, name, "text/plain;charset=utf-8").catch((error) => {
       if (!isDownloadCancelled(error)) {

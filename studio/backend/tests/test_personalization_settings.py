@@ -9,6 +9,18 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+
+def _shared_setup_1(monkeypatch, store):
+    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
+    monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda d: store.update(d))
+
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(settings_routes.router, prefix = "/api/settings")
+    client = TestClient(app)
+    return client
+
+
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -42,14 +54,28 @@ def test_unknown_keys_are_ignored():
     assert p.profile.displayName == "Mike"
 
 
-def test_invalid_theme_rejected():
+@pytest.mark.parametrize(
+    "section, field, value",
+    [
+        pytest.param("appearance", "theme", "neon", id = "invalid_theme_rejected"),
+        pytest.param("appearance", "palette", "neon", id = "invalid_palette_rejected"),
+        pytest.param(
+            "profile",
+            "avatarDataUrl",
+            "http://example.com/a.png",
+            id = "avatar_must_be_image_data_url",
+        ),
+        pytest.param(
+            "profile",
+            "avatarDataUrl",
+            "/Sloth%20emojis/../secret.png",
+            id = "bundled_avatar_traversal_rejected",
+        ),
+    ],
+)
+def test_invalid_personalization_values_are_rejected(section, field, value):
     with pytest.raises(ValidationError):
-        PersonalizationPayload.model_validate({"appearance": {"theme": "neon"}})
-
-
-def test_invalid_palette_rejected():
-    with pytest.raises(ValidationError):
-        PersonalizationPayload.model_validate({"appearance": {"palette": "neon"}})
+        PersonalizationPayload.model_validate({section: {field: value}})
 
 
 def test_customization_defaults():
@@ -334,13 +360,6 @@ def test_imported_fonts_total_size_capped():
     )
 
 
-def test_avatar_must_be_image_data_url():
-    with pytest.raises(ValidationError):
-        PersonalizationPayload.model_validate(
-            {"profile": {"avatarDataUrl": "http://example.com/a.png"}}
-        )
-
-
 def test_avatar_size_is_capped():
     big = "data:image/png;base64," + "A" * (pers.MAX_AVATAR_DATA_URL_BYTES + 1)
     with pytest.raises(ValidationError):
@@ -373,13 +392,6 @@ def test_bundled_avatar_subpath_allowed():
     assert "Sloth%20emojis" in p.profile.avatarDataUrl
 
 
-def test_bundled_avatar_traversal_rejected():
-    with pytest.raises(ValidationError):
-        PersonalizationPayload.model_validate(
-            {"profile": {"avatarDataUrl": "/Sloth%20emojis/../secret.png"}}
-        )
-
-
 def test_get_read_errors_propagate(monkeypatch):
     def fail(*args, **kwargs):
         raise RuntimeError("read failed")
@@ -408,13 +420,7 @@ def test_get_set_roundtrip(monkeypatch):
 
 def test_personalization_route_roundtrip_real_shape(monkeypatch):
     store: dict = {}
-    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
-    monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda d: store.update(d))
-
-    app = FastAPI()
-    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
-    app.include_router(settings_routes.router, prefix = "/api/settings")
-    client = TestClient(app)
+    client = _shared_setup_1(monkeypatch, store)
 
     initial = client.get("/api/settings/personalization")
     assert initial.status_code == 200
@@ -516,13 +522,7 @@ def test_personalization_put_preserves_absent_fields(monkeypatch):
     # A stale client that omits palette/customization must not materialize them,
     # so the record stays legacy and GET keeps reporting those fields unsaved.
     store: dict = {}
-    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
-    monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda d: store.update(d))
-
-    app = FastAPI()
-    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
-    app.include_router(settings_routes.router, prefix = "/api/settings")
-    client = TestClient(app)
+    client = _shared_setup_1(monkeypatch, store)
 
     put = client.put(
         "/api/settings/personalization",
@@ -559,13 +559,7 @@ def test_personalization_put_preserves_existing_fields_on_stale_write(monkeypatc
             },
         }
     }
-    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
-    monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda d: store.update(d))
-
-    app = FastAPI()
-    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
-    app.include_router(settings_routes.router, prefix = "/api/settings")
-    client = TestClient(app)
+    client = _shared_setup_1(monkeypatch, store)
 
     put = client.put(
         "/api/settings/personalization",

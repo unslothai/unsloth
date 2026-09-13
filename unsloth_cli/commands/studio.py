@@ -114,6 +114,8 @@ def _ensure_studio_env_exported() -> None:
 
 BOOTSTRAP_PASSWORD_FILE = ".bootstrap_password"
 DESKTOP_SECRET_FILE = ".desktop_secret"
+# Cached raw CLI API key; the full name carries a digest: ".cli_api_key_cli_<digest>".
+CLI_API_KEY_FILE_PREFIX = ".cli_api_key_"
 DEFAULT_ADMIN_USERNAME = "unsloth"
 DESKTOP_SECRET_PREFIX = "desktop-"
 API_KEY_PBKDF2_SALT_KEY = "api_key_pbkdf2_salt"
@@ -681,15 +683,56 @@ def _wait_for_server(
     return False
 
 
+def _cli_api_key_secret_path(name: str) -> Path:
+    """Cache path for the raw API key named *name*.
+
+    Identity is the digest; the stem is only so a human can tell the files apart.
+    Sharing a stem would hand one label's credential to another (`foo/bar` vs
+    `foo?bar`, past the 64-char cut, `cli` vs `CLI` on APFS/NTFS). ASCII-only
+    keeps 64 chars at 64 bytes: NAME_MAX is 255 BYTES, so multibyte alnums made a
+    282-byte name that failed to cache and re-minted every launch (#10595 again).
+    """
+    safe = "".join(
+        ch if (ch.isascii() and ch.isalnum()) or ch in "-_" else "_" for ch in name
+    ).strip("_")
+    if not safe:
+        safe = "cli"
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()[:12]
+    return STUDIO_HOME / "auth" / f"{CLI_API_KEY_FILE_PREFIX}{safe[:64]}_{digest}"
+
+
+def _read_cli_api_key_secret(name: str) -> str:
+    try:
+        return _cli_api_key_secret_path(name).read_text(encoding = "utf-8").strip()
+    except (OSError, ValueError):
+        return ""
+
+
 def _create_api_key_inprocess(name: str) -> str:
-    """Create an API key via direct storage call, bypassing the ``must_change_password`` gate that
+    """Return a raw API key for *name*, minting only when the cached one is dead.
+
+    Uses a direct storage call, bypassing the ``must_change_password`` gate that
     blocks HTTP POST /api/auth/api-keys on fresh installs."""
     storage = _load_backend_auth_storage()
+    cached = _read_cli_api_key_secret(name)
+    if cached and storage.validate_api_key_with_credential(cached, touch = False):
+        return cached
 
     raw_key, _row = storage.create_api_key(
         username = storage.DEFAULT_ADMIN_USERNAME,
         name = name,
     )
+    # Best-effort: the key is already committed and the caller shuts the server
+    # down on any exception, so raising here would kill a healthy launch and
+    # re-mint on every retry. Same trade-off as start.py's _write_private_json.
+    try:
+        _write_auth_secret(_cli_api_key_secret_path(name), raw_key)
+    except OSError as exc:
+        typer.echo(
+            f"Warning: could not cache the {name} API key ({exc}); this launch is "
+            "unaffected, but the next one will create another key.",
+            err = True,
+        )
     return raw_key
 
 
@@ -1024,23 +1067,59 @@ def _cli_update_password(
     """CLI mirror of backend update_password + change-password effects, in one transaction. File
     cleanup runs after commit, so it cannot roll back."""
     password_salt, password_hash = _hash_password(new_password)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}
+    # Managed credentials live in the account_* columns behind the downgrade fence; the owner's row keeps the legacy columns.
+    managed = False
+    if "account_jwt_secret" in columns:
+        row = conn.execute("SELECT role FROM auth_user WHERE username = ?", (username,)).fetchone()
+        managed = bool(row) and row[0] not in (None, "owner")
+    target_columns = (
+        "account_password_salt = ?, account_password_hash = ?, account_jwt_secret = ?"
+        if managed
+        else "password_salt = ?, password_hash = ?, jwt_secret = ?"
+    )
     with conn:
         conn.execute(
-            """
+            f"""
             UPDATE auth_user
-            SET password_salt = ?, password_hash = ?, jwt_secret = ?, must_change_password = 0
+            SET {target_columns}, must_change_password = 0
             WHERE username = ?
             """,
             (password_salt, password_hash, secrets.token_urlsafe(64), username),
         )
         conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
-        conn.execute(
-            "DELETE FROM app_secrets WHERE key IN (?, ?)",
-            (DESKTOP_SECRET_HASH_KEY, DESKTOP_SECRET_CREATED_AT_KEY),
-        )
+        if username == DEFAULT_ADMIN_USERNAME:
+            conn.execute(
+                "DELETE FROM app_secrets WHERE key IN (?, ?)",
+                (DESKTOP_SECRET_HASH_KEY, DESKTOP_SECRET_CREATED_AT_KEY),
+            )
         if revoke_api_keys:
-            conn.execute("DELETE FROM api_keys")
-    for stale in (BOOTSTRAP_PASSWORD_FILE, DESKTOP_SECRET_FILE):
+            conn.execute("DELETE FROM api_keys WHERE username = ?", (username,))
+            if managed:
+                conn.execute(
+                    "DELETE FROM account_api_keys WHERE account_id = "
+                    "(SELECT account_id FROM auth_user WHERE username = ?)",
+                    (username,),
+                )
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}
+            if "setup_code_hash" in columns:
+                conn.execute(
+                    "UPDATE auth_user SET setup_code_hash = NULL, setup_code_expires_at = NULL WHERE username = ?",
+                    (username,),
+                )
+    if username != DEFAULT_ADMIN_USERNAME:
+        return
+    stale_files = [BOOTSTRAP_PASSWORD_FILE, DESKTOP_SECRET_FILE]
+    if revoke_api_keys:
+        # Reset only: the rows are gone, so each cached key is now plaintext for a
+        # dead credential. An ordinary change keeps the rows, so its cache stays valid.
+        try:
+            stale_files += sorted(
+                p.name for p in (STUDIO_HOME / "auth").glob(f"{CLI_API_KEY_FILE_PREFIX}*")
+            )
+        except OSError:
+            pass
+    for stale in stale_files:
         stale_path = STUDIO_HOME / "auth" / stale
         try:
             stale_path.unlink(missing_ok = True)
@@ -2028,7 +2107,7 @@ def run(
         "cli",
         "--api-key-name",
         rich_help_panel = _RUN_PANEL_ADVANCED,
-        help = "Label for the auto-generated API key",
+        help = "Label for the API key reused across runs",
     ),
     port: int = typer.Option(8888, "--port", "-p", rich_help_panel = _RUN_PANEL_SERVER),
     host: str = typer.Option("127.0.0.1", "--host", "-H", rich_help_panel = _RUN_PANEL_SERVER),
@@ -4233,14 +4312,30 @@ def provision_desktop_auth():
     typer.echo("Desktop auth ready.")
 
 
-@studio_app.command("reset-password")
-def reset_password():
-    """Reset the Unsloth admin password.
+def _reset_password_username(conn: sqlite3.Connection, username: Optional[str]) -> str:
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(auth_user)")}
+    active_filter = " WHERE is_active = 1" if "is_active" in columns else ""
+    count = conn.execute("SELECT COUNT(*) FROM auth_user" + active_filter).fetchone()[0]
+    if username is None and count > 1:
+        typer.echo("Error: --username is required when multiple accounts are active.", err = True)
+        raise typer.Exit(1)
+    target = DEFAULT_ADMIN_USERNAME if username is None else username.casefold()
+    if target == DEFAULT_ADMIN_USERNAME:
+        _ensure_cli_default_admin(conn)
+    elif conn.execute("SELECT 1 FROM auth_user WHERE username = ?", (target,)).fetchone() is None:
+        typer.echo("Error: account not found.", err = True)
+        raise typer.Exit(1)
+    return target
 
-    Rotates the credential in place: a running Unsloth accepts the new password on
-    its next request, so there is nothing to restart. Shared /p preview links are
-    not revoked -- rotate those in Settings if the old password leaked.
-    """
+
+@studio_app.command("reset-password")
+def reset_password(
+    username: Optional[str] = typer.Option(
+        None, "--username", help = "Account to reset; required with multiple active accounts."
+    ),
+):
+    """Reset an Unsloth account password. Rotates in place, so nothing needs restarting. Shared /p
+    preview links are not revoked; rotate those in Settings if the old password leaked."""
     new_password = _generate_reset_password()
     try:
         conn = _connect_auth_db()
@@ -4254,15 +4349,16 @@ def reset_password():
         raise typer.Exit(1)
 
     try:
-        _ensure_cli_default_admin(conn)
-        _cli_update_password(conn, DEFAULT_ADMIN_USERNAME, new_password, revoke_api_keys = True)
+        conn.execute("BEGIN IMMEDIATE")
+        target = _reset_password_username(conn, username)
+        _cli_update_password(conn, target, new_password, revoke_api_keys = True)
     except (OSError, sqlite3.Error) as exc:
         typer.echo(f"Error: could not reset the password ({exc}).", err = True)
         raise typer.Exit(1)
     finally:
         conn.close()
 
-    typer.echo(f"New password for '{DEFAULT_ADMIN_USERNAME}': {new_password}")
+    typer.echo(f"New password for '{target}': {new_password}")
     typer.echo(
         "Sessions and API keys revoked. A running Unsloth takes it on the next request, "
         "though repeated failed logins can hold the rate limit shut for up to a minute."

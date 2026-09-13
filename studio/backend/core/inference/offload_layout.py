@@ -64,9 +64,8 @@ class ModelLayout:
     recurrent_bytes: int = 0
     n_ctx_train: int = 0
     is_moe: bool = False
-    # offloaded experts move only expert_used/expert_count per token, a dense FFN all of it
-    # Sparse-MoE routing: experts read per token is expert_used/expert_count. Offloaded experts move only that fraction
-    # per token, a dense FFN all of it.
+    # Sparse-MoE routing: experts read per token is expert_used/expert_count. Offloaded experts move only that
+    # fraction per token, a dense FFN all of it.
     n_expert: int = 0
     n_expert_used: int = 0
     # ``blocks`` drops the trailing nextn/MTP blk.<N> tensors: block_count counts them (llama-model.cpp reads it into
@@ -82,11 +81,10 @@ class ModelLayout:
     # from n_layer_all (llama-model.cpp:1449) puts those blocks on a GPU FIRST. llama.cpp's own fitter widens its
     # offloadable-layer count the same way (common/fit.cpp:139-142). Zero when nothing was dropped.
     excluded_block_bytes: int = 0
-    # sliding-window attention interleaves window-sized and full-context caches per layer
     # Sliding-window attention: some layers keep a window-sized cache, some the full context
-    # (llama-kv-cache-iswa.cpp:69-104 builds two caches and filters each by hparams.is_swa(il)), interleaved per layer.
-    # Every layer is still an attention layer, so n_attention_layers does NOT reveal this. A multi-device split has to
-    # know WHERE the big caches land, so the planner abstains.
+    # (llama-kv-cache-iswa.cpp:69-104 builds two caches and filters each by hparams.is_swa(il)), interleaved per
+    # layer. Every layer is still an attention layer, so n_attention_layers does NOT reveal this. A multi-device split
+    # has to know WHERE the big caches land, so the planner abstains.
     has_swa: bool = False
     # False when a needed quantity could not be read. The planner abstains.
     complete: bool = False
@@ -217,7 +215,6 @@ def _layout_from_readers(readers) -> ModelLayout:
 
     kv_per_token = int(n_attention) * int(n_kv_head) * (int(key_len) + int(val_len)) * 2
 
-    # charging every layer the full context is the safe direction for the TOTAL
     # Charging every layer the full context above is the safe direction for the TOTAL; what it cannot say is which
     # layers hold the big caches.
     has_swa = bool(_field(reader, f"{arch}.attention.sliding_window") or 0)
@@ -282,11 +279,10 @@ def _layout_from_readers(readers) -> ModelLayout:
     if not lm_head and token_embd:
         other_resident += token_embd
 
-    # trailing nextn/MTP blocks are not loaded unless a draft is engaged
-    # Trailing nextn/MTP blocks are NOT part of the target model and are not loaded unless a draft is engaged, so an -ot
-    # naming them moves nothing: measured, spilling only blk.<nextn> leaves the host buffer at exactly token_embd and
-    # the device buffer unchanged. Counting them spillable would credit bytes that can never be freed. Unsloth prices
-    # the drafter separately anyway.
+    # Trailing nextn/MTP blocks are NOT part of the target model and are not loaded unless a draft is engaged, so an
+    # -ot naming them moves nothing: measured, spilling only blk.<nextn> leaves the host buffer at exactly token_embd
+    # and the device buffer unchanged. Counting them spillable would credit bytes that can never be freed. Unsloth
+    # prices the drafter separately anyway.
     all_block_indices = set(spill) | set(resident)
     block_indices = sorted(i for i in all_block_indices if i < n_layers)
     has_excluded = any(i >= n_layers for i in all_block_indices)

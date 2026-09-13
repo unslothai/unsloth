@@ -6,6 +6,8 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 . "$SCRIPT_DIR/_harness.sh"
+# shellcheck source=tests/sh/_ps1_source.sh
+. "$SCRIPT_DIR/_ps1_source.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
 INSTALL_PS1="$SCRIPT_DIR/../../install.ps1"
 ROLLBACK_BLOCK=$(sed -n '/^_VENV_ROLLBACK_DIR=""/,/^trap '\''_on_install_signal 143'\'' TERM$/p' "$INSTALL_SH")
@@ -385,19 +387,29 @@ run_readonly_bin_case dangling-shim \
     "$WORK/readonly-bin-dangling-shim/unsloth_studio/bin/unsloth" 1 no-exe
 
 echo "=== install.ps1 rollback wiring ==="
-if grep -q '^    function Remove-StaleStudioVenvRollbacks {' "$INSTALL_PS1" \
-   && grep -q '^    Remove-StaleStudioVenvRollbacks$' "$INSTALL_PS1"; then
+# The code view throughout: install.ps1 emits a launcher through a here-string,
+# and that launcher has nine `function X {` declarations and its own
+# `} finally {`. Matching those answers a question about the emitted script.
+INSTALL_PS1_CODE=$(ps1_code "$INSTALL_PS1")
+if printf '%s\n' "$INSTALL_PS1_CODE" | grep -q '^    function Remove-StaleStudioVenvRollbacks {' \
+   && printf '%s\n' "$INSTALL_PS1_CODE" | grep -q '^    Remove-StaleStudioVenvRollbacks$'; then
     ok "Windows installer prunes stale rollbacks after success"
 else
     bad "Windows installer does not wire stale rollback cleanup"
 fi
-if grep -q '^    } finally {$' "$INSTALL_PS1" \
-   && grep -A3 '^    } finally {$' "$INSTALL_PS1" | grep -q 'Restore-StudioVenvRollback'; then
+# At least one of the installer's own `} finally {` blocks restores the rollback.
+# The emitted launcher has one too, so before the code view a match there could
+# have stood in for the installer's.
+_finally_hits=$(printf '%s\n' "$INSTALL_PS1_CODE" | grep -c '^    } finally {$' || true)
+_finally_guarded=$(printf '%s\n' "$INSTALL_PS1_CODE" |
+    grep -A3 '^    } finally {$' | grep -c 'Restore-StudioVenvRollback' || true)
+if [ "$_finally_hits" -gt 0 ] && [ "$_finally_guarded" -gt 0 ]; then
     ok "Windows replacement is protected by finally"
 else
     bad "Windows replacement lacks finally rollback"
 fi
-if grep -A18 '^    function Remove-StudioVenvTreeWithRetry {' "$INSTALL_PS1" \
+if printf '%s\n' "$INSTALL_PS1_CODE" \
+   | grep -A18 '^    function Remove-StudioVenvTreeWithRetry {' \
    | grep -q 'ErrorAction Stop'; then
     ok "Windows rollback deletion failures are observable and retried"
 else

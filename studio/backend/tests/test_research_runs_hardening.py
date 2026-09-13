@@ -42,6 +42,22 @@ from core.research_runs import (
 from routes.research_runs import CreateResearchRun, _is_sensitive_key, _sanitize_config
 
 
+def _shared_setup_1():
+    supervisor = _make_supervisor(_noop_check_active)
+
+    started = time.monotonic()
+    with pytest.raises(research_runs.ModelFirstOutputTimeout):
+        _run_stream(supervisor, timeout_seconds = 30.0)
+    return started
+
+
+def _shared_setup_2():
+    supervisor = _make_supervisor(_noop_check_active)
+
+    with pytest.raises(research_runs.ModelFirstOutputTimeout):
+        _run_stream(supervisor, timeout_seconds = 1.0)
+
+
 def test_sanitize_query_redacts_payment_card():
     cleaned = _sanitize_public_query("verify card 4111111111111111 statement")
     assert "4111111111111111" not in cleaned
@@ -1970,10 +1986,7 @@ def test_stream_completion_times_out_when_output_never_starts(monkeypatch):
             yield "data: [DONE]"
 
     _install_fake_client(monkeypatch, [_SilentStream()])
-    supervisor = _make_supervisor(_noop_check_active)
-
-    with pytest.raises(research_runs.ModelFirstOutputTimeout):
-        _run_stream(supervisor, timeout_seconds = 1.0)
+    _shared_setup_2()
 
 
 def test_admission_keepalives_do_not_spend_the_first_output_budget(monkeypatch):
@@ -2035,11 +2048,7 @@ def test_plain_keepalives_mean_a_silent_backend_and_spend_the_budget(monkeypatch
     """
     monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.05)
     _install_fake_client(monkeypatch, [_comment_only_stream(": keep-alive")])
-    supervisor = _make_supervisor(_noop_check_active)
-
-    started = time.monotonic()
-    with pytest.raises(research_runs.ModelFirstOutputTimeout):
-        _run_stream(supervisor, timeout_seconds = 30.0)
+    started = _shared_setup_1()
     assert time.monotonic() - started < 5.0, "must end on the budget, not the wall clock"
 
 
@@ -2096,11 +2105,7 @@ def test_the_budget_starts_when_admission_ends(monkeypatch):
             yield "data: [DONE]"
 
     _install_fake_client(monkeypatch, [_AdmittedThenSilent()])
-    supervisor = _make_supervisor(_noop_check_active)
-
-    started = time.monotonic()
-    with pytest.raises(research_runs.ModelFirstOutputTimeout):
-        _run_stream(supervisor, timeout_seconds = 30.0)
+    started = _shared_setup_1()
     assert time.monotonic() - started < 5.0, "the budget must run from admission end"
 
 
@@ -2218,11 +2223,7 @@ def test_stall_keepalives_after_the_first_frame_do_not_renew_the_budget(monkeypa
                 yield ": keep-alive"
 
     _install_fake_client(monkeypatch, [_RoleThenWedged()])
-    supervisor = _make_supervisor(_noop_check_active)
-
-    started = time.monotonic()
-    with pytest.raises(research_runs.ModelFirstOutputTimeout):
-        _run_stream(supervisor, timeout_seconds = 30.0)
+    started = _shared_setup_1()
     assert time.monotonic() - started < 5.0, "must end on the budget, not the wall clock"
 
 
@@ -2413,19 +2414,13 @@ def test_stream_completion_first_output_timeout_survives_iterator_cleanup(monkey
                 raise httpx.ReadError("cleanup failed") from exc
 
     _install_fake_client(monkeypatch, [_BrokenSilentStream()])
-    supervisor = _make_supervisor(_noop_check_active)
-
-    with pytest.raises(research_runs.ModelFirstOutputTimeout):
-        _run_stream(supervisor, timeout_seconds = 1.0)
+    _shared_setup_2()
 
 
 @pytest.mark.parametrize("body", ("data: [DONE]\n\n", ""))
 def test_stream_completion_rejects_zero_output_terminal_stream(monkeypatch, body):
     _install_fake_client(monkeypatch, [_response(200, body = body)])
-    supervisor = _make_supervisor(_noop_check_active)
-
-    with pytest.raises(research_runs.ModelFirstOutputTimeout):
-        _run_stream(supervisor, timeout_seconds = 1.0)
+    _shared_setup_2()
 
 
 def test_stream_cancellation_wins_at_first_output_deadline():
