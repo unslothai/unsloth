@@ -5081,6 +5081,7 @@ class TestProgressStepCountMatchesTotal:
         is_macos,
         is_mac_arm,
         skip_base = True,
+        no_torch = False,
     ):
         unstructured_plugin = tmp_path / "unstructured"
         github_plugin = tmp_path / "github"
@@ -5096,7 +5097,7 @@ class TestProgressStepCountMatchesTotal:
             patch.object(stack_mod, "IS_WINDOWS", is_windows),
             patch.object(stack_mod, "IS_MACOS", is_macos),
             patch.object(stack_mod, "IS_MAC_ARM", is_mac_arm),
-            patch.object(stack_mod, "NO_TORCH", False),
+            patch.object(stack_mod, "NO_TORCH", no_torch),
             patch.object(stack_mod, "_rocm_windows_torch_installed", False),
             patch.object(stack_mod, "_bootstrap_uv", return_value = False),
             patch.object(stack_mod, "_installed_torch_is_windows_rocm", return_value = False),
@@ -5138,6 +5139,27 @@ class TestProgressStepCountMatchesTotal:
             is_macos = is_macos,
             is_mac_arm = is_mac_arm,
             skip_base = skip_base,
+        )
+        assert step == total, f"progress {step} != total {total}"
+
+    @pytest.mark.parametrize("skip_base", [True, False])
+    @pytest.mark.parametrize(
+        "is_windows, is_macos, is_mac_arm",
+        [(False, False, False), (True, False, False), (False, True, True)],
+        ids = ["linux", "windows", "macos_arm"],
+    )
+    def test_progress_reaches_total_without_torch(
+        self, tmp_path, is_windows, is_macos, is_mac_arm, skip_base
+    ):
+        """--no-torch, on both core paths. The no-torch runtime deps step announces its own
+        progress slot, which the denominator has to count: an update printed 15/14 without it."""
+        step, total = self._run_stack(
+            tmp_path,
+            is_windows = is_windows,
+            is_macos = is_macos,
+            is_mac_arm = is_mac_arm,
+            skip_base = skip_base,
+            no_torch = True,
         )
         assert step == total, f"progress {step} != total {total}"
 

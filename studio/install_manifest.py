@@ -472,6 +472,14 @@ def update_manifest(root: Optional[Path] = None, **extra: object) -> bool:
     try:
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data, indent = 2, sort_keys = True), encoding = "utf-8")
+        # Checked again right before the replace, not just at the read above: the evidence this
+        # merges can take minutes to gather (the MLX import probe waits up to 180 s), and another
+        # updater that removed the manifest in the meantime is mid-pass. Recreating it there would
+        # put a completion marker over a half-built venv. Still not atomic, but the window closes
+        # from the length of the probe to the length of one replace.
+        if not path.exists():
+            tmp.unlink(missing_ok = True)
+            return False
         os.replace(tmp, path)
     except (OSError, TypeError, ValueError):
         return False

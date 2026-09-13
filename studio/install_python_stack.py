@@ -4628,15 +4628,18 @@ def _install_torchao_for_torch(torch_version: "str | None") -> None:
     # --no-deps skips nothing today (no torchao release declares a runtime torch dependency)
     # and guards the second caller, which runs right after the torch repair.
     args = ["--no-deps", "--no-cache-dir"]
-    if _may_skip_on_evidence() and not _pin_needs_reinstall(
-        spec, _torch_index_tag(torch_version) if index else ""
-    ):
+    needs_reinstall = _pin_needs_reinstall(spec, _torch_index_tag(torch_version) if index else "")
+    if _may_skip_on_evidence() and not needs_reinstall:
         # This exact version from this exact index is what the pin asserts, and running it resolved
         # against the index on every update. Evidence first: a forced pass asks for the install.
         _note(f"torch {torch_version or 'unknown'} detected -- {spec} is already installed")
         _record_step("torchao", "skipped")
         return
-    args.insert(0, "--force-reinstall")
+    # The flag stays keyed off the pin alone, as it was before the skip existed: a matching build
+    # with no evidence behind it -- every install's first update on this build -- would otherwise
+    # re-download a wheel that pip was about to report as already satisfied.
+    if needs_reinstall:
+        args.insert(0, "--force-reinstall")
     _record_step("torchao", "ran")
     _note(
         f"torch {torch_version or 'unknown'} detected -- installing {spec}"
@@ -7845,9 +7848,38 @@ def _mlx_stack_is_current() -> bool:
         return False
     try:
         from packaging.requirements import Requirement
-        return Requirement(_MLX_VLM_SPEC).specifier.contains(installed, prereleases = True)
+        if not Requirement(_MLX_VLM_SPEC).specifier.contains(installed, prereleases = True):
+            return False
     except Exception:  # noqa: BLE001 - no packaging, or a version it cannot parse
         return False
+    # The four pins are satisfied; their dependencies are a separate question. This step installs
+    # WITH dependencies, so it is what repairs an mlx-vlm whose miniaudio or mlx-audio is gone --
+    # the same reason the requirements steps audit their closure rather than their own lines.
+    return not _mlx_closure_unmet()
+
+
+def _mlx_closure_unmet() -> bool:
+    """Whether anything in the MLX pins' installed closure is missing or outside its pin."""
+    handle = None
+    try:
+        import tempfile as _tempfile  # noqa: PLC0415
+
+        handle = Path(
+            _tempfile.mkstemp(prefix = "unsloth-mlx-", suffix = ".txt", text = True)[1]
+        )
+        handle.write_text("\n".join([*_MLX_PINS, _MLX_VLM_SPEC]) + "\n", encoding = "utf-8")
+        unmet = install_manifest.closure_unmet_requirements(handle, _installed_index())
+    except Exception:  # noqa: BLE001 - an audit that cannot run is a reason to run the step
+        return True
+    finally:
+        if handle is not None:
+            try:
+                handle.unlink(missing_ok = True)
+            except OSError:
+                pass
+    if unmet and VERBOSE:
+        _note(f"MLX stack: {unmet[0]} is not satisfied -- running the step")
+    return bool(unmet)
 
 
 _MLX_HEALTH_PROBE = (
@@ -8058,9 +8090,16 @@ def _closure_record() -> "dict[str, list[str]]":
     """
     record: dict[str, list[str]] = {}
     # Under a caller's PIP_NO_DEPS the unmet dependencies are deliberate, not known conflicts.
-    if _foreign_resolver_inputs():
+    # A caller's UV_OVERRIDE is the same case and _plan_pass already refuses evidence for it:
+    # the override forces versions past the pins that asked for them, so what it leaves unmet is
+    # its own doing. Recorded, it would excuse the step that repairs it on every later update.
+    if _foreign_resolver_inputs() or _foreign_uv_override_in_effect():
         return record
-    previous = (_PASS_EVIDENCE or {}).get("known_unmet") or {}
+    # A hand-edited manifest can carry anything under this key; it reaches here outside the
+    # per-step try below, and this runs while write_manifest's arguments are being built.
+    previous = (_PASS_EVIDENCE or {}).get("known_unmet")
+    if not isinstance(previous, dict):
+        previous = {}
     for key, req in _AUDITED_STEPS.items():
         # An argument to write_manifest, so every install has already landed and nothing here may
         # raise: the core step can have replaced the tree these paths came from.
@@ -8079,10 +8118,11 @@ def _closure_record() -> "dict[str, list[str]]":
                 except OSError:
                     pass
         audited = not any(entry.startswith("<") for entry in unmet)
-        if _STEP_RESULTS.get(key) == "skipped" and isinstance(previous.get(key), list):
+        if _STEP_RESULTS.get(key) == "skipped":
             # Narrowed to what is still unmet, or a later loss of a since-satisfied package would
-            # hide behind the record. An audit that could not run keeps it as it was.
-            carried = list(previous[key])
+            # hide behind the record. An audit that could not run keeps it as it was. A step that
+            # did not run adopts nothing, so a record it never stood behind cannot excuse it.
+            carried = list(previous.get(key) or []) if isinstance(previous.get(key), list) else []
             if audited:
                 carried = [entry for entry in carried if entry in unmet]
             if carried:
@@ -8744,7 +8784,13 @@ def _run_patch_metadata() -> None:
     A subprocess here is a whole interpreter start for a stdlib script that edits at
     most three files. It stays as the fallback, because the script is also a supported
     standalone entry point and an import failure must not fail the install.
+
+    The script prints its tally. run() captured that; in process it would land in the
+    middle of the progress line, so it is captured here too and kept for UNSLOTH_VERBOSE.
     """
+    import contextlib  # noqa: PLC0415
+    import io  # noqa: PLC0415
+
     try:
         sys.path.insert(0, str(SINGLE_ENV))
         try:
@@ -8752,7 +8798,13 @@ def _run_patch_metadata() -> None:
         finally:
             if sys.path and sys.path[0] == str(SINGLE_ENV):
                 sys.path.pop(0)
-        patch_metadata.main()
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            patch_metadata.main()
+        if VERBOSE:
+            for line in captured.getvalue().splitlines():
+                if line.strip():
+                    _note(line.strip())
         return
     except Exception:  # noqa: BLE001
         pass
@@ -8796,7 +8848,11 @@ def _local_plugin_digest(plugin_dir: Path) -> "str | None":
             if path.is_file() and not _is_plugin_build_artifact(path.relative_to(plugin_dir))
         )
         for path in paths:
-            digest.update(path.relative_to(plugin_dir).as_posix().encode("utf-8"))
+            # surrogateescape, not strict: POSIX allows filenames that are not UTF-8, and
+            # a stray one beside the sources would otherwise end the update here.
+            digest.update(
+                path.relative_to(plugin_dir).as_posix().encode("utf-8", "surrogateescape")
+            )
             digest.update(b"\x00")
             digest.update(path.read_bytes())
             digest.update(b"\x00")
@@ -8849,6 +8905,10 @@ def install_python_stack() -> int:
             base_total += 1  # torch flavor invariant (step 13w), Windows
     if IS_MAC_ARM and not NO_TORCH:
         base_total += 1  # MLX stack, same gate as the step itself
+    if NO_TORCH and not skip_base:
+        # no-torch runtime deps, which this build announces on its own slot inside the core
+        # step rather than folding into it. Same gate as the step itself.
+        base_total += 1
     base_requirements = _shared_base_requirements() if skip_base else None
     # Core packages and shared base requirements occupy one progress slot. A
     # shell-installer handoff skips that slot only while base.txt has no work.

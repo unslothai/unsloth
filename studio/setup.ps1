@@ -5345,6 +5345,9 @@ if ($ROCmIndexUrl) {
     # As the XPU and CPU arms: force only when the resident torch is not this family, the pin moved
     # or the import failed. Unconditional --force-reinstall re-resolved the trio every update.
     $rocmForce = @()
+    # The same escape hatch the Python pass honours, in the same spellings: a skip nobody can turn
+    # off is a bug nobody can work around, and this arm is reached before the pass runs.
+    if (@("1", "true", "yes", "on") -contains "$($env:UNSLOTH_STUDIO_FULL_DEPS)".Trim().ToLowerInvariant()) { $rocmForce = @("--force-reinstall") }
     if ($installedTorchTag -ne "rocm") { $rocmForce = @("--force-reinstall") }
     if ($script:PinChangedForceReinstall) { $rocmForce = @("--force-reinstall") }
     if ($script:TorchImportDefinitivelyFailed) { $rocmForce = @("--force-reinstall") }

@@ -141,6 +141,29 @@ def test_update_manifest_never_creates_one(tmp_path: pathlib.Path) -> None:
     assert not (tmp_path / im.MANIFEST_NAME).exists()
 
 
+def test_update_manifest_does_not_recreate_one_removed_while_it_worked(
+    tmp_path: pathlib.Path, monkeypatch
+) -> None:
+    """The evidence this merges takes minutes to gather -- the MLX probe waits up to 180 s
+    -- and a second updater that dropped the manifest in that window is mid-pass. Writing
+    it back would put a completion marker over a half-built venv."""
+    im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+    live = tmp_path / im.MANIFEST_NAME
+    real_write_text = pathlib.Path.write_text
+
+    def _write_text(self, *args, **kwargs):
+        result = real_write_text(self, *args, **kwargs)
+        # Stands in for the other updater: it lands after the read, before the replace.
+        live.unlink(missing_ok = True)
+        return result
+
+    monkeypatch.setattr(pathlib.Path, "write_text", _write_text)
+    assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is False
+    monkeypatch.undo()
+    assert not live.exists()
+    assert not list(tmp_path.glob("*.json.tmp"))
+
+
 def test_update_manifest_with_nothing_to_say_is_a_no_op(tmp_path: pathlib.Path) -> None:
     im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
     assert im.update_manifest(root = tmp_path) is False

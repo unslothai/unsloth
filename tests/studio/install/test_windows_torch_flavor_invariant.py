@@ -329,13 +329,14 @@ def _base_total(**flags) -> int:
 class TestStepTotals:
     def test_windows_totals_include_torchcodec(self):
         assert _base_total(IS_WINDOWS = True) == 15
-        assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 13
+        # 14, not 13: an update installs the no-torch runtime deps on their own slot.
+        assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 14
 
     @pytest.mark.parametrize(
         "flags,total",
         [
             ({}, 17),  # Linux, torch
-            ({"NO_TORCH": True}, 14),  # Linux, GGUF-only
+            ({"NO_TORCH": True}, 15),  # Linux, GGUF-only (incl. the no-torch runtime step)
             ({"IS_MACOS": True, "IS_MAC_ARM": True}, 14),  # Apple Silicon
             ({"IS_MACOS": True}, 13),  # Intel Mac
         ],
@@ -615,6 +616,11 @@ def test_the_rocm_arm_forces_a_reinstall_only_when_the_other_arms_would():
     assert 'if ($installedTorchTag -ne "rocm") { $rocmForce = @("--force-reinstall") }' in arm
     assert "if ($script:PinChangedForceReinstall) { $rocmForce" in arm
     assert "if ($script:TorchImportDefinitivelyFailed) { $rocmForce" in arm
+    # ...and the escape hatch the Python pass honours reaches this arm too, in the same
+    # spellings: this runs before the pass, so UNSLOTH_STUDIO_FULL_DEPS would not otherwise
+    # reach the one install that used to be forced every time.
+    assert '@("1", "true", "yes", "on") -contains' in arm
+    assert '"$($env:UNSLOTH_STUDIO_FULL_DEPS)".Trim().ToLowerInvariant()' in arm
     # torch alone names the family: a companion re-resolved from PyPI satisfies its pin
     # without linking ROCm, and only a forced reinstall replaces a satisfied package.
     companion = arm[arm.index("$_companionNames = ") :]

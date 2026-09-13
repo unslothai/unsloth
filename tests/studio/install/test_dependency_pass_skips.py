@@ -20,10 +20,12 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import os
 import pathlib
 import platform
 import re
 import sys
+import tempfile
 import types
 
 import pytest
@@ -664,6 +666,28 @@ def test_no_closure_record_is_kept_under_a_callers_no_deps(monkeypatch) -> None:
     assert stack._closure_record() == {}
 
 
+def test_no_closure_record_is_kept_under_a_callers_uv_override(monkeypatch, gated) -> None:
+    """uv applies an override past the pin that asked for the package, so what the pass
+    leaves unmet under one is the override's doing. _plan_pass already refuses evidence
+    for a caller's UV_OVERRIDE, but the pass still writes the manifest at the end: a
+    record kept here would excuse the step that repairs it on every later update, long
+    after the override is gone."""
+    _payload, req_root = gated
+    monkeypatch.setattr(stack, "_AUDITED_STEPS", {"studio.txt": req_root / "studio.txt"})
+    monkeypatch.setattr(stack, "_STEP_RESULTS", {"studio.txt": "ran"})
+    monkeypatch.setattr(
+        stack.install_manifest, "closure_unmet_requirements", lambda *a, **k: ["click 8.5.0"]
+    )
+    assert stack._closure_record() == {"studio.txt": ["click 8.5.0"]}
+    foreign = req_root / "my-overrides.txt"
+    foreign.write_text("click==8.5.0\n", encoding = "utf-8")
+    monkeypatch.setenv("UV_OVERRIDE", str(foreign))
+    assert stack._closure_record() == {}
+    # The module's own macOS arm64 file is a tracked input, not a caller's.
+    monkeypatch.setenv("UV_OVERRIDE", str(stack._MLX_OVERRIDES))
+    assert stack._closure_record() == {"studio.txt": ["click 8.5.0"]}
+
+
 def test_a_caller_supplied_uv_override_forces_a_full_pass(monkeypatch, manifest) -> None:
     """uv applies UV_OVERRIDE to every step and its versions replace requirements
     outright; the gate digests only the bundled macOS file, so a caller's own file is
@@ -720,6 +744,20 @@ def test_a_plugin_digest_is_stable_and_content_addressed(tmp_path) -> None:
     assert stack._local_plugin_digest(first) == stack._local_plugin_digest(second)
     (second / "src" / "mod.py").write_text("VALUE = 2\n", encoding = "utf-8")
     assert stack._local_plugin_digest(first) != stack._local_plugin_digest(second)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Windows filenames are UTF-16, not bytes")
+def test_a_filename_that_is_not_utf_8_still_digests(tmp_path) -> None:
+    """POSIX filenames are bytes. A stray one beside the sources -- a download, an editor
+    backup -- used to raise UnicodeEncodeError out of the digest and end the update."""
+    plugin = tmp_path / "p"
+    plugin.mkdir()
+    (plugin / "ok.py").write_text("x\n", encoding = "utf-8")
+    odd = os.path.join(str(plugin), b"\xff.txt".decode("utf-8", "surrogateescape"))
+    with open(odd, "wb") as handle:
+        handle.write(b"x")
+    digest = stack._local_plugin_digest(plugin)
+    assert digest and stack._local_plugin_digest(plugin) == digest
 
 
 def test_a_renamed_file_changes_the_plugin_digest(tmp_path) -> None:
@@ -864,6 +902,8 @@ def test_a_pip_that_cannot_run_is_bootstrapped_again(monkeypatch) -> None:
 def test_the_mlx_stack_is_current_only_when_all_four_hold(monkeypatch) -> None:
     versions = {"mlx": "0.32.1", "mlx-metal": "0.32.1", "mlx-lm": "0.31.3", "mlx-vlm": "0.5.0"}
     monkeypatch.setattr(stack, "_installed_distribution_version", lambda name: versions.get(name))
+    # The closure of a stack that is not installed on this host is its own test below.
+    monkeypatch.setattr(stack, "_mlx_closure_unmet", lambda: False)
     assert stack._mlx_stack_is_current() is True
     for name, wrong in (
         ("mlx", "0.32.0"),
@@ -876,6 +916,38 @@ def test_the_mlx_stack_is_current_only_when_all_four_hold(monkeypatch) -> None:
         broken[name] = wrong
         monkeypatch.setattr(stack, "_installed_distribution_version", lambda n, b = broken: b.get(n))
         assert stack._mlx_stack_is_current() is False, name
+
+
+def test_a_satisfied_mlx_pin_with_a_broken_closure_is_not_current(monkeypatch, tmp_path) -> None:
+    """This step installs WITH dependencies, so it is what repairs an mlx-vlm whose own
+    miniaudio or mlx-audio is gone. Versions alone would skip that repair."""
+    versions = {"mlx": "0.32.1", "mlx-metal": "0.32.1", "mlx-lm": "0.31.3", "mlx-vlm": "0.5.0"}
+    monkeypatch.setattr(stack, "_installed_distribution_version", lambda name: versions.get(name))
+    monkeypatch.setattr(stack, "_mlx_closure_unmet", lambda: True)
+    assert stack._mlx_stack_is_current() is False
+
+
+def test_the_mlx_closure_audit_reads_the_pins_and_cleans_up(monkeypatch, tmp_path) -> None:
+    seen: list[str] = []
+
+    def _closure(req, _index = None, **_kwargs):
+        seen.append(req.read_text(encoding = "utf-8"))
+        assert req.exists()
+        return ["miniaudio"]
+
+    monkeypatch.setattr(stack.install_manifest, "closure_unmet_requirements", _closure)
+    monkeypatch.setattr(stack, "_installed_index", lambda: {})
+    assert stack._mlx_closure_unmet() is True
+    assert seen and all(spec in seen[0] for spec in [*stack._MLX_PINS, stack._MLX_VLM_SPEC])
+    # A temp file per update, on a path the step is not allowed to leave behind.
+    assert not list(pathlib.Path(tempfile.gettempdir()).glob("unsloth-mlx-*.txt"))
+
+    def _raises(*_a, **_k):
+        raise RuntimeError("metadata unreadable")
+
+    monkeypatch.setattr(stack.install_manifest, "closure_unmet_requirements", _raises)
+    # An audit that cannot run is a reason to run the step, never to skip it.
+    assert stack._mlx_closure_unmet() is True
 
 
 def test_the_mlx_pins_match_the_runtime_repair() -> None:
@@ -1118,6 +1190,7 @@ class _FakePatchModule:
 
     def main(self):
         self.main_calls += 1
+        print("single-env metadata patch: checked=1, changed=1")
         if self._raise_on_main:
             raise RuntimeError("cannot patch in process")
         return 0
@@ -1179,6 +1252,22 @@ def test_the_patch_applies_in_process(monkeypatch, tmp_path) -> None:
     stack._run_patch_metadata()
     assert fake.main_calls == 1
     assert ran == []
+
+
+def test_the_in_process_patch_does_not_print_into_the_progress_line(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    """The script prints its tally, and the subprocess path it replaces captured that.
+    In process it would land in the middle of the progress bar."""
+    _patch_module(monkeypatch, tmp_path, UNPATCHED)
+    monkeypatch.setattr(stack, "run", lambda *a, **k: None)
+    monkeypatch.setattr(stack, "VERBOSE", False)
+    stack._run_patch_metadata()
+    assert capsys.readouterr().out == ""
+    # ...and it is not lost: UNSLOTH_VERBOSE prints no progress line for it to break.
+    monkeypatch.setattr(stack, "VERBOSE", True)
+    stack._run_patch_metadata()
+    assert "checked=1, changed=1" in capsys.readouterr().out
 
 
 def test_the_patch_still_falls_back_to_the_subprocess(monkeypatch, tmp_path) -> None:
@@ -1469,6 +1558,22 @@ def test_the_closure_record_never_carries_an_audit_failure(monkeypatch, gated) -
     assert stack._closure_record() == {"studio.txt": ["click 8.3.0"]}
 
 
+def test_a_known_unmet_field_that_is_not_a_mapping_is_ignored(monkeypatch, gated) -> None:
+    """Read from the manifest on disk and reached while write_manifest's arguments are
+    being built, so a hand-edited value here used to abort a pass whose installs had all
+    landed -- leaving the venv with no manifest at all."""
+    _payload, req_root = gated
+    monkeypatch.setattr(stack, "_AUDITED_STEPS", {"studio.txt": req_root / "studio.txt"})
+    monkeypatch.setattr(stack, "_STEP_RESULTS", {"studio.txt": "skipped"})
+    monkeypatch.setattr(
+        stack.install_manifest, "closure_unmet_requirements", lambda *a, **k: ["click 8.3.0"]
+    )
+    for value in (["click 8.3.0"], "click", 7):
+        stack._PASS_EVIDENCE["known_unmet"] = value
+        # The step ran for nothing it can prove was known, so nothing is carried.
+        assert stack._closure_record() == {}
+
+
 def test_a_carried_known_unmet_record_drops_what_is_met_again(monkeypatch, gated) -> None:
     """A skipped step carries its record, narrowed to what the closure still lacks: an
     entry satisfied since it was recorded was no conflict, and keeping it would let a
@@ -1655,6 +1760,14 @@ def test_a_satisfied_torchao_pin_is_still_reinstalled_on_a_forced_pass(monkeypat
     stack._install_torchao_for_torch("2.10.0")
     assert len(calls) == 1
     assert stack._STEP_RESULTS.get("torchao") == "ran"
+    # ...with the flags the step had before the skip existed. Every install's first update on
+    # this build has no evidence, and forcing there would re-download a wheel pip was about to
+    # report as already satisfied.
+    assert "--force-reinstall" not in calls[0]
+
+    monkeypatch.setattr(stack, "_pin_needs_reinstall", lambda *_a: True)
+    stack._install_torchao_for_torch("2.10.0")
+    assert "--force-reinstall" in calls[1]
 
 
 def test_the_mlx_and_codec_skips_ask_for_the_evidence_too() -> None:
