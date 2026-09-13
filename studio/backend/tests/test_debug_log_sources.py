@@ -171,16 +171,12 @@ def test_troubleshooting_bundle_includes_session_and_recent_llama_attempts():
     bundle = debug_log_sources.troubleshooting_source_ids()
     assert bundle
     assert debug_log_sources.resolve_source_id(bundle[0]) == Path(os.path.realpath(server_path))
-    llama_ids = {
-        s.id for s in debug_log_sources.list_sources() if s.family == "llama-server"
-    }
+    llama_ids = {s.id for s in debug_log_sources.list_sources() if s.family == "llama-server"}
     assert any(item in llama_ids for item in bundle[1:])
 
 
 def test_recent_llama_attempts_are_flagged():
-    paths = [
-        _seed("llama-server", f"llama-17650003{i:02d}-port-8080.log") for i in range(4)
-    ]
+    paths = [_seed("llama-server", f"llama-17650003{i:02d}-port-8080.log") for i in range(4)]
     for index, path in enumerate(paths):
         os.utime(path, (1_765_000_300 + index, 1_765_000_300 + index))
     flagged = [
