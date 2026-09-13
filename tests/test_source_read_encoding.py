@@ -61,6 +61,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 TESTS = Path(__file__).resolve().parent
 REPO = TESTS.parent
 # Both trees ship to Windows contributors, and separate CI jobs collect them (repo-cpu-tests and the studio-backend
@@ -1274,9 +1276,22 @@ def _scan_one(tree: ast.Module, rel: str):
             yield f"{rel}:{call.lineno}: {name}"
 
 
-def test_checked_in_file_reads_name_an_encoding():
+# Scanning every file was one test, and a single test is one xdist worker, so
+# it set the floor for the whole suite however many workers were free. The
+# files are independent, so the same scan splits into batches that run in
+# parallel. Every file is still scanned exactly once, by exactly one batch.
+_BATCHES = 16
+
+
+def _batches():
+    ordered = sorted(SOURCES)
+    return [ordered[i::_BATCHES] for i in range(_BATCHES)]
+
+
+@pytest.mark.parametrize("batch", range(_BATCHES))
+def test_checked_in_file_reads_name_an_encoding(batch: int):
     offenders = []
-    for path in sorted(SOURCES):
+    for path in _batches()[batch]:
         tree = ast.parse(path.read_text(encoding = "utf-8"), filename = str(path))
         offenders.extend(_scan(tree, path.relative_to(REPO).as_posix()))
     assert offenders == [], (

@@ -58,11 +58,26 @@ def _safe_parse(path: pathlib.Path):
     if key in _PARSE_CACHE:
         return _PARSE_CACHE[key]
     try:
+        text = path.read_text(encoding = "utf-8")
+    except (OSError, UnicodeDecodeError):
+        _PARSE_CACHE[key] = None
+        return None
+    # Both halves of the rule need this substring spelled out in the source: a
+    # producer holds `self._<name>_callbacks`, a consumer calls
+    # `add_<name>_callback(...)` or `register_<name>_callback(...)`, and the AST
+    # side matches those attribute names literally. So a file without it cannot
+    # contribute a producer or a registration, and parsing it only to walk it
+    # and find nothing is most of this test's runtime: 3137 files parsed where
+    # 102 can matter.
+    if "_callback" not in text:
+        _PARSE_CACHE[key] = None
+        return None
+    try:
         import warnings as _w
         with _w.catch_warnings():
             # Suppress SyntaxWarning from third-party files with invalid escape sequences.
             _w.simplefilter("ignore", SyntaxWarning)
-            tree = ast.parse(path.read_text(encoding = "utf-8"))
+            tree = ast.parse(text)
     except (SyntaxError, UnicodeDecodeError):
         tree = None
     _PARSE_CACHE[key] = tree
@@ -71,8 +86,13 @@ def _safe_parse(path: pathlib.Path):
 
 def _callback_list_attrs_in_class(cls: ast.ClassDef) -> set[str]:
     """Find self._<name>_callbacks attributes assigned or appended-to inside cls."""
+    return _callback_list_attrs_in_nodes(ast.walk(cls))
+
+
+def _callback_list_attrs_in_nodes(nodes) -> set[str]:
+    """The same, over an already-walked class, so the walk can be shared."""
     found = set()
-    for node in ast.walk(cls):
+    for node in nodes:
         if isinstance(node, ast.Assign):
             for t in node.targets:
                 if (
@@ -101,14 +121,17 @@ def _producer_arities(tree: ast.AST) -> dict[str, int]:
     """Return {cb_list_attr: max_arity} over all ``for cb in self._x_callbacks: cb(...)`` sites."""
     out: dict[str, int] = {}
     for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
-        cb_lists = _callback_list_attrs_in_class(cls)
-        # Walk the class once rather than once per callback list. Which
-        # `for cb in self.<x>:` loops the class contains does not depend on the
-        # name being asked about, and re-deriving it per name is what made this
-        # quadratic in classes that declare several lists.
+        # One walk per class, shared by both questions asked of it. Which
+        # `for cb in self.<x>:` loops a class contains does not depend on the
+        # name being asked about, and re-deriving that per name is what made
+        # this quadratic in classes declaring several lists.
+        nodes = list(ast.walk(cls))
+        cb_lists = _callback_list_attrs_in_nodes(nodes)
+        if not cb_lists:
+            continue
         dispatch_loops = [
             node
-            for node in ast.walk(cls)
+            for node in nodes
             if isinstance(node, ast.For)
             and isinstance(node.iter, ast.Attribute)
             and isinstance(node.iter.value, ast.Name)
