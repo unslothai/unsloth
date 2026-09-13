@@ -305,6 +305,29 @@ def test_a_stop_created_by_decode_cleanup_of_settled_text_still_matches():
     assert "".join(wrapped) == "Hello world "
 
 
+def test_a_cleanup_rewrite_split_across_tokens_still_matches_a_stop():
+    inf = pytest.importorskip("core.inference.inference")
+    torch = pytest.importorskip("torch")
+
+    class Tokenizer(_Tokenizer):
+        pieces = {2: "I", 3: " ca", 4: " ", 5: "n", 6: "'t", 7: " go"}
+
+        def decode(self, ids, **kwargs):
+            # Mirrors clean_up_tokenization_spaces, which rewrites " n't" as "n't".
+            return super().decode(ids, **kwargs).replace(" n't", "n't")
+
+    # Split over three tokens the rewrite is invisible from a short window: " " and "n"
+    # and "'t" each decode unchanged, so the concatenation keeps the space the full
+    # decode drops and the stop is never found.
+    streamer = inf.TextIteratorStreamer(Tokenizer(), skip_prompt = False)
+    wrapped = inf._StopSequenceStreamer(streamer, ["can't"])
+    for token in (2, 3, 4, 5, 6):
+        wrapped.put(torch.tensor([token]))
+    assert wrapped.matched.is_set()
+    wrapped.end()
+    assert "can't" not in "".join(wrapped)
+
+
 def test_an_unfinished_byte_run_is_not_settled_before_it_completes():
     inf = pytest.importorskip("core.inference.inference")
     torch = pytest.importorskip("torch")

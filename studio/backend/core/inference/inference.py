@@ -260,6 +260,16 @@ class _GenerationThreadError(RuntimeError):
     """Generation worker failures that should propagate through stream routes."""
 
 
+# clean_up_tokenization_spaces deletes the space in " .", " ?", " !", " ,", " ' ",
+# " n't", " 'm", " 's", " 've" and " 're" -- every rule is a space followed by one of
+# these characters, and the longest is four characters long.
+_CLEANUP_AFTER_SPACE = ".?!,'n"
+_CLEANUP_SPAN_CHARS = 4
+# Tokens, not characters: a rewrite four characters wide can be spread over four
+# one-character tokens, and eight covers that with room for tokens that decode to "".
+_CLEANUP_SPAN_TOKENS = 8
+
+
 class _StopSequenceStreamer:
     def __init__(self, streamer, stop):
         self.streamer = streamer
@@ -333,6 +343,27 @@ class _StopSequenceStreamer:
         # and settle its text once it no longer ends in unresolved bytes.
         prefix = self._decode(self.token_ids[self.prefix_offset : self.read_offset])
         window = self._decode(self.token_ids[self.prefix_offset :])
+        if (
+            window.startswith(prefix)
+            and " " in self.settled[-_CLEANUP_SPAN_CHARS:]
+            and window[len(prefix) :][:1] in _CLEANUP_AFTER_SPACE
+        ):
+            # A cleanup rewrite that spans the join is invisible from this window: every
+            # clean_up_tokenization_spaces rule deletes a space before one of ".?!,'n"
+            # (" n't" -> "n't"), and split across tokens each half decodes unchanged, so
+            # ``startswith`` holds and the concatenation keeps a space the full decode
+            # drops. Settled text then diverges permanently and a stop written across the
+            # join never matches. Re-read the few tokens behind the join, but only for a
+            # join that looks like one of those rules, so ordinary text keeps the short
+            # window.
+            wider = max(0, self.read_offset - _CLEANUP_SPAN_TOKENS)
+            if wider < self.prefix_offset:
+                wide_prefix = self._decode(self.token_ids[wider : self.read_offset])
+                # Splicing onto text this prefix does not end is worse than the divergence
+                # it repairs, so fall back to the short window rather than guess.
+                if self.settled.endswith(wide_prefix):
+                    prefix = wide_prefix
+                    window = self._decode(self.token_ids[wider:])
         if window.endswith("\ufffd"):
             # Bytes still arriving can rewrite the whole window (byte-fallback tokenizers
             # show an unfinished emoji as replacement characters), so wait for them.
