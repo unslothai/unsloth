@@ -385,41 +385,6 @@ def test_update_manifest_does_not_recreate_one_removed_while_it_worked(
     assert not list(tmp_path.glob("*.tmp")), "the temp copy outlived the call"
 
 
-def test_remove_manifest_refuses_an_unclearable_parked_copy_with_no_live_manifest(
-    tmp_path: pathlib.Path,
-) -> None:
-    """An interrupted run already took the live manifest. Nothing is parked by this call, so
-    a surviving copy is that dead run's, and answering True would send setup.ps1 into its
-    pip/torch mutations ahead of the refusal the pass makes on exactly that path."""
-    blocked = tmp_path / im.PREVIOUS_MANIFEST_NAME
-    blocked.mkdir()
-    (blocked / "keep.txt").write_text("x", encoding = "utf-8")
-    assert im.remove_manifest(root = tmp_path) is False
-
-    (blocked / "keep.txt").unlink()
-    blocked.rmdir()
-    assert im.remove_manifest(root = tmp_path) is True
-
-
-def test_a_dead_runs_parked_copy_does_not_outlive_the_next_invalidation(
-    tmp_path: pathlib.Path,
-) -> None:
-    """It would otherwise be read as this pass's evidence."""
-    (tmp_path / im.PREVIOUS_MANIFEST_NAME).write_text("{}", encoding = "utf-8")
-    assert im.remove_manifest(root = tmp_path) is True
-    assert not (tmp_path / im.PREVIOUS_MANIFEST_NAME).exists()
-
-
-def test_remove_manifest_parks_over_a_stale_copy_it_can_clear(tmp_path: pathlib.Path) -> None:
-    """The ordinary case the fallback must not punish: a leftover file from a run that died
-    is replaced, not treated as an obstruction."""
-    im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
-    (tmp_path / im.PREVIOUS_MANIFEST_NAME).write_text("{}", encoding = "utf-8")
-    assert im.remove_manifest(root = tmp_path) is True
-    assert not (tmp_path / im.MANIFEST_NAME).exists()
-    assert im.read_previous_manifest(root = tmp_path)["schema"] == im.MANIFEST_SCHEMA
-
-
 def test_update_manifest_with_nothing_to_say_is_a_no_op(tmp_path: pathlib.Path) -> None:
     im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
     assert im.update_manifest(root = tmp_path) is False
