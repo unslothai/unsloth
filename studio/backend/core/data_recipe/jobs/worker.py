@@ -20,11 +20,13 @@ from .constants import EVENT_JOB_COMPLETED, EVENT_JOB_ERROR, EVENT_JOB_STARTED
 from ..service import build_config_builder, create_data_designer
 from utils.paths import ensure_dir, recipe_datasets_root
 
-# Fresh spawned interpreter: re-apply main.py's OS-trust-store injection.
+# Fresh spawned interpreter: re-apply main.py's process-wide network injections.
 from utils.native_tls import activate_native_tls
+from utils.happy_eyeballs import activate_happy_eyeballs
 from utils.paths.path_utils import drop_appledouble_metadata
 
 activate_native_tls()
+activate_happy_eyeballs()
 
 _ARTIFACT_ROOT = recipe_datasets_root()
 _RE_GITHUB_CURSOR = re.compile(r"\bcursor=[^\s,]+")

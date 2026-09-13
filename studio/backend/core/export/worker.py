@@ -27,10 +27,12 @@ from typing import Any
 
 logger = get_logger(__name__)
 
-# Fresh spawned interpreter: re-apply the OS-trust-store injection.
+# Fresh spawned interpreter: re-apply the process-wide network injections.
 from utils.native_tls import activate_native_tls
+from utils.happy_eyeballs import activate_happy_eyeballs
 
 activate_native_tls()
+activate_happy_eyeballs()
 
 
 # Gate controlling whether captured stdout/stderr lines are forwarded to the

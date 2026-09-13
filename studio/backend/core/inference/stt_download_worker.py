@@ -21,11 +21,14 @@ import time
 from pathlib import Path
 from typing import Optional, Sequence
 
-# Fresh spawned interpreter: re-apply the OS-trust-store injection.
 from hub.utils.hf_tokens import apply_token_to_child_env
+
+# Fresh spawned interpreter: re-apply the process-wide network injections.
 from utils.native_tls import activate_native_tls
+from utils.happy_eyeballs import activate_happy_eyeballs
 
 activate_native_tls()
+activate_happy_eyeballs()
 
 
 # How long a cancelled worker gets to exit on SIGTERM before it is killed.
