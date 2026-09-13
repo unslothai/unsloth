@@ -58,12 +58,17 @@ VLM_PROMPT_CACHE_ENTRIES = 6
 
 
 def vlm_prefill_step():
-    """The grid: mlx-vlm's default step, so an unreused request prefills as mlx-vlm does."""
+    """The grid: mlx-vlm's default step, so an unreused request prefills as mlx-vlm does.
+
+    Anything a grid cannot be built on falls back rather than raising: the step divides
+    the boundary on every request, so a ``None`` default (a release that stops chunking by
+    default) or a zero would break generation, not just the reuse."""
     try:
         from mlx_vlm.generate.common import DEFAULT_PREFILL_STEP_SIZE
-        return int(DEFAULT_PREFILL_STEP_SIZE)
-    except ImportError:
+        step = int(DEFAULT_PREFILL_STEP_SIZE)
+    except Exception:
         return VLM_PREFILL_STEP
+    return step if step > 0 else VLM_PREFILL_STEP
 
 
 def shape_stable_prefix(

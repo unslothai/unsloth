@@ -678,6 +678,44 @@ def test_session_defaults_to_mlx_vlm_prefill_step(fake_mx):
     assert shape_stable_prefix(2048) == 0 and shape_stable_prefix(2049) == 2048
 
 
+@pytest.mark.parametrize(
+    "default",
+    [None, 0, -1, "2048", object()],
+    ids = ["none", "zero", "negative", "string", "unreadable"],
+)
+def test_a_step_no_grid_can_be_built_on_falls_back_instead_of_raising(monkeypatch, default):
+    """The step divides every boundary, so one that cannot must never reach a request:
+    it would take generation down, not just the reuse."""
+    module = types.ModuleType("mlx_vlm.generate.common")
+    module.DEFAULT_PREFILL_STEP_SIZE = default
+    monkeypatch.setitem(sys.modules, "mlx_vlm", types.ModuleType("mlx_vlm"))
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate", types.ModuleType("mlx_vlm.generate"))
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate.common", module)
+
+    assert vlm_prefill_step() == VLM_PREFILL_STEP == 2048
+    assert shape_stable_prefix(3000, step = vlm_prefill_step()) == 2048
+
+
+def test_a_step_mlx_vlm_names_is_used_even_when_it_is_not_the_default(monkeypatch):
+    module = types.ModuleType("mlx_vlm.generate.common")
+    module.DEFAULT_PREFILL_STEP_SIZE = 512
+    monkeypatch.setitem(sys.modules, "mlx_vlm", types.ModuleType("mlx_vlm"))
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate", types.ModuleType("mlx_vlm.generate"))
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate.common", module)
+
+    assert vlm_prefill_step() == 512
+
+
+def test_a_module_that_names_no_step_falls_back(monkeypatch):
+    monkeypatch.setitem(sys.modules, "mlx_vlm", types.ModuleType("mlx_vlm"))
+    monkeypatch.setitem(sys.modules, "mlx_vlm.generate", types.ModuleType("mlx_vlm.generate"))
+    monkeypatch.setitem(
+        sys.modules, "mlx_vlm.generate.common", types.ModuleType("mlx_vlm.generate.common")
+    )
+
+    assert vlm_prefill_step() == VLM_PREFILL_STEP
+
+
 class FakeSlottedKV:
     """A cache whose fields live in ``__slots__``: ``vars()`` cannot reach them."""
 
