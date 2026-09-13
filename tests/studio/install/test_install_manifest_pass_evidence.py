@@ -141,6 +141,40 @@ def test_update_manifest_never_creates_one(tmp_path: pathlib.Path) -> None:
     assert not (tmp_path / im.MANIFEST_NAME).exists()
 
 
+def test_remove_manifest_keeps_the_live_one_when_the_parked_name_cannot_be_cleared(
+    tmp_path: pathlib.Path,
+) -> None:
+    """setup.ps1 reads True here as permission to replace pip, torch and triton, and the
+    dependency pass refuses to run behind a parked copy it cannot clear. Dropping the live
+    manifest first would put that refusal after the mutations, on a venv that can no longer
+    verify, and every later update would stop at the same place."""
+    im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+    live = tmp_path / im.MANIFEST_NAME
+    # A directory on the reserved name refuses both the rename and the unlink, on every OS.
+    blocked = tmp_path / im.PREVIOUS_MANIFEST_NAME
+    blocked.mkdir()
+    (blocked / "keep.txt").write_text("x", encoding = "utf-8")
+
+    assert im.remove_manifest(root = tmp_path) is False
+    assert live.exists(), "the venv must still verify when the pass cannot be entered"
+
+    # Cleared, the same call parks as usual.
+    (blocked / "keep.txt").unlink()
+    blocked.rmdir()
+    assert im.remove_manifest(root = tmp_path) is True
+    assert not live.exists() and (tmp_path / im.PREVIOUS_MANIFEST_NAME).exists()
+
+
+def test_remove_manifest_parks_over_a_stale_copy_it_can_clear(tmp_path: pathlib.Path) -> None:
+    """The ordinary case the fallback must not punish: a leftover file from a run that died
+    is replaced, not treated as an obstruction."""
+    im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+    (tmp_path / im.PREVIOUS_MANIFEST_NAME).write_text("{}", encoding = "utf-8")
+    assert im.remove_manifest(root = tmp_path) is True
+    assert not (tmp_path / im.MANIFEST_NAME).exists()
+    assert im.read_previous_manifest(root = tmp_path)["schema"] == im.MANIFEST_SCHEMA
+
+
 def test_update_manifest_does_not_recreate_one_removed_while_it_worked(
     tmp_path: pathlib.Path, monkeypatch
 ) -> None:

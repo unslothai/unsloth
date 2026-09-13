@@ -313,11 +313,28 @@ def remove_manifest(root: Optional[Path] = None) -> bool:
     write_manifest. Deleting it is still the fallback when the rename is refused.
     """
     path = manifest_path(root)
+    parked = previous_manifest_path(root)
     try:
-        os.replace(path, previous_manifest_path(root))
+        os.replace(path, parked)
     except FileNotFoundError:
         return True
     except OSError:
+        # The rename was refused. Clear whatever holds the reserved name and retry before
+        # falling back to the unlink: setup.ps1 reads True here as permission to replace pip,
+        # torch and triton, and the dependency pass refuses to run behind a parked copy it
+        # cannot clear. Deleting the live manifest first would put that refusal AFTER the
+        # mutations, on a venv that can no longer verify, and every later update would stop
+        # at the same place.
+        consume_previous_manifest(root)
+        if parked.exists():
+            return False
+        try:
+            os.replace(path, parked)
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError:
+            pass
         try:
             path.unlink()
         except FileNotFoundError:
