@@ -463,3 +463,13 @@ test("a carriage return only closes a fence as the closing line's last character
   const closing = markdownBlockFallback("```py\nx\n```\r");
   assert.equal(closing.text, "x", "a CR as the closing line's last character does close it");
 });
+
+test("a streaming open fence renders as a plain shell, not through Block", () => {
+  const markdownText = readFileSync(MARKDOWN_TEXT_PATH, "utf8");
+  assert.ok(
+    /if \(props\.isIncomplete\) \{\s*const openFence = markdownBlockFallback\(props\.content\);\s*if \(openFence\.fenced\) \{\s*return \(\s*<DeferredFenceShell/m.test(
+      markdownText,
+    ),
+    "an open fence that is still streaming must bypass Block and the highlighter until its closing delimiter arrives",
+  );
+});
