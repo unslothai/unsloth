@@ -2508,6 +2508,7 @@ def test_whisper_full_check_request_declines_the_fast_path(tmp_path, monkeypatch
     assert _whisper_check(install_dir, host) is False
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "os.chmod cannot clear an execute bit Windows lacks")
 def test_whisper_a_damaged_tree_is_not_current(tmp_path, monkeypatch):
     """installed_tree_is_intact is the shared on-disk half, so the fast path refuses
     exactly what the slow path would have repaired."""

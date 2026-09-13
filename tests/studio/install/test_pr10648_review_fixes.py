@@ -102,6 +102,7 @@ def test_the_group_survives_a_rewrite_the_owner_cannot_be_granted(tmp_path, monk
     assert applied == [shared_gid], "the group was never applied to the replacement"
 
 
+@requires_chown
 def test_a_marker_rewrite_keeps_the_keys_the_about_tab_renders(tmp_path, monkeypatch):
     """release_tag and tag reach the user through /api/system/hardware and the About tab.
 

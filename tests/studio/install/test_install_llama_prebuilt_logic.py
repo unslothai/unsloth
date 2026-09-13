@@ -6592,6 +6592,7 @@ def test_a_gutted_runtime_payload_is_not_current(tmp_path, monkeypatch):
     assert _check(install_dir) is False
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "os.chmod cannot clear an execute bit Windows lacks")
 def test_a_non_executable_binary_is_not_current(tmp_path, monkeypatch):
     install_dir = _current_install(tmp_path, monkeypatch)
     (install_dir / "build" / "bin" / "llama-server").chmod(0o644)

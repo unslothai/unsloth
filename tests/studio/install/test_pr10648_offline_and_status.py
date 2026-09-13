@@ -1133,6 +1133,7 @@ def test_setup_ps1_reports_each_component_separately(tmp_path):
     assert "setup_fail|" not in result.stdout, result.stdout
 
 
+@requires_bash
 def test_the_installer_emits_exactly_the_substrings_the_scripts_grep(tmp_path, monkeypatch, capsys):
     """End to end: the real installer log, fed to the real setup.sh block.
 
@@ -1146,8 +1147,6 @@ def test_the_installer_emits_exactly_the_substrings_the_scripts_grep(tmp_path, m
     code, log = _run_cli(monkeypatch, capsys, host, install_dir)
     assert code == M.EXIT_SUCCESS, log
 
-    if shutil.which("bash") is None:  # pragma: no cover - CI always has bash
-        pytest.skip("bash is required to execute the setup.sh status block")
     result = _run_bash(_sh_whisper_script(tmp_path, code, log))
     assert (
         _steps(result.stdout)["whisper.cpp"] == "update unavailable, existing prebuilt kept"
