@@ -1486,7 +1486,11 @@ def test_the_prime_never_blocks_the_warm_sequence(monkeypatch):
         release.wait(30)
         return {(0, 1): "NVLINK", (1, 0): "NVLINK"}
 
-    monkeypatch.setattr(LlamaCppBackend, "_nvlink_topology", classmethod(_slow))
+    # The prime calls _probe_nvml_nvlink_topology, not _nvlink_topology. Patching the
+    # latter left the probe on the fixture's NVML-absent default, which returns at
+    # once, so the worker was usually dead before `is_alive` ran and nothing slow was
+    # ever exercised.
+    monkeypatch.setattr(LlamaCppBackend, "_probe_nvml_nvlink_topology", classmethod(_slow))
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 8))
     try:
         started = _time.perf_counter()
