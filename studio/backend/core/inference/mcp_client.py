@@ -48,6 +48,7 @@ _private_recipients = {}
 _private_recipients_lock = threading.Lock()
 _private_reaper_started = False
 _PRIVATE_RESPONSE_LIMIT = 64 * 1024 * 1024
+_PRIVATE_RECIPIENT_TTL = 300.0
 
 
 class _PrivateMcpTransport:
@@ -424,11 +425,15 @@ def prepare_mcp_image_recipient(
             expired = [
                 identity
                 for identity, item in _private_recipients.items()
-                if time.monotonic() - item.created_at > 300 or item.closed.is_set()
+                if time.monotonic() - item.created_at > _PRIVATE_RECIPIENT_TTL
+                or item.closed.is_set()
             ]
             stale = [_private_recipients.pop(identity) for identity in expired]
             if len(_private_recipients) >= _DEFAULT_MAX_SESSIONS:
                 raise _PrivateTransportUnavailable
+            # Initialization may be slow. The disclosure lifetime begins only
+            # once this initialized recipient is ready to be shown to the user.
+            transport.created_at = time.monotonic()
             _private_recipients[transport.identity] = transport
             if not _private_reaper_started:
                 _private_reaper_started = True
@@ -450,7 +455,8 @@ def _private_recipient_reaper():
             expired = [
                 identity
                 for identity, item in _private_recipients.items()
-                if time.monotonic() - item.created_at > 300 or item.closed.is_set()
+                if time.monotonic() - item.created_at > _PRIVATE_RECIPIENT_TTL
+                or item.closed.is_set()
             ]
             stale = [_private_recipients.pop(identity) for identity in expired]
         for item in stale:
@@ -463,6 +469,15 @@ def mcp_image_recipient_location(identity):
         if transport is None or transport.account != current_account_id():
             raise _PrivateTransportUnavailable
         return transport.location
+
+
+def mcp_image_recipient_remaining_ms(identity):
+    with _private_recipients_lock:
+        transport = _private_recipients.get(identity)
+        if transport is None or transport.account != current_account_id():
+            raise _PrivateTransportUnavailable
+        remaining = _PRIVATE_RECIPIENT_TTL - (time.monotonic() - transport.created_at)
+        return max(0, int(remaining * 1000))
 
 
 def close_mcp_image_recipient(identity):
@@ -507,7 +522,7 @@ def _call_private_tool(url, headers, name, args, context, config_check, cancel_e
     try:
         if (
             transport._configuration != (url, _headers_key(headers))
-            or time.monotonic() - transport.created_at > 300
+            or time.monotonic() - transport.created_at > _PRIVATE_RECIPIENT_TTL
         ):
             raise _PrivateTransportUnavailable
         raw = transport.exchange(

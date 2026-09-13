@@ -211,6 +211,7 @@ class McpImageToolRun:
         from core.inference.mcp_client import (
             prepare_mcp_image_recipient,
             mcp_image_recipient_location,
+            mcp_image_recipient_remaining_ms,
             parse_server_headers,
             close_mcp_image_recipient,
         )
@@ -226,6 +227,9 @@ class McpImageToolRun:
                 use_oauth = bool(server.get("use_oauth")),
             )
             destination = mcp_image_recipient_location(recipient)
+            expires_in_ms = mcp_image_recipient_remaining_ms(recipient)
+            if expires_in_ms <= 0:
+                raise McpImageDisclosureError("Private MCP image recipient expired")
             current = _mapping_for_name(name)
             if (
                 self.closed
@@ -279,7 +283,7 @@ class McpImageToolRun:
             "field": mapping["field"],
             "encoding": mapping["encoding"],
             "status": "pending",
-            "expiresInMs": 300_000,
+            "expiresInMs": expires_in_ms,
         }
         with self._lock:
             if self.closed:

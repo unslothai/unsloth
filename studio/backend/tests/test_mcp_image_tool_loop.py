@@ -82,6 +82,7 @@ def image_request(tmp_path, monkeypatch):
     monkeypatch.setattr(
         mcp_client, "mcp_image_recipient_location", lambda _: "https://example.test/mcp"
     )
+    monkeypatch.setattr(mcp_client, "mcp_image_recipient_remaining_ms", lambda _: 300_000)
     monkeypatch.setattr(mcp_client, "close_mcp_image_recipient", lambda _: None)
     monkeypatch.setattr(mcp_client, "parse_server_headers", lambda _: {})
     fixture = SimpleNamespace(
