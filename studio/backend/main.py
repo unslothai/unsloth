@@ -2354,12 +2354,26 @@ def _is_live_cloudflare_frontend_request(scope, app_state) -> bool:
     return bool(expected_host) and request_host == expected_host
 
 
+def _request_on_loopback_listener(scope) -> bool:
+    """True when this request arrived on the primary loopback listener (desktop ``-H 127.0.0.1``).
+
+    Uses ``scope["server"]`` (the accepting socket), not the ``Host`` header, so a LAN peer cannot
+    forge loopback access.
+    """
+    server = scope.get("server")
+    return bool(server) and _is_loopback_ip(server[0])
+
+
 def _is_remote_frontend_request(scope, app_state) -> bool:
-    """True for a request the desktop backend may answer with its packaged web UI: Cloudflare's own edge, or one
-    of the sockets the runtime LAN listener bound, both identified by the connection itself rather than a
-    client header the caller controls."""
+    """True for a request the desktop backend may answer with its packaged web UI: Cloudflare's own edge, the
+    primary loopback listener, or one of the sockets the runtime LAN listener bound — all identified by the
+    connection itself rather than a client-controlled header."""
     from lan_access import request_on_lan_listener
-    return _is_live_cloudflare_frontend_request(scope, app_state) or request_on_lan_listener(scope)
+    return (
+        _is_live_cloudflare_frontend_request(scope, app_state)
+        or request_on_lan_listener(scope)
+        or _request_on_loopback_listener(scope)
+    )
 
 
 class _TunnelOnlyFrontend:
@@ -2380,8 +2394,8 @@ def setup_frontend(
     *,
     tunnel_only: bool = False,
 ):
-    """Mount frontend static files (optional). ``tunnel_only`` restricts the mount to remote callers:
-    the Cloudflare edge, or a socket the runtime LAN listener bound."""
+    """Mount frontend static files (optional). ``tunnel_only`` restricts the mount to browser callers:
+    the Cloudflare edge, the primary loopback listener, or a socket the runtime LAN listener bound."""
     if not build_path.exists():
         return False
 
