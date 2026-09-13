@@ -155,13 +155,11 @@ def _installed_metadata_records(dist_name: str) -> List[Tuple[str, Optional[Path
 
     wanted = _canonical(dist_name)
     paths = _metadata_scan_paths()
-    # The listing cache is keyed on each directory's st_mtime, so a dist-info added since an
-    # earlier scan in this process stays invisible whenever that mtime did not move -- two writes
-    # in one tick, or a coarse timestamp (exFAT 2s, HFS+ 1s) -- and a damaged install verifies as
-    # healthy. Through an INSTANCE: invalidate_caches only became a classmethod in 3.11.9 and
-    # 3.12.3 (gh-116811), so the class call raises TypeError before those, and 3.9 lacks it
-    # entirely. importlib.invalidate_caches() reaches this cache only via PathFinder's delegation
-    # from that same patch, so the caller cannot do it for us.
+    # The listing cache is keyed on the directory's st_mtime, so a dist-info added since an earlier
+    # scan in this process stays invisible while that mtime holds (two writes in one tick; exFAT 2s,
+    # HFS+ 1s), and a damaged install verifies as healthy. Via an INSTANCE: invalidate_caches only
+    # became a classmethod in 3.11.9 / 3.12.3 (gh-116811), and importlib.invalidate_caches() gained
+    # its delegation there too, so before those neither the class call nor the caller works.
     if getattr(MetadataPathFinder, "invalidate_caches", None) is not None:
         MetadataPathFinder().invalidate_caches()
     kwargs = {"path": paths} if paths else {}
