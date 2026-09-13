@@ -768,9 +768,8 @@ def test_a_stalled_model_is_nudged_to_act(executed):
 
 def test_a_stalled_model_is_not_nudged_by_default(executed, monkeypatch):
     """The external loop must not invent a retry for an omitted opt-in flag."""
-    # Pin the process default: _NUDGE_DEFAULT is read from UNSLOTH_TOOL_CALL_NUDGE at
-    # import, so without this the test only passes on a runner that happens to leave
-    # the variable unset, and silently stops testing "by default" under a launcher.
+    # Pin it: _NUDGE_DEFAULT is import-time, so otherwise this passes only where
+    # UNSLOTH_TOOL_CALL_NUDGE happens to be unset.
     monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", False)
     transport = FakeTransport(
         [
@@ -786,12 +785,8 @@ def test_a_stalled_model_is_not_nudged_by_default(executed, monkeypatch):
 
 
 def test_an_explicit_false_beats_a_process_default_of_on(executed, monkeypatch):
-    """What the Studio frontend sends on the external path.
-
-    `unsloth studio run` and `unsloth start` write UNSLOTH_TOOL_CALL_NUDGE=1 when it is
-    unset, so an omitted flag nudges here. The external branch of chat-adapter.ts sends
-    an explicit false, which must win over that default (#9686).
-    """
+    """What chat-adapter.ts sends externally: false must beat the launchers'
+    UNSLOTH_TOOL_CALL_NUDGE=1 (#9686)."""
     monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", True)
     transport = FakeTransport(
         [
@@ -807,11 +802,8 @@ def test_an_explicit_false_beats_a_process_default_of_on(executed, monkeypatch):
 
 
 def test_an_omitted_flag_still_follows_a_process_default_of_on(executed, monkeypatch):
-    """The contract the explicit false above exists to work around.
-
-    Kept as a live guard: if omission ever stops following the process default this
-    test fails and the frontend's explicit false can be reconsidered.
-    """
+    """The contract the explicit false works around: if omission ever stops
+    following the process default, this fails and the false can be reconsidered."""
     monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", True)
     transport = FakeTransport(
         [

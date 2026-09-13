@@ -5965,11 +5965,8 @@ export function createOpenAIStreamAdapter(
                     // Self-hosted models often write a call as text rather than emitting structured tool_calls, so
                     // the external loop heals like the local one; omitting this left the process default.
                     auto_heal_tool_calls: runtime.autoHealToolCalls,
-                    // Send false rather than omitting it: omitting leaves the process default, and
-                    // `unsloth studio run` / `unsloth start` set UNSLOTH_TOOL_CALL_NUDGE=1 when it is
-                    // unset, so an omitted field nudges on this path (#9686). Default-on here corrupted
-                    // turns (#9125); an explicit true from an API client still opts in, and the local
-                    // GGUF/safetensors paths keep the user setting.
+                    // false, not omitted: omission follows UNSLOTH_TOOL_CALL_NUDGE, which the
+                    // launchers set to 1 when unset, so this loop would keep nudging (#9686, #9125).
                     nudge_tool_calls: false,
                     // This branch runs the tools here, so say so by name: enabled_tools ["web_search"] is
                     // byte-identical to an older bundle's hosted search.
