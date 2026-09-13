@@ -241,7 +241,7 @@ def main() -> None:
             )
             if LOAD_SECOND:
                 wait_for(lambda: len(state["calls"]) > 0)
-                assert set(state["starts"]) == set(expected), state
+                assert state["starts"] == expected * 2, state
                 assert all(job["state"] == "complete" for job in state["jobs"].values()), state
             else:
                 assert state["starts"] == expected, state

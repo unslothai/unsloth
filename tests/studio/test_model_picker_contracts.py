@@ -1544,9 +1544,14 @@ def test_a_hidden_diffusion_page_does_not_load_when_its_download_lands():
         src = _read(rel)
         ready = re.search(r"onReady: \(\) => \{.*?\n    \},", src, re.S)
         assert ready, f"{rel}: staged-download onReady not found"
-        assert "if (!active)" in ready.group(0), f"{rel}: a hidden page still takes the GPU"
+        region = ready.group(0)
+        if "resumePendingLoad();" in region:
+            resume = re.search(r"function resumePendingLoad\(\) \{.*?\n  \}", src, re.S)
+            assert resume, f"{rel}: staged-load continuation not found"
+            region += resume.group(0)
+        assert "if (!active)" in region, f"{rel}: a hidden page still takes the GPU"
         # Deferred, not dropped: something has to fire the held pick when the page returns.
-        assert "stagedLoadDeferred" in ready.group(0), f"{rel}: the pick is discarded"
+        assert "stagedLoadDeferred" in region, f"{rel}: the pick is discarded"
         # The deps array grew when the load body moved into runStagedLoad, so match the
         # effect by its guard and check the deps separately. Keying the boundary on
         # `[active` instead lets a reordered array run the match on into the next hook,

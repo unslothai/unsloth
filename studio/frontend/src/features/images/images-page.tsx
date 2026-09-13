@@ -2545,15 +2545,12 @@ export function ImagesPage({
         finishDownloadOnlyPlan();
         return;
       }
+      if (pendingStagedLoad.current?.token === stagedPlan.current?.token) {
+        pendingLoadEntries.current = null;
+      }
       stagedPlan.current = null;
       if (startQueuedDownload()) return;
-      pendingLoadEntries.current = null;
-      if (!active) {
-        stagedLoadDeferred.current = true;
-        return;
-      }
-      const pending = pendingStagedLoad.current;
-      if (pending) runStagedLoad(pending);
+      resumePendingLoad();
     },
     onCancelled: () => {
       const cancelled = stagedPlan.current;
@@ -2594,13 +2591,23 @@ export function ImagesPage({
     stagedPlan.current = null;
     downloadOnlyPlans.current.shift();
     if (startQueuedDownload()) return;
+    resumePendingLoad();
+  }
+
+  function resumePendingLoad() {
     const entries = pendingLoadEntries.current;
     const pending = pendingStagedLoad.current;
-    if (entries && pending && pickGuard.isLatest(pending.token)) {
+    if (!pending || !pickGuard.isLatest(pending.token)) {
+      pendingLoadEntries.current = null;
+      return;
+    }
+    if (entries) {
       stagedPlan.current = { token: pending.token };
       stage(entries);
+    } else if (!active) {
+      stagedLoadDeferred.current = true;
     } else {
-      pendingLoadEntries.current = null;
+      runStagedLoad(pending);
     }
   }
 
