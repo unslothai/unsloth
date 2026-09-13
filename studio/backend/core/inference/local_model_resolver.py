@@ -80,6 +80,10 @@ def _advertised_loader_id(info) -> Optional[str]:
     an absolute filesystem path so /v1/models and the override key never expose a
     host path (the ./models and LM Studio scanners report the path as info.id)."""
     raw_id = getattr(info, "id", None)
+    from hub.services.models.ollama import is_ollama_manifest_ref
+
+    if isinstance(raw_id, str) and is_ollama_manifest_ref(raw_id):
+        return getattr(info, "model_id", None)
     if not raw_id or not _is_abs_path_id(raw_id):
         return raw_id
     for alt in (getattr(info, "model_id", None), getattr(info, "display_name", None)):
@@ -572,6 +576,17 @@ def _local_weights_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
 
 def _local_servable_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
     """Entry for whichever backend can serve *info* from disk, GGUF first."""
+    from hub.services.models.ollama import is_ollama_manifest_ref, ollama_model_ref_files
+
+    raw_id = getattr(info, "id", None)
+    if isinstance(raw_id, str) and is_ollama_manifest_ref(raw_id):
+        if getattr(info, "source", None) != "ollama":
+            return None
+        try:
+            ollama_model_ref_files(raw_id)
+        except (OSError, ValueError):
+            return None
+        return _LocalGgufEntry(loader_id, raw_id, ())
     return _local_gguf_entry(loader_id, info) or _local_weights_entry(loader_id, info)
 
 
@@ -586,9 +601,6 @@ def local_servable_model(info) -> Optional[tuple[bool, tuple[str, ...]]]:
     from pathlib import Path
 
     path = getattr(info, "path", None)
-    # Ollama-link entries come from a scanner _build_index intentionally skips (it creates symlinks on the request
-    # path), so their advertised ids never resolve. Don't report them as servable, or /v1/models would list unswitchable
-    # models.
     if isinstance(path, str) and any(
         seg in (".studio_links", "ollama_links") for seg in Path(path).parts
     ):
@@ -619,9 +631,8 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
 
     Scans the same roots Unsloth's model picker lists (./models, the active plus
     legacy/default HF caches, LM Studio and Hermes dirs, and user scan folders) so a named
-    local model is never missed and silently served as the loaded one. Ollama's
-    scanner is skipped: it creates symlinks as a side effect and this runs on the
-    request path.
+    local model is never missed and silently served as the loaded one. Ollama
+    discovery retains a read-only manifest reference for materialization at load time.
     """
     # Lazy import: routes.models imports core.inference, so import at call time.
     from pathlib import Path
@@ -629,6 +640,7 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         _scan_models_dir,
         _scan_hf_cache,
         _scan_lmstudio_dir,
+        _scan_ollama_dir,
         _resolve_hf_cache_dir,
         _is_hidden_model,
     )
@@ -697,6 +709,12 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     except Exception as exc:
         logger.debug("auto-switch: Hermes scan failed: %s", exc)
     try:
+        from utils.paths import ollama_model_dirs
+        for ollama_dir in ollama_model_dirs():
+            found += _scan_ollama_dir(ollama_dir)
+    except Exception as exc:
+        logger.debug("auto-switch: Ollama scan failed: %s", exc)
+    try:
         from storage.studio_db import list_scan_folders
 
         custom_found = []
@@ -704,7 +722,10 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             try:
                 fp = Path(folder["path"])
                 custom_found += dedupe_custom_gguf_rows(
-                    _scan_models_dir(fp, limit = 200) + _scan_hf_once(fp) + _scan_lmstudio_dir(fp)
+                    _scan_models_dir(fp, limit = 200)
+                    + _scan_hf_once(fp)
+                    + _scan_lmstudio_dir(fp)
+                    + _scan_ollama_dir(fp, limit = 200)
                 )
             except Exception as exc:
                 logger.debug("auto-switch: scan folder %r failed: %s", folder, exc)

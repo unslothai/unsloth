@@ -73,6 +73,7 @@ from hub.services.models.ollama import (
     acquire_ollama_model_ref,
     is_ollama_manifest_ref,
     materialize_ollama_model_ref,
+    ollama_model_ref_public_id,
 )
 from core.inference.audio_errors import (
     AudioBackendUnsupportedError,
@@ -7430,6 +7431,12 @@ def _target_is_vision(
     # but the rule requires it regardless).
     from utils.models.model_config import is_vision_model
     try:
+        if is_ollama_manifest_ref(load_path):
+            from hub.services.models.ollama import ollama_model_ref_files
+            from utils.models.gguf_metadata import mmproj_accepts_image
+
+            _, projector = ollama_model_ref_files(load_path)
+            return projector is not None and (not need_image or mmproj_accepts_image(projector))
         # Deliberately unguarded: the resolver only yields local paths, so this returns
         # from the mmproj filesystem branch without touching the hub. A reachability
         # probe here would add seconds per request and prevent nothing.
@@ -7509,6 +7516,9 @@ def _target_accepts_request_input(
 def _resolve_target_gguf_file(load_path: str, gguf_variant: Optional[str]) -> Optional[str]:
     from utils.models.model_config import _find_local_gguf_by_variant, detect_gguf_model
 
+    if is_ollama_manifest_ref(load_path):
+        from hub.services.models.ollama import ollama_model_ref_files
+        return ollama_model_ref_files(load_path)[0]
     local_path = os.path.expanduser(load_path)
     if gguf_variant and Path(local_path).is_dir():
         return _find_local_gguf_by_variant(local_path, gguf_variant)
@@ -8221,6 +8231,13 @@ def _loaded_satisfies(requested: str) -> bool:
         ]
         if not _matches_any(base, candidates):
             return False
+        identifier = getattr(llama_backend, "model_identifier", None)
+        if (
+            identifier
+            and is_ollama_manifest_ref(identifier)
+            and not _resolves_to_resident(identifier, llama_only = True)
+        ):
+            return False
         if not looks_like_quant(variant):
             # An Ollama-style tag (":latest", ":8b") names no file, so the repo is enough.
             return True
@@ -8347,6 +8364,18 @@ def _resident_quant_is(variant: Optional[str]) -> bool:
     return bool(variant) and resident.lower() == variant.strip().lower()
 
 
+def _ollama_source_identity(ref: str) -> Optional[tuple]:
+    from core.inference.llama_cpp import LlamaCppBackend
+    from hub.services.models.ollama import ollama_model_ref_files
+    try:
+        model_path, projector_path = ollama_model_ref_files(ref)
+        identity = LlamaCppBackend._gguf_load_source_identity(model_path, projector_path)
+        # Materialized hardlinks have different paths but share the blob's inode.
+        return tuple(part[-4:] for part in identity) if identity else None
+    except (OSError, ValueError):
+        return None
+
+
 def _resolves_to_resident(
     load_path: Optional[str],
     *,
@@ -8381,6 +8410,10 @@ def _resolves_to_resident(
             continue
         current = _norm_path(candidate)
         if current == target:
+            if is_ollama_manifest_ref(load_path):
+                source = _ollama_source_identity(load_path)
+                loaded = getattr(llama_backend, "_gguf_load_identity", None)
+                return bool(source and loaded and source == tuple(part[-4:] for part in loaded))
             return True
         # A non-GGUF checkpoint loads from its own directory, so a row nested under the
         # loaded one is different weights however that model was loaded.
@@ -8879,6 +8912,11 @@ async def _maybe_auto_switch_model(
         _, _requested_variant = split_model_ref(requested_model)
         bare = not looks_like_quant(_requested_variant)
 
+        ollama_target = target_is_gguf and is_ollama_manifest_ref(target_id)
+        ollama_source_identity = (
+            await asyncio.to_thread(_ollama_source_identity, target_id) if ollama_target else None
+        )
+
         def _already_serving() -> bool:
             # Match against both the concrete load path and the advertised repo id,
             # so a model loaded manually by repo id (identifier = repo id) and one
@@ -8906,6 +8944,14 @@ async def _maybe_auto_switch_model(
                 loaded_keys.add(advertised.lower())
             if loaded_keys.isdisjoint({target_id.lower(), override_id.lower()}):
                 return False
+            if ollama_target:
+                loaded_source = getattr(backend, "_gguf_load_identity", None)
+                if (
+                    not ollama_source_identity
+                    or not loaded_source
+                    or tuple(part[-4:] for part in loaded_source) != ollama_source_identity
+                ):
+                    return False
             loaded_companion_roots = tuple(
                 getattr(backend, "_openai_gguf_companion_roots", ()) or ()
             )
@@ -14346,6 +14392,11 @@ async def _load_model_impl(
 
         # Keep the inventory ref public while loading the materialized artifact.
         public_model_identifier = _public_model_identifier(request.model_path, model_identifier)
+        ollama_advertised_id = (
+            await asyncio.to_thread(ollama_model_ref_public_id, request.model_path)
+            if resolved_ollama_path is not None
+            else None
+        )
         # Version switching is handled by the subprocess-based inference
         # backend -- no ensure_transformers_version() needed here.
 
@@ -14409,6 +14460,8 @@ async def _load_model_impl(
             logger.info("Model already loaded (GGUF): %s, skipping reload", model_log_label)
             # A no-op Unsloth load of a preview-owned checkpoint still claims it.
             _set_preview_resident(None)
+            if ollama_advertised_id:
+                llama_backend._openai_advertised_id = ollama_advertised_id
             return _gguf_load_response(
                 llama_backend,
                 "already_loaded",
@@ -15027,9 +15080,8 @@ async def _load_model_impl(
             llama_backend._openai_gguf_companion_roots = tuple(request._gguf_companion_roots)
             llama_backend._openai_gguf_companion_state = gguf_companion_state
             await asyncio.to_thread(note_model_loaded, llama_backend)
-            # A plain load advertises its own identifier; auto-switch overwrites
-            # this with the repo id right after _load_model_impl returns.
-            llama_backend._openai_advertised_id = None
+            # Keep the manifest ref internal; API clients use the catalog alias.
+            llama_backend._openai_advertised_id = ollama_advertised_id
 
             # Audio detection moved into load_model under _serial_load_lock (#5642).
             _gguf_audio = llama_backend._audio_type

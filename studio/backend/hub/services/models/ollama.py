@@ -559,6 +559,31 @@ def _validated_ollama_manifest_location(ref: str) -> tuple[Path, Path]:
     return tag_file, canonical_ollama_dir
 
 
+def _ollama_model_ref_info(ref: str) -> tuple[Path, Path, LocalModelInfo]:
+    tag_file, ollama_dir = _validated_ollama_manifest_location(ref)
+    info = _ollama_model_info_from_manifest(
+        ollama_dir, tag_file, materialize_links = False, reject_unsupported_layers = True
+    )
+    if info is None:
+        raise ValueError("Could not resolve Ollama model from manifest")
+    return tag_file, ollama_dir, info
+
+
+def ollama_model_ref_public_id(ref: str) -> str:
+    _, _, info = _ollama_model_ref_info(ref)
+    return info.model_id
+
+
+def ollama_model_ref_files(ref: str) -> tuple[str, Optional[str]]:
+    tag_file, ollama_dir, info = _ollama_model_ref_info(ref)
+    manifest = json.loads(tag_file.read_text(encoding = "utf-8-sig"))
+    projector = None
+    for layer in manifest.get("layers") or []:
+        if layer.get("mediaType") == "application/vnd.ollama.image.projector":
+            projector = _ollama_blob_path(ollama_dir / "blobs", layer.get("digest"))
+    return info.path, str(projector) if projector is not None else None
+
+
 def _materialization_lock(tag_file: Path) -> threading.Lock:
     key = os.path.normcase(str(tag_file))
     with _OLLAMA_MATERIALIZE_LOCKS_GUARD:

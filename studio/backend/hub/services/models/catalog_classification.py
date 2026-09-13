@@ -41,11 +41,11 @@ _MAX_TASK_CLASSIFY_GGUFS = 64
 _TASK_CLASSIFY_WALK_SECONDS = 0.75
 _TASK_CLASSIFY_READ_SECONDS = 1.5
 _QWEN3_ASR_HINT = re.compile(
-    r"(?<![a-z0-9])qwen3[-_. ]*asr[-_. ]*(?:0[._]6|1[._]7)b(?![a-z0-9])",
+    r"(?<![a-z0-9])qwen3[-_. ]*asr[-_. :]*(?:0[._]6|1[._]7)b(?![a-z0-9])",
     re.IGNORECASE,
 )
 _ORPHEUS_GGUF_HINT = re.compile(
-    r"(?<![a-z0-9])orpheus[-_. ]*3b(?![a-z0-9])",
+    r"(?<![a-z0-9])orpheus[-_. :]*3b(?![a-z0-9])",
     re.IGNORECASE,
 )
 
@@ -342,11 +342,7 @@ def _gguf_path_audio_type(
 ) -> Optional[str]:
     model_path = Path(path)
     try:
-        paths = (
-            [model_path]
-            if model_path.suffix.lower() == ".gguf" and model_path.is_file()
-            else _iter_gguf_paths(model_path)
-        )
+        paths = [model_path] if model_path.is_file() else _iter_gguf_paths(model_path)
         for gguf_path in paths:
             audio_type = _arch_to_audio_type(
                 _gguf_architecture(str(gguf_path)),
@@ -370,7 +366,7 @@ def _repo_gguf_audio_type(repo_info, selected: Optional[Path] = None) -> Optiona
 def _gguf_path_task(path: str | Path, id_hints: tuple[Optional[str], ...] = ()) -> Optional[str]:
     model_path = Path(path)
     try:
-        if model_path.suffix.lower() == ".gguf" and model_path.is_file():
+        if model_path.is_file():
             hints = id_hints + (model_path.name,)
             if not file_contents_available_locally(model_path):
                 return _unhydrated_gguf_task(hints)
