@@ -280,6 +280,7 @@ def apply_chat_template_to_dataset(
                     "input": examples.get("input", [""] * len(examples["instruction"]))[i],
                     "output": examples["output"][i]
                 }
+                fields = {key: "" if value is None else value for key, value in fields.items()}
 
                 text = DEFAULT_ALPACA_TEMPLATE.format(
                     fields["instruction"], fields["input"], fields["output"]
