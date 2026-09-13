@@ -1213,6 +1213,9 @@ class TestInstallUvCacheRootParity:
         assert ".unsloth-write-probe." in sh
         assert ".unsloth-write-probe." in ps1
         assert "function Test-StudioUvCacheWritable" in ps1
+        #   5. and a fallback we cannot write is not a fallback, on both sides
+        assert "_uv_cache_root_is_writable() {" in sh
+        assert "function Test-StudioUvCacheRootWritable" in ps1
 
         # The reset must precede both consumers, the selector that writes the marker and
         # every Exit-InstallFailure that restores it. Under `irm | iex` the script scope is

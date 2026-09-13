@@ -43,6 +43,7 @@ awk '/^_configure_uv_cache\(\) \{$/,/^\}$/' "$INSTALL_SH" > "$_FN"
 awk '/^_prepare_studio_uv_cache_for_launch\(\) \{$/,/^\}$/' "$INSTALL_SH" >> "$_FN"
 awk '/^_absolutize_uv_cache_dir\(\) \{$/,/^\}$/' "$INSTALL_SH" >> "$_FN"
 awk '/^_uv_is_bucket_name\(\) \{$/,/^\}$/' "$INSTALL_SH" >> "$_FN"
+awk '/^_uv_cache_root_is_writable\(\) \{$/,/^\}$/' "$INSTALL_SH" >> "$_FN"
 
 if ! grep -q 'UV_CACHE_DIR="\$STUDIO_HOME/cache/uv"' "$_EARLY"; then
     echo "FAIL: could not extract the early UV_CACHE_DIR block from install.sh"
@@ -330,6 +331,34 @@ else
     assert_eq "unwritable root still selects shared" "shared" "$(echo "$_out" | cut -d' ' -f1)"
     assert_eq "and the launch keeps that cache"      "$_populated" "$(echo "$_out" | cut -d' ' -f3)"
     chmod u+w "$_TMP/lockedhome"
+fi
+
+echo "=== a fallback we cannot write is not a fallback ==="
+# The two reachable halves compound: the probe refuses a whole cache for one bucket uv may never
+# touch, and the early block has already given up on an unwritable $STUDIO_HOME/cache/uv, which
+# is the only reason the selection is running. Landing on the certain failure turns an install
+# that used to work into `failed to create cache directory`.
+if [ "$(id -u)" = "0" ]; then
+    echo "  SKIP: unwritable-fallback case (root writes through the mode bits)"
+else
+    # A fresh fixture: the shared $_readonly above has had its mode restored by now.
+    _refused="$_TMP/uvrefused"
+    mkdir -p "$_refused/archive-v0/torch"
+    : > "$_refused/archive-v0/torch/libtorch.so"
+    : > "$_refused/CACHEDIR.TAG"
+    chmod a-w "$_refused"
+    mkdir -p "$_TMP/deadhome"
+    chmod a-w "$_TMP/deadhome"
+    _out=$(_run "$_TMP/deadhome" '' "$_refused")
+    assert_eq "a warm cache beats a dead fallback"  "shared" "$(echo "$_out" | cut -d' ' -f1)"
+    assert_eq "and it is the one that is used"      "$_refused" "$(echo "$_out" | cut -d' ' -f2)"
+    assert_eq "the launch keeps it too"             "$_refused" "$(echo "$_out" | cut -d' ' -f3)"
+    chmod u+w "$_TMP/deadhome"
+    # With a WRITABLE Studio cache the refused candidate still loses to it, unchanged.
+    _out=$(_run "$_TMP/livehome" '' "$_refused")
+    assert_eq "a writable fallback still wins"      "studio" "$(echo "$_out" | cut -d' ' -f1)"
+    assert_eq "and it is the Studio cache"          "$_TMP/livehome/cache/uv" "$(echo "$_out" | cut -d' ' -f2)"
+    chmod u+w "$_refused"
 fi
 
 echo "=== the same answers under a real /bin/sh, and under the errexit install.sh runs with ==="

@@ -612,6 +612,17 @@ _absolutize_uv_cache_dir() {
     printf '%s\n' "$_uv_cache_path"
 }
 
+# Can we create AND fill this directory? A real create, since mkdir -p exits 0 for an existing
+# unwritable directory and -w reads the mode rather than the filesystem. mktemp, since a
+# predictable name in another account's directory can be pre-created as a symlink to follow.
+_uv_cache_root_is_writable() {
+    mkdir -p "$1" 2>/dev/null || return 1
+    _uv_root_probe=$(mktemp "$1/.unsloth-write-probe.XXXXXX" 2>/dev/null) || return 1
+    rm -f "$_uv_root_probe" 2>/dev/null || true
+    unset _uv_root_probe
+    return 0
+}
+
 _record_uv_cache_choice() {
     # In place, before anything reads it: every branch records, so this is the one point every phase of the install and the marker are made to agree on one directory.
     UV_CACHE_DIR=$(_absolutize_uv_cache_dir)
@@ -863,6 +874,19 @@ _configure_uv_cache() {
     else
         UV_CACHE_DIR="$_uv_studio_cache"
         _UV_CACHE_MODE=studio
+        # A fallback we cannot write is not a fallback. Reachable two ways, and they compound:
+        # the probe refuses a whole cache for one bucket uv may never touch, and the early
+        # block has ALREADY given up on $STUDIO_HOME/cache/uv when it could not write there --
+        # which is the only reason the selection is running. So the certain failure and the
+        # merely suspect cache can both be on the table, and landing on the certain one turns
+        # an install that used to work into `failed to create cache directory`. A populated
+        # cache that only failed the probe is the better bet; the warning below still names it.
+        if [ -n "$_uv_warn_cache" ] \
+           && [ "$_uv_warn_cache" != "$_uv_studio_cache" ] \
+           && ! _uv_cache_root_is_writable "$_uv_studio_cache"; then
+            UV_CACHE_DIR="$_uv_warn_cache"
+            _UV_CACHE_MODE=shared
+        fi
     fi
     export UV_CACHE_DIR
     _record_uv_cache_choice
@@ -897,11 +921,7 @@ _prepare_studio_uv_cache_for_launch() {
     # hands the autostarted backend a cache uv aborts on, after an install that succeeded.
     # Keeping the shared one is the honest fallback: it is the cache this install just filled.
     _uv_launch_cache="$STUDIO_HOME/cache/uv"
-    mkdir -p "$_uv_launch_cache" 2>/dev/null || return 0
-    _uv_launch_probe=$(mktemp "$_uv_launch_cache/.unsloth-write-probe.XXXXXX" 2>/dev/null) \
-        || return 0
-    rm -f "$_uv_launch_probe" 2>/dev/null || true
-    unset _uv_launch_probe
+    _uv_cache_root_is_writable "$_uv_launch_cache" || return 0
     UV_CACHE_DIR="$_uv_launch_cache"
     export UV_CACHE_DIR
 }

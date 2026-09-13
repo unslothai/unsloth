@@ -135,6 +135,7 @@ def _uv_cache_functions(source: str) -> str:
             "Test-StudioUvBucketName",
             "Test-StudioUvCacheWritable",
             "Test-StudioUvCachePopulated",
+            "Test-StudioUvCacheRootWritable",
             "Read-StudioUvCacheMarker",
             "Set-StudioUvCacheEnvironment",
             "Set-StudioUvCacheForLaunch",

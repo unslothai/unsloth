@@ -417,6 +417,45 @@ def test_the_launch_does_not_repoint_at_a_studio_cache_it_cannot_fill(tmp_path):
     assert verdict["launch"] == str(default), verdict
 
 
+@requires_pwsh
+@pytest.mark.skipif(os.name == "nt", reason = "mode bits; the Windows ACL equivalent needs a second account")
+@pytest.mark.skipif(os.geteuid() == 0 if hasattr(os, "geteuid") else False, reason = "root writes through the mode bits")
+def test_a_fallback_we_cannot_write_is_not_a_fallback(tmp_path):
+    """The probe refuses a whole cache for one bucket uv may never touch, so a warm cache and an
+    unwritable Studio root can both be on the table. Landing on the Studio root is a certain
+    failure; the refused cache is only a suspect one."""
+    default = _warm(tmp_path / "uvdefault")
+    (default / "builds-v0").mkdir()
+    (default / "builds-v0").chmod(0o555)
+    root = tmp_path / "studio"
+    root.mkdir()
+    root.chmod(0o555)
+    try:
+        verdict = _select(root, str(default))
+    finally:
+        root.chmod(0o755)
+        (default / "builds-v0").chmod(0o755)
+    assert verdict["mode"] == "shared", verdict
+    assert verdict["dir"] == str(default), verdict
+    assert verdict["launch"] == str(default), verdict
+
+
+@requires_pwsh
+@pytest.mark.skipif(os.name == "nt", reason = "mode bits; the Windows ACL equivalent needs a second account")
+@pytest.mark.skipif(os.geteuid() == 0 if hasattr(os, "geteuid") else False, reason = "root writes through the mode bits")
+def test_a_writable_studio_cache_still_wins_over_a_refused_one(tmp_path):
+    """The rule above must not turn into "a refused cache always wins"."""
+    default = _warm(tmp_path / "uvdefault")
+    (default / "builds-v0").mkdir()
+    (default / "builds-v0").chmod(0o555)
+    try:
+        verdict = _select(tmp_path / "studio", str(default))
+    finally:
+        (default / "builds-v0").chmod(0o755)
+    assert verdict["mode"] == "studio", verdict
+    assert verdict["dir"] == str(tmp_path / "studio" / "cache" / "uv"), verdict
+
+
 # ── the harness's own guard ────────────────────────────────────────────────────────────────
 
 

@@ -1818,6 +1818,20 @@ exit 1
         return $false
     }
 
+    # Can we create AND fill this directory? A real create, since an existing unwritable
+    # directory satisfies CreateDirectory and an ACL read answers a different question. Used for
+    # the Studio cache, which may not exist yet, where the bucket probe above has nothing to walk.
+    function Test-StudioUvCacheRootWritable {
+        param([Parameter(Mandatory = $true)][string]$Cache)
+        try {
+            [System.IO.Directory]::CreateDirectory($Cache) | Out-Null
+            $probe = Join-Path $Cache (".unsloth-write-probe." + [guid]::NewGuid().ToString("N").Substring(0, 8))
+            [System.IO.File]::WriteAllText($probe, "")
+            Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+        } catch { return $false }
+        return $true
+    }
+
     # The cache THIS install last recorded, absolute, or "" when there is none to read. Read
     # before the selector writes its own. Mirrors the marker read in _configure_uv_cache and the
     # reader in unsloth_cli/commands/studio.py, BOM and all: Windows PowerShell 5.1 writes
@@ -1955,6 +1969,15 @@ exit 1
         } else {
             $selectedCache = $studioCache
             $script:StudioUvCacheMode = "studio"
+            # A fallback we cannot write is not a fallback. The probe refuses a whole cache for
+            # one bucket uv may never touch, so the certain failure and the merely suspect cache
+            # can both be on the table, and landing on the certain one turns an install that used
+            # to work into "failed to create cache directory". The warning below still names it.
+            if ($warnCache -and $warnCache -ne $studioCache -and
+                -not (Test-StudioUvCacheRootWritable -Cache $studioCache)) {
+                $selectedCache = $warnCache
+                $script:StudioUvCacheMode = "shared"
+            }
         }
         Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $selectedCache
         Write-StudioUvCacheMarker -StudioRoot $StudioRoot -Cache $selectedCache
@@ -1991,12 +2014,7 @@ exit 1
         # succeeded. Keeping the shared one is the honest fallback -- it is the cache this
         # install just filled. Mirrors _prepare_studio_uv_cache_for_launch in install.sh.
         $launchCache = Join-Path (Join-Path $StudioRoot "cache") "uv"
-        try {
-            [System.IO.Directory]::CreateDirectory($launchCache) | Out-Null
-            $probe = Join-Path $launchCache (".unsloth-write-probe." + [guid]::NewGuid().ToString("N").Substring(0, 8))
-            [System.IO.File]::WriteAllText($probe, "")
-            Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
-        } catch { return }
+        if (-not (Test-StudioUvCacheRootWritable -Cache $launchCache)) { return }
         Set-Item -LiteralPath Env:UV_CACHE_DIR -Value $launchCache
     }
 
