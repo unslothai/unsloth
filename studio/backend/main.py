@@ -9,7 +9,7 @@ from pathlib import Path as _Path
 import asyncio
 from dataclasses import asdict
 
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 os.environ["PYTHONWARNINGS"] = "ignore"
 
@@ -2435,14 +2435,38 @@ def _host_header_is_loopback(host_header: Optional[str]) -> bool:
     return host == "localhost" or _is_loopback_ip(host)
 
 
+def _header_from_scope(scope, name: str) -> Optional[str]:
+    """Read one HTTP header from an ASGI scope (case-insensitive)."""
+    target = name.lower().encode("latin-1")
+    for raw_name, raw_value in scope.get("headers") or ():
+        if raw_name.lower() == target:
+            try:
+                return raw_value.decode("latin-1")
+            except UnicodeDecodeError:
+                return None
+    return None
+
+
+def _is_direct_loopback_http_client(
+    client_host: Optional[str],
+    host_header: Optional[str],
+    header_getter: Callable[[str], Optional[str]],
+) -> bool:
+    """Direct browser on loopback: loopback peer, loopback Host, no proxy/tunnel client headers."""
+    if client_host is None or not _is_loopback_ip(client_host):
+        return False
+    if any(header_getter(h) is not None for h in _PROXIED_CLIENT_HEADERS):
+        return False
+    return _host_header_is_loopback(host_header)
+
+
 def _is_local_bootstrap_request(request: Request) -> bool:
     """Allow bootstrap injection only through a direct loopback authority."""
-    client = request.client
-    if client is None or not _is_loopback_ip(client.host):
-        return False
-    if any(request.headers.get(h) is not None for h in _PROXIED_CLIENT_HEADERS):
-        return False
-    return _host_header_is_loopback(request.headers.get("host"))
+    return _is_direct_loopback_http_client(
+        request.client.host if request.client else None,
+        request.headers.get("host"),
+        request.headers.get,
+    )
 
 
 def _is_same_origin_request(request: Request) -> bool:
@@ -2528,13 +2552,24 @@ def _is_live_cloudflare_frontend_request(scope, app_state) -> bool:
 
 
 def _request_on_loopback_listener(scope) -> bool:
-    """True when this request arrived on the primary loopback listener (desktop ``-H 127.0.0.1``).
+    """True for a direct browser on the primary loopback listener (desktop ``-H 127.0.0.1``).
 
-    Uses ``scope["server"]`` (the accepting socket), not the ``Host`` header, so a LAN peer cannot
-    forge loopback access.
+    Requires the accepting socket, client peer, and Host to be loopback, with the same
+    proxy/tunnel header checks as bootstrap injection — a reverse proxy dialing 127.0.0.1
+    must not unlock the packaged SPA.
     """
+    if scope.get("type") != "http":
+        return False
     server = scope.get("server")
-    return bool(server) and _is_loopback_ip(server[0])
+    if not server or not _is_loopback_ip(server[0]):
+        return False
+    client = scope.get("client")
+    client_host = client[0] if client else None
+    return _is_direct_loopback_http_client(
+        client_host,
+        _header_from_scope(scope, "host"),
+        lambda name: _header_from_scope(scope, name),
+    )
 
 
 def _is_remote_frontend_request(scope, app_state) -> bool:

@@ -977,6 +977,13 @@ class TestFrontendAssets:
         assert client.get("/assets/app.js").status_code == 404
         assert loopback_client.get("/").status_code == 200
         assert loopback_client.get("/assets/app.js").status_code == 200
+        proxied_loopback = TestClient(
+            app,
+            base_url = "http://127.0.0.1:8888",
+            headers = {"CF-Connecting-IP": "203.0.113.7"},
+        )
+        assert proxied_loopback.get("/").status_code == 404
+        assert proxied_loopback.get("/assets/app.js").status_code == 404
         assert remote_client.get("/", headers = headers).status_code == 404
 
         app.state.cloudflare_url = "https://remote.trycloudflare.com"
