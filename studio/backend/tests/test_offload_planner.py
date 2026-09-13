@@ -21,16 +21,21 @@ from core.inference.offload_layout import (
     LM_HEAD_PATTERN,
     BlockLayout,
     ModelLayout,
+    LLAMA_MAX_LAYERS,
     _layout_from_reader,
+    hybrid_layer_split,
     _layout_from_readers,
     layout_from_gguf,
     split_shard_paths,
     spill_pattern_for,
 )
 from core.inference.offload_cost_model import HostProfile
-from core.inference.offload_planner import (
+from core.inference.offload_planner import (  # noqa: F401
+    _device_reserve,
     _device_slots,
+    _kv_floor_at,
     _per_device_shortfall,
+    _per_device_usage,
     ContextPolicy,
     Plan,
     PlanOptions,
@@ -291,6 +296,53 @@ def test_a_full_spill_uses_the_compact_global_pattern():
     assert r"\d+" in plan.ot_patterns[0]
 
 
+def test_a_multi_device_plan_pins_the_split_it_was_budgeted_on():
+    """--fit off means llama.cpp never re-fits, so the split has to be pinned.
+
+    Without -ts the child falls back to the default split, the free VRAM ggml_backend_dev_memory
+    reads IN THE CHILD (llama-model.cpp:1462-1477), short of the pre-launch snapshot this plan was
+    budgeted on by at least a CUDA primary context per card; on a 24 GiB plus 10 GiB pair that
+    shifts a layer boundary. Integer layer counts per device, the way common/fit.cpp:555 writes
+    them (tensor_split[id] = ngl_per_device[id].n_layer).
+    """
+    layout = q4_layout()
+    # A hybrid layout needs the per-layer cache vector before the per-device arithmetic will run
+    # at all; 0 marks the rows that hold recurrent state.
+    weights = [1 if i % 4 == 3 else 0 for i in range(layout.n_layers)]
+    opts = PlanOptions(trust_device_row_model = True)
+    rows = layout.n_layers + 1
+
+    plan = plan_placement(
+        layout, [24 * GIB, 10 * GIB], 64 * GIB, 8192, opts = opts, kv_layer_weights = weights
+    )
+    assert plan.priced and plan.changed
+    assert sum(plan.device_layer_counts) == rows, "every row is owned by exactly one device"
+    assert plan_to_args(plan)[-2:] == [
+        "--tensor-split",
+        ",".join(str(n) for n in plan.device_layer_counts),
+    ]
+
+    # The counts REPRODUCE the assignment they were read off rather than resembling it: llama.cpp
+    # prefix-sums and normalises whatever it is given, so a device with share c owns c rows.
+    assert _device_slots(rows, plan.device_layer_counts) == _device_slots(
+        rows, [24 * GIB, 10 * GIB]
+    )
+
+    # One device: no split to pin, and #28218 measured a 20x slowdown from -ts on one GPU.
+    single = plan_placement(layout, [24 * GIB], 64 * GIB, 8192, opts = opts)
+    assert single.device_layer_counts == ()
+    assert "--tensor-split" not in plan_to_args(single)
+
+
+def test_a_plan_that_is_never_emitted_pins_no_split():
+    """An abstention leaves llama.cpp's own placement alone, so plan_to_args stays empty."""
+    layout = q4_layout()
+    starved = plan_placement(layout, [4 * GIB, 4 * GIB], 64 * GIB, 131072)
+    assert starved.insufficient is True
+    assert starved.device_layer_counts == ()
+    assert plan_to_args(starved) == []
+
+
 def test_plan_to_args_shape():
     layout = q4_layout()
     args = plan_to_args(plan_placement(layout, [12 * GIB], 64 * GIB, 8192))
@@ -303,8 +355,8 @@ def test_plan_to_args_shape():
 
 
 def test_largest_first_minimises_overshoot():
-    """Best-fit-decreasing: cover a small residual with a small block, not by
-    dragging a 400 MiB block across the bus on every token."""
+    """Best-fit-decreasing: cover a small residual with a small block, not by dragging a 400 MiB
+    block across the bus on every token."""
     layout = uneven_layout()
     # Need ~50 MiB freed: the 50 MiB block alone should do it.
     floor = resident_floor_bytes(layout, 4096)
@@ -316,10 +368,40 @@ def test_largest_first_minimises_overshoot():
         4096,
         opts = PlanOptions(
             overhead_bytes_per_device = GIB,
+            spill_order = SpillOrder.LARGEST_FIRST,
         ),
     )
     spilled = sum(b.spillable_bytes for b in layout.blocks if b.index in plan.spilled_blocks)
     assert spilled == 50 * MIB, "should take the 50 MiB block, not a bigger one"
+
+
+def test_the_default_order_is_back_first():
+    """A fixture where the two orders DISAGREE: the smallest block is at the front and the last
+    is twice its size, so the default takes the last and LARGEST_FIRST the small one."""
+    sizes = [50 * MIB, 200 * MIB, 400 * MIB, 100 * MIB]
+    layout = ModelLayout(
+        **{
+            **uneven_layout().__dict__,
+            "blocks": tuple(
+                BlockLayout(index = i, spillable_bytes = s, resident_bytes = 10 * MIB)
+                for i, s in enumerate(sizes)
+            ),
+        }
+    )
+    floor = resident_floor_bytes(layout, 4096)
+    budget = floor + layout.spillable_bytes - 40 * MIB + 1 * GIB
+    default = plan_placement(
+        layout, [budget], 64 * GIB, 4096, opts = PlanOptions(overhead_bytes_per_device = GIB)
+    )
+    assert default.spilled_blocks == (3,), default.reason
+    minimal = plan_placement(
+        layout,
+        [budget],
+        64 * GIB,
+        4096,
+        opts = PlanOptions(overhead_bytes_per_device = GIB, spill_order = SpillOrder.LARGEST_FIRST),
+    )
+    assert minimal.spilled_blocks == (0,), minimal.reason
 
 
 def test_front_and_back_orders_pick_opposite_ends():
@@ -433,7 +515,7 @@ def test_a_safe_partial_spill_across_two_gpus_is_planned():
     )
 
     assert plan.changed is True
-    assert plan.spilled_blocks == (0, 3)
+    assert plan.spilled_blocks == (2, 3)
 
 
 def test_partial_spill_selection_covers_each_device_shortfall():
@@ -527,7 +609,7 @@ def test_output_device_shortfall_can_reach_the_lm_head_rung():
         split_weights_per_device = [1, 1],
     )
 
-    assert plan.spilled_blocks == (0,)
+    assert plan.spilled_blocks == (1,)
     assert plan.spilled_lm_head is True
     assert plan.vram_bytes <= 120
 
@@ -581,9 +663,11 @@ def test_the_row_split_matches_llama_cpp():
     # Contiguous, in device order, covering every row exactly once.
     rows = _device_slots(65, [24 * GIB, 8 * GIB])
     assert rows[0] == list(range(0, 49)) and rows[1] == list(range(49, 65))
-    # One device takes everything, and a zero-sized pool does not divide by zero.
     assert _device_slots(65, [8 * GIB]) == [list(range(65))]
-    assert _device_slots(4, [0, 0]) == [[0, 1, 2, 3], []]
+    # An all-zero split is not a placement llama.cpp produces, since it prefix-sums the shares
+    # and divides by the total, so it is refused rather than modelled.
+    with pytest.raises(ValueError):
+        _device_slots(4, [0, 0])
 
 
 def test_the_row_split_uses_llama_cpp_float32_boundaries():
@@ -631,7 +715,7 @@ def test_the_per_device_check_passes_when_the_shares_really_fit():
     that each one's row share fits with room to spare return None -- no abstain
     reason -- for the same full spill the tight case rejects."""
     layout = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
-    spilled = {b.index for b in layout.blocks}
+    spilled = {b.index: b.spillable_bytes for b in layout.blocks}
     tight = _ALL_SPILL_VRAM // 2
     assert (
         _per_device_shortfall(
@@ -784,15 +868,16 @@ def test_prefer_resident_still_spills_when_even_min_ctx_will_not_fit():
         [10 * GIB],
         64 * GIB,
         65536,
-        opts = PlanOptions(context_policy = ContextPolicy.PREFER_RESIDENT),
+        opts = PlanOptions(context_policy = ContextPolicy.PREFER_RESIDENT, overhead_bytes_per_token = 0),
     )
     assert plan.spilled_blocks, "shrinking cannot save this one, so spill"
 
 
-def test_context_is_clamped_to_what_the_model_was_trained_on():
+def test_only_the_default_context_reads_the_training_window():
+    """MOVED: this pinned a clamp of every request to n_ctx_train."""
     layout = q4_layout()
-    plan = plan_placement(layout, [24 * GIB], 128 * GIB, 999_999)
-    assert plan.n_ctx == layout.n_ctx_train
+    assert plan_placement(layout, [24 * GIB], 128 * GIB, 999_999).n_ctx == 999_999
+    assert plan_placement(layout, [24 * GIB], 128 * GIB, 0).n_ctx == layout.n_ctx_train
 
 
 # ------------------------------------------------------------------- KV quant
@@ -809,7 +894,8 @@ def test_kv_quantisation_rescues_a_load_f16_cannot_fit():
     at 9.73 GiB against 8 GiB usable, so no rung of the ladder fits. Halving the
     cache brings the floor to 7.73 and it does."""
     layout = q4_layout()
-    without = plan_placement(layout, [9 * GIB], 64 * GIB, 65536)
+    pinned = PlanOptions(overhead_bytes_per_token = 0)
+    without = plan_placement(layout, [9 * GIB], 64 * GIB, 65536, opts = pinned)
     assert without.insufficient is True
 
     with_quant = plan_placement(
@@ -817,7 +903,7 @@ def test_kv_quantisation_rescues_a_load_f16_cannot_fit():
         [9 * GIB],
         64 * GIB,
         65536,
-        opts = PlanOptions(allow_kv_quant = True),
+        opts = PlanOptions(allow_kv_quant = True, overhead_bytes_per_token = 0),
     )
     assert with_quant.insufficient is False
     assert with_quant.cache_type_k == "q8_0"
@@ -859,7 +945,10 @@ def test_q4_ffn_spilled_context_ladder(budget_gib, expected_k):
 # the prefill compute buffer that was OOMing at depth) does not silently
 # invalidate them. The constant itself is pinned by
 # test_the_overhead_reserve_covers_the_measured_prefill_buffer.
-FIXED_OVERHEAD_OPTS = PlanOptions(overhead_bytes_per_device = GIB)
+FIXED_OVERHEAD_OPTS = PlanOptions(overhead_bytes_per_device = GIB, overhead_bytes_per_token = 0)
+# The context-linear part of the reserve is pinned to zero here for the same reason the flat
+# part is pinned to 1 GiB: these ladders are arithmetic about the CACHE, and the term itself
+# is pinned by test_the_reserve_grows_with_context_and_max_context_agrees.
 
 
 @pytest.mark.parametrize("budget_gib,expected_k", [(6, 25), (8, 57), (12, 121), (20, 249)])
@@ -987,6 +1076,35 @@ def test_a_single_file_gguf_is_still_read():
     assert len(layout.blocks) == 64
 
 
+def test_a_block_count_above_llama_cpp_s_layer_cap_abstains(monkeypatch):
+    """llama.cpp asserts n_layer_all <= LLAMA_MAX_LAYERS (512) in load_hparams, so a file
+    declaring more is one the child refuses. Both readers abstain above the cap rather than
+    allocating a per-layer list off the declared count first."""
+    # A plain dense file one block over the cap, every block present, so the ONLY thing stopping
+    # a complete layout is the cap itself.
+    over = LLAMA_MAX_LAYERS + 1
+    fields = _shard_fields(**{"llama.block_count": over})
+    layout = _layout_from_reader(_StubReader(fields, _shard_tensors(range(over))))
+    assert not layout.complete
+    fields = _shard_fields(**{"llama.block_count": LLAMA_MAX_LAYERS})
+    layout = _layout_from_reader(_StubReader(fields, _shard_tensors(range(LLAMA_MAX_LAYERS))))
+    assert layout.complete and len(layout.blocks) == LLAMA_MAX_LAYERS
+    # The hybrid split, which the KV estimator also calls, abstains on its own.
+    assert hybrid_layer_split("qwen35", 100_000, n_kv_head = [8, 0]) == (0, 0, False)
+    # And the reader refuses BEFORE asking the split: the per-layer padding after the split call
+    # is sized off the declared count too.
+    import core.inference.offload_layout as _layout_mod
+
+    def _never(*a, **k):
+        raise AssertionError("the layout asked the split about a file above the cap")
+
+    monkeypatch.setattr(_layout_mod, "hybrid_layer_split", _never)
+    fields = _shard_fields(**{"llama.block_count": over})
+    assert not _layout_from_reader(_StubReader(fields, _shard_tensors(range(64)))).complete
+    # The cap itself is still readable: one layer under it is a normal file.
+    assert hybrid_layer_split("qwen35", LLAMA_MAX_LAYERS, n_kv_head = [8, 0])[2] is True
+
+
 def test_a_split_gguf_abstains_instead_of_planning_on_one_shard():
     """GGUFReader memmaps the ONE path it is given, but llama.cpp reads
     split.count off the first shard and loads every sibling
@@ -1003,6 +1121,113 @@ def test_a_split_gguf_abstains_instead_of_planning_on_one_shard():
     whole = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
     as_if_whole = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(16))))
     assert as_if_whole.spillable_bytes * 4 == whole.spillable_bytes
+
+
+def _qwen3next_fields(**extra):
+    """Qwen3-Next-80B-A3B's header, whose GGUF carries ssm.* and NO interval."""
+    base = {
+        "general.architecture": "qwen3next",
+        "qwen3next.block_count": 48,
+        "qwen3next.attention.head_count_kv": 2,
+        "qwen3next.attention.head_count": 16,
+        "qwen3next.embedding_length": 2048,
+        "qwen3next.attention.key_length": 256,
+        "qwen3next.attention.value_length": 256,
+        "qwen3next.context_length": 262144,
+        "qwen3next.expert_count": 512,
+        "qwen3next.expert_used_count": 10,
+        "qwen3next.ssm.inner_size": 4096,
+        "qwen3next.ssm.state_size": 128,
+        "qwen3next.ssm.conv_kernel": 4,
+        "qwen3next.ssm.group_count": 16,
+    }
+    base.update(extra)
+    return base
+
+
+def _hybrid_tensors(n = 48):
+    return [_StubTensor(f"blk.{i}.attn_q.weight", MIB) for i in range(n)]
+
+
+def test_a_hybrid_without_the_interval_key_uses_the_architecture_default():
+    """llama.cpp defaults full_attention_interval per ARCHITECTURE before treating every layer as
+    attention (models/qwen3next.cpp:24); the absent key read as 0 made Qwen3-Next look like 48 GQA
+    layers with no state, a 3.6x over-count."""
+    layout = _layout_from_reader(_StubReader(_qwen3next_fields(), _hybrid_tensors()))
+    assert layout.complete
+    assert layout.n_attention_layers == 12
+    assert layout.kv_bytes(131072) == 3072 * MIB
+    assert layout.recurrent_bytes > 0
+
+    spelled = _layout_from_reader(
+        _StubReader(
+            _qwen3next_fields(**{"qwen3next.full_attention_interval": 4}), _hybrid_tensors()
+        )
+    )
+    assert spelled.n_attention_layers == layout.n_attention_layers
+    assert spelled.recurrent_bytes == layout.recurrent_bytes
+
+
+def test_an_explicit_recurrent_layer_mask_beats_the_interval():
+    """attention.recurrent_layers is what llama.cpp reads FIRST, and it wins over
+    both the key and the default (models/qwen3next.cpp:21)."""
+    mask = [0] * 48
+    for i in (7, 15, 23, 31):
+        mask[i] = 1
+    layout = _layout_from_reader(
+        _StubReader(
+            _qwen3next_fields(
+                **{
+                    "qwen3next.attention.recurrent_layers": mask,
+                    "qwen3next.full_attention_interval": 4,
+                }
+            ),
+            _hybrid_tensors(),
+        )
+    )
+    assert layout.n_attention_layers == 44
+
+
+def test_ssm_keys_with_no_recurrent_map_abstain_instead_of_reading_all_attention():
+    """An architecture with no default here, whose GGUF states ssm.* and nothing else: the layout
+    cannot say which rows are recurrent, and calling them all attention is the 3.6x over-count."""
+    fields = {k.replace("qwen3next", "mysteryhybrid"): v for k, v in _qwen3next_fields().items()}
+    fields["general.architecture"] = "mysteryhybrid"
+    assert _layout_from_reader(_StubReader(fields, _hybrid_tensors())).complete is False
+
+    plain = {k: v for k, v in fields.items() if ".ssm." not in k}
+    assert _layout_from_reader(_StubReader(plain, _hybrid_tensors())).complete is True
+
+
+def test_nemotron_h_mlp_only_rows_are_not_charged_a_recurrent_state():
+    """A row is recurrent on nemotron_h only when its KV heads AND its FFN width are both 0
+    (models/nemotron-h.cpp:17), so counting every zero-head row charged 6 states where 4 exist."""
+    heads = [0, 0, 0, 8, 0, 0, 0, 8]
+    fields = {
+        "general.architecture": "nemotron_h",
+        "nemotron_h.block_count": 8,
+        "nemotron_h.attention.head_count_kv": heads,
+        "nemotron_h.attention.head_count": 32,
+        "nemotron_h.feed_forward_length": [0, 0, 4096, 0, 0, 0, 4096, 0],
+        "nemotron_h.embedding_length": 4096,
+        "nemotron_h.attention.key_length": 128,
+        "nemotron_h.attention.value_length": 128,
+        "nemotron_h.ssm.inner_size": 4096,
+        "nemotron_h.ssm.state_size": 128,
+        "nemotron_h.ssm.conv_kernel": 4,
+        "nemotron_h.ssm.group_count": 8,
+    }
+    layout = _layout_from_reader(_StubReader(fields, _hybrid_tensors(8)))
+    one_state = (3 * (4096 + 2 * 8 * 128) + 128 * 4096) * 4
+    assert layout.complete
+    assert layout.n_attention_layers == 2
+    assert layout.recurrent_bytes == 4 * one_state
+
+    other = {k.replace("nemotron_h", "jamba"): v for k, v in fields.items()}
+    other["general.architecture"] = "jamba"
+    assert _layout_from_reader(_StubReader(other, _hybrid_tensors(8))).recurrent_bytes == (
+        6 * one_state
+    )
 
 
 # ------------------------------------------------- host profile and cost integration
@@ -1052,14 +1277,22 @@ def test_a_small_host_is_predicted_to_suffer_more_for_the_same_spill():
         vram,
         ram,
         ctx,
-        opts = PlanOptions(overhead_bytes_per_device = GIB, host = HostProfile(threads = 192)),
+        opts = PlanOptions(
+            overhead_bytes_per_device = GIB,
+            overhead_bytes_per_token = 0,
+            host = HostProfile(threads = 192),
+        ),
     )
     small = plan_placement(
         layout,
         vram,
         ram,
         ctx,
-        opts = PlanOptions(overhead_bytes_per_device = GIB, host = HostProfile(threads = 8)),
+        opts = PlanOptions(
+            overhead_bytes_per_device = GIB,
+            overhead_bytes_per_token = 0,
+            host = HostProfile(threads = 8),
+        ),
     )
     assert big.spilled_blocks == small.spilled_blocks, "same placement, different host"
     assert small.predicted_gen_penalty_ms > big.predicted_gen_penalty_ms * 2
@@ -1079,7 +1312,9 @@ def test_routed_experts_are_charged_less_than_a_dense_ffn_of_equal_size():
         is_moe = True,
     )
     moe = ModelLayout(**{**moe.__dict__, "n_expert": 256, "n_expert_used": 8})
-    opts = PlanOptions(overhead_bytes_per_device = GIB, host = HostProfile(threads = 192))
+    opts = PlanOptions(
+        overhead_bytes_per_device = GIB, overhead_bytes_per_token = 0, host = HostProfile(threads = 192)
+    )
     d = plan_placement(dense, [8 * GIB], 64 * GIB, 32768, opts = opts)
     m = plan_placement(moe, [8 * GIB], 64 * GIB, 32768, opts = opts)
     assert d.spilled_blocks == m.spilled_blocks, "same bytes spilled either way"
@@ -1128,12 +1363,75 @@ def test_the_overhead_reserve_covers_the_measured_prefill_buffer():
     assert reserve <= 2 * GIB
 
 
+def test_the_context_reserve_matches_what_was_measured_on_hardware():
+    """The flat term was right and incomplete: the reserve also grows with context."""
+    opts = PlanOptions()
+    mib = 1024 * 1024
+
+    assert _device_reserve(opts, 8192) == opts.overhead_bytes_per_device
+    assert _device_reserve(opts, 32768) == opts.overhead_bytes_per_device
+    assert _device_reserve(opts, opts.overhead_free_ctx) == opts.overhead_bytes_per_device
+
+    assert _device_reserve(opts, 33792) / mib > 1184
+    assert _device_reserve(opts, 66560) / mib > 1932.5
+    assert _device_reserve(opts, 132096) / mib > 1958.1
+
+    assert _device_reserve(opts, 66560) / mib < 1932.5 + 1024
+    assert _device_reserve(opts, 132096) / mib < 1958.1 + 3 * 1024
+
+    kib = 1024
+    assert 18.8 * kib <= opts.overhead_bytes_per_token <= 23.4 * kib
+
+
+def test_the_context_reserve_declines_a_load_the_flat_one_accepted():
+    """On an 8.5 GiB card at 64K the flat reserve leaves room for a q8_0 cache and the load is
+    planned, while the context-aware one correctly finds it does not fit."""
+    layout = q4_layout()
+    flat = plan_placement(
+        layout,
+        [8704 * 1024 * 1024],
+        64 * GIB,
+        65536,
+        opts = PlanOptions(allow_kv_quant = True, overhead_bytes_per_token = 0),
+    )
+    aware = plan_placement(
+        layout, [8704 * 1024 * 1024], 64 * GIB, 65536, opts = PlanOptions(allow_kv_quant = True)
+    )
+    assert flat.insufficient is False, "the flat reserve accepted this cell"
+    assert aware.insufficient is True, "the context reserve must not"
+
+    a = plan_placement(
+        layout, [8704 * 1024 * 1024], 64 * GIB, 8192, opts = PlanOptions(overhead_bytes_per_token = 0)
+    )
+    b = plan_placement(layout, [8704 * 1024 * 1024], 64 * GIB, 8192)
+    assert a.ot_patterns == b.ot_patterns and a.n_ctx == b.n_ctx
+
+
+def test_max_context_for_is_consistent_with_the_reserve_it_charges():
+    """The reserve depends on the context being solved for, so a single pass answers with some
+    OTHER context's reserve; feed the answer back in and it must still fit."""
+    layout = q4_layout()
+    for budget_gib in (12, 16, 24, 48):
+        vram = [budget_gib * GIB]
+        ctx = max_context_for(layout, vram, spill_all_ffn = True)
+        if ctx <= 0:
+            continue
+        assert max_context_for(layout, vram, spill_all_ffn = True) == ctx
+
+        flat_only = max_context_for(
+            layout, vram, spill_all_ffn = True, opts = PlanOptions(overhead_bytes_per_token = 0)
+        )
+        assert ctx <= flat_only, "the context term can only reduce the answer, never raise it"
+        if ctx > PlanOptions().overhead_free_ctx and flat_only < layout.n_ctx_train:
+            assert ctx < flat_only, "and above the free context it must actually bite"
+
+
 # ------------------------------------------- excluded blocks and the pool budget
 
 
 # Just too little VRAM for the 64-block stub at 4096 ctx, so every block spills
 # and the planner reaches the all-of-them branch that emits the compact pattern.
-_NO_OVERHEAD = PlanOptions(overhead_bytes_per_device = 0)
+_NO_OVERHEAD = PlanOptions(overhead_bytes_per_device = 0, overhead_bytes_per_token = 0)
 _ALL_SPILL_VRAM = 3 * GIB + 64 * MIB
 
 
@@ -1252,20 +1550,29 @@ def test_the_spill_pattern_never_reaches_an_excluded_mtp_block():
     assert len(plan.spilled_blocks) == len(layout.blocks), "every block goes"
     assert len(plan.ot_patterns) >= 1
 
-    pattern = re.compile(plan.ot_patterns[0])
-    assert pattern.search("blk.0.ffn_up.weight"), "a target block still spills"
-    assert pattern.search("blk.63.ffn_up.weight")
+    # The UNION, not patterns[0]: boundary grading emits the last block taken as its own pattern,
+    # so a single-pattern assertion reads that block as missing.
+    def spills(tensor: str) -> bool:
+        return any(re.compile(p).search(tensor) for p in plan.ot_patterns)
+
+    assert spills("blk.0.ffn_up.weight"), "a target block still spills"
+    assert spills("blk.63.ffn_up.weight")
     for excluded in ("blk.64.ffn_up.weight", "blk.65.ffn_down.weight"):
-        assert pattern.search(excluded) is None, excluded
+        assert not spills(excluded), excluded
 
 
-def test_a_gguf_without_excluded_blocks_keeps_the_compact_pattern():
-    """The bound is only paid where it buys something: with nothing excluded the
-    global form is still used, which is the shape the benchmarks measured."""
+def test_every_spill_pattern_is_bounded_to_blocks_the_layout_knows():
+    """The unbounded ``^blk\\.\\d+\\.`` form is gone, including where nothing is excluded."""
     layout = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
     plan = plan_placement(layout, [_ALL_SPILL_VRAM], 256 * GIB, 4096, opts = _NO_OVERHEAD)
     assert len(plan.spilled_blocks) == len(layout.blocks)
-    assert re.compile(plan.ot_patterns[0]).search("blk.999.ffn_up.weight")
+
+    def spills(tensor: str) -> bool:
+        return any(re.compile(p).search(tensor) for p in plan.ot_patterns)
+
+    assert spills("blk.0.ffn_up.weight")
+    assert spills("blk.63.ffn_up.weight"), "the boundary block is covered too"
+    assert not spills("blk.999.ffn_up.weight"), "no block outside the layout"
 
 
 def test_extra_resident_bytes_are_charged_against_the_pooled_budget():
@@ -1293,10 +1600,9 @@ def test_row_ownership_is_modelled_on_raw_free_not_on_the_budget():
     card's TOTAL, so the two agree only when every card has the same free/total.
     Feeding the budget in as the split weight silently moves the boundary."""
     layout = _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64))))
-    spilled = {b.index for b in layout.blocks}
+    spilled = {b.index: b.spillable_bytes for b in layout.blocks}
     budgets = [2 * GIB, 2 * GIB]
 
-    # Same budgets, different RAW free: the rows move, so the verdict may too.
     even = _per_device_shortfall(
         layout,
         _NO_OVERHEAD,
@@ -1337,9 +1643,22 @@ def test_a_sliding_window_model_abstains_on_a_multi_gpu_split():
     assert plan.changed is False
     assert "sliding-window" in plan.reason
 
-    # One card has no split to mislocate the caches across.
     one = plan_placement(swa, [_ALL_SPILL_VRAM], 256 * GIB, 4096, opts = _NO_OVERHEAD)
-    assert len(one.spilled_blocks) == len(layout.blocks)
+    assert one.changed is False
+    assert one.spilled_blocks == ()
+    assert "sliding-window" in one.reason
+
+    measured = plan_placement(
+        swa,
+        [_ALL_SPILL_VRAM],
+        256 * GIB,
+        4096,
+        opts = _NO_OVERHEAD,
+        kv_bytes_floor = 48 * MIB,
+    )
+    assert measured.changed is True
+    assert "sliding-window" not in measured.reason
+    assert 0 < len(measured.spilled_blocks) <= len(layout.blocks)
 
 
 def _moe_reader(names):
@@ -1407,7 +1726,7 @@ def test_a_per_layer_vector_replaces_the_sliding_window_abstain():
     evenly, so it refuses; with one it knows where the big caches land."""
     layout = _swa_layout()
     half = _ALL_SPILL_VRAM // 2
-    spilled = {b.index for b in layout.blocks}
+    spilled = {b.index: b.spillable_bytes for b in layout.blocks}
 
     without = _per_device_shortfall(
         layout,
@@ -1441,7 +1760,7 @@ def test_the_vector_places_the_cache_it_does_not_resize_it():
     """Scaled to the total the caller already priced, so changing only its SHAPE
     moves the cache between devices without changing how much cache there is."""
     layout = _swa_layout()
-    spilled = {b.index for b in layout.blocks}
+    spilled = {b.index: b.spillable_bytes for b in layout.blocks}
     n = layout.n_layers
     budgets = [_ALL_SPILL_VRAM // 2, _ALL_SPILL_VRAM // 2]
 
@@ -1478,7 +1797,7 @@ def test_the_vector_places_the_cache_it_does_not_resize_it():
 def test_a_wrong_length_vector_is_ignored_rather_than_trusted():
     """A vector of the wrong length is not evidence: abstain, do not stretch it."""
     layout = _swa_layout()
-    spilled = {b.index for b in layout.blocks}
+    spilled = {b.index: b.spillable_bytes for b in layout.blocks}
     half = _ALL_SPILL_VRAM // 2
     got = _per_device_shortfall(
         layout,
@@ -1549,3 +1868,1576 @@ def test_layout_from_gguf_reads_the_sibling_shards_only_when_asked(tmp_path, mon
 
     shards[1].unlink()
     assert not layout_from_gguf(str(shards[0]), all_shards = True).complete
+
+
+# The owner's priority order for what a launch KEEPS: generation speed, context, the prompt
+# cache, the MTP / speculative draft, --parallel, the projector resident.
+
+_R_CTX = 4096
+_R_OPTS = dict(overhead_bytes_per_device = GIB, overhead_bytes_per_token = 0)
+
+
+def _card_short_by(
+    layout: ModelLayout,
+    short: int,
+    *,
+    floor: int = 0,
+    n_seq: int = 1,
+) -> int:
+    """A single card whose usable budget is ``short`` bytes below the resident load."""
+    needed = all_resident_bytes(layout, _R_CTX, kv_bytes_floor = floor, n_seq = n_seq)
+    return needed + GIB - short
+
+
+def test_rung0_pins_the_projector_before_touching_a_block():
+    layout = q4_layout()
+    mmproj = 600 * MIB
+    card = _card_short_by(layout, 100 * MIB) + mmproj
+    kept = plan_placement(
+        layout,
+        [card],
+        64 * GIB,
+        _R_CTX,
+        opts = PlanOptions(**_R_OPTS, mmproj_bytes = mmproj, mmproj_movable = False),
+    )
+    assert kept.spills_anything and not kept.mmproj_to_host
+    moved = plan_placement(
+        layout,
+        [card],
+        64 * GIB,
+        _R_CTX,
+        opts = PlanOptions(**_R_OPTS, mmproj_bytes = mmproj, mmproj_movable = True),
+    )
+    assert moved.mmproj_to_host
+    assert not moved.spills_anything, moved.reason
+    assert moved.changed and moved.reshapes_launch
+    assert "--no-mmproj-offload" in plan_to_args(moved)
+    assert "projector" in moved.reason
+
+
+def test_rung1_steps_the_slot_count_down_one_slot_at_a_time():
+    """Short by a quarter of the cache plus a hair: three slots suffice, so three it is, not one."""
+    layout = q4_layout()
+    floor = GIB
+    table = {4: floor, 3: 3 * floor // 4, 2: floor // 2, 1: floor // 4}
+    card = _card_short_by(layout, floor // 4 + MIB, floor = floor, n_seq = 4)
+    plan = plan_placement(
+        layout,
+        [card],
+        64 * GIB,
+        _R_CTX,
+        kv_bytes_floor = floor,
+        opts = PlanOptions(**_R_OPTS, n_parallel = 4, kv_bytes_floor_by_parallel = table),
+    )
+    assert plan.n_parallel == 3, plan.reason
+    assert not plan.spills_anything
+    assert plan_to_args(plan)[-2:] == ["--parallel", "3"]
+
+
+def test_rung1_respects_min_parallel():
+    layout = q4_layout()
+    floor = GIB
+    table = {4: floor, 3: 3 * floor // 4, 2: floor // 2, 1: floor // 4}
+    card = _card_short_by(layout, floor // 2 + MIB, floor = floor, n_seq = 4)
+    plan = plan_placement(
+        layout,
+        [card],
+        64 * GIB,
+        _R_CTX,
+        kv_bytes_floor = floor,
+        opts = PlanOptions(**_R_OPTS, n_parallel = 4, min_parallel = 3, kv_bytes_floor_by_parallel = table),
+    )
+    assert plan.n_parallel == 3
+    assert plan.spills_anything, plan.reason
+
+
+def test_rung1_is_skipped_on_a_sliding_window_cache_without_the_map():
+    """The layout's product has no window term, so without the caller's map nothing can price an
+    SWA cache at a different slot count and the rung is skipped."""
+    layout = replace(q4_layout(), has_swa = True)
+    floor = GIB
+    card = _card_short_by(layout, floor // 4 + MIB, floor = floor, n_seq = 4)
+    plan = plan_placement(
+        layout,
+        [card],
+        64 * GIB,
+        _R_CTX,
+        kv_bytes_floor = floor,
+        opts = PlanOptions(**_R_OPTS, n_parallel = 4),
+    )
+    assert plan.n_parallel == 0
+    assert plan.spills_anything, plan.reason
+    with_map = plan_placement(
+        layout,
+        [card],
+        64 * GIB,
+        _R_CTX,
+        kv_bytes_floor = floor,
+        opts = PlanOptions(
+            **_R_OPTS,
+            n_parallel = 4,
+            kv_bytes_floor_by_parallel = {3: 3 * floor // 4, 2: floor // 2, 1: floor // 4},
+        ),
+    )
+    assert with_map.n_parallel == 3 and not with_map.spills_anything
+
+
+def test_the_linear_slot_fallback_never_undercuts_the_layout_product():
+    """Without a map a non-SWA floor scales linearly in slots, and cache_bytes still takes the
+    max against the layout's product, so the guess can only over-reserve."""
+    from core.inference.offload_planner import cache_bytes
+
+    layout = q4_layout()
+    opts = PlanOptions(n_parallel = 4)
+    for slots in (1, 2, 3):
+        scaled = _kv_floor_at(layout, opts, 64 * MIB, _R_CTX, _R_CTX, slots)
+        assert scaled is not None
+        assert cache_bytes(layout, _R_CTX, kv_bytes_floor = scaled) >= layout.kv_bytes(_R_CTX)
+    assert _kv_floor_at(replace(layout, has_swa = True), opts, 64 * MIB, _R_CTX, _R_CTX, 2) is None
+    assert (
+        _kv_floor_at(replace(layout, has_swa = True), opts, 64 * MIB, _R_CTX, _R_CTX, 4) == 64 * MIB
+    )
+
+
+def test_the_recurrent_state_is_charged_per_slot():
+    layout = q4_layout()
+    one = all_resident_bytes(layout, _R_CTX, n_seq = 1)
+    four = all_resident_bytes(layout, _R_CTX, n_seq = 4)
+    assert four - one == 3 * layout.recurrent_bytes
+
+
+def test_rung2_drops_the_draft_only_after_the_slots_are_exhausted():
+    layout = q4_layout()
+    floor = GIB
+    draft = 700 * MIB
+    table = {2: floor, 1: floor // 2}
+    card = _card_short_by(layout, floor // 2 - MIB, floor = floor, n_seq = 2) + draft
+    common = dict(
+        **_R_OPTS,
+        n_parallel = 2,
+        kv_bytes_floor_by_parallel = table,
+        draft_bytes = draft,
+        draft_droppable = True,
+    )
+    slot_first = plan_placement(
+        layout, [card], 64 * GIB, _R_CTX, kv_bytes_floor = floor, opts = PlanOptions(**common)
+    )
+    assert slot_first.n_parallel == 1 and not slot_first.draft_dropped, slot_first.reason
+    assert not slot_first.spills_anything
+    pinned = plan_placement(
+        layout,
+        [card],
+        64 * GIB,
+        _R_CTX,
+        kv_bytes_floor = floor,
+        opts = PlanOptions(**{**common, "min_parallel": 2}),
+    )
+    assert pinned.n_parallel == 0 and pinned.draft_dropped, pinned.reason
+    assert not pinned.spills_anything
+    assert "--parallel" not in plan_to_args(pinned)
+
+
+def test_rungs_0_to_2_alone_are_ranked_against_the_launch_the_caller_typed():
+    """A plan with no spill still has a fallback arm: the launch as the caller typed it, fitted
+    by llama.cpp, so both figures are computed and reported rather than left at zero."""
+    layout = q4_layout()
+    mmproj = 600 * MIB
+    card = _card_short_by(layout, 100 * MIB) + mmproj
+    plan = plan_placement(
+        layout,
+        [card],
+        64 * GIB,
+        _R_CTX,
+        opts = PlanOptions(
+            **_R_OPTS, mmproj_bytes = mmproj, mmproj_movable = True, require_cost_win = True
+        ),
+    )
+    assert plan.mmproj_to_host and plan.changed
+    assert plan.predicted_request_ms == 0.0, "nothing is on the host to charge for"
+    assert plan.predicted_fit_request_ms > 0.0, "the fitter's arm is priced"
+    assert not plan.declined_by_gate
+
+
+def test_the_prompt_cache_bound_is_reported_only_when_it_binds():
+    layout = q4_layout()
+    card = _card_short_by(layout, -GIB)  # roomy: nothing spilled
+    roomy = plan_placement(layout, [card], 64 * GIB, _R_CTX, opts = PlanOptions(**_R_OPTS))
+    assert roomy.load_mode_none and roomy.cache_ram_mib == -1
+    assert "--cache-ram" not in plan_to_args(roomy)
+    opts = PlanOptions(**_R_OPTS)
+    tight_host = opts.host_ram_headroom_bytes + roomy.host_bytes + GIB
+    tight = plan_placement(layout, [card], tight_host, _R_CTX, opts = opts)
+    assert tight.load_mode_none
+    assert tight.cache_ram_mib == 1024, tight.cache_ram_mib
+    assert plan_to_args(tight)[-2:] == ["--cache-ram", "1024"]
+    cramped = plan_placement(layout, [card], opts.host_ram_headroom_bytes, _R_CTX, opts = opts)
+    assert not cramped.load_mode_none and cramped.cache_ram_mib == -1
+
+
+def test_max_context_for_honours_the_measured_floor():
+    layout = q4_layout()
+    bare = max_context_for(layout, [16 * GIB], spill_all_ffn = True, opts = FIXED_OVERHEAD_OPTS)
+    product_at = layout.kv_bytes(32768)
+    doubled = max_context_for(
+        layout,
+        [16 * GIB],
+        spill_all_ffn = True,
+        opts = FIXED_OVERHEAD_OPTS,
+        kv_bytes_floor = 2 * product_at,
+        floor_ctx = 32768,
+    )
+    assert 0 < doubled < bare
+    assert abs(doubled - bare // 2) <= 1024, (bare, doubled)
+    swa = replace(layout, has_swa = True)
+    flat_a = max_context_for(
+        swa,
+        [16 * GIB],
+        spill_all_ffn = True,
+        opts = FIXED_OVERHEAD_OPTS,
+        kv_bytes_floor = GIB,
+        floor_ctx = 32768,
+    )
+    flat_b = max_context_for(
+        swa,
+        [16 * GIB],
+        spill_all_ffn = True,
+        opts = FIXED_OVERHEAD_OPTS,
+        kv_bytes_floor = GIB,
+        floor_ctx = 4096,
+    )
+    assert flat_a == flat_b
+    assert flat_a >= doubled
+
+
+def test_the_shrink_prices_the_budget_at_the_shrunk_context():
+    """At 131072 the reserve's context term alone eats the card; at a shorter context the same
+    card holds the load with every FFN spilled."""
+    layout = q4_layout()
+    opts = PlanOptions(context_policy = ContextPolicy.FIT_ONLY)
+    plan = plan_placement(layout, [10 * GIB], 64 * GIB, 131072, opts = opts)
+    assert plan.changed and not plan.insufficient, plan.reason
+    assert 4096 <= plan.n_ctx < 131072, plan.n_ctx
+
+
+def _mixed_card_vision_layout():
+    """A tail-heavy dense model: the pooled budget fits, one card's rows do not."""
+    blocks = tuple(
+        BlockLayout(
+            index = i,
+            spillable_bytes = (700 * MIB if i < 25 else 800 * MIB),
+            resident_bytes = (217 * MIB if i < 25 else 224 * MIB),
+        )
+        for i in range(32)
+    )
+    return ModelLayout(
+        arch = "qwen35",
+        n_layers = 32,
+        n_attention_layers = 32,
+        blocks = blocks,
+        lm_head_bytes = 512 * MIB,
+        token_embd_bytes = 256 * MIB,
+        kv_bytes_per_token_f16 = 4096,
+        recurrent_bytes = 0,
+        n_ctx_train = 262144,
+        complete = True,
+    )
+
+
+def test_a_knob_only_fit_is_checked_device_by_device():
+    """Moving the projector can make the POOLED budget fit while the small card stays over."""
+    layout = _mixed_card_vision_layout()
+    opts = PlanOptions(
+        overhead_bytes_per_device = 1 * GIB,
+        pipeline_overhead_bytes = 0,
+        mmproj_bytes = 3 * GIB,
+        mmproj_movable = True,
+        n_parallel = 1,
+    )
+    vram = [24 * GIB, 8 * GIB]
+    assert all_resident_bytes(layout, 8192) > 27 * GIB
+    assert all_resident_bytes(layout, 8192) <= 30 * GIB
+    assert (
+        _per_device_shortfall(
+            layout,
+            opts,
+            8192,
+            {},
+            False,
+            vram,
+            quantised = False,
+            kv_bytes_floor = 0,
+            split_weights_per_device = vram,
+            extra_on_device0 = 0,
+        )
+        is not None
+    )
+
+    plan = plan_placement(layout, vram, 128 * GIB, 8192, opts = opts)
+    assert plan.mmproj_to_host and plan.spilled_blocks, plan.reason
+    assert "device 1" in plan.reason
+    assert all(index >= 25 for index in plan.spilled_blocks), plan.spilled_blocks
+    assert (
+        _per_device_shortfall(
+            layout,
+            opts,
+            8192,
+            {i: layout.blocks[i].spillable_bytes for i in plan.spilled_blocks},
+            False,
+            vram,
+            quantised = False,
+            kv_bytes_floor = 0,
+            split_weights_per_device = vram,
+            extra_on_device0 = 0,
+        )
+        is None
+    )
+
+
+def _bound_layout(*, resident_per_block: int, has_swa: bool = False):
+    blocks = tuple(
+        BlockLayout(index = i, spillable_bytes = 180 * MIB, resident_bytes = resident_per_block)
+        for i in range(48)
+    )
+    return ModelLayout(
+        arch = "gemma3" if has_swa else "qwen35",
+        n_layers = 48,
+        n_attention_layers = 48,
+        blocks = blocks,
+        lm_head_bytes = 600 * MIB,
+        token_embd_bytes = 600 * MIB,
+        kv_bytes_per_token_f16 = 98304,
+        recurrent_bytes = 0,
+        n_ctx_train = 131072,
+        has_swa = has_swa,
+        complete = True,
+    )
+
+
+def test_the_context_bound_leaves_a_host_held_cache_in_host_ram():
+    """-nkvo holds both caches in host RAM, so no context charges them to VRAM."""
+    layout = _bound_layout(resident_per_block = 130 * MIB)
+    opts = PlanOptions(
+        overhead_bytes_per_device = 1 * GIB,
+        context_policy = ContextPolicy.FIT_ONLY,
+        kv_on_host = True,
+        min_ctx = 4096,
+        ctx_step = 1024,
+    )
+    vram = [8 * GIB]
+
+    bound = max_context_for(layout, vram, spill_all_ffn = True, opts = opts, kv_on_host = True)
+    assert resident_floor_bytes(layout, bound, kv_on_host = True) <= _usable_vram_for(
+        vram, opts, bound
+    )
+    assert bound > 40960
+
+    plan = plan_placement(layout, vram, 256 * GIB, 131072, opts = opts)
+    assert plan.n_ctx > 65536
+    assert not plan.insufficient
+
+
+def test_a_windowed_cache_does_not_cap_the_context_bound_at_the_naive_product():
+    """``cache_at`` charges a measured SWA floor context-FLAT, so the layout's full-context
+    product is not an upper bound on the answer."""
+    layout = _bound_layout(resident_per_block = 100 * MIB, has_swa = True)
+    opts = PlanOptions(
+        overhead_bytes_per_device = 1 * GIB,
+        context_policy = ContextPolicy.FIT_ONLY,
+        min_ctx = 4096,
+        ctx_step = 1024,
+    )
+    vram = [8 * GIB]
+    floor = 400 * MIB
+
+    bound = max_context_for(
+        layout, vram, spill_all_ffn = True, opts = opts, kv_bytes_floor = floor, floor_ctx = 131072
+    )
+    assert bound > 65536
+    assert resident_floor_bytes(layout, bound, kv_bytes_floor = floor) <= _usable_vram_for(
+        vram, opts, bound
+    )
+
+    plan = plan_placement(layout, vram, 128 * GIB, 131072, opts = opts, kv_bytes_floor = floor)
+    assert plan.n_ctx > 65536
+    assert not plan.insufficient
+
+
+def _usable_vram_for(vram, opts, n_ctx):
+    from core.inference.offload_planner import _usable_vram
+    return _usable_vram(vram, opts, n_ctx)
+
+
+def test_a_resident_fit_below_the_requested_context_is_a_change():
+    """The context ladder can settle on a context where every tensor stays resident."""
+    blocks = tuple(
+        BlockLayout(index = i, spillable_bytes = 0, resident_bytes = 128 * MIB) for i in range(32)
+    )
+    layout = ModelLayout(
+        arch = "qwen3",
+        n_layers = 32,
+        n_attention_layers = 32,
+        blocks = blocks,
+        lm_head_bytes = 256 * MIB,
+        token_embd_bytes = 256 * MIB,
+        kv_bytes_per_token_f16 = 64 * 1024,
+        n_ctx_train = 131072,
+        complete = True,
+    )
+    opts = PlanOptions(context_policy = ContextPolicy.FIT_ONLY, allow_lm_head_spill = False)
+    resident = max_context_for(layout, [8 * GIB], opts = opts)
+    assert opts.min_ctx <= resident < 131072, resident
+    plan = plan_placement(layout, [8 * GIB], None, 131072, opts = opts)
+    assert not plan.insufficient, plan.reason
+    assert not plan.ot_patterns and not plan.load_mode_none
+    assert plan.n_ctx == resident
+    assert plan.changed
+
+
+def test_the_context_bound_assumes_the_rungs_above_the_first_spill():
+    """The bound has to assume the rungs above the first weight spill, or a large projector makes
+    it zero and the ladder never looks."""
+    blocks = tuple(
+        BlockLayout(index = i, spillable_bytes = 0, resident_bytes = 128 * MIB) for i in range(32)
+    )
+    layout = ModelLayout(
+        arch = "qwen3",
+        n_layers = 32,
+        n_attention_layers = 32,
+        blocks = blocks,
+        lm_head_bytes = 256 * MIB,
+        token_embd_bytes = 256 * MIB,
+        kv_bytes_per_token_f16 = 64 * 1024,
+        n_ctx_train = 131072,
+        complete = True,
+    )
+    opts = PlanOptions(
+        context_policy = ContextPolicy.FIT_ONLY,
+        allow_lm_head_spill = False,
+        mmproj_bytes = 3 * GIB,
+        mmproj_movable = True,
+    )
+    assert max_context_for(layout, [8 * GIB], opts = opts) == 0
+    plan = plan_placement(layout, [8 * GIB], 64 * GIB, 131072, opts = opts)
+    assert plan.changed and not plan.insufficient, plan.reason
+    assert plan.mmproj_to_host
+    assert opts.min_ctx <= plan.n_ctx < 131072, plan.n_ctx
+
+
+def test_a_host_held_recurrent_state_is_charged_once_per_slot():
+    """-nkvo puts the recurrent state in host RAM one copy per slot, so carrying one copy left
+    the load-mode rule and the prompt-cache clamp short by the other slots' state."""
+    import dataclasses
+
+    layout = dataclasses.replace(q4_layout(), recurrent_bytes = GIB)
+
+    def at(slots):
+        return plan_placement(
+            layout,
+            [16 * GIB],
+            64 * GIB,
+            8192,
+            opts = PlanOptions(kv_on_host = True, n_parallel = slots, min_parallel = slots),
+        )
+
+    one, four = at(1), at(4)
+    assert one.ot_patterns == four.ot_patterns
+    assert four.host_bytes - one.host_bytes == 3 * GIB
+
+
+def test_prefer_resident_tests_the_footprint_the_slots_really_serve():
+    """The guard priced one copy of the recurrent state while the launch serves one per slot, so
+    a load whose single copy fit skipped the resident search and spilled weights instead."""
+    import dataclasses
+
+    ctx = 32768
+    layout = dataclasses.replace(
+        q4_layout(), recurrent_bytes = GIB, kv_bytes_per_token_f16 = 4 * GIB / ctx
+    )
+    o = PlanOptions(
+        context_policy = ContextPolicy.PREFER_RESIDENT,
+        n_parallel = 4,
+        min_parallel = 4,
+        overhead_bytes_per_device = GIB,
+        overhead_bytes_per_token = 0,
+    )
+    single = all_resident_bytes(layout, ctx, n_seq = 1)
+    card = single + GIB + 512 * MIB
+    assert all_resident_bytes(layout, ctx, n_seq = 4) > card - GIB
+    plan = plan_placement(layout, [card], 64 * GIB, ctx, opts = o)
+    assert plan.changed and not plan.insufficient, plan.reason
+    assert not plan.ot_patterns, plan.ot_patterns
+    assert 0 < plan.n_ctx < ctx, plan.n_ctx
+    assert all_resident_bytes(layout, plan.n_ctx, n_seq = 4) <= card - GIB
+
+
+def test_the_context_bound_releases_the_dense_ffn_rung_too():
+    """Shared and dense FFN inside a MoE block are a rung of their own and sit in resident_bytes,
+    so a bound releasing only the expert bytes sat below what the ladder could reach."""
+    with_shared = graded_moe_with_shared(0.2)
+    without = graded_moe_with_shared(0.0)
+    bound = max_context_for(with_shared, [11 * GIB], spill_all_ffn = True)
+    assert bound > 0
+    assert bound == max_context_for(without, [11 * GIB], spill_all_ffn = True)
+
+
+def graded_moe_with_shared(shexp_gib: float) -> ModelLayout:
+    d, u, g = int(0.16 * GIB), int(0.16 * GIB), int(0.15 * GIB)
+    attn, shexp = int(0.025 * GIB), int(shexp_gib * GIB)
+    blocks = tuple(
+        BlockLayout(
+            index = i,
+            spillable_bytes = d + u + g,
+            resident_bytes = attn + shexp,
+            ffn_down_bytes = d,
+            ffn_up_bytes = u,
+            ffn_gate_bytes = g,
+            dense_ffn_bytes = shexp,
+            attn_bytes = attn,
+        )
+        for i in range(40)
+    )
+    return ModelLayout(
+        arch = "qwen3moe",
+        n_layers = 40,
+        n_attention_layers = 40,
+        blocks = blocks,
+        lm_head_bytes = int(0.5 * GIB),
+        token_embd_bytes = int(0.5 * GIB),
+        other_resident_bytes = int(0.01 * GIB),
+        kv_bytes_per_token_f16 = 0.62 * GIB / 32768,
+        n_ctx_train = 32768,
+        is_moe = True,
+        n_expert = 128,
+        n_expert_used = 8,
+        complete = True,
+    )
+
+
+def test_the_per_device_check_places_the_recurrent_state_on_the_rows_that_hold_it():
+    """The pooled fit charges the recurrent state in full, one copy per slot, so a per-device
+    check counting only block weights and the attention cache passed a card holding the recurrent
+    rows that llama.cpp then threw on."""
+    import dataclasses
+
+    layout = dataclasses.replace(
+        _swa_layout(), arch = "qwen35", has_swa = False, recurrent_bytes = 2 * GIB, n_attention_layers = 4
+    )
+    n = layout.n_layers
+    weights = [1 if i % (n // 4) == 0 else 0 for i in range(n)]
+    spilled = {b.index: b.spillable_bytes for b in layout.blocks}
+
+    def usage(
+        lay,
+        n_seq = 1,
+        vector = weights,
+    ):
+        _err, used, _slots = _per_device_usage(
+            lay,
+            _NO_OVERHEAD,
+            4096,
+            spilled,
+            False,
+            [GIB, GIB],
+            quantised = False,
+            kv_bytes_floor = 0,
+            kv_layer_weights = vector,
+            n_seq = n_seq,
+        )
+        return used
+
+    one, four = usage(layout), usage(layout, n_seq = 4)
+    assert abs(sum(four) - sum(one) - 3 * 2 * GIB) <= n
+    bare = usage(dataclasses.replace(layout, recurrent_bytes = 0))
+    budgets = [b + 64 * MIB for b in bare]
+    short = _per_device_shortfall(
+        layout,
+        _NO_OVERHEAD,
+        4096,
+        spilled,
+        False,
+        budgets,
+        quantised = False,
+        kv_bytes_floor = 0,
+        kv_layer_weights = weights,
+    )
+    assert short is not None and "device" in short
+    uniform = _per_device_shortfall(
+        layout,
+        _NO_OVERHEAD,
+        4096,
+        spilled,
+        False,
+        budgets,
+        quantised = False,
+        kv_bytes_floor = 0,
+        kv_layer_weights = [1] * n,
+    )
+    assert uniform is not None and "recurrent state" in uniform
+
+
+def test_the_context_ladder_tests_the_minimum_context_before_giving_up(monkeypatch):
+    """The lattice steps down from the refused context and lands on min_ctx only by coincidence:
+    8960 minus a 1024 step is 7936, below an 8192 minimum, so 8192 was never asked."""
+    from core.inference import offload_planner as planner
+    from core.inference.offload_planner import ContextPolicy, Plan
+
+    layout = _bound_layout(resident_per_block = 100 * MIB)
+    seen = []
+
+    def fake(_layout, _opts, ctx, *args, **kwargs):
+        seen.append(ctx)
+        if ctx == 8192:
+            return Plan(changed = True, n_ctx = ctx, ot_patterns = ("x",), spilled_blocks = (1,))
+        return Plan(n_ctx = ctx, declined_by_gate = True, reason = "gate")
+
+    monkeypatch.setattr(planner, "_plan_at", fake)
+    opts = PlanOptions(
+        overhead_bytes_per_device = GIB,
+        context_policy = ContextPolicy.FIT_ONLY,
+        min_ctx = 8192,
+        ctx_step = 1024,
+    )
+    plan = plan_placement(layout, [8 * GIB], 256 * GIB, 8960, opts = opts)
+    assert seen[0] == 8960
+    assert seen[-1] == 8192
+    assert plan.n_ctx == 8192 and not plan.declined_by_gate
+
+
+def test_the_boundary_block_is_left_whole_when_a_later_rung_closed_the_deficit():
+    """Only the rung that closed the gap may be graded: grading the last expert block against a
+    deficit the dense units already cover keeps cheap routed bytes resident and dear ones out."""
+    from core.inference.offload_cost_model import HostProfile
+
+    layout = graded_moe_with_shared(0.4)
+    opts = PlanOptions(host = HostProfile(threads = 6))
+    plan = plan_placement(layout, [5 * GIB], 94 * GIB, 8192, opts = opts)
+    assert plan.spills_anything, plan.reason
+    dense = [p for p in plan.ot_patterns if "_shexp" in p]
+    assert dense, plan.ot_patterns
+    graded_expert = [p for p in plan.ot_patterns if "_shexp" not in p and r"\d+" not in p]
+    assert not graded_expert, plan.ot_patterns
+
+
+def test_an_explicit_context_above_the_training_window_is_priced_as_asked():
+    """llama-server serves a -c above n_ctx_train, so a plan clamped to the window prices a cache
+    the child does not run at. Explicit means as asked; only the default reads the window."""
+    layout = _bound_layout(resident_per_block = 100 * MIB)
+    opts = PlanOptions(overhead_bytes_per_device = GIB)
+    asked = 2 * layout.n_ctx_train
+    plan = plan_placement(layout, [40 * GIB], 256 * GIB, asked, opts = opts)
+    assert plan.n_ctx == asked, plan
+    at_window = plan_placement(layout, [40 * GIB], 256 * GIB, layout.n_ctx_train, opts = opts)
+    assert at_window.n_ctx == layout.n_ctx_train
+    assert plan.host_bytes > at_window.host_bytes or (
+        plan.insufficient and not at_window.insufficient
+    )
+    assert plan_placement(layout, [40 * GIB], 256 * GIB, 0, opts = opts).n_ctx == layout.n_ctx_train
+
+
+def test_the_ladder_from_an_explicit_request_can_stop_above_the_training_window():
+    """A 2x-window request that does not fit may still fit above the window, but the ladder's
+    upper bound followed the window and never tried it."""
+    layout = _bound_layout(resident_per_block = 100 * MIB)
+    opts = PlanOptions(
+        overhead_bytes_per_device = GIB,
+        overhead_bytes_per_token = 0,
+        context_policy = ContextPolicy.FIT_ONLY,
+        min_ctx = 4096,
+    )
+    asked = 2 * layout.n_ctx_train
+    plan = plan_placement(layout, [26 * GIB], 256 * GIB, asked, opts = opts)
+    assert plan.changed and not plan.insufficient, plan
+    assert layout.n_ctx_train < plan.n_ctx < asked, plan.n_ctx
+    # The default still reads the window.
+    default = plan_placement(layout, [26 * GIB], 256 * GIB, 0, opts = opts)
+    assert default.n_ctx <= layout.n_ctx_train
+
+
+def test_a_resident_context_plan_is_priced_at_the_slots_it_was_checked_at():
+    """PREFER_RESIDENT charges one recurrent state per slot when it checks the requested context,
+    so assembling the plan without them under-reported a hybrid by (slots - 1) states."""
+    from core.inference.offload_planner import all_resident_bytes
+
+    layout = q4_layout()
+    assert layout.recurrent_bytes > 0
+    plan = plan_placement(
+        layout,
+        [22 * GIB],
+        64 * GIB,
+        65536,
+        opts = PlanOptions(context_policy = ContextPolicy.PREFER_RESIDENT, n_parallel = 4),
+    )
+    assert "shrank context" in plan.reason and plan.priced and plan.n_ctx < 65536
+    assert plan.vram_bytes == all_resident_bytes(layout, plan.n_ctx, n_seq = 4)
+    assert (
+        plan.vram_bytes - all_resident_bytes(layout, plan.n_ctx, n_seq = 1)
+        == 3 * layout.recurrent_bytes
+    )
+
+
+def test_only_a_priced_plan_says_the_load_fits():
+    """A fit and an abstain both carry an n_ctx and a reason; only the fit was priced."""
+    fits = plan_placement(q4_layout(), [200 * GIB], 64 * GIB, 65536)
+    assert fits.priced and not fits.spills_anything and "fits in VRAM" in fits.reason
+    abstained = plan_placement(
+        q4_layout(),
+        [200 * GIB],
+        64 * GIB,
+        65536,
+        opts = PlanOptions(host = HostProfile(threads = 8, unified_memory = True)),
+    )
+    assert not abstained.priced and "unified memory" in abstained.reason
+
+
+def test_a_cache_already_quantised_at_launch_is_priced_as_one():
+    """Handed only the measured byte floor with a first mode of f16, cache_bytes took the larger
+    f16 product over the floor and spilled a model whose weights plus q8 cache are resident."""
+    from core.inference.offload_planner import cache_bytes
+
+    layout = q4_layout()
+    n_ctx = 65536
+    q8_floor = cache_bytes(layout, n_ctx, kv_quantised = True)
+    f16 = cache_bytes(layout, n_ctx)
+    assert q8_floor < f16
+    budget = all_resident_bytes(layout, n_ctx, kv_quantised = True) + 1024 * MIB
+    assert all_resident_bytes(layout, n_ctx) > budget
+    flat = dict(overhead_bytes_per_device = 0, overhead_bytes_per_token = 0)
+    as_floor_only = plan_placement(
+        layout, [budget], 64 * GIB, n_ctx, kv_bytes_floor = q8_floor, opts = PlanOptions(**flat)
+    )
+    assert as_floor_only.spills_anything
+    as_quantised = plan_placement(
+        layout,
+        [budget],
+        64 * GIB,
+        n_ctx,
+        kv_bytes_floor = q8_floor,
+        opts = PlanOptions(cache_quantised = True, kv_quant_type = "q8_0", **flat),
+    )
+    assert not as_quantised.spills_anything and as_quantised.priced, as_quantised.reason
+    assert as_quantised.cache_type_k is None and as_quantised.cache_type_v is None
+
+
+def test_prefer_resident_prices_a_quantised_launch_cache_as_one():
+    """The PREFER_RESIDENT branch runs ahead of _kv_modes, so pricing the cache as f16 over a q8
+    floor shrank a context that fits fully resident at the type the child runs."""
+    from core.inference.offload_planner import cache_bytes
+
+    layout = q4_layout()
+    n_ctx = 65536
+    q8_floor = cache_bytes(layout, n_ctx, kv_quantised = True)
+    budget = all_resident_bytes(layout, n_ctx, kv_quantised = True) + 1024 * MIB
+    assert all_resident_bytes(layout, n_ctx) > budget
+    flat = dict(
+        context_policy = ContextPolicy.PREFER_RESIDENT,
+        overhead_bytes_per_device = 0,
+        overhead_bytes_per_token = 0,
+    )
+    shrunk = plan_placement(
+        layout, [budget], 64 * GIB, n_ctx, kv_bytes_floor = q8_floor, opts = PlanOptions(**flat)
+    )
+    assert shrunk.n_ctx < n_ctx and "shrank context" in shrunk.reason
+    kept = plan_placement(
+        layout,
+        [budget],
+        64 * GIB,
+        n_ctx,
+        kv_bytes_floor = q8_floor,
+        opts = PlanOptions(cache_quantised = True, kv_quant_type = "q8_0", **flat),
+    )
+    assert kept.n_ctx == n_ctx and not kept.spills_anything, kept.reason
+
+
+def test_an_unbounded_prompt_cache_keeps_the_plan_pageable():
+    """--cache-ram -1 bounds the prompt cache by nothing, so no figure charged for it is a
+    ceiling: the RAM proof behind --load-mode none abstains and no clamp is derived."""
+    layout = q4_layout()
+    bounded = plan_placement(layout, [12 * GIB], 256 * GIB, 32768)
+    assert bounded.spills_anything and bounded.load_mode_none
+    unbounded = plan_placement(
+        layout, [12 * GIB], 256 * GIB, 32768, opts = PlanOptions(prompt_cache_unbounded = True)
+    )
+    assert unbounded.spills_anything and not unbounded.load_mode_none
+    assert unbounded.cache_ram_mib == -1
+    assert not unbounded.declined_by_gate
+
+
+def test_an_mla_cache_trusts_the_measured_floor():
+    """MLA keeps one compressed K-only latent per token, so the per-head K+V product over-counts
+    by up to two orders of magnitude and taking the maximum overrode the byte-accurate floor."""
+    from core.inference.offload_planner import cache_bytes
+
+    n_ctx = 65536
+    gqa = q4_layout()
+    mla = replace(gqa, has_mla = True)
+    product = gqa.kv_bytes(n_ctx)
+    latent = product // 64
+    assert cache_bytes(gqa, n_ctx, kv_bytes_floor = latent) == product
+    assert cache_bytes(mla, n_ctx, kv_bytes_floor = latent) == latent
+    assert cache_bytes(mla, n_ctx) == product
+    flat = PlanOptions(overhead_bytes_per_device = 0, overhead_bytes_per_token = 0)
+    budget = all_resident_bytes(mla, n_ctx) - product + latent + 256 * MIB
+    assert plan_placement(
+        gqa, [budget], 64 * GIB, n_ctx, kv_bytes_floor = latent, opts = flat
+    ).spills_anything
+    got = plan_placement(mla, [budget], 64 * GIB, n_ctx, kv_bytes_floor = latent, opts = flat)
+    assert not got.spills_anything and got.n_ctx == n_ctx, got.reason
+
+
+def test_layout_from_gguf_marks_a_latent_attention_cache():
+    # Both MLA head lengths, as llama_hparams::is_mla keys it; the LoRA rank alone is the
+    # DeepSeek-R1 shape and gets the full per-head K+V cache instead.
+    fields = _shard_fields(
+        **{
+            "llama.attention.kv_lora_rank": 512,
+            "llama.attention.key_length_mla": 192,
+            "llama.attention.value_length_mla": 128,
+        }
+    )
+    assert _layout_from_reader(_StubReader(fields, _shard_tensors(range(64)))).has_mla is True
+    assert (
+        _layout_from_reader(_StubReader(_shard_fields(), _shard_tensors(range(64)))).has_mla
+        is False
+    )
+
+
+def test_a_fit_across_a_split_is_checked_device_by_device_even_with_nothing_given_up():
+    """A no-spill plan is emitted as ``-ngl -1 --fit off`` whenever it reshapes the launch, and a
+    shrunk context reshapes it as much as a knob does, so the per-device check has to run there
+    too or a pooled fit pins a row split one card cannot hold."""
+    layout = _mixed_card_vision_layout()
+    opts = PlanOptions(overhead_bytes_per_device = 1 * GIB, pipeline_overhead_bytes = 0)
+    vram = [24 * GIB, 8 * GIB]
+    assert all_resident_bytes(layout, 8192) <= 30 * GIB  # the pool says yes
+    split = plan_placement(layout, vram, 128 * GIB, 8192, opts = opts)
+    assert split.priced and split.spilled_blocks, split.reason
+    assert "device 1" in split.reason, split.reason
+    assert all(index >= 25 for index in split.spilled_blocks), split.spilled_blocks
+    whole = plan_placement(layout, [32 * GIB], 128 * GIB, 8192, opts = opts)
+    assert whole.priced and "fits in VRAM" in whole.reason
+
+
+# One scalar floor plus a scaling rule cannot describe a hybrid's fixed state, a windowed
+# cache's two halves or an MLA latent at the same time.
+
+
+def _small_layout(**kw) -> ModelLayout:
+    """A tiny complete layout: the cache, not the weights, is what these move."""
+    fields = dict(
+        arch = "qwen3",
+        n_layers = 8,
+        n_attention_layers = 8,
+        blocks = tuple(BlockLayout(i, int(0.25 * GIB), int(0.0125 * GIB)) for i in range(8)),
+        lm_head_bytes = int(0.1 * GIB),
+        token_embd_bytes = int(0.1 * GIB),
+        other_resident_bytes = int(0.01 * GIB),
+        kv_bytes_per_token_f16 = 1024,
+        n_ctx_train = 32768,
+        complete = True,
+    )
+    fields.update(kw)
+    return ModelLayout(**fields)
+
+
+_FLAT = dict(overhead_bytes_per_device = 0, overhead_bytes_per_token = 0)
+
+
+def test_a_fixed_recurrent_state_is_re_priced_not_scaled_with_the_context():
+    """A hybrid's floor is part fixed state, which does not shrink with the context, so scaling
+    the WHOLE scalar reads a mostly-state floor as a fraction of its true size and OOMs."""
+    layout = _small_layout()
+
+    def kv_at(ctx: int, slots: int) -> int:
+        return (4 * GIB + GIB * ctx // 32768) * slots
+
+    opts = PlanOptions(kv_bytes_at = kv_at, **_FLAT)
+    assert _kv_floor_at(layout, opts, 5 * GIB, 32768, 8192, 1) == 4 * GIB + GIB // 4
+    assert _kv_floor_at(layout, PlanOptions(), 5 * GIB, 32768, 8192, 1) == 5 * GIB // 4
+    hybrid = _small_layout(recurrent_bytes = 2 * GIB)
+    assert _kv_floor_at(hybrid, PlanOptions(), 5 * GIB, 32768, 8192, 1) == 2 * GIB + 3 * GIB // 4
+
+
+def test_a_shrunk_context_reserves_the_state_the_child_still_allocates():
+    """The context PREFER_RESIDENT settles on has to fit the card under the caller's own
+    estimator, not under a scaled scalar."""
+    layout = _small_layout()
+
+    def kv_at(ctx: int, slots: int) -> int:
+        return (4 * GIB + GIB * ctx // 32768) * slots
+
+    card = int(6.5 * GIB)
+    opts = PlanOptions(kv_bytes_at = kv_at, context_policy = ContextPolicy.PREFER_RESIDENT, **_FLAT)
+    plan = plan_placement(layout, [card], 64 * GIB, 32768, kv_bytes_floor = 5 * GIB, opts = opts)
+    assert plan.n_ctx < 32768 and not plan.spills_anything, plan.reason
+    weights = all_resident_bytes(layout, 0)  # no cache at ctx 0
+    assert weights + kv_at(plan.n_ctx, 1) <= card, plan.reason
+
+
+def test_the_context_search_prices_a_latent_cache_the_way_the_planner_does():
+    """``cache_bytes`` trusts a measured floor on MLA; the search did not."""
+    mla = _small_layout(
+        has_mla = True,
+        blocks = tuple(BlockLayout(i, int(0.00625 * GIB), int(0.15 * GIB)) for i in range(8)),
+        lm_head_bytes = int(0.05 * GIB),
+        kv_bytes_per_token_f16 = 2 * MIB,
+        n_ctx_train = 65536,
+    )
+    opts = PlanOptions(context_policy = ContextPolicy.FIT_ONLY, **_FLAT)
+    floor = dict(kv_bytes_floor = 2 * GIB, floor_ctx = 65536)
+    assert max_context_for(mla, [3 * GIB], opts = opts, **floor) >= 32768
+    plan = plan_placement(mla, [3 * GIB], 64 * GIB, 65536, kv_bytes_floor = 2 * GIB, opts = opts)
+    assert plan.priced and not plan.insufficient, plan.reason
+    assert plan.n_ctx >= 32768, plan.reason
+
+
+def test_a_windowed_cache_shrinks_when_the_caller_can_split_its_halves():
+    """iSWA is flat only because one scalar cannot say which half is which."""
+    swa = _small_layout(
+        has_swa = True,
+        blocks = tuple(BlockLayout(i, int(0.00625 * GIB), int(0.0125 * GIB)) for i in range(8)),
+    )
+
+    def kv_at(ctx: int, slots: int) -> int:
+        return (GIB + 3 * GIB * ctx // 32768) * slots
+
+    budget = [3 * GIB]
+    flat = PlanOptions(**_FLAT)
+    priced = PlanOptions(kv_bytes_at = kv_at, **_FLAT)
+    floor = dict(kv_bytes_floor = 4 * GIB, floor_ctx = 32768)
+    assert max_context_for(swa, budget, opts = flat, **floor) == 0
+    assert max_context_for(swa, budget, opts = priced, **floor) >= 8192
+    assert _kv_floor_at(swa, priced, 4 * GIB, 32768, 8192, 1) == GIB + 3 * GIB // 4
+
+
+def test_an_exact_cache_is_charged_as_given_at_any_architecture():
+    """The max against the per-head product is a guard against a floor that might be short."""
+    from core.inference.offload_planner import cache_bytes as _cache_bytes
+
+    layout = _small_layout(kv_bytes_per_token_f16 = 64 * 1024)
+    product = layout.kv_bytes(32768)
+    assert _cache_bytes(layout, 32768, kv_bytes_floor = product // 4) == product
+    assert _cache_bytes(layout, 32768, kv_bytes_floor = product // 4, trust_floor = True) == (
+        product // 4
+    )
+
+
+def test_a_card_the_requested_context_leaves_nothing_of_still_reaches_the_ladder():
+    """The budget was priced once, at the context the caller asked for."""
+    layout = _small_layout(
+        blocks = tuple(BlockLayout(i, 0, int(0.175 * GIB)) for i in range(8)),
+        lm_head_bytes = int(0.05 * GIB),
+        kv_bytes_per_token_f16 = 4096,
+        n_ctx_train = 262144,
+    )
+    shape = dict(
+        overhead_bytes_per_device = 1536 * MIB,
+        overhead_bytes_per_token = 23961,
+        overhead_free_ctx = 32768,
+        min_ctx = 8192,
+        allow_lm_head_spill = False,
+    )
+    card = [4 * GIB]
+    fit_only = PlanOptions(context_policy = ContextPolicy.FIT_ONLY, **shape)
+    plan = plan_placement(layout, card, 64 * GIB, 262144, opts = fit_only)
+    assert "no creditable VRAM" not in plan.reason, plan.reason
+    assert plan.priced and 32768 <= plan.n_ctx < 262144, plan.reason
+    assert not plan.spills_anything, plan.reason
+    pinned = plan_placement(layout, card, 64 * GIB, 262144, opts = PlanOptions(**shape))
+    assert "no creditable VRAM" in pinned.reason, pinned.reason
+
+
+def _lopsided_pair_layout(n_blocks: int = 16, per_block: int = 384 * MIB) -> ModelLayout:
+    """Uniform blocks and no output-row weight, so the row split alone decides which card is
+    over."""
+    blocks = tuple(
+        BlockLayout(index = i, spillable_bytes = per_block, resident_bytes = 0) for i in range(n_blocks)
+    )
+    return ModelLayout(
+        arch = "qwen35",
+        n_layers = n_blocks,
+        n_attention_layers = n_blocks,
+        blocks = blocks,
+        lm_head_bytes = 0,
+        token_embd_bytes = 64 * MIB,
+        kv_bytes_per_token_f16 = 1,
+        recurrent_bytes = 0,
+        n_ctx_train = 65536,
+        complete = True,
+    )
+
+
+def _lopsided_pair_args(**kwargs):
+    layout = _lopsided_pair_layout()
+    vram = [3 * GIB, 5 * GIB]
+    options = PlanOptions(
+        overhead_bytes_per_device = 0,
+        overhead_bytes_per_token = 0,
+        pipeline_overhead_bytes = 0,
+        n_parallel = 4,
+        kv_bytes_floor_by_parallel = {4: 2 * GIB, 3: 3 * GIB // 2, 2: GIB, 1: GIB // 2},
+        **kwargs,
+    )
+    return dict(
+        layout = layout,
+        vram_bytes_per_device = vram,
+        host_ram_bytes = 64 * GIB,
+        requested_ctx = 4096,
+        opts = options,
+        kv_bytes_floor = 2 * GIB,
+        split_weights_per_device = vram,
+        kv_layer_weights = [1] * layout.n_layers,
+    )
+
+
+def _plan_lopsided(**kwargs) -> Plan:
+    args = _lopsided_pair_args(**kwargs)
+    return plan_placement(
+        args["layout"],
+        args["vram_bytes_per_device"],
+        args["host_ram_bytes"],
+        args["requested_ctx"],
+        opts = args["opts"],
+        kv_bytes_floor = args["kv_bytes_floor"],
+        split_weights_per_device = args["split_weights_per_device"],
+        kv_layer_weights = args["kv_layer_weights"],
+    )
+
+
+def test_a_pooled_fit_with_one_card_short_tries_the_rungs_before_it_gives_up():
+    """8 GiB of model against 3 GiB + 5 GiB: the pool fits exactly and the row split puts 3.5 GiB
+    on the 3 GiB card."""
+    args = _lopsided_pair_args()
+    layout, vram = args["layout"], args["vram_bytes_per_device"]
+    assert all_resident_bytes(layout, 4096, kv_bytes_floor = 2 * GIB) == 8 * GIB
+    assert (
+        _per_device_shortfall(
+            layout,
+            args["opts"],
+            4096,
+            {},
+            False,
+            vram,
+            quantised = False,
+            kv_bytes_floor = 2 * GIB,
+            split_weights_per_device = vram,
+            kv_layer_weights = args["kv_layer_weights"],
+            extra_on_device0 = 0,
+            n_seq = 4,
+        )
+        is not None
+    )
+
+    plan = _plan_lopsided()
+    assert plan.priced and plan.changed, plan.reason
+    assert 0 < plan.n_parallel < 4, plan.reason
+    assert not plan.spills_anything, plan.reason
+
+
+def test_a_pooled_fit_with_one_card_short_spills_that_card_when_no_rung_is_left():
+    """With the slot count pinned there is nothing above the weights to give, so the short card's
+    own rows pay for it; a pooled pick relieves whichever card its rows happened to sit on."""
+    plan = _plan_lopsided(min_parallel = 4)
+    assert plan.priced and plan.spilled_blocks, plan.reason
+    args = _lopsided_pair_args(min_parallel = 4)
+    layout = args["layout"]
+    assert all(index <= 6 for index in plan.spilled_blocks), plan.spilled_blocks
+    assert (
+        _per_device_shortfall(
+            layout,
+            args["opts"],
+            4096,
+            {i: layout.blocks[i].spillable_bytes for i in plan.spilled_blocks},
+            False,
+            args["vram_bytes_per_device"],
+            quantised = False,
+            kv_bytes_floor = 2 * GIB,
+            split_weights_per_device = args["vram_bytes_per_device"],
+            kv_layer_weights = args["kv_layer_weights"],
+            extra_on_device0 = 0,
+            n_seq = 4,
+        )
+        is None
+    )
+
+
+def test_a_pooled_fit_with_a_card_no_rung_can_reach_still_abstains():
+    """A card whose own rows cannot cover its shortfall is handed back to llama.cpp's fitter."""
+    plan = _plan_lopsided(min_parallel = 4, extra_resident_bytes = 3 * GIB)
+    assert not plan.changed and not plan.spills_anything, plan.reason
+    assert "fitter" in plan.reason
+
+
+def test_an_all_zero_tensor_split_abstains_instead_of_being_modelled():
+    """A -ts whose active prefix truncates to zeros reaches the planner as an all-zero split."""
+    args = _lopsided_pair_args()
+    layout = args["layout"]
+    plan = plan_placement(
+        layout,
+        args["vram_bytes_per_device"],
+        args["host_ram_bytes"],
+        args["requested_ctx"],
+        opts = args["opts"],
+        kv_bytes_floor = args["kv_bytes_floor"],
+        split_weights_per_device = [0, 0],
+        kv_layer_weights = args["kv_layer_weights"],
+    )
+    assert not plan.changed and not plan.priced and not plan.spills_anything, plan.reason
+    assert "all zero" in plan.reason, plan.reason
+    assert plan_to_args(plan) == []
+
+
+def _tail_heavy_layout(
+    tail: int,
+    rest: int,
+    n_blocks: int = 8,
+) -> ModelLayout:
+    sizes = [rest] * (n_blocks - 1) + [tail]
+    return ModelLayout(
+        **{
+            **uneven_layout().__dict__,
+            "n_layers": n_blocks,
+            "n_attention_layers": n_blocks,
+            "blocks": tuple(
+                BlockLayout(index = i, spillable_bytes = s, resident_bytes = 10 * MIB)
+                for i, s in enumerate(sizes)
+            ),
+        }
+    )
+
+
+def _plan_for_deficit(layout: ModelLayout, deficit: int, **kwargs) -> Plan:
+    floor = resident_floor_bytes(layout, 4096)
+    budget = floor + layout.spillable_bytes - deficit + GIB
+    return plan_placement(
+        layout,
+        [budget],
+        64 * GIB,
+        4096,
+        opts = PlanOptions(overhead_bytes_per_device = GIB, **kwargs),
+    )
+
+
+def test_the_trailing_pick_gives_way_when_the_tail_block_is_a_size_accident():
+    """BACK_FIRST is a POSITION rule: a 100 MiB deficit whose last block carries an 8 GiB FFN
+    moved all of it while a 128 MiB block sat one row down, so the byte-minimal walk takes over
+    past twice the bytes."""
+    layout = _tail_heavy_layout(tail = 8 * GIB, rest = 128 * MIB)
+    plan = _plan_for_deficit(layout, 100 * MIB)
+    assert plan.spilled_blocks and 7 not in plan.spilled_blocks, plan.spilled_blocks
+    moved = sum(layout.blocks[i].spillable_bytes for i in plan.spilled_blocks)
+    assert moved < 256 * MIB, moved
+
+
+def test_a_uniform_layout_still_takes_the_contiguous_tail():
+    """The 98 cells the order was measured on all have blocks of one size: there the two walks
+    free the same bytes and the tie goes to the tail."""
+    layout = _tail_heavy_layout(tail = 200 * MIB, rest = 200 * MIB, n_blocks = 4)
+    plan = _plan_for_deficit(layout, 40 * MIB)
+    assert plan.spilled_blocks == (3,), plan.spilled_blocks
+
+
+def test_a_cost_ranked_caller_takes_the_smaller_pick_outright():
+    """Under require_cost_win the caller chooses between two placements of ONE rung, where rank()
+    is monotone in bytes, so the smaller pick wins and only a tie keeps the tail."""
+    from core.inference.offload_planner import SpillUnit, _select_units
+
+    units = [
+        SpillUnit(0, None, 100 * MIB),
+        SpillUnit(1, None, 100 * MIB),
+        SpillUnit(2, None, 150 * MIB),
+    ]
+    tail, freed = _select_units(units, 90 * MIB, SpillOrder.BACK_FIRST)
+    assert [u.index for u in tail] == [2] and freed == 150 * MIB
+    ranked, least = _select_units(units, 90 * MIB, SpillOrder.BACK_FIRST, cost_ranked = True)
+    assert [u.index for u in ranked] == [0] and least == 100 * MIB
+    even = [SpillUnit(i, None, 100 * MIB) for i in range(3)]
+    kept, _ = _select_units(even, 90 * MIB, SpillOrder.BACK_FIRST, cost_ranked = True)
+    assert [u.index for u in kept] == [2]
+
+
+def test_the_per_device_check_sizes_the_cache_the_caller_measured():
+    """The pooled deficit trusts ``kv_bytes_at`` while the per-device check went back through the
+    product, spreading a q4_0 cache over the cards at 1.78x its bytes."""
+    layout = ModelLayout(
+        arch = "dense",
+        blocks = tuple(BlockLayout(i, 64 * MIB, 64 * MIB) for i in range(16)),
+        complete = True,
+        n_layers = 16,
+        n_attention_layers = 16,
+        kv_bytes_per_token_f16 = 4 * GIB // 4096,
+        n_ctx_train = 131072,
+    )
+
+    def kv_at(n_ctx: int, slots: int) -> int:
+        return layout.kv_bytes(n_ctx, 1) * 9 // 32  # q4_0: 4.5 bits per element
+
+    exact = kv_at(4096, 4)
+    vram = [6 * GIB // 5, 11 * GIB // 5]  # each card holds its rows with the exact cache only
+    base = PlanOptions(
+        overhead_bytes_per_device = 0,
+        overhead_bytes_per_token = 0,
+        pipeline_overhead_bytes = 0,
+        n_parallel = 4,
+        min_parallel = 4,
+        cache_quantised = True,
+    )
+    plans = []
+    for o in (replace(base, kv_bytes_at = kv_at), base):
+        plans.append(
+            plan_placement(
+                layout,
+                vram,
+                64 * GIB,
+                4096,
+                opts = o,
+                kv_bytes_floor = exact,
+                split_weights_per_device = vram,
+                kv_layer_weights = [1] * 16,
+            )
+        )
+    trusted, product = plans
+    assert not trusted.spills_anything, trusted.reason
+    assert product.spills_anything, product.reason
+
+
+def test_a_context_priced_reserve_lets_the_ladder_find_the_context_that_fits():
+    """The seam's compute buffer is context-linear, so folded into the flat per-device term at
+    the requested context every lower rung still paid the requested context's buffer. A callable
+    re-prices it per rung; frozen, the same load abstains at every context."""
+    layout = _small_layout(
+        blocks = tuple(BlockLayout(i, 0, int(0.175 * GIB)) for i in range(8)),
+        lm_head_bytes = int(0.05 * GIB),
+        kv_bytes_per_token_f16 = 4096,
+        n_ctx_train = 262144,
+    )
+    per_token = 8 * 1024  # 2 GiB of compute buffer at 262144, 64 MiB at 8192
+    shape = dict(
+        overhead_bytes_per_token = 0,
+        overhead_free_ctx = 32768,
+        min_ctx = 8192,
+        allow_lm_head_spill = False,
+        context_policy = ContextPolicy.FIT_ONLY,
+    )
+    card = [3 * GIB]
+    frozen = PlanOptions(overhead_bytes_per_device = 512 * MIB + per_token * 262144, **shape)
+    stuck = plan_placement(layout, card, 64 * GIB, 262144, opts = frozen)
+    assert not stuck.priced or stuck.spills_anything, stuck.reason
+    priced = PlanOptions(
+        overhead_bytes_per_device = 512 * MIB + per_token * 262144,
+        overhead_bytes_at = lambda ctx: 512 * MIB + per_token * ctx,
+        **shape,
+    )
+    plan = plan_placement(layout, card, 64 * GIB, 262144, opts = priced)
+    assert plan.priced and 8192 <= plan.n_ctx < 262144 and not plan.spills_anything, plan.reason
+
+
+def test_a_windowed_cache_across_devices_is_not_shrunk_on_a_stale_layer_vector():
+    """The per-layer cache vector is measured at the requested context."""
+    layout = replace(
+        _small_layout(
+            blocks = tuple(BlockLayout(i, int(0.05 * GIB), int(0.2 * GIB)) for i in range(8)),
+            kv_bytes_per_token_f16 = 64 * 1024,
+            n_ctx_train = 65536,
+        ),
+        has_swa = True,
+    )
+    shape = dict(
+        overhead_bytes_per_device = 0,
+        overhead_bytes_per_token = 0,
+        pipeline_overhead_bytes = 0,
+        min_ctx = 8192,
+        context_policy = ContextPolicy.FIT_ONLY,
+    )
+    floor = 3 * GIB  # at 65536; more than the pair can hold with the weights
+    shape["kv_bytes_at"] = lambda ctx, slots: floor * ctx // 65536
+    vector = [1, 0, 1, 0, 1, 0, 1, 0]
+    pair = [2 * GIB, 2 * GIB]
+    split = plan_placement(
+        layout,
+        pair,
+        64 * GIB,
+        65536,
+        opts = PlanOptions(**shape),
+        kv_bytes_floor = floor,
+        split_weights_per_device = pair,
+        kv_layer_weights = vector,
+    )
+    assert not split.changed and not split.priced, split.reason
+    assert "windowed cache" in split.reason or "sliding-window" in split.reason, split.reason
+    one = plan_placement(
+        layout,
+        [4 * GIB],
+        64 * GIB,
+        65536,
+        opts = PlanOptions(**shape),
+        kv_bytes_floor = floor,
+        kv_layer_weights = vector,
+    )
+    assert one.priced and one.n_ctx < 65536, one.reason
+
+
+# ----------------------------------------------- lazily-read per-layer embeddings
+
+
+def test_the_per_layer_embeddings_are_their_own_bucket_inside_token_embd():
+    """A slice, not a second charge: the seam has to take the PLE back out of the host side
+    without the tied-output duplicate going with it."""
+    fields = {k.replace("llama.", "gemma4."): v for k, v in _shard_fields().items()}
+    fields["general.architecture"] = "gemma4"
+    reader = _StubReader(
+        fields,
+        _shard_tensors(range(64))
+        + [
+            _StubTensor("token_embd.weight", GIB),
+            _StubTensor("per_layer_token_embd.weight", 5 * GIB),
+        ],
+    )
+    layout = _layout_from_reader(reader)
+    assert layout.complete
+    assert layout.per_layer_embd_bytes == 5 * GIB
+    assert layout.token_embd_bytes == 6 * GIB
+
+
+def _ple_layout(ple_bytes):
+    """``q4_layout`` with ``ple_bytes`` of per-layer embeddings inside token_embd."""
+    base = q4_layout()
+    return ModelLayout(
+        **{
+            **base.__dict__,
+            "arch": "gemma4",
+            "token_embd_bytes": base.token_embd_bytes + ple_bytes,
+            "per_layer_embd_bytes": ple_bytes,
+        }
+    )
+
+
+def test_a_lazily_read_per_layer_embedding_leaves_the_mmap_branch_host_side():
+    """gemma4 and qwen4exp create per_layer_token_embd TENSOR_READ_LAZY, so under mmap llama.cpp
+    serves it out of the mapping: page cache the OS can evict, not resident bytes the plan buys.
+    Charging Qwen3.8-Flash-Next's 26.82 GiB in full flipped this plan to pageable on machines that
+    had the room.
+
+    RAM is one byte short of holding the charged plan unmapped, so it stays pageable while the
+    lazy one, 5 GiB lighter, takes ``none``; the host delta IS the tensor and VRAM must not move.
+    """
+    from core.inference.offload_planner import PlanOptions
+
+    layout = _ple_layout(5 * GIB)
+    charged_opts, lazy_opts = PlanOptions(), PlanOptions(ple_read_lazily = True)
+    full = plan_placement(layout, [12 * GIB], 200 * GIB, 8192, opts = charged_opts).host_bytes
+    ram = full + charged_opts.host_ram_headroom_bytes - 1
+
+    charged = plan_placement(layout, [12 * GIB], ram, 8192, opts = charged_opts)
+    lazy = plan_placement(layout, [12 * GIB], ram, 8192, opts = lazy_opts)
+
+    assert charged.load_mode_none is False and lazy.load_mode_none is True
+    assert charged.vram_bytes == lazy.vram_bytes
+    assert charged.spilled_blocks == lazy.spilled_blocks
+    assert charged.host_bytes - lazy.host_bytes == 5 * GIB
+    assert charged.ple_charged_to_host is True and lazy.ple_charged_to_host is False
+
+
+def test_the_none_branch_does_not_pay_for_a_table_llama_cpp_keeps_mapped():
+    """llama.cpp maps a lazy context whatever the load mode (llama-model-loader.cpp:
+    llama_model_loader::init_mappings maps whenever lazy.any()), so --load-mode none does not
+    fault the table in and the none branch is sized without it. Charged there,
+    Qwen3.8-Flash-Next's 26.82 GiB table pushed hosts with room onto mmap, at 2x on prefill."""
+    from core.inference.offload_planner import PlanOptions
+
+    layout = _ple_layout(5 * GIB)
+    charged_opts, lazy_opts = PlanOptions(), PlanOptions(ple_read_lazily = True)
+    charged = plan_placement(layout, [12 * GIB], 200 * GIB, 8192, opts = charged_opts)
+    lazy = plan_placement(layout, [12 * GIB], 200 * GIB, 8192, opts = lazy_opts)
+
+    assert charged.load_mode_none is True and lazy.load_mode_none is True
+    assert lazy.host_bytes == charged.host_bytes - 5 * GIB
+    assert lazy.ple_charged_to_host is False
+
+    # RAM that holds the spill but not the table: the plan still takes none.
+    ram = lazy.host_bytes + lazy_opts.host_ram_headroom_bytes
+    tight = plan_placement(layout, [12 * GIB], ram, 8192, opts = lazy_opts)
+    assert tight.load_mode_none is True
+    assert plan_placement(layout, [12 * GIB], ram, 8192, opts = charged_opts).load_mode_none is False
+
+
+def test_a_host_that_holds_only_the_mapped_plan_takes_it_unmapped_rather_than_refusing():
+    """Both decisions the over-charge moved, on one host: the spill is admitted and takes
+    --load-mode none, since the bytes that made it look unaffordable are never faulted in."""
+    from core.inference.offload_planner import PlanOptions
+
+    layout = _ple_layout(20 * GIB)
+    charged_opts = PlanOptions(require_cost_win = True)
+    lazy_opts = PlanOptions(require_cost_win = True, ple_read_lazily = True)
+    full = plan_placement(layout, [12 * GIB], 200 * GIB, 8192, opts = charged_opts).host_bytes
+    # Room for everything but the per-layer embeddings.
+    ram = full - 20 * GIB + charged_opts.host_ram_headroom_bytes
+
+    charged = plan_placement(layout, [12 * GIB], ram, 8192, opts = charged_opts)
+    lazy = plan_placement(layout, [12 * GIB], ram, 8192, opts = lazy_opts)
+
+    assert charged.declined_by_gate is True and "host RAM" in charged.reason
+    assert lazy.declined_by_gate is False and lazy.spilled_blocks
+    assert lazy.load_mode_none is True, "the lazy table is paged under none as well"
+    assert lazy.ple_charged_to_host is False
+
+
+def _deepseek2_fields(**extra):
+    """unsloth/DeepSeek-R1-GGUF's header: the LoRA rank, and no MLA head lengths."""
+    base = {
+        "general.architecture": "deepseek2",
+        "deepseek2.block_count": 61,
+        "deepseek2.attention.head_count_kv": 128,
+        "deepseek2.attention.head_count": 128,
+        "deepseek2.embedding_length": 7168,
+        "deepseek2.attention.key_length": 192,
+        "deepseek2.attention.value_length": 128,
+        "deepseek2.attention.kv_lora_rank": 512,
+        "deepseek2.context_length": 163840,
+    }
+    base.update(extra)
+    return base
+
+
+def test_the_lora_rank_alone_is_not_the_latent_cache():
+    """llama_hparams::is_mla is true only when BOTH MLA head lengths are present and non-zero,
+    because deepseek2.cpp reads them optionally. unsloth/DeepSeek-R1-GGUF and
+    unsloth/DeepSeek-V3-0324-GGUF predate the keys and carry kv_lora_rank 512 with head_count_kv
+    128, so llama.cpp allocates the full 128-head K+V cache, 39040 MiB at 8192, and the product
+    below is exact for them; keying has_mla on the rank traded it for a floor 40% short."""
+    layout = _layout_from_reader(_StubReader(_deepseek2_fields(), _shard_tensors(range(61))))
+    assert layout.complete
+    assert layout.has_mla is False
+    assert layout.kv_bytes(8192) == 39040 * MIB
+
+    latent = _layout_from_reader(
+        _StubReader(
+            _deepseek2_fields(
+                **{
+                    "deepseek2.attention.key_length_mla": 192,
+                    "deepseek2.attention.value_length_mla": 128,
+                }
+            ),
+            _shard_tensors(range(61)),
+        )
+    )
+    assert latent.has_mla is True
+
+    # One of the two alone is not is_mla() either.
+    half = _layout_from_reader(
+        _StubReader(
+            _deepseek2_fields(**{"deepseek2.attention.key_length_mla": 192}),
+            _shard_tensors(range(61)),
+        )
+    )
+    assert half.has_mla is False
+
+
+def _kimi_k3_fields(**extra):
+    """unsloth/Kimi-K3-GGUF's header: MLA attention on 24 rows, KDA on the other 69."""
+    heads = [1 if (i % 4) == 3 else 0 for i in range(93)]
+    heads[92] = 1
+    base = {
+        "general.architecture": "kimi-k3",
+        "kimi-k3.block_count": 93,
+        "kimi-k3.attention.head_count_kv": heads,
+        "kimi-k3.attention.head_count": 96,
+        "kimi-k3.embedding_length": 7168,
+        "kimi-k3.attention.key_length": 576,
+        "kimi-k3.attention.value_length": 74,
+        "kimi-k3.attention.kv_lora_rank": 512,
+        "kimi-k3.attention.key_length_mla": 192,
+        "kimi-k3.attention.value_length_mla": 128,
+        "kimi-k3.ssm.conv_kernel": 4,
+        "kimi-k3.kda.head_dim": 128,
+        "kimi-k3.context_length": 1048576,
+    }
+    base.update(extra)
+    return base
+
+
+def test_a_kda_hybrid_is_charged_its_recurrent_state():
+    """A Kimi-Delta-Attention row carries kda.head_dim and no ssm.inner_size, so the Mamba branch
+    sized it at zero while llama.cpp allocates 443 MiB per slot (llama-hparams.cpp:n_embd_r /
+    n_embd_s: 3*(d_conv-1)*n_head*head_dim conv rows plus head_dim^2*n_head state, f32). It is
+    added per slot separately from the cache, so a zero there is an allocation no shrink
+    recovers."""
+    layout = _layout_from_reader(_StubReader(_kimi_k3_fields(), _shard_tensors(range(93))))
+    assert layout.complete
+    assert layout.n_attention_layers == 24
+    # 69 KDA rows x (3*3*96*128 + 128*128*96) x 4 B.
+    assert layout.recurrent_bytes == 69 * (110592 + 1572864) * 4
+    assert round(layout.recurrent_bytes / MIB) == 443
+
+    # GLM-5.3-Flash: 46 blocks, one of them nextn, 11 of the remaining 45 attention.
+    glm_heads = [1 if (i % 4) == 3 else 0 for i in range(46)]
+    glm_heads[45] = 1
+    glm = _layout_from_reader(
+        _StubReader(
+            {
+                "general.architecture": "glm5next",
+                "glm5next.block_count": 46,
+                "glm5next.nextn_predict_layers": 1,
+                "glm5next.attention.head_count_kv": glm_heads,
+                "glm5next.attention.head_count": 64,
+                "glm5next.embedding_length": 4096,
+                "glm5next.attention.key_length": 512,
+                "glm5next.attention.value_length": 512,
+                "glm5next.attention.key_length_mla": 256,
+                "glm5next.attention.value_length_mla": 256,
+                "glm5next.ssm.conv_kernel": 4,
+                "glm5next.kda.head_dim": 128,
+                "glm5next.context_length": 1048576,
+            },
+            _shard_tensors(range(46)),
+        )
+    )
+    assert round(glm.recurrent_bytes / MIB) == 146
+
+
+def _lfm2_fields(**extra):
+    heads = [0 if i % 3 else 8 for i in range(18)]
+    base = {
+        "general.architecture": "lfm2",
+        "lfm2.block_count": 18,
+        "lfm2.attention.head_count_kv": heads,
+        "lfm2.attention.head_count": 32,
+        "lfm2.embedding_length": 2048,
+        "lfm2.attention.key_length": 64,
+        "lfm2.attention.value_length": 64,
+        "lfm2.shortconv.l_cache": 3,
+        "lfm2.context_length": 32768,
+    }
+    base.update(extra)
+    return base
+
+
+def test_an_lfm2_hybrid_is_charged_its_shortconv_state():
+    """Both state branches sized a shortconv row at zero (no ssm.inner_size, no kda.head_dim)
+    while llama.cpp keeps n_embd * (l_cache - 1) f32 per recurrent layer per slot
+    (llama-hparams.cpp:n_embd_r)."""
+    layout = _layout_from_reader(_StubReader(_lfm2_fields(), _shard_tensors(range(18))))
+    assert layout.complete
+    assert layout.n_attention_layers == 6
+    # 12 shortconv rows x n_embd x (l_cache - 1) x 4 B.
+    assert layout.recurrent_bytes == 12 * 2048 * 2 * 4
+
+
+def test_zero_head_rows_whose_state_cannot_be_sized_abstain():
+    """The head list names rows that hold no cache; with no branch able to size them, a complete
+    layout would drop a per-slot allocation from every feasibility check, so it abstains."""
+    fields = _lfm2_fields()
+    del fields["lfm2.shortconv.l_cache"]
+    assert _layout_from_reader(_StubReader(fields, _shard_tensors(range(18)))).complete is False
+
+
+def test_a_shortconv_header_with_no_recurrent_map_abstains():
+    """Same rule the ssm.* and kda.* branches follow."""
+    fields = _lfm2_fields(**{"lfm2.attention.head_count_kv": 8})
+    assert _layout_from_reader(_StubReader(fields, _shard_tensors(range(18)))).complete is False
+
+
+def test_a_kda_header_with_no_recurrent_map_abstains():
+    """Same rule the ssm.* branch follows: kda.head_dim says the model HAS recurrent rows, and
+    calling every row attention would charge a cache none of them hold."""
+    fields = _kimi_k3_fields(**{"kimi-k3.attention.head_count_kv": 1})
+    assert _layout_from_reader(_StubReader(fields, _shard_tensors(range(93)))).complete is False

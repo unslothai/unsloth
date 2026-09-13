@@ -203,6 +203,7 @@ class TestGGUFParserNewFields:
             ("_full_attention_interval", "full_attention_interval", 4),
             ("_kv_lora_rank", "attention.kv_lora_rank", 512),
             ("_key_length_mla", "attention.key_length_mla", 256),
+            ("_value_length_mla", "attention.value_length_mla", 256),
             ("_ssm_inner_size", "ssm.inner_size", 6144),
             ("_ssm_state_size", "ssm.state_size", 128),
             ("_ssm_group_count", "ssm.group_count", 16),
@@ -223,6 +224,7 @@ class TestGGUFParserNewFields:
             "_full_attention_interval",
             "_kv_lora_rank",
             "_key_length_mla",
+            "_value_length_mla",
             "_kv_key_length_swa",
             "_kv_value_length_swa",
             "_ssm_inner_size",
@@ -268,6 +270,7 @@ class TestArchSwaPatternDefaults:
             ("gemma3", 18, 6),
             ("gemma3n", 35, 5),
             ("gpt_oss", 24, 2),
+            ("gpt-oss", 24, 2),
             ("cohere2", 32, 4),
         ],
     )
@@ -659,6 +662,37 @@ class TestTransformersIntrospection:
                 monkeypatch.delitem(sys.modules, k, raising = False)
         assert lc._resolve_swa_entry_from_transformers("gemma3") is None
 
+    def test_the_bootstrap_answers_the_gguf_spelling_without_transformers(
+        self, monkeypatch, tmp_path
+    ):
+        """The table is keyed by GGUF general.architecture, and unsloth/gpt-oss-20b-GGUF spells
+        it `gpt-oss` while the HF model_type is `gpt_oss`. Keyed the HF way, with transformers
+        absent, an empty cache and this GGUF's useless repo hints, the estimator fell to the
+        n_layers // 4 heuristic: 6 full-context layers instead of 12, 41% short at 8192."""
+        import sys
+
+        self._isolate_cache(monkeypatch, tmp_path)
+        monkeypatch.setenv("UNSLOTH_STUDIO_OFFLINE", "1")
+        orig_import = (
+            __builtins__["__import__"]
+            if isinstance(__builtins__, dict)
+            else __builtins__.__import__
+        )
+
+        def fake_import(name, *a, **kw):
+            if name.startswith("transformers"):
+                raise ImportError("transformers not installed")
+            return orig_import(name, *a, **kw)
+
+        monkeypatch.setattr("builtins.__import__", fake_import)
+        for k in list(sys.modules):
+            if k.startswith("transformers"):
+                monkeypatch.delitem(sys.modules, k, raising = False)
+
+        assert lc._resolve_swa_pattern("gpt-oss", 24) == [(i + 1) % 2 != 0 for i in range(24)]
+        # And the HF spelling still resolves, so folding costs the old key nothing.
+        assert lc._resolve_swa_pattern("gpt_oss", 24) == [(i + 1) % 2 != 0 for i in range(24)]
+
     def test_returns_none_for_arch_unknown_to_transformers(self):
         from core.inference.llama_cpp import _resolve_swa_entry_from_transformers
         assert _resolve_swa_entry_from_transformers("totally-fake-arch-xyz") is None
@@ -757,11 +791,21 @@ class TestCanEstimateKV:
         b._kv_key_length = 128
         assert not b._can_estimate_kv()
 
-    def test_kv_lora_rank_sufficient(self):
+    def test_the_mla_head_lengths_are_sufficient(self):
         b = LlamaCppBackend()
         b._n_layers = 61
         b._kv_lora_rank = 512
+        b._key_length_mla = 192
+        b._value_length_mla = 128
         assert b._can_estimate_kv()
+
+    def test_the_lora_rank_alone_is_not_sufficient(self):
+        # llama_hparams::is_mla needs both MLA head lengths, so a header with the rank and no
+        # dimensions has no cache shape to price.
+        b = LlamaCppBackend()
+        b._n_layers = 61
+        b._kv_lora_rank = 512
+        assert not b._can_estimate_kv()
 
     def test_legacy_embed_plus_heads(self):
         b = LlamaCppBackend()
@@ -805,6 +849,7 @@ class TestMLAEstimation:
             "_kv_value_length": 512,
             "_kv_lora_rank": 512,
             "_key_length_mla": 192,
+            "_value_length_mla": 128,
         }
         defaults.update(overrides)
         b = LlamaCppBackend()
@@ -834,12 +879,12 @@ class TestMLAEstimation:
         expected = 61 * _runtime_kv_cells(1000) * 1 * (512 + 192) * 2  # 704
         assert result == expected
 
-    def test_mla_fallback_no_key_length_mla(self):
-        """No key_length and no key_length_mla: fall back to +64."""
-        b = self._mla_backend(_kv_key_length = None, _key_length_mla = None)
-        result = b._estimate_kv_cache_bytes(1000, "f16")
-        expected = 61 * _runtime_kv_cells(1000) * 1 * (512 + 64) * 2  # 576
-        assert result == expected
+    def test_no_mla_head_lengths_leaves_the_latent_path(self):
+        """llama_hparams::is_mla is keyed on the two MLA head lengths, so a GGUF carrying only
+        kv_lora_rank gets the ordinary per-head K+V cache (unsloth/DeepSeek-R1-GGUF), path 4."""
+        b = self._mla_backend(_key_length_mla = None, _value_length_mla = None)
+        cells = _runtime_kv_cells(1000)
+        assert b._estimate_kv_cache_bytes(1000, "f16") == 61 * cells * 1 * (576 + 512) * 2
 
     def test_mla_hybrid_counts_only_attention_layers(self):
         """Kimi-K3: KDA layers are 0 in head_count_kv and hold no growing cache."""
@@ -1210,7 +1255,7 @@ class TestPathPriority:
     """Confirm: MLA > Hybrid Mamba > SWA > GQA > Legacy."""
 
     def test_mla_takes_priority_over_all(self):
-        """If kv_lora_rank is set, MLA path wins even with other fields present."""
+        """The latent path wins even with other fields present."""
         b = LlamaCppBackend()
         b._n_layers = 61
         b._n_kv_heads = 1
@@ -1219,6 +1264,8 @@ class TestPathPriority:
         b._kv_key_length = 576
         b._kv_value_length = 512
         b._kv_lora_rank = 512
+        b._key_length_mla = 192
+        b._value_length_mla = 128
         b._ssm_inner_size = 4096  # Would trigger Hybrid
         b._full_attention_interval = 4
         b._sliding_window = 1024  # Would trigger SWA
@@ -1268,6 +1315,8 @@ class TestPathPriority:
         for k, v in params.items():
             setattr(b_mla, k, v)
         b_mla._kv_lora_rank = 512
+        b_mla._key_length_mla = 192
+        b_mla._value_length_mla = 128
         mla_val = b_mla._estimate_kv_cache_bytes(ctx, "f16")
 
         # Path 2: Hybrid Mamba
@@ -1540,6 +1589,7 @@ class TestServerFlags:
         b._n_kv_heads = 1
         b._kv_lora_rank = 512
         b._key_length_mla = 64
+        b._value_length_mla = 64
         b._kv_key_length = 576
         baseline = b._estimate_kv_cache_bytes(8192, "f16")
         for slots in (1, 2, 4, 8):
@@ -1769,6 +1819,7 @@ class TestParallelSWAScaling:
         b._n_kv_heads = 1
         b._kv_lora_rank = 512
         b._key_length_mla = 64
+        b._value_length_mla = 64
         b._kv_key_length = 576
         baseline = b._estimate_kv_cache_bytes(8192, "f16")
         for slots in (1, 2, 4, 8):
@@ -1804,6 +1855,7 @@ class TestParallelSWAScaling:
         mla._n_kv_heads = 1
         mla._kv_lora_rank = 512
         mla._key_length_mla = 64
+        mla._value_length_mla = 64
         mla._kv_key_length = 576
 
         hybrid = LlamaCppBackend()
@@ -2026,6 +2078,7 @@ class TestSharedKVLayers:
         b._n_kv_heads = 1
         b._kv_lora_rank = 512
         b._key_length_mla = 64
+        b._value_length_mla = 64
         b._kv_key_length = 576
         b._shared_kv_layers = 10
         ctx = 8192
@@ -2134,6 +2187,7 @@ class TestLifecycle:
             "_full_attention_interval",
             "_kv_lora_rank",
             "_key_length_mla",
+            "_value_length_mla",
             "_kv_key_length_swa",
             "_kv_value_length_swa",
             "_ssm_inner_size",
@@ -2165,6 +2219,7 @@ class TestLifecycle:
             "_full_attention_interval",
             "_kv_lora_rank",
             "_key_length_mla",
+            "_value_length_mla",
             "_kv_key_length_swa",
             "_kv_value_length_swa",
             "_ssm_inner_size",
@@ -2188,6 +2243,7 @@ class TestLifecycle:
                 "attention.value_length": 512,
                 "attention.kv_lora_rank": 512,
                 "attention.key_length_mla": 192,
+                "attention.value_length_mla": 128,
             },
         )
         assert b._can_estimate_kv()

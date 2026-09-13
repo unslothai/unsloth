@@ -82,6 +82,7 @@ def _make_mla_backend(
     kv_value_length = 512,
     kv_lora_rank = 512,
     key_length_mla = 256,
+    value_length_mla = 256,
     nextn = 1,
     embedding_length = 6144,
     vocab = 154880,
@@ -104,6 +105,7 @@ def _make_mla_backend(
     b._ssm_inner_size = None
     b._full_attention_interval = None
     b._key_length_mla = key_length_mla
+    b._value_length_mla = value_length_mla
     b._n_kv_heads_by_layer = None
     b._kv_key_length_swa = None
     b._kv_value_length_swa = None
@@ -126,6 +128,7 @@ def _make_non_mla_backend(**kw):
     )
     b._kv_lora_rank = None
     b._key_length_mla = None
+    b._value_length_mla = None
     return b
 
 
@@ -169,6 +172,8 @@ class TestMlaTargetCtxReserve:
         mla = _make_mla_backend()
         non = _make_mla_backend()
         non._kv_lora_rank = None  # flip MLA off, keep every other dim identical
+        non._key_length_mla = None
+        non._value_length_mla = None
         ctx = 131072
         assert mla._estimate_mtp_overhead_bytes(ctx) > non._estimate_mtp_overhead_bytes(ctx)
 

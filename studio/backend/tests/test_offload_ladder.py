@@ -1,0 +1,1171 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""The ladder: sub-FFN rungs, and the minimal number of blocks at each one.
+
+    1  ffn_down            (MoE: ffn_down_exps / _chexps)
+    2  + ffn_up / gate_up
+    3  + ffn_gate
+    4  + shared and dense FFN
+    5  + lm_head
+    6  + attention projections     (off by default)
+    7  + the KV cache              (off by default)
+
+The two bottom rungs are off because the module's own numbers put them off the scale; they exist
+so the ladder is complete and a benchmark can reach the bottom of it.
+"""
+
+from __future__ import annotations
+
+import re
+
+import pytest
+
+from core.inference.offload_cost_model import HostProfile
+from core.inference.offload_layout import (
+    BlockLayout,
+    ModelLayout,
+    SpillClass,
+    spill_pattern_for_class,
+)
+from core.inference.offload_planner import (
+    FfnGranularity,
+    _effective_granularity,
+    moe_down_up_bpw_ratio,
+    PlanOptions,
+    plan_placement,
+    plan_to_args,
+)
+
+GIB = 1024**3
+
+
+def graded_moe(
+    n_blocks: int = 40,
+    down: float = 0.16,
+    up: float = 0.16,
+    gate: float = 0.15,
+    attn: float = 0.025,
+    shexp: float = 0.0,
+) -> ModelLayout:
+    """A 35B-A3B-shaped MoE with its FFN broken out per matrix."""
+    d, u, g = int(down * GIB), int(up * GIB), int(gate * GIB)
+    blocks = tuple(
+        BlockLayout(
+            index = i,
+            spillable_bytes = d + u + g,
+            resident_bytes = int(attn * GIB) + int(shexp * GIB),
+            ffn_down_bytes = d,
+            ffn_up_bytes = u,
+            ffn_gate_bytes = g,
+            dense_ffn_bytes = int(shexp * GIB),
+            attn_bytes = int(attn * GIB),
+        )
+        for i in range(n_blocks)
+    )
+    return ModelLayout(
+        arch = "qwen3moe",
+        n_layers = n_blocks,
+        n_attention_layers = n_blocks,
+        blocks = blocks,
+        lm_head_bytes = int(0.5 * GIB),
+        token_embd_bytes = int(0.5 * GIB),
+        other_resident_bytes = int(0.01 * GIB),
+        kv_bytes_per_token_f16 = 0.62 * GIB / 32768,
+        n_ctx_train = 32768,
+        is_moe = True,
+        n_expert = 128,
+        n_expert_used = 8,
+        complete = True,
+    )
+
+
+def ungraded_moe(n_blocks: int = 40) -> ModelLayout:
+    """The same model as the planner saw it before the ladder: one FFN scalar."""
+    layout = graded_moe(n_blocks)
+    return ModelLayout(
+        **{
+            **layout.__dict__,
+            "blocks": tuple(
+                BlockLayout(b.index, b.spillable_bytes, b.resident_bytes) for b in layout.blocks
+            ),
+        }
+    )
+
+
+def opts(**kwargs) -> PlanOptions:
+    """Default options for these tests, at ALL granularity."""
+    kwargs.setdefault("ffn_granularity", FfnGranularity.ALL)
+    return PlanOptions(host = HostProfile(threads = 6), **kwargs)
+
+
+def shipped(**kwargs) -> PlanOptions:
+    """The options a real launch uses."""
+    return PlanOptions(host = HostProfile(threads = 6), **kwargs)
+
+
+def moved_bytes(plan, layout: ModelLayout) -> int:
+    """Weight bytes this plan puts on the host, less the always-host embedding."""
+    return plan.host_bytes - layout.token_embd_bytes
+
+
+def test_the_first_rung_is_ffn_down_alone():
+    layout = graded_moe()
+    plan = plan_placement(layout, [21 * GIB], 94 * GIB, 8192, opts = opts())
+    assert plan.spilled_blocks
+    assert len(plan.ot_patterns) == 1
+    assert "ffn_down_(exps|chexps)" in plan.ot_patterns[0]
+    assert "ffn_gate" not in plan.ot_patterns[0]
+    assert "ffn_up" not in plan.ot_patterns[0]
+
+
+def test_the_rungs_arrive_in_order_as_the_card_shrinks():
+    """down, then down+up, then down+up+gate."""
+    layout = graded_moe()
+    seen = []
+    for vram in (21, 19, 15, 11, 9):
+        plan = plan_placement(layout, [vram * GIB], 94 * GIB, 8192, opts = opts())
+        classes = []
+        for pattern in plan.ot_patterns:
+            for cls in (SpillClass.FFN_DOWN, SpillClass.FFN_UP, SpillClass.FFN_GATE):
+                body = spill_pattern_for_class(layout, cls, [0]).split(".", 2)[-1]
+                if body in pattern:
+                    classes.append(cls)
+        seen.append(tuple(classes))
+    assert seen[0] == (SpillClass.FFN_DOWN,)
+    assert seen[-1] == (SpillClass.FFN_DOWN, SpillClass.FFN_UP, SpillClass.FFN_GATE)
+    for earlier, later in zip(seen, seen[1:]):
+        assert set(earlier) <= set(later), (earlier, later)
+
+
+def test_a_later_rung_is_only_entered_once_the_earlier_one_is_exhausted():
+    layout = graded_moe()
+    plan = plan_placement(layout, [15 * GIB], 94 * GIB, 8192, opts = opts())
+    down, up = plan.ot_patterns[0], plan.ot_patterns[1]
+    assert r"^blk\.\d+\." in down
+    assert re.search(r"\(\d+(\|\d+)*\)", up), up
+
+
+def deficit_of(layout: ModelLayout, vram_gib: float) -> int:
+    """What the plan had to cover, from the planner's own arithmetic."""
+    from core.inference.offload_planner import all_resident_bytes
+
+    budget = int(vram_gib * GIB) - PlanOptions().overhead_bytes_per_device
+    return all_resident_bytes(layout, 8192) - budget
+
+
+def test_the_ladders_overshoot_is_bounded_by_one_rung_not_by_one_block():
+    """The guarantee the change actually buys, stated as the bound it is."""
+    fine, coarse = graded_moe(), ungraded_moe()
+    unit_fine = max(b.ffn_down_bytes for b in fine.blocks)
+    unit_coarse = max(b.spillable_bytes for b in coarse.blocks)
+    assert unit_fine < unit_coarse / 2
+
+    overshoots = []
+    for vram in (21, 19, 17, 15):
+        a = plan_placement(fine, [vram * GIB], 94 * GIB, 8192, opts = opts())
+        b = plan_placement(coarse, [vram * GIB], 94 * GIB, 8192, opts = opts())
+        assert a.spills_anything and b.spills_anything
+        need = deficit_of(fine, vram)
+        over_fine = moved_bytes(a, fine) - need
+        over_coarse = moved_bytes(b, coarse) - need
+        assert 0 <= over_fine < unit_fine, (vram, over_fine)
+        assert 0 <= over_coarse < unit_coarse, (vram, over_coarse)
+        overshoots.append((over_fine, over_coarse))
+
+    assert sum(f for f, _ in overshoots) < sum(c for _, c in overshoots)
+
+
+def test_an_ungraded_layout_still_gets_the_old_whole_ffn_answer():
+    """A layout whose per-rung bytes do not add up to its FFN cannot be spilled by rung without
+    crediting bytes the pattern would not move, so the ladder collapses to one coarse unit."""
+    layout = ungraded_moe()
+    assert not any(b.graded for b in layout.blocks)
+    plan = plan_placement(layout, [19 * GIB], 94 * GIB, 8192, opts = opts())
+    assert len(plan.ot_patterns) == 1
+    assert "ffn_(up|gate|down|gate_up)_(exps|chexps)" in plan.ot_patterns[0]
+
+
+def test_the_emitted_patterns_move_exactly_the_bytes_the_plan_charged_itself():
+    """If the patterns move fewer bytes than the deficit assumed, VRAM is filled against a gap
+    that was never closed and the load OOMs. Uses ``re.search`` as llama.cpp does, which is why
+    every pattern this module emits is anchored."""
+    layout = graded_moe(n_blocks = 12, shexp = 0.02)
+    table: list[tuple[str, int]] = []
+    for b in layout.blocks:
+        table += [
+            (f"blk.{b.index}.ffn_down_exps.weight", b.ffn_down_bytes),
+            (f"blk.{b.index}.ffn_up_exps.weight", b.ffn_up_bytes),
+            (f"blk.{b.index}.ffn_gate_exps.weight", b.ffn_gate_bytes),
+            (f"blk.{b.index}.ffn_down_shexp.weight", b.dense_ffn_bytes),
+            (f"blk.{b.index}.attn_q.weight", b.attn_bytes),
+            (f"blk.{b.index}.attn_norm.weight", 4096),
+            (f"blk.{b.index}.ffn_gate_inp.weight", 4096),
+        ]
+    table.append(("output.weight", layout.lm_head_bytes))
+
+    for vram in (7, 6, 5, 4, 3):
+        plan = plan_placement(layout, [vram * GIB], 94 * GIB, 8192, opts = opts())
+        if not plan.spills_anything:
+            continue
+        matched = sum(n for name, n in table if any(re.search(p, name) for p in plan.ot_patterns))
+        assert matched == moved_bytes(plan, layout), (vram, plan.reason)
+
+
+def test_the_down_rung_never_drags_the_shared_experts_with_it():
+    """``ffn_down`` unanchored also matches ``ffn_down_exps`` and ``ffn_down_shexp``."""
+    layout = graded_moe(shexp = 0.02)
+    pattern = spill_pattern_for_class(layout, SpillClass.FFN_DOWN, [3])
+    assert re.search(pattern, "blk.3.ffn_down_exps.weight")
+    assert not re.search(pattern, "blk.3.ffn_down_shexp.weight")
+    assert not re.search(pattern, "blk.3.ffn_down.weight")
+    assert not re.search(pattern, "blk.13.ffn_down_exps.weight")
+
+
+def test_lm_head_is_the_rung_after_every_ffn_rung_and_not_before():
+    """lm_head stays in VRAM as long as there is any expert byte left to move instead."""
+    layout = graded_moe(n_blocks = 8)
+    spillable = layout.spillable_bytes
+    plan = plan_placement(layout, [5 * GIB], 94 * GIB, 8192, opts = opts())
+    assert plan.spills_anything and not plan.spilled_lm_head
+    assert moved_bytes(plan, layout) < spillable
+
+    tight = plan_placement(layout, [2 * GIB], 94 * GIB, 8192, opts = opts())
+    assert tight.spills_anything
+    assert tight.spilled_lm_head
+    assert moved_bytes(tight, layout) == spillable + layout.lm_head_bytes
+
+
+def test_embed_tokens_is_never_a_rung_because_it_is_never_on_the_card():
+    """``llama-model.cpp`` pins ``dev_input`` to the CPU unconditionally, so ``token_embd`` is
+    host-resident on every launch and appears only as host RAM the plan must pay for."""
+    layout = graded_moe()
+    plan = plan_placement(layout, [64 * GIB], 94 * GIB, 8192, opts = opts())
+    assert not plan.spills_anything, "this card holds the whole model"
+    assert plan.host_bytes == layout.token_embd_bytes
+    assert not any("token_embd" in p for p in plan.ot_patterns)
+
+
+def test_attention_and_the_cache_are_off_the_ladder_by_default():
+    """The measurements put both rungs off the bottom of the scale, and abstaining is nearly
+    free, so a load that needs them is one ``--fit on`` should place."""
+    layout = graded_moe(n_blocks = 8, attn = 0.4)
+    plan = plan_placement(layout, [2 * GIB], 94 * GIB, 8192, opts = opts())
+    assert not plan.spills_anything
+    assert not plan.kv_spilled_to_host
+
+
+def test_the_attention_rung_exists_and_sits_below_lm_head():
+    """Implemented so the ladder is complete and a benchmark can reach it."""
+    layout = graded_moe(n_blocks = 8, attn = 0.4)
+    plan = plan_placement(layout, [2 * GIB], 94 * GIB, 8192, opts = opts(allow_attention_spill = True))
+    assert plan.spills_anything
+    assert plan.spilled_lm_head, "lm_head goes before any attention weight does"
+    assert any("attn_" in p for p in plan.ot_patterns)
+
+
+def test_the_cache_is_the_last_rung_of_all_and_emits_nkvo():
+    layout = graded_moe(n_blocks = 8, attn = 0.4)
+    plan = plan_placement(
+        layout,
+        [1 * GIB],
+        94 * GIB,
+        8192,
+        opts = opts(allow_attention_spill = True, allow_kv_host_fallback = True),
+    )
+    if plan.kv_spilled_to_host:
+        assert "--no-kv-offload" in plan_to_args(plan)
+        assert any("attn_" in p for p in plan.ot_patterns), "attention goes first"
+
+
+def test_load_mode_is_none_when_the_host_side_fits_and_mmap_when_it_does_not():
+    """``--load-mode none`` beats mmap on host-resident weights, but only while those bytes
+    really are in RAM; past that, mmap is the only thing making an over-commit pageable."""
+    layout = graded_moe()
+    roomy = plan_placement(layout, [15 * GIB], 94 * GIB, 8192, opts = opts())
+    assert roomy.spills_anything and roomy.load_mode_none
+    assert "--load-mode" in plan_to_args(roomy)
+
+    cramped = plan_placement(layout, [15 * GIB], 8 * GIB, 8192, opts = opts())
+    assert not cramped.load_mode_none
+    assert "--load-mode" not in plan_to_args(cramped)
+
+
+def test_a_partial_rung_is_charged_to_the_right_card_not_to_the_pool():
+    """``-ot`` does not move a layer, so a pooled partial spill relieves only the card the chosen
+    indices sat on, and a per-device shortfall is a hard throw rather than a slow load."""
+    layout = graded_moe()
+    plan = plan_placement(layout, [11 * GIB, 11 * GIB], 94 * GIB, 8192, opts = opts())
+    if plan.spills_anything:
+        partial = plan.host_bytes - layout.token_embd_bytes < layout.spillable_bytes
+        if partial:
+            # A partial spill is only planned when SELECTED device by device from each card's own
+            # rows and re-checked as a whole; the pooled pick never reaches the launch.
+            assert "device by device" in plan.reason
+            assert plan.vram_bytes <= 22 * GIB
+    else:
+        assert "partial spill" in plan.reason or "device" in plan.reason
+
+
+def test_a_dense_model_gets_the_same_gradation():
+    """The dense matrices carry no ``_exps`` suffix, and the ladder does not care which it
+    is looking at."""
+    d = u = g = int(0.07 * GIB)
+    blocks = tuple(
+        BlockLayout(
+            index = i,
+            spillable_bytes = d + u + g,
+            resident_bytes = int(0.045 * GIB),
+            ffn_down_bytes = d,
+            ffn_up_bytes = u,
+            ffn_gate_bytes = g,
+            attn_bytes = int(0.045 * GIB),
+        )
+        for i in range(64)
+    )
+    layout = ModelLayout(
+        arch = "qwen3",
+        n_layers = 64,
+        n_attention_layers = 64,
+        blocks = blocks,
+        lm_head_bytes = int(1.0 * GIB),
+        token_embd_bytes = int(1.0 * GIB),
+        other_resident_bytes = int(0.01 * GIB),
+        kv_bytes_per_token_f16 = 2.0 * GIB / 32768,
+        n_ctx_train = 32768,
+        complete = True,
+    )
+    plan = plan_placement(layout, [16 * GIB], 94 * GIB, 8192, opts = opts())
+    assert plan.spills_anything
+    assert any(r"ffn_down\.weight" in p for p in plan.ot_patterns)
+    assert not any("_exps" in p for p in plan.ot_patterns)
+
+
+@pytest.mark.parametrize(
+    "order",
+    [
+        (SpillClass.FFN_DOWN, SpillClass.FFN_UP, SpillClass.FFN_GATE),
+        (SpillClass.FFN_GATE, SpillClass.FFN_UP, SpillClass.FFN_DOWN),
+        (SpillClass.FFN_UP, SpillClass.FFN_DOWN, SpillClass.FFN_GATE),
+    ],
+)
+def test_the_rung_order_is_configurable_and_costs_the_same_either_way(order):
+    """Which matrix goes first is llama.cpp's choice and UNMEASURED by us: the cost model prices
+    all three identically, so the ladder's win is GRANULARITY, not order."""
+    layout = graded_moe()
+    plan = plan_placement(layout, [19 * GIB], 94 * GIB, 8192, opts = opts(ffn_rung_order = order))
+    assert plan.spills_anything
+    first = spill_pattern_for_class(layout, order[0], [0]).split(".", 2)[-1]
+    assert first in plan.ot_patterns[0]
+    assert abs(moved_bytes(plan, layout) - 3.04 * GIB) < 0.35 * GIB
+
+
+def overshoot(layout: ModelLayout, vram: float, options: PlanOptions) -> float:
+    plan = plan_placement(layout, [int(vram * GIB)], 94 * GIB, 8192, opts = options)
+    if not plan.spills_anything:
+        return 0.0
+    return moved_bytes(plan, layout) - deficit_of(layout, vram)
+
+
+def test_the_shipped_default_grades_only_the_boundary_block():
+    """BOUNDARY: coarse blocks, then the last one trimmed to the rungs needed."""
+    layout = graded_moe()
+    plan = plan_placement(layout, [19 * GIB], 94 * GIB, 8192, opts = shipped())
+    assert plan.spills_anything
+    coarse = [p for p in plan.ot_patterns if "ffn_(up|gate|down|gate_up)_" in p]
+    graded = [p for p in plan.ot_patterns if p not in coarse]
+    assert len(coarse) == 1, plan.ot_patterns
+    assert graded, "the boundary block should have been trimmed"
+    blocks_named = {b for p in graded for b in re.findall(r"\d+", p.split(".ffn")[0])}
+    assert len(blocks_named) == 1, blocks_named
+
+
+def test_boundary_grading_beats_both_extremes_on_overshoot():
+    """BOUNDARY can combine whole blocks with a partial one, so its step is a sub-FFN matrix on a
+    coarse base: less overshoot than WHOLE and no worse than ALL, at one extra split."""
+    layout = graded_moe()
+    for vram in (21, 19, 17):
+        whole = overshoot(layout, vram, shipped(ffn_granularity = FfnGranularity.WHOLE))
+        bound = overshoot(layout, vram, shipped(ffn_granularity = FfnGranularity.BOUNDARY))
+        every = overshoot(layout, vram, shipped(ffn_granularity = FfnGranularity.ALL))
+        assert bound < whole, (vram, bound, whole)
+        assert bound <= every, (vram, bound, every)
+
+
+def test_boundary_falls_back_to_the_whole_block_when_trimming_cannot_help():
+    """A deficit that needs the entire last block leaves it whole: a graded pattern adding up to
+    the same bytes would pay the extra split for nothing."""
+    layout = graded_moe()
+    plan = plan_placement(layout, [4 * GIB], 94 * GIB, 8192, opts = shipped())
+    if plan.spills_anything:
+        assert len(plan.ot_patterns) <= 2, plan.ot_patterns
+        assert any("ffn_(up|gate|down|gate_up)_" in p for p in plan.ot_patterns)
+
+
+# Two accounting bugs that made the planner spill a model which already fit.
+
+
+def tied_embedding_layout(vocab: int, per_layer: int) -> ModelLayout:
+    """A gemma-shaped layout: tied embeddings, plus per-layer input embeddings."""
+    blocks = tuple(
+        BlockLayout(
+            index = i,
+            spillable_bytes = int(0.025 * GIB),
+            resident_bytes = int(0.008 * GIB),
+            ffn_down_bytes = int(0.009 * GIB),
+            ffn_up_bytes = int(0.008 * GIB),
+            ffn_gate_bytes = int(0.008 * GIB),
+            attn_bytes = int(0.008 * GIB),
+        )
+        for i in range(35)
+    )
+    return ModelLayout(
+        arch = "gemma4",
+        n_layers = 35,
+        n_attention_layers = 35,
+        blocks = blocks,
+        lm_head_bytes = 0,
+        token_embd_bytes = vocab + per_layer,
+        per_layer_embd_bytes = per_layer,
+        other_resident_bytes = vocab,
+        kv_bytes_per_token_f16 = 0.615 * GIB / 9216,
+        n_ctx_train = 32768,
+        has_swa = True,
+        complete = True,
+    )
+
+
+def test_the_tied_embedding_duplicate_is_the_vocabulary_not_the_per_layer_embeddings():
+    """``per_layer_token_embd`` lands in the same host-resident bucket as ``token_embd``, so
+    adding that WHOLE bucket to ``other_resident_bytes`` charged VRAM several times the vocabulary
+    matrix it meant to."""
+    vocab, per_layer = 264 * 1024**2, 1540 * 1024**2
+    layout = tied_embedding_layout(vocab, per_layer)
+    assert layout.other_resident_bytes == vocab
+    assert layout.token_embd_bytes == vocab + per_layer
+    from core.inference.offload_planner import all_resident_bytes
+
+    resident = all_resident_bytes(layout, 9216, kv_bytes_floor = 48 * 1024**2)
+    assert resident < vocab + per_layer, "the PLE must not be charged to VRAM"
+
+
+def test_a_measured_cache_beats_the_product_under_sliding_window_attention():
+    """The product has no SWA term, so its error is one-sided and large: the window caps most
+    layers, those layers use narrower heads, and 20 of them share one cache."""
+    from core.inference.offload_planner import cache_bytes
+
+    measured = 48 * 1024**2
+    swa = tied_embedding_layout(264 * 1024**2, 1540 * 1024**2)
+    assert cache_bytes(swa, 9216, kv_bytes_floor = measured) == measured
+
+    dense = ModelLayout(**{**swa.__dict__, "has_swa": False})
+    assert cache_bytes(dense, 9216, kv_bytes_floor = measured) > measured
+
+
+def test_sliding_window_without_a_measurement_abstains_rather_than_guessing():
+    """No measurement, no spill."""
+    layout = tied_embedding_layout(264 * 1024**2, 1540 * 1024**2)
+    plan = plan_placement(layout, [4 * GIB], 200 * GIB, 9216, opts = shipped())
+    assert not plan.spills_anything
+    assert "sliding-window" in plan.reason
+
+    measured = plan_placement(
+        layout,
+        [4 * GIB],
+        200 * GIB,
+        9216,
+        kv_bytes_floor = 48 * 1024**2,
+        opts = shipped(),
+    )
+    assert not measured.spills_anything
+    assert "fits in VRAM" in measured.reason
+
+
+def _reader_with_kv_heads(value, n_layers = 6):
+    """A stand-in GGUFReader exposing just the fields the layout reads."""
+    fields = {
+        "general.architecture": "gemma4",
+        "gemma4.block_count": n_layers,
+        "gemma4.attention.head_count_kv": value,
+        "gemma4.attention.head_count": 8,
+        "gemma4.embedding_length": 256,
+        "gemma4.attention.key_length": 32,
+        "gemma4.attention.value_length": 32,
+    }
+
+    class _F:
+        def __init__(self, v):
+            self.v = v
+
+    class _R:
+        tensors = ()
+
+        def __init__(self):
+            self.fields = {k: _F(v) for k, v in fields.items()}
+
+    return _R(), fields
+
+
+def test_a_per_layer_kv_head_list_does_not_abstain():
+    """gemma-4-26B ships head_count_kv as a LIST, and int(list) raises."""
+    from core.inference import offload_layout as OL
+
+    scalar = OL._kv_heads_total(4, 6)
+    listed = OL._kv_heads_total([4, 4, 4, 4, 4, 4], 6)
+    assert scalar == listed == 24
+
+
+def test_a_mixed_kv_head_list_is_summed_not_multiplied():
+    """The real lists mix widths, so one head count times a layer count is wrong in either
+    direction."""
+    from core.inference import offload_layout as OL
+
+    heads = [8, 8, 8, 8, 8, 2]
+    assert OL._kv_heads_total(heads, 6) == 42
+    assert OL._kv_heads_total(heads, 6) != 8 * 6
+    assert OL._kv_heads_total(heads, 6) != 2 * 6
+
+
+def test_a_short_kv_head_list_pads_with_its_last_value():
+    """Trailing layers beyond the list reuse its last width rather than crash."""
+    from core.inference import offload_layout as OL
+    assert OL._kv_heads_total([8, 2], 4) == 8 + 2 + 2 + 2
+
+
+def test_no_ladder_rung_can_reach_a_unified_memory_host():
+    """Every granularity must abstain identically on a unified pool."""
+    from dataclasses import replace
+
+    from core.inference.offload_planner import (
+        FfnGranularity,
+        PlanOptions,
+        plan_placement,
+    )
+
+    layout = graded_moe()
+    gib = 1024**3
+    base = PlanOptions()
+
+    reasons = set()
+    for granularity in FfnGranularity:
+        unified = replace(
+            base,
+            ffn_granularity = granularity,
+            host = replace(base.host, unified_memory = True),
+        )
+        discrete = replace(
+            base,
+            ffn_granularity = granularity,
+            host = replace(base.host, unified_memory = False),
+        )
+        on_apu = plan_placement(layout, [8 * gib], 64 * gib, 8192, opts = unified)
+        on_gpu = plan_placement(layout, [8 * gib], 64 * gib, 8192, opts = discrete)
+
+        assert not on_apu.ot_patterns, granularity
+        assert "unified memory" in on_apu.reason, granularity
+        reasons.add(on_apu.reason)
+        assert on_gpu.ot_patterns, granularity
+
+    assert len(reasons) == 1, f"granularity leaked into the abstain: {reasons}"
+
+
+def test_the_selection_matches_an_independent_minimal_walk():
+    """MINIMALITY, checked against a reimplementation rather than a comment."""
+    layout = graded_moe()
+    checked = 0
+    for vram in (23, 21, 19, 17, 15, 13, 11):
+        plan = plan_placement(layout, [vram * GIB], 94 * GIB, 8192, opts = opts())
+        if not plan.spills_anything:
+            continue
+        need = deficit_of(layout, vram)
+
+        expected = 0
+        for attr in ("ffn_down_bytes", "ffn_up_bytes", "ffn_gate_bytes"):
+            if expected >= need:
+                break
+            sizes = sorted(
+                (getattr(b, attr) for b in layout.blocks if getattr(b, attr)),
+                reverse = True,
+            )
+            for size in sizes:
+                if expected >= need:
+                    break
+                expected += size
+
+        assert expected >= need, (vram, expected, need)
+        assert moved_bytes(plan, layout) == expected, (
+            f"at {vram} GiB the planner moved {moved_bytes(plan, layout)} bytes "
+            f"but the minimal rung-ordered walk needs {expected} for a {need} "
+            f"byte deficit"
+        )
+        checked += 1
+
+    assert checked >= 5, f"only {checked} budgets spilled; the sweep is vacuous"
+
+
+def _typed_moe(
+    down_type: str,
+    up_type: str,
+    n_blocks: int = 40,
+) -> ModelLayout:
+    """A graded MoE carrying real GGUF quant type names on its rungs."""
+    base = graded_moe(n_blocks)
+    return ModelLayout(
+        **{
+            **base.__dict__,
+            "blocks": tuple(
+                BlockLayout(
+                    index = b.index,
+                    spillable_bytes = b.spillable_bytes,
+                    resident_bytes = b.resident_bytes,
+                    ffn_down_bytes = b.ffn_down_bytes,
+                    ffn_up_bytes = b.ffn_up_bytes,
+                    ffn_gate_bytes = b.ffn_gate_bytes,
+                    dense_ffn_bytes = b.dense_ffn_bytes,
+                    attn_bytes = b.attn_bytes,
+                    ffn_down_type = down_type,
+                    ffn_up_type = up_type,
+                )
+                for b in base.blocks
+            ),
+        }
+    )
+
+
+def test_the_quant_rule_reproduces_every_measured_moe_verdict():
+    """The bits-per-weight rule, scored against the cells that produced it: ladder over coarse
+    generation ratio, six MoE model-quants, two families, five hosts."""
+    cases = [
+        ("IQ4_NL", "IQ2_XS", FfnGranularity.ALL),  # gemma-26B Q2
+        ("IQ4_NL", "IQ3_XXS", FfnGranularity.ALL),  # gemma-26B Q3
+        ("IQ3_XXS", "IQ2_XS", FfnGranularity.BOUNDARY),  # Qwen35B Q2, flat
+        ("Q5_1", "Q4_K", FfnGranularity.BOUNDARY),  # gemma-26B Q4
+        ("Q6_K", "Q5_K", FfnGranularity.BOUNDARY),  # Qwen35B Q6
+        ("Q5_K", "Q4_K", FfnGranularity.BOUNDARY),  # Qwen35B Q4
+    ]
+    for down, up, expected in cases:
+        layout = _typed_moe(down, up)
+        chosen = _effective_granularity(layout, opts(granularity_from_quant = True))
+        ratio = moe_down_up_bpw_ratio(layout)
+        assert chosen is expected, f"{down}/{up} ratio {ratio:.3f} chose {chosen} not {expected}"
+
+
+def test_the_quant_rule_is_off_by_default_and_changes_no_plan():
+    """OFF unless asked for. Six points do not earn a default."""
+    layout = _typed_moe("IQ4_NL", "IQ2_XS")  # the strongest ALL case there is
+    assert PlanOptions().granularity_from_quant is False
+    assert _effective_granularity(layout, shipped()) is FfnGranularity.BOUNDARY
+
+    off = plan_placement(layout, [16 * GIB], 94 * GIB, 8192, opts = shipped())
+    forced = plan_placement(
+        layout,
+        [16 * GIB],
+        94 * GIB,
+        8192,
+        opts = shipped(ffn_granularity = FfnGranularity.BOUNDARY),
+    )
+    assert moved_bytes(off, layout) == moved_bytes(forced, layout)
+
+
+def test_the_quant_rule_abstains_rather_than_guessing():
+    """No types, or a dense model, means no opinion, not a default of ALL."""
+    untyped = graded_moe()
+    assert moe_down_up_bpw_ratio(untyped) is None
+    assert (
+        _effective_granularity(untyped, opts(granularity_from_quant = True)) is FfnGranularity.ALL
+    )  # falls through to whatever opts asked for
+
+    dense = ModelLayout(**{**_typed_moe("Q3_K", "Q2_K").__dict__, "is_moe": False})
+    assert moe_down_up_bpw_ratio(dense) is None
+    assert (
+        _effective_granularity(dense, shipped(granularity_from_quant = True))
+        is FfnGranularity.BOUNDARY
+    )
+
+
+def test_the_rung_order_is_projector_then_slots_then_draft_then_weights():
+    """One cell where all three free rungs are available and the deficit needs every one of them
+    plus the first weight rung."""
+    layout = graded_moe()
+    ctx = 4096
+    floor = GIB
+    mmproj = 512 * 1024 * 1024
+    draft = 512 * 1024 * 1024
+    table = {2: floor, 1: floor // 2}
+    from core.inference.offload_planner import all_resident_bytes
+
+    needed = all_resident_bytes(layout, ctx, kv_bytes_floor = floor, n_seq = 2)
+    saved_by_knobs = mmproj + (floor // 2 + layout.recurrent_bytes) + draft
+    short = saved_by_knobs + layout.blocks[0].ffn_down_bytes // 2
+    card = needed + GIB - short + mmproj + draft
+    o = opts(
+        overhead_bytes_per_device = GIB,
+        overhead_bytes_per_token = 0,
+        n_parallel = 2,
+        kv_bytes_floor_by_parallel = table,
+        mmproj_bytes = mmproj,
+        mmproj_movable = True,
+        draft_bytes = draft,
+        draft_droppable = True,
+    )
+    plan = plan_placement(layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = o)
+    assert plan.mmproj_to_host and plan.n_parallel == 1 and plan.draft_dropped, plan.reason
+    assert len(plan.ot_patterns) == 1 and "ffn_down" in plan.ot_patterns[0], plan.ot_patterns
+    args = plan_to_args(plan)
+    assert "--no-mmproj-offload" in args and args[args.index("--parallel") + 1] == "1"
+    for single in (
+        dict(mmproj_movable = False, draft_droppable = False),
+        dict(n_parallel = 2, min_parallel = 2, draft_droppable = False),
+        dict(mmproj_movable = False, n_parallel = 2, min_parallel = 2),
+    ):
+        alone = plan_placement(
+            layout,
+            [card],
+            64 * GIB,
+            ctx,
+            kv_bytes_floor = floor,
+            opts = PlanOptions(**{**o.__dict__, **single}),
+        )
+        assert len(alone.spilled_blocks) > len(plan.spilled_blocks), single
+
+
+def test_a_cpu_pinned_projector_is_charged_to_host_ram():
+    """--no-mmproj-offload clears ``mmproj_use_gpu`` and clip.cpp allocates the whole projector
+    in a CPU backend buffer, so rung 0 turns VRAM bytes into HOST RAM bytes that ``host_bytes``
+    has to carry."""
+    from core.inference.offload_planner import all_resident_bytes
+
+    layout = graded_moe()
+    ctx, floor, mmproj = 4096, GIB, 3 * GIB
+    needed = all_resident_bytes(layout, ctx, kv_bytes_floor = floor)
+    card = needed + GIB + mmproj // 2
+    o = opts(
+        overhead_bytes_per_device = GIB,
+        overhead_bytes_per_token = 0,
+        mmproj_bytes = mmproj,
+        mmproj_movable = True,
+    )
+    ram = o.host_ram_headroom_bytes + layout.token_embd_bytes + mmproj
+
+    plan = plan_placement(layout, [card], ram, ctx, kv_bytes_floor = floor, opts = o)
+    assert plan.mmproj_to_host and not plan.spilled_blocks, plan.reason
+    assert (
+        plan.host_bytes == layout.token_embd_bytes + mmproj
+    ), "a CPU-pinned projector is host RAM this plan has to pay for"
+    assert plan.load_mode_none
+    assert plan.cache_ram_mib == 0, "nothing is left under the headroom for the prompt cache"
+
+    short = plan_placement(layout, [card], ram - 1, ctx, kv_bytes_floor = floor, opts = o)
+    assert short.declined_by_gate and not short.changed, short.reason
+    assert "host RAM" in short.reason
+    assert not short.mmproj_to_host and plan_to_args(short) == []
+
+
+def test_the_per_device_selection_grades_its_boundary_block_too():
+    """The pooled ladder trims the LAST whole block it takes; taking whole blocks per device left
+    every deficient device up to one block of host traffic the deficit did not need."""
+    from core.inference.offload_planner import (
+        PlanOptions,
+        _per_device_shortfall,
+        _select_units_per_device,
+    )
+
+    layout = graded_moe()
+    cards = [8 * GIB, 8 * GIB]
+    kwargs = dict(
+        quantised = False,
+        kv_bytes_floor = 0,
+        split_weights_per_device = cards,
+        kv_layer_weights = [1] * layout.n_layers,
+    )
+    graded = _select_units_per_device(layout, PlanOptions(), 8192, cards, **kwargs)
+    whole = _select_units_per_device(
+        layout, PlanOptions(ffn_granularity = FfnGranularity.WHOLE), 8192, cards, **kwargs
+    )
+    assert graded and whole, (graded, whole)
+    assert all(u.cls is None for u in whole)
+    assert any(u.cls is not None for u in graded), "no device's boundary block was graded"
+    assert sum(u.nbytes for u in graded) < sum(u.nbytes for u in whole)
+    moved = {}
+    for u in graded:
+        moved[u.index] = moved.get(u.index, 0) + u.nbytes
+    assert _per_device_shortfall(layout, PlanOptions(), 8192, moved, False, cards, **kwargs) is None
+
+
+def test_the_slot_rung_stays_off_a_windowed_cache_split_across_devices():
+    """Under iSWA the windowed layers' cache grows with the slot count and the full-attention
+    layers' does not, so the per-layer weights no longer split a re-priced total and the
+    multi-device check would pass a card that fails allocation."""
+    import dataclasses
+
+    from core.inference.offload_planner import all_resident_bytes
+
+    layout = dataclasses.replace(graded_moe(), has_swa = True)
+    ctx, floor = 4096, GIB
+    table = {4: floor, 3: 3 * floor // 4, 2: floor // 2, 1: floor // 4}
+    needed = all_resident_bytes(layout, ctx, kv_bytes_floor = floor, n_seq = 4)
+    card = needed + GIB - (3 * floor // 4 + 3 * layout.recurrent_bytes) + 16 * 1024 * 1024
+    o = opts(
+        overhead_bytes_per_device = GIB,
+        overhead_bytes_per_token = 0,
+        n_parallel = 4,
+        kv_bytes_floor_by_parallel = table,
+    )
+    weights = [1] * layout.n_layers
+    single = plan_placement(
+        layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = o, kv_layer_weights = weights
+    )
+    assert single.n_parallel == 1 and not single.ot_patterns, single.reason
+    split = plan_placement(
+        layout,
+        [card // 2, card - card // 2],
+        64 * GIB,
+        ctx,
+        kv_bytes_floor = floor,
+        opts = o,
+        split_weights_per_device = [card // 2, card - card // 2],
+        kv_layer_weights = weights,
+    )
+    assert split.n_parallel == 0, split
+
+
+def test_a_kv_head_list_with_zeros_keeps_the_attention_row_count():
+    """A KDA hybrid without full_attention_interval marks its cache-free rows with a 0 in the
+    per-layer list; summed away, the multi-device check spreads the cache over rows holding none."""
+    from core.inference import offload_layout as OL
+
+    def reader(heads):
+        fields = {
+            "general.architecture": "kda",
+            "kda.block_count": 6,
+            "kda.attention.head_count_kv": heads,
+            "kda.attention.head_count": 8,
+            "kda.embedding_length": 256,
+            "kda.attention.key_length": 32,
+            "kda.attention.value_length": 32,
+        }
+        if 0 in heads:
+            # Zero-head rows need a state the layout can size, or it abstains; the all-attention
+            # control carries no state keys, since keys without a map abstain too.
+            fields.update(
+                {
+                    "kda.ssm.inner_size": 64,
+                    "kda.ssm.state_size": 8,
+                    "kda.ssm.conv_kernel": 4,
+                    "kda.ssm.group_count": 1,
+                }
+            )
+
+        class _F:
+            def __init__(self, v):
+                self.v = v
+
+            def contents(self):
+                return self.v
+
+        class _T:
+            def __init__(self, i):
+                self.name = f"blk.{i}.attn_q.weight"
+                self.n_bytes = 1024
+
+        class _R:
+            tensors = tuple(_T(i) for i in range(6))
+
+            def __init__(self):
+                self.fields = {k: _F(v) for k, v in fields.items()}
+
+        return _R()
+
+    layout = OL._layout_from_reader(reader([4, 0, 4, 0, 4, 4]))
+    assert layout.n_layers == 6
+    assert layout.n_attention_layers == 4
+    assert layout.kv_bytes_per_token_f16 == 16 * (32 + 32) * 2
+    plain = OL._layout_from_reader(reader([4, 4, 4, 4, 4, 4]))
+    assert plain.n_attention_layers == 6
+    assert plain.kv_bytes_per_token_f16 == 24 * (32 + 32) * 2
+
+
+def test_the_gate_scores_the_same_request_after_rung_1_lowers_the_slots(monkeypatch):
+    """A request does not get longer because the server takes fewer at once.
+
+    At ``min_penalty_reduction = 0`` because the fitter grades its MoE boundary block, so on this
+    layout it ties with rung 1 and the default margin would decline before ``rank`` is reached.
+    """
+    from core.inference import offload_planner as planner
+
+    layout = graded_moe()
+    ctx = 4096
+    floor = GIB
+    table = {2: floor, 1: floor // 2}
+    from core.inference.offload_planner import all_resident_bytes
+
+    needed = all_resident_bytes(layout, ctx, kv_bytes_floor = floor, n_seq = 2)
+    short = (floor // 2 + layout.recurrent_bytes) + layout.blocks[0].ffn_down_bytes // 2
+    card = needed + GIB - short
+    seen = []
+    real = planner.rank
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("n_prompt"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(planner, "rank", spy)
+    base = dict(
+        overhead_bytes_per_device = GIB,
+        overhead_bytes_per_token = 0,
+        n_parallel = 2,
+        kv_bytes_floor_by_parallel = table,
+        require_cost_win = True,
+        min_penalty_reduction = 0.0,
+        workload_prompt_tokens = 1024,
+    )
+    plan = plan_placement(layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base))
+    assert plan.n_parallel == 1, plan.reason
+    assert seen and seen[-1] == 1024, seen
+    seen.clear()
+    plan_placement(
+        layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base, kv_unified = True)
+    )
+    assert seen and seen[-1] == 1024, seen
+    seen.clear()
+    wide = dict(base, workload_prompt_tokens = 8192, min_parallel = 2)
+    plan_placement(layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**wide))
+    assert seen and seen[-1] == ctx // 2, seen
+    seen.clear()
+    plan_placement(
+        layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**wide, kv_unified = True)
+    )
+    assert seen and seen[-1] == ctx, seen
+
+
+def test_a_repeated_rung_class_is_walked_once():
+    """Every rung pass re-reads its units from the layout, so an order naming a class twice took
+    the same tensors toward the deficit twice while the pattern names them once."""
+    layout = graded_moe()
+    dup = (SpillClass.FFN_DOWN, SpillClass.FFN_DOWN, SpillClass.FFN_UP, SpillClass.FFN_GATE)
+    clean = (SpillClass.FFN_DOWN, SpillClass.FFN_UP, SpillClass.FFN_GATE)
+    plan = plan_placement(layout, [14 * GIB], 94 * GIB, 8192, opts = opts(ffn_rung_order = dup))
+    ref = plan_placement(layout, [14 * GIB], 94 * GIB, 8192, opts = opts(ffn_rung_order = clean))
+    assert plan.spills_anything
+    assert plan.ot_patterns == ref.ot_patterns
+    assert moved_bytes(plan, layout) >= deficit_of(layout, 14)
+
+
+def test_an_interval_hybrid_sums_the_attention_rows_of_its_per_layer_vector():
+    """A hybrid naming both full_attention_interval and a per-layer head_count_kv vector keeps
+    zeros on its recurrent rows, so truncating to the first n_attention entries sums mostly
+    zeros."""
+    from core.inference import offload_layout as OL
+
+    fields = {
+        "general.architecture": "kda",
+        "kda.block_count": 6,
+        "kda.full_attention_interval": 2,
+        "kda.attention.head_count_kv": [4, 0, 4, 0, 4, 0],
+        "kda.attention.head_count": 8,
+        "kda.embedding_length": 256,
+        "kda.attention.key_length": 32,
+        "kda.attention.value_length": 32,
+        # Zero-head rows need a state the layout can size, or it abstains.
+        "kda.ssm.inner_size": 64,
+        "kda.ssm.state_size": 8,
+        "kda.ssm.conv_kernel": 4,
+        "kda.ssm.group_count": 1,
+    }
+
+    class _F:
+        def __init__(self, v):
+            self.v = v
+
+        def contents(self):
+            return self.v
+
+    class _T:
+        def __init__(self, i):
+            self.name = f"blk.{i}.attn_q.weight"
+            self.n_bytes = 1024
+
+    class _R:
+        tensors = tuple(_T(i) for i in range(6))
+
+        def __init__(self):
+            self.fields = {k: _F(v) for k, v in fields.items()}
+
+    layout = OL._layout_from_reader(_R())
+    assert layout.n_attention_layers == 3
+    assert layout.kv_bytes_per_token_f16 == 12 * (32 + 32) * 2
+
+
+def test_the_gate_scores_a_reduced_slot_plan_at_the_micro_batch_it_launches(monkeypatch):
+    """The emitted batch floor follows the slot count, so a plan rung 1 reduced launches at a
+    smaller micro-batch than the caller's; scored at the caller's, its prefill stream was priced
+    at twice its real size. At ``min_penalty_reduction = 0`` for the reason above.
+    """
+    from core.inference import offload_planner as planner
+
+    layout = graded_moe()
+    ctx = 4096
+    floor = GIB
+    table = {2: floor, 1: floor // 2}
+    from core.inference.offload_planner import all_resident_bytes
+
+    needed = all_resident_bytes(layout, ctx, kv_bytes_floor = floor, n_seq = 2)
+    short = (floor // 2 + layout.recurrent_bytes) + layout.blocks[0].ffn_down_bytes // 2
+    card = needed + GIB - short
+    seen = []
+    real = planner.rank
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("n_ubatch"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(planner, "rank", spy)
+    base = dict(
+        overhead_bytes_per_device = GIB,
+        overhead_bytes_per_token = 0,
+        n_parallel = 2,
+        kv_bytes_floor_by_parallel = table,
+        require_cost_win = True,
+        min_penalty_reduction = 0.0,
+        n_ubatch = 256,
+    )
+    plan = plan_placement(
+        layout,
+        [card],
+        64 * GIB,
+        ctx,
+        kv_bytes_floor = floor,
+        opts = opts(**base, n_ubatch_by_parallel = {2: 256, 1: 64}),
+    )
+    assert plan.n_parallel == 1, plan.reason
+    assert seen and seen[-1] == 64, seen
+    seen.clear()
+    plan_placement(layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base))
+    assert seen and seen[-1] == 256, seen
+
+
+def test_the_slot_rung_keeps_the_slots_it_cannot_buy_anything_with():
+    """A slot the cache does not shrink for is concurrency given up for nothing: a flat floor
+    map, and --kv-unified with no recurrent state, both hold the cache at the caller's count.
+
+    The unified case carries the FLAT map, since a unified cache is not slot-flat (window cells
+    are priced per slot) and a map that falls with the count is a measurement rung 1 may act on.
+    """
+    from core.inference.offload_planner import all_resident_bytes
+
+    layout = graded_moe()
+    ctx, floor = 4096, GIB
+    flat = {4: floor, 3: floor, 2: floor, 1: floor}
+    needed = all_resident_bytes(layout, ctx, kv_bytes_floor = floor, n_seq = 4)
+    card = needed + GIB - 3 * layout.blocks[0].ffn_down_bytes
+    base = dict(overhead_bytes_per_device = GIB, overhead_bytes_per_token = 0, n_parallel = 4)
+    for extra in (
+        dict(kv_bytes_floor_by_parallel = flat),
+        dict(kv_bytes_floor_by_parallel = flat, kv_unified = True),
+    ):
+        pinned = plan_placement(
+            layout,
+            [card],
+            64 * GIB,
+            ctx,
+            kv_bytes_floor = floor,
+            opts = opts(**base, **extra, min_parallel = 4),
+        )
+        plan = plan_placement(
+            layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base, **extra)
+        )
+        assert plan.spills_anything, plan.reason
+        assert plan.n_parallel == 0, plan.reason
+        assert plan.ot_patterns == pinned.ot_patterns
+        assert plan.host_bytes == pinned.host_bytes
+
+
+def test_the_slot_rung_still_fires_where_a_slot_really_is_a_cache():
+    """With a floor map that falls with the count, one slot fewer still closes a deficit no
+    weight has to move for."""
+    from core.inference.offload_planner import all_resident_bytes
+
+    layout = graded_moe()
+    ctx, floor = 4096, GIB
+    table = {4: floor, 3: 3 * floor // 4, 2: floor // 2, 1: floor // 4}
+    needed = all_resident_bytes(layout, ctx, kv_bytes_floor = floor, n_seq = 4)
+    card = needed + GIB - floor // 4
+    plan = plan_placement(
+        layout,
+        [card],
+        64 * GIB,
+        ctx,
+        kv_bytes_floor = floor,
+        opts = opts(
+            overhead_bytes_per_device = GIB,
+            overhead_bytes_per_token = 0,
+            n_parallel = 4,
+            kv_bytes_floor_by_parallel = table,
+        ),
+    )
+    assert plan.n_parallel == 3 and not plan.ot_patterns, plan.reason
+
+
+def test_a_unified_cache_still_gives_up_slots_for_a_hybrids_recurrent_state():
+    """--kv-unified makes the attention cache flat in the slot count, but the recurrent state is
+    still one copy per sequence, so skipping rung 1 outright under the flag spilled FFN on a
+    hybrid where one slot fewer fitted resident. The no-state control carries a FLAT map.
+    """
+    from dataclasses import replace
+
+    from core.inference.offload_planner import all_resident_bytes
+
+    layout = replace(graded_moe(), recurrent_bytes = GIB)
+    ctx, floor = 4096, GIB
+    needed = all_resident_bytes(layout, ctx, kv_bytes_floor = floor, n_seq = 4)
+    card = needed + GIB - GIB // 2  # one slot's state short
+    base = dict(
+        overhead_bytes_per_device = GIB,
+        overhead_bytes_per_token = 0,
+        n_parallel = 4,
+        kv_unified = True,
+        kv_bytes_floor_by_parallel = {4: floor, 3: 3 * floor // 4, 2: floor // 2, 1: floor // 4},
+    )
+    plan = plan_placement(layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base))
+    assert plan.n_parallel == 3 and not plan.spills_anything, plan.reason
+    plain = graded_moe()
+    short = all_resident_bytes(plain, ctx, kv_bytes_floor = floor, n_seq = 4) + GIB - GIB // 2
+    flat_map = dict(base, kv_bytes_floor_by_parallel = {_p: floor for _p in (1, 2, 3, 4)})
+    flat = plan_placement(
+        plain, [short], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**flat_map)
+    )
+    assert flat.n_parallel in (0, 4) and flat.spills_anything, flat.reason
+
+
+def test_a_unified_windowed_cache_still_shrinks_with_the_slot_count():
+    """--kv-unified does not make the cache slot-flat: the estimator prices ``swa * slots +
+    ubatch`` window cells per stream, so on a gemma-class model it shrinks by roughly 300 MiB per
+    slot, and asking the callable at the caller's count throws that away."""
+    from dataclasses import replace
+
+    from core.inference.offload_planner import all_resident_bytes
+
+    layout = replace(graded_moe(), arch = "gemma3", has_swa = True)
+    ctx, floor, step = 4096, GIB, GIB // 8
+    needed = all_resident_bytes(layout, ctx, kv_bytes_floor = floor, n_seq = 4)
+    card = needed + GIB - step
+    base = dict(
+        overhead_bytes_per_device = GIB,
+        overhead_bytes_per_token = 0,
+        n_parallel = 4,
+        kv_unified = True,
+    )
+    measured = plan_placement(
+        layout,
+        [card],
+        64 * GIB,
+        ctx,
+        kv_bytes_floor = floor,
+        opts = opts(**base, kv_bytes_at = lambda _c, slots: floor - (4 - max(1, slots)) * step),
+    )
+    assert measured.n_parallel == 3 and not measured.spills_anything, measured.reason
+
+    # Nothing measured the smaller count, so only the linear rule is left and it cannot tell
+    # the window cells from the full-context ones: the rung is skipped, as before.
+    blind = plan_placement(layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base))
+    assert blind.n_parallel == 0 and blind.spills_anything, blind.reason
