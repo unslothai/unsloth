@@ -624,7 +624,10 @@ test("opening the panel ticks Remember for any model with a resolvable row", () 
     "\\) \\{",
   ].join("\\s*\\n\\s*");
   assert.match(PANEL, new RegExp(adoptGuard));
-  assert.match(PANEL, /setRemember\(true\);\s*\n\s*setSavedRemember\(true\);/);
+  assert.match(
+    PANEL,
+    /replaceModelConfigDraft\(draftKey, serverConfig, \{\s*remember: true,\s*savedRemember: true,\s*\}\);/,
+  );
   // The write is local only. An erased server field is therefore NOT restored by
   // opening the panel, even though this browser still holds it: that takes a save.
   // Unconditional, because savePerModelConfig expresses "no settings" by deleting

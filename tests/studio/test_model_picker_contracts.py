@@ -490,11 +490,14 @@ def test_active_model_config_round_trips_gpu_fields():
         assert field in src, field
     assert "if (!isGguf)" in src and "return base" in src
     assert "useActiveModelConfig(" in _read("features/chat/chat-page.tsx")
-    # The GPU knobs are in the editor's instance key, so a reload re-seeds instead of keeping.
+    # Live config sync is in the shared draft store; instance keys still remount on signature.
     shared = _read("features/model-picker/model-config/config-signature.ts")
     assert "export function gpuFieldsSignature" in shared
     assert "gpuFieldsSignature(config)," in shared
     assert "export function modelConfigInstanceKey" in shared
+    assert "export function loadedConfigSignature" in shared
+    draft = _read("features/model-picker/model-config/model-config-draft.ts")
+    assert "export function primeModelConfigDraft" in draft
     sidebar = _read("features/model-picker/components/sidebar-model-config.tsx")
     assert "modelConfigInstanceKey(" in sidebar
     # apply-per-model-config re-exports it, so its own callers are unchanged.
@@ -2959,8 +2962,7 @@ def test_public_model_identity_matches_the_backend_for_path_loaded_models():
 
 
 def test_the_sidebar_settings_editor_reseeds_when_the_live_config_lands():
-    """ModelConfigPage reads loadedConfig in a useState initializer, so it seeds once per
-    mounted instance."""
+    """ModelConfigPage primes the shared draft when loadedConfigSignature changes."""
     sidebar = " ".join(_read("features/model-picker/components/sidebar-model-config.tsx").split())
     assert "key={modelConfigInstanceKey(modelId, settingsGgufVariant, loadedConfig)}" in sidebar
 
@@ -2979,7 +2981,8 @@ def test_the_sidebar_settings_editor_reseeds_when_the_live_config_lands():
         assert field in signature, field
 
     page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
-    assert "const [initial] = useState(resolveInitial);" in page, "the rule this mirrors"
+    assert "primeModelConfigDraft(" in page
+    assert "loadedConfigSignature(loadedConfig)" in page
 
 
 def test_a_standalone_gguf_has_one_settings_identity_in_the_picker():

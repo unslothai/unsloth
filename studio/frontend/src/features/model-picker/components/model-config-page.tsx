@@ -55,8 +55,11 @@ import { toast } from "@/lib/toast";
 import {
   type ReactNode,
   type Ref,
+  type SetStateAction,
+  useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -99,6 +102,20 @@ import {
   useModelMaxPositionEmbeddings,
 } from "../hooks/use-model-defaults";
 import { perModelConfigsEqual } from "../model-config/apply-per-model-config";
+import {
+  extraArgsHydrationIdentityForDraft,
+  markExtraArgsHydratedForDraft,
+  modelConfigDraftKey,
+  patchModelConfigDraft,
+  primeModelConfigDraft,
+  readModelConfigDraft,
+  replaceModelConfigDraft,
+  resetExtraArgsHydrationForDraft,
+  setModelConfigDraftRemember,
+  setModelConfigDraftSavedRemember,
+  subscribeModelConfigDraft,
+} from "../model-config/model-config-draft";
+import { loadedConfigSignature } from "../model-config/config-signature";
 import { ggufQuantLabel } from "../model-config/model-identity";
 import {
   CACHE_RAM_LLAMA_DEFAULT,
@@ -1800,18 +1817,72 @@ export function ModelConfigPage({
     }
     return resolved;
   };
-  const [initial] = useState(resolveInitial);
-  const [configState, setConfig] = useState<PerModelConfig>(() =>
-    reconcileConfigGpuSelection(initial.config, isDiffusion, gpuDevices),
+  const draftKey = modelConfigDraftKey(configId, target.ggufVariant);
+  const liveSignature = loadedConfigSignature(loadedConfig);
+  useLayoutEffect(() => {
+    const resolved = resolveInitial();
+    primeModelConfigDraft(
+      draftKey,
+      {
+        config: reconcileConfigGpuSelection(
+          resolved.config,
+          isDiffusion,
+          gpuDevices,
+        ),
+        remembered: resolved.remembered,
+      },
+      liveSignature,
+    );
+  }, [
+    draftKey,
+    liveSignature,
+    configId,
+    target.ggufVariant,
+    loadedConfig,
+    initialConfig,
+    isDiffusion,
+    gpuDevices,
+  ]);
+  const draftSnapshot = useSyncExternalStore(
+    subscribeModelConfigDraft,
+    () => readModelConfigDraft(draftKey),
   );
+  const initialFallback = useMemo(
+    () => resolveInitial(),
+    [configId, target.ggufVariant, loadedConfig, initialConfig],
+  );
+  const configState =
+    draftSnapshot?.config ??
+    reconcileConfigGpuSelection(initialFallback.config, isDiffusion, gpuDevices);
+  const remember = draftSnapshot?.remember ?? initialFallback.remembered;
+  const savedRemember =
+    draftSnapshot?.savedRemember ?? initialFallback.remembered;
   // The live config, for the async reads below: an effect that closed over it would hold
   // whatever it was when the request started.
   const configRef = useRef(configState);
   configRef.current = configState;
-  const [remember, setRemember] = useState(() => initial.remembered);
-  const [savedRemember, setSavedRemember] = useState(() => initial.remembered);
   const rememberRef = useRef(remember);
   rememberRef.current = remember;
+  const setConfig = useCallback(
+    (action: SetStateAction<PerModelConfig>) => {
+      patchModelConfigDraft(draftKey, (current) =>
+        typeof action === "function" ? action(current) : { ...current, ...action },
+      );
+    },
+    [draftKey],
+  );
+  const setRemember = useCallback(
+    (value: boolean) => {
+      setModelConfigDraftRemember(draftKey, value);
+    },
+    [draftKey],
+  );
+  const setSavedRemember = useCallback(
+    (value: boolean) => {
+      setModelConfigDraftSavedRemember(draftKey, value);
+    },
+    [draftKey],
+  );
   const [speculativeFallback] = useState(readPersistedSpeculativeType);
   // Same substitution as speculativeFallback: only "manual" is persisted per model, so an absent
   // mode means "follow the standing preference" rather than Auto, and pricing the absence as
@@ -1833,7 +1904,8 @@ export function ModelConfigPage({
   useEffect(() => {
     setExtraArgsLoadable(true);
     setExtraArgsHydrating(target.isGguf && !isDiffusion);
-  }, [configId, target.ggufVariant, target.isGguf, isDiffusion]);
+    resetExtraArgsHydrationForDraft(draftKey);
+  }, [configId, target.ggufVariant, target.isGguf, isDiffusion, draftKey]);
 
   // Compare against what the backend was asked for, not what it applied: staging a new value
   // must retire a verdict that answered a different request.
@@ -2035,7 +2107,6 @@ export function ModelConfigPage({
   // The server copy is shared by Desktop, LAN, and tunnel origins, so hydrate the whole
   // remembered GGUF config here; localStorage is only the immediate seed. This also runs while
   // Advanced is closed, since extra arguments affect every load.
-  const extraArgsHydrated = useRef<string | null>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: the model is the identity
   useEffect(() => {
     if (!target.isGguf || resolvedIsDiffusion) {
@@ -2062,7 +2133,7 @@ export function ModelConfigPage({
     ].filter((key, index, all) => all.indexOf(key) === index);
     // Joined because an array literal is a new value on every render.
     const identity = keys.join("\u0000");
-    if (extraArgsHydrated.current === identity) {
+    if (extraArgsHydrationIdentityForDraft(draftKey) === identity) {
       setExtraArgsHydrating(false);
       return;
     }
@@ -2089,7 +2160,7 @@ export function ModelConfigPage({
         if (cancelled) {
           return;
         }
-        extraArgsHydrated.current = identity;
+        markExtraArgsHydratedForDraft(draftKey, identity);
         const resolvedArgs = {
           tokens: resolvedOverride?.llama_extra_args ?? [],
           explicit: Array.isArray(resolvedOverride?.llama_extra_args),
@@ -2194,9 +2265,10 @@ export function ModelConfigPage({
             return;
           }
           setExtraArgsLoadable(hydratedIsLoadable);
-          setConfig(serverConfig);
-          setRemember(true);
-          setSavedRemember(true);
+          replaceModelConfigDraft(draftKey, serverConfig, {
+            remember: true,
+            savedRemember: true,
+          });
           if (hasNonDefaultAdvanced(serverConfig)) {
             setAutoOpenAdvanced(true);
           }
@@ -2286,6 +2358,7 @@ export function ModelConfigPage({
     target.ggufVariant,
     target.isGguf,
     resolvedIsDiffusion,
+    draftKey,
   ]);
   const config = reconcileConfigGpuSelection(
     configState,
