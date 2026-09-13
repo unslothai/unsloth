@@ -598,6 +598,24 @@ _probe_uv_cache_writable() {
     return 0
 }
 
+# uv unpacks distributions INTO the buckets, not just the cache root, so a root-only probe
+# passes on a cache uv then cannot use. Measured with uv 0.10.7: a 0555 archive-* bucket under a
+# writable root aborts the install with "failed to rename ... Permission denied (os error 13)".
+# Only an inferred cache needs this; a Studio cache we are about to create has no buckets yet.
+_probe_uv_cache_usable() {
+    _probe_uv_cache_writable "$1" || return 1
+    for _uv_probe_bucket in "$1"/archive-* "$1"/builds-* "$1"/built-wheels-* \
+        "$1"/wheels-* "$1"/sdists-*; do
+        [ -d "$_uv_probe_bucket" ] || continue
+        if ! _probe_uv_cache_writable "$_uv_probe_bucket"; then
+            unset _uv_probe_bucket
+            return 1
+        fi
+    done
+    unset _uv_probe_bucket
+    return 0
+}
+
 _record_uv_cache_choice() {
     # In place, before anything reads it: every branch records, so this is the one point every phase of the install and the marker are made to agree on one directory.
     _absolutize_uv_cache_dir
@@ -736,7 +754,7 @@ _configure_uv_cache() {
 
     # Warm is not enough: uv aborts on a cache it cannot write (a preseeded image, an NFS mount).
     _uv_default_readonly=false
-    if [ "$_uv_default_populated" = true ] && ! _probe_uv_cache_writable "$_uv_default_cache"; then
+    if [ "$_uv_default_populated" = true ] && ! _probe_uv_cache_usable "$_uv_default_cache"; then
         _uv_default_populated=false
         _uv_default_readonly=true
     fi

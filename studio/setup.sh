@@ -991,6 +991,23 @@ _uv_cache_probe_writable() {
     return 0
 }
 
+_uv_cache_usable() {
+    # uv unpacks INTO the buckets, so a root-only probe passes on a cache uv then cannot use:
+    # with uv 0.10.7 a 0555 archive-* under a writable root aborts with "failed to rename".
+    # install.sh's _probe_uv_cache_usable is the same check on the same bucket list.
+    _uv_cache_probe_writable "$1" || return 1
+    for _uvu_bucket in "$1"/archive-* "$1"/builds-* "$1"/built-wheels-* \
+        "$1"/wheels-* "$1"/sdists-*; do
+        [ -d "$_uvu_bucket" ] || continue
+        if ! _uv_cache_probe_writable "$_uvu_bucket"; then
+            unset _uvu_bucket
+            return 1
+        fi
+    done
+    unset _uvu_bucket
+    return 0
+}
+
 _uv_cache_warm() {
     # Package BYTES, not metadata (wheels-* is .msgpack/.http after a bare resolve). Mirrors
     # install.sh's scan and unsloth_cli's _uv_cache_has_packages.
@@ -1063,7 +1080,7 @@ else
     _uv_recorded=$(_recorded_uv_cache && printf x) || _uv_recorded=""
     _uv_recorded=${_uv_recorded%x}
     if [ -n "$_uv_recorded" ] && _uv_cache_warm "$_uv_recorded" \
-       && _uv_cache_probe_writable "$_uv_recorded"; then
+       && _uv_cache_usable "$_uv_recorded"; then
         # Only while it holds packages and uv can write to it: an emptied cache would refetch
         # everything, and uv aborts on a read-only one (a share remounted since the install).
         UV_CACHE_DIR="$_uv_recorded"

@@ -15,12 +15,13 @@ HELPERS=$(awk '
     /^_absolutize_uv_cache_dir\(\) \{/ { grab = 1 }
     /^_restore_uv_cache_marker\(\) \{/ { grab = 1 }
     /^_probe_uv_cache_writable\(\) \{/ { grab = 1 }
+    /^_probe_uv_cache_usable\(\) \{/ { grab = 1 }
     /^_default_uv_cache_early\(\) \{/ { grab = 1 }
     grab { print }
     grab && /^}/ { grab = 0 }
 ' "$INSTALL_SH")
 for _helper in _configure_uv_cache _prepare_studio_uv_cache_for_launch _record_uv_cache_choice \
-    _restore_uv_cache_marker _absolutize_uv_cache_dir _probe_uv_cache_writable \
+    _restore_uv_cache_marker _absolutize_uv_cache_dir _probe_uv_cache_writable _probe_uv_cache_usable \
     _default_uv_cache_early; do
     if ! printf '%s\n' "$HELPERS" | grep -q "^${_helper}() {"; then
         echo "  FAIL: could not extract $_helper from install.sh"
@@ -547,6 +548,22 @@ ISOLATED
             bad "$shell: isolation with an unwritable Studio cache gave [$_iso_actual], wanted [default|]"
         fi
         chmod 755 "$RO_ROOT/cache" 2>/dev/null || true
+    fi
+
+    # A writable ROOT is not a usable cache: uv unpacks distributions into the buckets, so a
+    # root-only probe passes on a cache uv then aborts on. Measured with uv 0.10.7, a 0555
+    # archive-* under a writable root gives "failed to rename ... Permission denied (os error
+    # 13)" and exit 1. Only this branch made it reachable on POSIX, so it is this branch's to
+    # keep out: before it, a POSIX install never selected an inferred cache at all.
+    BUCKET_RO="$CASE/bucket-blocked cache/uv"
+    mkdir -p "$BUCKET_RO/archive-v0/pkg"
+    : > "$BUCKET_RO/archive-v0/pkg/payload.whl"
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 0555 "$BUCKET_RO/archive-v0" 2>/dev/null; then
+        run_case "$shell" "a warm cache with an unwritable bucket is not adopted" unset "" false \
+            "$HOME_DIR" unset "" "$ROOT" "$BUCKET_RO" "$STUDIO_CACHE" studio \
+            "using new Studio-owned cache ($STUDIO_CACHE); $BUCKET_RO holds packages but is not writable, so cached packages may download again" \
+            "$STUDIO_CACHE"
+        chmod 0755 "$BUCKET_RO/archive-v0" 2>/dev/null || true
     fi
 
     # A relative uv.toml cache-dir resolves against UV_WORKING_DIR, not the installer's cwd.

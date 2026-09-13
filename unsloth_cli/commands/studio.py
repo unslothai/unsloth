@@ -3312,12 +3312,21 @@ def _backfill_uv_cache_marker(env: Optional[dict]) -> None:
 
 def _uv_cache_is_writable(cache_dir: Path) -> bool:
     """A real create, as install.sh's write probe does: mode bits do not answer for a network mount, and uv aborts on a cache it
-    cannot write rather than falling back."""
-    try:
-        with tempfile.NamedTemporaryFile(dir = cache_dir, prefix = ".unsloth-write-probe."):
-            pass
-    except OSError:
-        return False
+    cannot write rather than falling back.
+
+    The buckets too, not just the root: uv unpacks distributions into them, so a root-only probe
+    passes on a cache uv then cannot use. Measured with uv 0.10.7, a 0555 archive-* bucket under a
+    writable root aborts with "failed to rename ... Permission denied". Mirrors install.sh's
+    _probe_uv_cache_usable and setup.sh's _uv_cache_usable over the same bucket list."""
+    probes = [cache_dir]
+    for pattern in ("archive-*", "builds-*", "built-wheels-*", "wheels-*", "sdists-*"):
+        probes.extend(p for p in cache_dir.glob(pattern) if p.is_dir())
+    for target in probes:
+        try:
+            with tempfile.NamedTemporaryFile(dir = target, prefix = ".unsloth-write-probe."):
+                pass
+        except OSError:
+            return False
     return True
 
 
