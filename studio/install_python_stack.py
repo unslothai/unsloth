@@ -7864,7 +7864,11 @@ def _mlx_closure_unmet() -> bool:
     try:
         import tempfile as _tempfile  # noqa: PLC0415
 
-        handle = Path(_tempfile.mkstemp(prefix = "unsloth-mlx-", suffix = ".txt", text = True)[1])
+        # mkstemp hands back an OPEN descriptor. Left open it leaks one per update, and on
+        # Windows it also holds the file, so the unlink below cannot clear it.
+        _fd, _name = _tempfile.mkstemp(prefix = "unsloth-mlx-", suffix = ".txt", text = True)
+        os.close(_fd)
+        handle = Path(_name)
         handle.write_text("\n".join([*_MLX_PINS, _MLX_VLM_SPEC]) + "\n", encoding = "utf-8")
         unmet = install_manifest.closure_unmet_requirements(handle, _installed_index())
     except Exception:  # noqa: BLE001 - an audit that cannot run is a reason to run the step

@@ -754,8 +754,12 @@ def test_a_filename_that_is_not_utf_8_still_digests(tmp_path) -> None:
     plugin.mkdir()
     (plugin / "ok.py").write_text("x\n", encoding = "utf-8")
     odd = os.path.join(str(plugin), b"\xff.txt".decode("utf-8", "surrogateescape"))
-    with open(odd, "wb") as handle:
-        handle.write(b"x")
+    try:
+        with open(odd, "wb") as handle:
+            handle.write(b"x")
+    except OSError:
+        # APFS and other filesystems enforce UTF-8 names, so there is nothing to test here.
+        pytest.skip("this filesystem refuses filenames that are not UTF-8")
     digest = stack._local_plugin_digest(plugin)
     assert digest and stack._local_plugin_digest(plugin) == digest
 
