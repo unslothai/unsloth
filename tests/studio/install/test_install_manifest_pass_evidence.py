@@ -211,6 +211,39 @@ def test_the_manifest_lock_is_exclusive_across_processes(tmp_path: pathlib.Path)
     assert order.read_text(encoding = "utf-8").split() == ["child-released", "parent-acquired"]
 
 
+def test_a_stuck_peer_does_not_wedge_the_lock(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """A process suspended or stopped while holding the lock must not stop every later
+    update: after the wait the writer goes ahead unserialised, which is what shipped before
+    the lock existed. Windows does this on its own (msvcrt's LK_LOCK gives up); POSIX flock
+    waits forever unless asked not to."""
+    monkeypatch.setattr(im, "LOCK_WAIT_SECONDS", 0.3)
+    holder = "\n".join([
+        "import sys, time, pathlib",
+        f"sys.path.insert(0, {str(pathlib.Path(im.__file__).resolve().parent)!r})",
+        "import install_manifest as im",
+        f"with im._manifest_lock(pathlib.Path({str(tmp_path)!r})):",
+        f"    pathlib.Path({str(tmp_path / 'held')!r}).write_text('1', encoding='utf-8')",
+        "    time.sleep(30)",
+    ])
+    child = subprocess.Popen([sys.executable, "-c", holder])
+    try:
+        held = tmp_path / "held"
+        deadline = time.time() + 20
+        while not held.exists() and time.time() < deadline:
+            time.sleep(0.02)
+        assert held.exists(), "the child never took the lock"
+        started = time.monotonic()
+        with im._manifest_lock(tmp_path):
+            pass
+        waited = time.monotonic() - started
+        assert waited < 10, f"waited {waited:.1f}s on a peer that never lets go"
+        # ...and the writers still answer while that peer holds it.
+        assert im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+    finally:
+        child.kill()
+        child.wait(timeout = 30)
+
+
 def test_every_manifest_writer_takes_the_lock() -> None:
     """A writer outside it reintroduces the race the lock exists for, and nothing in the
     payloads themselves would show it."""

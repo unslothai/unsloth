@@ -39,6 +39,10 @@ PREVIOUS_MANIFEST_NAME = "unsloth_install_manifest.previous.json"
 # without this, one updater's replace can land between another's remove and its mutations, and
 # recreate a completion marker over a half-built venv.
 LOCK_NAME = "unsloth_install_manifest.lock"
+# How long a writer waits for a peer before going ahead unserialised. Matches what msvcrt's
+# LK_LOCK does on Windows: a peer suspended or killed while holding the lock must not wedge
+# every later update, and the work these writers do is measured in milliseconds.
+LOCK_WAIT_SECONDS = 10.0
 MANIFEST_SCHEMA = 1
 
 # Canonical truthy set for UNSLOTH_NO_TORCH, matching install.ps1 / install.sh.
@@ -323,8 +327,19 @@ def _manifest_lock(root: Optional[Path] = None):
     if handle is not None:
         try:
             import fcntl  # noqa: PLC0415 - POSIX only, and absent on Windows
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            locked = True
+            # Non-blocking with a deadline, never a bare LOCK_EX: that waits forever on a peer
+            # suspended or stopped while holding it, which is the one thing this must not do
+            # to an update.
+            deadline = time.monotonic() + LOCK_WAIT_SECONDS
+            while True:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.02)
         except ImportError:
             try:
                 import msvcrt  # noqa: PLC0415 - the Windows half of the same thing
