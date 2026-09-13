@@ -283,3 +283,89 @@ def test_a_linux_legacy_install_is_covered_by_its_preflight_instead(tmp_path, mo
     )
     helpers.existing_install_matches_plan(install_dir, host, plan)
     assert probed == [], "Linux paid a --version spawn its ldd preflight already covers"
+
+
+def test_a_marker_that_vanishes_between_the_two_reads_does_not_crash(tmp_path, monkeypatch):
+    """_backfill_fingerprint_inputs reads the marker a second time.
+
+    Another installer swapping the tree in between leaves None, and the old code called
+    .get on it. The backfill has nothing to catch up at that point, so falling out is the
+    answer -- the run that replaced the tree wrote its own marker.
+    """
+    calls = []
+
+    class Ops:
+        def load_prebuilt_metadata(self, install_dir):
+            # Present for _kept_marker_patch's read, gone for the backfill's.
+            calls.append(1)
+            return {"install_fingerprint": "abc"} if len(calls) == 1 else None
+
+        def metadata_path(self, install_dir):
+            return tmp_path / "MARKER.json"
+
+    selection = type(
+        "Sel",
+        (),
+        {
+            "coverage": {"min_os": None},
+            "walk_back": None,
+            "platform_os": "linux",
+            "platform_arch": "x64",
+            "fingerprint": lambda self: "abc",
+        },
+    )()
+
+    monkeypatch.setattr(CORE, "_kept_marker_patch", lambda ops, d, s: {"fingerprint_coverage": {}})
+    # The bug was an AttributeError here, not a wrong answer.
+    CORE._backfill_fingerprint_inputs(Ops(), tmp_path, selection)
+
+
+def test_a_blocked_marker_swap_is_retried_then_reported(tmp_path, monkeypatch):
+    """Rename-over needs DELETE access on the destination, so a scanner holding the marker
+    open fails the swap where the in-place write this replaced would have succeeded."""
+    source = tmp_path / "tmp-marker"
+    source.write_text("{}", encoding = "utf-8")
+    destination = tmp_path / "MARKER.json"
+
+    blocked = OSError(13, "in use")
+    blocked.winerror = 32
+    attempts = []
+
+    def blocked_then_ok(src, dst):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise blocked
+        Path(src).rename(dst)
+
+    # Pose as Windows by swapping the MODULE's os reference, never os.name itself: pathlib
+    # reads os.name at runtime, so setting it globally turns every path in the process into a
+    # backslash one and the rename fails for an entirely unrelated reason.
+    class FakeOs:
+        name = "nt"
+        replace = staticmethod(blocked_then_ok)
+
+        def __getattr__(self, item):
+            return getattr(os, item)
+
+    monkeypatch.setattr(CORE, "os", FakeOs())
+    monkeypatch.setattr(CORE.time, "sleep", lambda _s: None)
+
+    CORE.atomic_replace_from_tempfile(source, destination)
+    assert len(attempts) == 3, "the blocked swap was not retried"
+    assert destination.is_file()
+
+
+def test_a_swap_blocked_for_any_other_reason_raises_at_once(tmp_path, monkeypatch):
+    """A real problem must not be turned into an eight-step stall."""
+    source = tmp_path / "tmp-marker"
+    source.write_text("{}", encoding = "utf-8")
+    attempts = []
+
+    def replace(src, dst):
+        attempts.append(1)
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(CORE.os, "replace", replace)
+    with pytest.raises(OSError):
+        CORE.atomic_replace_from_tempfile(source, tmp_path / "MARKER.json")
+    assert len(attempts) == 1, "a non-transient failure was retried"

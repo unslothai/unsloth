@@ -471,9 +471,33 @@ def atomic_write_bytes(destination: Path, data: bytes) -> None:
     os.replace(tmp_path, destination)
 
 
-def atomic_replace_from_tempfile(tmp_path: Path, destination: Path) -> None:
+def atomic_replace_from_tempfile(
+    tmp_path: Path,
+    destination: Path,
+    *,
+    attempts: int = 8,
+) -> None:
+    """os.replace, retried against transient Windows sharing violations.
+
+    Rename-over needs DELETE access on the destination, so a scanner or the indexer holding the
+    marker open fails the swap outright -- where the in-place write this replaced would only
+    have contended for write access. Handles clear in a second or two, so a bounded backoff
+    turns the failure into a pause; anything else raises at once rather than stalling on a real
+    problem. A no-op off Windows, where the rename does not care about open handles.
+    """
     destination.parent.mkdir(parents = True, exist_ok = True)
-    os.replace(tmp_path, destination)
+    delay = 0.25
+    for attempt in range(attempts):
+        try:
+            os.replace(tmp_path, destination)
+            return
+        except OSError as exc:
+            transient = os.name == "nt" and getattr(exc, "winerror", None) in (5, 32, 145)
+            if not transient or attempt == attempts - 1:
+                raise
+            log(f"marker swap blocked ({exc.winerror}), retrying in {delay:.2f}s")
+            time.sleep(delay)
+            delay = min(delay * 2, 4.0)
 
 
 def write_live_marker(marker_path: Path, marker: dict[str, Any]) -> None:
@@ -2330,6 +2354,11 @@ def _backfill_fingerprint_inputs(
     if not patch:
         return
     metadata = ops.load_prebuilt_metadata(install_dir)
+    # _kept_marker_patch read the marker a moment ago, but this is a second read: another
+    # installer swapping the tree in between leaves None here, and the backfill has nothing to
+    # catch up. Falling out is right -- the run that replaced the tree wrote its own marker.
+    if not metadata:
+        return
     if metadata.get("install_fingerprint") != selection.fingerprint():
         return
     for key, value in patch.items():

@@ -261,8 +261,11 @@ def fetch_json(url: str) -> object:
 
 
 def atomic_replace_from_tempfile(tmp_path: Path, destination: Path) -> None:
+    # Through the same retry the directory renames use: rename-over needs DELETE access on the
+    # destination, so a scanner holding the marker open fails the swap outright, where the
+    # write_text this replaced would only have contended for write access. A no-op off Windows.
     destination.parent.mkdir(parents = True, exist_ok = True)
-    os.replace(tmp_path, destination)
+    _replace_with_retry(tmp_path, destination)
 
 
 def download_file(url: str, destination: Path) -> None:
