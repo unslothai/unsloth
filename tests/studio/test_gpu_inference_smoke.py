@@ -14,6 +14,8 @@ check, not a benchmark. Select/deselect it by name, e.g. `-k gpu_generation`.
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -25,6 +27,34 @@ MODEL_ID = "unsloth/gemma-3-270m-it"
 # stay a few seconds.
 MIN_NEW_TOKENS = 4
 MAX_NEW_TOKENS = 16
+# The hub fetch below is bounded. A connection that is merely slow, rather than failing, would
+# otherwise block a self-hosted GPU runner indefinitely, and --timeout cannot interrupt a
+# blocked socket read. The contract here is to skip when the model is not reachable.
+FETCH_TIMEOUT_SECONDS = 300
+
+
+def _with_deadline(fn, timeout):
+    """Run fn on a daemon thread so a stalled hub connection ends with the deadline.
+
+    ThreadPoolExecutor joins its workers at interpreter exit, which would move the hang to
+    teardown rather than remove it.
+    """
+    box = {}
+
+    def run():
+        try:
+            box["result"] = fn()
+        except BaseException as exc:  # re-raised on the test thread below
+            box["error"] = exc
+
+    thread = threading.Thread(target = run, daemon = True)
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        raise TimeoutError(f"timed out after {timeout}s")
+    if "error" in box:
+        raise box["error"]
+    return box["result"]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "requires a CUDA GPU")
@@ -37,10 +67,16 @@ def test_gpu_generation_smoke():
     # Gemma is numerically unstable in fp16 (it emits only <pad>); use bf16 where supported, else fp32. The model is
     # tiny, so fp32 is still fast.
     dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float32
-    try:
+
+    def load():
         tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
         model = AutoModelForCausalLM.from_pretrained(MODEL_ID, dtype = dtype).to("cuda")
-    except Exception as exc:  # offline / gated / download failure is not a code defect
+        return tokenizer, model
+
+    try:
+        # offline / gated / slow hub access is not a code defect
+        tokenizer, model = _with_deadline(load, FETCH_TIMEOUT_SECONDS)
+    except Exception as exc:
         pytest.skip(f"could not fetch/load {MODEL_ID}: {exc}")
 
     model.eval()
