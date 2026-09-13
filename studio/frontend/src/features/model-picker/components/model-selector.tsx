@@ -38,7 +38,7 @@ import {
   modelConfigTargetIsResident,
   modelConfigTargetMatchesSelection,
 } from "../model-config/model-config-handoff";
-import { modelConfigInstanceKey } from "../model-config/config-signature";
+import { modelConfigEditorKey } from "../model-config/model-config-draft";
 import {
   ggufVariantsMatch,
   modelDisplayName,
@@ -562,10 +562,9 @@ function ModelSelectorContent({
         {visibleConfigTarget ? (
           <div className="min-h-0 w-full overflow-y-auto px-4 pt-4 pb-4">
             <ModelConfigPage
-              key={modelConfigInstanceKey(
+              key={modelConfigEditorKey(
                 visibleConfigTarget.configId ?? visibleConfigTarget.id,
                 visibleConfigTarget.ggufVariant,
-                visibleLoadedConfig,
               )}
               target={visibleConfigTarget}
               onBack={() => setConfigTarget(null)}
