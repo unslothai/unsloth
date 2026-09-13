@@ -210,6 +210,33 @@ def test_failed_call_does_not_block_retry():
     assert retry.action == "execute"
 
 
+def test_re_run_after_an_intervening_call_executes():
+    """`run -> edit_file -> run` must execute the second run: the file changed in between.
+
+    The duplicate guard cannot tell a pointless repeat from a legitimate re-run after a
+    state change, so it only blocks the most recent successful call (#10792). An immediate
+    repeat is still a no-op.
+    """
+    controller = ToolLoopController(tools = [_tool("terminal"), _tool("edit_file")])
+
+    run = controller.prepare_call(_call("terminal", {"command": "python calc.py"}, "call_a"))
+    assert run.should_execute
+    controller.record_result(run, "3")
+
+    edit = controller.prepare_call(_call("edit_file", {"path": "calc.py", "edits": []}, "call_b"))
+    assert edit.should_execute
+    controller.record_result(edit, "ok")
+
+    re_run = controller.prepare_call(_call("terminal", {"command": "python calc.py"}, "call_c"))
+    assert re_run.should_execute
+    assert re_run.action == "execute"
+    controller.record_result(re_run, "5")
+
+    # But an immediate identical repeat of the same call is still a no-op.
+    immediate = controller.prepare_call(_call("terminal", {"command": "python calc.py"}, "call_d"))
+    assert immediate.action == "duplicate"
+
+
 def test_empty_enabled_tool_list_blocks_all_tool_calls():
     controller = ToolLoopController(tools = [])
     decision = controller.prepare_call(_call("web_search", {"query": "gpu prices"}))
