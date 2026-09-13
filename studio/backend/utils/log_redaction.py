@@ -14,15 +14,13 @@ import re
 
 REDACTED = "<redacted>"
 
-# Terminal control sequences, stripped BEFORE anything is matched. A colorized writer puts an escape between a key and its value, and the "m" ending a colour code is a word character, so without this every anchored rule below stops matching. ECMA-48 5.4 (CSI) and 5.6 (OSC / DCS / SOS / PM / APC).
-# This used to be one alternation with lazy `[\s\S]*?` bodies, and it backtracked: an introducer with no terminator scanned to the end of the record, failed, fell through to the single character Fe branch, and the engine retried from the next position. Every introducer therefore paid a full scan of everything after it, so the cost grew with the SQUARE of the record length. On characters of U+009D: 40k took 18.5s and 80k took 72.9s, against 0.0008s for 40k of ordinary text. That is reachable without an attacker: a log rotated mid sequence leaves an unterminated introducer behind, as does any writer whose output is cut, U+009D is ordinary UTF-8 (\xc2\x9d), and debug_log_reader hands this whole lines once a second while the Logs tab is open.
-# The semantics were never the problem, the retry was. A lazy scan that FINDS its terminator already succeeds in one pass; only the failing one rescans. So the walk below answers "the earliest terminator at or after k" with a monotonic str.find cache instead of a rescan, which is O(n) for the record, and is otherwise the same machine: same alternatives, same order, same lazy shortest-match, same fallthrough. It is deliberately byte for byte identical to the old pattern on every input, verified by differential fuzzing, because a redactor is the wrong place to smuggle a behaviour change into a performance fix.
+# Stripped BEFORE anything is matched: a colorized writer puts an escape between a key and its value, and the "m" ending a colour code is a word character, so every anchored rule below stops matching. ECMA-48 5.4 (CSI) and 5.6 (OSC / DCS / SOS / PM / APC).
+# _strip_ansi replaces one alternation of lazy `[\s\S]*?` bodies whose FAILURE was quadratic: an unterminated introducer scanned to end of record, failed, and the engine retried from the next position. Its output is identical to that pattern on every input, by differential fuzzing, and must stay so: a redactor is the wrong place to smuggle a behaviour change into a performance fix, and every attempt to also improve the truncated cases moved a leak rather than removing one (unslothai/unsloth#10721).
 _CSI_7BIT_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _CSI_8BIT_RE = re.compile(r"\x9b[0-?]*[ -/]*[@-~]")
-# Fe covers 0x40-0x5F, so it also claims a "]" or a "P" whose control string never terminated. It is tried last for exactly that reason.
+# Fe covers 0x40-0x5F, so it also claims a "]" or "P" whose control string never terminated. Hence tried last.
 _FE_RE = re.compile(r"\x1b[@-Z\\-_]")
 _ANSI_INTRODUCER_RE = re.compile(r"[\x1b\x90\x98\x9b\x9d-\x9f]")
-# The 8 bit control string introducers: OSC, DCS, SOS, PM, APC.
 _C1_STRING_INTRODUCERS = "\x9d\x90\x98\x9e\x9f"
 
 
@@ -35,7 +33,7 @@ def _strip_ansi(text: str) -> str:
     written = 0
     index = first.start()
     length = len(text)
-    # index only moves forward, so each needle's next occurrence can be carried: a cached hit at or after the current point is still the next one, and a cached miss stays a miss.
+    # index only moves forward, so a cached hit at or after it is still the next one and a cached miss stays a miss. This is what makes the scan linear.
     found: dict[str, int] = {}
 
     def next_index(needle: str, start: int) -> int:
@@ -74,7 +72,7 @@ def _strip_ansi(text: str) -> str:
                 match = None
             end = match.end() if match else -1
         if end < 0:
-            # No sequence starts here after all, exactly as the alternation would have failed. Skip to the next introducer rather than the next character, so ordinary text is never walked one character at a time.
+            # Skip to the next introducer, not the next character, so ordinary text is never walked one character at a time.
             following = _ANSI_INTRODUCER_RE.search(text, index + 1)
             if following is None:
                 break
