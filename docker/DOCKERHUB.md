@@ -10,10 +10,11 @@ Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker) in th
 |---|---|---|
 | `latest`, `studio` | Unsloth Studio web UI + JupyterLab + notebooks + key-only SSH | Most users. Train and chat in the browser. |
 | `core` | Training stack + JupyterLab + notebooks, no Studio | Notebooks, scripts, CI, slimmer pulls. |
+| `cpu-arm64` | Studio + JupyterLab + notebooks, no CUDA, ARM64 native | ARM64 CPU hosts (Ampere, Graviton, Pi 5, etc.). GGUF inference, data recipes. |
 | `nightly-<YYYY.MM.DD>`, `core-nightly-<YYYY.MM.DD>` | The same two images, one immutable pin per daily rebuild, kept 60 days | Reproducible runs. |
 | `<version>`, `core-<version>` | Release builds | Pin a release. |
 
-`latest` and `core` move with every push to `main` and on a daily rebuild. Both images are multi-arch: `linux/amd64` and `linux/arm64` (GH200, DGX Spark).
+`latest` and `core` move with every push to `main` and on a daily rebuild. Both images are multi-arch: `linux/amd64` and `linux/arm64` (GH200, DGX Spark). The `cpu-arm64` image is `linux/arm64` only and contains no CUDA toolkit.
 
 ## Quick start
 
@@ -72,6 +73,20 @@ Without a GPU the container refuses to start unless you opt in. Studio chat with
 ```bash
 docker run -d -e UNSLOTH_ALLOW_CPU=1 -p 8000:8000 -p 8888:8888 unsloth/unsloth
 ```
+
+#### ARM64 CPU hosts (Ampere, Graviton, Raspberry Pi 5, etc.)
+
+For ARM64 CPU-only hosts, use the dedicated `cpu-arm64` image which is smaller and has no CUDA dependencies:
+
+```bash
+docker run -d -p 8888:8888 \
+  -e UNSLOTH_STUDIO_PASSWORD="choose-a-password" \
+  -e JUPYTER_PASSWORD="choose-a-password" \
+  -v "$PWD":/workspace/host \
+  unsloth/unsloth:cpu-arm64
+```
+
+This image runs natively on `linux/arm64` without requiring `nvidia-container-toolkit` or `UNSLOTH_ALLOW_CPU=1`. It includes Studio, JupyterLab, notebooks, and GGUF tooling (llama.cpp, whisper.cpp). Training is not supported.
 
 ## Supported GPUs
 
