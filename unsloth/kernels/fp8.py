@@ -9,6 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+import functools
 from contextlib import nullcontext
 import torch
 import torch.nn as nn
@@ -341,9 +342,11 @@ fp8_block_matmul = (
 )
 
 
-# Expanding the scale over the whole weight needs two m*n float32 temporaries, ~6x the triton
-# kernel's peak; chunk by block-rows so the scratch stays bounded. Values are identical.
-_DEQUANT_CHUNK_ELEMS = 8 * 1024 * 1024
+@functools.lru_cache(maxsize = None)
+def _fp8_device_lacks_kernel(device):
+    # A device's capability cannot change, so look it up once. Tests that simulate another
+    # card must call _fp8_device_lacks_kernel.cache_clear().
+    return torch.version.hip is None and torch.cuda.get_device_capability(device) < (8, 9)
 
 
 def _fp8_kernel_unsupported(tensor):
@@ -354,23 +357,33 @@ def _fp8_kernel_unsupported(tensor):
     """
     return (
         tensor.is_cuda
-        and torch.version.hip is None
         and tensor.dtype == torch.float8_e4m3fn
-        and torch.cuda.get_device_capability(tensor.device) < (8, 9)
+        and _fp8_device_lacks_kernel(tensor.device)
     )
 
 
+# Expanding the scale over the whole weight needs two m*n float32 temporaries, ~6x the triton
+# kernel's peak; chunk by block-rows so the scratch stays bounded. Values are identical.
+_DEQUANT_CHUNK_ELEMS = 8 * 1024 * 1024
+
+
 def _torch_blockwise_dequant(weight, weight_scale, block_size, out_dtype):
-    m, n = weight.shape
-    out = torch.empty(m, n, dtype = out_dtype, device = weight.device)
-    rows = max(block_size[0], (_DEQUANT_CHUNK_ELEMS // max(n, 1)) // block_size[0] * block_size[0])
-    for i in range(0, m, rows):
-        j = min(i + rows, m)
-        s = weight_scale[i // block_size[0] : -(-j // block_size[0])]
-        s = s.repeat_interleave(block_size[0], 0)[: j - i]
-        s = s.repeat_interleave(block_size[1], 1)[:, :n]
-        out[i:j] = weight[i:j].to(torch.float32) * s
-    return out
+    # no_grad to match the triton kernel this stands in for, which builds no graph. Not
+    # torch.compiled: the callers are already compiled regions, and compiling the loop here
+    # unrolls one graph per chunk, which measured slower than eager.
+    with torch.no_grad():
+        m, n = weight.shape
+        out = torch.empty(m, n, dtype = out_dtype, device = weight.device)
+        rows = max(
+            block_size[0], (_DEQUANT_CHUNK_ELEMS // max(n, 1)) // block_size[0] * block_size[0]
+        )
+        for i in range(0, m, rows):
+            j = min(i + rows, m)
+            s = weight_scale[i // block_size[0] : -(-j // block_size[0])]
+            s = s.repeat_interleave(block_size[0], 0)[: j - i]
+            s = s.repeat_interleave(block_size[1], 1)[:, :n]
+            out[i:j] = weight[i:j].to(torch.float32) * s
+        return out
 
 
 def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dtype):

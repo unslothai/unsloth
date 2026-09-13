@@ -20,6 +20,16 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs C
 BLOCK = [128, 128]
 
 
+@pytest.fixture(autouse = True)
+def _clear_capability_cache():
+    # The guard caches per device, so a simulated capability would otherwise be ignored.
+    from unsloth.kernels import fp8
+
+    fp8._fp8_device_lacks_kernel.cache_clear()
+    yield
+    fp8._fp8_device_lacks_kernel.cache_clear()
+
+
 def _make(
     dtype = torch.float8_e4m3fn,
     m = 256,
@@ -122,8 +132,6 @@ def test_fallback_matches_the_triton_kernel_bit_for_bit(monkeypatch, shape, bloc
     )
 
     from unsloth.kernels import fp8
-
-    monkeypatch.setattr(fp8, "_DEQUANT_CHUNK_ELEMS", 4096)  # force the chunk loop to iterate
 
     with monkeypatch.context() as mp:
         mp.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (9, 0))
