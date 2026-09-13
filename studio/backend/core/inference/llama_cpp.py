@@ -439,6 +439,7 @@ from core.inference.tool_call_parser import (
 from core.inference.passthrough_healing import nudge_enabled as _nudge_enabled
 from core.inference.repetition_guard import is_repetition_dominated
 from core.inference.tool_loop_controller import (
+    _WORKSPACE_TOOLS,
     ToolLoopController,
     append_deferred_nudges,
     awaiting_approval_status,
@@ -32670,11 +32671,27 @@ class LlamaCppBackend:
                 # fallback (mirrors the safetensors loop; see _MAX_TOOL_CALLS_PER_TURN).
                 if tool_calls and not has_structured_tc and len(tool_calls) > 1:
                     _seen_keys: set = set()
+                    _last_workspace_key = None
+                    # One rerun per piece of new work: `test, edit A, test, edit B, test` keeps
+                    # every test, while `read, edit, read, edit` stops replaying and cannot
+                    # fill the cap.
+                    _novel_kept = 0
+                    _novel_at_last_keep: dict = {}
                     _deduped: list = []
                     for _tc in tool_calls:
                         _fn = _tc.get("function", {}) or {}
                         _key = (_fn.get("name", ""), str(_fn.get("arguments", "")))
-                        if _key in _seen_keys:
+                        if _fn.get("name") in _WORKSPACE_TOOLS:
+                            if _key == _last_workspace_key:
+                                continue
+                            if _key in _seen_keys:
+                                if _novel_kept <= _novel_at_last_keep.get(_key, 0):
+                                    continue
+                            else:
+                                _novel_kept += 1
+                            _novel_at_last_keep[_key] = _novel_kept
+                            _last_workspace_key = _key
+                        elif _key in _seen_keys:
                             continue
                         _seen_keys.add(_key)
                         _deduped.append(_tc)
