@@ -117,6 +117,12 @@ test("Greek system speech overrides an English voice, even beyond the curated ca
     lang: "el-GR",
     default: false,
   };
+  const british = {
+    voiceURI: "british",
+    name: "British English",
+    lang: "en-GB",
+    default: false,
+  };
   let voices = [
     english,
     ...Array.from({ length: 25 }, (_, i) => ({
@@ -147,6 +153,10 @@ test("Greek system speech overrides an English voice, even beyond the curated ca
     loadAdapter("auto").createConfiguredUtterance("Hello").voice,
     english,
   );
+  voices = [english, british];
+  const regional = loadAdapter("en-GB").createConfiguredUtterance("Hello");
+  assert.equal(regional.lang, "en-GB");
+  assert.equal(regional.voice, british);
   voices = [english];
   const missing = loadAdapter("el-GR").createConfiguredUtterance("Γεια σας");
   assert.equal(missing.lang, "el-GR");

@@ -118,6 +118,10 @@ function langBase(tag: string): string {
   return tag.toLowerCase().split(/[-_]/)[0] ?? "";
 }
 
+function normalizedLang(tag: string): string {
+  return tag.toLowerCase().replaceAll("_", "-");
+}
+
 const MAX_CURATED_VOICES = 20;
 
 /** Keep the best, most relevant voices: drop low-quality ones, keep English, the browser
@@ -209,19 +213,29 @@ export function createConfiguredUtterance(
   const utterance = new SpeechSynthesisUtterance(text);
   const requestedLanguage = ttsLanguage === "auto" ? undefined : ttsLanguage;
   const selectedVoice = findTtsVoice(ttsVoiceURI);
+  const availableVoices = window.speechSynthesis.getVoices();
+  const exactLanguageVoices = requestedLanguage
+    ? availableVoices.filter(
+        (voice) =>
+          normalizedLang(voice.lang) === normalizedLang(requestedLanguage),
+      )
+    : [];
+  const languageVoices =
+    requestedLanguage && exactLanguageVoices.length === 0
+      ? availableVoices.filter(
+          (voice) => langBase(voice.lang) === langBase(requestedLanguage),
+        )
+      : exactLanguageVoices;
   const selectedVoiceMatches =
     !requestedLanguage ||
     (selectedVoice &&
-      langBase(selectedVoice.lang) === langBase(requestedLanguage));
+      (exactLanguageVoices.length > 0
+        ? normalizedLang(selectedVoice.lang) ===
+          normalizedLang(requestedLanguage)
+        : langBase(selectedVoice.lang) === langBase(requestedLanguage)));
   const languageVoice =
     requestedLanguage && !selectedVoiceMatches
-      ? curateSystemVoices(
-          window.speechSynthesis.getVoices().filter(
-            (voice) => langBase(voice.lang) === langBase(requestedLanguage),
-          ),
-          undefined,
-          requestedLanguage,
-        )[0]
+      ? curateSystemVoices(languageVoices, undefined, requestedLanguage)[0]
       : undefined;
   const voice = selectedVoiceMatches
     ? (selectedVoice ?? defaultTtsVoice())
