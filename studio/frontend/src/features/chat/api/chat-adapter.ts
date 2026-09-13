@@ -5863,8 +5863,9 @@ export function createOpenAIStreamAdapter(
                     // Self-hosted models often write a call as text rather than emitting structured tool_calls, so
                     // the external loop heals like the local one; omitting this left the process default.
                     auto_heal_tool_calls: runtime.autoHealToolCalls,
-                    // Keep the external server-side loop under the same user setting as the local paths.
-                    nudge_tool_calls: runtime.nudgeToolCalls,
+                    // false, not omitted: omission follows UNSLOTH_TOOL_CALL_NUDGE, which the
+                    // launchers set to 1 when unset, so this loop would keep nudging (#9686, #9125).
+                    nudge_tool_calls: false,
                     // This branch runs the tools here, so say so by name: enabled_tools ["web_search"] is
                     // byte-identical to an older bundle's hosted search.
                     run_tools_locally: true,

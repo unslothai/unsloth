@@ -1487,6 +1487,9 @@
       "_MARKUP_OPENERS": {
         "kind": "assign"
       },
+      "_MAX_FENCE_CHARS": {
+        "kind": "assign"
+      },
       "_MAX_GEMMA_PREFIX_TAIL": {
         "kind": "assign"
       },
