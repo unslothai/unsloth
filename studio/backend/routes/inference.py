@@ -513,6 +513,7 @@ def _tts_max_new_tokens(
     *,
     audio_type: Optional[str] = None,
     speech_api_default_max_tokens: bool = False,
+    llama_backend = None,
 ) -> int:
     """Bound TTS work consistently across llama.cpp and subprocess backends.
 
@@ -521,7 +522,7 @@ def _tts_max_new_tokens(
     both the Unsloth and OpenAI routes inherit it.
     """
     moss_generation = audio_type in ("moss_tts_local", "moss_tts_nano")
-    context_length = _monitor_context_length() if moss_generation or prompt else None
+    context_length = _monitor_context_length(llama_backend) if moss_generation or prompt else None
     token_ceiling = (
         context_length or MOSS_TTS_MAX_FRAMES
         if moss_generation
@@ -552,14 +553,14 @@ def _speech_budget_exhausted(context_length: int, prompt_tokens: int) -> bool:
     return context_length - prompt_tokens - _TTS_PROMPT_FORMAT_RESERVE < _MIN_SPEECH_OUTPUT_TOKENS
 
 
-def _raise_if_prompt_leaves_no_speech_budget(text: str) -> None:
+def _raise_if_prompt_leaves_no_speech_budget(text: str, *, llama_backend = None) -> None:
     """400 when the prompt alone consumes the loaded context.
 
     Shared by both TTS routes: the budget helper floors at one token so generation always
     has something to ask for, which on its own would send an over-context prompt into the
     backend to fail there or return a clip too short to hold codec tokens.
     """
-    context_length = _monitor_context_length()
+    context_length = _monitor_context_length(llama_backend)
     if not context_length:
         return
     if _speech_budget_exhausted(context_length, _prompt_token_estimate(text)):
@@ -6423,8 +6424,9 @@ def _peek_inference_backend() -> Any:
     return _orch.peek_inference_backend()
 
 
-def _monitor_context_length() -> Optional[int]:
-    llama_backend = get_llama_cpp_backend()
+def _monitor_context_length(llama_backend = None) -> Optional[int]:
+    if llama_backend is None:
+        llama_backend = get_llama_cpp_backend()
     if getattr(llama_backend, "is_loaded", False):
         context_length = _positive_int_or_none(getattr(llama_backend, "context_length", None))
         if context_length is not None:
@@ -9234,7 +9236,6 @@ async def _maybe_auto_switch_model(
             )
         else:
             target_backend = await asyncio.to_thread(get_inference_backend)
-        backend = get_llama_cpp_backend()
         # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
         # repo, so it never reloads a different local quant that already serves it.
         # A tag that names no quant (":latest", ":8b") means the repo, as
@@ -9262,25 +9263,28 @@ async def _maybe_auto_switch_model(
                 if _looks_like_local_path(target_id) and _looks_like_local_path(active):
                     return False
                 return _matches_any(override_id, loaded_keys)
-            if not backend.is_loaded or not backend.model_identifier:
+            if not target_backend.is_loaded or not target_backend.model_identifier:
                 return False
-            loaded_keys = {backend.model_identifier.lower()}
-            advertised = getattr(backend, "_openai_advertised_id", None)
+            loaded_keys = {target_backend.model_identifier.lower()}
+            advertised = getattr(target_backend, "_openai_advertised_id", None)
             if advertised:
                 loaded_keys.add(advertised.lower())
             if loaded_keys.isdisjoint({target_id.lower(), override_id.lower()}):
                 return False
             loaded_companion_roots = tuple(
-                getattr(backend, "_openai_gguf_companion_roots", ()) or ()
+                getattr(target_backend, "_openai_gguf_companion_roots", ()) or ()
             )
             if loaded_companion_roots != gguf_companion_roots:
                 return False
-            if getattr(backend, "_openai_gguf_companion_state", ()) != gguf_companion_state:
+            if (
+                getattr(target_backend, "_openai_gguf_companion_state", ())
+                != gguf_companion_state
+            ):
                 return False
             if bare:
                 return True
             if variant:
-                loaded_variant = (getattr(backend, "hf_variant", None) or "").lower()
+                loaded_variant = (getattr(target_backend, "hf_variant", None) or "").lower()
                 return loaded_variant == variant.lower()
             return True
 
@@ -18344,11 +18348,6 @@ async def _generate_tts_wav(
             }
         ),
     )
-    # Again, now that a context exists to measure against. The check above runs before the
-    # restore so an invalid request never triggers a reload, but with nothing loaded it has
-    # no context length and passes everything, so the first request after an idle eviction
-    # would reach generation over-context and come back as a one-token clip.
-    _raise_if_prompt_leaves_no_speech_budget(text)
 
     # Created before the backend pick so the GGUF lambda can close over it; the registration
     # that arms it is below, once the model name is known.
@@ -18359,6 +18358,9 @@ async def _generate_tts_wav(
     # requested model: a named secondary resident serves its own audio model,
     # not whichever slot is active.
     llama_backend = _serving_llama_backend(requested_model)
+    # The context guard must inspect the selected resident. A named secondary can have a
+    # different window than the active/default backend.
+    _raise_if_prompt_leaves_no_speech_budget(text, llama_backend = llama_backend)
     # GGUF TTS goes straight to llama-server /completion, holding a slot with no
     # admission lease, so only the direct counter can show it in the slot readout.
     _direct_llama_tts = bool(llama_backend.is_loaded and getattr(llama_backend, "_is_audio", False))
@@ -18381,6 +18383,7 @@ async def _generate_tts_wav(
                 prompt_for_budget,
                 audio_type = audio_type,
                 speech_api_default_max_tokens = speech_api_default_max_tokens,
+                llama_backend = llama_backend,
             ),
             repetition_penalty = payload.repetition_penalty,
             cancel_event = _audio_cancel,
@@ -18407,6 +18410,7 @@ async def _generate_tts_wav(
                 prompt_for_budget,
                 audio_type = audio_type,
                 speech_api_default_max_tokens = speech_api_default_max_tokens,
+                llama_backend = llama_backend,
             ),
             repetition_penalty = payload.repetition_penalty,
             use_adapter = payload.use_adapter,
@@ -18430,7 +18434,7 @@ async def _generate_tts_wav(
             payload.audio_instructions,
             payload.audio_language,
         )
-        _raise_if_prompt_leaves_no_speech_budget(prompt_for_budget)
+        _raise_if_prompt_leaves_no_speech_budget(prompt_for_budget, llama_backend = llama_backend)
 
     # Audio-capable backend confirmed. The middleware claims the slot on a 2xx, so no claim
     # here: claiming before the audio backend runs could strand a preview-owned checkpoint
@@ -28361,9 +28365,10 @@ async def _embeddings_client_gone(request: Request) -> bool:
 
 
 async def _resident_answers_embeddings(llama_backend, requested: str) -> bool:
-    if not _resident_serves_embeddings(llama_backend):
-        return False
-    return await asyncio.to_thread(_loaded_satisfies, requested)
+    return bool(
+        _resident_serves_embeddings(llama_backend)
+        and _llama_backend_satisfies(llama_backend, requested)
+    )
 
 
 def _reference_is_decisive(requested: str) -> bool:
@@ -28615,12 +28620,12 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     # modules.json a bare .gguf never has -- so embeddings auto-switch is best-effort:
     # a non-embedding target switches, then llama-server returns a no-pooling error.
     studio_request = await _studio_embedder_request_body(request)
-    if studio_request is not None and not await _resident_answers_embeddings(
-        llama_backend, studio_request[0]["model"]
-    ):
-        return await _studio_embeddings(
-            request, studio_request[0], current_subject, model_name = studio_request[1]
-        )
+    if studio_request is not None:
+        requested_backend = _serving_llama_backend(studio_request[0]["model"])
+        if not await _resident_answers_embeddings(requested_backend, studio_request[0]["model"]):
+            return await _studio_embeddings(
+                request, studio_request[0], current_subject, model_name = studio_request[1]
+            )
     if studio_request is None and _resident_absent(llama_backend):
         default_body = await _default_embeddings_request_body(request)
         if default_body is not None and not await asyncio.to_thread(_stashed_gguf_embeds):
@@ -31935,7 +31940,8 @@ async def anthropic_messages(
     JSON).
     """
     _admit_tool_access(payload)
-    llama_backend = get_llama_cpp_backend()
+    requested_model = _switch_model_for_payload(payload)
+    llama_backend = _serving_llama_backend(requested_model)
 
     # Default-off parity: with no automatic load possible and nothing loaded, 503
     # before any request-shape check, exactly as the pre-feature endpoint did. When
@@ -32051,7 +32057,7 @@ async def anthropic_messages(
     # image request can't evict the resident vision model only to hit the vision
     # guard (_normalize_anthropic_openai_images) below after the load.
     await _maybe_auto_switch_model(
-        _switch_model_for_payload(payload),
+        requested_model,
         request,
         current_subject,
         require_vision = _anthropic_top_level_image,
@@ -32072,7 +32078,7 @@ async def anthropic_messages(
     )
     # Re-resolve after the switch: with several models resident the named one may
     # be a slot other than the backend fetched above.
-    llama_backend = _serving_llama_backend(_switch_model_for_payload(payload))
+    llama_backend = _serving_llama_backend(requested_model)
     if not llama_backend.is_loaded:
         _status, _detail = await _no_model_loaded_error(
             "No GGUF model loaded. Load a GGUF model first.",
@@ -32199,7 +32205,7 @@ async def anthropic_messages(
     )
 
     monitor_id = None
-    monitor_context_length = _monitor_context_length()
+    monitor_context_length = _monitor_context_length(llama_backend)
     request_state = getattr(request, "state", None)
     if not getattr(request_state, "skip_api_monitor", False):
         request_url = getattr(request, "url", None)

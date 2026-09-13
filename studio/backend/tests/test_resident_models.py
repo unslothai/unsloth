@@ -12,6 +12,8 @@ registry is swapped per test, so no slot ever leaks into another test's
 import asyncio
 import inspect
 import threading
+from types import SimpleNamespace
+
 
 import pytest
 from fastapi import HTTPException
@@ -35,6 +37,8 @@ class _ResidentDouble:
         *,
         hf_variant = None,
         advertised_id = None,
+        context_length = None,
+        is_embedding_gguf = False,
     ):
         self.model_identifier = identifier
         self.is_loaded = True
@@ -43,6 +47,8 @@ class _ResidentDouble:
         self._openai_advertised_id = advertised_id
         self._openai_gguf_companion_roots = ()
         self._openai_gguf_companion_state = ()
+        self.context_length = context_length
+        self.is_embedding_gguf = is_embedding_gguf
         self.unloads = 0
 
     def unload_model(self):
@@ -328,17 +334,46 @@ def test_a_path_named_secondary_resolves_and_records_its_alias(residents):
     assert inference_route.resolve_resident_llama("/srv/models/model-bb.gguf") is None
 
 
-def test_auto_switch_judges_already_serving_against_the_resident_backend():
-    # Source contract: the switch helper's target selection scans residents
-    # (falling back to the active), so a named secondary short-circuits as
-    # "already serving" instead of evicting the active model to reload weights
-    # the server already holds.
-    src = inspect.getsource(inference_route._maybe_auto_switch_model)
-    block = src[src.index("target_is_gguf:") :]
-    selection = block[: block.index("backend = get_llama_cpp_backend()")]
-    assert "iter_resident_llama_backends()" in selection
-    assert "_llama_backend_satisfies" in selection
+def test_auto_switch_keeps_a_local_path_secondary_resident(monkeypatch, residents):
+    """A resolver hit for a manually loaded secondary must not reload it over the active slot."""
+    _, load = residents
+    _, active = load("org/A-GGUF", make_active = True)
+    _, secondary = load("/srv/models/model-b.gguf")
+    loads = []
 
+    async def _load(*_args, **_kwargs):
+        loads.append(True)
+
+    from core.inference import local_model_resolver as resolver
+    from utils import openai_auto_switch_settings as settings
+
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: False)
+    monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        resolver,
+        "resolve_local_gguf",
+        lambda *_a, **_k: ("/srv/models/model-b.gguf", None, "model-b", False),
+    )
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *_a, **_k: True)
+    monkeypatch.setattr(resolver, "local_gguf_companion_roots", lambda *_a, **_k: ())
+    monkeypatch.setattr(resolver, "local_gguf_companion_state", lambda *_a, **_k: ())
+    monkeypatch.setattr(inference_route, "_loaded_identity_satisfies", lambda _model: False)
+    monkeypatch.setattr(inference_route, "_auto_download_hf_token", lambda _request: None)
+    monkeypatch.setattr(inference_route, "_load_model_impl", _load)
+
+    request = SimpleNamespace(
+        state = SimpleNamespace(generation_cancel_event = None),
+        scope = {},
+        headers = {},
+        url = None,
+    )
+    asyncio.run(inference_route._maybe_auto_switch_model("/srv/models/model-b.gguf", request, "tester"))
+
+    assert loads == []
+    assert active.is_loaded
+    assert secondary.is_loaded
+    assert secondary._openai_advertised_id == "model-b"
 
 def test_auto_switch_short_circuits_for_a_resident_secondary(monkeypatch, residents):
     # Naming a resident must neither swap nor reload: the switch helper returns
@@ -740,18 +775,82 @@ def test_status_resident_rows_flag_the_active_slot(residents):
 # ── Review-fix regressions ────────────────────────────────────────
 
 
-def test_every_model_bearing_endpoint_resolves_the_serving_backend():
-    """Audio/TTS, embeddings and Anthropic count-tokens pick the backend from
-    the requested model after their switch helper, like the chat paths."""
-    for handler_name in ("_generate_tts_wav", "openai_embeddings"):
-        src = inspect.getsource(getattr(inference_route, handler_name))
-        assert "_serving_llama_backend(" in src, handler_name
-    # /messages/count_tokens resolves after its switch, before the capability
-    # reads; the sibling /chat/count_tokens does the same.
-    count_src = inspect.getsource(inference_route.anthropic_count_tokens)
-    assert count_src.index("_serving_llama_backend(") < count_src.index("is_loaded")
-    chat_count_src = inspect.getsource(inference_route.chat_count_tokens)
-    assert chat_count_src.index("_serving_llama_backend(") < chat_count_src.index("is_loaded")
+def test_named_studio_embedder_uses_a_secondary_resident_before_fallback(monkeypatch, residents):
+    _, load = residents
+    load("org/A-GGUF", make_active = True)
+    _, embedding = load("org/B-GGUF")
+    embedding.is_embedding_gguf = True
+    body = {"model": "org/B-GGUF", "input": "hello"}
+    checked = []
+
+    async def _studio_request(_request):
+        return body, "configured-embedder"
+
+    async def _answers(backend, requested):
+        checked.append((backend, requested))
+        return backend is embedding
+
+    async def _switch(*_args, **_kwargs):
+        raise RuntimeError("reached resident switch")
+
+    async def _fallback(*_args, **_kwargs):
+        raise AssertionError("selected resident must not fall back to Studio embeddings")
+
+    monkeypatch.setattr(inference_route, "_should_validate_before_switch", lambda: False)
+    monkeypatch.setattr(inference_route, "_studio_embedder_request_body", _studio_request)
+    monkeypatch.setattr(inference_route, "_resident_answers_embeddings", _answers)
+    monkeypatch.setattr(inference_route, "_auto_switch_from_request_body", _switch)
+    monkeypatch.setattr(inference_route, "_studio_embeddings", _fallback)
+
+    with pytest.raises(RuntimeError, match = "reached resident switch"):
+        asyncio.run(inference_route.openai_embeddings(object(), "tester"))
+    assert checked == [(embedding, "org/B-GGUF")]
+
+
+def test_tts_budget_uses_the_named_secondary_context(residents):
+    _, load = residents
+    _, active = load("org/A-GGUF", make_active = True)
+    _, secondary = load("org/B-GGUF")
+    active.context_length = 4096
+    secondary.context_length = 128
+    text = "x" * 64
+    payload = SimpleNamespace(max_completion_tokens = 512, max_tokens = None)
+
+    assert inference_route._monitor_context_length(secondary) == 128
+    assert inference_route._tts_max_new_tokens(
+        payload, text, llama_backend = secondary
+    ) == 32
+    with pytest.raises(HTTPException) as excinfo:
+        inference_route._raise_if_prompt_leaves_no_speech_budget(text, llama_backend = secondary)
+    assert excinfo.value.status_code == 400
+
+
+def test_anthropic_named_secondary_survives_an_unloaded_active_slot(monkeypatch, residents):
+    _, load = residents
+    _, active = load("org/A-GGUF", make_active = True)
+    _, secondary = load("org/B-GGUF")
+    active.unload_model()
+    switched = []
+
+    async def _switch(model, *_args, **_kwargs):
+        switched.append(model)
+        raise RuntimeError("reached resident switch")
+
+    from models.inference import AnthropicMessagesRequest
+
+    monkeypatch.setattr(inference_route, "_admit_tool_access", lambda _payload: None)
+    monkeypatch.setattr(inference_route, "_automatic_model_load_may_run", lambda: False)
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _switch)
+    payload = AnthropicMessagesRequest(
+        model = "org/B-GGUF",
+        max_tokens = 1,
+        messages = [{"role": "user", "content": "hello"}],
+    )
+
+    with pytest.raises(RuntimeError, match = "reached resident switch"):
+        asyncio.run(inference_route.anthropic_messages(payload, object(), "tester"))
+    assert switched == ["org/B-GGUF"]
+    assert secondary.is_loaded
 
 
 def test_a_standard_load_rejects_the_keep_flag_and_clears_all_residents():
