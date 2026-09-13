@@ -3061,11 +3061,7 @@ class ExternalProviderClient:
                                 yield _content_chunk("</think>")
                             error = event.get("error")
                             error_type = error.get("type") if isinstance(error, dict) else None
-                            # A gateway standing in for Anthropic can put anything here, and an
-                            # unhashable `type` raised straight out of the generator: the route's
-                            # catch-all then reported "An internal error occurred" instead of the
-                            # provider's own message, with no status for Deep Research to back off
-                            # on. Anything but a string falls back to 502.
+                            # An unhashable `type` from a stand-in gateway raised out of here.
                             if not isinstance(error_type, str):
                                 error_type = None
                             yield _error_sse_line(
@@ -6525,8 +6521,7 @@ def _readable_provider_error(status_code: int, message: str, provider_type: str)
     return f"{text} ({code})" if code and code not in text else text
 
 
-# A mid-stream Anthropic error keeps the HTTP status its type has as a response, so a
-# rate limit still reads as 429 to callers that back off.
+# A mid-stream error keeps the status its type maps to, so a rate limit still reads as 429.
 _ANTHROPIC_ERROR_STATUS = {
     "invalid_request_error": 400,
     "authentication_error": 401,

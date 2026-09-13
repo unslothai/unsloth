@@ -136,8 +136,6 @@ def test_midstream_rate_limit_is_retried_by_research(monkeypatch):
 
 
 def test_every_documented_error_type_has_a_streamed_status():
-    # An Anthropic connection keeps an editable base URL, so the streamed map has to name every
-    # type the repo's own request-side table does -- `conflict_error` was the one it missed.
     missing = set(ANTHROPIC_TYPE_BY_STATUS.values()) - set(_ANTHROPIC_ERROR_STATUS)
     assert not missing, f"no streamed status for {missing}"
     assert _ANTHROPIC_ERROR_STATUS["conflict_error"] == 409
@@ -156,8 +154,8 @@ def test_every_documented_error_type_has_a_streamed_status():
     ],
 )
 def test_malformed_error_frame_still_reaches_the_client(monkeypatch, error):
-    # A stand-in gateway can send anything. An unhashable ``type`` used to raise out of the
-    # generator, which ended the reply with no error frame at all -- the bug this branch fixes.
+    # An unhashable ``type`` used to raise out of the generator, so the chat showed
+    # "An internal error occurred" instead of what the provider actually said.
     payloads = _payloads_from_lines(_stream_lines(monkeypatch, [*_TEXT, error]))
 
     reported = payloads[-1]["error"]
