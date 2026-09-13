@@ -8776,6 +8776,28 @@ def test_the_resident_shortcut_never_answers_where_the_full_check_would_not(
     ), f"shortcut served {requested!r} against {identity!r} (quant={quant!r})"
 
 
+def test_a_cache_pinned_chat_load_leaves_the_resident_shortcut_alone(monkeypatch, tmp_path):
+    """A chat load of a snapshot path now carries repo-level companion roots (#10599).
+
+    The shortcut already refuses a bare load path that advertises nothing, so the
+    roots reach it but cannot change its answer either way.
+    """
+    repo = tmp_path / "models--unsloth--Muse-GGUF" / "snapshots"
+    weights, head = repo / ("c" * 40), repo / ("3" * 40)
+    (weights / "UD-IQ1_S").mkdir(parents = True)
+    head.mkdir(parents = True)
+    shard = weights / "UD-IQ1_S" / "Muse-UD-IQ1_S-00001-of-00001.gguf"
+    shard.write_bytes(b"GGUF weights")
+
+    backend = _FakeBackend(str(shard))
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    for requested in ("unsloth/Muse-GGUF", str(shard)):
+        backend._openai_gguf_companion_roots = ()
+        without_roots = inference_route._loaded_identity_satisfies(requested)
+        backend._openai_gguf_companion_roots = (str(weights), str(head))
+        assert inference_route._loaded_identity_satisfies(requested) is without_roots is False
+
+
 def test_the_resident_shortcut_refuses_an_explicit_quant_mismatch(monkeypatch):
     backend = _FakeBackend("unsloth/Muse-GGUF", hf_variant = "Q4_K_M")
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)

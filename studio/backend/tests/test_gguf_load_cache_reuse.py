@@ -1254,3 +1254,91 @@ class TestLoadHubDownloadExclusion:
         assert (
             self._capture_hub_guard_require_mmproj(["--no-mmproj"], request_extra_args = []) is True
         )
+
+
+class TestCachePinnedCompanionScope:
+    """A row pinned to one snapshot still finds a companion in a sibling one (#10599)."""
+
+    REPO_ID = "unsloth/Qwen3.8-Flash-Next-GGUF"
+    WEIGHTS_REL = "UD-IQ1_S/Qwen3.8-Flash-Next-UD-IQ1_S-00001-of-00001.gguf"
+    HEAD_REL = "MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf"
+
+    def _split_repo(self, root: Path) -> tuple[Path, Path, str]:
+        """Weights in the older snapshot, MTP head alone in the newer one."""
+        weights = _build_cache(root, self.REPO_ID, {self.WEIGHTS_REL: 64}, snapshot_sha = "c" * 40)
+        head = _build_cache(root, self.REPO_ID, {self.HEAD_REL: 32}, snapshot_sha = "3" * 40)
+        return weights, head, str(weights / self.WEIGHTS_REL)
+
+    def test_roots_span_the_repo_from_a_pinned_shard(self, tmp_path):
+        from core.inference.local_model_resolver import hf_cache_snapshot_companion_roots
+        weights, head, shard = self._split_repo(tmp_path)
+
+        # Selected snapshot first, so a colocated companion still wins.
+        assert hf_cache_snapshot_companion_roots(shard) == (str(weights), str(head))
+
+    def test_a_path_outside_the_cache_layout_gains_no_siblings(self, tmp_path):
+        from core.inference.local_model_resolver import hf_cache_snapshot_companion_roots
+
+        loose = tmp_path / "my-models" / "snapshots" / "abc" / "model.gguf"
+        loose.parent.mkdir(parents = True)
+        loose.write_bytes(b"GGUF weights")
+
+        assert hf_cache_snapshot_companion_roots(str(loose)) == ()
+        assert hf_cache_snapshot_companion_roots(self.REPO_ID) == ()
+        assert hf_cache_snapshot_companion_roots("") == ()
+
+    def test_the_drafter_comparison_looks_where_the_launch_looked(self, tmp_path):
+        route = _load_route_module(
+            "inference_route_module_for_companion_scope_drafter_test",
+            "routes/inference.py",
+        )
+        weights, head, shard = self._split_repo(tmp_path)
+
+        assert route._mtp_draft_for_path(shard, False) is None
+        assert route._mtp_draft_for_path(
+            shard, False, companion_roots = (str(weights), str(head))
+        ) == str(head / self.HEAD_REL)
+
+    def test_a_pinned_load_hands_the_sibling_snapshot_to_the_resolver(self, tmp_path):
+        from models.inference import LoadRequest
+
+        route = _load_route_module(
+            "inference_route_module_for_companion_scope_load_test",
+            "routes/inference.py",
+        )
+        weights, head, shard = self._split_repo(tmp_path)
+        seen: dict = {}
+
+        class ResolverReached(BaseException):
+            pass
+
+        def _capture(**kwargs):
+            seen.update(kwargs)
+            raise ResolverReached()
+
+        backend = SimpleNamespace(
+            is_loaded = False,
+            model_identifier = None,
+            adopt_load_intent_if_matched = lambda _intent: False,
+            _audio_probed = True,
+            holds_no_vram = False,
+        )
+        with (
+            patch.object(
+                route,
+                "_resolve_model_identifier_for_request",
+                return_value = (shard, shard, False),
+            ),
+            patch.object(route, "resolve_effective_chat_template_override", return_value = None),
+            patch.object(route, "get_llama_cpp_backend", return_value = backend),
+            patch.object(
+                route,
+                "get_inference_backend",
+                return_value = SimpleNamespace(active_model_name = None),
+            ),
+            patch.object(route, "ModelConfig", SimpleNamespace(from_identifier = _capture)),
+            pytest.raises(ResolverReached),
+        ):
+            _run_route_load(route, LoadRequest(model_path = shard))
+
+        assert seen["gguf_companion_roots"] == (str(weights), str(head))

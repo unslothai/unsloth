@@ -180,6 +180,27 @@ def local_gguf_companion_roots(load_path: str, *, repo_level: bool = False) -> t
     return (str(selected), *(str(path) for path in siblings))
 
 
+def hf_cache_snapshot_companion_roots(load_path: str) -> tuple[str, ...]:
+    """Repo-level companion roots for a GGUF pinned to one cache snapshot.
+
+    The picker hands out a snapshot path whenever ``refs/main`` stops holding a
+    complete quant, which is what fetching a companion after the weights does.
+    That revision is the cache's own bookkeeping and not a choice anyone made,
+    so the companion scan still spans the repo. A path outside a
+    ``models--*/snapshots/<sha>`` layout is left alone.
+    """
+    from pathlib import Path
+
+    if not load_path:
+        return ()
+    path = Path(load_path)
+    for candidate in (path, *path.parents):
+        snapshots = candidate.parent
+        if snapshots.name == "snapshots" and snapshots.parent.name.startswith("models--"):
+            return local_gguf_companion_roots(str(candidate), repo_level = True)
+    return ()
+
+
 def local_gguf_companion_state(roots: tuple[str, ...]) -> tuple:
     """File metadata for trusted snapshots, including newly completed companions."""
     from pathlib import Path
