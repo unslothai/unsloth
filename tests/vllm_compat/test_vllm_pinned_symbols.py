@@ -100,6 +100,16 @@ VLLM_TAGS = _stable_release_tags() + ["main"]
 
 @functools.lru_cache(maxsize = None)
 def _tag_exists(tag: str) -> bool:
+    """Does this ref resolve? Asked of the ref itself, not of a file in it.
+
+    Probing a path conflates "ref is gone" with "that one file was renamed",
+    and a false negative here skips the whole tag, `main` included, which is
+    the ref that catches drift before release. Fall back to the path probe
+    only when the API cannot answer.
+    """
+    status = _api_status(f"repos/vllm-project/vllm/commits/{tag}")
+    if status is not None:
+        return status != 404
     return _fetch_text("vllm-project/vllm", tag, "README.md") is not None
 
 
@@ -109,6 +119,26 @@ def _tag_exists(tag: str) -> bool:
 VLLM_BNB_IN_TREE = "vllm/model_executor/layers/quantization/bitsandbytes.py"
 VLLM_BNB_PLUGIN_REPO = "vllm-project/vllm-bnb-plugin"
 VLLM_BNB_PLUGIN_PATH = "vllm_bnb_plugin/bitsandbytes.py"
+
+
+@functools.lru_cache(maxsize = None)
+def _plugin_ref() -> str:
+    """The plugin tag users actually get from `pip install vllm-bnb-plugin`.
+
+    `main` is a moving target: it can carry a fix no release has, and a
+    breaking change there would fail every vLLM version at once. Neither
+    outcome says anything about an installable pair.
+    """
+    try:
+        with urllib.request.urlopen(
+            "https://pypi.org/pypi/vllm-bnb-plugin/json", timeout = 20
+        ) as r:
+            version = json.loads(r.read().decode("utf-8"))["info"]["version"]
+    except (urllib.error.URLError, TimeoutError, ValueError, KeyError):
+        return "main"
+    return f"v{version}" if _fetch_text(VLLM_BNB_PLUGIN_REPO, f"v{version}", "README.md") else "main"
+
+
 # Only these two are REQUIRED. unsloth_zoo subclasses BitsAndBytesConfig and
 # replaces BitsAndBytesLinearMethod._apply_4bit_weight, so both must exist.
 # `apply_bnb_4bit` is hasattr-checked (the in-tree module has never defined it
@@ -118,6 +148,26 @@ VLLM_BNB_SYMBOLS = (
     "BitsAndBytesConfig",
     "BitsAndBytesLinearMethod",
 )
+
+
+@functools.lru_cache(maxsize = None)
+def _api_status(path: str) -> int | None:
+    """HTTP status for a GitHub API path, or None if the API cannot answer.
+
+    None covers an unreachable network and an unauthenticated rate limit, both
+    of which are the runner's problem rather than a compatibility answer.
+    """
+    req = urllib.request.Request(f"https://api.github.com/{path}", method = "HEAD")
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout = 15) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code if e.code == 404 else None
+    except (urllib.error.URLError, TimeoutError):
+        return None
 
 
 @functools.lru_cache(maxsize = None)
@@ -330,19 +380,20 @@ def test_vllm_bitsandbytes_symbols_have_a_home(tag: str):
         assert not missing, f"{tag}: in-tree bitsandbytes is missing {missing}"
         return
 
-    # Out of tree from 0.28. The plugin is versioned separately, so check its
-    # main rather than trying to map a vLLM tag onto a plugin release.
-    plugin = _fetch_text(VLLM_BNB_PLUGIN_REPO, "main", VLLM_BNB_PLUGIN_PATH)
+    # Out of tree from 0.28. The plugin versions separately, so there is no tag
+    # to map onto; the published release is what a user ends up with.
+    plugin_ref = _plugin_ref()
+    plugin = _fetch_text(VLLM_BNB_PLUGIN_REPO, plugin_ref, VLLM_BNB_PLUGIN_PATH)
     assert plugin is not None, (
         f"{tag}: bitsandbytes is absent in tree AND {VLLM_BNB_PLUGIN_PATH} could "
-        f"not be fetched from {VLLM_BNB_PLUGIN_REPO}; unsloth_zoo has nowhere to "
+        f"not be fetched from {VLLM_BNB_PLUGIN_REPO}@{plugin_ref}; nowhere to "
         f"resolve the bnb linear method from, so load_in_4bit + fast_inference "
         f"has no path on this version"
     )
     missing = [s for s in VLLM_BNB_SYMBOLS if s not in plugin]
     assert not missing, (
-        f"{tag}: bitsandbytes moved out of tree and the plugin's compat module "
-        f"no longer re-exports {missing}"
+        f"{tag}: bitsandbytes moved out of tree and {VLLM_BNB_PLUGIN_REPO}@"
+        f"{plugin_ref} no longer re-exports {missing}"
     )
 
 
