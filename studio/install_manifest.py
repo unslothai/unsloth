@@ -309,7 +309,12 @@ def _installed_version(dist_name: str, installed: Optional[Dict[str, str]] = Non
     return installed_version_probe(dist_name)[0] or None
 
 
-def _publish_json(path: Path, payload: dict, *, only_if_present: bool = False) -> bool:
+def _publish_json(
+    path: Path,
+    payload: dict,
+    *,
+    only_if_present: bool = False,
+) -> bool:
     """Write *payload* to *path* through a temp file of this writer's own, then replace.
 
     The temp name is unique per call. A shared one (the old MANIFEST_NAME + ".tmp") is a
