@@ -62,6 +62,9 @@ export function DebuggingTab() {
   const [mode, setMode] = useState<RefreshMode>(readStoredMode);
   const [buffer, setBuffer] = useState<LogBufferState>(EMPTY_BUFFER);
   const [realpath, setRealpath] = useState<string | null>(null);
+  // Where the backend says the logs live, for the folder button when no source
+  // is selected yet, which is exactly the custom-home case that has no log.
+  const [logRoot, setLogRoot] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [dropped, setDropped] = useState(false);
   // A burst larger than one response continues on the next poll, which in
@@ -107,6 +110,7 @@ export function DebuggingTab() {
           options.signal,
         );
         setSources(result.sources);
+        setLogRoot(result.logRoot);
         setSourceId((current) =>
           options.reselect
             ? result.defaultSourceId
@@ -283,9 +287,10 @@ export function DebuggingTab() {
   const revealLogsFolder = useCallback(async () => {
     setRevealing(true);
     try {
-      // The selected log's own path, which is what resolves a custom
-      // UNSLOTH_STUDIO_HOME: open_logs_dir hard-codes ~/.unsloth/studio.
-      await openLogsFolder(realpath);
+      // The selected log's own path, else the root the backend reported. Either
+      // resolves a custom UNSLOTH_STUDIO_HOME; open_logs_dir hard-codes
+      // ~/.unsloth/studio and cannot.
+      await openLogsFolder(realpath, logRoot);
     } catch (error) {
       toast.error(t("settings.debugging.openLogsFolderFailed"), {
         description: (error as Error).message,
@@ -293,7 +298,7 @@ export function DebuggingTab() {
     } finally {
       setRevealing(false);
     }
-  }, [t, realpath]);
+  }, [t, realpath, logRoot]);
 
   const downloadAllLogs = useCallback(async () => {
     setExporting(true);

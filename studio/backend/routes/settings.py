@@ -3497,6 +3497,12 @@ class DebugLogSourcesResponse(BaseModel):
     sources: list[DebugLogSourceModel]
     default_source_id: Optional[str] = None
     file_logging_disabled: bool = False
+    # Where the logs actually live, so a caller does not have to guess. The
+    # desktop "Open logs folder" button otherwise falls back to a hard-coded
+    # ~/.unsloth/studio, which is wrong whenever UNSLOTH_STUDIO_HOME or
+    # STUDIO_HOME is set AND there is no readable log to take a path from.
+    # Additive and optional: an older client ignores it.
+    log_root: Optional[str] = None
 
 
 class DebugLogResponse(BaseModel):
@@ -3532,10 +3538,14 @@ def get_debug_log_sources(
     from utils import debug_log_sources
 
     sources = debug_log_sources.list_sources()
+    # The first candidate root is the one the walk prefers, so it is the
+    # directory a user opening "the log folder" expects to land in.
+    roots = debug_log_sources.candidate_roots()
     return DebugLogSourcesResponse(
         sources = [DebugLogSourceModel(**vars(source)) for source in sources],
         default_source_id = debug_log_sources.default_source_id(),
         file_logging_disabled = debug_log_sources.file_logging_disabled(),
+        log_root = str(roots[0]) if roots else None,
     )
 
 

@@ -75,6 +75,7 @@ function makeWorld(options: {
   respond?: () => Response;
 }) {
   const invokes: InvokeCall[] = [];
+  const refreshes: boolean[] = [];
   const requests: string[] = [];
   const downloads: { filename: string; bytes: number }[] = [];
   const toasts: ToastCall[] = [];
@@ -95,6 +96,10 @@ function makeWorld(options: {
         return options.respond?.() ?? new Response(new Blob(["PK"]));
       },
       getAuthToken: () => UI_TOKEN,
+      refreshSession: async () => {
+        refreshes.push(true);
+        return true;
+      },
     },
     "@/lib/api-base": {
       isTauri: options.isTauri,
@@ -184,6 +189,7 @@ function makeWorld(options: {
     button,
     downloads,
     invokes,
+    refreshes,
     render,
     requests,
     toasts,
@@ -242,6 +248,39 @@ test("openLogsFolder falls back to open_logs_dir when nothing is selected", asyn
   await world.api.openLogsFolder();
   assert.deepEqual(world.invokes, [
     { command: "open_logs_dir", args: undefined },
+  ]);
+});
+
+test("the desktop export refreshes the session before handing the token to Rust", async () => {
+  // Rust uses the token once and as-is: it cannot retry a 401 by refreshing the
+  // way authFetch does. Without this, a desktop left idle past the access-token
+  // lifetime exports with a dead token while holding a good refresh token.
+  const world = makeWorld({
+    isTauri: true,
+    invoke: async () => SAVED_PATH,
+  });
+
+  await world.api.exportAllLogs();
+  assert.equal(world.refreshes.length, 1, "no refresh before the desktop export");
+});
+
+test("openLogsFolder uses the reported root when no source is selected", async () => {
+  // The custom-home case with nothing readable in it: realpath stays null and
+  // open_logs_dir would send the user to a hard-coded ~/.unsloth/studio.
+  const world = makeWorld({ isTauri: true });
+
+  await world.api.openLogsFolder(null, "/srv/studio-home");
+  assert.deepEqual(world.invokes, [
+    { command: "open_models_dir", args: { path: "/srv/studio-home" } },
+  ]);
+});
+
+test("a selected log still beats the reported root", async () => {
+  const world = makeWorld({ isTauri: true });
+
+  await world.api.openLogsFolder("/srv/other/logs/server/s.log", "/srv/studio-home");
+  assert.deepEqual(world.invokes, [
+    { command: "open_models_dir", args: { path: "/srv/other/logs/server" } },
   ]);
 });
 

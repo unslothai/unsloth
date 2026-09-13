@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch, getAuthToken } from "@/features/auth";
+import { authFetch, getAuthToken, refreshSession } from "@/features/auth";
 import { apiUrl, isTauri } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { browserDownload } from "@/lib/native-files";
@@ -30,6 +30,8 @@ export interface DebugLogSources {
   sources: DebugLogSource[];
   defaultSourceId: string | null;
   fileLoggingDisabled: boolean;
+  /** Where the logs live. Null on a backend older than this field. */
+  logRoot: string | null;
 }
 
 export interface DebugLogPage {
@@ -72,6 +74,7 @@ export async function loadDebugLogSources(
     })),
     defaultSourceId: body.default_source_id ?? null,
     fileLoggingDisabled: Boolean(body.file_logging_disabled),
+    logRoot: body.log_root ?? null,
   };
 }
 
@@ -167,6 +170,20 @@ function desktopExportError(error: unknown): LogExportError {
   return new LogExportError(failureForStatus(status), message);
 }
 
+/**
+ * The access token, refreshed if one can be. Falls back to whatever is stored:
+ * a refresh that fails is not a reason to skip the attempt, since the stored
+ * token may still be valid and the backend is the real judge.
+ */
+async function freshAuthToken(): Promise<string | null> {
+  try {
+    await refreshSession();
+  } catch {
+    // Ignored on purpose; see above.
+  }
+  return getAuthToken();
+}
+
 function pad2(value: number): string {
   return String(value).padStart(2, "0");
 }
@@ -199,10 +216,15 @@ export async function exportAllLogs(): Promise<string | null> {
       // it. The command prefers a minted session and only falls back to this,
       // and it pins host, port and path, so the token can reach nothing the tab
       // could not already reach itself.
+      //
+      // Refreshed first because Rust cannot do it. `authFetch` retries a 401 by
+      // refreshing, but the token handed over IPC is used once and as-is, so a
+      // desktop left idle past the access-token lifetime would export with a
+      // dead token and fail while holding a perfectly good refresh token.
       return await invoke<string>("download_logs_to_downloads", {
         url: apiUrl(LOG_EXPORT_ENDPOINT),
         filename,
-        uiToken: getAuthToken(),
+        uiToken: await freshAuthToken(),
       });
     } catch (error) {
       throw desktopExportError(error);
@@ -230,10 +252,18 @@ export async function exportAllLogs(): Promise<string | null> {
  * custom home it opens an unrelated directory or errors on a missing one. It
  * stays as the fallback for when no source is selected yet.
  */
-export async function openLogsFolder(realpath?: string | null): Promise<void> {
+export async function openLogsFolder(
+  realpath?: string | null,
+  logRoot?: string | null,
+): Promise<void> {
   if (!isTauri) return;
   const { invoke } = await import("@tauri-apps/api/core");
-  const directory = realpath ? parentDirectory(realpath) : null;
+  // The selected log's own directory first, then the root the backend reported.
+  // `open_logs_dir` is last because it hard-codes ~/.unsloth/studio and is
+  // simply wrong under a custom home -- which is also the case where there may
+  // be no readable log to take a path from, so neither of the first two can be
+  // dropped in favour of the other.
+  const directory = (realpath ? parentDirectory(realpath) : null) ?? logRoot ?? null;
   if (directory) {
     await invoke("open_models_dir", { path: directory });
     return;

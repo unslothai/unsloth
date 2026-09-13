@@ -41,7 +41,9 @@ def _seed_server_log(body: str = "hello\n") -> Path:
     directory = Path(os.environ["UNSLOTH_STUDIO_HOME"]) / "logs" / "server"
     directory.mkdir(parents = True, exist_ok = True)
     path = directory / f"server-20260813-120000-pid{os.getpid()}.log"
-    path.write_text(body, encoding = "utf-8")
+    # newline = "": `write_text` otherwise translates \n to \r\n on Windows, which
+    # moves every byte offset the seek and budget tests below compute.
+    path.write_text(body, encoding = "utf-8", newline = "")
     return path
 
 
@@ -49,7 +51,7 @@ def _seed_llama_log(body: str = "llama runner line\n") -> Path:
     directory = Path(os.environ["UNSLOTH_STUDIO_HOME"]) / "logs" / "llama-server"
     directory.mkdir(parents = True, exist_ok = True)
     path = directory / "llama-1786000000.log"
-    path.write_text(body, encoding = "utf-8")
+    path.write_text(body, encoding = "utf-8", newline = "")
     return path
 
 
@@ -267,6 +269,21 @@ def test_two_labels_differing_only_in_case_do_not_extract_over_each_other():
     assert debug_log_export._member_name("server", "t.log", used) == "server/t-3.log"
 
 
+def _filesystem_folds_case(directory: Path) -> bool:
+    """Whether this filesystem treats two spellings as one file.
+
+    Windows and default APFS do, which is the whole reason `_member_name` folds
+    its collision key -- and also why the two-file scenario below cannot be
+    BUILT there: the second write lands on the first file.
+    """
+    probe = directory / "CaseProbe.tmp"
+    try:
+        probe.write_text("x", encoding = "utf-8")
+        return (directory / "caseprobe.tmp").exists()
+    finally:
+        probe.unlink(missing_ok = True)
+
+
 def test_two_logs_differing_only_in_case_both_survive_the_round_trip(monkeypatch):
     """The same property end to end, since that is where it would be lost.
 
@@ -279,6 +296,12 @@ def test_two_logs_differing_only_in_case_both_survive_the_round_trip(monkeypatch
     """
     directory = Path(os.environ["UNSLOTH_STUDIO_HOME"]) / "logs" / "server"
     directory.mkdir(parents = True, exist_ok = True)
+    if _filesystem_folds_case(directory):
+        # The two files would be one file here, so there is nothing to pack
+        # twice. The property still holds and is covered without a filesystem by
+        # test_two_labels_differing_only_in_case_do_not_extract_over_each_other,
+        # which is the test that matters on exactly these platforms.
+        pytest.skip("case-insensitive filesystem cannot hold both spellings")
     spellings = {
         "server-20260101-120000-pid1.log": "lowercase spelling\n",
         "Server-20260101-120000-pid1.log": "uppercase spelling\n",
@@ -350,7 +373,10 @@ def test_the_export_is_owner_gated_exactly_like_the_routes_it_sits_beside():
     for path in ("/debug/logs", "/debug/logs/sources", "/debug/logs/export"):
         for name in ("router", "_owner_settings_router"):
             candidate = getattr(settings_route, name)
-            if any(route.path == path for route in candidate.routes):
+            # getattr, not `route.path`: `.routes` also holds `_IncludedRouter`
+            # entries with no path, which raise on macOS and Windows runners while
+            # passing on this one purely by FastAPI version.
+            if any(getattr(route, "path", None) == path for route in candidate.routes):
                 routers[path] = name
     assert routers["/debug/logs/export"] == routers["/debug/logs"] == routers["/debug/logs/sources"]
     owner_router = settings_route._owner_settings_router
@@ -639,11 +665,18 @@ def test_an_undecodable_filename_does_not_take_the_export_down():
     directory = Path(os.environ["UNSLOTH_STUDIO_HOME"]) / "logs" / "server"
     directory.mkdir(parents = True, exist_ok = True)
     raw = os.fsdecode(b"server-\xff\xfe.log")
-    (directory / raw).write_bytes(b"a line\n")
+    try:
+        (directory / raw).write_bytes(b"a line\n")
+    except OSError:
+        # Tried rather than guessed from the platform: macOS has every POSIX
+        # call this would test for and still refuses the byte sequence, so the
+        # capability is the only honest gate.
+        pytest.skip("this filesystem refuses undecodable filenames")
     members = _members()
     assert any(name.startswith("server/") for name in members)
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "Windows filenames cannot contain a newline")
 def test_a_label_cannot_forge_a_line_in_the_warnings_member():
     directory = Path(os.environ["UNSLOTH_STUDIO_HOME"]) / "logs" / "server"
     directory.mkdir(parents = True, exist_ok = True)
@@ -691,6 +724,7 @@ def test_a_pathological_log_cannot_run_past_the_time_budget(monkeypatch):
     assert truncated or "time budget" in warnings
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "no os.mkfifo on this platform")
 def test_a_fifo_in_the_log_directory_does_not_hang_the_export(monkeypatch):
     """O_NOFOLLOW refuses a symlink but not a FIFO, and opening a FIFO with no
     writer blocks forever -- before the fstat check gets a turn to reject it."""
