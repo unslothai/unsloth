@@ -643,6 +643,7 @@ jobs:
         run: |
           mkdir -p logs/playwright_image_cancel_retry
           python tests/studio/playwright_image_download_cancel_retry.py
+          PW_DOWNLOAD_ONLY=1 PW_ART_DIR="$PW_ART_DIR/download-only" python tests/studio/playwright_image_download_cancel_retry.py
 
       # Same drive with the checkpoint absent, so the plan stages two entries instead of one and
       # the queue's ordering and cancellation are covered as well as the single-entry path.
@@ -656,6 +657,7 @@ jobs:
         run: |
           mkdir -p logs/playwright_image_cancel_retry_cold
           python tests/studio/playwright_image_download_cancel_retry.py
+          PW_DOWNLOAD_ONLY=1 PW_ART_DIR="$PW_ART_DIR/download-only" python tests/studio/playwright_image_download_cancel_retry.py
 
       - name: Image download queue regression (Playwright)
         if: matrix.shard == 'extra'
