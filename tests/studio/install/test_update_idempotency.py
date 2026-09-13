@@ -79,20 +79,93 @@ E2E = os.environ.get("UNSLOTH_IDEMPOTENCY_E2E") == "1"
 
 PROXY = pathlib.Path(__file__).resolve().parent / "idempotency_proxy.py"
 IS_WINDOWS = sys.platform == "win32"
+IS_MACOS = sys.platform == "darwin"
 # Each run's update log and proxy journal: pytest's tmp dir, or UNSLOTH_IDEMPOTENCY_ARTIFACTS to
 # keep them (a failure is unreadable without them).
 ARTIFACTS = os.environ.get("UNSLOTH_IDEMPOTENCY_ARTIFACTS", "")
 
 # Hosts a no-op update must not touch. pypi.org and github.com are bounded separately (a version
-# check and a latest-release HEAD are legitimate); these five are where the megabytes are.
+# check and a latest-release HEAD are legitimate); these are where the megabytes are.
 PAYLOAD_HOSTS = (
     "files.pythonhosted.org",
     "objects.githubusercontent.com",
-    "release-assets.githubusercontent.com",
     "nodejs.org",
 )
+# NOT release-assets.githubusercontent.com. Deciding whether the installed prebuilt is still the
+# right one REQUIRES reading that release's metadata, and prebuilt_core.release_asset_download_url
+# builds metadata and payload URLs with the same function, so both redirect to the same host: a
+# no-op update on this box fetches llama-prebuilt-{manifest,sha256}.json and the whisper pair,
+# 4 connections and ~46 KB of body, every time. Held to zero, the three no-op tests below could
+# never pass.
+#
+# Neither a connection count nor a byte total can separate the two: macOS deliberately walks back
+# through older releases (DEFAULT_MAX_MACOS_RELEASE_FALLBACKS = 16 in install_llama_prebuilt.py,
+# because upstream can ship a run of prebuilts built for a newer macOS than the host), so its
+# legitimate metadata cost is up to 16x the Linux one and overlaps the smallest real payload.
+#
+# The biggest SINGLE transfer does separate them, on every platform and whatever the walk-back
+# costs. Measured against the live releases: the largest metadata asset is llama-prebuilt-sha256
+# .json at 19 KB, while the smallest payload published anywhere on either release is
+# whisper-...-macos-arm64-slim.tar.gz at 567 KB, and the smallest llama one is 11 MB. Nothing uses
+# a Range header, so a payload always arrives as one connection carrying the whole file; a retry
+# restarts it rather than continuing it. 256 KB sits 13x above the metadata and 2.2x below the
+# cheapest payload.
+PREBUILT_METADATA_HOST = "release-assets.githubusercontent.com"
+PREBUILT_METADATA_CEILING = 256 * 1024
+
+# Deciding "the installed prebuilt is still the right one" costs a fixed number of github.com
+# connections per prebuilt, all of them BEFORE the local marker is consulted
+# (install_llama_prebuilt.py:8846, prebuilt_core.py:2364 are both downstream of resolution), so an
+# update with nothing to do pays them in full. Four, not the three the shape suggests:
+#   1. HEAD /releases/latest                      prebuilt_core.py:873-880
+#   2. the 302 to /releases/tag/<tag>, which urllib re-issues as its own connection and which
+#      stays on github.com -- unlike 3 and 4, whose redirects leave for release-assets
+#   3. GET /releases/download/<tag>/<name>-prebuilt-sha256.json
+#   4. GET /releases/download/<tag>/<name>-prebuilt-manifest.json
+GITHUB_PER_PREBUILT = 4
+# macOS llama.cpp does not take that fast path (install_llama_prebuilt.py:6470, because upstream can
+# ship a run of prebuilts built for a newer macOS than the host), and its walk-back collects
+# DEFAULT_MAX_MACOS_RELEASE_FALLBACKS plans even when the first one is fine (the loop breaks on
+# len(plans) >= release_limit, :6515), at 2 metadata assets per release.
+MACOS_LLAMA_GITHUB = 2 * 16
+MAX_GITHUB_DESKTOP = (
+    (MACOS_LLAMA_GITHUB if IS_MACOS else GITHUB_PER_PREBUILT)  # llama.cpp
+    + GITHUB_PER_PREBUILT       # whisper.cpp, which keeps the fast path on every platform
+    + GITHUB_PER_PREBUILT       # an AMD iGPU host resolves llama twice (:8597, no memoisation)
+    + 2                         # the whisper/llama ggml_tree pairing (install_whisper_prebuilt.py:381)
+    + 2                         # slack for a retried fetch (HTTP_FETCH_ATTEMPTS)
+)
+# --local adds the triton kernels ref probe: one `git ls-remote` against triton-lang/triton
+# (install_python_stack.py:8634, Linux only per :9171), plus uv's own git fetch for the unsloth-zoo
+# overlay when its git cache misses. A git invocation is ONE tunnel, not two: smart-HTTP's two
+# requests share the connection.
+MAX_GITHUB_LOCAL = MAX_GITHUB_DESKTOP + (0 if (IS_MACOS or IS_WINDOWS) else 1) + 2
+
+# api.github.com is NOT unsloth's on the --local path. uv resolves each
+# `pkg @ git+https://github.com/...` requirement to a commit SHA through
+# api.github.com/repos/{owner}/{repo}/commits/{ref} before any git transport runs (its GitHub fast
+# path, UV_NO_GITHUB_FAST_PATH disables it), and the zoo overlay force-reinstalls from git on every
+# --local run (install_python_stack.py:6527-6530, the one step with no skip gate). A full pass adds
+# the triton kernels requirement, Linux only. unsloth itself reaches api.github.com only where the
+# download-host fast path does not apply, which is macOS llama.cpp: github_releases(max_pages =
+# DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES) fetches every page eagerly (install_llama_prebuilt.py:918).
+MACOS_LLAMA_API_GITHUB = 5
+MAX_API_GITHUB_DESKTOP = MACOS_LLAMA_API_GITHUB if IS_MACOS else 0
+MAX_API_GITHUB_LOCAL = MAX_API_GITHUB_DESKTOP + 1
+
+
+def assert_read_metadata_but_no_payload(run) -> None:
+    """The release metadata a no-op update legitimately reads, and nothing bigger."""
+    largest = run.largest_transfer_from(PREBUILT_METADATA_HOST)
+    assert largest <= PREBUILT_METADATA_CEILING, (
+        f"{PREBUILT_METADATA_HOST} served a single {largest} byte transfer to an update with "
+        f"nothing to do: that size is a prebuilt archive, not a release manifest. {run.report()}"
+    )
 # NOT raw.githubusercontent.com: install.sh's shortcut refresh fetches rounded-512.png from it on an
-# editable install with no built frontend (~8 KB); a bound keeps it from growing.
+# editable install with no built frontend; a bound keeps it from growing. On the --local path uv
+# adds a second reason -- after its GitHub fast path resolves the zoo overlay's ref it reads that
+# commit's pyproject.toml from the same host (~7.8 KB) for static metadata -- so the ceiling covers
+# both rather than one 8 KB icon.
 ICON_FETCH_CEILING = 64 * 1024
 
 # What the installers print when they decline to do work (setup.sh consumes the prebuilt installers'
@@ -227,6 +300,17 @@ class ProxyRun:
             v["connections"]
             for h, v in self.summary["by_host"].items()
             if h == host or h.endswith("." + host)
+        )
+
+    def largest_transfer_from(self, host: str) -> int:
+        """The biggest single connection from `host`. 0 when it was never contacted."""
+        return max(
+            (
+                v["largest_bytes_down"]
+                for h, v in self.summary["by_host"].items()
+                if h == host or h.endswith("." + host)
+            ),
+            default = 0,
         )
 
     @property
@@ -598,6 +682,7 @@ def test_a_second_update_changes_nothing_on_disk(install, settled):
     for host in PAYLOAD_HOSTS:
         assert run.connections_to(host) == 0, f"{host}: {run.report()}"
         assert run.bytes_from(host) == 0, f"{host}: {run.report()}"
+    assert_read_metadata_but_no_payload(run)
 
 
 def test_a_second_update_downloads_no_payload(install, settled):
@@ -616,6 +701,7 @@ def test_a_second_update_downloads_no_payload(install, settled):
             f"{host} served {run.bytes_from(host)} bytes to an update with nothing to "
             f"do: {run.report()}"
         )
+    assert_read_metadata_but_no_payload(run)
 
 
 def test_a_second_local_update_reuses_everything_it_can(install, settled):
@@ -645,8 +731,11 @@ def test_a_second_local_update_reuses_everything_it_can(install, settled):
     for host in PAYLOAD_HOSTS:
         assert run.connections_to(host) == 0, f"{host}: {run.report()}"
         assert run.bytes_from(host) == 0, f"{host}: {run.report()}"
-    # The release is never listed: the marker checks cost one HEAD per prebuilt.
-    assert run.connections_to("api.github.com") == 0, run.report()
+    assert_read_metadata_but_no_payload(run)
+    # The release is never listed. Not zero: this is the --local pass, and uv resolves the zoo
+    # overlay's git ref through the API before cloning (see MAX_API_GITHUB_LOCAL).
+    assert run.connections_to("api.github.com") <= MAX_API_GITHUB_LOCAL, run.report()
+    assert run.connections_to("github.com") <= MAX_GITHUB_LOCAL, run.report()
 
 
 # ── offline ──
@@ -772,19 +861,30 @@ def test_a_deleted_manifest_re_runs_the_pass_and_changes_nothing(install, settle
     assert moved == [], "a pass with no evidence reinstalled: " + ", ".join(moved)
 
 
-def test_a_damaged_llama_binary_makes_the_marker_check_decline(install, settled):
-    """The pre-check answers "current" from hashes of the runtime binaries, so a damaged
-    one has to send the update back to the release it was skipping.
+def test_a_missing_llama_binary_makes_the_marker_check_decline(install, settled):
+    """A runtime binary the install no longer has sends the update back to the release it
+    was skipping.
+
+    MISSING, not corrupt, and that distinction is the whole test. The pre-check is
+    `[ -x "$1/llama-server" ] || [ -x "$1/build/bin/llama-server" ]` (setup.sh:2932) plus
+    the marker fingerprint and a tree walk: it asks whether the file is there, never what
+    is in it. Truncating llama-server to a quarter of its bytes -- which is what this case
+    used to do on POSIX -- produces a byte-identical log AND byte-identical network traffic,
+    so the case could not fail on Linux or macOS; only the Windows branch, which unlinked,
+    ever damaged anything the check could see. Measured, not assumed: a truncated 14.6 KB
+    ELF still printed `prebuilt up to date and validated`.
+
+    So both halves of the symlink pair go, on every platform. That a CORRUPT binary
+    survives an update unnoticed is a real gap, but it is a gap in the product's damage
+    detection, not something this harness can assert its way out of; it needs a content
+    check in the pre-check first. Deliberately not encoded here as expected behaviour.
 
     Measured on the network rather than in the log, because the log line the fast path
-    produces is consumed by setup.sh and reprinted identically either way: reaching
-    release-assets.githubusercontent.com at all means the release was listed, which is
-    exactly the work the marker check exists to avoid.
-
-    It asserts a DECLINE, not a repair. A truncated llama-server is not replaced by the
-    full path either -- its own check is the marker fingerprint plus a tree walk, and it
-    has never hashed the binaries. That is unchanged by this PR: the pre-check refuses to
-    answer, and what happens next is what happened before.
+    produces is consumed by setup.sh and reprinted identically either way. It is the SIZE
+    of the biggest transfer that carries the signal, not the fact of one: every update,
+    including one with nothing to do, reads that release's manifest and checksum JSON from
+    release-assets.githubusercontent.com, so "was it contacted" is true either way and
+    proves nothing. An archive moving is the decline.
     """
     directory, before = settled
     candidates = sorted(_unsloth_home().glob("llama.cpp/**/llama-server*"))
@@ -793,19 +893,31 @@ def test_a_damaged_llama_binary_makes_the_marker_check_decline(install, settled)
         pytest.skip("no llama.cpp prebuilt in this install")
     saved = victim.read_bytes()
     mode = victim.stat().st_mode
-    if IS_WINDOWS:
-        # Damage the Windows validator detects too: it has no image-reading preflight.
-        victim.unlink()
-    else:
-        victim.write_bytes(saved[: len(saved) // 4])
+    # The pre-check accepts EITHER path, so removing one leaves it answering from the other.
+    sibling = _unsloth_home() / "llama.cpp" / "llama-server"
+    sibling_target = (
+        os.readlink(sibling) if sibling.is_symlink()
+        else (sibling.read_bytes() if sibling.is_file() else None)
+    )
+    sibling_was_symlink = sibling.is_symlink()
+    victim.unlink()
+    if sibling_target is not None and sibling != victim:
+        sibling.unlink()
     try:
         run = run_update(directory, "fault-llama", local = True)
         assert run.rc == 0, run.log[-8000:]
-        assert run.connections_to("release-assets.githubusercontent.com") > 0, (
-            "a damaged runtime binary was still answered from the marker: " + run.report()
+        assert run.largest_transfer_from(PREBUILT_METADATA_HOST) > PREBUILT_METADATA_CEILING, (
+            "a missing runtime binary was still answered from the marker -- nothing larger "
+            "than the release metadata every update reads came back: " + run.report()
         )
     finally:
-        victim.write_bytes(saved)
+        if not victim.exists():
+            victim.write_bytes(saved)
+        if sibling_target is not None and not sibling.exists():
+            if sibling_was_symlink:
+                os.symlink(sibling_target, sibling)
+            else:
+                sibling.write_bytes(sibling_target)
         victim.chmod(mode)
     assert snapshot(install)["distributions"] == before["distributions"]
 
@@ -1045,11 +1157,11 @@ def test_the_desktop_update_path_does_no_network_work(install, settled):
     # Each component, not the generic line once.
     assert run.log.count("prebuilt up to date") >= 2, run.log[-8000:]
     assert run.log.count("sidecar current") == 3, run.log[-8000:]
-    # One version check and one latest-release HEAD per prebuilt; the bound stops a full listing
-    # returning.
+    # One version check per run; the bounds stop a full listing or a payload returning.
     assert run.connections_to("pypi.org") <= 2, run.report()
-    assert run.connections_to("github.com") <= 6, run.report()
-    # The other half of the prebuilt claim: the release itself is never listed.
-    assert run.connections_to("api.github.com") == 0, run.report()
-    assert run.connections_to("release-assets.githubusercontent.com") == 0, run.report()
+    assert run.connections_to("github.com") <= MAX_GITHUB_DESKTOP, run.report()
+    # The other half of the prebuilt claim: the release itself is never listed. Zero everywhere the
+    # download-host fast path applies, which is everywhere except macOS llama.cpp.
+    assert run.connections_to("api.github.com") <= MAX_API_GITHUB_DESKTOP, run.report()
+    assert_read_metadata_but_no_payload(run)
     assert diff(before, snapshot(install)) == []

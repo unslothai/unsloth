@@ -245,8 +245,18 @@ def summary(
     since_ts: float | None = None,
     until_ts: float | None = None,
 ) -> dict:
+    # largest_bytes_down is the biggest SINGLE connection, which is what separates a release's
+    # metadata from its payload: both are served by the same host over the same URL shape, so a
+    # total or a connection count cannot tell them apart (see PREBUILT_METADATA_CEILING).
     by_host: dict[str, dict] = defaultdict(
-        lambda: {"bytes_down": 0, "bytes_up": 0, "connections": 0, "refused": 0, "seconds": 0.0}
+        lambda: {
+            "bytes_down": 0,
+            "bytes_up": 0,
+            "largest_bytes_down": 0,
+            "connections": 0,
+            "refused": 0,
+            "seconds": 0.0,
+        }
     )
     total = connections = refused = 0
     if os.path.exists(path):
@@ -263,6 +273,7 @@ def summary(
                 h = by_host[rec.get("host") or "?"]
                 h["bytes_down"] += rec["bytes_down"]
                 h["bytes_up"] += rec["bytes_up"]
+                h["largest_bytes_down"] = max(h["largest_bytes_down"], rec["bytes_down"])
                 h["connections"] += 1
                 h["seconds"] += rec["seconds"]
                 connections += 1
