@@ -3061,6 +3061,17 @@ async def start_diffusion_training(
         normalized_cfg.hf_token,
     )
 
+    # _preflight_gated_base skips a local path, and _assert_trusted_base_model accepts one as long
+    # as it is a real pipeline directory, so a base ALREADY in the operator's cache reached the
+    # trainer unchecked. Scrubbing the child environment does not help there: from_pretrained reads
+    # those files off disk and asks for no credential. Same authorization the LLM start applies.
+    await asyncio.to_thread(
+        _refuse_unauthorized_cached_local_paths,
+        [normalized_cfg.fetch_base_model or "", normalized_cfg.base_model or ""],
+        hf_token_arg(normalized_cfg.hf_token, allow_ambient_token = config["allow_ambient"]),
+        "model",
+    )
+
     from core.training import diffusion_train_common as _dtc
 
     service = get_diffusion_training_service()

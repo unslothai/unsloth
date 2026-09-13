@@ -312,6 +312,50 @@ def test_diffusion_child_leaves_a_studio_session_alone(monkeypatch):
         assert os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN") != "1"
 
 
+def test_a_cached_diffusion_base_requires_caller_authorization(monkeypatch, cache_root):
+    """Scrubbing the child environment does not protect a base that is ALREADY cached.
+
+    `_preflight_gated_base` returns early for a local path and `_assert_trusted_base_model` accepts
+    any real pipeline directory, so a tokenless API key could name the operator's cached private
+    base and `from_pretrained` would read it off disk without asking for a credential.
+    """
+    import routes.training as training_routes
+    from fastapi import HTTPException
+
+    snapshot = _make_repo(cache_root, "models--org--private-sdxl")
+    seen = {}
+
+    def refuse(
+        hf_token,
+        *,
+        repo_id,
+        is_cached,
+        repo_type = "model",
+        offline = False,
+    ):
+        seen["repo_id"] = repo_id
+        return hf_token is False
+
+    monkeypatch.setattr(training_routes, "cached_read_refused", refuse)
+
+    with pytest.raises(HTTPException) as error:
+        training_routes._refuse_unauthorized_cached_local_paths(
+            [str(snapshot), ""],
+            False,
+            "model",
+        )
+    assert error.value.status_code == 422
+    assert error.value.detail["code"] == "hf_model_access_denied"
+    assert seen["repo_id"] == "org/private-sdxl"
+
+    # A Hub id rather than a path resolves to nothing on disk and must not be probed as one.
+    training_routes._refuse_unauthorized_cached_local_paths(
+        ["black-forest-labs/FLUX.2-klein-4B", ""],
+        False,
+        "model",
+    )
+
+
 def test_the_diffusion_config_tolerates_the_new_policy_key():
     """allow_ambient rides the raw config dict; the trainer dataclass must ignore it."""
     from core.training.diffusion_train_common import _config_from_dict
