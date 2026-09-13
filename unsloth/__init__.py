@@ -11,6 +11,14 @@
 
 import os, importlib.util, platform, sys
 
+# Intra-card context-parallel FLA backend must stay off for single-process runs (Qwen3.5 / Next).
+# Do not set FLA_DISABLE_BACKEND_DISPATCH here — that bypasses TileLang dispatch on Hopper too.
+from .launcher_world_size import world_size_from_env as _launcher_world_size
+
+if _launcher_world_size() <= 1:
+    os.environ.setdefault("FLA_INTRACARD_CP", "0")
+del _launcher_world_size
+
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
 # Opt into ROCm AOTriton kernels PyTorch still gates as experimental; it keeps its own hardware
