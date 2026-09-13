@@ -5,8 +5,8 @@
 
 The abandoned turn serialises to a lone empty assistant message, every backend drops it, and
 strict templates (Ministral, Gemma) then refuse the two user turns that are left touching.
-``pruneOutboundHistory`` drops that turn together with the prompt that triggered it, the way
-refusals are already dropped.
+``toOpenAIMessages`` fills it with ``incompleteLabel`` instead, so the prompt stays on the wire
+and roles still alternate (#10428). Refusals and silent empty turns still drop with theirs.
 
 The prune, ``toOpenAIMessages`` and ``serializeAssistantReplayMessages`` are sliced verbatim out
 of the studio sources and run under ``node`` (see ``_node_harness``), so what is asserted is the
@@ -128,7 +128,7 @@ def _harness_source() -> str:
         + slice_between(
             read(CONTINUATION),
             "export type IncompleteReason =",
-            "const INCOMPLETE_LABELS",
+            "export function stripContinuationOverlap(",
         )
         + """
 // The refusal-only prune this fix replaces, kept so each case can show what the wire looked
@@ -155,6 +155,17 @@ export function wireRoles(messages: any[], includeReasoningContent: boolean): st
     .map((message: any) => message.role);
 }
 
+/** Same as wireRoles, but skips fillStoppedAssistantReplay so the #9484 pair still shows. */
+export function wireRolesBeforeFill(messages: any[], includeReasoningContent: boolean): string[] {
+  return messages
+    .flatMap((message: any) => message.role === "assistant"
+      ? serializeAssistantReplayMessages(message, includeReasoningContent)
+      : toOpenAIMessages(message, includeReasoningContent))
+    .filter((message: any) => !(message.role === "assistant" && !message.content
+      && !message.tool_calls && !message.reasoning_content))
+    .map((message: any) => message.role);
+}
+
 export { pruneOutboundHistory, toOpenAIMessages };
 """
         + _send_path_slice()
@@ -171,13 +182,22 @@ CANCELLED = (
     '{ role: "assistant", content: [], status: { type: "incomplete" },'
     ' metadata: { custom: { incomplete: { reason: "cancelled" } } } }'
 )
+# Nothing yielded, so status is the only record; a failure has the same shape under "error".
+STOPPED_UNMARKED = (
+    '{ role: "assistant", content: [], status: { type: "incomplete", reason: "cancelled" } }'
+)
+FAILED_UNMARKED = (
+    '{ role: "assistant", content: [], status: { type: "incomplete", reason: "error" } }'
+)
+STOPPED = "Response stopped"
+INTERRUPTED = "Response interrupted"
 
 
 def _script(history: str, include_reasoning: str = "true") -> str:
     return textwrap.dedent(
         f"""
         // @ts-nocheck
-        import {{ pruneOutboundHistory, pruneRefusalsOnly, toOpenAIMessages, wireRoles }}
+        import {{ pruneOutboundHistory, pruneRefusalsOnly, toOpenAIMessages, wireRoles, wireRolesBeforeFill }}
           from "./harness.ts";
         const history = {history};
         const kept = pruneOutboundHistory(history, {include_reasoning});
@@ -186,7 +206,7 @@ def _script(history: str, include_reasoning: str = "true") -> str:
           keptText: kept.flatMap((m) => (m.content ?? []).filter((p) => p.type === "text")
             .map((p) => p.text)),
           wire: wireRoles(kept, {include_reasoning}),
-          wireBefore: wireRoles(pruneRefusalsOnly(history), {include_reasoning}),
+          wireBefore: wireRolesBeforeFill(pruneRefusalsOnly(history), {include_reasoning}),
         }}));
         """
     )
@@ -205,11 +225,13 @@ def test_the_defect_is_two_user_turns_touching_on_the_wire():
     )
 
 
-def test_a_stop_before_any_output_takes_its_prompt_with_it():
+def test_a_stop_before_any_output_keeps_its_prompt_on_the_wire():
+    """#10428: the prompt must still transmit; #9484 wanted alternating roles, not deletion."""
     out = _run(_script(f"[{_user('first')}, {CANCELLED}, {_user('second')}]"))
-    assert out["kept"] == ["user"]
-    assert out["keptText"] == ["second"]
-    assert out["wire"] == ["user"]
+    assert out["kept"] == ["user", "assistant", "user"]
+    assert out["keptText"] == ["first", "second"]
+    assert out["wire"] == ["user", "assistant", "user"]
+    assert out["wireBefore"] == ["user", "user"]
 
 
 def test_a_reply_that_produced_text_is_kept_with_its_prompt():
@@ -220,12 +242,12 @@ def test_a_reply_that_produced_text_is_kept_with_its_prompt():
     assert out["wire"] == ["user", "assistant", "user"]
 
 
-def test_a_stop_during_reasoning_is_abandoned_on_both_serialisations():
+def test_a_stop_during_reasoning_keeps_its_prompt_on_both_serialisations():
     """An incomplete turn never replays its reasoning, so the local and external builds agree.
 
     They pass different ``includeReasoningContent``: the recount always sends true, the request
-    sends ``!isExternalRequest``. A turn cut mid-think must prune either way or the two paths
-    would price and send different histories.
+    sends ``!isExternalRequest``. A turn cut mid-think must keep the prompt either way or
+    the two paths would price and send different histories.
     """
     thinking = (
         '{ role: "assistant", content: [{ type: "reasoning", text: "let me think" }],'
@@ -233,8 +255,13 @@ def test_a_stop_during_reasoning_is_abandoned_on_both_serialisations():
     )
     for include_reasoning in ("true", "false"):
         out = _run(_script(f"[{_user('first')}, {thinking}, {_user('second')}]", include_reasoning))
-        assert out["kept"] == ["user"], f"includeReasoningContent={include_reasoning}"
-        assert out["keptText"] == ["second"]
+        assert out["kept"] == [
+            "user",
+            "assistant",
+            "user",
+        ], f"includeReasoningContent={include_reasoning}"
+        assert out["keptText"] == ["first", "second"]
+        assert out["wire"] == ["user", "assistant", "user"]
 
 
 def test_a_turn_that_called_a_tool_is_not_abandoned():
@@ -260,12 +287,12 @@ def test_refusals_are_still_pruned_with_their_prompt():
     assert out["keptText"] == ["second"]
 
 
-def test_back_to_back_stops_collapse_to_the_live_prompt():
-    """Stop twice and both abandoned pairs go, rather than one prune uncovering the next."""
+def test_back_to_back_stops_keep_every_interrupted_prompt():
     history = f"[{_user('first')}, {CANCELLED}, {_user('second')}, {CANCELLED}, {_user('third')}]"
     out = _run(_script(history))
-    assert out["kept"] == ["user"]
-    assert out["keptText"] == ["third"]
+    assert out["kept"] == ["user", "assistant", "user", "assistant", "user"]
+    assert out["keptText"] == ["first", "second", "third"]
+    assert out["wire"] == ["user", "assistant", "user", "assistant", "user"]
     assert out["wireBefore"] == ["user", "user", "user"]
 
 
@@ -316,13 +343,19 @@ def test_a_tool_call_the_replay_cannot_carry_prunes_with_its_prompt():
             ' toolName: "delete_file", args: "{}" }]' + marker
         )
         out = _run(_script(f"[{_user('first')}, {unreplayable}, {_user('second')}]"))
-        assert out["kept"] == ["user"], marker
-        assert out["keptText"] == ["second"]
-        assert out["wire"] == ["user"]
         assert out["wireBefore"] == ["user", "user"], (
             "the refusal-only prune must still strand the pair here, or this case has stopped "
             "measuring the defect it was written for"
         )
+        if marker == stopped:
+            # Stopped, so the prompt is history. The unreplayable call stays off the wire.
+            assert out["kept"] == ["user", "assistant", "user"], marker
+            assert out["keptText"] == ["first", "second"]
+            assert out["wire"] == ["user", "assistant", "user"]
+        else:
+            assert out["kept"] == ["user"], marker
+            assert out["keptText"] == ["second"]
+            assert out["wire"] == ["user"]
 
 
 def test_a_resultless_call_that_replays_without_role_tool_keeps_its_prompt():
@@ -353,8 +386,12 @@ def test_a_trailing_abandoned_turn_keeps_the_prompt_it_followed():
     """
     for include_reasoning in ("true", "false"):
         out = _run(_script(f"[{_user('first')}, {CANCELLED}]", include_reasoning))
-        assert out["kept"] == ["user"], f"includeReasoningContent={include_reasoning}"
+        assert out["kept"] == [
+            "user",
+            "assistant",
+        ], f"includeReasoningContent={include_reasoning}"
         assert out["keptText"] == ["first"]
+        assert out["wire"] == ["user", "assistant"]
 
 
 def test_a_thread_that_is_only_a_stop_keeps_its_system_prompt_and_prompt():
@@ -363,7 +400,7 @@ def test_a_thread_that_is_only_a_stop_keeps_its_system_prompt_and_prompt():
         f"{_user('first')}, {CANCELLED}]"
     )
     out = _run(_script(history))
-    assert out["kept"] == ["system", "user"]
+    assert out["kept"] == ["system", "user", "assistant"]
     assert out["keptText"] == ["sys", "first"]
 
 
@@ -414,6 +451,54 @@ def test_the_send_path_builds_its_payload_out_of_pruned_history():
     """
     for is_external in ("false", "true"):
         out = _run(_send_script(f"[{_user('first')}, {CANCELLED}, {_user('second')}]", is_external))
+        assert out["roles"] == ["user", "assistant", "user"], f"isExternalRequest={is_external}"
+        assert out["contents"] == ["first", STOPPED, "second"]
+
+
+def test_a_stop_with_no_persisted_marker_still_reads_as_a_stop():
+    """The real shape: nothing is yielded before the first token, so only the status is left."""
+    for is_external in ("false", "true"):
+        out = _run(
+            _send_script(f"[{_user('first')}, {STOPPED_UNMARKED}, {_user('second')}]", is_external)
+        )
+        assert out["roles"] == ["user", "assistant", "user"], f"isExternalRequest={is_external}"
+        assert out["contents"] == ["first", STOPPED, "second"]
+
+
+def test_a_generation_that_failed_is_not_replayed_as_a_stop():
+    """Same empty shape under ``reason: "error"``: the prompt stays, but "stopped" misreports why."""
+    for is_external in ("false", "true"):
+        out = _run(
+            _send_script(f"[{_user('first')}, {FAILED_UNMARKED}, {_user('second')}]", is_external)
+        )
+        assert out["roles"] == ["user", "assistant", "user"], f"isExternalRequest={is_external}"
+        assert out["contents"] == ["first", INTERRUPTED, "second"]
+
+
+def test_a_reloaded_stop_keeps_its_prompt_once_the_marker_was_persisted():
+    """Reloaded, not in-session: ``status`` rebuilds as ``complete``, so the persisted marker is
+    all that still says this was stopped. The durable path stamps it; the next test is the gap."""
+    reloaded = (
+        '{ role: "assistant", content: [], status: { type: "complete", reason: "unknown" },'
+        ' metadata: { custom: { incomplete: { reason: "cancelled" } } } }'
+    )
+    for is_external in ("false", "true"):
+        out = _run(_send_script(f"[{_user('first')}, {reloaded}, {_user('second')}]", is_external))
+        assert out["roles"] == ["user", "assistant", "user"], f"isExternalRequest={is_external}"
+        assert out["contents"] == ["first", STOPPED, "second"]
+
+
+def test_a_reloaded_stop_with_no_persisted_marker_is_still_dropped():
+    """The known limit, pinned as a decision: nothing persists a marker, so the reloaded row is
+    indistinguishable from a silent reply. Closing it means persisting at Stop time, not here."""
+    reloaded_unmarked = (
+        '{ role: "assistant", content: [], status: { type: "complete", reason: "unknown" },'
+        " metadata: { custom: {} } }"
+    )
+    for is_external in ("false", "true"):
+        out = _run(
+            _send_script(f"[{_user('first')}, {reloaded_unmarked}, {_user('second')}]", is_external)
+        )
         assert out["roles"] == ["user"], f"isExternalRequest={is_external}"
         assert out["contents"] == ["second"]
 
@@ -426,7 +511,7 @@ def test_the_send_path_still_carries_an_answered_exchange():
     assert out["contents"] == ["first", "an answer", "second"]
 
 
-def test_a_stop_that_produced_only_whitespace_takes_its_prompt_with_it():
+def test_a_stop_that_produced_only_whitespace_keeps_its_prompt():
     """Whitespace is not an answer, and the backend already agrees.
 
     ``_build_external_messages`` drops any assistant turn whose string content trims away
@@ -441,8 +526,9 @@ def test_a_stop_that_produced_only_whitespace_takes_its_prompt_with_it():
             ' metadata: { custom: { incomplete: { reason: "cancelled" } } } }' % blank
         )
         out = _run(_script(f"[{_user('first')}, {whitespace}, {_user('second')}]"))
-        assert out["kept"] == ["user"], repr(blank)
-        assert out["keptText"] == ["second"]
+        assert out["kept"] == ["user", "assistant", "user"], repr(blank)
+        assert [text for text in out["keptText"] if text.strip()] == ["first", "second"]
+        assert out["wire"] == ["user", "assistant", "user"]
         assert out["wireBefore"] == ["user", "assistant", "user"], (
             "the refusal-only prune kept the whitespace turn, which is the hop the backend "
             "trim then undid"

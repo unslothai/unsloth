@@ -58,6 +58,38 @@ test("an abandoned turn is pruned with the user prompt that triggered it", () =>
   );
 });
 
+test("a stopped empty assistant is filled before the prune sees it", () => {
+  assert.match(adapter, /function fillStoppedAssistantReplay\(/);
+  assert.match(
+    adapter,
+    /return fillStoppedAssistantReplay\(\s*message,\s*serializeAssistantReplayMessages\(/,
+  );
+  assert.match(adapter, /function stoppedAssistantReplayText\(/);
+  assert.match(adapter, /incompleteLabel\(info\?\.reason \?\? fromStatus\)/);
+});
+
+test("a Stop while a model loads arrives as a Stop", () => {
+  assert.match(
+    adapter,
+    /reject\(abortSignal\.reason \?\? new DOMException\("Aborted", "AbortError"\)\)/,
+  );
+});
+
+test("a Stop that beats the durable admission arrives as a Stop", () => {
+  assert.match(
+    adapter,
+    /throw runSignal\.reason \?\?\s*new DOMException\("Aborted", "AbortError"\)/,
+  );
+});
+
+test("only a deliberate Stop is replayed as one", () => {
+  // Collapsing this back to a constant tells the model a failed turn was stopped.
+  assert.match(
+    adapter,
+    /status\?\.type !== "incomplete" \|\| status\.reason === "cancelled"/,
+  );
+});
+
 test("a trailing abandoned turn keeps the prompt it followed", () => {
   assert.match(adapter, /if \(refused \|\| index < lastSurviving\) \{/);
 });
