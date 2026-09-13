@@ -91,64 +91,37 @@ PAYLOAD_HOSTS = (
     "objects.githubusercontent.com",
     "nodejs.org",
 )
-# NOT release-assets.githubusercontent.com. Deciding whether the installed prebuilt is still the
-# right one REQUIRES reading that release's metadata, and prebuilt_core.release_asset_download_url
-# builds metadata and payload URLs with the same function, so both redirect to the same host: a
-# no-op update on this box fetches llama-prebuilt-{manifest,sha256}.json and the whisper pair,
-# 4 connections and ~46 KB of body, every time. Held to zero, the three no-op tests below could
-# never pass.
-#
-# Neither a connection count nor a byte total can separate the two: macOS deliberately walks back
-# through older releases (DEFAULT_MAX_MACOS_RELEASE_FALLBACKS = 16 in install_llama_prebuilt.py,
-# because upstream can ship a run of prebuilts built for a newer macOS than the host), so its
-# legitimate metadata cost is up to 16x the Linux one and overlaps the smallest real payload.
-#
-# The biggest SINGLE transfer does separate them, on every platform and whatever the walk-back
-# costs. Measured against the live releases: the largest metadata asset is llama-prebuilt-sha256
-# .json at 19 KB, while the smallest payload published anywhere on either release is
-# whisper-...-macos-arm64-slim.tar.gz at 567 KB, and the smallest llama one is 11 MB. Nothing uses
-# a Range header, so a payload always arrives as one connection carrying the whole file; a retry
-# restarts it rather than continuing it. 256 KB sits 13x above the metadata and 2.2x below the
-# cheapest payload.
+# NOT release-assets.githubusercontent.com: deciding whether the installed prebuilt is still the
+# right one reads that release's manifest and sha256 JSON, and release_asset_download_url builds
+# metadata and payload URLs alike, so both land on that host (~46 KB every run). A count or a total
+# cannot separate them either, because macOS walks back 16 releases of metadata. The biggest SINGLE
+# transfer can: largest metadata asset 19 KB, smallest published payload 567 KB, and no Range header
+# anywhere, so a payload is always one connection carrying the whole file.
 PREBUILT_METADATA_HOST = "release-assets.githubusercontent.com"
 PREBUILT_METADATA_CEILING = 256 * 1024
 
-# Deciding "the installed prebuilt is still the right one" costs a fixed number of github.com
-# connections per prebuilt, all of them BEFORE the local marker is consulted
-# (install_llama_prebuilt.py:8846, prebuilt_core.py:2364 are both downstream of resolution), so an
-# update with nothing to do pays them in full. Four, not the three the shape suggests:
-#   1. HEAD /releases/latest                      prebuilt_core.py:873-880
-#   2. the 302 to /releases/tag/<tag>, which urllib re-issues as its own connection and which
-#      stays on github.com -- unlike 3 and 4, whose redirects leave for release-assets
-#   3. GET /releases/download/<tag>/<name>-prebuilt-sha256.json
-#   4. GET /releases/download/<tag>/<name>-prebuilt-manifest.json
+# Per prebuilt, all before the local marker is consulted: HEAD /releases/latest, the 302 to
+# /releases/tag/<tag> that urllib re-issues and that stays on this host, then one GET per metadata
+# asset (whose redirects leave for release-assets).
 GITHUB_PER_PREBUILT = 4
-# macOS llama.cpp does not take that fast path (install_llama_prebuilt.py:6470, because upstream can
-# ship a run of prebuilts built for a newer macOS than the host), and its walk-back collects
-# DEFAULT_MAX_MACOS_RELEASE_FALLBACKS plans even when the first one is fine (the loop breaks on
-# len(plans) >= release_limit, :6515), at 2 metadata assets per release.
+# macOS llama.cpp skips that fast path (install_llama_prebuilt.py:6470) and collects
+# DEFAULT_MAX_MACOS_RELEASE_FALLBACKS plans even when the first is fine, 2 assets each.
 MACOS_LLAMA_GITHUB = 2 * 16
 MAX_GITHUB_DESKTOP = (
     (MACOS_LLAMA_GITHUB if IS_MACOS else GITHUB_PER_PREBUILT)  # llama.cpp
-    + GITHUB_PER_PREBUILT       # whisper.cpp, which keeps the fast path on every platform
-    + GITHUB_PER_PREBUILT       # an AMD iGPU host resolves llama twice (:8597, no memoisation)
-    + 2                         # the whisper/llama ggml_tree pairing (install_whisper_prebuilt.py:381)
-    + 2                         # slack for a retried fetch (HTTP_FETCH_ATTEMPTS)
+    + GITHUB_PER_PREBUILT  # whisper.cpp, fast path on every platform
+    + GITHUB_PER_PREBUILT  # an AMD iGPU host resolves llama twice (:8597)
+    + 2  # the whisper/llama ggml_tree pairing (install_whisper_prebuilt.py:381)
+    + 2  # slack for a retried fetch
 )
-# --local adds the triton kernels ref probe: one `git ls-remote` against triton-lang/triton
-# (install_python_stack.py:8634, Linux only per :9171), plus uv's own git fetch for the unsloth-zoo
-# overlay when its git cache misses. A git invocation is ONE tunnel, not two: smart-HTTP's two
-# requests share the connection.
+# --local adds the triton kernels ref probe (one git ls-remote, Linux only) and uv's git fetch for
+# the zoo overlay on a cache miss. One git invocation is one tunnel, not two.
 MAX_GITHUB_LOCAL = MAX_GITHUB_DESKTOP + (0 if (IS_MACOS or IS_WINDOWS) else 1) + 2
 
-# api.github.com is NOT unsloth's on the --local path. uv resolves each
-# `pkg @ git+https://github.com/...` requirement to a commit SHA through
-# api.github.com/repos/{owner}/{repo}/commits/{ref} before any git transport runs (its GitHub fast
-# path, UV_NO_GITHUB_FAST_PATH disables it), and the zoo overlay force-reinstalls from git on every
-# --local run (install_python_stack.py:6527-6530, the one step with no skip gate). A full pass adds
-# the triton kernels requirement, Linux only. unsloth itself reaches api.github.com only where the
-# download-host fast path does not apply, which is macOS llama.cpp: github_releases(max_pages =
-# DEFAULT_GITHUB_RELEASE_SCAN_MAX_PAGES) fetches every page eagerly (install_llama_prebuilt.py:918).
+# api.github.com on --local is uv's, not ours: it resolves each git+https://github.com requirement
+# to a SHA through the API before cloning (UV_NO_GITHUB_FAST_PATH disables it), and the zoo overlay
+# reinstalls from git every run. We reach it only where the download-host fast path does not apply,
+# which is macOS llama.cpp listing its releases a page at a time.
 MACOS_LLAMA_API_GITHUB = 5
 MAX_API_GITHUB_DESKTOP = MACOS_LLAMA_API_GITHUB if IS_MACOS else 0
 MAX_API_GITHUB_LOCAL = MAX_API_GITHUB_DESKTOP + 1
@@ -161,11 +134,10 @@ def assert_read_metadata_but_no_payload(run) -> None:
         f"{PREBUILT_METADATA_HOST} served a single {largest} byte transfer to an update with "
         f"nothing to do: that size is a prebuilt archive, not a release manifest. {run.report()}"
     )
-# NOT raw.githubusercontent.com: install.sh's shortcut refresh fetches rounded-512.png from it on an
-# editable install with no built frontend; a bound keeps it from growing. On the --local path uv
-# adds a second reason -- after its GitHub fast path resolves the zoo overlay's ref it reads that
-# commit's pyproject.toml from the same host (~7.8 KB) for static metadata -- so the ceiling covers
-# both rather than one 8 KB icon.
+
+
+# NOT raw.githubusercontent.com: install.sh's shortcut refresh reads rounded-512.png from it, and on
+# --local uv reads the resolved zoo commit's pyproject.toml from it too. The ceiling covers both.
 ICON_FETCH_CEILING = 64 * 1024
 
 # What the installers print when they decline to do work (setup.sh consumes the prebuilt installers'
@@ -866,25 +838,16 @@ def test_a_missing_llama_binary_makes_the_marker_check_decline(install, settled)
     was skipping.
 
     MISSING, not corrupt, and that distinction is the whole test. The pre-check is
-    `[ -x "$1/llama-server" ] || [ -x "$1/build/bin/llama-server" ]` (setup.sh:2932) plus
-    the marker fingerprint and a tree walk: it asks whether the file is there, never what
-    is in it. Truncating llama-server to a quarter of its bytes -- which is what this case
-    used to do on POSIX -- produces a byte-identical log AND byte-identical network traffic,
-    so the case could not fail on Linux or macOS; only the Windows branch, which unlinked,
-    ever damaged anything the check could see. Measured, not assumed: a truncated 14.6 KB
-    ELF still printed `prebuilt up to date and validated`.
+    `[ -x .../llama-server ]` (setup.sh:2932) plus the marker fingerprint: it asks whether
+    the file is there, never what is in it. Truncating it, which this case used to do on
+    POSIX, leaves the log and the traffic byte-identical, so only the Windows branch (which
+    unlinked) ever damaged anything the check could see. Both halves of the symlink pair now
+    go on every platform. That a CORRUPT binary survives unnoticed is a real gap in the
+    product's damage detection, left unasserted here rather than blessed as intended.
 
-    So both halves of the symlink pair go, on every platform. That a CORRUPT binary
-    survives an update unnoticed is a real gap, but it is a gap in the product's damage
-    detection, not something this harness can assert its way out of; it needs a content
-    check in the pre-check first. Deliberately not encoded here as expected behaviour.
-
-    Measured on the network rather than in the log, because the log line the fast path
-    produces is consumed by setup.sh and reprinted identically either way. It is the SIZE
-    of the biggest transfer that carries the signal, not the fact of one: every update,
-    including one with nothing to do, reads that release's manifest and checksum JSON from
-    release-assets.githubusercontent.com, so "was it contacted" is true either way and
-    proves nothing. An archive moving is the decline.
+    Measured on the network, because setup.sh reprints the same line either way, and by SIZE,
+    because every update reads that release's metadata from the same host: an archive coming
+    back is the decline.
     """
     directory, before = settled
     candidates = sorted(_unsloth_home().glob("llama.cpp/**/llama-server*"))
@@ -896,7 +859,8 @@ def test_a_missing_llama_binary_makes_the_marker_check_decline(install, settled)
     # The pre-check accepts EITHER path, so removing one leaves it answering from the other.
     sibling = _unsloth_home() / "llama.cpp" / "llama-server"
     sibling_target = (
-        os.readlink(sibling) if sibling.is_symlink()
+        os.readlink(sibling)
+        if sibling.is_symlink()
         else (sibling.read_bytes() if sibling.is_file() else None)
     )
     sibling_was_symlink = sibling.is_symlink()
