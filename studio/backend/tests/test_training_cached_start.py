@@ -865,6 +865,46 @@ def test_zero_based_shard_numbering_uses_complete_cache(tmp_path, shards, comple
     assert result.cached_model_pin == ("unsloth/test", str(snapshot.resolve()))
 
 
+@pytest.mark.parametrize("persisted", ["repo", "snapshot"])
+@pytest.mark.parametrize(
+    "shards",
+    [
+        ["model-00000-of-00001.safetensors"],
+        ["model-00000-of-00002.safetensors", "model-00001-of-00002.safetensors"],
+        ["model-00001-of-00001.safetensors"],
+        ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"],
+    ],
+)
+def test_persisted_cache_path_starts_again_with_zero_based_shards(tmp_path, shards, persisted):
+    """The reported flow: run one leaves a modelLocalPath behind, so every later run takes the
+    local branch with that path instead of the hub one. Both the cache repo dir the frontend
+    persists and an already-resolved snapshot must reach the same verdict, and the 1-based
+    shard names keep the answer they had."""
+    route = _load_route_module(f"training_route_persisted_{len(shards)}_{shards[0]}_{persisted}")
+    snapshot = _model_repo_with_ref(tmp_path, "unsloth/test")
+    for shard in shards:
+        (snapshot / shard).write_bytes(b"x")
+    (snapshot / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {"weight_map": {f"layer.{index}": shard for index, shard in enumerate(shards)}},
+        )
+    )
+    target = snapshot if persisted == "snapshot" else snapshot.parent.parent
+
+    with patch.object(
+        route,
+        "_remote_untrainable_model_format",
+        side_effect = AssertionError("a cached model must not need the hub"),
+    ):
+        result = route._reject_untrainable_model_request(
+            _request(model_known_cached = True, model_local_path = str(target)),
+        )
+
+    assert result.model_name == "unsloth/test"
+    # normalize_path hands back forward slashes, so a Windows tmp_path never compares as str().
+    assert result.model_local_path == target.as_posix()
+
+
 def test_incomplete_safetensors_index_is_not_masked_by_pytorch_weights(tmp_path):
     route = _load_route_module("training_route_incomplete_safe_index_with_pytorch")
     first_shard, second_shard, snapshot = _shared_setup_7(tmp_path)
