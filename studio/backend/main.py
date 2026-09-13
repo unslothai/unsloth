@@ -300,6 +300,7 @@ from routes import (
     providers_router,
     openai_codex_auth_router,
     rag_router,
+    workspace_files_router,
     research_runs_router,
     chat_generation_runs_router,
     training_history_router,
@@ -1449,6 +1450,7 @@ app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
 app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
 app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
+app.include_router(workspace_files_router, prefix = "/api/workspace-files", tags = ["workspace-files"])
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
 app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
