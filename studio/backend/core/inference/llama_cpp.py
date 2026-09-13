@@ -639,12 +639,27 @@ _SPEC_KIND_CAPABILITY: dict[str, str] = {
 _LLAMA_RANDOM_SEED = 0xFFFFFFFF
 
 
-def _apply_seeded_llama_request(payload: dict, seed: Optional[int]) -> None:
-    """Disable prompt caching for fixed seeds so repeated requests stay reproducible."""
+def _apply_seeded_llama_request(
+    payload: dict,
+    seed: Optional[int],
+    *,
+    reuse_prompt_cache: bool = False,
+) -> None:
+    """Apply ``seed`` to a llama-server body.
+
+    Fixed seeds normally set ``cache_prompt: false`` so repeating the *same* prompt
+    stays bit-reproducible (#9979). Tool-loop continuations are not that case: each
+    round appends tool results onto a prefix the previous round already evaluated, and
+    forcing a cold cache re-prefills the whole context after every tool call (#10698).
+    Pass ``reuse_prompt_cache=True`` on those growing rounds (and the synthesised final
+    answer) so the seed still applies while KV reuse stays on.
+    """
     if seed is None:
         return
     payload["seed"] = seed
     # Compared as uint32: the schemas also accept 4294967295, the same "pick at random".
+    if reuse_prompt_cache:
+        return
     if (seed & 0xFFFFFFFF) != _LLAMA_RANDOM_SEED:
         payload["cache_prompt"] = False
 
@@ -30762,6 +30777,10 @@ class LlamaCppBackend:
         _continuation_max_tokens: Optional[int] = None
         _continuation_credits = 0
         _MAX_CONTINUATION_CREDITS = _MAX_LENGTH_CONTINUATIONS * max(1, max_tool_iterations)
+        # True once an in-loop llama-server body has been built. max_tool_iterations=0
+        # breaks before that and falls straight into the final pass, which must keep
+        # #9979's cold-cache pin for a fixed seed.
+        _in_loop_request_sent = False
         iteration = -1
         while True:
             iteration += 1
@@ -31014,7 +31033,11 @@ class LlamaCppBackend:
                 _continuation_max_tokens = None
             if stop:
                 payload["stop"] = stop
-            _apply_seeded_llama_request(payload, seed)
+            # Round 0 keeps #9979's cold cache for a fixed seed. Later rounds (and any
+            # re-prompt after the first request) extend a prefix already in the slot, so
+            # disabling reuse would re-prefill the entire context after every tool call.
+            _apply_seeded_llama_request(payload, seed, reuse_prompt_cache = iteration > 0)
+            _in_loop_request_sent = True
 
             _respawn_truncations: list[dict] = []
 
@@ -33519,7 +33542,10 @@ class LlamaCppBackend:
         stream_payload["max_tokens"] = _final_max_tokens
         if stop:
             stream_payload["stop"] = stop
-        _apply_seeded_llama_request(stream_payload, seed)
+        # Reuse only when an in-loop request already left KV in the slot. A
+        # max_tool_iterations=0 run never enters the loop and this pass is the first
+        # request, so it must keep the cold-cache pin for a fixed seed.
+        _apply_seeded_llama_request(stream_payload, seed, reuse_prompt_cache = _in_loop_request_sent)
         stream_payload["stream_options"] = {"include_usage": True}
 
         # Progress events feed the first-token deadline; timings stay opt-in.
