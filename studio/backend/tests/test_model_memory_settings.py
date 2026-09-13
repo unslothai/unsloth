@@ -3820,12 +3820,9 @@ class TestOnlyAClassifiableDeviceConfirms:
 
     @pytest.mark.parametrize("device", ["ROCm0", "HIP0"])
     def test_an_amd_device_nothing_classified_declines(self, monkeypatch, device):
-        """`_rocm_unified_memory_gpu_ids` answers the empty set both for "no APU
-        here" and for "there is no ROCm torch to ask", and only the first is a
-        fact about the hardware. PyTorch ships no Windows ROCm wheel, so on the
-        one platform this decision runs on the second is the usual case, and
-        reading it as discrete hands DirectIO to a Strix Halo whose VRAM is
-        system RAM. Same rule Vulkan applies through `type_known`."""
+        """The empty set means "no APU here" OR "no ROCm torch to ask", and only the
+        first is a fact about the hardware. There is no Windows ROCm wheel, so on the
+        one platform this runs on the second is the usual case."""
         assert self._confirm(monkeypatch, [device], rocm_classified = False) is False
 
     def test_cuda_does_not_need_the_rocm_classifier(self, monkeypatch):

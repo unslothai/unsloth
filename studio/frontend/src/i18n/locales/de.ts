@@ -1227,7 +1227,7 @@ export const de = {
         keepResidentHint: "Die Gewichte werden nicht an den System-RAM zurückgegeben, solange das Modell geladen bleibt. Deaktiviert das automatische Entladen im Leerlauf und übergibt zusätzlich --mlock, wenn die Gewichte tatsächlich im Host-RAM liegen (Unified Memory oder teilweises GPU-Offload), damit das Betriebssystem sie nicht auslagert und beim nächsten Prompt neu hochlädt.",
         noRamReserve: "Keinen System-RAM für das Modell reservieren",
         noRamReserveDescription: "Weniger RAM für die Modellgewichte belegen.",
-        noRamReserveHint: "Verwendet DirectIO auf unterstützten Windows-Builds, wenn das Modell vollständig auf die GPU ausgelagert ist. Andernfalls bleibt das speicherabgebildete Laden erhalten. Erforderliche CPU-Puffer und abgebildete Seiten können weiterhin RAM belegen. Entfernt --no-mmap und --mlock.",
+        noRamReserveHint: "Überspringt auf unterstützten Windows-Builds das speicherabgebildete Laden, wenn das Modell vollständig auf die GPU ausgelagert ist, sodass dessen Seiten nicht im Speicher gehalten werden. Andernfalls bleibt das speicherabgebildete Laden erhalten. Erforderliche CPU-Puffer können weiterhin RAM belegen. Entfernt --no-mmap und --mlock.",
         mlockVetoed: "--mlock bleibt aus: das Fixieren des Modells würde RAM für das gesamte Modell reservieren. Das automatische Entladen im Leerlauf bleibt deaktiviert.",
         memlockCapped: "Dieses System begrenzt gesperrten Speicher auf {limit}. Ein größeres Modell wird nicht vollständig fixiert; erhöhen Sie das Limit mit ulimit -l.",
         reloadRequired: "Modell neu laden, um die neuen Speicheroptionen anzuwenden.",

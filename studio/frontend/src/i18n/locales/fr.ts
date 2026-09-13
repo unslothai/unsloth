@@ -1226,7 +1226,7 @@ export const fr = {
         keepResidentHint: "Ne rend pas les poids à la RAM système tant que le modèle reste chargé. Désactive le déchargement automatique en veille et, lorsque les poids résident réellement en RAM hôte (mémoire unifiée ou déchargement GPU partiel), passe aussi --mlock afin que le système ne les décharge pas pour les retransférer au prochain message.",
         noRamReserve: "Ne pas réserver de RAM système pour le modèle",
         noRamReserveDescription: "Réduit la RAM occupée par les poids du modèle.",
-        noRamReserveHint: "Utilise DirectIO sur les versions Windows compatibles lorsque le modèle est entièrement déchargé sur le GPU. Sinon, conserve le chargement mappé en mémoire. Les tampons CPU nécessaires et les pages mappées peuvent toujours occuper de la RAM. Supprime --no-mmap et --mlock.",
+        noRamReserveHint: "Ignore le chargement mappé en mémoire sur les versions Windows compatibles lorsque le modèle est entièrement déchargé sur le GPU, afin que ses pages ne restent pas résidentes. Sinon, conserve le chargement mappé en mémoire. Les tampons CPU nécessaires peuvent toujours occuper de la RAM. Supprime --no-mmap et --mlock.",
         mlockVetoed: "--mlock reste désactivé : épingler le modèle réserverait de la RAM pour l'intégralité de celui-ci. Le déchargement automatique en veille reste désactivé.",
         memlockCapped: "Ce système limite la mémoire verrouillée à {limit}. Un modèle plus grand ne sera pas entièrement épinglé ; augmentez la limite avec ulimit -l.",
         reloadRequired: "Rechargez le modèle pour appliquer les nouvelles options de mémoire.",

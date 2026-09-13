@@ -6202,19 +6202,15 @@ def _load_probe_memo_scope():
 # apart from "not probed yet". None means the latter to every reader.
 _MISSING = object()
 
-# Backends whose devices are discrete by construction, because `_weights_in_host_memory`
-# already classifies them upstream. Everything else must be proven: a Vulkan id gets the
-# shared-memory probe, and a SYCL, OpenCL, MUSA or CANN id can be an integrated GPU
-# nothing here recognises, so it declines.
+# Discrete by construction, because `_weights_in_host_memory` classifies them upstream.
+# Everything else must be proven: a Vulkan id gets the shared-memory probe, and a SYCL,
+# OpenCL, MUSA or CANN id can be an integrated GPU nothing here recognises.
 _SELF_EVIDENTLY_DISCRETE = frozenset({"cuda"})
 
-# AMD is NOT self-evident, despite having an upstream classifier. That classifier reads
-# the driver through a ROCm torch, and `_rocm_unified_memory_gpu_ids` folds "torch is not
-# a ROCm build" into the same empty set as "no APU here" -- correct for its own caller,
-# which only skips a page-lock, and wrong for a loader choice. It matters on the only
-# platform this decision runs on: there is no Windows ROCm torch wheel, so on Windows the
-# classifier never answers, and reading that as "discrete" hands DirectIO to a Strix Halo
-# whose VRAM is system RAM. Same rule the Vulkan branch applies through `type_known`.
+# AMD needs its classifier to have actually run. `_rocm_unified_memory_gpu_ids` returns the
+# empty set both for "no APU here" and for "no ROCm torch to ask", and there is no Windows
+# ROCm wheel, so on the only platform this decision runs on it never answers. Reading that
+# as "discrete" hands DirectIO to a Strix Halo whose VRAM is system RAM.
 _NEEDS_ROCM_CLASSIFICATION = frozenset({"rocm", "hip"})
 
 # What the child enumerates depends on these as much as on the binary, and the
@@ -9395,15 +9391,10 @@ class LlamaCppBackend:
     def _rocm_classification_answered() -> bool:
         """Whether `_rocm_unified_memory_gpu_ids` could actually look at the devices.
 
-        It returns an empty set both for "no APU here" and for "there is no ROCm
-        torch to ask", so its own caller -- which only decides whether to skip a
-        page-lock -- may treat the two alike. A loader choice may not: DirectIO
-        over a unified-memory APU replaces a pageable mapping with a model-sized
-        allocated buffer, which is the reservation the setting exists to avoid.
-
-        Separate from the classifier rather than folded into it, because the two
-        questions have opposite safe answers and every existing caller wants the
-        permissive one.
+        Kept separate from it because the two questions have opposite safe answers:
+        skipping a page-lock may treat "no APU" and "could not tell" alike, choosing
+        a loader may not. DirectIO over a unified-memory APU replaces a pageable
+        mapping with a model-sized allocated buffer.
         """
         try:
             import torch
@@ -9412,8 +9403,7 @@ class LlamaCppBackend:
                 return False
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return False
-            # The classifier itself has to be importable, or every device below
-            # would be skipped by the `except: continue` and read as discrete.
+            # Importable too, or every device is skipped by its `except: continue`.
             from core.training.worker import _rocm_classify_unified_memory  # noqa: F401
 
             return torch.cuda.device_count() > 0
@@ -26650,12 +26640,11 @@ class LlamaCppBackend:
                             is_vulkan_backend = is_vulkan_backend,
                             binary = binary,
                             env = env,
-                            # Widened like the other two sites: under no-reserve
-                            # _mem_should_mlock is always False, so gating on it
-                            # alone asked this question with the Vulkan probe off,
-                            # and the predicate errs towards host-resident when it
-                            # cannot see. That answered True for the same discrete
-                            # card the launch had just confirmed as a full offload.
+                            # Widened like the other two sites: _mem_should_mlock is
+                            # always False under no-reserve, so alone it asked this
+                            # with the probe off, and an unprobed device answers the
+                            # conservative True -- contradicting the full offload the
+                            # launch had just confirmed for the same card.
                             probe_vulkan = _mem_should_mlock or _mem_probe_for_dio,
                             fit_active = fit_is_effectively_on([*cmd, *(_mem_extra_args or [])], env),
                         )
@@ -26694,12 +26683,11 @@ class LlamaCppBackend:
                             self._memory_policy_active = (
                                 bool(_retry_managed) or self._memory_policy_active
                             )
-                            # From `cmd`, for the reason the rung above gives: by
-                            # here it may carry the managed DirectIO pair, and the
-                            # parts no longer add up to it. Rebuilding from them
-                            # recorded a mapped load for a streaming child, which
-                            # the no-reserve comparator reads as a placement that
-                            # needs a reload -- one the relaunch reproduces.
+                            # From `cmd`, for the reason the rung above gives: it may
+                            # carry the managed DirectIO pair, which the parts no
+                            # longer add up to. Rebuilding from them recorded a mapped
+                            # load for a streaming child, and the no-reserve comparator
+                            # reads that as needing a reload the relaunch reproduces.
                             self._record_memory_state(cmd, env)
                             logger.info(
                                 "Arch-crash retry changed where the weights live; "

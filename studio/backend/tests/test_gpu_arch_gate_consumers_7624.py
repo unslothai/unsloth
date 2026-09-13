@@ -1075,12 +1075,10 @@ class TestGatedTensorModeStillDeduplicates:
 class TestArchRetryAsksResidencyTheSameWayTheLaunchDid:
     """The rung's residency question has to be the launch's question.
 
-    `_weights_in_host_memory` answers the conservative "host resident" whenever
-    its Vulkan probe is switched off, and under no-reserve `_mem_should_mlock` is
-    always False. So gating the rung's probe on the mlock flag alone made it
-    contradict, for the same devices, the verdict the launch had just reached
-    through the two sites that were widened with `_mem_probe_for_dio` -- and a
-    contradiction here is not cosmetic: it re-records the placement.
+    An unprobed device answers the conservative "host resident", and
+    `_mem_should_mlock` is always False under no-reserve, so gating the rung's probe
+    on it alone contradicted the launch's own verdict for the same devices. Not
+    cosmetic: the rung re-records the placement.
     """
 
     def _load_model_source(self):
@@ -1090,8 +1088,7 @@ class TestArchRetryAsksResidencyTheSameWayTheLaunchDid:
         return inspect.getsource(LlamaCppBackend.load_model)
 
     def test_every_probe_vulkan_gate_admits_the_directio_probe(self):
-        """Asserted across all three sites, because the defect was that they
-        disagreed -- not that any one of them is spelled a particular way."""
+        """Across all three sites: the defect was that they disagreed."""
         gates = [
             line.strip()
             for line in self._load_model_source().splitlines()
@@ -1101,11 +1098,10 @@ class TestArchRetryAsksResidencyTheSameWayTheLaunchDid:
         assert all("_mem_probe_for_dio" in gate for gate in gates), gates
 
     def test_the_residency_arm_records_from_the_argv(self):
-        """`cmd` may carry the managed DirectIO pair by the time this arm runs,
-        and `_mem_extras + _retry_managed` does not add up to it. Rebuilding from
-        the parts recorded a mapped load for a streaming child, which the
-        no-reserve comparator reads as needing a reload that the relaunch then
-        reproduces exactly."""
+        """`cmd` may carry the managed DirectIO pair, which `_mem_extras +
+        _retry_managed` does not add up to. Rebuilding from the parts records a mapped
+        load for a streaming child, and the comparator then asks for a reload that
+        relaunching reproduces."""
         src = self._load_model_source()
         marker = "Arch-crash retry changed where the weights live"
         assert marker in src

@@ -212,7 +212,7 @@ function loadModeOverrideNotice(
       : "This will be replaced by mmap+mlock: Keep model in GPU memory, in Settings, owns how the weights are held.";
   }
   if (settings.noRamReserve && RAM_RESERVING_LOAD_MODES.has(mode)) {
-    return "This will be removed: Don't reserve system RAM, in Settings, chooses the loading policy. Supported Windows builds use DirectIO for full GPU offload; other placements use the default mmap path.";
+    return "This will be removed: Don't reserve system RAM, in Settings, chooses the loading policy. Supported Windows builds skip the mapping for a full GPU offload; other placements use the default mmap path.";
   }
   return null;
 }

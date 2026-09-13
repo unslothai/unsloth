@@ -1210,7 +1210,7 @@ export const ptBR = {
         keepResidentHint: "Não devolve os pesos à RAM do sistema enquanto o modelo continuar carregado. Desativa a descarga automática por inatividade e, quando os pesos de fato ficam na RAM do host (memória unificada ou offload parcial para a GPU), também passa --mlock, para que o sistema operacional não os pagine e os reenvie no próximo prompt.",
         noRamReserve: "Não reservar RAM do sistema para o modelo",
         noRamReserveDescription: "Reduz a RAM ocupada pelos pesos do modelo.",
-        noRamReserveHint: "Usa DirectIO nas versões compatíveis do Windows quando o modelo está totalmente descarregado na GPU. Caso contrário, mantém o carregamento mapeado em memória. Buffers de CPU necessários e páginas mapeadas ainda podem usar RAM. Remove --no-mmap e --mlock.",
+        noRamReserveHint: "Ignora o carregamento mapeado em memória nas versões compatíveis do Windows quando o modelo está totalmente descarregado na GPU, para que suas páginas não fiquem residentes. Caso contrário, mantém o carregamento mapeado em memória. Buffers de CPU necessários ainda podem usar RAM. Remove --no-mmap e --mlock.",
         mlockVetoed: "--mlock continua desativado: fixar o modelo reservaria RAM para todo ele. A descarga automática por inatividade continua desativada.",
         memlockCapped: "Este sistema limita a memória bloqueada a {limit}. Um modelo maior não será totalmente fixado; aumente o limite com ulimit -l.",
         reloadRequired: "Recarregue o modelo para aplicar as novas opções de memória.",
