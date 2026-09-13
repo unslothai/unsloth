@@ -35,6 +35,7 @@ from core._torchao_stub import (
     install_xformers_windows_rocm_stub,
 )
 from loggers import get_logger
+from utils.account_context import account_thread, current_account_id
 from utils.hardware import clear_gpu_cache
 
 from .diffusion_families import (
@@ -1181,6 +1182,8 @@ class DiffusionBackend:
         self._generation_cancel_lock = threading.Lock()
         # Cancel Event of the in-flight generation; per-generation so a cancel can't be lost or leak
         self._active_generate_cancel: Optional[threading.Event] = None
+        # Bound with the event under the same lock, so a cancel cannot land on the wrong generation.
+        self._active_generate_account: Optional[str] = None
         # Queued requests; cancel_generate() decides which Stop may signal.
         self._queued_generate_cancels: set[threading.Event] = set()
         self._generation_owns_slot = False
@@ -1275,6 +1278,7 @@ class DiffusionBackend:
                             if not cancelled:
                                 self._queued_generate_cancels.discard(cancel)
                                 self._active_generate_cancel = cancel
+                                self._active_generate_account = current_account_id()
                                 self._generation_owns_slot = True
                                 admitted = True
                     else:
@@ -1289,12 +1293,15 @@ class DiffusionBackend:
                         raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                     if self._teardown_drained.wait(timeout = 0.1):
                         break
+            from hub.services.models.account_access import media_generation_slot
             try:
-                yield
+                with media_generation_slot("diffusion"):
+                    yield
             finally:
                 with self._generation_cancel_lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
+                        self._active_generate_account = None
                     self._generation_owns_slot = False
                     self._generate_lock.release()
         finally:
@@ -2003,7 +2010,7 @@ class DiffusionBackend:
             # Seed with the family fallback; the worker resolves the real base and updates this.
             self._loading = _LoadingState(repo_id = repo_id, base_repo = fam.base_repo)
 
-        threading.Thread(
+        account_thread(
             target = self._run_load,
             kwargs = dict(
                 repo_id = repo_id,
@@ -2177,6 +2184,12 @@ class DiffusionBackend:
             if self._load_token != token:
                 return
             logger.error("diffusion.load_failed: %s", exc)
+            if self._state is not None:
+                from .gpu_arbiter import DIFFUSION, restore_owner_account
+                from hub.services.models.account_access import restore_resident_metadata
+
+                restore_owner_account(DIFFUSION)
+                restore_resident_metadata(DIFFUSION)
             try:
                 clear_gpu_cache()
             except Exception:  # noqa: BLE001
@@ -6134,6 +6147,7 @@ class DiffusionBackend:
                         raise RuntimeError(DIFFUSION_CANCELLED_MSG)
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
+                        self._active_generate_account = None
 
                 # Components are offloaded and transfer copies dropped; return the pages now.
                 reclaim_offload_host_memory(state.offload_policy, logger = logger)
@@ -6167,6 +6181,7 @@ class DiffusionBackend:
                 with self._generation_cancel_lock:
                     if self._active_generate_cancel is cancel:
                         self._active_generate_cancel = None
+                        self._active_generate_account = None
                 with self._lock:
                     # Sole clear of the published progress state, on every exit, so a crashed generation never leaves
                     # the UI stuck.
@@ -6191,18 +6206,20 @@ class DiffusionBackend:
             "eta_seconds": gen.eta_seconds,
         }
 
-    def cancel_generate(self) -> bool:
-        """Signal the in-flight generation to stop at its next step boundary. The denoise loop
-        already watches this event (``_on_step`` sets diffusers' ``_interrupt``, and the
-        per-chunk check discards a partial batch), but until now only unload() and a superseding
-        load could set it. Returns False when nothing is running, which the route reports so the
-        UI can settle its button back to Generate. Best effort by construction: the sampler stops
-        at the NEXT step callback, so a cancel during the VAE decode or the encode that precedes
-        step 0 lands when that finishes."""
+    def cancel_generate(self, expected_account: Optional[str] = None) -> bool:
+        """Stop the in-flight generation at its next step boundary; False when nothing is running.
+
+        Best effort: the sampler stops at the NEXT step callback, so a cancel during the VAE
+        decode or the encode before step 0 lands when that finishes."""
         with self._generation_cancel_lock:
             # Stop targets the denoising generation, not a serialized waiter.
             active = self._active_generate_cancel
             if active is not None:
+                if expected_account is not None and self._active_generate_account not in (
+                    None,
+                    expected_account,
+                ):
+                    return False
                 active.set()
                 return True
             if self._generation_owns_slot:
@@ -6218,8 +6235,21 @@ class DiffusionBackend:
                 cancel.set()
             return True
 
-    def unload(self) -> dict[str, Any]:
+    def unload(self, *, expected_account: Optional[str] = None) -> dict[str, Any]:
         with self._lock:
+            if expected_account is not None:
+                from .gpu_arbiter import DIFFUSION, GpuBusyForAnotherAccountError
+                from hub.services.models.account_access import require_resident_control
+
+                # Recheck under the generation-admitting lock before setting any cancel event.
+                if (
+                    self._active_generate_cancel is not None
+                    and self._active_generate_account != expected_account
+                ):
+                    raise GpuBusyForAnotherAccountError(DIFFUSION, 1)
+                require_resident_control(
+                    DIFFUSION, self._state.repo_id if self._state is not None else None
+                )
             # Abort an in-flight (lock-free) download so unload returns promptly. Under the lock, like video.py:
             # begin_load rebinds this attribute, so an unlocked read could set an event the current load no longer
             # watches.

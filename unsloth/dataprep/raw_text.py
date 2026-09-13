@@ -188,8 +188,8 @@ class RawTextDataLoader:
                     chunk_tokens.tolist() if hasattr(chunk_tokens, "tolist") else list(chunk_tokens)
                 )
 
-                # Append EOS on the last or a full chunk.
-                if end_idx == len(tokens) or len(chunk_tokens_list) == chunk_size:
+                # EOS only at the true end: a full chunk mid-stride continues in the next chunk.
+                if end_idx == len(tokens):
                     eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
                     if eos_token_id is not None:
                         chunk_tokens_list.append(eos_token_id)
@@ -200,8 +200,7 @@ class RawTextDataLoader:
             else:
                 chunk_text = self.tokenizer.decode(chunk_tokens, skip_special_tokens = True)
 
-                # Append EOS on the last or a full chunk.
-                if end_idx == len(tokens) or len(chunk_tokens) == chunk_size:
+                if end_idx == len(tokens):
                     eos_token = self.tokenizer.eos_token if self.tokenizer.eos_token else ""
                     chunk_text += eos_token
 

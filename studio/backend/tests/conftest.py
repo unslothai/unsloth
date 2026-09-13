@@ -108,7 +108,7 @@ def _isolate_studio_home(_studio_home_root, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
     for name, module in tuple(sys.modules.items()):
         if name.startswith(("storage.", "hub.storage.")) and hasattr(module, "_schema_ready"):
-            monkeypatch.setattr(module, "_schema_ready", False)
+            monkeypatch.setattr(module, "_schema_ready", set())
 
 
 # Pytest CLI options
@@ -781,7 +781,7 @@ def rag_home(tmp_path, monkeypatch, linkable_temp_base):
         root = linkable_temp_base / tmp_path.name
         root.mkdir(parents = True, exist_ok = True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(root))
-    monkeypatch.setattr(rag_db, "_schema_ready", False)
+    monkeypatch.setattr(rag_db, "_schema_ready", set())
     return root
 
 
@@ -807,8 +807,10 @@ def stub_embeddings(monkeypatch):
     import hashlib
     import math
 
-    from core.rag import embeddings
+    from core.rag import config, embeddings
 
+    # Pin the backend: "auto" reprobes the hardware (nvidia-smi) on every use.
+    monkeypatch.setattr(config, "EMBED_BACKEND", "sentence-transformers")
     dim = 32
 
     def _vec(text: str):
