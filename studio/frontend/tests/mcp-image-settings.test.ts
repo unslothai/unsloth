@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { eligibleImageFields } from "../src/features/chat/api/mcp-image-mapping-options.ts";
-import { readSrc } from "./helpers/kit.ts";
-
-const settingsSource = readSrc(
-  "features/chat/api/mcp-image-settings-controls.tsx",
-);
+import {
+  beginMcpImageSettingRefresh,
+  beginMcpImageSettingSave,
+  canApplyMcpImageSettingRefresh,
+  canApplyMcpImageSettingSave,
+  finishMcpImageSettingSave,
+} from "../src/features/chat/api/mcp-image-setting-order.ts";
 
 test("mapping options come from exact top-level schema strings without name inference", () => {
   assert.deepEqual(
@@ -43,13 +45,16 @@ test("ambiguous schemas and restricted payload values are unavailable", () => {
   );
 });
 
-test("focus refreshes cannot overwrite a pending image-sharing save", () => {
-  assert.match(settingsSource, /const operationId = useRef\(0\)/);
-  assert.match(settingsSource, /const savePending = useRef\(false\)/);
-  assert.match(settingsSource, /if \(savePending\.current\) return;/);
-  assert.match(
-    settingsSource,
-    /!savePending\.current[\s\S]*requestId === operationId\.current/,
-  );
-  assert.match(settingsSource, /savePending\.current = true/);
+test("refresh ordering survives a settings control remount", () => {
+  const save = beginMcpImageSettingSave();
+  assert.equal(beginMcpImageSettingRefresh(), null);
+  assert.equal(canApplyMcpImageSettingSave(save), true);
+  assert.equal(finishMcpImageSettingSave(save), true);
+
+  const staleRefresh = beginMcpImageSettingRefresh();
+  assert.notEqual(staleRefresh, null);
+  const nextSave = beginMcpImageSettingSave();
+  assert.equal(canApplyMcpImageSettingRefresh(staleRefresh!), false);
+  assert.equal(canApplyMcpImageSettingSave(nextSave), true);
+  assert.equal(finishMcpImageSettingSave(nextSave), true);
 });

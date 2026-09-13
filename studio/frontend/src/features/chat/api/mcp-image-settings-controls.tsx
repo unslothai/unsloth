@@ -4,11 +4,19 @@
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { authFetch } from "@/features/auth";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { getChatSettings, saveChatSettingsPatch } from "./chat-settings-api";
 import { eligibleImageFields } from "./mcp-image-mapping-options";
+import {
+  beginMcpImageSettingRefresh,
+  beginMcpImageSettingSave,
+  canApplyMcpImageSettingRefresh,
+  canApplyMcpImageSettingSave,
+  finishMcpImageSettingSave,
+  MCP_IMAGE_SETTING_SAVED_EVENT,
+} from "./mcp-image-setting-order";
 import { clearSelectedMcpImage } from "./mcp-image-selection";
 import {
   type McpImageInputMapping,
@@ -19,20 +27,14 @@ import {
 export function McpImageSharingSetting() {
   const enabled = useChatRuntimeStore((s) => s.mcpImageAttachmentsEnabled);
   const [busy, setBusy] = useState(true);
-  const operationId = useRef(0);
-  const savePending = useRef(false);
   useEffect(() => {
     let active = true;
     const refresh = () => {
-      if (savePending.current) return;
-      const requestId = ++operationId.current;
+      const requestId = beginMcpImageSettingRefresh();
+      if (requestId === null) return;
       void getChatSettings()
         .then((settings) => {
-          if (
-            active &&
-            !savePending.current &&
-            requestId === operationId.current
-          ) {
+          if (active && canApplyMcpImageSettingRefresh(requestId)) {
             const savedEnabled = settings.mcpImageAttachmentsEnabled === true;
             useChatRuntimeStore.setState({
               mcpImageAttachmentsEnabled: savedEnabled,
@@ -43,11 +45,7 @@ export function McpImageSharingSetting() {
           }
         })
         .catch(() => {
-          if (
-            active &&
-            !savePending.current &&
-            requestId === operationId.current
-          ) {
+          if (active && canApplyMcpImageSettingRefresh(requestId)) {
             useChatRuntimeStore.setState({
               mcpImageAttachmentsEnabled: false,
             });
@@ -55,16 +53,18 @@ export function McpImageSharingSetting() {
           }
         })
         .finally(() => {
-          if (active && requestId === operationId.current) {
+          if (active && canApplyMcpImageSettingRefresh(requestId)) {
             setBusy(false);
           }
         });
     };
     refresh();
     window.addEventListener("focus", refresh);
+    window.addEventListener(MCP_IMAGE_SETTING_SAVED_EVENT, refresh);
     return () => {
       active = false;
       window.removeEventListener("focus", refresh);
+      window.removeEventListener(MCP_IMAGE_SETTING_SAVED_EVENT, refresh);
     };
   }, []);
   return (
@@ -76,14 +76,13 @@ export function McpImageSharingSetting() {
           checked={enabled}
           disabled={busy}
           onCheckedChange={async (next) => {
-            const requestId = ++operationId.current;
-            savePending.current = true;
+            const requestId = beginMcpImageSettingSave();
             setBusy(true);
             try {
               const saved = await saveChatSettingsPatch({
                 mcpImageAttachmentsEnabled: next,
               });
-              if (requestId !== operationId.current) return;
+              if (!canApplyMcpImageSettingSave(requestId)) return;
               const savedEnabled = saved.mcpImageAttachmentsEnabled === true;
               useChatRuntimeStore.setState({
                 mcpImageAttachmentsEnabled: savedEnabled,
@@ -92,14 +91,13 @@ export function McpImageSharingSetting() {
                 clearSelectedMcpImage();
               }
             } catch {
-              if (requestId === operationId.current) {
+              if (canApplyMcpImageSettingSave(requestId)) {
                 toast.error("Could not save image sharing setting. Try again.");
               }
             } finally {
-              if (requestId === operationId.current) {
-                savePending.current = false;
-                operationId.current += 1;
+              if (finishMcpImageSettingSave(requestId)) {
                 setBusy(false);
+                window.dispatchEvent(new Event(MCP_IMAGE_SETTING_SAVED_EVENT));
               }
             }
           }}

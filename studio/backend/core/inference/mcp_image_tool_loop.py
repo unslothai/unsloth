@@ -6,14 +6,13 @@
 from __future__ import annotations
 
 import copy
-import base64
 import functools
 import inspect
 import json
 import secrets
 import time
 import threading
-from urllib.parse import quote, unquote
+from urllib.parse import quote
 
 from core.inference.mcp_image_disclosure import (
     McpImageDisclosureError,
@@ -79,29 +78,23 @@ def prepare_image_tool_request(payload, *, subject, tools, cancel_event, ui_even
         message_id = selection.message_id,
         attachment_id = selection.attachment_id,
     )
-    fingerprints = (
-        base64.b64encode(image.data).decode("ascii").rstrip("="),
-        base64.urlsafe_b64encode(image.data).decode("ascii").rstrip("="),
-    )
+    from core.inference.mcp_image_redaction import contains_mcp_image_echo
 
-    def contains_private(value):
+    def dump_models(value):
         if hasattr(value, "model_dump"):
             value = value.model_dump()
-        if isinstance(value, str):
-            compact = "".join(value.split())
-            decoded = "".join(unquote(value).split()) if "%" in value else compact
-            return any(
-                fingerprint in candidate
-                for fingerprint in fingerprints
-                for candidate in (compact, decoded)
-            )
         if isinstance(value, dict):
-            return any(contains_private(child) for child in value.values())
+            return {key: dump_models(child) for key, child in value.items()}
         if isinstance(value, (list, tuple)):
-            return any(contains_private(child) for child in value)
-        return False
+            return [dump_models(child) for child in value]
+        return value
 
-    if contains_private(payload.messages):
+    messages = dump_models(payload.messages)
+    try:
+        contains_private = contains_mcp_image_echo(messages, image.data)
+    except Exception:
+        raise McpImageDisclosureError("Private image message validation failed") from None
+    if contains_private:
         raise McpImageDisclosureError("The private image must be removed from model messages")
     if tools is None:
         return None, None

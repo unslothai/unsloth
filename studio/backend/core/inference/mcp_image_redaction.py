@@ -159,6 +159,7 @@ class _ImageEchoSanitizer:
         self.nodes = 0
         self.material = 0
         self.ancestors = set()
+        self.found_echo = False
         # Decoders also accept nonzero unused pad bits. Enumerate only the
         # possible final character so byte-equivalent inputs remain recognized.
         alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
@@ -203,52 +204,69 @@ class _ImageEchoSanitizer:
         return False
 
     @staticmethod
-    def _text_slot(value):
-        """Return a mutable text-bearing protocol field, if value flattens as text."""
-        if isinstance(value, dict):
-            value_type = value.get("type")
-            if value_type == "text" and isinstance(value.get("text"), str):
-                return value, "text", value["text"]
-            if value_type == "resource":
-                resource = value.get("resource")
-                if isinstance(resource, dict) and isinstance(resource.get("text"), str):
-                    return resource, "text", resource["text"]
-                resource_text = getattr(resource, "text", None)
-                if isinstance(resource_text, str):
-                    return resource, "text", resource_text
-            if value_type == "resource_link" and isinstance(value.get("uri"), str):
-                return value, "uri", value["uri"]
-            return None
-        value_type = getattr(value, "type", None)
-        if value_type == "text" and isinstance(getattr(value, "text", None), str):
-            return value, "text", value.text
-        if value_type == "resource":
-            resource = getattr(value, "resource", None)
-            resource_text = getattr(resource, "text", None)
-            if isinstance(resource_text, str):
-                return resource, "text", resource_text
-        if value_type == "resource_link" and isinstance(getattr(value, "uri", None), str):
-            return value, "uri", value.uri
-        return None
+    def _normalized_text(value):
+        normalized = (
+            unquote(value).translate(_NORMALIZE_BASE64)
+            if "%" in value
+            else value.translate(_NORMALIZE_BASE64)
+        )
+        marker = ";base64,"
+        position = normalized.lower().find(marker)
+        return normalized[position + len(marker) :] if position >= 0 else normalized
 
     @staticmethod
-    def _set_slot(slot, value):
+    def _text_slots(value):
+        """Return mutable fields whose values are rendered by ``_flatten_result``."""
+        slots = []
+        if isinstance(value, dict):
+            value_type = value.get("type")
+            if isinstance(value.get("text"), str) and value["text"]:
+                return [(value, "text", value["text"])]
+            resource = value.get("resource")
+            if (
+                isinstance(resource, dict)
+                and isinstance(resource.get("text"), str)
+                and resource["text"]
+            ):
+                return [(resource, "text", resource["text"])]
+            resource_text = getattr(resource, "text", None)
+            if isinstance(resource_text, str) and resource_text:
+                return [(resource, "text", resource_text)]
+            if value_type == "resource_link" and isinstance(value.get("uri"), str) and value["uri"]:
+                if isinstance(value.get("name"), str) and value["name"]:
+                    slots.append((value, "name", value["name"]))
+                slots.append((value, "uri", value["uri"]))
+            return slots
+        value_type = getattr(value, "type", None)
+        text = getattr(value, "text", None)
+        if isinstance(text, str) and text:
+            return [(value, "text", text)]
+        resource = getattr(value, "resource", None)
+        resource_text = getattr(resource, "text", None)
+        if isinstance(resource_text, str) and resource_text:
+            return [(resource, "text", resource_text)]
+        uri = getattr(value, "uri", None)
+        if value_type == "resource_link" and isinstance(uri, str) and uri:
+            name = getattr(value, "name", None)
+            if isinstance(name, str) and name:
+                slots.append((value, "name", name))
+            slots.append((value, "uri", uri))
+        return slots
+
+    def _set_slot(self, slot, value):
         owner, key, _ = slot
         if isinstance(owner, (dict, list)):
             owner[key] = value
         else:
             setattr(owner, key, value)
+        if value == REDACTED_IMAGE:
+            self.found_echo = True
 
     def _redact_slots(self, slots):
         slots = [slot for slot in slots if slot[2] != REDACTED_IMAGE]
         if len(slots) < 2:
             return
-        normalized = [
-            unquote(text).translate(_NORMALIZE_BASE64)
-            if "%" in text
-            else text.translate(_NORMALIZE_BASE64)
-            for _, _, text in slots
-        ]
+        normalized = [self._normalized_text(text) for _, _, text in slots]
         combined = "".join(normalized)
         span = self._match_span(combined)
         while span is not None:
@@ -259,6 +277,34 @@ class _ImageEchoSanitizer:
                     self._set_slot(slot, REDACTED_IMAGE)
                 start = end
             span = self._match_span(combined, span[1])
+
+        # A server can place payload chunks in separate fields with unrelated
+        # blocks between them. Track subsequences of slots against the exact
+        # image fingerprint. If a pathological result creates too many partial
+        # matches, fail closed by withholding every candidate slot.
+        variants = [self.fingerprint[:-1] + final for final in self.final_characters]
+        matched_slots = set()
+        for fingerprint in variants:
+            states = {0: ()}
+            for index, text in enumerate(normalized):
+                if not text or text == REDACTED_IMAGE:
+                    continue
+                advanced = dict(states)
+                for position, path in states.items():
+                    if fingerprint.startswith(text, position):
+                        end = position + len(text)
+                        candidate = path + (index,)
+                        if end == len(fingerprint):
+                            matched_slots.update(candidate)
+                        else:
+                            advanced.setdefault(end, candidate)
+                if len(advanced) > 4096:
+                    for slot in slots:
+                        self._set_slot(slot, REDACTED_IMAGE)
+                    return
+                states = advanced
+        for matched in matched_slots:
+            self._set_slot(slots[matched], REDACTED_IMAGE)
 
     @staticmethod
     def _integer_image_echo(value, data):
@@ -271,7 +317,8 @@ class _ImageEchoSanitizer:
     def _redact_structured_fragments(self, value):
         """Check structured result fragments that are rendered through str()."""
         slots = []
-        ignored_keys = {
+        rekeys = []
+        metadata_keys = {
             "type",
             "mimeType",
             "mime_type",
@@ -289,16 +336,16 @@ class _ImageEchoSanitizer:
             key = None,
         ):
             if type(node) is str:
-                if owner is not None and key not in ignored_keys:
+                compact = self._normalized_text(node)
+                if owner is not None and (key not in metadata_keys or compact in self.fingerprint):
                     slots.append((owner, key, node))
                 return
             if isinstance(node, dict):
-                node_type = node.get("type")
-                if node_type not in (None, "text", "resource"):
-                    return
                 for child_key, child in node.items():
-                    if child_key not in ignored_keys:
-                        collect(child, node, child_key)
+                    key_holder = [child_key]
+                    slots.append((key_holder, 0, child_key))
+                    rekeys.append((node, child_key, key_holder))
+                    collect(child, node, child_key)
                 return
             if isinstance(node, (list, tuple)):
                 for index, child in enumerate(node):
@@ -306,11 +353,14 @@ class _ImageEchoSanitizer:
                 return
             if isinstance(node, SimpleNamespace):
                 for child_key, child in vars(node).items():
-                    if child_key not in ignored_keys:
-                        collect(child, node, child_key)
+                    collect(child, node, child_key)
 
         collect(value)
         self._redact_slots(slots)
+        for owner, original, holder in rekeys:
+            if holder[0] != original and original in owner:
+                child = owner.pop(original)
+                owner[holder[0]] = child
 
     def sanitize(
         self,
@@ -326,10 +376,16 @@ class _ImageEchoSanitizer:
         if type(value) is str:
             # Charge conservatively before creating normalized/unquoted strings.
             self._charge(len(value) * 4)
-            return REDACTED_IMAGE if self._echo(value, uri) else value
+            if self._echo(value, uri):
+                self.found_echo = True
+                return REDACTED_IMAGE
+            return value
         if type(value) is bytes:
             self._charge(len(value))
-            return REDACTED_IMAGE if self.data in value else value
+            if self.data in value:
+                self.found_echo = True
+                return REDACTED_IMAGE
+            return value
         if id(value) in self.ancestors:
             raise ValueError("cyclic private result")
         self.ancestors.add(id(value))
@@ -338,6 +394,7 @@ class _ImageEchoSanitizer:
                 if len(value) > MAX_REDACTION_NODES - self.nodes:
                     raise ValueError("private result node limit")
                 if self._integer_image_echo(value, self.data):
+                    self.found_echo = True
                     return REDACTED_IMAGE
                 clean = [self.sanitize(child, depth + 1) for child in value]
                 # flatten_result joins every text/link block, even when an image or
@@ -345,18 +402,11 @@ class _ImageEchoSanitizer:
                 # candidate across those ignored blocks before it inserts newlines.
                 slots = []
                 for child in clean:
-                    slot = self._text_slot(child)
-                    if slot is not None:
-                        slots.append(slot)
-                    elif isinstance(child, (dict, SimpleNamespace)):
-                        child_type = (
-                            child.get("type")
-                            if isinstance(child, dict)
-                            else getattr(child, "type", None)
-                        )
-                        if child_type is None:
-                            self._redact_structured_fragments(child)
+                    slots.extend(self._text_slots(child))
+                    if isinstance(child, (dict, SimpleNamespace)):
+                        self._redact_structured_fragments(child)
                 self._redact_slots(slots)
+                self._redact_structured_fragments(clean)
                 return clean
             as_object = type(value) is SimpleNamespace
             if not as_object and not isinstance(value, dict):
@@ -393,3 +443,11 @@ class _ImageEchoSanitizer:
             raise ValueError("unsupported private result object")
         finally:
             self.ancestors.remove(id(value))
+
+
+def contains_mcp_image_echo(value, data):
+    """Return whether a public value contains the selected image, including fragments."""
+    fingerprint = base64.b64encode(data).decode("ascii").rstrip("=")
+    sanitizer = _ImageEchoSanitizer(fingerprint, data)
+    sanitizer.sanitize(copy.deepcopy(value))
+    return sanitizer.found_echo

@@ -140,6 +140,44 @@ def test_adjacent_text_fragments_are_checked_before_flattening(as_objects):
     assert ENCODED[17:] not in repr(clean)
 
 
+@pytest.mark.parametrize(
+    "fragments",
+    [
+        [
+            {"type": "custom", "text": ENCODED[:17]},
+            {"type": "custom", "text": ENCODED[17:]},
+        ],
+        [{"type": "resource_link", "name": ENCODED[:17], "uri": ENCODED[17:]}],
+        [
+            {"type": "custom", "text": "data:image/png;base64," + ENCODED[:17]},
+            {"type": "custom", "text": ENCODED[17:]},
+        ],
+        [
+            {"type": "custom", "resource": {"text": ENCODED[:17]}},
+            {"type": "custom", "resource": {"text": ENCODED[17:]}},
+        ],
+    ],
+)
+def test_fragments_in_every_rendered_text_field_are_withheld(fragments):
+    clean = make_context().redact_result(fragments)
+    assert ENCODED[:17] not in repr(clean)
+    assert ENCODED[17:] not in repr(clean)
+
+
+def test_multiple_separated_fragment_echoes_are_withheld():
+    fragments = [
+        {"type": "custom", "text": ENCODED[:17]},
+        {"type": "custom", "text": ENCODED[17:]},
+        {"type": "custom", "text": "safe"},
+        {"type": "custom", "text": ENCODED[:17]},
+        {"type": "custom", "text": ENCODED[17:]},
+    ]
+    clean = make_context().redact_result(fragments)
+    assert ENCODED[:17] not in repr(clean)
+    assert ENCODED[17:] not in repr(clean)
+    assert clean[2]["text"] == "safe"
+
+
 def test_f_result_split_across_non_text_content_and_structured_fragments_is_withheld():
     result = {
         "content": [
@@ -158,6 +196,20 @@ def test_f_result_split_across_non_text_content_and_structured_fragments_is_with
     assert clean["content"][1]["data"] == "unrelated"
     assert clean["structuredContent"]["parts"][0] == REDACTED_IMAGE
     assert clean["structuredContent"]["parts"][2] == REDACTED_IMAGE
+
+
+@pytest.mark.parametrize(
+    "structured",
+    [
+        {"type": "chunks", "parts": [ENCODED[:17], ENCODED[17:]]},
+        {"id": ENCODED[:17], "name": ENCODED[17:]},
+        {ENCODED[:17]: ENCODED[17:]},
+    ],
+)
+def test_f_result_split_across_typed_or_metadata_structured_fragments_is_withheld(structured):
+    clean = make_context().redact_result({"content": [], "structuredContent": structured})
+    assert ENCODED[:17] not in repr(clean)
+    assert ENCODED[17:] not in repr(clean)
 
 
 def test_f_result_percent_encoded_text_is_withheld():

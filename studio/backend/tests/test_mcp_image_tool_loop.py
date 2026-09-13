@@ -216,6 +216,35 @@ def test_f_message_percent_encoded_private_image_is_rejected(image_request):
         prepare(f)
 
 
+@pytest.mark.parametrize("data_url", [False, True])
+def test_private_image_split_across_message_blocks_is_rejected(image_request, data_url):
+    f = image_request
+    prefix = ("data:image/png;base64," if data_url else "") + f.encoded[:17]
+    f.payload.messages[0]["content"] = [
+        {"type": "text", "text": prefix},
+        {"type": "text", "text": f.encoded[17:]},
+    ]
+    with pytest.raises(McpImageDisclosureError, match = "removed from model messages"):
+        prepare(f)
+
+
+def test_private_image_split_across_messages_is_rejected(image_request):
+    f = image_request
+    f.payload.messages = [
+        {"role": "user", "content": f.encoded[:17]},
+        {"role": "assistant", "content": f.encoded[17:]},
+    ]
+    with pytest.raises(McpImageDisclosureError, match = "removed from model messages"):
+        prepare(f)
+
+
+def test_prior_redaction_marker_does_not_reject_a_new_image(image_request):
+    f = image_request
+    f.payload.messages[0]["content"] = "[shared image echo withheld]"
+    run, _ = prepare(f)
+    run.close()
+
+
 def test_unrelated_vision_image_is_preserved(image_request):
     f = image_request
     f.payload.messages[0]["content"] = [
