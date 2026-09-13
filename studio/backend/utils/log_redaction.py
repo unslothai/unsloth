@@ -19,9 +19,9 @@ REDACTED = "<redacted>"
 # Excluding the terminators is not enough on its own: a run of introducers contains none, so the body is still consumed to end of string from every starting position. The body classes therefore exclude the introducers too, which is also the correct reading of ECMA-48, since a control string cannot nest inside another.
 # The aborted prefix must be CONSUMED, not skipped. Leaving it in the text welds it onto the key in front of it ("api_key" + "foo"), the trailing \b in _SECRET_KEYS then fails, and the credential behind it prints. So an introducer whose sequence is cut takes its partial body with it, and the post-condition is that no introducer _ANSI_INTRODUCER_RE recognises survives the strip. A truncated introducer is not exotic: it is what a rotated log, or any writer cut mid sequence, leaves behind.
 # CSI gets a second branch rather than an optional final byte, because [@-~] already covers the lowercase letters: "\x1b[" in front of "api_key" would otherwise take the "a" with it and leave "pi_key", which is the same welding bug in reverse. The fallback runs only after the terminated form has failed, and consumes the parameter and intermediate bytes alone.
-# The Fe class keeps its old members and gains the escape sequences a terminal actually writes that used to be left in the text a byte at a time: the charset designators ("\x1b(B" from less and tput, "\x1b)0", "\x1b#8", "\x1b%G") and the Fp pair "\x1b7" / "\x1b8" (DECSC / DECRC) and "\x1b=" / "\x1b>" (keypad). Dropping only the ESC left the "7" welded to what followed, which is how "AKIA...\x1b7" stopped matching its own trailing \b, and left a bare "(B" in the viewer.
-# Both classes are deliberately narrower than ECMA-48 6.3.1 allows. The intermediate byte is limited to the designators rather than all of 0x20-0x2F, because "-" and the quote live in that range and "\x1b--api-key" would lose its flag; the final byte stops at 0x5F rather than 0x7E, because that range covers the lowercase letters and "\x1bapi_key" would come back as "pi_key". ESC in front of ordinary text is a write cut short far more often than it is a real sequence, and truncation is the case this whole rule exists for.
-# The bare ESC at the end is the last resort, after every sequence shape above has failed. It is what satisfies the post-condition, and it costs nothing that the branches above have not already declined to claim.
+# The Fe class keeps its old members and gains the escape sequences a terminal actually writes that used to be left in the text a byte at a time: the charset designators ("\x1b(B" from less and tput, "\x1b)0", "\x1b#8", "\x1b%G") and the Fp pair "\x1b7" / "\x1b8" (DECSC / DECRC). Dropping only the ESC left the "7" welded to what followed, which is how "AKIA...\x1b7" stopped matching its own trailing \b, and left a bare "(B" in the viewer. The keypad pair "\x1b=" / "\x1b>" is deliberately NOT here: a full screen app writes those, a log almost never does, and claiming "\x1b=" eats the separator out of "api_key\x1b=value" and takes the mask with it.
+# Both classes are deliberately narrower than ECMA-48 6.3.1 allows. The intermediate byte is limited to the designators rather than all of 0x20-0x2F, because "-" and the quote live in that range and "\x1b--api-key" would lose its flag. The final byte stops at 0x5F rather than 0x7E, because 0x60-0x7E is the lowercase letters: a writer cut after "\x1b(" would otherwise read the key's own first character as the designator's final byte and leave "pi_key". No registered 94-character set uses a lowercase final, so nothing real is given up. ESC in front of ordinary text is a write cut short far more often than it is a real sequence, and truncation is the case this whole rule exists for.
+# The bare ESC at the end is the last resort, after every sequence shape above has failed, and it is what satisfies the post-condition. It is replaced by a SPACE rather than deleted (see _strip_ansi): the escape itself was the non-alphanumeric boundary _KEY_START looks behind for, so dropping it outright joins "prefix" to "api_key" and the key stops matching. A space is a boundary on both sides, since the separator rules all allow \s* before the colon or equals.
 # The bodies also exclude the newline, which bounds how much a cut sequence can eat to the line it started on. This function runs per record for the viewer but over whole multiline blobs for exception text, and a lazy body accepts \n, so one stray introducer could otherwise blank an entire traceback.
 _ANSI_RE = re.compile(
     r"\x1b\][^\x07\x1b\x9c\n]*(?:\x07|\x1b\\|\x9c)?"
@@ -31,12 +31,35 @@ _ANSI_RE = re.compile(
     r"|\x9b[0-?]*[ -/]*[@-~]"
     r"|\x9b[0-?]*[ -/]*"
     r"|[\x9d\x90\x98\x9e\x9f][^\x07\x9c\x1b\x90\x98\x9b\x9d\x9e\x9f\n]*(?:\x07|\x9c)?"
-    r"|\x1b[#%()*+][0-~]"
-    r"|\x1b[78=>]"
+    r"|\x1b[#%()*+][0-_]"
+    r"|\x1b[78]"
     r"|\x1b[@-Z\\-_]"
     r"|\x1b"
 )
 _ANSI_INTRODUCER_RE = re.compile(r"[\x1b\x90\x98\x9b\x9d-\x9f]")
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove every control sequence. A recognised one costs nothing; a lone cut escape leaves a space behind, but ONLY where dropping it would join two alphanumerics, since there it was the boundary _KEY_START looks behind for and "prefix" would weld to "api_key". Anywhere else the space is the damage: a rule keyed on a value reads it as the value's first character, and "session=" followed by a space stops matching its own cookie.
+
+    Written as a walk rather than a sub with a callback because the test is on the OUTPUT: an escape preceded by a sequence that is itself being stripped has whatever survives that sequence next to it, not the character the record happens to hold.
+    """
+    out: list[str] = []
+    last = 0
+    emitted = ""  # the last character written out, carried rather than searched for: scanning back over `out` is O(n) per escape, which is the quadratic shape this whole rule removes.
+    for match in _ANSI_RE.finditer(text):
+        chunk = text[last : match.start()]
+        if chunk:
+            out.append(chunk)
+            emitted = chunk[-1]
+        last = match.end()
+        if match.group(0) != "\x1b":
+            continue
+        if emitted.isalnum() and text[last : last + 1].isalnum():
+            out.append(" ")
+            emitted = " "
+    out.append(text[last:])
+    return "".join(out)
 
 # Key names whose VALUE is a secret. "token" alone is absent on purpose, so n_tokens = 4096 and token_id=128009 survive.
 _SECRET_KEYS = (
@@ -171,7 +194,7 @@ def redact_log_text(text: str) -> str:
         return text
     # Nothing anchored below survives an escape between a key and its value, so strip first, guarded by one introducer scan: ordinary content is untouched.
     if _ANSI_INTRODUCER_RE.search(text):
-        text = _ANSI_RE.sub("", text)
+        text = _strip_ansi(text)
     for pattern, replacement in _PATTERNS:
         text = pattern.sub(replacement, text)
     # Before the key/value rules: _KV_RE captures "Basic" from "Authorization: Basic dXNlcjpwdw==", masking the scheme and leaving the credential clear.

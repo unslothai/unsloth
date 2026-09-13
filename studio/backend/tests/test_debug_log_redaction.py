@@ -433,6 +433,50 @@ def test_a_stripped_sequence_costs_only_itself():
     assert "abcdef123456" not in redact_log_text("\x1b?token=abcdef123456&next=1")
 
 
+def test_a_cut_escape_does_not_eat_the_character_behind_it():
+    """A writer cut after an introducer must not have the next character read as
+    the sequence's own final byte. "\\x1b(" in front of a key took the "a" with
+    it and left "pi_key", which is the welding bug the other way round: the key
+    is damaged rather than extended, and it stops matching either way."""
+    for text in (
+        "\x1b(api_key=abcdef123456",
+        "\x1b)api_key=abcdef123456",
+        "\x1b#api_key=abcdef123456",
+        "\x1b%api_key=abcdef123456",
+        "\x1b(password=abcdef123456",
+    ):
+        assert "abcdef123456" not in redact_log_text(text), text
+
+
+def test_removing_a_lone_escape_keeps_the_boundary_it_provided():
+    """A bare ESC is a write cut short, and it is also the non-alphanumeric
+    boundary _KEY_START looks behind for. Deleting it outright joins the words
+    either side, so "prefix" welds to "api_key" and the key stops matching.
+
+    The space goes in ONLY where that weld would happen. Put one anywhere else
+    and it becomes the damage instead: the cookie and presigned-URL rules read
+    the character after the separator as the value's first, so "session=" plus a
+    space no longer matches its own cookie.
+    """
+    for text in (
+        "prefix\x1bapi_key=abcdef123456",
+        "prefix\x1bpassword=abcdef123456",
+        # The escape sits behind a sequence that is itself stripped, so what ends
+        # up next to it is the "=", not the "t" the record happens to hold.
+        "Cookie: session=\x1b]0;t\x1babcdef1234567890",
+        "?token=\x1b]0;t\x1babcdef1234567890&next=1",
+        "Cookie: session=\x1babcdef1234567890",
+        "?token=\x1babcdef1234567890&next=1",
+        "api_key\x1b=abcdef123456",
+    ):
+        assert "abcdef123456" not in redact_log_text(text), text
+        assert "abcdef1234567890" not in redact_log_text(text), text
+    # The boundary is added only between two alphanumerics, so an escape next to
+    # punctuation still costs nothing.
+    assert redact_log_text("done\x1b: ok") == "done: ok"
+    assert redact_log_text("prefix\x1bsuffix") == "prefix suffix"
+
+
 def test_an_aborted_sequence_cannot_eat_past_its_own_line():
     """A cut control string has no terminator, so the only bound left is the
     newline, and the cost has to stop there. This function runs per record for
