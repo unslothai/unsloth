@@ -150,6 +150,7 @@ class ChatThreadSettings(BaseModel):
     # -1 disables top-k, matching ChatCompletionRequest and the default.yaml fallback.
     topK: Optional[int] = Field(default = None, ge = -1, le = 100)
     minP: Optional[float] = Field(default = None, ge = 0, le = 1)
+    minPMode: Optional[Literal["server-default", "custom"]] = None
     repetitionPenalty: Optional[float] = Field(default = None, ge = 1, le = 2)
     presencePenalty: Optional[float] = Field(default = None, ge = 0, le = 2)
     seed: SamplingSeed = None
@@ -383,6 +384,7 @@ class ChatInferenceSettings(BaseModel):
     topP: Optional[float] = None
     topK: Optional[float] = None
     minP: Optional[float] = None
+    minPMode: Optional[Literal["server-default", "custom"]] = None
     repetitionPenalty: Optional[float] = None
     presencePenalty: Optional[float] = None
     maxSeqLength: Optional[float] = None
