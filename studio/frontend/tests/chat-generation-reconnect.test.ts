@@ -330,8 +330,7 @@ test("Stop during create cancels the run after its delayed reply", async () => {
 });
 
 test("a null admission does not mean the run was stopped", async () => {
-  // json() makes an unparseable 2xx body null and `ok` keeps it, so the create resolves null
-  // with the signal untouched, and the adapter's durable branch must not read that as a Stop.
+  // json() makes an unparseable 2xx body null and `ok` keeps it, so the create resolves null.
   globalThis.fetch = (async () =>
     new Response("", { status: 200 })) as typeof fetch;
   const controller = new AbortController();

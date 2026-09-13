@@ -70,7 +70,6 @@ test("a stopped empty assistant is filled before the prune sees it", () => {
 });
 
 test("the fill leaves a refusal suppressed", () => {
-  // Every other assistant shape force-flushes, so an empty serialization is a refusal.
   assert.match(
     adapter,
     /if \(serialized\.length === 0\) \{[\s\S]{0,200}?return serialized;/,
