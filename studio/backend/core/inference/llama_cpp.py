@@ -5928,6 +5928,9 @@ def _report_live_llama_timings(callback, chunk) -> None:
     sample.pop("prompt_ms", None)
     progress = chunk.get("prompt_progress")
     if isinstance(progress, dict):
+        # Keep the actual prefill event, not only the throughput derived from it.
+        # Consumers can use this to distinguish prompt processing from decoding.
+        sample["prompt_progress"] = dict(progress)
         try:
             processed = max(0.0, float(progress.get("processed", 0)))
             cached = max(0.0, float(progress.get("cache", 0)))

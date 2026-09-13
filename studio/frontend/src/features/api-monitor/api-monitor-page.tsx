@@ -416,7 +416,15 @@ function RequestDetail({
               statusTextClass(entry.status),
             )}
           >
-            {entry.status}
+            {entry.status === "running"
+              ? entry.running_phase === "prompt_processing"
+                ? entry.prompt_progress?.percent != null
+                  ? `Prompt processing · ${Math.round(entry.prompt_progress.percent)}%`
+                  : "Prompt processing"
+                : entry.running_phase === "token_generation"
+                  ? "Token generation"
+                  : "Running"
+              : entry.status}
           </span>
           <span className="ml-auto shrink-0 font-mono text-ui-10 text-muted-foreground">
             {entry.id}

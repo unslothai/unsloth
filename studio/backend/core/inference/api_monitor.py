@@ -195,6 +195,15 @@ class ApiMonitorEntry:
     shared: bool = False
     # 0-100 for a running download row; None when not applicable.
     progress: Optional[float] = None
+    # Request sub-phase while status remains "running".
+    # Kept separate from lifecycle download progress above.
+    running_phase: Optional[str] = None
+    # Live llama.cpp prompt-processing progress.
+    # ``processed`` already includes cached tokens.
+    prompt_progress_total: Optional[int] = None
+    prompt_progress_processed: Optional[int] = None
+    prompt_progress_cached: Optional[int] = None
+    prompt_progress_time_ms: Optional[float] = None
     # Stamped on the first reply text; snapshot() prefers it over engine timings.
     first_token_monotonic: Optional[float] = None
     # The same instant, but only for output the model decoded. A tool card is client output that TTFT should count and
@@ -251,6 +260,30 @@ class ApiMonitorEntry:
             gen_s = self.finished_monotonic - self.first_decode_monotonic
             if gen_s > 0.05:
                 tok_per_sec = (self.completion_tokens - 1) / gen_s
+        prompt_progress = None
+        if self.prompt_progress_processed is not None:
+            percent = None
+            if self.prompt_progress_total is not None and self.prompt_progress_total > 0:
+                percent = min(
+                    100.0,
+                    max(
+                        0.0,
+                        self.prompt_progress_processed / self.prompt_progress_total * 100.0,
+                    ),
+                )
+
+            prompt_progress = {
+                "total": self.prompt_progress_total,
+                "processed": self.prompt_progress_processed,
+                "cached": self.prompt_progress_cached,
+                "time_ms": (
+                    round(self.prompt_progress_time_ms, 2)
+                    if self.prompt_progress_time_ms is not None
+                    else None
+                ),
+                "percent": round(percent, 1) if percent is not None else None,
+            }
+
         payload = {
             "id": self.id,
             "endpoint": self.endpoint,
@@ -278,6 +311,8 @@ class ApiMonitorEntry:
             "event": self.event,
             "reason": self.reason,
             "progress": self.progress,
+            "running_phase": self.running_phase,
+            "prompt_progress": prompt_progress,
             "ttft_ms": ttft_ms,
             "tok_per_sec": round(tok_per_sec, 2) if tok_per_sec is not None else None,
             "prompt_tok_per_sec": (
@@ -456,6 +491,69 @@ class ApiMonitor:
                 entry.progress = min(100.0, max(0.0, float(progress)))
                 entry.updated_at = time.time()
 
+    def set_prompt_progress(
+        self,
+        entry_id: Optional[str],
+        *,
+        total: Any = None,
+        processed: Any = None,
+        cached: Any = None,
+        time_ms: Any = None,
+    ) -> None:
+        """Record one live llama.cpp prompt-processing progress sample."""
+        if not entry_id:
+            return
+
+        total = _token_count_or_none(total)
+        processed = _token_count_or_none(processed)
+        cached = _token_count_or_none(cached)
+        time_ms = _finite_float_or_none(time_ms)
+
+        if processed is None:
+            return
+
+        if total is not None and total > 0:
+            processed = min(processed, total)
+
+        if cached is not None:
+            cached = min(cached, processed)
+
+        if time_ms is not None and time_ms < 0:
+            time_ms = None
+
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if (
+                entry is None
+                or entry.status != "running"
+                or entry.kind != "request"
+                or entry.running_phase == "token_generation"
+            ):
+                return
+
+            # A tool loop can enter prompt processing more than once in one
+            # API request. Do not carry progress from the previous prefill round
+            # into the next one.
+            if entry.running_phase != "prompt_processing":
+                entry.prompt_progress_total = None
+                entry.prompt_progress_processed = None
+                entry.prompt_progress_cached = None
+                entry.prompt_progress_time_ms = None
+
+            entry.running_phase = "prompt_processing"
+
+            # llama.cpp progress frames may omit fields after reporting them
+            # once, so keep the latest known value within the same prefill round.
+            if total is not None:
+                entry.prompt_progress_total = total
+            entry.prompt_progress_processed = processed
+            if cached is not None:
+                entry.prompt_progress_cached = cached
+            if time_ms is not None:
+                entry.prompt_progress_time_ms = time_ms
+
+            entry.updated_at = time.time()
+
     def discard(self, entry_id: Optional[str]) -> None:
         """Drop a row that turned out not to be an event (an already-satisfied load)."""
         if not entry_id:
@@ -485,6 +583,7 @@ class ApiMonitor:
                 entry.openai_stream_last_segment_was_tool = False
             # Only a streaming delta stamps TTFT; a full-response append is end-to-end latency.
             if stamp_first_token:
+                entry.running_phase = "token_generation"
                 now = time.monotonic()
                 if entry.first_token_monotonic is None:
                     entry.first_token_monotonic = now
@@ -598,6 +697,7 @@ class ApiMonitor:
                 entry.first_token_monotonic = now
             if entry.first_decode_monotonic is None:
                 entry.first_decode_monotonic = now
+            entry.running_phase = "token_generation"
             entry.updated_at = time.time()
 
     def take_openai_tool_calls(
@@ -662,8 +762,14 @@ class ApiMonitor:
                 return
             if entry.first_token_monotonic is None:
                 entry.first_token_monotonic = now
-            if decoded and entry.first_decode_monotonic is None:
-                entry.first_decode_monotonic = now
+            if decoded:
+                entry.running_phase = "token_generation"
+                if entry.first_decode_monotonic is None:
+                    entry.first_decode_monotonic = now
+            else:
+                # Tool/client output means prefill has ended, but the model is
+                # not decoding while Studio executes or awaits the tool.
+                entry.running_phase = None
 
     def set_reply(self, entry_id: Optional[str], text: str) -> None:
         if not entry_id:
