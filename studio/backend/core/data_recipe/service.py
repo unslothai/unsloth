@@ -320,9 +320,42 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
 
 
 def validate_recipe(recipe: dict[str, Any]) -> None:
+    from data_designer.config.errors import InvalidConfigError  # pyright: ignore[reportMissingImports]
+    from data_designer.engine.compiler import (  # pyright: ignore[reportMissingImports]
+        _add_internal_row_id_column_if_needed,
+        _get_allowed_references,
+        _resolve_and_add_seed_columns,
+    )
+    from data_designer.engine.validation import (  # pyright: ignore[reportMissingImports]
+        ViolationLevel,
+        validate_data_designer_config,
+    )
+
+    from .export_columns import filter_studio_validation_violations
+
     builder = build_config_builder(recipe)
     designer = create_data_designer(recipe)
-    designer.validate(builder)
+    resource_provider = designer._create_resource_provider(
+        "validate-configuration",
+        builder,
+    )
+    config = builder.build()
+    _resolve_and_add_seed_columns(config, resource_provider.seed_reader)
+    _add_internal_row_id_column_if_needed(config)
+    violations = validate_data_designer_config(
+        columns = config.columns,
+        processor_configs = config.processors or [],
+        allowed_references = _get_allowed_references(config),
+    )
+    violations = filter_studio_validation_violations(
+        violations,
+        columns = config.columns,
+        processor_configs = config.processors or [],
+    )
+    if any(violation.level == ViolationLevel.ERROR for violation in violations):
+        raise InvalidConfigError(
+            "🛑 Your configuration contains validation errors. Please address the indicated issues and try again."
+        )
 
 
 def preview_recipe(
