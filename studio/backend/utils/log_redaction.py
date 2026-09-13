@@ -61,6 +61,7 @@ def _strip_ansi(text: str) -> str:
     out.append(text[last:])
     return "".join(out)
 
+
 # Key names whose VALUE is a secret. "token" alone is absent on purpose, so n_tokens = 4096 and token_id=128009 survive.
 _SECRET_KEYS = (
     "authorization|x-api-key|api[-_]?key|apikey|hf[-_]?token|access[-_]?token|"
