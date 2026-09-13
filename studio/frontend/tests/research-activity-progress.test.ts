@@ -15,6 +15,7 @@ Object.assign(globalThis.window as object, { addEventListener: () => {} });
 
 const {
   ingestResearchUpdate,
+  openResearchRun,
   researchPhaseTitle,
   runningResearchActivityTitle,
   resetResearchRunState,
@@ -94,6 +95,31 @@ test("a planning phase produces a live row before the plan exists", () => {
   assert.equal(running.length, 1);
   assert.equal(running[0].title, "Planning an approach");
   assert.equal(runningResearchActivityTitle(activities()), "Planning an approach");
+});
+
+test("opening a run from message metadata hydrates it before opening the panel", () => {
+  reset();
+  const completed = run({
+    status: "completed",
+    report: "done",
+  });
+  const openedWithThread: Array<string | undefined> = [];
+  const unsubscribe = useResearchRunStore.subscribe((state) => {
+    if (state.openRunId === RUN_ID) {
+      openedWithThread.push(state.sessions[RUN_ID]?.run.threadId);
+    }
+  });
+
+  openResearchRun(
+    completed as unknown as Parameters<typeof openResearchRun>[0],
+  );
+  unsubscribe();
+
+  const state = useResearchRunStore.getState();
+  assert.equal(openedWithThread[0], "thread-1");
+  assert.equal(state.openRunId, RUN_ID);
+  assert.equal(state.sessions[RUN_ID]?.run.threadId, "thread-1");
+  assert.equal(state.sessions[RUN_ID]?.run.status, "completed");
 });
 
 test("reasoning for a call lands on that call's phase row, not a second one", async () => {
