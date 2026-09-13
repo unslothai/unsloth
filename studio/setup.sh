@@ -3633,6 +3633,11 @@ else
     if [ "$_WHISPER_STATUS" -eq 0 ]; then
         if grep -Fq "already matches" "$_WHISPER_LOG"; then
             step "whisper.cpp" "prebuilt up to date"
+        elif grep -Fq "keeping the existing complete install" "$_WHISPER_LOG"; then
+            # Exit 0 can also mean a kept tree after a lookup that could not answer; "prebuilt
+            # installed" would name a release nothing fetched. Same wording and token as llama's
+            # arm.
+            step "whisper.cpp" "update unavailable, existing prebuilt kept" "$C_WARN"
         else
             step "whisper.cpp" "prebuilt installed"
         fi
