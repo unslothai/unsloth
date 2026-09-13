@@ -838,30 +838,60 @@ def test_a_group_shared_marker_keeps_its_group(tmp_path, writer):
 
 @NEEDS_CHOWN
 @pytest.mark.parametrize("writer", WRITERS, ids = _WRITER_IDS)
-def test_every_marker_writer_asks_for_the_group_only(tmp_path, writer, monkeypatch):
-    """All three pass uid -1, and that uniformity is the point.
+def test_every_marker_writer_asks_for_the_owner_then_falls_back_to_the_group(
+    tmp_path, writer, monkeypatch
+):
+    """All three ask for owner AND group first, then group alone, and that uniformity is
+    the point.
 
-    llama._write_marker asked for the owner AND the group until 2026-09-13 ("Marker
-    rewrites keep the group"), which for a non-root member of a group-shared install is
-    EPERM on the whole call -- the group the other two writers restore was lost, silently,
-    because the failure is swallowed. The consequence is measured in the next test; this
-    one pins the call shape so the three cannot drift apart again.
+    Neither half is sufficient on its own. Owner+group alone is EPERM for a non-root member
+    of a group-shared install -- chown is all-or-nothing -- so the group is silently lost,
+    which is what e8d128d24 fixed in core and node. Group alone is wrong under root, which
+    is exactly when the owner CAN be restored: it leaves the marker owned by root, and an
+    0600 marker stops being readable by the user who owns the install. The two calls in
+    this order give each caller the best it is permitted. This pins the call shape so the
+    three writers cannot drift apart again.
     """
     path = _live_marker(tmp_path, writer)
     original = path.stat()
     calls: list = []
 
-    def recording_chown(target, uid, gid):
+    def refusing_chown(target, uid, gid):
         calls.append((Path(target).name, uid, gid))
+        if uid != -1:
+            raise PermissionError("a non-root member may not give a file away")
 
-    monkeypatch.setattr(writer.module.os, "chown", recording_chown)
+    monkeypatch.setattr(writer.module.os, "chown", refusing_chown)
     writer.rewrite(tmp_path, _LIVE_PAYLOAD)
     monkeypatch.undo()
 
-    assert len(calls) == 1
-    name, uid, gid = calls[0]
-    assert ".tmp-" in name, "ownership must be set on the temp file, before the swap"
-    assert (uid, gid) == (-1, original.st_gid)
+    assert [(uid, gid) for _, uid, gid in calls] == [
+        (original.st_uid, original.st_gid),
+        (-1, original.st_gid),
+    ], calls
+    assert all(
+        ".tmp-" in name for name, _, _ in calls
+    ), "ownership must be set on the temp file, before the swap"
+
+
+@NEEDS_CHOWN
+@pytest.mark.parametrize("writer", WRITERS, ids = _WRITER_IDS)
+def test_a_permitted_writer_restores_the_owner_and_asks_no_further(tmp_path, writer, monkeypatch):
+    """The root case: when the combined call is allowed, the fallback must not run, or the
+    owner just restored would be left in place by luck rather than by intent."""
+    path = _live_marker(tmp_path, writer)
+    original = path.stat()
+    calls: list = []
+
+    monkeypatch.setattr(
+        writer.module.os,
+        "chown",
+        lambda target, uid, gid: calls.append((Path(target).name, uid, gid)),
+    )
+    writer.rewrite(tmp_path, _LIVE_PAYLOAD)
+    monkeypatch.undo()
+
+    assert [(uid, gid) for _, uid, gid in calls] == [(original.st_uid, original.st_gid)], calls
 
 
 @NEEDS_CHOWN

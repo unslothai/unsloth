@@ -54,15 +54,21 @@ def _node_tree(root: Path, host) -> None:
     "writer_name",
     ["llama._write_marker", "core.write_live_marker"],
 )
-def test_a_live_marker_rewrite_never_asks_for_the_owner(tmp_path, monkeypatch, writer_name):
-    """Both marker rewriters must ask os.chown for the group alone.
+def test_a_live_marker_rewrite_falls_back_to_the_group_when_the_owner_is_refused(
+    tmp_path, monkeypatch, writer_name
+):
+    """Both marker rewriters must ask for owner AND group, then for the group alone.
 
-    A shared install's marker is owned by whoever installed it. chown(2) refuses the whole
-    call when an unprivileged caller names another owner, so asking for the owner loses the
-    group too, and the next reader in that group cannot read the marker.
+    Neither half is sufficient. A shared install's marker is owned by whoever installed it,
+    and chown(2) refuses the WHOLE call when an unprivileged caller names another owner, so
+    asking only for the owner loses the group too and the next reader in that group cannot
+    read the marker. Asking only for the group is wrong the other way: under root, the one
+    caller that CAN restore the owner, it leaves the marker owned by root, and an 0600
+    marker stops being readable by the user who owns the install.
     """
     marker = tmp_path / "MARKER.json"
     marker.write_text('{"release_tag": "b10840"}\n', encoding = "utf-8")
+    original = marker.stat()
 
     calls = []
     if writer_name == "llama._write_marker":
@@ -70,13 +76,17 @@ def test_a_live_marker_rewrite_never_asks_for_the_owner(tmp_path, monkeypatch, w
     else:
         module, write = CORE, lambda: CORE.write_live_marker(marker, {"release_tag": "b10841"})
 
-    monkeypatch.setattr(module.os, "chown", lambda path, uid, gid: calls.append((uid, gid)))
+    def refusing(path, uid, gid):
+        calls.append((uid, gid))
+        if uid != -1:
+            raise PermissionError("a non-root member may not give a file away")
+
+    monkeypatch.setattr(module.os, "chown", refusing)
     write()
 
-    assert calls, "the rewriter did not try to restore ownership at all"
-    assert [uid for uid, _ in calls] == [-1] * len(calls), (
-        f"{writer_name} asked for the owner ({calls}); a non-root member of a group-shared "
-        "install cannot grant that, and chown then declines the group as well"
+    assert calls == [(original.st_uid, original.st_gid), (-1, original.st_gid)], (
+        f"{writer_name} asked for {calls}; it must try the owner first and fall back to the "
+        "group, so a non-root member keeps the group and root restores the owner"
     )
 
 
@@ -353,3 +363,110 @@ def test_a_swap_blocked_for_any_other_reason_raises_at_once(tmp_path, monkeypatc
     with pytest.raises(OSError):
         CORE.atomic_replace_from_tempfile(source, tmp_path / "MARKER.json")
     assert len(attempts) == 1, "a non-transient failure was retried"
+
+
+# An explicit release pin is not automatic selection
+# The macOS walk-back records why AUTOMATIC selection settled on an older release. Reusing that
+# record to satisfy a run that NAMED a release makes the fast path answer "already matches
+# selected release N" while N is not what is installed. The full path never did this: it turns
+# off older-release fallback as soon as published_release_tag is supplied.
+def _mac(macos_version = (14, 7)):
+    return LLAMA.HostInfo(
+        system = "Darwin",
+        machine = "arm64",
+        is_linux = False,
+        is_windows = False,
+        is_macos = True,
+        is_x86_64 = False,
+        is_arm64 = True,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = [],
+        visible_cuda_devices = None,
+        has_physical_nvidia = False,
+        has_usable_nvidia = False,
+        macos_version = macos_version,
+    )
+
+
+def _walked_back_marker(
+    host,
+    *,
+    installed = "b9998",
+    skipped = "b9999",
+):
+    return {
+        "release_tag": installed,
+        "tag": installed,
+        "walked_back_from": skipped,
+        "walked_back_on_macos": CORE.macos_version_label(host),
+    }
+
+
+def test_a_pinned_release_is_not_satisfied_by_a_walked_back_install():
+    host = _mac()
+    marker = _walked_back_marker(host)
+    assert LLAMA._release_expectation_met(marker, "b9999", host, pinned = True) is False
+
+
+def test_an_automatic_request_still_accepts_the_walk_back():
+    """The optimisation this PR exists for must survive the fix above: without a pin, a Mac
+    holding the older release because the newest needs a newer OS is still current."""
+    host = _mac()
+    marker = _walked_back_marker(host)
+    assert LLAMA._release_expectation_met(marker, "b9999", host, pinned = False) is True
+
+
+def test_a_pinned_release_that_is_actually_installed_is_still_current():
+    """The fix must not send every pinned request down the full path."""
+    host = _mac()
+    marker = _walked_back_marker(host, installed = "b9999", skipped = "b9999")
+    assert LLAMA._release_expectation_met(marker, "b9999", host, pinned = True) is True
+
+
+def test_the_pin_reaches_the_expectation_check(tmp_path, monkeypatch):
+    """The guard is only worth anything if the caller actually passes the pin, so drive the
+    real entry point and record what it asked."""
+    seen = []
+    monkeypatch.setattr(
+        LLAMA,
+        "_release_expectation_met",
+        lambda marker, expected, host, *, pinned = False: seen.append(pinned) or False,
+    )
+    host = _mac()
+    # Everything the guards AHEAD of the release check demand, so the call actually gets
+    # there. A marker that fails an earlier guard would make this test pass vacuously with
+    # the pin never computed at all.
+    monkeypatch.setattr(
+        LLAMA,
+        "load_prebuilt_metadata",
+        lambda *_a, **_k: {
+            "install_fingerprint": "x" * 64,
+            "backend_request": "auto",
+            "force_cpu": False,
+            "prebuilt_fallback_used": False,
+            "published_repo": LLAMA.DEFAULT_PUBLISHED_REPO,
+            "backend": "metal",
+            "host_profile": LLAMA.host_profile(host),
+        },
+    )
+    monkeypatch.setattr(LLAMA, "_marker_backend_fits_host", lambda *_a, **_k: True)
+    monkeypatch.setattr(LLAMA, "_runtime_preference_moved", lambda *_a, **_k: False)
+    route = LLAMA.BackendRoute(
+        backend = "auto",
+        host = host,
+        published_repo = LLAMA.DEFAULT_PUBLISHED_REPO,
+        published_release_tag = "b9999",
+        persist_llama_backend = None,
+        persist_rocm_gfx = None,
+    )
+    LLAMA.existing_install_current_without_plan(
+        tmp_path,
+        llama_tag = "latest",
+        published_repo = LLAMA.DEFAULT_PUBLISHED_REPO,
+        published_release_tag = "b9999",
+        backend_request = "auto",
+        force_cpu = False,
+        route = route,
+    )
+    assert seen == [True], f"the pin never reached the expectation check: {seen}"

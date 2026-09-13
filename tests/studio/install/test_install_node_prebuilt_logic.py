@@ -1230,10 +1230,17 @@ def test_a_refreshed_marker_keeps_its_owner_and_group(tmp_path, monkeypatch):
     marker.write_text("{}", encoding = "utf-8")
     original = marker.stat()
     chowned = []
-    monkeypatch.setattr(M.os, "chown", lambda path, uid, gid: chowned.append((uid, gid)))
+
+    def refusing(path, uid, gid):
+        chowned.append((uid, gid))
+        if uid != -1:
+            raise PermissionError("a non-root member may not give a file away")
+
+    monkeypatch.setattr(M.os, "chown", refusing)
     M._write_metadata_payload(install_dir, {"kind": "node"})
-    # The group only: asking for the owner too would refuse the call for a non-root member.
-    assert chowned == [(-1, original.st_gid)]
+    # Owner and group first, since root can restore both; group alone when that is refused,
+    # which is the non-root member of a group-shared install.
+    assert chowned == [(original.st_uid, original.st_gid), (-1, original.st_gid)]
     chowned.clear()
     # A marker written for the first time has no owner to preserve.
     marker.unlink()

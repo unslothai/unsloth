@@ -704,17 +704,24 @@ def _write_metadata_payload(install_dir: Path, payload: dict) -> None:
             mask = os.umask(0)
             os.umask(mask)
             original_mode = 0o666 & ~mask
-        try:
-            os.chmod(tmp_path, original_mode)
-        except OSError:
-            pass
+        # Not swallowed, unlike an earlier revision: swapping anyway publishes
+        # NamedTemporaryFile's 0600 over a marker other users read, which is the very failure
+        # the mode restore exists to prevent. Core and llama abandon the replacement here too.
+        os.chmod(tmp_path, original_mode)
         if original is not None:
-            # Group only (uid -1): os.replace installs the temp file's ownership, and asking for
-            # the owner too refuses the whole call for a non-root member.
+            # Owner AND group when the caller can (root refreshing another user's install), group
+            # alone when it cannot. chown is all-or-nothing, so a non-root member of a shared
+            # group has the combined call refused outright, and os.replace then installs the
+            # member's own uid and primary gid -- which is how the group was lost (e8d128d24).
+            # Group-only alone is not enough either: under root it leaves the marker owned by
+            # root, and a 0600 marker then stops being readable by the user who owns the install.
             try:
-                os.chown(tmp_path, -1, original.st_gid)
+                os.chown(tmp_path, original.st_uid, original.st_gid)
             except (OSError, AttributeError):
-                pass
+                try:
+                    os.chown(tmp_path, -1, original.st_gid)
+                except (OSError, AttributeError):
+                    pass
         atomic_replace_from_tempfile(tmp_path, destination)
         tmp_path = None
     finally:

@@ -1001,18 +1001,26 @@ def test_a_kept_install_that_changes_under_the_lock_is_re_validated(tmp_path):
 
 
 @pytest.mark.skipif(not hasattr(core.os, "chown"), reason = "os.chown is POSIX only")
-def test_a_live_marker_rewrite_keeps_the_group_without_asking_for_the_owner(tmp_path, monkeypatch):
+def test_a_live_marker_rewrite_keeps_the_group_when_the_owner_is_refused(tmp_path, monkeypatch):
     """A non-root member of a group-shared install can hand the temp file to the
     marker's group, but not to its owner; asking for both refuses the call before the
-    group is applied and os.replace installs the member's primary group instead."""
+    group is applied and os.replace installs the member's primary group instead. So the
+    combined call is tried first, for the root case that can honour it, and the group-only
+    call is the fallback."""
     marker = tmp_path / "MARKER.json"
     marker.write_text('{"a": 1}', encoding = "utf-8")
     original = marker.stat()
     calls = []
-    monkeypatch.setattr(core.os, "chown", lambda path, uid, gid: calls.append((uid, gid)))
+
+    def refusing(path, uid, gid):
+        calls.append((uid, gid))
+        if uid != -1:
+            raise PermissionError("a non-root member may not give a file away")
+
+    monkeypatch.setattr(core.os, "chown", refusing)
     core.write_live_marker(marker, {"a": 1, "b": 2})
     assert json.loads(marker.read_text(encoding = "utf-8")) == {"a": 1, "b": 2}
-    assert calls == [(-1, original.st_gid)]
+    assert calls == [(original.st_uid, original.st_gid), (-1, original.st_gid)]
     assert not list(tmp_path.glob("MARKER.json.tmp-*"))
 
 

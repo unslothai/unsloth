@@ -6787,12 +6787,19 @@ def _write_marker(marker_path: Path, marker: dict) -> bool:
             os.fsync(handle.fileno())
         if original is not None:
             os.chmod(tmp_path, stat.S_IMODE(original.st_mode))
-            # Group only (uid -1), as core and node do (e8d128d24): chown is all-or-nothing, so
-            # asking for the owner too refuses the call and os.replace installs the caller's group.
+            # Owner AND group when the caller can (root refreshing another user's install), group
+            # alone when it cannot. chown is all-or-nothing, so a non-root member of a shared
+            # group has the combined call refused outright, and os.replace then installs the
+            # member's own uid and primary gid -- which is how the group was lost (e8d128d24).
+            # Group-only alone is not enough either: under root it leaves the marker owned by
+            # root, and a 0600 marker then stops being readable by the user who owns the install.
             try:
-                os.chown(tmp_path, -1, original.st_gid)
+                os.chown(tmp_path, original.st_uid, original.st_gid)
             except (OSError, AttributeError):
-                pass
+                try:
+                    os.chown(tmp_path, -1, original.st_gid)
+                except (OSError, AttributeError):
+                    pass
         atomic_replace_from_tempfile(tmp_path, marker_path)
         return True
     except OSError:
@@ -7860,7 +7867,12 @@ def existing_install_current_without_plan(
     expected_release = _expected_release_tag_without_plan(
         marker, llama_tag, route.published_repo, route.published_release_tag, host = host
     )
-    if not _release_expectation_met(marker, expected_release, host):
+    if not _release_expectation_met(
+        marker,
+        expected_release,
+        host,
+        pinned = bool((route.published_release_tag or "").strip()),
+    ):
         return False
     # (4) the marker was written whole by this installer, so its fields can be trusted.
     if _marker_install_fingerprint(marker) != marker.get("install_fingerprint"):
@@ -7899,7 +7911,11 @@ def existing_install_current_without_plan(
 
 
 def _release_expectation_met(
-    marker: "dict[str, Any]", expected_release: "str | None", host: HostInfo
+    marker: "dict[str, Any]",
+    expected_release: "str | None",
+    host: HostInfo,
+    *,
+    pinned: bool = False,
 ) -> bool:
     """Whether the release this run would ask for is the one installed.
 
@@ -7908,11 +7924,22 @@ def _release_expectation_met(
     (prebuilt_core.WalkBack). While the newest published release is still that one and
     the host is still that macOS version, the walk-back stands and the install is
     current; a newer release or an OS upgrade takes the full path, which re-decides it.
+
+    *pinned* is the caller naming a release explicitly, and it disables that: the walk-back
+    explains why AUTOMATIC selection settled on an older release, and an explicit request is
+    not automatic selection. Without this, a Mac holding b9998 after walking back from b9999
+    answers "already matches selected release b9999" to a run that asked for b9999, which is
+    both a release the user did not get and a sentence that is not true. The full path
+    disables older-release fallback for a pinned request for the same reason
+    (allow_older_release_fallback in _fork_manifest_release_plans), so it reports the
+    incompatibility instead of quietly serving a different build.
     """
     if not expected_release:
         return False
     if expected_release == marker.get("release_tag"):
         return True
+    if pinned:
+        return False
     return _core.walk_back_stands(marker, host, expected_release)
 
 
