@@ -2995,6 +2995,7 @@ _TORCH_CEILING="2.12.0"
 _TORCHVISION_CEILING="0.27.0"
 _TORCHAUDIO_CEILING="2.12.0"
 # Default torch constraint; tightened for Python 3.13+ on arm64 macOS (no cp313 wheels below 2.6).
+# Torch 2.4 remains supported without automatic torchcodec installation; Studio's table starts at 2.5.
 TORCH_CONSTRAINT="torch>=2.4,<${_TORCH_CEILING}"
 if [ "$SKIP_TORCH" = false ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
     _PY_MINOR=$("$VENV_DIR/bin/python" -c \
@@ -4454,6 +4455,7 @@ case "$_torch_index_leaf" in
             done
             TORCH_INDEX_URL="${_amd_gfx906_base}/rocm6.3"
             # Cap below <2.12: a rocm7.2 pick floors at 2.11, which rocm6.3 (<= 2.9.x) cannot meet.
+            # Keep the default 2.4 floor, including its lack of automatic torchcodec installation.
             TORCH_CONSTRAINT="torch>=2.4,<2.11.0"
             TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.26.0"
             TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.11.0"
