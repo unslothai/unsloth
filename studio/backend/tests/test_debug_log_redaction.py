@@ -409,9 +409,22 @@ def test_a_stripped_sequence_costs_only_itself():
     wraps exactly as it found it, whatever the shape."""
     line = "INFO loading unsloth/Llama-3.2-1B revision 8f3a2b1c in 13ms"
     for sequence in (
-        "\x1b[36m", "\x1b[0m", "\x1b[38;5;196m", "\x1b[?25l", "\x1b[2K",
-        "\x1b]0;title\x07", "\x1b]0;title\x1b\\", "\x9d0;title\x9c",
-        "\x1bPx\x1b\\", "\x9b0m", "\x1bM", "\x1b7", "\x1b8", "\x1b(B", "\x1b)0", "\x1b#8",
+        "\x1b[36m",
+        "\x1b[0m",
+        "\x1b[38;5;196m",
+        "\x1b[?25l",
+        "\x1b[2K",
+        "\x1b]0;title\x07",
+        "\x1b]0;title\x1b\\",
+        "\x9d0;title\x9c",
+        "\x1bPx\x1b\\",
+        "\x9b0m",
+        "\x1bM",
+        "\x1b7",
+        "\x1b8",
+        "\x1b(B",
+        "\x1b)0",
+        "\x1b#8",
     ):
         assert redact_log_text(sequence + line + sequence) == line, sequence
     # A flag and a query parameter must survive an escape in front of them: the
