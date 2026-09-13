@@ -31,7 +31,7 @@ from hub.utils.paths import (
 )
 from hub.services import snapshot_progress
 from hub.services import download_lifecycle
-from hub.services.models import cache_inventory, gguf_variants
+from hub.services.models import account_access, cache_inventory, gguf_variants
 
 logger = get_logger(__name__)
 
@@ -170,13 +170,25 @@ async def download_model_response(
     *,
     allow_ambient_token: bool = True,
 ):
-    """Start a background download for a HuggingFace model. ``allow_ambient_token=False`` keeps the worker anonymous when the caller sent no token, for repos named over the API rather than chosen here."""
+    """Start a background download for a HuggingFace model.
+
+    ``allow_ambient_token=False`` keeps the worker anonymous when the caller sent
+    no token, for repos named over the API rather than chosen here.
+    """
+    from core.training.account_jobs import account_is_retired
+
+    if account_is_retired():
+        raise HTTPException(status_code = 403, detail = "Account is retired")
+    hf_token = account_access.account_hf_token(hf_token)
+    allow_ambient_token = allow_ambient_token and not account_access.managed_account()
     repo_id = body.repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(
             status_code = 400,
             detail = f"Invalid repo_id: {repo_id!r}",
         )
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.authorize_download, repo_id, "model", hf_token)
     # Canonicalize so two different-cased paste-ins share one job + cache dir.
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "model")
 
@@ -279,6 +291,7 @@ async def download_model_response(
     )
     generation = _registry.current_generation(key)
     if not claimed:
+        download_lifecycle.require_download_account(_registry, key)
         if claim_state == "admission_blocked":
             raise _load_in_flight_error(repo_id)
         if claim_state == "scope_file_mismatch":
@@ -303,6 +316,10 @@ async def download_model_response(
             # And its cancel marker: a run that fell back from Xet to HTTP still cancels into a restart-only partial.
             "cancel_transport": _registry.job_cancel_transport(key),
         }
+    # Record ownership with the claim, not at launch, or the last downloader keeps the key.
+    download_lifecycle.record_download_account(_registry, key)
+    # Only then read the tombstone: an account retired during the awaits must not spawn.
+    download_lifecycle.require_live_account(_registry, key)
     download_manifest.clear_cancel_marker(
         "model",
         repo_id,
@@ -346,6 +363,28 @@ async def download_model_response(
         # The transport actually resolved: an explicit "xet" is downgraded to HTTP where hf_xet is unavailable, and a client that assumed its request stood would offer the wrong stop control.
         "transport": transport,
     }
+
+
+def retire_account_downloads() -> None:
+    """Cancel and reap this account's model downloads before its roots are renamed aside."""
+    stragglers = []
+    for job in _registry.active_job_refs():
+        if not download_lifecycle.download_belongs_to_account(_registry, job.key):
+            continue
+        download_lifecycle.cancel_worker(
+            _registry, job.key, generation = job.generation, label = "model", logger = logger
+        )
+        proc = _registry.get_process(job.key)
+        if proc is None:
+            continue
+        try:
+            proc.wait(timeout = 10)
+        except Exception:
+            stragglers.append(job.key)
+    if stragglers:
+        raise RuntimeError(
+            f"Retired account model downloads have not stopped: {sorted(stragglers)}"
+        )
 
 
 async def cancel_download_model_response(body: CancelDownloadRequest):
@@ -460,7 +499,17 @@ async def get_model_transport_status_response(
     gguf_variant: str = "",
     hf_token: Optional[str] = None,
 ) -> dict:
-    """Last transport used for this repo, whether any partial blobs exist, and whether that partial supports byte-level resume. ``resumable`` is True only for an HTTP partial: XET partials report ``has_partial`` but never resume, because ``hf_xet`` rewrites the destination from scratch every call (network resume happens transparently via its chunk cache)."""
+    """Return last transport used for this repo + whether any partial blobs
+    exist + whether that partial supports byte-level resume.
+
+    ``resumable`` is True only when an HTTP partial exists. XET partials
+    are reported via ``has_partial`` but always have ``resumable=False``
+    because ``hf_xet`` rewrites the destination from scratch on every
+    call (network resume happens transparently via its chunk cache).
+    """
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_download_progress_access, _registry, repo_id)
+        hf_token = account_access.account_hf_token(hf_token)
     repo_id = repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         return {"has_partial": False, "last_transport": None, "resumable": False}
@@ -553,6 +602,9 @@ async def get_gguf_download_progress_response(
     hf_token: Optional[str] = None,
 ) -> dict:
     """Return download progress for a specific GGUF variant."""
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_download_progress_access, _registry, repo_id)
+        hf_token = account_access.account_hf_token(hf_token)
     expected_total = max(expected_bytes, 0)
     progress_variant = variant.strip() or None
     if progress_variant is not None and not _is_valid_gguf_variant(progress_variant):
@@ -649,7 +701,18 @@ async def get_download_progress_response(
     expected_bytes: int = 0,
     hf_token: Optional[str] = None,
 ) -> dict:
-    """Download progress for any HuggingFace model repo, from completed blobs and in-progress (.incomplete) files in the local HF cache. Uses the caller-supplied expected total when available, else queries and caches HF metadata. ``cache_path`` is the realpath of the snapshot dir (or the cache repo root before one exists) so the UI can show where the weights live."""
+    """Return download progress for any HuggingFace model repo.
+
+    Checks the local HF cache for completed blobs and in-progress
+    (.incomplete) downloads. Uses the caller-supplied expected total
+    when available; otherwise queries HF metadata and caches it.
+    Also returns ``cache_path``: the realpath of the snapshot directory
+    (or the cache repo root if no snapshot exists yet) so the UI can
+    show users where the weights actually live on disk.
+    """
+    if account_access.managed_account():
+        await asyncio.to_thread(account_access.require_download_progress_access, _registry, repo_id)
+        hf_token = account_access.account_hf_token(hf_token)
     return await snapshot_progress.snapshot_progress_response(
         repo_type = "model",
         repo_id = repo_id,

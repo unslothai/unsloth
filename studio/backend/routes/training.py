@@ -1,6 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+"""
+Training API routes
+"""
+
+from core.training.account_jobs import (
+    account_event_stream,
+    account_hf_token,
+    account_path,
+    job_busy,
+    job_is_foreign,
+    managed_account,
+    require_job_owner,
+    validate_job_paths,
+)
 import contextlib
 import json
 import os
@@ -255,6 +269,9 @@ def _run_active(backend) -> bool:
 
 
 def _validate_local_dataset_paths(paths: list[str], label: str = "Local dataset") -> list[str]:
+    """Resolve and validate a list of local dataset paths. Returns validated absolute paths."""
+    for path in paths:
+        account_path(path)
     validated = []
     missing = []
     for dataset_path in paths:
@@ -455,7 +472,7 @@ def _remote_untrainable_model_format(model_name: str, hf_token: HfTokenArg) -> O
         try:
             info = hf_model_info(
                 repo_id,
-                token = hf_token,
+                token = account_hf_token(hf_token),
                 timeout = timeout,
             )
             break
@@ -650,6 +667,8 @@ def _preflight_hf_dataset_request(request: TrainingStartRequest) -> None:
                 ),
             )
         if cached_path is not None:
+            # No Hub probe ran and no cached claim was made, so grants must authorize it.
+            _authorize_cache_fallback(dataset_id, "dataset")
             return
         raise _hf_preflight_error(
             409,
@@ -756,6 +775,14 @@ def _detect_local_gguf(path: Path) -> Optional[str]:
     return None
 
 
+def _authorize_cache_fallback(model_name: str, repo_type: str = "model") -> None:
+    """A shared-cache snapshot was never authorized by the caller's token, so grants must be."""
+    if managed_account():
+        from hub.services.models import account_access
+        reference = canonical_model_repo_id(model_name) if repo_type == "model" else model_name
+        account_access.require_model_access(reference, repo_type)
+
+
 def _reject_untrainable_model_request(
     request: TrainingStartRequest,
     actual_model_repo_id: Optional[str] = None,
@@ -837,6 +864,8 @@ def _reject_untrainable_model_request(
                 request.model_name,
                 model_local_path,
             )
+            if snapshot and not model_local_path:
+                _authorize_cache_fallback(request.model_name)
         if snapshot:
             path = Path(snapshot)
             if offline_mode and not request.resume_from_checkpoint:
@@ -913,6 +942,9 @@ def _reject_untrainable_model_request(
                 raise
             # The snapshot can land while the metadata probe is in flight.
             refuse_unauthorized_cache(lambda: True)
+            # Independent axes, so both: the check above asks whether this CALLER's Hugging Face
+            # token reaches the repo, this one whether a managed account was granted the model.
+            _authorize_cache_fallback(request.model_name)
             path = Path(snapshot)
             cached_model_pin = (
                 canonical_model_repo_id(request.model_name),
@@ -1266,6 +1298,13 @@ async def start_training(
     Initiates training in the background and returns immediately. Use /status
     to check progress.
     """
+    if managed_account():
+        from utils.paths import tensorboard_root
+
+        directory = request.tensorboard_dir
+        if not directory or not Path(directory).is_absolute():
+            request.tensorboard_dir = str(tensorboard_root() / (directory or ""))
+        validate_job_paths(request.model_dump())
     backend = None
     reserved_start_request_id = None
     start_task: Optional[asyncio.Task[bool]] = None
@@ -1887,6 +1926,7 @@ async def stop_training(
         save (bool): If True (default), save the model at the current checkpoint.
         expected_job_id (str): Identifier of the job the caller intends to stop.
     """
+    require_job_owner(get_training_backend())
     try:
         backend = get_training_backend()
         outcome = await asyncio.to_thread(
@@ -1928,6 +1968,7 @@ async def reset_training(
     body: Optional[TrainingResetRequest] = None, current_subject: str = Depends(get_current_subject)
 ):
     """Reset training state so the user can return to configuration."""
+    require_job_owner(get_training_backend())
     try:
         backend = get_training_backend()
         result = await asyncio.to_thread(
@@ -1979,6 +2020,13 @@ def _training_status_identity(backend) -> TrainingStatusIdentitySnapshot:
 def _build_training_status(
     backend, identity: TrainingStatusIdentitySnapshot, is_active: bool
 ) -> TrainingStatus:
+    if job_is_foreign(backend):
+        return TrainingStatus(
+            job_id = "",
+            phase = "idle",
+            is_training_running = False,
+            message = "Busy" if job_busy(backend) else "Ready to train",
+        )
     owner_job_id = identity.current_job_id
     job_id = owner_job_id
     start_request_id = identity.current_start_request_id
@@ -2142,6 +2190,16 @@ async def get_training_metrics(
     """
     Get training metrics (loss, learning rate, steps).
     """
+    if job_is_foreign(get_training_backend()):
+        return TrainingMetricsResponse(
+            job_id = "",
+            loss_history = [],
+            lr_history = [],
+            step_history = [],
+            current_loss = None,
+            current_lr = None,
+            current_step = None,
+        )
     try:
         backend = get_training_backend()
         job_id = getattr(backend, "current_job_id", "") or ""
@@ -2219,6 +2277,9 @@ async def stream_training_progress(
 
     async def event_generator():
         backend = get_training_backend()
+        if job_is_foreign(backend):
+            yield 'event: busy\ndata: {"status":"busy"}\n\n'
+            return
         backend_job_id = getattr(backend, "current_job_id", "") or ""
         job_id = expected_job_id if expected_job_id is not None else backend_job_id
 
@@ -2399,6 +2460,9 @@ async def stream_training_progress(
         )
 
         while True:
+            if job_is_foreign(backend):
+                yield 'event: busy\ndata: {"status":"busy"}\n\n'
+                return
             if not is_current_job():
                 return
             is_active = await asyncio.to_thread(run_active)
@@ -2555,7 +2619,7 @@ async def stream_training_progress(
         )
 
     return StreamingResponse(
-        event_generator(),
+        account_event_stream(get_training_backend(), event_generator()),
         media_type = "text/event-stream",
         headers = {
             "Cache-Control": "no-cache",
@@ -2768,8 +2832,12 @@ def _resolve_diffusion_data_dir(raw: str) -> Path:
             # Route a bare name through the same protected resolver the CRUD routes use, so a symlink to an external
             # directory is rejected here too. A broken symlink is included so it is rejected, not passed on.
             if direct.is_dir() or direct.is_symlink():
-                return _resolve_dataset_folder(value)
-    return resolve_dataset_path(raw)
+                resolved = _resolve_dataset_folder(value)
+                account_path(resolved)
+                return resolved
+    resolved = resolve_dataset_path(raw)
+    account_path(resolved)
+    return resolved
 
 
 def _preflight_diffusion_resume(
@@ -2874,6 +2942,8 @@ async def start_diffusion_training(
         config["cond_cache_dir"] = str(cond_cache_dir) if cond_cache_dir is not None else None
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
+
+    validate_job_paths(config)
 
     # Validate the config BEFORE freeing resident GPU workloads, so a refused start never tears down the user's
     # chat/Images model. service.start() re-runs this before spawn.
