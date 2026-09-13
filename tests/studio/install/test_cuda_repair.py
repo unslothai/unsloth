@@ -165,7 +165,7 @@ def _run_cuda_repair(
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_FAMILY", None)
         if index_url is None:
             stack_mod.os.environ.pop("UNSLOTH_TORCH_INDEX_URL", None)
-        _ensure_cuda_torch()
+        mock_pip.repair_ok = _ensure_cuda_torch()
     return mock_pip
 
 
@@ -505,6 +505,26 @@ class TestPreTuringWheelFamily:
             compute_caps = ("7.0", "12.0"),
         )
         mock_pip.assert_not_called()
+
+    def test_query_mirror_keeps_a_partial_family_when_no_replacement_covers(self):
+        with patch.object(stack_mod, "_PYTORCH_WHL_BASE", "https://mirror.example/whl?token=abc"):
+            mock_pip = _run_cuda_repair(
+                torch_state = "cuda|cu126|2.11.0",
+                cuda_version = "13.0",
+                compute_caps = ("7.0", "12.0"),
+            )
+        mock_pip.assert_not_called()
+        assert mock_pip.repair_ok is True
+
+    def test_query_mirror_fails_when_a_replacement_would_cover(self):
+        with patch.object(stack_mod, "_PYTORCH_WHL_BASE", "https://mirror.example/whl?token=abc"):
+            mock_pip = _run_cuda_repair(
+                torch_state = "cuda|cu126|2.11.0",
+                cuda_version = "13.0",
+                compute_caps = ("12.0",),
+            )
+        mock_pip.assert_not_called()
+        assert mock_pip.repair_ok is False
 
     def test_cu118_kepler_build_is_kept(self):
         # torch 2.7's cu118 still built sm_37 and nothing newer does, so the replacement would strand the GPU that
@@ -2030,10 +2050,10 @@ class TestAFailedGpuPinIsNotADeliberateCpuChoice:
         """One read of the pair, so the precedence cannot be bypassed by a second one."""
         body = inspect.getsource(stack_mod._expected_torch_flavor_was_pinned)
         assert "UNSLOTH_TORCH_INDEX_FAMILY" not in body, (
-            "the family has to come through _explicit_torch_index_url(), which applies "
+            "the family has to come through _explicit_torch_index_family(), which applies "
             "install.sh's precedence; a direct read here reintroduces the bug"
         )
-        assert "_explicit_torch_index_url()" in body
+        assert "_explicit_torch_index_family()" in body
 
     def test_asking_without_a_flavor_answers_as_it_always_did(self, monkeypatch):
         assert self._pinned(monkeypatch, "", url = "https://download.pytorch.org/whl/rocm6.4") is True

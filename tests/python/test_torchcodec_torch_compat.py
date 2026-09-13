@@ -35,6 +35,7 @@ def _no_inherited_index_config(monkeypatch):
     for name in (
         "UNSLOTH_TORCH_INDEX_URL",
         "UNSLOTH_TORCH_INDEX_FAMILY",
+        "UNSLOTH_TORCH_INSTALL_INDEX_URL",
         "UNSLOTH_PYTORCH_MIRROR",
     ):
         monkeypatch.delenv(name, raising = False)
@@ -1476,11 +1477,20 @@ def test_a_query_authenticated_mirror_is_not_pinned_at_all(monkeypatch):
     for base in ("https://mirror.example/whl?token=abc", "https://mirror.example/whl#tok"):
         monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", base)
         mod = _reload_install_python_stack()
+        warnings = []
+        monkeypatch.setattr(mod, "_safe_print", warnings.append)
         assert mod._torch_accelerator_index_url("2.13.0+cu130") is None, base
         assert mod._torchcodec_index_url("2.13.0+cu130") is None, base
         # The FAMILY override reaches the same base, so it declines the same way.
         monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu126")
         assert mod._torch_accelerator_index_url("2.13.0") is None, base
+        assert mod._detect_cuda_torch_index_url() is None, base
+        # URL construction declines, but family state remains authoritative so no caller
+        # mistakes the refusal for permission to re-probe the host or erase provenance.
+        assert mod._explicit_torch_index_url() is None, base
+        assert mod._explicit_torch_index_family() == "cu126", base
+        assert mod._explicit_unknown_family_torch_index_url() is None, base
+        assert len(warnings) == 1 and "netrc" in warnings[0], warnings
         monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
     # An explicit full UNSLOTH_TORCH_INDEX_URL is still taken verbatim: that is the user
     # naming one exact index rather than a base this code appends a leaf to.
@@ -1490,6 +1500,180 @@ def test_a_query_authenticated_mirror_is_not_pinned_at_all(monkeypatch):
     assert mod._torch_accelerator_index_url("2.13.0+cu130") == (
         "https://mirror.example/simple?token=abc"
     )
+
+
+def test_query_authenticated_mirror_repairs_decline_instead_of_falling_back(monkeypatch):
+    """The eight repair/flavor paths must neither mangle the token nor leave the mirror."""
+    monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://mirror.example/whl?token=abc")
+    mod = _reload_install_python_stack()
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("a query-authenticated mirror must not reach an install command")
+
+    # Automatic CUDA detection used to return ...?token=abc/cu126.
+    monkeypatch.setattr(mod, "_nvidia_smi_path", lambda: None)
+    assert mod._detect_cuda_torch_index_url() is None
+
+    monkeypatch.setattr(mod, "IS_MACOS", False)
+    monkeypatch.setattr(mod, "IS_WINDOWS", False)
+    monkeypatch.setattr(mod, "NO_TORCH", False)
+    monkeypatch.setattr(mod, "_TORCH_BACKEND", "")
+    monkeypatch.setattr(mod, "_has_usable_nvidia_gpu", lambda: True)
+    monkeypatch.setattr(
+        mod,
+        "_probe_torch_runtime",
+        lambda: (True, True, "2.11.0+rocm7.2", "7.2", ""),
+    )
+    monkeypatch.setattr(mod, "pip_install", unexpected)
+    assert mod._ensure_cuda_torch() is False
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu130")
+    assert mod._ensure_cuda_torch() is False
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
+
+    # An installed one-shot XPU pin and the miscomputing-AMD CPU demotion synthesize
+    # their own leaves; both must stop before probing/downloading from the broken URL.
+    monkeypatch.setattr(mod, "_explicit_xpu_torch_index_url", lambda: None)
+    monkeypatch.setattr(mod, "_installed_torch_version_label", lambda: "2.10.0+xpu")
+    monkeypatch.setattr(mod.subprocess, "run", unexpected)
+    mod._ensure_xpu_triton()
+
+    monkeypatch.setattr(mod, "_rocm_miscomputing_host", lambda: True)
+    monkeypatch.setattr(
+        mod,
+        "_probe_torch_runtime",
+        lambda: (True, True, "2.11.0+rocm7.2", "7.2", ""),
+    )
+    assert mod._ensure_cpu_torch() is False
+
+    monkeypatch.setattr(mod, "_rocm_miscomputing_host", lambda: False)
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cpu")
+    monkeypatch.setattr(
+        mod,
+        "_probe_torch_runtime",
+        lambda: (True, True, "2.11.0+cu130", "", "13.0"),
+    )
+    assert mod._ensure_cpu_torch() is False
+    monkeypatch.setattr(
+        mod,
+        "_probe_torch_runtime",
+        lambda: (True, True, "2.11.0+cpu", "", ""),
+    )
+    assert mod._ensure_cpu_torch() is True
+    monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY")
+    source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    assert source.count("if not _ensure_cuda_torch():") == 2
+    assert source.count("if not _ensure_rocm_torch():") == 2
+    assert source.count("if not _ensure_xpu_torch():") == 2
+    assert source.count("if not _ensure_cpu_torch():") == 2
+
+    # The final flavor repair likewise declines rather than emitting a bad --index-url.
+    monkeypatch.setattr(
+        mod,
+        "_probe_torch_runtime",
+        lambda: (True, True, "2.11.0+cpu", "", ""),
+    )
+    assert mod._expected_torch_index_url("cu130") is None
+    assert mod._ensure_expected_torch_flavor("cu130") is False
+
+    # XPU and unknown families use the empty unknown-pin sentinel. It is not a usable
+    # differing URL and must not bypass the same final invariant.
+    for family, expected in (("xpu", "xpu"), ("current", "cu130")):
+        monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", family)
+        assert mod._explicit_unknown_family_torch_index_url() == ""
+        if family == "xpu":
+            assert mod._ensure_xpu_torch() is False
+        assert mod._ensure_expected_torch_flavor(expected) is False
+
+
+def test_an_unusable_family_pin_records_resident_flavor_provenance(monkeypatch):
+    """Later dependency steps may change torch even though this pin installs nothing."""
+    monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://mirror.example/whl?token=abc")
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "cu130")
+    mod = _reload_install_python_stack()
+    monkeypatch.setattr(mod, "_RECORDED_TORCH_TAG", "cu128")
+    monkeypatch.setattr(mod, "_RECORDED_TORCH_TAG_PINNED", True)
+    monkeypatch.setattr(mod, "_TORCH_BACKEND", "")
+    monkeypatch.setattr(
+        mod,
+        "_probe_torch_runtime",
+        lambda: (True, True, "2.11.0+cpu", "", ""),
+    )
+
+    # The requested family still governs this run, but a dependency move to CPU is what
+    # the manifest records and it cannot inherit the old cu128 provenance bit.
+    assert mod._expected_torch_flavor_tag() == "cu130"
+    assert mod._recordable_torch_flavor_tag("cu130") == "cpu"
+    assert mod._expected_torch_flavor_was_pinned("cpu") is False
+
+    # If the requested family was already resident, the explicit intent still pins it.
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "xpu")
+    monkeypatch.setattr(
+        mod,
+        "_probe_torch_runtime",
+        lambda: (True, True, "2.10.0+xpu", "", ""),
+    )
+    assert mod._expected_torch_flavor_tag() == "xpu"
+    assert mod._recordable_torch_flavor_tag("xpu") == "xpu"
+    assert mod._expected_torch_flavor_was_pinned("xpu") is True
+
+    # An unknown request carries old provenance only if that exact build is still resident.
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "current")
+    monkeypatch.setattr(
+        mod,
+        "_probe_torch_runtime",
+        lambda: (True, True, "2.11.0+cu128", "", "12.8"),
+    )
+    assert mod._explicit_unknown_family_torch_index_url() == ""
+    assert mod._expected_torch_flavor_tag() == "cu128"
+    assert mod._recordable_torch_flavor_tag("") == "cu128"
+    assert mod._expected_torch_flavor_was_pinned("cu128") is True
+
+    # The CPU invariant normally requires a current CPU pin. Here the unusable request
+    # changed no wheel, so a preserved pinned-CPU manifest remains authoritative too.
+    monkeypatch.setattr(mod, "_RECORDED_TORCH_TAG", "cpu")
+    monkeypatch.setattr(
+        mod,
+        "_probe_torch_runtime",
+        lambda: (True, True, "2.11.0+cu130", "", "13.0"),
+    )
+    assert mod._expected_torch_flavor_tag() == "cpu"
+    assert mod._ensure_expected_torch_flavor() is False
+    monkeypatch.setattr(
+        mod,
+        "_probe_torch_runtime",
+        lambda: (True, True, "2.11.0+cpu", "", ""),
+    )
+    assert mod._ensure_expected_torch_flavor() is True
+
+    # The install checks this after every package operation and before certifying success.
+    source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    install = source.split("def install_python_stack(", 1)[1]
+    resident_check = install.index("torch_flavor_tag = _resident_torch_flavor_tag()")
+    assert install.rindex("_repair_damaged_core_payload(", 0, resident_check) < resident_check
+    assert resident_check < install.index("install_manifest.write_manifest(")
+
+
+def test_a_full_query_authenticated_torch_index_stays_verbatim(monkeypatch):
+    """A complete index URL is usable because no leaf has to be appended to it."""
+    full = "https://mirror.example/whl/cu130?token=secret"
+    monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://mirror.example/whl?token=base")
+    monkeypatch.setenv("UNSLOTH_TORCH_INSTALL_INDEX_URL", full)
+    mod = _reload_install_python_stack()
+    assert mod._expected_torch_index_url("cu130") == full
+
+    monkeypatch.delenv("UNSLOTH_TORCH_INSTALL_INDEX_URL")
+    monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", full)
+    assert mod._detect_cuda_torch_index_url() == full
+    assert mod._explicit_torch_index_url() == full
+    assert mod._explicit_torch_index_family() == "cu130"
+
+
+def test_every_pytorch_mirror_leaf_goes_through_the_guarded_helper():
+    """A new direct concatenation would recreate #10516 on whichever path added it."""
+    source = (REPO_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+    assert source.count('f"{_PYTORCH_WHL_BASE}/') == 1
+    helper = source.split("def _pytorch_whl_leaf_url", 1)[1].split("\ndef ", 1)[0]
+    assert 'f"{_PYTORCH_WHL_BASE}/{leaf}"' in helper
 
 
 def test_an_explicit_family_is_honoured_when_torch_carries_no_tag(monkeypatch):

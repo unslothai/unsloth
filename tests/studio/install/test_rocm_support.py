@@ -790,6 +790,7 @@ def run_ensure_rocm_torch(
     isdir = True,
     timeout = False,
     attrs = None,
+    return_result = False,
     **stubs,
 ):
     """Run _ensure_rocm_torch() against a fully mocked host.
@@ -797,7 +798,8 @@ def run_ensure_rocm_torch(
     `stubs` maps a stack_mod probe function to its return value, `attrs` replaces plain
     module attributes (IS_WINDOWS and friends), `probe` is the torch-probe stdout after
     the marker ("" means no marker at all, i.e. CPU torch), and `timeout` makes the probe
-    subprocess time out. Returns the (pip_install, pip_install_try) mocks.
+    subprocess time out. Returns the (pip_install, pip_install_try) mocks and, when
+    requested, the repair verdict.
     """
     pip = MagicMock()
     pip_try = MagicMock(return_value = True)
@@ -818,8 +820,8 @@ def run_ensure_rocm_torch(
             )
         else:
             stack.enter_context(patch("subprocess.run", return_value = result))
-        _ensure_rocm_torch()
-    return pip, pip_try
+        repair_ok = _ensure_rocm_torch()
+    return (pip, pip_try, repair_ok) if return_result else (pip, pip_try)
 
 
 class TestEnsureRocmTorch:
@@ -1067,6 +1069,26 @@ class TestEnsureRocmTorch:
         mock_pip, _ = run_ensure_rocm_torch(_has_rocm_gpu = True, _detect_rocm_version = (6, 3))
         torch_call = mock_pip.call_args_list[0]
         assert "rocm6.3" in str(torch_call)
+
+    def test_query_pytorch_mirror_skips_the_generic_rocm_pin(self, monkeypatch):
+        """A synthesized rocm leaf after ?token= is neither usable nor a fallback license."""
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+        attrs = {"_TORCH_BACKEND": "", "_PYTORCH_WHL_BASE": "https://mirror.example/whl?token=abc"}
+        mock_pip, _, repair_ok = run_ensure_rocm_torch(
+            _has_rocm_gpu = True,
+            _detect_rocm_version = (6, 3),
+            attrs = attrs,
+            return_result = True,
+        )
+        mock_pip.assert_not_called()
+        assert repair_ok is False
+
+        monkeypatch.setenv("UNSLOTH_TORCH_INDEX_FAMILY", "rocm6.3")
+        _, _, repair_ok = run_ensure_rocm_torch(
+            _detect_rocm_version = (6, 3), attrs = attrs, return_result = True
+        )
+        assert repair_ok is False
 
     def test_old_rocm_skips(self):
         """ROCm version too old (below 6.0) should skip."""
@@ -1685,6 +1707,24 @@ class TestGfx906LegacyReroute:
         assert "torch>=2.4,<2.11.0" in torch_call
         # gfx906 has no prebuilt bnb -- the generic wheel must not be installed.
         assert not any("bitsandbytes" in str(c).lower() for c in mock_pip_try.call_args_list)
+
+    def test_query_pytorch_mirror_skips_the_gfx906_legacy_pin(self, monkeypatch):
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+        monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+        mock_pip, mock_pip_try, repair_ok = run_ensure_rocm_torch(
+            _has_rocm_gpu = True,
+            _detect_rocm_version = (7, 2),
+            _detect_amd_gfx_codes = ["gfx906"],
+            attrs = {
+                "_TORCH_BACKEND": "",
+                "_PYTORCH_WHL_BASE": "https://mirror.example/whl?token=abc",
+            },
+            return_result = True,
+        )
+        mock_pip.assert_not_called()
+        mock_pip_try.assert_not_called()
+        assert repair_ok is False
 
     def test_gfx906_repairs_existing_rocm72_torch(self, monkeypatch):
         """An installed +rocm7.2 torch IS the broken combo: reinstall from rocm6.3
@@ -7008,6 +7048,7 @@ class TestRocmMiscomputingArchDemotion:
         env = None,
         codes_fn = None,
         kfd = (),
+        return_result = False,
     ):
         calls = []
         monkeypatch.setattr(stack_mod, "_kfd_gfx_targets", lambda: list(kfd))
@@ -7033,14 +7074,39 @@ class TestRocmMiscomputingArchDemotion:
             monkeypatch.delenv(_var, raising = False)
         for _var, _val in (env or {}).items():
             monkeypatch.setenv(_var, _val)
-        stack_mod._ensure_cpu_torch()
-        return calls
+        result = stack_mod._ensure_cpu_torch()
+        return (calls, result) if return_result else calls
 
     def test_installed_rocm_torch_on_gfx1033_is_demoted(self, monkeypatch):
         calls = self._demotion_calls(monkeypatch, "2.10.0+rocm7.1", ["gfx1033"])
         assert len(calls) == 1, "gfx1033 kept its ROCm torch across the upgrade"
         assert "--force-reinstall" in calls[0][0]
         assert "download.pytorch.org/whl/cpu" in str(calls[0])
+
+    @pytest.mark.parametrize("family", ["cpu", "current"])
+    def test_an_unusable_non_rocm_family_still_requires_the_demotion(self, monkeypatch, family):
+        monkeypatch.setattr(stack_mod, "_PYTORCH_WHL_BASE", "https://mirror.example/whl?token=abc")
+        calls, repair_ok = self._demotion_calls(
+            monkeypatch,
+            "2.10.0+rocm7.1",
+            ["gfx1033"],
+            env = {"UNSLOTH_TORCH_INDEX_FAMILY": family},
+            return_result = True,
+        )
+        assert calls == []
+        assert repair_ok is False
+
+    def test_an_unusable_rocm_family_may_explicitly_retain_rocm(self, monkeypatch):
+        monkeypatch.setattr(stack_mod, "_PYTORCH_WHL_BASE", "https://mirror.example/whl?token=abc")
+        calls, repair_ok = self._demotion_calls(
+            monkeypatch,
+            "2.10.0+rocm7.1",
+            ["gfx1033"],
+            env = {"UNSLOTH_TORCH_INDEX_FAMILY": "rocm7.2"},
+            return_result = True,
+        )
+        assert calls == []
+        assert repair_ok is True
 
     def test_hsa_spoofed_gfx1033_is_still_demoted(self, monkeypatch):
         """HSA_OVERRIDE_GFX_VERSION=10.3.0 is the usual Van Gogh workaround and makes

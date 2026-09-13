@@ -399,15 +399,20 @@ class TestManifestRecordsTheFlavor:
         helper = helper[: helper.index("\ndef ", 1)]
         assert 'return _RECORDED_TORCH_TAG or ""' in helper
 
-    def test_a_mirror_pin_does_not_carry_a_stale_flavor_forward(self):
+    def test_a_usable_mirror_pin_does_not_carry_a_stale_flavor_forward(self):
         # The wheel came from a mirror whose leaf names no family, so the previous record
         # describes a venv that no longer exists and would hand a later unpinned run a flavor
-        # to "repair" the mirror's build back to.
+        # to "repair" the mirror's build back to. An unusable query-base FAMILY is falsey,
+        # but its later dependency steps may still have moved torch, so it records the
+        # resident answer instead of either the request or the old manifest.
         helper = _STACK_SRC[_STACK_SRC.index("def _recordable_torch_flavor_tag(") :]
         helper = helper[: helper.index("\ndef ", 1)]
-        assert "_explicit_unknown_family_torch_index_url() is not None" in helper
-        assert helper.index("_explicit_unknown_family_torch_index_url") < helper.index(
-            "_RECORDED_TORCH_TAG"
+        assert "if _explicit_torch_index_is_unusable():" in helper
+        assert "return _resident_torch_flavor_tag()" in helper
+        assert helper.index("_explicit_torch_index_is_unusable") < helper.index("if resolved:")
+        assert "if _explicit_unknown_family_torch_index_url():" in helper
+        assert helper.index("_explicit_unknown_family_torch_index_url") < helper.rindex(
+            'return _RECORDED_TORCH_TAG or ""'
         ), "the mirror check has to come before the carry-forward"
 
     def test_the_record_is_read_before_the_manifest_is_dropped(self):
@@ -554,7 +559,8 @@ class TestAnUnknownMirrorPinNamesNoFlavor:
     def test_the_expectation_stops_before_the_stale_manifest(self):
         body = _STACK_SRC[_STACK_SRC.index("def _expected_torch_flavor_tag(") :]
         body = body[: body.index("\ndef ", 1)]
-        guard = body.index("_explicit_unknown_family_torch_index_url() is not None")
+        guard = body.index("unknown_pin = _explicit_unknown_family_torch_index_url()")
+        assert body.index("if unknown_pin is not None") > guard
         record = body.index("if _RECORDED_TORCH_TAG:")
         assert guard < record, (
             "the guard has to run BEFORE the manifest fallback, or the stale tag is "
@@ -566,7 +572,7 @@ class TestAnUnknownMirrorPinNamesNoFlavor:
         body = _STACK_SRC[_STACK_SRC.index("def _expected_torch_flavor_tag(") :]
         body = body[: body.index("\ndef ", 1)]
         assert body.index("UNSLOTH_EXPECTED_TORCH_TAG") < body.index(
-            "_explicit_unknown_family_torch_index_url() is not None"
+            "unknown_pin = _explicit_unknown_family_torch_index_url()"
         ), "the setup handover describes the index this run installed from"
 
 
