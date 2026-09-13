@@ -409,9 +409,7 @@ def _filter_false_all_columns_dropped_during_validate() -> Iterator[None]:
     original_validate = dd_compiler.validate_data_designer_config
 
     def validate_with_export_filter(
-        columns: list[Any],
-        processor_configs: list[Any],
-        allowed_references: list[str],
+        columns: list[Any], processor_configs: list[Any], allowed_references: list[str]
     ) -> list[Any]:
         violations = original_validate(
             columns = columns,
