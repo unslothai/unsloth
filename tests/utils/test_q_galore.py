@@ -288,6 +288,25 @@ class TestParamGroupHelper:
 # ======================================================================
 
 
+def test_optimizer_bias_correction_matches_adamw():
+    bnb = pytest.importorskip("bitsandbytes")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if device == "cpu" and "cpu" not in getattr(bnb, "supported_torch_devices", set()):
+        pytest.skip("This bitsandbytes version has no CPU optimizer backend")
+
+    param = nn.Parameter(torch.ones(2, device = device))
+    reference = nn.Parameter(param.detach().clone())
+    optimizer = _adamw_mod.QGaLoreAdamW8bit([param], lr = 0.1, weight_decay = 0.0)
+    expected_optimizer = torch.optim.AdamW([reference], lr = 0.1, weight_decay = 0.0)
+    # Non-projected parameters use AdamW; small tensors use full-precision states.
+    for values in ([0.1, 0.2], [0.4, -0.2], [-0.05, 0.3]):
+        param.grad = torch.tensor(values, device = device)
+        reference.grad = param.grad.clone()
+        optimizer.step()
+        expected_optimizer.step()
+        torch.testing.assert_close(param, reference)
+
+
 class TestQGaLoreIntegration:
     """Integration tests that work without bitsandbytes on CPU."""
 
