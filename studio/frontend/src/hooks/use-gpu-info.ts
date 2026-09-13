@@ -46,6 +46,8 @@ export interface GpuInfo {
    * GPU-less one, because "which runtimes can this host place" is exactly the question a host
    * with no usable GPU has to answer. Empty until system info arrives. */
   backend: string;
+  /** Backend-reported dense quant capability. False until system info arrives. */
+  denseQuantSupported: boolean;
   name: string;
   memoryTotalGb: number;
   memorySharedGb: number;
@@ -81,6 +83,7 @@ const DEFAULT_GPU: GpuInfo = {
   sharedMemory: false,
   unifiedMemory: false,
   backend: "",
+  denseQuantSupported: false,
   name: "Unknown",
   memoryTotalGb: 0,
   memorySharedGb: 0,
@@ -106,6 +109,7 @@ function toGpuInfo(
   // path: unified-memory math still needs a RAM budget to work with.
   const base = {
     backend: data?.device_backend ?? "",
+    denseQuantSupported: data?.dense_quant_supported === true,
     cpuCore: data?.cpu?.physical_count ?? 0,
     cpuThread: data?.cpu?.logical_count ?? 0,
     systemRamAvailableGb: data?.memory?.available_gb ?? 0,
