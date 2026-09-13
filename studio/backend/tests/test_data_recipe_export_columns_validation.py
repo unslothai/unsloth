@@ -61,14 +61,12 @@ def _base_recipe(data_file: Path) -> dict:
 
 
 def test_column_names_after_drop_processors_respects_explicit_names() -> None:
-    from data_designer.config.processors import ProcessorType  # pyright: ignore[reportMissingImports]
-
     processors = [
         type(
             "Drop",
             (),
             {
-                "processor_type": ProcessorType.DROP_COLUMNS,
+                "processor_type": "drop_columns",
                 "column_names": ["input", "missing"],
             },
         )()
@@ -81,6 +79,7 @@ def test_column_names_after_drop_processors_respects_explicit_names() -> None:
 
 
 def test_recipe_would_export_columns_counts_seed_survivors(local_seed_parquet: Path) -> None:
+    pytest.importorskip("data_designer")
     from data_designer.engine.compiler import (  # pyright: ignore[reportMissingImports]
         _add_internal_row_id_column_if_needed,
         _resolve_and_add_seed_columns,
@@ -120,6 +119,7 @@ def test_recipe_would_export_columns_counts_seed_survivors(local_seed_parquet: P
 
 
 def test_validate_recipe_allows_seed_export_when_llm_marked_drop(local_seed_parquet: Path) -> None:
+    pytest.importorskip("data_designer")
     recipe = {
         **_base_recipe(local_seed_parquet),
         "columns": [
@@ -145,6 +145,7 @@ def test_validate_recipe_allows_seed_export_when_llm_marked_drop(local_seed_parq
 def test_filter_studio_validation_violations_still_fails_when_nothing_exports(
     local_seed_parquet: Path,
 ) -> None:
+    pytest.importorskip("data_designer")
     from data_designer.engine.compiler import (  # pyright: ignore[reportMissingImports]
         _add_internal_row_id_column_if_needed,
         _get_allowed_references,

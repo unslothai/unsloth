@@ -7,8 +7,9 @@ from core.training.account_jobs import account_path, managed_account, validate_r
 import base64
 import io
 import os
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from fastapi import HTTPException
 
@@ -393,43 +394,48 @@ def create_data_designer(recipe: dict[str, Any], *, artifact_path: str | None = 
     )
 
 
-def validate_recipe(recipe: dict[str, Any]) -> None:
-    from data_designer.config.errors import InvalidConfigError  # pyright: ignore[reportMissingImports]
-    from data_designer.engine.compiler import (  # pyright: ignore[reportMissingImports]
-        _add_internal_row_id_column_if_needed,
-        _get_allowed_references,
-        _resolve_and_add_seed_columns,
-    )
-    from data_designer.engine.validation import (  # pyright: ignore[reportMissingImports]
-        ViolationLevel,
-        validate_data_designer_config,
-    )
+@contextmanager
+def _filter_false_all_columns_dropped_during_validate() -> Iterator[None]:
+    """Wrap Data Designer's compile-time validation to drop a false ALL_COLUMNS_DROPPED.
+
+    ``DataDesigner.validate`` runs ``compile_data_designer_config``, which calls
+    ``validate_data_designer_config`` internally. Studio filters that one violation
+    when seed columns would still export — same rule as the HTTP validate route.
+    """
+    import data_designer.engine.compiler as dd_compiler  # pyright: ignore[reportMissingImports]
 
     from .export_columns import filter_studio_validation_violations
 
+    original_validate = dd_compiler.validate_data_designer_config
+
+    def validate_with_export_filter(
+        columns: list[Any],
+        processor_configs: list[Any],
+        allowed_references: list[str],
+    ) -> list[Any]:
+        violations = original_validate(
+            columns = columns,
+            processor_configs = processor_configs,
+            allowed_references = allowed_references,
+        )
+        return filter_studio_validation_violations(
+            violations,
+            columns = columns,
+            processor_configs = processor_configs,
+        )
+
+    dd_compiler.validate_data_designer_config = validate_with_export_filter
+    try:
+        yield
+    finally:
+        dd_compiler.validate_data_designer_config = original_validate
+
+
+def validate_recipe(recipe: dict[str, Any]) -> None:
     builder = build_config_builder(recipe)
     designer = create_data_designer(recipe)
-    resource_provider = designer._create_resource_provider(
-        "validate-configuration",
-        builder,
-    )
-    config = builder.build()
-    _resolve_and_add_seed_columns(config, resource_provider.seed_reader)
-    _add_internal_row_id_column_if_needed(config)
-    violations = validate_data_designer_config(
-        columns = config.columns,
-        processor_configs = config.processors or [],
-        allowed_references = _get_allowed_references(config),
-    )
-    violations = filter_studio_validation_violations(
-        violations,
-        columns = config.columns,
-        processor_configs = config.processors or [],
-    )
-    if any(violation.level == ViolationLevel.ERROR for violation in violations):
-        raise InvalidConfigError(
-            "🛑 Your configuration contains validation errors. Please address the indicated issues and try again."
-        )
+    with _filter_false_all_columns_dropped_during_validate():
+        designer.validate(builder)
 
 
 def preview_recipe(
