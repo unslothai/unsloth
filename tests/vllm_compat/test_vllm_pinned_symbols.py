@@ -20,13 +20,11 @@ import urllib.request
 import pytest
 
 
-# Every stable vLLM release from here on is covered. A hand-kept list silently
-# stops testing the moment a new minor ships, which is how 0.28 moving
-# bitsandbytes out of tree went unnoticed, so derive it from PyPI instead.
+# Derived from PyPI: a hand-kept list stops covering new minors silently, which
+# is how 0.28 moving bitsandbytes out of tree went unnoticed.
 _VLLM_MIN_VERSION = (0, 9, 0)
 
-# Used when PyPI is unreachable (offline CI, network blip). Stale by design: it
-# only needs to keep the suite meaningful, not current.
+# Only for an unreachable PyPI. Stale by design.
 _VLLM_TAGS_FALLBACK = [
     "v0.9.0",
     "v0.9.1",
@@ -56,10 +54,8 @@ _VLLM_TAGS_FALLBACK = [
 def _stable_release_tags() -> list[str]:
     """Stable vLLM releases >= _VLLM_MIN_VERSION, as git tags, oldest first.
 
-    Only `X.Y.Z` is accepted: release candidates, dev builds and post releases
-    are not what users pip install, and a fully yanked release is not one we
-    owe compatibility to. Any PyPI failure falls back rather than failing the
-    suite, since an unreachable index says nothing about our compatibility.
+    `X.Y.Z` only: rc/dev/post builds are not what users pip install, and a fully
+    yanked release is not one we owe compatibility to.
     """
     try:
         with urllib.request.urlopen("https://pypi.org/pypi/vllm/json", timeout = 20) as r:
@@ -112,9 +108,8 @@ VLLM_BNB_SYMBOLS = (
 def _fetch_text(repo: str, ref: str, path: str) -> str | None:
     """Fetch a file's text from GitHub; None on 404 (renamed/removed, informational).
 
-    Cached: the tag list is now every release, and the same few paths are read
-    once per tag per test, so without this the suite makes thousands of requests
-    and gets rate limited.
+    Cached: uncached, every-release x every-test is thousands of requests and
+    gets rate limited.
     """
     url = f"https://raw.githubusercontent.com/{repo}/{ref}/{path}"
     req = urllib.request.Request(url)
@@ -134,11 +129,8 @@ def _fetch_text(repo: str, ref: str, path: str) -> str | None:
 
 @pytest.fixture(autouse = True)
 def _skip_when_the_tag_is_absent(request):
-    """A PyPI release with no git tag is not a compatibility failure.
-
-    Without this, such a version 404s on every path and reports as broken
-    compatibility, which says nothing true about our code.
-    """
+    """A PyPI release with no git tag 404s on every path; that is not a
+    compatibility failure, so skip it rather than report our code broken."""
     if "tag" not in request.fixturenames:
         return
     tag = request.getfixturevalue("tag")
@@ -338,32 +330,24 @@ def test_vllm_bitsandbytes_symbols_have_a_home(tag: str):
     )
 
 
-# WeightsMapper helper that strips the stacked (fused) weight maps. unsloth_zoo
-# must call it before loading LoRA tensors, or q/k/v and gate/up collapse onto
-# the fused names and set_lora dies with IndexError.
 VLLM_WEIGHTS_MAPPER_PATH = "vllm/model_executor/models/utils.py"
 VLLM_UNSTACK_HELPERS = ("get_rename_mapper", "get_unstacked_mapper")
 
 
 @pytest.mark.parametrize("tag", VLLM_TAGS)
 def test_weights_mapper_unstack_helper_is_named_as_expected(tag: str):
-    """One of the helper spellings unsloth_zoo probes for must still exist.
+    """unsloth_zoo must be able to strip the fused q/k/v + gate/up maps.
 
-    vLLM 0.25.0 added `get_unstacked_mapper`; 0.29.0 renamed it to
-    `get_rename_mapper`. unsloth_zoo probed only the old name, so on 0.29 the
-    full mapper reached the LoRA loader, `.q_proj`/`.k_proj`/`.v_proj` and
-    `.gate_proj`/`.up_proj` all rewrote onto `.qkv_proj`/`.gate_up_proj`, and
-    GRPO with fast_inference=True died in vLLM's set_lora with
-    `IndexError: tuple index out of range` for 4-bit and 16-bit alike.
-
-    Versions with no stacked maps need no helper: skip those rather than fail.
+    0.25.0 added `get_unstacked_mapper`, 0.29.0 renamed it `get_rename_mapper`;
+    probing only the old name fused the LoRA names and killed GRPO with
+    fast_inference in vLLM's set_lora (IndexError: tuple index out of range).
     """
     src = _fetch_text("vllm-project/vllm", tag, VLLM_WEIGHTS_MAPPER_PATH)
     if src is None:
         pytest.skip(f"{tag}: {VLLM_WEIGHTS_MAPPER_PATH} not present")
     if "orig_to_new_stacked" not in src:
         pytest.skip(f"{tag}: WeightsMapper has no stacked maps, nothing to strip")
-    # A method, so indented: _has_def anchors at column 0 and would miss it.
+    # Indented, so not _has_def, which anchors at column 0.
     assert any(
         re.search(rf"^\s*def\s+{name}\b", src, re.MULTILINE) for name in VLLM_UNSTACK_HELPERS
     ), (
