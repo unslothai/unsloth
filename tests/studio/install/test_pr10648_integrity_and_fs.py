@@ -13,7 +13,7 @@ Three components, three different amounts of evidence, so three different answer
   * llama (``_runtime_files_match``) records ``size`` for every allowlisted runtime file
     and ``size + sha256`` for the three binaries a reuse decision would otherwise run.
     Only the digest can see a corruption that preserves the byte count, which is why
-    ``test_a_same_size_byte_flip_is_caught_only_by_the_digest`` is the load-bearing test
+    ``test_llama_a_same_size_byte_flip_is_caught_only_by_the_digest`` is the load-bearing test
     in this file.
   * whisper (``installed_tree_is_intact``) now records the same two tiers in the same
     ``runtime_files`` shape: ``size + sha256`` for ``whisper-server``, ``size`` for the
@@ -42,56 +42,27 @@ and the permission cases skip under root, which bypasses the bits they rely on.
 
 import dataclasses
 import errno
-import importlib.util
 import json
 import os
 import shutil
 import stat
-import sys
 from pathlib import Path
 from typing import Any, Callable
 
 import pytest
 
-WINDOWS_HOST = os.name == "nt"
-IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
-
-# os.access(path, os.X_OK) answers "does this exist" on Windows, and os.chmod cannot clear
-# an execute bit Windows does not have, so the mode-bit rows are indistinguishable there.
-POSIX_ONLY = pytest.mark.skipif(
-    WINDOWS_HOST,
-    reason = "mode bits and os.access(X_OK) are POSIX only",
-)
-# root reads and executes regardless of the bits, so "unreadable" and "not executable"
-# stop being the corruptions these tests apply.
-NOT_ROOT = pytest.mark.skipif(
+from _pr10648_helpers import (
     IS_ROOT,
-    reason = "root bypasses the permission bits this asserts on",
+    NEEDS_CHOWN,
+    NOT_ROOT,
+    POSIX_ONLY,
+    WINDOWS_HOST,
+    llama_host,
+    whisper_host,
+    whisper_install_is_intact,
+    whisper_selection_fields,
 )
-NEEDS_CHOWN = pytest.mark.skipif(
-    not hasattr(os, "chown"),
-    reason = "os.chown does not exist on this platform",
-)
-
-
-PACKAGE_ROOT = Path(__file__).resolve().parents[3]
-_STUDIO_DIR = str(PACKAGE_ROOT / "studio")
-if _STUDIO_DIR not in sys.path:
-    # The installers import each other by module name; spec-based loading needs studio/ reachable.
-    sys.path.insert(0, _STUDIO_DIR)
-
-
-def _load(module_name: str, filename: str):
-    """Load one installer under a name of this file's own, so nothing here can be
-    disturbed by -- or disturb -- another test module's instance of it."""
-    path = PACKAGE_ROOT / "studio" / filename
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
-
+from _pr10648_helpers import load_studio_module as _load
 
 LLAMA = _load("studio_install_llama_prebuilt_pr10648_integrity", "install_llama_prebuilt.py")
 CORE = _load("studio_prebuilt_core_pr10648_integrity", "prebuilt_core.py")
@@ -107,27 +78,7 @@ MARKER_NAME = "UNSLOTH_PREBUILT_INFO.json"
 
 
 # ── llama fixtures ───────────────────────────────────────────────────────────────────
-def _llama_host(**overrides):
-    base = dict(
-        system = "Linux",
-        machine = "x86_64",
-        is_windows = False,
-        is_linux = True,
-        is_macos = False,
-        is_x86_64 = True,
-        is_arm64 = False,
-        nvidia_smi = None,
-        driver_cuda_version = None,
-        compute_caps = [],
-        visible_cuda_devices = None,
-        has_physical_nvidia = False,
-        has_usable_nvidia = False,
-    )
-    base.update(overrides)
-    return LLAMA.HostInfo(**base)
-
-
-LINUX = _llama_host()
+LINUX = llama_host(LLAMA.HostInfo)
 _UPSTREAM = ("ggml-org/llama.cpp", "upstream-prebuilt")
 _SOURCE = ("ggml-org/llama.cpp", "upstream-source")
 
@@ -334,7 +285,7 @@ def test_a_corrupted_recorded_binary_is_rejected(tmp_path, monkeypatch, relative
 
 
 @pytest.mark.parametrize("relative", HASHED_TIER)
-def test_a_same_size_byte_flip_is_caught_only_by_the_digest(tmp_path, monkeypatch, relative):
+def test_llama_a_same_size_byte_flip_is_caught_only_by_the_digest(tmp_path, monkeypatch, relative):
     """The case the whole two-tier record exists for.
 
     One bit flipped, byte count identical, mode identical, and the file still parses as
@@ -598,42 +549,14 @@ def test_deleting_one_entry_leaves_only_that_file_unchecked(tmp_path, monkeypatc
 
 
 # ── PART 3: whisper, which records no payload digests ────────────────────────────────
-def _whisper_host(**overrides):
-    base = dict(
-        system = "Linux",
-        machine = "x64",
-        whisper_os = "linux",
-        whisper_arch = "x64",
-        archive_ext = ".tar.gz",
-        is_windows = False,
-        is_macos = False,
-        is_apple_silicon = False,
-    )
-    base.update(overrides)
-    return WHISPER.HostInfo(**base)
-
-
-WHISPER_LINUX = _whisper_host()
+WHISPER_LINUX = whisper_host(WHISPER.HostInfo)
 _GGML_TREE = "ggml-tree-aaaa"
 
 
 def _whisper_selection(**overrides):
-    fields = dict(
-        published_repo = WHISPER.DEFAULT_PUBLISHED_REPO,
-        release_tag = "v1.9.1-unsloth.1",
-        upstream_tag = "v1.9.1",
-        source_commit = "0" * 40,
-        asset = "whisper-v1.9.1-unsloth.1-linux-x64-cpu.tar.gz",
-        asset_sha256 = "c" * 64,
-        backend = "cpu",
-        runtime_line = None,
-        coverage = {"min_os": None},
-        studio_protocol = "inference/multipart-v1",
-        platform_os = "linux",
-        platform_arch = "x64",
-    )
-    fields.update(overrides)
-    return CORE.InstallSelection(**fields)
+    # CORE, not WHISPER.InstallSelection: this file loads its own prebuilt_core instance and
+    # the marker writer accepting it is part of what Part 3 says.
+    return CORE.InstallSelection(**whisper_selection_fields(WHISPER, **overrides))
 
 
 def _whisper_install(
@@ -684,17 +607,7 @@ def _whisper_marker(install_dir: Path) -> dict:
 
 
 def _whisper_keep(install_dir: Path) -> bool:
-    """The on-disk half of the whisper precheck: marker identity, the slim pairing, and
-    installed_tree_is_intact. No release lookup, so no network."""
-    return (
-        WHISPER._existing_install_is_intact(
-            install_dir,
-            WHISPER_LINUX,
-            published_repo = WHISPER.DEFAULT_PUBLISHED_REPO,
-            requested_backend = "cpu",
-        )
-        is not None
-    )
+    return whisper_install_is_intact(WHISPER, install_dir, WHISPER_LINUX)
 
 
 def test_whisper_a_healthy_install_is_kept(tmp_path, monkeypatch):

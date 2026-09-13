@@ -33,7 +33,6 @@ rather than being weakened, and the permission case skips under root.
 from __future__ import annotations
 
 import dataclasses
-import importlib.util
 import json
 import os
 import subprocess
@@ -42,80 +41,30 @@ from pathlib import Path
 
 import pytest
 
-WINDOWS_HOST = os.name == "nt"
-IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
-
-POSIX_ONLY = pytest.mark.skipif(
+from _pr10648_helpers import (
+    NOT_ROOT,
+    POSIX_ONLY,
+    STUDIO_DIR,
+    WHISPER_RELEASE_TAG as RELEASE_TAG,
     WINDOWS_HOST,
-    reason = "mode bits and os.access(X_OK) are POSIX only",
+    git,
+    whisper_host,
+    whisper_install_is_intact,
+    whisper_selection_fields,
 )
-NOT_ROOT = pytest.mark.skipif(
-    IS_ROOT,
-    reason = "root bypasses the permission bits this asserts on",
-)
-
-PACKAGE_ROOT = Path(__file__).resolve().parents[3]
-STUDIO_DIR = PACKAGE_ROOT / "studio"
-if str(STUDIO_DIR) not in sys.path:
-    # The installers import each other by module name; spec-based loading needs studio/ reachable.
-    sys.path.insert(0, str(STUDIO_DIR))
-
-
-def _load(module_name: str, filename: str):
-    """Load one installer under a name of this file's own, so nothing here can be
-    disturbed by -- or disturb -- another test module's instance of it."""
-    path = STUDIO_DIR / filename
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
-    return module
-
+from _pr10648_helpers import load_studio_module as _load
 
 WHISPER = _load("studio_install_whisper_prebuilt_pr10648_digests", "install_whisper_prebuilt.py")
 LLAMA = _load("studio_install_llama_prebuilt_pr10648_digests", "install_llama_prebuilt.py")
 
-RELEASE_TAG = "v1.9.1-unsloth.1"
 GGML_TREE = "ggml-tree-aaaa"
 SERVER_BYTES = b"#!/bin/sh\necho whisper-server\nexit 0\n"
 
-
-def _host(**overrides):
-    fields = dict(
-        system = "Linux",
-        machine = "x64",
-        whisper_os = "linux",
-        whisper_arch = "x64",
-        archive_ext = ".tar.gz",
-        is_windows = False,
-        is_macos = False,
-        is_apple_silicon = False,
-    )
-    fields.update(overrides)
-    return WHISPER.HostInfo(**fields)
-
-
-LINUX = _host()
+LINUX = whisper_host(WHISPER.HostInfo)
 
 
 def _selection(**overrides):
-    fields = dict(
-        published_repo = WHISPER.DEFAULT_PUBLISHED_REPO,
-        release_tag = RELEASE_TAG,
-        upstream_tag = "v1.9.1",
-        source_commit = "0" * 40,
-        asset = f"whisper-{RELEASE_TAG}-linux-x64-cpu.tar.gz",
-        asset_sha256 = "c" * 64,
-        backend = "cpu",
-        runtime_line = None,
-        coverage = {"min_os": None},
-        studio_protocol = "inference/multipart-v1",
-        platform_os = "linux",
-        platform_arch = "x64",
-    )
-    fields.update(overrides)
-    return WHISPER.InstallSelection(**fields)
+    return WHISPER.InstallSelection(**whisper_selection_fields(WHISPER, **overrides))
 
 
 SLIM_LIBRARIES = ("libggml.so.0", "libggml-base.so.0")
@@ -189,15 +138,7 @@ def _reuse(
 
 def _fast_path(install_dir: Path) -> bool:
     """The no-network fast path: "do not even ask which release is newest"."""
-    return (
-        WHISPER._existing_install_is_intact(
-            install_dir,
-            LINUX,
-            published_repo = WHISPER.DEFAULT_PUBLISHED_REPO,
-            requested_backend = "cpu",
-        )
-        is not None
-    )
+    return whisper_install_is_intact(WHISPER, install_dir, LINUX)
 
 
 def _server_key(install_dir: Path) -> str:
@@ -260,7 +201,7 @@ def test_a_truncated_server_is_rejected(tmp_path, monkeypatch):
     assert _fast_path(install_dir) is False
 
 
-def test_a_same_size_byte_flip_is_caught_only_by_the_digest(tmp_path, monkeypatch):
+def test_whisper_a_same_size_byte_flip_is_caught_only_by_the_digest(tmp_path, monkeypatch):
     """Bit rot, a bad cable or a partial overwrite: the file is exactly as long as it was.
 
     This is the one corruption the size tier cannot see, and the reason whisper-server is
@@ -613,12 +554,7 @@ def _extract_released_studio(tmp_path: Path) -> Path:
     old_dir.mkdir()
     for name in _OLD_MODULES:
         try:
-            blob = subprocess.run(
-                ["git", "show", f"{_OLD_TAG}:studio/{name}"],
-                cwd = PACKAGE_ROOT,
-                capture_output = True,
-                timeout = 60,
-            )
+            blob = git("show", f"{_OLD_TAG}:studio/{name}", timeout = 60)
         except (OSError, subprocess.SubprocessError) as exc:  # pragma: no cover - CI without git
             pytest.skip(f"git is unavailable here: {exc}")
         if blob.returncode != 0 or not blob.stdout:  # pragma: no cover - shallow checkout

@@ -15,31 +15,17 @@ Two defects the marker work exposed, each with the user situation it costs:
     a third of the runtime answered from its marker.
 """
 
-import importlib.util
-import os
 import sys
 from pathlib import Path
 
 import pytest
 
-
-PACKAGE_ROOT = Path(__file__).resolve().parents[3]
-
-
-def _load(name: str, filename: str):
-    spec = importlib.util.spec_from_file_location(name, PACKAGE_ROOT / "studio" / filename)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
+from _pr10648_helpers import NEEDS_CHOWN as requires_chown
+from _pr10648_helpers import load_studio_module as _load
 
 LLAMA = _load("studio_install_llama_prebuilt_pr10648_fixes", "install_llama_prebuilt.py")
 CORE = _load("studio_prebuilt_core_pr10648_fixes", "prebuilt_core.py")
 NODE = _load("studio_install_node_prebuilt_pr10648_fixes", "install_node_prebuilt.py")
-
-requires_chown = pytest.mark.skipif(not hasattr(os, "chown"), reason = "os.chown is POSIX only")
 
 
 def _node_host():

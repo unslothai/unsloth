@@ -35,7 +35,6 @@ no GPU. The subprocesses are read-only against the repository and write only und
 """
 
 import dataclasses
-import importlib.util
 import json
 import os
 import subprocess
@@ -44,31 +43,16 @@ from pathlib import Path
 
 import pytest
 
-PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 _TEST_DIR = Path(__file__).resolve().parent
 if str(_TEST_DIR) not in sys.path:
     # The canonical corpus lives beside this file; pytest's prepend import mode puts this
     # directory on sys.path too, but not necessarily before this module body runs.
     sys.path.insert(0, str(_TEST_DIR))
 
+from _pr10648_helpers import PACKAGE_ROOT, git, llama_host  # noqa: E402
+from _pr10648_helpers import load_studio_module as _load  # noqa: E402
+
 import test_keep_install_backcompat_9979 as CORPUS  # noqa: E402
-
-
-def _load(module_name: str, filename: str):
-    """Load a studio installer under a name unique to this file.
-
-    Every install test loads these modules; sharing a ``sys.modules`` key with another
-    test file would mean one file's module-level monkeypatching could be observed by
-    another under ``pytest -n``.
-    """
-    path = PACKAGE_ROOT / "studio" / filename
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
 
 ILP = _load("studio_install_llama_prebuilt_pr10648_legacy", "install_llama_prebuilt.py")
 WSP = _load("studio_install_whisper_prebuilt_pr10648_legacy", "install_whisper_prebuilt.py")
@@ -229,16 +213,6 @@ main()
 '''
 
 
-def _git(*args: str) -> subprocess.CompletedProcess:
-    """Read-only git against this checkout. Never mutates the working tree."""
-    return subprocess.run(
-        ["git", "-C", str(PACKAGE_ROOT), *args],
-        capture_output = True,
-        timeout = 300,
-        check = False,
-    )
-
-
 def _extract_legacy_tree(tag: str, destination: Path) -> "Path | None":
     """``git show`` a released tag's installers into *destination*, or None if it is absent.
 
@@ -248,14 +222,14 @@ def _extract_legacy_tree(tag: str, destination: Path) -> "Path | None":
     destination.mkdir(parents = True, exist_ok = True)
     wanted = [f"studio/{name}" for name in _LEGACY_MODULES]
     wanted += ["studio/backend/__init__.py", "studio/backend/utils/__init__.py"]
-    listing = _git("ls-tree", "-r", "--name-only", tag, "studio/backend/utils/prebuilt")
+    listing = git("ls-tree", "-r", "--name-only", tag, "studio/backend/utils/prebuilt")
     if listing.returncode != 0:
         return None
     wanted += [
         line for line in listing.stdout.decode("utf-8", "replace").split() if line.endswith(".py")
     ]
     for path in wanted:
-        blob = _git("show", f"{tag}:{path}")
+        blob = git("show", f"{tag}:{path}")
         if blob.returncode != 0:
             return None
         target = destination / Path(path).relative_to("studio")
@@ -364,27 +338,9 @@ def _fill(cls, wanted: dict):
     return cls(**kwargs)
 
 
-def _llama_host(**overrides):
-    base = dict(
-        system = "Linux",
-        machine = "x86_64",
-        is_windows = False,
-        is_linux = True,
-        is_macos = False,
-        is_x86_64 = True,
-        is_arm64 = False,
-        nvidia_smi = None,
-        driver_cuda_version = None,
-        compute_caps = [],
-        visible_cuda_devices = None,
-        has_physical_nvidia = False,
-        has_usable_nvidia = False,
-    )
-    base.update(overrides)
-    return ILP.HostInfo(**base)
-
-
-LINUX = _llama_host()
+LINUX = llama_host(ILP.HostInfo)
+# Spelled out again as a plain dict: the legacy subprocess builds its own tag's HostInfo by
+# field name, so this is data crossing a process boundary rather than a second factory.
 LLAMA_HOST_KWARGS = {
     "system": "Linux",
     "machine": "x86_64",
@@ -439,7 +395,7 @@ MARKER_SPEC = {
 @pytest.fixture(scope = "session")
 def legacy_markers(tmp_path_factory) -> dict:
     """One marker per component, per released tag, written by that tag's own code."""
-    if _git("rev-parse", "--git-dir").returncode != 0:
+    if git("rev-parse", "--git-dir").returncode != 0:
         pytest.skip("not a git checkout, so the released tags cannot be read")
     root = tmp_path_factory.mktemp("pr10648-legacy")
     produced: dict = {}

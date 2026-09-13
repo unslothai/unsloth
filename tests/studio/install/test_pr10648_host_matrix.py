@@ -30,7 +30,6 @@ pinned per test on the module object, so no test reads this machine's real hardw
 from __future__ import annotations
 
 import dataclasses
-import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -44,22 +43,18 @@ if str(TEST_DIR) not in sys.path:
     # is what makes a sibling importable.
     sys.path.insert(0, str(TEST_DIR))
 
+from _pr10648_helpers import llama_host, load_studio_module  # noqa: E402
+
 # The install-tree writer the back-compat suite already maintains. Reused rather than
 # re-implemented so a change to what a real tree contains reaches this file too.
 from test_keep_install_backcompat_9979 import build_install  # noqa: E402
 
-PACKAGE_ROOT = TEST_DIR.parents[2]
-MODULE_PATH = PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py"
 # A distinct sys.modules name: the sibling suites load the same file under
 # "studio_install_llama_prebuilt", and monkeypatching a module another file is also
 # using would leak across an xdist worker's tests.
-SPEC = importlib.util.spec_from_file_location(
-    "studio_install_llama_prebuilt_pr10648_matrix", MODULE_PATH
+ILP = load_studio_module(
+    "studio_install_llama_prebuilt_pr10648_matrix", "install_llama_prebuilt.py"
 )
-assert SPEC is not None and SPEC.loader is not None
-ILP = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = ILP
-SPEC.loader.exec_module(ILP)
 
 HostInfo = ILP.HostInfo
 host_profile = ILP.host_profile
@@ -88,29 +83,7 @@ PUBLISHED_REPO = "unslothai/llama.cpp"
 
 
 def make_host(**overrides) -> HostInfo:
-    """A simulated host. Mirrors ``test_selection_logic.make_host``: the platform booleans
-    are derived from ``system``/``machine``, so no caller can hand out a host whose flags
-    contradict the two strings that name it. Accelerator fields default to a bare CPU box.
-    """
-    system = overrides.pop("system", "Linux")
-    machine = overrides.pop("machine", "x86_64")
-    defaults = dict(
-        system = system,
-        machine = machine,
-        is_linux = system == "Linux",
-        is_windows = system == "Windows",
-        is_macos = system == "Darwin",
-        is_x86_64 = machine.lower() in {"x86_64", "amd64"},
-        is_arm64 = machine.lower() in {"arm64", "aarch64"},
-        nvidia_smi = None,
-        driver_cuda_version = None,
-        compute_caps = [],
-        visible_cuda_devices = None,
-        has_physical_nvidia = False,
-        has_usable_nvidia = False,
-    )
-    defaults.update(overrides)
-    return HostInfo(**defaults)
+    return llama_host(HostInfo, **overrides)
 
 
 # --------------------------------------------------------------------------------------

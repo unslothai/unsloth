@@ -27,7 +27,6 @@ URLs it was asked for so a test that intercepted nothing fails instead of passin
 from __future__ import annotations
 
 import email.message
-import importlib.util
 import io
 import json
 import os
@@ -41,28 +40,18 @@ from pathlib import Path
 
 import pytest
 
+from _pr10648_helpers import PACKAGE_ROOT, git, load_studio_module
 from unsloth_pwsh_runner import run_pwsh
 
 
-PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = PACKAGE_ROOT / "studio" / "install_whisper_prebuilt.py"
-
-# The installer imports install_llama_prebuilt / prebuilt_core as top-level modules from its own
-# directory, so studio/ has to be importable before the spec loader runs it.
-_STUDIO_DIR = str(MODULE_PATH.parent)
-if _STUDIO_DIR not in sys.path:
-    sys.path.insert(0, _STUDIO_DIR)
 
 # A DISTINCT sys.modules name: test_install_whisper_prebuilt_logic.py owns
 # "studio_install_whisper_prebuilt", and sharing it would make the two files' monkeypatches
 # visible to each other under -n 4's per-worker module cache.
-_SPEC = importlib.util.spec_from_file_location(
-    "studio_install_whisper_prebuilt_pr10648_offline", MODULE_PATH
+M = load_studio_module(
+    "studio_install_whisper_prebuilt_pr10648_offline", "install_whisper_prebuilt.py"
 )
-assert _SPEC is not None and _SPEC.loader is not None
-M = importlib.util.module_from_spec(_SPEC)
-sys.modules[_SPEC.name] = M
-_SPEC.loader.exec_module(M)
 
 HostInfo = M.HostInfo
 
@@ -640,12 +629,7 @@ def test_macos_keep_refuses_an_install_below_this_hosts_floor(tmp_path, monkeypa
 
 
 def _git(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", "-C", str(PACKAGE_ROOT), *args],
-        capture_output = True,
-        text = True,
-        timeout = 60,
-    )
+    return git(*args, text = True, timeout = 60)
 
 
 requires_merge_base = pytest.mark.skipif(
