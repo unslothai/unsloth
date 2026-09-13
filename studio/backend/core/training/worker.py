@@ -139,6 +139,25 @@ def _resolve_cached_model_load_name(config: dict) -> str:
     return config.get("model_snapshot_path") or config["model_name"]
 
 
+def _worker_hf_token(config: dict):
+    """The caller's credential as a three-valued ``HfTokenArg``, not a bare ``str | None``.
+
+    Scrubbing the environment makes the worker's NETWORK traffic anonymous, and nothing more. The
+    disk cache is still readable without a credential, so every cache guard downstream
+    (``cache_reads_authorized``, ``cached_read_refused``) discriminates on the ``False`` sentinel
+    rather than on the string. ``or None`` erased exactly that distinction and handed an API key
+    the ambient caller class, which reads the operator's cached private weights.
+
+    It matters for the repos the route never saw: it authorized the model that was REQUESTED, while
+    the worker goes on to resolve a LoRA checkpoint's base, sibling scan targets and fallback load
+    targets. ``core/export/worker.py`` rebuilds the sentinel per command for the same reason.
+    """
+    from hub.utils.hf_tokens import hf_token_arg
+    return hf_token_arg(
+        config.get("hf_token"), allow_ambient_token = config.get("allow_ambient", True)
+    )
+
+
 def _effective_training_load_in_4bit(
     config: dict, model_load_target: str, hf_token: str | None
 ) -> bool:
@@ -642,8 +661,7 @@ def _load_embedding_hf_dataset(
     subset = config.get("subset") or None
     train_split = config.get("train_split", "train") or "train"
     revision = config.get("dataset_revision")
-    token = config.get("hf_token", "")
-    token = token if token and token.strip() else None
+    token = _worker_hf_token(config)
     dataset = None
     config["_dataset_loaded_from_exact_snapshot"] = False
 
@@ -2319,7 +2337,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             mx.set_wired_limit(wired_cap)
 
     model_name = config["model_name"]
-    hf_token = config.get("hf_token") or None
+    hf_token = _worker_hf_token(config)
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
     model_load_name = _resolve_cached_model_load_name(config)
@@ -3116,7 +3134,7 @@ def run_mlx_training_process(
         # Must precede detect_hardware(): its MLX stack check imports mlx_lm, hence transformers.
         _activate_transformers_version_or_warn(
             model_load_target,
-            config.get("hf_token") or None,
+            _worker_hf_token(config),
         )
 
     from utils.hardware import hardware as _hw
@@ -3306,7 +3324,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         # Must precede detect_hardware(): its MLX stack check imports mlx_lm, hence transformers.
         _activate_transformers_version_or_warn(
             model_load_target,
-            config.get("hf_token") or None,
+            _worker_hf_token(config),
         )
         mlx_transformers_activated = True
 
@@ -3326,7 +3344,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     try:
         _activate_transformers_version(
             model_load_target,
-            config.get("hf_token") or None,
+            _worker_hf_token(config),
         )
     except Exception as exc:
         event_queue.put(
@@ -3349,7 +3367,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         any(sub in _lowered for sub in _NEMOTRON_TRUST_SUBSTRINGS)
         and (_lowered.startswith("unsloth/") or _lowered.startswith("nvidia/"))
         # Confirm a genuine first-party Hub repo (not a spoofed "unsloth/" name); authenticated.
-        and is_trusted_org_repo(model_name, hf_token = config.get("hf_token") or None)
+        and is_trusted_org_repo(model_name, hf_token = _worker_hf_token(config))
         and not config.get("trust_remote_code", False)
     ):
         config["trust_remote_code"] = True
@@ -3361,7 +3379,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     security_error = _model_load_security_error(
         config,
         _resolve_cached_model_load_name(config),
-        config.get("hf_token") or None,
+        _worker_hf_token(config),
     )
     if security_error:
         event_queue.put({"type": "error", **security_error, "ts": time.time()})
@@ -3378,7 +3396,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         wants_causal_conv1d = resolved_model_wants_causal_conv1d(
             model_name,
             model_load_target,
-            config.get("hf_token") or None,
+            _worker_hf_token(config),
         )
         _ensure_causal_conv1d_fast_path(
             event_queue,
@@ -3821,8 +3839,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     # Pipeline order: detect -> dataset -> model -> prepare -> train, so both never hold VRAM at once.
     try:
-        hf_token = config.get("hf_token", "")
-        hf_token = hf_token if hf_token and hf_token.strip() else None
+        hf_token = _worker_hf_token(config)
         model_load_name = _resolve_cached_model_load_name(config)
         model_local_only = _model_local_files_only(config)
         model_revision = None if model_local_only else config.get("model_revision")
@@ -4696,8 +4713,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
 
     _send_status(event_queue, "Loading embedding model...")
     try:
-        hf_token = config.get("hf_token", "")
-        hf_token = hf_token if hf_token and hf_token.strip() else None
+        hf_token = _worker_hf_token(config)
         max_seq_length = config.get("max_seq_length", 512)
         training_type = config.get("training_type", "LoRA/QLoRA")
         use_lora = training_type == "LoRA/QLoRA"

@@ -408,6 +408,47 @@ def test_a_remote_named_cached_base_is_authorized_when_the_hub_probe_fails_open(
     assert seen == {}
 
 
+def test_the_worker_rebuilds_the_anonymous_sentinel_rather_than_none():
+    """`or None` handed an API key the AMBIENT caller class inside the worker.
+
+    The environment scrub only makes the worker's network traffic anonymous. Every disk-cache guard
+    downstream discriminates on the ``False`` sentinel, and ``cache_reads_authorized(None)`` is
+    True, so the operator's cached private weights stayed readable for the repos the route never
+    authorized: a LoRA checkpoint's base, sibling scan targets, a fallback load target.
+    """
+    from core.training.worker import _worker_hf_token
+    from hub.utils.hf_tokens import AmbientAuthorizedToken, cache_reads_authorized, is_anonymous
+
+    # A tokenless API key: the sentinel, and it authorizes no cache read.
+    token = _worker_hf_token({"allow_ambient": False})
+    assert is_anonymous(token)
+    assert cache_reads_authorized(token, repo_id = "org/private") is False
+
+    # A tokenless UI session keeps the ambient login, exactly as before.
+    assert _worker_hf_token({"allow_ambient": True}) is None
+    assert _worker_hf_token({}) is None
+
+    # An API key's own token stays a plain str, so it is probed rather than trusted outright.
+    own = _worker_hf_token({"allow_ambient": False, "hf_token": "  hf_caller  "})
+    assert own == "hf_caller"
+    assert not isinstance(own, AmbientAuthorizedToken)
+
+    # A UI session's own token is entitled to ambient and must not be demoted by the trim.
+    ui = _worker_hf_token({"allow_ambient": True, "hf_token": " hf_ui "})
+    assert isinstance(ui, AmbientAuthorizedToken) and ui == "hf_ui"
+    assert cache_reads_authorized(ui, repo_id = "org/private") is True
+
+
+def test_the_worker_no_longer_launders_the_sentinel_through_or_none():
+    """A guard against the tempting `config.get("hf_token") or None` simplification coming back."""
+    import inspect
+
+    from core.training import worker
+
+    source = inspect.getsource(worker)
+    assert 'config.get("hf_token") or None' not in source
+
+
 def test_the_diffusion_config_tolerates_the_new_policy_key():
     """allow_ambient rides the raw config dict; the trainer dataclass must ignore it."""
     from core.training.diffusion_train_common import _config_from_dict
