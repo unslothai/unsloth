@@ -482,9 +482,7 @@ def test_a_mutable_git_ref_is_evidence_only_while_the_remote_still_points_at_it(
     # Whitespace-normalised: _note wraps to the terminal width, so on an 80-column
     # terminal -- every xdist worker, and CI runs this suite with -n 4 -- the sentence
     # breaks mid-phrase and a literal substring match fails for no reason of substance.
-    assert "keeping the installed build 0123456789ab" in " ".join(
-        capsys.readouterr().out.split()
-    )
+    assert "keeping the installed build 0123456789ab" in " ".join(capsys.readouterr().out.split())
 
     # Without a recorded commit there is nothing to compare: the step runs, offline or not.
     without_commit = {**recorded, "vcs_info": {"vcs": "git", "requested_revision": "release/3.6.x"}}
@@ -1902,9 +1900,7 @@ def test_a_requirements_file_the_update_replaced_still_lets_the_manifest_be_writ
     assert isinstance(stack._closure_record(), dict)
 
 
-def test_a_requirements_file_that_is_not_utf8_still_lets_the_manifest_be_written(
-    audited,
-) -> None:
+def test_a_requirements_file_that_is_not_utf8_still_lets_the_manifest_be_written(audited) -> None:
     (audited / "studio.txt").write_bytes(b"\xff\xfe studio\n")
     assert isinstance(stack._closure_record(), dict)
 
@@ -1985,9 +1981,7 @@ def test_installing_a_flash_attn_wheel_counts_as_an_install_action(monkeypatch) 
     monkeypatch.setattr(
         stack,
         "install_wheel",
-        lambda *a, **k: iter(
-            [("uv", types.SimpleNamespace(returncode = 1, stdout = "", stderr = ""))]
-        ),
+        lambda *a, **k: iter([("uv", types.SimpleNamespace(returncode = 1, stdout = "", stderr = ""))]),
     )
     monkeypatch.setattr(stack, "_print_optional_install_failure", lambda *a, **k: None)
     monkeypatch.setattr(stack, "_step", lambda *a, **k: None)
