@@ -4,6 +4,7 @@
 import sys
 import os
 import tempfile
+import unicodedata
 from pathlib import Path
 import importlib.util
 
@@ -230,10 +231,11 @@ def test_raw_text_loader():
         print("✅ All tests passed!")
         return True
 
-    except Exception as e:
-        print(f"❌ Test failed: {e}")
-        return False
-
+    # No `except Exception: return False` here. Swallowing the failure printed a
+    # tidy message and still reported a pass to pytest, so every assertion in this
+    # function -- including the whitespace and non-ASCII ones above -- ran in CI
+    # without being able to fail it. That is how clean_text came to delete every
+    # non-ASCII character unnoticed.
     finally:
         os.unlink(test_file)
 
@@ -285,6 +287,42 @@ def test_clean_text_drops_invisible_characters():
         ("a\uffffb", "ab"),
     ]:
         assert preprocessor.clean_text(raw) == expected, raw
+
+
+def test_clean_text_decision_cannot_drift_between_interpreters():
+    """clean_text must clean a corpus identically on every supported Python.
+
+    unicodedata is compiled into CPython, so its database version moves with the
+    interpreter (3.9 ships Unicode 13.0, 3.14 ships 16.0) and most General_Category
+    values are free to change between them. Unicode's stability policy freezes
+    exactly three: Cc, Co and Cs. Keying the drop set on only those is what makes
+    the same corpus clean the same way on 3.9 and on 3.14, so pin it here: widening
+    _DROP_CATEGORIES to any other category silently reintroduces that drift.
+
+    https://www.unicode.org/policies/property_value_stability_table.html
+    """
+    immutable = {"Cc", "Co", "Cs"}
+    assert set(raw_text_module._TextCharTable._DROP_CATEGORIES) <= immutable, (
+        "clean_text may only key on the General_Category values Unicode has frozen "
+        f"({sorted(immutable)}); the rest differ between Python versions."
+    )
+
+    # Everything else that is dropped is named explicitly rather than derived from
+    # the database, for the same reason.
+    preprocessor = TextPreprocessor()
+    for codepoint in (0x00AD, 0x200B, 0x200E, 0x2060, 0x2066, 0xFEFF, 0xFFFD, 0xE0001):
+        assert preprocessor.clean_text(f"a{chr(codepoint)}b") == "ab", hex(codepoint)
+
+    # Unassigned (Cn) code points are characters newer than the running
+    # interpreter's database, so they have to survive rather than be deleted.
+    unassigned = [
+        cp
+        for cp in range(0x10D40, 0x10D90)
+        if unicodedata.category(chr(cp)) == "Cn" and not (cp & 0xFFFE) == 0xFFFE
+    ]
+    for codepoint in unassigned[:8]:
+        text = f"a{chr(codepoint)}b"
+        assert preprocessor.clean_text(text) == text, hex(codepoint)
 
 
 def test_smart_chunk_text_single_chunk_no_eos_returns_plain_list():
@@ -720,6 +758,7 @@ if __name__ == "__main__":
     success = test_raw_text_loader()
     test_clean_text_keeps_text_in_any_script()
     test_clean_text_drops_invisible_characters()
+    test_clean_text_decision_cannot_drift_between_interpreters()
     success = test_smart_chunk_text_single_chunk_no_eos_returns_plain_list() and success
     success = test_load_from_file_skips_non_object_json_lines() and success
     success = test_smart_chunk_text_empty_input_returns_no_chunks() and success
