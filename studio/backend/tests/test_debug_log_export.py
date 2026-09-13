@@ -116,10 +116,7 @@ def test_a_source_swapped_for_a_symlink_after_enumeration_is_refused(monkeypatch
     """The enumeration walk refuses an escaping link, but that ran earlier.
     Anything can replace the entry before the export opens it."""
     path = _seed_server_log("ordinary line\n")
-    # Named for what it is to the test rather than `secret`, for the CodeQL
-    # reason spelled out on the AWS test further down: the query classifies a
-    # local by NAME, and a fixture called `secret` makes every write to it a
-    # clear-text-storage alert.
+    # Not `secret`, for the CodeQL reason on the AWS test below.
     link_target = tmp_path / "id_rsa"
     link_target.write_text("PRIVATE KEY MATERIAL\n", encoding = "utf-8")
     enumerate_sources = debug_log_sources.list_sources
@@ -255,14 +252,9 @@ def test_duplicate_labels_are_uniquified_by_a_loop():
 
 
 def test_two_labels_differing_only_in_case_do_not_extract_over_each_other():
-    """The volume the archive is EXTRACTED on decides what collides.
-
-    Windows and default APFS fold case, so `Server.log` and `server.log` are one
-    name there. Comparing case-sensitively when building the ZIP emits two
-    members that land on top of each other on those machines, which is the same
-    silent loss `_member_name` exists to prevent, just moved from the builder to
-    the extractor. The member keeps its real spelling; only the collision key is
-    folded.
+    """The volume the archive is EXTRACTED on decides what collides: Windows and
+    default APFS fold case, so two members that differ only in case land on top
+    of each other there. The member keeps its spelling; only the key is folded.
     """
     used: set[str] = set()
     assert debug_log_export._member_name("server", "s.log", used) == "server/s.log"
@@ -331,15 +323,10 @@ def test_the_route_streams_an_attachment(client):
 
 
 def test_the_archive_is_never_written_to_the_browser_cache(client):
-    """A stable authenticated GET that answers with an attachment is an
-    ordinary cacheable response unless it says otherwise.
-
-    Two things follow, and the browser export path hits both: the archive can
-    outlive the download in the on-disk HTTP cache after the user has deleted
-    the file, and a second export can be served from that cache instead of from
-    the logs as they are NOW, which is the exact moment the user is trying to
-    capture. `no-store` because the response must not be written down at all,
-    not merely revalidated.
+    """A stable authenticated GET returning an attachment is cacheable unless it
+    says otherwise: the archive could outlive the download on disk, and a second
+    export could be answered from cache rather than from the logs as they are
+    now. `no-store` because it must not be written down at all.
     """
     _seed_server_log("cacheable?\n")
     response = client.get("/api/settings/debug/logs/export")
@@ -435,15 +422,11 @@ def test_a_log_inside_the_tail_is_not_truncated_or_warned_about():
 
 
 def test_a_record_cut_by_the_allowance_is_marked_not_presented_as_whole():
-    """A read that stops on the ALLOWANCE leaves the front of a record.
-
-    Emitting it presents a cut line as a complete one in the file the reader is
-    most likely to trust. It is also the one place a credential can reach the
-    archive: `redact_log_text` needs several characters of value before it
-    masks, so a cut landing just past `password=` ships the first few in the
-    clear. EOF is the other way this loop ends, and there the trailing bytes
-    really are a whole record written without a newline, so the two must not be
-    treated alike.
+    """A read that stops on the ALLOWANCE leaves the front of a record, which
+    would read as a complete line. It is also the one place a credential reaches
+    the archive: `redact_log_text` needs several characters of value, so a cut
+    just past `password=` ships the first few in the clear. At EOF the same
+    trailing bytes ARE a whole record, so the two must not be treated alike.
     """
     directory = Path(os.environ["UNSLOTH_STUDIO_HOME"]) / "logs" / "server"
     directory.mkdir(parents = True, exist_ok = True)
@@ -612,12 +595,9 @@ def test_a_record_straddling_the_seek_never_leaks_its_credential(monkeypatch):
     monkeypatch.setattr(debug_log_export, "MAX_SOURCE_TAIL_BYTES", 2 * record_cap)
     monkeypatch.setattr(debug_log_export, "MAX_TOTAL_SOURCE_BYTES", 1 << 20)
 
-    # `planted_value` and `anchor` rather than `secret` and `key`: CodeQL's
-    # py/clear-text-storage-sensitive-data classifies a local by its NAME, so
-    # those two spellings make every test that writes a fixture log a new
-    # high-severity "clear-text storage" alert on the pull request. The string
-    # is a synthetic AWS example value and the file is a tmp_path fixture; the
-    # names are what the query reads, so the names are what change.
+    # Not `secret`/`key`: CodeQL's py/clear-text-storage-sensitive-data classifies
+    # a local by NAME, so those spellings make every fixture write a new
+    # high-severity alert. The value is a synthetic AWS example.
     planted_value = "wJalrXUtnFEMIKSECRETDENGbPxRfiCYEXAMPLEKEY"
     anchor = 'aws_secret_access_key="'
     head = "x" * 200

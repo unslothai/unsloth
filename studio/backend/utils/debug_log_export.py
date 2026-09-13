@@ -3,17 +3,13 @@
 
 """Pack every log the viewer may read into one redacted ZIP.
 
-Sharing a problem means collecting the server log and each runner's log by
-hand, and the desktop app has no way to reach the log folder at all. This is
-the same allowlist the picker shows -- `debug_log_sources.list_sources` -- read
-through the same `redact_log_text` that already guards the live viewer, so the
-bundle can never contain a file, or a credential, the tab would not have shown.
+Same allowlist as the picker (`debug_log_sources.list_sources`) through the same
+`redact_log_text`, so the bundle can hold no file, and no credential, the tab
+would not have shown.
 
-The 10-per-family cap in `debug_log_sources` is not lifted here, but it caps
-FILES, not bytes: the active session log is never rotated (see
-`debug_log_reader`) and is routinely many GB on its own. So the archive is
-bounded twice more -- a tail per file and a budget across all of them. Both cut
-from the FRONT, because the end of a log is the part that explains a problem.
+The per-family cap upstream bounds FILES, not bytes, and the session log is
+never rotated. Hence two more bounds here, a tail per file and a budget across
+all of them, both cutting from the FRONT: the end of a log explains the problem.
 """
 
 from __future__ import annotations
@@ -29,66 +25,38 @@ from typing import IO, Iterator
 from utils import debug_log_sources
 from utils.log_redaction import redact_log_text
 
-# Beyond this the ZIP rolls from memory onto disk. An export of ten files per
-# family compresses well below it in the ordinary case, and a busy host pays a
-# temp file rather than the resident memory of one.
+# Beyond this the ZIP rolls from memory onto disk.
 SPOOL_MAX_BYTES = 8 * 1024 * 1024
 
-# What the route hands to StreamingResponse.
 STREAM_CHUNK_BYTES = 64 * 1024
 
 _READ_CHUNK_BYTES = 256 * 1024
 
-# A record longer than this is dropped WHOLE rather than split. Splitting is
-# what debug_log_reader does for the viewer, and it is wrong here: the redactor
-# is anchored on a key name next to its value, so a cut between the two hands
-# out the credential in the clear.
-#
-# Deliberately the same 32 KiB the viewer caps a line at (MAX_LINE_BYTES in
-# debug_log_reader). `_ANSI_RE` in log_redaction backtracks quadratically on an
-# unterminated OSC introducer -- 40k such characters take ~16s against ~0.005s
-# for the same length of ordinary text -- so the cost of a call grows with the
-# SQUARE of what is passed to it. Handing the redactor a 1 MiB record instead of
-# a 32 KiB one multiplies the cost of the same bytes by ~1000. Matching the
-# viewer keeps the export's worst case no worse than the tab's.
+# Dropped WHOLE, never split: the redactor is anchored on a key next to its
+# value, so a cut between the two hands out the credential. Matches the viewer's
+# MAX_LINE_BYTES because `_ANSI_RE` backtracks quadratically, so cost grows with
+# the SQUARE of what one call is handed.
 MAX_RECORD_BYTES = 32 * 1024
 OVERSIZED_MARKER = "[oversized log record omitted]"
 TRUNCATED_MARKER = "[export time budget reached, rest of this log omitted]"
 CUT_MARKER = "[export size budget reached, end of this record omitted]"
 UNREADABLE_MARKER = "[log record omitted: not UTF-8 text the redactor can mask]"
 
-# The tail kept from any one log. A session log runs to gigabytes and the whole
-# point of the bundle is to attach it to an issue, so the head is both the least
-# useful part and the part that makes the archive unusable.
+# The tail kept from any one log; a session log runs to gigabytes.
 MAX_SOURCE_TAIL_BYTES = 8 * 1024 * 1024
 
-# And across every log together, because eighty tails still add up.
-#
-# Sized against the redactor rather than against taste. `redact_log_text` runs
-# at ~4.2 MB/s (measured on this tree, and flat regardless of whether a line
-# holds a credential), the route builds the archive before it answers, and
-# DOWNLOAD_READ_TIMEOUT in native_file_dialogs.rs gives the response 30s to
-# produce headers. 32 MB is ~12s of that, which still leaves margin on a host
-# slower than this one. Raising it without either making the redactor faster or
-# streaming the ZIP as it is built turns a big export into a timed-out one.
-#
-# It also bounds the browser path, which lands the whole response in a Blob in
-# the tab's memory.
+# Across every log together. Sized against the redactor's ~4.2 MB/s: the route
+# builds before it answers and DOWNLOAD_READ_TIMEOUT (native_file_dialogs.rs)
+# allows 30s for headers, so 32 MB is ~12s of that. Raising it without making
+# the redactor faster, or streaming the ZIP as it builds, times the caller out.
+# Also bounds the browser path, which holds the response in a Blob.
 MAX_TOTAL_SOURCE_BYTES = 32 * 1024 * 1024
 
-# A ceiling on the whole build, in seconds.
-#
-# The byte budget assumes a throughput, and that assumption is not safe: the
-# redactor's ANSI rules backtrack quadratically, so a log carrying unterminated
-# C1 introducers costs thousands of times what the same bytes of ordinary text
-# do. A size cap cannot express "and do not take an hour"; this can. Measured:
-# 12 MB of such records takes ~16 minutes without this and ~22s with it.
-#
-# The deadline is tested BEFORE each record, so the build can overshoot by the
-# cost of the one record already in flight -- ~2.5s for a 32 KiB pathological
-# record on this host. 15s leaves that overshoot, and a slower host's, inside
-# DOWNLOAD_READ_TIMEOUT (30s) in native_file_dialogs.rs, so the caller gets a
-# short archive that says it is short rather than a timeout with nothing in it.
+# The byte budget assumes a throughput the redactor does not guarantee: ANSI
+# rules backtrack quadratically, so 12 MB of unterminated C1 introducers takes
+# ~16 minutes without this and ~22s with it. Checked BEFORE each record, so the
+# build overshoots by one record (~2.5s worst case) and still lands inside
+# DOWNLOAD_READ_TIMEOUT, returning a short archive rather than a timeout.
 MAX_BUILD_SECONDS = 15.0
 
 WARNINGS_MEMBER = "EXPORT_WARNINGS.txt"
@@ -98,18 +66,15 @@ def _safe_basename(label: str) -> str:
     """The filename out of a label, with no way to reach a directory.
 
     Both separators, not `Path(label).name`: a Windows-shaped label read on
-    POSIX keeps its backslashes, and the result is a member name that some
-    extractors treat as a path.
+    POSIX keeps its backslashes, which some extractors treat as a path.
     """
     name = label.replace("\\", "/").rsplit("/", 1)[-1].strip()
-    # A newline would forge an entry in EXPORT_WARNINGS.txt, which is one line
-    # per source; the rest are simply not filenames.
+    # A newline would forge an entry in EXPORT_WARNINGS.txt, one line per source.
     name = "".join(
         "_" if character < " " or character == "\x7f" else character for character in name
     )
-    # POSIX filenames are bytes, so `Path.name` can hand back lone surrogates
-    # from `surrogateescape`. zipfile cannot encode those, and the raise lands
-    # outside both OSError handlers and takes the whole export down with a 500.
+    # Lone surrogates from `surrogateescape` are not encodable by zipfile, and
+    # the raise lands outside both OSError handlers: a 500 for the whole export.
     name = name.encode("utf-8", "replace").decode("utf-8")
     if not name or name.strip(".") == "":
         return "log"
@@ -119,19 +84,12 @@ def _safe_basename(label: str) -> str:
 def _member_name(family: str, label: str, used: set[str]) -> str:
     """`family/basename`, made unique against everything already in the ZIP.
 
-    Two studio homes can hold a same-named file in the same family, and a ZIP
-    with a duplicated member extracts as whichever entry the tool happens to
-    reach last, silently losing the other one.
-
-    The collision key is case-folded because the volume the archive is
-    EXTRACTED on decides what collides, not the one it was built on. Windows and
-    default APFS treat `Server.log` and `server.log` as one name, so comparing
-    case-sensitively here emits two members that land on top of each other --
-    the exact silent loss this function exists to prevent, just moved from the
-    builder to the extractor. `.lower()` rather than `.casefold()`: casefold
-    over-folds for a filename (Turkish dotless i, German sharp s), while
-    `.lower()` is what `ntpath.normcase` applies. Only the KEY is folded; the
-    member keeps the name the file actually has.
+    A duplicated member extracts as whichever entry the tool reaches last,
+    silently losing the other. The key is case-folded because the volume the
+    archive is EXTRACTED on decides what collides: Windows and default APFS
+    treat `Server.log` and `server.log` as one name. `.lower()` not
+    `.casefold()`, which over-folds for filenames (Turkish dotless i, sharp s);
+    only the KEY is folded, the member keeps its real name.
     """
     base = _safe_basename(label)
     candidate = f"{family}/{base}"
@@ -144,8 +102,8 @@ def _member_name(family: str, label: str, used: set[str]) -> str:
     else:
         extension = dot + extension
     index = 2
-    # Loops: the first suffix can itself already be taken, by a real file named
-    # that way or by an earlier collision.
+    # Loops: the first suffix can itself be taken, by a real file or an earlier
+    # collision.
     while f"{family}/{stem}-{index}{extension}".lower() in used:
         index += 1
     candidate = f"{family}/{stem}-{index}{extension}"
@@ -212,18 +170,12 @@ def _open_verified(path: str) -> tuple[IO[bytes], int]:
 
 
 def _redact_record(raw: bytes) -> str:
-    """One record, masked -- or refused if the redactor cannot read it.
+    """One record, masked, or refused if the redactor cannot read it.
 
-    `errors="replace"` is not safe here. A UTF-16 log decoded as UTF-8 keeps a
-    NUL between every character, so `HF_TOKEN=hf_...` becomes
-    `H\\x00F\\x00_\\x00T...`: every masking rule stops matching, the record is
-    copied through verbatim, and the credential is still perfectly readable to
-    anyone who opens the archive -- or runs `strings` on it. Windows PowerShell
-    redirection writes UTF-16LE by default, so this is not a contrived shape.
-
-    The export cannot re-encode its way out of that (the redactor is shared with
-    the live viewer and is not being changed here), so it refuses instead. A
-    record it cannot mask is a record it must not ship.
+    `errors="replace"` is unsafe: a UTF-16 log decoded as UTF-8 keeps a NUL
+    between every character, so `HF_TOKEN=hf_...` stops matching every masking
+    rule and is copied through in the clear. PowerShell redirection writes
+    UTF-16LE by default. A record that cannot be masked must not ship.
     """
     if b"\x00" in raw:
         return UNREADABLE_MARKER
@@ -237,37 +189,27 @@ def _redact_record(raw: bytes) -> str:
 def _seek_to_tail(handle: IO[bytes], fd: int, allowance: int) -> tuple[int, int]:
     """Position at the last `allowance` bytes, on a record boundary.
 
-    Returns the bytes skipped (0 if the whole file fits) and the file's size,
-    read from the descriptor we are about to use rather than re-stat'd later.
+    Returns the bytes skipped (0 if the whole file fits) and the size, read from
+    the descriptor about to be used rather than re-stat'd later.
 
-    Landing on a boundary is not cosmetic. `redact_log_text` is anchored on a
-    key name sitting next to its value, so a read that begins in the middle of a
-    record can hand out the value of a credential whose key was left behind in
-    the part we skipped. Whatever the seek lands in the middle of is therefore
-    dropped, and reading starts after the next newline.
+    The boundary is not cosmetic: `redact_log_text` is anchored on a key beside
+    its value, so a read starting mid-record can emit a credential whose key was
+    in the skipped part. Whatever the seek lands inside is dropped.
     """
     size = os.fstat(fd).st_size
     if size <= allowance:
         return 0, size
     start = size - allowance
-    # If `start` already sits just after a newline it IS a record boundary, and
-    # scanning forward would throw away a complete record for nothing.
+    # Already just after a newline: a boundary, so do not discard a whole record.
     handle.seek(start - 1)
     if handle.read(1) == b"\n":
         return start, size
-    # Otherwise the handle is at `start`, which is where the scan below begins.
-    # Scan FORWARD to a real newline, however far that is. Stopping after one
-    # probe and reading from wherever it ended would start mid-record at an
-    # arbitrary offset -- which is the whole thing this function exists to
-    # prevent, and it leaks: a record holding `aws_secret_access_key="..."`
-    # whose key falls before that offset arrives redacted of nothing, because
-    # the redactor is anchored on the key and the key is in the part we threw
-    # away. An AWS secret has no prefix for a shape rule to catch, so the
-    # anchor was the only defence.
-    # Bounded by the size already taken from the descriptor, not by EOF. A live
-    # log has no EOF: scanning to it follows the writer for as long as it keeps
-    # up, which is the same unbounded read `_redacted_records` is careful to
-    # avoid, reintroduced one function earlier.
+    # Scan FORWARD to a real newline, however far. Giving up after one probe
+    # starts mid-record, which leaks: an `aws_secret_access_key="..."` whose key
+    # fell before that offset arrives masked of nothing, and an AWS secret has
+    # no prefix for a shape rule to catch. Bounded by the size taken from the
+    # descriptor, not by EOF -- a live log has none, so scanning to it follows
+    # the writer indefinitely.
     scanned = start
     while scanned < size:
         probe = handle.read(min(MAX_RECORD_BYTES, size - scanned))
@@ -278,9 +220,8 @@ def _seek_to_tail(handle: IO[bytes], fd: int, allowance: int) -> tuple[int, int]
             handle.seek(scanned + newline + 1)
             return scanned + newline + 1, size
         scanned += len(probe)
-    # No boundary anywhere in the tail. Reading from `scanned` would be the same
-    # mid-record start, so refuse the file; the caller turns this into a
-    # warning, not a member.
+    # No boundary in the tail: reading anyway is the same mid-record start, so
+    # refuse the file. The caller turns this into a warning, not a member.
     handle.seek(size)
     return size, size
 
@@ -288,41 +229,33 @@ def _seek_to_tail(handle: IO[bytes], fd: int, allowance: int) -> tuple[int, int]
 def _redacted_records(handle: IO[bytes], fd: int, limit: int, deadline: float) -> Iterator[str]:
     """Every line of one log, masked, in bounded chunks, stopping after `limit`.
 
-    Never `handle.read()`: a runner log can be gigabytes, and the export must
-    not size its memory on the largest file a host happens to hold.
+    Never `handle.read()`: a runner log can be gigabytes.
 
-    `limit` is not the same bound as the seek that positioned this read. The
-    seek says where to start; a log that is being APPENDED to while the export
-    runs has no end, so without a ceiling here the loop follows the writer for
-    as long as it keeps up -- on the session log, which is the file both caps
-    exist for, and which is by definition live when someone is exporting it.
+    `limit` is a different bound from the seek that positioned this read. The
+    seek says where to start; a log being APPENDED to has no end, so without a
+    ceiling the loop follows the writer -- on the session log, which is live by
+    definition while someone is exporting it.
 
-    `deadline` is checked per RECORD, not per source and not per chunk, because
-    both coarser choices overrun: one file is enough to blow the whole build,
-    since the redactor's cost is quadratic in the length handed to it and a log
-    of unterminated C1 introducers takes minutes on its own; and one 256 KiB
-    chunk holds thousands of records, so checking between chunks lets the budget
-    run over by the cost of all of them. Stopping mid-file truncates that file;
-    letting it run times the caller out and produces nothing.
+    `deadline` is per RECORD. Per source overruns because one pathological file
+    blows the whole build (the redactor's cost is quadratic in what it is
+    handed); per chunk overruns because one 256 KiB chunk holds thousands of
+    records.
     """
     buffer = b""
     start = handle.tell()
     consumed = start
-    # The current record already blew the budget; everything up to the next
-    # newline belongs to it and is dropped with it.
+    # The current record blew the budget; everything to the next newline goes
+    # with it.
     dropping = False
-    # Whether the read stopped because the FILE ended or because the ALLOWANCE
-    # did. The trailing bytes mean different things in the two cases and cannot
-    # be told apart afterwards: at EOF they are a genuine last record written
-    # without a newline, and at the allowance they are the front of a record
-    # whose remainder was never read.
+    # Whether the read stopped at the FILE's end or the ALLOWANCE's. At EOF the
+    # trailing bytes are a real last record with no newline; at the allowance
+    # they are the front of one whose remainder was never read.
     at_eof = False
     while consumed - start < limit:
         chunk = handle.read(min(_READ_CHUNK_BYTES, limit - (consumed - start)))
         if not chunk:
-            # EOF on a file that is now shorter than what we read means it
-            # rotated or was truncated under us, so the tail we produced does
-            # not line up with the head. Growth is ordinary -- it is a live log.
+            # Shorter than what was read means it rotated or was truncated under
+            # us, so the tail does not line up. Growth is ordinary: it is live.
             if os.fstat(fd).st_size < consumed:
                 raise OSError(errno.ESTALE, "log file shrank during export")
             at_eof = True
@@ -342,51 +275,35 @@ def _redacted_records(handle: IO[bytes], fd: int, limit: int, deadline: float) -
                 dropping = False
                 yield OVERSIZED_MARKER
             elif len(record) > MAX_RECORD_BYTES:
-                # Over budget but terminated inside one chunk, so the buffer
-                # guard below never saw it. Same rule, or a record just past
-                # the limit would come through whole while a longer one did not.
+                # Terminated inside one chunk, so the buffer guard never saw it.
                 yield OVERSIZED_MARKER
             else:
                 yield _redact_record(record)
         if len(buffer) > MAX_RECORD_BYTES:
-            # Bounds the buffer as well as the record: a log with no newline in
-            # it at all must not be held in memory whole.
+            # A log with no newline at all must not be held in memory whole.
             dropping = True
             buffer = b""
-    # No `len(buffer) > MAX_RECORD_BYTES` here: the in-loop guard clears the
-    # buffer after every chunk, so it cannot be over budget by this point.
+    # No size guard here: the in-loop one clears the buffer after every chunk.
     if dropping:
         yield OVERSIZED_MARKER
     elif buffer:
-        # Whether these trailing bytes are a whole record or the front of one.
+        # Whole record, or the front of one? `at_eof` alone cannot say: the loop
+        # stops as soon as the allowance is spent, so a file whose last byte
+        # lands exactly there never gets the read that reports EOF, and its
+        # final newline-less record is complete. The descriptor separates them.
         #
-        # `at_eof` alone is not enough to tell. The loop stops as soon as the
-        # allowance is spent, so a file whose last byte lands exactly on that
-        # boundary never gets the read that would have reported EOF -- and its
-        # final newline-less record is complete, not cut. Asking the descriptor
-        # is what separates the two: bytes beyond what we consumed mean the
-        # record continues into them, and none means the file ended here.
-        #
-        # Emitting a cut record as though it were whole matters because it is
-        # presented as a complete line in the file the reader is most likely to
-        # trust, and because `redact_log_text` needs several characters of value
-        # before it masks, so a cut landing just past a key ships the first few
-        # in the clear. A marker says what happened instead.
-        #
-        # Reachable, not theoretical: when `_seek_to_tail` takes the forward-scan
-        # path it starts LATER than `size - allowance`, so `skipped + allowance`
-        # is already past the size the descriptor reported. On a log being
-        # appended to -- the active session log, which is live by definition when
-        # someone is exporting it -- the read then runs into the new bytes and
-        # stops on the allowance rather than on EOF.
+        # It matters because a cut record reads as a complete line, and
+        # `redact_log_text` needs several characters of value before it masks,
+        # so a cut just past a key ships the first few in the clear. Reachable:
+        # `_seek_to_tail`'s forward scan starts later than `size - allowance`,
+        # so on a log being appended to the read ends on the allowance, not EOF.
         if at_eof:
             cut = False
         else:
             try:
                 cut = os.fstat(fd).st_size > consumed
             except OSError:
-                # No way to tell, so take the side that cannot mislead.
-                cut = True
+                cut = True  # cannot tell; take the side that cannot mislead
         yield CUT_MARKER if cut else _redact_record(buffer)
 
 
@@ -395,12 +312,10 @@ def _newest_first_across_families(
 ) -> list[debug_log_sources.LogSource]:
     """Round-robin the families instead of draining them one at a time.
 
-    `list_sources` groups by family, newest first within each. Consumed in that
-    order, a host with a large session log spends the whole byte budget on the
-    server family and the bundle arrives with no runner logs at all -- which is
-    usually the half that explains the problem. Taking the newest of every
-    family, then the second newest of every family, means the budget runs out on
-    the oldest attempts rather than on an entire category.
+    Consumed in `list_sources` order, a large session log spends the whole byte
+    budget on the server family and the bundle arrives with no runner logs --
+    usually the half that explains the problem. Round-robin means the budget
+    runs out on the oldest attempts rather than on a whole category.
     """
     by_family: dict[str, list[debug_log_sources.LogSource]] = {}
     for source in sources:
@@ -416,9 +331,8 @@ def _newest_first_across_families(
 def _warning_line(member: str, exc: BaseException) -> str:
     """One failed source, named by its member, never by its path.
 
-    `str(exc)` is what you would reach for and it is exactly wrong here:
-    `OSError.__str__` appends the filename, which would put a host path -- the
-    one thing member names are careful not to carry -- into the archive.
+    Not `str(exc)`: `OSError.__str__` appends the filename, which would put a
+    host path into the archive -- the one thing member names avoid.
     """
     code = getattr(exc, "errno", None)
     return redact_log_text(
@@ -441,8 +355,8 @@ def build_log_archive() -> tempfile.SpooledTemporaryFile:
             for source in _newest_first_across_families(debug_log_sources.list_sources()):
                 member = _member_name(source.family, source.label, used)
                 if remaining <= 0:
-                    # Named rather than dropped silently, so the bundle says what
-                    # it is missing instead of looking complete.
+                    # Named, so the bundle says what is missing rather than
+                    # looking complete.
                     warnings.append(f"{member}: omitted, export size budget reached")
                     continue
                 if time.monotonic() > deadline:
@@ -459,24 +373,18 @@ def build_log_archive() -> tempfile.SpooledTemporaryFile:
                     with handle:
                         skipped, size = _seek_to_tail(handle, fd, allowance)
                         # `size > 0` first: an empty log returns (0, 0), and
-                        # reporting that as "no complete record" blames the
-                        # export for a file that simply has nothing in it yet.
-                        # An empty member is the honest answer there.
+                        # calling that "no complete record" blames the file for
+                        # being empty. An empty member is the honest answer.
                         if size > 0 and skipped >= size:
-                            # No record boundary anywhere in the tail, so there
-                            # is no whole record to keep and reading anyway
-                            # would start mid-record. An empty member reads as
-                            # "this log was empty", which is a different and
-                            # wrong story. `remaining` is deliberately NOT
-                            # spent: this is a property of one file, and the
-                            # next source may still fit.
+                            # No boundary in the tail, so nothing whole to keep
+                            # and reading anyway starts mid-record. `remaining`
+                            # is deliberately NOT spent: this is one file's
+                            # property and the next source may still fit.
                             #
-                            # Which of the two caps produced the window decides
-                            # what to say. If the budget is what shrank it, the
-                            # file is not at fault and naming its byte count
-                            # reads as though it were -- and since `remaining` is
-                            # not spent here, that wrong message would then
-                            # repeat for every source after this one.
+                            # Which cap produced the window decides the wording.
+                            # Blaming the file when the budget shrank it would
+                            # then repeat for every later source, since
+                            # `remaining` is untouched here.
                             if allowance < MAX_SOURCE_TAIL_BYTES:
                                 warnings.append(f"{member}: omitted, export size budget reached")
                             else:
@@ -499,21 +407,17 @@ def build_log_archive() -> tempfile.SpooledTemporaryFile:
                                 for record in _redacted_records(handle, fd, allowance, deadline):
                                     destination.write((record + "\n").encode("utf-8"))
                             finally:
-                                # Charged even when the read failed partway: those
-                                # bytes were still redacted and written, so a log
-                                # that dies mid-export is not budget-free. Inside
-                                # the `with`, because tell() needs an open handle.
+                                # Charged even on a partial read: those bytes were
+                                # still redacted and written. Inside the `with`,
+                                # because tell() needs an open handle.
                                 remaining -= max(0, handle.tell() - before)
                 except OSError as exc:
-                    # The entry keeps whatever was copied before the failure:
-                    # a partial log is still worth reading, and the warning
-                    # says why it stops where it does.
+                    # Keeps whatever was copied first: a partial log is still
+                    # worth reading, and the warning says why it stops.
                     warnings.append(_warning_line(member, exc))
             if warnings:
-                # Through a bare ZipInfo, not the str overload: that one stamps
-                # time.localtime(), which hands out the exporting host's clock
-                # and, against the response Date header, its UTC offset. Every
-                # log member is already at zipfile's 1980 default.
+                # A bare ZipInfo, not the str overload: that one stamps
+                # time.localtime(), leaking the host's clock and UTC offset.
                 archive.writestr(
                     zipfile.ZipInfo(WARNINGS_MEMBER),
                     "\n".join(warnings) + "\n",

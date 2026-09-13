@@ -3,16 +3,14 @@
 
 // Settings > Logs: "Download all logs (.zip)" and "Open logs folder".
 //
-// Both branches are driven in one process, which a plain import cannot do:
-// `isTauri` is decided once when lib/api-base evaluates. loadWithStubs re-runs
-// the real source per test with the api-base the test wants, and is also what
-// keeps "@tauri-apps/api/core" -- a package that resolves only inside a Tauri
-// webview -- out of the runner.
+// Both branches run in one process, which a plain import cannot do: `isTauri` is
+// decided once when lib/api-base evaluates. loadWithStubs re-runs the source per
+// test with the api-base it wants, and keeps "@tauri-apps/api/core" (resolvable
+// only inside a Tauri webview) out of the runner.
 //
-// The tab is rendered with react-dom/server. Its effects (the poll loop) never
-// run there, and a setState after the render is a no-op on the server, so a
-// handler can be called straight off the recorded button props: what is asserted
-// is which request went out and which toast came back, not the disabled repaint.
+// The tab renders with react-dom/server, where effects never run and setState is
+// a no-op, so handlers are called off the recorded button props: what is asserted
+// is the request and the toast, not the disabled repaint.
 
 import assert from "node:assert/strict";
 import test from "node:test";

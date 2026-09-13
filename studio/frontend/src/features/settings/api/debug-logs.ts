@@ -119,12 +119,9 @@ export async function loadDebugLog(
 export const LOG_EXPORT_ENDPOINT = "/api/settings/debug/logs/export";
 
 /**
- * Why an export attempt failed, so the caller can say something useful rather
- * than repeat a status code:
- *
- *   outdated  - the route is not there, so the backend predates the feature
- *   forbidden - the route is there but rejects this caller (API key, keyless)
- *   failed    - anything else; `message` carries the detail
+ * outdated  - no such route, so the backend predates the feature
+ * forbidden - the route rejects this caller (API key, keyless)
+ * failed    - anything else; `message` carries the detail
  */
 export type LogExportFailure = "outdated" | "forbidden" | "failed";
 
@@ -144,27 +141,18 @@ function failureForStatus(status: number): LogExportFailure {
   return "failed";
 }
 
-// The desktop side streams in Rust and only ever hands back a string, so the
-// status has to be read out of it. `stream_url_to_path` formats a non-2xx as
-// exactly "Download failed with status 404." and nothing else in src-tauri
-// produces that phrase.
-//
-// Anchored to the START of the message on purpose. Unanchored, two other error
-// strings can be made to contain the phrase: "Failed to save {path}: {error}"
-// embeds a path ending in the caller-supplied filename, and the desktop-auth
-// failure embeds raw subprocess stderr. Either could turn a disk-full error into
-// a "forbidden" toast. A start anchor is enough rather than a full match because
-// every other error reachable from this command begins with its own fixed
-// literal prefix, and the environment-controlled part is always interpolated
-// after that prefix, never at position 0.
+// Rust hands back a string, so the status is read out of it; only
+// `stream_url_to_path` produces this phrase. Anchored at the START because two
+// other errors can CONTAIN it -- "Failed to save {path}: {error}" embeds the
+// caller's filename, and desktop-auth embeds raw stderr -- which would turn a
+// disk-full error into a "forbidden" toast. A start anchor suffices: every
+// other reachable error begins with its own fixed prefix.
 const DESKTOP_STATUS_PATTERN = /^Download failed with status (\d{3})\./;
 
-// Desktop auth can answer "this account has to log in" rather than returning a
-// session, which per-account isolation made reachable on a shared install. No
-// request is made in that case, so there is no status to read: the command
-// returns this exact sentence (`LOGIN_REQUIRED` in native_file_dialogs.rs).
-// Treated as `forbidden`, which is the copy that already says a signed-in
-// Studio session is what this needs. Keep the two strings in step.
+// Desktop auth can answer "this account has to log in" instead of returning a
+// session (per-account isolation, shared installs). No request is made, so
+// there is no status: the command returns this exact sentence (`LOGIN_REQUIRED`
+// in native_file_dialogs.rs). Keep the two in step.
 const DESKTOP_LOGIN_REQUIRED = "Log export requires a signed-in Studio session.";
 
 function desktopExportError(error: unknown): LogExportError {
@@ -183,10 +171,7 @@ function pad2(value: number): string {
   return String(value).padStart(2, "0");
 }
 
-/**
- * `unsloth-logs-<YYYYmmdd-HHMMSS>.zip`, stamped in local time so it sorts next
- * to whatever the user was doing when they hit the problem.
- */
+/** `unsloth-logs-<YYYYmmdd-HHMMSS>.zip`, local time so it sorts with the session. */
 export function logArchiveFilename(now: Date = new Date()): string {
   const day = `${now.getFullYear()}${pad2(now.getMonth() + 1)}${pad2(now.getDate())}`;
   const time = `${pad2(now.getHours())}${pad2(now.getMinutes())}${pad2(now.getSeconds())}`;
@@ -194,12 +179,9 @@ export function logArchiveFilename(now: Date = new Date()): string {
 }
 
 /**
- * Pack every log the picker lists into one ZIP.
- *
- * Returns the absolute path on desktop, where Rust streams the response
- * straight to the Downloads folder and knows where it landed. Returns null in a
- * browser: the blob goes through the normal download path and only the browser
- * knows where that is.
+ * Pack every log the picker lists into one ZIP. Returns the absolute path on
+ * desktop, where Rust streamed it; null in a browser, which alone knows where
+ * its downloads land.
  */
 export async function exportAllLogs(): Promise<string | null> {
   const filename = logArchiveFilename();
@@ -207,13 +189,9 @@ export async function exportAllLogs(): Promise<string | null> {
   if (isTauri) {
     const { invoke } = await import("@tauri-apps/api/core");
     try {
-      // Mirrors `download_logs_to_downloads` in
-      // studio/src-tauri/src/native_file_dialogs.rs. Tauri maps a camelCase key
-      // onto the command's snake_case parameter, so a single-word `filename` is
-      // passed through as-is; `lib/native-files.ts` spells
-      // `save_native_file_from_url`'s `file_name` parameter `fileName` for the
-      // same reason. The command picks the destination itself, so `filename` is
-      // only a suggestion and the realpath it returns is the answer.
+      // `filename` is one word because Tauri maps camelCase onto snake_case
+      // parameters. It is only a suggestion: the command picks the destination
+      // and the realpath it returns is the answer.
       return await invoke<string>("download_logs_to_downloads", {
         url: apiUrl(LOG_EXPORT_ENDPOINT),
         filename,
@@ -235,27 +213,20 @@ export async function exportAllLogs(): Promise<string | null> {
 }
 
 /**
- * Reveal the Unsloth directory in the system file manager. Desktop only, and a
- * no-op elsewhere: the button that calls it is not rendered in a browser, and
- * the folder it names is on the server rather than on the user's machine.
+ * Reveal the Unsloth directory. Desktop only: in a browser the folder is on the
+ * server, not the user's machine, and the button is not rendered.
  */
 export async function openLogsFolder(): Promise<void> {
   if (!isTauri) return;
   const { invoke } = await import("@tauri-apps/api/core");
-  // Takes no arguments: the command already resolves ~/.unsloth/studio itself.
-  await invoke("open_logs_dir");
+  await invoke("open_logs_dir");   // resolves ~/.unsloth/studio itself
 }
 
 /**
- * Reveal the folder the archive was just saved into.
- *
- * Not `openLogsFolder`: that opens ~/.unsloth/studio, where the logs came FROM,
- * and the archive went to Downloads. Naming one path and opening the other is
- * the bug this exists to avoid.
- *
- * `open_models_dir` is misnamed rather than misused -- it is the app's generic
- * "open this directory" command (`open_existing_dir` in commands.rs), already
- * registered, and it refuses anything that is not an existing directory.
+ * Reveal the folder the archive was saved into. Not `openLogsFolder`, which
+ * opens ~/.unsloth/studio where the logs came FROM: naming one path and opening
+ * another is the bug this avoids. `open_models_dir` is the app's generic "open
+ * this directory" command (`open_existing_dir`), misnamed rather than misused.
  */
 export async function revealSavedArchive(savedPath: string): Promise<void> {
   if (!isTauri) return;
