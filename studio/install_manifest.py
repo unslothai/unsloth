@@ -17,6 +17,7 @@ Must import inside that half-installed venv: stdlib only, `packaging` optional.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -32,6 +33,12 @@ MANIFEST_NAME = "unsloth_install_manifest.json"
 # evidence of the LAST completed pass; verify_install, the setup fast path and the desktop preflight
 # never do, so a venv without a live manifest still reads as half-built.
 PREVIOUS_MANIFEST_NAME = "unsloth_install_manifest.previous.json"
+# Serialises the three writers below against each other ACROSS processes. Two updates of one
+# venv are already guarded by the CLI, but setup.sh/setup.ps1 and the installer can be driven
+# directly, and the post-install MLX probe rewrites the manifest minutes after the pass ends:
+# without this, one updater's replace can land between another's remove and its mutations, and
+# recreate a completion marker over a half-built venv.
+LOCK_NAME = "unsloth_install_manifest.lock"
 MANIFEST_SCHEMA = 1
 
 # Canonical truthy set for UNSLOTH_NO_TORCH, matching install.ps1 / install.sh.
@@ -298,6 +305,63 @@ def _installed_version(dist_name: str, installed: Optional[Dict[str, str]] = Non
     return installed_version_probe(dist_name)[0] or None
 
 
+@contextlib.contextmanager
+def _manifest_lock(root: Optional[Path] = None):
+    """Hold an exclusive lock on LOCK_NAME for the block. Never raises, never blocks forever.
+
+    Best effort by design: this module has to import and run inside a half-built venv, so a
+    filesystem that cannot lock (a network mount, a read-only prefix, an interpreter without
+    fcntl or msvcrt) proceeds unserialised rather than failing an install. That is the same
+    guarantee as before this existed, and strictly better everywhere else.
+    """
+    handle = None
+    locked = False
+    try:
+        handle = open((root or venv_root()) / LOCK_NAME, "a+b")
+    except OSError:
+        handle = None
+    if handle is not None:
+        try:
+            import fcntl  # noqa: PLC0415 - POSIX only, and absent on Windows
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            locked = True
+        except ImportError:
+            try:
+                import msvcrt  # noqa: PLC0415 - the Windows half of the same thing
+
+                handle.seek(0)
+                # LK_LOCK retries for ~10 s and then raises; an update that waits longer than
+                # that on a stale lock has to proceed, or a crashed peer strands every later run.
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                locked = True
+            except (ImportError, OSError):
+                locked = False
+        except (OSError, ValueError):
+            locked = False
+    try:
+        yield
+    finally:
+        if handle is not None:
+            if locked:
+                try:
+                    try:
+                        import fcntl  # noqa: PLC0415
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                    except ImportError:
+                        import msvcrt  # noqa: PLC0415
+
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                except (OSError, ValueError):
+                    pass
+            try:
+                handle.close()
+            except OSError:
+                pass
+
+
 def remove_manifest(root: Optional[Path] = None) -> bool:
     """Called before the dependency pass so an aborted run cannot leave a valid one.
 
@@ -314,6 +378,11 @@ def remove_manifest(root: Optional[Path] = None) -> bool:
     """
     path = manifest_path(root)
     parked = previous_manifest_path(root)
+    with _manifest_lock(root):
+        return _remove_manifest_locked(root, path, parked)
+
+
+def _remove_manifest_locked(root: Optional[Path], path: Path, parked: Path) -> bool:
     try:
         os.replace(path, parked)
     except FileNotFoundError:
@@ -454,7 +523,10 @@ def write_manifest(
     try:
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload, indent = 2, sort_keys = True), encoding = "utf-8")
-        os.replace(tmp, path)
+        # The same lock the other two writers take: this is the marker that says the install
+        # finished, and it must not interleave with another process dropping it.
+        with _manifest_lock(root):
+            os.replace(tmp, path)
     # TypeError/ValueError too: `extra` is caller-composed, and raising here would abort a pass
     # that has already installed everything, leaving a venv with no manifest at all.
     except (OSError, TypeError, ValueError):
@@ -498,12 +570,13 @@ def update_manifest(root: Optional[Path] = None, **extra: object) -> bool:
         # Checked again right before the replace, not just at the read above: the evidence this
         # merges can take minutes to gather (the MLX import probe waits up to 180 s), and another
         # updater that removed the manifest in the meantime is mid-pass. Recreating it there would
-        # put a completion marker over a half-built venv. Still not atomic, but the window closes
-        # from the length of the probe to the length of one replace.
-        if not path.exists():
-            tmp.unlink(missing_ok = True)
-            return False
-        os.replace(tmp, path)
+        # put a completion marker over a half-built venv. Under the lock the check and the replace
+        # are one step against every other writer here, so the marker cannot come back.
+        with _manifest_lock(root):
+            if not path.exists():
+                tmp.unlink(missing_ok = True)
+                return False
+            os.replace(tmp, path)
     except (OSError, TypeError, ValueError):
         return False
     return True

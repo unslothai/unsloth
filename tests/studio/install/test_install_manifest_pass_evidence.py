@@ -13,9 +13,16 @@ install nobody can tell apart from a finished one.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import pathlib
+import subprocess
+import sys
+import textwrap
+import time
+import textwrap
+import subprocess
 import sys
 import sysconfig
 
@@ -139,6 +146,71 @@ def test_update_manifest_never_creates_one(tmp_path: pathlib.Path) -> None:
     must not be able to claim that on its own."""
     assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is False
     assert not (tmp_path / im.MANIFEST_NAME).exists()
+
+
+def test_the_manifest_lock_is_exclusive_across_processes(tmp_path: pathlib.Path) -> None:
+    """The writers serialise against another PROCESS, not just another thread: setup.sh,
+    setup.ps1, the installer and the CLI are separate processes on one venv."""
+    order = tmp_path / "order.txt"
+    child_code = "\n".join([
+        f"import sys, time, pathlib",
+        f"sys.path.insert(0, {str(pathlib.Path(im.__file__).resolve().parent)!r})",
+        f"import install_manifest as im",
+        f"with im._manifest_lock(pathlib.Path({str(tmp_path)!r})):",
+        f"    pathlib.Path({str(tmp_path / 'held')!r}).write_text('1', encoding='utf-8')",
+        f"    time.sleep(1.5)",
+        f"    fh = open({str(order)!r}, 'a', encoding='utf-8')",
+        f"    fh.write('child-released\\n')",
+        f"    fh.close()",
+    ])
+    child = subprocess.Popen([sys.executable, "-c", child_code])
+    try:
+        held = tmp_path / "held"
+        deadline = time.time() + 20
+        while not held.exists() and time.time() < deadline:
+            time.sleep(0.02)
+        assert held.exists(), "the child never took the lock"
+        with im._manifest_lock(tmp_path):
+            with order.open("a", encoding = "utf-8") as fh:
+                fh.write("parent-acquired\n")
+    finally:
+        child.wait(timeout = 30)
+    # Ordering, not duration: the parent's acquire cannot land inside the child's hold.
+    assert order.read_text(encoding = "utf-8").split() == ["child-released", "parent-acquired"]
+
+
+def test_every_manifest_writer_takes_the_lock() -> None:
+    """A writer outside it reintroduces the race the lock exists for, and nothing in the
+    payloads themselves would show it."""
+    source = pathlib.Path(im.__file__).read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    writers = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name in ("write_manifest", "update_manifest", "remove_manifest")
+    }
+    assert set(writers) == {"write_manifest", "update_manifest", "remove_manifest"}
+    for name, node in writers.items():
+        body = ast.unparse(node)
+        assert "_manifest_lock(" in body, f"{name} replaces the manifest outside the lock"
+        assert "os.replace" not in body or "_manifest_lock(" in body
+
+
+def test_a_root_that_cannot_hold_a_lock_still_writes(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """This module has to run inside a half-built venv and on filesystems that cannot lock.
+    Unserialised is the behaviour that shipped before; failing the install is not."""
+
+    def _no_open(*_args, **_kwargs):
+        raise OSError("no lock file here")
+
+    monkeypatch.setattr(pathlib.Path, "open", _no_open)
+    with im._manifest_lock(tmp_path):
+        pass
+    monkeypatch.undo()
+    assert im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+    assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is True
+    assert im.remove_manifest(root = tmp_path) is True
 
 
 def test_remove_manifest_keeps_the_live_one_when_the_parked_name_cannot_be_cleared(
