@@ -199,6 +199,32 @@ def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge
     assert controller.active_tools() == []
 
 
+def test_command_can_run_again_after_a_file_edit():
+    controller = ToolLoopController(
+        tools = [_tool("terminal"), _tool("edit_file"), _tool("web_search")]
+    )
+    run = _call("terminal", {"command": "python calc.py"})
+    edit = _call(
+        "edit_file", {"path": "calc.py", "edits": [{"old_string": "a", "new_string": "b"}]}
+    )
+    search = _call("web_search", {"query": "gpu prices"})
+
+    controller.record_result(controller.prepare_call(search), "ok")
+    controller.record_result(controller.prepare_call(run), "3")
+    assert controller.prepare_call(run).action == "duplicate"
+    controller.record_noop(controller.prepare_call(run))
+
+    controller.record_result(controller.prepare_call(edit), "Edited calc.py")
+    rerun = controller.prepare_call(run)
+    assert rerun.action == "execute"
+    controller.record_result(rerun, "-1")
+
+    controller.record_noop(controller.prepare_call(run))
+    assert not controller.force_final_answer
+    assert controller.prepare_call(edit).action == "execute"
+    assert controller.prepare_call(search).action == "duplicate"
+
+
 def test_failed_call_does_not_block_retry():
     controller = ToolLoopController(tools = [_tool("web_search")])
     first = controller.prepare_call(_call("web_search", {"query": "gpu prices"}))
@@ -594,3 +620,14 @@ def test_a_success_that_opens_with_error_is_not_nudged_as_a_failure():
 
     assert not completion.is_error
     assert TOOL_ERROR_NUDGE not in completion.model_message()["content"]
+
+
+@pytest.mark.parametrize("tool_name", ["python", "terminal", "edit_file"])
+def test_failed_workspace_execution_invalidates_previous_reads(tool_name):
+    controller = ToolLoopController(tools = [_tool("terminal"), _tool(tool_name)])
+    read = _call("terminal", {"command": "cat notes.txt"})
+    controller.record_result(controller.prepare_call(read), "before")
+    write = _call(tool_name, {"code": "write_then_fail", "command": "write_then_fail"})
+    controller.record_result(controller.prepare_call(write), "Error: failed after writing")
+    assert controller.prepare_call(read).action == "execute"
+    assert controller.prepare_call(write).action == "execute"

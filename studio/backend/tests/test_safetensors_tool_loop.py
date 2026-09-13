@@ -5229,3 +5229,57 @@ def test_call_single_turn_falls_back_to_legacy_signatures():
     assert list(_call_single_turn(no_flag, [], [{"x": 1}], False)) == ["a"]
     assert list(_call_single_turn(bare, [], [{"x": 1}], False)) == ["b"]
     assert seen == [("no_flag", [{"x": 1}]), ("bare", None)]
+
+
+@pytest.mark.parametrize("edit_result", ["Edited notes.txt", "Error: failed after writing"])
+def test_workspace_read_edit_read_in_one_turn(edit_result):
+    read = '<tool_call>{"name":"terminal","arguments":{"command":"cat notes.txt"}}</tool_call>'
+    edit = '<tool_call>{"name":"edit_file","arguments":{"path":"notes.txt","edits":[]}}</tool_call>'
+    turns = iter([read + edit + read, "Done."])
+
+    def single_turn(messages, **kwargs):
+        yield next(turns)
+
+    executor = FakeExecuteTool(["before", edit_result, "after"])
+    events = _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "Read, edit, and verify notes.txt"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            execute_tool = executor,
+            max_tool_iterations = 3,
+        )
+    )
+    assert [name for name, _ in executor.calls] == ["terminal", "edit_file", "terminal"]
+    assert [event["result"] for event in events if event["type"] == "tool_end"] == [
+        "before",
+        edit_result,
+        "after",
+    ]
+
+
+def test_repeated_workspace_reads_do_not_crowd_out_a_later_edit():
+    read = '<tool_call>{"name":"terminal","arguments":{"command":"cat notes.txt"}}</tool_call>'
+    edit = '<tool_call>{"name":"edit_file","arguments":{"path":"notes.txt","edits":[]}}</tool_call>'
+    turns = iter([read * 8 + edit + read, "Done."])
+
+    def single_turn(messages, **kwargs):
+        yield next(turns)
+
+    executor = FakeExecuteTool(["before", "Edited notes.txt", "after"])
+    _collect_events(
+        run_safetensors_tool_loop(
+            single_turn = single_turn,
+            messages = [{"role": "user", "content": "Read, edit, and verify notes.txt"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            execute_tool = executor,
+            max_tool_iterations = 3,
+        )
+    )
+    assert [name for name, _ in executor.calls] == ["terminal", "edit_file", "terminal"]
