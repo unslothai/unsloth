@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from core.training.account_jobs import managed_account
 import asyncio
 import math
 import os
@@ -602,9 +603,14 @@ def _scan_hf_dataset_caches() -> list[dict]:
 
 
 async def list_cached_datasets_response() -> dict:
-    """List dataset repos already downloaded into the HF cache."""
     try:
-        return {"cached": await asyncio.to_thread(_scan_hf_dataset_caches)}
+        rows = await asyncio.to_thread(_scan_hf_dataset_caches)
+        if managed_account():
+            from hub.services.models import account_access
+            rows = await asyncio.to_thread(
+                account_access.filter_model_rows, rows, repo_type = "dataset"
+            )
+        return {"cached": rows}
     except Exception as exc:
         logger.error("Error listing cached datasets: %s", exc, exc_info = True)
         raise HTTPException(
@@ -615,11 +621,15 @@ async def list_cached_datasets_response() -> dict:
 
 async def delete_cached_dataset_response(repo_id: str, cache_path: Optional[str] = None) -> dict:
     """Remove a cached dataset repo from the HF cache."""
+    if managed_account():
+        raise HTTPException(
+            status_code = 403, detail = "Only the installation owner can delete shared dataset caches"
+        )
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
 
     repo_key = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
-    if not downloads.registry.begin_delete(repo_key):
+    if not downloads.begin_delete(repo_key):
         raise HTTPException(
             status_code = 400,
             detail = "Cancel the active download before deleting.",
@@ -627,7 +637,7 @@ async def delete_cached_dataset_response(repo_id: str, cache_path: Optional[str]
     try:
         return await asyncio.to_thread(_delete_cached_dataset_blocking, repo_key, cache_path)
     finally:
-        downloads.registry.end_delete(repo_key)
+        downloads.end_delete(repo_key)
         hf_cache_scan.invalidate_hf_cache_scans()
 
 
