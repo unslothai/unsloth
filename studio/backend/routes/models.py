@@ -5362,6 +5362,66 @@ _LOCAL_DELETE_FILE_SUFFIXES = frozenset(
 
 _LOCAL_DELETE_DIR_MARKERS = frozenset({"config.json", "adapter_config.json", "model_index.json"})
 
+_LOCAL_DELETE_SIDECARS = frozenset(
+    {
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "special_tokens_map.json",
+        "vocab.json",
+        "merges.txt",
+        "generation_config.json",
+        "chat_template.json",
+    }
+)
+
+
+def _is_local_model_related_file(path: Path) -> bool:
+    lname = path.name.lower()
+    if lname in _LOCAL_DELETE_DIR_MARKERS:
+        return True
+    if path.suffix.lower() in _LOCAL_DELETE_FILE_SUFFIXES:
+        return True
+    if lname in _LOCAL_DELETE_SIDECARS:
+        return True
+    return False
+
+
+def _local_model_base(name: str) -> str:
+    """Normalized base for matching a file to its model entry.
+
+    Strips extension, `-GGUF` suffix, and trailing quant like `-Q4_K_M` / `-IQ1_M`
+    so `Llama-3.2-1B-Instruct-GGUF` matches `llama-3.2-1b-instruct-q4_k_m.gguf`
+    but not `mistral-7b-q4_k_m.gguf`. Generic shard names like
+    `pytorch_model-00001-of-00002.bin` keep their full stem and are handled
+    separately.
+    """
+    low = name.lower().replace(".gguf", "").replace("-gguf", "")
+    # file stems may still carry quant after a dot
+    low = low.split(".")[0]
+    # quant suffixes start with -q / _q / -iq
+    import re as _re
+
+    m = _re.search(r"[-._]q\d|[-._]iq\d", low)
+    if m:
+        low = low[: m.start()]
+    return low.strip("-_.")
+
+
+def _local_file_belongs_to_model(file: Path, display_name: str | None) -> bool:
+    if not display_name:
+        return True
+    fname = file.name.lower()
+    # Generic sharded weights belong to whatever directory model contains them.
+    if (
+        fname.startswith("pytorch_model")
+        or fname.startswith("model-")
+        or fname.startswith("adapter_model")
+    ):
+        return True
+    return _local_model_base(file.stem) in _local_model_base(display_name) or _local_model_base(
+        display_name
+    ) in _local_model_base(file.stem)
+
 
 def _local_delete_target_is_model_file(target: Path) -> bool:
     return target.is_file() and target.suffix.lower() in _LOCAL_DELETE_FILE_SUFFIXES
@@ -5374,37 +5434,152 @@ def _local_delete_target_is_model_dir(target: Path) -> bool:
         top = list(target.iterdir())
     except OSError:
         return False
+    # Directory must look like a single model; lone config/manifest is
+    # not enough and a weight file one level down must not qualify its parent.
+    has_weight = False
+    has_marker = False
+    other_files = 0
     for child in top:
         try:
-            name = child.name
-            if child.is_file():
-                lowered = name.lower()
-                if lowered in _LOCAL_DELETE_DIR_MARKERS:
-                    return True
-                if Path(name).suffix.lower() in _LOCAL_DELETE_FILE_SUFFIXES:
-                    return True
-            elif child.is_dir():
-                try:
-                    for grandchild in child.iterdir():
-                        if not grandchild.is_file():
-                            continue
-                        gname = grandchild.name.lower()
-                        if gname in _LOCAL_DELETE_DIR_MARKERS:
-                            return True
-                        if Path(gname).suffix.lower() in _LOCAL_DELETE_FILE_SUFFIXES:
-                            return True
-                except OSError:
-                    continue
+            if not child.is_file():
+                continue
+            lname = child.name.lower()
+            if lname in _LOCAL_DELETE_DIR_MARKERS:
+                has_marker = True
+            elif Path(child.name).suffix.lower() in _LOCAL_DELETE_FILE_SUFFIXES:
+                has_weight = True
+            else:
+                other_files += 1
         except OSError:
             continue
+    if has_weight:
+        # Avoid treating a mixed collection folder with a single weight file
+        # among many unrelated files as a single deletable model.
+        if other_files > 5 and other_files > 2:
+            return False
+        return True
     return False
+
+
+def _local_dir_delete_preview(target: Path, display_name: str | None = None) -> dict:
+    """Counts for the delete choice dialog. Only top-level files are counted
+    so a collection folder with sub-model dirs is not inflated. When
+    display_name is given, only files belonging to that specific model are
+    counted as model files — other sibling models in the same folder are
+    treated as other files so 'model files only' deletes just the one."""
+    model_files = 0
+    model_bytes = 0
+    other_files = 0
+    other_bytes = 0
+    try:
+        entries = list(target.iterdir())
+    except OSError:
+        return {
+            "model_files": 0,
+            "model_bytes": 0,
+            "other_files": 0,
+            "other_bytes": 0,
+        }
+
+    for child in entries:
+        try:
+            if child.is_file():
+                # Weight files are filtered by display_name so sibling models
+                # count as other files.
+                if Path(child.name).suffix.lower() in _LOCAL_DELETE_FILE_SUFFIXES:
+                    is_model = _local_file_belongs_to_model(child, display_name)
+                else:
+                    is_model = _is_local_model_related_file(child)
+                try:
+                    size = child.stat().st_size
+                except OSError:
+                    size = 0
+                if is_model:
+                    model_files += 1
+                    model_bytes += size
+                else:
+                    other_files += 1
+                    other_bytes += size
+            elif child.is_dir() and not child.is_symlink():
+                # Mirror the delete pruning: a subdir that contains only model-related
+                # files will be removed entirely, so count its files as model files.
+                try:
+                    sub = list(child.iterdir())
+                except OSError:
+                    continue
+                if sub and all((not c.is_file()) or _is_local_model_related_file(c) for c in sub):
+                    for c in sub:
+                        if not c.is_file():
+                            continue
+                        # For weight files inside a subdir, respect display_name as well.
+                        if Path(c.name).suffix.lower() in _LOCAL_DELETE_FILE_SUFFIXES:
+                            if not _local_file_belongs_to_model(c, display_name):
+                                continue
+                        try:
+                            size = c.stat().st_size
+                        except OSError:
+                            size = 0
+                        model_files += 1
+                        model_bytes += size
+        except OSError:
+            continue
+    return {
+        "model_files": model_files,
+        "model_bytes": model_bytes,
+        "other_files": other_files,
+        "other_bytes": other_bytes,
+    }
+
+
+class LocalDeletePreviewResponse(BaseModel):
+    model_files: int
+    model_bytes: int
+    other_files: int
+    other_bytes: int
+    is_dir: bool
+
+
+@router.post("/local-delete-preview", response_model = LocalDeletePreviewResponse)
+async def local_delete_preview(
+    path: str = Body(..., embed = True),
+    display_name: str | None = Body(None, embed = True),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Preview counts for the local delete choice dialog."""
+    resolved = _resolve_local_path_inside_allowlist(path)
+    if not resolved.exists() and not resolved.is_symlink():
+        raise HTTPException(status_code = 404, detail = "Path not found on disk")
+    if _local_delete_target_is_model_file(resolved):
+        try:
+            size = resolved.stat().st_size if resolved.is_file() else 0
+        except OSError:
+            size = 0
+        return {
+            "model_files": 1,
+            "model_bytes": size,
+            "other_files": 0,
+            "other_bytes": 0,
+            "is_dir": False,
+        }
+    if _local_delete_target_is_model_dir(resolved):
+        preview = _local_dir_delete_preview(resolved, display_name)
+        return {**preview, "is_dir": True}
+    raise HTTPException(
+        status_code = 400,
+        detail = "Only model files (.gguf, weights) or model directories can be deleted here.",
+    )
 
 
 @router.delete("/delete-local-path")
 async def delete_local_path(
-    path: str = Body(..., embed = True), current_subject: str = Depends(get_current_subject)
+    path: str = Body(..., embed = True),
+    mode: str = Body("model_only", embed = True),
+    display_name: str | None = Body(None, embed = True),
+    current_subject: str = Depends(get_current_subject),
 ):
     """Delete a single local model file (.gguf, weights) or a model directory from custom folders, LM Studio, or the models dir."""
+    if mode not in ("model_only", "all"):
+        raise HTTPException(status_code = 400, detail = "mode must be 'model_only' or 'all'")
     resolved = _resolve_local_path_inside_allowlist(path)
     allowed_roots = _build_browse_allowlist()
     try:
@@ -5479,7 +5654,55 @@ async def delete_local_path(
                 except Exception:
                     pass
         else:
-            await asyncio.to_thread(shutil.rmtree, str(resolved))
+            if mode == "all":
+                await asyncio.to_thread(shutil.rmtree, str(resolved))
+            else:
+                try:
+                    entries = list(resolved.iterdir())
+                except OSError as e:
+                    raise HTTPException(
+                        status_code = 500, detail = "Failed to list model directory"
+                    ) from e
+                for child in entries:
+                    try:
+                        if not child.is_file():
+                            continue
+                        is_weight = Path(child.name).suffix.lower() in _LOCAL_DELETE_FILE_SUFFIXES
+                        if is_weight:
+                            if not _local_file_belongs_to_model(child, display_name):
+                                continue
+                        elif not _is_local_model_related_file(child):
+                            continue
+                            child.unlink()
+                            try:
+                                from hub.utils.gguf import remove_appledouble_sidecar
+                                remove_appledouble_sidecar(child)
+                            except Exception:
+                                pass
+                    except OSError:
+                        continue
+                # prune empty subdirs that were part of this model (e.g. snapshots), but
+                # don't recurse into unrelated data
+                for child in entries:
+                    try:
+                        if child.is_dir() and not child.is_symlink():
+                            # only remove subdir if every file inside is model-related
+                            try:
+                                sub = list(child.iterdir())
+                            except OSError:
+                                continue
+                            if sub and all(
+                                (not c.is_file()) or _is_local_model_related_file(c) for c in sub
+                            ):
+                                await asyncio.to_thread(shutil.rmtree, str(child))
+                    except OSError:
+                        continue
+                # if directory is now empty, remove it; otherwise leave other files
+                try:
+                    if not any(resolved.iterdir()):
+                        resolved.rmdir()
+                except OSError:
+                    pass
     except HTTPException:
         raise
     except Exception as e:

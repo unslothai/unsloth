@@ -71,7 +71,8 @@ export function InventoryWarningRow({
 }: {
   isDataset: boolean;
   onRetry: () => void;
-}) {  return (
+}) {
+  return (
     <div className="mx-5 mt-2 rounded-[8px] border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-ui-12p5 text-muted-foreground">
       <div className="flex items-center justify-between gap-3">
         <span>

@@ -780,7 +780,7 @@ export const InventoryRow = memo(function InventoryRow({
           unpinLabel: "Unpin",
           onToggle: () => togglePinned(localRowPath),
         } : undefined}
-        localPath={localRevealPath ? { path: localRevealPath } : undefined}
+        localPath={localRevealPath ? { path: localRevealPath, displayName: localTitle } : undefined}
         del={localDeletablePath ? {
           title: "Delete local model?",
           description: (

@@ -696,12 +696,37 @@ export async function revealLocalPath(path: string): Promise<void> {
   await parseJsonOrThrow<unknown>(response);
 }
 
+export async function getLocalDeletePreview(path: string, displayName?: string): Promise<{
+  model_files: number;
+  model_bytes: number;
+  other_files: number;
+  other_bytes: number;
+  is_dir: boolean;
+}> {
+  const response = await authFetch("/api/models/local-delete-preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, display_name: displayName }),
+  });
+  return parseJsonOrThrow<{
+    model_files: number;
+    model_bytes: number;
+    other_files: number;
+    other_bytes: number;
+    is_dir: boolean;
+  }>(response);
+}
+
 /** Delete a single local model file or model directory from custom folders, LM Studio, or the models dir. */
-export async function deleteLocalPath(path: string): Promise<void> {
+export async function deleteLocalPath(
+  path: string,
+  mode: "model_only" | "all" = "model_only",
+  displayName?: string,
+): Promise<void> {
   const response = await authFetch("/api/models/delete-local-path", {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({ path, mode, display_name: displayName }),
   });
   await parseJsonOrThrow<unknown>(response);
 }

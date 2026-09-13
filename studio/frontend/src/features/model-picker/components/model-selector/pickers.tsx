@@ -4226,6 +4226,71 @@ export function HubModelPicker({
   const unpinRepo = usePinnedModelsStore((s) => s.unpinRepo);
   const pinnedSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
 
+  const isLocalModelDeletable = useCallback((model: LocalModelInfo) => {
+    const lower = model.path.toLowerCase();
+    if (
+      lower.endsWith(".gguf") ||
+      lower.endsWith(".safetensors") ||
+      lower.endsWith(".bin") ||
+      lower.endsWith(".pt") ||
+      lower.endsWith(".pth") ||
+      lower.endsWith(".onnx") ||
+      lower.endsWith(".ckpt") ||
+      lower.endsWith(".ggml")
+    )
+      return true;
+    // Directory models: require actual weights, not just a lone config.
+    // A folder with only config.json appears in inventory but must not offer
+    // delete — backend now requires a weight file at the top level.
+    // For directories, check the reported format and size; a config-only
+    // checkpoint is tiny (few KB) and should not be deletable.
+    const size = (model as unknown as { size_bytes?: number }).size_bytes ?? 0;
+    if (model.model_format === "gguf" || model.model_format === "safetensors" || model.model_format === "adapter")
+      return true;
+    if (model.model_format === "checkpoint" && size > 10_000_000) return true;
+    return false;
+  }, []);
+
+  const renderLocalModelMenu = useCallback(
+    (model: LocalModelInfo, displayName: string, loaded: boolean) => {
+      const deletable = isLocalModelDeletable(model);
+      return (
+        <ModelRowMenu
+          ariaLabel={`More options for ${displayName}`}
+          iconClassName="size-3"
+          pin={{
+            pinned: pinnedSet.has(localPinKey(model)),
+            pinLabel: "Pin to top",
+            unpinLabel: "Unpin",
+            onToggle: () => togglePinned(localPinKey(model)),
+          }}
+          localPath={{ path: model.path, displayName }}
+          del={
+            deletable
+              ? {
+                  title: "Delete local model?",
+                  description: (
+                    <>
+                      This will remove{" "}
+                      <span className="font-medium text-foreground">{displayName}</span> from disk.
+                      This cannot be undone.
+                    </>
+                  ),
+                  successMessage: `Deleted ${displayName}`,
+                  disabled: loaded,
+                  onConfirm: async () => {
+                    await deleteLocalPath(model.path);
+                  },
+                  onDeleted: refreshCachedLists,
+                }
+              : undefined
+          }
+        />
+      );
+    },
+    [isLocalModelDeletable, pinnedSet, refreshCachedLists, togglePinned],
+  );
+
   // Candidate pins whose repo still exists in the cache; per-quant validation below is needed
   // because deleting one variant can leave a sibling cached.
   const pinnedQuantCandidates = useMemo(() => {
@@ -6446,35 +6511,7 @@ export function HubModelPicker({
                                     }
                                   />
                                 )}
-                                <ModelRowMenu
-                                  ariaLabel={`More options for ${customDisplayName}`}
-                                  iconClassName="size-3"
-                                  pin={{
-                                    pinned: pinnedSet.has(localPinKey(m)),
-                                    pinLabel: "Pin to top",
-                                    unpinLabel: "Unpin",
-                                    onToggle: () => togglePinned(localPinKey(m)),
-                                  }}
-                                  localPath={{ path: m.path }}
-                                  del={{
-                                    title: "Delete local model?",
-                                    description: (
-                                      <>
-                                        This will remove{" "}
-                                        <span className="font-medium text-foreground">
-                                          {customDisplayName}
-                                        </span>{" "}
-                                        from disk. This cannot be undone.
-                                      </>
-                                    ),
-                                    successMessage: `Deleted ${customDisplayName}`,
-                                    disabled: customLoaded,
-                                    onConfirm: async () => {
-                                      await deleteLocalPath(m.path);
-                                    },
-                                    onDeleted: refreshCachedLists,
-                                  }}
-                                />
+                                {renderLocalModelMenu(m, customDisplayName, customLoaded)}
                               </span>
                             </div>
                             {isGguf &&
@@ -6499,6 +6536,23 @@ export function HubModelPicker({
                                   gpuGb={expanderGpuGb}
                                   systemRamGb={expanderRamGb || undefined}
                                   budgetKnown={expanderBudgetGpu.budgetKnown}
+                                  variantActions={{
+                                    onDelete: async (quant) => {
+                                      try {
+                                        const res = await listGgufVariants(m.id, undefined, {
+                                          localPath: m.path,
+                                        } as any);
+                                        const variants = (res as { variants?: Array<{ quant: string; filename: string }> })?.variants ?? [];
+                                        const match = variants.find((v) => v.quant === quant);
+                                        const fileName = match?.filename ?? `${quant}.gguf`;
+                                        const fullPath = `${m.path.replace(/\/$/, "").replace(/\\$/, "")}/${fileName}`;
+                                        await deleteLocalPath(fullPath, "model_only", m.model_id ?? m.display_name);
+                                      } catch {
+                                        await deleteLocalPath(m.path, "model_only", m.model_id ?? m.display_name);
+                                      }
+                                      refreshCachedLists();
+                                    },
+                                  }}
                                 />
                               )}
                           </div>
@@ -6617,35 +6671,7 @@ export function HubModelPicker({
                                     }
                                   />
                                 )}
-                                <ModelRowMenu
-                                  ariaLabel={`More options for ${lmDisplayName}`}
-                                  iconClassName="size-3"
-                                  pin={{
-                                    pinned: pinnedSet.has(localPinKey(m)),
-                                    pinLabel: "Pin to top",
-                                    unpinLabel: "Unpin",
-                                    onToggle: () => togglePinned(localPinKey(m)),
-                                  }}
-                                  localPath={{ path: m.path }}
-                                  del={{
-                                    title: "Delete local model?",
-                                    description: (
-                                      <>
-                                        This will remove{" "}
-                                        <span className="font-medium text-foreground">
-                                          {lmDisplayName}
-                                        </span>{" "}
-                                        from disk. This cannot be undone.
-                                      </>
-                                    ),
-                                    successMessage: `Deleted ${lmDisplayName}`,
-                                    disabled: lmLoaded,
-                                    onConfirm: async () => {
-                                      await deleteLocalPath(m.path);
-                                    },
-                                    onDeleted: refreshCachedLists,
-                                  }}
-                                />
+                                {renderLocalModelMenu(m, lmDisplayName, lmLoaded)}
                               </span>
                             </div>
                             {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
@@ -6668,6 +6694,23 @@ export function HubModelPicker({
                                 gpuGb={expanderGpuGb}
                                 systemRamGb={expanderRamGb || undefined}
                                 budgetKnown={expanderBudgetGpu.budgetKnown}
+                                variantActions={{
+                                  onDelete: async (quant) => {
+                                    try {
+                                      const res = await listGgufVariants(m.id, undefined, {
+                                        localPath: m.path,
+                                      } as any);
+                                      const variants = (res as { variants?: Array<{ quant: string; filename: string }> })?.variants ?? [];
+                                      const match = variants.find((v) => v.quant === quant);
+                                      const fileName = match?.filename ?? `${quant}.gguf`;
+                                      const fullPath = `${m.path.replace(/\/$/, "").replace(/\\$/, "")}/${fileName}`;
+                                      await deleteLocalPath(fullPath, "model_only", m.model_id ?? m.display_name);
+                                    } catch {
+                                      await deleteLocalPath(m.path, "model_only", m.model_id ?? m.display_name);
+                                    }
+                                    refreshCachedLists();
+                                  },
+                                }}
                               />
                             )}
                           </div>
@@ -6775,35 +6818,7 @@ export function HubModelPicker({
                                     }
                                   />
                                 )}
-                                <ModelRowMenu
-                                  ariaLabel={`More options for ${localDisplayName}`}
-                                  iconClassName="size-3"
-                                  pin={{
-                                    pinned: pinnedSet.has(localPinKey(m)),
-                                    pinLabel: "Pin to top",
-                                    unpinLabel: "Unpin",
-                                    onToggle: () => togglePinned(localPinKey(m)),
-                                  }}
-                                  localPath={{ path: m.path }}
-                                  del={{
-                                    title: "Delete local model?",
-                                    description: (
-                                      <>
-                                        This will remove{" "}
-                                        <span className="font-medium text-foreground">
-                                          {localDisplayName}
-                                        </span>{" "}
-                                        from disk. This cannot be undone.
-                                      </>
-                                    ),
-                                    successMessage: `Deleted ${localDisplayName}`,
-                                    disabled: localLoaded,
-                                    onConfirm: async () => {
-                                      await deleteLocalPath(m.path);
-                                    },
-                                    onDeleted: refreshCachedLists,
-                                  }}
-                                />
+                                {renderLocalModelMenu(m, localDisplayName, localLoaded)}
                               </span>
                             </div>
                             {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
@@ -6826,6 +6841,23 @@ export function HubModelPicker({
                                 gpuGb={expanderGpuGb}
                                 systemRamGb={expanderRamGb || undefined}
                                 budgetKnown={expanderBudgetGpu.budgetKnown}
+                                variantActions={{
+                                  onDelete: async (quant) => {
+                                    try {
+                                      const res = await listGgufVariants(m.id, undefined, {
+                                        localPath: m.path,
+                                      } as any);
+                                      const variants = (res as { variants?: Array<{ quant: string; filename: string }> })?.variants ?? [];
+                                      const match = variants.find((v) => v.quant === quant);
+                                      const fileName = match?.filename ?? `${quant}.gguf`;
+                                      const fullPath = `${m.path.replace(/\/$/, "").replace(/\\$/, "")}/${fileName}`;
+                                      await deleteLocalPath(fullPath, "model_only", m.model_id ?? m.display_name);
+                                    } catch {
+                                      await deleteLocalPath(m.path, "model_only", m.model_id ?? m.display_name);
+                                    }
+                                    refreshCachedLists();
+                                  },
+                                }}
                               />
                             )}
                           </div>

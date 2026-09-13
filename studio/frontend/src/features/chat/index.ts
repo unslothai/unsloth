@@ -9,6 +9,7 @@ export {
   deleteChatAttachment,
   deleteFineTunedModel,
   deleteLocalPath,
+  getLocalDeletePreview,
   fetchChatAttachmentBlob,
   fetchGgufStagedMetadata,
   getCachedModelPath,

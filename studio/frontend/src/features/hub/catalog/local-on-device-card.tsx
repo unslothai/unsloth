@@ -271,7 +271,7 @@ export function LocalOnDeviceCard({
   });
   const { deleting: localDeleting, runDelete: runLocalDelete } = useCardDelete({
     action: async () => {
-      await deleteLocalPath(path);
+      await deleteLocalPath(path, "model_only", displayName);
     },
     resourceName: "model",
     successMessage: () => `Deleted ${displayName}`,
