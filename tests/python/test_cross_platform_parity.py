@@ -1250,16 +1250,26 @@ class TestInstallUvCacheRootParity:
         assert "UV_WORKING_DIR" in sh[sh.index("_absolutize_uv_cache_dir() {") :][:600]
         assert "UV_WORKING_DIR" in ps1[ps1.index("function Resolve-StudioUvCachePath") :][:800]
         for start in _all_indexes(ps1_marker, "Remove-Item -LiteralPath $markerFile"):
-            # The call form: the comment above the gate names the cmdlet too.
-            window = ps1_marker[
-                start : ps1_marker.index("Set-Content -LiteralPath $markerFile", start)
+            # The call form; the record writes text, the restore writes saved bytes.
+            ends = [
+                end
+                for end in (
+                    ps1_marker.find("[System.IO.File]::WriteAllText($markerFile", start),
+                    ps1_marker.find("[System.IO.File]::WriteAllBytes($markerFile", start),
+                )
+                if end != -1
             ]
+            window = ps1_marker[start : min(ends)]
             assert "Get-Item -LiteralPath $markerFile -Force" in window, window
 
-        # UTF-8, not the ANSI code page: the update writes this file BOM-less UTF-8 and
-        # 5.1 would restore mojibake. Asserted on source, since pwsh 7 passes either way.
-        read_back = ps1_marker.index("Get-Content -LiteralPath $markerFile")
-        assert "-Encoding UTF8" in ps1_marker[read_back : read_back + 220], ps1_marker[read_back:]
+        # Bytes, not text: 5.1 decoded a BOM-less file with the ANSI code page and restored
+        # mojibake. Asserted on source, since pwsh 7 passes either way.
+        assert "[System.IO.File]::ReadAllBytes($markerFile)" in ps1_marker
+        assert (
+            "[System.IO.File]::WriteAllBytes($markerFile, [byte[]]$script:StudioUvMarkerPrevious)"
+            in ps1_marker
+        )
+        assert "Get-Content -LiteralPath $markerFile" not in ps1_marker
 
         # One flag decides both rollbacks. Clearing them separately leaves a window either
         # way round, where a signal restores one half of a committed install.

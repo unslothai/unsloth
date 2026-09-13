@@ -1672,11 +1672,10 @@ exit 1
             # Under "Stop", Test-Path inside an ACL-denied directory throws.
             $existing = Test-Path -LiteralPath $markerFile -ErrorAction SilentlyContinue
             if ($existing) {
-                # UTF8, not the default: Windows PowerShell 5.1 decodes a BOM-less file
-                # with the active ANSI code page, and the update writes this one BOM-less
-                # UTF-8, so a non-ASCII path came back as mojibake and was restored that way.
-                $previous = Get-Content -LiteralPath $markerFile -Raw -Encoding UTF8 `
-                    -ErrorAction SilentlyContinue
+                # The bytes, not the text: a rollback puts back exactly what it found, whatever
+                # writer and encoding produced it (5.1 decoded a BOM-less file as ANSI and re-encoded it).
+                $previous = $null
+                try { $previous = [System.IO.File]::ReadAllBytes($markerFile) } catch { $previous = $null }
                 # One we cannot read is one we cannot put back, so leave it alone.
                 if ($null -eq $previous) { return }
                 $script:StudioUvMarkerPrevious = $previous
@@ -1691,15 +1690,23 @@ exit 1
         if (-not (Test-Path -LiteralPath $markerDir -PathType Container -ErrorAction SilentlyContinue)) {
             try { [System.IO.Directory]::CreateDirectory($markerDir) | Out-Null } catch { }
         }
-        # Removed first: Set-Content follows a symlink and would truncate its target.
+        # Removed first: a write (WriteAllText as much as Set-Content) follows a symlink and would truncate its target.
         Remove-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue
         # And only once gone, since that removal fails non-terminatingly. Get-Item -Force
         # reports the link itself; Test-Path would follow it.
         if ($null -ne (Get-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue)) {
             return
         }
-        Set-Content -LiteralPath $markerFile -Value $Cache `
-            -Encoding utf8 -ErrorAction SilentlyContinue
+        # WriteAllText with a BOM-less encoder, NOT `Set-Content -Encoding utf8`, which emits a
+        # BOM under Windows PowerShell 5.1 and none under 7. The update DIGESTS this file, and
+        # install.sh (`printf '%s\n'`) and unsloth_cli (os.fsencode(f"{chosen}\n")) write plain
+        # UTF-8 with one LF, so a BOM or CRLF here (the readers merely tolerate both) reads as
+        # a change that never happened. WriteAllText appends no newline, so it is written explicitly.
+        try {
+            # It throws where -ErrorAction SilentlyContinue only warned; a marker is a preference, so no install may fail over one.
+            [System.IO.File]::WriteAllText($markerFile, ($Cache + "`n"),
+                (New-Object System.Text.UTF8Encoding($false)))
+        } catch { }
     }
 
     function Restore-StudioUvCacheMarker {
@@ -1713,8 +1720,11 @@ exit 1
         Remove-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue
         $stillThere = $null -ne (Get-Item -LiteralPath $markerFile -Force -ErrorAction SilentlyContinue)
         if (-not $stillThere -and $script:StudioUvMarkerExisted -and $null -ne $script:StudioUvMarkerPrevious) {
-            Set-Content -LiteralPath $markerFile -Value ([string]$script:StudioUvMarkerPrevious).TrimEnd("`r", "`n") `
-                -Encoding utf8 -ErrorAction SilentlyContinue
+            # The saved bytes, verbatim: another encoding or line ending would be a change of its
+            # own. WriteAllBytes throws; the try/catch stands in for -ErrorAction SilentlyContinue.
+            try {
+                [System.IO.File]::WriteAllBytes($markerFile, [byte[]]$script:StudioUvMarkerPrevious)
+            } catch { }
         }
         $script:StudioUvMarkerSaved = $false
     }

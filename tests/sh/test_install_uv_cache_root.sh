@@ -14,11 +14,14 @@ HELPERS=$(awk '
     /^_record_uv_cache_choice\(\) \{/ { grab = 1 }
     /^_absolutize_uv_cache_dir\(\) \{/ { grab = 1 }
     /^_restore_uv_cache_marker\(\) \{/ { grab = 1 }
+    /^_probe_uv_cache_writable\(\) \{/ { grab = 1 }
+    /^_default_uv_cache_early\(\) \{/ { grab = 1 }
     grab { print }
     grab && /^}/ { grab = 0 }
 ' "$INSTALL_SH")
 for _helper in _configure_uv_cache _prepare_studio_uv_cache_for_launch _record_uv_cache_choice \
-    _restore_uv_cache_marker _absolutize_uv_cache_dir; do
+    _restore_uv_cache_marker _absolutize_uv_cache_dir _probe_uv_cache_writable \
+    _default_uv_cache_early; do
     if ! printf '%s\n' "$HELPERS" | grep -q "^${_helper}() {"; then
         echo "  FAIL: could not extract $_helper from install.sh"
         exit 1
@@ -41,6 +44,11 @@ printf '%s\n' "$HELPERS" > "$PROBE"
 cat >> "$PROBE" <<'PROBE'
 step() { printf 'message=%s\n' "$2"; }
 C_WARN=""
+# install.sh's own top-level initialisation of the rollback state, verbatim. The probe used
+# to lean on unset reading as empty, which is only true while nothing runs it under `set -u`.
+_UV_MARKER_SAVED=false
+_UV_MARKER_EXISTED=false
+_UV_MARKER_PREVIOUS=""
 case "$1" in
     unset) unset UV_CACHE_DIR ;;
     value) UV_CACHE_DIR=$2 ;;
@@ -91,6 +99,16 @@ run_case() { # shell, label, state, input, isolate, home, xdg-state, xdg, root, 
         bad "$_shell: $_label (expected [$_wanted], got [$_actual])"
     fi
 }
+
+# A bucket with more names than a 64K pipe carries, built once (4000 touches is the slow part).
+# `find ... -print | head -n 1` reads THIS cache as cold under `set -o pipefail`: head exits
+# after one line, find dies writing the rest, and the failed pipeline routes the hit into
+# `|| _uv_artifact=""`. install.sh has no pipefail and never lost a match; studio/setup.sh
+# runs the same scan under `set -euo pipefail` and did. Pinned in both suites so the scans agree.
+BIG_CACHE="$WORK/big shared cache/uv"
+mkdir -p "$BIG_CACHE/archive-v0/pkg"
+awk -v d="$BIG_CACHE/archive-v0/pkg" 'BEGIN { for (i = 0; i < 4000; i++)
+    printf "%s/wheel_payload_%05d.whl%c", d, i, 0 }' | xargs -0 touch
 
 echo "=== test_install_uv_cache_root ==="
 for shell in sh bash; do
@@ -209,6 +227,20 @@ for shell in sh bash; do
         "reusing existing shared cache ($BUILDS_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
         "$STUDIO_CACHE"
 
+    run_case "$shell" "a bucket too big for one pipe buffer is still shared" unset "" false \
+        "$HOME_DIR" unset "" "$ROOT" "$BIG_CACHE" "$BIG_CACHE" shared \
+        "reusing existing shared cache ($BIG_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
+        "$STUDIO_CACHE"
+
+    # Under the strictest options a caller could impose. run_case invokes "$_shell" unquoted so
+    # a shell can be named with options; bash only, since dash has no `-o pipefail`.
+    if [ "$shell" = bash ]; then
+        run_case "bash -e -u -o pipefail" "a big shared cache survives set -euo pipefail" unset "" false \
+            "$HOME_DIR" unset "" "$ROOT" "$BIG_CACHE" "$BIG_CACHE" shared \
+            "reusing existing shared cache ($BIG_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
+            "$STUDIO_CACHE"
+    fi
+
     # `find` needs -L to descend a symlink; Get-ChildItem -Recurse already does.
     LINK_CACHE="$CASE/symlinked bucket/uv"
     LINK_TARGET="$CASE/symlinked bucket/elsewhere"
@@ -233,17 +265,33 @@ for shell in sh bash; do
         chmod 755 "$DENIED_CACHE/archive-v0" 2>/dev/null || true
     fi
 
+    # The denied leaf must be walked BEFORE the hit: find exits nonzero after an unreadable
+    # leaf even once it printed the hit, and the scanner used to discard it. readdir order is
+    # creation order on small ext4, name order on APFS: created first, named first, and
+    # added until `ls -f` shows one ahead of the hit.
     DEEP_CACHE="$CASE/denied leaf/uv"
-    mkdir -p "$DEEP_CACHE/archive-v0/visible" "$DEEP_CACHE/archive-v0/aaa hidden"
+    mkdir -p "$DEEP_CACHE/archive-v0/hidden 1"
+    : > "$DEEP_CACHE/archive-v0/hidden 1/other.so"
+    chmod 000 "$DEEP_CACHE/archive-v0/hidden 1" 2>/dev/null || true
+    mkdir -p "$DEEP_CACHE/archive-v0/visible"
     : > "$DEEP_CACHE/archive-v0/visible/payload.so"
-    : > "$DEEP_CACHE/archive-v0/aaa hidden/other.so"
-    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 000 "$DEEP_CACHE/archive-v0/aaa hidden" 2>/dev/null; then
+    _leaf=1
+    while [ "$_leaf" -lt 40 ] && \
+        [ "$(ls -f "$DEEP_CACHE/archive-v0" | grep -v '^\.\.*$' | head -n 1)" = visible ]; do
+        _leaf=$((_leaf + 1))
+        mkdir -p "$DEEP_CACHE/archive-v0/hidden $_leaf"
+        : > "$DEEP_CACHE/archive-v0/hidden $_leaf/other.so"
+        chmod 000 "$DEEP_CACHE/archive-v0/hidden $_leaf" 2>/dev/null || true
+    done
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && [ ! -r "$DEEP_CACHE/archive-v0/hidden 1" ]; then
         run_case "$shell" "unreadable leaf keeps a warm cache warm" unset "" false \
             "$HOME_DIR" unset "" "$ROOT" "$DEEP_CACHE" "$DEEP_CACHE" shared \
             "reusing existing shared cache ($DEEP_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
             "$STUDIO_CACHE"
-        chmod 755 "$DEEP_CACHE/archive-v0/aaa hidden" 2>/dev/null || true
     fi
+    for _leaf in "$DEEP_CACHE/archive-v0"/hidden*; do
+        chmod 755 "$_leaf" 2>/dev/null || true
+    done
 
     # The marker `unsloth studio update` reads: content cannot tell a Studio cache the
     # installer filled from one a runtime install dropped a single wheel into.
@@ -443,6 +491,52 @@ EXPORTED
         bad "$shell: custom cache exported as [$_exp], wanted [$CASE/relcache]"
     fi
 
+    # A warm but unwritable default cache (a preseeded image, an NFS mount): uv aborts on it,
+    # yet warm alone used to select it.
+    RO_CACHE="$CASE/read-only cache/uv"
+    mkdir -p "$RO_CACHE/archive-v0/pkg"
+    : > "$RO_CACHE/archive-v0/pkg/payload.whl"
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 555 "$RO_CACHE" 2>/dev/null; then
+        run_case "$shell" "a warm but read-only default falls back to Studio" unset "" false \
+            "$HOME_DIR" unset "" "$ROOT" "$RO_CACHE" "$STUDIO_CACHE" studio \
+            "using new Studio-owned cache ($STUDIO_CACHE); $RO_CACHE holds packages but is not writable, so cached packages may download again" \
+            "$STUDIO_CACHE"
+        chmod 755 "$RO_CACHE" 2>/dev/null || true
+    fi
+
+    # A relative uv.toml cache-dir resolves against UV_WORKING_DIR, not the installer's cwd.
+    mkdir -p "$CASE/work/relcache/archive-v0/pkg"
+    : > "$CASE/work/relcache/archive-v0/pkg/payload.whl"
+    REL_PROBE="$WORK/$shell relative default.sh"
+    {
+        printf '%s\n' "$HELPERS"
+        cat <<RELATIVE
+step() { :; }
+substep() { :; }
+C_WARN=""
+STUDIO_HOME='$ROOT'
+_UV_MARKER_SAVED=false
+_ISOLATE_UV_CACHE=false
+cd '$CASE'
+unset UV_CACHE_DIR
+UV_WORKING_DIR=work
+export UV_WORKING_DIR
+TEST_UV_EFFECTIVE_CACHE=relcache
+export TEST_UV_EFFECTIVE_CACHE
+PATH="\$UV_STUB_DIR:\$PATH"
+export PATH
+_configure_uv_cache
+printf '%s\n%s\n' "\$_UV_CACHE_MODE" "\$UV_CACHE_DIR"
+RELATIVE
+    } > "$REL_PROBE"
+    rm -f "$MARKER"
+    _rel_actual=$($shell "$REL_PROBE" 2>/dev/null | tr '\n' '|')
+    if [ "$_rel_actual" = "shared|$CASE/work/relcache|" ]; then
+        ok "$shell: a relative default cache is resolved against UV_WORKING_DIR"
+    else
+        bad "$shell: relative default resolved as [$_rel_actual], wanted [shared|$CASE/work/relcache|]"
+    fi
+
     # An unwritable STUDIO_HOME is a reason to skip the marker, never to fail the install.
     rm -rf "$ROOT/cache"
     if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && mkdir -p "$ROOT" && chmod 500 "$ROOT" 2>/dev/null; then
@@ -452,6 +546,78 @@ EXPORTED
             "$STUDIO_CACHE"
         chmod 755 "$ROOT" 2>/dev/null || true
     fi
+done
+
+# The real prologue: `_default_uv_cache_early` runs ~2000 lines before the selector and always
+# leaves UV_CACHE_DIR set. With that placeholder the selector answered `custom`, so `shared`
+# was unreachable on POSIX and every wheel was refetched into a Studio cache.
+PROLOGUE="$WORK/prologue.sh"
+{
+    printf '%s\n' "$HELPERS"
+    cat <<'PROLOGUE_BODY'
+step() { printf 'message=%s\n' "$2"; }
+C_WARN=""
+case "$1" in
+    unset) unset UV_CACHE_DIR ;;
+    value) UV_CACHE_DIR=$2 ;;
+    *) exit 2 ;;
+esac
+_ISOLATE_UV_CACHE=$3
+HOME=$4
+STUDIO_HOME=$5
+unset XDG_CACHE_HOME
+TEST_UV_EFFECTIVE_CACHE=$6
+export TEST_UV_EFFECTIVE_CACHE
+PATH="$UV_STUB_DIR:$PATH"
+export PATH
+_UV_CACHE_DEFAULTED=false
+_default_uv_cache_early
+printf 'early=%s\n' "${UV_CACHE_DIR-<unset>}"
+_configure_uv_cache
+printf 'value=%s\nmode=%s\ndefaulted=%s\n' "${UV_CACHE_DIR-<unset>}" "$_UV_CACHE_MODE" "$_UV_CACHE_DEFAULTED"
+PROLOGUE_BODY
+} > "$PROLOGUE"
+
+run_prologue() { # shell, label, state, input, isolate, home, root, effective, early, value, mode
+    _p_shell=$1; _p_label=$2; _p_state=$3; _p_input=$4; _p_isolate=$5
+    _p_home=$6; _p_root=$7; _p_effective=$8; _p_early=$9
+    shift 9
+    _p_value=$1; _p_mode=$2
+    _p_actual=$($_p_shell "$PROLOGUE" "$_p_state" "$_p_input" "$_p_isolate" "$_p_home" \
+        "$_p_root" "$_p_effective" 2>/dev/null | grep -v '^message=')
+    _p_wanted=$(printf 'early=%s\nvalue=%s\nmode=%s\ndefaulted=false' \
+        "$_p_early" "$_p_value" "$_p_mode")
+    if [ "$_p_actual" = "$_p_wanted" ]; then
+        ok "$_p_shell: prologue: $_p_label"
+    else
+        bad "$_p_shell: prologue: $_p_label (expected [$_p_wanted], got [$_p_actual])"
+    fi
+}
+
+for shell in sh bash; do
+    command -v "$shell" >/dev/null 2>&1 || continue
+    PCASE="$WORK/$shell prologue"
+    PHOME="$PCASE/home"
+    PROOT="$PCASE/studio root"
+    PSTUDIO_CACHE="$PROOT/cache/uv"
+    PHOME_CACHE="$PHOME/.cache/uv"
+    PCOLD_CACHE="$PCASE/cold/uv"
+    mkdir -p "$PHOME" "$PROOT" "$PCOLD_CACHE"
+
+    run_prologue "$shell" "a cold default still selects the Studio cache" unset "" false \
+        "$PHOME" "$PROOT" "$PCOLD_CACHE" "$PSTUDIO_CACHE" "$PSTUDIO_CACHE" studio
+
+    mkdir -p "$PHOME_CACHE/archive-v0/package"
+    : > "$PHOME_CACHE/archive-v0/package/payload.whl"
+    run_prologue "$shell" "a warm default is adopted despite the early export" unset "" false \
+        "$PHOME" "$PROOT" "$PHOME_CACHE" "$PSTUDIO_CACHE" "$PHOME_CACHE" shared
+
+    PVERRIDE="$PCASE/caller cache"
+    run_prologue "$shell" "a caller value is still custom" value "$PVERRIDE" false \
+        "$PHOME" "$PROOT" "$PHOME_CACHE" "$PVERRIDE" "$PVERRIDE" custom
+
+    run_prologue "$shell" "isolation still beats a warm default" unset "" true \
+        "$PHOME" "$PROOT" "$PHOME_CACHE" "$PSTUDIO_CACHE" "$PSTUDIO_CACHE" isolated
 done
 
 _resolve_line=$(grep -n '^_resolve_studio_destinations$' "$INSTALL_SH" | head -n1 | cut -d: -f1)

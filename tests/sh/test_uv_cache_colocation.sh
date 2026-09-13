@@ -26,8 +26,22 @@ INSTALL_SH="$SCRIPT_DIR/../../install.sh"
 _FN_FILE=$(mktemp)
 _TMP=$(mktemp -d)
 trap 'rm -rf "$_FN_FILE" "$_TMP"' EXIT
-awk '/^# Keep uv.s cache on the same filesystem as the venv it fills\.$/,/^fi$/' \
-    "$INSTALL_SH" > "$_FN_FILE"
+# By function name, with the write probe: the default block calls `_probe_uv_cache_writable`,
+# and without it "command not found" reads as unwritable and turns every case green wrongly.
+awk '
+    /^_probe_uv_cache_writable\(\) \{/ { grab = 1 }
+    /^_default_uv_cache_early\(\) \{/ { grab = 1 }
+    grab { print }
+    grab && /^}/ { grab = 0 }
+' "$INSTALL_SH" > "$_FN_FILE"
+for _fn in _probe_uv_cache_writable _default_uv_cache_early; do
+    if ! grep -q "^${_fn}() {" "$_FN_FILE"; then
+        echo "FAIL: could not extract $_fn from install.sh"
+        exit 1
+    fi
+done
+# The call install.sh makes right after defining it, so sourcing still RUNS the default block.
+printf '%s\n' '_UV_CACHE_DEFAULTED=false' '_default_uv_cache_early' >> "$_FN_FILE"
 
 if ! grep -q 'UV_CACHE_DIR="\$STUDIO_HOME/cache/uv"' "$_FN_FILE"; then
     echo "FAIL: could not extract the UV_CACHE_DIR block from install.sh"
