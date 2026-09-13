@@ -59,7 +59,11 @@ _SSE = (
 ).encode()
 
 _JSON_COMPLETION = json.dumps(
-    {"choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]}
+    {
+        "choices": [
+            {"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}
+        ]
+    }
 ).encode()
 
 
@@ -87,7 +91,9 @@ class _RejectingHandler(BaseHTTPRequestHandler):
             return
         payload = _SSE if body.get("stream") else _JSON_COMPLETION
         self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream" if body.get("stream") else "application/json")
+        self.send_header(
+            "Content-Type", "text/event-stream" if body.get("stream") else "application/json"
+        )
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
@@ -180,7 +186,7 @@ def test_a_rejected_max_tokens_is_retried_as_max_completion_tokens():
         assert "max_tokens" not in server.bodies[1]
         # The client saw the successful stream, not the 400.
         assert any('"content":"ok"' in chunk for chunk in chunks)
-        assert not any(chunk.startswith("data: {\"error\"") or "400" in chunk for chunk in chunks)
+        assert not any(chunk.startswith('data: {"error"') or "400" in chunk for chunk in chunks)
 
 
 def test_an_unrelated_400_is_not_retried():

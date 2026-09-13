@@ -1314,9 +1314,8 @@ class ExternalProviderClient:
                     if response.status_code != 200:
                         error_body = await response.aread()
                         error_text = error_body.decode("utf-8", errors = "replace")
-                        if (
-                            attempt_body is not body
-                            or not _unsupported_max_tokens_error(response.status_code, error_text)
+                        if attempt_body is not body or not _unsupported_max_tokens_error(
+                            response.status_code, error_text
                         ):
                             error_text = _friendly_provider_error_text(
                                 self.provider_type,
@@ -1415,7 +1414,9 @@ class ExternalProviderClient:
                             {
                                 "type": "tool_end",
                                 "tool_call_id": web_search_tool_id,
-                                "result": ("\n---\n".join(blocks) if blocks else "(search complete)"),
+                                "result": (
+                                    "\n---\n".join(blocks) if blocks else "(search complete)"
+                                ),
                             }
                         )
 
@@ -1490,7 +1491,9 @@ class ExternalProviderClient:
                                                     ):
                                                         if not isinstance(envelope, dict):
                                                             continue
-                                                        for ann in envelope.get("annotations") or []:
+                                                        for ann in (
+                                                            envelope.get("annotations") or []
+                                                        ):
                                                             _record_or_url_citation(ann)
                             # Verbatim relay, minus Unsloth's own UI control protocol: the frames this server writes to
                             # paint tool cards ride the same stream, so an endpoint that echoes them forges a card for a
@@ -1501,7 +1504,11 @@ class ExternalProviderClient:
                             yield relayed
                         # Stream ended without [DONE] (some upstreams just close the connection). Emit tool_end so the
                         # card does not stay in "running" forever.
-                        if web_search_active and web_search_tool_started and not web_search_tool_ended:
+                        if (
+                            web_search_active
+                            and web_search_tool_started
+                            and not web_search_tool_ended
+                        ):
                             yield _build_web_search_tool_end()
                             web_search_tool_ended = True
                     except GeneratorExit:
