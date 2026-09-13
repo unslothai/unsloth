@@ -668,6 +668,17 @@ _configure_uv_cache() {
     if [ "$_ISOLATE_UV_CACHE" = true ]; then
         UV_CACHE_DIR="$_uv_studio_cache"
         _UV_CACHE_MODE=isolated
+        # The same probe the studio branch below gets. The early block's answer was discarded
+        # above whenever it had defaulted, and uv aborts on a cache it cannot create rather
+        # than falling back, so isolation must not be the one branch that hands over unprobed.
+        if ! _probe_uv_cache_writable "$UV_CACHE_DIR"; then
+            echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
+            echo "[WARN] Wheels will be copied into the venv rather than hardlinked, costing extra disk." >&2
+            step "uv cache" "using uv's default cache; $UV_CACHE_DIR is not writable" "$C_WARN"
+            unset UV_CACHE_DIR
+            _UV_CACHE_MODE=default
+            return 0
+        fi
         export UV_CACHE_DIR
         _record_uv_cache_choice
         step "uv cache" "forced Studio cache isolation ($UV_CACHE_DIR); already-cached packages may download again" "$C_WARN"
@@ -777,6 +788,11 @@ _configure_uv_cache() {
 
 _prepare_studio_uv_cache_for_launch() {
     [ "${_UV_CACHE_MODE:-}" = shared ] || return 0
+    # Probe before repointing. Shared mode is the one path that never probed the Studio cache
+    # (the warm shared cache won before that branch was reached), and uv aborts on a cache it
+    # cannot create. Keeping the shared cache is strictly better than handing uv a dead path:
+    # it is the directory this install just filled, and it was probed to get here.
+    _probe_uv_cache_writable "$STUDIO_HOME/cache/uv" || return 0
     UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
     export UV_CACHE_DIR
 }

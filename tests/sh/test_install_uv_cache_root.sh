@@ -504,6 +504,51 @@ EXPORTED
         chmod 755 "$RO_CACHE" 2>/dev/null || true
     fi
 
+    # Two branches used to hand uv the Studio cache without probing it, and uv aborts on a
+    # cache it cannot create rather than falling back.
+    #
+    # Isolation: the early block's probe answer is discarded whenever it had defaulted, so
+    # --isolated-uv-cache was the one selector branch that exported unprobed.
+    #
+    # The launch repoint: shared mode reaches it having probed only the SHARED cache (the warm
+    # one won before the studio branch was reached), so the Studio path it switches to was
+    # never tested. On main that was unreachable on POSIX, because shared mode itself was; this
+    # is the branch that makes it reachable, so it has to hold up.
+    # Its own probe, not run_case: the outcome here is UV_CACHE_DIR *unset*, and run_case's
+    # expectation is built as `child=x:<value>`, which cannot express an absent variable.
+    RO_ROOT="$CASE/unwritable root"
+    mkdir -p "$RO_ROOT/cache"
+    if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && chmod 555 "$RO_ROOT/cache" 2>/dev/null; then
+        ISO_PROBE="$WORK/$shell isolation unwritable.sh"
+        {
+            printf '%s\n' "$HELPERS"
+            cat <<ISOLATED
+step() { :; }
+substep() { :; }
+C_WARN=""
+STUDIO_HOME='$RO_ROOT'
+_UV_MARKER_SAVED=false
+_UV_MARKER_EXISTED=false
+_UV_MARKER_PREVIOUS=""
+_ISOLATE_UV_CACHE=true
+unset UV_CACHE_DIR
+TEST_UV_EFFECTIVE_CACHE='$HOME_CACHE'
+export TEST_UV_EFFECTIVE_CACHE
+PATH="\$UV_STUB_DIR:\$PATH"
+export PATH
+_configure_uv_cache
+printf '%s|%s\n' "\$_UV_CACHE_MODE" "\${UV_CACHE_DIR+set}"
+ISOLATED
+        } > "$ISO_PROBE"
+        _iso_actual=$($shell "$ISO_PROBE" 2>/dev/null)
+        if [ "$_iso_actual" = "default|" ]; then
+            ok "$shell: isolation falls back when the Studio cache is unwritable"
+        else
+            bad "$shell: isolation with an unwritable Studio cache gave [$_iso_actual], wanted [default|]"
+        fi
+        chmod 755 "$RO_ROOT/cache" 2>/dev/null || true
+    fi
+
     # A relative uv.toml cache-dir resolves against UV_WORKING_DIR, not the installer's cwd.
     mkdir -p "$CASE/work/relcache/archive-v0/pkg"
     : > "$CASE/work/relcache/archive-v0/pkg/payload.whl"
@@ -540,10 +585,13 @@ RELATIVE
     # An unwritable STUDIO_HOME is a reason to skip the marker, never to fail the install.
     rm -rf "$ROOT/cache"
     if [ "$(id -u 2>/dev/null || echo 0)" != 0 ] && mkdir -p "$ROOT" && chmod 500 "$ROOT" 2>/dev/null; then
+        # ...and the launch repoint keeps the shared cache rather than switching to a Studio
+        # cache uv cannot create. It used to switch unconditionally, which failed the install
+        # this case exists to keep alive, at the first on-demand backend install.
         run_case "$shell" "an unwritable Studio root still installs" unset "" false \
             "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$BUILDS_CACHE" shared \
             "reusing existing shared cache ($BUILDS_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
-            "$STUDIO_CACHE"
+            "$BUILDS_CACHE"
         chmod 755 "$ROOT" 2>/dev/null || true
     fi
 done
