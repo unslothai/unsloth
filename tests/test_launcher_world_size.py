@@ -30,7 +30,7 @@ def test_world_size_from_env(env, expected, monkeypatch):
                 "MV2_",
             )
         ):
-            monkeypatch.delenv(key, raising=False)
+            monkeypatch.delenv(key, raising = False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     assert world_size_from_env() == expected
