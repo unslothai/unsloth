@@ -7789,41 +7789,39 @@ export function createOpenAIStreamAdapter(
           closeReasoningContent();
           const partialText = mergeContinuation(cumulativeText, { final: true });
           const partialContent = buildAssistantContent(partialText);
-          if (partialContent.length > 0) {
-            const partialTiming = buildTiming(
-              streamStartTime,
-              totalChunks,
-              firstTokenTime,
-              Date.now() - streamStartTime,
-              estimateTokenCount(partialText),
-              toolCallParts.length,
-            );
-            yield {
-              content: partialContent,
-              metadata: {
-                timing: partialTiming,
-                custom: {
-                  ...reasoningDurationTracker.metadata(),
-                  contextTruncation,
-                  // Unfinished too, so it also offers Continue -- unless the provider already
-                  // said why the model stopped.
-                  incomplete: {
-                    reason: resolveIncompleteReason(
-                      err instanceof GenerationLengthError
-                        ? ("length" as const)
-                        : err instanceof ChatGenerationTerminalError &&
-                            err.generationStatus === "cancelled"
-                          ? ("cancelled" as const)
-                          : ("interrupted" as const),
-                      contextWindowExceeded,
-                    ),
-                  },
-                  timing: partialTiming,
-                  ...generationCustom(),
+          const partialTiming = buildTiming(
+            streamStartTime,
+            totalChunks,
+            firstTokenTime,
+            Date.now() - streamStartTime,
+            estimateTokenCount(partialText),
+            toolCallParts.length,
+          );
+          yield {
+            content: partialContent,
+            metadata: {
+              timing: partialTiming,
+              custom: {
+                ...reasoningDurationTracker.metadata(),
+                contextTruncation,
+                // Unfinished too, so it also offers Continue -- unless the provider already
+                // said why the model stopped.
+                incomplete: {
+                  reason: resolveIncompleteReason(
+                    err instanceof GenerationLengthError
+                      ? ("length" as const)
+                      : err instanceof ChatGenerationTerminalError &&
+                          err.generationStatus === "cancelled"
+                        ? ("cancelled" as const)
+                        : ("interrupted" as const),
+                    contextWindowExceeded,
+                  ),
                 },
+                timing: partialTiming,
+                ...generationCustom(),
               },
-            };
-          }
+            },
+          };
         }
         throw err;
       } finally {
