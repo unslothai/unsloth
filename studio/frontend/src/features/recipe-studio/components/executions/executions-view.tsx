@@ -223,7 +223,9 @@ export function ExecutionsView({
       : Math.max(1, Math.ceil(datasetTotal / datasetPageSize));
   const canPageDataset =
     selectedExecution?.kind === "preview" ||
-    (selectedExecution?.kind === "full" && Boolean(selectedExecution.jobId));
+    (selectedExecution?.kind === "full" &&
+      Boolean(selectedExecution.jobId) &&
+      !isExecutionInProgress(selectedExecution.status));
   const datasetRowsForTable = useMemo(() => {
     if (!selectedExecution) {
       return [];

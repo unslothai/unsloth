@@ -95,8 +95,6 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
         env = os.getenv("ENVIRONMENT_TYPE", "production"),
     )
 
-    event_queue.put({"type": EVENT_JOB_STARTED, "ts": time.time()})
-
     try:
         from data_designer.config.run_config import RunConfig
 
@@ -114,6 +112,18 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
         merge_batches = bool(run.get("merge_batches"))
         ensure_dir(_ARTIFACT_ROOT)
         run_config_raw = run.get("run_config") or {}
+        execution_type = str(run.get("execution_type") or "full").strip().lower()
+        planned_artifact_path = (
+            str(_ARTIFACT_ROOT / dataset_name) if execution_type != "preview" else None
+        )
+        event_queue.put(
+            {
+                "type": EVENT_JOB_STARTED,
+                "ts": time.time(),
+                "artifact_path": planned_artifact_path,
+                "execution_type": execution_type,
+            }
+        )
 
         builder = build_config_builder(recipe)
         designer = create_data_designer(recipe, artifact_path = str(_ARTIFACT_ROOT))
@@ -136,7 +146,6 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
         if run_config_raw:
             designer.set_run_config(RunConfig.model_validate(run_config_raw))
 
-        execution_type = str(run.get("execution_type") or "full").strip().lower()
         if execution_type == "preview":
             results = designer.preview(builder, num_records = rows)
             analysis = (
