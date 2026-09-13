@@ -141,6 +141,11 @@ def test_split_echoes_in_content_and_structured_data_are_withheld():
         "structuredContent": {
             "parts": [ENCODED[:17], {"separator": "|"}, ENCODED[17:]],
             "bytes": [[0, *DATA[:17]], [*DATA[17:], 0]],
+            "framed": {
+                "a": "prefix:" + ENCODED[:17],
+                "noise": "unrelated",
+                "b": ENCODED[17:] + "; done",
+            },
         },
     }
     clean = make_context().redact_result(result)
@@ -150,6 +155,11 @@ def test_split_echoes_in_content_and_structured_data_are_withheld():
     assert ENCODED[:17] not in repr(clean)
     assert ENCODED[17:] not in repr(clean)
     assert clean["structuredContent"]["bytes"] == [REDACTED_IMAGE, REDACTED_IMAGE]
+    assert clean["structuredContent"]["framed"] == {
+        "a": REDACTED_IMAGE,
+        "noise": "unrelated",
+        "b": REDACTED_IMAGE,
+    }
 
 
 def test_unrelated_image_and_text_remain_unchanged():

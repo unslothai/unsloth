@@ -290,6 +290,7 @@ class _ImageEchoSanitizer:
         # matches, fail closed by withholding every candidate slot.
         variants = [self.fingerprint[:-1] + final for final in self.final_characters]
         matched_slots = set()
+        work = 0
         for fingerprint in variants:
             states = {0: ()}
             for index, text in enumerate(normalized):
@@ -297,13 +298,39 @@ class _ImageEchoSanitizer:
                     continue
                 advanced = dict(states)
                 for position, path in states.items():
-                    if fingerprint.startswith(text, position):
-                        end = position + len(text)
+                    start = 0
+                    while position < len(fingerprint) and start < len(text):
+                        found = text.find(fingerprint[position], start)
+                        scanned = (len(text) - start) if found < 0 else (found - start + 1)
+                        # Initial searches are bounded by the existing material
+                        # limit and run in native code. Charge spans only after a
+                        # prior slot has begun reconstructing the fingerprint.
+                        work += scanned if position else 1
+                        if work > MAX_REDACTION_NODES * 32:
+                            for slot in slots:
+                                self._set_slot(slot, REDACTED_IMAGE)
+                            return
+                        if found < 0:
+                            break
+                        length = 0
+                        limit = min(len(text) - found, len(fingerprint) - position)
+                        while (
+                            length < limit
+                            and text[found + length] == fingerprint[position + length]
+                        ):
+                            length += 1
+                            work += 1
+                            if work > MAX_REDACTION_NODES * 32:
+                                for slot in slots:
+                                    self._set_slot(slot, REDACTED_IMAGE)
+                                return
+                        end = position + length
                         candidate = path + (index,)
                         if end == len(fingerprint):
                             matched_slots.update(candidate)
-                        else:
+                        elif length:
                             advanced.setdefault(end, candidate)
+                        start = found + 1
                 if len(advanced) > 4096:
                     for slot in slots:
                         self._set_slot(slot, REDACTED_IMAGE)
