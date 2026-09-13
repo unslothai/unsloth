@@ -1088,6 +1088,7 @@ export function ChatMcpServersDialog({
                 </span>
                 <Switch
                   id="mcp-image-attachments"
+                  aria-label="Allow tool-only image attachments"
                   checked={form.allowImageAttachments}
                   disabled={formPending}
                   onCheckedChange={(allowImageAttachments) =>
