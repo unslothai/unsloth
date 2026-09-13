@@ -488,13 +488,15 @@ jobs:
         # mirror the backend pytest job for the reasons written out there; the numbers are
         # this suite's own.
         #
-        # 330s per test comes off this suite's measured tail, not off taste. Under -n 4 over
-        # the whole discovered set the slowest is test_source_read_encoding.py::
-        # test_checked_in_file_reads_name_an_encoding at 63.6s, then 48.3s, then a run of
-        # ~31s docker-notebook durability cases. This step runs ~2.2x slower on a 4-vCPU
-        # runner than on the box those came off, so call the worst legitimate test ~140s:
-        # the cap is ~2.4x that. It is also the same 330 the backend pytest job settled on
-        # against its own tail. Nothing here is near it, and a deadlock is named in minutes.
+        # 330s per test comes off this suite's measured tail, not off taste. The tail used
+        # to start at test_source_read_encoding.py::test_checked_in_file_reads_name_an_encoding
+        # at 63.6s, then 48.3s, then a run of ~31s docker-notebook durability cases. Those
+        # first two have since been made much cheaper and that scan now runs as 16 batches,
+        # so the docker-notebook cases are the tail: ~50s for the worst. This step runs
+        # ~2.2x slower on a 4-vCPU runner than on the box those came off, so call the worst
+        # legitimate test ~110s and the cap ~3x that. The headroom only grew, so 330 stands,
+        # and it is the same 330 the backend pytest job settled on against its own tail.
+        # Nothing here is near it, and a deadlock is named in minutes.
         #
         # --timeout arms inside each xdist worker, so a wedged CONTROLLER escapes it. 2100s
         # bounds the session from outside, where it cannot: 1.25x the worst of the 40 runs
