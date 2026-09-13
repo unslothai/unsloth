@@ -568,11 +568,17 @@ def test_replayed_arguments_keep_the_order_the_model_generated():
     )
 
     replayed = decision.as_assistant_tool_call()["function"]["arguments"]
-    assert replayed == '{"path":"calc.py","edits":[{"new_string":"def subtract","old_string":"def add"}]}'
+    assert (
+        replayed
+        == '{"path":"calc.py","edits":[{"new_string":"def subtract","old_string":"def add"}]}'
+    )
     # The card and the replay still share one encoder, so the two stay identical.
     assert decision.tool_start_payload()["arguments_text"] == replayed
     # Duplicate detection keeps its own sorted key, so it is order-insensitive.
-    flipped = {"path": "calc.py", "edits": [{"old_string": "def add", "new_string": "def subtract"}]}
+    flipped = {
+        "path": "calc.py",
+        "edits": [{"old_string": "def add", "new_string": "def subtract"}],
+    }
     assert canonical_tool_call_key("edit_file", decision.arguments) == (
         canonical_tool_call_key("edit_file", flipped)
     )
