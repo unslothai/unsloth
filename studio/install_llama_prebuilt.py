@@ -8114,6 +8114,26 @@ def existing_install_matches_choice(
     if isinstance(recorded_files, dict) and recorded_files:
         if not _runtime_files_match(install_dir, host, metadata):
             return False
+    elif not (host.is_linux or host.is_macos):
+        # The migration run, on the one platform with no loader preflight below. A marker written
+        # before the runtime record exists has no digest to check, and this call is what decides
+        # whether sync_marker_selection may bless the bytes on disk as that record -- so a
+        # llama-server.exe damaged under the old marker would become the reference it is later
+        # compared against. Ask the OS to start it instead, once, before it is recorded; every
+        # later run reads the digest. _binary_image_runs treats a timeout or an ordinary non-zero
+        # exit as healthy, so this cannot cost a working install a needless reinstall.
+        if not all(
+            _binary_image_runs(
+                runtime_dir / f"{binary}{ext}",
+                install_dir,
+                host,
+                metadata.get("runtime_line")
+                if isinstance(metadata.get("runtime_line"), str)
+                else None,
+            )
+            for binary in ("llama-server", "llama-quantize")
+        ):
+            return False
     if host.is_linux:
         try:
             preflight_linux_installed_binaries(

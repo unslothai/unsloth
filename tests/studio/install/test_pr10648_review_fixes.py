@@ -174,3 +174,112 @@ def test_the_node_bypass_stays_off_for_anything_else(monkeypatch, value):
     monkeypatch.setenv("UNSLOTH_PREBUILT_FULL_CHECK", value)
     assert NODE.prebuilt_full_check_requested() is False
     assert LLAMA.prebuilt_full_check_requested() is False
+
+
+# The migration run: the marker predates the runtime record, so there is no digest to check
+# and, on Windows, no loader preflight either. That run is what decides whether the bytes on
+# disk become the record every later run is compared against.
+_LOGIC = _load("studio_install_llama_prebuilt_pr10648_logic", "install_llama_prebuilt.py")
+
+
+def _legacy_marker_install(tmp_path, helpers, windows: bool):
+    """A healthy tree under a marker with no runtime_files, i.e. every install made before
+    this record existed."""
+    install_dir = tmp_path / "llama.cpp"
+    install_dir.mkdir()
+    if windows:
+        helpers.write_windows_install_shape(install_dir, include_llama_dll = True)
+        host = helpers.windows_host()
+        choice = helpers.asset_choice(
+            name = "llama-b9001-bin-win-cpu-x64.zip",
+            url = "https://example.com/x.zip",
+            source_label = "published",
+            install_kind = "windows-cpu",
+        )
+        repo = helpers.PREBUILT
+    else:
+        helpers.write_linux_install_shape(install_dir)
+        host = helpers.linux_host()
+        choice = helpers.asset_choice()
+        repo = helpers.UPSTREAM
+    checksums = helpers.release_checksums((choice.name, choice.expected_sha256, repo))
+    plan = helpers.release_plan([choice], checksums)
+    helpers.write_metadata(install_dir, choice, checksums)
+    # Strip the keys that did not exist before this work, which is what every marker on disk
+    # from an older Studio actually looks like. runtime_files is not a fingerprint input, so
+    # removing it leaves the marker self-consistent -- exactly the legacy shape.
+    import json as _json
+
+    marker_path = install_dir / "UNSLOTH_PREBUILT_INFO.json"
+    payload = _json.loads(marker_path.read_text(encoding = "utf-8"))
+    payload.pop("runtime_files", None)
+    payload.pop("host_profile", None)
+    marker_path.write_text(_json.dumps(payload, indent = 2) + "\n", encoding = "utf-8")
+    assert "runtime_files" not in (LLAMA.load_prebuilt_metadata(install_dir) or {})
+    return install_dir, host, plan
+
+
+@pytest.fixture(scope = "module")
+def helpers():
+    return _load_logic_helpers()
+
+
+def _load_logic_helpers():
+    import importlib.util as _iu
+
+    path = Path(__file__).with_name("test_install_llama_prebuilt_logic.py")
+    spec = _iu.spec_from_file_location("pr10648_logic_helpers", path)
+    assert spec is not None and spec.loader is not None
+    module = _iu.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_legacy_marker_is_not_blessed_without_asking_the_loader(tmp_path, monkeypatch, helpers):
+    """A Windows install damaged under a pre-record marker must not have its damage recorded.
+
+    Windows gets neither of the loader preflights below, and a marker with no runtime_files has
+    no digest to fail, so before this the only integrity test was "the file is not zero bytes".
+    The next run would then be compared against the damaged bytes for ever.
+    """
+    install_dir, host, plan = _legacy_marker_install(tmp_path, helpers, windows = True)
+
+    probed = []
+    monkeypatch.setattr(
+        helpers.INSTALL_LLAMA_PREBUILT,
+        "_binary_image_runs",
+        lambda path, d, h, line = None: (probed.append(Path(path).name), False)[1],
+    )
+    assert (
+        helpers.existing_install_matches_plan(install_dir, host, plan) is False
+    ), "an image the OS refuses to start was accepted as a current install"
+    assert probed, "the loader was never asked, so nothing checked the bytes"
+
+
+def test_a_healthy_legacy_windows_install_still_migrates(tmp_path, monkeypatch, helpers):
+    """The other half: the guard must not cost a working install its one migration run."""
+    install_dir, host, plan = _legacy_marker_install(tmp_path, helpers, windows = True)
+
+    probed = []
+    monkeypatch.setattr(
+        helpers.INSTALL_LLAMA_PREBUILT,
+        "_binary_image_runs",
+        lambda path, d, h, line = None: (probed.append(Path(path).name), True)[1],
+    )
+    assert helpers.existing_install_matches_plan(install_dir, host, plan) is True
+    assert probed, "the migration run should have asked the loader once"
+
+
+def test_a_linux_legacy_install_is_covered_by_its_preflight_instead(tmp_path, monkeypatch, helpers):
+    """Linux and macOS already run a real preflight below, so they must not pay a spawn too."""
+    install_dir, host, plan = _legacy_marker_install(tmp_path, helpers, windows = False)
+
+    probed = []
+    monkeypatch.setattr(
+        helpers.INSTALL_LLAMA_PREBUILT,
+        "_binary_image_runs",
+        lambda path, d, h, line = None: (probed.append(Path(path).name), True)[1],
+    )
+    helpers.existing_install_matches_plan(install_dir, host, plan)
+    assert probed == [], "Linux paid a --version spawn its ldd preflight already covers"
