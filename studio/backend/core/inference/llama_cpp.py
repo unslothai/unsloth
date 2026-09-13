@@ -32785,15 +32785,30 @@ class LlamaCppBackend:
                         needs_confirm = is_high_risk_tool_call(
                             decision.tool_name, decision.arguments
                         )
-                    from core.inference.mcp_image_tool_loop import abort_call_decision, wait_call_decision
+                    from core.inference.mcp_image_tool_loop import (
+                        abort_call_decision,
+                        wait_call_decision,
+                    )
+
                     image_approval = (
-                        mcp_image_run.prepare_call(decision.tool_name, decision.arguments, decision.card_id)
-                        if mcp_image_run is not None else None
+                        mcp_image_run.prepare_call(
+                            decision.tool_name, decision.arguments, decision.card_id
+                        )
+                        if mcp_image_run is not None
+                        else None
                     )
                     needs_confirm = needs_confirm or image_approval is not None
-                    approval_id = image_approval.approval_id if image_approval else (new_approval_id() if needs_confirm else "")
+                    approval_id = (
+                        image_approval.approval_id
+                        if image_approval
+                        else (new_approval_id() if needs_confirm else "")
+                    )
                     decision_slot = (
-                        image_approval.slot if image_approval else (begin_tool_decision(session_id, approval_id) if needs_confirm else None)
+                        image_approval.slot
+                        if image_approval
+                        else (
+                            begin_tool_decision(session_id, approval_id) if needs_confirm else None
+                        )
                     )
                     start_event = decision.tool_start_event()
                     start_event["approval_id"] = approval_id
@@ -32878,7 +32893,9 @@ class LlamaCppBackend:
                         decision_slot = None
                     finally:
                         if decision_slot is not None:
-                            abort_call_decision(image_approval, decision_slot, approval_id, abort_tool_decision)
+                            abort_call_decision(
+                                image_approval, decision_slot, approval_id, abort_tool_decision
+                            )
 
                     # Can the turn this call is part of still be SERVED once it returns?
                     # Everything below prices what a result may add; nothing asked whether

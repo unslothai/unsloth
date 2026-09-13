@@ -14,7 +14,13 @@ from core.inference.mcp_image_disclosure import (
 )
 
 
-def _tool(name: str, field: str, *, required: bool = True, alias: bool = False):
+def _tool(
+    name: str,
+    field: str,
+    *,
+    required: bool = True,
+    alias: bool = False,
+):
     schema = {
         "type": "object",
         "properties": {
@@ -64,8 +70,14 @@ def test_model_schema_offers_only_the_issued_opaque_reference():
     ("schema", "message"),
     [
         ({"type": "object", "properties": {"image": {"type": "object"}}}, "top-level strings"),
-        ({"type": "object", "properties": {"image": {"type": "string", "anyOf": []}}}, "unsupported"),
-        ({"type": "object", "properties": {"image": {"type": ["string", "null"]}}}, "top-level strings"),
+        (
+            {"type": "object", "properties": {"image": {"type": "string", "anyOf": []}}},
+            "unsupported",
+        ),
+        (
+            {"type": "object", "properties": {"image": {"type": ["string", "null"]}}},
+            "top-level strings",
+        ),
         ({"type": "object", "properties": {}}, "top-level strings"),
     ],
 )
@@ -129,12 +141,15 @@ def test_reference_is_conversation_bound_and_live_bytes_are_rechecked(monkeypatc
         attachment_id = image.attachment_id,
     )
     assert "abc" not in repr(image)
-    assert resolve_mcp_image_reference(
-        record.reference,
-        subject = "alice",
-        thread_id = "thread-a",
-        generation_id = "generation-a",
-    )[0] == record
+    assert (
+        resolve_mcp_image_reference(
+            record.reference,
+            subject = "alice",
+            thread_id = "thread-a",
+            generation_id = "generation-a",
+        )[0]
+        == record
+    )
     with pytest.raises(McpImageDisclosureError, match = "invalid or expired"):
         resolve_mcp_image_reference(
             record.reference,
@@ -142,9 +157,7 @@ def test_reference_is_conversation_bound_and_live_bytes_are_rechecked(monkeypatc
             thread_id = "thread-b",
             generation_id = "generation-a",
         )
-    changed = ResolvedImageAttachment(
-        **{**image.__dict__, "sha256": "b" * 64, "data": b"xyz"}
-    )
+    changed = ResolvedImageAttachment(**{**image.__dict__, "sha256": "b" * 64, "data": b"xyz"})
     monkeypatch.setattr(disclosure, "resolve_tool_only_image", lambda **_kwargs: changed)
     with pytest.raises(McpImageDisclosureError, match = "changed"):
         resolve_mcp_image_reference(

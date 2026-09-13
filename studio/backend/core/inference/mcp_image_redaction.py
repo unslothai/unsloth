@@ -43,7 +43,15 @@ class McpImageCallContext:
     """
 
     def __init__(
-        self, *, public_arguments, image, field, encoding, original_schema, recipient, commit,
+        self,
+        *,
+        public_arguments,
+        image,
+        field,
+        encoding,
+        original_schema,
+        recipient,
+        commit,
         tool_name,
     ):
         if (
@@ -116,7 +124,9 @@ class McpImageCallContext:
                 validator(self._schema).validate(wire)
             except Exception:
                 wire.clear()
-                raise McpImageDisclosureError("Private MCP image wire arguments are invalid") from None
+                raise McpImageDisclosureError(
+                    "Private MCP image wire arguments are invalid"
+                ) from None
             return wire
 
     def commit_at_send(self, recipient):
@@ -154,14 +164,18 @@ class _ImageEchoSanitizer:
         alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
         unused = {0: 0, 1: 4, 2: 2}[len(data) % 3]
         final = alphabet.index(fingerprint[-1])
-        self.final_characters = frozenset(alphabet[final:final + (1 << unused)])
+        self.final_characters = frozenset(alphabet[final : final + (1 << unused)])
 
     def _charge(self, size):
         self.material += size
         if self.material > MAX_REDACTION_BYTES:
             raise ValueError("private result material limit")
 
-    def _match_span(self, compact, start = 0):
+    def _match_span(
+        self,
+        compact,
+        start = 0,
+    ):
         prefix = self.fingerprint[:-1]
         while True:
             position = compact.find(prefix, start)
@@ -172,7 +186,11 @@ class _ImageEchoSanitizer:
                 return position, end + 1
             start = position + 1
 
-    def _echo(self, value, uri = False):
+    def _echo(
+        self,
+        value,
+        uri = False,
+    ):
         # Base64 is canonical apart from alphabet, padding and ASCII whitespace.
         # A matching canonical encoding therefore represents the same bytes.
         if self._match_span(value.translate(_NORMALIZE_BASE64)) is not None:
@@ -181,7 +199,12 @@ class _ImageEchoSanitizer:
             return self._match_span(unquote(value).translate(_NORMALIZE_BASE64)) is not None
         return False
 
-    def sanitize(self, value, depth = 0, uri = False):
+    def sanitize(
+        self,
+        value,
+        depth = 0,
+        uri = False,
+    ):
         self.nodes += 1
         if self.nodes > MAX_REDACTION_NODES or depth > MAX_REDACTION_DEPTH:
             raise ValueError("private result traversal limit")
@@ -208,7 +231,9 @@ class _ImageEchoSanitizer:
 
                 def finish_run():
                     if len(run) > 1:
-                        texts = [item["text"] if isinstance(item, dict) else item.text for item in run]
+                        texts = [
+                            item["text"] if isinstance(item, dict) else item.text for item in run
+                        ]
                         combined_size = sum(len(text) for text in texts)
                         self._charge(combined_size * 4)
                         compact_texts = [text.translate(_NORMALIZE_BASE64) for text in texts]
@@ -228,8 +253,16 @@ class _ImageEchoSanitizer:
                     run.clear()
 
                 for child in clean:
-                    child_type = child.get("type") if isinstance(child, dict) else getattr(child, "type", None)
-                    child_text = child.get("text") if isinstance(child, dict) else getattr(child, "text", None)
+                    child_type = (
+                        child.get("type")
+                        if isinstance(child, dict)
+                        else getattr(child, "type", None)
+                    )
+                    child_text = (
+                        child.get("text")
+                        if isinstance(child, dict)
+                        else getattr(child, "text", None)
+                    )
                     if child_type == "text" and isinstance(child_text, str):
                         run.append(child)
                     else:
@@ -241,7 +274,9 @@ class _ImageEchoSanitizer:
                 # Inspect only known protocol objects; never invoke arbitrary
                 # __str__, properties or custom serialization before redaction.
                 module = type(value).__module__
-                as_object = module.startswith(("mcp.types", "fastmcp.client")) and hasattr(value, "__dict__")
+                as_object = module.startswith(("mcp.types", "fastmcp.client")) and hasattr(
+                    value, "__dict__"
+                )
             if type(value) is dict or as_object:
                 fields = vars(value) if as_object else value
                 if len(fields) > MAX_REDACTION_NODES - self.nodes:

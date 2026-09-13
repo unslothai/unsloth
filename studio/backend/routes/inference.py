@@ -5202,11 +5202,14 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
 async def _prepare_mcp_image_for_route(payload, current_subject, tools, cancel_event, ui_events):
     from core.inference.mcp_image_tool_loop import prepare_image_tool_request
     from core.inference.mcp_image_disclosure import McpImageDisclosureError
-
     try:
         return await asyncio.to_thread(
-            prepare_image_tool_request, payload, subject = current_subject,
-            tools = tools, cancel_event = cancel_event, ui_events = ui_events,
+            prepare_image_tool_request,
+            payload,
+            subject = current_subject,
+            tools = tools,
+            cancel_event = cancel_event,
+            ui_events = ui_events,
         )
     except McpImageDisclosureError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
@@ -17159,7 +17162,6 @@ async def confirm_tool_call(
 ):
     if request.purpose == "mcp_image_disclosure":
         from state.tool_approvals import resolve_mcp_image_disclosure
-
         matched = resolve_mcp_image_disclosure(
             request.approval_id,
             request.decision,
@@ -23270,7 +23272,9 @@ async def produce_openai_chat_completions(
                 use_tools = False
 
         if getattr(payload, "mcp_image_attachment", None) is not None and not use_tools:
-            raise HTTPException(status_code = 400, detail = "This model cannot run the configured MCP image tool")
+            raise HTTPException(
+                status_code = 400, detail = "This model cannot run the configured MCP image tool"
+            )
 
         if _response_format_constrains_decoding(payload):
             # Only an explicit request for Unsloth's tool loop reaches here with a
@@ -25092,7 +25096,9 @@ async def produce_openai_chat_completions(
             _sf_use_tools = False
 
     if getattr(payload, "mcp_image_attachment", None) is not None and not _sf_use_tools:
-        raise HTTPException(status_code = 400, detail = "This model cannot run the configured MCP image tool")
+        raise HTTPException(
+            status_code = 400, detail = "This model cannot run the configured MCP image tool"
+        )
 
     if _sf_use_tools and _wants_multiple_choices(payload):
         _raise_unsupported_n("non-GGUF tool chat completions", monitor_id)

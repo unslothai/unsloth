@@ -176,9 +176,7 @@ def test_tools_endpoint_returns_exact_raw_names_and_schemas(tmp_path, monkeypatc
     import routes.mcp_servers as routes_mcp
 
     _reset_db(tmp_path, monkeypatch)
-    mcp_servers_db.create_server(
-        id = "srv1", display_name = "Images", url = "https://example.com/mcp"
-    )
+    mcp_servers_db.create_server(id = "srv1", display_name = "Images", url = "https://example.com/mcp")
     tools = [
         {
             "name": "inspect_picture",
@@ -189,9 +187,7 @@ def test_tools_endpoint_returns_exact_raw_names_and_schemas(tmp_path, monkeypatc
         }
     ]
     monkeypatch.setattr(routes_mcp, "get_cached_tools", lambda server_id: tools)
-    result = asyncio.run(
-        routes_mcp.list_mcp_server_tools("srv1", current_subject = "user")
-    )
+    result = asyncio.run(routes_mcp.list_mcp_server_tools("srv1", current_subject = "user"))
     assert result == {"tools": tools}
 
 

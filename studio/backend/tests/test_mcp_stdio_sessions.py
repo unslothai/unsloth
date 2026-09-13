@@ -138,8 +138,9 @@ def test_cached_stdio_rechecks_configuration_after_probe(fake_clients, monkeypat
         return result
 
     monkeypatch.setattr(FakeClient, "list_tools_mcp", probe_then_revoke)
-    result = call_tool_sync(STDIO_URL, None, "t", {}, scope = "private-probe-test",
-                            config_check = lambda: current["value"])
+    result = call_tool_sync(
+        STDIO_URL, None, "t", {}, scope = "private-probe-test", config_check = lambda: current["value"]
+    )
     assert "updated or removed" in result
     assert len(fake_clients[0].calls) == 1
 

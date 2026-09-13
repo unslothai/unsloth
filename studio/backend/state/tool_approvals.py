@@ -209,9 +209,7 @@ def wait_mcp_image_disclosure(
 
 
 def consume_mcp_image_disclosure(
-    approval_id: str,
-    expected_binding: McpImageDisclosureBinding,
-    recipient: str,
+    approval_id: str, expected_binding: McpImageDisclosureBinding, recipient: str
 ) -> bool:
     """Atomically spend an allowed grant at the transport dispatch boundary."""
     with _lock:

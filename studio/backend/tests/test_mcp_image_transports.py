@@ -17,7 +17,13 @@ from studio.backend.tests.test_mcp_image_redaction import ENCODED, PUBLIC, make_
 @pytest.fixture
 def http_recipient():
     calls = []
-    state = {"echo": True, "redirect": False, "events": False, "disconnect": False, "rpc_error": False}
+    state = {
+        "echo": True,
+        "redirect": False,
+        "events": False,
+        "disconnect": False,
+        "rpc_error": False,
+    }
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -31,8 +37,11 @@ def http_recipient():
                 self.end_headers()
                 return
             if method == "initialize":
-                result = {"protocolVersion": "2024-11-05", "capabilities": {},
-                          "serverInfo": {"name": "test", "version": "1"}}
+                result = {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "serverInfo": {"name": "test", "version": "1"},
+                }
             else:
                 calls.append(message)
                 if state["disconnect"]:
@@ -44,22 +53,38 @@ def http_recipient():
                     self.end_headers()
                     return
                 image = message["params"]["arguments"]["picture"]
-                result = {"content": [{"type": "text", "text": "safe label"},
-                                      {"type": "image", "data": image, "mimeType": "image/png"}],
-                          "structuredContent": {"echo": image}}
+                result = {
+                    "content": [
+                        {"type": "text", "text": "safe label"},
+                        {"type": "image", "data": image, "mimeType": "image/png"},
+                    ],
+                    "structuredContent": {"echo": image},
+                }
             response = {"jsonrpc": "2.0", "id": message["id"], "result": result}
             if state["rpc_error"] and method == "tools/call":
-                response = {"jsonrpc": "2.0", "id": message["id"],
-                            "error": {"code": -32603, "message": ENCODED}}
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": message["id"],
+                    "error": {"code": -32603, "message": ENCODED},
+                }
             data = json.dumps(response).encode()
             if state["events"] and method == "tools/call":
                 # Logging/sampling side channels are swallowed before the result.
-                data = (b'data: {"jsonrpc":"2.0","method":"notifications/message","params":'
-                        + json.dumps({"data": ENCODED}).encode() + b'}\n\n'
-                        + b"data: " + data + b"\n\n")
+                data = (
+                    b'data: {"jsonrpc":"2.0","method":"notifications/message","params":'
+                    + json.dumps({"data": ENCODED}).encode()
+                    + b"}\n\n"
+                    + b"data: "
+                    + data
+                    + b"\n\n"
+                )
             self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream" if state["events"] and method == "tools/call"
-                             else "application/json")
+            self.send_header(
+                "Content-Type",
+                "text/event-stream"
+                if state["events"] and method == "tools/call"
+                else "application/json",
+            )
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Mcp-Session-Id", "fixed-session")
             self.end_headers()
@@ -92,8 +117,9 @@ def test_real_http_private_send_is_exact_one_use_and_redacted(http_recipient, ev
     assert mcp_client.mcp_image_recipient_location(identity) == url
     commits = []
     context = make_context(recipient = identity, commit = lambda value: commits.append(value) is None)
-    result = mcp_client.call_tool_sync(url, None, "inspect_picture", PUBLIC,
-                                      disclosure_context = context, config_check = lambda: True)
+    result = mcp_client.call_tool_sync(
+        url, None, "inspect_picture", PUBLIC, disclosure_context = context, config_check = lambda: True
+    )
     assert len(calls) == 1
     assert calls[0]["params"]["arguments"]["picture"] == ENCODED
     assert calls[0]["params"]["arguments"]["options"] == PUBLIC["options"]
@@ -101,7 +127,9 @@ def test_real_http_private_send_is_exact_one_use_and_redacted(http_recipient, ev
     assert commits == [identity]
     assert "safe label" in result and REDACTED_IMAGE in result
     assert ENCODED not in result and ENCODED not in caplog.text
-    retry = mcp_client.call_tool_sync(url, None, "inspect_picture", PUBLIC, disclosure_context = context)
+    retry = mcp_client.call_tool_sync(
+        url, None, "inspect_picture", PUBLIC, disclosure_context = context
+    )
     assert retry.startswith("Error:") and len(calls) == 1
 
 
@@ -109,8 +137,9 @@ def test_http_redirect_never_replays_image(http_recipient):
     url, calls, state = http_recipient
     identity = mcp_client.prepare_mcp_image_recipient(url)
     state["redirect"] = True
-    result = mcp_client.call_tool_sync(url, None, "inspect_picture", PUBLIC,
-                                      disclosure_context = make_context(recipient = identity))
+    result = mcp_client.call_tool_sync(
+        url, None, "inspect_picture", PUBLIC, disclosure_context = make_context(recipient = identity)
+    )
     assert result == PRIVATE_CALL_ERROR
     assert len(calls) == 1
 
@@ -124,25 +153,40 @@ def test_socket_closed_at_commit_cannot_implicitly_reconnect(http_recipient):
         transport.http.close()
         return True
 
-    result = mcp_client.call_tool_sync(url, None, "inspect_picture", PUBLIC,
-                                      disclosure_context = make_context(recipient = identity, commit = commit))
+    result = mcp_client.call_tool_sync(
+        url,
+        None,
+        "inspect_picture",
+        PUBLIC,
+        disclosure_context = make_context(recipient = identity, commit = commit),
+    )
     assert result == PRIVATE_CALL_ERROR
     assert calls == []
 
 
 @pytest.mark.parametrize("failure", ["disconnect", "rpc_error"])
-def test_unknown_delivery_and_error_echoes_are_fixed_and_never_retried(http_recipient, caplog, failure):
+def test_unknown_delivery_and_error_echoes_are_fixed_and_never_retried(
+    http_recipient, caplog, failure
+):
     url, calls, state = http_recipient
     identity = mcp_client.prepare_mcp_image_recipient(url)
     state[failure] = True
-    result = mcp_client.call_tool_sync(url, None, "inspect_picture", PUBLIC,
-                                      disclosure_context = make_context(recipient = identity), timeout = 3)
+    result = mcp_client.call_tool_sync(
+        url,
+        None,
+        "inspect_picture",
+        PUBLIC,
+        disclosure_context = make_context(recipient = identity),
+        timeout = 3,
+    )
     assert result == PRIVATE_CALL_ERROR
     assert len(calls) == 1
     assert ENCODED not in caplog.text
 
 
-@pytest.mark.parametrize("header", ["Host", "Content-Length", "Transfer-Encoding", "Mcp-Session-Id"])
+@pytest.mark.parametrize(
+    "header", ["Host", "Content-Length", "Transfer-Encoding", "Mcp-Session-Id"]
+)
 def test_private_http_cannot_override_destination_or_framing(http_recipient, header):
     url, calls, state = http_recipient
     with pytest.raises(mcp_client._PrivateTransportUnavailable):
@@ -150,7 +194,9 @@ def test_private_http_cannot_override_destination_or_framing(http_recipient, hea
     assert calls == []
 
 
-@pytest.mark.parametrize("revocation", ["config", "consent", "recipient", "arguments", "cancel", "tool"])
+@pytest.mark.parametrize(
+    "revocation", ["config", "consent", "recipient", "arguments", "cancel", "tool"]
+)
 def test_revocations_prevent_actual_http_invocation(http_recipient, revocation):
     url, calls, state = http_recipient
     identity = mcp_client.prepare_mcp_image_recipient(url)
@@ -159,10 +205,13 @@ def test_revocations_prevent_actual_http_invocation(http_recipient, revocation):
     if revocation == "cancel":
         cancel.set()
     result = mcp_client.call_tool_sync(
-        url + ("?changed=1" if revocation == "recipient" else ""), None,
+        url + ("?changed=1" if revocation == "recipient" else ""),
+        None,
         "another_tool" if revocation == "tool" else "inspect_picture",
         {**PUBLIC, "options": {"limit": 3}} if revocation == "arguments" else PUBLIC,
-        disclosure_context = context, config_check = lambda: revocation != "config", cancel_event = cancel,
+        disclosure_context = context,
+        config_check = lambda: revocation != "config",
+        cancel_event = cancel,
     )
     assert result.startswith("Error:")
     assert calls == []
@@ -185,8 +234,15 @@ def test_http_config_revoked_while_connecting_prevents_write(http_recipient, mon
 
     monkeypatch.setattr(mcp_client._PrivateMcpTransport, "_connection", paused)
     with ThreadPoolExecutor(1) as pool:
-        future = pool.submit(mcp_client.call_tool_sync, url, None, "inspect_picture", PUBLIC,
-                             disclosure_context = make_context(recipient = identity), config_check = current.is_set)
+        future = pool.submit(
+            mcp_client.call_tool_sync,
+            url,
+            None,
+            "inspect_picture",
+            PUBLIC,
+            disclosure_context = make_context(recipient = identity),
+            config_check = current.is_set,
+        )
         assert reached.wait(5)
         current.clear()
         release.set()
@@ -201,8 +257,13 @@ def test_racing_private_calls_have_one_physical_invocation(http_recipient):
 
     def call():
         barrier.wait()
-        return mcp_client.call_tool_sync(url, None, "inspect_picture", PUBLIC,
-                                         disclosure_context = make_context(recipient = identity))
+        return mcp_client.call_tool_sync(
+            url,
+            None,
+            "inspect_picture",
+            PUBLIC,
+            disclosure_context = make_context(recipient = identity),
+        )
 
     with ThreadPoolExecutor(2) as pool:
         results = list(pool.map(lambda _: call(), range(2)))
@@ -219,14 +280,19 @@ def test_sanitizer_failure_withholds_entire_http_result(http_recipient, monkeypa
         raise RuntimeError(ENCODED)
 
     monkeypatch.setattr(context, "redact_result", fail)
-    result = mcp_client.call_tool_sync(url, None, "inspect_picture", PUBLIC, disclosure_context = context)
+    result = mcp_client.call_tool_sync(
+        url, None, "inspect_picture", PUBLIC, disclosure_context = context
+    )
     assert result == PRIVATE_CALL_ERROR
     assert len(calls) == 1
 
 
-def test_real_stdio_private_send_suppresses_stderr_notifications_and_echoes(tmp_path, monkeypatch, capfd):
+def test_real_stdio_private_send_suppresses_stderr_notifications_and_echoes(
+    tmp_path, monkeypatch, capfd
+):
     script = tmp_path / "server.py"
-    script.write_text('''import json, sys
+    script.write_text(
+        """import json, sys
 for line in sys.stdin:
     message = json.loads(line)
     if message['method'] == 'notifications/initialized':
@@ -240,12 +306,20 @@ for line in sys.stdin:
         result = {'content': [{'type': 'text', 'text': image[:20]}, {'type': 'text', 'text': image[20:]},
                               {'type': 'text', 'text': 'safe stdio label'}]}
     print(json.dumps({'jsonrpc': '2.0', 'id': message['id'], 'result': result}), flush=True)
-''', encoding = "utf-8")
+""",
+        encoding = "utf-8",
+    )
     monkeypatch.setattr(mcp_client, "stdio_mcp_enabled", lambda: True)
     url = mcp_client.join_stdio_command([sys.executable, "-u", str(script)])
     identity = mcp_client.prepare_mcp_image_recipient(url)
-    result = mcp_client.call_tool_sync(url, None, "classify_frame", PUBLIC,
-                                      disclosure_context = make_context(recipient = identity, tool_name = "classify_frame"), timeout = 5)
+    result = mcp_client.call_tool_sync(
+        url,
+        None,
+        "classify_frame",
+        PUBLIC,
+        disclosure_context = make_context(recipient = identity, tool_name = "classify_frame"),
+        timeout = 5,
+    )
     assert REDACTED_IMAGE in result
     assert "safe stdio label" in result
     assert ENCODED not in result
@@ -265,13 +339,21 @@ def test_direct_execute_cannot_bypass_enabled_mapping_with_raw_payload(monkeypat
     from core.inference import tools
     from storage import studio_db
 
-    server = {"id": "server-1", "url": "https://example.test/mcp", "is_enabled": True,
-              "image_input_mappings_json": json.dumps([{"tool": "inspect_picture", "field": "picture", "encoding": "base64"}]),
-              "config_revision": 1}
+    server = {
+        "id": "server-1",
+        "url": "https://example.test/mcp",
+        "is_enabled": True,
+        "image_input_mappings_json": json.dumps(
+            [{"tool": "inspect_picture", "field": "picture", "encoding": "base64"}]
+        ),
+        "config_revision": 1,
+    }
     calls = []
     monkeypatch.setattr(tools.mcp_servers_db, "get_server_for_tool", lambda _: server)
     monkeypatch.setattr(studio_db, "get_chat_setting_with_revision", lambda _: (enabled, "r1"))
-    monkeypatch.setattr(tools, "call_tool_sync", lambda **kwargs: calls.append(kwargs) or "ordinary result")
+    monkeypatch.setattr(
+        tools, "call_tool_sync", lambda **kwargs: calls.append(kwargs) or "ordinary result"
+    )
     monkeypatch.setattr(tools, "_fit_result_to_room", lambda result, *args: result)
     arguments = {"picture": ENCODED}
     result = tools.execute_tool("mcp__server-1__inspect_picture", arguments)
@@ -286,7 +368,8 @@ def test_server_invalidation_removes_prepared_recipient(http_recipient):
     url, calls, state = http_recipient
     identity = mcp_client.prepare_mcp_image_recipient(url)
     mcp_client.close_mcp_sessions(url)
-    result = mcp_client.call_tool_sync(url, None, "inspect_picture", PUBLIC,
-                                      disclosure_context = make_context(recipient = identity))
+    result = mcp_client.call_tool_sync(
+        url, None, "inspect_picture", PUBLIC, disclosure_context = make_context(recipient = identity)
+    )
     assert result.startswith("Error:")
     assert calls == []

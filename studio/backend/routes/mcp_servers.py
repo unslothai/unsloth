@@ -647,7 +647,6 @@ async def refresh_mcp_server_tools(
             current = mcp_servers_db.get_server(server_id)
             if current is not None and schema_digest != current.get("image_input_schema_digest"):
                 from state.tool_approvals import revoke_mcp_image_disclosures
-
                 revoke_mcp_image_disclosures(subject = current_subject, server_id = server_id)
                 mcp_servers_db.update_server(
                     server_id,

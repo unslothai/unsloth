@@ -71,7 +71,9 @@ from core.inference.tool_stream_exec import (
 )
 from core.inference.tools import build_rag_autoinject, execute_tool, is_high_risk_tool_call
 from core.inference.mcp_image_tool_loop import (
-    abort_call_decision, mcp_image_run_lifetime, wait_call_decision,
+    abort_call_decision,
+    mcp_image_run_lifetime,
+    wait_call_decision,
 )
 from state.tool_approvals import (
     TOOL_REJECTED_MESSAGE,
@@ -1628,7 +1630,8 @@ async def stream_with_studio_tools(
             card_id = decision.card_id
             image_approval = (
                 await asyncio.to_thread(mcp_image_run.prepare_call, name, arguments, card_id)
-                if mcp_image_run is not None else None
+                if mcp_image_run is not None
+                else None
             )
             needs_confirmation = (
                 confirm_tool_calls and not bypass_permissions and permission_mode != "off"
@@ -1636,9 +1639,15 @@ async def stream_with_studio_tools(
             if needs_confirmation and permission_mode == "auto":
                 needs_confirmation = is_high_risk_tool_call(name, arguments)
             needs_confirmation = needs_confirmation or image_approval is not None
-            approval_id = image_approval.approval_id if image_approval else (new_approval_id() if needs_confirmation else "")
+            approval_id = (
+                image_approval.approval_id
+                if image_approval
+                else (new_approval_id() if needs_confirmation else "")
+            )
             decision_slot = (
-                image_approval.slot if image_approval else (begin_tool_decision(session_id, approval_id) if needs_confirmation else None)
+                image_approval.slot
+                if image_approval
+                else (begin_tool_decision(session_id, approval_id) if needs_confirmation else None)
             )
 
             start_event = decision.tool_start_event()
@@ -1657,7 +1666,11 @@ async def stream_with_studio_tools(
                 if decision_slot is not None:
                     waiter = asyncio.ensure_future(
                         asyncio.to_thread(
-                            wait_call_decision, image_approval, decision_slot, approval_id, cancel_event,
+                            wait_call_decision,
+                            image_approval,
+                            decision_slot,
+                            approval_id,
+                            cancel_event,
                             ordinary_wait = wait_tool_decision,
                         )
                     )
@@ -1685,7 +1698,9 @@ async def stream_with_studio_tools(
                     decision_slot = None
             finally:
                 if decision_slot is not None:
-                    abort_call_decision(image_approval, decision_slot, approval_id, abort_tool_decision)
+                    abort_call_decision(
+                        image_approval, decision_slot, approval_id, abort_tool_decision
+                    )
 
             if denied:
                 yield _sse(

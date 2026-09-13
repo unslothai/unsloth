@@ -46,7 +46,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     if "image_input_schema_digest" not in cols:
         conn.execute("ALTER TABLE mcp_servers ADD COLUMN image_input_schema_digest TEXT")
     if "config_revision" not in cols:
-        conn.execute("ALTER TABLE mcp_servers ADD COLUMN config_revision INTEGER NOT NULL DEFAULT 1")
+        conn.execute(
+            "ALTER TABLE mcp_servers ADD COLUMN config_revision INTEGER NOT NULL DEFAULT 1"
+        )
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS mcp_servers_builtin_id ON mcp_servers(builtin_id)"
     )

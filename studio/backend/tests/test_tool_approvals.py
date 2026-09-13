@@ -300,18 +300,24 @@ def test_image_disclosure_requires_subject_and_purpose_specific_resolver():
     binding = _image_binding()
     approval_id, slot = begin_mcp_image_disclosure(binding)
     assert resolve_tool_decision(approval_id, "allow", session_id = binding.session_id) is False
-    assert resolve_mcp_image_disclosure(
-        approval_id,
-        "allow",
-        current_subject = "account-b",
-        session_id = binding.session_id,
-    ) is False
-    assert resolve_mcp_image_disclosure(
-        approval_id,
-        "allow",
-        current_subject = binding.subject,
-        session_id = binding.session_id,
-    ) is True
+    assert (
+        resolve_mcp_image_disclosure(
+            approval_id,
+            "allow",
+            current_subject = "account-b",
+            session_id = binding.session_id,
+        )
+        is False
+    )
+    assert (
+        resolve_mcp_image_disclosure(
+            approval_id,
+            "allow",
+            current_subject = binding.subject,
+            session_id = binding.session_id,
+        )
+        is True
+    )
     assert wait_mcp_image_disclosure(slot, approval_id) == "allow"
 
 
@@ -348,7 +354,7 @@ def test_revocation_cancels_pending_and_allowed_image_disclosures():
     assert wait_mcp_image_disclosure(first_slot, first_id, timeout = 0.1) == "deny"
     assert wait_mcp_image_disclosure(second_slot, second_id, timeout = 0.1) == "deny"
     assert not consume_mcp_image_disclosure(second_id, second, second.recipient)
-    consume_mcp_image_disclosure,
-    resolve_mcp_image_disclosure,
-    revoke_mcp_image_disclosures,
-    wait_mcp_image_disclosure,
+    (consume_mcp_image_disclosure,)
+    (resolve_mcp_image_disclosure,)
+    (revoke_mcp_image_disclosures,)
+    (wait_mcp_image_disclosure,)

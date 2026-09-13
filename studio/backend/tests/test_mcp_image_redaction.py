@@ -18,30 +18,43 @@ DATA = b"\x89PNG\r\n\x1a\nunique-private-image-synthetic-\xfb\xff\xef"
 ENCODED = base64.b64encode(DATA).decode()
 PUBLIC = {"picture": "mcp-image-ref-" + "x" * 40, "options": {"limit": 2}}
 SCHEMA = {
-    "type": "object", "properties": {
+    "type": "object",
+    "properties": {
         "picture": {"type": "string"},
         "options": {"type": "object", "properties": {"limit": {"type": "integer"}}},
-    }, "required": ["picture"],
+    },
+    "required": ["picture"],
 }
 
 
 def make_context(**kwargs):
-    return McpImageCallContext(**{
-        "public_arguments": PUBLIC,
-        "image": SimpleNamespace(data = DATA, size_bytes = len(DATA),
-                                 sha256 = hashlib.sha256(DATA).hexdigest(), mime_type = "image/png"),
-        "field": "picture", "encoding": "base64", "original_schema": SCHEMA,
-        "recipient": "recipient-a", "commit": lambda recipient: True,
-        "tool_name": "inspect_picture",
-        **kwargs,
-    })
+    return McpImageCallContext(
+        **{
+            "public_arguments": PUBLIC,
+            "image": SimpleNamespace(
+                data = DATA,
+                size_bytes = len(DATA),
+                sha256 = hashlib.sha256(DATA).hexdigest(),
+                mime_type = "image/png",
+            ),
+            "field": "picture",
+            "encoding": "base64",
+            "original_schema": SCHEMA,
+            "recipient": "recipient-a",
+            "commit": lambda recipient: True,
+            "tool_name": "inspect_picture",
+            **kwargs,
+        }
+    )
 
 
 @pytest.mark.parametrize("encoding", ["base64", "data_url"])
 def test_only_ephemeral_copy_gets_encoded_image(encoding):
     context = make_context(encoding = encoding)
     wire = context.prepare_wire(PUBLIC)
-    assert wire["picture"] == (ENCODED if encoding == "base64" else "data:image/png;base64," + ENCODED)
+    assert wire["picture"] == (
+        ENCODED if encoding == "base64" else "data:image/png;base64," + ENCODED
+    )
     wire["options"]["limit"] = 5
     assert PUBLIC["options"]["limit"] == 2
     assert PUBLIC["picture"].startswith("mcp-image-ref-")
@@ -83,14 +96,17 @@ def test_commit_checks_actual_recipient_and_is_one_use_under_race():
     assert calls == ["recipient-a"]
 
 
-@pytest.mark.parametrize("echo", [
-    ENCODED,
-    "data:image/png;base64," + ENCODED,
-    "data:IMAGE/JPEG;charset=utf-8;BASE64," + ENCODED,
-    base64.urlsafe_b64encode(DATA).decode().rstrip("="),
-    " \r\n".join(ENCODED),
-    "Result: " + ENCODED + "; done",
-])
+@pytest.mark.parametrize(
+    "echo",
+    [
+        ENCODED,
+        "data:image/png;base64," + ENCODED,
+        "data:IMAGE/JPEG;charset=utf-8;BASE64," + ENCODED,
+        base64.urlsafe_b64encode(DATA).decode().rstrip("="),
+        " \r\n".join(ENCODED),
+        "Result: " + ENCODED + "; done",
+    ],
+)
 def test_finite_echo_forms_are_withheld(echo):
     assert make_context().redact_result(echo) == REDACTED_IMAGE
 
@@ -125,8 +141,10 @@ def test_adjacent_text_fragments_are_checked_before_flattening(as_objects):
 
 
 def test_unrelated_image_and_text_remain_unchanged():
-    result = {"content": [{"type": "image", "data": "YW5vdGhlciBpbWFnZQ==", "mimeType": "image/png"}],
-              "structuredContent": {"label": "cat", "probability": 0.9}}
+    result = {
+        "content": [{"type": "image", "data": "YW5vdGhlciBpbWFnZQ==", "mimeType": "image/png"}],
+        "structuredContent": {"label": "cat", "probability": 0.9},
+    }
     assert make_context().redact_result(result) == result
 
 
@@ -153,7 +171,10 @@ def test_limits_cycles_and_arbitrary_objects_fail_closed(monkeypatch):
 def test_closed_context_withholds_result_and_cannot_prepare_or_commit():
     context = make_context()
     context.close()
-    for operation in (lambda: context.redact_result("safe"), lambda: context.prepare_wire(PUBLIC),
-                      lambda: context.commit_at_send("recipient-a")):
+    for operation in (
+        lambda: context.redact_result("safe"),
+        lambda: context.prepare_wire(PUBLIC),
+        lambda: context.commit_at_send("recipient-a"),
+    ):
         with pytest.raises(McpImageDisclosureError):
             operation()

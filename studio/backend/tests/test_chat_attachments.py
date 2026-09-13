@@ -337,9 +337,7 @@ def test_private_mcp_attachment_resolver_requires_exact_thread_and_marker(tmp_pa
     assert (resolved.width, resolved.height) == (1, 1)
 
     with pytest.raises(McpImageDisclosureError, match = "no longer available"):
-        resolve_tool_only_image(
-            thread_id = "other-thread", message_id = "msg-1", attachment_id = "att-1"
-        )
+        resolve_tool_only_image(thread_id = "other-thread", message_id = "msg-1", attachment_id = "att-1")
 
 
 def test_private_mcp_attachment_resolver_rejects_ordinary_and_deleted_images(tmp_path, monkeypatch):
@@ -350,18 +348,14 @@ def test_private_mcp_attachment_resolver_rejects_ordinary_and_deleted_images(tmp
 
     _seed(tmp_path, monkeypatch, [_image_attachment()])
     with pytest.raises(McpImageDisclosureError, match = "not a private MCP image"):
-        resolve_tool_only_image(
-            thread_id = "thread-1", message_id = "msg-1", attachment_id = "att-1"
-        )
+        resolve_tool_only_image(thread_id = "thread-1", message_id = "msg-1", attachment_id = "att-1")
 
     attachment = _image_attachment()
     attachment["mcpToolOnly"] = True
     studio_db.upsert_chat_message(_message("msg-1", attachments = [attachment]))
     assert studio_db.delete_chat_attachment("msg-1", "att-1") is True
     with pytest.raises(McpImageDisclosureError, match = "no longer available"):
-        resolve_tool_only_image(
-            thread_id = "thread-1", message_id = "msg-1", attachment_id = "att-1"
-        )
+        resolve_tool_only_image(thread_id = "thread-1", message_id = "msg-1", attachment_id = "att-1")
 
 
 def test_attachment_file_tolerates_whitespace_in_base64(tmp_path, monkeypatch):

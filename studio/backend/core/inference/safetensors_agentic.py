@@ -1396,11 +1396,20 @@ def run_safetensors_tool_loop(
                 needs_confirm = is_high_risk_tool_call(decision.tool_name, decision.arguments)
             image_approval = (
                 mcp_image_run.prepare_call(decision.tool_name, decision.arguments, decision.card_id)
-                if mcp_image_run is not None else None
+                if mcp_image_run is not None
+                else None
             )
             needs_confirm = needs_confirm or image_approval is not None
-            approval_id = image_approval.approval_id if image_approval else (new_approval_id() if needs_confirm else "")
-            decision_slot = image_approval.slot if image_approval else (begin_tool_decision(session_id, approval_id) if needs_confirm else None)
+            approval_id = (
+                image_approval.approval_id
+                if image_approval
+                else (new_approval_id() if needs_confirm else "")
+            )
+            decision_slot = (
+                image_approval.slot
+                if image_approval
+                else (begin_tool_decision(session_id, approval_id) if needs_confirm else None)
+            )
             start_event = decision.tool_start_event()
             start_event["approval_id"] = approval_id
             start_event["awaiting_confirmation"] = needs_confirm
@@ -1456,7 +1465,9 @@ def run_safetensors_tool_loop(
                 decision_slot = None
             finally:
                 if decision_slot is not None:
-                    abort_call_decision(image_approval, decision_slot, approval_id, abort_tool_decision)
+                    abort_call_decision(
+                        image_approval, decision_slot, approval_id, abort_tool_decision
+                    )
 
             eff_timeout = None if tool_call_timeout >= 9999 else tool_call_timeout
             # RAG: cap paraphrased KB re-searches that slip past the dup guard.

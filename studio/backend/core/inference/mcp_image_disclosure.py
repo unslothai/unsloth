@@ -139,7 +139,9 @@ def validate_image_input_mappings(
 
 
 def model_schema_for_mapping(
-    schema: dict[str, Any], field: str, attachment_ref: str | None = None
+    schema: dict[str, Any],
+    field: str,
+    attachment_ref: str | None = None,
 ) -> dict[str, Any]:
     """Return a public schema that accepts a selector and contains no payload hints."""
     _eligible_field(schema, field)
@@ -204,7 +206,11 @@ def resolve_tool_only_image(
     image_value = None
     if isinstance(content, list):
         for part in content:
-            if isinstance(part, dict) and part.get("type") == "image" and isinstance(part.get("image"), str):
+            if (
+                isinstance(part, dict)
+                and part.get("type") == "image"
+                and isinstance(part.get("image"), str)
+            ):
                 image_value = part["image"]
                 break
     if image_value is None:
@@ -219,7 +225,12 @@ def resolve_tool_only_image(
     except (UnidentifiedImageError, OSError, ValueError) as exc:
         raise McpImageDisclosureError("The selected image is invalid") from exc
     expected_format = {"image/png": "PNG", "image/jpeg": "JPEG", "image/webp": "WEBP"}[mime]
-    if image_format != expected_format or width <= 0 or height <= 0 or width * height > MAX_IMAGE_PIXELS:
+    if (
+        image_format != expected_format
+        or width <= 0
+        or height <= 0
+        or width * height > MAX_IMAGE_PIXELS
+    ):
         raise McpImageDisclosureError("The selected image format or dimensions are invalid")
     return ResolvedImageAttachment(
         message_id = message_id,
@@ -234,12 +245,7 @@ def resolve_tool_only_image(
 
 
 def issue_mcp_image_reference(
-    *,
-    subject: str,
-    thread_id: str,
-    generation_id: str,
-    message_id: str,
-    attachment_id: str,
+    *, subject: str, thread_id: str, generation_id: str, message_id: str, attachment_id: str
 ) -> McpImageReference:
     """Mint a selector for one verified attachment in the authenticated run."""
     if not subject or not thread_id or not generation_id:
@@ -267,11 +273,7 @@ def issue_mcp_image_reference(
 
 
 def resolve_mcp_image_reference(
-    reference: str,
-    *,
-    subject: str,
-    thread_id: str,
-    generation_id: str,
+    reference: str, *, subject: str, thread_id: str, generation_id: str
 ) -> tuple[McpImageReference, ResolvedImageAttachment]:
     """Resolve a selector against live conversation storage and immutable bytes."""
     with _reference_lock:
