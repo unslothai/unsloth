@@ -630,9 +630,7 @@ class TestTheDirectIoGateNeedsEveryDeviceRead:
         """The discrete gfx1100 beside it is exactly the trap: the set comes back
         empty, the launch looks like two discrete cards, and the unreadable one may
         be the APU."""
-        monkeypatch.setitem(
-            sys.modules, "torch", self._torch(["gfx1100", "gfx1151"], raises_on = 1)
-        )
+        monkeypatch.setitem(sys.modules, "torch", self._torch(["gfx1100", "gfx1151"], raises_on = 1))
         assert LlamaCppBackend._rocm_unified_memory_gpu_ids() == set()
         assert LlamaCppBackend._rocm_classification_answered() is False
 
