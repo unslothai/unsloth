@@ -30,7 +30,7 @@ HELPERS=$(awk '
     grab && /^}/ { grab = 0 }
 ' "$SETUP_SH")
 SELECTOR=$(awk '
-    /^if \[ -n "\$\{UV_CACHE_DIR:-\}" \]; then$/ { grab = 1 }
+    /^_uv_caller_value=false$/ { grab = 1 }
     grab { print }
     grab && /^fi$/ { exit }
 ' "$SETUP_SH")
@@ -145,6 +145,21 @@ for shell in sh bash; do
     warm "$META" wheels-v6 torch.whl
     assert_eq "$shell: package bytes beside metadata do count" \
         "$META" "$(run "$shell" unset "" unset "" "$HOME_DIR")"
+
+    # An all-whitespace UV_CACHE_DIR is not a caller's choice. install.sh's selector decides
+    # this with `case *[![:space:]]*`; a plain `-n` here would read the same value as a choice
+    # and hand uv `--cache-dir '   '`, so the two selectors would answer differently for one
+    # environment. Whitespace-only falls through to the marker, exactly as it does in install.sh.
+    WS="$CASE/whitespace/uv"
+    warm "$WS"
+    record "$HOME_DIR" "$WS\\n"
+    assert_eq "$shell: an all-whitespace UV_CACHE_DIR is not a caller value" \
+        "$WS" "$(run "$shell" value "   " unset "" "$HOME_DIR")"
+    assert_eq "$shell: a tab-only UV_CACHE_DIR is not a caller value" \
+        "$WS" "$(run "$shell" value "$(printf '\t')" unset "" "$HOME_DIR")"
+    # ...while one real character in it still is.
+    assert_eq "$shell: a caller value with surrounding space is still a caller value" \
+        " /caller/uv " "$(run "$shell" value " /caller/uv " unset "" "$HOME_DIR")"
 
     for bucket in archive-v0 builds-v0 built-wheels-v3 sdists-v9; do
         BUCKET_CACHE="$CASE/$bucket/uv"

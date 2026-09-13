@@ -1052,7 +1052,14 @@ _UV_MARKER_LF=${_UV_MARKER_LF%.}
 # "uv's default if warm" tier, unlike install.sh: it decides before anything is recorded; here
 # the decision is written down (and the CLI injects UV_CACHE_DIR for `unsloth studio update`),
 # and such a tier would move an update off the installer's cache with nothing recording it.
-if [ -n "${UV_CACHE_DIR:-}" ]; then
+_uv_caller_value=false
+# `*[![:space:]]*`, not `-n`: the same test install.sh's selector uses, so an all-whitespace
+# UV_CACHE_DIR is not read as a caller's choice on one side and handed to uv as
+# `--cache-dir '   '` on the other. The two selectors have to answer alike.
+case "${UV_CACHE_DIR-}" in
+    *[![:space:]]*) _uv_caller_value=true ;;
+esac
+if [ "$_uv_caller_value" = true ]; then
     # A caller value wins outright, here as in install.sh and in the CLI.
     :
 elif _uv_no_cache_requested; then
@@ -1078,6 +1085,7 @@ else
     fi
     unset _uv_recorded
 fi
+unset _uv_caller_value
 VENV_T5_530_DIR="$RUNTIME_ROOT/.venv_t5_530"
 VENV_T5_550_DIR="$RUNTIME_ROOT/.venv_t5_550"
 VENV_T5_510_DIR="$RUNTIME_ROOT/.venv_t5_510"

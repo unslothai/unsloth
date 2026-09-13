@@ -609,7 +609,11 @@ _record_uv_cache_choice() {
     if [ "$_UV_MARKER_SAVED" != true ]; then
         if [ -e "$_uv_marker_file" ] || [ -L "$_uv_marker_file" ]; then
             # One we cannot read is one we cannot put back, so leave it alone.
-            _UV_MARKER_PREVIOUS=$(cat "$_uv_marker_file" 2>/dev/null) || return 0
+            # Same sentinel the readers use: command substitution strips EVERY trailing
+            # newline, and a rollback that rewrote `path\n\n` as `path\n` would name a
+            # different directory. install.ps1 restores the bytes verbatim; so does this.
+            _UV_MARKER_PREVIOUS=$(cat "$_uv_marker_file" 2>/dev/null && printf x) || return 0
+            _UV_MARKER_PREVIOUS=${_UV_MARKER_PREVIOUS%x}
             _UV_MARKER_EXISTED=true
         else
             _UV_MARKER_PREVIOUS=""
@@ -634,7 +638,8 @@ _restore_uv_cache_marker() {
     rm -f "$_uv_marker_file" 2>/dev/null || true
     if [ "$_UV_MARKER_EXISTED" = true ] \
        && ! { [ -e "$_uv_marker_file" ] || [ -L "$_uv_marker_file" ]; }; then
-        printf '%s\n' "$_UV_MARKER_PREVIOUS" > "$_uv_marker_file" 2>/dev/null || true
+        # The saved bytes, verbatim: the delimiter is already part of them.
+        printf '%s' "$_UV_MARKER_PREVIOUS" > "$_uv_marker_file" 2>/dev/null || true
     fi
     _UV_MARKER_SAVED=false
 }

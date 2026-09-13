@@ -632,12 +632,53 @@ else
     bad "helper ordering (resolve=$_resolve_line uv=$_uv_line configure=$_configure_line venv=$_venv_line)"
 fi
 
+# A failed install must put the previous marker back BYTE FOR BYTE. install.ps1 does this with
+# ReadAllBytes/WriteAllBytes; the POSIX side used `$(cat ...)` + `printf '%s\n'`, which strips
+# every trailing newline and re-adds exactly one, so a recorded path whose own last byte is a
+# newline -- the case the reader's sentinel exists to support -- came back naming a DIFFERENT
+# directory. The readers agree on those bytes, so the rollback has to as well.
+ROLLBACK_PROBE="$WORK/rollback.sh"
+printf '%s\n' "$HELPERS" > "$ROLLBACK_PROBE"
+cat >> "$ROLLBACK_PROBE" <<'RB'
+_UV_MARKER_SAVED=false
+_UV_MARKER_EXISTED=false
+_UV_MARKER_PREVIOUS=""
+_STUDIO_INSTALL_COMMITTED=false
+STUDIO_HOME=$1
+UV_CACHE_DIR=$2
+_record_uv_cache_choice
+_restore_uv_cache_marker
+od -An -c < "$STUDIO_HOME/cache/uv-cache-dir" | tr -s ' ' | tr -d '\n'
+RB
+
+for shell in sh bash; do
+    command -v "$shell" >/dev/null 2>&1 || continue
+    for _shape in plain trailing-newline bom-crlf; do
+        _rb_home="$WORK/rollback $shell $_shape"
+        mkdir -p "$_rb_home/cache"
+        case "$_shape" in
+            # The ordinary marker every writer produces.
+            plain)            printf '/previous/uv\n' > "$_rb_home/cache/uv-cache-dir" ;;
+            # A recorded path that itself ends in a newline: two LF bytes on disk.
+            trailing-newline) printf '/previous/uv\n\n' > "$_rb_home/cache/uv-cache-dir" ;;
+            # What an older install.ps1 left behind under Windows PowerShell 5.1.
+            bom-crlf)         printf '\357\273\277/previous/uv\r\n' > "$_rb_home/cache/uv-cache-dir" ;;
+        esac
+        _rb_want=$(od -An -c < "$_rb_home/cache/uv-cache-dir" | tr -s ' ' | tr -d '\n')
+        _rb_got=$($shell "$ROLLBACK_PROBE" "$_rb_home" "/new/uv")
+        if [ "$_rb_want" = "$_rb_got" ]; then
+            ok "$shell: a failed install restores a [$_shape] marker byte for byte"
+        else
+            bad "$shell: rollback rewrote a [$_shape] marker (expected [$_rb_want], got [$_rb_got])"
+        fi
+    done
+done
+
 for _required in \
     '_ISOLATE_UV_CACHE=false' \
     '--isolated-uv-cache) _ISOLATE_UV_CACHE=true' \
     'UNSLOTH_ISOLATE_UV_CACHE' \
     'export UNSLOTH_ISOLATE_UV_CACHE=1' \
-    'unset UV_CACHE_DIR' \
     '_prepare_studio_uv_cache_for_launch'; do
     if grep -Fq -- "$_required" "$INSTALL_SH"; then
         ok "source contract: $_required"
@@ -645,6 +686,21 @@ for _required in \
         bad "missing source contract: $_required"
     fi
 done
+
+# A bare `unset UV_CACHE_DIR` grep cannot fail for the reason it claims: the string appears in
+# five unrelated places in install.sh (the early probe's unwind, no-cache mode, the reroute).
+# What the selector must actually do is drop the value the PROLOGUE defaulted, so pin that
+# adjacency instead.
+if awk '
+    /^[[:space:]]*if \[ "\$\{_UV_CACHE_DEFAULTED:-false\}" = true \]; then$/ { armed = 1; next }
+    armed && /^[[:space:]]*unset UV_CACHE_DIR$/ { found = 1 }
+    armed { armed = 0 }
+    END { exit(found ? 0 : 1) }
+' "$INSTALL_SH"; then
+    ok "the selector drops the cache path the prologue defaulted"
+else
+    bad "the selector no longer unsets a defaulted UV_CACHE_DIR (shared mode is unreachable again)"
+fi
 
 echo ""
 echo "  PASS: $PASS"

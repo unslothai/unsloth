@@ -914,3 +914,33 @@ def test_a_recorded_cache_that_is_no_longer_writable_loses_to_the_studio_cache(
     recorded.chmod(0o755)
     seen = _run_posix(monkeypatch, tmp_path)
     assert seen["env"]["UV_CACHE_DIR"] == str(recorded)
+
+
+@pytest.mark.skipif(
+    os.name != "posix", reason = "POSIX mode bits; chmod(0o555) denies nothing on Windows"
+)
+def test_an_unwritable_studio_cache_is_not_forced_on_setup(monkeypatch, tmp_path, caches):
+    """The last fallback was the one branch here that never probed.
+
+    setup.sh treats any UV_CACHE_DIR it inherits as the caller's choice and skips its own
+    write probe, so handing it a Studio cache uv cannot write aborts every uv command in
+    the update. Leaving the variable alone lets setup.sh probe and fall back to uv's
+    default, which is what it does when it runs standalone.
+    """
+    if os.geteuid() == 0:
+        pytest.skip("root can write anywhere")
+    studio = _studio()
+    studio_cache, _default = caches
+    # Neither the marker nor uv's default can settle it, so the Studio cache is the choice.
+    studio_cache.parent.mkdir(parents = True, exist_ok = True)
+    studio_cache.mkdir(parents = True, exist_ok = True)
+    studio_cache.chmod(0o555)
+    try:
+        seen = _run_posix(monkeypatch, tmp_path)
+    finally:
+        studio_cache.chmod(0o755)
+    assert "UV_CACHE_DIR" not in seen["env"], seen["env"].get("UV_CACHE_DIR")
+
+    # Writable again, and it is handed over as before.
+    seen = _run_posix(monkeypatch, tmp_path)
+    assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache)
