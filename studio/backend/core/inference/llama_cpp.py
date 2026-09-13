@@ -2554,29 +2554,6 @@ def _extract_model_size_b(model_id: str):
     return extract_model_size_b(model_id)
 
 
-_TOOL_TEMPLATE_MARKERS = (
-    "{%- if tools %}",
-    "{%- if tools -%}",
-    "{% if tools %}",
-    "{% if tools -%}",
-    # Defensive templates guard with `tools is defined` before truth-testing
-    # (e.g. Inkling: `{%- if tools is defined and tools -%}`).
-    "{%- if tools is defined",
-    "{% if tools is defined",
-    '"role" == "tool"',
-    "'role' == 'tool'",
-    'message.role == "tool"',
-    "message.role == 'tool'",
-    # DeepSeek: no top-level ``{% if tools %}`` block; it gates emission on
-    # ``message['role'] == 'tool'`` plus ``message['tool_calls'] is defined``.
-    "message['role'] == 'tool'",
-    'message["role"] == "tool"',
-    "message['tool_calls']",
-    'message["tool_calls"]',
-    "tool_calls is defined",
-)
-
-
 # Canonical reasoning_effort levels, weakest -> strongest. Used to read the
 # discrete set a template branches on (e.g. GLM-5.2 uses 'high' | 'max', Inkling
 # uses the full 'none'..'max' ladder) so we only ever offer levels the template
@@ -2748,7 +2725,9 @@ def detect_reasoning_flags(
         flags["preserve_thinking_default"] = bool(_QWEN38_MODEL_RE.search(model_identifier or ""))
         _log(f"{prefix}model supports preserve_thinking")
 
-    if any(marker in tpl for marker in _TOOL_TEMPLATE_MARKERS):
+    from core.inference.template_capabilities import template_supports_tools
+
+    if isinstance(tpl, str) and template_supports_tools(tpl):
         flags["supports_tools"] = True
         _log(f"{prefix}model supports tool calling")
 
