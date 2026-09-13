@@ -70,8 +70,10 @@ _VLLM_TAGS_FALLBACK = [
 def _stable_release_tags() -> list[str]:
     """Stable vLLM releases >= _VLLM_MIN_VERSION, as git tags, oldest first.
 
-    `X.Y.Z` only: rc/dev/post builds are not what users pip install, and a fully
-    yanked release is not one we owe compatibility to.
+    All-numeric versions only: rc/dev/post builds are not what users pip
+    install, and a fully yanked release is not one we owe compatibility to.
+    Hotfixes carry a fourth component (0.9.0.1, 0.10.1.1) and are ordinary
+    installable releases, so the component count is not fixed at three.
     """
     try:
         with urllib.request.urlopen("https://pypi.org/pypi/vllm/json", timeout = 20) as r:
@@ -83,15 +85,14 @@ def _stable_release_tags() -> list[str]:
     for version, files in releases.items():
         if not files or all(f.get("yanked") for f in files):
             continue
-        m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", version)
-        if m is None:
+        if re.fullmatch(r"\d+(?:\.\d+){2,}", version) is None:
             continue
-        parts = tuple(int(g) for g in m.groups())
+        parts = tuple(int(g) for g in version.split("."))
         if parts >= _VLLM_MIN_VERSION:
             versions.append(parts)
     if not versions:
         return list(_VLLM_TAGS_FALLBACK)
-    return [f"v{major}.{minor}.{patch}" for major, minor, patch in sorted(versions)]
+    return ["v" + ".".join(str(p) for p in parts) for parts in sorted(versions)]
 
 
 # `main` catches drift before it ships to PyPI.
@@ -121,22 +122,29 @@ VLLM_BNB_PLUGIN_REPO = "vllm-project/vllm-bnb-plugin"
 VLLM_BNB_PLUGIN_PATH = "vllm_bnb_plugin/bitsandbytes.py"
 
 
-@functools.lru_cache(maxsize = None)
-def _plugin_ref() -> str:
-    """The plugin tag users actually get from `pip install vllm-bnb-plugin`.
+# Used when PyPI cannot be reached. A released tag, never `main`: see _plugin_ref.
+VLLM_BNB_PLUGIN_FALLBACK_REF = "v0.0.3"
 
-    `main` is a moving target: it can carry a fix no release has, and a
-    breaking change there would fail every vLLM version at once. Neither
-    outcome says anything about an installable pair.
+
+@functools.lru_cache(maxsize = None)
+def _plugin_ref() -> str | None:
+    """The plugin tag users get from `pip install vllm-bnb-plugin`, or None.
+
+    Never `main`: an unreleased fix there would hide a broken published
+    plugin, and an unreleased regression would fail every historical vLLM at
+    once. Neither says anything about a pair anyone can install. None means no
+    released ref resolved, which is a skip rather than a verdict.
     """
+    version = None
     try:
         with urllib.request.urlopen("https://pypi.org/pypi/vllm-bnb-plugin/json", timeout = 20) as r:
             version = json.loads(r.read().decode("utf-8"))["info"]["version"]
     except (urllib.error.URLError, TimeoutError, ValueError, KeyError):
-        return "main"
-    return (
-        f"v{version}" if _fetch_text(VLLM_BNB_PLUGIN_REPO, f"v{version}", "README.md") else "main"
-    )
+        pass
+    for ref in (f"v{version}" if version else None, VLLM_BNB_PLUGIN_FALLBACK_REF):
+        if ref and _api_status(f"repos/{VLLM_BNB_PLUGIN_REPO}/commits/{ref}") != 404:
+            return ref
+    return None
 
 
 # Only these two are REQUIRED. unsloth_zoo subclasses BitsAndBytesConfig and
@@ -383,6 +391,8 @@ def test_vllm_bitsandbytes_symbols_have_a_home(tag: str):
     # Out of tree from 0.28. The plugin versions separately, so there is no tag
     # to map onto; the published release is what a user ends up with.
     plugin_ref = _plugin_ref()
+    if plugin_ref is None:
+        pytest.skip(f"no released {VLLM_BNB_PLUGIN_REPO} ref resolved; nothing reproducible to check")
     plugin = _fetch_text(VLLM_BNB_PLUGIN_REPO, plugin_ref, VLLM_BNB_PLUGIN_PATH)
     assert plugin is not None, (
         f"{tag}: bitsandbytes is absent in tree AND {VLLM_BNB_PLUGIN_PATH} could "
