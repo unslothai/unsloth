@@ -342,7 +342,8 @@ fp8_block_matmul = (
 
 def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dtype):
     """Blockwise fp8 weight dequant for any shape: triton when the weight tiles
-    evenly into block_size, else a torch-native per-block scale expansion."""
+    evenly into block_size and this GPU can compile its fp8 dtype, else a
+    torch-native per-block scale expansion."""
     m, n = weight.shape
     if weight_scale.dtype not in (torch.float32, torch.float16, torch.bfloat16):
         weight_scale = weight_scale.to(torch.float32)  # e.g. float8_e8m0fnu scales break triton
@@ -351,9 +352,22 @@ def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dt
         # Per-tensor scale: the normal forward stashes the un-expanded scalar, which repeat_interleave
         # cannot grow to (m, n).
         return (weight.to(torch.float32) * weight_scale.float()).to(out_dtype)
-    if m % block_size[0] != 0 or n % block_size[1] != 0 or block_size[0] != block_size[1]:
-        # Uneven tiling, or rectangular blocks: the triton kernel uses a single BLOCK_SIZE for both axes
-        # and derives the column scale stride from it, so it mis-indexes when block_size[0] != [1].
+    # fp8e4nv (torch.float8_e4m3fn) only exists from sm89 on, so the triton kernel below cannot be
+    # compiled for older architectures; expand the scales in torch rather than failing to fall back.
+    kernel_fp8_unsupported = (
+        weight.is_cuda
+        and weight.dtype == torch.float8_e4m3fn
+        and torch.cuda.get_device_capability(weight.device)[0] < 9
+    )
+    if (
+        m % block_size[0] != 0
+        or n % block_size[1] != 0
+        or block_size[0] != block_size[1]
+        or kernel_fp8_unsupported
+    ):
+        # Uneven tiling, rectangular blocks, or an fp8 dtype this GPU cannot compile: the triton kernel
+        # uses a single BLOCK_SIZE for both axes and derives the column scale stride from it, so it
+        # mis-indexes when block_size[0] != [1].
         s_full = weight_scale.repeat_interleave(block_size[0], 0)[:m]
         s_full = s_full.repeat_interleave(block_size[1], 1)[:, :n]
         return (weight.to(torch.float32) * s_full).to(out_dtype)
