@@ -99,6 +99,12 @@ import {
   useModelMaxPositionEmbeddings,
 } from "../hooks/use-model-defaults";
 import { perModelConfigsEqual } from "../model-config/apply-per-model-config";
+import {
+  CONTEXT_LENGTH_FINE_STEP,
+  CONTEXT_LENGTH_SLIDER_STEPS,
+  getContextLengthSliderStep,
+  snapContextLengthToStep,
+} from "../model-config/context-length-step";
 import { ggufQuantLabel } from "../model-config/model-identity";
 import {
   CACHE_RAM_LLAMA_DEFAULT,
@@ -1875,6 +1881,9 @@ export function ModelConfigPage({
     advancedPreference ?? (autoOpenAdvanced || autoOpenForMlxKvBits);
   const toggleAdvanced = saveAdvancedSettingsOpen;
   const contextInputRef = useRef<NumericValueInputHandle>(null);
+  const [contextSliderStep, setContextSliderStep] = useState<number>(
+    CONTEXT_LENGTH_FINE_STEP,
+  );
   const maxSeqLengthInputRef = useRef<NumericValueInputHandle>(null);
   const gpuLayersInputRef = useRef<NumericValueInputHandle>(null);
   const moeLayersInputRef = useRef<NumericValueInputHandle>(null);
@@ -2367,9 +2376,18 @@ export function ModelConfigPage({
       )
     : contextValue;
   const contextSliderValue = contextIsAuto ? 0 : contextValue;
+  const effectiveContextSliderStep = getContextLengthSliderStep(
+    minContext,
+    maxContext,
+    contextSliderStep,
+  );
   const setContextLength = (v: number) => update({ customContextLength: v });
   const setContextSliderValue = (v: number) =>
-    update({ customContextLength: v === 0 ? null : v });
+    update({
+      customContextLength: v === 0 ? null : snapContextLengthToStep(
+        v, minContext, maxContext, effectiveContextSliderStep,
+      ),
+    });
   const rawBaseline = loadedConfig ?? DEFAULT_PER_MODEL_CONFIG;
   const baseline = resolvedIsDiffusion
     ? withoutUnsupportedDiffusionSettings(rawBaseline, gpuIndexKind)
@@ -2944,7 +2962,7 @@ export function ModelConfigPage({
                   <Slider
                     min={0}
                     max={maxContext}
-                    step={128}
+                    step={effectiveContextSliderStep}
                     value={[contextSliderValue]}
                     onValueChange={([v]) => setContextSliderValue(v)}
                     className="panel-slider"
@@ -2963,6 +2981,29 @@ export function ModelConfigPage({
                     <span>Auto</span>
                     <span>{maxContext.toLocaleString()}</span>
                   </div>
+                  <label className="flex items-center justify-between gap-2 text-ui-11 text-muted-foreground">
+                    Slider step
+                    <select
+                      aria-label="Context length slider step"
+                      className="rounded border border-border bg-background px-2 py-1 text-foreground"
+                      value={effectiveContextSliderStep}
+                      onChange={(event) =>
+                        setContextSliderStep(Number(event.target.value))
+                      }
+                    >
+                      {CONTEXT_LENGTH_SLIDER_STEPS.map(({ value, label }) => (
+                        <option
+                          key={value}
+                          value={value}
+                          disabled={
+                            getContextLengthSliderStep(minContext, maxContext, value) !== value
+                          }
+                        >
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
               ) : null}
               {!contextIsAuto &&

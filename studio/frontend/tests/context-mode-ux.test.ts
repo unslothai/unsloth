@@ -28,7 +28,7 @@ test("the far-left slider position is Auto", () => {
     /const contextSliderValue = contextIsAuto \? 0 : contextValue/,
   );
   assert.match(panelCode, /<Slider min=\{0\}/);
-  assert.match(panelCode, /customContextLength: v === 0 \? null : v/);
+  assert.match(panelCode, /customContextLength: v === 0 \? null : snapContextLengthToStep\(/);
   assert.match(panelCode, /<span>Auto<\/span>/);
 });
 
