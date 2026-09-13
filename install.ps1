@@ -1827,7 +1827,11 @@ exit 1
             [System.IO.Directory]::CreateDirectory($Cache) | Out-Null
             $probe = Join-Path $Cache (".unsloth-write-probe." + [guid]::NewGuid().ToString("N").Substring(0, 8))
             [System.IO.File]::WriteAllText($probe, "")
-            Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+            # Stop, not SilentlyContinue, and for the same reason the bucket probe above uses
+            # Stop: NTFS carries DELETE as its own ACE, so a root can grant create and deny
+            # unlink. Suppressing that returned $true for a cache uv cannot rename into, and
+            # left the probe behind in it.
+            Remove-Item -LiteralPath $probe -Force -ErrorAction Stop
         } catch { return $false }
         return $true
     }

@@ -1223,6 +1223,19 @@ class TestInstallUvCacheRootParity:
         #   5. and a fallback we cannot write is not a fallback, on both sides
         assert "_uv_cache_root_is_writable() {" in sh
         assert "function Test-StudioUvCacheRootWritable" in ps1
+        #   6. creating the probe is not enough on either side: uv RENAMES into these
+        # directories, and NTFS carries DELETE as its own ACE while an append-only directory
+        # does the same on ext4, so a root can grant create and deny unlink. The bucket probes
+        # have always failed the candidate there; the root probes used to swallow it and leave
+        # the probe file behind in the user's cache.
+        root_sh = sh.split("_uv_cache_root_is_writable() {", 1)[1].split("\n}", 1)[0]
+        assert 'if ! rm -f "$_uv_root_probe" 2>/dev/null; then' in root_sh, root_sh
+        root_ps1 = ps1.split("function Test-StudioUvCacheRootWritable", 1)[1].split(
+            "\n    }", 1)[0]
+        removal = [ln for ln in root_ps1.splitlines()
+                   if "Remove-Item" in ln and not ln.strip().startswith("#")]
+        assert len(removal) == 1, root_ps1
+        assert "-ErrorAction Stop" in removal[0], removal[0]
 
         # The reset must precede both consumers, the selector that writes the marker and
         # every Exit-InstallFailure that restores it. Under `irm | iex` the script scope is
@@ -1348,8 +1361,11 @@ class TestInstallUvCacheRootParity:
         assert "-ErrorAction SilentlyContinue -ErrorVariable scanErrors" in selector
         # The scan only. The helpers after it DO use Stop, and have to: a marker or a write
         # probe that fails is an answer, where a bucket that cannot be read is not.
+        # Ends at the next function, not two on: Test-StudioUvCacheRootWritable sits between
+        # this scan and the marker reader, and it uses Stop deliberately, so a slice reaching
+        # past it asserts the opposite of what this test says it is asserting.
         bucket_loop = selector.split("foreach ($bucket in $buckets)", 1)[1].split(
-            "function Read-StudioUvCacheMarker", 1
+            "function Test-StudioUvCacheRootWritable", 1
         )[0]
         assert "-ErrorAction Stop" not in bucket_loop, bucket_loop
         # -L on the sh side for the same reason Get-ChildItem -Recurse follows links.

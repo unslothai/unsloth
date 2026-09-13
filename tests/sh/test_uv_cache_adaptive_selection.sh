@@ -405,6 +405,30 @@ for _alt in /bin/sh /bin/bash; do
 done
 _SH="$_SH_SAVED"
 
+echo "=== a root we can create in but not unlink from is not writable ==="
+# NTFS carries DELETE as its own ACE and an append-only directory does the same on ext4, so
+# "create succeeded" does not mean "uv can rename into this". The bucket probe has always
+# failed the candidate here; the root probe used to swallow it, return true, and leave the
+# probe file behind in the user's cache. Simulated by a failing rm rather than by an ACL,
+# because the mode bits cannot express it and running as root would hide it anyway.
+_probe_unlink_case() {
+    # shellcheck disable=SC2317
+    rm() { return 1; }
+    if _uv_cache_root_is_writable "$1"; then echo writable; else echo unwritable; fi
+}
+_out=$(
+    . "$_FN" 2>/dev/null || true
+    _probe_unlink_case "$_TMP/unlinkdenied"
+)
+assert_eq "create without unlink -> unwritable" "unwritable" "$_out"
+# And the ordinary case still passes, so the check above is not just failing everything.
+_out=$(
+    . "$_FN" 2>/dev/null || true
+    if _uv_cache_root_is_writable "$_TMP/unlinkok"; then echo writable; else echo unwritable; fi
+)
+assert_eq "an ordinary root is still writable"  "writable"   "$_out"
+assert_eq "and the probe is not left behind"    ""           "$(ls -A "$_TMP/unlinkok" 2>/dev/null)"
+
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

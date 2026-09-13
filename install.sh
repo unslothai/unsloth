@@ -623,7 +623,13 @@ _absolutize_uv_cache_dir() {
 _uv_cache_root_is_writable() {
     mkdir -p "$1" 2>/dev/null || return 1
     _uv_root_probe=$(mktemp "$1/.unsloth-write-probe.XXXXXX" 2>/dev/null) || return 1
-    rm -f "$_uv_root_probe" 2>/dev/null || true
+    # Creating is not enough, the same way it is not enough for a bucket: an ACL that grants
+    # create but denies unlink leaves uv's own renames to fail later, and leaks the probe into
+    # the cache. rm -f exits 0 on a missing file, so a failure here is a real one.
+    if ! rm -f "$_uv_root_probe" 2>/dev/null; then
+        unset _uv_root_probe
+        return 1
+    fi
     unset _uv_root_probe
     return 0
 }
@@ -998,15 +1004,23 @@ if [ -z "${UV_CACHE_DIR:-}" ]; then
     _UV_CACHE_DIR_INSTALLER_DEFAULT=true
     # mktemp, not a $$ name: a predictable path in another account's directory can be pre-created as a symlink for `: >` to follow and truncate as root.
     _uv_cache_probe=""
+    _uv_cache_usable=true
     if ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null \
        || ! _uv_cache_probe=$(mktemp "$UV_CACHE_DIR/.unsloth-write-probe.XXXXXX" 2>/dev/null); then
+        _uv_cache_usable=false
+    # And a probe we cannot remove says the same thing as one we could not create: uv renames
+    # into this directory, so an ACL granting create without unlink fails it later instead,
+    # after the install has already reported success. Same rule as the bucket probe.
+    elif ! rm -f "$_uv_cache_probe" 2>/dev/null; then
+        _uv_cache_usable=false
+    fi
+    if [ "$_uv_cache_usable" != true ]; then
         echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
         echo "[WARN] Wheels will be copied into the venv rather than hardlinked, costing extra disk." >&2
         unset UV_CACHE_DIR
         _UV_CACHE_DIR_INSTALLER_DEFAULT=false
     fi
-    [ -z "$_uv_cache_probe" ] || rm -f "$_uv_cache_probe" 2>/dev/null || true
-    unset _uv_cache_probe
+    unset _uv_cache_probe _uv_cache_usable
 fi
 _VENV_ROLLBACK_DIR=""
 _VENV_ROLLBACK_TARGET="$VENV_DIR"
