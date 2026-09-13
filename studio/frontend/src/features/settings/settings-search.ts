@@ -85,6 +85,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.resources.storage.modelsFolder",
     "settings.resources.storage.futureDownloads",
     "settings.resources.storage.systemDisk",
+    "settings.resources.storage.caches.label",
     "settings.resources.environment.title",
     "settings.resources.environment.backend",
     "settings.resources.environment.python",
@@ -283,6 +284,10 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
 > = {
   "settings.resources.storage.modelsFolder":
     "settings.resources.storage.modelsFolderKeywords",
+  // "purge", "prune" and the tool names are in none of the labels, so the row
+  // the feature is named after was unreachable by search.
+  "settings.resources.storage.caches.label":
+    "settings.resources.storage.caches.keywords",
   // mlock, vram, ulimit and pin are in none of these labels, so search
   // missed the rows the feature is named after.
   "settings.resources.modelMemory.title":

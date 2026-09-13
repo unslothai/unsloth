@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import asyncio
 import functools
 import hashlib
 import re
@@ -54,6 +55,7 @@ from utils.upload_limits import (
     upload_limit_bytes,
     upload_limit_label,
 )
+from utils.cache_inventory import CACHE_KEYS, cache_inventory, purge_caches
 from utils.xet_notice_settings import reserve_xet_notice
 from utils.chat_preferences_settings import (
     get_show_model_disclaimer,
@@ -697,6 +699,47 @@ class HuggingFaceCacheResponse(BaseModel):
     environment_variable: Optional[str] = None
 
 
+class CacheEntryResponse(BaseModel):
+    key: str
+    group: str
+    # Clearing this costs a re-download, so the UI never folds it into a
+    # "clear everything" action.
+    opt_in: bool
+    paths: list[str]
+    size_bytes: int
+    entry_count: int
+    present: bool
+    purgeable: bool
+    blocked_reason: Optional[str] = None
+
+
+class CacheInventoryResponse(BaseModel):
+    caches: list[CacheEntryResponse]
+    total_bytes: int
+    reclaimable_bytes: int
+    free_bytes: Optional[int] = None
+    total_disk_bytes: Optional[int] = None
+
+
+class CachePurgePayload(BaseModel):
+    # Cache identifiers, never paths: the backend owns the mapping from a key to
+    # a directory, so a caller cannot name one of its own.
+    keys: list[str] = Field(min_length = 1, max_length = len(CACHE_KEYS))
+
+
+class CachePurgeResultResponse(BaseModel):
+    key: str
+    freed_bytes: int
+    removed_entries: int
+    errors: list[str]
+
+
+class CachePurgeResponse(BaseModel):
+    results: list[CachePurgeResultResponse]
+    freed_bytes: int
+    inventory: CacheInventoryResponse
+
+
 class LlamaCppPathPayload(BaseModel):
     path: Optional[str] = Field(default = None, max_length = MAX_CUSTOM_LLAMA_CPP_PATH_LENGTH)
 
@@ -1040,6 +1083,49 @@ def update_hugging_face_cache(
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
     return _hugging_face_cache_response()
+
+
+@router.get("/caches", response_model = CacheInventoryResponse)
+async def get_caches(
+    refresh: bool = False,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> CacheInventoryResponse:
+    """Size every cache this install writes to, plus the free space around them.
+
+    ``refresh`` re-walks every cache instead of reusing a size measured in the
+    last minute, for the Recheck the UI offers after something big was written.
+    It is the interactive button, and a walk of a large hub or triton cache is
+    seconds of stat calls in the shared executor with no memo in front of it, so
+    only a UI session may ask for one. A plain read stays open to an API key.
+    """
+    if refresh:
+        require_ui_session(via_api_key)
+    # A cold walk of a large hub or triton cache is seconds of stat calls, so it
+    # stays off the event loop.
+    inventory = await asyncio.to_thread(cache_inventory, refresh = refresh)
+    return CacheInventoryResponse(**inventory)
+
+
+@router.post("/caches/purge", response_model = CachePurgeResponse)
+async def purge_caches_endpoint(
+    payload: CachePurgePayload,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+) -> CachePurgeResponse:
+    """Empty the named caches. Only the interactive UI may delete anything."""
+    require_ui_session(via_api_key)
+    try:
+        result = await asyncio.to_thread(purge_caches, payload.keys)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            str(exc),
+            event = "settings.purge_caches_failed",
+            log = logger,
+        ) from exc
+    return CachePurgeResponse(**result)
 
 
 @router.get("/llama-cpp-path", response_model = LlamaCppPathResponse)

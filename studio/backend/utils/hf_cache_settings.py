@@ -344,7 +344,26 @@ def set_hf_cache_home(cache_home: Optional[str]) -> HuggingFaceCachePaths:
     from hub.utils.hf_cache_state import invalidate_partial_resumability
 
     invalidate_partial_resumability()
+    # And the inventory's remembered sizes, which are keyed by cache rather than by path.
+    from utils.cache_inventory import invalidate_hf_rooted_sizes
+
+    invalidate_hf_rooted_sizes()
     return get_hf_cache_paths()
+
+
+def effective_cache_home() -> Path:
+    """The directory Hugging Face itself treats as HF_HOME.
+
+    Never ``HuggingFaceCachePaths.cache_home``, which is the DISPLAY home and is
+    not it in either direction: an explicit ``HF_HUB_CACHE=/mnt/project/hub``
+    makes it the hub's parent, and a Studio-selected models folder makes it that
+    folder, while ``initialize_hf_cache_environment`` deliberately leaves HF_HOME
+    at the platform default and redirects only the hub and xet caches. The token,
+    ``assets`` and ``datasets`` stay under the real home, so anything resolving
+    one of those has to ask here.
+    """
+    live = (os.environ.get("HF_HOME") or "").strip()
+    return _canonical(live) if live else _default_cache_home()
 
 
 def known_hf_cache_homes() -> list[Path]:

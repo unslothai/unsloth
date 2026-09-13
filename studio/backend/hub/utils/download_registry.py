@@ -1130,6 +1130,9 @@ class DownloadRegistry:
         # Monotonic across keys so an evicted then re-claimed key never reuses a prior generation, which would let a stale cancel match a new run.
         self._generation_seq = 0
         self._deleting: dict[str, set[Optional[str]]] = {}
+        # A whole-cache purge, which begin_delete cannot express: it reserves one
+        # repository, and emptying the root has to hold every one of them.
+        self._purging = 0
         # Publish external cache owners under the same lock as Model Hub jobs.
         self._repository_owners: dict[str, object] = {}
         self._lock = threading.Lock()
@@ -1375,6 +1378,8 @@ class DownloadRegistry:
             # Run the final admission check under the registry lock: the GGUF load path establishes its marker before its active-job probe, so either this claim sees that marker or the load sees this claim.
             if admission_check is not None and not admission_check():
                 return False, "admission_blocked"
+            if self._purging:
+                return False, "deleting"
             deleting_scopes = self._deleting.get(repo)
             if deleting_scopes is not None and (
                 None in deleting_scopes or variant_from_key(key) in deleting_scopes
@@ -1458,7 +1463,7 @@ class DownloadRegistry:
         with self._lock:
             if repo in self._repository_owners:
                 return False, "repository_owned"
-            if repo in self._deleting:
+            if self._purging or repo in self._deleting:
                 return False, "deleting"
             for key, job in self._jobs.items():
                 if _repo_of_key(key) != repo or job.state not in _ACTIVE_STATES:
@@ -1598,12 +1603,37 @@ class DownloadRegistry:
         repo_id = normalize_repo_key(repo_id)
         variant_key = (variant or "").strip().lower() or None
         with self._lock:
-            if repo_id in self._repository_owners:
+            if repo_id in self._repository_owners or self._purging:
                 return False
             if self._delete_blocked_by_active_locked(repo_id, variant_key):
                 return False
             self._deleting.setdefault(repo_id, set()).add(variant_key)
             return True
+
+    def begin_cache_purge(self) -> bool:
+        """Reserve the WHOLE cache for a purge. False while anything is active.
+
+        ``begin_delete`` closes the check-then-delete race for one repository by
+        making :func:`claim` reject it until the delete finishes. A purge empties
+        the root instead, so it needs the same promise over every repository, or
+        a worker that claims just after the check writes into a tree already
+        being removed. The two exclude each other in both directions, since a
+        scoped delete is removing files from the same root. Counted, so
+        overlapping purges of two caches that share this registry nest.
+        """
+        with self._lock:
+            if not self._purging:
+                if self._repository_owners or self._deleting:
+                    return False
+                if any(job.state in _ACTIVE_STATES for job in self._jobs.values()):
+                    return False
+            self._purging += 1
+            return True
+
+    def end_cache_purge(self) -> None:
+        with self._lock:
+            if self._purging:
+                self._purging -= 1
 
     def end_delete(
         self,

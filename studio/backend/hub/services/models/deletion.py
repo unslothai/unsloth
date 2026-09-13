@@ -650,6 +650,60 @@ def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
     return None
 
 
+def any_model_load_blocks_cache_clear() -> Optional[str]:
+    """The refusal detail if ANY inference backend is holding a cached model, else None.
+
+    The guards above ask whether one repo is in use. Emptying the whole Hugging Face cache is
+    every repo at once, so there is no repo to match on and anything loaded or loading is enough.
+    sd.cpp in particular re-reads its companion VAE and text-encoder files for every generation,
+    so a clear can break a model that was loaded long before it.
+
+    Fail-open on ACQUIRE, like the guards above: a backend that cannot be reached is not holding
+    anything this process can see. A backend that IS reachable and raises while being asked is a
+    different matter, and the caller fails closed on it rather than unlink weights blindly.
+    """
+    try:
+        from routes.inference import get_llama_cpp_backend
+        backend = get_llama_cpp_backend()
+    except Exception as exc:  # noqa: BLE001 - unavailable is not "in use"
+        logger.debug(f"llama.cpp backend unavailable during the cache-clear guard: {exc}")
+    else:
+        if (backend.is_loaded or backend.is_active) and backend.model_identifier:
+            return "Unload the model before clearing the model cache"
+
+    try:
+        from core.inference.orchestrator import peek_inference_backend
+
+        # Peek, never construct: building one just to learn nothing is loaded imports torch.
+        engine = peek_inference_backend()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"Inference backend unavailable during the cache-clear guard: {exc}")
+    else:
+        if engine is not None and engine.active_model_name:
+            return "Unload the model before clearing the model cache"
+
+    for label, load in (
+        ("Images", "core.inference.diffusion_engine_router:get_active_diffusion_engine"),
+        ("Video", "core.inference.video:get_video_backend"),
+    ):
+        module_name, _, attr = load.partition(":")
+        try:
+            module = __import__(module_name, fromlist = [attr])
+            held = getattr(module, attr)()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"{label} backend unavailable during the cache-clear guard: {exc}")
+            continue
+        if held is None:
+            continue
+        if held.status().get("loaded"):
+            return "Unload the model before clearing the model cache"
+        if any(getattr(held, "loaded_repo_ids", tuple)()):
+            return "Unload the model before clearing the model cache"
+        if any(getattr(held, "loading_repo_ids", tuple)()):
+            return f"An {label} model load is using the cache; wait for it to finish"
+    return None
+
+
 def _video_blocks_delete(repo_id: str) -> Optional[str]:
     """The 400 detail if the Video backend holds or is fetching *repo_id*, else None. Video repos share the On Device delete action, so a live Wan / LTX / Hunyuan pipeline could otherwise lose its snapshot. Mirrors :func:`_diffusion_blocks_delete`."""
     try:
