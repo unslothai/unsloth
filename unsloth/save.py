@@ -2684,7 +2684,10 @@ def upload_to_huggingface(
             username = username,
             base_model = model.config._name_or_path,
             model_type = model.config.model_type,
-            method = "",
+            # The card's heading is "# Uploaded {method} model", so blanking this dropped the one
+            # thing `method` is passed for. Every caller passes "finetuned" and every card came
+            # out reading "Uploaded  model", with the gap still in it.
+            method = method,
             extra = extra,
         )
         card = ModelCard(content)
