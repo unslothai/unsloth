@@ -1487,9 +1487,24 @@ def test_the_desktop_frontend_gate_admits_the_lan_listener():
     import main
 
     scope = {"type": "http", "headers": [], "server": ("10.0.0.7", 8888)}
-    loopback = {"type": "http", "headers": [], "server": ("127.0.0.1", 8888)}
+    loopback = {
+        "type": "http",
+        "headers": [(b"host", b"127.0.0.1:8888")],
+        "server": ("127.0.0.1", 8888),
+        "client": ("127.0.0.1", 40000),
+    }
+    proxied_loopback = {
+        "type": "http",
+        "headers": [
+            (b"host", b"127.0.0.1:8888"),
+            (b"cf-connecting-ip", b"203.0.113.7"),
+        ],
+        "server": ("127.0.0.1", 8888),
+        "client": ("127.0.0.1", 40001),
+    }
     state = SimpleNamespace(cloudflare_url = None)
     assert main._is_remote_frontend_request(loopback, state) is True
+    assert main._is_remote_frontend_request(proxied_loopback, state) is False
     assert main._is_remote_frontend_request(scope, state) is False
     original = lan_access._bound_addresses
     lan_access._bound_addresses = ("10.0.0.7",)
