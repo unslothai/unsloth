@@ -1257,6 +1257,8 @@ class NativeAudioBackend:
         if instructions is not None:
             instructions = neutralize_tts_prompt_text(instructions, "moss_tts_local")
         if language is not None:
+            if language.strip().lower().replace("_", "-") in {"el", "el-gr", "greek"}:
+                language = "Greek"
             language = neutralize_tts_prompt_text(language, "moss_tts_local")
         processor = entry["processor"]
         batch = processor(

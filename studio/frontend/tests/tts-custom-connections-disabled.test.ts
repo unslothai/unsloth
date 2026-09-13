@@ -113,6 +113,9 @@ function load(
           }),
         },
       },
+      "@/features/settings/lib/speech-languages": {
+        resolveTtsLanguageName: () => undefined,
+      },
       "@/lib/toast": { toast: { error: () => {} } },
     },
   );
