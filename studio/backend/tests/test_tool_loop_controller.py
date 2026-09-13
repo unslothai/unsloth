@@ -237,6 +237,35 @@ def test_re_run_after_an_intervening_call_executes():
     assert immediate.action == "duplicate"
 
 
+def test_a_fresh_execution_resets_the_duplicate_count():
+    """One duplicate after each of two executions is two separate recoveries, not a stuck
+    loop: a re-executed call's accumulated duplicate no-ops must not carry over, or the
+    second single duplicate reaches the limit and strips the tools (Codex review of
+    #10846)."""
+    controller = ToolLoopController(tools = [_tool("web_search"), _tool("python")])
+    call = _call("web_search", {"query": "gpu prices"})
+
+    first = controller.prepare_call(call)
+    controller.record_result(first, "ok")
+    duplicate_one = controller.prepare_call(call)
+    controller.record_noop(duplicate_one)
+    assert duplicate_one.action == "duplicate"
+
+    # An intervening call reopens the key...
+    other = controller.prepare_call(_call("python", {"code": "print(1)"}))
+    controller.record_result(other, "ok")
+    re_run = controller.prepare_call(call)
+    assert re_run.action == "execute"
+    controller.record_result(re_run, "ok")
+
+    # ...so the NEXT single duplicate is recovery one again, not the terminal second.
+    duplicate_two = controller.prepare_call(call)
+    assert duplicate_two.action == "duplicate"
+    completion = controller.record_noop(duplicate_two)
+    assert not controller.force_final_answer
+    assert [t["function"]["name"] for t in controller.active_tools()] == ["web_search", "python"]
+
+
 def test_empty_enabled_tool_list_blocks_all_tool_calls():
     controller = ToolLoopController(tools = [])
     decision = controller.prepare_call(_call("web_search", {"query": "gpu prices"}))
