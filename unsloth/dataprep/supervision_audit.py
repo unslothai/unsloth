@@ -32,14 +32,13 @@ _EXAMPLE_MAX_CHARS = 400
 _ANSI_GREEN = "\033[32m"
 _ANSI_RESET = "\033[0m"
 
-_MISSING_INPUT_IDS = (
-    "Unsloth: audit_supervision needs an `input_ids` column – tokenize the dataset (or pass the trainer) first."
-)
+_MISSING_INPUT_IDS = "Unsloth: audit_supervision needs an `input_ids` column – tokenize the dataset (or pass the trainer) first."
 
 
 @dataclass
 class SupervisionAuditReport:
     """What an SFT dataset actually supervises, as counted by audit_supervision"""
+
     num_rows: int
     num_rows_total: Optional[int]
     labels_source: str
@@ -153,9 +152,13 @@ def audit_supervision(
     modified, and nothing is printed unless `verbose` is True.
     """
     if max_rows is not None and max_rows <= 0:
-        raise ValueError(f"Unsloth: audit_supervision max_rows must be None or > 0, got {max_rows}.")
+        raise ValueError(
+            f"Unsloth: audit_supervision max_rows must be None or > 0, got {max_rows}."
+        )
     if num_examples < 0:
-        raise ValueError(f"Unsloth: audit_supervision num_examples must be >= 0, got {num_examples}.")
+        raise ValueError(
+            f"Unsloth: audit_supervision num_examples must be >= 0, got {num_examples}."
+        )
 
     if hasattr(dataset, "train_dataset"):
         trainer = dataset
@@ -204,7 +207,9 @@ def audit_supervision(
 
         n_all = len(input_ids)
         for name, column in (
-            ("labels", labels), ("completion_mask", completion_mask), ("attention_mask", attention_mask),
+            ("labels", labels),
+            ("completion_mask", completion_mask),
+            ("attention_mask", attention_mask),
         ):
             if column is not None and len(column) != n_all:
                 raise ValueError(
@@ -250,7 +255,12 @@ def audit_supervision(
             if _any_occurrence_supervised(input_ids, labels, completion_mask, eos_token_id):
                 rows_with_supervised_eos += 1
 
-        if bos_token_id is not None and n >= 2 and input_ids[0] == bos_token_id and input_ids[1] == bos_token_id:
+        if (
+            bos_token_id is not None
+            and n >= 2
+            and input_ids[0] == bos_token_id
+            and input_ids[1] == bos_token_id
+        ):
             rows_with_duplicated_bos += 1
 
         if decode is not None and len(examples) < num_examples:
@@ -296,7 +306,11 @@ def audit_supervision(
             "so the model may never learn to stop generating."
         )
     # Skipped when every row is already unsupervised: the all-rows warning above covers it.
-    if eos_token_id is not None and zero_supervision_rows < num_rows and rows_with_supervised_eos < rows_with_eos:
+    if (
+        eos_token_id is not None
+        and zero_supervision_rows < num_rows
+        and rows_with_supervised_eos < rows_with_eos
+    ):
         masked = rows_with_eos - rows_with_supervised_eos
         warnings.append(
             f"{_rows(masked)} ({_pct(masked, num_rows)}) contain EOS only in masked (-100) positions, "
@@ -321,7 +335,9 @@ def audit_supervision(
         fully_supervised_rows = fully_supervised_rows,
         max_seq_length = max_seq_length,
         rows_at_max_length = rows_at_max_length if max_seq_length is not None else None,
-        rows_truncated_mid_response = rows_truncated_mid_response if max_seq_length is not None else None,
+        rows_truncated_mid_response = rows_truncated_mid_response
+        if max_seq_length is not None
+        else None,
         eos_token_id = eos_token_id,
         rows_with_eos = rows_with_eos if eos_token_id is not None else None,
         rows_with_supervised_eos = rows_with_supervised_eos if eos_token_id is not None else None,
@@ -474,7 +490,11 @@ def _decode_segments(input_ids, labels, completion_mask, decode):
     return segments
 
 
-def _render_segments(segments, color, limit = _EXAMPLE_MAX_CHARS):
+def _render_segments(
+    segments,
+    color,
+    limit = _EXAMPLE_MAX_CHARS,
+):
     """One example row as a single escaped line, supervised runs marked, cut at `limit` visible characters"""
     open_marker, close_marker = (_ANSI_GREEN, _ANSI_RESET) if color else ("[[", "]]")
     parts = []

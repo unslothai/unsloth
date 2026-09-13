@@ -51,13 +51,22 @@ class MockTokenizer:
     def ids(self, text):
         return [self.token_id(word) for word in text.split()]
 
-    def __call__(self, text, add_special_tokens = False, return_tensors = None):
+    def __call__(
+        self,
+        text,
+        add_special_tokens = False,
+        return_tensors = None,
+    ):
         ids = self.ids(text)
         if add_special_tokens:
             ids = [self.bos_token_id] + ids
         return _Encoding(input_ids = ids, attention_mask = [1] * len(ids))
 
-    def decode(self, token_ids, skip_special_tokens = False):
+    def decode(
+        self,
+        token_ids,
+        skip_special_tokens = False,
+    ):
         specials = {self.pad_token_id, self.bos_token_id, self.eos_token_id}
         return " ".join(
             self.words[int(i)]
@@ -125,7 +134,11 @@ def padded_rows(tok):
     a, b, c, d, e, g = (tok.token_id(w) for w in "a b c d e g".split())
     return [
         # 4 tokens, 3 supervised; the last non-padding token (EOS) is supervised
-        {"input_ids": [1, a, b, 2, 0, 0], "attention_mask": [1, 1, 1, 1, 0, 0], "labels": [-100, a, b, 2, -100, -100]},
+        {
+            "input_ids": [1, a, b, 2, 0, 0],
+            "attention_mask": [1, 1, 1, 1, 0, 0],
+            "labels": [-100, a, b, 2, -100, -100],
+        },
         # 3 tokens, all supervised; the label on the padded position must be ignored
         {"input_ids": [1, c, 2, 0], "attention_mask": [1, 1, 1, 0], "labels": [1, c, 2, 7]},
         # 3 tokens, 2 supervised; EOS sits in a masked-out position, so this row has no EOS
@@ -157,7 +170,9 @@ def test_labels_path_counts_every_field():
     assert report.num_tokens == 34
     assert report.num_supervised_tokens == 9
     assert report.supervised_fraction == pytest.approx(9 / 34)
-    assert report.supervised_tokens_per_row == pytest.approx({"min": 0, "median": 2, "mean": 1.8, "max": 4})
+    assert report.supervised_tokens_per_row == pytest.approx(
+        {"min": 0, "median": 2, "mean": 1.8, "max": 4}
+    )
     assert report.zero_supervision_rows == 2
     assert report.zero_supervision_row_indices == [1, 3]
     assert report.fully_supervised_rows == 1
@@ -171,7 +186,10 @@ def test_labels_path_counts_every_field():
     assert report.rows_with_duplicated_bos == 0
     assert len(report.examples) == 2
     assert all(isinstance(segment, tuple) for segment in report.examples[0])
-    assert list(report.examples[0]) == [(False, "<s> user: What is 2+2? assistant:"), (True, "4 </s>")]
+    assert list(report.examples[0]) == [
+        (False, "<s> user: What is 2+2? assistant:"),
+        (True, "4 </s>"),
+    ]
     assert list(report.examples[1]) == [(False, "<s> user: Hi assistant: Hello </s>")]
     assert report.warnings == [
         "2 rows (40.0%) have zero supervised tokens and contribute nothing to training.",
@@ -185,16 +203,23 @@ def test_same_rows_give_the_same_report_whatever_the_container():
     rows = labels_rows(tok)
     as_dicts = [{"input_ids": ids, "labels": labels} for ids, labels in rows]
 
-    expected = audit_supervision(Dataset.from_dict(columns(rows)), tokenizer = tok, verbose = False).to_dict()
+    expected = audit_supervision(
+        Dataset.from_dict(columns(rows)), tokenizer = tok, verbose = False
+    ).to_dict()
 
     assert audit_supervision(as_dicts, tokenizer = tok, verbose = False).to_dict() == expected
-    assert audit_supervision(IndexableRows(as_dicts), tokenizer = tok, verbose = False).to_dict() == expected
+    assert (
+        audit_supervision(IndexableRows(as_dicts), tokenizer = tok, verbose = False).to_dict()
+        == expected
+    )
     assert expected["num_supervised_tokens"] == 9
 
 
 def test_render_layout_without_color():
     tok = MockTokenizer()
-    report = audit_supervision(Dataset.from_dict(columns(labels_rows(tok))), tokenizer = tok, verbose = False)
+    report = audit_supervision(
+        Dataset.from_dict(columns(labels_rows(tok))), tokenizer = tok, verbose = False
+    )
 
     rendered = report.render(color = False)
     lines = rendered.splitlines()
@@ -226,7 +251,9 @@ def test_render_layout_without_color():
 
 def test_render_color_modes(monkeypatch):
     tok = MockTokenizer()
-    report = audit_supervision(Dataset.from_dict(columns(labels_rows(tok))), tokenizer = tok, verbose = False)
+    report = audit_supervision(
+        Dataset.from_dict(columns(labels_rows(tok))), tokenizer = tok, verbose = False
+    )
 
     ansi = report.render(color = True)
     assert "\x1b[" in ansi
@@ -242,13 +269,18 @@ def test_render_color_modes(monkeypatch):
 
 def test_to_dict_is_json_serialisable():
     tok = MockTokenizer()
-    report = audit_supervision(Dataset.from_dict(columns(labels_rows(tok))), tokenizer = tok, verbose = False)
+    report = audit_supervision(
+        Dataset.from_dict(columns(labels_rows(tok))), tokenizer = tok, verbose = False
+    )
 
     as_dict = report.to_dict()
 
     assert set(as_dict) == {field.name for field in dataclasses.fields(SupervisionAuditReport)}
     assert json.loads(json.dumps(as_dict)) == as_dict
-    assert as_dict["examples"][0] == [[False, "<s> user: What is 2+2? assistant:"], [True, "4 </s>"]]
+    assert as_dict["examples"][0] == [
+        [False, "<s> user: What is 2+2? assistant:"],
+        [True, "4 </s>"],
+    ]
     assert isinstance(as_dict["examples"][0][0], list)
     assert as_dict["num_supervised_tokens"] == 9
     assert as_dict["zero_supervision_row_indices"] == [1, 3]
@@ -317,7 +349,9 @@ def test_no_labels_means_every_token_is_supervised():
     assert report.fully_supervised_rows == report.num_rows == 2
     assert report.zero_supervision_rows == 0
     assert report.zero_supervision_row_indices == []
-    assert report.supervised_tokens_per_row == pytest.approx({"min": 3, "median": 3.5, "mean": 3.5, "max": 4})
+    assert report.supervised_tokens_per_row == pytest.approx(
+        {"min": 3, "median": 3.5, "mean": 3.5, "max": 4}
+    )
     assert report.eos_token_id is None
     assert report.rows_with_eos is None
     assert report.rows_with_supervised_eos is None
@@ -354,7 +388,9 @@ def test_attention_mask_excludes_padding_everywhere():
     assert report.num_rows == 4
     assert report.num_tokens == 12
     assert report.num_supervised_tokens == 9
-    assert report.supervised_tokens_per_row == pytest.approx({"min": 1, "median": 2.5, "mean": 2.25, "max": 3})
+    assert report.supervised_tokens_per_row == pytest.approx(
+        {"min": 1, "median": 2.5, "mean": 2.25, "max": 3}
+    )
     assert report.fully_supervised_rows == 1
     assert report.zero_supervision_rows == 0
     # only row 0 has 4 non-padding tokens; its last real token (EOS) is supervised
@@ -391,18 +427,29 @@ def test_tensor_and_numpy_rows_match_plain_lists():
 
     as_torch = [{key: torch.tensor(value) for key, value in row.items()} for row in rows]
     as_numpy = [{key: np.array(value) for key, value in row.items()} for row in rows]
-    assert audit_supervision(as_torch, tokenizer = tok, max_seq_length = 4, verbose = False).to_dict() == expected
-    assert audit_supervision(as_numpy, tokenizer = tok, max_seq_length = 4, verbose = False).to_dict() == expected
+    assert (
+        audit_supervision(as_torch, tokenizer = tok, max_seq_length = 4, verbose = False).to_dict()
+        == expected
+    )
+    assert (
+        audit_supervision(as_numpy, tokenizer = tok, max_seq_length = 4, verbose = False).to_dict()
+        == expected
+    )
 
     # a torch-formatted padded Dataset hands `.iter()` 2-D tensors per column
     width = max(len(row["input_ids"]) for row in rows)
     square = {
         "input_ids": [row["input_ids"] + [0] * (width - len(row["input_ids"])) for row in rows],
-        "attention_mask": [row["attention_mask"] + [0] * (width - len(row["attention_mask"])) for row in rows],
+        "attention_mask": [
+            row["attention_mask"] + [0] * (width - len(row["attention_mask"])) for row in rows
+        ],
         "labels": [row["labels"] + [-100] * (width - len(row["labels"])) for row in rows],
     }
     formatted = Dataset.from_dict(square).with_format("torch")
-    assert audit_supervision(formatted, tokenizer = tok, max_seq_length = 4, verbose = False).to_dict() == expected
+    assert (
+        audit_supervision(formatted, tokenizer = tok, max_seq_length = 4, verbose = False).to_dict()
+        == expected
+    )
 
 
 # ── iteration, max_rows, trainers ──────────────────────────────────────────
@@ -419,9 +466,14 @@ def test_iterable_dataset_streams_and_stops_at_max_rows():
     assert report.num_tokens == 14
     assert report.num_supervised_tokens == 2
     assert report.zero_supervision_row_indices == [1]
-    assert report.render(color = False).splitlines()[0] == "Unsloth: Supervision audit of 2 rows (labels from `labels`)"
+    assert (
+        report.render(color = False).splitlines()[0]
+        == "Unsloth: Supervision audit of 2 rows (labels from `labels`)"
+    )
 
-    everything = audit_supervision(ds.to_iterable_dataset(), tokenizer = tok, max_rows = None, verbose = False)
+    everything = audit_supervision(
+        ds.to_iterable_dataset(), tokenizer = tok, max_rows = None, verbose = False
+    )
     sized = audit_supervision(ds, tokenizer = tok, verbose = False)
     assert everything.num_rows == 5
     assert everything.num_rows_total is None
@@ -450,17 +502,27 @@ def test_max_rows_smaller_than_dataset_reports_first_n_of_m():
 
     whole = audit_supervision(ds, tokenizer = tok, max_rows = 5, verbose = False)
     assert whole.num_rows == whole.num_rows_total == 5
-    assert whole.render(color = False).splitlines()[0] == "Unsloth: Supervision audit of 5 rows (labels from `labels`)"
+    assert (
+        whole.render(color = False).splitlines()[0]
+        == "Unsloth: Supervision audit of 5 rows (labels from `labels`)"
+    )
 
     many = [{"input_ids": [7, 8]} for _ in range(1200)]
-    first_line = audit_supervision(many, max_rows = 1000, verbose = False).render(color = False).splitlines()[0]
-    assert first_line == "Unsloth: Supervision audit of the first 1,000 of 1,200 rows (labels from `all_tokens`)"
+    first_line = (
+        audit_supervision(many, max_rows = 1000, verbose = False).render(color = False).splitlines()[0]
+    )
+    assert (
+        first_line
+        == "Unsloth: Supervision audit of the first 1,000 of 1,200 rows (labels from `all_tokens`)"
+    )
 
 
 def test_trainer_supplies_tokenizer_and_max_seq_length():
     tok = MockTokenizer()
     ds = Dataset.from_dict(columns(labels_rows(tok)))
-    trainer = SimpleNamespace(train_dataset = ds, processing_class = tok, args = SimpleNamespace(max_length = 8))
+    trainer = SimpleNamespace(
+        train_dataset = ds, processing_class = tok, args = SimpleNamespace(max_length = 8)
+    )
 
     report = audit_supervision(trainer, verbose = False)
 
@@ -478,7 +540,10 @@ def test_trainer_supplies_tokenizer_and_max_seq_length():
         "2 rows (40.0%) hit max_seq_length = 8 while still inside a supervised span, so their responses are cut off before the end (and before EOS).",
         "2 rows (40.0%) contain EOS only in masked (-100) positions, so the model does not learn to stop there.",
     ]
-    assert "  Rows at max_seq_length = 8: 3 (60.0%), 2 cut off mid-response" in report.render(color = False).splitlines()
+    assert (
+        "  Rows at max_seq_length = 8: 3 (60.0%), 2 cut off mid-response"
+        in report.render(color = False).splitlines()
+    )
 
     explicit = audit_supervision(trainer, max_seq_length = 6, verbose = False)
     assert explicit.max_seq_length == 6
@@ -491,7 +556,9 @@ def test_trainer_tokenizer_and_length_fallbacks():
     tok = MockTokenizer()
     ds = Dataset.from_dict(columns(labels_rows(tok)))
 
-    old_style = SimpleNamespace(train_dataset = ds, tokenizer = tok, args = SimpleNamespace(max_seq_length = 8))
+    old_style = SimpleNamespace(
+        train_dataset = ds, tokenizer = tok, args = SimpleNamespace(max_seq_length = 8)
+    )
     report = audit_supervision(old_style, verbose = False)
     assert report.eos_token_id == 2
     assert report.max_seq_length == 8
@@ -506,7 +573,10 @@ def test_trainer_tokenizer_and_length_fallbacks():
     report = audit_supervision(vlm, verbose = False)
     assert report.eos_token_id == 2
     assert report.max_seq_length == 6
-    assert list(report.examples[0]) == [(False, "<s> user: What is 2+2? assistant:"), (True, "4 </s>")]
+    assert list(report.examples[0]) == [
+        (False, "<s> user: What is 2+2? assistant:"),
+        (True, "4 </s>"),
+    ]
 
     bare = SimpleNamespace(train_dataset = ds, processing_class = tok, args = SimpleNamespace())
     report = audit_supervision(bare, verbose = False)
@@ -522,7 +592,10 @@ def test_truncation_counts_only_rows_whose_last_token_is_supervised():
         {"input_ids": [5, 6, 7, 8], "labels": [-100, -100, 7, 8]},  # at max, last token supervised
         {"input_ids": [5, 6, 7, 8], "labels": [5, 6, 7, -100]},  # at max, last token masked
         {"input_ids": [5, 6, 7], "labels": [-100, 6, 7]},  # under max
-        {"input_ids": [5, 6, 7, 8, 9], "labels": [-100, -100, -100, -100, 9]},  # over max, last token supervised
+        {
+            "input_ids": [5, 6, 7, 8, 9],
+            "labels": [-100, -100, -100, -100, 9],
+        },  # over max, last token supervised
     ]
 
     report = audit_supervision(rows, max_seq_length = 4, verbose = False)
@@ -534,7 +607,10 @@ def test_truncation_counts_only_rows_whose_last_token_is_supervised():
     assert report.warnings == [
         "2 rows (50.0%) hit max_seq_length = 4 while still inside a supervised span, so their responses are cut off before the end (and before EOS).",
     ]
-    assert "  Rows at max_seq_length = 4: 3 (75.0%), 2 cut off mid-response" in report.render(color = False).splitlines()
+    assert (
+        "  Rows at max_seq_length = 4: 3 (75.0%), 2 cut off mid-response"
+        in report.render(color = False).splitlines()
+    )
 
     unlimited = audit_supervision(rows, verbose = False)
     assert unlimited.max_seq_length is None
@@ -548,7 +624,10 @@ def test_eos_presence_and_supervision():
     tok = MockTokenizer()
     a, b = tok.token_id("a"), tok.token_id("b")
     rows = [
-        {"input_ids": [1, a, 2, b, 2], "labels": [-100, -100, -100, b, 2]},  # two EOS, only the second supervised
+        {
+            "input_ids": [1, a, 2, b, 2],
+            "labels": [-100, -100, -100, b, 2],
+        },  # two EOS, only the second supervised
         {"input_ids": [1, a, b], "labels": [-100, a, b]},  # no EOS at all
         {"input_ids": [1, a, 2], "labels": [-100, a, -100]},  # EOS masked
         {"input_ids": [1, b, 2], "labels": [-100, -100, 2]},  # EOS supervised
@@ -566,7 +645,10 @@ def test_eos_presence_and_supervision():
     assert "do not contain the EOS token (id 2)" in no_eos
     assert masked_eos.startswith("1 row")
     assert "contain EOS only in masked (-100) positions" in masked_eos
-    assert "  Rows containing EOS: 3 (75.0%); rows with a supervised EOS: 2 (50.0%)" in report.render(color = False).splitlines()
+    assert (
+        "  Rows containing EOS: 3 (75.0%); rows with a supervised EOS: 2 (50.0%)"
+        in report.render(color = False).splitlines()
+    )
 
 
 def test_duplicated_bos_uses_the_first_two_non_padding_tokens():
@@ -574,8 +656,14 @@ def test_duplicated_bos_uses_the_first_two_non_padding_tokens():
     a = tok.token_id("a")
     rows = [
         {"input_ids": [1, 1, a, 2], "attention_mask": [1, 1, 1, 1]},  # duplicated
-        {"input_ids": [1, a, 1, 2], "attention_mask": [1, 1, 1, 1]},  # two BOS, but not adjacent at the start
-        {"input_ids": [0, 0, 1, 1, a, 2], "attention_mask": [0, 0, 1, 1, 1, 1]},  # left padded, duplicated
+        {
+            "input_ids": [1, a, 1, 2],
+            "attention_mask": [1, 1, 1, 1],
+        },  # two BOS, but not adjacent at the start
+        {
+            "input_ids": [0, 0, 1, 1, a, 2],
+            "attention_mask": [0, 0, 1, 1, 1, 1],
+        },  # left padded, duplicated
         {"input_ids": [1, a, 2], "attention_mask": [1, 1, 1]},  # single BOS
     ]
 
@@ -585,7 +673,10 @@ def test_duplicated_bos_uses_the_first_two_non_padding_tokens():
     assert report.warnings == [
         "2 rows (50.0%) start with two BOS tokens; your formatting adds BOS on top of the tokenizer's.",
     ]
-    assert "  Rows starting with a duplicated BOS: 2 (50.0%)" in report.render(color = False).splitlines()
+    assert (
+        "  Rows starting with a duplicated BOS: 2 (50.0%)"
+        in report.render(color = False).splitlines()
+    )
 
 
 # ── examples ───────────────────────────────────────────────────────────────
@@ -602,7 +693,12 @@ def test_num_examples_controls_decoded_rows():
 
     assert len(audit_supervision(ds, tokenizer = tok, num_examples = 1, verbose = False).examples) == 1
     assert len(audit_supervision(ds, tokenizer = tok, num_examples = 50, verbose = False).examples) == 5
-    assert len(audit_supervision(ds, tokenizer = tok, num_examples = 3, max_rows = 1, verbose = False).examples) == 1
+    assert (
+        len(
+            audit_supervision(ds, tokenizer = tok, num_examples = 3, max_rows = 1, verbose = False).examples
+        )
+        == 1
+    )
 
     no_decode = SimpleNamespace(eos_token_id = 2, bos_token_id = None)
     report = audit_supervision(ds, tokenizer = no_decode, verbose = False)
@@ -619,17 +715,26 @@ def test_num_examples_controls_decoded_rows():
 
 def test_render_escapes_control_characters_and_truncates_long_examples():
     tok = MockTokenizer()
-    newline, tab, a, b = tok.token_id("\n"), tok.token_id("\t"), tok.token_id("a"), tok.token_id("b")
+    newline, tab, a, b = (
+        tok.token_id("\n"),
+        tok.token_id("\t"),
+        tok.token_id("a"),
+        tok.token_id("b"),
+    )
     short = {"input_ids": [1, a, newline, tab, b, 2], "labels": [-100, -100, -100, -100, b, 2]}
     long = {"input_ids": [1] + [a] * 1498 + [2], "labels": [1] + [a] * 1498 + [2]}
     tiny = {"input_ids": [1, b, 2], "labels": [-100, b, 2]}
 
-    report = audit_supervision([short, long, tiny], tokenizer = tok, max_seq_length = 2048, num_examples = 3, verbose = False)
+    report = audit_supervision(
+        [short, long, tiny], tokenizer = tok, max_seq_length = 2048, num_examples = 3, verbose = False
+    )
 
     rendered = report.render(color = False)
     lines = rendered.splitlines()
     assert lines[0] == "Unsloth: Supervision audit of 3 rows (labels from `labels`)"
-    assert "  Supervised tokens: 1,504 of 1,509 (99.7%); per row min 2 / median 2 / max 1,500" in lines
+    assert (
+        "  Supervised tokens: 1,504 of 1,509 (99.7%); per row min 2 / median 2 / max 1,500" in lines
+    )
     assert "  Rows at max_seq_length = 2,048: 0 (0.0%), 0 cut off mid-response" in lines
 
     # control characters are shown escaped, so the example stays on one line
@@ -676,7 +781,9 @@ def test_empty_dataset_warns_without_dividing_by_zero():
     assert "  WARNING: The dataset is empty." in lines
     json.dumps(report.to_dict())
 
-    bounded = audit_supervision(Dataset.from_dict({"input_ids": []}), max_seq_length = 4, verbose = False)
+    bounded = audit_supervision(
+        Dataset.from_dict({"input_ids": []}), max_seq_length = 4, verbose = False
+    )
     assert bounded.rows_at_max_length == 0
     assert bounded.rows_truncated_mid_response == 0
     assert bounded.warnings == ["The dataset is empty."]
@@ -708,8 +815,15 @@ def test_rows_of_length_zero_are_counted_but_contribute_no_tokens():
     assert list(report.examples[0]) == []
     assert list(report.examples[1]) == [(False, "<s>"), (True, "a </s>")]
     assert "Example row 0" in report.render(color = False)
-    assert audit_supervision(Dataset.from_dict(columns([(r["input_ids"], r["labels"]) for r in rows])),
-                             tokenizer = tok, max_seq_length = 3, verbose = False).to_dict() == report.to_dict()
+    assert (
+        audit_supervision(
+            Dataset.from_dict(columns([(r["input_ids"], r["labels"]) for r in rows])),
+            tokenizer = tok,
+            max_seq_length = 3,
+            verbose = False,
+        ).to_dict()
+        == report.to_dict()
+    )
 
     only_empty = audit_supervision([{"input_ids": []}, {"input_ids": []}], verbose = False)
     assert only_empty.num_rows == 2
@@ -769,7 +883,9 @@ def test_audits_labels_written_by_the_real_train_on_responses_only():
     from unsloth.chat_templates import train_on_responses_only
 
     if train_on_responses_only is None:
-        pytest.skip("train_on_responses_only is unavailable on this host (unsloth_zoo.dataset_utils needs torch)")
+        pytest.skip(
+            "train_on_responses_only is unavailable on this host (unsloth_zoo.dataset_utils needs torch)"
+        )
 
     tok = MockTokenizer()
     texts = [
@@ -795,10 +911,15 @@ def test_audits_labels_written_by_the_real_train_on_responses_only():
     assert 0 < report.supervised_fraction < 1
     assert report.num_tokens == 24
     assert report.num_supervised_tokens == 7
-    assert report.supervised_tokens_per_row == pytest.approx({"min": 2, "median": 2, "mean": 7 / 3, "max": 3})
+    assert report.supervised_tokens_per_row == pytest.approx(
+        {"min": 2, "median": 2, "mean": 7 / 3, "max": 3}
+    )
     assert report.rows_with_eos == 3
     assert report.rows_with_supervised_eos == 3
-    assert list(report.examples[0]) == [(False, "<s> <user> What is 2+2? <assistant>"), (True, "4 </s>")]
+    assert list(report.examples[0]) == [
+        (False, "<s> <user> What is 2+2? <assistant>"),
+        (True, "4 </s>"),
+    ]
     assert report.warnings == []
     assert report.ok is True
 
