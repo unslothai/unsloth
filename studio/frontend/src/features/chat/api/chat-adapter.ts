@@ -3333,6 +3333,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               ? ""
               : (loadResp.reasoning_budget_message ??
                 config.reasoningBudgetMessage),
+          loadedReasoningBudgetRequested: loadResp.is_diffusion
+            ? -1
+            : (loadResp.requested_reasoning_budget ?? config.reasoningBudget),
+          loadedReasoningBudgetMessageRequested: loadResp.is_diffusion
+            ? ""
+            : (loadResp.requested_reasoning_budget_message ?? config.reasoningBudgetMessage),
           nBatch: committedNBatch,
           loadedNBatch: committedNBatch,
           nUbatch: committedNUbatch,
@@ -3383,8 +3389,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           loadedNParallel: null,
           reasoningBudget: -1,
           loadedReasoningBudget: -1,
+          loadedReasoningBudgetRequested: -1,
           reasoningBudgetMessage: "",
           loadedReasoningBudgetMessage: "",
+          loadedReasoningBudgetMessageRequested: "",
           nBatch: null,
           loadedNBatch: null,
           nUbatch: null,
@@ -3725,8 +3733,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           loadedNParallel: null,
           reasoningBudget: -1,
           loadedReasoningBudget: -1,
+          loadedReasoningBudgetRequested: -1,
           reasoningBudgetMessage: "",
           loadedReasoningBudgetMessage: "",
+          loadedReasoningBudgetMessageRequested: "",
           nBatch: null,
           loadedNBatch: null,
           nUbatch: null,

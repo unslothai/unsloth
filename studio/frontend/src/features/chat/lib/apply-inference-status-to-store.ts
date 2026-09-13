@@ -573,6 +573,26 @@ export function applyActiveModelStatusToStore(
         hydratingExistingModel ||
         reasoningBudgetStatusChanged) &&
       reasoningBudgetStatusFields),
+    // Rollback needs the request, not the effective environment-resolved value.
+    // Refresh on every settled echo: a same-model reload can change only the request.
+    ...(seedLoadParams && {
+      ...(!reasoningBudgetApplicable ||
+      status.requested_reasoning_budget !== undefined
+        ? {
+            loadedReasoningBudgetRequested: reasoningBudgetApplicable
+              ? (status.requested_reasoning_budget ?? -1)
+              : -1,
+          }
+        : {}),
+      ...(!reasoningBudgetApplicable ||
+      status.requested_reasoning_budget_message !== undefined
+        ? {
+            loadedReasoningBudgetMessageRequested: reasoningBudgetApplicable
+              ? (status.requested_reasoning_budget_message ?? "")
+              : "",
+          }
+        : {}),
+    }),
     // AFTER that clear, which both a first hydration and a model change trip: either would leave
     // the control blank while the model runs on a remembered override, so the next Apply would
     // save the blank over it. Adopted only when the running count matches.

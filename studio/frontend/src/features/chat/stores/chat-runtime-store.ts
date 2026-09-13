@@ -2341,8 +2341,11 @@ type ChatRuntimeStore = {
   loadedNParallel: number | null;
   reasoningBudget: number;
   loadedReasoningBudget: number | null;
+  /** Request baseline for rollback; effective values can include server environment defaults. */
+  loadedReasoningBudgetRequested: number | null;
   reasoningBudgetMessage: string;
   loadedReasoningBudgetMessage: string | null;
+  loadedReasoningBudgetMessageRequested: string | null;
   /** user --batch-size override for gguf loads (null = llama.cpp default 2048) */
   nBatch: number | null;
   loadedNBatch: number | null;
@@ -3985,8 +3988,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedNParallel: null,
   reasoningBudget: -1,
   loadedReasoningBudget: null,
+  loadedReasoningBudgetRequested: null,
   reasoningBudgetMessage: "",
   loadedReasoningBudgetMessage: null,
+  loadedReasoningBudgetMessageRequested: null,
   nBatch: null,
   loadedNBatch: null,
   loadedLlamaExtraArgs: null,
@@ -4878,8 +4883,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedNParallel: null,
       reasoningBudget: -1,
       loadedReasoningBudget: null,
+      loadedReasoningBudgetRequested: null,
       reasoningBudgetMessage: "",
       loadedReasoningBudgetMessage: null,
+      loadedReasoningBudgetMessageRequested: null,
       nBatch: null,
       loadedNBatch: null,
       loadedLlamaExtraArgs: null,

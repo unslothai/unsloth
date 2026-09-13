@@ -1656,8 +1656,10 @@ export function useChatModelRuntime() {
                 loadedNParallel: null,
                 reasoningBudget: -1,
                 loadedReasoningBudget: null,
+                loadedReasoningBudgetRequested: null,
                 reasoningBudgetMessage: "",
                 loadedReasoningBudgetMessage: null,
+                loadedReasoningBudgetMessageRequested: null,
                 nBatch: null,
                 loadedNBatch: null,
                 nUbatch: null,
@@ -2026,6 +2028,14 @@ export function useChatModelRuntime() {
                   ? (loadResponse.reasoning_budget_message ??
                     loadReasoningBudgetMessage)
                   : "",
+              loadedReasoningBudgetRequested:
+                loadResponse.is_gguf && !loadResponse.is_diffusion
+                  ? (loadResponse.requested_reasoning_budget ?? loadReasoningBudget)
+                  : -1,
+              loadedReasoningBudgetMessageRequested:
+                loadResponse.is_gguf && !loadResponse.is_diffusion
+                  ? (loadResponse.requested_reasoning_budget_message ?? loadReasoningBudgetMessage)
+                  : "",
               nBatch: committedNBatch,
               loadedNBatch: committedNBatch,
               ...committedServerTuning,
@@ -2147,9 +2157,9 @@ export function useChatModelRuntime() {
                     stateBeforeUnload.loadedSpecDraftNMax,
                   n_parallel: stateBeforeUnload.loadedNParallel,
                   reasoning_budget:
-                    stateBeforeUnload.loadedReasoningBudget ?? -1,
+                    stateBeforeUnload.loadedReasoningBudgetRequested ?? -1,
                   reasoning_budget_message:
-                    stateBeforeUnload.loadedReasoningBudgetMessage ?? "",
+                    stateBeforeUnload.loadedReasoningBudgetMessageRequested ?? "",
                   // omit unset fields: a null counts as set and would strip the previous server's extras
                   ...(stateBeforeUnload.loadedNBatch != null
                     ? { n_batch: stateBeforeUnload.loadedNBatch }
@@ -2212,6 +2222,14 @@ export function useChatModelRuntime() {
                   reasoningBudgetMessage: previousReasoningBudgetMessage,
                   loadedReasoningBudgetMessage:
                     rollbackResponse.reasoning_budget_message ?? "",
+                  loadedReasoningBudgetRequested:
+                    rollbackResponse.requested_reasoning_budget ??
+                    stateBeforeUnload.loadedReasoningBudgetRequested ??
+                    -1,
+                  loadedReasoningBudgetMessageRequested:
+                    rollbackResponse.requested_reasoning_budget_message ??
+                    stateBeforeUnload.loadedReasoningBudgetMessageRequested ??
+                    "",
                   nBatch: previousNBatch,
                   loadedNBatch: stateBeforeUnload.loadedNBatch ?? null,
                   nUbatch: previousNUbatch,

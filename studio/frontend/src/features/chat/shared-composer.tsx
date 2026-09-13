@@ -1675,6 +1675,12 @@ export function SharedComposer({
               ? (resp.reasoning_budget_message ??
                 ownConfig.reasoningBudgetMessage)
               : "",
+          loadedReasoningBudgetRequested: targetIsGguf && !resp.is_diffusion
+            ? (resp.requested_reasoning_budget ?? ownConfig.reasoningBudget)
+            : -1,
+          loadedReasoningBudgetMessageRequested: targetIsGguf && !resp.is_diffusion
+            ? (resp.requested_reasoning_budget_message ?? ownConfig.reasoningBudgetMessage)
+            : "",
           nBatch: committedNBatch,
           loadedNBatch: committedNBatch,
           nUbatch: committedNUbatch,
