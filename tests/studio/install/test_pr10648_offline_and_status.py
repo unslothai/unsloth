@@ -84,7 +84,12 @@ FAIL_TOKEN = "prebuilt install failed"
 # ══ Part 1 helpers ═══════════════════════════════════════════════════════════════════
 
 
-def _host(whisper_os: str, whisper_arch: str, *, macos_version = None) -> HostInfo:
+def _host(
+    whisper_os: str,
+    whisper_arch: str,
+    *,
+    macos_version = None,
+) -> HostInfo:
     return HostInfo(
         system = {"linux": "Linux", "macos": "Darwin", "windows": "Windows"}[whisper_os],
         machine = whisper_arch,
@@ -224,7 +229,11 @@ class _InjectedNetwork:
             raise socket.timeout("injected: timed out")
 
     # ── the /releases/latest HEAD ──
-    def open(self, request, timeout = None):
+    def open(
+        self,
+        request,
+        timeout = None,
+    ):
         url = getattr(request, "full_url", str(request))
         self.calls.append(("head", url))
         self._raise_transport(url)
@@ -403,9 +412,9 @@ def test_no_failure_mode_reports_success_without_a_working_install(
     code, log = _run_cli(monkeypatch, capsys, host, install_dir)
 
     assert net.install_calls, f"{mode}/{damage}: the injection never fired"
-    assert code != M.EXIT_SUCCESS, (
-        f"{mode}/{damage}: reported success with no working install\n{log}"
-    )
+    assert (
+        code != M.EXIT_SUCCESS
+    ), f"{mode}/{damage}: reported success with no working install\n{log}"
     assert code == M.EXIT_ERROR, f"{mode}/{damage}: exit {code}\n{log}"
     assert KEEP_TOKEN not in log, f"{mode}/{damage}: claimed to keep a broken install\n{log}"
     assert MATCH_TOKEN not in log, f"{mode}/{damage}: {log}"
@@ -413,9 +422,9 @@ def test_no_failure_mode_reports_success_without_a_working_install(
     assert net.downloads == [], f"{mode}/{damage}: downloaded {net.downloads}"
     assert _partial_artifacts(install_dir) == [], f"{mode}/{damage}: half-installed leftovers"
     if damage == "absent":
-        assert not install_dir.exists() or _tree_snapshot(install_dir) == {}, (
-            f"{mode}: a failed install left a tree behind"
-        )
+        assert (
+            not install_dir.exists() or _tree_snapshot(install_dir) == {}
+        ), f"{mode}: a failed install left a tree behind"
 
 
 @pytest.mark.parametrize("mode", FAILURE_MODES)
@@ -504,9 +513,7 @@ def test_a_release_compatibility_error_is_never_papered_over(tmp_path, monkeypat
     _inject(monkeypatch, "offline")
 
     def incompatible(*_args, **_kwargs):
-        raise M.ReleaseCompatibilityError(
-            "slim bundle requires llama.cpp b9999; installed b1000"
-        )
+        raise M.ReleaseCompatibilityError("slim bundle requires llama.cpp b9999; installed b1000")
 
     monkeypatch.setattr(M, "_release_plan_for_host", incompatible)
     code, log = _run_cli(monkeypatch, capsys, host, install_dir)
@@ -665,9 +672,9 @@ def test_pre_pr_an_unreachable_release_listing_escaped_as_an_uncaught_oserror():
     source = pre.stdout
 
     # The loop was unguarded: no try/except between the planner and the listing fetch.
-    assert "    for release_tag in _published_release_tags(published_repo):" in source, (
-        "the pre-PR planner did not iterate the listing directly; re-read the comparison"
-    )
+    assert (
+        "    for release_tag in _published_release_tags(published_repo):" in source
+    ), "the pre-PR planner did not iterate the listing directly; re-read the comparison"
     assert "could not list" not in source, "pre-PR already had the listing guard"
     # install_prebuilt had no keep arm, so nothing downgraded a lookup failure to exit 0.
     pre_install = source[source.index("def install_prebuilt(") :]
@@ -722,9 +729,9 @@ def test_the_pr_only_added_new_arms_to_the_setup_status_blocks():
     assert 'grep -Fq "already matches" "$_NODE_LOG"' in setup_sh
     assert '$prebuiltOutput -match "already matches"' in setup_ps1
     for script in (setup_sh, setup_ps1):
-        assert script.count("update unavailable, existing prebuilt kept") == 2, (
-            "llama and whisper each have exactly one keep arm"
-        )
+        assert (
+            script.count("update unavailable, existing prebuilt kept") == 2
+        ), "llama and whisper each have exactly one keep arm"
 
 
 # ══ Part 2: the status contract, executed in both shells ═════════════════════════════
@@ -795,9 +802,7 @@ def _ps1_block(name: str) -> str:
     if name == "whisper":
         # The exit-2 arm ends with the same words followed by "} else {", so the trailing
         # newline is what pins this to the final closing brace of the chain.
-        return _extract_block(
-            setup_ps1, _PS1_WHISPER_START, 'remain available" "Yellow"\n    }\n'
-        )
+        return _extract_block(setup_ps1, _PS1_WHISPER_START, 'remain available" "Yellow"\n    }\n')
     return _extract_block(setup_ps1, _PS1_LLAMA_START, 'retry setup."\n        }')
 
 
@@ -846,7 +851,11 @@ def _ps1_whisper_script(tmp_path: Path, status: int, output: str) -> str:
     )
 
 
-def _run_ps1(tmp_path: Path, script: str, name: str = "status.ps1"):
+def _run_ps1(
+    tmp_path: Path,
+    script: str,
+    name: str = "status.ps1",
+):
     script_path = tmp_path / name
     script_path.write_text(script, encoding = "utf-8")
     # run_pwsh, not subprocess.run: a pwsh killed at startup returns rc -6 with empty stdout,
@@ -1173,6 +1182,6 @@ def test_the_installer_emits_exactly_the_substrings_the_scripts_grep(tmp_path, m
     if shutil.which("bash") is None:  # pragma: no cover - CI always has bash
         pytest.skip("bash is required to execute the setup.sh status block")
     result = _run_bash(_sh_whisper_script(tmp_path, code, log))
-    assert _steps(result.stdout)["whisper.cpp"] == "update unavailable, existing prebuilt kept", (
-        result.stdout
-    )
+    assert (
+        _steps(result.stdout)["whisper.cpp"] == "update unavailable, existing prebuilt kept"
+    ), result.stdout

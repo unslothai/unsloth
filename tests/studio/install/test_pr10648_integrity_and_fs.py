@@ -146,9 +146,7 @@ def _asset_choice(**overrides):
 
 def _artifact(asset_name: str, sha256: str, origin: "tuple[str, str]"):
     repo, kind = origin
-    return LLAMA.ApprovedArtifactHash(
-        asset_name = asset_name, sha256 = sha256, repo = repo, kind = kind
-    )
+    return LLAMA.ApprovedArtifactHash(asset_name = asset_name, sha256 = sha256, repo = repo, kind = kind)
 
 
 def _release_checksums(*assets: "tuple[str, str, tuple[str, str]]"):
@@ -178,7 +176,12 @@ def _fill_payload(install_dir: Path, host) -> None:
             path.write_bytes(b"payload:" + path.name.encode("utf-8") + b":" + b"\xa5" * 48)
 
 
-def _install(tmp_path: Path, monkeypatch, *, host = LINUX) -> Path:
+def _install(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    host = LINUX,
+) -> Path:
     """A healthy install plus a marker written by the REAL write_prebuilt_metadata.
 
     The fingerprint guard (step 4 of existing_install_current_without_plan) rejects any
@@ -234,9 +237,7 @@ def _marker(install_dir: Path) -> dict:
 
 
 def _rewrite_marker(install_dir: Path, payload: dict) -> None:
-    (install_dir / MARKER_NAME).write_text(
-        json.dumps(payload, indent = 2) + "\n", encoding = "utf-8"
-    )
+    (install_dir / MARKER_NAME).write_text(json.dumps(payload, indent = 2) + "\n", encoding = "utf-8")
 
 
 # ── corruptions ──────────────────────────────────────────────────────────────────────
@@ -356,9 +357,7 @@ def test_a_same_size_byte_flip_is_caught_only_by_the_digest(tmp_path, monkeypatc
 
 @POSIX_ONLY
 @pytest.mark.parametrize("relative", HASHED_TIER)
-def test_a_recorded_binary_replaced_by_a_different_one_is_rejected(
-    tmp_path, monkeypatch, relative
-):
+def test_a_recorded_binary_replaced_by_a_different_one_is_rejected(tmp_path, monkeypatch, relative):
     install_dir = _install(tmp_path, monkeypatch)
     assert _fast_path(install_dir) is True
     _swap_for_another_binary(install_dir / relative)
@@ -498,9 +497,7 @@ def test_runtime_files_is_not_an_input_to_the_marker_fingerprint(tmp_path, monke
     assert LLAMA._marker_install_fingerprint(marker) != before
 
 
-def test_dropping_the_digest_from_one_entry_downgrades_it_to_the_size_tier(
-    tmp_path, monkeypatch
-):
+def test_dropping_the_digest_from_one_entry_downgrades_it_to_the_size_tier(tmp_path, monkeypatch):
     """(a) An entry with size but no sha256 is accepted, and checked on size alone.
 
     _runtime_files_match treats a missing digest as "this file has none to check" --
@@ -636,7 +633,12 @@ def _whisper_selection(**overrides):
     return CORE.InstallSelection(**fields)
 
 
-def _whisper_install(tmp_path: Path, monkeypatch, *, slim: bool = False) -> Path:
+def _whisper_install(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    slim: bool = False,
+) -> Path:
     """A whisper install tree plus a marker written by the REAL writer, so the
     fingerprint the keep path recomputes is genuinely self-consistent."""
     install_dir = tmp_path / "whisper.cpp"
@@ -675,9 +677,7 @@ def _whisper_install(tmp_path: Path, monkeypatch, *, slim: bool = False) -> Path
 
 
 def _whisper_marker(install_dir: Path) -> dict:
-    return json.loads(
-        (install_dir / WHISPER.METADATA_FILENAME).read_text(encoding = "utf-8")
-    )
+    return json.loads((install_dir / WHISPER.METADATA_FILENAME).read_text(encoding = "utf-8"))
 
 
 def _whisper_keep(install_dir: Path) -> bool:
@@ -785,9 +785,7 @@ def test_whisper_a_slim_install_is_kept_only_while_its_paired_ggml_tree_stands(
 
 
 @pytest.mark.parametrize("missing", ("libggml.so.0", "libggml-base.so.0"))
-def test_whisper_a_slim_install_missing_a_wired_library_is_rejected(
-    tmp_path, monkeypatch, missing
-):
+def test_whisper_a_slim_install_missing_a_wired_library_is_rejected(tmp_path, monkeypatch, missing):
     install_dir = _whisper_install(tmp_path, monkeypatch, slim = True)
     assert _whisper_keep(install_dir) is True
     bin_dir = WHISPER.runtime_bin_dir(install_dir, WHISPER_LINUX)
@@ -822,18 +820,14 @@ WRITERS = (
         name = "llama._write_marker",
         module = LLAMA,
         filename = MARKER_NAME,
-        rewrite = lambda directory, payload: LLAMA._write_marker(
-            directory / MARKER_NAME, payload
-        ),
+        rewrite = lambda directory, payload: LLAMA._write_marker(directory / MARKER_NAME, payload),
         raises_on_failure = False,
     ),
     _Writer(
         name = "prebuilt_core.write_live_marker",
         module = CORE,
         filename = MARKER_NAME,
-        rewrite = lambda directory, payload: CORE.write_live_marker(
-            directory / MARKER_NAME, payload
-        ),
+        rewrite = lambda directory, payload: CORE.write_live_marker(directory / MARKER_NAME, payload),
         raises_on_failure = True,
     ),
     _Writer(
@@ -857,7 +851,12 @@ _LIVE_PAYLOAD = {
 }
 
 
-def _live_marker(tmp_path: Path, writer: _Writer, *, mode: int = 0o644) -> Path:
+def _live_marker(
+    tmp_path: Path,
+    writer: _Writer,
+    *,
+    mode: int = 0o644,
+) -> Path:
     path = tmp_path / writer.filename
     path.write_text(
         json.dumps({"release_tag": "release-0", "tag": "b9000"}) + "\n", encoding = "utf-8"
