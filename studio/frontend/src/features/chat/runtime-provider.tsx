@@ -104,7 +104,13 @@ import { readThreadCreationClaim } from "./utils/chat-thread-creation-claim";
 import type { MessageRecord, ModelType, ThreadRecord } from "./types";
 import type { OpenAIChatChunk } from "./types/api";
 import {
+  type AdmissionStatus,
+  admissionStatusLabel,
+} from "./utils/admission-status";
+import {
   budgetImpliesTruncation,
+  completedAfterGivingUp,
+  isPreemptGaveUp,
   restoredAssistantStatus,
 } from "./utils/continuation";
 import {
@@ -984,6 +990,11 @@ function scheduleGenerationRecovery(
           maxTokens: run.requestPayload.max_tokens,
           completionTokens,
         });
+      // The live adapter's rule: a give-up is `paused` unless the run finished after it.
+      const preemptGaveUp =
+        isPreemptGaveUp(
+          currentMetadata.contextTruncation as OpenAIChatChunk["context_truncated"],
+        ) && !completedAfterGivingUp(run.finishReason);
       let nextMetadata = generationRecoveryMetadata({
         current: currentMetadata,
         runId,
@@ -991,6 +1002,7 @@ function scheduleGenerationRecovery(
         cursor,
         lastEventSeq: run.lastEventSeq,
         lengthLimited,
+        preemptGaveUp,
         firstChunkAt,
         totalChunks,
         usage: recoveryUsage,
@@ -1059,6 +1071,7 @@ function scheduleGenerationRecovery(
             cursor = update.event.seq;
             if (update.event.type === "chunk") {
               const chunk = update.event.payload as {
+                _admissionStatus?: AdmissionStatus;
                 _reasoningDurationMs?: unknown;
                 usage?: {
                   prompt_tokens?: unknown;
@@ -1077,6 +1090,18 @@ function scheduleGenerationRecovery(
                 }>;
                 context_truncated?: OpenAIChatChunk["context_truncated"];
               };
+              if (chunk._admissionStatus !== undefined) {
+                // Queued or paused: the line the live adapter shows, so a follower does
+                // not read the pause as a wedged backend. Cleared with the run below.
+                useChatRuntimeStore
+                  .getState()
+                  .setToolStatus(
+                    threadId,
+                    admissionStatusLabel(chunk._admissionStatus),
+                    serverCancel,
+                  );
+                continue;
+              }
               if ("_reasoningDurationMs" in chunk) {
                 currentMetadata = recoveredReasoningSummaryMetadata(
                   currentMetadata,
@@ -1167,6 +1192,7 @@ function scheduleGenerationRecovery(
       }
     } finally {
       const store = useChatRuntimeStore.getState();
+      store.setToolStatus(threadId, null, serverCancel);
       store.setThreadRunning(threadId, false, { owner: serverCancel });
       store.clearThreadServerCancel(threadId, serverCancel);
     }

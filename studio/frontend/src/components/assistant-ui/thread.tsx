@@ -145,6 +145,7 @@ import {
   modeAllowsContinuation,
   readIncompleteInfo,
   readTextThoughtSignature,
+  resumesWithoutText,
   claimAutoContinue,
   forgetAutoContinue,
   recordAutoContinue,
@@ -6987,6 +6988,11 @@ const ContinueMessageBarForLastMessage: FC = () => {
   const continuable = useAuiState(({ message }) =>
     isContinuableContent(message.content),
   );
+  // The same question with the "there must be text" half dropped. Selected unconditionally
+  // because the reason is not known until below and a hook cannot be conditional.
+  const continuableIfEmpty = useAuiState(({ message }) =>
+    isContinuableContent(message.content, { allowEmpty: true }),
+  );
   // Gemini signs its text parts, and the resumed turn is replayed from this branch,
   // so the signature travels with the partial.
   const thoughtSignature = useAuiState(({ message }) =>
@@ -7012,6 +7018,9 @@ const ContinueMessageBarForLastMessage: FC = () => {
     cancelled && !isProviderReportedReason(stamped?.reason)
       ? ("cancelled" as const)
       : stamped?.reason;
+  // A turn the backend gave up on can be empty, and both content gates below assume text,
+  // so together they hid the bar on exactly the turn that most needed it.
+  const noTextIsExpected = resumesWithoutText(reason);
 
   // Every gate the bar itself answers to. Resuming without asking has to clear the same
   // ones, or it would resume a turn the bar would have refused to offer.
@@ -7021,12 +7030,12 @@ const ContinueMessageBarForLastMessage: FC = () => {
     !isRunning &&
     !researchRunId &&
     !researchActive &&
-    continuable &&
+    (noTextIsExpected ? continuableIfEmpty : continuable) &&
     modeAllowsContinuation({
       fromAudioInput,
       audioOutputModel,
     }) &&
-    Boolean(partial.trim());
+    (noTextIsExpected || Boolean(partial.trim()));
 
   // A cut with a remedy is one resuming cannot undo, so the way out replaces the button.
   const remedy = reason ? incompleteRemedy(reason) : null;

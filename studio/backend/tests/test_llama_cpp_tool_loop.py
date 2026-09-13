@@ -2798,6 +2798,35 @@ def test_confirm_tool_calls_skips_gguf_rag_autoinject(monkeypatch):
     assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
 
 
+def test_a_reasoning_only_continuation_skips_gguf_rag_autoinject(monkeypatch):
+    """The gate read `trailing_assistant_text`, which is "" for a chat paused inside its
+    thought, so autoinject appended a tool exchange behind the partial and the resume, no
+    longer trailing, sent neither continuation flag and started a fresh answer."""
+    streams = [[_sse({"content": "Done."}), _done()]]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, streams, payloads)
+
+    def fail_autoinject(*_args, **_kwargs):
+        raise AssertionError("RAG autoinject must not move a resumable partial")
+
+    monkeypatch.setattr("core.inference.tools.build_rag_autoinject", fail_autoinject)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "user", "content": "use docs"},
+                {"role": "assistant", "content": "", "reasoning_content": "Let me think"},
+            ],
+            tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
+            max_tool_iterations = 1,
+            continue_final_message = True,
+            session_id = "sess",
+            rag_scope = {"thread_id": "t1"},
+        )
+    )
+    assert payloads and payloads[0].get("continue_final_message") is True, payloads
+
+
 def test_rag_autoinject_counts_as_a_prior_tool_execution(monkeypatch):
     """Autoinjected retrieval runs before the controller, so history stays empty.
 
@@ -4938,8 +4967,10 @@ def test_gguf_textual_fallback_caps_distinct_tool_calls_per_turn(monkeypatch):
     )
 
     assert len(calls) == _MAX_TOOL_CALLS_PER_TURN, [c[0] for c in calls]
-    # The cap keeps the first calls in order (no reordering / drop of leading ones).
-    assert [c[0] for c in calls] == [f"t{i}" for i in range(_MAX_TOOL_CALLS_PER_TURN)]
+    # The cap keeps the FIRST calls and drops the tail. Which of them reaches its tool
+    # first is no longer fixed, since the round runs them together, so compare the set:
+    # what the cap must never do is drop a leading call and keep a later one.
+    assert sorted(c[0] for c in calls) == sorted(f"t{i}" for i in range(_MAX_TOOL_CALLS_PER_TURN))
 
 
 def test_gguf_textual_fallback_collapses_duplicate_tool_calls(monkeypatch):
@@ -5329,10 +5360,11 @@ def test_second_structured_call_at_one_index_keeps_its_own_fragments(monkeypatch
         max_tool_iterations = 2,
     )
 
-    assert calls == [
-        {"name": "web_search", "arguments": {"query": "first"}},
-        {"name": "web_search", "arguments": {"query": "second"}},
-    ]
+    # Sorted: a round's calls now RUN together, so which thread reaches the tool first
+    # is not fixed. These tests are about argument routing -- each call keeping its own
+    # fragments instead of inheriting the other's tail -- and the order the MODEL sees is
+    # asserted directly below, on the cards and on the replayed conversation.
+    assert sorted(call["arguments"]["query"] for call in calls) == ["first", "second"]
     assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
         "call_a",
         "call_b",
@@ -5382,10 +5414,11 @@ def test_structured_fragment_naming_its_call_goes_back_to_that_call(monkeypatch)
         max_tool_iterations = 2,
     )
 
-    assert calls == [
-        {"name": "web_search", "arguments": {"query": "first"}},
-        {"name": "web_search", "arguments": {"query": "second"}},
-    ]
+    # Sorted: a round's calls now RUN together, so which thread reaches the tool first
+    # is not fixed. These tests are about argument routing -- each call keeping its own
+    # fragments instead of inheriting the other's tail -- and the order the MODEL sees is
+    # asserted directly below, on the cards and on the replayed conversation.
+    assert sorted(call["arguments"]["query"] for call in calls) == ["first", "second"]
     assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
         "call_a",
         "call_b",
@@ -5472,7 +5505,7 @@ def test_structured_call_forked_onto_a_reused_index_executes_last(monkeypatch):
         max_tool_iterations = 2,
     )
 
-    assert calls == [{"query": "a"}, {"query": "b"}, {"query": "c"}]
+    assert sorted(call["query"] for call in calls) == ["a", "b", "c"]
     assert [e.get("tool_call_id") for e in events if e.get("type") == "tool_end"] == [
         "call_a",
         "call_b",
@@ -6283,7 +6316,9 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
             # One round, so the loop breaks on the cap mid-round rather than at the top.
             max_tool_iterations = 1,
             permission_mode = "off",
-            on_conversation_grew = lambda conversation: seen.append(copy.deepcopy(conversation)),
+            on_conversation_grew = lambda conversation, _tools: seen.append(
+                copy.deepcopy(conversation)
+            ),
         )
     )
 
@@ -6302,6 +6337,66 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
         f"the final pass sends {len(final_messages)} messages but the pool was last told "
         f"about {len(last_seen)}"
     )
+
+
+def test_a_parallel_round_keeps_each_calls_compaction_promise(monkeypatch):
+    """The gate's promise to compact an oversized call travels with that call."""
+    # Two files, so the round's keys differ and the calls overlap: edits to one file are
+    # kept in order on purpose.
+    first_turn = _two_edits_in_one_turn()
+    first_turn[0] = first_turn[0].replace(
+        'game.html\\", \\"old_string\\": \\"TODO', 'readme.md\\", \\"old_string\\": \\"TODO'
+    )
+    assert "readme.md" in first_turn[0]
+    payloads: list[dict] = []
+    backend = _make_backend(
+        monkeypatch,
+        [first_turn, [_sse({"content": "Done."}), _done()]],
+        payloads,
+    )
+    monkeypatch.setattr("core.inference.studio_tool_loop.parallel_tool_calls_enabled", lambda: True)
+
+    def fake_count_chat_tokens(messages, *_args, **_kwargs):
+        return len(json.dumps(messages, default = str)) // 2
+
+    monkeypatch.setattr(backend, "count_chat_tokens", fake_count_chat_tokens)
+    executed: list[str] = []
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        executed.append(str(arguments.get("old_string")))
+        return "Wrote game.html"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    import core.inference.llama_cpp as llama_cpp_module
+
+    compacted: list[str] = []
+    real_compact = llama_cpp_module.compact_executed_call_arguments
+
+    def recording_compact(conversation, tool_call_id):
+        # The gate prices a call by compacting it too, before it runs, and a later pass
+        # may compact finished calls for reply room; the promise being kept is the
+        # compaction the settle applies the moment the tool's own result lands.
+        if sys._getframe(1).f_code.co_name == "_settle_tool_call":
+            compacted.append(tool_call_id)
+        return real_compact(conversation, tool_call_id)
+
+    monkeypatch.setattr(llama_cpp_module, "compact_executed_call_arguments", recording_compact)
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Write the game"}],
+            tools = [{"type": "function", "function": {"name": "edit_file"}}],
+            max_tool_iterations = 4,
+        )
+    )
+
+    assert executed and executed[0] == "", "the oversized call was refused instead of run"
+    assert (
+        "call_big" in compacted
+    ), "the first call's promise was dropped by the second's preparation"
+    sent = json.dumps(payloads[-1]["messages"], default = str)
+    assert _BIG_BODY not in sent
 
 
 @pytest.mark.parametrize(

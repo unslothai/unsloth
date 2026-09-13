@@ -2812,6 +2812,36 @@ def trailing_assistant_text(messages: list) -> Optional[str]:
     return None
 
 
+def trailing_assistant_reasoning(messages: list) -> str:
+    """Reasoning text of a trailing assistant turn that showed no prose yet.
+
+    A reasoning model preempted inside its thought block has real work and no visible
+    characters, so ``trailing_assistant_text`` reports "" and every truthiness gate built
+    on it drops the continuation.
+
+    Separate from ``trailing_assistant_text`` on purpose: that one feeds the manual prompt
+    splice, which appends its result as VISIBLE text, so handing it reasoning would paste
+    the thought into the answer.
+    """
+    if not messages:
+        return ""
+    last = messages[-1]
+    if not isinstance(last, dict) or last.get("role") != "assistant":
+        return ""
+    if last.get("tool_calls"):
+        return ""
+    for field in ("reasoning_content", "reasoning", "thinking"):
+        value = last.get(field)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def trailing_assistant_resumable(messages: list) -> bool:
+    """Whether a trailing assistant turn can be continued at all, prose or thought."""
+    return bool(trailing_assistant_text(messages) or trailing_assistant_reasoning(messages))
+
+
 def last_user_text(messages: list) -> str:
     """Text of the newest user turn, with any ``<img>`` markup stripped. Scans back rather than
     reading ``messages[-1]``: a continuation ends on the assistant partial. Stops at the newest
@@ -3013,6 +3043,8 @@ def append_assistant_turn(
     Merge over the resumed turn rather than replacing it, or every key the partial carried but the
     continuation does not repeat is lost. ``extra_content`` is such a key, and Gemini reads the text
     part's thought signature back from it alone, so a resumed turn replayed without it is rejected.
+    ``reasoning_content`` is concatenated rather than merged over: replacing it dropped the thought a
+    resumed turn had already produced as soon as the continuation thought anything of its own.
     """
     # Same acceptance rule as the prompt boundary, so a partial sent as text parts merges too.
     prev_text = trailing_assistant_text(conversation) if continue_final_message else None
@@ -3020,6 +3052,12 @@ def append_assistant_turn(
         # Copy rather than mutate: the caller owns assistant_msg and may still read it.
         merged_msg = {**conversation[-1], **assistant_msg}
         merged_msg["content"] = f"{prev_text}{assistant_msg['content']}"
+        # The thought is one turn's work too: a continuation that went on thinking and then
+        # called a tool carried only its own part, and the earlier part left the context.
+        prev_reasoning = conversation[-1].get("reasoning_content")
+        new_reasoning = assistant_msg.get("reasoning_content")
+        if isinstance(prev_reasoning, str) and isinstance(new_reasoning, str):
+            merged_msg["reasoning_content"] = f"{prev_reasoning}{new_reasoning}"
         conversation[-1] = merged_msg
         return
     conversation.append(assistant_msg)

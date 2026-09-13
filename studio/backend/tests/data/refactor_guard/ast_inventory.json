@@ -13,6 +13,12 @@
       "_GenerationThreadError": {
         "kind": "class"
       },
+      "_hf_token_for_loader": {
+        "kind": "def"
+      },
+      "_prompt_already_has_bos": {
+        "kind": "def"
+      },
       "get_inference_backend": {
         "kind": "def"
       },
@@ -44,6 +50,9 @@
       "LlamaServerNotFoundError": {
         "kind": "class"
       },
+      "PREEMPT_GAVE_UP_REASON": {
+        "kind": "assign"
+      },
       "ParavirtualPlacement": {
         "kind": "class"
       },
@@ -68,16 +77,37 @@
       "_BIG_ENDIAN_GGUF_FILENAME_RE": {
         "kind": "assign"
       },
+      "_BLOCKQUOTE_PREFIX": {
+        "kind": "assign"
+      },
       "_BOOTSTRAP_SWA_DEFAULTS": {
         "kind": "assign"
       },
+      "_BRACKET_THINK_OPEN_RE": {
+        "kind": "assign"
+      },
       "_CANONICAL_SPEC_MODES": {
+        "kind": "assign"
+      },
+      "_CARVEOUT_ADVICE_HOST_FRACTION": {
+        "kind": "assign"
+      },
+      "_CARVEOUT_ADVICE_MIN_HOST_GB": {
+        "kind": "assign"
+      },
+      "_CARVEOUT_NOMINAL_SLACK_GB": {
         "kind": "assign"
       },
       "_CGROUP_ROOT": {
         "kind": "assign"
       },
       "_CHAT_LOADS_IN_FLIGHT": {
+        "kind": "assign"
+      },
+      "_CLOSED_CODE_FENCE": {
+        "kind": "assign"
+      },
+      "_CLOSED_MARKUP_ARTIFACT": {
         "kind": "assign"
       },
       "_CONTINUE_AFTER_LENGTH_STATUS": {
@@ -107,6 +137,9 @@
       "_CombinedCancelEvent": {
         "kind": "class"
       },
+      "_CompactionBranchState": {
+        "kind": "class"
+      },
       "_CpuFallbackRuntime": {
         "kind": "class"
       },
@@ -128,6 +161,9 @@
       "_DEVICE_ROW_RE": {
         "kind": "assign"
       },
+      "_DOCTYPE_PREFIX": {
+        "kind": "assign"
+      },
       "_DRAFTER_DIR_KINDS": {
         "kind": "assign"
       },
@@ -140,10 +176,19 @@
       "_DRAFT_GPU_LAYER_FLAGS": {
         "kind": "assign"
       },
+      "_EMPTY_MARKUP_SKELETON": {
+        "kind": "assign"
+      },
       "_FAILURE_QUOTE_CHARS": {
         "kind": "assign"
       },
       "_FAILURE_SCAN_TAIL_CHARS": {
+        "kind": "assign"
+      },
+      "_FENCE_INFO_STRING_RE": {
+        "kind": "assign"
+      },
+      "_FENCE_RUN_RE": {
         "kind": "assign"
       },
       "_FINAL_ANSWER_SIGNAL": {
@@ -200,6 +245,9 @@
       "_GPU_OFFLOAD_OVERRIDE_FLAGS": {
         "kind": "assign"
       },
+      "_HAS_ANSWER_ARTIFACT": {
+        "kind": "assign"
+      },
       "_HF_DRAFT_FLAGS": {
         "kind": "assign"
       },
@@ -219,6 +267,9 @@
         "kind": "assign"
       },
       "_LEGACY_SPEC_MODE_MAP": {
+        "kind": "assign"
+      },
+      "_LIST_MARKER_ONLY": {
         "kind": "assign"
       },
       "_LLAMA_ARG_AUTO_VALUES": {
@@ -263,6 +314,9 @@
       "_MAX_LENGTH_CONTINUATIONS": {
         "kind": "assign"
       },
+      "_MAX_PARALLEL_TOOL_CALLS_PER_ROUND": {
+        "kind": "assign"
+      },
       "_MAX_TOOL_CALLS_PER_TURN": {
         "kind": "assign"
       },
@@ -296,6 +350,9 @@
       "_OFFLOADED_LAYERS_RE": {
         "kind": "assign"
       },
+      "_ONE_QUOTE_MARKER": {
+        "kind": "assign"
+      },
       "_OVERRIDE_TENSOR_FLAGS": {
         "kind": "assign"
       },
@@ -309,6 +366,9 @@
         "kind": "assign"
       },
       "_PERMANENT_HUB_ERRORS": {
+        "kind": "assign"
+      },
+      "_PREEMPT_KEEPALIVE_S": {
         "kind": "assign"
       },
       "_PROC_ROOT": {
@@ -371,7 +431,25 @@
       "_TEXT_TOOL_REHEARSAL_RE": {
         "kind": "assign"
       },
+      "_THINKING_OPEN_RE": {
+        "kind": "assign"
+      },
+      "_THINK_OPEN_RE": {
+        "kind": "assign"
+      },
       "_THREAD_OVERRIDE_FLAGS": {
+        "kind": "assign"
+      },
+      "_TOKEN_REPORT_EVERY": {
+        "kind": "assign"
+      },
+      "_TOOL_CALL_REFUSED": {
+        "kind": "assign"
+      },
+      "_TOOL_PRIME_PENDING": {
+        "kind": "assign"
+      },
+      "_TOOL_START_DEFERRED": {
         "kind": "assign"
       },
       "_TOOL_TEMPLATE_MARKERS": {
@@ -428,6 +506,12 @@
       "_archive_and_recall": {
         "kind": "def"
       },
+      "_archive_as_wire": {
+        "kind": "def"
+      },
+      "_archive_branch_chain": {
+        "kind": "def"
+      },
       "_archive_branch_transcript": {
         "kind": "def"
       },
@@ -443,7 +527,16 @@
       "_args_place_tensors_on_cpu": {
         "kind": "def"
       },
+      "_argv_keeps_projector_on_gpu": {
+        "kind": "def"
+      },
+      "_artifact_spans": {
+        "kind": "def"
+      },
       "_auto_mode_drops_mtp": {
+        "kind": "def"
+      },
+      "_await_resume": {
         "kind": "def"
       },
       "_backend_supports_tools": {
@@ -503,6 +596,9 @@
       "_coerce_reasoning_effort": {
         "kind": "def"
       },
+      "_compaction_branch_states": {
+        "kind": "def"
+      },
       "_compaction_fit_kwargs": {
         "kind": "def"
       },
@@ -513,6 +609,9 @@
         "kind": "def"
       },
       "_cpu_runtime_owner_alive": {
+        "kind": "def"
+      },
+      "_decline_preemption": {
         "kind": "def"
       },
       "_device_selection_is_cpu": {
@@ -528,6 +627,9 @@
         "kind": "def"
       },
       "_drafter_set_bytes": {
+        "kind": "def"
+      },
+      "_drive_tool_stream": {
         "kind": "def"
       },
       "_effective_headroom_ratio": {
@@ -641,6 +743,12 @@
       "_finalize_reasoning_only_cumulative": {
         "kind": "def"
       },
+      "_find_outside_artifacts": {
+        "kind": "def"
+      },
+      "_first_real_artifact": {
+        "kind": "def"
+      },
       "_fit_context": {
         "kind": "def"
       },
@@ -666,6 +774,15 @@
         "kind": "def"
       },
       "_gguf_snapshot_files": {
+        "kind": "def"
+      },
+      "_has_answer_artifact": {
+        "kind": "def"
+      },
+      "_has_unclosed_code_fence": {
+        "kind": "def"
+      },
+      "_has_unclosed_markup_block": {
         "kind": "def"
       },
       "_held_rehearsal_tail_len": {
@@ -704,7 +821,13 @@
       "_inject_recall": {
         "kind": "def"
       },
+      "_interrupt_event": {
+        "kind": "def"
+      },
       "_is_big_endian_gguf_path": {
+        "kind": "def"
+      },
+      "_is_blank_fence": {
         "kind": "def"
       },
       "_is_companion_gguf_path": {
@@ -714,6 +837,9 @@
         "kind": "def"
       },
       "_is_dspark_drafter_path": {
+        "kind": "def"
+      },
+      "_is_empty_markup_skeleton": {
         "kind": "def"
       },
       "_is_external_link": {
@@ -773,6 +899,9 @@
       "_llama_lib_dir": {
         "kind": "def"
       },
+      "_llama_predicted_n": {
+        "kind": "def"
+      },
       "_load_swa_cache": {
         "kind": "def"
       },
@@ -792,6 +921,9 @@
         "kind": "def"
       },
       "_mmproj_env_is_audio_only": {
+        "kind": "def"
+      },
+      "_mtp_head_borrows": {
         "kind": "def"
       },
       "_native_linux_system_rocm_lib_dirs": {
@@ -845,6 +977,12 @@
       "_planned_scratch_cache_type": {
         "kind": "def"
       },
+      "_preempt_charge": {
+        "kind": "def"
+      },
+      "_preempt_gave_up_event": {
+        "kind": "def"
+      },
       "_prefix_user_text": {
         "kind": "def"
       },
@@ -890,6 +1028,12 @@
       "_retrieval_budget": {
         "kind": "assign"
       },
+      "_row_ended_early": {
+        "kind": "def"
+      },
+      "_row_replayed": {
+        "kind": "def"
+      },
       "_save_swa_cache": {
         "kind": "def"
       },
@@ -926,6 +1070,9 @@
       "_split_mode_confines_to_one_device": {
         "kind": "def"
       },
+      "_start_tool_call": {
+        "kind": "def"
+      },
       "_sticky_compaction_boundary": {
         "kind": "def"
       },
@@ -933,6 +1080,9 @@
         "kind": "def"
       },
       "_strip_flag_pairs": {
+        "kind": "def"
+      },
+      "_strip_markup_outside_fences": {
         "kind": "def"
       },
       "_subsequence_index": {
@@ -951,6 +1101,12 @@
         "kind": "def"
       },
       "_sweep_abandoned_cpu_runtimes": {
+        "kind": "def"
+      },
+      "_text_outside_think": {
+        "kind": "def"
+      },
+      "_usage_with_earlier_attempts": {
         "kind": "def"
       },
       "_vram_reserve_floor_mib": {
@@ -1925,6 +2081,11 @@
         "decorators": [],
         "kind": "def",
         "signature": "content: str"
+      },
+      "admission_room_refused_message": {
+        "decorators": [],
+        "kind": "def",
+        "signature": ""
       },
       "blocked_bare_json_chain_may_continue": {
         "decorators": [],

@@ -351,6 +351,27 @@ _ADMISSION_WAIT_MARKER = ": admission-wait"
 # Leaving the queue. Renewed unconditionally: wait renewals are rate limited, and the lease equals the first-token
 # timeout, so any age carried in is negative margin.
 _ADMISSION_DONE_MARKER = ": admission-done"
+# The pause comments, same origin. `_SSEDecoder` keeps data lines only, so a durable
+# follower never sees them and a paused chat simply stopped and restarted minutes later.
+# Relayed as a chunk carrying the frontend's own `_admissionStatus` field.
+_PREEMPT_PAUSED_MARKER = ": preempt-paused"
+_PREEMPT_RESUMED_MARKER = ": preempt-resumed"
+# Every two seconds of a pause. The lease is renewed on it: a pause longer than the lease
+# is a chat waiting its turn, not a wedged run.
+_PREEMPT_KEEPALIVE_MARKER = ": preempt-keepalive"
+
+
+def _admission_status_chunks(text: str) -> list[dict]:
+    """The pause and resume comments in one piece of the upstream stream, as chunks a
+    durable follower renders the way the legacy stream renders the comments."""
+    chunks: list[dict] = []
+    for line in text.replace("\r\n", "\n").split("\n"):
+        stripped = line.strip()
+        if stripped == _PREEMPT_PAUSED_MARKER:
+            chunks.append({"_admissionStatus": "paused"})
+        elif stripped == _PREEMPT_RESUMED_MARKER:
+            chunks.append({"_admissionStatus": "resumed"})
+    return chunks
 
 
 def _minimum_lease_seconds() -> float:
@@ -733,11 +754,22 @@ class ChatGenerationSupervisor:
                 if _ADMISSION_DONE_MARKER in text:
                     last_keepalive = time.monotonic()
                     await self._try_touch_progress(run_id)
-                elif _ADMISSION_WAIT_MARKER in text:
+                elif _ADMISSION_WAIT_MARKER in text or _PREEMPT_KEEPALIVE_MARKER in text:
                     now_s = time.monotonic()
                     if now_s - last_keepalive >= _renew_interval_seconds():
                         last_keepalive = now_s
                         await self._try_touch_progress(run_id)
+                status_chunks = _admission_status_chunks(text)
+                if status_chunks:
+                    # Written at once, not batched: nothing follows a pause while it
+                    # lasts, so a batched notice would arrive with the resume.
+                    now_ms = db.now_ms()
+                    pending.extend(("chunk", chunk, now_ms) for chunk in status_chunks)
+                    await asyncio.to_thread(db.append_events, run_id, worker_token, pending)
+                    pending = []
+                    last_flush = time.monotonic()
+                    last_keepalive = last_flush
+                    await self._try_touch_progress(run_id)
                 for encoded in decoder.feed(text):
                     if encoded == "[DONE]":
                         saw_done = True

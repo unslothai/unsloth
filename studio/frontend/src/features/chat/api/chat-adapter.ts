@@ -58,6 +58,10 @@ import {
 } from "../search-images/search-images";
 import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
+import {
+  type AdmissionStatus,
+  admissionStatusLabel,
+} from "../utils/admission-status";
 import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
 import {
   adoptPreStreamRunReservation,
@@ -255,9 +259,11 @@ import { resolveLoadMaxSeqLength } from "../presets/preset-policy";
 import type { CachedGgufRepo, CachedModelRepo } from "./chat-api";
 import {
   budgetImpliesTruncation,
+  completedAfterGivingUp,
   CONTINUE_INSTRUCTION,
   createContinuationMerger,
   type IncompleteReason,
+  isPreemptGaveUp,
   readIncompleteInfo,
   resolveIncompleteReason,
   readContinuationRequest,
@@ -5118,6 +5124,9 @@ export function createOpenAIStreamAdapter(
       });
       // Why this turn stopped early. Drives the Continue affordance.
       let incompleteReason: IncompleteReason | null = null;
+      // Latched rather than read off the last chunk, because the give-up notice arrives
+      // before the terminal chunk whose `length` would otherwise be the last word.
+      let preemptGaveUp = false;
       // MLX reports finish_reason "stop" even at the cap, so an exhausted budget is its only truncation signal.
       let requestedMaxTokens: number | undefined;
       const isMlxRequest = !isExternalRequest && activeModel?.isMlx === true;
@@ -6302,6 +6311,24 @@ export function createOpenAIStreamAdapter(
                 responseModelId = chunkModel;
               }
 
+              // Queued for a slot, or paused so another chat can finish: neither is an
+              // error and neither produces a token, so without a line on screen both look
+              // like a wedged backend. Routed through setToolStatus because that setter
+              // already handles two runs sharing the unresolved "__default" thread key,
+              // where a naive clear wipes the sibling's status.
+              const admissionStatus = (
+                chunk as unknown as { _admissionStatus?: AdmissionStatus }
+              )._admissionStatus;
+              if (admissionStatus !== undefined) {
+                runtime.setToolStatus(
+                  liveThreadKey(serverCancel),
+                  admissionStatusLabel(admissionStatus),
+                  serverCancel,
+                );
+                continue;
+              }
+
+              // Handle tool status events
               const toolStatusText = (
                 chunk as unknown as { _toolStatus?: string }
               )._toolStatus;
@@ -6324,6 +6351,9 @@ export function createOpenAIStreamAdapter(
                   contextTruncation,
                   chunk.context_truncated,
                 );
+                if (isPreemptGaveUp(chunk.context_truncated)) {
+                  preemptGaveUp = true;
+                }
                 const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
                 // What must stay silent is a fit that returned the ORIGINAL messages: "older turns were
                 // removed" would be untrue and burns the once-per-thread flag. Not `fits`, which is also
@@ -6830,6 +6860,13 @@ export function createOpenAIStreamAdapter(
                 incompleteReason = "length";
               } else if (chunk.choices?.[0]?.finish_reason) {
                 incompleteReason = null;
+                if (completedAfterGivingUp(chunk.choices[0].finish_reason)) {
+                  // The give-up latch too, not just the reason it set: the override below
+                  // is unconditional, so a tool run that gave up, broke into the final pass
+                  // and finished normally was still stamped paused. `length` is the shape a
+                  // give-up really ends on, so it never reaches this branch.
+                  preemptGaveUp = false;
+                }
               }
               // Latch the chunk's `model` field so the openrouter/free chip shows the underlying model.
               if (
@@ -7552,6 +7589,15 @@ export function createOpenAIStreamAdapter(
           })
         ) {
           incompleteReason = "length";
+        }
+
+        // A turn the backend gave up on is `paused`, not `length`: it ends on `length`
+        // because that is the shape a continuation resumes from, but naming Max Tokens sends
+        // the user to a setting that was never the constraint. `paused` also refuses the
+        // AUTOMATIC continuation, which would ask for another slot in the cache that just
+        // ran out. Last, so it wins over both assignments above.
+        if (preemptGaveUp) {
+          incompleteReason = "paused";
         }
 
         // Before the lookup below: its network time is not generation time.

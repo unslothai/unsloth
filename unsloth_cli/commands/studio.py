@@ -1286,6 +1286,94 @@ def _tunnel_binary_confirmed_unavailable() -> bool:
                 pass
 
 
+_REEXEC_DEPTH_ENV = "UNSLOTH_STUDIO_REEXEC_DEPTH"
+
+
+def _running_inside_studio_venv(studio_venv_dir: Path) -> bool:
+    """Whether this interpreter is the Studio venv's, symlinks and all.
+
+    Compared on RESOLVED paths: `sys.prefix` is the venv's real directory while
+    `STUDIO_HOME / "unsloth_studio"` is whatever path the user gave, so a symlinked venv
+    never matched and the parent re-executed the venv's console script forever.
+    """
+    try:
+        prefix = Path(sys.prefix).resolve()
+        target = Path(studio_venv_dir).resolve()
+    except OSError:
+        return sys.prefix.startswith(str(studio_venv_dir))
+    return prefix == target or target in prefix.parents
+
+
+def _hand_off_landed() -> None:
+    """This process is the venv's launcher, so the marker has done its job. Left in place it
+    reaches the server and every subprocess it starts, and a fresh `unsloth studio` from an
+    integrated terminal is refused as a second hand-off of a command it never joined."""
+    os.environ.pop(_REEXEC_DEPTH_ENV, None)
+
+
+def _child_launcher_predates_the_guard(studio_venv_dir: Path) -> bool:
+    """Whether handing off would loop anyway: the venv is reached through a symlink and the
+    `unsloth` installed in it predates the symlink-aware check, so it neither resolves the
+    path nor reads the marker.
+
+    An old child cannot be guarded from here, so the parent refuses rather than start the
+    loop. A venv whose launcher cannot be found is given the benefit of the doubt.
+    """
+    try:
+        given = Path(studio_venv_dir)
+        real = given.resolve()
+    except OSError:
+        return False
+    if real == given:
+        return False
+    candidates = list(real.glob("lib/python*/site-packages/unsloth_cli/commands/studio.py"))
+    candidates += list(real.glob("Lib/site-packages/unsloth_cli/commands/studio.py"))
+    for launcher in candidates:
+        try:
+            if _REEXEC_DEPTH_ENV not in launcher.read_text(encoding = "utf-8", errors = "replace"):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _refuse_an_old_launcher_behind_a_symlink(studio_venv_dir: Path, studio_python) -> None:
+    if not _child_launcher_predates_the_guard(studio_venv_dir):
+        return
+    typer.echo(
+        f"Error: the Studio venv at {studio_venv_dir} is reached through a symlink, and "
+        "the unsloth CLI installed in it predates the symlink-aware hand-off, so it would "
+        f"hand off to itself forever. Upgrade it ({studio_python} -m pip install -U unsloth) "
+        "or point UNSLOTH_STUDIO_HOME at the venv's real home.",
+        err = True,
+    )
+    raise typer.Exit(2)
+
+
+def _guard_reexec_loop(target: str) -> None:
+    """Refuse the second hand-off rather than loop.
+
+    One hand-off is the design; a second means the venv check cannot succeed in this
+    layout, and saying so is the only useful outcome. The marker is inherited through
+    `os.execvp` and `subprocess.Popen`, since both pass the environment on.
+    """
+    depth = os.environ.get(_REEXEC_DEPTH_ENV, "0")
+    try:
+        depth_n = int(depth)
+    except ValueError:
+        depth_n = 0
+    if depth_n >= 1:
+        typer.echo(
+            "Error: Unsloth handed off to the Studio venv's launcher, which did not "
+            f"recognise itself as inside {target}. Refusing to hand off again. "
+            "Check that UNSLOTH_STUDIO_HOME points at the home whose unsloth_studio venv "
+            "this is.",
+            err = True,
+        )
+        raise typer.Exit(2)
+    os.environ[_REEXEC_DEPTH_ENV] = str(depth_n + 1)
+
+
 def _child_self_suppresses(*, in_studio_venv: bool, child_run_py: Optional[Path]) -> bool:
     """True when the child serving Unsloth is provably THIS install's backend, which suppresses the
     seeded credential, so the strip can be skipped. False on ANY doubt."""
@@ -1768,7 +1856,9 @@ def studio_default(
 
     # Resolve the child launcher BEFORE the gate: a headless gate strips the seeded password, so aborting afterwards leaves no way to log in.
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
-    in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
+    in_studio_venv = _running_inside_studio_venv(studio_venv_dir)
+    if in_studio_venv:
+        _hand_off_landed()
     # Before the env reaches a child: an override contradicting single-arch wheels fails every kernel launch, and install.sh's unset cannot reach here (#7331).
     _clear_hsa_override_before_launch(silent = silent)
     studio_python = run_py = None
@@ -1874,6 +1964,9 @@ def studio_default(
                     )
                 raise typer.Exit(rc)
             else:
+                # The child here is run.py, the server itself, which never hands off again;
+                # an inherited marker would reach every subprocess it starts.
+                os.environ.pop(_REEXEC_DEPTH_ENV, None)
                 os.execvp(str(studio_python), args)
         else:
             typer.echo("Unsloth Studio not set up. Run install.sh first.")
@@ -2389,7 +2482,9 @@ def run(
     )
 
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
-    in_studio_venv = sys.prefix.startswith(str(studio_venv_dir))
+    in_studio_venv = _running_inside_studio_venv(studio_venv_dir)
+    if in_studio_venv:
+        _hand_off_landed()
     studio_bin = None
     resolved_frontend = frontend
     if not in_studio_venv:
@@ -2497,6 +2592,10 @@ def run(
         if start_api_key_marker:
             os.environ[_START_API_KEY_MARKER_ENV] = "1"
         try:
+            # Before the platform branch: the Windows hand-off inherits this environment as
+            # the exec does, and guarding the exec alone left it free to chain old children.
+            _refuse_an_old_launcher_behind_a_symlink(studio_venv_dir, studio_python)
+            _guard_reexec_loop(str(studio_venv_dir))
             if sys.platform == "win32":
                 with _studio_runtime_launch_guard(inherited = runtime_gate_handoff) as gate_held:
                     popen_kwargs = {}
@@ -2512,6 +2611,7 @@ def run(
                 os.execvp(str(studio_bin), args)
         finally:
             os.environ.pop(_START_API_KEY_MARKER_ENV, None)
+            os.environ.pop(_REEXEC_DEPTH_ENV, None)
 
     with _studio_deps.studio_backend_imports("unsloth studio"):
         run_mod = _load_run_module()

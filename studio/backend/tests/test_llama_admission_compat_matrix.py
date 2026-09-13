@@ -223,10 +223,9 @@ class TestOldCallers:
         parameter = signature.parameters["on_conversation_grew"]
         assert parameter.default is None, "the hook must be optional for existing callers"
 
-    def test_the_hook_was_appended_rather_than_inserted(self):
-        """No bare ``*`` in this signature, so every parameter is positional-or-keyword and
-        inserting one silently rebinds the arguments after it for positional callers, with
-        no exception to report it."""
+    def test_admission_parameters_were_appended_rather_than_inserted(self):
+        """No bare ``*`` in these signatures, so inserting a parameter silently rebinds
+        the arguments after it for positional callers. New ones go at the end."""
         import inspect
 
         from core.inference.llama_cpp import LlamaCppBackend
@@ -234,9 +233,26 @@ class TestOldCallers:
         names = list(
             inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         )
-        assert (
-            names[-1] == "on_conversation_grew"
-        ), f"the hook must be last; signature ends {names[-3:]}"
+        # The property is that nothing was INSERTED, not that one name is last: pinning the
+        # literal tail fails the moment a second hook is appended, which is the safe move.
+        assert "on_conversation_grew" in names
+        hook_at = names.index("on_conversation_grew")
+        assert names[hook_at - 1] == "tool_choice", (
+            f"a parameter was inserted before the hook, rebinding positional callers: "
+            f"{names[hook_at - 2:hook_at + 1]}"
+        )
+        for later in names[hook_at + 1 :]:
+            assert (
+                inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools)
+                .parameters[later]
+                .default
+                is None
+            ), f"{later} was appended without an optional default"
+        plain = list(inspect.signature(LlamaCppBackend.generate_chat_completion).parameters)
+        assert plain[-2:] == [
+            "admission_output_allowance",
+            "on_prompt_fitted",
+        ], f"a parameter was inserted rather than appended; signature ends {plain[-4:]}"
 
     def test_the_wait_timeout_has_a_sane_default(self):
         import inspect
