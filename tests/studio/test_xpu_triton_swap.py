@@ -227,9 +227,7 @@ class TestXpuTritonSwap:
         """It removes a distribution outside pip_install, and the pass's final pip check only
         runs when something said the environment moved. Uncounted, dropping generic triton on
         an XPU host would leave torch's dependency unmet with nothing left to report it."""
-        mod, _log = _load(
-            monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1"
-        )
+        mod, _log = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
         mod.__dict__["_ensure_xpu_triton"]()
         assert mod.__dict__["_test_counted"], "the uninstall did not count as a change"
 
