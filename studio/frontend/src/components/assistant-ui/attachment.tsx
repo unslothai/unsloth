@@ -29,6 +29,8 @@ import {
 } from "@/features/chat";
 import { formatBytes } from "@/features/hub";
 import { cn } from "@/lib/utils";
+import { clearSelectedMcpImage, useMcpImageSelection } from "@/features/chat/api/mcp-image-selection";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useShallow } from "zustand/shallow";
 import {
   AttachmentPrimitive,
@@ -276,6 +278,10 @@ const AttachmentUI: FC = () => {
 
   const isImage = useAuiState(({ attachment }) => attachment.type === "image");
   const attachmentId = useAuiState(({ attachment }) => attachment.id);
+  const imageSharingEnabled = useChatRuntimeStore((s) => s.mcpImageAttachmentsEnabled);
+  const selectedImageId = useMcpImageSelection((s) => s.attachmentId);
+  const selectImage = useMcpImageSelection((s) => s.select);
+  const toolOnly = useAuiState(({ attachment }) => (attachment as { mcpToolOnly?: boolean }).mcpToolOnly === true);
   const name = useAuiState(({ attachment }) => attachment.name);
   const typeLabel = useAuiState(({ attachment }) => {
     const type = attachment.type;
@@ -339,6 +345,10 @@ const AttachmentUI: FC = () => {
           </TooltipTrigger>
         </AttachmentPreviewDialog>
         {isComposer && <AttachmentRemove />}
+        {isImage && (isComposer ? imageSharingEnabled || selectedImageId === attachmentId : toolOnly) && <label className="block max-w-32 text-xs">
+          {isComposer && <input type="checkbox" checked={selectedImageId === attachmentId} onChange={(event) => selectImage(event.target.checked ? attachmentId : null)} />}
+          Tool only{!isComposer ? " (hidden from model)" : ""}
+        </label>}
       </AttachmentPrimitive.Root>
       <TooltipContent side="top" className="tooltip-compact">
         <AttachmentPrimitive.Name />
@@ -348,10 +358,12 @@ const AttachmentUI: FC = () => {
 };
 
 const AttachmentRemove: FC = () => {
+  const attachmentId = useAuiState(({ attachment }) => attachment.id);
   return (
     <AttachmentPrimitive.Remove asChild={true}>
       <TooltipIconButton
         tooltip="Remove file"
+        onClick={() => clearSelectedMcpImage(attachmentId)}
         className="aui-attachment-tile-remove absolute top-1.5 right-1.5 size-3.5 rounded-full bg-white text-muted-foreground opacity-100 shadow-sm hover:bg-white! [&_svg]:text-black hover:[&_svg]:text-destructive"
         side="top"
       >

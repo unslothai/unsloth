@@ -507,6 +507,40 @@ def test_a_raising_config_check_fails_closed(clients):
     assert mcp_client._mcp_sessions == {}
 
 
+@pytest.mark.parametrize("oauth", [False, True])
+def test_one_shot_rechecks_configuration_after_connect(clients, monkeypatch, oauth):
+    current = {"value": True}
+    original = RecordingClient.__aenter__
+
+    async def connect_then_revoke(self):
+        result = await original(self)
+        current["value"] = False
+        return result
+
+    monkeypatch.setattr(RecordingClient, "__aenter__", connect_then_revoke)
+    out = _call(HTTP_URL, use_oauth = oauth, config_check = lambda: current["value"])
+    assert "updated or removed" in out
+    assert all(not client.calls for client in clients)
+
+
+def test_cached_http_rechecks_configuration_after_responsiveness_probe(clients, monkeypatch):
+    _call(HTTP_URL, scope = SCOPE)
+    session = next(iter(mcp_client._mcp_sessions.values()))
+    session.dirty = True
+    current = {"value": True}
+    original = RecordingClient.list_tools_mcp
+
+    async def probe_then_revoke(self):
+        result = await original(self)
+        current["value"] = False
+        return result
+
+    monkeypatch.setattr(RecordingClient, "list_tools_mcp", probe_then_revoke)
+    out = _call(HTTP_URL, scope = SCOPE, config_check = lambda: current["value"])
+    assert "updated or removed" in out
+    assert len(clients[0].calls) == 1
+
+
 # --------------------------------------------------------------------------
 # Failure handling
 # --------------------------------------------------------------------------

@@ -9764,6 +9764,7 @@ def execute_tool(
     context_tokens = _UNSET_CONTEXT_TOKENS,
     search_images: bool = False,
     result_budget_tokens: int | None = None,
+    mcp_image_context = None,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -9863,6 +9864,34 @@ def execute_tool(
         headers = parse_server_headers(server)
         url = server["url"]
         use_oauth = bool(server.get("use_oauth"))
+        config_revision = server.get("config_revision")
+
+        # A private reference is a selector, never a grant. Direct callers must
+        # not bypass the interactive disclosure gate or send it as raw input.
+        try:
+            image_mappings = json.loads(server.get("image_input_mappings_json") or "[]")
+        except (ValueError, TypeError):
+            image_mappings = []
+        mapped_image_tool = any(
+            isinstance(mapping, dict) and mapping.get("tool") == tool_name
+            for mapping in image_mappings
+        ) if isinstance(image_mappings, list) else False
+        private_selector = mapped_image_tool and any(
+            isinstance(value, str) and value.startswith("mcp-image-ref-")
+            for value in arguments.values()
+        )
+        private_enabled = False
+        if mapped_image_tool:
+            from storage.studio_db import get_chat_setting_with_revision
+
+            try:
+                private_enabled = get_chat_setting_with_revision("mcpImageAttachmentsEnabled")[0] is True
+            except Exception:
+                # An unreadable authoritative flag cannot authorize a configured
+                # image field, even if its argument looks like ordinary base64.
+                return "Error: The image sharing setting is unavailable. Nothing was sent."
+        if (private_selector or (mapped_image_tool and private_enabled)) and mcp_image_context is None:
+            return "Error: Sharing this image requires a new explicit image approval."
 
         def _config_current() -> bool:
             # Re-read before an MCP session is cached: this call may have read the row just before an update/delete
@@ -9876,8 +9905,16 @@ def execute_tool(
                 and row.get("url") == url
                 and parse_server_headers(row) == headers
                 and bool(row.get("use_oauth")) == use_oauth
+                and row.get("config_revision") == config_revision
             )
 
+        private_kwargs = {}
+        if mcp_image_context is not None:
+            from .mcp_image_redaction import McpImageCallContext, PRIVATE_CALL_ERROR
+
+            if not isinstance(mcp_image_context, McpImageCallContext) or not mapped_image_tool:
+                return PRIVATE_CALL_ERROR
+            private_kwargs["disclosure_context"] = mcp_image_context
         return _fit_result_to_room(
             call_tool_sync(
                 url = url,
@@ -9889,6 +9926,7 @@ def execute_tool(
                 cancel_event = cancel_event,
                 scope = mcp_scope,
                 config_check = _config_current,
+                **private_kwargs,
             ),
             name,
         )

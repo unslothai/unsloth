@@ -58,6 +58,7 @@ export interface PersistedChatSettings {
   artifactsEnabled?: boolean;
   showCanvasMenuItem?: boolean;
   mcpEnabledForChat?: boolean;
+  mcpImageAttachmentsEnabled?: boolean;
   confirmToolCalls?: boolean;
   /** "full" (Full access) is session-only and never leaves the browser. */
   permissionMode?: Exclude<PermissionMode, "full">;

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
+import { isMcpToolOnly, modelVisibleMessage, type ImageDisclosure } from "./mcp-image-privacy";
 import {
   clearedServerTuningState,
   committedServerTuningState,
@@ -705,6 +706,7 @@ function buildTiming(
 }
 
 function collectTextParts(message: RunMessage): string[] {
+  message = modelVisibleMessage(message);
   const textParts = message.content
     .filter((part) => part.type === "text")
     .map((part) => part.text);
@@ -725,6 +727,7 @@ function collectTextParts(message: RunMessage): string[] {
 function collectImageParts(
   message: RunMessage,
 ): Array<{ type: "image_url"; image_url: { url: string } }> {
+  message = modelVisibleMessage(message);
   const parts: Array<{ type: "image_url"; image_url: { url: string } }> = [];
   const pushImagePart = (part: { type: string }) => {
     if (part.type !== "image" || !("image" in part)) {
@@ -1317,6 +1320,7 @@ function toOpenAIMessages(
   message: RunMessage,
   includeReasoningContent = false,
 ): SerializedMessage[] {
+  message = modelVisibleMessage(message);
   if (
     message.role !== "system" &&
     message.role !== "user" &&
@@ -1481,6 +1485,7 @@ function extractImageBase64(input: string): string | undefined {
 }
 
 function findLatestUserImageBase64(messages: RunMessages): string | undefined {
+  messages = messages.map(modelVisibleMessage);
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (!message || message.role !== "user") {
@@ -1529,6 +1534,7 @@ function extractAudioPartBase64(
 
 // A predicate rather than collectImageParts: building the parts would copy the base64 this exists to avoid touching.
 export function messagesContainImage(messages: RunMessages): boolean {
+  messages = messages.map(modelVisibleMessage);
   const isImage = (part: { type: string }) =>
     part.type === "image" &&
     "image" in part &&
@@ -1585,6 +1591,7 @@ export function findLatestUserAudioBase64(
   messages: RunMessages,
   includePendingAudio = true,
 ): string | undefined {
+  messages = messages.map(modelVisibleMessage);
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (!message || message.role !== "user") continue;
@@ -1632,6 +1639,7 @@ function extractVideoPartBase64(
 export function findLatestUserVideoBase64(
   messages: RunMessages,
 ): string | undefined {
+  messages = messages.map(modelVisibleMessage);
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (!message || message.role !== "user") continue;
@@ -4953,6 +4961,23 @@ export function createOpenAIStreamAdapter(
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");
+      const privateImages = generationUserMessage?.attachments?.filter(isMcpToolOnly) ?? [];
+      let mcpImageAttachment: { message_id: string; attachment_id: string } | undefined;
+      if (privateImages.length) {
+        if (privateImages.length !== 1 || !resolvedThreadId || isThreadIncognito(resolvedThreadId) || !generationUserMessage) {
+          throw new Error("Tool-only sharing requires one image in a saved conversation.");
+        }
+        const stored = (await listStoredChatMessages(resolvedThreadId)).find((m) => m.id === generationUserMessage.id);
+        const index = messages.findIndex((message) => message.id === generationUserMessage.id);
+        await saveStoredChatMessage({
+          id: generationUserMessage.id, threadId: resolvedThreadId,
+          parentId: stored?.parentId !== undefined ? stored.parentId : index > 0 ? messages[index - 1]!.id : null,
+          role: "user", content: generationUserMessage.content,
+          attachments: generationUserMessage.attachments,
+          createdAt: generationUserMessage.createdAt?.getTime?.() ?? Date.now(),
+        }, { requireAcknowledgement: true });
+        mcpImageAttachment = { message_id: generationUserMessage.id, attachment_id: privateImages[0]!.id };
+      }
       const generationCandidate = Boolean(
         !isExternalRequest &&
           !activeModel?.isAudio &&
@@ -6187,6 +6212,9 @@ export function createOpenAIStreamAdapter(
               requestPayload = await buildRequestPayload(
                 retriedWithRefreshedKey,
               );
+              if (mcpImageAttachment) {
+                requestPayload = { ...requestPayload, mcp_image_attachment: mcpImageAttachment } as OpenAIChatCompletionsRequest;
+              }
             } catch (error) {
               clearSelectedImageEditReference();
               throw error;
@@ -6676,6 +6704,7 @@ export function createOpenAIStreamAdapter(
                         approvalId,
                         sandboxSessionId ?? "",
                         toolConfirmationScopeId,
+                        toolEvent.image_disclosure as ImageDisclosure | undefined,
                       );
                   }
                 } else if (toolEvent.type === "tool_end") {

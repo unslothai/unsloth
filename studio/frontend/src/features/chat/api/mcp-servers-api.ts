@@ -11,7 +11,11 @@ import {
   trackMcpServerMutation,
 } from "./mcp-server-mutation-tracker";
 
+export type McpImageInputMapping = { tool: string; field: string; encoding: "base64" | "data_url" };
+
 export interface McpServerConfig {
+  image_input_mappings?: McpImageInputMapping[];
+  config_revision?: number;
   id: string;
   builtin_id: string | null;
   display_name: string;
@@ -169,6 +173,7 @@ export function createMcpServer(payload: {
   headers?: Record<string, string>;
   isEnabled?: boolean;
   useOauth?: boolean;
+  imageInputMappings?: McpImageInputMapping[];
 }): Promise<McpServerConfig> {
   return trackMcpServerMutation(
     mcpRequest("/", {
@@ -179,6 +184,7 @@ export function createMcpServer(payload: {
         headers: payload.headers ?? null,
         is_enabled: payload.isEnabled ?? true,
         use_oauth: payload.useOauth ?? false,
+        image_input_mappings: payload.imageInputMappings ?? [],
       },
     }),
   );
@@ -193,9 +199,11 @@ export function updateMcpServer(
     headers?: Record<string, string> | null;
     isEnabled?: boolean;
     useOauth?: boolean;
+    imageInputMappings?: McpImageInputMapping[];
   },
 ): Promise<McpServerConfig> {
   const body: Record<string, unknown> = {};
+  if (payload.imageInputMappings !== undefined) body.image_input_mappings = payload.imageInputMappings;
   if (payload.displayName !== undefined)
     body.display_name = payload.displayName;
   if (payload.url !== undefined) body.url = payload.url;

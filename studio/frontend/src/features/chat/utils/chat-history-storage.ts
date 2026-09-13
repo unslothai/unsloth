@@ -1005,13 +1005,18 @@ function forgetChatThreads(threadIds: string[]): void {
 
 export async function saveStoredChatMessage(
   message: MessageRecord,
+  options: { requireAcknowledgement?: boolean } = {},
 ): Promise<MessageRecord> {
-  if (isThreadIncognito(message.threadId)) return message;
+  if (isThreadIncognito(message.threadId)) {
+    if (options.requireAcknowledgement) throw new Error("Image sharing requires a saved conversation.");
+    return message;
+  }
   if (isChatThreadDeleted(message.threadId)) {
     throw new Error(`Thread ${message.threadId} was deleted`);
   }
   const payload = stableStringify(message);
   if (rejectedChatMessagePayloads.get(message.threadId)?.get(message.id) === payload) {
+    if (options.requireAcknowledgement) throw new Error("Could not save the image message. Send it as a new message.");
     // Refresh: otherwise the message being resent right now is the one aging out.
     rememberRejectedPayload(message.threadId, message.id, payload);
     return message;
@@ -1022,6 +1027,7 @@ export async function saveStoredChatMessage(
     return await saveChatMessage(message, { coalesce: true });
   } catch (error) {
     if (error instanceof ChatMessageProtectedError) {
+      if (options.requireAcknowledgement) throw error;
       rememberRejectedPayload(message.threadId, message.id, payload);
       return message;
     }

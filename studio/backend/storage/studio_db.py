@@ -4209,6 +4209,21 @@ def list_chat_attachments() -> list[dict]:
         offset = next_offset
 
 
+def _chat_attachment_from_row(row, attachment_id: str) -> Optional[dict]:
+    if row is None or row["tombstoned"]:
+        return None
+    attachments = _json_loads(row["attachments_json"], None)
+    if isinstance(attachments, list):
+        for attachment in attachments:
+            if isinstance(attachment, dict) and str(attachment.get("id") or "") == attachment_id:
+                return attachment
+    if attachment_id.startswith(_CONTENT_PART_ID_PREFIX):
+        for attachment in _content_part_attachments(row["content_json"]):
+            if attachment["id"] == attachment_id:
+                return attachment
+    return None
+
+
 def get_chat_attachment(message_id: str, attachment_id: str) -> Optional[dict]:
     conn = get_connection()
     try:
@@ -4228,18 +4243,65 @@ def get_chat_attachment(message_id: str, attachment_id: str) -> Optional[dict]:
         ).fetchone()
     finally:
         conn.close()
-    if row is None or row["tombstoned"]:
-        return None
-    attachments = _json_loads(row["attachments_json"], None)
-    if isinstance(attachments, list):
-        for attachment in attachments:
-            if isinstance(attachment, dict) and str(attachment.get("id") or "") == attachment_id:
-                return attachment
-    if attachment_id.startswith(_CONTENT_PART_ID_PREFIX):
-        for attachment in _content_part_attachments(row["content_json"]):
-            if attachment["id"] == attachment_id:
-                return attachment
-    return None
+    return _chat_attachment_from_row(row, attachment_id)
+
+
+def get_chat_attachment_for_thread(
+    thread_id: str, message_id: str, attachment_id: str
+) -> Optional[dict]:
+    """Resolve only a live upload on the named user message in the current thread."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT message.attachments_json, message.content_json,
+                   EXISTS(
+                       SELECT 1 FROM chat_attachment_tombstones tombstone
+                       WHERE tombstone.thread_id = message.thread_id
+                         AND tombstone.message_id = message.id
+                         AND tombstone.attachment_id = ?
+                   ) AS tombstoned
+            FROM chat_messages message
+            WHERE message.id = ? AND message.thread_id = ? AND message.role = 'user'
+            """,
+            (attachment_id, message_id, thread_id),
+        ).fetchone()
+    finally:
+        conn.close()
+    return _chat_attachment_from_row(row, attachment_id)
+
+
+def get_latest_chat_user_message_id(thread_id: str) -> Optional[str]:
+    """Return the newest persisted user message eligible for a new tool run."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            """
+            SELECT id FROM chat_messages
+            WHERE thread_id = ? AND role = 'user'
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (thread_id,),
+        ).fetchone()
+        return str(row["id"]) if row is not None else None
+    finally:
+        conn.close()
+
+
+def get_chat_setting_with_revision(key: str) -> tuple[Any, Optional[str]]:
+    """Return a setting and its write revision without accepting corrupt JSON."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT value_json, updated_at FROM chat_settings WHERE key = ?", (key,)
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None, None
+    valid, value = _parse_chat_setting_json(key, row["value_json"])
+    return (value, row["updated_at"]) if valid else (None, row["updated_at"])
 
 
 def _record_chat_attachment_tombstone(

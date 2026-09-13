@@ -7,15 +7,19 @@ import asyncio
 import atexit
 import concurrent.futures
 import hashlib
+import http.client
 import importlib
 import ipaddress
 import json
 import mimetypes
 import os
+import queue
 import re
+import select
 import shlex
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import threading
@@ -24,6 +28,7 @@ import uuid
 from contextlib import contextmanager
 from functools import wraps
 from typing import Any, Optional, get_type_hints
+from types import SimpleNamespace
 from urllib.parse import urlsplit, urlunsplit
 from weakref import WeakKeyDictionary
 
@@ -36,6 +41,436 @@ from utils.account_context import (
 )
 
 logger = get_logger(__name__)
+
+# Private image calls use an isolated, deliberately small JSON-RPC transport.
+# SDK clients remain unchanged for ordinary traffic. The SDK's background writers
+# and raw diagnostics cannot enforce the private disclosure boundary.
+_private_recipients = {}
+_private_recipients_lock = threading.Lock()
+_private_reaper_started = False
+_PRIVATE_RESPONSE_LIMIT = 64 * 1024 * 1024
+
+
+class _PrivateMcpTransport:
+    def __init__(self, url, headers, timeout):
+        self.url = url
+        self.headers = dict(headers or {})
+        self.account = current_account_id()
+        self.identity = "mcp-private-" + uuid.uuid4().hex
+        self.created_at = time.monotonic()
+        self.process = None
+        self.http = None
+        self.session_id = None
+        self.protocol = "2024-11-05"
+        self.next_id = 1
+        self.closed = threading.Event()
+        self._disposed = False
+        self.messages = queue.Queue(maxsize = 1)
+        self.reader = None
+        self.timeout = timeout
+        self.location = ""
+        self._configuration = (url, _headers_key(headers))
+        if is_stdio(url):
+            if not stdio_mcp_enabled():
+                raise _PrivateTransportUnavailable
+            parts = parse_stdio_command(url)
+            env = _stdio_env(headers, parts[0])
+            argv = _stdio_argv(parts, env)
+            self.location = f"{argv[0]} ({len(argv) - 1} arguments; values hidden)"
+            # Never forward child stderr or malformed stdout into diagnostics.
+            # No shell expansion; resolved argv and environment belong to this
+            # exact live process, established before consent.
+            self.process = subprocess.Popen(
+                argv, stdin = subprocess.PIPE, stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL, env = env, bufsize = 0,
+                creationflags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            )
+            self.reader = account_thread(target = self._read_stdio, daemon = True)
+            self.reader.start()
+        else:
+            parsed = urlsplit(url)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.fragment:
+                raise _PrivateTransportUnavailable
+            if parsed.username is not None or parsed.password is not None:
+                raise _PrivateTransportUnavailable
+            if any(key.lower() in {
+                "host", "content-length", "transfer-encoding", "connection",
+                "proxy-authorization", "upgrade", "mcp-session-id",
+            } for key in self.headers):
+                raise _PrivateTransportUnavailable
+            self.location = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+
+    def _read_stdio(self):
+        material = 0
+        pending = bytearray()
+        scanned = 0
+        try:
+            while not self.closed.is_set():
+                # Poll before reading so a descendant that inherited stdout
+                # cannot leave a private reader blocked after the parent exits.
+                size = 64 * 1024
+                if sys.platform == "win32":
+                    import ctypes
+                    import msvcrt
+
+                    available = ctypes.c_ulong()
+                    handle = ctypes.c_void_p(msvcrt.get_osfhandle(self.process.stdout.fileno()))
+                    if not ctypes.windll.kernel32.PeekNamedPipe(
+                        handle, None, 0, None, ctypes.byref(available), None
+                    ):
+                        break
+                    if not available.value:
+                        self.closed.wait(0.05)
+                        continue
+                    size = min(size, available.value)
+                elif not select.select([self.process.stdout], [], [], 0.05)[0]:
+                    continue
+                chunk = self.process.stdout.read(size)
+                material += len(chunk)
+                if not chunk or material > _PRIVATE_RESPONSE_LIMIT:
+                    break
+                pending.extend(chunk)
+                while True:
+                    end = pending.find(b"\n", scanned)
+                    if end < 0:
+                        scanned = len(pending)
+                        break
+                    line = bytes(pending[:end + 1])
+                    del pending[:end + 1]
+                    scanned = 0
+                    while not self.closed.is_set():
+                        try:
+                            self.messages.put(line, timeout = 0.05)
+                            break
+                        except queue.Full:
+                            continue
+        except Exception:
+            pass
+        finally:
+            self.closed.set()
+
+    def _check(self, deadline, cancel_event):
+        if self.closed.is_set() or (cancel_event is not None and cancel_event.is_set()):
+            raise _MCPCancelled
+        if time.monotonic() >= deadline:
+            raise asyncio.TimeoutError
+
+    def _connection(self, deadline):
+        parsed = urlsplit(self.url)
+        remaining = max(0.01, deadline - time.monotonic())
+        if parsed.scheme == "https":
+            connection = http.client.HTTPSConnection(
+                parsed.hostname, parsed.port or 443, timeout = remaining,
+                context = ssl.create_default_context(),
+            )
+        else:
+            connection = http.client.HTTPConnection(
+                parsed.hostname, parsed.port or 80, timeout = remaining,
+            )
+        # Pin the public address while keeping the original HTTP Host and TLS
+        # hostname. stdlib HTTP ignores proxy environment variables.
+        if _managed_mcp_restricted():
+            address = _public_mcp_address(self.url)
+
+            def connect_pinned(target, timeout = remaining, source_address = None, **kwargs):
+                return socket.create_connection((address, target[1]), timeout, source_address)
+
+            connection._create_connection = connect_pinned
+        connection.set_debuglevel(0)
+        # HTTPConnection.send otherwise reconnects implicitly if its socket was
+        # closed after the explicit pre-consent/pre-dispatch connection.
+        connection.auto_open = 0
+        self.http = connection
+        connection.connect()
+        return connection
+
+    def exchange(self, method, params, *, context = None, arguments = None,
+                 config_check = None, cancel_event = None, timeout = None, notify = False):
+        deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
+        self._check(deadline, cancel_event)
+        request_id = self.next_id
+        self.next_id += 1
+        message = {"jsonrpc": "2.0", "method": method, "params": params}
+        if not notify:
+            message["id"] = request_id
+        connection = None
+        wire = None
+        try:
+            if self.process is None:
+                connection = self._connection(deadline)
+            elif self.process.poll() is not None:
+                raise _PrivateTransportUnavailable
+            self._check(deadline, cancel_event)
+            if config_check is not None and config_check() is not True:
+                raise _PrivateTransportUnavailable
+            if context is not None:
+                wire = context.prepare_wire(arguments)
+                message["params"] = {**params, "arguments": wire}
+            body = json.dumps(message, separators = (",", ":"), allow_nan = False).encode("utf-8")
+            if connection is not None:
+                parsed = urlsplit(self.url)
+                path = parsed.path or "/"
+                if parsed.query:
+                    path += "?" + parsed.query
+                headers = {
+                    **self.headers, "Content-Type": "application/json",
+                    "Accept": "application/json, text/event-stream",
+                    "MCP-Protocol-Version": self.protocol,
+                }
+                if self.session_id:
+                    headers["Mcp-Session-Id"] = self.session_id
+                # connect/TLS, payload validation and serialization precede the
+                # one-use commitment. No SDK queue, redirect, auth retry or
+                # resumption machinery exists between this guard and the write.
+                self._check(deadline, cancel_event)
+                if config_check is not None and config_check() is not True:
+                    raise _PrivateTransportUnavailable
+                if context is not None:
+                    context.commit_at_send(self.identity)
+                connection.request("POST", path, body = body, headers = headers)
+                response = connection.getresponse()
+                if not 200 <= response.status < 300:
+                    raise _PrivateTransportUnavailable
+                received_session = response.getheader("Mcp-Session-Id")
+                if received_session:
+                    if self.session_id and received_session != self.session_id:
+                        raise _PrivateTransportUnavailable
+                    self.session_id = received_session
+                if notify:
+                    return None
+                content_type = response.getheader("Content-Type", "").partition(";")[0].lower()
+                if content_type == "text/event-stream":
+                    return self._read_http_events(response, request_id, deadline, cancel_event)
+                if content_type != "application/json":
+                    raise _PrivateTransportUnavailable
+                data = response.read(_PRIVATE_RESPONSE_LIMIT + 1)
+                if len(data) > _PRIVATE_RESPONSE_LIMIT:
+                    raise _PrivateTransportUnavailable
+                return self._response(json.loads(data), request_id)
+            self._check(deadline, cancel_event)
+            if config_check is not None and config_check() is not True:
+                raise _PrivateTransportUnavailable
+            if context is not None:
+                context.commit_at_send(self.identity)
+            # Unbuffered binary stdin writes to the approved live process.
+            # A short write is not retried: delivery is unknown and consent spent.
+            outbound = body + b"\n"
+            if self.process.stdin.write(outbound) != len(outbound):
+                raise _PrivateTransportUnavailable
+            if notify:
+                return None
+            material = 0
+            while True:
+                self._check(deadline, cancel_event)
+                try:
+                    data = self.messages.get(timeout = min(0.05, max(0.001, deadline - time.monotonic())))
+                except queue.Empty:
+                    continue
+                material += len(data)
+                if material > _PRIVATE_RESPONSE_LIMIT:
+                    raise _PrivateTransportUnavailable
+                item = json.loads(data)
+                # Suppress log/progress/sampling/elicitation notifications and
+                # requests. A private transport never forwards these side channels.
+                if isinstance(item, dict) and item.get("id") == request_id and "method" not in item:
+                    return self._response(item, request_id)
+        finally:
+            if wire is not None:
+                wire.clear()
+            if connection is not None:
+                connection.close()
+                self.http = None
+
+    def _response(self, item, request_id):
+        if (not isinstance(item, dict) or item.get("jsonrpc") != "2.0"
+                or item.get("id") != request_id or "error" in item or "result" not in item):
+            raise _PrivateTransportUnavailable
+        return item["result"]
+
+    def _read_http_events(self, response, request_id, deadline, cancel_event):
+        material = 0
+        event_data = []
+        while True:
+            self._check(deadline, cancel_event)
+            line = response.readline(_PRIVATE_RESPONSE_LIMIT - material + 1)
+            material += len(line)
+            if not line or material > _PRIVATE_RESPONSE_LIMIT:
+                raise _PrivateTransportUnavailable
+            if line in (b"\n", b"\r\n"):
+                if event_data:
+                    item = json.loads(b"\n".join(event_data))
+                    event_data.clear()
+                    if isinstance(item, dict) and item.get("id") == request_id and "method" not in item:
+                        return self._response(item, request_id)
+            elif line.startswith(b"data:"):
+                event_data.append(line[5:].strip())
+
+    def close(self):
+        if self._disposed:
+            return
+        self._disposed = True
+        try:
+            self._close()
+        except Exception:
+            # Teardown exceptions are not diagnostic channels for private data.
+            self.closed.set()
+
+    def _close(self):
+        self.closed.set()
+        if self.http is not None:
+            if self.http.sock is not None:
+                try:
+                    self.http.sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            self.http.close()
+        if self.process is not None:
+            if self.process.poll() is None:
+                self.process.kill()
+            try:
+                self.process.wait(timeout = 2)
+            except subprocess.TimeoutExpired:
+                pass
+            for stream in (self.process.stdin, self.process.stdout):
+                if stream is not None:
+                    stream.close()
+        if self.reader is not None:
+            self.reader.join(timeout = 2)
+        while not self.messages.empty():
+            try:
+                self.messages.get_nowait()
+            except queue.Empty:
+                break
+
+
+def prepare_mcp_image_recipient(url, headers = None, *, scope = None, use_oauth = False, timeout = 30.0):
+    """Connect without image bytes before showing the recipient in a consent card.
+
+    Returns an opaque identity for exactly this initialized transport. Consent
+    callbacks should bind it along with config revision and authenticated scope.
+    """
+    global _private_reaper_started
+    if use_oauth or timeout is None or timeout <= 0:
+        raise _PrivateTransportUnavailable
+    validate_mcp_address(url)
+    transport = None
+    try:
+        transport = _PrivateMcpTransport(url, headers, timeout)
+        initialized = transport.exchange("initialize", {
+            "protocolVersion": "2024-11-05", "capabilities": {},
+            "clientInfo": {"name": "unsloth-private-image", "version": "1"},
+        })
+        if not isinstance(initialized, dict) or not isinstance(initialized.get("protocolVersion"), str):
+            raise _PrivateTransportUnavailable
+        transport.protocol = initialized["protocolVersion"]
+        transport.exchange("notifications/initialized", {}, notify = True)
+        with _private_recipients_lock:
+            expired = [identity for identity, item in _private_recipients.items()
+                       if time.monotonic() - item.created_at > 300 or item.closed.is_set()]
+            stale = [_private_recipients.pop(identity) for identity in expired]
+            if len(_private_recipients) >= _DEFAULT_MAX_SESSIONS:
+                raise _PrivateTransportUnavailable
+            _private_recipients[transport.identity] = transport
+            if not _private_reaper_started:
+                _private_reaper_started = True
+                account_thread(target = _private_recipient_reaper, daemon = True).start()
+                atexit.register(close_mcp_sessions, all_accounts = True)
+        for item in stale:
+            item.close()
+        return transport.identity
+    except BaseException:
+        if transport is not None:
+            transport.close()
+        raise _PrivateTransportUnavailable from None
+
+
+def _private_recipient_reaper():
+    while True:
+        time.sleep(5)
+        with _private_recipients_lock:
+            expired = [identity for identity, item in _private_recipients.items()
+                       if time.monotonic() - item.created_at > 300 or item.closed.is_set()]
+            stale = [_private_recipients.pop(identity) for identity in expired]
+        for item in stale:
+            item.close()
+
+
+def mcp_image_recipient_location(identity):
+    with _private_recipients_lock:
+        transport = _private_recipients.get(identity)
+        if transport is None or transport.account != current_account_id():
+            raise _PrivateTransportUnavailable
+        return transport.location
+
+
+def close_mcp_image_recipient(identity):
+    with _private_recipients_lock:
+        transport = _private_recipients.get(identity)
+        if transport is None or transport.account != current_account_id():
+            return
+        _private_recipients.pop(identity)
+    transport.close()
+
+
+def _call_private_tool(url, headers, name, args, context, config_check, cancel_event, timeout):
+    from .mcp_image_redaction import McpImageCallContext
+
+    if not isinstance(context, McpImageCallContext) or context.tool_name != name:
+        raise _PrivateTransportUnavailable
+    with _private_recipients_lock:
+        transport = _private_recipients.get(context.recipient)
+        if transport is None or transport.account != current_account_id():
+            raise _PrivateTransportUnavailable
+        # Removing the exact initialized transport atomically prevents racing
+        # consumers, even if they were given two separate context objects.
+        _private_recipients.pop(context.recipient)
+    settled = threading.Event()
+    deadline = None if timeout is None else time.monotonic() + timeout
+
+    def watch_cancel():
+        while not settled.wait(0.05):
+            if ((cancel_event is not None and cancel_event.is_set())
+                    or (deadline is not None and time.monotonic() >= deadline)):
+                # Stop blocked stdio writes/reads or HTTP reads; the operation
+                # remains spent if commitment already happened.
+                try:
+                    transport.close()
+                except Exception:
+                    pass
+                return
+
+    watcher = account_thread(target = watch_cancel, daemon = True)
+    watcher.start()
+    try:
+        if (transport._configuration != (url, _headers_key(headers))
+                or time.monotonic() - transport.created_at > 300):
+            raise _PrivateTransportUnavailable
+        raw = transport.exchange(
+            "tools/call", {"name": name}, context = context, arguments = args,
+            config_check = config_check, cancel_event = cancel_event, timeout = timeout,
+        )
+        clean = context.redact_result(raw)
+        if not isinstance(clean, dict):
+            raise _PrivateTransportUnavailable
+
+        def block(value):
+            if not isinstance(value, dict):
+                raise _PrivateTransportUnavailable
+            value = dict(value)
+            if isinstance(value.get("resource"), dict):
+                value["resource"] = SimpleNamespace(**value["resource"])
+            return SimpleNamespace(**value)
+
+        return SimpleNamespace(
+            content = [block(value) for value in clean.get("content", [])],
+            structured_content = clean.get("structuredContent"),
+            is_error = clean.get("isError", False),
+        )
+    finally:
+        settled.set()
+        watcher.join(timeout = 5)
+        transport.close()
+        context.close()
 
 MCP_TOOL_PREFIX = "mcp__"
 _WINDOWS_BATCH_ALWAYS_UNSAFE_ARGUMENT_CHARS = frozenset('%!"\r\n')
@@ -1238,6 +1673,14 @@ def close_mcp_sessions(
     global _mcp_close_all_gen
     hk = None if headers is _ANY_HEADERS else _headers_key(headers)
     account_id = current_account_id()
+    with _private_recipients_lock:
+        private_keys = [
+            identity for identity, item in _private_recipients.items()
+            if (url is None or item.url == url)
+            and (hk is None or item._configuration[1] == hk)
+            and (all_accounts or item.account == account_id)
+        ]
+        private_sessions = [_private_recipients.pop(identity) for identity in private_keys]
     with _mcp_sessions_lock:
         keys = [
             k
@@ -1264,7 +1707,7 @@ def close_mcp_sessions(
                 cfg = _cfg_close_key(url, headers)
                 _mcp_cfg_close_gen[cfg] = _mcp_cfg_close_gen.get(cfg, 0) + 1
     pending, worker = _drain_cleanup_queue()
-    _close_all(sessions + pending)
+    _close_all(sessions + pending + private_sessions)
     if worker is not None and worker is not threading.current_thread():
         # Draining the queue does not recall the session the worker had already popped, and this function promises its
         # caller (a server edit, or atexit) that the teardown has happened. The worker stops as soon as the queue is
@@ -1391,6 +1834,10 @@ def _reset_after_fork() -> None:
     still using them."""
     global _mcp_reaper_started, _mcp_connects_in_flight, _mcp_sessions_lock
     global _mcp_cleanup_lock, _mcp_cleanup_worker
+    global _private_recipients_lock, _private_reaper_started
+    _private_recipients_lock = threading.Lock()
+    _private_recipients.clear()
+    _private_reaper_started = False
     # Replaced, not just cleared: a lock the fork caught held belongs to a thread that no longer exists here, so the
     # child would block on it forever.
     _mcp_sessions_lock = threading.Lock()
@@ -1729,6 +2176,7 @@ def _call_session_tool(
     scope: Optional[str],
     config_check,
     use_oauth: bool = False,
+    disclosure_context = None,
 ) -> Any:
     if cancel_event is not None and cancel_event.is_set():
         raise _MCPCancelled
@@ -1822,9 +2270,22 @@ def _call_session_tool(
                     raise RuntimeError("MCP server is not responding")
             else:
                 rem = _remaining()
+                async def _dispatch():
+                    # The probe and event-loop scheduling can both wait. Read
+                    # current configuration in the owning task after those waits.
+                    if not _config_ok():
+                        raise RuntimeError("MCP server was updated or removed during the call")
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise _MCPCancelled
+                    if disclosure_context is not None:
+                        # FastMCP currently queues writes and can log raw messages
+                        # below this seam. Never inject bytes into that path.
+                        raise _PrivateTransportUnavailable
+                    return await session.client.call_tool(name, args, raise_on_error = False)
+
                 # raise_on_error=False for the same reason as the one-shot path.
                 coro = _race_tool_call(
-                    session.client.call_tool(name, args, raise_on_error = False),
+                    _dispatch(),
                     rem,
                     cancel_event,
                     # Only a cached session is worth waiting on.
@@ -1892,6 +2353,7 @@ def call_tool_sync(
     cancel_event = None,
     scope: Optional[str] = None,
     config_check = None,
+    disclosure_context = None,
 ) -> str:
     """Call one MCP tool and return its flattened text/image result. Never raises: every failure comes
     back as an "Error: ..." string for the model.
@@ -1911,33 +2373,77 @@ def call_tool_sync(
 
     async def _one_shot() -> Any:
         async with _client(url, headers, use_oauth) as client:
+            if config_check is not None and not config_check():
+                raise RuntimeError("MCP server was updated or removed during the call")
+            if cancel_event is not None and cancel_event.is_set():
+                raise _MCPCancelled
+            if disclosure_context is not None:
+                raise _PrivateTransportUnavailable
             # raise_on_error=False lets an is_error result (which may still carry image content) reach _flatten_result
             # instead of FastMCP raising ToolError and dropping the images. Transport failures still raise (handled
             # below).
             return await client.call_tool(name, args, raise_on_error = False)
 
     try:
+        if disclosure_context is not None:
+            if use_oauth:
+                raise _PrivateTransportUnavailable
+            return _flatten_result(_call_private_tool(
+                url, headers, name, args, disclosure_context, config_check,
+                cancel_event, timeout,
+            ))
         if is_stdio(url) or (scope and not use_oauth):
             result = _call_session_tool(
-                url, headers, name, args, timeout, cancel_event, scope, config_check, use_oauth
+                url, headers, name, args, timeout, cancel_event, scope, config_check, use_oauth,
+                disclosure_context = disclosure_context,
             )
         else:
             result = asyncio.run(_race_tool_call(_one_shot(), timeout, cancel_event))
     except _MCPCancelled:
+        if disclosure_context is not None:
+            return _private_call_error()
         return f"Error: MCP tool '{name}' cancelled"
     except _ConnectTimeout as exc:
+        if disclosure_context is not None:
+            return _private_call_error()
         # Report the window that actually expired: for stdio that is the cold-start cap, not the (larger) caller
         # timeout.
         suffix = f" after {round(exc.window, 1):g}s" if exc.window is not None else ""
         return f"Error: MCP tool '{name}' timed out connecting{suffix}"
     except asyncio.TimeoutError:
+        if disclosure_context is not None:
+            return _private_call_error()
         suffix = f" after {timeout:g}s" if timeout is not None else ""
         return f"Error: MCP tool '{name}' timed out{suffix}"
+    except _PrivateTransportUnavailable:
+        from .mcp_image_redaction import PRIVATE_TRANSPORT_UNAVAILABLE
+
+        if disclosure_context is not None and getattr(disclosure_context, "spent", True):
+            return _private_call_error()
+        return PRIVATE_TRANSPORT_UNAVAILABLE
     except Exception as exc:
+        if disclosure_context is not None:
+            return _private_call_error()
         logger.exception("MCP call_tool failed for %s: %s", name, exc)
         return f"Error: MCP tool '{name}' failed: {exc}"
 
+    if disclosure_context is not None:
+        try:
+            result = disclosure_context.redact_result(result)
+            return _flatten_result(result)
+        except Exception:
+            return _private_call_error()
     return _flatten_result(result)
+
+
+def _private_call_error():
+    from .mcp_image_redaction import PRIVATE_CALL_ERROR
+
+    return PRIVATE_CALL_ERROR
+
+
+class _PrivateTransportUnavailable(Exception):
+    """This SDK path has no verified private write and side-channel fence."""
 
 
 class _MCPCancelled(Exception):

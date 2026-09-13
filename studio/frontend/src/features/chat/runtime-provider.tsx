@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
+import { clearSelectedMcpImage, isSelectedMcpImage } from "./api/mcp-image-selection";
 import { authFetch } from "@/features/auth";
 import {
   classifiedAttachmentFile,
@@ -313,7 +314,7 @@ class VisionImageAdapter implements AttachmentAdapter {
       visionDisabledByUser: state.loadedVisionDisabledByUser,
       mmprojFallbackReason: state.mmprojFallbackReason,
     });
-    if (unavailableReason) {
+    if (unavailableReason && !state.mcpImageAttachmentsEnabled) {
       toast.error(unavailableReason);
       throw new Error(unavailableReason);
     }
@@ -334,15 +335,22 @@ class VisionImageAdapter implements AttachmentAdapter {
   }
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const toolOnly = isSelectedMcpImage(attachment.id);
+    if (toolOnly && (attachment.file.size > 10 * 1024 * 1024 || !["image/png", "image/jpeg", "image/webp"].includes(attachment.file.type))) {
+      throw new Error("Tool-only images must be PNG, JPEG or WebP and at most 10 MiB.");
+    }
+    const image = await this.fileToBase64DataURL(attachment.file);
+    if (toolOnly) clearSelectedMcpImage(attachment.id);
     return {
       id: attachment.id,
       type: "image",
+      ...(toolOnly ? { mcpToolOnly: true } : {}),
       name: attachment.name,
       contentType: attachment.contentType,
       content: [
         {
           type: "image",
-          image: await this.fileToBase64DataURL(attachment.file),
+          image,
         },
       ],
       status: { type: "complete" },

@@ -454,6 +454,7 @@ export async function resolveToolConfirmation(
   sessionId: string,
   approvalId: string,
   decision: "allow" | "deny",
+  purpose: "tool" | "mcp_image_disclosure" = "tool",
 ): Promise<boolean> {
   const response = await authFetch("/api/inference/tool-confirm", {
     method: "POST",
@@ -462,6 +463,7 @@ export async function resolveToolConfirmation(
       session_id: sessionId,
       approval_id: approvalId,
       decision,
+      purpose,
     }),
   });
   const parsed = await parseJsonOrThrow<{ resolved?: boolean }>(response);

@@ -212,6 +212,15 @@ def test_list_chat_attachments_orders_newest_first(tmp_path, monkeypatch):
     assert [r["id"] for r in studio_db.list_chat_attachments()] == ["att-new", "att-old"]
 
 
+def test_latest_user_message_identity_is_thread_scoped(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    studio_db.upsert_chat_message(_message("msg-old", 1_700_000_000_000))
+    studio_db.upsert_chat_message(_message("msg-new", 1_700_000_100_000))
+    assert studio_db.get_latest_chat_user_message_id("thread-1") == "msg-new"
+    assert studio_db.get_latest_chat_user_message_id("missing") is None
+
+
 def test_list_chat_attachments_survives_missing_thread_row(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread())
@@ -307,6 +316,52 @@ def test_attachment_file_serves_image_bytes(tmp_path, monkeypatch):
     response = chat_history.get_attachment_file("msg-1", "att-1", current_subject = "unsloth")
     assert response.body == PNG_BYTES
     assert response.media_type == "image/png"
+
+
+def test_private_mcp_attachment_resolver_requires_exact_thread_and_marker(tmp_path, monkeypatch):
+    from core.inference.mcp_image_disclosure import (
+        McpImageDisclosureError,
+        resolve_tool_only_image,
+    )
+
+    attachment = _image_attachment()
+    attachment["mcpToolOnly"] = True
+    _seed(tmp_path, monkeypatch, [attachment])
+
+    resolved = resolve_tool_only_image(
+        thread_id = "thread-1", message_id = "msg-1", attachment_id = "att-1"
+    )
+    assert resolved.data == PNG_BYTES
+    assert resolved.mime_type == "image/png"
+    assert resolved.size_bytes == len(PNG_BYTES)
+    assert (resolved.width, resolved.height) == (1, 1)
+
+    with pytest.raises(McpImageDisclosureError, match = "no longer available"):
+        resolve_tool_only_image(
+            thread_id = "other-thread", message_id = "msg-1", attachment_id = "att-1"
+        )
+
+
+def test_private_mcp_attachment_resolver_rejects_ordinary_and_deleted_images(tmp_path, monkeypatch):
+    from core.inference.mcp_image_disclosure import (
+        McpImageDisclosureError,
+        resolve_tool_only_image,
+    )
+
+    _seed(tmp_path, monkeypatch, [_image_attachment()])
+    with pytest.raises(McpImageDisclosureError, match = "not a private MCP image"):
+        resolve_tool_only_image(
+            thread_id = "thread-1", message_id = "msg-1", attachment_id = "att-1"
+        )
+
+    attachment = _image_attachment()
+    attachment["mcpToolOnly"] = True
+    studio_db.upsert_chat_message(_message("msg-1", attachments = [attachment]))
+    assert studio_db.delete_chat_attachment("msg-1", "att-1") is True
+    with pytest.raises(McpImageDisclosureError, match = "no longer available"):
+        resolve_tool_only_image(
+            thread_id = "thread-1", message_id = "msg-1", attachment_id = "att-1"
+        )
 
 
 def test_attachment_file_tolerates_whitespace_in_base64(tmp_path, monkeypatch):

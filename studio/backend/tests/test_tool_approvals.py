@@ -18,12 +18,18 @@ import pytest
 
 from state import tool_approvals
 from state.tool_approvals import (
+    McpImageDisclosureBinding,
     TOOL_REJECTED_MESSAGE,
+    begin_mcp_image_disclosure,
     abort_tool_decision,
     begin_tool_decision,
+    consume_mcp_image_disclosure,
     new_approval_id,
     request_tool_decision,
+    resolve_mcp_image_disclosure,
     resolve_tool_decision,
+    revoke_mcp_image_disclosures,
+    wait_mcp_image_disclosure,
     wait_tool_decision,
 )
 
@@ -33,9 +39,38 @@ def _clear_pending():
     """Each test starts and ends with an empty ``_pending`` map."""
     with tool_approvals._lock:
         tool_approvals._pending.clear()
+        tool_approvals._mcp_image_pending.clear()
     yield
     with tool_approvals._lock:
         tool_approvals._pending.clear()
+        tool_approvals._mcp_image_pending.clear()
+
+
+def _image_binding(**changes):
+    values = {
+        "subject": "account-a",
+        "session_id": "session-a",
+        "thread_id": "thread-a",
+        "generation_id": "generation-a",
+        "call_id": "call-a",
+        "attachment_ref": "mcp-image-ref-abcdefghijklmnopqrstuvwxyz012345",
+        "message_id": "message-a",
+        "attachment_id": "attachment-a",
+        "attachment_sha256": "1" * 64,
+        "mime_type": "image/png",
+        "size_bytes": 123,
+        "server_id": "server-a",
+        "config_revision": 4,
+        "tool_name": "inspect",
+        "field": "picture",
+        "encoding": "base64",
+        "schema_digest": "2" * 64,
+        "public_arguments_digest": "3" * 64,
+        "feature_revision": "rev-a",
+        "recipient": "recipient-a",
+    }
+    values.update(changes)
+    return McpImageDisclosureBinding(**values)
 
 
 class _Waiter:
@@ -259,3 +294,61 @@ def test_concurrent_distinct_calls_route_their_own_decisions():
 def test_rejected_message_is_user_facing_text():
     assert isinstance(TOOL_REJECTED_MESSAGE, str)
     assert TOOL_REJECTED_MESSAGE.strip()
+
+
+def test_image_disclosure_requires_subject_and_purpose_specific_resolver():
+    binding = _image_binding()
+    approval_id, slot = begin_mcp_image_disclosure(binding)
+    assert resolve_tool_decision(approval_id, "allow", session_id = binding.session_id) is False
+    assert resolve_mcp_image_disclosure(
+        approval_id,
+        "allow",
+        current_subject = "account-b",
+        session_id = binding.session_id,
+    ) is False
+    assert resolve_mcp_image_disclosure(
+        approval_id,
+        "allow",
+        current_subject = binding.subject,
+        session_id = binding.session_id,
+    ) is True
+    assert wait_mcp_image_disclosure(slot, approval_id) == "allow"
+
+
+def test_image_disclosure_is_bound_and_consumed_once():
+    binding = _image_binding()
+    approval_id, slot = begin_mcp_image_disclosure(binding)
+    assert resolve_mcp_image_disclosure(
+        approval_id,
+        "allow",
+        current_subject = binding.subject,
+        session_id = binding.session_id,
+    )
+    assert wait_mcp_image_disclosure(slot, approval_id) == "allow"
+    assert not consume_mcp_image_disclosure(
+        approval_id, _image_binding(public_arguments_digest = "4" * 64), binding.recipient
+    )
+    assert not consume_mcp_image_disclosure(approval_id, binding, "recipient-b")
+    assert consume_mcp_image_disclosure(approval_id, binding, binding.recipient)
+    assert not consume_mcp_image_disclosure(approval_id, binding, binding.recipient)
+
+
+def test_revocation_cancels_pending_and_allowed_image_disclosures():
+    first = _image_binding(call_id = "first")
+    second = _image_binding(call_id = "second")
+    first_id, first_slot = begin_mcp_image_disclosure(first)
+    second_id, second_slot = begin_mcp_image_disclosure(second)
+    assert resolve_mcp_image_disclosure(
+        second_id,
+        "allow",
+        current_subject = second.subject,
+        session_id = second.session_id,
+    )
+    assert revoke_mcp_image_disclosures(subject = "account-a", server_id = "server-a") == 2
+    assert wait_mcp_image_disclosure(first_slot, first_id, timeout = 0.1) == "deny"
+    assert wait_mcp_image_disclosure(second_slot, second_id, timeout = 0.1) == "deny"
+    assert not consume_mcp_image_disclosure(second_id, second, second.recipient)
+    consume_mcp_image_disclosure,
+    resolve_mcp_image_disclosure,
+    revoke_mcp_image_disclosures,
+    wait_mcp_image_disclosure,

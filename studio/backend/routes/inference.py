@@ -2700,11 +2700,13 @@ async def _release_unstarted_anthropic_stream(iterator, prior_cleanup) -> None:
             pass
 
 
-def _tracked_cancel_unstarted_cleanup(tracker):
+def _tracked_cancel_unstarted_cleanup(tracker, mcp_image_run = None):
     """unstarted_cleanup that exits ``tracker`` on a pre-start disconnect, when
     the generator's finally (which normally exits it) never runs."""
 
     async def _cleanup() -> None:
+        if mcp_image_run is not None:
+            mcp_image_run.close()
         tracker.__exit__(None, None, None)
 
     return _cleanup
@@ -5195,6 +5197,19 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
         )
     except Exception:
         return False
+
+
+async def _prepare_mcp_image_for_route(payload, current_subject, tools, cancel_event, ui_events):
+    from core.inference.mcp_image_tool_loop import prepare_image_tool_request
+    from core.inference.mcp_image_disclosure import McpImageDisclosureError
+
+    try:
+        return await asyncio.to_thread(
+            prepare_image_tool_request, payload, subject = current_subject,
+            tools = tools, cancel_event = cancel_event, ui_events = ui_events,
+        )
+    except McpImageDisclosureError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
 
 
 async def _select_request_tools(
@@ -17111,6 +17126,11 @@ async def cancel_inference(request: Request, current_subject: str = Depends(get_
 
     cancel_id = body.get("cancel_id")
     if isinstance(cancel_id, str) and cancel_id:
+        from core.inference.mcp_image_disclosure import revoke_mcp_image_references
+        from state.tool_approvals import revoke_mcp_image_disclosures
+
+        revoke_mcp_image_references(subject = current_subject, generation_id = cancel_id)
+        revoke_mcp_image_disclosures(subject = current_subject, generation_id = cancel_id)
         return {"cancelled": _cancel_by_cancel_id_or_stash(cancel_id)}
 
     keys = []
@@ -17124,6 +17144,11 @@ async def cancel_inference(request: Request, current_subject: str = Depends(get_
     if not keys:
         return {"cancelled": 0}
 
+    from state.tool_approvals import revoke_mcp_image_disclosures
+
+    for key in keys:
+        revoke_mcp_image_disclosures(subject = current_subject, session_id = key)
+
     n = _cancel_by_keys(keys)
     return {"cancelled": n}
 
@@ -17132,11 +17157,21 @@ async def cancel_inference(request: Request, current_subject: str = Depends(get_
 async def confirm_tool_call(
     request: ToolConfirmRequest, current_subject: str = Depends(get_current_subject)
 ):
-    matched = resolve_tool_decision(
-        request.approval_id,
-        request.decision,
-        session_id = request.session_id,
-    )
+    if request.purpose == "mcp_image_disclosure":
+        from state.tool_approvals import resolve_mcp_image_disclosure
+
+        matched = resolve_mcp_image_disclosure(
+            request.approval_id,
+            request.decision,
+            current_subject = current_subject,
+            session_id = request.session_id,
+        )
+    else:
+        matched = resolve_tool_decision(
+            request.approval_id,
+            request.decision,
+            session_id = request.session_id,
+        )
     if not matched:
         raise HTTPException(status_code = 404, detail = "No pending tool call confirmation")
     return {"resolved": True}
@@ -20880,6 +20915,9 @@ async def _proxy_to_external_provider(
     streams the response back in OpenAI SSE format.
     """
     # Resolve provider type and base URL
+    await _prepare_mcp_image_for_route(
+        payload, current_subject, None, None, _ui_stream_events_enabled(request)
+    )
     provider_type = payload.provider_type
     base_url = payload.provider_base_url
     saved_provider_snapshot: Optional[dict] = None
@@ -21199,6 +21237,11 @@ async def _proxy_to_external_provider(
             include_api_key = bool(studio_tool_payloads),
         )
         cancel_event = threading.Event()
+        _codex_image_run, studio_tool_payloads = await _prepare_mcp_image_for_route(
+            payload, current_subject, studio_tool_payloads, cancel_event, _ui_events
+        )
+        if studio_tool_payloads:
+            tool_payloads = studio_tool_payloads
         cancel_keys = tuple(
             _account_cancel_key(key) for key in (payload.cancel_id, payload.session_id) if key
         )
@@ -21301,6 +21344,7 @@ async def _proxy_to_external_provider(
                         run = run,
                         policy = policy,
                         cancel_event = cancel_event,
+                        mcp_image_run = _codex_image_run,
                     )
                     if policy
                     else client.stream(
@@ -21406,6 +21450,8 @@ async def _proxy_to_external_provider(
                 )
                 yield "data: [DONE]\n\n"
             finally:
+                if _codex_image_run is not None:
+                    _codex_image_run.close()
                 await client.close()
                 disconnect_task.cancel()
                 await asyncio.gather(disconnect_task, return_exceptions = True)
@@ -21545,6 +21591,9 @@ async def _proxy_to_external_provider(
         chat_messages = _append_to_system_message(chat_messages, _external_nudge)
 
     cancel_event = threading.Event()
+    _external_image_run, external_studio_tools = await _prepare_mcp_image_for_route(
+        payload, current_subject, external_studio_tools, cancel_event, _ui_events
+    )
     cancel_keys = tuple(key for key in (payload.cancel_id, payload.session_id) if key)
 
     async def _watch_disconnect() -> None:
@@ -21630,6 +21679,7 @@ async def _proxy_to_external_provider(
                     on_provider_turn_end = (None if _ui_events else _tool_call_stripper.end_turn),
                 ),
                 cancel_event = cancel_event,
+                mcp_image_run = _external_image_run,
             )
         else:
             gen = client.stream_chat_completion(
@@ -21722,6 +21772,9 @@ async def _proxy_to_external_provider(
                 await gen.aclose()
             except RuntimeError:
                 pass  # suppress httpcore asyncgen cleanup error (Python 3.13 + httpcore 1.0.x)
+            finally:
+                if _external_image_run is not None:
+                    _external_image_run.close()
             await client.close()
 
     def _tracked_stream():
@@ -22143,6 +22196,7 @@ async def produce_openai_chat_completions(
     # Opt-in per request (see UI_STREAM_EVENTS_HEADER); captured once so every stream
     # generator below shares one answer.
     _ui_events = _ui_stream_events_enabled(request)
+    await _prepare_mcp_image_for_route(payload, current_subject, None, None, _ui_events)
     # Seeded at stream start, so a tool already chatty past the window still gets a keepalive.
     _drop_keepalive = _DroppedFrameKeepalive()
 
@@ -23215,6 +23269,9 @@ async def produce_openai_chat_completions(
             if not tools_to_use:
                 use_tools = False
 
+        if getattr(payload, "mcp_image_attachment", None) is not None and not use_tools:
+            raise HTTPException(status_code = 400, detail = "This model cannot run the configured MCP image tool")
+
         if _response_format_constrains_decoding(payload):
             # Only an explicit request for Unsloth's tool loop reaches here with a
             # contract; every other GGUF request took the passthrough above. Neither
@@ -23341,6 +23398,10 @@ async def produce_openai_chat_completions(
                         _stripped if _msg is _gguf_continue_target else _stripped.strip()
                     )
 
+            _gguf_image_run, tools_to_use = await _prepare_mcp_image_for_route(
+                payload, current_subject, tools_to_use, cancel_event, _ui_events
+            )
+
             def gguf_generate_with_tools():
                 return llama_backend.generate_chat_completion_with_tools(
                     messages = gguf_messages,
@@ -23377,6 +23438,7 @@ async def produce_openai_chat_completions(
                     # Bypass Permissions takes precedence over the confirm gate:
                     # never prompt while bypassing.
                     confirm_tool_calls = _effective_confirm and not bool(payload.bypass_permissions),
+                    mcp_image_run = _gguf_image_run,
                     bypass_permissions = bool(payload.bypass_permissions),
                     permission_mode = payload.permission_mode,
                     perf_callback = _gguf_perf_callback,
@@ -23405,6 +23467,8 @@ async def produce_openai_chat_completions(
                 # before this, since the generator is not iterated until admission returns.
                 _gguf_admission_hold["reservation"] = reservation
             except LlamaAdmissionQueueFull as exc:
+                if _gguf_image_run is not None:
+                    _gguf_image_run.close()
                 _llama_admission_log(
                     "queue-full",
                     snapshot = exc.snapshot,
@@ -23415,6 +23479,11 @@ async def produce_openai_chat_completions(
                 )
                 api_monitor.fail(monitor_id, str(exc))
                 raise _openai_admission_http_exception(exc, status_code = 429)
+
+            except BaseException:
+                if _gguf_image_run is not None:
+                    _gguf_image_run.close()
+                raise
 
             _tool_sentinel = object()
             # True only once the sync generator returned on its own; see _gguf_decode_finished.
@@ -23737,6 +23806,8 @@ async def produce_openai_chat_completions(
                                 )
                         await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                     finally:
+                        if _gguf_image_run is not None:
+                            _gguf_image_run.close()
                         _tracker.__exit__(None, None, None)
 
             if payload.stream:
@@ -23851,9 +23922,13 @@ async def produce_openai_chat_completions(
                         if not stream_started:
                             api_monitor.finish(monitor_id, "cancelled")
                             reservation.cancel()
+                            if _gguf_image_run is not None:
+                                _gguf_image_run.close()
                             _tracker.__exit__(None, None, None)
 
                 async def _gguf_tool_admission_unstarted_cleanup() -> None:
+                    if _gguf_image_run is not None:
+                        _gguf_image_run.close()
                     api_monitor.finish(monitor_id, "cancelled")
                     if stream_lease is not None:
                         stream_lease.release()
@@ -25016,6 +25091,9 @@ async def produce_openai_chat_completions(
         if not _sf_tools_to_use:
             _sf_use_tools = False
 
+    if getattr(payload, "mcp_image_attachment", None) is not None and not _sf_use_tools:
+        raise HTTPException(status_code = 400, detail = "This model cannot run the configured MCP image tool")
+
     if _sf_use_tools and _wants_multiple_choices(payload):
         _raise_unsupported_n("non-GGUF tool chat completions", monitor_id)
 
@@ -25097,6 +25175,10 @@ async def produce_openai_chat_completions(
         # Request-scoped usage/timings receptacle (filled at gen_done).
         _sf_stats_holder: dict = {}
 
+        _sf_image_run, _sf_tools_to_use = await _prepare_mcp_image_for_route(
+            payload, current_subject, _sf_tools_to_use, cancel_event, _ui_events
+        )
+
         def sf_generate_with_tools():
             return backend.generate_chat_completion_with_tools(
                 messages = _sf_chat_messages,
@@ -25130,6 +25212,7 @@ async def produce_openai_chat_completions(
                 # Bypass Permissions takes precedence over the confirm gate:
                 # never prompt while bypassing.
                 confirm_tool_calls = _sf_effective_confirm and not bool(payload.bypass_permissions),
+                mcp_image_run = _sf_image_run,
                 bypass_permissions = bool(payload.bypass_permissions),
                 permission_mode = payload.permission_mode,
                 use_adapter = payload.use_adapter,
@@ -25368,11 +25451,13 @@ async def produce_openai_chat_completions(
                     except (RuntimeError, ValueError):
                         pass
                 _sf_tracker.__exit__(None, None, None)
+                if _sf_image_run is not None:
+                    _sf_image_run.close()
 
         if payload.stream:
             return _SameTaskStreamingResponse(
                 sf_tool_stream(),
-                unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_sf_tracker),
+                unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_sf_tracker, _sf_image_run),
                 media_type = "text/event-stream",
                 headers = {
                     "Cache-Control": "no-cache",

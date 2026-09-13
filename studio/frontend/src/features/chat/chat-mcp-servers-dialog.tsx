@@ -58,6 +58,7 @@ import {
   resolveMcpStdioUrl,
 } from "./mcp-server-form";
 import { BlenderMcpSetup } from "./blender-mcp-setup";
+import { McpImageSharingSetting, McpImageMappingSettings } from "./api/mcp-image-settings-controls";
 
 type HeaderRow = { id: string; key: string; value: string };
 type ArgumentRow = { id: string; value: string };
@@ -894,6 +895,7 @@ export function ChatMcpServersDialog({
             Register remote (HTTP) or local (stdio command) MCP servers.
           </DialogDescription>
         </DialogHeader>
+        <McpImageSharingSetting />
         <input
           ref={fileInputRef}
           type="file"
@@ -1138,6 +1140,7 @@ export function ChatMcpServersDialog({
                       <div className="truncate text-xs text-muted-foreground">
                         {server.url}
                       </div>
+                      <McpImageMappingSettings server={server} />
                     </div>
                     <div className="flex items-center gap-1">
                       <Switch

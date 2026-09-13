@@ -2256,6 +2256,7 @@ type ChatRuntimeStore = {
   // web_search also returns images the model can place inline; read by the backend per call.
   searchImages: boolean;
   mcpEnabledForChat: boolean;
+  mcpImageAttachmentsEnabled: boolean;
   ragEnabled: boolean;
   ragSource: RagSource;
   projectAttachmentTarget: ProjectAttachmentTarget;
@@ -2289,7 +2290,7 @@ type ChatRuntimeStore = {
    *  `autoAllowKey` scopes "Always allow" per chat. Backend-gated local calls only. */
   toolConfirmations: Record<
     string,
-    { approvalId: string; sessionId: string; autoAllowKey: string }
+    { approvalId: string; sessionId: string; autoAllowKey: string; imageDisclosure?: import("../api/mcp-image-privacy").ImageDisclosure }
   >;
   /** Fetch pill state, independent of `toolsEnabled` (Search). Read only when the provider
    *  supports builtin web_fetch. */
@@ -2544,6 +2545,7 @@ type ChatRuntimeStore = {
     approvalId: string,
     sessionId: string,
     autoAllowKey: string,
+    imageDisclosure?: import("../api/mcp-image-privacy").ImageDisclosure,
   ) => void;
   clearToolConfirmation: (toolCallId: string) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
@@ -3925,6 +3927,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ),
   searchImages: loadBool(CHAT_SEARCH_IMAGES_KEY, false),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
+  mcpImageAttachmentsEnabled: false,
   // Mirrors permissionMode (gate requested for ask/auto) so both controls agree on load.
   confirmToolCalls:
     INITIAL_PERMISSION_MODE === "ask" || INITIAL_PERMISSION_MODE === "auto",
@@ -4056,6 +4059,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           fromServer,
           persisted: settingsArePersisted,
         } = await loadChatSettingsWithLegacyImport();
+        set({ mcpImageAttachmentsEnabled: fromServer && settings.mcpImageAttachmentsEnabled === true });
         // Assigned by the confirming read below, so the failure path can prefer
         // it over the older hydration response.
         let confirmed: PersistedChatSettings | undefined;
@@ -5174,11 +5178,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       next.set(sessionId, new Set(current ?? []).add(toolName));
       return { alwaysAllowToolsBySession: next };
     }),
-  setToolConfirmation: (toolCallId, approvalId, sessionId, autoAllowKey) =>
+  setToolConfirmation: (toolCallId, approvalId, sessionId, autoAllowKey, imageDisclosure) =>
     set((state) => ({
       toolConfirmations: {
         ...state.toolConfirmations,
-        [toolCallId]: { approvalId, sessionId, autoAllowKey },
+        [toolCallId]: { approvalId, sessionId, autoAllowKey, imageDisclosure },
       },
     })),
   clearToolConfirmation: (toolCallId) =>
