@@ -1363,9 +1363,10 @@ function GgufAdvancedSettings({
               <span className={LABEL_CLASS}>Micro-batch Size</span>
               <InfoHint>
                 Physical prompt micro-batch size (--ubatch-size). Leave blank for
-                the llama.cpp default (512). Larger values speed up prompt
-                processing but use more VRAM for the compute buffer; capped at the
-                batch size.
+                the llama.cpp default (512), raised to 1120 on Gemma 4 vision
+                models, whose images do not fit in 512. Other vision models keep
+                the 512 default. Larger values speed up prompt processing but use
+                more VRAM for the compute buffer; capped at the batch size.
               </InfoHint>
             </div>
             <input

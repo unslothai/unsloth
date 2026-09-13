@@ -992,6 +992,50 @@ def extra_args_disable_mmproj(args: Optional[Iterable[str]]) -> bool:
     return disabled
 
 
+def extra_args_image_max_tokens(args: Optional[Iterable[str]]) -> Optional[int]:
+    """The ``--image-max-tokens N`` a load passed through, or None. Last wins.
+
+    Both spellings, since llama-server accepts ``--flag N`` and ``--flag=N``. clip.cpp
+    reads it as ``custom_image_max_tokens`` and lets it raise a projector's own
+    per-image ceiling, so a caller sizing the micro-batch has to honour it.
+    """
+    tokens = [str(a) for a in (args or ())]
+    found: Optional[int] = None
+    for index, raw in enumerate(tokens):
+        if raw.startswith("--image-max-tokens="):
+            value = raw.partition("=")[2]
+        elif raw == "--image-max-tokens" and index + 1 < len(tokens):
+            value = tokens[index + 1]
+        else:
+            continue
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            found = parsed
+    return found
+
+
+def extra_args_mmproj_auto(args: Optional[Iterable[str]]) -> bool:
+    """True when pass-through args leave llama-server discovering a projector itself.
+
+    The last-wins boolean :func:`extra_args_disable_mmproj` reads, asked the other way:
+    a winning ``--mmproj-auto`` makes the child look for an adjacent mmproj Unsloth
+    never put on the command line, so a caller sizing the launch must assume one.
+    """
+    if not args:
+        return False
+    enabled = False
+    for raw in args:
+        flag = _flag_name(str(raw))
+        if flag in _MMPROJ_ENABLE_FLAGS:
+            enabled = True
+        elif flag in _MMPROJ_DISABLE_FLAGS:
+            enabled = False
+    return enabled
+
+
 def strip_shadowing_flags(
     args: Iterable[str],
     *,
