@@ -11,6 +11,11 @@
 
 import os, importlib.util, platform, sys
 
+# fla backend dispatch walks registered backends on every hot kernel call; the CP
+# backend rejects single-process training. Set before fla is imported (Qwen3.5 / Next).
+if int(os.environ.get("WORLD_SIZE", "1") or 1) <= 1:
+    os.environ.setdefault("FLA_DISABLE_BACKEND_DISPATCH", "1")
+
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
 # Before transformers, which reads sentencepiece availability during its own import. On Windows
