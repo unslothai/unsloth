@@ -159,7 +159,8 @@ class QGaLoreAdamW8bit(Optimizer2State):
                         group["_wd_saved"] = group["weight_decay"]
                         group["weight_decay"] = 0
 
-                    grad = state["projector"].project(p.grad, state["step"])
+                    full_rank_grad = p.grad
+                    grad = state["projector"].project(full_rank_grad, state["step"])
 
                     # Zero p.data so the 8-bit update writes the pure delta.
                     p._saved_data = p.data.clone()
@@ -175,6 +176,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
                 if "rank" in group:
                     # p.data now holds the weight update in low-rank space.
                     p.data = p._saved_data.add_(state["projector"].project_back(p.data))
+                    p.grad = full_rank_grad
 
                     # Re-apply decoupled weight decay using pre-update weights.
                     if "_wd_saved" in group:
