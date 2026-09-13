@@ -1140,7 +1140,8 @@ class ToolLoopController:
                 self._workspace_ran.add(decision.key)
                 self._workspace_novel += 1
             stale = {
-                key for key in self._successful_keys
+                key
+                for key in self._successful_keys
                 if key.partition(":")[0] in _WORKSPACE_TOOLS
                 and self._workspace_novel_at.get(key, 0) < self._workspace_novel
             }

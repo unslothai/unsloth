@@ -6528,8 +6528,7 @@ def test_textual_every_independent_edit_gets_its_own_verification_rerun(monkeypa
 def _structured_batch(spec: list) -> list:
     """One assistant turn carrying `spec` as parallel structured tool_calls."""
     frames = [
-        _tool_call_sse(name, args, f"call_{i}", index = i)
-        for i, (name, args) in enumerate(spec)
+        _tool_call_sse(name, args, f"call_{i}", index = i) for i, (name, args) in enumerate(spec)
     ]
     return [frames + [_done()], [_sse({"content": "Done."}), _done()]]
 

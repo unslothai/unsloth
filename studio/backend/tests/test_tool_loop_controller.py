@@ -250,7 +250,9 @@ def test_a_repeating_workspace_block_stops_replaying_itself():
     """read, edit, read, edit: the second edit is the block repeating, not new work."""
     controller = ToolLoopController(tools = [_tool("terminal"), _tool("edit_file")])
     read = _call("terminal", {"command": "cat notes.txt"})
-    edit = _call("edit_file", {"path": "notes.txt", "edits": [{"old_string": "a", "new_string": "b"}]})
+    edit = _call(
+        "edit_file", {"path": "notes.txt", "edits": [{"old_string": "a", "new_string": "b"}]}
+    )
 
     controller.record_result(controller.prepare_call(read), "version one")
     controller.record_result(controller.prepare_call(edit), "Edited notes.txt")
