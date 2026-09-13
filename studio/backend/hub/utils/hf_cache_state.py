@@ -369,6 +369,36 @@ def validated_repo_cache_path(
         return None
 
 
+def cached_repo_id_for_path(path: Path | str, repo_type: str = "model") -> Optional[str]:
+    prefix = f"{repo_type}s--"
+    try:
+        resolved = Path(path).expanduser().resolve(strict = True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    repo_dir = next(
+        (
+            candidate
+            for candidate in (resolved, *resolved.parents)
+            if candidate.name.lower().startswith(prefix) and len(candidate.name) > len(prefix)
+        ),
+        None,
+    )
+    if repo_dir is None:
+        return None
+    repo_id = repo_dir.name[len(prefix) :].replace("--", "/")
+    scan_errors: list = []
+    roots = []
+    for root in hf_cache_roots(scan_errors):
+        try:
+            roots.append(root.resolve(strict = True))
+        except (OSError, RuntimeError):
+            scan_errors.append(root)
+    if any(same_existing_path(repo_dir.parent, root) for root in roots):
+        return repo_id
+    # An unreadable root may be this path's: authorize rather than skip the check.
+    return repo_id if scan_errors else None
+
+
 def latest_snapshot_from_cache_path(
     local_path: Optional[str],
     repo_type: str,
