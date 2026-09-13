@@ -2502,6 +2502,83 @@ def test_unload_sets_cancel_event(fake_runtime):
     assert backend._cancel_event.is_set()
 
 
+@pytest.mark.parametrize("reason", ["generation", "resident"])
+def test_rejected_unload_preserves_pending_work(fake_runtime, monkeypatch, reason):
+    from fastapi import HTTPException
+    from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
+    from hub.services.models import account_access
+
+    backend = DiffusionBackend()
+    pending = object()
+    backend._loading = pending
+    active = threading.Event()
+    backend._active_generate_cancel = active
+    backend._active_generate_account = "bob" if reason == "generation" else "alice"
+
+    def refuse(*args):
+        raise HTTPException(status_code = 404, detail = "Model not found")
+
+    monkeypatch.setattr(account_access, "require_resident_control", refuse)
+    error = GpuBusyForAnotherAccountError if reason == "generation" else HTTPException
+    with pytest.raises(error):
+        backend.unload(expected_account = "alice")
+    assert not active.is_set() and not backend._cancel_event.is_set()
+    assert backend._load_token == backend._unload_waiters == backend._teardown_waiters == 0
+    assert backend._loading is pending
+
+
+def test_generation_waits_for_unload_before_teardown_reservation(fake_runtime, monkeypatch):
+    backend = DiffusionBackend()
+    parked, release, attempted, started = (threading.Event() for _ in range(4))
+    real_lock = backend._lock
+    torn_down = []
+    observed = []
+    errors = []
+
+    class GateLock:
+        def __enter__(self):
+            if threading.current_thread() is ejector:
+                parked.set()
+                assert release.wait(5)
+            real_lock.acquire()
+
+        def __exit__(self, *args):
+            real_lock.release()
+            if threading.current_thread() is generator:
+                attempted.set()
+
+    monkeypatch.setattr(backend, "_lock", GateLock())
+    monkeypatch.setattr(backend, "_unload_locked", lambda: torn_down.append(True))
+
+    def eject():
+        try:
+            backend.unload()
+        except Exception as exc:
+            errors.append(str(exc))
+
+    def generate():
+        with backend._generation_slot(threading.Event()):
+            observed.append(bool(torn_down))
+            started.set()
+
+    ejector = threading.Thread(target = eject, daemon = True)
+    generator = threading.Thread(target = generate, daemon = True)
+    ejector.start()
+    try:
+        assert parked.wait(5)
+        generator.start()
+        assert attempted.wait(5)
+        assert not started.wait(0.1), "generation started before the accepted eject"
+    finally:
+        release.set()
+        ejector.join(5)
+        if generator.ident is not None:
+            generator.join(5)
+    assert not errors and not ejector.is_alive() and not generator.is_alive()
+    assert observed == [True]
+    assert backend._unload_waiters == backend._teardown_waiters == 0
+
+
 @pytest.mark.parametrize(
     "phase",
     [
@@ -2530,7 +2607,10 @@ def test_unload_sets_cancel_event(fake_runtime):
         "publication",
     ],
 )
-def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatch, phase):
+@pytest.mark.parametrize("account_scoped", [False, True])
+def test_unload_cancels_pipeline_construction(
+    fake_runtime, tmp_path, monkeypatch, phase, account_scoped
+):
     import gc
     import weakref
     from core.inference import diffusion as diff_mod
@@ -2693,7 +2773,11 @@ def test_unload_cancels_pipeline_construction(fake_runtime, tmp_path, monkeypatc
             mp.setattr(diff_mod, name, parked)
 
         loader = threading.Thread(target = load, daemon = True)
-        ejector = threading.Thread(target = backend.unload, daemon = True)
+        ejector = threading.Thread(
+            target = backend.unload,
+            kwargs = {"expected_account": diff_mod.current_account_id()} if account_scoped else {},
+            daemon = True,
+        )
         loader.start()
         try:
             assert entered.wait(5), "load did not reach the blocked construction stage"
