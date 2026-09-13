@@ -301,11 +301,14 @@ def test_diffusion_child_leaves_a_studio_session_alone(monkeypatch):
     # conftest points HF_TOKEN_PATH at the isolated cache for every test, so the claim is that it
     # is left where it was rather than redirected to devnull.
     token_path_before = os.environ.get("HF_TOKEN_PATH")
+    # Both read as "unchanged", not as a literal value: another test in this worker may have left
+    # HF_HUB_DISABLE_IMPLICIT_TOKEN set, and the claim here is that this call does not set it.
+    implicit_before = os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN")
     for config in ({}, {"allow_ambient": True}):
         service._default_target(event_queue = None, stop_queue = None, config = config)
         assert os.environ["HF_TOKEN"] == "operator-saved-login"
         assert os.environ.get("HF_TOKEN_PATH") == token_path_before
-        assert os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN") != "1"
+        assert os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN") == implicit_before
 
 
 def test_a_cached_diffusion_base_requires_caller_authorization(monkeypatch, cache_root):
