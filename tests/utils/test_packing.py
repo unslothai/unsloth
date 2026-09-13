@@ -1247,6 +1247,42 @@ def test_require_replace_raises_on_missing_anchor():
     assert _require_replace("abc", "z", "Z", required = False, where = "optional") == "abc"
 
 
+def test_require_replace_survives_a_trailing_comment_on_the_anchor():
+    """A comment appearing on an anchored line is not a code change.
+
+    unsloth_zoo #1192 put `# noqa: F821` on the `pack_dataset(` call while
+    building a lint gate. The literal anchor stopped matching, the required edit
+    raised, and every SFT run silently fell back to TRL's own trainer -- losing
+    the packing and truncation fixes this module exists to apply. The code the
+    anchor points at never moved.
+    """
+    from unsloth.models.rl_replacements import _require_replace
+
+    anchor = "dataset = pack_dataset(\n    a,\n    b,\n)"
+    replacement = "dataset = pack_dataset(\n    a,\n    **kw,\n)"
+
+    # The exact shape that broke: a trailing comment on the first anchored line.
+    commented = "x = 1\ndataset = pack_dataset(  # noqa: F821 -- reached only past the probe\n    a,\n    b,\n)\ny = 2"
+    assert _require_replace(commented, anchor, replacement) == f"x = 1\n{replacement}\ny = 2"
+
+    # A comment on any other anchored line is tolerated too.
+    inner = "dataset = pack_dataset(\n    a,  # the columns\n    b,\n)"
+    assert _require_replace(inner, anchor, replacement) == replacement
+
+    # Tolerance must not reach across a real code change: `b` -> `c` still raises.
+    with pytest.raises(RuntimeError):
+        _require_replace(
+            "dataset = pack_dataset(\n    a,\n    c,\n)",
+            anchor,
+            replacement,
+            where = "changed argument",
+        )
+
+    # A `#` inside a string literal is not a comment and must still match exactly.
+    hashed = 'sep = "#"\n'
+    assert _require_replace(hashed + anchor, anchor, replacement) == hashed + replacement
+
+
 def test_resolve_string_model_config_forwards_token(monkeypatch):
     import transformers
 
