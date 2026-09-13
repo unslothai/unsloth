@@ -545,6 +545,18 @@ def test_docker_desktop_on_macos_says_cpu_only(tmp_path: Path):
     assert "GPU support comes with it" not in res.stdout
 
 
+def test_macos_says_cpu_only_whatever_runs_the_daemon(tmp_path: Path):
+    """colima and Rancher Desktop keep their socket outside /var/run, which took a Mac
+    to the endpoint check: it told the user to configure that daemon by hand, for a
+    toolkit no Mac can use."""
+    _, _, env = _setup(tmp_path, driver = False, uid = 1000)
+    _stub(tmp_path / "bin" / "uname", 'if [ "$1" = -s ]; then echo Darwin; else echo arm64; fi\n')
+    res = _run(env, extra_env = {"DOCKER_HOST": "unix:///Users/u/.colima/default/docker.sock"})
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "no NVIDIA GPU" in res.stdout and "UNSLOTH_ALLOW_CPU=1" in res.stdout
+    assert "by hand" not in res.stderr, res.stderr
+
+
 def test_the_old_driver_message_names_the_host_platform_even_without_verification(tmp_path: Path):
     _, _, env = _setup(tmp_path, driver_version = "550.54.15")
     _stub(tmp_path / "bin" / "uname", 'if [ "$1" = -s ]; then echo Linux; else echo aarch64; fi\n')

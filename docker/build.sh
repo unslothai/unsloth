@@ -93,9 +93,10 @@ DOCKER_BUILDKIT=1 docker build \
 echo
 echo "Built ${IMAGE_NAME}:${TAG}"
 echo
-echo "Smoke test on this host (B200, sm_100):"
+# the build host is whatever the user has; the message named the one it was written on
+HOST_GPU="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || true)"
+echo "Smoke test on this host${HOST_GPU:+ (${HOST_GPU})}:"
 echo "  docker run --rm --gpus all ${IMAGE_NAME}:${TAG} python /workspace/smoke_test.py"
 echo
-echo "Smoke test on an RTX 5090 host (sm_120):"
+echo "On another host, the same command after:"
 echo "  docker pull ${IMAGE_NAME}:${TAG}   # or load .tar"
-echo "  docker run --rm --gpus all ${IMAGE_NAME}:${TAG} python /workspace/smoke_test.py"

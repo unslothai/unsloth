@@ -91,7 +91,9 @@ if [[ ${#GPU_FLAG[@]} -gt 0 ]] && ! host_has_nvidia; then
                 [[ -n "$_gid" ]] && GPU_FLAG+=(--group-add "$_gid")
             done
         fi
-        printf "      AMD devices found: passing /dev/kfd and /dev/dri through.\n" >&2
+        printf "      AMD devices found: passing /dev/kfd and /dev/dri through, but nothing\n" >&2
+        printf "      in the image uses them yet: torch is cu128 and the bundled llama.cpp\n" >&2
+        printf "      has no HIP or Vulkan backend, so this container runs on the CPU.\n" >&2
     fi
     printf "\n" >&2
 fi
