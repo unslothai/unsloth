@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { authFetch } from "@/features/auth";
+import { authFetch, getAuthToken } from "@/features/auth";
 import { apiUrl, isTauri } from "@/lib/api-base";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { browserDownload } from "@/lib/native-files";
@@ -192,9 +192,17 @@ export async function exportAllLogs(): Promise<string | null> {
       // `filename` is one word because Tauri maps camelCase onto snake_case
       // parameters. It is only a suggestion: the command picks the destination
       // and the realpath it returns is the answer.
+      //
+      // `uiToken` is the fallback for a multi-account install, where
+      // `desktop-login` refuses to mint unconditionally because the desktop
+      // secret says which SHELL owns the backend, not which account is using
+      // it. The command prefers a minted session and only falls back to this,
+      // and it pins host, port and path, so the token can reach nothing the tab
+      // could not already reach itself.
       return await invoke<string>("download_logs_to_downloads", {
         url: apiUrl(LOG_EXPORT_ENDPOINT),
         filename,
+        uiToken: getAuthToken(),
       });
     } catch (error) {
       throw desktopExportError(error);
@@ -213,13 +221,30 @@ export async function exportAllLogs(): Promise<string | null> {
 }
 
 /**
- * Reveal the Unsloth directory. Desktop only: in a browser the folder is on the
- * server, not the user's machine, and the button is not rendered.
+ * Reveal the directory the log picker actually reads from. Desktop only: in a
+ * browser the folder is on the server, not the user's machine, and the button
+ * is not rendered.
+ *
+ * `realpath` comes from the picker, which resolves UNSLOTH_STUDIO_HOME and
+ * STUDIO_HOME. `open_logs_dir` cannot: it hard-codes ~/.unsloth/studio, so on a
+ * custom home it opens an unrelated directory or errors on a missing one. It
+ * stays as the fallback for when no source is selected yet.
  */
-export async function openLogsFolder(): Promise<void> {
+export async function openLogsFolder(realpath?: string | null): Promise<void> {
   if (!isTauri) return;
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("open_logs_dir");   // resolves ~/.unsloth/studio itself
+  const directory = realpath ? parentDirectory(realpath) : null;
+  if (directory) {
+    await invoke("open_models_dir", { path: directory });
+    return;
+  }
+  await invoke("open_logs_dir");
+}
+
+/** The directory part of a path, on either separator. Empty when there is none. */
+function parentDirectory(path: string): string | null {
+  const separator = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return separator > 0 ? path.slice(0, separator) : null;
 }
 
 /**
@@ -230,11 +255,8 @@ export async function openLogsFolder(): Promise<void> {
  */
 export async function revealSavedArchive(savedPath: string): Promise<void> {
   if (!isTauri) return;
-  const separator = Math.max(
-    savedPath.lastIndexOf("/"),
-    savedPath.lastIndexOf("\\"),
-  );
-  if (separator <= 0) return;
+  const directory = parentDirectory(savedPath);
+  if (!directory) return;
   const { invoke } = await import("@tauri-apps/api/core");
-  await invoke("open_models_dir", { path: savedPath.slice(0, separator) });
+  await invoke("open_models_dir", { path: directory });
 }

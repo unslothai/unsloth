@@ -35,6 +35,7 @@ const TAB_URL = new URL(
   import.meta.url,
 );
 const API_BASE = "http://127.0.0.1:7860";
+const UI_TOKEN = "ui-session-token";
 const EXPORT_PATH = "/api/settings/debug/logs/export";
 const SAVED_PATH = "/home/tester/Downloads/unsloth-logs-20260910-101112.zip";
 const ARCHIVE_NAME = /^unsloth-logs-\d{8}-\d{6}\.zip$/;
@@ -93,6 +94,7 @@ function makeWorld(options: {
         requests.push(input);
         return options.respond?.() ?? new Response(new Blob(["PK"]));
       },
+      getAuthToken: () => UI_TOKEN,
     },
     "@/lib/api-base": {
       isTauri: options.isTauri,
@@ -205,9 +207,19 @@ test("the desktop export streams through the Tauri command", async () => {
   assert.equal(await world.api.exportAllLogs(), SAVED_PATH);
   assert.equal(world.invokes.length, 1);
   assert.equal(world.invokes[0].command, "download_logs_to_downloads");
-  const args = world.invokes[0].args as { url: string; filename: string };
+  const args = world.invokes[0].args as {
+    url: string;
+    filename: string;
+    uiToken: string | null;
+  };
   assert.equal(args.url, `${API_BASE}${EXPORT_PATH}`);
   assert.match(args.filename, ARCHIVE_NAME);
+  // The multi-account fallback. `desktop-login` refuses to mint unconditionally
+  // on a multi-account install, so without this the owner -- signed in, looking
+  // at the owner-only tab -- could never export and signing in again would not
+  // help. The command still prefers a minted session and pins host, port and
+  // path, so this reaches nothing the tab could not reach itself.
+  assert.equal(args.uiToken, UI_TOKEN);
   // The whole point of the desktop branch: the response never crosses into JS.
   assert.deepEqual(world.requests, []);
 });
@@ -224,12 +236,34 @@ test("the browser export fetches the route and never reaches for Tauri", async (
   assert.equal(world.tauriImports(), 0);
 });
 
-test("openLogsFolder invokes open_logs_dir with no arguments", async () => {
+test("openLogsFolder falls back to open_logs_dir when nothing is selected", async () => {
   const world = makeWorld({ isTauri: true });
 
   await world.api.openLogsFolder();
   assert.deepEqual(world.invokes, [
     { command: "open_logs_dir", args: undefined },
+  ]);
+});
+
+test("openLogsFolder opens the CONFIGURED home, not the hard-coded one", async () => {
+  // `open_logs_dir` resolves ~/.unsloth/studio and nothing else, while the
+  // picker honours UNSLOTH_STUDIO_HOME and STUDIO_HOME. On a custom home the
+  // button would open an unrelated directory, or error on one that does not
+  // exist. The selected log's own realpath is what makes them agree.
+  const world = makeWorld({ isTauri: true });
+
+  await world.api.openLogsFolder("/srv/studio-home/logs/server/server-1.log");
+  assert.deepEqual(world.invokes, [
+    { command: "open_models_dir", args: { path: "/srv/studio-home/logs/server" } },
+  ]);
+});
+
+test("openLogsFolder handles a Windows realpath", async () => {
+  const world = makeWorld({ isTauri: true });
+
+  await world.api.openLogsFolder("C:\\studio\\logs\\server\\server-1.log");
+  assert.deepEqual(world.invokes, [
+    { command: "open_models_dir", args: { path: "C:\\studio\\logs\\server" } },
   ]);
 });
 

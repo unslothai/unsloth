@@ -560,8 +560,8 @@ fn unique_destination(directory: &Path, file_name: &str) -> Result<PathBuf, Stri
 
 const NOT_THE_LOG_EXPORT: &str = "Only the local log export endpoint can be downloaded.";
 
-/// Returned when desktop auth says this account has to log in rather than handing
-/// back a session. A fixed sentence, matched structurally on the TypeScript side
+/// Returned when desktop auth cannot mint a session AND the caller supplied no UI
+/// token of its own. A fixed sentence, matched structurally on the TypeScript side
 /// (`DESKTOP_LOGIN_REQUIRED` in features/settings/api/debug-logs.ts) so the tab can
 /// say "sign in" instead of showing a generic failure. Keep the two in step.
 const LOGIN_REQUIRED: &str = "Log export requires a signed-in Studio session.";
@@ -675,6 +675,7 @@ fn display_path(path: &Path) -> String {
 ///
 /// `filename` is a single word on purpose: Tauri renames a snake_case parameter to
 /// camelCase over IPC, and this one is the name the Logs tab already passes.
+/// `ui_token` arrives as `uiToken` for the same reason.
 ///
 /// Errors come back with `stream_url_to_path`'s wording, non-2xx included, so the caller
 /// can still tell a 404 (backend too old for the route) and a 403 (no UI session) apart
@@ -686,6 +687,7 @@ pub async fn download_logs_to_downloads(
     diagnostics: State<'_, crate::diagnostics::DiagnosticsState>,
     url: String,
     filename: String,
+    ui_token: Option<String>,
 ) -> Result<String, String> {
     crate::native_intents::ensure_main_window(&window)?;
     // Both guards run before anything is minted, so a URL this command will not fetch
@@ -696,16 +698,24 @@ pub async fn download_logs_to_downloads(
     // Minting also resolves and caches the live port, so read it back afterwards. The
     // refresh token that comes with it is discarded unused; the backend has no
     // access-token-only exchange to ask for instead.
-    // Per-account isolation made this an enum: on a shared install the backend can
-    // legitimately answer "this account has to log in" instead of handing back a
-    // session. There is no token to spend in that case and the export cannot be
-    // silently attempted without one, so it stops here with a message the UI can
-    // tell apart from a transport failure.
-    let session = match crate::desktop_auth::desktop_auth(state.clone(), diagnostics).await? {
+    // `desktop-login` answers LoginRequired UNCONDITIONALLY on a multi-account
+    // install: the desktop secret proves the shell owns the backend, not which
+    // account is driving it (routes/auth.py). So minting alone would make this
+    // command permanently fail there -- for an owner who is signed in and looking
+    // at the owner-only tab, with no way to resolve it by signing in again.
+    //
+    // Hence the fallback to the caller's own UI session. It grants the webview
+    // nothing it did not already have: the token is the one it is already holding,
+    // and this command pins the host, the port and the path, so the only thing it
+    // can be spent on is this one route on this install's backend. The minted
+    // desktop session is still preferred where one exists, and the call is made
+    // either way because it is also what resolves and caches the live port.
+    let minted = crate::desktop_auth::desktop_auth(state.clone(), diagnostics).await?;
+    let session = match minted {
         crate::desktop_auth::DesktopAuthResponse::Tokens { access_token, .. } => access_token,
-        crate::desktop_auth::DesktopAuthResponse::LoginRequired { .. } => {
-            return Err(LOGIN_REQUIRED.to_string())
-        }
+        crate::desktop_auth::DesktopAuthResponse::LoginRequired { .. } => ui_token
+            .filter(|token| !token.trim().is_empty())
+            .ok_or_else(|| LOGIN_REQUIRED.to_string())?,
     };
     let pinned_url = pin_to_backend(target, live_backend_port(&state)?)?;
 
@@ -1450,6 +1460,22 @@ mod tests {
         }
         assert!(
             require_loopback_url("http://127.0.0.1:8888/api/settings/debug/logs/export").is_ok()
+        );
+    }
+
+    /// The multi-account fallback, asserted where it is decidable without a live
+    /// backend: the tab must actually SEND a token for the command to fall back
+    /// to. `desktop-login` refuses to mint unconditionally when the install is
+    /// multi-account, so if the caller stops passing `uiToken` the export dies
+    /// there permanently, for an owner who is signed in and cannot fix it by
+    /// signing in again.
+    #[test]
+    fn the_tab_sends_a_ui_token_for_the_multi_account_fallback() {
+        let frontend = include_str!("../../frontend/src/features/settings/api/debug-logs.ts");
+        assert!(
+            frontend.contains("uiToken: getAuthToken()"),
+            "debug-logs.ts no longer sends uiToken, so a multi-account desktop \
+             install can never export logs"
         );
     }
 

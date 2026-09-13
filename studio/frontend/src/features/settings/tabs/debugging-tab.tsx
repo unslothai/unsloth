@@ -283,7 +283,9 @@ export function DebuggingTab() {
   const revealLogsFolder = useCallback(async () => {
     setRevealing(true);
     try {
-      await openLogsFolder();
+      // The selected log's own path, which is what resolves a custom
+      // UNSLOTH_STUDIO_HOME: open_logs_dir hard-codes ~/.unsloth/studio.
+      await openLogsFolder(realpath);
     } catch (error) {
       toast.error(t("settings.debugging.openLogsFolderFailed"), {
         description: (error as Error).message,
@@ -291,7 +293,7 @@ export function DebuggingTab() {
     } finally {
       setRevealing(false);
     }
-  }, [t]);
+  }, [t, realpath]);
 
   const downloadAllLogs = useCallback(async () => {
     setExporting(true);
