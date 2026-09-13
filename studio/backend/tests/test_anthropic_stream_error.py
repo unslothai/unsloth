@@ -5,6 +5,8 @@ import httpx
 import pytest
 
 from core import research_runs
+from core.inference.external_provider import _ANTHROPIC_ERROR_STATUS
+from utils.api_errors import ANTHROPIC_TYPE_BY_STATUS
 
 from .test_anthropic_thinking_translation import (
     _anthropic_sse,
@@ -131,3 +133,37 @@ def test_midstream_rate_limit_is_retried_by_research(monkeypatch):
 
     assert _payloads_from_lines(lines)[-1]["error"]["code"] == "429"
     assert research_runs._stream_rate_limit_delay(lines[0]) == 0.0
+
+
+def test_every_documented_error_type_has_a_streamed_status():
+    # An Anthropic connection keeps an editable base URL, so the streamed map has to name every
+    # type the repo's own request-side table does -- `conflict_error` was the one it missed.
+    missing = set(ANTHROPIC_TYPE_BY_STATUS.values()) - set(_ANTHROPIC_ERROR_STATUS)
+    assert not missing, f"no streamed status for {missing}"
+    assert _ANTHROPIC_ERROR_STATUS["conflict_error"] == 409
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        {"type": "error", "error": {"type": ["overloaded_error"], "message": "listy"}},
+        {"type": "error", "error": {"type": {"a": 1}, "message": "dicty"}},
+        {"type": "error", "error": {"type": 529, "message": "numeric"}},
+        {"type": "error", "error": {"message": "no type at all"}},
+        {"type": "error", "error": "a bare string"},
+        {"type": "error", "error": None},
+        {"type": "error"},
+    ],
+)
+def test_malformed_error_frame_still_reaches_the_client(monkeypatch, error):
+    # A stand-in gateway can send anything. An unhashable ``type`` used to raise out of the
+    # generator, which ended the reply with no error frame at all -- the bug this branch fixes.
+    payloads = _payloads_from_lines(_stream_lines(monkeypatch, [*_TEXT, error]))
+
+    reported = payloads[-1]["error"]
+    assert reported["type"] == "provider_error"
+    assert reported["provider"] == "anthropic"
+    assert isinstance(reported["message"], str) and reported["message"]
+    assert "[DONE]" not in payloads
+    combined = "".join(p["choices"][0]["delta"].get("content", "") for p in payloads[:-1])
+    assert combined == "The three causes are"

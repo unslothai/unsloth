@@ -3061,6 +3061,13 @@ class ExternalProviderClient:
                                 yield _content_chunk("</think>")
                             error = event.get("error")
                             error_type = error.get("type") if isinstance(error, dict) else None
+                            # A gateway standing in for Anthropic can put anything here, and an
+                            # unhashable `type` raised straight out of the generator: the route's
+                            # catch-all then reported "An internal error occurred" instead of the
+                            # provider's own message, with no status for Deep Research to back off
+                            # on. Anything but a string falls back to 502.
+                            if not isinstance(error_type, str):
+                                error_type = None
                             yield _error_sse_line(
                                 _ANTHROPIC_ERROR_STATUS.get(error_type, 502),
                                 _json.dumps(event),
@@ -6526,6 +6533,7 @@ _ANTHROPIC_ERROR_STATUS = {
     "billing_error": 402,
     "permission_error": 403,
     "not_found_error": 404,
+    "conflict_error": 409,
     "request_too_large": 413,
     "rate_limit_error": 429,
     "api_error": 500,
