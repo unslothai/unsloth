@@ -1,6 +1,6 @@
 # Unsloth Docker Image
 
-Pre-built images for [Unsloth](https://github.com/unslothai/unsloth): fine-tune and run LLMs, vision, audio and diffusion models with no setup. Every image carries the full training stack (PyTorch 2.11 with CUDA 12.8, Unsloth, unsloth-zoo, bitsandbytes, TRL, PEFT, plus xformers on `linux/amd64`), JupyterLab with the [Unsloth notebooks](https://github.com/unslothai/notebooks) pre-synced, and prebuilt llama.cpp and whisper.cpp for GGUF work.
+Pre-built images for [Unsloth](https://github.com/unslothai/unsloth): fine-tune and run LLMs, vision, audio and diffusion models with no setup. Every image carries the full training stack (PyTorch 2.11 with CUDA 12.8, Unsloth, unsloth-zoo, bitsandbytes, TRL, PEFT, plus xformers on `linux/amd64`), JupyterLab with the [Unsloth notebooks](https://github.com/unslothai/notebooks) pre-synced, and prebuilt llama.cpp for GGUF work. The `latest` image adds whisper.cpp for Studio's speech-to-text.
 
 Source: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker) in the main repository. Guide: [docs.unsloth.ai](https://docs.unsloth.ai/get-started/install/docker).
 
@@ -103,7 +103,8 @@ Turing has no bfloat16; Unsloth falls back to float16 there. AMD GPUs are not su
 | `SSH_KEY` or `PUBLIC_KEY` | OpenSSH public key for root login. Enables sshd on port 22. Password login is never enabled. |
 | `UNSLOTH_ALLOW_CPU=1` | Allow starting without a GPU (`latest` already does). Dropped when a GPU is visible, where it would turn off Unsloth's training patches. |
 | `UNSLOTH_JUPYTER_CLOUDFLARE=1` | Publish JupyterLab through a Cloudflare quick tunnel and print the URL. |
-| `UNSLOTH_SKIP_NOTEBOOK_SYNC=1` | Do not refresh the notebooks from GitHub on start. |
+| `UNSLOTH_SKIP_NOTEBOOK_REFRESH=1` | Do not refresh the notebooks from GitHub on start; the copy baked into the image is still used. |
+| `UNSLOTH_SKIP_NOTEBOOK_SYNC=1` | Do not set up the notebooks at all: no `/workspace/unsloth-notebooks` and no `/workspace/Unsloth Notebooks`. |
 | `HF_TOKEN`, `WANDB_API_KEY` | Forwarded to Hugging Face and Weights and Biases. |
 
 On a host with no GPU, Studio, JupyterLab and its kernels, and login shells all run in
@@ -123,7 +124,7 @@ The working directory is `/workspace`. Mount what you want to keep:
 | `/workspace/unsloth-notebooks` | The synced notebooks. Your edits are kept across refreshes. |
 | `/workspace/Unsloth Notebooks` | The same notebooks grouped by topic, rebuilt on each start. |
 
-The container runs as root by default. `--user <uid>:<gid>` is supported and keeps files on your mounts owned by you.
+The container runs as root by default. On `core`, `--user <uid>:<gid>` is supported and keeps files on your mounts owned by you. `latest` runs its services as root and does not start under `--user`.
 
 ## Updating inside a running container
 
@@ -133,7 +134,9 @@ On the `latest` image:
 - `unsloth-llama-update` fetches the newest prebuilt llama.cpp.
 - `unsloth-jupyter-tunnel` opens a Cloudflare quick tunnel to JupyterLab.
 
-On both images the notebooks refresh from GitHub on each start unless `UNSLOTH_SKIP_NOTEBOOK_SYNC=1`. Pull a new image tag to update everything else.
+On both images the notebooks refresh from GitHub on each start unless `UNSLOTH_SKIP_NOTEBOOK_REFRESH=1`. Pull a new image tag to update everything else.
+
+Setting them up costs roughly 10 to 20 seconds of every start, depending on the disk, so a one-shot `docker run --rm ... python script.py` is worth running with `UNSLOTH_SKIP_NOTEBOOK_SYNC=1`.
 
 ## Help
 
@@ -143,4 +146,4 @@ On both images the notebooks refresh from GitHub on each start unless `UNSLOTH_S
 
 ## License
 
-AGPL-3.0, following the main repository. See [LICENSE](https://github.com/unslothai/unsloth/blob/main/LICENSE).
+Unsloth is Apache-2.0 ([LICENSE](https://github.com/unslothai/unsloth/blob/main/LICENSE)). Both images also include Unsloth Studio's code (`studio/`), which is AGPL-3.0 ([studio/LICENSE.AGPL-3.0](https://github.com/unslothai/unsloth/blob/main/studio/LICENSE.AGPL-3.0)).
