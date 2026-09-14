@@ -2837,7 +2837,7 @@ _RELATIVE_PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*[/\\][^\s'\"()\[\]
 # `cd DIR`, `cd /d DIR` or `pushd DIR` at a command position; `pushd` moves the cwd as `cd` does.
 # Case-insensitive because the shell is `cmd /c` on a Windows host without a trusted bash.
 _CD_TARGET_RE = re.compile(
-    r"(?:^|[;&|(]\s*|\s)(?:cd|pushd)\s+(?:(?:-[LPe@]+|/d)\s+)*([^\s;&|)]+)", re.IGNORECASE
+    r"(?:^|[;&|(]\s*|\s)(?:cd|pushd)\s+(?:(?:-[LPe@]+|--|/d)\s+)*([^\s;&|)]+)", re.IGNORECASE
 )
 # Distinct directories, not `cd` commands: padding with repeats must not spend the budget.
 _MAX_TRACKED_CWDS = 64
@@ -3001,8 +3001,15 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
                 cwds = (moved + [c for c in cwds if c not in moved])[:_MAX_TRACKED_CWDS]
             continue
         folded = node.value if isinstance(node, ast.Constant) else _folded_path(node)
-        if not folded or "\x02" in folded:  # a name bound more than once is not answerable here
+        if not folded:
             continue
+        if "\x02" in folded:
+            # `Path.cwd().parents[1] / "auth" / "auth.db"` folds the parent walk to \x02. The
+            # analyzer that reads that is skipped in bypass mode, and the walk is from the cwd,
+            # which is known here: each \x02 is one level up from it.
+            if not any(_parent_walk_reaches_the_auth_dir(folded, cwd) for cwd in cwds):
+                continue
+            return True
         if "\x00" in folded:
             # A dynamic piece is the sensitive-path analyzer's, unless the code reads a
             # studio-home variable: bypass keeps that in the child env, so its value is known.
@@ -3021,6 +3028,30 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
                     return True
             if _references_studio_credential_here(folded, cwd):
                 return True
+    return False
+
+
+def _parent_walk_reaches_the_auth_dir(folded: str, cwd: "str | None") -> bool:
+    """Whether a folded `.parent` / `.parents[n]` walk from *cwd* lands in the auth directory.
+
+    `_folded_path` writes \x02 for each level walked up, so the remainder after the last one is the
+    path opened relative to that ancestor.
+    """
+    if not cwd or "\x02" not in folded:
+        return False
+    tail = folded.rsplit("\x02", 1)[-1].lstrip("/\\")
+    # EVERY ancestor, not a level count: `parents[1]` folds to a single marker whatever n is, so the
+    # number of levels is not in the folded text. Only a tail that lands exactly in the auth
+    # directory matches, so walking the whole chain does not widen this.
+    base = cwd
+    for _ in range(64):
+        resolved = os.path.normpath(os.path.join(base, tail)) if tail else base
+        if _references_studio_credential(resolved):
+            return True
+        parent = os.path.dirname(base.rstrip("/\\"))
+        if not parent or parent == base:
+            return False
+        base = parent
     return False
 
 
@@ -3071,7 +3102,13 @@ def _needs_a_workdir(text: str) -> bool:
     if ".." in text:
         return True
     lowered = text.lower()
-    return "cd" in lowered or "pushd" in lowered or "chdir" in lowered
+    return (
+        "cd" in lowered
+        or "pushd" in lowered
+        or "chdir" in lowered
+        # `Path.cwd().parents[1] / "auth"` walks up from the cwd without writing a `..`.
+        or "parent" in lowered
+    )
 
 
 def _tool_workdir_for_guard(session_id: "str | None") -> "str | None":

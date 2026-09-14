@@ -1125,3 +1125,55 @@ def test_a_pushd_to_an_absolute_home_and_paths_before_the_cd(monkeypatch, tmp_pa
             ), ordinary
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_a_pathlib_parent_walk_and_the_option_terminator(monkeypatch, tmp_path):
+    # `Path.cwd().parents[1] / "auth" / "auth.db"` walks up from the sandbox without writing a `..`,
+    # and bash accepts `--` as the end of options, so it is not the target of the `cd`.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for code in (
+            "import sqlite3\nfrom pathlib import Path\n"
+            'print(sqlite3.connect(Path.cwd().parents[1] / "auth" / "auth.db"))',
+            "from pathlib import Path\n"
+            'print((Path.cwd().parent.parent / "auth" / ".desktop_secret").read_text())',
+            'from pathlib import Path\nprint((Path.cwd().parents[3] / "auth" / "auth.db"))',
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+        assert (
+            tools._bash_exec(
+                "cd -- ../..; cat auth/auth.db",
+                None,
+                30,
+                _SESSION,
+                disable_sandbox = True,
+            )
+            == tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+        # A parent walk that lands anywhere else stays ordinary work.
+        for code in (
+            'from pathlib import Path\nprint(Path.cwd().parent / "data" / "x.csv")',
+            'from pathlib import Path\nprint(Path("x.txt").parent)',
+            'from pathlib import Path\nprint((Path.cwd().parents[1] / "models" / "m.gguf").exists())',
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+        assert (
+            tools._bash_exec(
+                "cd -- ../models; ls",
+                None,
+                30,
+                _SESSION,
+                disable_sandbox = True,
+            )
+            != tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+    finally:
+        tools._studio_auth_markers_cache = None
