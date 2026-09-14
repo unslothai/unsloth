@@ -860,6 +860,68 @@ def test_home_is_the_workdir_under_bypass_permissions(monkeypatch, tmp_path):
         tools._studio_auth_markers_cache = None
 
 
+def test_a_subshell_cd_does_not_outlive_the_subshell(monkeypatch, tmp_path):
+    # `(cd ../..; ls models); cat auth/config.json` runs the `cat` where it started, because a
+    # subshell's directory dies with it. Carried past the bracket, the move refused a project's
+    # own auth/ read. Inside the subshell the move is real and still counts.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for ordinary in (
+            "(cd ../..; ls models); cat auth/config.json",
+            "(cd ../..; ls models)\ncat auth/notes.txt",
+        ):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+        for command in (
+            "(cd ../..; cat auth/auth.db)",
+            "x=$(cd ../.. && cat auth/auth.db)",
+            "(cd ../../auth; ls)",
+            "(cd ../..); cd ../..; cat auth/auth.db",
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_only_a_module_that_owns_the_process_directory_changes_it(monkeypatch, tmp_path):
+    # `ftp.chdir('../..')` moves a remote directory, not this process's, so the local read that
+    # follows never leaves the sandbox. Matched on the method name alone, it was refused.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        assert (
+            tools._python_exec(
+                'import ftplib\nftp = ftplib.FTP("h")\nftp.chdir("../..")\nprint(open("auth/config.json").read())',
+                None,
+                30,
+                _SESSION,
+                disable_sandbox = True,
+            )
+            != tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+        for code in (
+            'import os\nos.chdir("../..")\nprint(open("auth/auth.db", "rb").read())',
+            'import os as o\no.chdir("../..")\nprint(open("auth/auth.db", "rb").read())',
+            'from os import chdir\nchdir("../..")\nprint(open("auth/auth.db", "rb").read())',
+            'import contextlib\nwith contextlib.chdir("../.."):\n    print(open("auth/auth.db", "rb").read())',
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
 def test_a_cd_in_a_conditional_position_moves_the_directory(monkeypatch, tmp_path):
     # `if cd ../..; then ...; fi` runs the move as the condition itself, and a brace group is just
     # another command position. Only `then`/`do`/`else` were recognised, so those moves went

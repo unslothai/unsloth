@@ -2980,8 +2980,33 @@ _MAX_WALKED_CWDS = 2048
 _PROC_CWD_RE = re.compile(r"/proc/(?:self|thread-self|\d+|\$\$|\$\{?BASHPID\}?|\$\{?PPID\}?)/cwd")
 
 
-def _cwds_after_cd(workdir: str, text: str) -> "list[tuple[int, str]]":
-    """Every working directory *text* walks into via `cd`, as `(offset, directory)` in order.
+def _subshell_end(text: str, start: int) -> int:
+    """Where the subshell containing *start* closes, or the end of *text* when it is not in one.
+
+    `(cd ../..; ls models); cat auth/config.json` runs the `cat` in the unchanged directory: a
+    subshell's `cd` dies with the subshell, so its move must not reach past the closing bracket.
+    """
+    depth = 0
+    for char in text[:start]:
+        if char == "(":
+            depth += 1
+        elif char == ")" and depth:
+            depth -= 1
+    if not depth:
+        return len(text)
+    for index in range(start, len(text)):
+        char = text[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if not depth:
+                return index
+    return len(text)
+
+
+def _cwds_after_cd(workdir: str, text: str) -> "list[tuple[int, int, str]]":
+    """Every working directory *text* walks into via `cd`, as `(offset, limit, directory)` in order.
 
     The offset is where that `cd` ends, because a relative path written BEFORE it opens from the
     old directory: `cat auth/auth.db; cd ../..` reads inside the sandbox and is ordinary work.
@@ -2994,26 +3019,31 @@ def _cwds_after_cd(workdir: str, text: str) -> "list[tuple[int, str]]":
     # studio root from the sandbox. Assuming every `cd` succeeds resolved the rest against a
     # directory the command was never in.
     states: "list[str]" = [workdir]
-    walked: "list[tuple[int, str]]" = []
-    seen: "set[str]" = set()
+    walked: "list[tuple[int, int, str]]" = []
+    seen: "set[tuple[str, int]]" = set()
     for match in _CD_TARGET_RE.finditer(text):
         target = match.group(1).strip("'\"")
         if not target or target.startswith("-"):
             continue
+        # A `cd` inside `( ... )` or `$( ... )` moves only that subshell, so its move stops there.
+        limit = _subshell_end(text, match.end())
         moved: "list[str]" = []
         for cwd in states:
             nxt = target if os.path.isabs(target) else os.path.normpath(os.path.join(cwd, target))
             if nxt not in moved:
                 moved.append(nxt)
             # Deduplicated: `cd .` x8 spent the budget before the real ones.
-            if nxt not in seen:
-                seen.add(nxt)
-                walked.append((match.end(), nxt))
+            if (nxt, limit) not in seen:
+                seen.add((nxt, limit))
+                walked.append((match.end(), limit, nxt))
         # Both outcomes stay live, capped so a long chain cannot grow the set without bound. The
         # starting directory is kept FIRST: it is where the shell is when every `cd` fails, which is
         # what a padded command relies on, and truncating the tail used to drop exactly that state.
         # The cap bounds the STATES only, never the scan, or the padding hides the `cd ../..`.
-        ordered = [workdir] + [c for c in states if c != workdir] + moved
+        # A subshell's move does not survive it, so the outer states are what carry on.
+        ordered = (
+            [workdir] + [c for c in states if c != workdir] + (moved if limit >= len(text) else [])
+        )
         states = list(dict.fromkeys(ordered))[:_MAX_TRACKED_CWDS]
         if len(walked) >= _MAX_WALKED_CWDS:
             break
@@ -3060,7 +3090,7 @@ def _references_studio_credential_here(text: str, workdir: "str | None") -> bool
             return True
     # A `cd` earlier in the command moves where every later relative path opens from.
     if workdir and ("cd" in text.lower() or "pushd" in text.lower()):
-        for offset, cwd in _cwds_after_cd(workdir, text):
+        for offset, limit, cwd in _cwds_after_cd(workdir, text):
             # The directory itself: `cd ../..; cd auth; sqlite3 auth.db` writes no separator at
             # all, so every token below reads as an ordinary filename.
             if _references_studio_credential(cwd):
@@ -3069,7 +3099,7 @@ def _references_studio_credential_here(text: str, workdir: "str | None") -> bool
                 # Only what comes AFTER that `cd`: a path written before it opens from the old
                 # directory, so resolving `cat auth/auth.db; cd ../..` against the root refused a
                 # read that never left the sandbox.
-                if match.start() < offset:
+                if match.start() < offset or match.start() >= limit:
                     continue
                 token = match.group(0)
                 if os.path.isabs(token) or token.startswith("~"):
@@ -3116,10 +3146,11 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
     # A list of possible directories, for the same reason the shell walk keeps one: a `chdir` into a
     # path that does not exist raises, and code that catches it carries on from where it was.
     chdir_names = _chdir_names(tree)
+    chdir_modules = _chdir_modules(tree)
     name_bases = _literal_name_bases(tree)
     cwds: "list[str | None]" = [workdir]
     for node in nodes:
-        if isinstance(node, ast.Call) and _is_chdir_call(node, chdir_names):
+        if isinstance(node, ast.Call) and _is_chdir_call(node, chdir_names, chdir_modules):
             argument = _chdir_argument(node)
             target = None if argument is None else _folded_path(argument)
             targets: "list[str]" = []
@@ -3327,12 +3358,36 @@ def _chdir_names(tree) -> "set[str]":
     return names
 
 
-def _is_chdir_call(node: "ast.Call", names: "set[str] | None" = None) -> bool:
+def _chdir_modules(tree) -> "set[str]":
+    """The names that stand for a module whose `chdir` moves THIS process.
+
+    `ftp.chdir('../..')` changes a remote directory and leaves the local one alone, so reading a
+    project's own `auth/config.json` afterwards was refused for a move that never happened.
+    """
+    modules = {"os", "contextlib"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in ("os", "contextlib") and alias.asname:
+                    modules.add(alias.asname)
+    return modules
+
+
+def _is_chdir_call(
+    node: "ast.Call",
+    names: "set[str] | None" = None,
+    modules: "set[str] | None" = None,
+) -> bool:
     """True for `os.chdir(...)`, a bare `chdir(...)`, and any alias bound from it."""
     names = names or {"chdir"}
     func = node.func
     if isinstance(func, ast.Attribute):
-        return func.attr in names
+        if func.attr not in names:
+            return False
+        # Only a module that owns the process directory. An unknown receiver is not one.
+        return isinstance(func.value, ast.Name) and func.value.id in (
+            modules or {"os", "contextlib"}
+        )
     return isinstance(func, ast.Name) and func.id in names
 
 
