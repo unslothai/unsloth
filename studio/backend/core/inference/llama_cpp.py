@@ -9442,6 +9442,7 @@ class LlamaCppBackend:
             )
             corrected.append((idx, usable_mib, 0))
         return corrected
+
     def _rocm_classification_answered() -> bool:
         """Whether `_rocm_unified_memory_gpu_ids` could actually look at the devices.
 

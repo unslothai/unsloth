@@ -528,9 +528,7 @@ def test_the_probe_actually_calls_the_correction(HW, integrated, monkeypatch):
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
     )
-    monkeypatch.setattr(
-        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b: False)
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b: False))
     monkeypatch.setattr(
         "core.inference.llama_cpp.subprocess.run",
         lambda *a, **k: types.SimpleNamespace(
@@ -552,9 +550,7 @@ def test_the_probe_still_reports_pci_index_ids(HW, integrated, monkeypatch):
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
     )
-    monkeypatch.setattr(
-        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b: False)
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b: False))
     monkeypatch.setattr(
         "core.inference.llama_cpp.subprocess.run",
         lambda *a, **k: types.SimpleNamespace(
