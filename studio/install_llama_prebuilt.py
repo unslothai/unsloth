@@ -7657,6 +7657,19 @@ def _expected_release_tag_without_plan(
     every update to close it would reintroduce the rate limit this path exists to avoid.
     Two things narrow it anyway, below: an explicit request for the API path gets the
     API's answer, and a payload this process already fetched is compared for free.
+
+    A SECOND DEFERRAL of the same class, in the macOS walk-back rather than the pointer.
+    iter_resolved_published_releases skips a release whose checksum index it cannot fetch
+    and logs it, and those skips are invisible to the planner, so a walk-back records only
+    that the NEWEST release was unusable. If a middle release was passed over for a
+    transient fetch failure rather than for its OS floor, walk_back_stands keeps answering
+    "current" for the older install while the newest is unchanged, and the middle one is
+    not reconsidered until something newer publishes. The pre-PR path re-planned every
+    update and would have taken it on the next run. Same consequence as above and left
+    alone for the same reason: both releases are compatible, so this is one deferred
+    update and never a wrong install, and it clears itself on the next publish. Suppressing
+    the walk-back whenever any release was skipped transiently is the fix if this is ever
+    worth closing; it costs a flag threaded out of the iterator.
     """
     pinned = (published_release_tag or "").strip()
     requested = normalized_requested_llama_tag(llama_tag)
