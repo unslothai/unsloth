@@ -507,6 +507,40 @@ class TestRocmEntrypoint:
         assert (tmp_path / "ran").read_text().strip() == "unset"
         assert "ignoring HSA_OVERRIDE_GFX_VERSION" in err and "/dev/kfd" not in err, err
 
+    @staticmethod
+    def _build_args(tmp_path, **inputs):
+        """Run the prepare job's build_args step as the workflow would."""
+        import yaml
+        wf = yaml.safe_load(open(_WORKFLOW, encoding = "utf-8"))
+        step = next(s for s in wf["jobs"]["prepare"]["steps"] if s.get("id") == "build_args")
+        out = tmp_path / f"out{len(os.listdir(tmp_path))}"
+        out.write_text("")
+        env = {"PATH": os.environ["PATH"], "GITHUB_OUTPUT": str(out)}
+        env.update({k: str(v) for k, v in wf["env"].items()})
+        env.update({"IN_UNSLOTH": "", "IN_ZOO": "", "IN_ROCM": "", "IN_INDEX": "", "IN_GFX": ""})
+        env.update(inputs)
+        proc = subprocess.run(["bash", "-e", "-c", step["run"]], env = env, capture_output = True, text = True)
+        got = dict(ln.split("=", 1) for ln in out.read_text().splitlines() if "=" in ln)
+        return proc.returncode, got, proc.stdout + proc.stderr
+
+    def test_gfx906_defaults_to_the_last_rocm_that_carries_it(self, tmp_path):
+        """The public :gfx906 tag must name a 6.3 build: a gfx906 dispatch on the
+        7.2.4 default would be tagged and fail on the first matmul."""
+        rc, got, log = self._build_args(tmp_path, IN_GFX = "gfx906")
+        assert rc == 0, log
+        assert got["rocm_version"] == "6.3.4" and got["torch_index_url"].endswith("/rocm6.3"), got
+        assert got["gfx_tag"] == "true" and got["stable"] == "false", got
+        rc, got, log = self._build_args(tmp_path, IN_GFX = "gfx906", IN_ROCM = "6.3.4")
+        assert rc == 0 and got["gfx_tag"] == "true", (got, log)
+        rc, got, log = self._build_args(tmp_path, IN_GFX = "gfx906", IN_ROCM = "7.2.4")
+        assert rc != 0 and "needs a ROCm 6.3 base" in log, log
+        rc, got, log = self._build_args(tmp_path, IN_GFX = "gfx906", IN_ROCM = "6.3.4", IN_UNSLOTH = "feature")
+        assert rc == 0 and got["gfx_tag"] == "false", got
+        rc, got, log = self._build_args(tmp_path, IN_GFX = "gfx1151")
+        assert rc == 0 and got["rocm_version"] == "7.2.4" and got["gfx_tag"] == "true", got
+        rc, got, log = self._build_args(tmp_path)
+        assert rc == 0 and got["stable"] == "true" and got["gfx_tag"] == "false", got
+
     def test_the_workflow_accepts_a_gfx906_dispatch(self):
         """Dockerfile.rocm relies on ROCM_GFX=gfx906 to leave out bitsandbytes, so the
         dispatch validation must let it through (with a 6.3 base)."""

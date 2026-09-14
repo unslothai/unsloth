@@ -52,6 +52,8 @@ env:
   REGISTRY_USERNAME: unsloth
   DEFAULT_ROCM_VERSION: '7.2.4'
   DEFAULT_TORCH_INDEX_URL: 'https://download.pytorch.org/whl/rocm7.2'
+  # the last ROCm with gfx906 kernels: the default base for rocm_gfx=gfx906
+  GFX906_ROCM_VERSION: '6.3.4'
 
 # Serialise per-ref runs, except on main where each RUN gets its own group: a
 # shared group DISCARDS a pending run when a newer one is queued (see
@@ -162,23 +164,38 @@ jobs:
           IN_INDEX: ${{ github.event.inputs.torch_index_url }}
           IN_GFX: ${{ github.event.inputs.rocm_gfx }}
         run: |
-          ROCM="${IN_ROCM:-$DEFAULT_ROCM_VERSION}"
-          # the index follows the base unless named: a 6.3.4 base with the 7.2
-          # wheels would build (torch.version.hip is set either way) and not run
-          INDEX="${IN_INDEX:-https://download.pytorch.org/whl/rocm${ROCM%.*}}"
           GFX="${IN_GFX}"
           case "$GFX" in
               ""|gfx906|gfx1150|gfx1151|gfx1152|gfx1200|gfx1201) ;;
               *) echo "::error::rocm_gfx='${GFX}' has no per-arch wheel index (gfx906 = generic index without bitsandbytes)"; exit 1 ;;
           esac
+          # gfx906 has no kernels after ROCm 6.3, so its defaults are the last base
+          # that carries it; the public :gfx906 tag names that pair, and a 6.4+
+          # base with gfx906 is refused rather than tagged.
+          DEF_ROCM="$DEFAULT_ROCM_VERSION"
+          DEF_INDEX="$DEFAULT_TORCH_INDEX_URL"
+          if [ "$GFX" = gfx906 ]; then
+              DEF_ROCM="$GFX906_ROCM_VERSION"
+              DEF_INDEX="https://download.pytorch.org/whl/rocm${DEF_ROCM%.*}"
+          fi
+          ROCM="${IN_ROCM:-$DEF_ROCM}"
+          # the index follows the base unless named: a 6.3.4 base with the 7.2
+          # wheels would build (torch.version.hip is set either way) and not run
+          INDEX="${IN_INDEX:-https://download.pytorch.org/whl/rocm${ROCM%.*}}"
+          if [ "$GFX" = gfx906 ]; then
+              case "$ROCM" in
+                  6.[0-3]|6.[0-3].*) ;;
+                  *) echo "::error::rocm_gfx=gfx906 needs a ROCm 6.3 base (AMD dropped gfx906 after 6.3), not ${ROCM}"; exit 1 ;;
+              esac
+          fi
           # DEFAULTS: every input other than the gfx at its default. STABLE adds a
           # blank gfx. A per-arch build gets its gfx tag only under DEFAULTS, so a
           # feature-branch ref plus gfx1151 cannot replace the public gfx1151 image.
           DEFAULTS=true
           [ -z "$IN_UNSLOTH" ] || DEFAULTS=false
           case "$IN_ZOO" in ""|main) ;; *) DEFAULTS=false ;; esac
-          [ "$ROCM" = "$DEFAULT_ROCM_VERSION" ] || DEFAULTS=false
-          [ "$INDEX" = "$DEFAULT_TORCH_INDEX_URL" ] || DEFAULTS=false
+          [ "$ROCM" = "$DEF_ROCM" ] || DEFAULTS=false
+          [ "$INDEX" = "$DEF_INDEX" ] || DEFAULTS=false
           STABLE=$DEFAULTS
           [ -z "$GFX" ] || STABLE=false
           GFX_TAG=false
