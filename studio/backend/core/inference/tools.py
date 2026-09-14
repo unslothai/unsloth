@@ -2722,6 +2722,10 @@ def _references_studio_credential(text: str) -> bool:
     # backslash is an escape there, not a separator, so undo it before canonicalising, which would
     # otherwise read it as one and split the directory name in half.
     unescaped = text.replace("\\ ", " ") if "\\ " in text else text
+    # A shell concatenates adjacent fragments, so `"$STUDIO_HOME"/auth/auth.db` opens the same file
+    # as the unquoted spelling; with the quote left in place no marker could span it.
+    if '"' in unescaped or "'" in unescaped:
+        unescaped = unescaped.replace('"', "").replace("'", "")
     # `..` segments and Windows separators need the full lexical canonicalisation, which the slash
     # collapse above does not do.
     canonical = _canonical_path_text(text)

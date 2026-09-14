@@ -955,7 +955,10 @@ _STUDIO_API_KEY_RE = re.compile(
     # 8 rather than the full 32 hex: a result cut to fit the window can end mid-key, and half a key
     # is still credential material. The prefix is Unsloth's own, so a short floor costs nothing;
     # `sk-unsloth-` with no token after it (prose about the format) still reads through.
-    r"sk-unsloth-[A-Za-z0-9]{8,}"
+    # Hex, not alphanumeric: the token is `token_hex`, and the wider alphabet rewrote the
+    # repository's own `sk-unsloth-internal-workflow` to `[redacted]-workflow` in source listings
+    # and test output, which is text that cannot be a key.
+    r"sk-unsloth-[0-9a-fA-F]{8,}"
     # The desktop credential is `desktop-` + token_urlsafe(48); the length floor keeps an ordinary
     # hyphenated word ("desktop-app") out of it.
     r"|desktop-[A-Za-z0-9_-]{40,}"

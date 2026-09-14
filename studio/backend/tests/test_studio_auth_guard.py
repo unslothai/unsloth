@@ -185,6 +185,7 @@ def test_the_environment_variable_spelling_of_the_studio_home(monkeypatch, tmp_p
             r"type %UNSLOTH_STUDIO_HOME%\auth\.desktop_secret",
             r"Get-Content $env:STUDIO_HOME\auth\auth.db",
             'cd "$STUDIO_HOME" && ls auth',
+            'sqlite3 "$UNSLOTH_STUDIO_HOME"/auth/auth.db "select jwt_secret from auth_user"',
         ):
             assert tools._references_studio_credential(spelling), spelling
         # Naming the variable without going into the auth directory stays ordinary work.
@@ -204,6 +205,11 @@ def test_a_studio_home_whose_name_contains_a_space(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
     monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
     try:
+        # A shell concatenates adjacent fragments, so the quote sits INSIDE the path here and no
+        # marker could span it until the candidate was dequoted.
+        assert tools._references_studio_credential(f'sqlite3 "{home}"/auth/auth.db "select 1"')
+        assert tools._references_studio_credential(f"cat '{home}'/auth/.desktop_secret")
+        assert not tools._references_studio_credential(f'cat "{home}"/models/notes.txt')
         assert tools._references_studio_credential(f"cat {escaped}/auth/auth.db")
         assert tools._references_studio_credential(f"cd {escaped} && ls -a auth")
         assert tools._references_studio_credential(f'cat "{home}/auth/auth.db"')
@@ -261,6 +267,14 @@ def test_redaction_is_idempotent_and_leaves_other_output_alone():
     assert redact_studio_credentials("keys look like sk-unsloth-<hex>") == (
         "keys look like sk-unsloth-<hex>"
     )
+    # The token is hex, so a name that only shares the prefix is left alone. On the alphanumeric
+    # pattern this repository's own `sk-unsloth-internal-workflow` came back as
+    # `[redacted]-workflow` in source listings and test output.
+    for not_a_key in (
+        "container name sk-unsloth-internal-workflow here",
+        "sk-unsloth-zzzzzzzzzz",
+    ):
+        assert redact_studio_credentials(not_a_key) == not_a_key
 
 
 def test_the_envelope_split_still_sees_a_suffix_only_strip():
