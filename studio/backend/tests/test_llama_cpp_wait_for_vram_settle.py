@@ -211,9 +211,9 @@ def test_empty_first_sample_returns_immediately():
     with ctx, _Sleeps() as sleeps:
         LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 2.0, interval = 0.25))
     assert state["calls"] == 1
-    assert sleeps.durations == [], (
-        f"CPU-only short-circuit slept through the interval: {sleeps.durations}"
-    )
+    assert (
+        sleeps.durations == []
+    ), f"CPU-only short-circuit slept through the interval: {sleeps.durations}"
 
 
 def test_first_probe_raises_returns_without_polling():
@@ -288,9 +288,9 @@ def test_max_wait_respected_when_probe_is_slow():
         elapsed = time.monotonic() - start
     # The probe burned 0.30 of a 0.4s budget, so the nap after it must be clipped.
     assert sleeps.durations, "helper never napped, so nothing was clipped"
-    assert sleeps.durations[-1] < 0.25, (
-        f"helper slept the full interval past the deadline: {sleeps.durations}"
-    )
+    assert (
+        sleeps.durations[-1] < 0.25
+    ), f"helper slept the full interval past the deadline: {sleeps.durations}"
     assert sleeps.total <= 0.4 + 1e-9, f"helper napped past max_wait: {sleeps.durations}"
     assert elapsed < 20.0, f"helper never returned: elapsed={elapsed:.3f}s"
 
