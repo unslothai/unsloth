@@ -2501,6 +2501,12 @@ _LOCALIZED_NVIDIA_SMI = (
     "import sys\n"
     "if sys.argv[1:] == ['--query-gpu=compute_cap', '--format=csv,noheader,nounits']:\n"
     "    sys.stdout.buffer.write(b'8.6\\n')\n"
+    # -L is the GPU-presence predicate the family probe now shares with
+    # _has_usable_nvidia_gpu. Without an arm for it this double prints the banner, which
+    # lists no GPU, and the candidate is skipped: the test then passes only on a host that
+    # happens to have a REAL nvidia-smi to fall through to, and fails on a GPU-free runner.
+    "elif sys.argv[1:] == ['-L']:\n"
+    "    sys.stdout.buffer.write(b'GPU 0: NVIDIA GeForce RTX 4090 (UUID: GPU-x)\\n')\n"
     "else:\n"
     "    sys.stdout.buffer.write(b'| NVIDIA-SMI 591.86    CUDA Version: 13.1 |\\n')\n"
     "    sys.stdout.buffer.write('\\u4e02\\u4fdd\\u7559\\u6240\\u6709\\u6743\\u5229\\u3002\\n'.encode('gbk'))\n"
