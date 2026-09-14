@@ -209,6 +209,10 @@ class GgufVariantsResponse(BaseModel):
         False,
         description = "Whether this answer came from resolving repo_id as a local path",
     )
+    dependencies_resolved: bool = Field(
+        False,
+        description = "Whether Hub metadata was available to resolve the variant's required companion files",
+    )
     loadable_variants: Optional[List[str]] = Field(
         None,
         description = (

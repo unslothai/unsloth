@@ -1527,20 +1527,24 @@ async def get_gguf_variants_answer(
             )
 
         def _snapshot_has_companions(by_filename: dict[str, int], companions: tuple) -> bool:
-            return not companions or _filenames_cached_in_snapshot(
-                by_filename,
-                frozenset(file.path for file in companions),
-                sum(max(0, int(file.size or 0)) for file in companions),
+            return all(
+                _filenames_cached_in_snapshot(
+                    by_filename,
+                    frozenset({file.path}),
+                    max(0, int(file.size or 0)),
+                )
+                for file in companions
             )
 
         def _main_and_companions_ready(requirement: _GgufVariantRequirement) -> bool:
             companions = _non_mmproj_companions(requirement)
-            filenames = requirement.main_filenames | frozenset(file.path for file in companions)
-            expected_size = requirement.main_size_bytes + sum(
-                max(0, int(file.size or 0)) for file in companions
-            )
             return any(
-                _filenames_cached_in_snapshot(by_filename, filenames, expected_size)
+                _filenames_cached_in_snapshot(
+                    by_filename,
+                    requirement.main_filenames,
+                    requirement.main_size_bytes,
+                )
+                and _snapshot_has_companions(by_filename, companions)
                 for by_filename, _by_quant in cached_snapshots
             )
 

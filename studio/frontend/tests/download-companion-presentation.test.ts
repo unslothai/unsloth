@@ -6,10 +6,12 @@ import test from "node:test";
 
 import {
   pendingDrafterPresentation,
+  presentationForExpectedBytesUpdate,
   presentationForJobStart,
   presentedProgress,
 } from "../src/features/hub/download-manager/download-presentation.ts";
 import { readSrc } from "./helpers/kit.ts";
+import { carriesOverSeed } from "../src/features/hub/download-manager/adopt-rules.ts";
 
 test("a pending MTP file becomes the download manager presentation", () => {
   assert.deepEqual(
@@ -88,6 +90,24 @@ test("adoption defers stabilization while the backend total is unknown", () => {
   assert.deepEqual(presentationForJobStart(undefined, existing, 0, true), existing);
 });
 
+test("a different backend generation cannot inherit stale presentation", () => {
+  const existing = {
+    label: "MTP companion",
+    filename: "old-mtp.gguf",
+    expectedBytes: 20,
+  };
+  const carryExisting = carriesOverSeed(true, 1, 2);
+  assert.equal(carryExisting, false);
+  assert.equal(
+    presentationForJobStart(undefined, existing, 120, carryExisting),
+    undefined,
+  );
+  assert.match(
+    readSrc("features/hub/download-manager/poll-loop.ts"),
+    /presentationForJobStart\([\s\S]*?carryOverSeed,\s*\)/,
+  );
+});
+
 test("a later plan-total increase cannot move companion progress backwards", () => {
   const presentation = presentationForJobStart(
     {
@@ -107,6 +127,31 @@ test("a later plan-total increase cannot move companion progress backwards", () 
       presentation,
     }),
     { expectedBytes: 20, downloadedBytes: 5, fraction: 0.25 },
+  );
+});
+
+test("poll totals freeze the first authoritative prefix across later growth", () => {
+  const initial = {
+    label: "MTP companion",
+    filename: "mtp-shared-Q8_0.gguf",
+    expectedBytes: 20,
+  };
+  const first = presentationForExpectedBytesUpdate(initial, 0, 120);
+  const grown = presentationForExpectedBytesUpdate(first, 120, 200);
+  assert.deepEqual(first, { ...initial, cachedPlanPrefixBytes: 100 });
+  assert.deepEqual(grown, first);
+  assert.deepEqual(
+    presentedProgress({
+      expectedBytes: 200,
+      downloadedBytes: 105,
+      fraction: 0.525,
+      presentation: grown,
+    }),
+    { expectedBytes: 20, downloadedBytes: 5, fraction: 0.25 },
+  );
+  assert.match(
+    readSrc("features/hub/download-manager/poll-loop.ts"),
+    /applyProgressUpdate[\s\S]*?presentationForExpectedBytesUpdate\(/,
   );
 });
 

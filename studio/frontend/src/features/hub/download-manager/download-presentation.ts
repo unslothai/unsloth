@@ -60,6 +60,21 @@ export function presentationForJobStart(
   );
 }
 
+export function presentationForExpectedBytesUpdate(
+  presentation: DownloadPresentation | undefined,
+  previousPlanExpectedBytes: number,
+  nextPlanExpectedBytes: number,
+): DownloadPresentation | undefined {
+  if (!presentation || presentation.cachedPlanPrefixBytes !== undefined) {
+    return presentation;
+  }
+  const planExpectedBytes =
+    previousPlanExpectedBytes >= presentation.expectedBytes
+      ? previousPlanExpectedBytes
+      : nextPlanExpectedBytes;
+  return stabilizeDownloadPresentation(presentation, planExpectedBytes);
+}
+
 /** Project plan-wide cache counters onto the sole artifact still transferring. */
 export function presentedProgress(
   job: Pick<

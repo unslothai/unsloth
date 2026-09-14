@@ -152,6 +152,42 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
     )
 
 
+def mtp_plan_files(siblings: Sequence) -> tuple[ExpectedFile, ...]:
+    """Every shard of the MTP sidecar selected by the loader-compatible preference rule."""
+    from utils.models.drafters import (
+        is_published_drafter_filename,
+        split_listing_is_complete,
+    )
+
+    selected = preferred_mtp_sibling(siblings)
+    selected_name = _gguf_rfilename(selected) if selected is not None else None
+    if selected_name is None:
+        return ()
+    family = gguf_variant_family(selected_name)
+    nested = "/" in selected_name.replace("\\", "/")
+    files = tuple(
+        sorted(
+            (
+                file
+                for sibling in siblings
+                if (name := _gguf_rfilename(sibling))
+                and gguf_variant_family(name) == family
+                and is_mtp_drafter_path(name)
+                and is_published_drafter_filename(
+                    name.replace("\\", "/").rsplit("/", 1)[-1],
+                    kind = "mtp",
+                    allow_legacy_suffix = nested,
+                )
+                and (file := expected_file_from_sibling(sibling)) is not None
+            ),
+            key = lambda file: file.path,
+        )
+    )
+    if not files or not split_listing_is_complete([file.path for file in files], selected_name):
+        return ()
+    return files
+
+
 def preferred_dflash_sibling(
     siblings: Sequence,
     weight_name: Optional[str] = None,
@@ -234,8 +270,7 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
     all_mmproj_hashes = frozenset(h for h in (sibling_sha256(s) for s in all_mmproj) if h)
     companion = preferred_mmproj_sibling(siblings)
     companion_expected = expected_file_from_sibling(companion) if companion is not None else None
-    mtp_sibling = preferred_mtp_sibling(siblings)
-    mtp_expected = expected_file_from_sibling(mtp_sibling) if mtp_sibling is not None else None
+    mtp_expected = mtp_plan_files(siblings)
     common_companions_expected = (companion_expected,) if companion_expected is not None else ()
 
     for sibling in siblings:
@@ -279,7 +314,7 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
         expected_files = (
             *main_expected,
             *common_companions_expected,
-            *((mtp_expected,) if mtp_expected is not None else ()),
+            *mtp_expected,
             *dflash_expected,
         )
         plans[quant] = plan_from_expected_files(

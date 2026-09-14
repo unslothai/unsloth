@@ -101,7 +101,10 @@ import {
   hasObservedExpectedBytes,
   resolveProgressUpdate,
 } from "./progress-reconcile";
-import { presentationForJobStart } from "./download-presentation";
+import {
+  presentationForExpectedBytesUpdate,
+  presentationForJobStart,
+} from "./download-presentation";
 import {
   clearWatchdog,
   runtimeRegistry,
@@ -185,6 +188,11 @@ export function applyProgressUpdate(
   const resolved = resolveProgressUpdate(job, progressResp);
   patchJob(key, {
     expectedBytes: resolved.expected,
+    presentation: presentationForExpectedBytesUpdate(
+      job.presentation,
+      job.expectedBytes,
+      resolved.expected,
+    ),
     downloadedBytes: resolved.downloadedBytes,
     measuredTransfer: resolved.measuredTransfer,
     completedBytes: resolved.completedBytes,
@@ -648,7 +656,15 @@ export async function startJob(
   runtimeRegistry.runtimes.set(key, rt);
   const epoch = rt.epoch;
 
-  const expected = Math.max(existing?.expectedBytes ?? 0, req.expectedBytes);
+  const carryOverSeed = carriesOverSeed(
+    opts.adopt === true,
+    existing?.serverGeneration,
+    opts.generation,
+  );
+  const expected = Math.max(
+    carryOverSeed ? (existing?.expectedBytes ?? 0) : 0,
+    req.expectedBytes,
+  );
   const hfToken = getHfToken() || null;
   // Carry the stored preference UNRESOLVED so "auto" survives to effectiveTransportMode(); collapsing it to a boolean sends every download over HTTP.
   // Never awaited for an adopted job: suspending here let a concurrent adoptJob replace this runtime, leaving duplicate timers and a leaked listener.
@@ -668,11 +684,6 @@ export async function startJob(
     teardownRuntime(key);
     throw error;
   }
-  const carryOverSeed = carriesOverSeed(
-    opts.adopt === true,
-    existing?.serverGeneration,
-    opts.generation,
-  );
   const seedDownloaded = carryOverSeed ? (existing?.downloadedBytes ?? 0) : 0;
   const seedCompleted = carryOverSeed ? (existing?.completedBytes ?? 0) : 0;
   const seedFraction = carryOverSeed ? (existing?.fraction ?? 0) : 0;
@@ -699,7 +710,7 @@ export async function startJob(
     req.presentation,
     existing?.presentation,
     expected,
-    opts.adopt === true,
+    carryOverSeed,
   );
   if (!opts.adopt && hasActiveRepoPeer(req.kind, req.repoId, key, req.variant)) {
     teardownRuntime(key);

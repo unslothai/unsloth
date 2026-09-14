@@ -31,7 +31,7 @@ import {
   downloadInventoryHintKind,
   scopedDownloadInventoryKind,
 } from "./download-manager-types";
-import { stabilizeDownloadPresentation } from "./download-presentation";
+import { presentationForExpectedBytesUpdate } from "./download-presentation";
 import {
   clearRuntimeTimer,
   pruneSuppressedCompletedInventoryHints as pruneRuntimeSuppressedHints,
@@ -689,15 +689,12 @@ export function setExpectedBytesForJob(
 ): void {
   const job = selectActiveJob(getState(), kind, repoId, variant);
   if (!job || job.state !== "running" || bytes <= job.expectedBytes) return;
-  const presentationPlanBytes =
-    job.presentation && job.expectedBytes < job.presentation.expectedBytes
-      ? bytes
-      : job.expectedBytes;
   patchJob(job.key, {
     expectedBytes: bytes,
-    presentation: stabilizeDownloadPresentation(
+    presentation: presentationForExpectedBytesUpdate(
       job.presentation,
-      presentationPlanBytes,
+      job.expectedBytes,
+      bytes,
     ),
     // Measured against the old, smaller total, so wrong the moment the total grows.
     etaSeconds: 0,

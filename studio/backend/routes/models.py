@@ -4499,6 +4499,7 @@ async def get_gguf_variants(
                 else None
             ),
             resolved_locally = bool(getattr(response, "resolved_locally", False)),
+            dependencies_resolved = bool(getattr(response, "dependencies_resolved", False)),
             loadable_variants = getattr(response, "loadable_variants", None),
             loadable = getattr(response, "loadable", None),
         )

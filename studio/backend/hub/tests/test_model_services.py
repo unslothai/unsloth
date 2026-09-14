@@ -4354,6 +4354,7 @@ def test_gguf_variants_scopes_partial_state_to_requested_cache(monkeypatch, tmp_
         "stale-main",
         "planned-projector",
         "cross-snapshot",
+        "undersized-mtp",
     ],
 )
 def test_cached_flash_next_quant_needs_managed_mtp_before_it_is_downloaded(
@@ -4385,6 +4386,10 @@ def test_cached_flash_next_quant_needs_managed_mtp_before_it_is_downloaded(
         companion.parent.mkdir(parents = True)
         companion.write_bytes(b"d" * 20)
         snapshots.append(companion_snapshot)
+    elif cache_case == "undersized-mtp":
+        companion = snapshot / mtp_name
+        companion.parent.mkdir(parents = True)
+        companion.write_bytes(b"d" * 10)
     local_blobs = {main_name: {"old-main" if cache_case == "stale-main" else "main"}}
     if cache_case in {"alternate-projector", "planned-projector"}:
         siblings.extend(
@@ -4445,7 +4450,7 @@ def test_cached_flash_next_quant_needs_managed_mtp_before_it_is_downloaded(
     assert before.variants[0].pending_drafter_size_bytes == 20
 
     companion = snapshot / mtp_name
-    companion.parent.mkdir()
+    companion.parent.mkdir(exist_ok = True)
     companion.write_bytes(b"d" * 20)
     monkeypatch.setattr(
         gguf_variants.download_registry,
