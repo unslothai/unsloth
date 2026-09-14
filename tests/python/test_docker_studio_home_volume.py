@@ -384,6 +384,33 @@ def test_a_failed_move_changes_nothing(tmp_path):
     assert not any((home / LEGACY).iterdir())
 
 
+def test_a_link_where_the_kept_aside_copies_go_is_refused(tmp_path):
+    """mkdir -p, rm -rf and mv all follow a symlink, so a link left at
+    .unsloth-studio-legacy would send the kept-aside copies wherever it points, the app
+    dir included. Both the link run and --restore stop before writing through it."""
+    app = _app(tmp_path)
+    home = _legacy_home(tmp_path)
+    decoy = tmp_path / "decoy"
+    (decoy / "src").mkdir(parents = True)
+    (decoy / "src" / "app.py").write_text("this image's code")
+    (home / LEGACY).symlink_to(decoy)
+    for args in ((), ("--restore",)):
+        res = _link(app, home, *args)
+        assert res.returncode == 1, res.stderr
+        assert LEGACY in res.stderr and "must be a directory" in res.stderr
+        assert [p.name for p in decoy.iterdir()] == ["src"]
+        assert (decoy / "src" / "app.py").read_text() == "this image's code"
+        assert (home / LEGACY).is_symlink()
+        assert not (home / "src").is_symlink()
+        assert (home / "src" / "studio" / "uncommitted.py").read_text() == "mine"
+        assert (home / "unsloth_studio" / "VERSION").read_text() == "old\n"
+        assert not (home / "node").exists()
+    # with the link out of the way the migration runs as usual
+    os.unlink(home / LEGACY)
+    assert _link(app, home).returncode == 0
+    assert (home / "src").is_symlink()
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason = "root ignores directory modes")
 def test_a_read_only_home_fails_loudly_and_touches_nothing(tmp_path):
     app = _app(tmp_path)

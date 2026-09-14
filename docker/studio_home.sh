@@ -24,10 +24,20 @@ LEGACY_NAME=".unsloth-studio-legacy"
 log() { echo "[unsloth-studio] $*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
+# A symlink, or anything that is not a directory, where the kept-aside copies go:
+# mkdir -p, rm -rf and mv all follow it, so a link planted at that name aims them at
+# whatever it points at, the app dir included. Refuse instead of writing through it.
+check_legacy() {
+    if [ -L "$1" ] || { [ -e "$1" ] && [ ! -d "$1" ]; }; then
+        die "$1 must be a directory, not a link or a file; move or remove it, then start the container again"
+    fi
+}
+
 # `--restore` puts the entries kept aside back in place of the links. Run it under an
 # image that ships Studio inside the home (before the code/data split) to roll back.
 if [ "${1:-}" = "--restore" ]; then
     legacy="$HOME_DIR/$LEGACY_NAME"
+    check_legacy "$legacy"
     shopt -s dotglob nullglob
     if [ ! -d "$legacy" ]; then
         # A volume first used after the split, or one whose legacy copy was deleted, holds
@@ -105,6 +115,7 @@ set_aside() {
         log "removed $path (UNSLOTH_STUDIO_KEEP_LEGACY=0)"
         return
     fi
+    check_legacy "$legacy"
     mkdir -p -m 0700 "$legacy" || die "cannot create $legacy"
     # one generation only: a second upgrade replaces the copy kept by the first
     if [ -e "$kept" ] || [ -L "$kept" ]; then
