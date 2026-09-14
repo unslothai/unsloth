@@ -9,6 +9,9 @@ import { Streamdown, parseMarkdownIntoBlocks } from "streamdown";
 import { stabilizeStreamingMarkdown } from "../src/components/assistant-ui/streaming-markdown.ts";
 import {
   IncrementalMarkdownCache,
+  markdownRenderKey,
+  markdownRenderScope,
+  parseMarkdownIntoRenderableBlocks,
   withoutStreamdownAnimationPlugin,
 } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
@@ -116,7 +119,7 @@ test("incremental blocks match a full Streamdown split at every prefix", () => {
       const render = cache.update(input);
       assert.deepEqual(
         render.parseMarkdownIntoBlocks(render.markdown),
-        parseMarkdownIntoBlocks(remend(input)),
+        parseMarkdownIntoRenderableBlocks(remend(input)),
         `block mismatch at prefix ${length} of ${JSON.stringify(source)}`,
       );
     }
@@ -155,6 +158,207 @@ test("mid-string remend repairs use the sticky full-document fallback", () => {
     const next = cache.update(appended);
     assert.equal(next.markdown, remend(appended));
   }
+});
+
+test("code that only looks like a link definition keeps block-scoped rendering", () => {
+  const reply = [
+    "Here is the shape:",
+    "",
+    "```ts",
+    "interface Grid {",
+    "  [key: string]: number[][];",
+    "}",
+    "const cell = grid[row][col];",
+    "```",
+    "",
+    "That is all.",
+  ].join("\n");
+
+  assert.equal(markdownRenderScope(reply), "blocks");
+  assert.equal(markdownRenderKey(reply), "blocks");
+  assert.deepEqual(
+    parseMarkdownIntoRenderableBlocks(reply),
+    parseMarkdownIntoBlocks(reply),
+  );
+});
+
+test("a css selector in a fence is not a link definition", () => {
+  const reply = [
+    "Compare [one][two] below.",
+    "",
+    "```css",
+    "a[href]:hover { color: red; }",
+    "```",
+  ].join("\n");
+
+  assert.equal(markdownRenderScope(reply), "blocks");
+});
+
+test("a definition-looking line indented into a code block is not a definition", () => {
+  const reply = "Compare [one][two] below.\n\n    [two]: not-a-definition\n";
+
+  assert.equal(markdownRenderScope(reply), "blocks");
+});
+
+test("the document render key ignores definitions inside fences", () => {
+  const real = "See [one][two].\n\n[two]: https://example.com/two\n";
+  const withFence = `${real}\n\`\`\`ts\ntype T = { [k: string]: number };\n\`\`\`\n`;
+
+  assert.equal(markdownRenderScope(withFence), "document");
+  assert.equal(markdownRenderKey(withFence), markdownRenderKey(real));
+});
+
+test("a four-backtick wrapper around a fence example does not swallow the definition", () => {
+  const reply = [
+    "To open a Python block, type this line:",
+    "",
+    "````",
+    "```python",
+    "````",
+    "",
+    "Then see [the guide][d] for the rest.",
+    "",
+    "[d]: https://example.com/guide",
+  ].join("\n");
+
+  assert.equal(markdownRenderScope(reply), "document");
+});
+
+test("a tilde line inside a backtick fence does not close it", () => {
+  const reply = [
+    "Fence markers:",
+    "",
+    "```text",
+    "~~~",
+    "```",
+    "",
+    "See [the guide][d].",
+    "",
+    "[d]: https://example.com/guide",
+  ].join("\n");
+
+  assert.equal(markdownRenderScope(reply), "document");
+});
+
+test("a marker carrying an info string does not close a fence", () => {
+  const reply = [
+    "See [one][two].",
+    "",
+    "```ts",
+    "type T = { [k: string]: number };",
+    "```ts",
+    "const x: T = {};",
+    "```",
+    "",
+    "[two]: https://example.com/two",
+  ].join("\n");
+
+  assert.equal(markdownRenderScope(reply), "document");
+  assert.equal(
+    markdownRenderKey(reply),
+    "document:[two]: https://example.com/two",
+  );
+});
+
+test("a definition inside a block quote or a list is still document-wide", () => {
+  for (const container of [
+    "> [g]: /guide",
+    "- [g]: /guide",
+    "1. [g]: /guide",
+    "> > [g]: /guide",
+  ]) {
+    assert.equal(
+      markdownRenderScope(`See [guide][g].\n\n${container}\n`),
+      "document",
+      container,
+    );
+  }
+});
+
+test("only spaces and tabs may follow a closing fence marker", () => {
+  // U+00A0 after the marker is code content to marked, so the fence is still open and
+  // the marker on the next line is the one that closes it.
+  const reply =
+    "See [guide][g].\n\n```ts\nconst x = 1;\n```\u00a0\n```\n\n[g]: /guide\n";
+
+  assert.equal(markdownRenderScope(reply), "document");
+});
+
+test("a CRLF reply closes its fences", () => {
+  const reply =
+    "See [guide][g].\r\n\r\n```ts\r\nconst x = 1;\r\n```\r\n\r\n[g]: /guide\r\n";
+
+  assert.equal(markdownRenderScope(reply), "document");
+});
+
+test("a fence marker inside a raw HTML block is literal content", () => {
+  for (const html of ["<pre>\n```\n</pre>", "<div>\n```\n</div>"]) {
+    assert.equal(
+      markdownRenderScope(`See [guide][g].\n\n${html}\n\n[g]: /guide\n`),
+      "document",
+      html,
+    );
+  }
+});
+
+test("the block split is shared per reply without leaking between replies", () => {
+  // `blocksOf` keeps one slot at module scope. Two messages streaming at once interleave
+  // their calls through it, so the only thing keeping that honest is that the slot is keyed
+  // on the exact reply text: a miss recomputes, it never answers for the wrong reply.
+  const plain = "Message A.\n\n```ts\nconst a = grid[r][c];\n```\n";
+  const withReference = "Message B, see [guide][g].\n\n```py\nprint('b')\n```\n\n[g]: /guide\n";
+  const other = "Message C.\n\n```js\nconst c = 1;\n```\n";
+
+  for (const reply of [plain, withReference, other, withReference, plain]) {
+    markdownRenderKey(reply);
+  }
+
+  assert.equal(markdownRenderScope(plain), "blocks");
+  assert.equal(markdownRenderScope(other), "blocks");
+  assert.equal(markdownRenderScope(withReference), "document");
+  assert.deepEqual(
+    parseMarkdownIntoRenderableBlocks(plain),
+    parseMarkdownIntoBlocks(plain),
+  );
+  assert.deepEqual(parseMarkdownIntoRenderableBlocks(withReference), [
+    withReference,
+  ]);
+});
+
+test("the shared split is not handed out for the caller to mutate", () => {
+  const reply = "Message A.\n\n```ts\nconst a = 1;\n```\n";
+  const first = parseMarkdownIntoRenderableBlocks(reply);
+  first.push("mutated");
+
+  assert.deepEqual(
+    parseMarkdownIntoRenderableBlocks(reply),
+    parseMarkdownIntoBlocks(reply),
+  );
+});
+
+test("link references and definitions stay in one rendered document", () => {
+  const usage = `Before [reference][math-ref].\n\n${paragraphs(20)}`;
+  const cache = new IncrementalMarkdownCache();
+  cache.update(usage);
+  const generation = cache.renderGeneration;
+
+  const complete = `${usage}[math-ref]: https://example.com/reference`;
+  const render = cache.update(complete);
+  assert.equal(cache.renderGeneration, generation);
+  assert.notEqual(markdownRenderScope(usage), markdownRenderScope(complete));
+  assert.notEqual(
+    markdownRenderKey(`${usage}[math-ref]: `),
+    markdownRenderKey(complete),
+  );
+  assert.equal(render.markdown, remend(complete));
+  assert.deepEqual(render.parseMarkdownIntoBlocks(render.markdown), [
+    remend(complete),
+  ]);
+  assert.deepEqual(parseMarkdownIntoRenderableBlocks(complete), [complete]);
+  assert.equal(
+    (cache as unknown as { fullDocumentMode: boolean }).fullDocumentMode,
+    true,
+  );
 });
 
 test("a transient marker imbalance can recover incremental parsing", () => {

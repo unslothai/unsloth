@@ -18,7 +18,7 @@ from routes import datasets as datasets_route  # noqa: E402
 
 @pytest.fixture(autouse = True)
 def isolated_studio_home(tmp_path, monkeypatch):
-    """Keep fixtures out of the developer's real Studio uploads directory."""
+    """Keep fixtures out of the developer's real Unsloth uploads directory."""
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     return tmp_path
 

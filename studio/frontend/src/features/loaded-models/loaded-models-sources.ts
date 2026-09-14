@@ -126,11 +126,10 @@ export function describeInferenceStatus(
   const active = status.active_model;
   if (active) {
     const audioType = status.audio_type ?? null;
-    // is_audio means TTS here, as mlx_inference documents ("audio_vlm (omni
-    // audio input; is_audio stays False -- it means TTS and redirects in the
-    // chat route)"). So the audio types split three ways, not two: whisper is
-    // the ASR sidecar, audio_vlm is a chat model that happens to listen, and
-    // the rest speak. Only the third kind belongs under Speech.
+    // is_audio means TTS here, as mlx_inference documents ("audio_vlm (omni audio input; is_audio
+    // stays False -- it means TTS and redirects in the chat route)"). So the audio types split
+    // three ways, not two: whisper is the ASR sidecar, audio_vlm is a chat model that happens to
+    // listen, and the rest speak. Only the third kind belongs under Speech.
     const isTts =
       Boolean(status.is_audio) &&
       audioType !== "whisper" &&
@@ -351,13 +350,12 @@ export function withPendingLoads(
   if (pending.size === 0) return rows;
   const extra: LoadedModelEntry[] = [];
   for (const [source, model] of pending) {
-    // A status row wins only when it describes the same load. Images and video
-    // keep the OLD pipeline resident while the replacement downloads, freeing it
-    // only at the commit, so a source-only test hid the incoming model for the
-    // whole pull: the card showed the model being replaced and no sign of the
-    // one arriving. A row that is itself loading always wins, which is what
-    // keeps chat and dictation from announcing the same load twice when the
-    // backend spells its name differently.
+    // A status row wins only when it describes the same load. Images and video keep the OLD
+    // pipeline resident while the replacement downloads, freeing it only at the commit, so a
+    // source-only test hid the incoming model for the whole pull: the card showed the model being
+    // replaced and no sign of the one arriving. A row that is itself loading always wins, which is
+    // what keeps chat and dictation from announcing the same load twice when the backend spells its
+    // name differently.
     if (
       rows.some(
         (row) =>

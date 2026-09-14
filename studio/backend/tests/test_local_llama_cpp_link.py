@@ -8,6 +8,10 @@ user's own checkout, Unsloth must treat it as externally managed:
   - the in-app updater must not offer or apply a prebuilt over the link
   - orphan cleanup must not kill a llama-server the user launched from that tree
 
+A link into the image's own code tree ($UNSLOTH_STUDIO_APP) is not one of these: the
+Docker image makes it over its own install, and treating it as a checkout disabled the
+update the image ships the runtime for.
+
 These exercise real link behavior rather than grepping the scripts.
 """
 
@@ -18,7 +22,9 @@ from pathlib import Path
 
 import pytest
 
+from utils import llama_cpp_path_settings as path_settings
 from utils import llama_cpp_update as u
+from utils import whisper_cpp_update as w
 from core.inference import llama_cpp as llama_cpp_module
 from core.inference.llama_cpp import LlamaCppBackend
 
@@ -82,6 +88,56 @@ def test_active_install_is_local_link(tmp_path: Path) -> None:
     assert u._active_install_is_local_link(str(plain / _server_subpath())) is False
 
 
+def test_a_link_into_the_studio_app_tree_is_not_a_local_link(tmp_path: Path, monkeypatch) -> None:
+    """The Docker image keeps Studio's code in $UNSLOTH_STUDIO_APP and links each entry
+    of it into the Studio home, the directory users mount a volume on. whisper.cpp is
+    discovered through the home (there is no UNSLOTH_WHISPER_CPP_PATH pin to shortcut
+    it), so the image's own link would otherwise read as a user checkout and disable the
+    in-app update. A link into the image's code is Unsloth's own install, not external."""
+    app = tmp_path / "app"
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("UNSLOTH_STUDIO_APP", str(app))
+
+    link = home / "llama.cpp"
+    _make_link(link, app / "llama.cpp")
+    assert u._active_install_is_local_link(str(link / _server_subpath())) is False
+
+    whisper_link = home / "whisper.cpp"
+    _make_link(whisper_link, app / "whisper.cpp")
+    whisper_binary = str(whisper_link / "build" / "bin" / "whisper-server")
+    assert w._active_install_is_local_link(whisper_binary) is False
+
+    # a link out of the image's code is still the user's own checkout
+    outside = home / "outside.cpp" / "llama.cpp"
+    outside.parent.mkdir()
+    _make_link(outside, tmp_path / "my-checkout")
+    assert u._active_install_is_local_link(str(outside / _server_subpath())) is True
+
+
+def test_without_the_studio_app_tree_every_link_stays_external(tmp_path: Path, monkeypatch) -> None:
+    """Outside the Docker image nothing sets the variable, so the contract is unchanged.
+    An empty value counts as unset: only a real tree may exempt a link."""
+    app = tmp_path / "app"
+    link = tmp_path / "home" / "llama.cpp"
+    link.parent.mkdir()
+    _make_link(link, app / "llama.cpp")
+    binary = str(link / _server_subpath())
+    monkeypatch.delenv("UNSLOTH_STUDIO_APP", raising = False)
+    assert u._active_install_is_local_link(binary) is True
+    monkeypatch.setenv("UNSLOTH_STUDIO_APP", "   ")
+    assert u._active_install_is_local_link(binary) is True
+
+
+def test_a_sibling_of_the_studio_app_tree_is_not_inside_it(tmp_path: Path, monkeypatch) -> None:
+    """$UNSLOTH_STUDIO_APP=/opt/unsloth-studio-app must not claim /opt/unsloth-studio-appx."""
+    monkeypatch.setenv("UNSLOTH_STUDIO_APP", str(tmp_path / "app"))
+    link = tmp_path / "home" / "llama.cpp"
+    link.parent.mkdir()
+    _make_link(link, tmp_path / "appx" / "llama.cpp")
+    assert u._active_install_is_local_link(str(link / _server_subpath())) is True
+
+
 def test_get_update_status_reports_local_link(tmp_path: Path, monkeypatch) -> None:
     link = tmp_path / "llama.cpp"
     _make_link(link, tmp_path / "tgt")
@@ -138,6 +194,26 @@ def _run_orphan_scan(
     )
     monkeypatch.setattr(LlamaCppBackend, "_reap_recorded_pid", staticmethod(lambda: 0))
 
+    # The fake is an orphan by construction, so say so instead of letting the host
+    # decide. _kill_orphaned_servers skips any candidate whose parent is alive, and
+    # _pid_parent_is_alive answers that by looking the PID up for real:
+    # psutil.Process(pid).ppid() then psutil.pid_exists(ppid). Nothing here stubs
+    # psutil.Process -- only process_iter -- so the lookup hits the actual machine.
+    #
+    # The PID is os.getpid() + 888, invented on the assumption that nothing owns it.
+    # On a quiet runner nothing does, NoSuchProcess comes back, the candidate is
+    # treated as an orphan and killed. On a busier one that PID is a real process
+    # with a real live parent, the candidate is skipped, and the test reports
+    # `assert 0 == 1` having exercised the ownership logic correctly. That is what
+    # it did on a staging runner while passing on the org queue for the same commit.
+    #
+    # These two tests are about OWNERSHIP -- link tree spared, real root reaped --
+    # and parent liveness is incidental to both, so it is pinned rather than left to
+    # whatever else happens to be running. test_llama_cpp_wait_for_vram_settle.py
+    # stubs this at every one of its call sites for the same reason; this harness
+    # stubbed the sibling _reap_recorded_pid and missed this one.
+    monkeypatch.setattr(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False))
+
     if scan == "procfs":
         # Linux reads /proc directly. Point it at a fixture tree and intercept the
         # signal, since the fixture's pid is not a real process.
@@ -189,3 +265,26 @@ def test_orphan_cleanup_kills_under_real_root(tmp_path: Path, monkeypatch, scan)
     killed = _run_orphan_scan(monkeypatch, studio_root, fake, scan, tmp_path)
     assert killed == 1
     assert fake.killed is True
+
+
+@pytest.mark.parametrize("scan", ["psutil", "procfs"])
+def test_orphan_cleanup_spares_studio_selected_custom_tree(
+    tmp_path: Path, monkeypatch, scan
+) -> None:
+    studio_root = tmp_path / "studio-home"
+    studio_root.mkdir()
+    custom_root = tmp_path / "user-owned-llama.cpp"
+    binary = custom_root / _server_subpath()
+    binary.parent.mkdir(parents = True)
+    binary.write_text("x")
+    monkeypatch.setattr(
+        path_settings,
+        "get_stored_custom_llama_cpp_path",
+        lambda: custom_root.resolve(),
+    )
+
+    fake = _FakeProc(os.getpid() + 999, str(binary.resolve()))
+    killed = _run_orphan_scan(monkeypatch, studio_root, fake, scan, tmp_path)
+
+    assert killed == 0
+    assert fake.killed is False

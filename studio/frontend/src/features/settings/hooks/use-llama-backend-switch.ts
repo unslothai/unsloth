@@ -218,6 +218,7 @@ export function useLlamaBackendSwitch() {
     setSelected,
     running: Boolean(running),
     apply,
+    refresh,
     loadError,
   };
 }

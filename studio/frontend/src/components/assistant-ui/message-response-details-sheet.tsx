@@ -20,6 +20,7 @@ import {
   formatMcpToolName,
   mcpServerFromProvenance,
 } from "@/features/chat";
+import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { cn } from "@/lib/utils";
 import { useMessage, useMessageTiming } from "@assistant-ui/react";
 import { HelpCircleIcon } from "@hugeicons/core-free-icons";
@@ -105,6 +106,7 @@ const TOOL_CALL_LABELS: Record<string, string> = {
   code_execution: "Code",
   python: "Python",
   terminal: "Terminal",
+  edit_file: "Edit",
   image_generation: "Images",
   search_knowledge_base: "Docs",
   render_html: "Canvas",
@@ -121,7 +123,8 @@ function toolCategoryFromCall(toolName: string): string | null {
   if (
     normalized === "code_execution" ||
     normalized === "python" ||
-    normalized === "terminal"
+    normalized === "terminal" ||
+    normalized === "edit_file"
   ) {
     return "code";
   }
@@ -311,6 +314,11 @@ export const MessageResponseModelBadge: FC<{ className?: string }> = ({
 
   return (
     <span
+      // Out of find-in-page's reach: this is a hover affordance, transparent and unclickable until
+      // the message is hovered, so a match here would be counted and walked to under a highlight
+      // nobody can see. The index leaves opacity alone otherwise, so a message still fading in
+      // stays findable.
+      {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       className={cn(
         "aui-response-model-badge pointer-events-none relative inline-flex min-h-5 max-w-full cursor-text select-text items-center text-muted-foreground/80 text-xs font-medium leading-5 opacity-0 transition-opacity duration-150 after:absolute after:inset-x-0 after:top-full after:h-1 after:content-[''] hover:opacity-100 group-hover/assistant-message:pointer-events-auto group-hover/assistant-message:opacity-100 group-focus-within/assistant-message:pointer-events-auto group-focus-within/assistant-message:opacity-100",
         className,

@@ -41,7 +41,6 @@ def download_and_combine_aime_datasets(data_dir: str = "./data/aime") -> str:
             response = requests.get(url)
             response.raise_for_status()
 
-            # Tag each line with its source dataset + global ID
             for line_num, line in enumerate(response.text.strip().split("\n")):
                 if line.strip():
                     try:
@@ -100,7 +99,6 @@ def load_aime_dataset(data_dir: str = "./data/aime") -> List[Dict[str, Any]]:
                         "answer": str(data["answer"]),  # Ensure answer is string
                         "solution": data.get("solution", ""),
                         "url": data.get("url", ""),
-                        # Format as chat messages for the model
                         "prompt": [
                             {
                                 "role": "system",
@@ -134,7 +132,8 @@ def load_aime_dataset(data_dir: str = "./data/aime") -> List[Dict[str, Any]]:
 def extract_aime_answer(response: str) -> str:
     """Extract numerical answer from AIME response"""
 
-    # AIME answers are integers 0-999; match "The answer is 123" etc.
+    # AIME answers are integers 0-999;
+    # match "The answer is 123" etc.
     patterns = [
         r"(?:the )?(?:final )?answer is (\d{1,3})",
         r"(?:therefore|thus|so),?\s*(?:the )?(?:final )?answer is (\d{1,3})",
@@ -157,7 +156,6 @@ def extract_aime_answer(response: str) -> str:
             except ValueError:
                 continue
 
-    # Fallback: any 1-3 digit number, scanning from the end
     numbers = re.findall(r"\b(\d{1,3})\b", response)
     if numbers:
         for num_str in reversed(numbers):
@@ -234,7 +232,6 @@ def evaluate_model_aime(
     print(f"   Top-p: {top_p}")
     print(f"   Seed: {seed}")
 
-    # Temporarily suppress verbose vllm/ray logging
     original_levels = {}
     loggers_to_suppress = [
         "vllm",

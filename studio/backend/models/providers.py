@@ -10,9 +10,6 @@ from pydantic import BaseModel, Field
 MAX_JSON_SAFE_INTEGER = 9_007_199_254_740_991
 
 
-# ── Registry (static provider info) ───────────────────────────────
-
-
 class ProviderRegistryEntry(BaseModel):
     """A supported provider type with its default configuration."""
 
@@ -35,7 +32,7 @@ class ProviderRegistryEntry(BaseModel):
     )
     supports_studio_tools: bool = Field(
         False,
-        description = "Whether Studio runs its own tool loop (search/code/MCP/RAG) against this provider",
+        description = "Whether Unsloth runs its own tool loop (search/code/MCP/RAG) against this provider",
     )
     hidden: bool = Field(
         False,
@@ -49,9 +46,6 @@ class ProviderRegistryEntry(BaseModel):
         "remote",
         description = "remote = fetch /models; curated = huge catalogs — UI uses defaults + manual IDs only",
     )
-
-
-# ── Provider config CRUD ──────────────────────────────────────────
 
 
 class ProviderCreate(BaseModel):
@@ -153,9 +147,6 @@ class ProviderResponse(BaseModel):
     updated_at: str = Field(..., description = "ISO 8601 last-update timestamp")
 
 
-# ── Model listing ─────────────────────────────────────────────────
-
-
 class ProviderModelInfo(BaseModel):
     """A model available from an external provider."""
 
@@ -180,9 +171,6 @@ class ProviderModelsRequest(BaseModel):
     base_url: Optional[str] = Field(
         None, description = "Custom base URL (overrides registry default)"
     )
-
-
-# ── Connection testing ────────────────────────────────────────────
 
 
 class ProviderTestRequest(BaseModel):

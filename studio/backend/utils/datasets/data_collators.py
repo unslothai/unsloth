@@ -46,7 +46,7 @@ class DeepSeekOCRDataCollator:
     instruction fine-tuning.
     """
 
-    processor: Any  # Qwen2VLProcessor or similar
+    processor: Any
     max_length: int = 2048
     ignore_index: int = -100
 
@@ -76,7 +76,7 @@ class DeepSeekOCRDataCollator:
                     for item in content:
                         if isinstance(item, dict) and item.get("type") == "image":
                             img = item.get("image")
-                            if img is not None and hasattr(img, "size"):  # PIL Image
+                            if img is not None and hasattr(img, "size"):
                                 all_images.append(img)
 
         try:
@@ -115,7 +115,7 @@ class VLMDataCollator:
     processor: Any
     max_length: int = 2048
     ignore_index: int = -100
-    mask_input_tokens: bool = True  # Mask user tokens in labels
+    mask_input_tokens: bool = True
 
     def __call__(self, batch: List[dict]) -> dict:
         """Collate a batch of VLM samples."""

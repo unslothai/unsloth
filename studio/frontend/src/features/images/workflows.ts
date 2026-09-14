@@ -26,8 +26,7 @@ export type WorkflowId =
 export const WORKFLOW_TABS: Array<{
   id: WorkflowId;
   label: string;
-  /** Page heading, when the sidebar's short label would read oddly on its own.
-   *  Falls back to `label`. */
+  /** Page heading, when the sidebar's short label would read oddly on its own. Falls back to `label`. */
   heading?: string;
   requires: string | null;
   icon: IconSvgElement;

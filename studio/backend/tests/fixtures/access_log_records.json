@@ -1,0 +1,103 @@
+{
+  "_comment": [
+    "One definition of 'a successful access record', consumed by both languages.",
+    "",
+    "The desktop shell decides whether to mirror a backend stdout line into tauri.log,",
+    "and the backend decides whether to emit it at all. Those are two implementations of",
+    "the same idea in two languages and two processes, so they can drift; the CRLF",
+    "handling in the progress-frame collapsers already did drift once.",
+    "",
+    "Python reads this from tests/test_log_rule_parity.py. Rust reads it from the",
+    "shared_access_log_fixture_tests module in src-tauri/src/process.rs. A change to the",
+    "rule on one side turns the other side red.",
+    "",
+    "keep=false means the line is a successful access record that tauri.log may drop",
+    "because it is already on the phase log and the backend session log."
+  ],
+  "cases": [
+    {
+      "name": "plain 200 access record",
+      "line": "{\"event\": \"request_completed\", \"method\": \"GET\", \"path\": \"/api/health\", \"status_code\": 200}",
+      "keep": false,
+      "why": "the duplicated line this whole mechanism exists to drop"
+    },
+    {
+      "name": "299 is still success",
+      "line": "{\"event\": \"request_completed\", \"method\": \"GET\", \"path\": \"/api/health\", \"status_code\": 299}",
+      "keep": false,
+      "why": "upper edge of the 2xx range"
+    },
+    {
+      "name": "199 is not success",
+      "line": "{\"event\": \"request_completed\", \"method\": \"GET\", \"path\": \"/api/health\", \"status_code\": 199}",
+      "keep": true,
+      "why": "lower edge; anything outside 2xx keeps its line"
+    },
+    {
+      "name": "300 is not success",
+      "line": "{\"event\": \"request_completed\", \"method\": \"GET\", \"path\": \"/api/health\", \"status_code\": 300}",
+      "keep": true,
+      "why": "a redirect is not a success and must stay visible"
+    },
+    {
+      "name": "404 failure",
+      "line": "{\"event\": \"request_completed\", \"method\": \"GET\", \"path\": \"/api/nope\", \"status_code\": 404}",
+      "keep": true,
+      "why": "the line a support engineer is looking for"
+    },
+    {
+      "name": "500 failure",
+      "line": "{\"event\": \"request_completed\", \"method\": \"POST\", \"path\": \"/api/inference/load\", \"status_code\": 500}",
+      "keep": true,
+      "why": "server error"
+    },
+    {
+      "name": "request_completed with no status_code",
+      "line": "{\"event\": \"request_completed\", \"method\": \"GET\", \"path\": \"/api/health\"}",
+      "keep": true,
+      "why": "a record we cannot vouch for is kept rather than guessed at"
+    },
+    {
+      "name": "status_code is a string",
+      "line": "{\"event\": \"request_completed\", \"method\": \"GET\", \"path\": \"/api/health\", \"status_code\": \"200\"}",
+      "keep": true,
+      "why": "not an integer, so the success test does not apply"
+    },
+    {
+      "name": "a different structured event",
+      "line": "{\"event\": \"request_failed\", \"method\": \"GET\", \"path\": \"/api/health\", \"status_code\": 200}",
+      "keep": true,
+      "why": "only request_completed is an access record"
+    },
+    {
+      "name": "hardware line, not JSON",
+      "line": "Hardware detected: NVIDIA RTX 4090",
+      "keep": true,
+      "why": "plain text always survives"
+    },
+    {
+      "name": "malformed JSON",
+      "line": "{\"event\": \"request_completed\", \"status_code\": 200",
+      "keep": true,
+      "why": "unparseable, so it is not recognised as an access record"
+    },
+    {
+      "name": "leading whitespace before the object",
+      "line": "   {\"event\": \"request_completed\", \"method\": \"GET\", \"path\": \"/api/health\", \"status_code\": 200}",
+      "keep": false,
+      "why": "both sides trim the start before parsing"
+    },
+    {
+      "name": "empty line",
+      "line": "",
+      "keep": true,
+      "why": "nothing to recognise"
+    },
+    {
+      "name": "traceback frame",
+      "line": "  File \"run.py\", line 1, in <module>",
+      "keep": true,
+      "why": "tracebacks must never be filtered"
+    }
+  ]
+}

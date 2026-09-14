@@ -12,6 +12,8 @@ mod install_watchdog;
 #[cfg(target_os = "linux")]
 mod linux_webkit;
 mod loopback_http;
+#[cfg(target_os = "macos")]
+mod macos_tray;
 mod native_backend_lease;
 mod native_clipboard;
 mod native_file_dialogs;
@@ -20,6 +22,7 @@ mod native_path_policy;
 mod preflight;
 mod process;
 mod process_identity;
+mod staged_update;
 mod update;
 mod webview_permissions;
 mod windows_job;
@@ -36,7 +39,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
-use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::menu::{MenuBuilder, MenuItem, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
@@ -1680,6 +1683,26 @@ fn setup_terminate_interception(app: &tauri::App) {
     }
 }
 
+struct TrayServerToggle(MenuItem<tauri::Wry>);
+
+fn tray_toggle_label(status: &str) -> (&'static str, bool) {
+    match status {
+        "running" => ("Stop Server", true),
+        "stopped" | "error" => ("Start Server", true),
+        "starting" => ("Starting\u{2026}", false),
+        _ => ("Start Server", false),
+    }
+}
+
+#[tauri::command]
+fn set_tray_server_status(app: tauri::AppHandle, status: String) {
+    if let Some(toggle) = app.try_state::<TrayServerToggle>() {
+        let (text, enabled) = tray_toggle_label(&status);
+        let _ = toggle.0.set_text(text);
+        let _ = toggle.0.set_enabled(enabled);
+    }
+}
+
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let open = MenuItemBuilder::with_id("open", "Open Unsloth").build(app)?;
     let toggle = MenuItemBuilder::with_id("toggle", "Start/Stop Server").build(app)?;
@@ -1687,11 +1710,20 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let menu = MenuBuilder::new(app)
         .items(&[&open, &toggle, &quit])
         .build()?;
+    app.manage(TrayServerToggle(toggle));
 
-    TrayIconBuilder::new()
+    // macOS renders tray images at 18 points. Embed the 36 px scale for crisp Retina output;
+    // template mode lets AppKit choose the correct monochrome color for the current menu bar.
+    #[cfg(target_os = "macos")]
+    let tray_icon = tauri::include_image!("./icons/tray-icon@2x.png");
+    #[cfg(not(target_os = "macos"))]
+    let tray_icon = app.default_window_icon().unwrap().clone();
+
+    let tray = TrayIconBuilder::new()
         .menu(&menu)
         .tooltip("Unsloth")
-        .icon(app.default_window_icon().unwrap().clone())
+        .icon(tray_icon)
+        .icon_as_template(cfg!(target_os = "macos"))
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "open" => show_main_window(app),
             "toggle" => {
@@ -1711,6 +1743,14 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .build(app)?;
+
+    #[cfg(target_os = "macos")]
+    if let Err(error) = macos_tray::install_appearance_observer(&tray) {
+        // The template icon remains visible and adaptive if native observation is unavailable.
+        warn!("Could not install the macOS tray appearance observer: {error}");
+    }
+    #[cfg(not(target_os = "macos"))]
+    drop(tray);
 
     Ok(())
 }
@@ -1803,11 +1843,11 @@ fn main() {
     // process drives X from several threads. See x11_threads for the crash.
     x11_threads::init_x11_threads();
 
-    // WebKitGTK's hardware dmabuf path can violate Wayland explicit-sync
-    // protocol on current NVIDIA/Mesa stacks. Select a compatible fallback
-    // before any GTK/WebKit object can be initialized.
+    // WebKitGTK's hardware dmabuf path breaks on the proprietary NVIDIA driver on
+    // either display server, and on an AppImage that cannot load GLES. Select a
+    // compatible fallback before any GTK/WebKit object can be initialized.
     #[cfg(target_os = "linux")]
-    let webkit_rendering_workaround = linux_webkit::configure_wayland_renderer();
+    let webkit_rendering_workaround = linux_webkit::configure_renderer();
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
@@ -1817,8 +1857,13 @@ fn main() {
     info!("Unsloth desktop app starting");
 
     #[cfg(target_os = "linux")]
-    if let Some(variable) = webkit_rendering_workaround {
-        info!("Wayland detected; set {variable}=1 for WebKitGTK compatibility");
+    if let Some((variables, reason)) = webkit_rendering_workaround {
+        let applied = variables
+            .iter()
+            .map(|variable| format!("{variable}=1"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        info!("{reason}; set {applied} for WebKitGTK compatibility");
     }
     windows_job::initialize();
 
@@ -1854,6 +1899,7 @@ fn main() {
         .manage(new_backend_state())
         .manage(process::new_shutdown_flag())
         .manage(update::new_update_state())
+        .manage(desktop_updater::new_desktop_update_state())
         .manage(new_close_to_tray_state())
         .manage(native_file_dialogs::ChatImportRegistry::default())
         .invoke_handler(tauri::generate_handler![
@@ -1881,6 +1927,9 @@ fn main() {
             desktop_update_policy::check_desktop_manual_update,
             desktop_update_policy::desktop_update_policy,
             desktop_updater::check_desktop_update,
+            desktop_updater::download_desktop_update,
+            desktop_updater::install_desktop_update,
+            desktop_updater::desktop_update_bundle_status,
             desktop_updater::desktop_update_cleanup_armed,
             desktop_updater::resume_desktop_update_cleanup,
             diagnostics::collect_support_diagnostics,
@@ -1888,6 +1937,7 @@ fn main() {
             native_clipboard::read_native_clipboard_png,
             native_file_dialogs::save_native_file,
             native_file_dialogs::save_native_file_from_url,
+            native_file_dialogs::download_logs_to_downloads,
             native_file_dialogs::pick_native_chat_import,
             native_file_dialogs::read_native_chat_import_chunk,
             native_file_dialogs::pick_native_training_config,
@@ -1913,6 +1963,7 @@ fn main() {
             set_close_to_tray,
             get_launch_at_login,
             set_launch_at_login,
+            set_tray_server_status,
         ])
         .setup(|app| {
             // Resolve here, before any window path can ask: this consumes the relaunch marker.
@@ -1926,6 +1977,12 @@ fn main() {
 
             initialize_close_to_tray(app.handle());
             reconcile_autostart_entry(app.handle());
+            if let Err(error) = process::with_studio_runtime_launch_guard(|| {
+                staged_update::reconcile_legacy_at_launch(&diagnostics::studio_dir());
+                Ok(())
+            }) {
+                warn!("Legacy staged update cleanup deferred: {error}");
+            }
             // Recover legacy desktop installs before the first preflight.
             if let Err(error) = desktop_backend_owner::ensure_installed_studio_root_id() {
                 warn!("Desktop backend ownership id unavailable: {error}");
@@ -1990,6 +2047,9 @@ fn main() {
                 // roughly 18s on Windows, where those first two graceful waits are
                 // `#[cfg(unix)]` and go straight to the force kill, but the backend spends
                 // its liveness, shutdown and CTRL_BREAK budgets in series instead.
+                #[cfg(target_os = "macos")]
+                macos_tray::remove_appearance_observer();
+
                 cleanup_child_processes(app);
             }
             _ => {}
@@ -2746,5 +2806,51 @@ mod tests {
         apply_renderer_activity(&state, "", false);
         apply_renderer_activity(&state, "Downloads", true);
         assert_eq!(renderer_activity(&state), (false, true));
+    }
+
+    /// The three states the tray-toggle-server listener in use-tauri-backend.ts acts
+    /// on, plus the one the tray reports progress for.
+    #[test]
+    fn the_tray_toggle_names_the_action_a_click_would_take() {
+        assert_eq!(tray_toggle_label("running"), ("Stop Server", true));
+        assert_eq!(tray_toggle_label("stopped"), ("Start Server", true));
+        assert_eq!(tray_toggle_label("error"), ("Start Server", true));
+        assert_eq!(tray_toggle_label("starting"), ("Starting\u{2026}", false));
+    }
+
+    /// Every remaining BackendStatus: the listener acts on none of them, so the item is
+    /// greyed rather than offering a click that would be a silent no-op. Keep this list in
+    /// step with the union in use-tauri-backend.ts.
+    #[test]
+    fn a_status_the_tray_cannot_act_on_greys_the_toggle() {
+        for status in [
+            "checking",
+            "not-installed",
+            "installing",
+            "install-error",
+            "needs-elevation",
+            "repairing",
+            "repair-error",
+        ] {
+            assert_eq!(
+                tray_toggle_label(status),
+                ("Start Server", false),
+                "{status} offered a click the renderer would drop"
+            );
+        }
+    }
+
+    /// The status is whatever string the webview sent, so a mismatched bundle can pass
+    /// something that is not a status at all. Match the whole string: a prefix or a case
+    /// fold would let "run" read as an offer to stop a server that is not running.
+    #[test]
+    fn an_unrecognised_status_greys_the_toggle_rather_than_guessing() {
+        for status in ["", " ", "Running", "RUNNING", "running ", "run", "{}"] {
+            assert_eq!(
+                tray_toggle_label(status),
+                ("Start Server", false),
+                "{status:?} was read as a known status"
+            );
+        }
     }
 }
