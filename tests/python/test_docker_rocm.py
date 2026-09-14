@@ -311,6 +311,7 @@ class TestBuildShRocm:
         assert "-r{0}', github.run_id" in body, "override sha tags need the run id suffix"
         assert "git ls-remote https://github.com/unslothai/unsloth-zoo" in body
         assert "needs.prepare.outputs.stable == 'true'" in body
+        assert "org.opencontainers.image.licenses=Apache-2.0 AND AGPL-3.0-only" in body
 
 
 # ── entrypoint-rocm.sh ───────────────────────────────────────────────────────

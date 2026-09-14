@@ -221,6 +221,10 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # The action copies the repo's Apache-2.0; the image ships AGPL-3.0 files too
+          # (docker/smoke_test_rocm.py), as docker-publish.yml records for its images.
+          labels: |
+            org.opencontainers.image.licenses=Apache-2.0 AND AGPL-3.0-only
 
       - name: Build and push (by digest)
         id: build
