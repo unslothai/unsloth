@@ -700,14 +700,23 @@ def _write_metadata_payload(install_dir: Path, payload: dict) -> None:
             os.fsync(handle.fileno())
         # NamedTemporaryFile is 0600 and os.replace keeps it, so a refresh left a shared marker
         # unreadable to other users.
+        replacing_an_existing_marker = original_mode is not None
         if original_mode is None:
             mask = os.umask(0)
             os.umask(mask)
             original_mode = 0o666 & ~mask
-        # Not swallowed, unlike an earlier revision: swapping anyway publishes
-        # NamedTemporaryFile's 0600 over a marker other users read, which is the very failure
-        # the mode restore exists to prevent. Core and llama abandon the replacement here too.
-        os.chmod(tmp_path, original_mode)
+        try:
+            os.chmod(tmp_path, original_mode)
+        except OSError:
+            # Only the REFRESH abandons here. Swapping a 0600 temp file over a marker other
+            # users already read is the exact failure the mode restore exists to prevent, so a
+            # refresh that cannot restore the mode leaves the good marker alone. A FIRST write
+            # has no mode to preserve and no other readers yet, and raising there would abort a
+            # whole Node install over a cosmetic chmod -- on Windows, where a scanner holding
+            # the freshly written temp file is the same sharing violation
+            # atomic_replace_from_tempfile already retries for.
+            if replacing_an_existing_marker:
+                raise
         if original is not None:
             # Owner AND group when the caller can (root refreshing another user's install), group
             # alone when it cannot. chown is all-or-nothing, so a non-root member of a shared

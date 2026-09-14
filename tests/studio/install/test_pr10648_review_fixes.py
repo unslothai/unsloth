@@ -470,3 +470,51 @@ def test_the_pin_reaches_the_expectation_check(tmp_path, monkeypatch):
         route = route,
     )
     assert seen == [True], f"the pin never reached the expectation check: {seen}"
+
+
+# A refused mode restore must not abort a FIRST Node marker write
+# The restore exists so a REFRESH does not publish NamedTemporaryFile's 0600 over a marker other
+# users already read. A first write has neither a mode to preserve nor another reader, and
+# raising there aborts a whole Node install over a cosmetic call -- on Windows, where a scanner
+# holding the freshly written temp file is the same sharing violation
+# atomic_replace_from_tempfile already retries for.
+def _refuse_mode_change(monkeypatch, module):
+    def refuse(path, mode):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(module.os, "chmod", refuse)
+
+
+def test_a_first_node_marker_survives_a_refused_mode_restore(tmp_path, monkeypatch):
+    install_dir = tmp_path / "node"
+    install_dir.mkdir()
+    _refuse_mode_change(monkeypatch, NODE)
+    NODE.write_metadata(install_dir, version = "24.17.0", asset = "a.tar.gz", sha256 = "b" * 64)
+    assert NODE.load_metadata(install_dir)["version"] == "24.17.0"
+    assert not list(install_dir.glob("*.tmp-*")), "a temp marker was left behind"
+
+
+def test_a_node_marker_refresh_abandons_on_a_refused_mode_restore(tmp_path, monkeypatch):
+    """The refresh is where the harm is: the existing marker must be left exactly as it was,
+    rather than replaced by one only its writer can read."""
+    install_dir = tmp_path / "node"
+    install_dir.mkdir()
+    NODE.write_metadata(install_dir, version = "24.17.0", asset = "a.tar.gz", sha256 = "b" * 64)
+    marker = NODE.metadata_path(install_dir)
+    before = marker.read_bytes()
+
+    _refuse_mode_change(monkeypatch, NODE)
+    with pytest.raises(OSError):
+        NODE.write_metadata(install_dir, version = "25.0.0", asset = "c.tar.gz", sha256 = "d" * 64)
+    assert marker.read_bytes() == before, "the good marker was replaced anyway"
+    assert not list(install_dir.glob("*.tmp-*")), "a temp marker was left behind"
+
+
+def test_the_runtime_record_refresh_still_never_raises(tmp_path, monkeypatch):
+    """record_runtime_verification is best effort by contract: an unrefreshable marker costs
+    the two spawns again, and must never take the caller down with it."""
+    host = _node_host()
+    _node_tree(tmp_path, host)
+    NODE.write_metadata(tmp_path, version = "24.17.0", asset = "a", sha256 = "b" * 64)
+    _refuse_mode_change(monkeypatch, NODE)
+    NODE.record_runtime_verification(tmp_path, host, version = "24.17.0", npm_major = 11)
