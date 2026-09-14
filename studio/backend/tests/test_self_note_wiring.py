@@ -131,7 +131,6 @@ class _FakeModel:
 
     def model_dump_json(self):
         import json
-
         return json.dumps(self._as_dict())
 
 

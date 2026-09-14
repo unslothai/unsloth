@@ -3880,9 +3880,7 @@ def test_the_note_never_merges_with_the_users_quoted_instructions():
         self_note = "Approach A fails.",
     )
     # The user's bullet must not pick up the note's text, and vice versa.
-    bullet_line = next(
-        line for line in rendered.splitlines() if line.startswith("- ")
-    )
+    bullet_line = next(line for line in rendered.splitlines() if line.startswith("- "))
     assert "Approach A fails." not in bullet_line
 
 
@@ -4074,7 +4072,11 @@ def _captured_note(monkeypatch, messages, **fit_kwargs):
     captured: dict[str, str] = {}
     original = checkpoint.render_checkpoint
 
-    def _spy(items, searchable = True, self_note = ""):
+    def _spy(
+        items,
+        searchable = True,
+        self_note = "",
+    ):
         captured["note"] = self_note
         return original(items, searchable = searchable, self_note = self_note)
 
@@ -4159,9 +4161,7 @@ def test_a_users_literal_self_note_tag_does_not_eat_the_rest_of_the_block():
     # The exact reproduction from the review. Before the fix these returned
     # ['benign'] and ['use tabs not spaces', 'see'].
     assert checkpoint._block_items(
-        render_checkpoint(
-            ["benign <self_note> opener", "SECOND REAL USER INSTRUCTION", "THIRD"]
-        )
+        render_checkpoint(["benign <self_note> opener", "SECOND REAL USER INSTRUCTION", "THIRD"])
     ) == ["benign <self_note> opener", "SECOND REAL USER INSTRUCTION", "THIRD"]
 
     assert checkpoint._block_items(

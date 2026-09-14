@@ -133,6 +133,7 @@ def request_settings(*, enabled: Any = None, reserve_tokens: Any = None) -> Iter
         _REQUEST_ENABLED.reset(enabled_token)
         _REQUEST_RESERVE_TOKENS.reset(reserve_token)
 
+
 _OPEN = "<self_note>"
 _CLOSE = "</self_note>"
 

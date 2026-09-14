@@ -890,7 +890,6 @@ def _apply_request_self_note_settings(payload) -> None:
     """
     try:
         from core.inference import self_note
-
         self_note.apply_request_settings(
             enabled = getattr(payload, "self_note_enabled", None),
             reserve_tokens = getattr(payload, "self_note_reserve_tokens", None),

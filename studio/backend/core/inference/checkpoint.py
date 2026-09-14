@@ -353,7 +353,10 @@ def _resolved(value):
 
 
 def render_checkpoint(
-    items: list[str], *, searchable: bool = True, self_note: str = ""
+    items: list[str],
+    *,
+    searchable: bool = True,
+    self_note: str = "",
 ) -> str:
     """The block appended to the system message, or "" when there is nothing to carry."""
     if not items:
@@ -598,9 +601,7 @@ def fit_checkpoint_context(
             # model's commentary on the user's words, so it is worth less than the words.
             # `budget` is already what the block may spend; what the items left is what
             # the note may have, capped again by its own ceiling.
-            spent = sum(
-                estimate_message({"role": "user", "content": item}) for item in items
-            )
+            spent = sum(estimate_message({"role": "user", "content": item}) for item in items)
             # `max_note_tokens()`, not the module constant: the chat settings slider is
             # a per-request override, and reading the constant directly would ignore it.
             room = min(self_note_module.max_note_tokens(), max(0, budget - spent))
