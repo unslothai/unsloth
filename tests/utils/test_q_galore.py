@@ -14,6 +14,7 @@
 #
 # Tests for Q-GaLore integration (unsloth/optimizers/).
 
+import inspect
 import pytest
 import sys
 import os
@@ -80,6 +81,40 @@ def requires_bnb_optimizer(device):
         _BNB_OPTIMIZER_BACKEND[device] = available
     if not available:
         pytest.skip(f"This bitsandbytes version cannot run an optimizer step on {device}")
+
+
+@pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
+def test_optimizer_constructs_against_the_installed_bitsandbytes():
+    """Runs on every version in the CI matrix, unlike the tests that need a step.
+
+    Construction needs no optimizer kernels, so this is the only check the 0.45.x-0.49.x
+    matrix jobs can actually execute. It has to assert on the bound arguments because the
+    0.50.x misbinding left the arity intact and raised nothing.
+    """
+    signature = inspect.signature(_adamw_mod.Optimizer2State.__init__)
+    captured = {}
+    original = _adamw_mod.Optimizer2State.__init__
+
+    def record(self, *args, **kwargs):
+        bound = signature.bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        captured.update(bound.arguments)
+        return original(self, *args, **kwargs)
+
+    _adamw_mod.Optimizer2State.__init__ = record
+    try:
+        _adamw_mod.QGaLoreAdamW8bit([nn.Parameter(torch.ones(8, 8))], lr = 1e-3)
+    finally:
+        _adamw_mod.Optimizer2State.__init__ = original
+
+    assert captured.get("optimizer_name") == "adam"
+    assert captured.get("optim_bits") == 8
+    for name, default in (("max_unorm", 0.0), ("skip_zeros", False)):
+        if name in signature.parameters:
+            assert captured.get(name) == default, (
+                f"bitsandbytes received {name}={captured.get(name)!r}, but its default is "
+                f"{default!r}; an option is landing in the wrong parameter positionally."
+            )
 
 
 @pytest.mark.skipif(not _adamw_mod._HAS_BNB, reason = "bitsandbytes is required")
