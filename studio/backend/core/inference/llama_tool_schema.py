@@ -32,7 +32,14 @@ _SINGLE_KEYWORDS = (
 _LIST_KEYWORDS = {"allOf": False, "anyOf": None, "items": True, "oneOf": None, "prefixItems": True}
 
 
-def _has_reorderable_keys(schema: dict) -> bool:
+# A generated wrapper, so a caller's own union of the same shape is never mistaken for one.
+class _RelaxedUnion(dict):
+    pass
+
+
+def _optional_key_count(schema: Any) -> int:
+    if not isinstance(schema, dict):
+        return 0
     kind = schema.get("type")
     if isinstance(kind, list):
         is_object = "object" in kind
@@ -40,20 +47,10 @@ def _has_reorderable_keys(schema: dict) -> bool:
         is_object = kind is None or kind == "object"
     properties = schema.get("properties")
     if not is_object or not isinstance(properties, dict):
-        return False
+        return 0
     required = schema.get("required")
     required = set(required) if isinstance(required, list) else set()
-    return sum(name not in required for name in properties) >= 2
-
-
-def _is_relaxed(schema: dict) -> bool:
-    branches = schema.get("anyOf")
-    return (
-        len(schema) == 1
-        and isinstance(branches, list)
-        and len(branches) == 2
-        and branches[0] == _PERMISSIVE_OBJECT
-    )
+    return sum(name not in required for name in properties)
 
 
 def _resolve_ref(ref: Any, root: dict) -> Any:
@@ -67,8 +64,23 @@ def _resolve_ref(ref: Any, root: dict) -> Any:
     return node
 
 
+def _reorderable(schema: dict, root: dict) -> bool:
+    if _optional_key_count(schema) >= 2:
+        return True
+    if _optional_key_count(_resolve_ref(schema.get("$ref"), root)) >= 2:
+        return True
+    parts = schema.get("allOf")
+    if not isinstance(parts, list):
+        return False
+    merged = 0
+    for part in parts:
+        target = _resolve_ref(part.get("$ref"), root) if isinstance(part, dict) else None
+        merged += _optional_key_count(target if isinstance(target, dict) else part)
+    return merged >= 2
+
+
 def _relax(schema: Any, *, nested: bool, root: dict) -> Any:
-    if not isinstance(schema, dict) or _is_relaxed(schema):
+    if not isinstance(schema, dict) or isinstance(schema, _RelaxedUnion):
         return schema
     out = schema
     for keyword, child_nested in _MAP_KEYWORDS.items():
@@ -93,11 +105,8 @@ def _relax(schema: Any, *, nested: bool, root: dict) -> Any:
             relaxed = [_relax(value, nested = mode, root = root) for value in children]
             if any(new is not old for new, old in zip(relaxed, children)):
                 out = {**out, keyword: relaxed}
-    if not nested:
-        return out
-    target = _resolve_ref(out.get("$ref"), root)
-    if _has_reorderable_keys(out) or (isinstance(target, dict) and _has_reorderable_keys(target)):
-        return {"anyOf": [dict(_PERMISSIVE_OBJECT), out]}
+    if nested and _reorderable(out, root):
+        return _RelaxedUnion(anyOf = [dict(_PERMISSIVE_OBJECT), out])
     return out
 
 
@@ -107,7 +116,7 @@ def relax_nested_object_key_order(parameters: Any) -> Any:
 
 
 def unrelaxed(schema: Any) -> Any:
-    return schema["anyOf"][1] if isinstance(schema, dict) and _is_relaxed(schema) else schema
+    return schema["anyOf"][1] if isinstance(schema, _RelaxedUnion) else schema
 
 
 def llama_grammar_tools(tools: Any) -> Any:

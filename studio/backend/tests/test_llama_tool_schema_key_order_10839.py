@@ -146,25 +146,41 @@ def test_objects_under_items_and_refs_are_wrapped_where_they_are_used():
     assert relaxed["$defs"]["Row"] == row
 
 
-def test_allof_ref_parts_keep_their_definition_bare():
+def test_allof_ref_is_wrapped_around_the_use_and_not_the_definition():
     # A wrapped $defs target compiles to "{}" under llama.cpp's allOf merge, dropping every key.
     paging = {
         "type": "object",
         "properties": {"start_cursor": {"type": "string"}, "page_size": {"type": "integer"}},
     }
+    filter_use = {"allOf": [{"$ref": "#/$defs/Filter"}], "description": "paging"}
     parameters = {
         "type": "object",
-        "properties": {
-            "query": {"type": "string"},
-            "filter": {"allOf": [{"$ref": "#/$defs/Filter"}], "description": "paging"},
-        },
+        "properties": {"query": {"type": "string"}, "filter": copy.deepcopy(filter_use)},
         "required": ["query"],
         "$defs": {"Filter": copy.deepcopy(paging)},
     }
-    assert relax_nested_object_key_order(parameters) is parameters
+    relaxed = relax_nested_object_key_order(parameters)
+
+    assert relaxed["properties"]["filter"] == _relaxed(filter_use)
+    assert relaxed["$defs"] is parameters["$defs"]
 
     recursive_root = {"$defs": {"Node": copy.deepcopy(paging)}, "allOf": [{"$ref": "#/$defs/Node"}]}
     assert relax_nested_object_key_order(recursive_root) is recursive_root
+
+
+def test_a_caller_union_shaped_like_the_wrapper_is_read_as_written():
+    from core.inference.tool_loop_controller import coerce_arguments_by_schema
+
+    properties = {
+        "payload": {
+            "anyOf": [
+                {"type": "object", "additionalProperties": True},
+                {"type": "object", "properties": {"code": {"type": "integer"}}},
+            ]
+        }
+    }
+    coerced = coerce_arguments_by_schema({"payload": {"code": "001"}}, properties, repair = True)
+    assert coerced == {"payload": {"code": "001"}}
 
 
 def test_root_union_branches_are_the_root_and_stay_bare():
