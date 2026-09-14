@@ -3332,6 +3332,8 @@ _ALLOWLISTED_TERMINAL = (
     "grep --exclude-from=filters needle local.txt",
     "cat notes.txt > out.txt",
     "echo hi > /dev/null",
+    "tar --extract --file=/usr/share/in.tar",
+    "cat /usr/share/doc/readme",
 )
 
 _ALLOWLISTED_PYTHON = (
@@ -3350,6 +3352,12 @@ _ALLOWLISTED_PYTHON = (
     "import os.path as p\nprint(p.join('data', 'train.csv'))",
     "from io import open as fopen\nprint(fopen('notes.txt').read())",
     "from os.path import join as j\nprint(j('data', 'train.csv'))",
+    "from pandas import read_csv as rc\nrc('train.csv')",
+    "import os\nopen(os.path.join('/usr', 'share', 'doc')).read()",
+    (
+        "\n".join(f"base = '/usr/a{i}'" for i in range(9))
+        + "\np = base + '/report.txt'\nopen(p).read()"
+    ),
     "base = 'local'\np = base + '/report.txt'\nopen(p).read()",
     "import os\nos.rename('a.txt', 'b.txt')",
     "import shutil\nshutil.copy('a.txt', 'b.txt')",
@@ -3402,6 +3410,13 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     # bash accepts several redirections before the command word. Kept whole, the token read as one
     # silent /dev read and the write past it was never seen.
     f"</dev/null>{_OUTSIDE_DIR}/out printf payload",
+    # A doubled separator inside ONE literal is just a separator; the OS collapses it. Treating it
+    # as a second root read /usr out of the path and the real file went silent.
+    "cat /home/alice//usr/report.txt",
+    # A cluster whose value is ATTACHED to its last letter, which GNU tar accepts.
+    f"tar -cf{_OUTSIDE_DIR}/out.tar src",
+    # The long spelling of create carries the same mode as -c.
+    "tar --create --file=/usr/share/out.tar src",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
@@ -3439,6 +3454,18 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
     # The serializer receiver has to be resolved through the alias, or the call falls through to a
     # branch that never looks at the second argument.
     f"import torch as t\nt.save(m, {_OUTSIDE_DIR!r} + '/model.pt')",
+    # Any MODELED path call is reachable under an alias, not just the open-like ones.
+    f"from pandas import read_csv as rc\nrc({_OUTSIDE_DIR!r} + '/report.csv')",
+    f"from shutil import copy as cp\ncp('a.txt', {_OUTSIDE_DIR!r} + '/out.txt')",
+    # A command string recovered from a variable has to be split like a literal one.
+    f"import subprocess\ncmd = 'cat {_OUTSIDE_FILE}'\nsubprocess.run(cmd, shell = True)",
+    f"open('/home/alice//usr/report.txt').read()",
+    # The alternate cap is ranked by what needs APPROVAL: nine read-silent rebindings must not
+    # crowd out the one value that does.
+    (
+        "\n".join(f"base = '/usr/a{i}'" for i in range(9))
+        + f"\nbase = {_OUTSIDE_DIR!r}\np = base + '/report.txt'\nopen(p).read()"
+    ),
     # The alternate cap must bound WORK, not coverage: eight benign reassignments ahead of the
     # absolute one must not hide it.
     (

@@ -2819,22 +2819,24 @@ _silent_roots_cache = None
 _WIN_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
-def _last_absolute_component(text: str) -> str:
-    """Apply POSIX join semantics to a folded path.
+def _posix_join(parts) -> str:
+    """Join folded path pieces the way ``os.path.join`` and ``Path(...)`` actually resolve them.
 
-    ``_folded_path`` concatenates, so ``os.path.join("/usr", "/media/x")`` folds to ``/usr//media/x``
-    while Python resolves it to ``/media/x``. Taking the last absolute component keeps the allowlist
-    from accepting a prefix the runtime discards.
+    An absolute component DISCARDS everything before it: `os.path.join("/usr", "/media/x")` opens
+    `/media/x`, not `/usr/media/x`. Doing this at the join keeps the distinction from a doubled
+    separator inside one literal, which the OS simply collapses -- `/home/alice//usr/report.txt` is
+    `/home/alice/usr/report.txt` and has nothing to do with `/usr`. Inferring the join from `//`
+    after the fact could not tell those apart, and read `/usr` out of the literal.
     """
-    marker = text.find("//", 1)
-    while marker != -1:
-        tail = text[marker + 1 :]
-        # Only a genuine second root counts; a doubled separator inside one path is not a new root.
-        if tail.startswith("//"):
-            break
-        text = tail
-        marker = text.find("//", 1)
-    return text
+    out = ""
+    for part in parts:
+        if not out:
+            out = part
+        elif part.startswith("/") or _WIN_DRIVE_RE.match(part):
+            out = part
+        else:
+            out = out.rstrip("/") + "/" + part
+    return out
 
 
 def _normalized_fs_text(text: str) -> str:
@@ -3030,8 +3032,6 @@ def _path_needs_approval(text, *, writing: bool = False) -> bool:
     # \x00 is a segment the folder could not resolve, which is not a decidable path.
     if "\x00" in text:
         return False
-    # A later absolute component discards everything before it, so judge the path the runtime would open.
-    text = _last_absolute_component(text)
     if not _looks_absolute(text):
         # Relative: resolves inside the session workdir. Only the credential/traversal scan applies.
         return bool(_references_sensitive_path(text) or _glob_token_sensitive(text))
@@ -3208,6 +3208,9 @@ _PATH_ARG_SKIP = {
 # be classified. grep and sed are NOT in here: their skipped positional is a pattern, which is the
 # first POSITIONAL rather than the first argument, so their skip stays unconditional.
 _PATH_SKIP_FIRST_ARG_ONLY = frozenset({"tar"})
+# Long spellings of an archive command's create mode. The short forms are read letter by letter out
+# of the cluster; these carry the same meaning and are matched whole.
+_ARCHIVE_CREATE_LONG_FLAGS = frozenset({"--create", "--append", "--update"})
 # Flags that supply the pattern or program themselves. `_PATH_ARG_SKIP` spends a positional on it by
 # default, but `grep -f patterns.txt FILE` and `sed -e s/a/b/ FILE` already have theirs, so keeping
 # the skip would discard the first real input path and leave the read unclassified.
@@ -3541,10 +3544,15 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
     # on a later flag, and reading only the first argument would classify out.tar as a read. Limited
     # to args[0] (the legacy option word) plus single-dash tokens, because an ORDINARY FILENAME can
     # contain a "c" -- `tar -xf a.tar src` must not look like a create.
-    creating = command in _PATH_ARCHIVE_COMMANDS and any(
-        "c" in arg.lstrip("-")
-        for index, arg in enumerate(args)
-        if not arg.startswith("--") and (index == 0 or arg.startswith("-"))
+    creating = command in _PATH_ARCHIVE_COMMANDS and (
+        any(
+            "c" in arg.lstrip("-")
+            for index, arg in enumerate(args)
+            if not arg.startswith("--") and (index == 0 or arg.startswith("-"))
+        )
+        # The long spellings carry the same mode and were not read at all, so
+        # `tar --create --file=/models/out.tar` classified the archive as a READ.
+        or any(arg.split("=", 1)[0] in _ARCHIVE_CREATE_LONG_FLAGS for arg in args)
     )
     skip = _PATH_ARG_SKIP.get(command, 0)
     operands: "list[tuple[str, bool]]" = []
@@ -3636,12 +3644,23 @@ def _short_flag_with_value(arg: str, spec) -> "tuple[str | None, str | None]":
     if head in spec:
         return head, (arg[2:] or None)
     body = arg[1:]
-    if not body.isalpha():
+    if body.isalpha():
+        last = "-" + body[-1]
+        return (last, None) if last in spec else (None, None)
+    # A cluster whose value is ATTACHED to the last letter: `tar -cf/media/x/out.tar`, which GNU tar
+    # accepts and which creates that archive. Requiring the whole body to be alphabetic rejected it
+    # the moment the value contained a separator, so the archive operand was never seen. Split at
+    # the first non-letter: everything before it is the cluster, the rest is the value.
+    for index, char in enumerate(body):
+        if not char.isalpha():
+            break
+    else:
         return None, None
-    last = "-" + body[-1]
-    if last in spec:
-        return last, None
-    return None, None
+    if index < 1:
+        return None, None
+    last = "-" + body[index - 1]
+    value = body[index:]
+    return (last, value or None) if last in spec else (None, None)
 
 
 # A command substitution or arithmetic/brace expansion sitting where a path belongs. shlex keeps the
@@ -3866,22 +3885,34 @@ _PY_PATH_KWARGS = (
 )
 
 
+# Every call name the path tables model, so an alias of any of them resolves back. Built from the
+# tables themselves rather than repeated by hand, so a name added to one is aliasable at once.
+_PY_ALIASABLE_PATH_CALLS = (
+    frozenset({"open", "fdopen"})
+    | _PY_PATH_READ_CALLS
+    | _PY_PATH_WRITE_CALLS
+    | _PY_PATH_DEST_SECOND_CALLS
+    | _PY_PATH_SERIALIZE_CALLS
+    | _PY_PATH_CONTENT_FIRST_CALLS
+    | _PY_PATH_ARCHIVE_CTORS
+    | _PY_PATH_SUBPROCESS_CALLS
+)
+
+
 def _python_function_aliases(tree) -> dict:
     """Local name -> real function, for `from io import open as fopen`.
 
-    Only names imported FROM a module whose `open` takes the path first are recorded, so the alias
-    dispatches exactly as the bare builtin would. Without this the call is a plain `Name` under a
-    name in no table and its path argument is never looked at.
+    Every MODELED path call is covered, not only the open-like ones: `from pandas import read_csv as
+    rc` leaves a plain `Name` under a name in no table, so the call is never dispatched and its path
+    argument is never looked at. Restricting this to `open` left every other reader and writer in
+    the tables reachable under an alias.
     """
     aliases: dict = {}
     for node in _tree_nodes(tree):
         if not isinstance(node, ast.ImportFrom):
             continue
-        root = (node.module or "").split(".", 1)[0]
-        if root not in _PY_MODULE_OPEN_RECEIVERS:
-            continue
         for entry in node.names:
-            if entry.asname and entry.name in ("open", "fdopen"):
+            if entry.asname and entry.name in _PY_ALIASABLE_PATH_CALLS:
                 aliases[entry.asname] = entry.name
     return aliases
 
@@ -3987,11 +4018,14 @@ def _capped_alternates(values) -> "list[str]":
     values = list(values)
     if len(values) <= _MAX_REBOUND_ALTERNATES:
         return values
-    absolute = [v for v in values if _looks_absolute(v)]
-    if len(absolute) >= _MAX_REBOUND_ALTERNATES:
-        return absolute[:_MAX_REBOUND_ALTERNATES]
-    relative = [v for v in values if not _looks_absolute(v)]
-    return absolute + relative[: _MAX_REBOUND_ALTERNATES - len(absolute)]
+    # Ranked by what the value would COST, not by whether it happens to be absolute: a path under a
+    # read-silent root needs no approval, so filling the cap with `/usr/...` rebindings would drop
+    # the one `/media/...` value that does. Ordering by need keeps the bound on work, not coverage.
+    gated = [v for v in values if _path_needs_approval(v)]
+    if len(gated) >= _MAX_REBOUND_ALTERNATES:
+        return gated[:_MAX_REBOUND_ALTERNATES]
+    rest = [v for v in values if not _path_needs_approval(v)]
+    return gated + rest[: _MAX_REBOUND_ALTERNATES - len(gated)]
 
 
 def _python_path_operands(tree) -> "list[tuple[str, bool]]":
@@ -4020,11 +4054,14 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
                 if isinstance(piece, ast.Constant) and isinstance(piece.value, str):
                     words.extend(piece.value.split() or [piece.value])
                 elif isinstance(piece, ast.Name):
+                    # Split a folded value the same way a literal is split. `cmd = "cat /media/x";
+                    # subprocess.run(cmd, shell = True)` otherwise appended one unrecognised word,
+                    # so the operand scan saw no command and no path.
                     folded = bindings.get(piece.id)
                     if isinstance(folded, str) and folded:
-                        words.append(folded)
+                        words.extend(folded.split() or [folded])
                     for path in rebound.get(piece.id, ()):
-                        words.append(path)
+                        words.extend(path.split() or [path])
         if words:
             operands.extend(_terminal_path_operands(words))
             # A bare path with no recognised command around it still reaches the child.
@@ -4439,8 +4476,10 @@ def _folded_path(
             right = fold(node.right)
             left = "\x00" if left is None else left
             right = "\x00" if right is None else right
-            # Path('/etc') / 'passwd' joins with a separator; '+' concatenates.
-            return left + "/" + right if isinstance(node.op, ast.Div) else left + right
+            # Path('/etc') / 'passwd' joins with a separator; '+' concatenates. The `/` operator is
+            # a JOIN, so an absolute right side discards the left exactly as os.path.join does:
+            # Path("/usr") / "/media/x" opens /media/x.
+            return _posix_join((left, right)) if isinstance(node.op, ast.Div) else left + right
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
             # Old-style formatting: '%s/%s' % ('/etc', 'passwd') -> /etc/passwd.
             template = fold(node.left)
@@ -4518,19 +4557,19 @@ def _folded_path(
                     and isinstance(node.args[0], (ast.List, ast.Tuple))
                 ):
                     pieces = [(fold(e) or "\x00") for e in node.args[0].elts]
-                    return sep.join(pieces)
+                    return _posix_join(pieces) if sep == "/" else sep.join(pieces)
                 parts = [(fold(a) or "\x00") for a in node.args]
-                return "/".join(parts)
+                return _posix_join(parts)
             # A bare os.path.join alias (from os.path import join): join(*pieces).
             if isinstance(func, ast.Name) and func.id in join_names:
                 parts = [(fold(a) or "\x00") for a in node.args]
-                return "/".join(parts)
+                return _posix_join(parts)
             # A bare/qualified/aliased pathlib constructor (Path(...), P(...)).
             if (isinstance(func, ast.Attribute) and func.attr in ctors) or (
                 isinstance(func, ast.Name) and func.id in ctors
             ):
                 parts = [(fold(a) or "\x00") for a in node.args]
-                return "/".join(parts)
+                return _posix_join(parts)
             # '/etc/{}'.format('passwd') -> /etc/passwd (literal template + args).
             if isinstance(func, ast.Attribute) and func.attr == "format":
                 template = fold(func.value)
