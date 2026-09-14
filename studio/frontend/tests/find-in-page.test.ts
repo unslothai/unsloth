@@ -7,7 +7,6 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
@@ -42,14 +41,24 @@ import {
   startPositionAt,
 } from "../src/features/find-in-page/lib/find-text-index.ts";
 
+import { readSrc, readSrcAsync } from "./helpers/kit.ts";
+
+const FIND_BAR = readSrc("features/find-in-page/components/find-bar.tsx");
+const FIND_IN_PAGE = readSrc(
+  "features/find-in-page/components/find-in-page.tsx",
+);
+const USE_FIND_IN_PAGE = readSrc(
+  "features/find-in-page/hooks/use-find-in-page.ts",
+);
+const FIND_DOM = readSrc("features/find-in-page/lib/find-dom.ts");
+const FIND_TEXT_INDEX = readSrc("features/find-in-page/lib/find-text-index.ts");
+const USE_SHORTCUT = readSrc("features/settings/hooks/use-shortcut.ts");
+const INDEX = readSrc("index.css");
+
 /** The feature's component module as one string. */
 async function readComponentSource(): Promise<string> {
-  return await readFile(
-    new URL(
-      "../src/features/find-in-page/components/find-in-page.tsx",
-      import.meta.url,
-    ),
-    "utf8",
+  return await readSrcAsync(
+    "features/find-in-page/components/find-in-page.tsx",
   );
 }
 
@@ -552,12 +561,8 @@ function record(
 test("the selection fallback hands the caret back to the field", async () => {
   // The caret goes with the selection on WebKit and Blink: the field still reports as active
   // while every keystroke is swallowed.
-  const engine = await readFile(
-    new URL("../src/features/find-in-page/lib/find-dom.ts", import.meta.url),
-    "utf8",
-  );
-  const fallback = engine.slice(
-    engine.indexOf("export function selectRangeFallback"),
+  const fallback = FIND_DOM.slice(
+    FIND_DOM.indexOf("export function selectRangeFallback"),
   );
   const body = fallback.slice(0, fallback.indexOf("\n}"));
   assert.match(body, /holdCaret\(\)/);
@@ -1269,13 +1274,9 @@ function cssRule(css: string, selector: string): string {
 }
 
 test("the stylesheet paints the two highlights the code registers", async () => {
-  const css = await readFile(
-    new URL("../src/index.css", import.meta.url),
-    "utf8",
-  );
   for (const name of [FIND_HIGHLIGHT, FIND_HIGHLIGHT_ACTIVE]) {
     assert.ok(
-      css.includes(`::highlight(${name})`),
+      INDEX.includes(`::highlight(${name})`),
       `${name} is registered but never painted`,
     );
   }
@@ -1396,31 +1397,13 @@ test("registered ranges are cleared and repainted before deletion or replacement
 });
 
 test("the bar keeps itself out of the region it searches", async () => {
-  const bar = await readFile(
-    new URL(
-      "../src/features/find-in-page/components/find-bar.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(bar, new RegExp(`${FIND_SKIP_ATTRIBUTE}=`));
-  const engine = await readFile(
-    new URL(
-      "../src/features/find-in-page/hooks/use-find-in-page.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(engine, /FIND_SKIP_ATTRIBUTE/);
+  assert.match(FIND_BAR, new RegExp(`${FIND_SKIP_ATTRIBUTE}=`));
+  assert.match(USE_FIND_IN_PAGE, /FIND_SKIP_ATTRIBUTE/);
 });
 
 test("light mode is the chatbox's background, under a slightly heavier shadow", async () => {
-  const css = await readFile(
-    new URL("../src/index.css", import.meta.url),
-    "utf8",
-  );
-  const composer = cssRule(css, ".unsloth-composer-surface");
-  const bar = cssRule(css, ".find-bar-surface");
+  const composer = cssRule(INDEX, ".unsloth-composer-surface");
+  const bar = cssRule(INDEX, ".find-bar-surface");
 
   // The composer is the reference, not a copied colour, so a restyle fails here.
   const background = /background-color:\s*(#[0-9a-f]{6});/i.exec(composer);
@@ -1466,13 +1449,9 @@ test("light mode is the chatbox's background, under a slightly heavier shadow", 
 });
 
 test("dark mode sits above the cards it floats over", async () => {
-  const css = await readFile(
-    new URL("../src/index.css", import.meta.url),
-    "utf8",
-  );
   const value = (selector: string, property: string) => {
     const hit = new RegExp(`${property}:\\s*([^;]+);`).exec(
-      cssRule(css, selector),
+      cssRule(INDEX, selector),
     );
     assert.ok(hit, `${selector} has no ${property}`);
     return hit[1].trim();
@@ -1491,21 +1470,14 @@ test("dark mode sits above the cards it floats over", async () => {
 });
 
 test("the bar stays out of a backgrounded scope, and off the document origin", async () => {
-  const bar = await readFile(
-    new URL(
-      "../src/features/find-in-page/components/find-bar.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   // Every modal, not just Settings: Radix marks the shell aria-hidden for as long as one is up,
   // and `enabled` is read at render, which a dialog opening need not cause.
   assert.match(
-    bar,
+    FIND_BAR,
     /isSurfaceBackgrounded\(`\[\$\{FIND_SCOPE_ATTRIBUTE\}\]`\)/,
   );
   // Fixed, not absolute: on a route whose outer container scrolls, an absolute bar scrolls away.
-  const surface = /className="(find-bar-surface[^"]*)"/.exec(bar);
+  const surface = /className="(find-bar-surface[^"]*)"/.exec(FIND_BAR);
   assert.ok(surface);
   assert.match(surface[1], /\bfixed\b/);
   assert.equal(/\babsolute\b/.test(surface[1]), false);
@@ -1516,7 +1488,9 @@ test("the bar stays out of a backgrounded scope, and off the document origin", a
   // 22.25/28.25rem is exactly the previous short-counter width: fixed input + 12rem chrome.
   assert.match(surface[1], /(?:^|\s)w-\[22\.25rem\](?:\s|$)/);
   assert.match(surface[1], /(?:^|\s)sm:w-\[28\.25rem\](?:\s|$)/);
-  const input = /<input[\s\S]*?className=\{cn\([\s\S]*?"([^"]*)"/.exec(bar);
+  const input = /<input[\s\S]*?className=\{cn\([\s\S]*?"([^"]*)"/.exec(
+    FIND_BAR,
+  );
   assert.ok(input);
   assert.match(input[1], /\bflex-1\b/);
   assert.equal(/\bw-(?:40|64)\b/.test(input[1]), false);
@@ -1525,62 +1499,43 @@ test("the bar stays out of a backgrounded scope, and off the document origin", a
 test("the reveal looks again while the scroll is still moving", async () => {
   // Such a subtree contributes placeholder height until it renders, clamping the first scroll
   // 3415px short on all three engines. The node suite cannot see a scroll.
-  const dom = await readFile(
-    new URL("../src/features/find-in-page/lib/find-dom.ts", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    dom,
+    FIND_DOM,
     /export function scrollRangeIntoView\(range: Range\): boolean/,
   );
-  const reveal = dom.slice(dom.indexOf("function revealPass("));
+  const reveal = FIND_DOM.slice(FIND_DOM.indexOf("function revealPass("));
   const body = reveal.slice(0, reveal.indexOf("\n}\n"));
   assert.match(
     body,
     /if \(!scrollRangeIntoView\(range\) \|\| tries <= 1\) return;/,
   );
   assert.match(body, /tries - 1/);
-  assert.match(dom, /revealRangeWhenPainted\(range: Range, tries = \d\)/);
+  assert.match(FIND_DOM, /revealRangeWhenPainted\(range: Range, tries = \d\)/);
   assert.match(body, /requestAnimationFrame\(/);
   assert.match(body, /range\.startContainer\.isConnected/);
-  const engine = await readFile(
-    new URL(
-      "../src/features/find-in-page/hooks/use-find-in-page.ts",
-      import.meta.url,
-    ),
-    "utf8",
+  assert.match(USE_FIND_IN_PAGE, /revealRangeWhenPainted\(activeRange\)/);
+  assert.equal(
+    /scrollRangeIntoView\(activeRange\)/.test(USE_FIND_IN_PAGE),
+    false,
   );
-  assert.match(engine, /revealRangeWhenPainted\(activeRange\)/);
-  assert.equal(/scrollRangeIntoView\(activeRange\)/.test(engine), false);
 });
 
 test("a dismissed or superseded search abandons its queued reveal passes", async () => {
   // The workspace stays mounted when the bar closes, so `isConnected` stays true and the old
   // chain keeps scrolling to a dismissed match.
-  const dom = await readFile(
-    new URL("../src/features/find-in-page/lib/find-dom.ts", import.meta.url),
-    "utf8",
-  );
-  const entry = dom.slice(
-    dom.indexOf("export function revealRangeWhenPainted"),
+  const entry = FIND_DOM.slice(
+    FIND_DOM.indexOf("export function revealRangeWhenPainted"),
   );
   assert.match(
     entry.slice(0, entry.indexOf("\n}\n")),
     /cancelRevealPasses\(\)/,
   );
-  const pass = dom.slice(dom.indexOf("function revealPass("));
+  const pass = FIND_DOM.slice(FIND_DOM.indexOf("function revealPass("));
   assert.match(
     pass.slice(0, pass.indexOf("\n}\n")),
     /if \(generation !== revealGeneration\) return;/,
   );
-  const engine = await readFile(
-    new URL(
-      "../src/features/find-in-page/hooks/use-find-in-page.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(engine, /cancelRevealPasses\(\);/);
+  assert.match(USE_FIND_IN_PAGE, /cancelRevealPasses\(\);/);
 });
 
 test("a query too large to compile falls back instead of throwing on the first scan", () => {
@@ -1838,14 +1793,11 @@ test("the grapheme fences do not depend on lookbehind", async () => {
   // JavaScriptCore only shipped lookbehind in Safari 16.4, and a pattern using one throws on older
   // engines straight into the unfenced literal scan, quietly undoing both boundaries. So the start
   // of the fence is checked in code and the pattern carries none.
-  const source = await readFile(
-    new URL(
-      "../src/features/find-in-page/lib/find-text-index.ts",
-      import.meta.url,
-    ),
-    "utf8",
+  assert.equal(
+    FIND_TEXT_INDEX.includes("(?<"),
+    false,
+    "no lookbehind in the pattern",
   );
-  assert.equal(source.includes("(?<"), false, "no lookbehind in the pattern");
 
   const real = globalThis.RegExp;
   const refuse = (pattern: string, flags?: string) => {
@@ -1967,22 +1919,18 @@ test("an engine whose `containing` is off by one is not trusted with it", () => 
 
 test("the seek probe is asked once, on a fixture the spec settles", () => {
   // Once per process: a probe on the hot path is the cost the budget exists to avoid.
-  const source = readFileSync(
-    new URL(
-      "../src/features/find-in-page/lib/find-text-index.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(source, /let seeksBoundaries: boolean \| undefined;/);
+  assert.match(FIND_TEXT_INDEX, /let seeksBoundaries: boolean \| undefined;/);
   assert.match(
-    source,
+    FIND_TEXT_INDEX,
     /if \(seeksBoundaries !== undefined\) return seeksBoundaries;/,
   );
   // `containing(1)` over a code unit and a surrogate pair is the start of the pair, per the spec.
-  assert.match(source, /probe\.containing\(1\)\?\.index === 1/);
+  assert.match(FIND_TEXT_INDEX, /probe\.containing\(1\)\?\.index === 1/);
   // The definition, the seek in `startsGrapheme`, and the junction check a cut asks.
-  assert.equal((source.match(/segmenterSeeksBoundaries\(/g) ?? []).length, 3);
+  assert.equal(
+    (FIND_TEXT_INDEX.match(/segmenterSeeksBoundaries\(/g) ?? []).length,
+    3,
+  );
 });
 
 test("a query that needs no pattern is not given one", () => {
@@ -1997,15 +1945,13 @@ test("a query that needs no pattern is not given one", () => {
 test("plain text does not pay for the boundary check", () => {
   // The segmenter is asked only where something could actually join, which nothing below U+0300
   // can. Latin prose therefore costs one comparison per match rather than a segmentation.
-  const source = readFileSync(
-    new URL(
-      "../src/features/find-in-page/lib/find-text-index.ts",
-      import.meta.url,
-    ),
-    "utf8",
+  assert.match(
+    FIND_TEXT_INDEX,
+    /const JOINS_GRAPHEME = \/\[\^\\u0000-\\u02ff\]\//,
   );
-  assert.match(source, /const JOINS_GRAPHEME = \/\[\^\\u0000-\\u02ff\]\//);
-  const guard = source.slice(source.indexOf("function alignsToGraphemes"));
+  const guard = FIND_TEXT_INDEX.slice(
+    FIND_TEXT_INDEX.indexOf("function alignsToGraphemes"),
+  );
   const before = guard.indexOf("JOINS_GRAPHEME");
   const asks = guard.indexOf("graphemeSegmenter()");
   assert.ok(before > 0 && before < asks, "the cheap test comes first");
@@ -2442,81 +2388,51 @@ test("nothing below U+0300 can join a grapheme, which is what the fast path rest
 });
 
 test("a match with no geometry is aimed at through its nearest laid-out ancestor", async () => {
-  const dom = await readFile(
-    new URL("../src/features/find-in-page/lib/find-dom.ts", import.meta.url),
-    "utf8",
-  );
   // Such text has a collapsed rect while the subtree's own box keeps its placeholder geometry.
   assert.match(
-    dom,
+    FIND_DOM,
     /export function revealRect\(range: Range\): DOMRect \| null/,
   );
-  assert.match(dom, /export function rangeTop\(range: Range\): number \| null/);
-  const engine = await readFile(
-    new URL(
-      "../src/features/find-in-page/hooks/use-find-in-page.ts",
-      import.meta.url,
-    ),
-    "utf8",
+  assert.match(
+    FIND_DOM,
+    /export function rangeTop\(range: Range\): number \| null/,
   );
-  assert.match(engine, /const top = rangeTop\(range\);/);
-  assert.equal(/range\.getBoundingClientRect\(\)/.test(engine), false);
+  assert.match(USE_FIND_IN_PAGE, /const top = rangeTop\(range\);/);
+  assert.equal(
+    /range\.getBoundingClientRect\(\)/.test(USE_FIND_IN_PAGE),
+    false,
+  );
 });
 
 test("a fresh query starts from the scroll container's top, not the window's", async () => {
-  const engine = await readFile(
-    new URL(
-      "../src/features/find-in-page/hooks/use-find-in-page.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   // The viewport starts below the navbar, so a match clipped off its top still has positive `top`.
-  assert.match(engine, /top >= scrollViewportTop\(range\)/);
-  assert.equal(/top >= 0/.test(engine), false);
+  assert.match(USE_FIND_IN_PAGE, /top >= scrollViewportTop\(range\)/);
+  assert.equal(/top >= 0/.test(USE_FIND_IN_PAGE), false);
 });
 
 test("a pending query clears the previous highlight before the next paint", async () => {
-  const engine = await readFile(
-    new URL(
-      "../src/features/find-in-page/hooks/use-find-in-page.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   // The input value is committed during the event. A passive effect may run only after the browser
   // has painted that new value beside the old query's ranges, which is the visible `sta`/`stan`
   // mismatch this guards. A layout effect clears those ranges in the same commit, before paint.
-  assert.match(engine, /import \{[^}]*useLayoutEffect[^}]*\} from "react";/);
   assert.match(
-    engine,
+    USE_FIND_IN_PAGE,
+    /import \{[^}]*useLayoutEffect[^}]*\} from "react";/,
+  );
+  assert.match(
+    USE_FIND_IN_PAGE,
     /useLayoutEffect\(\(\) => \{\s*if \(queryPending\) \{\s*cancelRevealPasses\(\);\s*clearHighlights\(\);/,
   );
 });
 
 test("re-indexing while the document changes is a throttle, and says so", async () => {
-  const engine = await readFile(
-    new URL(
-      "../src/features/find-in-page/hooks/use-find-in-page.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   // A debounce would freeze the count for as long as a reply takes to write.
-  assert.match(engine, /REINDEX_INTERVAL_MS/);
-  assert.equal(/REINDEX_DEBOUNCE_MS/.test(engine), false);
-  assert.match(engine, /A throttle rather than a debounce/);
+  assert.match(USE_FIND_IN_PAGE, /REINDEX_INTERVAL_MS/);
+  assert.equal(/REINDEX_DEBOUNCE_MS/.test(USE_FIND_IN_PAGE), false);
+  assert.match(USE_FIND_IN_PAGE, /A throttle rather than a debounce/);
 });
 
 test("the bar has no border, and its buttons have a hover that shows", async () => {
-  const bar = await readFile(
-    new URL(
-      "../src/features/find-in-page/components/find-bar.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  const surface = /className="(find-bar-surface[^"]*)"/.exec(bar);
+  const surface = /className="(find-bar-surface[^"]*)"/.exec(FIND_BAR);
   assert.ok(surface, "the bar no longer wears the shared surface class");
   assert.equal(
     /\bborder\b/.test(surface[1]),
@@ -2524,44 +2440,36 @@ test("the bar has no border, and its buttons have a hover that shows", async () 
     "the bar took a border back",
   );
   // The ghost variant's own `--muted/50` hover lands within a shade of this surface.
-  assert.match(bar, /hover:bg-black\/\[0\.06\] dark:hover:bg-white\/10/);
-  assert.equal((bar.match(/className=\{FIND_BUTTON_CLASS\}/g) ?? []).length, 3);
+  assert.match(FIND_BAR, /hover:bg-black\/\[0\.06\] dark:hover:bg-white\/10/);
+  assert.equal(
+    (FIND_BAR.match(/className=\{FIND_BUTTON_CLASS\}/g) ?? []).length,
+    3,
+  );
 });
 
 test("a long query rewinds to its first character when focus leaves", async () => {
   // Typing past the width of the field scrolls it, and a bar left showing the tail of a word says
   // nothing about what was searched for.
-  const bar = await readFile(
-    new URL(
-      "../src/features/find-in-page/components/find-bar.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(bar, /onBlur=\{rewindToStart\}/);
-  assert.match(bar, /input\.setSelectionRange\(0, 0\);/);
-  assert.match(bar, /input\.scrollLeft = 0;/);
-  assert.match(bar, /onMouseDown=\{keepFocusInField\}/);
+  assert.match(FIND_BAR, /onBlur=\{rewindToStart\}/);
+  assert.match(FIND_BAR, /input\.setSelectionRange\(0, 0\);/);
+  assert.match(FIND_BAR, /input\.scrollLeft = 0;/);
+  assert.match(FIND_BAR, /onMouseDown=\{keepFocusInField\}/);
 });
 
 test("the observer watches the attributes a workspace switch flips", async () => {
   // Switching between kept-alive workspaces flips `inert` rather than mutating children.
-  const engine = await readFile(
-    new URL(
-      "../src/features/find-in-page/hooks/use-find-in-page.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(engine, /attributeFilter: \[[^\]]*"inert"/);
+  assert.match(USE_FIND_IN_PAGE, /attributeFilter: \[[^\]]*"inert"/);
   // `open` too: it is all a `<details>` changes, while its body goes from visible to not.
-  assert.match(engine, /attributeFilter: \[[^\]]*"open"/);
+  assert.match(USE_FIND_IN_PAGE, /attributeFilter: \[[^\]]*"open"/);
   // Not the whole stream: `class` changes on every hover. Scanned, not matched, since the
   // comments in between make a regex backtrack badly.
-  const opensAttributes = engine.indexOf("attributes: true,");
-  const opensFilter = engine.indexOf("attributeFilter:", opensAttributes);
+  const opensAttributes = USE_FIND_IN_PAGE.indexOf("attributes: true,");
+  const opensFilter = USE_FIND_IN_PAGE.indexOf(
+    "attributeFilter:",
+    opensAttributes,
+  );
   assert.ok(opensAttributes !== -1 && opensFilter > opensAttributes);
-  const between = engine.slice(
+  const between = USE_FIND_IN_PAGE.slice(
     opensAttributes + "attributes: true,".length,
     opensFilter,
   );
@@ -2572,7 +2480,7 @@ test("the observer watches the attributes a workspace switch flips", async () =>
     true,
     "nothing else is being observed between the flag and its filter",
   );
-  assert.equal(engine.includes('attributeFilter: ["class"'), false);
+  assert.equal(USE_FIND_IN_PAGE.includes('attributeFilter: ["class"'), false);
 });
 
 /** Stand in for the document `resolvePortalSurfaces` queries: node has no version of one. */
@@ -2628,11 +2536,7 @@ test("explicit monitor portals are searched but are not dismissible surfaces", a
     else view.document = undefined;
   }
 
-  const dom = await readFile(
-    new URL("../src/features/find-in-page/lib/find-dom.ts", import.meta.url),
-    "utf8",
-  );
-  assert.match(dom, /export function resolveDismissiblePortalSurfaces/);
+  assert.match(FIND_DOM, /export function resolveDismissiblePortalSurfaces/);
 
   for (const path of [
     "../src/features/api-monitor/api-monitor-overlay.tsx",
@@ -2657,50 +2561,29 @@ test("a surface inside the scope, or inside one already taken, is not indexed tw
 });
 
 test("the observer watches the document, since a portal lands outside the scope", async () => {
-  const engine = await readFile(
-    new URL(
-      "../src/features/find-in-page/hooks/use-find-in-page.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   // A popover renders to the body: an observer on the scope alone never hears one open or close.
-  assert.match(engine, /scope\?\.ownerDocument\?\.body \?\? scope/);
+  assert.match(USE_FIND_IN_PAGE, /scope\?\.ownerDocument\?\.body \?\? scope/);
   // `data-state` is all a dismissed one changes, and it keeps its box until the animation ends.
-  assert.match(engine, /attributeFilter: \[[^\]]*"data-state"/);
+  assert.match(USE_FIND_IN_PAGE, /attributeFilter: \[[^\]]*"data-state"/);
 });
 
 test("the rows progressive completion adds are re-anchored, not renumbered", async () => {
   // Progressive completion PREPENDS, and match 3 of the tail is not match 3 of the thread.
-  const engine = await readFile(
-    new URL(
-      "../src/features/find-in-page/hooks/use-find-in-page.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   assert.match(
-    engine,
+    USE_FIND_IN_PAGE,
     /completeProgressiveMounts\([\s\S]*?\.then\(\(\) => \{[\s\S]*?search\(false, reindex\(\)\);/,
   );
   // `reindex` answers false when nothing came in, so a settled thread's probe takes back no Enter.
-  assert.equal(engine.includes("rebuild("), false);
+  assert.equal(USE_FIND_IN_PAGE.includes("rebuild("), false);
 });
 
 test("Escape closes the bar from the walk buttons, not just the field", async () => {
-  const bar = await readFile(
-    new URL(
-      "../src/features/find-in-page/components/find-bar.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   // On the WINDOW, in the capture phase, for the lifetime of the open bar. A handler on the bar
   // only reaches presses that started inside it, so clicking a message to read it left a bar
   // Escape would not close -- and with a tool request waiting, that same unprevented Escape went
   // on to `declineToolRequest`, which is bare Escape and is not shielded by `isTextEntryFocused`
   // on a message body. Closing a find bar must not be able to answer a tool request.
-  const effect = bar.slice(bar.indexOf("const onEscape ="));
+  const effect = FIND_BAR.slice(FIND_BAR.indexOf("const onEscape ="));
   const body = effect.slice(0, effect.indexOf("window.addEventListener"));
   assert.match(body, /event\.key !== "Escape"/);
   assert.match(body, /event\.preventDefault\(\);/);
@@ -2715,7 +2598,7 @@ test("Escape closes the bar from the walk buttons, not just the field", async ()
   assert.match(body, /isSurfaceBackgrounded\(/);
   assert.match(body, /resolveDismissiblePortalSurfaces\(/);
   // And nothing left on the landmark, which would take the inside presses before the window does.
-  const landmark = bar.slice(bar.indexOf('role="search"'));
+  const landmark = FIND_BAR.slice(FIND_BAR.indexOf('role="search"'));
   assert.equal(
     landmark.slice(0, landmark.indexOf(">")).includes("onKeyDown"),
     false,
@@ -2724,23 +2607,12 @@ test("Escape closes the bar from the walk buttons, not just the field", async ()
 
 test("only threads this search can read are forced to finish mounting", async () => {
   // Completing globally would make a retained conversation mount every row it withheld.
-  const engine = await readFile(
-    new URL(
-      "../src/features/find-in-page/hooks/use-find-in-page.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   assert.match(
-    engine,
+    USE_FIND_IN_PAGE,
     /completeProgressiveMounts\(\(viewport\) =>\s*\n?\s*indexReaches\(scope, viewport\)/,
   );
-  const progressive = await readFile(
-    new URL(
-      "../src/components/assistant-ui/progressive-messages.tsx",
-      import.meta.url,
-    ),
-    "utf8",
+  const progressive = await readSrcAsync(
+    "components/assistant-ui/progressive-messages.tsx",
   );
   // The exit has to read the filtered set, or a declined completer holds it open forever.
   assert.match(
@@ -2753,60 +2625,41 @@ test("the chord is left to the browser when the scope is behind a modal", async 
   // `useShortcut` prevents the event BEFORE the handler, so declining inside it kills the chord.
   const controller = await readComponentSource();
   assert.match(controller, /claims: \(\) => !isSurfaceBackgrounded\(/);
-  const shortcut = await readFile(
-    new URL("../src/features/settings/hooks/use-shortcut.ts", import.meta.url),
-    "utf8",
-  );
-  const consume = shortcut.indexOf("event.preventDefault();");
+  const consume = USE_SHORTCUT.indexOf("event.preventDefault();");
   assert.ok(consume > 0);
-  assert.ok(shortcut.lastIndexOf("latestRef.current.claims?.()", consume) > 0);
+  assert.ok(
+    USE_SHORTCUT.lastIndexOf("latestRef.current.claims?.()", consume) > 0,
+  );
 });
 
 test("the Enter that commits an IME candidate is left alone", async () => {
-  const bar = await readFile(
-    new URL(
-      "../src/features/find-in-page/components/find-bar.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   // Ahead of preventDefault, or the composition is discarded before the guard is reached.
-  const enter = bar.slice(bar.indexOf('event.key === "Enter"'));
+  const enter = FIND_BAR.slice(FIND_BAR.indexOf('event.key === "Enter"'));
   const guard = enter.indexOf("isImeComposing(event.nativeEvent)");
   const prevent = enter.indexOf("event.preventDefault()");
   assert.ok(guard > 0 && guard < prevent);
 });
 
 test("closing the bar hands focus back to where it came from", async () => {
-  const bar = await readFile(
-    new URL(
-      "../src/features/find-in-page/components/find-bar.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   // Captured above the effect that focuses the field, or it reads the field it is about to fill.
-  const capture = bar.indexOf("const active = document.activeElement");
-  const takeFocus = bar.indexOf("input.select();");
+  const capture = FIND_BAR.indexOf("const active = document.activeElement");
+  const takeFocus = FIND_BAR.indexOf("input.select();");
   assert.ok(capture > 0 && capture < takeFocus);
-  assert.match(bar, /origin\.focus\(\);/);
+  assert.match(FIND_BAR, /origin\.focus\(\);/);
   // First answer only: StrictMode replays the effect, and by the second run the field has focus.
-  assert.match(bar, /originRef\.current === null &&/);
+  assert.match(FIND_BAR, /originRef\.current === null &&/);
   // Against the bar's element, not `data-find-skip`, which the composer carries.
-  assert.match(bar, /barRef\.current\?\.contains\(active\) !== true/);
-  assert.equal(bar.includes("closest(`[${FIND_SKIP_ATTRIBUTE}]`)"), false);
+  assert.match(FIND_BAR, /barRef\.current\?\.contains\(active\) !== true/);
+  assert.equal(FIND_BAR.includes("closest(`[${FIND_SKIP_ATTRIBUTE}]`)"), false);
   assert.match(
-    bar,
+    FIND_BAR,
     /if \(focused !== null && focused !== document\.body\) return;/,
   );
 });
 
 test("the chat composer is out of the searchable scope", async () => {
   // Its draft lives in a textarea the index cannot read, leaving find only the pill labels.
-  const thread = await readFile(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
+  const thread = await readSrcAsync("components/assistant-ui/thread.tsx");
   const root = thread.slice(thread.indexOf("<ComposerPrimitive.Root"));
   assert.match(
     root.slice(0, root.indexOf(">")),
@@ -2815,24 +2668,22 @@ test("the chat composer is out of the searchable scope", async () => {
 });
 
 test("the reader is kept on the occurrence, not on the number", async () => {
-  const engine = await readFile(
-    new URL(
-      "../src/features/find-in-page/hooks/use-find-in-page.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   assert.match(
-    engine,
+    USE_FIND_IN_PAGE,
     /activeStartRef\.current = active >= 0 \? matches\[active\]\.start : null;/,
   );
   // Read BEFORE the new list is installed, or it is the new list's answer being read back.
-  const read = engine.indexOf("const wasAt = activeStartRef.current;");
-  const install = engine.indexOf("matchesRef.current = matches;", read - 400);
+  const read = USE_FIND_IN_PAGE.indexOf(
+    "const wasAt = activeStartRef.current;",
+  );
+  const install = USE_FIND_IN_PAGE.indexOf(
+    "matchesRef.current = matches;",
+    read - 400,
+  );
   assert.ok(read > 0 && read < install);
-  assert.match(engine, /ordinalOfStart\(matches, wasAt\)/);
+  assert.match(USE_FIND_IN_PAGE, /ordinalOfStart\(matches, wasAt\)/);
   assert.match(
-    engine,
+    USE_FIND_IN_PAGE,
     /at === -1 \? firstMatchFromViewport\(index, matches\) : at/,
   );
 });
@@ -2840,22 +2691,18 @@ test("the reader is kept on the occurrence, not on the number", async () => {
 test("the ordinal survives an append and nothing else", async () => {
   // A streaming reply only adds at the tail; history above, `inert` flipping or a breakpoint
   // revealing a column each renumber the list.
-  const engine = await readFile(
-    new URL(
-      "../src/features/find-in-page/hooks/use-find-in-page.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   // One rule, and it lives in the pure module so the tests below can exercise it directly.
   assert.match(
-    engine,
+    USE_FIND_IN_PAGE,
     /return renumbersMatches\(before, indexRef\.current, activeStartRef\.current\);/,
   );
-  assert.equal(engine.includes("search(false, false)"), false);
-  assert.equal((engine.match(/search\(false, reindex\(\)\)/g) ?? []).length, 2);
+  assert.equal(USE_FIND_IN_PAGE.includes("search(false, false)"), false);
+  assert.equal(
+    (USE_FIND_IN_PAGE.match(/search\(false, reindex\(\)\)/g) ?? []).length,
+    2,
+  );
   assert.match(
-    engine,
+    USE_FIND_IN_PAGE,
     /reindex\(\);\n\s*\/\/[^\n]*\n\s*search\(false, true\);/,
   );
 });
@@ -2863,37 +2710,30 @@ test("the ordinal survives an append and nothing else", async () => {
 test("every navigation waits for the query to settle, buttons included", async () => {
   // The buttons stay enabled on the previous query's count while an edit is pending, and `apply`
   // will not paint until it settles, so calling `next`/`previous` from a click dropped it silently.
-  const bar = await readFile(
-    new URL(
-      "../src/features/find-in-page/components/find-bar.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(bar, /onClick=\{\(\) => stepWhenSettled\(-1\)\}/);
-  assert.match(bar, /onClick=\{\(\) => stepWhenSettled\(1\)\}/);
+  assert.match(FIND_BAR, /onClick=\{\(\) => stepWhenSettled\(-1\)\}/);
+  assert.match(FIND_BAR, /onClick=\{\(\) => stepWhenSettled\(1\)\}/);
   // No control reaches the raw pair, so a new one cannot copy the losing spelling.
-  assert.equal(/onClick=\{(next|previous)\}/.test(bar), false);
+  assert.equal(/onClick=\{(next|previous)\}/.test(FIND_BAR), false);
   // Reaching the handler at all: a settled zero must not disable the walk while the next query is
   // still pending, or editing "no matches" into a match loses the press to a disabled button.
   assert.match(
-    bar,
+    FIND_BAR,
     /const canStep = searching && \(count > 0 \|\| queryPending\);/,
   );
-  assert.equal((bar.match(/disabled=\{!canStep\}/g) ?? []).length, 2);
-  assert.equal(bar.includes("disabled={count === 0}"), false);
+  assert.equal((FIND_BAR.match(/disabled=\{!canStep\}/g) ?? []).length, 2);
+  assert.equal(FIND_BAR.includes("disabled={count === 0}"), false);
   // The helper queues the step and forces the settle rather than dropping it.
   assert.match(
-    bar,
+    FIND_BAR,
     /if \(queryPending\) \{\s*queuedStepsRef\.current\.push\(\{ query, delta \}\);[\s\S]*?settleQuery\(\);/,
   );
 
-  assert.match(bar, /filter\([\s\S]*?\(step\) => step\.query === query/);
+  assert.match(FIND_BAR, /filter\([\s\S]*?\(step\) => step\.query === query/);
 
-  assert.match(bar, /queuedStepsRef\.current = \[\.\.\.pendingSteps\]/);
-  assert.match(bar, /for \(const step of steps\)/);
+  assert.match(FIND_BAR, /queuedStepsRef\.current = \[\.\.\.pendingSteps\]/);
+  assert.match(FIND_BAR, /for \(const step of steps\)/);
 
-  assert.match(bar, /if \(count > 0\) \{\s*for \(const step of steps\)/);
+  assert.match(FIND_BAR, /if \(count > 0\) \{\s*for \(const step of steps\)/);
 });
 
 test("the seam between the workspace and the surfaces in front of it is recorded", () => {
@@ -3054,36 +2894,28 @@ test("history arriving above the reader still renumbers the list", () => {
 
 test("a breakpoint that changes what is rendered invalidates the index", async () => {
   // Crossing one reveals whole columns with nothing in the DOM to observe.
-  const engine = await readFile(
-    new URL(
-      "../src/features/find-in-page/hooks/use-find-in-page.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(engine, /window\.addEventListener\("resize", invalidate\);/);
-  assert.match(engine, /window\.removeEventListener\("resize", invalidate\);/);
   assert.match(
-    engine,
+    USE_FIND_IN_PAGE,
+    /window\.addEventListener\("resize", invalidate\);/,
+  );
+  assert.match(
+    USE_FIND_IN_PAGE,
+    /window\.removeEventListener\("resize", invalidate\);/,
+  );
+  assert.match(
+    USE_FIND_IN_PAGE,
     /const invalidate = \(\) => \{[\s\S]*?REINDEX_INTERVAL_MS\);/,
   );
 });
 
 test("closing preserves the query while leaving the shell forgets the session", async () => {
-  const controller = await readFile(
-    new URL(
-      "../src/features/find-in-page/components/find-in-page.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(controller, /const \[query, setQuery\] = useState\(""\);/);
+  assert.match(FIND_IN_PAGE, /const \[query, setQuery\] = useState\(""\);/);
   assert.match(
-    controller,
+    FIND_IN_PAGE,
     /const close = useCallback\(\(\) => \{[\s\S]*?setOpen\(false\);[\s\S]*?\}, \[\]\);/,
   );
-  assert.equal(controller.includes('setQuery("")'), false);
-  assert.equal(controller.includes("useFindInPageStore"), false);
+  assert.equal(FIND_IN_PAGE.includes('setQuery("")'), false);
+  assert.equal(FIND_IN_PAGE.includes("useFindInPageStore"), false);
 });
 
 test("the capped window follows the reader, not the top of the document", () => {
@@ -3212,58 +3044,36 @@ test("the counter says '+' only when the cap actually cut something off", () => 
 });
 
 test("the cap flag is what the bar renders, not the count", async () => {
-  const engine = await readFile(
-    new URL(
-      "../src/features/find-in-page/hooks/use-find-in-page.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
   assert.match(
-    engine,
+    USE_FIND_IN_PAGE,
     /findMatches\(\s*\n\s*index,\s*\n\s*queryRef\.current,\s*\n\s*MAX_MATCHES \+ 1,/,
   );
-  assert.match(engine, /cappedRef\.current = matches\.length > MAX_MATCHES;/);
+  assert.match(
+    USE_FIND_IN_PAGE,
+    /cappedRef\.current = matches\.length > MAX_MATCHES;/,
+  );
   // Trimmed from the end the reader is further from: a window anchored near the bottom ends at
   // the document's last match.
   assert.match(
-    engine,
+    USE_FIND_IN_PAGE,
     /if \(cappedRef\.current\) dropProbeFurthestFrom\(matches, anchoredAt\);/,
   );
-  assert.match(engine, /let anchoredAt: number \| null = null;/);
-  assert.match(engine, /anchoredAt = viewportOffset\(index\);/);
-  const bar = await readFile(
-    new URL(
-      "../src/features/find-in-page/components/find-bar.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(bar, /\$\{capped \? "\+" : ""\}/);
-  assert.equal(bar.includes("count >= MAX_MATCHES"), false);
+  assert.match(USE_FIND_IN_PAGE, /let anchoredAt: number \| null = null;/);
+  assert.match(USE_FIND_IN_PAGE, /anchoredAt = viewportOffset\(index\);/);
+  assert.match(FIND_BAR, /\$\{capped \? "\+" : ""\}/);
+  assert.equal(FIND_BAR.includes("count >= MAX_MATCHES"), false);
 });
 
 test("Escape is left to the IME while it is composing", async () => {
   // Escape dismisses a candidate. Consumed here, it closes the bar out from under a word still
   // being typed, and the candidate window never sees the key it was aimed at.
-  const bar = await readFile(
-    new URL(
-      "../src/features/find-in-page/components/find-bar.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  const escapeHandler = bar.slice(bar.indexOf("const onEscape ="));
+  const escapeHandler = FIND_BAR.slice(FIND_BAR.indexOf("const onEscape ="));
   const guard = escapeHandler.indexOf("isImeComposing(event)");
   const consume = escapeHandler.indexOf("event.preventDefault()");
   assert.ok(guard > 0 && guard < consume);
   // Safe: the global listener stands aside for a composing event before looking for a binding.
-  const shortcut = await readFile(
-    new URL("../src/features/settings/hooks/use-shortcut.ts", import.meta.url),
-    "utf8",
-  );
   assert.match(
-    shortcut,
+    USE_SHORTCUT,
     /if \(isImeComposing\(event\)\) return;\n\s*const hit = bindings\.find/,
   );
 });
@@ -3317,12 +3127,8 @@ test("the selection fallback only clears what it put there", () => {
 
 test("the generated-image actions are out of the index too", async () => {
   // Persistently transparent text has to say so, since the index cannot tell it from a fade-in.
-  const tool = await readFile(
-    new URL(
-      "../src/components/assistant-ui/tool-ui-image-generation.tsx",
-      import.meta.url,
-    ),
-    "utf8",
+  const tool = await readSrcAsync(
+    "components/assistant-ui/tool-ui-image-generation.tsx",
   );
   const at = tool.indexOf("sm:group-hover/generated-image:opacity-100");
   assert.notEqual(at, -1);
@@ -3335,69 +3141,37 @@ test("the generated-image actions are out of the index too", async () => {
 test("a hover-only badge is out of the index", async () => {
   // An affordance, not an entrance animation, so it is marked at the call site rather than by
   // turning the opacity check on.
-  const sheet = await readFile(
-    new URL(
-      "../src/components/assistant-ui/message-response-details-sheet.tsx",
-      import.meta.url,
-    ),
-    "utf8",
+  const sheet = await readSrcAsync(
+    "components/assistant-ui/message-response-details-sheet.tsx",
   );
   const badge = sheet.slice(sheet.indexOf("aui-response-model-badge") - 400);
   assert.match(
     badge.slice(0, badge.indexOf("aui-response-model-badge")),
     /\{\.\.\.\{ \[FIND_SKIP_ATTRIBUTE\]: "" \}\}/,
   );
-  const index = await readFile(
-    new URL(
-      "../src/features/find-in-page/lib/find-text-index.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(index, /opacityProperty: false/);
+  assert.match(FIND_TEXT_INDEX, /opacityProperty: false/);
 });
 
 test("a container query resizing the scope invalidates the index", async () => {
   // Images is an `@container`, so pinning the sidebar crosses a breakpoint with no resize and
   // no mutation inside the scope.
-  const engine = await readFile(
-    new URL(
-      "../src/features/find-in-page/hooks/use-find-in-page.ts",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(engine, /new ResizeObserver\(\(\) => \{/);
-  assert.match(engine, /sized\.observe\(scope\);/);
-  assert.match(engine, /sized\?\.disconnect\(\);/);
+  assert.match(USE_FIND_IN_PAGE, /new ResizeObserver\(\(\) => \{/);
+  assert.match(USE_FIND_IN_PAGE, /sized\.observe\(scope\);/);
+  assert.match(USE_FIND_IN_PAGE, /sized\?\.disconnect\(\);/);
   // The first delivery is the size the scope already had, and would cost a flatten on every open.
   assert.match(
-    engine,
+    USE_FIND_IN_PAGE,
     /if \(!measured\) \{\s*\n\s*measured = true;\s*\n\s*return;/,
   );
 });
 
 test("nothing of the engine is mounted while the bar is closed", async () => {
-  const controller = await readFile(
-    new URL(
-      "../src/features/find-in-page/components/find-in-page.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.match(controller, /if \(!enabled \|\| !open\) return null;/);
+  assert.match(FIND_IN_PAGE, /if \(!enabled \|\| !open\) return null;/);
   assert.match(
-    controller,
+    FIND_IN_PAGE,
     /lazy\(\(\) => import\("\.\/find-bar-loader\.tsx"\)\)/,
   );
-  assert.equal(controller.includes("useFindInPage("), false);
+  assert.equal(FIND_IN_PAGE.includes("useFindInPage("), false);
 
-  const loadedBar = await readFile(
-    new URL(
-      "../src/features/find-in-page/components/find-bar.tsx",
-      import.meta.url,
-    ),
-    "utf8",
-  );
-  assert.equal((loadedBar.match(/useFindInPage\(/g) ?? []).length, 1);
+  assert.equal((FIND_BAR.match(/useFindInPage\(/g) ?? []).length, 1);
 });

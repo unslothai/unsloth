@@ -13,23 +13,20 @@
 // Read from the source: the node suite has no DOM to compute styles in.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-function read(path: string): string {
-  return readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
-}
+import { readSrc } from "./helpers/kit.ts";
 
-const TAURI = read("components/tauri/update-banner.tsx");
-const WEB = read("components/web/update-banner.tsx");
-const LLAMA = read("components/llama-update-banner.tsx");
-const LLAMA_CHANGELOG = read(
+const TAURI = readSrc("components/tauri/update-banner.tsx");
+const WEB = readSrc("components/web/update-banner.tsx");
+const LLAMA = readSrc("components/llama-update-banner.tsx");
+const LLAMA_CHANGELOG = readSrc(
   "components/update/llama-update-changelog-panel.tsx",
 );
-const NOTES_LAYOUT = read("components/update/update-notes-layout.ts");
-const NOTES = read("components/update/release-notes-panel.tsx");
-const PROVIDER = read("app/provider.tsx");
-const STORE = read("features/settings/stores/monitor-frame-store.ts");
+const NOTES_LAYOUT = readSrc("components/update/update-notes-layout.ts");
+const NOTES = readSrc("components/update/release-notes-panel.tsx");
+const PROVIDER = readSrc("app/provider.tsx");
+const STORE = readSrc("features/settings/stores/monitor-frame-store.ts");
 
 /** The class string opened by `anchor`, up to its closing quote. */
 function classes(source: string, anchor: string): string {
@@ -328,7 +325,7 @@ test("the rail's block gutter costs the cards no room", () => {
   // The gutter drops the rail's box to the floor and `-mx-3` put it 4px from the right
   // edge, so it spans the window's resize grips, which are under it on Tailwind's scale.
   // All eight: a narrow window spans the rail across the north and west targets too.
-  const TITLEBAR = read("components/tauri/window-titlebar.tsx");
+  const TITLEBAR = readSrc("components/tauri/window-titlebar.tsx");
   // A z-index on the toolbar would read as protection and give none: it sits inside a
   // positioned, numbered header, which is a stacking context.
   const toolbar = TITLEBAR.slice(

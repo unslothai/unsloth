@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import {
   applyModelLoadConfigToRuntime,
+  clearModelConfigHandoff,
   currentRuntimePerModelConfig,
   type DeletedModelRef,
   type ExternalConnectionRef,
@@ -14,23 +16,23 @@ import {
   type PerModelConfig,
   isServedByMlx,
   loadedContextFields,
-  resolveInitialConfig,
+  modelConfigHandoffForDestination,
+  resolveResidentInitialConfig,
   SidebarModelConfig,
   useActiveModelConfig,
+  useModelConfigHandoffStore,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { usePlatformStore } from "@/config/env";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
-  DropdownMenu,
-  DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -694,9 +696,9 @@ const CompareContent = memo(function CompareContent({
   );
 });
 
-/** One column in the compare layout: a ChatRuntimeProvider and a Thread with hideComposer. Each
- *  pane is `flex-1 basis-0 min-h-0 min-w-0` so panes share space equally and the inner
- *  viewport scrolls instead of spilling. */
+/** One column in the compare layout: a ChatRuntimeProvider and a Thread with hideComposer. Each pane is
+ *  `flex-1 basis-0 min-h-0 min-w-0` so panes share space equally and the inner viewport scrolls instead of
+ *  spilling. */
 function ComparePane({
   modelType,
   pairId,
@@ -749,6 +751,7 @@ function ComparePane({
 }
 
 function useCompareReloadReadiness(pairId: string): (pane: string) => void {
+  const signalReady = useAppShellReadySignal();
   const stateRef = useRef({
     pairId,
     panes: new Set<string>(),
@@ -768,15 +771,15 @@ function useCompareReloadReadiness(pairId: string): (pane: string) => void {
         return;
       }
       state.sent = true;
-      window.dispatchEvent(new Event("unsloth:app-shell-ready"));
+      signalReady();
     },
-    [pairId],
+    [pairId, signalReady],
   );
 }
 
-/** Shared shell for both compare variants: a flex column with the two panes as siblings and the
- *  shared composer docked at the bottom. Flex, not grid: grid rows with 1fr triggered resize
- *  thrash in assistant-ui's autoscroll on breakpoint crossings. */
+/** Shared shell for both compare variants: a flex column with the two panes as siblings and the shared composer
+ *  docked at the bottom. Flex, not grid: grid rows with 1fr triggered resize thrash in assistant-ui's autoscroll
+ *  on breakpoint crossings. */
 function CompareShell({
   handlesRef,
   children,
@@ -831,15 +834,15 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const checkpointIsLora = useIsLoraCompare();
 
-  // Global on purpose: a first compare run starts before either thread exists, so there is no pair
-  // id to scope BY. The gate exists at all because these ids feed ComparePane's
-  // `initialThreadId`, so learning them mid-run points ThreadAutoSwitch at a live thread.
+  // Global on purpose: a first compare run starts before either thread exists, so there is no pair id to scope
+  // BY. The gate exists at all because these ids feed ComparePane's `initialThreadId`, so learning them mid-run
+  // points ThreadAutoSwitch at a live thread.
   const anyRunning = useChatRuntimeStore(
     (s) => Object.keys(s.localRunByThreadId).length > 0,
   );
-  // ...but only RE-lists wait. The shared provider (#8908) keeps a base chat's run alive across
-  // the switch into compare, so `anyRunning` is true on arrival for an unrelated reason, and
-  // gating the FIRST list on it left an existing compare on blank runtimes.
+  // ...but only RE-lists wait. The shared provider (#8908) keeps a base chat's run alive across the switch into
+  // compare, so `anyRunning` is true on arrival for an unrelated reason, and gating the FIRST list on it left an
+  // existing compare on blank runtimes.
   const listedPairRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -1331,6 +1334,7 @@ function ProjectLanding({
   // view switch now (#8908), so the owner of that one reports readiness down.
   runtimeReady: boolean;
 }): ReactElement {
+  const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
   // Gates body-portaled surfaces so they cannot linger or act while the landing is off-route.
   const active = useChatActive();
@@ -1594,9 +1598,9 @@ function ProjectLanding({
     }
     if (!activeThreadId) {
       if (resumed && pendingNewThreadId) {
-        // ...unless it was deleted while another view held the screen. Nothing else clears this id, so
-        // restoring a tombstoned thread would put a conversation storage no longer has back on
-        // screen. Fall through to the rotate below.
+        // ...unless it was deleted while another view held the screen. Nothing else clears this id, so restoring a
+        // tombstoned thread would put a conversation storage no longer has back on screen. Fall through to the
+        // rotate below.
         if (!isChatThreadDeleted(pendingNewThreadId)) {
           useChatRuntimeStore.getState().setActiveThreadId(pendingNewThreadId);
           return;
@@ -1616,9 +1620,9 @@ function ProjectLanding({
     ) {
       return;
     }
-    // Hand the composer's attach choice to the chat it just created: setting this swaps
-    // ProjectComposer for Thread, so the bar holding the choice unmounts and its cleanup drops
-    // it. Its own choice only, or a later send would consume another composer's pick.
+    // Hand the composer's attach choice to the chat it just created: setting this swaps ProjectComposer for
+    // Thread, so the bar holding the choice unmounts and its cleanup drops it. Its own choice only, or a later
+    // send would consume another composer's pick.
     const captured = pendingTargetClaimRef.current;
     useChatRuntimeStore
       .getState()
@@ -1691,8 +1695,8 @@ function ProjectLanding({
       return;
     }
     reloadReadySent.current = true;
-    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
-  }, [dataLoaded, items, previews, runtimeReady]);
+    signalReady();
+  }, [dataLoaded, items, previews, runtimeReady, signalReady]);
 
   return (
     <>
@@ -1722,61 +1726,60 @@ function ProjectLanding({
               <h1 className="min-w-0 flex-1 truncate font-sans text-ui-30 font-medium leading-tight tracking-normal text-foreground">
                 {projectName}
               </h1>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild={true}>
+              <NonModalDropdownMenu
+                side="bottom"
+                align="end"
+                sideOffset={6}
+                className="unsloth-plus-menu menu-flat-destructive w-52"
+                trigger={(triggerRef) => (
                   <button
+                    ref={triggerRef}
                     type="button"
                     aria-label="Project options"
                     className="inline-flex size-9 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring data-[state=open]:bg-muted data-[state=open]:text-foreground"
                   >
                     <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-5" />
                   </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  side="bottom"
-                  align="end"
-                  sideOffset={6}
-                  className="unsloth-plus-menu menu-flat-destructive w-52"
+                )}
+              >
+                <DropdownMenuItem
+                  onSelect={() => {
+                    setProjectNameDraft(projectName);
+                    setRenamingProject(true);
+                  }}
                 >
-                  <DropdownMenuItem
-                    onSelect={() => {
-                      setProjectNameDraft(projectName);
-                      setRenamingProject(true);
-                    }}
-                  >
-                    <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
-                    <span>Rename project</span>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => togglePinProject(projectId)}>
-                    <HugeiconsIcon icon={projectPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
-                    <span>{projectPinned ? "Unpin project" : "Pin project"}</span>
-                  </DropdownMenuItem>
-                  <DropdownMenuSub>
-                    <DropdownMenuSubTrigger>
-                      <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
-                      <span>Export</span>
-                    </DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent className="unsloth-plus-menu w-48">
-                      {PROJECT_CHAT_EXPORT_OPTIONS.map(({ label, format }) => (
-                        <DropdownMenuItem
-                          key={format}
-                          onSelect={() => void handleProjectExport(format)}
-                        >
-                          {label}
-                        </DropdownMenuItem>
-                      ))}
-                    </DropdownMenuSubContent>
-                  </DropdownMenuSub>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem
-                    variant="destructive"
-                    onSelect={() => setDeletingProject(true)}
-                  >
-                    <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
-                    <span>Delete project</span>
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+                  <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
+                  <span>Rename project</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => togglePinProject(projectId)}>
+                  <HugeiconsIcon icon={projectPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
+                  <span>{projectPinned ? "Unpin project" : "Pin project"}</span>
+                </DropdownMenuItem>
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
+                    <span>Export</span>
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="unsloth-plus-menu w-48">
+                    {PROJECT_CHAT_EXPORT_OPTIONS.map(({ label, format }) => (
+                      <DropdownMenuItem
+                        key={format}
+                        onSelect={() => void handleProjectExport(format)}
+                      >
+                        {label}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  variant="destructive"
+                  onSelect={() => setDeletingProject(true)}
+                >
+                  <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                  <span>Delete project</span>
+                </DropdownMenuItem>
+              </NonModalDropdownMenu>
             </div>
 
             <ProjectComposer
@@ -1835,9 +1838,9 @@ function ProjectLanding({
                               setRenameDraft(event.target.value)
                             }
                             onKeyDown={(event) => {
-                              // Ignore keydowns fired mid-IME-composition (CJK) so a candidate-confirming
-                              // Enter does not commit the rename. Guarded before the key branch so Escape
-                              // is covered too (isComposing on WebKit, 229 on Chromium).
+                              // Ignore keydowns fired mid-IME-composition (CJK) so a candidate-confirming Enter does not commit
+                              // the rename. Guarded before the key branch so Escape is covered too (isComposing on
+                              // WebKit, 229 on Chromium).
                               if (
                                 event.nativeEvent.isComposing ||
                                 event.keyCode === 229
@@ -1897,9 +1900,14 @@ function ProjectLanding({
                             formatProjectChatDate(item.createdAt)}
                         </span>
                       </button>
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
+                      <NonModalDropdownMenu
+                        side="bottom"
+                        align="end"
+                        sideOffset={4}
+                        className="unsloth-plus-menu menu-flat-destructive w-56"
+                        trigger={(triggerRef) => (
                           <button
+                            ref={triggerRef}
                             type="button"
                             onClick={(event) => event.stopPropagation()}
                             aria-label="Chat options"
@@ -1911,133 +1919,127 @@ function ProjectLanding({
                               className="size-icon"
                             />
                           </button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent
-                          side="bottom"
-                          align="end"
-                          sideOffset={4}
-                          className="unsloth-plus-menu menu-flat-destructive w-56"
+                        )}
+                      >
+                        <DropdownMenuItem onSelect={() => openRename(item)}>
+                          <HugeiconsIcon
+                            icon={Edit03Icon}
+                            strokeWidth={1.75}
+                            className="size-icon"
+                          />
+                          <span>Rename</span>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onSelect={() => togglePinnedChat(item.id)}
                         >
-                          <DropdownMenuItem onSelect={() => openRename(item)}>
+                          <HugeiconsIcon
+                            icon={
+                              pinnedChatIdSet.has(item.id)
+                                ? PinOffIcon
+                                : PinIcon
+                            }
+                            strokeWidth={1.75}
+                            className="size-icon"
+                          />
+                          <span>
+                            {pinnedChatIdSet.has(item.id)
+                              ? "Unpin chat"
+                              : "Pin chat"}
+                          </span>
+                        </DropdownMenuItem>
+                        <DropdownMenuSub>
+                          <DropdownMenuSubTrigger>
                             <HugeiconsIcon
-                              icon={Edit03Icon}
+                              icon={FolderExportIcon}
                               strokeWidth={1.75}
                               className="size-icon"
                             />
-                            <span>Rename</span>
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onSelect={() => togglePinnedChat(item.id)}
-                          >
-                            <HugeiconsIcon
-                              icon={
-                                pinnedChatIdSet.has(item.id)
-                                  ? PinOffIcon
-                                  : PinIcon
+                            <span>Move to project</span>
+                          </DropdownMenuSubTrigger>
+                          <DropdownMenuSubContent className="unsloth-plus-menu w-52">
+                            <DropdownMenuItem
+                              disabled={item.projectId !== projectId}
+                              onSelect={() =>
+                                void handleMoveToProject(item, null)
                               }
-                              strokeWidth={1.75}
-                              className="size-icon"
-                            />
-                            <span>
-                              {pinnedChatIdSet.has(item.id)
-                                ? "Unpin chat"
-                                : "Pin chat"}
-                            </span>
-                          </DropdownMenuItem>
-                          <DropdownMenuSub>
-                            <DropdownMenuSubTrigger>
-                              <HugeiconsIcon
-                                icon={FolderExportIcon}
-                                strokeWidth={1.75}
-                                className="size-icon"
-                              />
-                              <span>Move to project</span>
-                            </DropdownMenuSubTrigger>
-                            <DropdownMenuSubContent className="unsloth-plus-menu w-52">
+                            >
+                              <span>Recents</span>
+                            </DropdownMenuItem>
+                            {projects.map((p) => (
                               <DropdownMenuItem
-                                disabled={item.projectId !== projectId}
+                                key={p.id}
+                                disabled={item.projectId === p.id}
                                 onSelect={() =>
-                                  void handleMoveToProject(item, null)
+                                  void handleMoveToProject(item, p.id)
                                 }
                               >
-                                <span>Recents</span>
+                                <HugeiconsIcon
+                                  icon={Folder01Icon}
+                                  strokeWidth={1.75}
+                                  className="size-icon"
+                                />
+                                <span className="truncate">{p.name}</span>
                               </DropdownMenuItem>
-                              {projects.map((p) => (
+                            ))}
+                          </DropdownMenuSubContent>
+                        </DropdownMenuSub>
+                        <DropdownMenuSub>
+                          <DropdownMenuSubTrigger>
+                            <HugeiconsIcon
+                              icon={Download01Icon}
+                              strokeWidth={1.75}
+                              className="size-icon"
+                            />
+                            <span>Export</span>
+                          </DropdownMenuSubTrigger>
+                          <DropdownMenuSubContent className="unsloth-plus-menu w-52">
+                            {PROJECT_CHAT_EXPORT_OPTIONS.map(
+                              ({ label, format }) => (
                                 <DropdownMenuItem
-                                  key={p.id}
-                                  disabled={item.projectId === p.id}
+                                  key={format}
                                   onSelect={() =>
-                                    void handleMoveToProject(item, p.id)
+                                    void handleExport(item, format)
                                   }
                                 >
-                                  <HugeiconsIcon
-                                    icon={Folder01Icon}
-                                    strokeWidth={1.75}
-                                    className="size-icon"
-                                  />
-                                  <span className="truncate">{p.name}</span>
+                                  {label}
                                 </DropdownMenuItem>
-                              ))}
-                            </DropdownMenuSubContent>
-                          </DropdownMenuSub>
-                          <DropdownMenuSub>
-                            <DropdownMenuSubTrigger>
-                              <HugeiconsIcon
-                                icon={Download01Icon}
-                                strokeWidth={1.75}
-                                className="size-icon"
-                              />
-                              <span>Export</span>
-                            </DropdownMenuSubTrigger>
-                            <DropdownMenuSubContent className="unsloth-plus-menu w-52">
-                              {PROJECT_CHAT_EXPORT_OPTIONS.map(
-                                ({ label, format }) => (
-                                  <DropdownMenuItem
-                                    key={format}
-                                    onSelect={() =>
-                                      void handleExport(item, format)
-                                    }
-                                  >
-                                    {label}
-                                  </DropdownMenuItem>
-                                ),
-                              )}
-                            </DropdownMenuSubContent>
-                          </DropdownMenuSub>
-                          <DropdownMenuItem
-                            onSelect={() => void handleSaveAsSource(item)}
-                          >
-                            <HugeiconsIcon
-                              icon={BookOpen01Icon}
-                              strokeWidth={1.75}
-                              className="size-icon"
-                            />
-                            <span>Save to project sources</span>
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            onSelect={() => void handleArchive(item)}
-                          >
-                            <HugeiconsIcon
-                              icon={Archive03Icon}
-                              strokeWidth={1.75}
-                              className="size-icon"
-                            />
-                            <span>Archive</span>
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            variant="destructive"
-                            onSelect={() => handleDelete(item)}
-                          >
-                            <HugeiconsIcon
-                              icon={Delete02Icon}
-                              strokeWidth={1.75}
-                              className="size-icon"
-                            />
-                            <span>Delete</span>
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                              ),
+                            )}
+                          </DropdownMenuSubContent>
+                        </DropdownMenuSub>
+                        <DropdownMenuItem
+                          onSelect={() => void handleSaveAsSource(item)}
+                        >
+                          <HugeiconsIcon
+                            icon={BookOpen01Icon}
+                            strokeWidth={1.75}
+                            className="size-icon"
+                          />
+                          <span>Save to project sources</span>
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onSelect={() => void handleArchive(item)}
+                        >
+                          <HugeiconsIcon
+                            icon={Archive03Icon}
+                            strokeWidth={1.75}
+                            className="size-icon"
+                          />
+                          <span>Archive</span>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          variant="destructive"
+                          onSelect={() => handleDelete(item)}
+                        >
+                          <HugeiconsIcon
+                            icon={Delete02Icon}
+                            strokeWidth={1.75}
+                            className="size-icon"
+                          />
+                          <span>Delete</span>
+                        </DropdownMenuItem>
+                      </NonModalDropdownMenu>
                     </div>
                   );
                 })}
@@ -2169,9 +2171,8 @@ type PendingHubAutoLoad = {
   originGgufVariant: string | null;
 };
 
-// `search` comes from RootLayout (not useSearch) so ChatPage stays mounted off-route, frozen to
-// the last /chat search. `active` is false off-route: close portaled surfaces and stop
-// route-specific listeners.
+// `search` comes from RootLayout (not useSearch) so ChatPage stays mounted off-route, frozen to the last /chat
+// search. `active` is false off-route: close portaled surfaces and stop route-specific listeners.
 export function ChatPage({
   search,
   active,
@@ -2189,9 +2190,9 @@ export function ChatPage({
     const store = useChatRuntimeStore.getState();
     const wasIncognito = store.incognito;
     store.setIncognito(!store.incognito);
-    // On an empty scratch chat there is nothing to abandon, so flip in place: navigating would
-    // remount the thread and bounce the composer. Otherwise start a clean chat so the temporary
-    // session cannot inherit or leave behind a persisted thread.
+    // On an empty scratch chat there is nothing to abandon, so flip in place: navigating would remount the thread
+    // and bounce the composer. Otherwise start a clean chat so the temporary session cannot inherit or leave
+    // behind a persisted thread.
     const onEmptyScratchChat =
       !search.thread &&
       !search.compare &&
@@ -2259,6 +2260,24 @@ export function ChatPage({
   // Controlled, so the chord can open the switcher and not just its trigger.
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
+  const modelConfigRequest = useModelConfigHandoffStore((state) =>
+    modelConfigHandoffForDestination(state.request, {
+      active,
+      newChatId: search.new,
+      threadId: search.thread,
+      compareId: search.compare,
+      projectId: search.project,
+    }),
+  );
+  const handleModelConfigRequestAdopted = useCallback(
+    (requestId: string) => {
+      setSettingsOpen(false);
+      setModelSelectorLocked(false);
+      setModelSelectorOpen(true);
+      clearModelConfigHandoff(requestId);
+    },
+    [setSettingsOpen],
+  );
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
   // Latest non-compare view, so exiting compare can restore it even when compare was opened from a
   // path that does not set viewBeforeCompareRef.
@@ -2353,9 +2372,9 @@ export function ChatPage({
   const persistedActiveThreadId = isAssistantLocalThreadId(activeThreadId)
     ? null
     : activeThreadId;
-  // A ?new=<nonce> chat has no thread in the URL before or after its first send, and for the first
-  // render the store still holds the PREVIOUS chat's id until ThreadNewChatSwitch blanks it,
-  // so latch on having seen it blanked for this nonce.
+  // A ?new=<nonce> chat has no thread in the URL before or after its first send, and for the first render the
+  // store still holds the PREVIOUS chat's id until ThreadNewChatSwitch blanks it, so latch on having seen it
+  // blanked for this nonce.
   const newChatBlankedRef = useRef<string | null>(null);
   if (
     search.new &&
@@ -2416,7 +2435,10 @@ export function ChatPage({
       source?: string;
     }) => {
       if (selection.source === "external") return null;
-      const resolved = resolveInitialConfig(selection.id, selection.ggufVariant);
+      const resolved = resolveResidentInitialConfig(
+        selection.id,
+        selection.ggufVariant,
+      );
       return resolved.remembered ? resolved.config : null;
     },
     [],
@@ -2555,9 +2577,8 @@ export function ChatPage({
     const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
       provider?.providerType,
     );
-    // Kimi's k2.6/k2.5 default to thinking enabled server-side, so the Think pill comes up clicked.
-    // Search stays off; the composer's mutual-exclusion handlers flip the two.
-    // Per https://platform.kimi.ai/docs/models.
+    // Kimi's k2.6/k2.5 default to thinking enabled server-side, so the Think pill comes up clicked. Search stays
+    // off; the composer's mutual-exclusion handlers flip the two. Per https://platform.kimi.ai/docs/models.
     const isKimi = provider?.providerType === "kimi";
     // Web search on by default only for Anthropic and OpenAI, both with structured citations.
     // OpenRouter and Kimi work on opt-in but are less reliable.
@@ -2578,10 +2599,9 @@ export function ChatPage({
     const storedWebFetchToolsEnabled =
       threadScopedOverride("webFetchToolsEnabled") ??
       loadOptionalBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY);
-    // Unsloth runs Search and Code itself for any provider that advertises the capability, so a
-    // self-hosted connection has no hosted builtin to key off. Keying the pill state on the
-    // hosted flags alone discarded the saved preference on every reload and sent
-    // enable_tools: false.
+    // Unsloth runs Search and Code itself for any provider that advertises the capability, so a self-hosted
+    // connection has no hosted builtin to key off. Keying the pill state on the hosted flags alone discarded the
+    // saved preference on every reload and sent enable_tools: false.
     const supportsStudioToolsHere =
       providerModelSupportsStudioTools(
         provider?.providerType,
@@ -2760,9 +2780,9 @@ export function ChatPage({
       ? "single:implicit"
       : artifactViewKey;
 
-  // Compare replaces the shared provider on screen, so the base view is kept mounted behind it:
-  // unmounting runs useLocalRuntime's detach(), the backend cancels on the disconnect, and a
-  // project chat's run would die. Frozen to the last non-compare view.
+  // Compare replaces the shared provider on screen, so the base view is kept mounted behind it: unmounting runs
+  // useLocalRuntime's detach(), the backend cancels on the disconnect, and a project chat's run would die. Frozen
+  // to the last non-compare view.
   const keptBaseViewRef = useRef<{
     view: Exclude<ChatView, { mode: "compare" }>;
     attachmentTargetKey: string;
@@ -2775,9 +2795,9 @@ export function ChatPage({
     keptBaseViewRef.current?.attachmentTargetKey ?? artifactViewKey;
   const baseBackgrounded = view.mode === "compare";
 
-  // #9251's reload signal, taken here because the provider is hoisted. Stored as the project it
-  // belongs to, not a boolean: the hoisted provider is not remounted when the project changes,
-  // so a flag would release the next landing's shell early.
+  // #9251's reload signal, taken here because the provider is hoisted. Stored as the project it belongs to, not
+  // a boolean: the hoisted provider is not remounted when the project changes, so a flag would release the next
+  // landing's shell early.
   const projectLandingId =
     baseView?.mode === "project" ? baseView.projectId : null;
   const [projectRuntimeReadyFor, setProjectRuntimeReadyFor] = useState<
@@ -3403,9 +3423,9 @@ export function ChatPage({
   // Both controls are the header's, and the header drops them in Compare, where each pane carries
   // its own picker. Without the check the chord would toggle state nothing renders.
   const headerPickersShown = active && view.mode !== "compare";
-  // This page stays mounted under a dialog, so `enabled` still says yes while the header is inert;
-  // without a press-time check the chord opens a popover on the covered surface.
-  // Backgrounded, not "not in the foreground": an unrendered layout is not a covered one.
+  // This page stays mounted under a dialog, so `enabled` still says yes while the header is inert; without a
+  // press-time check the chord opens a popover on the covered surface. Backgrounded, not "not in the foreground":
+  // an unrendered layout is not a covered one.
   const chatCovered = () => isSurfaceBackgrounded(COMPOSER_INPUT_SELECTOR);
   useShortcut(
     "openModelPicker",
@@ -3425,9 +3445,9 @@ export function ChatPage({
     },
     { enabled: projectSwitcherShown },
   );
-  // A picker left open would come back on the next visit as a ghost. Off-route is one way to leave
-  // it (this page stays mounted), and so is entering Compare or a standalone chat taking the
-  // project away. Adjusted during render, as React prescribes for derived state.
+  // A picker left open would come back on the next visit as a ghost. Off-route is one way to leave it (this page
+  // stays mounted), and so is entering Compare or a standalone chat taking the project away. Adjusted during
+  // render, as React prescribes for derived state.
   if (!projectSwitcherShown && projectPickerOpen) {
     setProjectPickerOpen(false);
   }
@@ -3554,12 +3574,10 @@ export function ChatPage({
               return;
             }
           }
-          // For local turns, also require the restored count to fit in
-          // the active window. Skip when unknown (external provider).
-          //
-          // llama.cpp only: it stops at the window, so a count past it is stale by
-          // definition. MLX generates straight past instead, where an over-window count
-          // is the true one and the bar has a state for it.
+          // For local turns, also require the restored count to fit in the active window. Skip when unknown
+          // (external provider). llama.cpp only: it stops at the window, so a count past it is stale by definition.
+          // MLX generates straight past instead, where an over-window count is the true one and the bar has a state
+          // for it.
           const limit = store.loadedIsGguf ? store.loadedContextLength : null;
           if (
             typeof limit === "number" &&
@@ -3606,10 +3624,10 @@ export function ChatPage({
         )
         .flatMap((provider) =>
           provider.models.map((model) => {
-            // For OpenRouter's free router the chosen underlying model is latched from `chunk.model`, so
-            // render the chip as `openrouter:<short-chosen>`, dropping the redundant `/free` and the
-            // chosen id's org prefix: inclusionai/ring-2.6-1t-20260508:free becomes
-            // ring-2.6-1t-20260508:free. The `:free` suffix already conveys "free model".
+            // For OpenRouter's free router the chosen underlying model is latched from `chunk.model`, so render the
+            // chip as `openrouter:<short-chosen>`, dropping the redundant `/free` and the chosen id's org prefix:
+            // inclusionai/ring-2.6-1t-20260508:free becomes ring-2.6-1t-20260508:free. The `:free` suffix already
+            // conveys "free model".
             let displayName = model;
             if (
               provider.providerType === "openrouter" &&
@@ -3634,10 +3652,10 @@ export function ChatPage({
         ),
     [externalProvidersForChat, lastOpenRouterChosenModel],
   );
-  // `externalModels` is flat-mapped from `provider.models`, the ids the user ticked, so a model
-  // unticked in the connection dialog looks exactly like one the provider withdrew; the
-  // connection's cached catalogue tells the two apart. Depends on the store value and the gate
-  // rather than on `externalProvidersForChat`, which is a fresh array each render.
+  // `externalModels` is flat-mapped from `provider.models`, the ids the user ticked, so a model unticked in the
+  // connection dialog looks exactly like one the provider withdrew; the connection's cached catalogue tells the
+  // two apart. Depends on the store value and the gate rather than on `externalProvidersForChat`, which is a
+  // fresh array each render.
   const externalConnections = useMemo<ExternalConnectionRef[]>(
     () =>
       connectionsEnabled
@@ -3706,9 +3724,9 @@ export function ChatPage({
     [models, loraModels, externalModels],
   );
 
-  // The picker's own handler, reached the way the picker reaches it: with the row's metadata, not
-  // the bare id. A local or fine-tuned row is in neither `/api/models/list` nor the external
-  // ids, so without it the switch loads on different arguments.
+  // The picker's own handler, reached the way the picker reaches it: with the row's metadata, not the bare id. A
+  // local or fine-tuned row is in neither `/api/models/list` nor the external ids, so without it the switch loads
+  // on different arguments.
   const handleSwitchBackToChatModel = useCallback(
     (target: ChatModelSwitchTarget) => {
       handleCheckpointChange(
@@ -3958,13 +3976,17 @@ export function ChatPage({
                 activeGgufVariant={activeGgufVariant}
                 activeModelConfig={activeModelConfig}
                 activeLoadedContextLength={loadedContextLength}
+                configRequest={modelConfigRequest}
+                onConfigRequestAdopted={handleModelConfigRequestAdopted}
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
                 onFoldersChange={refreshLocalModels}
                 onModelsChange={refreshModelLists}
                 deleteDisabled={modelOperationInProgress}
                 variant="ghost"
-                open={active && modelSelectorOpen}
+                open={
+                  active && (modelSelectorOpen || modelConfigRequest !== null)
+                }
                 onOpenChange={handleModelSelectorOpenChange}
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
@@ -4254,7 +4276,7 @@ export function ChatPage({
       </div>
 
       <ChatSettingsPanel
-        open={active && settingsOpen}
+        open={active && modelConfigRequest === null && settingsOpen}
         onOpenChange={(open) => {
           setSettingsOpen(open);
         }}

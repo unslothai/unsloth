@@ -233,5 +233,5 @@ def test_keyless_examples_match_transport_tool_and_full_scope_policy():
     section = KEYLESS_SECTION_TSX.read_text(encoding = "utf-8")
     assert "[cloudflareUrl, onSettingsChange]" in section
     assert "delete" in section[section.find("  full: {") : section.find("  tools: {")]
-    assert "including on localhost" in section
+    assert "disabled on localhost" in section
     assert "read the files and settings in Unsloth" not in section

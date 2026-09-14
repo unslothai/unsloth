@@ -373,7 +373,10 @@ jobs:
     # and exits 0); this simply does not start.
     if: github.event.pull_request.head.repo.fork != true
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 15, the worst case with two accounts: each one's authentication, username
+    # and quota read at the socket ceiling, one shared survey budget, and the
+    # call still in flight when it expires. The suite asserts the arithmetic.
+    timeout-minutes: 15
     outputs:
       should_run: ${{ steps.decide.outputs.should_run }}
       reason: ${{ steps.decide.outputs.reason }}
@@ -383,6 +386,9 @@ jobs:
       # NAME, and the GPU job indexes the secrets context with it.
       account: ${{ steps.decide.outputs.account }}
       account_user: ${{ steps.decide.outputs.account_user }}
+      # The commit under test, resolved once: the GPU job tests THIS and never
+      # re-resolves a moving ref.
+      head_sha: ${{ steps.ref.outputs.head_sha }}
       matrix: ${{ steps.decide.outputs.matrix }}
     steps:
       - name: Harden runner (audit)
@@ -464,6 +470,43 @@ jobs:
       # than being interpolated into the shell, for the same reason the
       # stale-approval warning below does: they are free text set by anyone with
       # write access.
+      # THE COMMIT THE GPU JOB WILL TEST, which is not always this workflow's
+      # own: a dispatch naming `unsloth_ref` tests that ref. Keyed on github.sha
+      # instead, the in-flight check would look for the wrong kernel, and once
+      # the default branch moved two runs of one requested ref could be drawn
+      # onto different accounts and never see each other. A ref that does not
+      # resolve leaves the key EMPTY, so the draw falls back to the run id and
+      # the GPU job stands down on the same ref moments later.
+      - name: Name the commit under test
+        id: ref
+        env:
+          UNSLOTH_REF: ${{ inputs.unsloth_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [ -z "$UNSLOTH_REF" ]; then
+            echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if printf '%s' "$UNSLOTH_REF" | grep -Eq '^[0-9a-f]{40}$'; then
+            RESOLVED="$UNSLOTH_REF"
+          else
+            RESOLVED=''
+            for attempt in 1 2 3; do
+              LS="$(git ls-remote https://github.com/unslothai/unsloth "$UNSLOTH_REF" || true)"
+              PEELED="$(printf '%s\n' "$LS" | grep '\^{}$' | head -n1 | cut -f1)"
+              if [ -n "$PEELED" ]; then
+                RESOLVED="$PEELED"
+              else
+                RESOLVED="$(printf '%s\n' "$LS" | head -n1 | cut -f1)"
+              fi
+              if [ -n "$RESOLVED" ]; then break; fi
+              echo "ls-remote attempt $attempt resolved nothing"
+              sleep 10
+            done
+          fi
+          echo "head_sha=$RESOLVED" >> "$GITHUB_OUTPUT"
+          echo "the gate is keyed on unslothai/unsloth@${RESOLVED:-(unresolved)}"
+
       - name: Decide
         id: decide
         env:
@@ -479,6 +522,9 @@ jobs:
         run: |
           python .github/scripts/kaggle_t4_ci/gate.py \
             --percent 15 \
+            --head-sha '${{ steps.ref.outputs.head_sha }}' \
+            --kind notebook \
+            --slot '${{ inputs.slot || '1' }}' \
             --force '${{ inputs.force || (github.event_name == 'schedule' && 'true' || 'false') }}' \
             --labels "$PR_LABELS" \
             --label-name kaggle-t4-ci \
@@ -493,6 +539,13 @@ jobs:
     needs: gate
     if: needs.gate.outputs.should_run == 'true'
     runs-on: ubuntu-latest
+    # `statuses: write` is what makes the dispatch honest: this job no longer
+    # waits, so it cannot BE the check that says the GPU tests passed. It posts
+    # that verdict against the sha the result belongs to, which need not be this
+    # run's; the collection step below finishes earlier commits' kernels.
+    permissions:
+      contents: read
+      statuses: write
     # A ONE-ELEMENT matrix, whose only job is to carry the account the gate
     # chose into a context that `secrets[...]` can be indexed with.
     #
@@ -738,31 +791,18 @@ jobs:
         env:
           UNSLOTH_REF: ${{ inputs.unsloth_ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          GATE_SHA: ${{ needs.gate.outputs.head_sha }}
         run: |
           if [ -z "$UNSLOTH_REF" ]; then
             echo "ref=$HEAD_SHA" >> "$GITHUB_OUTPUT"
             echo "testing unslothai/unsloth@$HEAD_SHA"
             exit 0
           fi
-          if printf '%s' "$UNSLOTH_REF" | grep -Eq '^[0-9a-f]{40}$'; then
-            RESOLVED="$UNSLOTH_REF"
-          else
-            RESOLVED=''
-            for attempt in 1 2 3; do
-              LS="$(git ls-remote https://github.com/unslothai/unsloth "$UNSLOTH_REF" || true)"
-              # An annotated tag lists the tag OBJECT first and the commit it
-              # points at on the `^{}` line, which is what pip can check out.
-              PEELED="$(printf '%s\n' "$LS" | grep '\^{}$' | head -n1 | cut -f1)"
-              if [ -n "$PEELED" ]; then
-                RESOLVED="$PEELED"
-              else
-                RESOLVED="$(printf '%s\n' "$LS" | head -n1 | cut -f1)"
-              fi
-              if [ -n "$RESOLVED" ]; then break; fi
-              echo "ls-remote attempt $attempt resolved nothing"
-              sleep 10
-            done
-          fi
+          # RESOLVED ONCE, by the gate job, and reused rather than asked again:
+          # a branch or tag can move while this job queues, and a second answer
+          # could name a commit the gate never keyed the draw or the in-flight
+          # check on, whose own run may already be out on the other account.
+          RESOLVED="$GATE_SHA"
           # Every branch above ends here, including the 40-character one. That
           # branch used to be its own exit: a SHA is immutable, so it was
           # accepted on shape alone and nothing asked whether unslothai/unsloth
@@ -1005,6 +1045,61 @@ jobs:
             $SHARED_WHEELS \
             $SKIP
 
+      # BEFORE THE RECHECK, finish what an earlier run started.
+      #
+      # Before and not after: this can take fifteen minutes of downloads, and a
+      # recheck on the far side of that gap is the stale answer it exists to
+      # replace, since the Studio workflow can take the account's last session
+      # meanwhile. Collecting first also frees whatever slot a finished kernel
+      # held.
+      #
+      # The cheap half of collection: this job already has a runner and this
+      # account's token, so a previous commit's finished kernel costs seconds
+      # and publishes against ITS OWN sha. `kaggle-collect.yml` does the same on
+      # a schedule, always but only every ten minutes.
+      #
+      # It also answers whether a kernel for THIS commit is already in flight,
+      # so a re-run does not buy a second session for a result already coming.
+      - name: Collect finished Kaggle runs
+        id: collect
+        if: steps.ref.outputs.stand_down != 'true' && steps.pins.outputs.stand_down != 'true' && steps.stepcount.outputs.stand_down != 'true'
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
+        run: |
+          python .github/scripts/kaggle_t4_ci/collect.py \
+            --outdir kaggle_collected \
+            --expect '${{ steps.build.outputs.payloads }}' \
+            --sha '${{ steps.ref.outputs.ref }}' \
+            --kind notebook \
+            --slot '${{ inputs.slot || '1' }}' \
+            --no-delete \
+            --target-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+      # Post FIRST, delete SECOND: a verdict that fails to reach GitHub leaves
+      # its kernel up for the next pass, and deleting first would make that
+      # failure permanent. The poster is shared by all three workflows; it
+      # expands the slug's abbreviated sha (the statuses API 422s one) and hands
+      # every field to `gh` as its own argument, never through a shell.
+      - name: Post the collected verdicts as commit statuses
+        id: post
+        if: always() && hashFiles('kaggle_collected/collect_result.json') != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python .github/scripts/kaggle_t4_ci/post_statuses.py \
+            --result kaggle_collected/collect_result.json \
+            --out kaggle_collected/posted.json
+
+      - name: Release the kernels whose verdicts were delivered
+        if: always() && hashFiles('kaggle_collected/collect_result.json') != ''
+        env:
+          KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
+        run: |
+          python .github/scripts/kaggle_t4_ci/collect.py \
+            --outdir kaggle_collected \
+            --delete-collected kaggle_collected/collect_result.json \
+            --posted kaggle_collected/posted.json
+
       # kernel-timeout-sec is passed to Kaggle at push time as a BACKSTOP, not
       # the budget control. Measured on 2026-08-11: a kernel pushed with -t 5400
       # whose nbconvert crashed sat in RUNNING for over two hours and stopped
@@ -1014,6 +1109,11 @@ jobs:
       # launch.py's module docstring. One value for both kernels, since Kaggle
       # takes it per push and the larger requirement wins: kernel 2 downloads a
       # 12GB gpt-oss checkpoint before it trains anything.
+      #
+      # `--sha` stands a run down when a kernel of this commit is already up,
+      # and `--slot` is part of that identity: slot 2 is the opt-in for a SECOND
+      # session on the same ref, so a slot-1 kernel does not count against it
+      # while a retry of the slot-2 run itself does.
       #
       # THE GATE'S ANSWER CAN BE STALE BY THE TIME WE GET HERE, and this is the
       # first point at which it cannot be. The `gate` job surveys quota and
@@ -1064,6 +1164,11 @@ jobs:
         run: |
           echo "::warning title=Stood down at the second check::${REASON}"
 
+      - name: Note that this commit is already running on Kaggle
+        if: steps.recheck.outputs.should_run == 'true' && steps.collect.outputs.in_flight == 'true'
+        run: |
+          echo "::notice title=Already in flight::a Kaggle kernel for this commit is still running from an earlier run, so nothing was dispatched. Its result will arrive as the kaggle-t4-notebook commit status."
+
       # --deadline-epoch is when THIS JOB is killed, and the launcher pushes
       # nothing unless its whole worst case still fits before it. Everything
       # above is unbounded -- a checkout, a pip install off a slow index, the
@@ -1080,9 +1185,19 @@ jobs:
       # JOB_TIMEOUT_MINUTES restates this job's timeout-minutes because a job
       # cannot read its own; the harness suite asserts the two agree, so moving
       # one without the other is a red test rather than a silent gap.
-      - name: Launch on Kaggle and collect
+      #
+      # PUSH AND EXIT. Waiting here cost 41.5 minutes of runner per commit
+      # (measured, run 33479481067) against a queue 400-670 deep.
+      #
+      # This job now succeeds by DISPATCHING and proves only that Kaggle
+      # accepted a push. The verdict arrives later as the `kaggle-t4-notebook`
+      # commit status, which cannot be a REQUIRED check while the gate samples
+      # and the workflow path-filters: a skipped commit never gets one.
+      # --commit-sha puts the sha into the slug, the only record outliving this
+      # runner.
+      - name: Dispatch to Kaggle
         id: launch
-        if: steps.recheck.outputs.should_run == 'true'
+        if: steps.recheck.outputs.should_run == 'true' && steps.collect.outputs.in_flight != 'true'
         env:
           KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
           JOB_TIMEOUT_MINUTES: 260
@@ -1095,7 +1210,27 @@ jobs:
             --kernel-timeout-sec 3600 \
             --max-wait 5400 \
             --poll-every 60 \
+            --dispatch \
+            --kind notebook \
+            --slot '${{ inputs.slot || '1' }}' \
+            --commit-sha '${{ steps.ref.outputs.ref }}' \
             --deadline-epoch "$(( JOB_START_EPOCH + JOB_TIMEOUT_MINUTES * 60 ))"
+
+      # Gated on the launcher's verdict, not its exit code: launch.py exits 0
+      # for every stand-down, and a pending status for a kernel that does not
+      # exist is one no collector can ever replace.
+      - name: Mark the dispatch pending on this commit
+        if: steps.launch.outputs.verdict == 'dispatched'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # A required context that has never been posted blocks a pull request
+          # forever with no explanation on the page.
+          gh api "repos/$GITHUB_REPOSITORY/statuses/${{ steps.ref.outputs.ref }}" \
+            -f state=pending -f context=kaggle-t4-notebook \
+            -f description="dispatched to Kaggle; the result is collected when the kernel finishes" \
+            -f target_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --silent || echo "::warning title=Could not post the pending status::kaggle-t4-notebook"
 
       # The launcher collects executed notebooks and the kernel log and nothing
       # else, deliberately. The Studio payload therefore encodes its
@@ -1105,12 +1240,19 @@ jobs:
       # It is safe on a run that carried no Studio payload: the collector finds
       # no encoded evidence and writes nothing.
       - name: Unpack the Playwright evidence
-        if: always() && steps.recheck.outputs.should_run == 'true'
+        if: always() && hashFiles('kaggle_evidence/**/*_output.ipynb', 'kaggle_collected/**/*_output.ipynb') != ''
         continue-on-error: true
         run: |
-          python .github/scripts/kaggle_studio_ci/collect_evidence.py \
-            --evidence kaggle_evidence \
-            --outdir studio_evidence
+          # One kernel per call: the bundle is reassembled from numbered chunks
+          # and one walk over two would splice them together. Both trees, since
+          # a waited-on kernel lands in kaggle_evidence and a collected one in
+          # kaggle_collected.
+          for dir in kaggle_evidence/*/ kaggle_collected/*/; do
+            [ -d "$dir" ] || continue
+            python .github/scripts/kaggle_studio_ci/collect_evidence.py \
+              --evidence "$dir" \
+              --outdir "studio_evidence/$(basename "$dir")"
+          done
 
       # always(): the evidence is most valuable when something went wrong, and
       # the executed notebooks are kilobytes.
@@ -1136,6 +1278,7 @@ jobs:
           name: kaggle-t4-evidence
           path: |
             kaggle_evidence/**
+            kaggle_collected/**
             studio_evidence/**
             kernel*.ipynb
           # 14 rather than the repo's usual 7: this job runs on a minority of
@@ -1157,7 +1300,7 @@ jobs:
       # recheck has no evidence, and "0 of 4 payloads" would read as a failure
       # rather than the skip it is.
       - name: Report
-        if: always() && steps.recheck.outputs.should_run == 'true'
+        if: always() && hashFiles('kaggle_evidence/**/*_output.ipynb') != ''
         run: |
           python .github/scripts/kaggle_t4_ci/report.py \
             --evidence kaggle_evidence \
@@ -1175,7 +1318,7 @@ jobs:
       # report set with `partial` rather than silence, so ungated it would print
       # a PARTIAL section on every leg-list run about a payload it never ran.
       - name: Report Studio
-        if: always() && steps.recheck.outputs.should_run == 'true' && steps.build.outputs.studio == 'true'
+        if: always() && hashFiles('kaggle_evidence/**/*_output.ipynb') != '' && steps.build.outputs.studio == 'true'
         run: |
           python .github/scripts/kaggle_studio_ci/report.py \
             --evidence kaggle_evidence
