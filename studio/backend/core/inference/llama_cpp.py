@@ -478,18 +478,6 @@ _REASONING_FLAG = "--reasoning"
 _REASONING_ON = "on"
 _REASONING_OFF = "off"
 _REASONING_AUTO = "auto"
-# llama-server parses LLAMA_ARG_REASONING itself and accepts more than on/off:
-# common/arg.cpp's is_truthy / is_falsey / is_autoy, verified against b10360.
-# Matching only "on"/"off" read LLAMA_ARG_REASONING=true as "no operator
-# override", so the launch appended its own --reasoning, and a CLI flag
-# overwrites the environment ("will be overwritten by command line argument").
-# Matched case-sensitively and unstripped, exactly as upstream compares them, so
-# a spelling it would reject ("ON", " on ") is never mistaken for a default the
-# server actually ran with. Such a value still counts as the operator's, since
-# appending our own flag cannot rescue a launch the environment already aborts.
-_REASONING_ON_ENV_VALUES = frozenset({_REASONING_ON, "enabled", "true", "1"})
-_REASONING_OFF_ENV_VALUES = frozenset({_REASONING_OFF, "disabled", "false", "0"})
-_REASONING_AUTO_ENV_VALUES = frozenset({_REASONING_AUTO, "-1"})
 _CHAT_TEMPLATE_KWARGS_FLAG = "--chat-template-kwargs"
 _LLAMA_REASONING_ENV = "LLAMA_ARG_REASONING"
 
@@ -7271,17 +7259,25 @@ class LlamaCppBackend:
     ) -> None:
         """Append reasoning defaults, retaining kwargs for older llama-server builds."""
         env_reasoning = os.environ.get(_LLAMA_REASONING_ENV, "")
+        # The shared llama-server vocabulary, not an on/off pair: common/arg.cpp
+        # takes is_truthy / is_falsey / is_autoy here, so LLAMA_ARG_REASONING=true
+        # is as binding as =on. Reading only on/off treated it as no override, and
+        # the launch appended its own --reasoning, which llama-server prefers over
+        # the environment ("will be overwritten by command line argument").
+        # Compared unstripped and case-sensitively, exactly as upstream compares:
+        # "ON" and " on " abort the server rather than meaning on, so neither may
+        # be recorded as a default some server actually ran with.
         # Three states, not two: a value whose polarity we know, an override we
         # must stand aside for without knowing its polarity, and no override at
         # all. `auto` is the third: `unsloth start` writes it unconditionally to
         # mean "follow the template", so it must not read as an operator choice.
-        if env_reasoning in _REASONING_ON_ENV_VALUES:
+        if env_reasoning in _LLAMA_ARG_TRUE_VALUES:
             env_thinking = True
-        elif env_reasoning in _REASONING_OFF_ENV_VALUES:
+        elif env_reasoning in _LLAMA_ARG_FALSE_VALUES:
             env_thinking = False
         else:
             env_thinking = None
-        env_overrides = bool(env_reasoning) and env_reasoning not in _REASONING_AUTO_ENV_VALUES
+        env_overrides = bool(env_reasoning) and env_reasoning not in _LLAMA_ARG_AUTO_VALUES
         if env_thinking is not None:
             self._reasoning_default = env_thinking
         # Resolve the override BEFORE building the kwargs, not after. Deriving
