@@ -10,8 +10,7 @@ import {
 } from "../../hub/lib/model-identity.ts";
 import type { PerModelConfig } from "./per-model-config";
 
-// Normalized like modelStorageKey, or one model spelled two ways is two drafts. The JSON pair
-// also keeps "repo:quant" apart from "repo" at "quant", which a string join folds together.
+// Normalized like modelStorageKey; the JSON pair keeps "repo:quant" apart from "repo" at "quant".
 function draftStorageKey(
   modelId: string,
   ggufVariant: string | null | undefined,
@@ -27,12 +26,7 @@ export type ModelConfigExtraArgsEdit = {
   text: string;
   /** `formatExtraArgs` of the tokens this edit published, to spot an external replacement. */
   source: string;
-  /**
-   * The row's verdict on `text`, undefined until it has one. Shared because only the row reads
-   * the raw text: an editor whose Advanced section is collapsed has no row and judges the
-   * TOKENS, which `formatExtraArgs` quotes back into a balanced string, so it cannot see the
-   * unfinished quote and left its Run button live over an edit the other one refuses.
-   */
+  /** The row's verdict on `text`; an editor with Advanced collapsed has no row to ask. */
   loadable?: boolean;
 };
 
@@ -46,27 +40,16 @@ export type ModelConfigDraftSnapshot = {
 
 const drafts = new Map<string, ModelConfigDraftSnapshot>();
 const listeners = new Set<() => void>();
-// Editors showing each draft. It must outlive one and not the last, or a value typed and never
-// applied returns as the model's settings, over a row saved elsewhere meanwhile.
+// Editors showing each draft: it must outlive one and not the last.
 const hostCounts = new Map<string, number>();
-// Which drafts have had the stored override row folded in, so opening the second host does not
-// re-run the read and write that row back over what the first is showing. Keyed by the DRAFT and
-// nothing else: the two hosts reach one model through differently SHAPED candidate lists, the
-// picker carrying the load-path candidates and the sidebar only the checkpoint, so normalizing
-// their spellings still leaves the lists unequal. Nothing reachable within one draft key changes
-// what the read returns, and the mark dies with the draft.
+// Drafts whose stored override row is folded in. Keyed by the DRAFT, never by the candidate
+// keys: the two hosts build differently SHAPED lists, so no normalizing makes them equal.
 const extraArgsHydratedDrafts = new Set<string>();
-// Drafts the USER has changed, as opposed to ones only seeded or hydrated. Two things turn on
-// it, and neither can be told from the config alone: a stored-row read may not replace an edited
-// draft, because the peer's unsaved edit is already in the config the request compared itself
-// against; and a fresh editor may only re-read an UNedited one.
+// Drafts the USER changed, which the config alone cannot tell: a read may neither replace an
+// edited draft nor re-run over one, since the peer's edit is already in its configAtStart.
 const editedDrafts = new Set<string>();
-// What is TYPED into the Extra Arguments box, which is not what is stored: the config holds
-// argv tokens. Shared for the same reason the config is: the box publishes tokens on every
-// keystroke, valid or not, so a second editor re-quoted a half-typed line into balanced text,
-// judged it loadable and left its Run button live over an edit the first one was refusing.
-// `source` is what the config read when the edit was written, so a Reset or a hydration that
-// replaces llamaExtraArgs supersedes the edit in both editors instead of being re-quoted over.
+// What is TYPED into the Extra Arguments box; the config holds argv tokens. Shared, or a second
+// editor re-quotes a half-typed line into balanced text and judges it loadable.
 const extraArgsEditByDraftKey = new Map<string, ModelConfigExtraArgsEdit>();
 
 /** Stable React key: model + quant only. Live config sync goes through the draft store. */
@@ -105,11 +88,9 @@ export function readModelConfigDraft(
 
 /** Registers one editor and returns its release; the draft and its mark live while any holds. */
 export function retainModelConfigDraft(key: string): () => void {
+  // A fresh editor re-reads the row: the sidebar host never unmounts while a model is resident,
+  // so a permanent mark hid settings another origin saved. Never over an edit.
   if (!editedDrafts.has(key)) {
-    // A fresh editor re-reads the stored row, or a tab whose sidebar never unmounts while a
-    // model is resident could not notice settings another origin saved, and would mirror its
-    // stale copy back over them on the next Run. Never over an edit: that is the one case where
-    // what is on screen is worth more than what is stored.
     extraArgsHydratedDrafts.delete(key);
   }
   hostCounts.set(key, (hostCounts.get(key) ?? 0) + 1);
@@ -164,7 +145,7 @@ export function primeModelConfigDraft(
     };
     drafts.set(key, next);
     editedDrafts.delete(key);
-    // Re-seeded from the resident process, which is as external as a hydration. See above.
+    // Re-seeded from the resident process, as external as a hydration.
     extraArgsEditByDraftKey.delete(key);
     notify();
     return next;
@@ -193,10 +174,8 @@ export function replaceModelConfigDraft(
   };
   drafts.set(key, next);
   editedDrafts.delete(key);
-  // The raw edit described the value being replaced. Kept, it would be treated as current again
-  // the moment a later external value happened to format to the same tokens, resurrecting the
-  // old text and its verdict: token equality alone cannot tell an A -> B -> A round trip from
-  // never having changed.
+  // Token equality cannot tell an A -> B -> A round trip from no change, so the edit goes with
+  // the value it described rather than waiting to be superseded.
   extraArgsEditByDraftKey.delete(key);
   notify();
 }
@@ -296,7 +275,7 @@ export function setExtraArgsEditForDraft(
   notify();
 }
 
-/** Records the row's verdict on the edit already stored; a keystroke retires it by replacing it. */
+/** Records the row's verdict; a keystroke retires it by replacing the edit. */
 export function setExtraArgsEditLoadableForDraft(
   key: string,
   loadable: boolean,

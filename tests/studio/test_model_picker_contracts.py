@@ -2983,40 +2983,27 @@ def test_the_sidebar_settings_editor_reseeds_when_the_live_config_lands():
     page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert "primeModelConfigDraft(" in page
     assert "loadedConfigSignature(loadedConfig)" in page
-    # LAYOUT: both hosts key on loadedConfigSignature, so a live change remounts under the same
-    # draft key and only a layout cleanup runs before the new instance re-primes.
+    # LAYOUT: a live change remounts under the same key, so only a layout cleanup runs first.
     assert "useLayoutEffect(() => retainModelConfigDraft(draftKey), [draftKey])" in page
-    # And the server-override read is marked by the DRAFT, not by an identity built from the
-    # candidate keys: the two hosts derive differently shaped candidate lists for one model, so
-    # any such identity let the second editor miss the mark, re-read the stored row and write it
-    # back over the first's edit.
+    # Marked by the DRAFT, never the candidate keys: the hosts build differently shaped lists.
     assert "isExtraArgsHydratedForDraft(draftKey)" in page
-    # Retaining an UNedited draft retires that mark, so a fresh editor re-reads the stored row:
-    # the sidebar host stays mounted for the whole of a model's residency, so a mark kept for the
-    # life of the draft left the tab unable to notice settings another origin saved, and Run with
-    # Remember on mirrored the stale copy back over them.
+    # Retiring it on retain is how a fresh editor re-reads: the sidebar stays mounted for a
+    # model's whole residency and would never see another origin's save.
     assert "!isModelConfigDraftEdited(draftKey) &&" in page
     assert "markModelConfigDraftEdited(draftKey)" in page
-    # Only once the write landed: a blocked or full localStorage leaves the unsaved values on
-    # screen, and clearing anyway let the next editor's read replace them with the stored row.
+    # Only once the write landed, or the next read replaces values still on screen.
     assert re.search(r"if \(!saveFailed\) \{.*?clearModelConfigDraftEdited\(draftKey\);", page)
-    # An unticked Remember is a pending Forget, and the read captures the already-changed value,
-    # so its own guard passes and it would re-tick the box.
+    # An unticked Remember is a pending Forget the read's own guard would pass and re-tick.
     assert "markModelConfigDraftEdited(draftKey); setRemember(checked === true);" in page
     # A peer that fixed the text lifts this editor's retained refusal.
     assert "(!extraArgsLoadable && !sharedExtraArgsCleared) ||" in page
-    # Run reads the draft, not the render closure: the peer's focused input commits on blur
-    # during the same click, and these refs only reach this editor's own inputs.
+    # Run reads the draft, not the render closure: the peer's input blurs during this click.
     assert "const liveDraftConfig = readModelConfigDraft(draftKey)?.config;" in page
     assert "const peerChanged = !perModelConfigsEqual(baseConfig, config);" in page
     assert "markExtraArgsHydratedForDraft(draftKey)" in page
-    # Reset passes a plain object, and DEFAULT_PER_MODEL_CONFIG names no GPU field, so a
-    # setConfig that merged could not clear a manual placement: the rows kept the pick and
-    # the next Run used it. A plain value replaces, as the useState setter it stands in for does.
+    # DEFAULT_PER_MODEL_CONFIG names no GPU field, so a merge could not clear a manual pick.
     assert 'typeof action === "function" ? action(current) : action' in page
-    # The row is the only reader of the raw text, so its verdict rides on the shared edit: an
-    # editor with Advanced collapsed judges the TOKENS, which formatExtraArgs quotes back into a
-    # balanced string, and would offer to load an unfinished quote the other one refuses.
+    # Only the row reads the raw text; an editor with Advanced collapsed judges the TOKENS.
     # Only ever LOWERED by a row that has no catalogue: until the probe lands every flag reads
     # as unknown, so a second row mounting would otherwise clear a refusal another row verified.
     assert "if (catalog !== null || !loadable) {" in page

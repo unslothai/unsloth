@@ -152,14 +152,12 @@ test("a release that fires twice does not drop another host's draft", () => {
 test("the Extra Arguments box is shared, and an external replacement supersedes it", () => {
   const key = modelConfigDraftKey("unsloth/Extra-Args-GGUF", VARIANT);
   const release = retainModelConfigDraft(key);
-  // Half-typed: parseExtraArgs still yields tokens, so commit publishes them and the other
-  // editor would otherwise re-quote them into something it judges loadable.
+  // Half-typed: parseExtraArgs still yields tokens, which the other editor would re-quote.
   setExtraArgsEditForDraft(key, {
     text: '--chat-template "a b',
     source: '--chat-template "a b"',
   });
   assert.equal(readExtraArgsEditForDraft(key)?.text, '--chat-template "a b');
-  // The second editor reads the same characters, so it reaches the same verdict.
   assert.equal(
     readExtraArgsEditForDraft(key)?.source,
     '--chat-template "a b"',
@@ -175,13 +173,12 @@ test("the row's verdict travels with the edit, and a keystroke retires it", () =
     text: '--chat-template "a b',
     source: '--chat-template "a b"',
   });
-  // Only the row reads the raw text. Without this the other editor judges the TOKENS, which
-  // formatExtraArgs quotes back into a balanced string, and offers to load the unfinished line.
+  // Only the row reads the raw text; the other editor judges the TOKENS, which format back
+  // balanced, and would offer to load the unfinished line.
   setExtraArgsEditLoadableForDraft(key, false);
   assert.equal(readExtraArgsEditForDraft(key)?.loadable, false);
   assert.equal(readExtraArgsEditForDraft(key)?.text, '--chat-template "a b');
-  // The next keystroke publishes a new edit with no verdict yet, so a stale refusal cannot
-  // outlive the text it judged.
+  // A keystroke publishes a new edit with no verdict, so a refusal cannot outlive its text.
   setExtraArgsEditForDraft(key, {
     text: '--chat-template "a b"',
     source: '--chat-template "a b"',
@@ -207,22 +204,19 @@ test("a fresh editor re-reads the stored row, but not over an unsaved edit", () 
   primeModelConfigDraft(key, { config: SEED, remembered: false }, "none");
   markExtraArgsHydratedForDraft(key);
 
-  // Nothing edited: opening the picker retires the mark, so the read runs again and settings
-  // another origin saved are picked up. The sidebar host never unmounts while a model is
-  // resident, so without this the tab could never notice them.
+  // The sidebar never unmounts while a model is resident, so without this retirement the tab
+  // never sees a save made by another origin.
   const picker = retainModelConfigDraft(key);
   assert.equal(isExtraArgsHydratedForDraft(key), false);
   markExtraArgsHydratedForDraft(key);
   picker();
 
-  // With an unsaved edit the mark stands: by the time a second read returned, that edit would
-  // already be in the config it compared itself against, so it would go straight over it.
+  // The mark stands: that edit is already in the config a second read compares itself against.
   markModelConfigDraftEdited(key);
   const pickerAgain = retainModelConfigDraft(key);
   assert.equal(isExtraArgsHydratedForDraft(key), true);
   pickerAgain();
 
-  // A save makes the draft and the stored row the same thing again.
   clearModelConfigDraftEdited(key);
   const pickerOnceMore = retainModelConfigDraft(key);
   assert.equal(isExtraArgsHydratedForDraft(key), false);
@@ -236,7 +230,6 @@ test("re-seeding or replacing a draft retires the edited mark", () => {
   const release = retainModelConfigDraft(key);
   primeModelConfigDraft(key, { config: SEED, remembered: false }, "sig-a");
   markModelConfigDraftEdited(key);
-  // The resident process reloaded: the draft is re-seeded wholesale, so the edit is gone with it.
   primeModelConfigDraft(key, { config: SEED, remembered: false }, "sig-b");
   assert.equal(isModelConfigDraftEdited(key), false);
   markModelConfigDraftEdited(key);
@@ -256,13 +249,10 @@ test("an external replacement retires the raw edit, so an A to B to A round trip
   });
   setExtraArgsEditLoadableForDraft(key, false);
 
-  // Hydration replaces llamaExtraArgs from outside the box.
   replaceModelConfigDraft(key, SEED, { remember: true, savedRemember: true });
-  // Gone, rather than merely out of date: left in place, a later value that happened to format
-  // to '--chat-template "a b"' would make this text current again, refusal and all.
+  // Gone, not stale: a later value formatting to the same tokens would make it current again.
   assert.equal(readExtraArgsEditForDraft(key), undefined);
 
-  // Same for a re-seed from the resident process.
   setExtraArgsEditForDraft(key, { text: "--verbose", source: "--verbose" });
   primeModelConfigDraft(key, { config: SEED, remembered: false }, "sig-b");
   assert.equal(readExtraArgsEditForDraft(key), undefined);

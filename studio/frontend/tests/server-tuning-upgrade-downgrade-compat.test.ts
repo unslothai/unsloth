@@ -619,9 +619,8 @@ test("opening the panel ticks Remember for any model with a resolvable row", () 
     "if \\(",
     "resolvedRow &&",
     "serverConfig &&",
-    // The load-bearing one once the two editors share a draft: an edit the OTHER editor made
-    // before this read started is already in configAtStart, so the comparison below reads as
-    // untouched and the stored row would go straight over it.
+    // Load-bearing once the editors share a draft: an edit the OTHER one made before this
+    // read started is already in configAtStart, so the comparison below reads as untouched.
     "!isModelConfigDraftEdited\\(draftKey\\) &&",
     "configRef\\.current === configAtStart &&",
     "rememberRef\\.current === rememberAtStart",
