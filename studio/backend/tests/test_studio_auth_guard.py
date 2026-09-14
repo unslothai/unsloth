@@ -1637,3 +1637,61 @@ def test_command_positions_explicit_bases_and_chdir_aliases(monkeypatch, tmp_pat
         )
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_a_generic_cwd_keyword_is_not_a_child_process(monkeypatch, tmp_path):
+    # `cwd` is an ordinary keyword name. Reading it as process semantics on any call refused
+    # ordinary code whose function may never touch the path it was handed.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        ordinary = 'describe("auth/config.json", cwd = "../..")'
+        assert tools._python_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+            tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+        for code in (
+            'import subprocess\nsubprocess.run(["cat", "auth/auth.db"], cwd = "../..")',
+            'from subprocess import run\nrun(["cat", "auth/auth.db"], cwd = "../..")',
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_a_context_manager_chdir_restores_on_exit(monkeypatch, tmp_path):
+    # `contextlib.chdir` moves only while its body runs, so a read AFTER the block is back in the
+    # sandbox and must not be resolved against the studio root.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        after = (
+            "import contextlib\n"
+            'with contextlib.chdir("../.."):\n'
+            "    pass\n"
+            'print(open("auth/config.json").read())'
+        )
+        assert tools._python_exec(after, None, 30, _SESSION, disable_sandbox = True) != (
+            tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+        inside = (
+            "import contextlib\n"
+            'with contextlib.chdir("../.."):\n'
+            '    print(open("auth/auth.db", "rb").read())'
+        )
+        assert tools._python_exec(inside, None, 30, _SESSION, disable_sandbox = True) == (
+            tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+        permanent = 'import os\nos.chdir("../..")\nprint(open("auth/auth.db", "rb").read())'
+        assert tools._python_exec(permanent, None, 30, _SESSION, disable_sandbox = True) == (
+            tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+    finally:
+        tools._studio_auth_markers_cache = None

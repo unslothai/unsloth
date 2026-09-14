@@ -3187,7 +3187,14 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
     chdir_names = _chdir_names(tree, chdir_modules)
     name_bases = _literal_name_bases(tree)
     cwds: "list[str | None]" = [workdir]
+    # `contextlib.chdir(p)` moves only while its `with` body runs and restores on exit, so its move
+    # is scoped to that body rather than carried forward. Treating it as permanent refused a later
+    # read of the project's OWN `auth/config.json` in every permission mode.
+    scoped_until = _scoped_chdir_bounds(tree)
+    restore: "list[tuple[int, list]]" = []
     for node in nodes:
+        while restore and getattr(node, "lineno", 0) > restore[-1][0]:
+            cwds = restore.pop()[1]
         if isinstance(node, ast.Call) and _is_chdir_call(node, chdir_names, chdir_modules):
             argument = _chdir_argument(node)
             target = None if argument is None else _folded_path(argument)
@@ -3213,6 +3220,9 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
                             moved.append(nxt)
                         if _references_studio_credential(nxt):
                             return True
+                bound = scoped_until.get(id(node))
+                if bound is not None:
+                    restore.append((bound, cwds))
                 cwds = (moved + [c for c in cwds if c not in moved])[:_MAX_TRACKED_CWDS]
             continue
         if isinstance(node, ast.Call) and _call_runs_from_a_credential_directory(
@@ -3369,6 +3379,51 @@ def _parent_walk_targets(
     return out
 
 
+def _scoped_chdir_bounds(tree) -> dict:
+    """`id(call) -> last line of the with body`, for a chdir used as a context manager.
+
+    `with contextlib.chdir(p):` restores the directory on exit, so the move applies to the body and
+    nothing after it. A call that is not a `with` item is absent here and stays permanent, which is
+    what a bare `os.chdir(p)` does.
+    """
+    bounds: dict = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.With, ast.AsyncWith)):
+            continue
+        end = getattr(node, "end_lineno", None)
+        if end is None:
+            continue
+        for item in node.items:
+            if isinstance(item.context_expr, ast.Call):
+                bounds[id(item.context_expr)] = end
+    return bounds
+
+
+# The APIs that start a child process and accept a `cwd`. Anything else carrying that keyword is an
+# ordinary function whose argument means whatever its author decided.
+_CHILD_PROCESS_RECEIVERS = {
+    "subprocess": frozenset(
+        {"run", "Popen", "call", "check_call", "check_output", "getoutput", "getstatusoutput"}
+    ),
+    "asyncio": frozenset({"create_subprocess_exec", "create_subprocess_shell"}),
+    "os": frozenset({"popen"}),
+}
+_CHILD_PROCESS_BARE_NAMES = frozenset(
+    {"run", "Popen", "call", "check_call", "check_output", "create_subprocess_exec",
+     "create_subprocess_shell"}
+)
+
+
+def _launches_a_child_process(node: "ast.Call") -> bool:
+    """True for a call that starts a process, by module attribute or by a bare imported name."""
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        receiver = func.value
+        name = receiver.id if isinstance(receiver, ast.Name) else getattr(receiver, "attr", "")
+        return func.attr in _CHILD_PROCESS_RECEIVERS.get(name, frozenset())
+    return isinstance(func, ast.Name) and func.id in _CHILD_PROCESS_BARE_NAMES
+
+
 def _call_runs_from_a_credential_directory(
     node: "ast.Call", cwds: "list", name_bases: "dict"
 ) -> bool:
@@ -3377,7 +3432,14 @@ def _call_runs_from_a_credential_directory(
     `subprocess.run([...], cwd = "../..")` leaves this process where it is, so the walk above never
     moves, and each literal argument was tested against the sandbox instead of against the
     directory the child actually runs from.
+
+    Restricted to the APIs that actually start a process. `cwd` is an ordinary keyword name, and
+    reading it as process semantics on any call refused ordinary code:
+    `describe("auth/config.json", cwd = "../..")` was blocked in every permission mode even though
+    the function may never touch that path.
     """
+    if not _launches_a_child_process(node):
+        return False
     given = next((kw.value for kw in node.keywords if kw.arg == "cwd"), None)
     if given is None:
         return False
