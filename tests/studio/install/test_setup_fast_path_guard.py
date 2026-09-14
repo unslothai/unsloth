@@ -510,10 +510,14 @@ def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path):
         "maybe",
         "2",
     ):
-        env = {**os.environ, "UV_OFFLINE": value}
+        # `sh` with a pinned POSIX PATH, as the sibling test above: `bash` on a Windows
+        # runner resolves to the WSL stub, which answers in UTF-16 and runs nothing.
         shell = (
             subprocess.run(
-                ["bash", str(probe)], capture_output = True, text = True, env = env
+                ["sh", str(probe)],
+                capture_output = True,
+                text = True,
+                env = {"PATH": "/usr/bin:/bin", "UV_OFFLINE": value},
             ).stdout.strip()
             == "yes"
         )
