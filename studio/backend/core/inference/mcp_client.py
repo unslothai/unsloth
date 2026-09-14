@@ -1640,14 +1640,27 @@ def _block_attachment(block: Any) -> Optional[tuple[str, str]]:
     return f"{label} not shown to the model", str(data)
 
 
-def _mirrors_payload(value: Any, payloads: set[str]) -> bool:
+_BLOCK_KEYS = frozenset({"type", "mimeType", "mime_type", "uri"})
+_MIRRORED = object()
+
+
+def _strip_payloads(value: Any, payloads: set[str]) -> Any:
+    # drop mirrored payloads and any block left holding only its descriptors
     if isinstance(value, str):
-        return value in payloads
+        return _MIRRORED if value in payloads else value
     if isinstance(value, dict):
-        return any(_mirrors_payload(v, payloads) for v in value.values())
+        kept = {}
+        for key, item in value.items():
+            item = _strip_payloads(item, payloads)
+            if item is not _MIRRORED:
+                kept[key] = item
+        return _MIRRORED if len(kept) < len(value) and kept.keys() <= _BLOCK_KEYS else kept
     if isinstance(value, (list, tuple)):
-        return any(_mirrors_payload(v, payloads) for v in value)
-    return False
+        kept = [
+            s for s in (_strip_payloads(item, payloads) for item in value) if s is not _MIRRORED
+        ]
+        return _MIRRORED if value and not kept else kept
+    return value
 
 
 def _flatten_result(result: Any) -> str:
@@ -1682,11 +1695,14 @@ def _flatten_result(result: Any) -> str:
         if attachment is not None:
             note, data = attachment
             unshown.append(note)
-            payloads.add(data)
+            if data:
+                payloads.add(data)
     body = "\n".join(parts)
-    # the filesystem server mirrors binary blocks in structured_content; keep anything else
+    # the filesystem server mirrors binary blocks in structured_content; keep everything else
     structured = None if has_text else getattr(result, "structured_content", None)
-    if structured is not None and not _mirrors_payload(structured, payloads - {""}):
+    if structured is not None and payloads:
+        structured = _strip_payloads(structured, payloads)
+    if structured is not None and structured is not _MIRRORED:
         body = f"{structured}\n{body}" if body else str(structured)
     if images or omitted or unshown:
         notes = []

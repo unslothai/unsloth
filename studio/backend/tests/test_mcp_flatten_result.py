@@ -228,6 +228,35 @@ def test_zero_byte_attachments_are_noted():
     )
 
 
+def test_partially_mirrored_structured_content_keeps_its_own_fields():
+    structured = {
+        "content": [{"type": "audio", "data": WAV_B64, "mimeType": "audio/wav"}],
+        "duration_s": 1.0,
+        "transcript": "hello",
+    }
+    flat = _flatten_result(_result(_audio(), structured = structured))
+    assert flat == (
+        "{'duration_s': 1.0, 'transcript': 'hello'}\n"
+        "[audio attachment (audio/wav) not shown to the model]"
+    )
+    blob = _blob_resource(mime = "application/pdf", uri = "file:///out/report.pdf")
+    mirrored = {
+        "content": [
+            {
+                "type": "resource",
+                "resource": {
+                    "uri": "file:///out/report.pdf",
+                    "mimeType": "application/pdf",
+                    "blob": PNG_B64,
+                },
+            }
+        ]
+    }
+    assert _flatten_result(_result(blob, structured = mirrored)) == (
+        "[file attachment (application/pdf) <file:///out/report.pdf> not shown to the model]"
+    )
+
+
 def test_audio_only_error_keeps_error_prefix():
     flat = _flatten_result(_result(_audio(), is_error = True))
     assert flat == "Error: [audio attachment (audio/wav) not shown to the model]"
