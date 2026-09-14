@@ -73,7 +73,10 @@ SRC_DIR="$(dirname "$SRC")"
 SRC_INSTALL="$STUDIO_HOME/src"
 [ -e "$SRC_INSTALL" ] || SRC_INSTALL="$SRC"
 
-version_of() { "$PY" -c "from importlib.metadata import version; print(version('unsloth'))" 2>/dev/null || echo "unknown"; }
+# From /: `python -` and `python -c` put the caller's cwd first on sys.path (python -m pip
+# drops it itself), so a checkout there with its own unsloth.egg-info would answer for
+# the venv's installed distribution.
+version_of() { (cd / && "$PY" -c "from importlib.metadata import version; print(version('unsloth'))") 2>/dev/null || echo "unknown"; }
 
 log() { echo "[studio-update] $*"; }
 
@@ -95,12 +98,20 @@ fi
 # A run that was killed outright (docker stop ends in SIGKILL, so no trap ran) can leave
 # its previous tree beside src as .src-prev.*, or its staging tree as .src-update.*.
 # Nothing else writes those names here, and the lock above makes this the only updater,
-# so at start they are always leftovers: put a lone previous tree back when src is gone,
-# and clear the rest.
+# so at start they are always leftovers. A previous tree is a swap that was never
+# committed (commit_update renames it away before deleting it): the tree in src was
+# never proven to serve, so the previous one goes back over it; with no src at all the
+# kill landed between the two moves. Everything else is cleared.
 shopt -s nullglob
 _prev=("$SRC_DIR"/.src-prev.*)
-if [ ! -e "$SRC" ] && [ "${#_prev[@]}" = "1" ] && [ -d "${_prev[0]}" ]; then
-    log "recovering the source tree an interrupted update left at ${_prev[0]}"
+if [ "${#_prev[@]}" = "1" ] && [ -d "${_prev[0]}" ]; then
+    if [ -e "$SRC" ]; then
+        log "an interrupted update left its previous tree at ${_prev[0]}; putting it back over the unverified one"
+        _drop="$(mktemp -d "$SRC_DIR/.src-update.XXXXXX")" && rmdir "$_drop"
+        mv -T "$SRC" "$_drop"
+    else
+        log "recovering the source tree an interrupted update left at ${_prev[0]}"
+    fi
     mv -T "${_prev[0]}" "$SRC"
 fi
 if [ -d "$SRC" ]; then
@@ -191,7 +202,7 @@ trap 'exit 143' TERM
 # How each package is installed right now (editable tree, pinned commit or release), so
 # a failed update can put it back exactly.
 ROLLBACK="$(mktemp)"
-"$PY" - "$ROLLBACK" unsloth unsloth_zoo <<'PY'
+(cd / && "$PY" - "$ROLLBACK" unsloth unsloth_zoo) <<'PY'
 import json, sys
 from importlib.metadata import distribution, PackageNotFoundError
 out = []
@@ -378,7 +389,11 @@ fi
 commit_update() {
     DONE=1
     if [ "$SWAPPED" = "1" ]; then
-        rm -rf "$PREV_SRC"
+        # renamed before it is deleted: a kill during the delete must not leave a half
+        # tree that the next run takes for the previous one and puts back
+        _gone="$(mktemp -d "$SRC_DIR/.src-update.XXXXXX")" && rmdir "$_gone"
+        mv -T "$PREV_SRC" "$_gone" || _gone="$PREV_SRC"
+        rm -rf "$_gone"
     fi
 }
 # The restarted service did not come up: put the previous install back and start that,

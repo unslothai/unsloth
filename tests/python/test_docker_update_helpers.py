@@ -608,6 +608,46 @@ def test_studio_update_recovers_a_source_tree_a_killed_run_moved_aside(tmp_path:
     assert not list(home.glob(".src-prev.*"))
 
 
+def test_studio_update_puts_back_a_previous_tree_a_killed_run_never_committed(tmp_path: Path):
+    """SIGKILL after the swap but before the health check committed it leaves the new
+    tree in src and the previous one beside it. The new tree was never proven to serve,
+    so the previous one goes back; treating it as stale would delete the only known-good
+    tree."""
+    env = _studio_env(tmp_path)
+    home = Path(env["UNSLOTH_STUDIO_HOME"])
+    (home / "src").rename(home / ".src-prev.abc123")
+    (home / "src" / "studio").mkdir(parents = True)
+    (home / "src" / "UNVERIFIED").write_text("never passed the health check\n")
+    res = _run(STUDIO_UPDATE, [], env)
+    assert res.returncode == 0, res.stderr + res.stdout
+    assert "putting it back over the unverified one" in res.stdout, res.stdout
+    assert (home / "src" / "OLD_TREE").exists()
+    assert not (home / "src" / "UNVERIFIED").exists()
+    assert not list(home.glob(".src-*")), "the unverified tree was left behind"
+
+
+def test_studio_update_reads_the_install_record_from_the_venv_not_the_cwd(tmp_path: Path):
+    """`python -` searches the caller's cwd first, so a checkout there with its own
+    dist-info would answer for the venv's installed unsloth and a rollback would
+    reinstall the wrong thing."""
+    env = _studio_env(tmp_path, import_ok = False)
+    site = tmp_path / "site"
+    info = site / "unsloth-2026.9.4.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text("Metadata-Version: 2.1\nName: unsloth\nVersion: 2026.9.4\n")
+    (info / "direct_url.json").write_text('{"url": "file:///opt/venv-src", "dir_info": {"editable": true}}')
+    checkout = tmp_path / "checkout"
+    decoy = checkout / "unsloth-0.0.1.dist-info"
+    decoy.mkdir(parents = True)
+    (decoy / "METADATA").write_text("Metadata-Version: 2.1\nName: unsloth\nVersion: 0.0.1\n")
+    (decoy / "direct_url.json").write_text('{"url": "file:///checkout", "dir_info": {"editable": true}}')
+    res = _run(STUDIO_UPDATE, ["--no-restart"], env, cwd = checkout)
+    assert res.returncode != 0
+    assert "STUB-PIP-REQ -e file:///opt/venv-src" in _calls(env), _calls(env)
+    assert "checkout" not in _calls(env), _calls(env)
+    assert "before: unsloth 2026.9.4" in res.stdout, res.stdout
+
+
 def test_studio_update_ref_uses_the_lockfile_and_does_not_fall_back_to_npm_install(tmp_path: Path):
     env = _studio_env(tmp_path)
     env["STUB_LOCKFILE"] = "1"
