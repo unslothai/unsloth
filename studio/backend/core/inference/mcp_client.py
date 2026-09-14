@@ -59,6 +59,7 @@ class _PrivateMcpTransport:
         self.created_at = time.monotonic()
         self.process = None
         self.http = None
+        self.http_socket = None
         self.session_id = None
         self.protocol = "2024-11-05"
         self.next_id = 1
@@ -203,6 +204,7 @@ class _PrivateMcpTransport:
         connection.auto_open = 0
         self.http = connection
         connection.connect()
+        self.http_socket = connection.sock
         return connection
 
     def exchange(
@@ -226,29 +228,8 @@ class _PrivateMcpTransport:
             message["id"] = request_id
         connection = None
         wire = None
-        settled = threading.Event()
-        watcher = None
-
-        def interrupt_http_wait():
-            while not settled.wait(0.05):
-                if (
-                    cancel_event is not None and cancel_event.is_set()
-                ) or time.monotonic() >= deadline:
-                    self.closed.set()
-                    active = self.http
-                    if active is not None:
-                        try:
-                            if active.sock is not None:
-                                active.sock.shutdown(socket.SHUT_RDWR)
-                        except OSError:
-                            pass
-                        active.close()
-                    return
-
         try:
             if self.process is None:
-                watcher = account_thread(target = interrupt_http_wait, daemon = True)
-                watcher.start()
                 connection = self._connection(deadline)
             elif self.process.poll() is not None:
                 raise _PrivateTransportUnavailable
@@ -272,30 +253,20 @@ class _PrivateMcpTransport:
                 }
                 if self.session_id:
                     headers["Mcp-Session-Id"] = self.session_id
-                # connect/TLS, payload validation and serialization precede the
-                # one-use commitment. No SDK queue, redirect, auth retry or
-                # resumption machinery exists between this guard and the write.
-                self._commit_send(deadline, cancel_event, config_check, context)
-                connection.request("POST", path, body = body, headers = headers)
-                response = connection.getresponse()
-                if not 200 <= response.status < 300:
-                    raise _PrivateTransportUnavailable
-                received_session = response.getheader("Mcp-Session-Id")
-                if received_session:
-                    if self.session_id and received_session != self.session_id:
-                        raise _PrivateTransportUnavailable
-                    self.session_id = received_session
-                if notify:
-                    return None
-                content_type = response.getheader("Content-Type", "").partition(";")[0].lower()
-                if content_type == "text/event-stream":
-                    return self._read_http_events(response, request_id, deadline, cancel_event)
-                if content_type != "application/json":
-                    raise _PrivateTransportUnavailable
-                data = response.read(_PRIVATE_RESPONSE_LIMIT + 1)
-                if len(data) > _PRIVATE_RESPONSE_LIMIT:
-                    raise _PrivateTransportUnavailable
-                return self._response(json.loads(data), request_id)
+                owned_connection = connection
+                connection = None
+                return self._exchange_http(
+                    owned_connection,
+                    path,
+                    body,
+                    headers,
+                    request_id,
+                    deadline,
+                    cancel_event,
+                    notify,
+                    config_check,
+                    context,
+                )
             self._commit_send(deadline, cancel_event, config_check, context)
             # Unbuffered binary stdin writes to the approved live process.
             # A short write is not retried: delivery is unknown and consent spent.
@@ -322,14 +293,92 @@ class _PrivateMcpTransport:
                 if isinstance(item, dict) and item.get("id") == request_id and "method" not in item:
                     return self._response(item, request_id)
         finally:
-            settled.set()
             if wire is not None:
                 wire.clear()
             if connection is not None:
                 connection.close()
                 self.http = None
-            if watcher is not None:
-                watcher.join(timeout = 0.2)
+                self.http_socket = None
+
+    def _exchange_http(
+        self,
+        connection,
+        path,
+        body,
+        headers,
+        request_id,
+        deadline,
+        cancel_event,
+        notify,
+        config_check,
+        context,
+    ):
+        outcome = queue.Queue(maxsize = 1)
+
+        def run():
+            response = None
+            try:
+                # Connect/TLS, payload validation and serialization precede the
+                # one-use commitment. No SDK queue, redirect, auth retry or
+                # resumption machinery exists between this guard and the write.
+                self._commit_send(deadline, cancel_event, config_check, context)
+                connection.request("POST", path, body = body, headers = headers)
+                response = connection.getresponse()
+                if not 200 <= response.status < 300:
+                    raise _PrivateTransportUnavailable
+                received_session = response.getheader("Mcp-Session-Id")
+                if received_session:
+                    if self.session_id and received_session != self.session_id:
+                        raise _PrivateTransportUnavailable
+                    self.session_id = received_session
+                if notify:
+                    value = None
+                else:
+                    content_type = response.getheader("Content-Type", "").partition(";")[0].lower()
+                    if content_type == "text/event-stream":
+                        value = self._read_http_events(response, request_id, deadline, cancel_event)
+                    elif content_type == "application/json":
+                        data = response.read(_PRIVATE_RESPONSE_LIMIT + 1)
+                        if len(data) > _PRIVATE_RESPONSE_LIMIT:
+                            raise _PrivateTransportUnavailable
+                        value = self._response(json.loads(data), request_id)
+                    else:
+                        raise _PrivateTransportUnavailable
+                result = (True, value)
+            except BaseException as error:
+                result = (False, error)
+            finally:
+                if response is not None:
+                    try:
+                        response.close()
+                    except Exception:
+                        pass
+                try:
+                    connection.close()
+                except Exception:
+                    pass
+                if self.http is connection:
+                    self.http = None
+                    self.http_socket = None
+                outcome.put(result)
+
+        account_thread(target = run, daemon = True).start()
+        try:
+            while True:
+                self._check(deadline, cancel_event)
+                try:
+                    succeeded, value = outcome.get(
+                        timeout = min(0.05, max(0.001, deadline - time.monotonic()))
+                    )
+                except queue.Empty:
+                    continue
+                if succeeded:
+                    return value
+                raise value
+        except BaseException:
+            self.closed.set()
+            self._interrupt_http()
+            raise
 
     def _commit_send(self, deadline, cancel_event, config_check, context):
         self._check(deadline, cancel_event)
@@ -381,15 +430,24 @@ class _PrivateMcpTransport:
             # Teardown exceptions are not diagnostic channels for private data.
             self.closed.set()
 
+    def _interrupt_http(self):
+        active_socket = self.http_socket
+        if active_socket is None and self.http is not None:
+            active_socket = self.http.sock
+        if active_socket is not None:
+            try:
+                active_socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            active_socket.close()
+            if active_socket is self.http_socket:
+                self.http_socket = None
+        if self.http is not None:
+            self.http.close()
+
     def _close(self):
         self.closed.set()
-        if self.http is not None:
-            if self.http.sock is not None:
-                try:
-                    self.http.sock.shutdown(socket.SHUT_RDWR)
-                except OSError:
-                    pass
-            self.http.close()
+        self._interrupt_http()
         if self.process is not None:
             if self.process.poll() is None:
                 self.process.kill()
@@ -563,6 +621,12 @@ def _call_private_tool(url, headers, name, args, context, config_check, cancel_e
         clean = context.redact_result(raw)
         if not isinstance(clean, dict):
             raise _PrivateTransportUnavailable
+
+        for field in ("isError", "is_error"):
+            if field in clean and not isinstance(clean[field], bool):
+                raise _PrivateTransportUnavailable
+            if clean.get(field) is True:
+                raise _PrivateTransportUnavailable
 
         # Preserve content validation without constructing an SDK-shaped result:
         # private calls disclose only the fixed completion message.

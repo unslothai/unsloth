@@ -94,6 +94,17 @@ def test_model_schema_offers_only_the_issued_opaque_reference():
             },
             "regular expressions",
         ),
+        (
+            {
+                "type": "object",
+                "properties": {
+                    "image": {"type": "string"},
+                    "options": {"$ref": "#/$defs/Options"},
+                },
+                "$defs": {"Options": {"type": "object"}},
+            },
+            "cannot use references",
+        ),
     ],
 )
 def test_unsupported_mapping_schemas_fail_closed(schema, message):

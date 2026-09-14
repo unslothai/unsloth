@@ -9,12 +9,13 @@ Approval and attachment lookup stay in their own subsystems.
 from __future__ import annotations
 
 import base64
+import codecs
 import copy
 import hashlib
 import json
 import threading
 from types import SimpleNamespace
-from urllib.parse import unquote
+from urllib.parse import unquote, unquote_to_bytes
 
 from .mcp_image_disclosure import MAX_IMAGE_BYTES, McpImageDisclosureError
 
@@ -168,31 +169,73 @@ class _ImageEchoSanitizer:
         self.material = 0
         self.ancestors = set()
         self.found_echo = False
+        self._fingerprint_lower_bounds = {}
         # Decoders also accept nonzero unused pad bits. Enumerate only the
         # possible final character so byte-equivalent inputs remain recognized.
         alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
         unused = {0: 0, 1: 4, 2: 2}[len(data) % 3]
         final = alphabet.index(fingerprint[-1])
         self.final_characters = frozenset(alphabet[final : final + (1 << unused)])
-        reversible = [
-            *((fingerprint[:-1] + char, False) for char in self.final_characters),
-            (data.hex(), True),
-            (base64.b32encode(data).decode("ascii"), True),
-            (base64.b32hexencode(data).decode("ascii"), True),
-            (base64.a85encode(data).decode("ascii"), False),
-            (base64.b85encode(data).decode("ascii"), False),
-        ]
-        self.text_fingerprints = tuple(
-            dict.fromkeys(
-                (
-                    self._normalized_text(encoded).lower()
-                    if fold_case
-                    else self._normalized_text(encoded),
-                    fold_case,
-                )
-                for encoded, fold_case in reversible
+        groups, remainder = divmod(len(data), 4)
+        ascii85_min_length = groups + (remainder + 1 if remainder else 0)
+        self.min_raw_text_fingerprint = min(len(fingerprint), ascii85_min_length)
+
+    def _encoded_fingerprint(self, encode, block_size, max_length, fold_case):
+        """Encode in aligned chunks and stop once the result cannot fit."""
+        name = encode.__name__
+        if self._fingerprint_lower_bounds.get(name, 0) > max_length:
+            return None
+        chunk_size = (64 * 1024 // block_size) * block_size
+        pieces = []
+        pending = ""
+        length = 0
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        for start in range(0, len(self.data), chunk_size):
+            encoded = encode(self.data[start : start + chunk_size])
+            pending += encoded.decode("ascii") if isinstance(encoded, bytes) else encoded
+            final = start + chunk_size >= len(self.data)
+            if final:
+                stable, pending = pending, ""
+            else:
+                cut = len(pending)
+                if pending.endswith("%"):
+                    cut -= 1
+                elif (
+                    len(pending) >= 2
+                    and pending[-2] == "%"
+                    and pending[-1] in "0123456789abcdefABCDEF"
+                ):
+                    cut -= 2
+                stable, pending = pending[:cut], pending[cut:]
+            normalized = decoder.decode(unquote_to_bytes(stable), final = final).translate(
+                _NORMALIZE_BASE64
             )
-        )
+            if fold_case:
+                normalized = normalized.lower()
+            pieces.append(normalized)
+            length += len(normalized)
+            if length > max_length:
+                self._fingerprint_lower_bounds[name] = max(
+                    self._fingerprint_lower_bounds.get(name, 0), length
+                )
+                return None
+        return "".join(pieces)
+
+    def _text_fingerprints(self, max_length):
+        """Yield one bounded reversible encoding at a time."""
+        if len(self.fingerprint) <= max_length:
+            for char in self.final_characters:
+                yield self.fingerprint[:-1] + char, False
+        for encode, block_size, fold_case in (
+            (bytes.hex, 1, True),
+            (base64.b32encode, 5, True),
+            (base64.b32hexencode, 5, True),
+            (base64.a85encode, 4, False),
+            (base64.b85encode, 4, False),
+        ):
+            fingerprint = self._encoded_fingerprint(encode, block_size, max_length, fold_case)
+            if fingerprint is not None:
+                yield fingerprint, fold_case
 
     def _charge(self, size):
         self.material += size
@@ -205,7 +248,7 @@ class _ImageEchoSanitizer:
         start = 0,
     ):
         spans = []
-        for fingerprint, fold_case in self.text_fingerprints:
+        for fingerprint, fold_case in self._text_fingerprints(len(compact) - start):
             haystack = compact.lower() if fold_case else compact
             position = haystack.find(fingerprint, start)
             if position >= 0:
@@ -222,6 +265,8 @@ class _ImageEchoSanitizer:
     ):
         # Base64 is canonical apart from alphabet, padding and ASCII whitespace.
         # A matching canonical encoding therefore represents the same bytes.
+        if len(value) < self.min_raw_text_fingerprint:
+            return False
         normalized = (
             unquote(value).translate(_NORMALIZE_BASE64)
             if "%" in value
@@ -233,14 +278,11 @@ class _ImageEchoSanitizer:
 
     @staticmethod
     def _normalized_text(value):
-        normalized = (
+        return (
             unquote(value).translate(_NORMALIZE_BASE64)
             if "%" in value
             else value.translate(_NORMALIZE_BASE64)
         )
-        marker = ";base64,"
-        position = normalized.lower().find(marker)
-        return normalized[position + len(marker) :] if position >= 0 else normalized
 
     @staticmethod
     def _text_slots(value):
@@ -291,6 +333,9 @@ class _ImageEchoSanitizer:
         slots = [slot for slot in slots if slot[2] != REDACTED_IMAGE]
         if len(slots) < 2:
             return
+        raw = "".join(text for _, _, text in slots)
+        if len(raw) < self.min_raw_text_fingerprint:
+            return
         normalized = [self._normalized_text(text) for _, _, text in slots]
         matched_slots = set()
         combined = "".join(normalized)
@@ -309,7 +354,7 @@ class _ImageEchoSanitizer:
         # exceeding any search bound withholds all candidate slots.
         completed_paths = set()
         work = [0]
-        for fingerprint, fold_case in self.text_fingerprints:
+        for fingerprint, fold_case in self._text_fingerprints(sum(map(len, normalized))):
             texts = [text.lower() for text in normalized] if fold_case else normalized
             paths = self._fragment_paths(texts, fingerprint, work, completed_paths)
             if paths is None:

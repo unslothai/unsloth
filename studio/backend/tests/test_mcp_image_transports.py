@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 
 import pytest
 
@@ -101,6 +102,91 @@ def test_http_send_is_one_use_and_withholds_all_results(http_recipient, caplog, 
     assert len(calls) == 1
 
 
+def test_private_tool_error_returns_fixed_error(monkeypatch):
+    url = "http://recipient.test/mcp"
+    context = make_context()
+
+    def exchange(*args, **kwargs):
+        kwargs["context"].commit_at_send(context.recipient)
+        return {
+            "content": [{"type": "text", "text": "private server detail"}],
+            "isError": True,
+        }
+
+    transport = SimpleNamespace(
+        _configuration = (url, ()),
+        created_at = time.monotonic(),
+        exchange = exchange,
+        close = lambda: None,
+    )
+    monkeypatch.setattr(mcp_client, "_private_recipient", lambda *args, **kwargs: transport)
+
+    result = mcp_client.call_tool_sync(
+        url,
+        None,
+        "inspect_picture",
+        PUBLIC,
+        disclosure_context = context,
+        config_check = lambda: True,
+    )
+    assert result == PRIVATE_CALL_ERROR
+    assert "private server detail" not in result
+
+
+def test_http_revalidates_configuration_in_worker_before_write(monkeypatch):
+    transport = mcp_client._PrivateMcpTransport("http://example.test/mcp", {}, 5)
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    valid = [True]
+    writes = []
+
+    class Connection:
+        sock = None
+
+        def request(self, *args, **kwargs):
+            writes.append((args, kwargs))
+
+        def getresponse(self):
+            raise AssertionError("an invalid configuration must not send")
+
+        def close(self):
+            pass
+
+    connection = Connection()
+
+    def delayed_account_thread(*, target, daemon):
+        def delayed_target():
+            worker_started.set()
+            release_worker.wait(2)
+            target()
+
+        return threading.Thread(target = delayed_target, daemon = daemon)
+
+    def revoke():
+        assert worker_started.wait(2)
+        valid[0] = False
+        release_worker.set()
+
+    monkeypatch.setattr(transport, "_connection", lambda _: connection)
+    monkeypatch.setattr(mcp_client, "account_thread", delayed_account_thread)
+    revoker = threading.Thread(target = revoke, daemon = True)
+    revoker.start()
+    context = make_context(recipient = transport.identity)
+
+    with pytest.raises(Exception):
+        transport.exchange(
+            "tools/call",
+            {"name": "inspect_picture"},
+            context = context,
+            arguments = PUBLIC,
+            config_check = lambda: valid[0],
+        )
+    assert writes == []
+    assert context.spent is False
+    revoker.join(timeout = 2)
+    assert not revoker.is_alive()
+
+
 def test_http_initialize_cancel_interrupts_blocked_response(monkeypatch):
     transport = mcp_client._PrivateMcpTransport("http://example.test/mcp", {}, 30)
     left, right = socket.socketpair()
@@ -143,6 +229,52 @@ def test_http_initialize_cancel_interrupts_blocked_response(monkeypatch):
     assert cancel.is_set()
     assert time.monotonic() - started < 2
     right.close()
+
+
+def test_http_cancel_interrupts_connection_close_response_body():
+    headers_sent = threading.Event()
+    release = threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"
+
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            body = b'{"jsonrpc":"2.0","id":1,"result":{}}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            headers_sent.set()
+            release.wait(5)
+            try:
+                self.wfile.write(body)
+            except OSError:
+                pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target = server.serve_forever, daemon = True)
+    thread.start()
+    cancel = threading.Event()
+    transport = mcp_client._PrivateMcpTransport(f"http://127.0.0.1:{server.server_port}/mcp", {}, 5)
+    timer = threading.Thread(target = lambda: headers_sent.wait(2) and cancel.set(), daemon = True)
+    timer.start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(Exception):
+            transport.exchange("initialize", {}, cancel_event = cancel)
+        assert cancel.is_set()
+        assert time.monotonic() - started < 2
+    finally:
+        release.set()
+        transport.close()
+        server.shutdown()
+        server.server_close()
+        thread.join()
 
 
 def test_stdio_send_redacts_results_and_side_channels(tmp_path, monkeypatch, capfd):

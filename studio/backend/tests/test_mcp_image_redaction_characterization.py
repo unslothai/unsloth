@@ -4,7 +4,9 @@
 """Behavior captured against PR #10871's original implementation."""
 
 import base64
+import gc
 import hashlib
+import tracemalloc
 from types import SimpleNamespace
 
 import pytest
@@ -85,3 +87,70 @@ def test_uncertain_delivery_spends_consent_even_when_commit_fails(commit_result)
     with pytest.raises(redaction.McpImageDisclosureError):
         context.commit_at_send("recipient")
     assert calls == ["recipient"]
+
+
+def test_large_image_request_scan_has_bounded_memory():
+    data = b"\x89PNG\r\n\x1a\n" + b"x" * ((1 << 20) - 8)
+    gc.collect()
+    tracemalloc.start()
+    try:
+        found = redaction.contains_mcp_image_echo(
+            [{"role": "user", "content": "Inspect this image"}], data
+        )
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert found is False
+    assert peak < len(data) * 6
+    fingerprint = base64.b64encode(data).decode("ascii").rstrip("=")
+    sanitizer = redaction._ImageEchoSanitizer(fingerprint, data)
+    assert sanitizer._echo(base64.b32encode(data).decode("ascii"))
+
+
+@pytest.mark.parametrize(
+    ("encode", "block_size", "fold_case"),
+    [
+        (bytes.hex, 1, True),
+        (base64.b32encode, 5, True),
+        (base64.b32hexencode, 5, True),
+        (base64.a85encode, 4, False),
+        (base64.b85encode, 4, False),
+    ],
+)
+def test_chunked_fingerprints_match_complete_encodings(encode, block_size, fold_case):
+    data = (bytes(range(251)) * 280)[:70_003]
+    fingerprint = base64.b64encode(data).decode("ascii").rstrip("=")
+    sanitizer = redaction._ImageEchoSanitizer(fingerprint, data)
+    expected = encode(data)
+    if isinstance(expected, bytes):
+        expected = expected.decode("ascii")
+    expected = sanitizer._normalized_text(expected)
+    if fold_case:
+        expected = expected.lower()
+
+    assert sanitizer._encoded_fingerprint(encode, block_size, len(expected), fold_case) == expected
+
+
+def test_chunked_fingerprint_preserves_percent_escape_at_boundary():
+    encoded = "00000" * 16_381 + "00%41" + "00000" * 3
+    data = base64.b85decode(encoded)
+    fingerprint = base64.b64encode(data).decode("ascii").rstrip("=")
+    sanitizer = redaction._ImageEchoSanitizer(fingerprint, data)
+
+    assert sanitizer._encoded_fingerprint(
+        base64.b85encode, 4, len(encoded), False
+    ) == sanitizer._normalized_text(encoded)
+
+
+def test_ascii85_zero_compression_is_detected_whole_and_fragmented():
+    data = bytes(8)
+    fingerprint = base64.b64encode(data).decode("ascii").rstrip("=")
+    sanitizer = redaction._ImageEchoSanitizer(fingerprint, data)
+    assert base64.a85encode(data) == b"zz"
+    assert sanitizer._echo("zz")
+
+    clean = redaction._ImageEchoSanitizer(fingerprint, data).sanitize(
+        [{"type": "text", "text": "z"}, {"type": "text", "text": "z"}]
+    )
+    assert [item["text"] for item in clean] == [redaction.REDACTED_IMAGE] * 2
