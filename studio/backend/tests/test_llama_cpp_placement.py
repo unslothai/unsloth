@@ -1790,6 +1790,34 @@ def test_an_explicit_tensor_split_leaves_the_shared_heap_uncredited(tmp_path, mo
     )
 
 
+def test_manual_layer_split_emits_explicit_split_mode(tmp_path):
+    """A manual multi-GPU layer load must declare --split-mode layer so the
+    backend's intent is unambiguous and cannot be flipped by inherited state.
+    Regression for unslothai/unsloth#10549."""
+    backend, gguf = _backend_non_vulkan(
+        tmp_path,
+        memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)],
+    )
+    backend._get_gguf_size_bytes = lambda _path: 1 * 1024**3
+    backend._n_layers = 32
+
+    cmd = _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = 33,
+        gpu_ids = [0, 1],
+        tensor_split = [3, 1],
+        tensor_parallel = False,
+    )["cmd"]
+
+    assert backend.tensor_parallel is False
+    assert "--split-mode" in cmd
+    assert cmd[cmd.index("--split-mode") + 1] == "layer"
+    assert "--tensor-split" in cmd
+    assert cmd[cmd.index("--tensor-split") + 1] == "3,1"
+
+
 def _mixed_vulkan(tmp_path, monkeypatch, memory):
     """A 30 GiB GGUF on a host with 4 GiB of RAM left, full manual offload."""
     backend, gguf = _backend(tmp_path, vulkan = True, memory = memory)
