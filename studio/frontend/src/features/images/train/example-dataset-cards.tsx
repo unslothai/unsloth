@@ -3,6 +3,7 @@
 
 import { useEffect, useState } from "react";
 
+import { usePlatformStore } from "@/config/env";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -68,6 +69,9 @@ export function shortExampleLabel(label: string): string {
 
 function ExamplePreviews({ repo }: { repo: string }) {
   const [urls, setUrls] = useState<string[] | null>(null);
+  // In the effect identity: a server arriving after this mounts changes the
+  // cache key, and without this nothing would ask for the previews again.
+  const hfDatasetsServer = usePlatformStore((s) => s.hfDatasetsServer);
   useEffect(() => {
     let cancelled = false;
     void fetchPreviews(repo).then((u) => {
@@ -76,7 +80,7 @@ function ExamplePreviews({ repo }: { repo: string }) {
     return () => {
       cancelled = true;
     };
-  }, [repo]);
+  }, [repo, hfDatasetsServer]);
 
   if (!urls || urls.length === 0) return null;
   return (

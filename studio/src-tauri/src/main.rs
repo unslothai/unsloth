@@ -1824,22 +1824,44 @@ fn webview_cache_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
 /// `hf_endpoint_url()` does it: scheme added when missing, trailing slash
 /// stripped. Blank values are ignored so an unset mirror changes nothing.
 fn configured_hf_endpoints() -> Vec<String> {
-    ["HF_ENDPOINT", "HF_DATASETS_SERVER"]
+    let mut raw: Vec<String> = ["HF_ENDPOINT", "HF_DATASETS_SERVER"]
         .into_iter()
         .filter_map(|key| std::env::var(key).ok())
-        .map(|raw| raw.trim().to_string())
-        .filter(|raw| !raw.is_empty())
-        .map(|raw| {
-            let with_scheme = if raw.contains("://") { raw } else { format!("https://{raw}") };
-            let trimmed = with_scheme.trim_end_matches('/');
-            match split_scheme(trimmed) {
-                Some((scheme, rest)) => format!("{scheme}://{rest}"),
-                None => trimmed.to_string(),
-            }
-        })
-        .filter(|endpoint| is_usable_csp_source(endpoint))
-        .map(|endpoint| csp_origin_of(&endpoint))
-        .collect()
+        .collect();
+    // A backend that survived the last desktop process may have been started
+    // from a shell that set HF_ENDPOINT while this process (an icon relaunch)
+    // was not. /api/health would then send the frontend to that mirror, and a
+    // CSP built from this process's environment alone would block every Hub
+    // request, so the adopted backend's own endpoints are allowed too.
+    raw.extend(desktop_backend_owner::recorded_hf_endpoints());
+    csp_sources_from(raw)
+}
+
+/// Normalise raw endpoint values into deduplicated CSP sources, dropping any
+/// that are not usable.
+fn csp_sources_from(raw: Vec<String>) -> Vec<String> {
+    let mut sources: Vec<String> = Vec::new();
+    for value in raw {
+        let value = value.trim().to_string();
+        if value.is_empty() {
+            continue;
+        }
+        let with_scheme =
+            if value.contains("://") { value } else { format!("https://{value}") };
+        let trimmed = with_scheme.trim_end_matches('/');
+        let normalised = match split_scheme(trimmed) {
+            Some((scheme, rest)) => format!("{scheme}://{rest}"),
+            None => trimmed.to_string(),
+        };
+        if !is_usable_csp_source(&normalised) {
+            continue;
+        }
+        let source = csp_origin_of(&normalised);
+        if !sources.contains(&source) {
+            sources.push(source);
+        }
+    }
+    sources
 }
 
 /// Split "scheme://rest", with the scheme lowercased.
@@ -2362,6 +2384,20 @@ mod tests {
         // https to the same hosts stays fine.
         assert!(is_usable_csp_source("https://192.168.1.10:8080"));
         assert!(is_usable_csp_source("https://hf-mirror.com"));
+    }
+
+    #[test]
+    fn csp_sources_are_normalised_and_deduplicated() {
+        // The adopted backend usually names the same mirror this process does.
+        let sources = csp_sources_from(vec![
+            "https://hf-mirror.com".to_string(),
+            "HTTPS://hf-mirror.com/".to_string(),
+            "hf-mirror.com".to_string(),
+            "  ".to_string(),
+            "http://192.168.1.10".to_string(),
+            "https://ds.internal/hf".to_string(),
+        ]);
+        assert_eq!(sources, vec!["https://hf-mirror.com", "https://ds.internal"]);
     }
 
     #[test]
