@@ -1024,6 +1024,8 @@ def test_a_failed_first_install_leaves_nothing_the_offline_guard_would_keep(tmp_
     assert tv._sidecar_has_content(str(root2)) is False
     (root2 / "keep.txt").write_text("", encoding = "utf-8")
     assert tv._sidecar_has_content(str(root2)) is True
+
+
 def test_an_unlockable_filesystem_is_not_waited_out(tmp_path, monkeypatch) -> None:
     """A mount that cannot lock answers at once. Retrying it spent the whole 120 second
     bound asleep inside a model activation, to arrive at the same answer."""
