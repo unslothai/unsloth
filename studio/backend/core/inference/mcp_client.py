@@ -203,7 +203,13 @@ class _PrivateMcpTransport:
         # closed after the explicit pre-consent/pre-dispatch connection.
         connection.auto_open = 0
         self.http = connection
-        connection.connect()
+        try:
+            connection.connect()
+        except BaseException:
+            connection.close()
+            if self.http is connection:
+                self.http = None
+            raise
         self.http_socket = connection.sock
         return connection
 
@@ -226,12 +232,9 @@ class _PrivateMcpTransport:
         message = {"jsonrpc": "2.0", "method": method, "params": params}
         if not notify:
             message["id"] = request_id
-        connection = None
         wire = None
         try:
-            if self.process is None:
-                connection = self._connection(deadline)
-            elif self.process.poll() is not None:
+            if self.process is not None and self.process.poll() is not None:
                 raise _PrivateTransportUnavailable
             self._check(deadline, cancel_event)
             if config_check is not None and config_check() is not True:
@@ -240,7 +243,7 @@ class _PrivateMcpTransport:
                 wire = context.prepare_wire(arguments)
                 message["params"] = {**params, "arguments": wire}
             body = json.dumps(message, separators = (",", ":"), allow_nan = False).encode("utf-8")
-            if connection is not None:
+            if self.process is None:
                 parsed = urlsplit(self.url)
                 path = parsed.path or "/"
                 if parsed.query:
@@ -253,10 +256,7 @@ class _PrivateMcpTransport:
                 }
                 if self.session_id:
                     headers["Mcp-Session-Id"] = self.session_id
-                owned_connection = connection
-                connection = None
                 return self._exchange_http(
-                    owned_connection,
                     path,
                     body,
                     headers,
@@ -295,29 +295,17 @@ class _PrivateMcpTransport:
         finally:
             if wire is not None:
                 wire.clear()
-            if connection is not None:
-                connection.close()
-                self.http = None
-                self.http_socket = None
 
     def _exchange_http(
-        self,
-        connection,
-        path,
-        body,
-        headers,
-        request_id,
-        deadline,
-        cancel_event,
-        notify,
-        config_check,
-        context,
+        self, path, body, headers, request_id, deadline, cancel_event, notify, config_check, context
     ):
         outcome = queue.Queue(maxsize = 1)
 
         def run():
+            connection = None
             response = None
             try:
+                connection = self._connection(deadline)
                 # Connect/TLS, payload validation and serialization precede the
                 # one-use commitment. No SDK queue, redirect, auth retry or
                 # resumption machinery exists between this guard and the write.
@@ -353,11 +341,12 @@ class _PrivateMcpTransport:
                         response.close()
                     except Exception:
                         pass
-                try:
-                    connection.close()
-                except Exception:
-                    pass
-                if self.http is connection:
+                if connection is not None:
+                    try:
+                        connection.close()
+                    except Exception:
+                        pass
+                if connection is not None and self.http is connection:
                     self.http = None
                     self.http_socket = None
                 outcome.put(result)

@@ -187,6 +187,42 @@ def test_http_revalidates_configuration_in_worker_before_write(monkeypatch):
     assert not revoker.is_alive()
 
 
+def test_http_cancel_returns_while_connection_setup_is_blocked(monkeypatch):
+    transport = mcp_client._PrivateMcpTransport("http://example.test/mcp", {}, 5)
+    entered = threading.Event()
+    release = threading.Event()
+    worker_done = threading.Event()
+    writes = []
+
+    class Connection:
+        sock = None
+
+        def request(self, *args, **kwargs):
+            writes.append((args, kwargs))
+
+        def close(self):
+            worker_done.set()
+
+    def blocked_connection(_deadline):
+        entered.set()
+        release.wait(5)
+        return Connection()
+
+    cancel = threading.Event()
+    monkeypatch.setattr(transport, "_connection", blocked_connection)
+    threading.Thread(target = lambda: entered.wait(2) and cancel.set(), daemon = True).start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(Exception):
+            transport.exchange("initialize", {}, cancel_event = cancel)
+        assert cancel.is_set()
+        assert time.monotonic() - started < 2
+    finally:
+        release.set()
+        assert worker_done.wait(2)
+    assert writes == []
+
+
 def test_http_initialize_cancel_interrupts_blocked_response(monkeypatch):
     transport = mcp_client._PrivateMcpTransport("http://example.test/mcp", {}, 30)
     left, right = socket.socketpair()
