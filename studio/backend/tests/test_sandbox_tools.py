@@ -852,6 +852,40 @@ class TestBashBlocklistPosition:
             pytest.param("c=hello; echo $c", id = "benign_var_arg_allowed"),
             pytest.param("c=reboot; echo $c", id = "blocked_var_arg_allowed"),
             pytest.param("PATH=/usr/bin; ls", id = "path_assignment_allowed"),
+            # A wrapper forwards to ONE operand: its first plain word is the command it runs, so
+            # nothing further along the line is at command position any more. Reading any word
+            # within reach of a wrapper as command position refused these everyday commands.
+            pytest.param(
+                "timeout 60 python train.py --data $(ls -d data/*)",
+                id = "wrapper_spent_on_its_own_command_allowed",
+            ),
+            pytest.param(
+                "stamp=$(date +%F); nohup ./run.sh $stamp &",
+                id = "laundered_var_as_wrapper_argument_allowed",
+            ),
+            pytest.param(
+                "out=$(pwd); timeout 300 ./run.sh $out", id = "laundered_var_as_operand_allowed"
+            ),
+            pytest.param(
+                "v=$(date); env FOO=1 ./run.sh $v", id = "laundered_var_after_env_assign_allowed"
+            ),
+            # `-P` takes its value as a separate token, so the `$n` behind it is that value and
+            # not the command xargs runs.
+            pytest.param(
+                "n=$(nproc); xargs -P $n -I{} echo {}", id = "wrapper_value_flag_operand_allowed"
+            ),
+            # Arithmetic evaluates to a number and can never hold a command name, so it launders
+            # nothing - in an assignment either, not just on its own.
+            pytest.param(
+                "sec=$((60*5)); timeout $sec make test", id = "arithmetic_assignment_allowed"
+            ),
+            # Bash expands nothing inside single quotes, and an expansion inside double quotes is
+            # a word the outer command receives rather than a command of its own.
+            pytest.param(
+                'echo "check if $(ls -1 *.py | wc -l) files"',
+                id = "subst_inside_double_quoted_argument_allowed",
+            ),
+            pytest.param("sed 's|x|$(ls)|' f", id = "subst_inside_single_quotes_allowed"),
         ],
     )
     def test_bash_blocklist_finds_nothing_in_safe_commands(self, command):
@@ -979,6 +1013,50 @@ class TestBashBlocklistPosition:
                 "command substitution",
                 "export c=$(compgen -c | grep rm); $c",
                 id = "exported_laundered_subst_blocked",
+            ),
+            # An assignment binds a name wherever it appears, so the launder has to be collected
+            # from every one of these too. Each really deletes: verified by running them against
+            # a stand-in `rm` on PATH.
+            pytest.param(
+                "command substitution",
+                "if true; then c=$(ls /usr/bin|grep rm); fi; $c",
+                id = "laundered_behind_keyword_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "(c=$(ls /usr/bin|grep rm); $c)",
+                id = "laundered_in_subshell_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "x=1 c=$(ls /usr/bin|grep rm); $c",
+                id = "laundered_behind_assignment_prefix_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "for i in 1; do c=$(ls /usr/bin|grep rm); done; $c",
+                id = "laundered_in_loop_body_blocked",
+            ),
+            # Quoting the expansion is the RECOMMENDED way to run a variable, so it cannot be the
+            # spelling that escapes the screen the bare one is caught by.
+            pytest.param(
+                "command substitution",
+                'c=$(ls /usr/bin|grep rm); "$c"',
+                id = "laundered_quoted_exec_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                'c=$(ls /usr/bin|grep rm); "${c}"',
+                id = "laundered_quoted_brace_exec_blocked",
+            ),
+            pytest.param("reboot", 'c=reboot; "$c"', id = "laundered_literal_quoted_exec_blocked"),
+            # Reading every substitution costs a span walk over the rest of the line and this
+            # screen has no length cap, so a command built from thousands of unterminated `$(`
+            # openers is refused rather than scanned. Fail closed, never open.
+            pytest.param(
+                "command substitution",
+                ";$(" * 200,
+                id = "substitution_flood_refused_not_scanned",
             ),
         ],
     )
