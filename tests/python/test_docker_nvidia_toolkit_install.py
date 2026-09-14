@@ -588,6 +588,20 @@ def test_a_mac_driving_a_remote_daemon_is_sent_to_that_host(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
+    "endpoint", ["tcp://localhost:2375", "tcp://127.0.0.1:2375", "tcp://[::1]:2375", "localhost:2375"]
+)
+def test_a_loopback_tcp_endpoint_is_this_machine(tmp_path: Path, endpoint: str):
+    """Docker Desktop can expose its daemon on tcp://localhost:2375, and a socket can be
+    proxied through localhost; both are the local daemon, not a box to run this on."""
+    _, _, env = _setup(tmp_path, driver = False, uid = 1000)
+    _stub(tmp_path / "bin" / "uname", 'if [ "$1" = -s ]; then echo Darwin; else echo arm64; fi\n')
+    res = _run(env, extra_env = {"DOCKER_HOST": endpoint})
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "remote daemon" not in res.stderr
+    assert "nothing to install" in res.stdout
+
+
+@pytest.mark.parametrize(
     "kernel", ["MINGW64_NT-10.0-22631", "MSYS_NT-10.0-22631", "CYGWIN_NT-10.0"]
 )
 def test_a_windows_shell_is_sent_to_docker_desktops_wsl2_backend(tmp_path: Path, kernel: str):

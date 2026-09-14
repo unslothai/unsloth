@@ -40,8 +40,11 @@ case "$host_os" in
         else
             host_endpoint="$DOCKER_HOST"
         fi
+        # loopback tcp is this machine too: Docker Desktop's "expose daemon on
+        # tcp://localhost:2375" setting, or a socket proxied through localhost
         case "$host_endpoint" in
             ""|unix://*|npipe://*) ;;
+            tcp://localhost|tcp://localhost:*|tcp://127.*|tcp://\[::1\]*|localhost:*|127.*) ;;
             *) fail "the Docker CLI on this machine talks to a remote daemon (${host_endpoint}); run this script on that host, it configures the local Docker only." 2 ;;
         esac
         if [[ "$host_os" == Darwin ]]; then
