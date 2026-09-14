@@ -218,7 +218,7 @@ def test_latched_read_ceiling_covers_the_stall_guard():
     asyncio.run(_run())
 
 
-def test_closing_the_pump_under_cancellation_re_raises_it():
+def test_closing_the_pump_under_cancellation_re_raises_it(monkeypatch):
     """The pump must not absorb a cancellation aimed at the request task.
 
     `_aclose_stream_resources` closes the pump, the iterator, the response and
@@ -245,20 +245,20 @@ def test_closing_the_pump_under_cancellation_re_raises_it():
         # The bounded stop is where an ambient cancellation lands, since awaiting
         # a cancelled task re-raises immediately. Forcing it is what separates
         # "recorded and re-raised" from "swallowed"; the pump's own loop is past
-        # its last wait by now, so only the teardown sees this.
-        real_wait = asyncio.wait
-
+        # its last wait by now, so only the teardown sees this. monkeypatch, not
+        # assignment: `inf_mod.asyncio` IS the stdlib module, so an unrestored
+        # patch would break every other test sharing this process.
         async def _cancelled_wait(*args, **kwargs):
             raise asyncio.CancelledError()
 
-        inf_mod.asyncio.wait = _cancelled_wait
+        monkeypatch.setattr(inf_mod.asyncio, "wait", _cancelled_wait)
         try:
             await agen.aclose()
             outcome = "swallowed"
         except asyncio.CancelledError:
             outcome = "re-raised"
         finally:
-            inf_mod.asyncio.wait = real_wait
+            monkeypatch.undo()
 
         assert outcome == "re-raised", (
             "the pump absorbed a cancellation that _aclose_stream_resources "
