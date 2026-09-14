@@ -405,6 +405,19 @@ for _alt in /bin/sh /bin/bash; do
 done
 _SH="$_SH_SAVED"
 
+echo "=== a marker naming a directory that is gone is stale, not a decision ==="
+# The marker named a cache the user deleted. Skipping the Studio cache because "a marker is a
+# decision" then handed the install uv's default and abandoned a warm Studio cache holding
+# Torch and CUDA -- offline, that is an install that used to succeed and now fails.
+_stale=$_TMP/stalemarker
+mkdir -p "$_stale/studio/cache/uv/archive-v0/torch"
+: > "$_stale/studio/cache/uv/archive-v0/torch/libtorch.so"
+: > "$_stale/studio/cache/uv/CACHEDIR.TAG"
+printf '%s\n' "$_TMP/deleted-cache" > "$_stale/studio/cache/uv-cache-dir"
+_out=$(_run "$_stale/studio" '' "$_populated")
+assert_eq "stale marker -> keep the Studio cache" "studio" "$(echo "$_out" | cut -d' ' -f1)"
+assert_eq "and not uv's default"                  "$_stale/studio/cache/uv" "$(echo "$_out" | cut -d' ' -f2)"
+
 echo "=== a root we can create in but not unlink from is not writable ==="
 # NTFS carries DELETE as its own ACE and an append-only directory does the same on ext4, so
 # "create succeeded" does not mean "uv can rename into this". The bucket probe has always
@@ -414,6 +427,15 @@ echo "=== a root we can create in but not unlink from is not writable ==="
 _probe_unlink_case() {
     # shellcheck disable=SC2317
     rm() { return 1; }
+    if _uv_cache_root_is_writable "$1"; then echo writable; else echo unwritable; fi
+}
+# A delete that FAILS but leaves nothing behind is a delete. An indexer or a scanner holding
+# the handle open makes one rm fail and the next succeed, and a probe another process already
+# removed is cleaned up -- `rm -f` exits 0 on a missing file where PowerShell's Remove-Item
+# -ErrorAction Stop throws ItemNotFoundException, which is the divergence this rule closes.
+_probe_gone_case() {
+    # shellcheck disable=SC2317
+    rm() { command rm -f "$@" 2>/dev/null; return 1; }
     if _uv_cache_root_is_writable "$1"; then echo writable; else echo unwritable; fi
 }
 _out=$(
@@ -428,6 +450,11 @@ _out=$(
 )
 assert_eq "an ordinary root is still writable"  "writable"   "$_out"
 assert_eq "and the probe is not left behind"    ""           "$(ls -A "$_TMP/unlinkok" 2>/dev/null)"
+_out=$(
+    . "$_FN" 2>/dev/null || true
+    _probe_gone_case "$_TMP/unlinkgone"
+)
+assert_eq "a failed rm that removed it is fine" "writable"   "$_out"
 
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"

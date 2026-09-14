@@ -1229,15 +1229,14 @@ class TestInstallUvCacheRootParity:
         # have always failed the candidate there; the root probes used to swallow it and leave
         # the probe file behind in the user's cache.
         root_sh = sh.split("_uv_cache_root_is_writable() {", 1)[1].split("\n}", 1)[0]
-        assert 'if ! rm -f "$_uv_root_probe" 2>/dev/null; then' in root_sh, root_sh
+        # Judged by whether the probe is GONE, not by rm's exit status, and retried: a scanner
+        # holding the handle makes one delete fail and the next succeed, and PowerShell's
+        # Remove-Item throws for a probe something else already removed where rm -f exits 0.
+        assert '[ -e "$_uv_root_probe" ] || break' in root_sh, root_sh
+        assert "_uv_root_tries" in root_sh, root_sh
         root_ps1 = ps1.split("function Test-StudioUvCacheRootWritable", 1)[1].split("\n    }", 1)[0]
-        removal = [
-            ln
-            for ln in root_ps1.splitlines()
-            if "Remove-Item" in ln and not ln.strip().startswith("#")
-        ]
-        assert len(removal) == 1, root_ps1
-        assert "-ErrorAction Stop" in removal[0], removal[0]
+        assert "[System.IO.File]::Exists($probe)" in root_ps1, root_ps1
+        assert "$attempt -lt 3" in root_ps1, root_ps1
 
         # The reset must precede both consumers, the selector that writes the marker and
         # every Exit-InstallFailure that restores it. Under `irm | iex` the script scope is

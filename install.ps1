@@ -1741,7 +1741,11 @@ exit 1
         if ($at -lt 0) { return $false }
         $suffix = $Name.Substring($at + 2)
         if ([string]::IsNullOrEmpty($suffix)) { return $false }
-        return ($suffix -match '^[0-9]+$')
+        # \A and \z, not ^ and $: in .NET `$` also matches BEFORE a final newline, so
+        # `archive-v1<LF>` passed here while the sh helper rejected it. Directory names on
+        # Windows cannot hold a newline, but this helper is the shared rule, and the two sides
+        # disagreeing is how the rest of these bugs started.
+        return ($suffix -match '\A[0-9]+\z')
     }
 
     # Readable is not usable: uv writes CACHEDIR.TAG into the root and renames distributions into
@@ -1827,13 +1831,18 @@ exit 1
             [System.IO.Directory]::CreateDirectory($Cache) | Out-Null
             $probe = Join-Path $Cache (".unsloth-write-probe." + [guid]::NewGuid().ToString("N").Substring(0, 8))
             [System.IO.File]::WriteAllText($probe, "")
-            # Stop, not SilentlyContinue, and for the same reason the bucket probe above uses
-            # Stop: NTFS carries DELETE as its own ACE, so a root can grant create and deny
-            # unlink. Suppressing that returned $true for a cache uv cannot rename into, and
-            # left the probe behind in it.
-            Remove-Item -LiteralPath $probe -Force -ErrorAction Stop
         } catch { return $false }
-        return $true
+        # NTFS carries DELETE as its own ACE, so a root can grant create and deny unlink, and a
+        # cache uv cannot rename into must not pass. But GONE is the answer, not the cmdlet's
+        # error: -ErrorAction Stop THROWS ItemNotFoundException for a probe something else
+        # already removed, where `rm -f` exits 0, and an indexer or antivirus holding the handle
+        # makes one delete fail and the next succeed. Ask the filesystem, and retry first.
+        for ($attempt = 0; $attempt -lt 3; $attempt++) {
+            if ($attempt -gt 0) { Start-Sleep -Seconds 1 }
+            Remove-Item -LiteralPath $probe -Force -ErrorAction SilentlyContinue
+            if (-not [System.IO.File]::Exists($probe)) { return $true }
+        }
+        return $false
     }
 
     # The cache THIS install last recorded, absolute, or "" when there is none to read. Read
@@ -1933,7 +1942,11 @@ exit 1
             # it. Nothing but this product writes there, so a warm one is self-evidently ours.
             # Only when there is no marker: a marker naming somewhere else is a decision.
             $recorded = Read-StudioUvCacheMarker -StudioRoot $StudioRoot
-            $unmarkedStudio = if ($recorded) { $null } else { $studioCache }
+            # ... and a marker naming a directory that is no longer there is stale rather than
+            # a decision, so the Studio cache goes back on the list. Mirrors install.sh.
+            $unmarkedStudio = if ($recorded -and (Test-Path -LiteralPath $recorded -PathType Container -ErrorAction SilentlyContinue)) {
+                $null
+            } else { $studioCache }
             foreach ($candidate in @($recorded, $unmarkedStudio, $defaultCache)) {
                 if ([string]::IsNullOrWhiteSpace([string]$candidate)) { continue }
                 if ($chosenCache) { continue }

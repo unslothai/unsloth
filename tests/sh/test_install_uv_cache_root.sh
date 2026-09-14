@@ -296,12 +296,22 @@ for shell in sh bash; do
         "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$STUDIO_CACHE" isolated \
         "forced Studio cache isolation ($STUDIO_CACHE); already-cached packages may download again" \
         "$STUDIO_CACHE"
-    # A marker naming a cache that is no longer warm loses to uv's default, so a machine that
-    # really has moved on still reaches the shared cache.
-    _PRESET_MARKER="$CASE/gone/uv"
+    # A marker naming a cache that EXISTS and is no longer warm loses to uv's default, so a
+    # machine that really has moved on still reaches the shared cache.
+    mkdir -p "$CASE/coldrec/uv"
+    _PRESET_MARKER="$CASE/coldrec/uv"
     run_case "$shell" "a cold recorded cache falls through to shared" unset "" false \
         "$HOME_DIR" unset "" "$ROOT" "$BUILDS_CACHE" "$BUILDS_CACHE" shared \
         "reusing existing shared cache ($BUILDS_CACHE) to avoid duplicate Torch/CUDA downloads; use --isolated-uv-cache to isolate" \
+        "$STUDIO_CACHE"
+    # A marker naming a directory that is GONE is different, and used to be treated the same:
+    # it is a stale pointer, not a decision, so it must not cost us a warm Studio cache. Doing
+    # so abandoned cached Torch and CUDA for uv's default, which offline is an install that
+    # used to succeed and then failed.
+    _PRESET_MARKER="$CASE/gone/uv"
+    run_case "$shell" "a marker naming a deleted cache keeps Studio" unset "" false \
+        "$HOME_DIR" unset "" "$ROOT" "$STUDIO_CACHE" "$STUDIO_CACHE" studio \
+        "reusing this install's Studio cache ($STUDIO_CACHE)" \
         "$STUDIO_CACHE"
     _PRESET_MARKER=""
     rm -rf "$STUDIO_CACHE"

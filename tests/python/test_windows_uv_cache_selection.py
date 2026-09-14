@@ -256,6 +256,33 @@ def test_a_bucket_lookalike_is_not_warmth(tmp_path, name):
 
 
 @requires_pwsh
+def test_a_marker_naming_a_deleted_cache_keeps_the_studio_cache(tmp_path):
+    """A stale pointer is not a decision.
+
+    Treating it as one skipped a warm Studio cache holding Torch and CUDA and took uv's
+    default instead, which is the abandonment the marker exists to prevent. Offline, that is
+    an install that used to succeed and then failed.
+    """
+    root = tmp_path / "studio"
+    _warm(root / "cache" / "uv")
+    (root / "cache" / "uv-cache-dir").write_text(str(tmp_path / "deleted-cache"), encoding = "utf-8")
+    chosen = _select(root, str(_warm(tmp_path / "uvdefault")))
+    assert chosen["mode"] == "studio", chosen
+    assert chosen["dir"].rstrip("\\/") == str(root / "cache" / "uv").rstrip("\\/"), chosen
+
+
+@requires_pwsh
+def test_a_cold_recorded_cache_that_still_exists_falls_through(tmp_path):
+    """The other half of the same rule: a machine that really has moved on still gets shared."""
+    root = tmp_path / "studio"
+    _warm(root / "cache" / "uv")
+    cold = tmp_path / "coldrec"
+    cold.mkdir()
+    (root / "cache" / "uv-cache-dir").write_text(str(cold), encoding = "utf-8")
+    assert _select(root, str(_warm(tmp_path / "uvdefault")))["mode"] == "shared"
+
+
+@requires_pwsh
 def test_a_real_bucket_beside_a_lookalike_is_still_warm(tmp_path):
     default = _warm(tmp_path / "uvdefault")
     (default / "archive-v0.backup").mkdir()

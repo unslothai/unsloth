@@ -625,12 +625,22 @@ _uv_cache_root_is_writable() {
     _uv_root_probe=$(mktemp "$1/.unsloth-write-probe.XXXXXX" 2>/dev/null) || return 1
     # Creating is not enough, the same way it is not enough for a bucket: an ACL that grants
     # create but denies unlink leaves uv's own renames to fail later, and leaks the probe into
-    # the cache. rm -f exits 0 on a missing file, so a failure here is a real one.
-    if ! rm -f "$_uv_root_probe" 2>/dev/null; then
-        unset _uv_root_probe
-        return 1
-    fi
-    unset _uv_root_probe
+    # the cache. But GONE is the answer, not rm's exit status. A scanner or an indexer holding
+    # the handle open makes one delete fail and the next succeed, and condemning the cache on
+    # the first failure sends the install to a fallback we may already know is worse. Retry,
+    # then believe the filesystem.
+    _uv_root_tries=0
+    while :; do
+        rm -f "$_uv_root_probe" 2>/dev/null || true
+        [ -e "$_uv_root_probe" ] || break
+        _uv_root_tries=$((_uv_root_tries + 1))
+        if [ "$_uv_root_tries" -ge 3 ]; then
+            unset _uv_root_probe _uv_root_tries
+            return 1
+        fi
+        sleep 1
+    done
+    unset _uv_root_probe _uv_root_tries
     return 0
 }
 
@@ -768,8 +778,14 @@ _configure_uv_cache() {
     # is avoiding duplicate downloads. Nothing but this product writes to that directory, so a
     # warm one is self-evidently ours and belongs in the list. Only when there is no marker: a
     # marker that names somewhere else is a decision, and it outranks a leftover.
+    # ... and a marker naming a directory that is no longer there is stale rather than a
+    # decision, so the Studio cache goes back on the list. Otherwise a marker pointing at a
+    # deleted cache made us skip a warm Studio cache holding Torch and CUDA and take uv's
+    # default instead, which is the very abandonment the marker exists to prevent.
     _uv_unmarked_studio=""
-    [ -n "$_uv_recorded" ] || _uv_unmarked_studio="$_uv_studio_cache"
+    if [ -z "$_uv_recorded" ] || [ ! -d "$_uv_recorded" ]; then
+        _uv_unmarked_studio="$_uv_studio_cache"
+    fi
 
     # Readable is not usable: uv writes CACHEDIR.TAG into the root and renames distributions
     # into the buckets, aborting on either. Nested entries are deliberately NOT probed -- that
@@ -1002,25 +1018,16 @@ if [ -z "${UV_CACHE_DIR:-}" ]; then
     UV_CACHE_DIR="$STUDIO_HOME/cache/uv"
     export UV_CACHE_DIR
     _UV_CACHE_DIR_INSTALLER_DEFAULT=true
-    # mktemp, not a $$ name: a predictable path in another account's directory can be pre-created as a symlink for `: >` to follow and truncate as root.
-    _uv_cache_probe=""
-    _uv_cache_usable=true
-    if ! mkdir -p "$UV_CACHE_DIR" 2>/dev/null \
-       || ! _uv_cache_probe=$(mktemp "$UV_CACHE_DIR/.unsloth-write-probe.XXXXXX" 2>/dev/null); then
-        _uv_cache_usable=false
-    # And a probe we cannot remove says the same thing as one we could not create: uv renames
-    # into this directory, so an ACL granting create without unlink fails it later instead,
-    # after the install has already reported success. Same rule as the bucket probe.
-    elif ! rm -f "$_uv_cache_probe" 2>/dev/null; then
-        _uv_cache_usable=false
-    fi
-    if [ "$_uv_cache_usable" != true ]; then
+    # The same question the selection asks later, so it gets the same answer: a real create
+    # and delete under an mktemp name, retried, rather than a second copy of the rule that
+    # can drift from it. mktemp, not a $$ name: a predictable path in another account's
+    # directory can be pre-created as a symlink for the write to follow.
+    if ! _uv_cache_root_is_writable "$UV_CACHE_DIR"; then
         echo "[WARN] Cannot write to $UV_CACHE_DIR -- using uv's default cache." >&2
         echo "[WARN] Wheels will be copied into the venv rather than hardlinked, costing extra disk." >&2
         unset UV_CACHE_DIR
         _UV_CACHE_DIR_INSTALLER_DEFAULT=false
     fi
-    unset _uv_cache_probe _uv_cache_usable
 fi
 _VENV_ROLLBACK_DIR=""
 _VENV_ROLLBACK_TARGET="$VENV_DIR"
