@@ -424,7 +424,7 @@ class McpImageApproval:
 
 
 def begin_call_decision(
-    decision, image_approval, needs_confirm, session_id, ordinary_new, ordinary_begin,
+    decision, image_approval, needs_confirm, session_id, ordinary_new, ordinary_begin
 ):
     """Register consent before publishing the same tool-start event in every loop."""
     if image_approval:

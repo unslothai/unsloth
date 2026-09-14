@@ -487,7 +487,12 @@ def _pop_private_recipients(matches):
     return [_private_recipients.pop(key) for key in identities]
 
 
-def _private_recipient(identity, *, consume = False, required = True):
+def _private_recipient(
+    identity,
+    *,
+    consume = False,
+    required = True,
+):
     with _private_recipients_lock:
         transport = _private_recipients.get(identity)
         if transport is None or transport.account != current_account_id():
@@ -2487,7 +2492,15 @@ def call_tool_sync(
 
     if disclosure_context is not None:
         return _call_private_tool_sync(
-            url, headers, name, args, disclosure_context, config_check, cancel_event, timeout, use_oauth
+            url,
+            headers,
+            name,
+            args,
+            disclosure_context,
+            config_check,
+            cancel_event,
+            timeout,
+            use_oauth,
         )
     try:
         if is_stdio(url) or (scope and not use_oauth):
@@ -2533,14 +2546,15 @@ def _call_private_tool_sync(
         PRIVATE_CALL_ERROR,
         PRIVATE_TRANSPORT_UNAVAILABLE,
     )
-
     try:
         if use_oauth:
             raise _PrivateTransportUnavailable
         _call_private_tool(url, headers, name, args, context, config_check, cancel_event, timeout)
         return PRIVATE_CALL_COMPLETE
     except _PrivateTransportUnavailable:
-        return PRIVATE_CALL_ERROR if getattr(context, "spent", True) else PRIVATE_TRANSPORT_UNAVAILABLE
+        return (
+            PRIVATE_CALL_ERROR if getattr(context, "spent", True) else PRIVATE_TRANSPORT_UNAVAILABLE
+        )
     except Exception:
         # Private exception details must never reach logs or model-visible output.
         return PRIVATE_CALL_ERROR

@@ -1641,8 +1641,12 @@ async def stream_with_studio_tools(
                 needs_confirmation = is_high_risk_tool_call(name, arguments)
             needs_confirmation = needs_confirmation or image_approval is not None
             approval_id, decision_slot, start_event = begin_call_decision(
-                decision, image_approval, needs_confirmation, session_id,
-                new_approval_id, begin_tool_decision,
+                decision,
+                image_approval,
+                needs_confirmation,
+                session_id,
+                new_approval_id,
+                begin_tool_decision,
             )
             denied = False
             try:

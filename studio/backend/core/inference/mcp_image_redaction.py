@@ -245,6 +245,7 @@ class _ImageEchoSanitizer:
     @staticmethod
     def _text_slots(value):
         """Return mutable fields whose values are rendered by ``_flatten_result``."""
+
         def get(owner, key):
             return owner.get(key) if isinstance(owner, dict) else getattr(owner, key, None)
 
@@ -264,7 +265,9 @@ class _ImageEchoSanitizer:
         if slots:
             return slots
         uri = text_slot(value, "uri")
-        return text_slot(value, "name") + uri if get(value, "type") == "resource_link" and uri else []
+        return (
+            text_slot(value, "name") + uri if get(value, "type") == "resource_link" and uri else []
+        )
 
     def _set_slot(self, slot, value):
         owner, key, _ = slot
@@ -423,7 +426,9 @@ class _ImageEchoSanitizer:
                         break
                     length = 0
                     limit = min(len(chunk) - found, len(fingerprint) - position)
-                    while length < limit and chunk[found + length] == fingerprint[position + length]:
+                    while (
+                        length < limit and chunk[found + length] == fingerprint[position + length]
+                    ):
                         length += 1
                         if text_search:
                             work[0] += 1

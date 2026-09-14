@@ -1418,8 +1418,12 @@ def run_safetensors_tool_loop(
             )
             needs_confirm = needs_confirm or image_approval is not None
             approval_id, decision_slot, start_event = begin_call_decision(
-                decision, image_approval, needs_confirm, session_id,
-                new_approval_id, begin_tool_decision,
+                decision,
+                image_approval,
+                needs_confirm,
+                session_id,
+                new_approval_id,
+                begin_tool_decision,
             )
 
             try:

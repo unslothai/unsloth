@@ -9989,7 +9989,8 @@ def execute_tool(
 
         image_mapping = next(
             (
-                mapping for mapping in stored_image_input_mappings(server)
+                mapping
+                for mapping in stored_image_input_mappings(server)
                 if isinstance(mapping, dict) and mapping.get("tool") == tool_name
             ),
             None,
