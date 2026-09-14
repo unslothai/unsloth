@@ -2892,6 +2892,92 @@ class TestResolveReleaseAssetChoicePin:
         assert "b9360" not in [a.tag for a in result]
 
 
+class TestWindowsAmdWithoutRocmTakesVulkan:
+    """An AMD Windows host with no usable ROCm must take the Vulkan bundle, not windows-cpu.
+
+    The Windows gate checked has_intel_gpu alone while the Linux one checked
+    `has_intel_gpu or has_amd_gpu_without_rocm`, so the same silicon took Vulkan on Linux
+    and CPU on Windows. Measured on a gfx1151 (Radeon 8060S) box where amd-smi.exe failed
+    to load its library and HIP_PATH / ROCM_PATH were both unset: every ref resolved
+    app-<tag>-windows-x64-cpu.zip, with a windows-vulkan bundle sitting in the same
+    release."""
+
+    TAG = "b10909"
+
+    def _release(self):
+        return make_release(
+            [
+                make_cpu_artifact(
+                    f"app-{self.TAG}-windows-x64-vulkan.zip", install_kind = "windows-vulkan"
+                ),
+                make_cpu_artifact(
+                    f"app-{self.TAG}-windows-x64-cpu.zip", install_kind = "windows-cpu"
+                ),
+            ],
+            upstream_tag = self.TAG,
+        )
+
+    def _checksums(self):
+        return make_checksums(
+            [
+                f"app-{self.TAG}-windows-x64-vulkan.zip",
+                f"app-{self.TAG}-windows-x64-cpu.zip",
+            ]
+        )
+
+    def _host(self, **overrides):
+        defaults = dict(
+            system = "Windows",
+            machine = "AMD64",
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+            has_rocm = False,
+            has_intel_gpu = False,
+            has_amd_gpu_without_rocm = True,
+        )
+        defaults.update(overrides)
+        return make_host(**defaults)
+
+    def test_vulkan_is_preferred_over_the_cpu_bundle(self):
+        result = resolve_release_asset_choice(
+            self._host(), self.TAG, self._release(), self._checksums()
+        )
+        assert result[0].install_kind == "windows-vulkan"
+        # The CPU bundle stays as the tail, exactly as it does for an Intel host.
+        assert [c.install_kind for c in result] == ["windows-vulkan", "windows-cpu"]
+
+    def test_an_intel_host_is_unchanged(self):
+        result = resolve_release_asset_choice(
+            self._host(has_intel_gpu = True, has_amd_gpu_without_rocm = False),
+            self.TAG,
+            self._release(),
+            self._checksums(),
+        )
+        assert result[0].install_kind == "windows-vulkan"
+
+    def test_a_host_with_usable_rocm_is_not_diverted_to_vulkan(self):
+        # has_amd_gpu_without_rocm is only set when ROCm is unusable, but assert the gate
+        # too: the windows-rocm branch below must keep owning every host where ROCm runs.
+        # This release carries no windows-rocm and no win-hip bundle, so that host walks
+        # past the published pair entirely rather than being handed Vulkan.
+        with pytest.raises(PrebuiltFallback):
+            resolve_release_asset_choice(
+                self._host(has_rocm = True), self.TAG, self._release(), self._checksums()
+            )
+
+    def test_a_plain_cpu_windows_host_still_takes_the_cpu_bundle(self):
+        result = resolve_release_asset_choice(
+            self._host(has_amd_gpu_without_rocm = False),
+            self.TAG,
+            self._release(),
+            self._checksums(),
+        )
+        assert result[0].install_kind == "windows-cpu"
+
+
 class TestPublishedWindowsCudaAppBundleSmSelection:
     """app-named windows-cuda bundles carry no minor, so the driver-minor gate is skipped; selection must filter by SM coverage instead of handing every host the lowest-rank "older" bundle."""
 

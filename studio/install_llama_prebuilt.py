@@ -377,8 +377,8 @@ class HostInfo:
     has_usable_nvidia: bool
     has_rocm: bool = False
     has_intel_gpu: bool = False
-    # AMD GPU present but ROCm unusable. Linux only, probed only when there is no usable
-    # NVIDIA and no ROCm, so the ROCm branches still own every host where ROCm works.
+    # AMD GPU present but ROCm unusable. Linux and Windows, probed only when there is no
+    # usable NVIDIA and no ROCm, so the ROCm branches still own every host where ROCm works.
     has_amd_gpu_without_rocm: bool = False
     rocm_gfx_target: str | None = None
     rocm_gfx_targets: list[str] = field(default_factory = list)
@@ -2494,6 +2494,25 @@ def windows_intel_gpu_in_registry() -> bool:
     answers in microseconds. Matches the PCI vendor id in MatchingDeviceId
     (ven_8086) or an Intel DriverDesc.
     """
+    return _windows_display_adapter_in_registry((("MatchingDeviceId", "ven_8086"), ("DriverDesc", "intel")))
+
+
+def windows_amd_gpu_in_registry() -> bool:
+    """Whether the Windows registry lists an AMD display adapter.
+
+    Same probe and same caveats as windows_intel_gpu_in_registry, against PCI
+    vendor id 0x1002. Two DriverDesc needles because AMD ships adapters named
+    "AMD Radeon(TM) 8060S Graphics" and others named only "Radeon (TM) ...".
+    Only consulted with no usable NVIDIA and no usable ROCm, so a host reaching
+    it is one the ROCm branch has already declined.
+    """
+    return _windows_display_adapter_in_registry(
+        (("MatchingDeviceId", "ven_1002"), ("DriverDesc", "amd"), ("DriverDesc", "radeon"))
+    )
+
+
+def _windows_display_adapter_in_registry(needles: tuple[tuple[str, str], ...]) -> bool:
+    """Whether any display-adapter class key matches one of (value_name, needle)."""
     try:
         import winreg
     except ImportError:
@@ -2507,10 +2526,7 @@ def windows_intel_gpu_in_registry() -> bool:
                         # "Properties" is ACL-restricted and not an adapter.
                         continue
                     with winreg.OpenKey(class_key, name) as adapter_key:
-                        for value_name, needle in (
-                            ("MatchingDeviceId", "ven_8086"),
-                            ("DriverDesc", "intel"),
-                        ):
+                        for value_name, needle in needles:
                             try:
                                 value, _ = winreg.QueryValueEx(adapter_key, value_name)
                             except OSError:
@@ -2773,10 +2789,14 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                     has_amd_gpu_without_rocm = True
         elif is_windows:
             # Registry first (in-process; see windows_intel_gpu_in_registry).
-            # The CIM query stays as the fallback when the registry shows no
-            # Intel adapter.
+            # The CIM query stays as the fallback when the registry shows
+            # neither adapter. AMD is read here too, not just Intel: without it
+            # an AMD host with no usable ROCm falls through to windows-cpu,
+            # while the Linux branch above routes the same host to Vulkan.
             has_intel_gpu = windows_intel_gpu_in_registry()
-            if not has_intel_gpu:
+            if not _amd_hidden_by_mask:
+                has_amd_gpu_without_rocm = windows_amd_gpu_in_registry()
+            if not has_intel_gpu or not has_amd_gpu_without_rocm:
                 _ps = shutil.which("powershell") or shutil.which("pwsh")
                 if _ps:
                     try:
@@ -2790,8 +2810,14 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                             ],
                             timeout = 15,
                         )
-                        if _result.returncode == 0 and "intel" in _result.stdout.lower():
-                            has_intel_gpu = True
+                        if _result.returncode == 0:
+                            _names = _result.stdout.lower()
+                            if "intel" in _names:
+                                has_intel_gpu = True
+                            if not _amd_hidden_by_mask and (
+                                "amd" in _names or "radeon" in _names
+                            ):
+                                has_amd_gpu_without_rocm = True
                     except Exception:
                         pass
 
@@ -3634,13 +3660,20 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                 )
             log("AMD ROCm detected on Windows but no HIP prebuilt found -- falling back to CPU")
 
-        # Intel (or other non-NVIDIA/non-AMD) GPU on Windows: use Vulkan. No
-        # physical NVIDIA so a CUDA-hidden card isn't reached through Vulkan.
-        if host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm:
+        # Intel or AMD GPU on Windows: use Vulkan. No physical NVIDIA so a CUDA-hidden card
+        # isn't reached through Vulkan, and the ROCm branch above still wins wherever ROCm
+        # runs. This mirrors the Linux branch; without the AMD half, a Strix Halo box whose
+        # ROCm tooling is absent took windows-cpu while the same silicon took Vulkan on Linux.
+        if (
+            (host.has_intel_gpu or host.has_amd_gpu_without_rocm)
+            and not host.has_physical_nvidia
+            and not host.has_rocm
+        ):
+            vendor = "Intel GPU" if host.has_intel_gpu else "AMD GPU without usable ROCm"
             vulkan_name = f"llama-{llama_tag}-bin-win-vulkan-x64.zip"
             if vulkan_name in upstream_assets:
                 log(
-                    f"Intel GPU detected on Windows -- using upstream Vulkan prebuilt {vulkan_name}"
+                    f"{vendor} detected on Windows -- using upstream Vulkan prebuilt {vulkan_name}"
                 )
                 return AssetChoice(
                     repo = UPSTREAM_REPO,
@@ -3650,7 +3683,7 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
                     source_label = "upstream",
                     install_kind = "windows-vulkan",
                 )
-            log("Intel GPU detected on Windows but no Vulkan prebuilt found -- falling back to CPU")
+            log(f"{vendor} detected on Windows but no Vulkan prebuilt found -- falling back to CPU")
 
         upstream_name = f"llama-{llama_tag}-bin-win-cpu-x64.zip"
         if upstream_name not in upstream_assets:
@@ -3733,7 +3766,15 @@ def resolve_release_asset_choice(
 
     published_choice: AssetChoice | None = None
     if host.is_windows and host.is_x86_64:
-        if host.has_intel_gpu and not host.has_physical_nvidia and not host.has_rocm:
+        # Intel OR AMD-without-usable-ROCm, mirroring the Linux branch. Measured on a
+        # gfx1151 (Radeon 8060S) box whose amd-smi could not load and where HIP_PATH and
+        # ROCM_PATH were unset: with the Intel-only gate every ref resolved windows-cpu,
+        # even though the release ships a windows-vulkan bundle.
+        if (
+            (host.has_intel_gpu or host.has_amd_gpu_without_rocm)
+            and not host.has_physical_nvidia
+            and not host.has_rocm
+        ):
             choices = [
                 choice
                 for choice in (
