@@ -110,6 +110,21 @@ def test_a_non_true_full_deps_value_changes_nothing(monkeypatch, manifest, value
     assert _plan() is not None
 
 
+def test_a_peer_already_in_a_pass_forces_everything(monkeypatch, manifest) -> None:
+    """Its packages are the ones this evidence describes, so nothing may be skipped on it."""
+    monkeypatch.setattr(stack, "_PASS_UNCONTENDED", False)
+    assert _plan() is None
+
+
+def test_the_pass_runs_inside_the_pass_lock() -> None:
+    """The flag has to cover the whole pass: a lock dropped early proves nothing."""
+    source = STACK_PATH.read_text(encoding = "utf-8")
+    assert "@_under_pass_lock\ndef install_python_stack() -> int:" in source
+    wrapper = source[source.index("def _under_pass_lock(") : source.index("@_under_pass_lock")]
+    assert "with install_manifest.pass_lock() as uncontended:" in wrapper
+    assert "return func(*args, **kwargs)" in wrapper
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [
@@ -1930,6 +1945,27 @@ def test_an_unreadable_requires_dist_makes_the_whole_index_unreadable(monkeypatc
     monkeypatch.setattr(stack.install_manifest, "_metadata_scan_paths", lambda: [])
     monkeypatch.setattr(importlib.metadata, "distributions", lambda **kw: [_Dist()])
     assert stack.install_manifest.installed_dependency_index() is None
+
+
+def test_pip_backup_metadata_is_not_read_as_installed(tmp_path, monkeypatch) -> None:
+    """An interrupted pip upgrade leaves ~ame-1.0.dist-info with the payload gone. pip
+    ignores it, so the closure must too, or the step that would reinstall it skips."""
+    site = tmp_path / "site-packages"
+    backup = site / "~obble-0.1.dist-info"
+    backup.mkdir(parents = True)
+    (backup / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: cobble\nVersion: 0.1\n", encoding = "utf-8"
+    )
+    live = site / "mammoth-1.0.dist-info"
+    live.mkdir()
+    (live / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: mammoth\nVersion: 1.0\n", encoding = "utf-8"
+    )
+    monkeypatch.setattr(stack.install_manifest, "_metadata_scan_paths", lambda: [str(site)])
+    index = stack.install_manifest.installed_dependency_index()
+    assert index is not None
+    assert "mammoth" in index
+    assert "cobble" not in index, "the backup metadata was read as an installed package"
 
 
 def test_a_second_pass_in_one_process_starts_with_no_audited_steps() -> None:

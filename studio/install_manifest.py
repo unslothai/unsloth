@@ -39,6 +39,8 @@ PREVIOUS_MANIFEST_NAME = "unsloth_install_manifest.previous.json"
 # manifest minutes after the pass ends: unserialised, one writer's replace can land between
 # another's remove and its mutations and recreate a completion marker over a half-built venv.
 LOCK_NAME = "unsloth_install_manifest.lock"
+# Held for a whole pass by the installer, and only ever tested, never waited on: see pass_lock.
+PASS_LOCK_NAME = "unsloth_install_pass.lock"
 # How long a writer waits for a peer before going ahead unserialised, matching msvcrt's
 # LK_LOCK. These writers take milliseconds, and a peer killed holding the lock must not wedge
 # every later update.
@@ -209,10 +211,18 @@ def _metadata_scan_paths() -> List[str]:
 
 def _installed_metadata_records(dist_name: str) -> List[Tuple[str, Optional[Path]]]:
     """Every matching metadata version and its directory, when available."""
-    from importlib.metadata import distributions
+    from importlib.metadata import MetadataPathFinder, distributions
 
     wanted = _canonical(dist_name)
     paths = _metadata_scan_paths()
+    # The listing cache is keyed on the directory's st_mtime, so a dist-info added since an earlier
+    # scan in this process stays invisible while that mtime holds (two writes in one tick; exFAT 2s,
+    # HFS+ 1s), and a damaged install verifies as healthy. Via an INSTANCE: invalidate_caches only
+    # became a classmethod in 3.11.9 / 3.12.3 (gh-116811), and importlib.invalidate_caches() gained
+    # its delegation there too, so before those neither the class call nor the caller works. 3.9
+    # resolves it to MetaPathFinder's no-op, which is right: its FastPath does not cache.
+    if getattr(MetadataPathFinder, "invalidate_caches", None) is not None:
+        MetadataPathFinder().invalidate_caches()
     kwargs = {"path": paths} if paths else {}
     found: List[Tuple[str, Optional[Path]]] = []
     for dist in distributions(**kwargs):
@@ -425,22 +435,81 @@ def _manifest_lock(root: Optional[Path] = None):
         # lock has to be able to ask, and the two that must never fail an install can ignore it.
         yield locked
     finally:
-        if handle is not None:
-            if locked:
-                try:
-                    try:
-                        import fcntl  # noqa: PLC0415
-                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-                    except ImportError:
-                        import msvcrt  # noqa: PLC0415
-                        handle.seek(0)
-                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                except (OSError, ValueError):
-                    pass
+        _release_lock(handle, locked)
+
+
+def _release_lock(handle, locked: bool) -> None:
+    """Drop the lock and the handle. Never raises."""
+    if handle is None:
+        return
+    if locked:
+        try:
             try:
-                handle.close()
-            except OSError:
+                import fcntl  # noqa: PLC0415
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except ImportError:
+                import msvcrt  # noqa: PLC0415
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        except (OSError, ValueError):
+            pass
+    try:
+        handle.close()
+    except OSError:
+        pass
+
+
+@contextlib.contextmanager
+def pass_lock(root: Optional[Path] = None):
+    """Held for a whole dependency pass, and never waited on. Never raises.
+
+    Yields False only when a peer is already inside a pass on this venv. Its packages are the
+    ones the recorded evidence describes, so a second pass has to run every step rather than
+    skip on an answer the peer is invalidating as it reads it. Not serialisation: the pass can
+    take tens of minutes and a waiter would be worse than the concurrency.
+
+    Best effort, as _manifest_lock: a filesystem that cannot lock reads as uncontended, which
+    is what every release before this did.
+    """
+    handle = None
+    locked = False
+    contended = False
+    try:
+        descriptor = os.open(
+            (root or venv_root()) / PASS_LOCK_NAME,
+            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+            0o644,
+        )
+        handle = os.fdopen(descriptor, "a+b")
+    except OSError:
+        handle = None
+    if handle is not None:
+        try:
+            import fcntl  # noqa: PLC0415 - POSIX only, and absent on Windows
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+            except OSError as exc:
+                # Only these mean a peer holds it. Anything else is a mount that does not
+                # implement locking, which must not cost every step its evidence.
+                contended = exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES)
+        except ImportError:
+            try:
+                import msvcrt  # noqa: PLC0415 - the Windows half of the same thing
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                locked = True
+            except ImportError:
                 pass
+            except OSError as exc:
+                contended = exc.errno in (errno.EACCES, errno.EDEADLK)
+        except (OSError, ValueError):
+            pass
+    try:
+        yield not contended
+    finally:
+        _release_lock(handle, locked)
 
 
 def remove_manifest(root: Optional[Path] = None) -> bool:
@@ -866,6 +935,11 @@ CLOSURE_SCAN_BUDGET_SECONDS = 10.0
 _CLOSURE_MAX_VISITS = 20000
 
 
+def _is_pip_backup(dist) -> bool:
+    """True for the ~ame-1.0.dist-info an interrupted pip upgrade leaves behind."""
+    return str(getattr(getattr(dist, "_path", None), "name", "")).startswith("~")
+
+
 def installed_dependency_index() -> Optional[Dict[str, Tuple[str, List[str]]]]:
     """canonical name -> (version, raw Requires-Dist lines) for this interpreter.
 
@@ -878,6 +952,11 @@ def installed_dependency_index() -> Optional[Dict[str, Tuple[str, List[str]]]]:
     try:
         index: Dict[str, Tuple[str, List[str]]] = {}
         for dist in distributions(path = _metadata_scan_paths()):
+            # An interrupted pip upgrade leaves the old metadata renamed to ~ame-1.0.dist-info
+            # with its payload gone. pip ignores those; so must this, or a closure reads an
+            # unimportable package as installed and its step skips the reinstall that repairs it.
+            if _is_pip_backup(dist):
+                continue
             try:
                 name = dist.metadata["Name"]
                 version = dist.version

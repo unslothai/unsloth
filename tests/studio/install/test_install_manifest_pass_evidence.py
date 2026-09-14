@@ -978,3 +978,69 @@ def test_both_writers_refuse_the_same_unencodable_payload(tmp_path: pathlib.Path
         )
         is None
     )
+
+
+def test_the_pass_lock_reads_as_contended_only_while_a_peer_holds_it(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A second pass on one venv must see the first one, across processes."""
+    child_code = "\n".join(
+        [
+            "import sys, time, pathlib",
+            f"sys.path.insert(0, {str(pathlib.Path(im.__file__).resolve().parent)!r})",
+            "import install_manifest as im",
+            f"with im.pass_lock(pathlib.Path({str(tmp_path)!r})) as owned:",
+            "    assert owned",
+            f"    pathlib.Path({str(tmp_path / 'held')!r}).write_text('1', encoding='utf-8')",
+            "    time.sleep(2.0)",
+        ]
+    )
+    child = subprocess.Popen([sys.executable, "-c", child_code])
+    try:
+        held = tmp_path / "held"
+        deadline = time.time() + 20
+        while not held.exists() and time.time() < deadline:
+            time.sleep(0.02)
+        assert held.exists(), "the child never took the pass lock"
+        with im.pass_lock(tmp_path) as uncontended:
+            assert uncontended is False
+    finally:
+        child.wait(timeout = 30)
+    # And the moment it lets go, the next pass is free to trust its evidence again.
+    with im.pass_lock(tmp_path) as uncontended:
+        assert uncontended is True
+
+
+def test_the_pass_lock_never_waits_for_the_peer(tmp_path: pathlib.Path) -> None:
+    """It is tested, not waited on: a pass runs for minutes, so a waiter would be worse."""
+    with im.pass_lock(tmp_path):
+        started = time.monotonic()
+        code = "\n".join(
+            [
+                "import sys, pathlib",
+                f"sys.path.insert(0, {str(pathlib.Path(im.__file__).resolve().parent)!r})",
+                "import install_manifest as im",
+                f"with im.pass_lock(pathlib.Path({str(tmp_path)!r})) as owned:",
+                "    print(owned)",
+            ]
+        )
+        peer = subprocess.run(
+            [sys.executable, "-c", code], capture_output = True, text = True, timeout = 60
+        )
+    assert peer.stdout.strip() == "False", peer.stderr
+    assert time.monotonic() - started < 5.0
+
+
+def test_a_root_that_cannot_hold_a_pass_lock_reads_as_uncontended(tmp_path: pathlib.Path) -> None:
+    """Best effort, as the manifest lock: an unlockable filesystem keeps the fast path."""
+    with im.pass_lock(tmp_path / "does" / "not" / "exist") as uncontended:
+        assert uncontended is True
+
+
+def test_a_symlink_on_the_pass_lock_name_is_not_followed(tmp_path: pathlib.Path) -> None:
+    target = tmp_path / "elsewhere"
+    target.write_text("untouched", encoding = "utf-8")
+    (tmp_path / im.PASS_LOCK_NAME).symlink_to(target)
+    with im.pass_lock(tmp_path) as uncontended:
+        assert uncontended is True
+    assert target.read_text(encoding = "utf-8") == "untouched"
