@@ -133,11 +133,17 @@ def test_fallback_matches_the_triton_kernel_bit_for_bit(monkeypatch, shape, bloc
 
     from unsloth.kernels import fp8
 
+    # Both capabilities are simulated in one test, so clear between them too: the cache is
+    # keyed on the device, and a stale entry would quietly compare triton against itself.
     with monkeypatch.context() as mp:
         mp.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (9, 0))
+        fp8._fp8_device_lacks_kernel.cache_clear()
+        assert not fp8._fp8_kernel_unsupported(weight)
         via_triton = fp8._blockwise_weight_dequant_any_shape(weight, scale, block, torch.bfloat16)
     with monkeypatch.context() as mp:
         mp.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 0))
+        fp8._fp8_device_lacks_kernel.cache_clear()
+        assert fp8._fp8_kernel_unsupported(weight)
         via_torch = fp8._blockwise_weight_dequant_any_shape(weight, scale, block, torch.bfloat16)
 
     assert torch.equal(via_triton, via_torch)
