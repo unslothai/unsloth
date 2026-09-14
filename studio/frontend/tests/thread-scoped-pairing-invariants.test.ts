@@ -12,16 +12,13 @@
 // graph, so it cannot be loaded in a bare node test. The sibling store tests do the same.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
-function read(path: string): string {
-  return readFileSync(new URL(path, import.meta.url), "utf8");
-}
+import { readText } from "./helpers/kit.ts";
 
-const store = read("../src/features/chat/stores/chat-runtime-store.ts");
-const provider = read("../src/features/chat/runtime-provider.tsx");
-const composer = read("../src/components/assistant-ui/thread.tsx");
+const store = readText("../src/features/chat/stores/chat-runtime-store.ts");
+const provider = readText("../src/features/chat/runtime-provider.tsx");
+const composer = readText("../src/components/assistant-ui/thread.tsx");
 
 function slice(source: string, from: string, to: string): string {
   const start = source.indexOf(from);
@@ -36,11 +33,61 @@ test("the read waits for this chat's own write before it can be believed", () =>
   // returns the pre-edit snapshot, which is then applied over what the user set.
   const sync = slice(provider, "const sync = () => {", "// The read did not answer");
   assert.match(sync, /awaitThreadScopedSettingsWrite\(activeThreadId\)/);
+  // And the row's own creation: initialize() resolves as soon as the id is minted and leaves
+  // the POST tracked, so a first send's read can overtake it, see no row, and release this
+  // chat's held edits into the installation defaults.
+  assert.match(sync, /awaitStoredChatThreadWrites\(activeThreadId\)/);
   // and the read only happens after it, not alongside
   assert.ok(
     sync.indexOf("awaitThreadScopedSettingsWrite") <
       sync.indexOf("getStoredChatThreadReadResult"),
     "the read is not sequenced after the write",
+  );
+});
+
+/** sync()'s body with comments removed, for the two order assertions below. These call
+ * sites are heavily commented, and a prose mention of a call ahead of the call itself
+ * would otherwise read as the call being in the wrong place. */
+function syncCode(): string {
+  return slice(provider, "const sync = () => {", "// The read did not answer")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^[ \t]*\/\/.*$/gm, "");
+}
+
+test("both waits sit inside the attempt's deadline, not in front of it", () => {
+  // Neither wait is bounded on its own, so in front of the deadline their time goes
+  // uncounted and a stalled write ends in a refused send. The reasoning is at the call site.
+  const sync = syncCode();
+  const race = sync.indexOf("Promise.race");
+  assert.ok(race !== -1, "the per-attempt deadline is gone");
+
+  for (const wait of ["awaitThreadScopedSettingsWrite", "awaitStoredChatThreadWrites"]) {
+    assert.ok(
+      sync.indexOf(wait) > race,
+      `${wait}() is awaited before the deadline opens, so its time is unbounded`,
+    );
+  }
+});
+
+test("the pairing wait still outlasts the worst case read chain", () => {
+  // The arithmetic THREAD_PAIRING_WAIT_MS's own comment claims. Read from source so the
+  // two cannot drift apart: whichever constant moves, this is what catches it.
+  const constant = (source: string, name: string): number => {
+    const match = source.match(new RegExp(`${name}\\s*=\\s*([0-9_]+)`));
+    assert.ok(match, `${name} not found`);
+    return Number(match[1].replace(/_/g, ""));
+  };
+  const store = readText("../src/features/chat/stores/chat-runtime-store.ts");
+
+  const attempts = constant(provider, "THREAD_READ_RETRIES") + 1;
+  const worstCase =
+    attempts * constant(provider, "THREAD_READ_TIMEOUT_MS") +
+    (attempts - 1) * constant(provider, "THREAD_READ_RETRY_MS");
+
+  assert.ok(
+    worstCase < constant(store, "THREAD_PAIRING_WAIT_MS"),
+    `the read chain can take ${worstCase}ms, at or past the gate's give-up, so a slow ` +
+      "read refuses the user's send instead of falling back to the installation defaults",
   );
 });
 
@@ -268,7 +315,7 @@ test("the read that gates sends cannot hang forever", () => {
 test("every run waits for the chat's settings, not just the composer", () => {
   // Reload, Continue and send-from-edit never touch handleSubmit; they all reach the
   // adapter, so the wait belongs there.
-  const adapter = read("../src/features/chat/api/chat-adapter.ts");
+  const adapter = readText("../src/features/chat/api/chat-adapter.ts");
   const run = slice(adapter, "await useChatRuntimeStore.getState().hydratePersistedSettings();", "let runtime =");
   assert.match(run, /await awaitThreadScopedPairing\(runThreadId\)/);
 });
@@ -308,7 +355,7 @@ test("the run's wait is bound to the run's own chat", () => {
   const wait = slice(store, "export function awaitThreadScopedPairing", "\n}");
   assert.match(wait, /threadId: string \| null \| undefined/);
   assert.match(wait, /pairingSettledByThreadId\.get\(threadId\)/);
-  const adapter = read("../src/features/chat/api/chat-adapter.ts");
+  const adapter = readText("../src/features/chat/api/chat-adapter.ts");
   assert.match(adapter, /await awaitThreadScopedPairing\(runThreadId\)/);
 });
 
@@ -369,7 +416,7 @@ test("the thread read that gates sends aborts when it times out", () => {
 test("a read nobody is waiting for any more is cancelled", () => {
   const effect = slice(provider, "const reads = new Set<AbortController>();", "\n  }, [activeThreadId");
   assert.match(effect, /abortReads\(\);/);
-  const api = read("../src/features/chat/api/chat-api.ts");
+  const api = readText("../src/features/chat/api/chat-api.ts");
   const get = slice(api, "export async function getChatThread", "\n}");
   assert.match(get, /options\.timeoutMs !== undefined/);
   assert.match(get, /combineAbortSignals\(\[timeout\.signal, options\.signal\]\)/);
@@ -378,7 +425,7 @@ test("a read nobody is waiting for any more is cancelled", () => {
 test("the ensure step in front of a settings write is bounded too", () => {
   // It runs BEFORE the write, so neither the caller's signal nor the write timeout
   // reaches it, and a stall there leaves the whole per-thread chain pending.
-  const storage = read("../src/features/chat/utils/chat-history-storage.ts");
+  const storage = readText("../src/features/chat/utils/chat-history-storage.ts");
   const update = slice(storage, "export async function updateStoredChatThread", "\n}");
   assert.match(update, /ensureStoredChatThread\(threadId, undefined, \{/);
   assert.match(update, /bounded: true/);
@@ -462,17 +509,28 @@ test("a fork stops when the chat's settings could not be saved", () => {
 });
 
 test("an unsaved chat's edit reaches the installation defaults without a round trip", () => {
-  // assistant-ui gives an unsaved thread a `__LOCALID_` id (RemoteThreadListThreadList
-  // RuntimeCore), which no row can exist for, so its read can only 404. Holding edits
-  // behind that certain-to-fail read is what stopped a pill clicked on a fresh /chat
-  // from reaching localStorage straight away, which playwright_chat_ui asserts.
+  // Holding edits behind a read certain to 404 is what stopped a pill clicked on a fresh
+  // /chat from reaching localStorage at once, which playwright_chat_ui asserts. A chat is
+  // unsaved only until its first send, so the test is the runtime's pending-new-thread id:
+  // the `__LOCALID_` prefix stays for good and gated every app-created chat out of its own
+  // settings (#8686).
   const effect = slice(
     provider,
     "const { applyThreadScopedSettings } = useChatRuntimeStore.getState();",
     "if (!enabled) {",
   );
-  assert.match(effect, /isAssistantLocalThreadId\(activeThreadId\)/);
+  assert.match(effect, /activeThreadId === pendingNewThreadId/);
+  assert.doesNotMatch(effect, /isAssistantLocalThreadId/);
   assert.match(effect, /applyThreadScopedSettings\(null, null\)/);
+});
+
+test("the pairing effect tracks the runtime's pending new thread", () => {
+  assert.match(
+    provider,
+    /const pendingNewThreadId = useAuiState\(\(\{ threads \}\) => threads\.newThreadId\)/,
+  );
+  const deps = slice(provider, "}, [activeThreadId, enabled,", ");");
+  assert.match(deps, /pendingNewThreadId/);
 });
 
 test("a run whose pairing never settled is refused, not run on another chat's settings", () => {
@@ -481,7 +539,7 @@ test("a run whose pairing never settled is refused, not run on another chat's se
   const wait = slice(store, "export function awaitThreadScopedPairing", "\n}");
   assert.match(wait, /Promise<boolean>/);
   assert.match(wait, /resolve\(false\)/);
-  const adapter = read("../src/features/chat/api/chat-adapter.ts");
+  const adapter = readText("../src/features/chat/api/chat-adapter.ts");
   assert.match(adapter, /if \(!\(await awaitThreadScopedPairing\(runThreadId\)\)\) \{/);
   assert.match(adapter, /the message was not sent/);
 });
@@ -587,12 +645,12 @@ test("only a user edit to a sampling param lands on the chat", () => {
   );
 
   // Both paths that apply a model's own params say so.
-  const runtime = read("../src/features/chat/hooks/use-chat-model-runtime.ts");
-  const status = read("../src/features/chat/lib/apply-inference-status-to-store.ts");
+  const runtime = readText("../src/features/chat/hooks/use-chat-model-runtime.ts");
+  const status = readText("../src/features/chat/lib/apply-inference-status-to-store.ts");
   for (const source of [runtime, status]) {
     assert.match(
       source,
-      /mergeBackendRecommendedInference\([\s\S]{0,700}?fromModelDefaults: true/,
+      /mergeBackendRecommendedInference\([\s\S]{0,1200}?fromModelDefaults: true/,
     );
   }
 });
@@ -638,7 +696,7 @@ test("a model's recommendation does not overwrite the chat's sampling", () => {
 // user just asked for arrives with the previous mode's temperature and top-p. The
 // load-time path applies the same table unasked, so it stays marked.
 test("toggling Think applies its params even in a chat that pins sampling", () => {
-  const qwen = read("../src/features/chat/utils/qwen-params.ts");
+  const qwen = readText("../src/features/chat/utils/qwen-params.ts");
   assert.match(qwen, /store\.setParams\(\{ \.\.\.store\.params, \.\.\.params \}\);/);
   assert.doesNotMatch(
     qwen,
@@ -646,7 +704,7 @@ test("toggling Think applies its params even in a chat that pins sampling", () =
     "the toggle is treated as a model default, so a pinned chat never changes mode params",
   );
   // The post-load application of the same table stays marked.
-  const runtime = read("../src/features/chat/hooks/use-chat-model-runtime.ts");
+  const runtime = readText("../src/features/chat/hooks/use-chat-model-runtime.ts");
   const post = slice(runtime, "store.setParams({ ...store.params, ...p }", "\n              }");
   assert.match(post, /fromModelDefaults: true/);
 });
@@ -687,8 +745,12 @@ test("the in-memory defaults follow the model defaults that were just written", 
     note,
     /if \(isHeldThreadScopedField\(key\)\) \{\s*hydratedDefaultsByHeldField\.set\(key, value\);/,
   );
-  // and it is the fallback apply() actually reads
-  assert.match(store, /stored\?\.\[key\] \?\? globalThreadScopedDefaults\?\.\[key\]/);
+  // and it is the fallback apply() actually reads. Not ??: a cleared seed is stored as
+  // null, and ?? would read that as a missing key and hand back the installation pin.
+  assert.match(
+    store,
+    /firstSetThreadScopedValue\(\s*stored\?\.\[key\],\s*globalThreadScopedDefaults\?\.\[key\],/,
+  );
 });
 
 // setCheckpoint replays the destination model's remembered params without going through
@@ -730,7 +792,7 @@ test("the model being left does not remember the open chat's values", () => {
   );
   assert.match(
     strip,
-    /remembered\?\.\[key\] \?\?\s*globalThreadScopedDefaults\?\.\[key\]/,
+    /firstSetThreadScopedValue\(\s*remembered\?\.\[key\],\s*globalThreadScopedDefaults\?\.\[key\],/,
   );
   // and for a held key neither of those may exist yet, so the sample taken when the
   // window opened is the pre-edit value.

@@ -6,7 +6,7 @@
 These tests do not exercise the tool loop itself (``test_studio_tool_loop.py``
 owns that). They pin the contract at the seams where an *existing* install can
 break during an upgrade, because each of those seams is a place where the two
-halves of Studio are versioned independently:
+halves of Unsloth are versioned independently:
 
 * the ``/api/providers/registry`` payload, read by a browser that may still be
   running a JS bundle from before this capability existed (old FE + new BE);
@@ -255,7 +255,7 @@ def test_response_format_is_omitted_when_the_caller_does_not_ask(monkeypatch):
 
     TGI types it as a Rust enum with no ``text`` variant and 422s on the
     OpenAI-default ``{"type": "text"}``; LM Studio before 0.3.18 400s on the
-    same. Studio talks to those through the ``custom`` preset, so the field has
+    same. Unsloth talks to those through the ``custom`` preset, so the field has
     to stay absent unless a caller explicitly asked for structured output.
     """
     captured: dict = {}

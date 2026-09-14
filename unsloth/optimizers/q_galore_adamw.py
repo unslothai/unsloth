@@ -1,17 +1,13 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#
 # Adapted from Q-GaLore (https://github.com/VITA-Group/Q-GaLore)
 # Original paper: "Q-GaLore: Quantized GaLore with INT4 Projection and
 # Layer-Adaptive Low-Rank Gradients" (arXiv:2407.08296)
@@ -133,7 +129,6 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
                 has_weight_quant = self._has_weight_quant(p, group)
 
-                # --- Dequantize weight if INT8 ---
                 if has_weight_quant:
                     if p._q_scales is not None:
                         float_weight = _dequantize(
@@ -143,9 +138,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
                             p._q_shape,
                         )
                         p.data = float_weight
-                    # else: first step, weights are still float — skip dequantize
 
-                # --- GaLore projection ---
                 if "rank" in group:
                     if "projector" not in state:
                         state["projector"] = GaLoreProjector(
@@ -161,8 +154,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
                             queue_size = group.get("queue_size", 5),
                         )
 
-                    # Temporarily disable weight decay for GaLore params
-                    # (we apply it manually after project-back)
+                    # Temporarily disable weight decay for GaLore params; it is applied manually after project-back.
                     if "weight_decay" in group and group["weight_decay"] > 0:
                         group["_wd_saved"] = group["weight_decay"]
                         group["weight_decay"] = 0
@@ -174,19 +166,17 @@ class QGaLoreAdamW8bit(Optimizer2State):
                     p.data = torch.zeros_like(grad, dtype = p.data.dtype, device = p.data.device)
                     p.grad = grad
 
-                # --- 8-bit Adam update ---
                 if "state1" not in state:
                     self.init_state(group, p, gindex, pindex)
 
                 self.prefetch_state(p)
                 self.update_step(group, p, gindex, pindex)
 
-                # --- GaLore project-back ---
                 if "rank" in group:
-                    # p.data now holds the weight update in low-rank space
+                    # p.data now holds the weight update in low-rank space.
                     p.data = p._saved_data.add_(state["projector"].project_back(p.data))
 
-                    # Re-apply decoupled weight decay using pre-update weights
+                    # Re-apply decoupled weight decay using pre-update weights.
                     if "_wd_saved" in group:
                         p.data.add_(
                             p.data,
@@ -197,7 +187,6 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
                     del p._saved_data
 
-                # --- Re-quantize weight to INT8 ---
                 if has_weight_quant:
                     float_data = p.data
                     stochastic = group.get("stochastic_round", True)
@@ -208,12 +197,9 @@ class QGaLoreAdamW8bit(Optimizer2State):
                     p._q_scales = scales
                     p._q_zeros = zeros
                     p._q_shape = shape
-                    # Scalar placeholder to free float memory; the forward
-                    # pre-hook (install_weight_quant_hooks) dequantizes before
-                    # the next forward pass.
+                    # Scalar placeholder to free float memory; the forward pre-hook (install_weight_quant_hooks)
+                    # dequantizes before the next forward pass.
                     p.data = torch.empty(1, dtype = p.data.dtype, device = p.data.device)
-
-                state["step"] += 1
 
         if torch.cuda.is_available():
             torch.cuda.synchronize()
@@ -251,9 +237,8 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
         for name, p in model.named_parameters():
             if id(p) in weight_quant_params:
-                # Store metadata without converting weights to uint8; the first
-                # step() quantizes after the update. Dummy scales/zeros keep
-                # _has_weight_quant() True on the first step.
+                # Store metadata without converting weights to uint8; the first step() quantizes after the update,
+                # and dummy scales/zeros keep _has_weight_quant() True on that first step.
                 p._q_scales = None
                 p._q_zeros = None
                 p._q_shape = p.data.shape
@@ -355,8 +340,8 @@ def make_q_galore_param_groups(
         if not param.requires_grad:
             continue
 
-        # Match target module names; exclude 1-D params (biases, norms) since
-        # GaLoreProjector.project requires 2-D gradients.
+        # Match target module names and exclude 1-D params (biases, norms), since GaLoreProjector.project
+        # requires 2-D gradients.
         name_parts = name.split(".")
         is_galore = param.dim() >= 2 and any(t in name_parts for t in targets)
 

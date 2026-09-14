@@ -43,7 +43,7 @@ export function ProfileStatsContent() {
 
   if (stats === null) return null;
 
-  const hasChats = stats.totals.messages > 0;
+  const hasUsage = stats.totals.messages > 0 || stats.totals.totalTokens > 0;
   const hasTraining = stats.training.runs > 0;
 
   return (
@@ -62,7 +62,7 @@ export function ProfileStatsContent() {
 
       <StatsHighlights stats={stats} />
 
-      {hasChats ? (
+      {hasUsage ? (
         <>
           <TokenActivityCard daily={stats.daily} />
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">

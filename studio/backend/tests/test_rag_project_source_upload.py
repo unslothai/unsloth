@@ -3,12 +3,14 @@
 
 """Project sources upload: the path the create-project dialog drives."""
 
+import io
 import os
 
 import pytest
+from fastapi import UploadFile
 
 from core.rag import ingestion, store
-from routes.rag import _sanitize_filename
+from routes.rag import _sanitize_filename, _save_upload
 from storage import rag_db
 
 
@@ -79,3 +81,57 @@ def test_sanitized_filenames_carry_no_path(raw):
 @pytest.mark.parametrize("raw", ["." * 300, "noext" * 100, "a" * 100 + "." + "e" * 250])
 def test_sanitizer_degrades_safely(raw):
     assert 0 < len(_sanitize_filename(raw)) <= 200
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "报告.pdf",
+        "日本語ドキュメント.txt",
+        "Отчёт 2026.pdf",
+        "résumé.docx",
+        "My Report.pdf",
+        "Q3: Revenue.pdf",
+        # macOS keeps a Finder "/" on disk as ":", so this is how a dropped
+        # "P/L statement.pdf" reaches the sanitizer. Its first component is the name.
+        "P:L statement.pdf",
+        "C:notes.txt",
+    ],
+)
+def test_sanitizer_keeps_the_name_the_user_gave(raw):
+    assert _sanitize_filename(raw) == raw
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("a\x00b.pdf", "ab.pdf"),
+        ("a\u202eb.pdf", "ab.pdf"),
+        ("a\u200bb.pdf", "ab.pdf"),
+        ("\ufeff报告.pdf", "报告.pdf"),
+        ("a\nb.pdf", "a b.pdf"),
+        ("a\u2028b.pdf", "a b.pdf"),
+        # What a browser actually sends for a file picked on Windows.
+        ("C:\\fakepath\\notes.txt", "notes.txt"),
+    ],
+)
+def test_sanitizer_normalizes_what_a_label_cannot_carry(raw, expected):
+    assert _sanitize_filename(raw) == expected
+
+
+def test_uploaded_unicode_name_is_persisted_verbatim(rag_home, stub_embeddings):
+    payload = b"alpha bravo charlie " * 50
+    stored_path, filename, _ = _save_upload(
+        UploadFile(file = io.BytesIO(payload), filename = "报告 2026.txt")
+    )
+    assert filename == "报告 2026.txt"
+
+    _, job_id = _ingest("P9", filename, stored_path)
+    assert _wait(job_id)["status"] == "completed"
+
+    conn = rag_db.get_connection()
+    try:
+        docs = store.list_documents(conn, store.project_scope("P9"))
+        assert [d["filename"] for d in docs] == ["报告 2026.txt"]
+    finally:
+        conn.close()

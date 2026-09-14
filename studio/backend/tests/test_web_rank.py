@@ -3,7 +3,7 @@
 
 """Unit tests for the ephemeral web-RAG used by deep research auto-read.
 
-These run the *real* Studio RAG store + hybrid retrieval + formatter against a temporary
+These run the *real* Unsloth RAG store + hybrid retrieval + formatter against a temporary
 rag.db (so the ingest -> retrieve -> render reuse chain is exercised end to end) with a fake
 deterministic embedding so no model is downloaded. They also assert the ephemeral scope is
 deleted, i.e. an auto-read leaves nothing behind in the store."""
@@ -21,7 +21,7 @@ def rag_home(tmp_path, monkeypatch):
 
     db_file = tmp_path / "rag.db"
     monkeypatch.setattr(rag_db, "rag_db_path", lambda: db_file)
-    monkeypatch.setattr(rag_db, "_schema_ready", False, raising = False)
+    monkeypatch.setattr(rag_db, "_schema_ready", set(), raising = False)
     return db_file
 
 
@@ -92,7 +92,7 @@ def test_retrieves_relevant_passages_as_chunks(rag_home):
     assert "<chunk" in rendered
     assert "LoRA" in rendered
     assert sources and sources[0]["citationId"] == 1
-    # source attribution is the page title, via Studio's formatter
+    # source attribution is the page title, via Unsloth's formatter
     assert 'source="LoRA"' in rendered
 
 

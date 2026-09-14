@@ -232,20 +232,22 @@ def test_openai_long_context_triggers_on_cache_creation_inflated_billable():
     assert _isclose(out["output_usd"], 1_000 / 1_000_000.0 * 45.0)
 
 
-def test_openai_long_context_threshold_boundary_inclusive():
-    # Threshold is inclusive (>=).
+def test_openai_long_context_threshold_boundary_exclusive():
+    # Threshold is exclusive (>). OpenAI prices "prompts with >272K input
+    # tokens" at 2x input / 1.5x output for the full session, so a prompt of
+    # exactly 272,000 is still on the standard rate.
     out = calculate_cost(
         "openai",
         "gpt-5.5",
         {"input_tokens": 272_000, "output_tokens": 1_000},
     )
-    assert "long-context" in out["model_priced"]
-    out_lo = calculate_cost(
+    assert "long-context" not in out["model_priced"]
+    out_hi = calculate_cost(
         "openai",
         "gpt-5.5",
-        {"input_tokens": 271_999, "output_tokens": 1_000},
+        {"input_tokens": 272_001, "output_tokens": 1_000},
     )
-    assert "long-context" not in out_lo["model_priced"]
+    assert "long-context" in out_hi["model_priced"]
 
 
 # ── chat-style vs raw envelope parity at OpenAI long-context tier ──

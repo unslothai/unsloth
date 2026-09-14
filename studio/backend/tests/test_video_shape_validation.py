@@ -41,6 +41,7 @@ from core.inference.video_families import (
     validate_video_request_shape,
 )
 from core.inference.video_minimax_h3 import h3_conditioning_mode
+from models.inference import VideoReferenceVideo
 from routes.video import router as video_router
 
 # LTX-2 is the reference family for the single-family cases: 4 presets and frame_step 8.
@@ -226,6 +227,24 @@ def test_snapping_helpers_are_untouched():
     assert snap_video_size(LTX2, 250, 250) == (224, 224)
     assert snap_num_frames(LTX2, 100) == 97
     assert format_video_resolution_presets(LTX2) == "768x512, 1216x704, 704x1216, 512x768"
+
+
+def test_reference_video_trim_schema_requires_one_bounded_interval():
+    reference = VideoReferenceVideo(
+        video = "data:video/mp4;base64,AA==",
+        trim_start_seconds = 4.0,
+        trim_end_seconds = 19.0,
+    )
+    assert reference.trim_start_seconds == 4.0
+    assert reference.trim_end_seconds == 19.0
+
+    for values, message in (
+        ({"trim_start_seconds": 4.0}, "provided together"),
+        ({"trim_start_seconds": 4.0, "trim_end_seconds": 5.0}, "2 to 15 seconds"),
+        ({"trim_start_seconds": 4.0, "trim_end_seconds": 20.0}, "2 to 15 seconds"),
+    ):
+        with pytest.raises(ValueError, match = message):
+            VideoReferenceVideo(video = "data:video/mp4;base64,AA==", **values)
 
 
 # ── the route ─────────────────────────────────────────────────────────────────

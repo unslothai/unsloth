@@ -112,7 +112,7 @@ def test_each_lane_gets_its_own_port_and_studio_home() -> None:
 
 
 def test_each_lane_links_the_installed_venv_and_pins_llama_cpp() -> None:
-    """A bare per-lane home is not a usable Studio root; see the module docstring."""
+    """A bare per-lane home is not a usable Unsloth root; see the module docstring."""
     body = _lane_body()
     assert "unsloth_studio" in body and re.search(r"mklink|ln -sfn", body), (
         "the lane home does not link the installed venv. UNSLOTH_STUDIO_HOME is the "

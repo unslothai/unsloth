@@ -558,8 +558,10 @@ Assert-VenvActivated -VenvDir `$Venv
 
 # ── where it is wired in ──
 # Both ends sit immediately after a non-newline token, so a CRLF checkout fails the match rather
-# than yielding an empty region every -not check would pass against.
-$_actPat = '(?s)(\$ActivateScript = Join-Path \$VenvDir "Scripts\\Activate\.ps1"\n\. \$ActivateScript\n.*?Assert-VenvActivated -VenvDir \$VenvDir\n)'
+# than yielding an empty region every -not check would pass against. The dot-source is reached
+# through Enter-StudioVenv, which picks it or the staged-root PATH activation, so the region
+# spans that helper rather than requiring the dot-source on the very next line.
+$_actPat = '(?s)(\$ActivateScript = Join-Path \$VenvDir "Scripts\\Activate\.ps1"\n.*?\. \$ActivateScript\n.*?Assert-VenvActivated -VenvDir \$VenvDir\n)'
 $_act = if ($setupText -match $_actPat) { $Matches[1] } else { "" }
 Check "the activation block was found"     ($_act -ne "")
 Check "CRLF is normalised, not tolerated"  (-not (($setupText -replace "`n", "`r`n") -match $_actPat))
@@ -583,7 +585,10 @@ Check "and that one is outside the swallowing catch" (
     $setupText.IndexOf('} catch { }') -lt
     $setupText.LastIndexOf('Assert-VenvActivated -VenvDir $VenvDir'))
 # It refuses; it does not repair, and it does not wipe a venv install.ps1 may still restore from.
-Check "the guard does not delete anything" (($_act -ne "") -and -not ($_act -match 'Remove-Item'))
+# Env: is exempt: the staged branch clears PYTHONHOME the way Activate.ps1 does, and that removes
+# a variable, not a file.
+Check "the guard does not delete anything" (
+    ($_act -ne "") -and -not ($_act -match 'Remove-Item(?!\s+Env:)'))
 
 Write-Host ""
 Write-Host "=== an installer-managed repair never moves a GPU wheel to another family ==="
@@ -647,10 +652,11 @@ Check "it reports the resolved flavor, not the raw index URL" (
 # session must not inherit the first one's answer. Assigning "" clears it on every edition (7.5+
 # keeps a present blank value, 5.1 and 7.0-7.4 remove the variable) and setup reads both as
 # unknown. The -match half is the anti-vacuity half: a bare -notmatch passes against a tree that
-# never grew the assignment at all.
+# never grew the assignment at all. The finally that puts the caller's own value back is a
+# conditional assignment too, and is not the report; only its $previous* form is allowed.
 Check "the report is assigned on every run, not only when known" (
     ($installText -match '(?m)^\s*\$env:UNSLOTH_INSTALLER_TORCH_TAG = ') -and
-    ($installText -notmatch 'if \([^\n]*\) \{\s*\$env:UNSLOTH_INSTALLER_TORCH_TAG'))
+    ($installText -notmatch 'if \([^\n]*\) \{\s*\$env:UNSLOTH_INSTALLER_TORCH_TAG = (?!\$previous)'))
 Check "it is handed over before setup is invoked" (
     $installText.IndexOf('$env:UNSLOTH_INSTALLER_TORCH_TAG') -ge 0 -and
     $installText.IndexOf('$env:UNSLOTH_INSTALLER_TORCH_TAG') -lt

@@ -30,19 +30,16 @@ cleanup() {
 trap cleanup EXIT
 
 # Say who died and when, for a failure mode that currently reports nothing.
-#
 # Observed on windows-latest at roughly one run in twenty-five: the suite prints
 # "permission-only run passed" and the STEP then ends with "Process completed with exit
 # code 143". 143 is 128+SIGTERM, so something signalled this script after its work had
 # already succeeded, and neither the step log nor the server log records what. The
 # server log simply stops mid-request, which is what cleanup killing it looks like, so
 # it cannot distinguish the two.
-#
 # suite_done is the fact worth capturing: it separates "signalled while driving the
 # browser" (a real timeout worth chasing) from "signalled after passing" (a teardown
 # ordering problem, and what the one observed instance was). Without it the next
 # occurrence is as unreadable as this one.
-#
 # `exit` explicitly, because the whole point is to be unambiguous about the status
 # rather than to rely on what bash would have chosen for a trapped signal.
 suite_done=0
@@ -62,8 +59,15 @@ trap '_on_signal INT 2' INT
 trap '_on_signal HUP 1' HUP
 
 healthy=0
-for _ in $(seq 1 180); do
-  if curl -fs "http://127.0.0.1:$port/api/health" >/dev/null; then
+# --max-time, or only the loop counter is bounded and a server that binds the
+# port then wedges parks the first iteration forever. And a real deadline
+# rather than an iteration count, because once a probe can cost --max-time,
+# 180 iterations is up to 18 minutes rather than the 180s it reads as. See
+# wait-for-health.sh, which had both halves of the same hole.
+health_deadline=$(( SECONDS + 180 ))
+while [ "$SECONDS" -lt "$health_deadline" ]; do
+  if curl -fs --connect-timeout 3 --max-time 5 \
+       "http://127.0.0.1:$port/api/health" >/dev/null; then
     healthy=1
     break
   fi

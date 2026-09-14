@@ -1152,7 +1152,7 @@ def test_h3_is_advertised_as_trainable_with_the_precisions_it_has():
     train this family" and disables Start with "Not supported on this GPU". MiniMax-H3 was only
     in _FLOW_TRAIN_FAMILIES, while the info builder keyed the precision branch on
     _DIT_TRAIN_FAMILIES, so it reported [] even on a host that can train, and the trainer this
-    PR adds was unreachable from Studio.
+    PR adds was unreachable from Unsloth.
 
     Judged against a reference DiT family rather than against a hardcoded list, so the test
     describes the host it runs on: on a GPU-less runner BOTH are legitimately empty, and the

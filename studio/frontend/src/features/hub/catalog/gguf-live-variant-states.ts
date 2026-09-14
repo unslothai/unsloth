@@ -87,25 +87,19 @@ export function applyLiveGgufVariantStates(
       variant.download_size_bytes ?? 0,
       variant.size_bytes,
     );
-    // The row says "N left", so N has to follow the transfer of a running job,
-    // and the backend's measured remainder covers every other case.
-    //
-    // Both terms come from the job and only from the job. snapshot_progress nets
-    // completed_baseline_bytes -- files a previous quant already fetched, an
-    // mmproj most often -- out of expected_bytes AND downloaded_bytes alike, so
-    // the pair is self-consistent while the catalog totals above are not.
-    // Subtracting the transfer from `expectedBytes`, the larger of the two
-    // scopes, adds that baseline back: 1 GB reused and 1 GB fetched of a 5 GB
-    // plan would read 4 GB left rather than 3 GB.
-    //
-    // Only while running: `transferredBytes` is progress, not bytes a resume can
-    // reuse. From huggingface_hub 1.18 the partial is process-unique and unlinked
-    // in a finally, so an interrupted transfer is refetched whole, which is how
-    // `existing_blob_bytes` already prices it. Subtracting a dead job's progress
-    // read "1.0 GB left" for a cancelled 18 GB download with all 18 GB to fetch.
-    //
-    // And only off a MEASURED reading: a held one is priced against the previous,
-    // larger total, so mixing it with the current one read "0 B left".
+    // The row says "N left", so N has to follow the transfer of a running job, and the backend's
+    // measured remainder covers every other case. Both terms come from the job and only from the
+    // job. snapshot_progress nets completed_baseline_bytes -- files a previous quant already
+    // fetched, an mmproj most often -- out of expected_bytes AND downloaded_bytes alike, so the
+    // pair is self-consistent while the catalog totals above are not. Subtracting the transfer from
+    // `expectedBytes`, the larger of the two scopes, adds that baseline back: 1 GB reused and 1 GB
+    // fetched of a 5 GB plan would read 4 GB left rather than 3 GB. Only while running:
+    // `transferredBytes` is progress, not bytes a resume can reuse. From huggingface_hub 1.18 the
+    // partial is process-unique and unlinked in a finally, so an interrupted transfer is refetched
+    // whole, which is how `existing_blob_bytes` already prices it. Subtracting a dead job's
+    // progress read "1.0 GB left" for a cancelled 18 GB download with all 18 GB to fetch. And only
+    // off a MEASURED reading: a held one is priced against the previous, larger total, so mixing it
+    // with the current one read "0 B left".
     const liveRemaining =
       activeDownloadState(live.state) &&
       live.measuredTransfer &&

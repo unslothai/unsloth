@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -61,11 +58,9 @@ except ImportError:
     _TRUE = ("1", "true", "yes", "on")
 
     def is_kaggle_environment():
-        # Kept byte for byte in step with unsloth_zoo.disk_utils: only a real
-        # kernel sets KAGGLE_KERNEL_RUN_TYPE, and only the Kaggle image has a
-        # /kaggle/working. KAGGLE_USERNAME / KAGGLE_KEY / KAGGLE_CONFIG_DIR
-        # are what people export for the Kaggle CLI on their own machines,
-        # and must never be mistaken for one.
+        # Kept in step with unsloth_zoo.disk_utils: only a real kernel sets KAGGLE_KERNEL_RUN_TYPE and
+        # only the Kaggle image has /kaggle/working, whereas KAGGLE_USERNAME / KAGGLE_KEY /
+        # KAGGLE_CONFIG_DIR are what people export for the Kaggle CLI on their own machines.
         override = os.environ.get("UNSLOTH_IS_KAGGLE", None)
         if override is not None:
             return str(override).strip().lower() in _TRUE
@@ -100,10 +95,9 @@ except ImportError:
             return None
 
     def logical_numel(param, name = ""):
-        # Packed storage cannot be unpacked without the zoo's knowledge of the
-        # packing schemes, so this reports what `numel()` says, exactly as the
-        # code did before it asked. Barely reachable: `model_16bit_bytes` is 0
-        # here, and every caller returns before sizing anything.
+        # Packed storage cannot be unpacked without the zoo's knowledge of the packing schemes, so report
+        # what numel() says, exactly as the code did before it asked. Barely reachable: model_16bit_bytes
+        # is 0 here and every caller returns before sizing anything.
         try:
             return int(param.numel())
         except Exception:
@@ -116,8 +110,8 @@ except ImportError:
         return 0
 
     def estimate_gguf_export_bytes(*args, **kwargs):
-        # 0 means "unmeasurable", and every caller treats that as "do not
-        # block". An old unsloth_zoo therefore behaves exactly as it did.
+        # 0 means "unmeasurable", and every caller treats that as "do not block", so an old unsloth_zoo
+        # behaves exactly as it did.
         return 0
 
     def kaggle_tmp_redirect(save_directory, *args, **kwargs):
