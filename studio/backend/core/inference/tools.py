@@ -3028,6 +3028,17 @@ def _subshell_end(text: str, start: int) -> int:
     return len(text)
 
 
+def _token_spellings(token: str) -> "list[str]":
+    """The paths *token* can be, once the shell has had its say.
+
+    A backslash is a separator on Windows and an escape on POSIX, so `au\\th/auth.db` is both
+    `au/th/auth.db` and `auth/auth.db` and the guard has to try each.
+    """
+    if "\\" not in token:
+        return [token]
+    return list(dict.fromkeys([token.replace("\\", "/"), token.replace("\\", "")]))
+
+
 def _cwds_after_cd(workdir: str, text: str) -> "list[tuple[int, int, str]]":
     """Every working directory *text* walks into via `cd`, as `(offset, limit, directory)` in order.
 
@@ -3127,16 +3138,20 @@ def _references_studio_credential_here(text: str, workdir: "str | None") -> bool
                 token = match.group(0)
                 if os.path.isabs(token) or token.startswith("~"):
                     continue
-                resolved = os.path.normpath(os.path.join(cwd, token.replace("\\", "/")))
-                if _references_studio_credential(resolved):
+                if any(
+                    _references_studio_credential(os.path.normpath(os.path.join(cwd, spelling)))
+                    for spelling in _token_spellings(token)
+                ):
                     return True
     if not workdir or ".." not in text:
         return False
     for token in _TRAVERSAL_TOKEN_RE.findall(text):
         if "/" not in token and "\\" not in token:
             continue
-        resolved = os.path.normpath(os.path.join(workdir, token.replace("\\", "/")))
-        if _references_studio_credential(resolved):
+        if any(
+            _references_studio_credential(os.path.normpath(os.path.join(workdir, spelling)))
+            for spelling in _token_spellings(token)
+        ):
             return True
     return False
 

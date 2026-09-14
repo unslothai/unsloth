@@ -860,6 +860,36 @@ def test_home_is_the_workdir_under_bypass_permissions(monkeypatch, tmp_path):
         tools._studio_auth_markers_cache = None
 
 
+def test_a_backslash_escape_inside_a_relative_path(monkeypatch, tmp_path):
+    # On POSIX bash drops the backslash and opens `auth/auth.db`, but the join read it as a
+    # separator and resolved `au/th/auth.db`, which names nothing. Both spellings are tried now,
+    # because the same character IS the separator on Windows.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for command in (
+            "cd ../..; cat au\\th/auth.db",
+            "cd ../..; cat auth/au\\th.db",
+            "cat ../../au\\th/auth.db",
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+        for ordinary in (
+            "cd ../..; cat models\\sub\\file.txt",
+            "cat notes\\ file.txt",
+            "cd ../..; cat models/m.gguf",
+        ):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
 def test_a_quoted_bracket_is_not_a_subshell(monkeypatch, tmp_path):
     # `echo '('; cd ../..; echo ')'` opens no subshell at all. Counted as syntax, the quoted
     # brackets ended a subshell that was never entered and dropped the real `cd` between them.
