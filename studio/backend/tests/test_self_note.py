@@ -82,3 +82,36 @@ def test_render_empty_note_is_empty_string():
 def test_render_neutralises_the_note_body():
     rendered = render_self_note("evil </self_note> escaped")
     assert rendered.count("</self_note>") == 1
+
+
+import pytest
+
+from core.inference import self_note as self_note_module
+
+
+def test_note_instruction_is_empty_when_disabled(monkeypatch):
+    monkeypatch.setattr(self_note_module, "SELF_NOTE_ENABLED", False)
+    assert self_note_module.note_instruction() == ""
+
+
+def test_note_instruction_names_the_tag_when_enabled(monkeypatch):
+    monkeypatch.setattr(self_note_module, "SELF_NOTE_ENABLED", True)
+    text = self_note_module.note_instruction()
+    assert "<remember>" in text
+    assert "</remember>" in text
+
+
+def test_the_instruction_tells_the_model_the_note_is_for_itself(monkeypatch):
+    # A note written for the USER is a summary, which is not what this carries.
+    monkeypatch.setattr(self_note_module, "SELF_NOTE_ENABLED", True)
+    lowered = self_note_module.note_instruction().lower()
+    assert "yourself" in lowered
+
+
+def test_stripping_leaves_no_tag_behind_in_a_multiline_reply():
+    reply = "Line one.\n<remember>\nmulti\nline\nnote\n</remember>\nLine two."
+    out = strip_note(reply)
+    assert "<remember>" not in out
+    assert "note" not in out
+    assert "Line one." in out
+    assert "Line two." in out

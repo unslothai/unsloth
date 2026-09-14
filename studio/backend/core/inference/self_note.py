@@ -104,3 +104,21 @@ def render_self_note(note: str) -> str:
     if not body:
         return ""
     return f"{_OPEN}\n{_HEADER}\n\n{neutralise_note(body)}\n{_CLOSE}"
+
+
+# Addressed to the model about its OWN future self, not to the user: a note written as a
+# summary for a reader is the thing checkpoint compaction already refuses to generate.
+# Kept short because it rides in the prompt on every request the feature is on for.
+SELF_NOTE_INSTRUCTION = (
+    "If this conversation is compacted, everything above will be dropped. You may leave "
+    "yourself a short note that survives: write it inside <remember></remember> tags at "
+    "the very end of your reply. Use it for what you would not want to re-derive -- an "
+    "approach you ruled out and why, a lead worth resuming, a constraint you discovered. "
+    "Write it for yourself, not as a summary for the user. It is not shown to the user. "
+    "Omit the tags entirely if there is nothing worth carrying."
+)
+
+
+def note_instruction() -> str:
+    """The prompt fragment telling the model the tag exists, or "" when disabled."""
+    return SELF_NOTE_INSTRUCTION if enabled() else ""
