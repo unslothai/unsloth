@@ -2700,7 +2700,7 @@ _GLOB_META_RE = re.compile(r"[*?\[]")
 _BRACKET_CLASS_RE = re.compile(r"\[[^\]/\s]{1,64}\]")
 # The spellings of the home directory a shell expands before the command sees them. The bare `~` only
 # counts at the head of a path, so `file~` and `a~b` are left alone.
-_HOME_VARIABLE_RE = re.compile(r"\$\{HOME\}|\$HOME\b|%HOME%|(?<![\w~.])~(?=[/\\])")
+_HOME_VARIABLE_RE = re.compile(r"\$\{HOME\}|\$HOME\b|%HOME%|(?<![\w~.])~(?=[/\\])", re.IGNORECASE)
 
 
 def _glob_can_name_the_marker(lowered: str, marker: str) -> bool:
@@ -2825,11 +2825,14 @@ _TRAVERSAL_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*\.\.[^\s'\"()\[\]{},;|
 # Any path-shaped token carrying a separator. Used only once a `cd` has moved the working directory,
 # where a plain relative path like `auth/auth.db` stops being "somewhere inside the sandbox".
 _RELATIVE_PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*[/\\][^\s'\"()\[\]{},;|&<>]*")
-# `cd DIR`, including the `cd /d DIR` spelling, at a command position. Case-insensitive because
+# `cd DIR` or `pushd DIR`, including the `cd /d DIR` spelling, at a command position. `pushd`
+# makes its argument the working directory exactly as `cd` does. Case-insensitive because
 # `cmd /c` is the shell on a Windows host without a trusted bash and its built-ins are, so `CD ..\..
 # & CD auth` is a working directory change there. The `cd into the studio root` pattern built above
 # has always been IGNORECASE for the same reason; this is the spelling that was still exact.
-_CD_TARGET_RE = re.compile(r"(?:^|[;&|(]\s*|\s)cd\s+(?:/d\s+)?([^\s;&|)]+)", re.IGNORECASE)
+_CD_TARGET_RE = re.compile(
+    r"(?:^|[;&|(]\s*|\s)(?:cd|pushd)\s+(?:/d\s+)?([^\s;&|)]+)", re.IGNORECASE
+)
 # Ceiling on the directories walked. A command with many `cd`s gains no signal from the long tail.
 # Distinct directories, not `cd` commands: padding a command with repeats must not spend the budget.
 _MAX_TRACKED_CWDS = 64
@@ -2895,7 +2898,7 @@ def _references_studio_credential_here(text: str, workdir: "str | None") -> bool
     # is the sandbox walked two levels up, which is the auth directory's parent. Joining the literal
     # token under the workdir instead read it as `<workdir>/$HOME/...` and missed. Substituted, not
     # replaced: the unsubstituted text still carries the real-home spellings the markers know.
-    if workdir and ("HOME" in text or "~" in text):
+    if workdir and ("home" in text.lower() or "~" in text):
         homed = _HOME_VARIABLE_RE.sub(lambda _m: workdir.rstrip("/\\"), text)
         # A workdir that itself spells `~` would substitute to another match, so the recursion is
         # only entered once the spelling is gone.
@@ -2912,7 +2915,7 @@ def _references_studio_credential_here(text: str, workdir: "str | None") -> bool
             return True
     # A `cd` earlier in the same command moves the directory every later relative path is opened
     # from, so those paths have to be re-resolved against where the command actually ended up.
-    if workdir and "cd" in text.lower():
+    if workdir and ("cd" in text.lower() or "pushd" in text.lower()):
         for cwd in _cwds_after_cd(workdir, text):
             # The walked directory itself, not only what is opened from it: `cd ../..; cd auth;
             # sqlite3 auth.db` never writes a path with a separator in it, so every token below
@@ -2950,10 +2953,34 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
         tree = ast.parse(code)
     except SyntaxError:  # the executor reports the error itself; nothing to fold
         return False
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.Call, ast.BinOp, ast.JoinedStr)):
+    # Source order, because `os.chdir('../..')` moves the directory every path AFTER it is opened
+    # from: checked independently, the chdir reaches only the studio root and the `auth/auth.db`
+    # that follows still looks like it is inside the sandbox.
+    # Plain string constants are in here too: `sqlite3.connect('auth/auth.db')` is not a path
+    # CONSTRUCTOR, so the fold returns nothing for the call, and the argument is the whole path.
+    nodes = sorted(
+        (
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, (ast.Call, ast.BinOp, ast.JoinedStr))
+            or (isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value)
+        ),
+        key = lambda n: (getattr(n, "lineno", 0), getattr(n, "col_offset", 0)),
+    )
+    cwd = workdir
+    for node in nodes:
+        if isinstance(node, ast.Call) and _is_chdir_call(node) and node.args:
+            target = _folded_path(node.args[0])
+            if target and "\x00" not in target and "\x02" not in target:
+                cwd = (
+                    target
+                    if os.path.isabs(target) or not cwd
+                    else os.path.normpath(os.path.join(cwd, target))
+                )
+                if _references_studio_credential(cwd):
+                    return True
             continue
-        folded = _folded_path(node)
+        folded = node.value if isinstance(node, ast.Constant) else _folded_path(node)
         if not folded or "\x02" in folded:  # a name bound more than once is not answerable here
             continue
         if "\x00" in folded:
@@ -2963,12 +2990,26 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
             # bypass mode keeps that variable in the child env, so the dynamic piece has a known
             # value. Substituting it is not a guess.
             root = _studio_home_for_guard() if _code_reads_the_studio_home(code) else None
-            if root and _references_studio_credential_here(folded.replace("\x00", root), workdir):
+            if root and _references_studio_credential_here(folded.replace("\x00", root), cwd):
                 return True
             continue
-        if _references_studio_credential_here(folded, workdir):
+        # Resolved against the cwd the code is standing in by then: after `os.chdir('../..')` a
+        # plain `auth/auth.db` is the protected database, and nothing in the text says so.
+        if cwd and not os.path.isabs(folded):
+            joined = os.path.normpath(os.path.join(cwd, folded.replace("\\", "/")))
+            if _references_studio_credential(joined):
+                return True
+        if _references_studio_credential_here(folded, cwd):
             return True
     return False
+
+
+def _is_chdir_call(node: "ast.Call") -> bool:
+    """True for `os.chdir(...)` and a bare `chdir(...)` bound from it."""
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        return func.attr == "chdir"
+    return isinstance(func, ast.Name) and func.id == "chdir"
 
 
 def _code_reads_the_studio_home(code: str) -> bool:

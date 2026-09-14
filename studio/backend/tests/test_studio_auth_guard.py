@@ -844,3 +844,48 @@ def test_home_is_the_workdir_under_bypass_permissions(monkeypatch, tmp_path):
             ), ordinary
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_pushd_and_a_python_chdir_move_the_directory_too(monkeypatch, tmp_path):
+    # `pushd DIR` makes DIR the working directory exactly as `cd` does, and `os.chdir('../..')`
+    # moves every path AFTER it in the same snippet. Checked independently, the move reaches only
+    # the studio root and the `auth/auth.db` that follows still looks like it is in the sandbox.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for command in (
+            'pushd ../..; sqlite3 auth/auth.db "select jwt_secret from auth_user"',
+            "pushd ../.. && cat auth/.desktop_secret",
+            # cmd.exe environment names are case-insensitive, so %home% expands like %HOME%.
+            r"type %home%\..\..\auth\auth.db",
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+        for code in (
+            "import os, sqlite3\nos.chdir('../..')\nprint(sqlite3.connect('auth/auth.db'))",
+            "import os\nos.chdir('..')\nos.chdir('..')\nprint(open('auth/auth.db').read())",
+            "import os\nos.chdir('../../auth')\nprint(open('.cli_api_key_cli_1').read())",
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+        # Moving anywhere else, and an `auth` that is a string rather than a path, stay ordinary.
+        for ordinary in ("pushd ../models; ls", "popd"):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+        for code in (
+            "import os\nos.chdir('../data')\nprint(open('x.csv').read())",
+            "print(open('auth/auth.db').read())",
+            "print('authentication helper')",
+            "x = 'auth'\nprint(x)",
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+    finally:
+        tools._studio_auth_markers_cache = None
