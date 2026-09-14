@@ -1512,6 +1512,7 @@ export const ja = {
       importedCursorChatCount:
         "Cursor から {count} 件の会話をインポートしました。",
       cursorUpToDate: "Cursor の会話はすでに最新です。",
+      importedCursorPartial: "一部の Cursor の会話をインポートできませんでした。",
       importFromClaude: "Claude Code からインポート",
       importFromClaudeDescription:
         "Claude Code の会話をプロジェクトごとにグループ化して Studio にコピーします。",
@@ -1520,6 +1521,7 @@ export const ja = {
       importedClaudeChatCount:
         "Claude Code から {count} 件の会話をインポートしました。",
       claudeUpToDate: "Claude Code の会話はすでに最新です。",
+      importedClaudePartial: "一部の Claude Code の会話をインポートできませんでした。",
       clearHistory: "チャット履歴を消去",
       clearHistoryDescription: "このデバイスからチャット履歴を削除します。",
       clearAction: "消去",
