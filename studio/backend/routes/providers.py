@@ -627,6 +627,7 @@ async def _test_custom_provider_connectivity(client, model_id: str) -> ProviderT
             messages = [{"role": "user", "content": "ping"}],
             model = model_id,
             temperature = 0.0,
+            top_p = None,
             max_tokens = 1,
         )
         return ProviderTestResult(

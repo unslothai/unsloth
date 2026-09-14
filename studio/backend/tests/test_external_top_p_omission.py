@@ -189,3 +189,32 @@ def test_the_non_streaming_helper_omits_top_p_when_given_none():
 
         _run(go)
         assert "top_p" not in gateway.body
+
+
+def test_the_connection_test_ping_omits_top_p():
+    from routes.providers import _test_custom_provider_connectivity
+    with _Gateway() as gateway:
+        real = ExternalProviderClient(
+            provider_type = "custom", base_url = gateway.base_url, api_key = "k"
+        )
+
+        class _NoModelsOrSpeech:
+            async def list_models(self):
+                raise RuntimeError("no /models")
+
+            async def create_speech(self, **kwargs):
+                raise RuntimeError("no /audio/speech")
+
+            async def chat_completion(self, **kwargs):
+                return await real.chat_completion(**kwargs)
+
+        results = []
+
+        async def go() -> None:
+            results.append(
+                await _test_custom_provider_connectivity(_NoModelsOrSpeech(), "claude-sonnet-4-6")
+            )
+
+        _run(go)
+        assert "top_p" not in gateway.body
+        assert "cannot both be specified" not in results[0].message
