@@ -6,6 +6,7 @@
 // routes/inference.py reads this map and rebuilds the picker's LoadRequest.
 
 import { authFetch } from "@/features/auth";
+import type { GpuIndexKind } from "@/hooks/gpu-selection";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import {
   normalizeGgufVariantIdentity,
@@ -65,6 +66,9 @@ export interface ApiModelOverride {
   n_cpu_moe?: number;
   // biome-ignore lint/style/useNamingConvention: API schema
   gpu_ids?: number[];
+  // Which index space gpu_ids is in. Absent means "physical", all an older row could mean.
+  // biome-ignore lint/style/useNamingConvention: API schema
+  gpu_index_kind?: GpuIndexKind;
 }
 
 export type ApiModelOverrides = Record<string, ApiModelOverride>;
@@ -111,9 +115,8 @@ export function foldOverrideKey(key: string): string {
     return path;
   }
   // splitQuantSuffix, not the last colon: a colon is legal in a POSIX filename, so
-  // "/models/foo:Bar.gguf" is a whole path and reading "Bar.gguf" as a quant would fold it
-  // onto the real, different file "/models/foo:bar.gguf". Mirrors the backend's
-  // split_quant_suffix.
+  // "/models/foo:Bar.gguf" is a whole path and reading "Bar.gguf" as a quant would fold it onto the
+  // real, different file "/models/foo:bar.gguf". Mirrors the backend's split_quant_suffix.
   const split = splitQuantSuffix(key);
   const id = split ? split[0] : key;
   const quant = split ? `:${split[1].toLowerCase()}` : "";
@@ -278,8 +281,7 @@ export function fromApiOverride(
   const extraArgs = Array.isArray(override.llama_extra_args)
     ? override.llama_extra_args
     : local.llamaExtraArgs;
-  // Only a physical pin travels (toApiOverride drops the rest), so a row without ids says
-  // nothing about placement and a local Vulkan ordinal keeps its own namespace.
+  // A row without ids says nothing about placement, so the local pin keeps its namespace.
   const serverGpuIds = override.gpu_ids?.length ? override.gpu_ids : null;
   // The pin is ONE setting in one of two fields, and an edit clears the other
   // (contextPinPatch). Filling them from different sources mints a record that loads at
@@ -317,8 +319,9 @@ export function fromApiOverride(
     gpuLayers: override.gpu_layers ?? local.gpuLayers,
     nCpuMoe: override.n_cpu_moe ?? local.nCpuMoe,
     selectedGpuIds: serverGpuIds ?? local.selectedGpuIds ?? null,
+    // reconcileGpuSelection drops the pin if this host numbers its devices the other way.
     selectedGpuIndexKind: serverGpuIds
-      ? "physical"
+      ? (override.gpu_index_kind ?? "physical")
       : (local.selectedGpuIndexKind ?? null),
   });
   // normalizePerModelConfig collapses an empty list to null. The server uses [] as a tombstone
@@ -407,16 +410,16 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (typeof config.nCpuMoe === "number" && config.nCpuMoe > 0) {
     payload.n_cpu_moe = config.nCpuMoe;
   }
-  // Only a physical pin travels. The same integers are a Vulkan ordinal under Vulkan and a
-  // CUDA/ROCm index elsewhere, and the override carries no namespace, so after a backend
-  // change the server would pin a different device. An absent kind predates the field.
+  // The pin travels with its namespace, or after a backend change the server pins a
+  // different device; reconcileGpuSelection drops it on a mismatch instead.
   const gpuIndexKind = config.selectedGpuIndexKind ?? "physical";
-  if (
-    config.selectedGpuIds &&
-    config.selectedGpuIds.length > 0 &&
-    gpuIndexKind === "physical"
-  ) {
+  if (config.selectedGpuIds && config.selectedGpuIds.length > 0) {
     payload.gpu_ids = config.selectedGpuIds;
+    // Sent only when it is not the legacy default, so a physical pin's payload is
+    // unchanged from before this field.
+    if (gpuIndexKind !== "physical") {
+      payload.gpu_index_kind = gpuIndexKind;
+    }
   }
   return payload;
 }
@@ -482,11 +485,10 @@ async function sendModelOverride(
     body: JSON.stringify({
       // biome-ignore lint/style/useNamingConvention: API schema
       model_id: modelOverrideKey(modelId, ggufVariant),
-      // This build mirrors the llama-server tuning group, so an omission here is the
-      // user clearing it rather than a client that predates the fields. Without this
-      // the backend preserves the stored values, which is what stops a cached older
-      // bundle from deleting settings it never knew to send. An older backend ignores
-      // the key.
+      // This build mirrors the llama-server tuning group, so an omission here is the user clearing
+      // it rather than a client that predates the fields. Without this the backend preserves the
+      // stored values, which is what stops a cached older bundle from deleting settings it never
+      // knew to send. An older backend ignores the key.
       // biome-ignore lint/style/useNamingConvention: API schema
       mirrors_server_tuning: true,
       // Only sent when set, so an older backend is not handed an unknown key every save.

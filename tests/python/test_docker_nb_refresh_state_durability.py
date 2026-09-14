@@ -17,12 +17,43 @@ write is never reached.
 
 from __future__ import annotations
 
+import atexit
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
+
+
+def _build_shared_setup_1(root: Path):
+    tpl, dest, up = _template(root), root / "dest", _upstream(root)
+    dest.mkdir()
+    _run(tpl, dest, up, refresh = False)
+    _run(tpl, dest, up, refresh = True)
+    return dest, tpl, up
+
+
+# Five tests start from the same two sync runs over 500 notebooks, which is
+# ~7.4s each and ~37s of the file. Build it once per process and copy it in,
+# which is ~0.04s: nothing it writes embeds its own absolute path, so the copy
+# is the same tree at a different place. Each test still gets a private
+# directory it is free to mutate, so the isolation is unchanged.
+_SHARED_1: Path | None = None
+
+
+def _shared_setup_1(tmp_path):
+    global _SHARED_1
+    if _SHARED_1 is None:
+        prototype = Path(tempfile.mkdtemp(prefix = "unsloth-nbsync-"))
+        atexit.register(shutil.rmtree, prototype, True)
+        _build_shared_setup_1(prototype)
+        _SHARED_1 = prototype
+    root = tmp_path / "s1"
+    shutil.copytree(_SHARED_1, root, symlinks = True)
+    return root / "dest", root / "tpl", root / "up"
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SYNC = REPO_ROOT / "docker" / "unsloth_sync_notebooks.sh"
@@ -268,10 +299,7 @@ def _json_upstream(tmp_path: Path, count: int) -> Path:
 @needs_git
 def test_the_refresh_child_never_republishes_an_unreadable_state_as_empty(tmp_path: Path):
     """No UNSLOTH_SKIP_NOTEBOOK_REFRESH here: that flag is what hid this."""
-    tpl, dest, up = _template(tmp_path), tmp_path / "dest", _upstream(tmp_path)
-    dest.mkdir()
-    _run(tpl, dest, up, refresh = False)
-    _run(tpl, dest, up, refresh = True)
+    dest, tpl, up = _shared_setup_1(tmp_path)
     before = _recorded(dest)
     assert len(before) == NOTEBOOKS
 
@@ -329,10 +357,7 @@ def test_keeping_a_removed_notebook_keeps_its_record_too(tmp_path: Path):
     """UNSLOTH_KEEP_REMOVED_NOTEBOOKS kept the FILE and dropped its RECORD, so the
     next refresh read it as a user edit -- and turning the option back off never
     recovered it, because by then it is no longer in the state."""
-    tpl, dest, up = _template(tmp_path), tmp_path / "dest", _upstream(tmp_path)
-    dest.mkdir()
-    _run(tpl, dest, up, refresh = False)
-    _run(tpl, dest, up, refresh = True)
+    dest, tpl, up = _shared_setup_1(tmp_path)
     victim = f"nb{1:09d}.ipynb"
     assert victim in _recorded(dest)
 
@@ -364,10 +389,7 @@ def test_an_unrecorded_notebook_identical_to_upstream_is_adopted(tmp_path: Path)
     state would strand every notebook the run DID record. The only repair is for a
     later refresh to notice that a file identical to the clone was never a user edit
     and take it back under management."""
-    tpl, dest, up = _template(tmp_path), tmp_path / "dest", _upstream(tmp_path)
-    dest.mkdir()
-    _run(tpl, dest, up, refresh = False)
-    _run(tpl, dest, up, refresh = True)
+    dest, tpl, up = _shared_setup_1(tmp_path)
 
     orphan = f"nb{7:09d}.ipynb"
     state = dest / ".unsloth_sync_state"
@@ -395,10 +417,7 @@ def test_a_genuinely_edited_unrecorded_notebook_is_still_left_alone(tmp_path: Pa
     """The adoption above must key on the content matching the clone EXACTLY. An
     unrecorded file whose bytes differ is the real user-edit case and must keep its
     hands-off treatment."""
-    tpl, dest, up = _template(tmp_path), tmp_path / "dest", _upstream(tmp_path)
-    dest.mkdir()
-    _run(tpl, dest, up, refresh = False)
-    _run(tpl, dest, up, refresh = True)
+    dest, tpl, up = _shared_setup_1(tmp_path)
 
     orphan = f"nb{7:09d}.ipynb"
     state = dest / ".unsloth_sync_state"
@@ -453,10 +472,7 @@ def test_a_kept_removed_notebook_survives_a_failed_state_append(tmp_path: Path):
     exactly what UNSLOTH_KEEP_REMOVED_NOTEBOOKS was set to preserve, and no retry
     recovers it -- not with the option on, not with it off, because by then it is in
     neither the clone nor the state."""
-    tpl, dest, up = _template(tmp_path), tmp_path / "dest", _upstream(tmp_path)
-    dest.mkdir()
-    _run(tpl, dest, up, refresh = False)
-    _run(tpl, dest, up, refresh = True)
+    dest, tpl, up = _shared_setup_1(tmp_path)
     victim = f"nb{1:09d}.ipynb"
     assert victim in _recorded(dest)
     _delete_upstream(up, victim)

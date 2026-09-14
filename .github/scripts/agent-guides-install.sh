@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-#
 # Install one coding-agent CLI for the Local Agent Guides CI. Isolated as
 # failure class (b) "agent package install failed": npm/curl flakiness here
 # is the single biggest source of false reds, so installs retry with
 # backoff and the only ::error:: this script can emit is class (b). The
 # install recipes mirror the install_hint strings in
 # unsloth_cli/commands/start.py at HEAD.
-#
 # Usage: agent-guides-install.sh <agent>
 #   agent in: claude codex hermes openclaw opencode pi dsh
 set -uo pipefail

@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 import typer
 
@@ -404,6 +406,29 @@ def test_omitted_default_flags_are_not_forwarded(monkeypatch):
     assert sent(server) == {"model_path": "unsloth/Qwen3-14B"}
 
 
+def _registered_command_name(command) -> str:
+    """Name the CLI dispatches on. Ask Typer, so an unnamed command cannot drop out."""
+    from typer.main import get_command_name
+    return command.name or get_command_name(command.callback.__name__)
+
+
+def _scan_start_commands() -> tuple:
+    """(all-knob, partial-knob) commands, read off the app: a hardcoded roster missed dsh."""
+    knobs = set(start_cli._LOAD_OPTION_PARAMS)
+    full, partial = [], []
+    for command in start_cli.start_app.registered_commands:
+        if command.callback is None:
+            continue
+        params = set(inspect.signature(command.callback).parameters)
+        if not knobs & params:
+            continue
+        (full if knobs <= params else partial).append(_registered_command_name(command))
+    return sorted(full), sorted(partial)
+
+
+AGENT_COMMANDS, PARTIAL_KNOB_COMMANDS = _scan_start_commands()
+
+
 class TestExplicitFlagsThroughTheRealCli:
     """`supplied` tracking through the real Typer and Click stack."""
 
@@ -420,10 +445,16 @@ class TestExplicitFlagsThroughTheRealCli:
 
         start_cli._connect = fake_connect
         try:
-            CliRunner().invoke(start_cli.start_app, argv)
+            result = CliRunner().invoke(start_cli.start_app, argv)
         finally:
             start_cli._connect = real_connect
-        return captured.get("load")
+        if "load" not in captured:
+            # Without the exit code, a parser incompatibility reads as a dropped flag.
+            pytest.fail(
+                f"{argv} never reached _connect (exit {result.exit_code}): "
+                f"{result.exception!r}\n{result.output}"
+            )
+        return captured["load"]
 
     @pytest.mark.parametrize(
         "flag, expected",
@@ -436,21 +467,31 @@ class TestExplicitFlagsThroughTheRealCli:
     )
     def test_flags_equal_to_their_default_are_recorded(self, flag, expected):
         load = self._load_for(["codex", "--no-launch", *flag])
-        assert load is not None, "the command never reached _connect"
         assert expected in load.supplied
         assert expected in load.overrides()
 
     def test_a_bare_invocation_records_nothing(self):
         load = self._load_for(["codex", "--no-launch"])
-        assert load is not None
         assert load.supplied == frozenset()
         assert load.overrides() == frozenset()
 
-    @pytest.mark.parametrize("command", ["codex", "claude", "opencode", "hermes", "pi", "openclaw"])
+    def test_the_agent_command_roster_is_not_empty(self):
+        """An empty parametrization collects no tests, so the check below would vanish."""
+        assert AGENT_COMMANDS
+
+    def test_no_start_command_takes_only_part_of_the_load_knobs(self):
+        assert PARTIAL_KNOB_COMMANDS == [], (
+            f"{PARTIAL_KNOB_COMMANDS} take some load knobs but not all of "
+            f"{sorted(start_cli._LOAD_OPTION_PARAMS)}; give them the full set (and "
+            "_load_options) or they will never be checked for flag tracking."
+        )
+
+    @pytest.mark.parametrize("command", AGENT_COMMANDS)
     def test_every_agent_command_tracks_flags_identically(self, command):
         load = self._load_for([command, "--no-launch", "--context-length", "0"])
-        assert load is not None, f"{command} never reached _connect"
         assert "max_seq_length" in load.supplied
+        # overrides() is what _resolve_model reads; supplied alone never reaches the load.
+        assert "max_seq_length" in load.overrides()
 
 
 def test_inferred_reload_carries_the_resident_runtime_settings(monkeypatch):

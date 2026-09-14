@@ -30,6 +30,9 @@
 #   HF_HOME=$HOME/.cache/huggingface        host HF cache dir to mount
 #   TRITON_CACHE_DIR=...unsloth-triton      host Triton cache dir to mount
 #   UNSLOTH_WORKDIR=$PWD                    host dir mounted at /workspace/host
+#   UNSLOTH_STUDIO_VOLUME=unsloth-studio    named volume for Studio's data (accounts,
+#                                           chats, outputs) at /opt/unsloth-studio;
+#                                           set it empty to run without one
 set -euo pipefail
 
 IMAGE="${UNSLOTH_IMAGE:-unsloth/unsloth:latest}"
@@ -49,6 +52,14 @@ esac
 HF_CACHE="${HF_HOME:-$HOME/.cache/huggingface}"
 TRITON_CACHE="${TRITON_CACHE_DIR:-$HOME/.cache/unsloth-triton}"
 WORK_DIR="${UNSLOTH_WORKDIR:-$PWD}"
+# Studio's data lives under /opt/unsloth-studio and the image relinks its code there at
+# every start, so the volume survives `docker rm` without pinning the code. `-` (not `:-`):
+# an explicitly empty value disables the mount. On :core it is an empty dir the image never reads.
+STUDIO_VOLUME="${UNSLOTH_STUDIO_VOLUME-unsloth-studio}"
+STUDIO_MOUNT=()
+if [ -n "$STUDIO_VOLUME" ]; then
+    STUDIO_MOUNT=(-v "$STUDIO_VOLUME":/opt/unsloth-studio)
+fi
 
 mkdir -p "$HF_CACHE" "$TRITON_CACHE"
 
@@ -61,10 +72,12 @@ mkdir -p "$HF_CACHE" "$TRITON_CACHE"
 # regression tests can stage a fake device tree; leave it unset in normal use.
 DEV_ROOT="${UNSLOTH_DEV_ROOT:-}"
 host_has_nvidia() {
+    local listing
     [[ -e "$DEV_ROOT/dev/nvidiactl" ]] && return 0
-    command -v nvidia-smi >/dev/null 2>&1 \
-        && nvidia-smi -L 2>/dev/null | grep -q '^GPU' && return 0
-    return 1
+    command -v nvidia-smi >/dev/null 2>&1 || return 1
+    # buffer before grep -q: under pipefail the producer's SIGPIPE can become the pipeline status, which reads as "no GPU" and silently drops --gpus
+    listing="$(nvidia-smi -L 2>/dev/null || true)"
+    grep -q '^GPU' <<< "${listing}"
 }
 
 if [[ ${#GPU_FLAG[@]} -gt 0 ]] && ! host_has_nvidia; then
@@ -90,15 +103,52 @@ if [[ ${#GPU_FLAG[@]} -gt 0 ]] && ! host_has_nvidia; then
             done
         fi
         printf "      AMD devices found: passing /dev/kfd and /dev/dri through.\n" >&2
+        # published images only (untagged is :latest); a custom image may carry a HIP or Vulkan build
+        if [[ "$IMAGE" == unsloth/unsloth || "$IMAGE" == unsloth/unsloth:* ]]; then
+            printf "      Nothing in the image uses them yet: torch is cu128 and the bundled\n" >&2
+            printf "      llama.cpp has no HIP or Vulkan backend, so this container runs on the CPU.\n" >&2
+            if [[ "$IMAGE" == unsloth/unsloth:core* ]]; then
+                printf "      :core refuses a CPU-only start unless UNSLOTH_ALLOW_CPU=1 is set (:latest allows it).\n" >&2
+            fi
+        else
+            printf "      The published unsloth/unsloth images cannot use them (cu128 torch, no HIP\n" >&2
+            printf "      or Vulkan llama.cpp); whether %s does is up to that image.\n" "$IMAGE" >&2
+        fi
     fi
     printf "\n" >&2
 fi
 
-# warn, do not abort: some setups report runtimes differently
-if [[ ${#GPU_FLAG[@]} -gt 0 ]] && ! docker info 2>/dev/null | grep -qi 'Runtimes:.*nvidia'; then
-    printf "\033[1;33mWARN:\033[0m 'docker info' does not list 'nvidia' as a runtime.\n" >&2
-    printf "      If --gpus all fails below, install nvidia-container-toolkit:\n" >&2
-    printf "      https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html\n\n" >&2
+# A GPU host with no nvidia runtime would fail --gpus at the daemon with exit 125, so offer the installer.
+# UNSLOTH_INSTALL_TOOLKIT=1 says yes without a prompt, =0 never asks; with neither and no terminal, print the one-liner and continue.
+DOCKER_INFO=""
+DOCKER_ERR=""
+if [[ ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia; then
+    # stderr folded in: on failure the captured text IS the daemon's error
+    DOCKER_INFO="$(docker info 2>&1)" || { DOCKER_ERR="$DOCKER_INFO"; DOCKER_INFO=""; }
+fi
+if [[ -n "$DOCKER_ERR" ]]; then
+    printf "\033[1;33mWARN:\033[0m 'docker info' failed, so the GPU runtime could not be checked:\n      %s\n" "${DOCKER_ERR##*$'\n'}" >&2
+    printf "      Start the Docker daemon, or add yourself to the docker group (newgrp docker).\n\n" >&2
+elif [[ ${#GPU_FLAG[@]} -gt 0 ]] && host_has_nvidia \
+        && ! grep -qi 'Runtimes:.*nvidia' <<<"$DOCKER_INFO"; then
+    INSTALLER="$(dirname "${BASH_SOURCE[0]}")/install_nvidia_toolkit.sh"
+    printf "\033[1;33mWARN:\033[0m 'docker info' does not list 'nvidia' as a runtime: the NVIDIA\n" >&2
+    printf "      Container Toolkit is not set up, so --gpus %s would fail at the daemon.\n" "$GPUS" >&2
+    answer="${UNSLOTH_INSTALL_TOOLKIT:-}"
+    if [[ -z "$answer" && -t 0 && -t 1 ]]; then
+        read -r -p "      Install it now with sudo (bash $INSTALLER)? [Y/n] " answer </dev/tty || answer=n
+        answer="${answer:-y}"
+    fi
+    case "$answer" in
+        1|[Yy]*)
+            # -E keeps UNSLOTH_TOOLKIT_VERIFY and the proxy settings through env_reset; a failed, cancelled or driver-too-old install (exit 3) must not stop the docker run below.
+            if [[ "$(id -u)" = 0 ]]; then bash "$INSTALLER" || true; else sudo -E bash "$INSTALLER" || true; fi
+            ;;
+        *)
+            printf "      Install it with one command (Linux, needs sudo):\n" >&2
+            printf "      curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh\n\n" >&2
+            ;;
+    esac
 fi
 
 # Only if set, else an empty string shadows the image's. The dash-only `-e VAR` form
@@ -110,6 +160,8 @@ declare -a ENV_FORWARD=(-e HF_HUB_ENABLE_HF_TRANSFER=1)
 [[ -n "${UNSLOTH_ALLOW_CPU:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_ALLOW_CPU)
 # read by studio_launch.sh; without these it uses a random password and no sshd
 [[ -n "${JUPYTER_PASSWORD:-}"           ]] && ENV_FORWARD+=(-e JUPYTER_PASSWORD)
+[[ -n "${UNSLOTH_STUDIO_PASSWORD:-}"    ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_PASSWORD)
+[[ -n "${UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT)
 [[ -n "${PUBLIC_KEY:-}"                 ]] && ENV_FORWARD+=(-e PUBLIC_KEY)
 [[ -n "${SSH_KEY:-}"                    ]] && ENV_FORWARD+=(-e SSH_KEY)
 [[ -n "${UNSLOTH_JUPYTER_CLOUDFLARE:-}" ]] && ENV_FORWARD+=(-e UNSLOTH_JUPYTER_CLOUDFLARE)
@@ -136,6 +188,7 @@ exec docker run --rm ${TTY_FLAG[@]+"${TTY_FLAG[@]}"} \
     -v "$HF_CACHE":/workspace/.cache/huggingface \
     -v "$TRITON_CACHE":/workspace/.cache/triton \
     -v "$WORK_DIR":/workspace/host \
+    ${STUDIO_MOUNT[@]+"${STUDIO_MOUNT[@]}"} \
     "${ENV_FORWARD[@]}" \
     ${PORT_FLAGS[@]+"${PORT_FLAGS[@]}"} \
     "$IMAGE" "$@"
