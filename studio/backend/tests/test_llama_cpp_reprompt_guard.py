@@ -661,9 +661,9 @@ def _guard_ms(payload, repeats = 5):
         t0 = time.perf_counter()
         _has_answer_artifact(payload)
         elapsed_ms = (time.perf_counter() - t0) * 1000
-        if best is None or elapsed_ms < best: best = elapsed_ms
+        if best is None or elapsed_ms < best:
+            best = elapsed_ms
     return best
-
 
 
 def test_no_backtrack_on_crlf_spam():
