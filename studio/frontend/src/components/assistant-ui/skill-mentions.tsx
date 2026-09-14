@@ -134,8 +134,7 @@ export function SkillMentionPopover({
     includeModelContextTools: false,
     formatter: skillMentionFormatter,
   });
-  // Cap the search itself: the popover navigates and inserts from these results,
-  // so a render-only slice would let Enter pick a row that is not on screen.
+  // Cap the search itself: the popover navigates and inserts from these results, not the rendered rows.
   const adapter = useMemo(
     () => ({
       ...mention.adapter,

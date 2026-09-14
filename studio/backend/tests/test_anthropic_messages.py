@@ -3373,8 +3373,7 @@ class TestAnthropicMessagesToolRouting:
     def test_permission_mode_gating_for_server_tools(self, monkeypatch):
         import routes.inference as inf_mod
 
-        # The bundled skill-creator is enabled by default, but an Anthropic web-search
-        # request must not inherit its local, confirmation-gated create_skill tool.
+        # An Anthropic web-search request must not inherit the confirmation-gated create_skill tool.
         monkeypatch.setattr(
             inf_mod,
             "_enabled_agent_skills",

@@ -37,8 +37,7 @@ def _write_skill(
 
 @pytest.fixture(autouse = True)
 def _reset_tool_request_budget():
-    # execute_tool sets these per call and never resets them, so a tight budget from the
-    # pagination test below must not leak into later tests on the same worker.
+    # execute_tool never resets these, so the pagination test's tight budget must not leak.
     from core.inference import tools
 
     context_token = tools._REQUEST_CONTEXT_TOKENS.set(tools._UNSET_CONTEXT_TOKENS)
@@ -626,9 +625,7 @@ def test_read_skill_tool_keeps_pagination_consistent_with_tight_room(isolated_sk
     assert "truncated to" not in result
 
 
-# =====================================================================
-# Account scoping: the owner keeps the home folders, a managed account gets its own workspace
-# =====================================================================
+# Account scoping: the owner keeps the home folders, a managed account gets its own workspace.
 
 _ALICE_ID = "a" * 32
 _BOB_ID = "b" * 32
