@@ -20,11 +20,7 @@ LIFTED = ("upload_to_huggingface", "create_huggingface_repo")
 
 @pytest.fixture
 def uploading(monkeypatch):
-    """The card-writing functions plus `MODEL_CARD`, lifted out of save.py.
-
-    save.py cannot be imported here: it pulls in the accelerator at module scope. The
-    definitions under test read nothing else from the module, so run them on their own.
-    """
+    """Lifted out of save.py, which cannot be imported: accelerator at module scope."""
     source = SAVE_PY
     tree = ast.parse(source.read_text(encoding = "utf-8"))
 
@@ -67,8 +63,6 @@ def uploading(monkeypatch):
 
 
 def test_upload_model_card_names_the_method(uploading):
-    # The heading is "# Uploaded {method} model" and every caller in save.py passes "finetuned",
-    # so a card that does not name it came out as "Uploaded  model" with the gap left in.
     env, pushed = uploading
 
     env["upload_to_huggingface"](Model(), "owner/model", "token", "finetuned", "trl")
@@ -93,7 +87,6 @@ def test_upload_model_card_still_carries_username_extra_and_datasets(uploading):
 
 
 def test_create_huggingface_repo_also_names_the_method(uploading):
-    # Same template, same heading, so the repo-creation card had the same hole in it.
     env, pushed = uploading
 
     env["create_huggingface_repo"](Model(), "owner/model", "token")
@@ -103,12 +96,7 @@ def test_create_huggingface_repo_also_names_the_method(uploading):
 
 
 def test_no_card_in_save_py_is_formatted_without_a_method():
-    """The guard for the whole file rather than one call site.
-
-    `MODEL_CARD`'s heading is "# Uploaded {method} model". Any site that formats it
-    with an empty `method` ships a card reading "Uploaded  model", gap and all, which
-    is what this test exists to stop coming back.
-    """
+    """The heading is "# Uploaded {method} model": an empty method ships "Uploaded  model"."""
     tree = ast.parse(SAVE_PY.read_text(encoding = "utf-8"))
 
     formats = [

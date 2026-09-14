@@ -2633,8 +2633,7 @@ def create_huggingface_repo(
             username = username,
             base_model = model.config._name_or_path,
             model_type = model.config.model_type,
-            # Same heading, same hole. This helper only ever writes the card for a
-            # model Unsloth just trained, which is what the other call sites call it.
+            # "finetuned" for the same reason the other call sites say it: Unsloth trained it.
             method = "finetuned",
             extra = "unsloth",
         )
@@ -2686,7 +2685,6 @@ def upload_to_huggingface(
             username = username,
             base_model = model.config._name_or_path,
             model_type = model.config.model_type,
-            # The heading is "# Uploaded {method} model", so blanking this left "Uploaded  model".
             method = method,
             extra = extra,
         )
@@ -5448,8 +5446,7 @@ def _push_merged_to_hub_revision(save_kwargs):
                     username = username,
                     base_model = base_model,
                     model_type = model.config.model_type,
-                    # Only reached when the repo has no card yet, and this is the
-                    # merged-model push, so it lands on the same word as the rest.
+                    # Only reached when the repo has no card yet.
                     method = "finetuned",
                     extra = "unsloth",
                 )
