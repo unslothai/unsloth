@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
 """UNSLOTH_HIGH_PRECISION_LAYERNORM must upcast every norm in a block, not some.
 
 The selector used to be name-only, so a block whose norms are not all named
@@ -5,6 +8,7 @@ The selector used to be name-only, so a block whose norms are not all named
 `embed_vision` is the live case: `pos_norm` matched, its siblings `patch_ln1`
 and `patch_ln2` did not.
 """
+
 import torch
 import torch.nn as nn
 
@@ -73,7 +77,7 @@ def test_weightless_norm_is_skipped():
 
     class Weightless(nn.LayerNorm):
         def __init__(self):
-            super().__init__(8, elementwise_affine=False)
+            super().__init__(8, elementwise_affine = False)
 
     class Block(nn.Module):
         def __init__(self):

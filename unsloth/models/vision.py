@@ -116,7 +116,8 @@ from ..device_type import (
 
 # torch.nn.RMSNorm only exists on torch >= 2.4.
 _NORM_MODULE_TYPES = tuple(
-    t for t in (getattr(torch.nn, "LayerNorm", None), getattr(torch.nn, "RMSNorm", None))
+    t
+    for t in (getattr(torch.nn, "LayerNorm", None), getattr(torch.nn, "RMSNorm", None))
     if t is not None
 )
 
