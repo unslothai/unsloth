@@ -1573,8 +1573,7 @@ else:
                 peak = torch.cuda.max_memory_reserved()
                 total = getattr(props, "total_memory", 0)
                 return props, _bytes_to_gb(peak), _bytes_to_gb(total) or 1.0
-            # Last, so no existing device changes which branch it takes. Without it an
-            # Ascend host fell through to "Unknown GPU" with a fabricated 1 GiB total.
+            # Last, so no existing device changes branch. npu fell through to a fake 1 GiB.
             if hasattr(torch, "npu") and torch.npu.is_available():
                 props = torch.npu.get_device_properties(0)
                 peak = (

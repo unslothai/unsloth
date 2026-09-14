@@ -42,9 +42,7 @@ from unsloth_zoo.utils import Version
 if DEVICE_TYPE == "xpu" and Version(torch.__version__) < Version("2.6.0"):
     raise RuntimeError("Intel xpu currently supports unsloth with torch.version >= 2.6.0")
 
-# torch.amp.custom_fwd(device_type=...) only exists from 2.4, and the npu arm below is not
-# version-gated the way the cuda one is. Say so here rather than let it surface as an
-# AttributeError mid-import on a torch_npu built against 2.2 or 2.3.
+# torch.amp.custom_fwd(device_type=) is 2.4+; say so here, not as an AttributeError mid-import.
 if DEVICE_TYPE == "npu" and Version(torch.__version__) < Version("2.4.0"):
     raise RuntimeError("Ascend NPU currently supports unsloth with torch.version >= 2.4.0")
 
@@ -62,9 +60,7 @@ if DEVICE_TYPE == "xpu":
     torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
     torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
 elif DEVICE_TYPE == "npu":
-    # A device_type that does not match the running device makes these decorators inert
-    # rather than raising (pytorch#165730), so leaving the "cuda" default would silently
-    # drop autocast in the fused LoRA autograd functions.
+    # A mismatched device_type makes these inert, not loud (pytorch#165730): "cuda" drops autocast.
     torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "npu")
     torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "npu")
 
@@ -187,8 +183,7 @@ if DEVICE_COUNT > 1:
     elif DEVICE_TYPE == "xpu":
         torch_gpu_device = torch.xpu.device
     elif DEVICE_TYPE == "npu":
-        # Without an arm here the name is never bound, and rope_embedding.py imports it
-        # at module scope, so a multi-NPU host fails `import unsloth` with an ImportError.
+        # Unbound without this, and rope_embedding imports it at module scope: ImportError.
         torch_gpu_device = torch.npu.device
 else:
     from contextlib import nullcontext
@@ -244,9 +239,7 @@ if DEVICE_TYPE == "xpu":
         WEIGHT_BUFFERS = []
         ABSMAX_BUFFERS = []
 elif DEVICE_TYPE in ("mlx", "npu"):
-    # npu joins mlx rather than falling to the else: that arm reads CUDA streams via
-    # torch._C._cuda_getCurrentRawStream, which an Ascend build has no runtime for, so
-    # DEVICE_COUNT > 0 would raise here during `import unsloth`.
+    # npu joins mlx: the else arm reads CUDA raw streams an Ascend build has no runtime for.
     CUDA_STREAMS = ()
     XPU_STREAMS = ()
     WEIGHT_BUFFERS = []
@@ -299,8 +292,7 @@ else:
 if DEVICE_TYPE == "xpu":
     torch_device_stream = torch.xpu.current_stream
 elif DEVICE_TYPE == "npu":
-    # RoPE calls torch_device_stream(Q.device).synchronize() on the first forward, which
-    # would otherwise reach the CUDA backend an Ascend build does not have.
+    # RoPE synchronizes on this in its first forward, which would otherwise reach CUDA.
     torch_device_stream = torch.npu.current_stream
 else:
     torch_device_stream = torch.cuda.current_stream

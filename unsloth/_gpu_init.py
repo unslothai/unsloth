@@ -391,8 +391,7 @@ elif DEVICE_TYPE == "xpu":
     # torch.xpu.is_bf16_supported()
     SUPPORTS_BFLOAT16 = torch.xpu.is_bf16_supported()
 elif DEVICE_TYPE == "npu":
-    # No arm here left the name unbound on npu, so consumers fell back to their own
-    # module-level SUPPORTS_BFLOAT16 = False.
+    # No arm left the name unbound, so consumers fell back to their own False.
     SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()
 
 # For Gradio HF Spaces?

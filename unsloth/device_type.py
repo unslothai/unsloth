@@ -110,8 +110,7 @@ def get_device_type():
         if not torch.accelerator.is_available():
             raise NotImplementedError("Unsloth cannot find any torch accelerator? You need a GPU.")
         accelerator = str(torch.accelerator.current_accelerator())
-        # "npu" is listed, not returned: torch.npu is unusable here, so returning it
-        # would only defer the failure to device_count() as an AttributeError.
+        # Listed, not returned: torch.npu is unusable here, so it only defers the AttributeError.
         if accelerator in ("cuda", "xpu", "hip", "npu"):
             raise RuntimeError(
                 f"Unsloth: Weirdly `torch.cuda.is_available()`, `torch.xpu.is_available()`, `torch.npu.is_available()` and `is_hip` all failed.\n"

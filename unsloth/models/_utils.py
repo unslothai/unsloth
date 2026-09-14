@@ -2079,8 +2079,7 @@ elif DEVICE_TYPE == "xpu":
         torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
         torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
 elif DEVICE_TYPE == "npu":
-    # Named rather than left to the else below, which would reach the same 2.4-only API
-    # without saying why it failed on a torch_npu built against 2.2 or 2.3.
+    # Named, not left to the else: same 2.4-only API, but this says why it failed.
     if Version(torch_version) < Version("2.4.0"):
         raise RuntimeError("torch.npu currently only supports torch.version >= 2.4.0")
     else:
@@ -2226,8 +2225,7 @@ elif DEVICE_TYPE == "hip":
 elif DEVICE_TYPE == "xpu":
     SUPPORTS_BFLOAT16 = True
 elif DEVICE_TYPE == "npu":
-    # Ask torch_npu rather than leaving the module-level False, which silently rewrote an
-    # explicit dtype = torch.bfloat16 to float16 and warned that the device cannot do bf16.
+    # Ask torch_npu: the module-level False silently rewrote an explicit bfloat16 to float16.
     SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()
 
 # Silence xformers CUDA mismatch warnings before import.
@@ -2674,8 +2672,7 @@ def get_statistics(local_files_only = False):
     if DEVICE_TYPE == "xpu":
         total_memory = torch.xpu.get_device_properties(0).total_memory
     elif DEVICE_TYPE == "npu":
-        # from_pretrained always calls this, and an Ascend build has no CUDA runtime to
-        # answer the else arm with.
+        # from_pretrained always calls this; an Ascend build cannot answer the else arm.
         total_memory = torch.npu.get_device_properties(0).total_memory
     else:
         total_memory = torch.cuda.get_device_properties(0).total_memory
