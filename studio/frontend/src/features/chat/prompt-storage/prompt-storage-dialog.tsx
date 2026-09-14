@@ -238,6 +238,8 @@ async function loadConversationMessages(
     emptyMessage = "No messages in this conversation to export.",
     includeSiblings = true,
   } = options;
+  // Read before the storage await: switching chats meanwhile would point the lookup at another thread.
+  const liveBranch = liveThreadBranch(threadId);
   const raw = await listStoredChatMessages(threadId);
   if (raw.length === 0) {
     toast.info(emptyMessage);
@@ -247,7 +249,6 @@ async function loadConversationMessages(
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
   if (!hasParentIds) return raw;
   // Newest saved turn of the branch on screen: a reply still generating is not stored yet, and falling back to the newest leaf would export the reply it replaces.
-  const liveBranch = liveThreadBranch(threadId);
   const storedIds = new Set(raw.map((m) => m.id));
   const headId = liveBranch
     ? ([...liveBranch].reverse().find((id) => storedIds.has(id)) ?? null)

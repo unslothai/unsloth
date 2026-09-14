@@ -54,7 +54,11 @@ function storedMessages(
   }));
 }
 
-function loadExporters(stored: StoredMessage[], downloads: string[] = []) {
+function loadExporters(
+  stored: StoredMessage[],
+  downloads: string[] = [],
+  onRead: () => void = () => {},
+) {
   const javascript = ts.transpileModule(
     [
       sliceSource(
@@ -75,7 +79,10 @@ function loadExporters(stored: StoredMessage[], downloads: string[] = []) {
   const context = {
     exports: {},
     toast: { info: () => {} },
-    listStoredChatMessages: async () => stored,
+    listStoredChatMessages: async () => {
+      onRead();
+      return stored;
+    },
     ...liveThreadHead,
     orderByParentChain,
     exportFormatIncludesSiblings,
@@ -196,6 +203,27 @@ test("ShareGPT exports nothing from the replaced branch while an edited first pr
   ]);
   assert.deepEqual(downloads, []);
   assert.equal(bulk, null);
+});
+
+test("ShareGPT keeps the picked branch when the chat is switched during the export", async () => {
+  const downloads: string[] = [];
+  let unregister = () => {};
+  const exporters = loadExporters(regenerated, downloads, () => unregister());
+  unregister = liveThreadHead.registerLiveThreadView({
+    threadListItem: () => ({ getState: () => ({ remoteId: "thread" }) }),
+    thread: () => ({
+      getState: () => ({ messages: [{ id: "u1" }, { id: "a1" }] }),
+    }),
+  });
+  try {
+    await exporters.exportConversationShareGPT("thread");
+  } finally {
+    unregister();
+  }
+  assert.deepEqual(JSON.parse(downloads[0]).conversations, [
+    { from: "human", value: "Name one fruit." },
+    { from: "gpt", value: "Apples." },
+  ]);
 });
 
 test("CSV still exports every branch", async () => {
