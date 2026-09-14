@@ -1021,7 +1021,9 @@ def _replace_with_retry(
     WinError 5 keeps that budget but is reported differently. ``_swap_into_place`` also
     calls this to move an EXISTING install aside, and there a 5 is equally the signature
     of a tree whose ACLs are unreadable -- a permission fault the retries cannot clear,
-    which naming a scanner sends the user away from (#9928).
+    which naming a scanner sends the user away from (#9928). Only a caller that passes
+    ``access_denied_paths`` gets the repair lines: atomic_replace_from_tempfile renames a
+    temp file that is about to be removed, and there is nothing there to repair.
     """
     delay = 0.25
     for attempt in range(attempts):
@@ -1032,11 +1034,9 @@ def _replace_with_retry(
             winerror = getattr(exc, "winerror", None)
             transient = os.name == "nt" and winerror in (_ERROR_ACCESS_DENIED, 32, 145)
             if not transient or attempt == attempts - 1:
-                if transient and winerror == _ERROR_ACCESS_DENIED:
+                if transient and winerror == _ERROR_ACCESS_DENIED and access_denied_paths:
                     log(f"rename still blocked (5) after {attempts} attempts")
-                    for line in _access_denied_recovery_lines(
-                        access_denied_paths or ((src, True),)
-                    ):
+                    for line in _access_denied_recovery_lines(access_denied_paths):
                         log(line)
                     exc._unsloth_acl_recovery_reported = True
                 raise

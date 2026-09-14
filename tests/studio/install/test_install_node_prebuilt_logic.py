@@ -925,7 +925,9 @@ def test_replace_names_acl_recovery_when_access_denied_persists(monkeypatch, tmp
     monkeypatch.setattr(M.os, "replace", lambda s, d: (_ for _ in ()).throw(_oserror(5)))
 
     with pytest.raises(OSError) as excinfo:
-        M._replace_with_retry(source, tmp_path / "node.old", attempts = 3)
+        M._replace_with_retry(
+            source, tmp_path / "node.old", attempts = 3, access_denied_paths = ((source, True),)
+        )
 
     assert getattr(excinfo.value, "_unsloth_acl_recovery_reported", False) is True
     output = "".join(capsys.readouterr())
@@ -934,6 +936,24 @@ def test_replace_names_acl_recovery_when_access_denied_persists(monkeypatch, tmp
     assert "elevated PowerShell" in output
     assert str(source) in output
     assert not any("takeown" in line and "icacls" in line for line in output.splitlines()), output
+
+
+def test_a_denied_marker_write_offers_no_repair_for_its_temp_file(monkeypatch, tmp_path, capsys):
+    # atomic_replace_from_tempfile shares the retry, but its source is a temp file about to be
+    # removed: repair lines naming it, and the reported-denial flag, belong to _swap_into_place.
+    monkeypatch.setattr(M.os, "name", "nt")
+    monkeypatch.setattr(M.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(M.os, "replace", lambda s, d: (_ for _ in ()).throw(_oserror(5)))
+    marker = M.metadata_path(tmp_path)
+    temp = marker.with_name(marker.name + ".tmp-denied")
+    temp.write_text("{}", encoding = "utf-8")
+
+    with pytest.raises(OSError) as excinfo:
+        M.atomic_replace_from_tempfile(temp, marker)
+
+    assert excinfo.value.winerror == 5
+    assert getattr(excinfo.value, "_unsloth_acl_recovery_reported", False) is False
+    assert "takeown" not in "".join(capsys.readouterr())
 
 
 def test_replace_does_not_blame_a_scanner_for_access_denied(monkeypatch, tmp_path, capsys):
