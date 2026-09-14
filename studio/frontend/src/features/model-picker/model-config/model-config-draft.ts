@@ -42,9 +42,13 @@ const listeners = new Set<() => void>();
 // Editors showing each draft. It must outlive one and not the last, or a value typed and never
 // applied returns as the model's settings, over a row saved elsewhere meanwhile.
 const hostCounts = new Map<string, number>();
-// Per draft, not per editor: opening the second host must not re-run the read and write the
-// stored row back over what the first is showing.
-const extraArgsHydratedByDraftKey = new Map<string, string>();
+// Which drafts have had the stored override row folded in, so opening the second host does not
+// re-run the read and write that row back over what the first is showing. Keyed by the DRAFT and
+// nothing else: the two hosts reach one model through differently SHAPED candidate lists, the
+// picker carrying the load-path candidates and the sidebar only the checkpoint, so normalizing
+// their spellings still leaves the lists unequal. Nothing reachable within one draft key changes
+// what the read returns, and the mark dies with the draft.
+const extraArgsHydratedDrafts = new Set<string>();
 // What is TYPED into the Extra Arguments box, which is not what is stored: the config holds
 // argv tokens. Shared for the same reason the config is: the box publishes tokens on every
 // keystroke, valid or not, so a second editor re-quoted a half-typed line into balanced text,
@@ -102,7 +106,7 @@ export function retainModelConfigDraft(key: string): () => void {
       return;
     }
     hostCounts.delete(key);
-    extraArgsHydratedByDraftKey.delete(key);
+    extraArgsHydratedDrafts.delete(key);
     extraArgsEditByDraftKey.delete(key);
     if (drafts.delete(key)) {
       notify();
@@ -214,17 +218,12 @@ export function setModelConfigDraftSavedRemember(
   notify();
 }
 
-export function extraArgsHydrationIdentityForDraft(
-  key: string,
-): string | null {
-  return extraArgsHydratedByDraftKey.get(key) ?? null;
+export function isExtraArgsHydratedForDraft(key: string): boolean {
+  return extraArgsHydratedDrafts.has(key);
 }
 
-export function markExtraArgsHydratedForDraft(
-  key: string,
-  identity: string,
-): void {
-  extraArgsHydratedByDraftKey.set(key, identity);
+export function markExtraArgsHydratedForDraft(key: string): void {
+  extraArgsHydratedDrafts.add(key);
 }
 
 export function readExtraArgsEditForDraft(

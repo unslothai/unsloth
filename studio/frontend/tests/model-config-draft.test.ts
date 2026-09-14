@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  extraArgsHydrationIdentityForDraft,
+  isExtraArgsHydratedForDraft,
   markExtraArgsHydratedForDraft,
   readExtraArgsEditForDraft,
   setExtraArgsEditForDraft,
@@ -117,13 +117,13 @@ test("the draft outlives one host but not the last one", () => {
   const dropdown = retainModelConfigDraft(key);
   primeModelConfigDraft(key, { config: SEED, remembered: true }, "none");
   patchModelConfigDraft(key, { nParallel: 6 });
-  markExtraArgsHydratedForDraft(key, "identity");
+  markExtraArgsHydratedForDraft(key);
   dropdown();
   assert.equal(readModelConfigDraft(key)?.config.nParallel, 6);
   // Or a value typed and never applied comes back as this model's settings.
   sidebar();
   assert.equal(readModelConfigDraft(key), undefined);
-  assert.equal(extraArgsHydrationIdentityForDraft(key), null);
+  assert.equal(isExtraArgsHydratedForDraft(key), false);
 });
 
 test("a release that fires twice does not drop another host's draft", () => {

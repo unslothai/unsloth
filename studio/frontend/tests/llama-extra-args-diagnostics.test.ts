@@ -627,7 +627,7 @@ test("the box is filled from the stored flags, not left looking empty", () => {
   // And the key is marked only once a response is in hand, or StrictMode's replayed
   // effect cancels the first fetch and skips the second. The mark is on the shared draft, so
   // the second host reads it rather than fetching again.
-  const marked = body.indexOf("markExtraArgsHydratedForDraft(draftKey, identity)");
+  const marked = body.indexOf("markExtraArgsHydratedForDraft(draftKey)");
   assert.ok(
     marked > body.indexOf("if (cancelled) { return; }"),
     "mark after the response",
