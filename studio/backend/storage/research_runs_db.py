@@ -998,6 +998,7 @@ def finish(
             else status
         )
         actual_error = None if actual_status == "cancelled" else error
+        # A cancelled run stores no report: a stop is the user asking for nothing back.
         report_text = None
         if actual_status in {"completed", "failed"} and event_payload:
             candidate = event_payload.get("report")
