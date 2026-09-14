@@ -79,7 +79,9 @@ export function ResearchMessage(): ReactElement | null {
     );
   }
 
-  if (run.status === "completed" && run.report) {
+  // A failed run's report opens with its own notice, so nothing here repeats it.
+  if ((run.status === "completed" || run.status === "failed") && run.report) {
+    const failed = run.status === "failed";
     const sources: SourceData[] = run.sources.map((source) => ({
       id: String(source.id ?? source.url),
       url: source.url,
@@ -109,9 +111,17 @@ export function ResearchMessage(): ReactElement | null {
           className="mb-3 flex items-center gap-2 rounded-full text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <span className="flex size-5 items-center justify-center rounded-full bg-primary/10 text-primary">
-            <Check className="size-3" />
+            {failed ? (
+              <TriangleAlert className="size-3" />
+            ) : (
+              <Check className="size-3" />
+            )}
           </span>
-          <span>Deep research completed · {sourceCount} sources</span>
+          <span>
+            {failed
+              ? `Deep research failed · ${sourceCount} sources`
+              : `Deep research completed · ${sourceCount} sources`}
+          </span>
           <span className="text-primary">View activity</span>
         </button>
         <MarkdownPreview
