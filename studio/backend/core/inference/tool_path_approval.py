@@ -573,8 +573,9 @@ _PATH_SCRIPT_COMMANDS = frozenset(
         "luajit",
         "julia",
         "rscript",
-        "sqlite3",
         "duckdb",
+        "curl",
+        "wget",
         # `unzip` READS its archive; the extraction destination is a flag (`-d`) handled above.
         "unzip",
     }
@@ -796,6 +797,29 @@ _PATH_FLAG_SPECS = {
         "--exec-path": "skip",
         "--namespace": "skip",
     },
+    # `curl file:///p` READS a local file and `curl -o p url` writes one (`curl --manual`: the FILE
+    # scheme can read or write local files). Ordinary http(s) URLs are not absolute paths, so they
+    # never reach the gate; only the `file:` scheme does.
+    "curl": {
+        "-o": "write",
+        "--output": "write",
+        "-O": "skip",
+        "-d": "skip",
+        "--data": "skip",
+        "-H": "skip",
+        "--header": "skip",
+        "-X": "skip",
+        "--request": "skip",
+        "-u": "skip",
+        "--user": "skip",
+        "-A": "skip",
+        "--user-agent": "skip",
+        "-e": "skip",
+        "--referer": "skip",
+        "--max-time": "skip",
+        "--connect-timeout": "skip",
+    },
+    "wget": {"-O": "write", "--output-document": "write", "-P": "write", "--header": "skip"},
     "zip": {"-x": "skip", "-i": "skip"},
     # `unzip ... archive ... [-d exdir]` (`unzip -hh`): the ARCHIVE is read and the extraction
     # target is written. Listed as all-writes, even `unzip -l /usr/share/doc/example.zip` asked,
@@ -1034,9 +1058,18 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
     if command.endswith(".exe"):
         command = command[: -len(".exe")]
     args = segment[index + 1 :]
-    read_cmd = command in _PATH_READ_COMMANDS or command in _PATH_SCRIPT_COMMANDS
+    # `sqlite3 FILE 'DELETE ...'` CREATES the file when absent and modifies it otherwise, so the
+    # database is a write unless the invocation is explicitly read-only (`sqlite3 --help` documents
+    # `-readonly`). Classifying it as a read let a delete against a read-silent-but-not-write-silent
+    # root through, a configured model folder being the realistic one.
+    sqlite_write = command == "sqlite3" and not any(
+        arg in ("-readonly", "--readonly") for arg in args
+    )
+    read_cmd = (
+        command in _PATH_READ_COMMANDS or command in _PATH_SCRIPT_COMMANDS or command == "sqlite3"
+    )
     flag_only = command in _PATH_FLAG_ONLY_COMMANDS
-    write_cmd = command in _PATH_WRITE_COMMANDS
+    write_cmd = command in _PATH_WRITE_COMMANDS or sqlite_write
     dest_last = command in _PATH_DEST_LAST_COMMANDS
     if not (read_cmd or write_cmd or dest_last or flag_only):
         return []
@@ -1062,6 +1095,12 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
         # The long spellings carry the same mode and were not read at all, so
         # `tar --create --file=/models/out.tar` classified the archive as a READ.
         or any(arg.split("=", 1)[0] in _ARCHIVE_CREATE_LONG_FLAGS for arg in args)
+    )
+    # Whether the archive came from `-f`/`--file` rather than from the first positional.
+    archive_from_flag = command in _PATH_ARCHIVE_COMMANDS and any(
+        arg.split("=", 1)[0] in ("-f", "--file")
+        or (arg.startswith("-") and not arg.startswith("--") and "f" in arg.lstrip("-"))
+        for arg in args
     )
     skip = _PATH_ARG_SKIP.get(command, 0)
     operands: "list[tuple[str, bool]]" = []
@@ -1112,7 +1151,11 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
         if dest_last:
             writing = position == len(positionals) - 1 and len(positionals) > 1
         else:
-            writing = write_cmd or inplace or (creating and position == 0)
+            # `creating and position == 0` is the LEGACY form, `tar cf out.tar src`, where the
+            # archive occupies the first positional. With `-f` the archive arrived as a flag value
+            # and was classified there, so the first positional is a SOURCE: `tar -cf out.tar
+            # /usr/share/doc` reads that directory and must not ask under the read-silent root.
+            writing = write_cmd or inplace or (creating and position == 0 and not archive_from_flag)
         if not _looks_absolute(arg):
             # The shell expands a substitution in this position into the operand the command
             # actually opens, so a literal path inside one counts as if it were written here.

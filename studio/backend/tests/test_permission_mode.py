@@ -3438,6 +3438,11 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     "stdbuf -o L cat /media/kuser/MEDIA_SSD/private.txt",
     "unzip /media/kuser/MEDIA_SSD/private.zip",
     "unzip a.zip -d /media/kuser/MEDIA_SSD/out",
+    # curl reads and writes local files through the file scheme.
+    "curl file:///media/kuser/MEDIA_SSD/private.txt",
+    "curl -o /media/kuser/MEDIA_SSD/out.txt https://example.com",
+    # sqlite3 creates the database when absent, so the operand is a write by default.
+    "sqlite3 /usr/share/catalog.db 'DELETE FROM entries'",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
@@ -3542,7 +3547,12 @@ _INDIRECT_BENIGN_TERMINAL = (
     "git -C src log",
     'git -c user.name=x commit -m "y"',
     'sqlite3 file:local.db "select 1"',
-    'sqlite3 file:/usr/share/x.db "select 1"',
+    "curl https://example.com/x",
+    "curl file:///usr/share/doc/x.txt",
+    "tar -cf out.tar /usr/share/doc",
+    # A read-only sqlite invocation under a read-silent root. Without `-readonly` the database is a
+    # write, which /usr is not silent for.
+    'sqlite3 -readonly file:/usr/share/x.db "select 1"',
     "stdbuf -o L cat notes.txt",
     # The archive is READ, so a listing under the read-silent /usr must not ask.
     "unzip -l /usr/share/doc/example.zip",
