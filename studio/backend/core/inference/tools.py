@@ -9286,7 +9286,7 @@ PYTHON_TOOL = {
                         "need a short confirmation and want to avoid a long paged result. "
                         "Cannot raise the cap past what the server already allows for this "
                         "conversation; requests above that ceiling are silently clamped to "
-                        "it, and requests below it are honoured as given."
+                        "it, and requests under 500 are raised to 500."
                     ),
                 },
             },
@@ -9317,7 +9317,7 @@ TERMINAL_TOOL = {
                         "need a short confirmation and want to avoid a long paged result. "
                         "Cannot raise the cap past what the server already allows for this "
                         "conversation; requests above that ceiling are silently clamped to "
-                        "it, and requests below it are honoured as given."
+                        "it, and requests under 500 are raised to 500."
                     ),
                 },
             },
@@ -11737,16 +11737,26 @@ def _resolve_max_output_chars(requested) -> int | None:
     reopen exactly that gap from inside a single tool call instead of from an
     env var only the install owner controls.
     """
-    if requested is None:
+    if requested is None or isinstance(requested, bool):
+        # `bool` is an `int` subclass, so an unguarded coercion reads `true` as a request for ONE character, which the
+        # floor below then turns into a 500-character request. A boolean is not a character count in any reading.
         return None
     try:
         requested = int(requested)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError is `int(float("inf"))`, and a model writing `1e999` in its JSON arguments reaches it: nothing
+        # validates tool arguments against the schema before dispatch. Uncaught it escapes into `_python_exec`'s own
+        # handler AFTER the subprocess has already run, so the side effects land and the model is handed
+        # "Execution error" with the real output discarded.
         return None
     if requested <= 0:
         return None
-    ceiling = _tool_result_char_budget()
-    return max(_MIN_RESULT_CHARS, min(requested, ceiling))
+    # Floor INSIDE, operator ceiling OUTERMOST -- the same shape as `_result_char_budget` and `_dense_char_limit`
+    # ("An explicit cap smaller than the floor still wins"). Reversed, an install running
+    # `UNSLOTH_TOOL_RESULT_MAX_CHARS=200` answers a request for 50 characters with 500, because the floor never saw
+    # the ceiling: a per-call argument raising the install's own cap 2.5x, which is the one thing this function's
+    # docstring promises it cannot do.
+    return min(_tool_result_char_budget(), max(_MIN_RESULT_CHARS, requested))
 
 
 def _page_char_budget() -> int:

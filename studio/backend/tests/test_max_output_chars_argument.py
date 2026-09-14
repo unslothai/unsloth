@@ -63,6 +63,20 @@ class TestResolveOnlyEverLowersTheCap:
         assert tools._resolve_max_output_chars("not a number") is None
         assert tools._resolve_max_output_chars(object()) is None
 
+    def test_a_boolean_is_not_a_character_count(self):
+        # `bool` is an `int` subclass: coerced, `True` reads as a request for one character and the floor turns it
+        # into 500, so a model that writes `"max_output_chars": true` silently resizes its own result.
+        assert tools._resolve_max_output_chars(True) is None
+        assert tools._resolve_max_output_chars(False) is None
+
+    def test_an_unrepresentable_number_is_ignored_not_raised(self):
+        # `1e999` in a model's JSON arguments parses to `inf`, and `int(inf)` is an OverflowError. Uncaught it
+        # surfaces from `_python_exec` AFTER the subprocess has run: the side effects land, and the model is handed
+        # "Execution error" instead of the output it asked to shorten.
+        assert tools._resolve_max_output_chars(float("inf")) is None
+        assert tools._resolve_max_output_chars(float("-inf")) is None
+        assert tools._resolve_max_output_chars(float("nan")) is None
+
     def test_a_numeric_string_is_accepted(self):
         assert tools._resolve_max_output_chars("2000") == 2000
 
@@ -94,3 +108,48 @@ class TestPythonAndTerminalHonourTheArgumentEndToEnd:
             "print('x' * (default_budget + 5000))".replace("default_budget", str(default_budget))
         )
         assert len(capped) == len(uncapped)
+
+
+class TestAConfiguredCapIsNeverRaisedByAPerCallRequest:
+    """The floor is a comfort, not a licence to exceed what the install configured.
+
+    Mirrors `test_web_page_cap_fits_window.py::TestAConfiguredCapIsNeverRaised`, which holds the same
+    invariant for `_tool_result_char_budget` itself. `UNSLOTH_TOOL_RESULT_MAX_CHARS` is a ceiling the
+    install owner set, and `_result_char_budget` clamps to it on the way OUT for exactly this reason
+    -- it was once written floor-outside and handed 2,000 characters to an install that asked for 500.
+    A per-call argument resolved as `max(floor, min(requested, ceiling))` reintroduces that shape: the
+    floor never sees the ceiling, so on an install capped below 500 the argument is the only way to
+    get more than the cap, and it does so hardest on the smallest caps, which is where the operator
+    asked for a small one.
+    """
+
+    @pytest.fixture
+    def _tiny_configured_cap(self, monkeypatch):
+        monkeypatch.setattr(tools, "_MAX_OUTPUT_CHARS", 200)
+        yield 200
+
+    @pytest.mark.parametrize("ctx", [0, 1024, 8192, 262144])
+    def test_the_env_cap_is_the_ceiling_on_every_window(
+        self, monkeypatch, _tiny_configured_cap, ctx
+    ):
+        monkeypatch.setattr(tools, "_loaded_context_tokens", lambda: ctx)
+        assert tools._tool_result_char_budget() == _tiny_configured_cap
+
+    @pytest.mark.parametrize("requested", [1, 50, 199, 400, 499, 500, 100000])
+    def test_no_request_resolves_above_the_configured_cap(self, _tiny_configured_cap, requested):
+        resolved = tools._resolve_max_output_chars(requested)
+        assert resolved is not None
+        assert resolved <= _tiny_configured_cap, f"requested {requested} -> {resolved}"
+
+    @pytest.mark.parametrize("ceiling", [1, 100, 200, 499, 500, 2000, 16000])
+    @pytest.mark.parametrize("requested", [1, 200, 499, 500, 1000, 10**9])
+    def test_the_ceiling_binds_for_every_pairing(self, monkeypatch, ceiling, requested):
+        monkeypatch.setattr(tools, "_tool_result_char_budget", lambda: ceiling)
+        assert tools._resolve_max_output_chars(requested) <= ceiling
+
+    def test_asking_for_less_never_returns_more_than_asking_for_nothing(self, _tiny_configured_cap):
+        # The observable form of the bug: with the cap at 200, `max_output_chars=50` truncated to 500.
+        with_arg = tools._python_exec("print('x' * 5000)", max_output_chars = 50)
+        without = tools._python_exec("print('x' * 5000)")
+        assert f"truncated to {_tiny_configured_cap} chars for the model" in with_arg
+        assert len(with_arg) <= len(without)
