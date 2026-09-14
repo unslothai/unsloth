@@ -227,14 +227,16 @@ def test_the_advisory_write_declines_rather_than_publish_unserialised(
     monkeypatch.setattr(im, "LOCK_WAIT_SECONDS", 0.3)
     im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
     before = _payload(tmp_path)
-    holder = "\n".join([
-        "import sys, time, pathlib",
-        f"sys.path.insert(0, {str(pathlib.Path(im.__file__).resolve().parent)!r})",
-        "import install_manifest as im",
-        f"with im._manifest_lock(pathlib.Path({str(tmp_path)!r})):",
-        f"    pathlib.Path({str(tmp_path / 'held')!r}).write_text('1', encoding='utf-8')",
-        "    time.sleep(30)",
-    ])
+    holder = "\n".join(
+        [
+            "import sys, time, pathlib",
+            f"sys.path.insert(0, {str(pathlib.Path(im.__file__).resolve().parent)!r})",
+            "import install_manifest as im",
+            f"with im._manifest_lock(pathlib.Path({str(tmp_path)!r})):",
+            f"    pathlib.Path({str(tmp_path / 'held')!r}).write_text('1', encoding='utf-8')",
+            "    time.sleep(30)",
+        ]
+    )
     child = subprocess.Popen([sys.executable, "-c", holder])
     try:
         deadline = time.time() + 20
@@ -264,7 +266,9 @@ def test_a_symlink_on_the_lock_name_is_not_followed(tmp_path: pathlib.Path) -> N
     assert im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
 
 
-def test_a_filesystem_without_locking_is_not_waited_out(tmp_path: pathlib.Path, monkeypatch) -> None:
+def test_a_filesystem_without_locking_is_not_waited_out(
+    tmp_path: pathlib.Path, monkeypatch
+) -> None:
     """Some NFS and SMB mounts answer immediately that they do not implement locking. Only
     contention is worth waiting out; retrying that answer would cost the whole deadline on
     every manifest write."""

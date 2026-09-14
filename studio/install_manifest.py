@@ -406,7 +406,12 @@ def _manifest_lock(root: Optional[Path] = None):
                     # Only contention is worth waiting out. A filesystem that does not implement
                     # locking at all (some NFS and SMB mounts) answers immediately and would
                     # otherwise cost the whole deadline on every manifest write.
-                    if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN, errno.EACCES, errno.EINTR):
+                    if exc.errno not in (
+                        errno.EWOULDBLOCK,
+                        errno.EAGAIN,
+                        errno.EACCES,
+                        errno.EINTR,
+                    ):
                         break
                     if time.monotonic() >= deadline:
                         break
