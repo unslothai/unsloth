@@ -342,6 +342,13 @@ def test_speed_off_keeps_the_released_weights(monkeypatch):
     assert _settle(_settle_backend(monkeypatch), speed_mode = "off") is None
 
 
+def test_an_explicit_scheme_under_speed_off_still_seeds(monkeypatch):
+    """Speed=off only silences an AUTO precision. An explicit scheme is still quantized by the loader, which then
+    upgrades the speed to `default`, so it must seed the hosted checkpoint instead of downloading the bf16 shards."""
+    backend = _settle_backend(monkeypatch)
+    assert _settle(backend, transformer_quant = "fp8", speed_mode = "off") == "fp8"
+
+
 def test_a_baked_lora_keeps_the_dense_path(monkeypatch):
     """A LoRA bake keeps the dense path; an all-zero list bakes nothing and is unaffected."""
     backend = _settle_backend(monkeypatch)

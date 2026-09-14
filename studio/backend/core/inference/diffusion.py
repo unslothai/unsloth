@@ -2514,10 +2514,14 @@ class DiffusionBackend:
                 return None
             if not pipeline_seed_supported(fam):
                 return None
-            if speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF:
-                return None
             raw = transformer_quant
             auto = raw is None or str(raw).strip().lower() in ("", "auto")
+            # An AUTO precision under an explicit Speed="off" is rewritten to "off" by load_pipeline, so no seed is
+            # ever wanted. An EXPLICIT scheme is still honored and still upgrades the speed to `default`, so seeding
+            # it here is what keeps that load off the released bf16 shards. Same split `_dit_prequant_plan_source`
+            # applies to a GGUF pick.
+            if auto and speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF:
+                return None
             mode = TQ_AUTO if auto else normalize_transformer_quant(raw)
             if mode is None:
                 return None
