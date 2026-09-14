@@ -35,6 +35,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -757,12 +758,7 @@ def test_a_marker_predating_the_key_is_backfilled_not_re_downloaded(tmp_path, mo
     """An older marker cannot say which bundle it was paired against, so a swap that ALREADY
     happened is unanswerable from it. Reinstalling to find out would re-download the bundle
     for every existing user; recording the current pairing makes the NEXT swap detectable."""
-    _paired(monkeypatch, LLAMA_ID_GFX1100)
-    install_dir = _install(tmp_path, monkeypatch, slim = True)
-    marker = _marker(install_dir)
-    marker.pop("paired_llama_runtime_id")
-    _rewrite_marker(install_dir, marker)
-
+    install_dir, _ = _slim_with_live_llama(tmp_path, monkeypatch)
     assert WHISPER.kept_install_needs_settling(install_dir) is True
     assert _reuse(install_dir, slim = True, tmp_path = tmp_path) is True
     WHISPER.settle_kept_install(install_dir)
@@ -795,3 +791,83 @@ def test_a_recorded_pairing_against_a_vanished_llama_install_is_rejected(tmp_pat
     install_dir = _install(tmp_path, monkeypatch, slim = True)
     _paired(monkeypatch, None)
     assert _intact(install_dir) is False
+
+
+# The pairing backfill must not record a pairing it has not verified
+# A legacy slim marker carries no pairing identity, so a llama replaced before whisper's first
+# migration -- or by another installer holding llama's own per-directory lock during this one --
+# leaves the hardlinks pointing at the previous libraries. Recording the LIVE llama identity there
+# writes a FALSE pairing, and the runtime-id check then believes it forever.
+def _slim_with_live_llama(
+    tmp_path,
+    monkeypatch,
+    *,
+    hardlink = True,
+):
+    """A slim whisper install whose wiring really does come from a llama bin dir on disk."""
+    llama_bin = tmp_path / "llama.cpp" / "build" / "bin"
+    llama_bin.mkdir(parents = True)
+    for name in SLIM_LIBRARIES:
+        (llama_bin / name).write_bytes(b"ggml-payload-" + name.encode("utf-8"))
+
+    _paired(monkeypatch, LLAMA_ID_GFX1100)
+    install_dir = _install(tmp_path, monkeypatch, slim = True)
+    bin_dir = WHISPER.runtime_bin_dir(install_dir, LINUX)
+    for name in SLIM_LIBRARIES:
+        target = bin_dir / name
+        target.unlink(missing_ok = True)
+        if hardlink:
+            os.link(llama_bin / name, target)
+        else:
+            shutil.copy2(llama_bin / name, target)
+
+    marker = _marker(install_dir)
+    marker["linked_from"] = str(llama_bin)
+    marker["linked_libraries"] = list(SLIM_LIBRARIES)
+    marker.pop("paired_llama_runtime_id", None)
+    marker.pop("paired_llama_ggml_tree", None)
+    _rewrite_marker(install_dir, marker)
+    return install_dir, llama_bin
+
+
+def test_the_backfill_records_a_pairing_the_wiring_proves(tmp_path, monkeypatch):
+    install_dir, _ = _slim_with_live_llama(tmp_path, monkeypatch)
+    WHISPER.settle_kept_install(install_dir)
+    assert _marker(install_dir).get("paired_llama_runtime_id") == LLAMA_ID_GFX1100
+
+
+def test_the_backfill_records_nothing_when_llama_was_swapped_underneath(tmp_path, monkeypatch):
+    """The reported case. llama is replaced with different bytes at a NEW inode, exactly as a
+    directory swap leaves it, while whisper keeps the old ones."""
+    install_dir, llama_bin = _slim_with_live_llama(tmp_path, monkeypatch)
+    for name in SLIM_LIBRARIES:
+        (llama_bin / name).unlink()
+        (llama_bin / name).write_bytes(b"REPLACED-" + name.encode("utf-8"))
+    _paired(monkeypatch, LLAMA_ID_GFX1151)
+
+    WHISPER.settle_kept_install(install_dir)
+    marker = _marker(install_dir)
+    assert (
+        "paired_llama_runtime_id" not in marker
+    ), "a pairing was recorded for a llama install this wiring does not point at"
+    assert (
+        WHISPER.kept_install_needs_settling(install_dir) is True
+    ), "the install stopped asking to be settled without ever having been settled"
+
+
+def test_a_copied_wiring_is_judged_by_its_bytes_not_its_inode(tmp_path, monkeypatch):
+    """_link_or_copy falls back to shutil.copy2 across filesystems, where the inodes differ
+    legitimately. Refusing on the inode alone would deny those installs the fast path forever."""
+    install_dir, _ = _slim_with_live_llama(tmp_path, monkeypatch, hardlink = False)
+    WHISPER.settle_kept_install(install_dir)
+    assert _marker(install_dir).get("paired_llama_runtime_id") == LLAMA_ID_GFX1100
+
+
+def test_a_marker_naming_no_source_directory_records_nothing(tmp_path, monkeypatch):
+    """Fails closed: a marker that cannot say where its wiring came from cannot prove anything."""
+    install_dir, _ = _slim_with_live_llama(tmp_path, monkeypatch)
+    marker = _marker(install_dir)
+    marker["linked_from"] = str(tmp_path / "gone")
+    _rewrite_marker(install_dir, marker)
+    WHISPER.settle_kept_install(install_dir)
+    assert "paired_llama_runtime_id" not in _marker(install_dir)

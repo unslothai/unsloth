@@ -1346,6 +1346,49 @@ def _backfill_runtime_file_records(install_dir: Path) -> None:
         log(f"existing {COMPONENT} install reused; recorded {len(records)} payload files")
 
 
+def _wiring_matches_live_llama(install_dir: Path, marker: dict) -> bool:
+    """Whether this install's wired libraries ARE the live llama runtime's, right now.
+
+    Recording a pairing the wiring has not been checked against is how a FALSE one gets
+    written: the backfill reads whichever llama marker is live at that moment, and a llama
+    that was replaced before the first migration -- or by another installer holding its own
+    per-directory lock during this one -- leaves whisper hardlinked to the previous libraries
+    while the marker claims the new identity. The next fast check then believes it.
+
+    _link_or_copy hardlinks, so a shared (st_dev, st_ino) PROVES the two names are one file.
+    It falls back to shutil.copy2 across filesystems, where the inodes legitimately differ, so
+    an inode mismatch is not evidence of staleness on its own and the bytes are compared
+    instead. Unverifiable answers False: recording nothing costs the fast path, recording a
+    guess costs the install.
+    """
+    linked = marker.get("linked_libraries")
+    linked_from = marker.get("linked_from")
+    if not isinstance(linked, list) or not linked or not isinstance(linked_from, str):
+        return False
+    source_dir = Path(linked_from)
+    if not source_dir.is_dir():
+        return False
+    bin_dir = installed_server_path(install_dir, detect_host()).parent
+    checked = 0
+    for name in linked:
+        if not isinstance(name, str) or Path(name).name != name:
+            return False
+        ours, theirs = bin_dir / name, source_dir / name
+        try:
+            a, b = ours.stat(), theirs.stat()
+        except OSError:
+            return False
+        if (a.st_dev, a.st_ino) != (b.st_dev, b.st_ino):
+            # Copied rather than hardlinked, or genuinely stale. Only the bytes can say.
+            try:
+                if a.st_size != b.st_size or core.sha256_file(ours) != core.sha256_file(theirs):
+                    return False
+            except OSError:
+                return False
+        checked += 1
+    return checked > 0
+
+
 def _backfill_slim_pairing_record(install_dir: Path) -> None:
     """Record the paired llama runtime on a slim marker written before those keys existed.
 
@@ -1369,6 +1412,16 @@ def _backfill_slim_pairing_record(install_dir: Path) -> None:
     """
     marker = load_prebuilt_metadata(install_dir)
     if not marker or marker.get("install_kind") != "slim":
+        return
+    # Only record a pairing this install can be SHOWN to have. Without this the backfill
+    # writes whichever llama is live at the moment it runs, which is a guess whenever llama
+    # changed before whisper's first migration or while another installer held llama's own
+    # lock, and the runtime-id check then trusts the guess forever.
+    if not _wiring_matches_live_llama(install_dir, marker):
+        log(
+            f"existing {COMPONENT} install reused; its wiring does not match the live "
+            "llama.cpp runtime, so no pairing was recorded"
+        )
         return
     added: list[str] = []
     for key, live in (

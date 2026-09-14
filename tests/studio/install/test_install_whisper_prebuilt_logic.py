@@ -2529,12 +2529,28 @@ def test_whisper_no_marker_is_not_current(tmp_path, monkeypatch):
     assert _whisper_check(install_dir, host) is False
 
 
+def _wire_from_llama(install_dir: Path, name: str) -> Path:
+    """Give the slim marker the wiring it claims: one library hardlinked out of a llama bin
+    dir, which is what link_ggml_runtime really leaves behind. The pairing backfill verifies
+    the wiring before recording anything, so a marker that merely SAYS "slim" is not enough."""
+    source_dir = install_dir.parent / "llama.cpp" / "build" / "bin"
+    source_dir.mkdir(parents = True, exist_ok = True)
+    source = source_dir / name
+    if not source.exists():
+        source.write_bytes(b"ggml-payload")
+    ours = M.installed_server_path(install_dir, M.detect_host()).parent / name
+    ours.unlink(missing_ok = True)
+    os.link(source, ours)
+    return source_dir
+
+
 def _slim_marker(install_dir: Path, **overrides) -> None:
     marker_path = install_dir / M.METADATA_FILENAME
     payload = json.loads(marker_path.read_text(encoding = "utf-8"))
     payload["install_kind"] = "slim"
     payload["runtime_wiring_version"] = M.SLIM_RUNTIME_WIRING_VERSION
     payload["linked_libraries"] = ["libggml-base.so"]
+    payload["linked_from"] = str(_wire_from_llama(install_dir, "libggml-base.so"))
     payload["paired_llama_tag"] = "b9001"
     payload["paired_llama_ggml_tree"] = "ggml-abc"
     for key, value in overrides.items():
