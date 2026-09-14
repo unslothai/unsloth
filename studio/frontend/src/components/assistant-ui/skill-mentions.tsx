@@ -134,13 +134,23 @@ export function SkillMentionPopover({
     includeModelContextTools: false,
     formatter: skillMentionFormatter,
   });
+  // Cap the search itself: the popover navigates and inserts from these results,
+  // so a render-only slice would let Enter pick a row that is not on screen.
+  const adapter = useMemo(
+    () => ({
+      ...mention.adapter,
+      search: (query: string) =>
+        (mention.adapter.search?.(query) ?? []).slice(0, MAX_MENTION_RESULTS),
+    }),
+    [mention.adapter],
+  );
   useHighlightedItemScroll(listElement);
   if (items.length === 0) return null;
 
   return (
     <ComposerPrimitive.Unstable_TriggerPopover
       char="@"
-      adapter={mention.adapter}
+      adapter={adapter}
       aria-label={t("skills.mentions")}
       className="data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 absolute bottom-[calc(100%+8px)] left-3 z-40 w-[min(360px,calc(100%-24px))] overflow-hidden rounded-lg border border-border/60 bg-popover p-1 text-popover-foreground shadow-border duration-100"
     >
@@ -158,7 +168,7 @@ export function SkillMentionPopover({
               {t("skills.mentions")}
             </div>
             <div ref={setListElement} className="max-h-64 overflow-y-auto">
-              {results.slice(0, MAX_MENTION_RESULTS).map((item, index) => (
+              {results.map((item, index) => (
                 <ComposerPrimitive.Unstable_TriggerPopoverItem
                   key={item.id}
                   item={item}

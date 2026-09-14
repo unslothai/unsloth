@@ -27,3 +27,10 @@ test("the compare composer exposes its skill suggestions as a linked combobox", 
     assert.ok(mentionsSource.includes(semantic), semantic);
   }
 });
+
+test("the popover caps the adapter search, so navigation never leaves the rendered rows", () => {
+  assert.ok(
+    mentionsSource.includes("(mention.adapter.search?.(query) ?? []).slice(0, MAX_MENTION_RESULTS)"),
+  );
+  assert.ok(!mentionsSource.includes("results.slice(0, MAX_MENTION_RESULTS)"));
+});
