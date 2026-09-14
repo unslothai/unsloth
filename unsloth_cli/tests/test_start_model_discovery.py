@@ -34,13 +34,24 @@ def test_discovery_avoids_full_catalog(monkeypatch, operation):
     assert calls == [(BASE + "/api/inference/loaded-models", 5 if operation == "survivor" else 30)]
 
 
-def test_old_server_falls_back_to_compat_listing(monkeypatch):
+@pytest.mark.parametrize(
+    "unsupported",
+    [
+        pytest.param("404", id = "route-404s"),
+        # Studio's SPA catch-all answered an unknown /api path with a 200 body before it
+        # was changed to raise 404, so a resident model must survive that shape too.
+        pytest.param({"error": "API endpoint not found"}, id = "spa-catch-all-answers-200"),
+    ],
+)
+def test_old_server_falls_back_to_compat_listing(monkeypatch, unsupported):
     calls = []
 
     def http_json(method, url, token, **kwargs):
         calls.append((url, kwargs["timeout"]))
         if url.endswith("/loaded-models"):
-            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+            if unsupported == "404":
+                raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+            return unsupported
         return {"data": [{"id": "org/Model"}]}
 
     monkeypatch.setattr(start, "_http_json", http_json)

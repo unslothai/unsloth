@@ -1495,7 +1495,12 @@ def _loaded_models_response(
     which on a slow scan folder outlasts the deadline below.
     """
     try:
-        return _http_json("GET", f"{base}/api/inference/loaded-models", key, timeout = timeout)
+        answer = _http_json("GET", f"{base}/api/inference/loaded-models", key, timeout = timeout)
+        if isinstance(answer.get("data"), list):
+            return answer
+        # A Studio older than the 404-ing catch-all answers an unknown /api path with a
+        # 200 and {"error": ...}, which read as an empty listing reports a resident model
+        # as unloaded. Anything without a "data" list means the route is not there.
     except urllib.error.HTTPError as exc:
         if exc.code != 404:
             raise
