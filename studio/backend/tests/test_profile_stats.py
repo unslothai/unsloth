@@ -279,7 +279,10 @@ def test_terminal_callback_returns_promptly_while_locked_db_eventually_persists(
         monitor.finish(entry_id)
         elapsed = time.perf_counter() - started
         # The row count below is the sharp claim; this only rules out queueing on the lock.
-        assert elapsed < 5.0, f"finish() blocked on the locked database: {elapsed:.3f}s"
+        # A second is already three orders of magnitude past a put_nowait, and this file is
+        # in the serial leg of studio-backend-ci.yml rather than under `-n 4`, so there is no
+        # contention to buy slack for: a looser bound just lets a stalling callback through.
+        assert elapsed < 1.0, f"finish() blocked on the locked database: {elapsed:.3f}s"
         assert (
             lock_conn.execute(
                 "SELECT COUNT(*) FROM api_usage_events WHERE id = ?", (entry_id,)

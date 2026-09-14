@@ -267,8 +267,12 @@ def test_max_wait_respected_when_never_settles():
         start = time.monotonic()
         LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 0.5, interval = 0.1))
         elapsed = time.monotonic() - start
-    assert len(sleeps.durations) > 1, f"helper did not wait at all: {sleeps.durations}"
+    # Both ends, because only the pair says "polled for the whole window and no longer".
+    # A loop accidentally capped at two iterations records [0.1, 0.1] and returns after
+    # 0.2s while the VRAM is still moving, which is how the next model gets launched
+    # early; a ceiling alone calls that a pass.
     assert sleeps.total <= 0.5 + 1e-9, f"helper napped past max_wait: {sleeps.durations}"
+    assert sleeps.total >= 0.5 - 0.1, f"helper gave up inside max_wait: {sleeps.durations}"
     assert elapsed < 20.0, f"helper never returned: elapsed={elapsed:.3f}s"
 
 
