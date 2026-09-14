@@ -2407,6 +2407,9 @@ if ($HasNvidiaSmi -and $NvidiaSmiExe -and -not $script:NvidiaSmiWedged -and -not
             # abbreviated to any unique leading portion, so it is matched on prefix.
             $nvIdx = 0
             $nvTok = if ($env:CUDA_VISIBLE_DEVICES) { ($env:CUDA_VISIBLE_DEVICES -split ',')[0].Trim() } else { '' }
+            # True while nothing has IDENTIFIED a device: an ordinal, or an identity
+            # lookup that matched nothing and fell back to one.
+            $nvByOrdinal = $true
             if ($nvTok -match '^\d+$') {
                 $nvIdx = [int]$nvTok
             } elseif ($nvTok -like 'MIG-*' -and $nvTok -notlike 'MIG-GPU-*') {
@@ -2415,20 +2418,39 @@ if ($HasNvidiaSmi -and $NvidiaSmiExe -and -not $script:NvidiaSmiWedged -and -not
                 # `nvidia-smi -L` nests the instances under their GPU.
                 $nvListOut = Invoke-NvidiaSmiBounded $NvidiaSmiExe @('-L') -StdoutOnly
                 $cur = 0
+                $nvByOrdinal = $false
+                $nvFound = $false
                 foreach ($ln in ($nvListOut -split '\r?\n')) {
                     if ($ln -match '^GPU\s+(\d+):') { $cur = [int]$Matches[1] }
-                    if ($ln -match [regex]::Escape($nvTok)) { $nvIdx = $cur; break }
+                    if ($ln -match [regex]::Escape($nvTok)) { $nvIdx = $cur; $nvFound = $true; break }
                 }
+                if (-not $nvFound) { $nvByOrdinal = $true }
             } elseif ($nvTok) {
                 # Pre-R470 MIG names embed the parent UUID: MIG-<GPU-UUID>/<gi>/<ci>.
                 if ($nvTok -like 'MIG-GPU-*') { $nvTok = ($nvTok.Substring(4) -split '/')[0] }
                 $nvUuidOut = Invoke-NvidiaSmiBounded $NvidiaSmiExe @('--query-gpu=uuid', '--format=csv,noheader') -StdoutOnly
                 $nvUuids = @($nvUuidOut -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                $nvByOrdinal = $false
+                $nvFound = $false
                 for ($i = 0; $i -lt $nvUuids.Count; $i++) {
-                    if ($nvUuids[$i].StartsWith($nvTok, [System.StringComparison]::OrdinalIgnoreCase)) { $nvIdx = $i; break }
+                    if ($nvUuids[$i].StartsWith($nvTok, [System.StringComparison]::OrdinalIgnoreCase)) { $nvIdx = $i; $nvFound = $true; break }
                 }
+                if (-not $nvFound) { $nvByOrdinal = $true }
             }
             $nvRow = if ($nvIdx -lt $nvRows.Count) { $nvRows[$nvIdx] } else { $nvRows[0] }
+            # A numeric entry is a CUDA ordinal, and CUDA's default
+            # CUDA_DEVICE_ORDER=FASTEST_FIRST puts the fastest card at 0 and leaves the
+            # rest unspecified, while nvidia-smi always lists in PCI order. So an ordinal
+            # identifies an nvidia-smi row only when the order is pinned to PCI_BUS_ID, or
+            # when the cards are interchangeable and every row gives the same answer
+            # anyway. Compared on name and compute_cap, not the driver, which is host-wide.
+            $nvAmbiguous = $false
+            if ($nvByOrdinal) {
+                $nvOrder = (("$env:CUDA_DEVICE_ORDER") -replace '\s', '').ToUpperInvariant()
+                $nvModels = @($nvRows | ForEach-Object { $_ -replace ',[^,]*$', '' } |
+                              Sort-Object -Unique).Count
+                $nvAmbiguous = ($nvOrder -ne 'PCI_BUS_ID' -and $nvModels -gt 1)
+            }
             # Split from the right: nvidia-smi does not quote, so a comma in a device name
             # would otherwise shift every field.
             $nvParts = $nvRow -split ','
@@ -2449,6 +2471,9 @@ if ($HasNvidiaSmi -and $NvidiaSmiExe -and -not $script:NvidiaSmiWedged -and -not
             $nvPlaceholders = @('[N/A]', '[Not Supported]', '[Unknown Error]')
             if ($nvPlaceholders -contains $NvidiaGpuName)       { $NvidiaGpuName = $null }
             if ($nvPlaceholders -contains $NvidiaDriverVersion) { $NvidiaDriverVersion = $null }
+            # Keep the driver, drop the identity: the banner falls back to the vendor-only
+            # wording rather than claiming a card that may not be the one CUDA will use.
+            if ($nvAmbiguous) { $NvidiaGpuName = $null; $NvidiaSmArch = $null }
         }
     } catch {}
 }

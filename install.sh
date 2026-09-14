@@ -2463,7 +2463,7 @@ _nv_idx_from_uuid() {
 # /proc/driver/nvidia/gpus with no nvidia-smi at all -- re-resolving with `command -v`
 # would silently skip the name on exactly those hosts.
 _nv_banner_fields() {
-    _nv_name=""; _nv_sm=""; _nv_driver=""; _nv_row=""; _nv_cc=""
+    _nv_name=""; _nv_sm=""; _nv_driver=""; _nv_row=""; _nv_cc=""; _nv_ambiguous=""
     [ -n "${_nvsmi:-}" ] || return 0
     # Detection already waited out the full bound on this binary. Asking again cannot
     # succeed and would double the stall, so the banner keeps the vendor-only wording.
@@ -2471,12 +2471,21 @@ _nv_banner_fields() {
     # nvidia-smi ignores CUDA_VISIBLE_DEVICES, so its rows are the physical devices and
     # the mask has to be resolved against them by hand.
     _nv_idx=0
+    # Set while nothing has IDENTIFIED a device: an ordinal, or a failed identity lookup
+    # that fell back to one. Only an ordinal is order-dependent, so only it needs the
+    # CUDA_DEVICE_ORDER check below.
+    _nv_by_ordinal=1
     _nv_vis="${CUDA_VISIBLE_DEVICES:-}"
+    # Only the FIRST entry selects the device, and only IT decides the form of the mask.
+    # CUDA truncates enumeration at the first invalid index, so the documented `2,-1`
+    # means "device 2, then stop"; classifying the whole string would see the `-1`, call
+    # it non-numeric, and send a plain ordinal down the UUID path.
     _nv_tok="${_nv_vis%%,*}"
-    case "$_nv_vis" in
+    case "$_nv_tok" in
         '') ;;
-        *[!0-9,]*)
+        *[!0-9]*)
             # A non-numeric mask names a device rather than indexing one.
+            _nv_by_ordinal=""
             case "$_nv_tok" in
                 MIG-GPU-*)
                     # Pre-R470 MIG name, MIG-<GPU-UUID>/<gi>/<ci>: the parent UUID is
@@ -2494,13 +2503,30 @@ _nv_banner_fields() {
                 *)
                     _nv_idx=$(_nv_idx_from_uuid "$_nv_tok") ;;
             esac
-            case "$_nv_idx" in ''|*[!0-9]*) _nv_idx=0 ;; esac
+            # Nothing matched, so row 0 is a guess again, not the named device.
+            case "$_nv_idx" in ''|*[!0-9]*) _nv_idx=0; _nv_by_ordinal=1 ;; esac
             ;;
         *) _nv_idx="$_nv_tok" ;;
     esac
-    _nv_row=$(_run_bounded "$_nvsmi" --query-gpu=name,compute_cap,driver_version --format=csv,noheader 2>/dev/null \
-        | awk -v idx="$_nv_idx" 'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }' || true)
+    _nv_all=$(_run_bounded "$_nvsmi" --query-gpu=name,compute_cap,driver_version --format=csv,noheader 2>/dev/null || true)
+    _nv_row=$(printf '%s\n' "$_nv_all" \
+        | awk -v idx="$_nv_idx" 'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }')
     [ -n "$_nv_row" ] || return 0
+    # A numeric entry is a CUDA ordinal, and CUDA's default CUDA_DEVICE_ORDER=FASTEST_FIRST
+    # puts the fastest card at 0 and leaves the rest "unspecified", while nvidia-smi always
+    # lists in PCI order. So an ordinal identifies an nvidia-smi row only when the order is
+    # pinned to PCI_BUS_ID, or when the cards are interchangeable and every row gives the
+    # same answer anyway. Otherwise naming one is a guess, and the AMD path above already
+    # refuses that rather than name a card the mask did not select. Compared on name and
+    # compute_cap, not the driver, which is host-wide and identical on every row.
+    if [ -n "$_nv_by_ordinal" ]; then
+        _nv_order=$(printf '%s' "${CUDA_DEVICE_ORDER:-}" | tr '[:lower:]' '[:upper:]' | tr -d '[:space:]')
+        _nv_models=$(printf '%s\n' "$_nv_all" \
+            | awk -F, 'NF { k=$0; sub(/,[^,]*$/,"",k); if (!(k in s)) { s[k]; n++ } } END { print n+0 }')
+        if [ "$_nv_order" != "PCI_BUS_ID" ] && [ "$_nv_models" -gt 1 ]; then
+            _nv_ambiguous=1
+        fi
+    fi
     # Split from the right: nvidia-smi does not quote, so a comma in a device name
     # would otherwise shift every field.
     _nv_driver=$(printf '%s' "$_nv_row" | awk -F, 'NF>=3 { gsub(/^[[:space:]]+|[[:space:]]+$/,"",$NF); print $NF }')
@@ -2513,6 +2539,9 @@ _nv_banner_fields() {
     # (the 470 branch has no compute_cap at all). "[N/A]" is not a name.
     case "$_nv_name"   in '[N/A]'|'[Not Supported]'|'[Unknown Error]') _nv_name="" ;; esac
     case "$_nv_driver" in '[N/A]'|'[Not Supported]'|'[Unknown Error]') _nv_driver="" ;; esac
+    # Keep the driver, drop the identity: the banner falls back to "NVIDIA GPU detected"
+    # rather than claiming a card that may not be the one CUDA will use.
+    if [ -n "$_nv_ambiguous" ]; then _nv_name=""; _nv_cc=""; fi
     case "$_nv_cc" in
         [0-9]*.[0-9]*) _nv_sm="sm_$(printf '%s' "$_nv_cc" | awk -F. '{ print ($1*10)+$2 }')" ;;
     esac
