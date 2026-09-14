@@ -362,6 +362,47 @@ class TestRocmEntrypoint:
         assert "hip_ver is None" in check3 and "not a ROCm build" in check3
         assert "6.2" not in check3, "the ROCm version is read from the build, not hardcoded"
 
+    def test_gfx1033_is_refused_not_spoofed(self, tmp_path):
+        """Van Gogh (Steam Deck) computes wrong results under ROCm (studio/ROCM_RDNA2_APU.md);
+        install.sh routes it to CPU torch. A HIP-only image can only refuse, and must not
+        advise HSA_OVERRIDE_GFX_VERSION, which would hide the silicon from this check."""
+        fake = tmp_path / "fake"
+        (fake / "torch" / "cuda").mkdir(parents = True)
+        (fake / "torch" / "__init__.py").write_text(
+            "__version__ = '2.12.1+rocm7.2'\n"
+            "class version:\n    hip = '7.2.53211'\n"
+            "from . import cuda\n"
+        )
+        (fake / "torch" / "cuda" / "__init__.py").write_text(
+            "class _P:\n    gcnArchName = 'gfx1033:xnack-'\n"
+            "def is_available(): return True\n"
+            "def device_count(): return 1\n"
+            "def get_device_name(i): return 'AMD Custom GPU 0405'\n"
+            "def get_device_properties(i): return _P()\n"
+            "def is_bf16_supported(): return False\n"
+        )
+        python_body = f'PYTHONPATH="{fake}" exec python3 "$@"\n'
+        rc, ran, err = _entrypoint(tmp_path, python_body = python_body)
+        assert rc == 1 and not ran, err
+        assert "gfx1033" in err and "refuses" in err, err
+        assert "HSA_OVERRIDE_GFX_VERSION=10.3.0" not in err, err
+        # the same fake torch on a supported arch runs the command
+        (fake / "torch" / "cuda" / "__init__.py").write_text(
+            (fake / "torch" / "cuda" / "__init__.py").read_text().replace("gfx1033:xnack-", "gfx1100:sramecc+"))
+        (tmp_path / "ok").mkdir()
+        rc, ran, err = _entrypoint(tmp_path / "ok", python_body = python_body)
+        assert rc == 0 and ran, err
+        assert "RDNA 3" in err, err
+
+    def test_the_gfx_tag_needs_every_other_input_at_its_default(self):
+        """A feature-branch ref plus rocm_gfx=gfx1151 must not replace the public
+        gfx1151 image: the gfx tag is gated like latest, minus the gfx itself."""
+        body = open(_WORKFLOW, encoding = "utf-8").read()
+        assert "gfx_tag=${GFX_TAG}" in body
+        assert 'GFX_TAG=false\n          [ "$DEFAULTS" = "true" ] && [ -n "$GFX" ] && GFX_TAG=true' in body
+        raw = [ln for ln in body.splitlines() if "type=raw,value=${{ needs.prepare.outputs.rocm_gfx }}" in ln]
+        assert len(raw) == 1 and "needs.prepare.outputs.gfx_tag == 'true'" in raw[0], raw
+
     def test_the_arch_table_carries_no_marketing_names(self):
         """Card-name tables live in install.sh and studio/ under a parity test; a
         seventh copy here would drift. Families only."""

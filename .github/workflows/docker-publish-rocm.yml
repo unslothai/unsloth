@@ -80,6 +80,8 @@ jobs:
       rocm_gfx: ${{ steps.build_args.outputs.rocm_gfx }}
       # every input at its default: only then may the build take the stable tags
       stable: ${{ steps.build_args.outputs.stable }}
+      # every input at its default except a set gfx: only then the gfx tag
+      gfx_tag: ${{ steps.build_args.outputs.gfx_tag }}
     steps:
       # Precedence: dispatch input, else pushed tag, else trigger sha, else main.
       - name: Resolve unsloth ref
@@ -165,19 +167,26 @@ jobs:
               ""|gfx1150|gfx1151|gfx1152|gfx1200|gfx1201) ;;
               *) echo "::error::rocm_gfx='${GFX}' has no per-arch wheel index"; exit 1 ;;
           esac
-          STABLE=true
-          [ -z "$IN_UNSLOTH" ] || STABLE=false
-          case "$IN_ZOO" in ""|main) ;; *) STABLE=false ;; esac
-          [ "$ROCM" = "$DEFAULT_ROCM_VERSION" ] || STABLE=false
-          [ "$INDEX" = "$DEFAULT_TORCH_INDEX_URL" ] || STABLE=false
+          # DEFAULTS: every input other than the gfx at its default. STABLE adds a
+          # blank gfx. A per-arch build gets its gfx tag only under DEFAULTS, so a
+          # feature-branch ref plus gfx1151 cannot replace the public gfx1151 image.
+          DEFAULTS=true
+          [ -z "$IN_UNSLOTH" ] || DEFAULTS=false
+          case "$IN_ZOO" in ""|main) ;; *) DEFAULTS=false ;; esac
+          [ "$ROCM" = "$DEFAULT_ROCM_VERSION" ] || DEFAULTS=false
+          [ "$INDEX" = "$DEFAULT_TORCH_INDEX_URL" ] || DEFAULTS=false
+          STABLE=$DEFAULTS
           [ -z "$GFX" ] || STABLE=false
+          GFX_TAG=false
+          [ "$DEFAULTS" = "true" ] && [ -n "$GFX" ] && GFX_TAG=true
           {
               echo "rocm_version=${ROCM}"
               echo "torch_index_url=${INDEX}"
               echo "rocm_gfx=${GFX}"
               echo "stable=${STABLE}"
+              echo "gfx_tag=${GFX_TAG}"
           } >> "$GITHUB_OUTPUT"
-          echo "ROCm ${ROCM}, index ${INDEX}, gfx '${GFX}', stable tags: ${STABLE}"
+          echo "ROCm ${ROCM}, index ${INDEX}, gfx '${GFX}', stable tags: ${STABLE}, gfx tag: ${GFX_TAG}"
 
   build:
     needs: prepare
@@ -255,7 +264,7 @@ jobs:
             type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && needs.prepare.outputs.stable == 'true' }}
             type=ref,event=tag,enable=${{ needs.prepare.outputs.stable == 'true' }}
             type=schedule,pattern=nightly,enable=${{ needs.prepare.outputs.stable == 'true' }}
-            type=raw,value=${{ needs.prepare.outputs.rocm_gfx }},enable=${{ needs.prepare.outputs.rocm_gfx != '' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+            type=raw,value=${{ needs.prepare.outputs.rocm_gfx }},enable=${{ needs.prepare.outputs.gfx_tag == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
             type=sha,prefix=sha-,format=short,suffix=${{ needs.prepare.outputs.rocm_gfx != '' && format('-{0}', needs.prepare.outputs.rocm_gfx) || '' }}
 
       - name: Create manifest

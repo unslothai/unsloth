@@ -187,6 +187,18 @@ for i in range(torch.cuda.device_count()):
     if not arch:
         continue
     fam = FAMILY.get(arch)
+    if arch == "gfx1033":
+        # Van Gogh (Steam Deck): ROCm wheels install and forward math looks fine,
+        # but training diverges to NaN and fails gradcheck (studio/ROCM_RDNA2_APU.md).
+        # install.sh routes this arch to CPU torch for the same reason; an image
+        # whose torch is HIP-only can only refuse. Spoofing it as gfx1030 would hide
+        # the silicon from this check, not fix the arithmetic.
+        print(f"ERROR: {arch} (Van Gogh, Steam Deck) computes incorrect results under ROCm:")
+        print("       training diverges to NaN even though forward passes look valid, so this")
+        print("       image refuses to train on it. Use the CPU image path (unsloth/unsloth")
+        print("       with UNSLOTH_ALLOW_CPU=1) or llama.cpp over Vulkan for inference.")
+        print("       UNSLOTH_SKIP_GPU_CHECK=1 bypasses this check; the results stay wrong.")
+        sys.exit(1)
     if image_gfx:
         if arch == image_gfx or (arch in RDNA4 and image_gfx in RDNA4):
             print(f"  -> {fam}: this image was built for {image_gfx}")
