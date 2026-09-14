@@ -932,8 +932,7 @@ def github_releases(
 
 
 def latest_upstream_release_tag() -> str:
-    # The release page redirect is the same "latest" pointer as the API's /releases/latest
-    # and costs no api.github.com quota.
+    # Same "latest" pointer as UPSTREAM_RELEASES_API, at no api.github.com quota.
     try:
         tag = _core.download_host_latest_release_tag(_OPS, UPSTREAM_REPO)
     except Exception as exc:  # noqa: BLE001 - the API below is the fallback
@@ -3885,9 +3884,7 @@ def ensure_diffusion_visual_server(
         return
 
     try:
-        # The manifest already names every approved asset and the URL is a function of
-        # repo, tag and name, so listing the release over api.github.com is pure rate limit.
-        # An asset absent from the manifest is never considered: this binary gets executed.
+        # The URL is a function of repo, tag and name, all named by the manifest.
         match = None
         for asset_name, approved in approved_checksums.artifacts.items():
             low = asset_name.lower()

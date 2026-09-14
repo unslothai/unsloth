@@ -4203,8 +4203,7 @@ def test_diffusion_visual_server_uses_approved_checksum_download(monkeypatch, tm
     asset_url = "https://github.com/unslothai/llama.cpp/releases/download/b9334/" + asset_name
     calls: list[tuple[str, Path, str | None, str | None]] = []
 
-    # The asset URL is a function of repo, tag and manifest name; listing the release
-    # over api.github.com would only spend rate limit.
+    # The asset URL is a function of repo, tag and manifest name; listing spends quota.
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT,
         "github_release_assets",
@@ -4246,8 +4245,6 @@ def test_diffusion_visual_server_uses_approved_checksum_download(monkeypatch, tm
 def test_diffusion_visual_server_skips_when_the_manifest_names_no_visual_server(
     monkeypatch, tmp_path: Path
 ):
-    # The resolver reads only the checksum manifest now, never the release listing, so
-    # an asset that exists in the release but not in the manifest is simply not seen.
     verified_calls: list[str] = []
     raw_calls: list[str] = []
 
@@ -5919,8 +5916,7 @@ def test_a_fresh_windows_install_is_payload_checked_not_just_vulkan():
 
 
 def test_latest_upstream_release_tag_prefers_the_release_page_redirect(monkeypatch):
-    # github.com/<repo>/releases/latest redirects to the same tag the API's /releases/latest
-    # names, without spending api.github.com quota.
+    # The releases/latest redirect names the same tag as the API, without spending quota.
     monkeypatch.setattr(
         INSTALL_LLAMA_PREBUILT._core,
         "download_host_latest_release_tag",

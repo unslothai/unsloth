@@ -18,7 +18,6 @@ import http.client
 import os
 import platform
 import re
-import shutil
 import stat
 import sys
 import urllib.error
@@ -264,34 +263,21 @@ class GitHubRateLimited(RuntimeError):
     pass
 
 
-def _quota_left(headers: object) -> bool:
-    if headers is None:
-        return False
-    try:
-        return float(str(getattr(headers, "get")("X-RateLimit-Remaining") or "").strip()) > 0
-    except (ValueError, AttributeError, TypeError):
-        return False
-
-
 def _is_rate_limited(exc: BaseException) -> bool:
-    """A refusal that throttling explains. 429 always is, whatever the quota header says:
-    X-RateLimit-* describes the PRIMARY quota and a secondary limit leaves it untouched.
-    A 403 whose headers still report quota is instead a permission or policy refusal, and
-    the other rungs of the ladder may well answer, so it must fall through."""
+    """A refusal that throttling explains, by the same rule as freshness_flow.is_rate_limited, which this stdlib-only installer cannot import."""
     if not isinstance(exc, urllib.error.HTTPError) or exc.code not in (403, 429):
         return False
     if exc.code == 429:
         return True
     headers = getattr(exc, "headers", None)
-    if headers is not None and _header(headers, "Retry-After"):
-        return True
-    # A secondary limit can answer 403 with the primary quota untouched and no
-    # Retry-After; only the body names it. Same markers the repo's GitHub scraper uses.
-    if _names_a_rate_limit(_error_body(exc)):
-        return True
-    return not _quota_left(headers)
+    return bool(
+        _header(headers, "Retry-After")
+        or _header(headers, "X-RateLimit-Remaining") == "0"
+        or _names_a_rate_limit(_error_body(exc))
+    )
 
 
+# Kept identical to freshness_flow._RATE_LIMIT_BODY_MARKERS; a test guards the drift.
 _RATE_LIMIT_BODY_MARKERS = (
     "api rate limit exceeded",
     "rate limit exceeded",
@@ -308,8 +294,7 @@ def _names_a_rate_limit(body: str) -> bool:
 
 
 def _error_body(exc: BaseException, *, limit: int = 2048) -> str:
-    """The refusal's body, read once and remembered: HTTPError is the response, so
-    reading it consumes it and the caller still prints the same object."""
+    """The refusal's body, cached on the exception since reading an HTTPError consumes it."""
     cached = getattr(exc, "_unsloth_body", None)
     if cached is not None:
         return cached
@@ -326,6 +311,8 @@ def _error_body(exc: BaseException, *, limit: int = 2048) -> str:
 
 
 def _header(headers: object, name: str) -> str:
+    if headers is None:
+        return ""
     try:
         return str(getattr(headers, "get")(name) or "").strip()
     except (AttributeError, TypeError):
@@ -458,6 +445,67 @@ def _locate_sd_server(root: Path) -> Optional[Path]:
     return None
 
 
+def _from_destination(exc: OSError) -> OSError:
+    """Mark an error as the destination's, not the transfer's. Marked rather than wrapped because callers match on the original type."""
+    try:
+        exc._unsloth_destination = True  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - exotic OSError subclasses
+        pass
+    return exc
+
+
+def _declared_length(response: object) -> Optional[int]:
+    try:
+        raw = response.getheader("Content-Length")  # type: ignore[attr-defined]
+        return None if raw is None else int(str(raw).strip())
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _stream_to(response: object, dest: Path) -> None:
+    expected = _declared_length(response)
+    written = 0
+    try:
+        handle = open(dest, "wb")
+    except OSError as exc:
+        raise _from_destination(exc)
+    try:
+        while True:
+            chunk = response.read(1 << 16)  # type: ignore[attr-defined]
+            if not chunk:
+                break
+            try:
+                handle.write(chunk)
+            except OSError as exc:
+                raise _from_destination(exc)
+            written += len(chunk)
+        # A body that stops early returns empty rather than raising, so a truncated archive would reach the checksum outside the retry loop.
+        if expected is not None and written < expected:
+            raise http.client.IncompleteRead(b"", expected - written)
+    except BaseException:
+        try:
+            handle.close()
+        except OSError as close_exc:
+            # Buffered writes reach the disk only here; that error displaces the transfer error the way the enclosing `with` used to.
+            raise _from_destination(close_exc)
+        raise
+    try:
+        handle.close()
+    except OSError as exc:
+        raise _from_destination(exc)
+
+
+def _download_is_retriable(exc: BaseException) -> bool:
+    """Whether to try this download again, which only a transfer failure earns. Classifies refusals as wheel_utils._probe_is_retriable does, and additionally rules out the destination."""
+    if getattr(exc, "_unsloth_destination", False) or _timed_out(exc):
+        return False
+    if isinstance(exc, urllib.error.HTTPError):
+        if _header(getattr(exc, "headers", None), "Retry-After"):
+            return False
+        return exc.code == 408 or exc.code >= 500
+    return isinstance(exc, (urllib.error.URLError, OSError, http.client.HTTPException))
+
+
 def _download(
     url: str,
     dest: Path,
@@ -465,39 +513,20 @@ def _download(
     timeout: float = 300.0,
     attempts: int = 3,
 ) -> None:
-    """Stream ``url`` to ``dest`` with an explicit timeout: ``urlretrieve`` takes no timeout and can hang forever on a stalled socket. A User-Agent is set because the GitHub asset CDN can reject header-less requests; the API fetch carries any token. Retried on a dropped connection or a malformed response; a 404, a timeout, and a destination that cannot be opened are terminal, since none of them change on the next attempt."""
-    import shutil
+    """Stream ``url`` to ``dest`` with an explicit timeout, which ``urlretrieve`` has no way to take. A User-Agent is set because the asset CDN can reject header-less requests. Retries per ``_download_is_retriable``."""
     import time
 
     if attempts < 1:
-        # Otherwise the loop never runs and the caller gets None with no file written.
         raise ValueError("attempts must be at least 1")
     for attempt in range(1, attempts + 1):
         req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-sd-cpp-installer"})
         try:
             # Socket first, file second: a failed connect must not leave an empty dest.
-            with urllib.request.urlopen(req, timeout = timeout) as resp, open(dest, "wb") as f:  # noqa: S310
-                shutil.copyfileobj(resp, f)
+            with urllib.request.urlopen(req, timeout = timeout) as resp:  # noqa: S310
+                _stream_to(resp, dest)
             return
         except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
-            if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
-                raise
-            # A destination that cannot be opened (read-only dir, missing parent) will
-            # not open on the next attempt either; retrying would only re-download the
-            # whole archive to fail the same way. open() names the file it could not
-            # open, and a socket error never does, which tells the two apart.
-            if (
-                isinstance(exc, OSError)
-                and not isinstance(exc, urllib.error.URLError)
-                and getattr(exc, "filename", None)
-            ):
-                raise
-            # A stalled socket already spent the whole timeout; retrying it would spend
-            # the same wait again, so three attempts would triple the deadline rather
-            # than recover anything. Terminal, exactly as url_exists treats it.
-            if _timed_out(exc):
-                raise
-            if attempt >= attempts:
+            if attempt >= attempts or not _download_is_retriable(exc):
                 raise
             print(f"sd-cli: download failed ({exc}); retrying {attempt}/{attempts - 1}", flush = True)
             time.sleep(2.0 * attempt)
@@ -731,11 +760,10 @@ def _resolve_repo_asset(
     *,
     allow_latest: bool = True,
 ) -> tuple[Optional[dict], Optional[str]]:
-    """Fetch ``repo``'s release and pick the asset for this host. Returns ``(release, asset_name)`` or ``(None, None)`` when the repo has no usable release (fetch failed, or the pinned tag is missing and ``allow_latest`` is False) or no asset for this host, so the caller can fall back. A fetch the API refused for quota raises ``GitHubRateLimited`` instead: the other rungs share that quota, so there is nothing to fall back to."""
+    """Fetch ``repo``'s release and pick the asset for this host. Returns ``(release, asset_name)`` or ``(None, None)`` when the repo has no usable release (fetch failed, or the pinned tag is missing and ``allow_latest`` is False) or no asset for this host, so the caller can fall back. A fetch refused for quota raises ``GitHubRateLimited`` instead: the other rungs share that quota, so there is nothing to fall back to."""
     try:
         release = _fetch_release(tag, repo = repo, token = token, allow_latest = allow_latest)
     except Exception as exc:  # noqa: BLE001 - network -> fall back
-        # The whole ladder is one api.github.com quota; the other rungs would fail the same way.
         if _is_rate_limited(exc):
             raise GitHubRateLimited(_rate_limit_message()) from exc
         print(f"sd-cli: {repo} release fetch failed ({exc})", flush = True)
@@ -755,7 +783,7 @@ def _resolve_repo_asset(
 def _resolve_with_fallback(
     accelerator: str, token: Optional[str]
 ) -> tuple[str, Optional[dict], Optional[str]]:
-    """Resolve ``(used_repo, release, asset_name)`` for this host across the primary repo and, only when the built-in default is in use and the user did not pin a repo, the upstream fallback. Ordering guarantees reproducibility: a pinned tag is tried EXACTLY on every candidate repo before any repo's unpinned latest, so a mirror missing the pinned release prefers the pinned upstream build over an unpinned mirror-latest. Returns ``(primary, None, None)`` when nothing serves this host, and raises ``GitHubRateLimited`` as soon as any rung is refused for quota. Shared by ``install`` and ``--print-asset`` so both honour the same fallback."""
+    """Resolve ``(used_repo, release, asset_name)`` for this host, falling back to upstream only when the built-in default repo is in use. A pinned tag is tried on every candidate repo before any repo's unpinned latest, so a mirror missing the pinned release still prefers the pinned upstream build. Returns ``(primary, None, None)`` when nothing serves this host, and raises ``GitHubRateLimited`` once any rung is refused for quota."""
     tag = _pinned_tag()
     primary = _repo()
     # Only substitute upstream when no UNSLOTH_SD_CPP_REPO is pinned: an explicit repo gets exactly that repo.
@@ -812,7 +840,7 @@ def install(
     accelerator: str = "auto",
     token: Optional[str] = None,
 ) -> Path:
-    """Download and extract the prebuilt for this host, returning the sd-cli path. Resolves against the Unsloth mirror (``DEFAULT_REPO``) first; if the mirror cannot serve this host AND the default repo is in use, falls back to leejet upstream so native install still works. Raises ``RuntimeError`` when neither source has an asset for the host or the archive has no ``sd-cli``, and its subclass ``GitHubRateLimited`` when the release lookups are refused for quota, in which case no source was tried past the first refusal."""
+    """Download and extract the prebuilt for this host, returning the sd-cli path. Raises ``RuntimeError`` when no source has an asset for the host or the archive has no ``sd-cli``, and its subclass ``GitHubRateLimited`` when a release lookup is refused for quota."""
     target = install_dir or default_install_dir()
     # Claim ownership of `target` only if we created it, it was empty, or it is already marked: adopting a user's non-empty dir would let a later uninstall wipe it.
     marker = target / OWNERSHIP_MARKER
