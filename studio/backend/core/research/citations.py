@@ -37,6 +37,8 @@ _PLACEHOLDER_KINDS = ("research-code", "research-citation")
 # would leave the raw sentinel in the delivered report.
 # [0-9] not \d: \d also matches other scripts' digits, which no token ever uses.
 _PLACEHOLDER = re.compile(rf"\x00(?:{'|'.join(_PLACEHOLDER_KINDS)})-[0-9]+\x00")
+# Just the code ones, for a pass that deletes prose but must carry the code through.
+_CODE_PLACEHOLDER = re.compile(r"\x00research-code-[0-9]+\x00")
 # A GFM footnote definition. The chat renders reports with remark-gfm, which reads the indented
 # lines under one as footnote prose, while the CommonMark parser below reads them as an indented
 # code block. Masking on that reading would skip validation for text the reader sees as prose,
@@ -107,7 +109,10 @@ def _record_code_span(state, silent: bool) -> bool:
 
 # Block maps retain the original lines, including indentation and container markers.
 # Parse inline source separately so code offsets refer to those original lines too.
-_CODE_MARKDOWN = MarkdownIt("commonmark").disable("inline")
+# Tables are enabled because the renderer reads them: without the rule a row is one paragraph
+# line, so backticks in two different cells pair up into a span covering the cell boundary, and
+# whatever sits between them stops being validated while still rendering as ordinary cell text.
+_CODE_MARKDOWN = MarkdownIt("commonmark").enable("table").disable("inline")
 _CODE_MARKDOWN.inline.ruler.at("backticks", _record_code_span)
 
 
@@ -146,7 +151,37 @@ def _mask_code(text: str, placeholders: dict[str, str]) -> str:
     lines = [text[offsets[number] : offsets[number + 1]] for number in range(len(offsets) - 1)]
     footnote_content = _footnote_content_lines(lines)
     spans = []
+
+    def record_inline(start: int, end: int) -> None:
+        source = text[start:end]
+        env = {"code_source": source, "code_spans": []}
+        _CODE_MARKDOWN.inline.parse(source, _CODE_MARKDOWN, env, [])
+        spans.extend((start + first, start + last) for first, last in env["code_spans"])
+
+    def record_row(start: int, end: int) -> None:
+        """Each cell separately, the way the renderer splits a row before parsing inline.
+
+        Every cell token in a row carries the whole row's line map, so walking the row once and
+        cutting at each unescaped pipe is what keeps a span inside one cell.
+        """
+        cell = start
+        escaped = False
+        for index in range(start, end):
+            if escaped:
+                escaped = False
+            elif text[index] == "\\":
+                escaped = True
+            elif text[index] == "|":
+                record_inline(cell, index)
+                cell = index + 1
+        record_inline(cell, end)
+
+    in_table = False
     for token in _CODE_MARKDOWN.parse(text):
+        if token.type == "table_open":
+            in_table = True
+        elif token.type == "table_close":
+            in_table = False
         if token.map is None:
             continue
         # An indented block is only code here if the renderer agrees; a fence is a fence in both.
@@ -157,11 +192,10 @@ def _mask_code(text: str, placeholders: dict[str, str]) -> str:
             # Keep the following heading on its own line while the block is masked.
             end = start + len(text[start:end].rstrip("\r\n"))
             spans.append((start, end))
-        elif token.type == "inline":
-            source = text[start:end]
-            env = {"code_source": source, "code_spans": []}
-            _CODE_MARKDOWN.inline.parse(source, _CODE_MARKDOWN, env, [])
-            spans.extend((start + first, start + last) for first, last in env["code_spans"])
+        elif token.type == "tr_open":
+            record_row(start, end)
+        elif token.type == "inline" and not in_table:
+            record_inline(start, end)
     pieces = []
     cursor = 0
     for start, end in sorted(spans):
@@ -339,7 +373,11 @@ def _validate_masked_document_sources(
         # filename ("budget [final].pdf"), and a filename may also contain backticks, which
         # _mask_code replaced with a placeholder before this pass ran.
         citation = _restore_placeholders(match.group(0), placeholders)
-        return match.group(0) if citation in allowed else ""
+        if citation in allowed:
+            return match.group(0)
+        # An unsupported citation can reach across code ("[Document: `cmd` ]"). Dropping it must
+        # not take the code with it, which would delete the span this module exists to protect.
+        return "".join(_CODE_PLACEHOLDER.findall(match.group(0)))
 
     return _DOCUMENT_CITATION.sub(keep_if_allowed, report)
 

@@ -3548,6 +3548,51 @@ def test_footnote_content_is_validated_not_masked(report, expected):
     assert _validate_report(report, [{"url": "https://a.com", "title": "A"}], []) == expected
 
 
+@pytest.mark.parametrize(
+    ("report", "expected"),
+    [
+        # Backticks in two different cells are not a code span to the renderer, which splits the
+        # row into cells first, so what sits between them still renders as plain cell text.
+        (
+            "| a | b |\n| - | - |\n| `x | https://nope.example/bad ` |",
+            "| a | b |\n| - | - |\n| `x |  ` |",
+        ),
+        (
+            "| a | b |\n| - | - |\n| `x | [Document: fake.pdf] ` |",
+            "| a | b |\n| - | - |\n| `x |  ` |",
+        ),
+        # A command in one cell is still code, which is the point of masking at all.
+        (
+            "| cmd | note |\n| --- | --- |\n| `git clone https://nope.example/r` | clone |",
+            "| cmd | note |\n| --- | --- |\n| `git clone https://nope.example/r` | clone |",
+        ),
+        # An escaped pipe stays inside its cell, so a span may span it.
+        (
+            "| a | b |\n| - | - |\n| `grep a \\| wc https://nope.example/c` | x |",
+            "| a | b |\n| - | - |\n| `grep a \\| wc https://nope.example/c` | x |",
+        ),
+    ],
+)
+def test_table_cells_are_validated_per_cell(report, expected):
+    assert _validate_report(report, [], []) == expected
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        "Prose [Document: `git clone https://nope.example/r` ] end.",
+        "Prose [Document: oops `keepme` ] end.",
+    ],
+)
+def test_dropping_an_unsupported_document_citation_keeps_its_code(report):
+    """The citation pattern can reach across a code span. Removing the citation must not remove
+    the code, which is the one thing this module promises not to touch."""
+    out = _validate_report(report, [], [{"filename": "real.pdf"}])
+    assert "[Document:" not in out
+    assert out.count("`") == 2
+    assert out == "Prose " + report[report.index("`") : report.rindex("`") + 1] + " end."
+
+
 def test_restoring_many_code_spans_stays_linear():
     """A replace() per token rescans the whole report once per span. Guard the single pass so a
     code-heavy report cannot go quadratic on the event loop."""
