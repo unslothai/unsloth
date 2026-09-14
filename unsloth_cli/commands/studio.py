@@ -3391,16 +3391,22 @@ def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Op
     # setup.sh treats an inherited UV_CACHE_DIR as the caller's choice and skips its own write
     # probe, so handing it an unwritable Studio cache aborts every uv command in the update --
     # the one branch here that was still unprobed. Left unset, setup.sh probes and falls back.
-    try:
-        studio_cache.mkdir(parents = True, exist_ok = True)
-    except OSError:
-        pass
-    if not _uv_cache_is_writable(studio_cache):
-        # Explicitly absent rather than a bare `return env`: the other branches all hand back a
-        # dict, and setup.sh's own probe wants the variable gone, not inherited from this process.
-        unset = {**(env or os.environ)}
-        unset.pop("UV_CACHE_DIR", None)
-        return unset
+    #
+    # Only for a root that already exists, and the root is never created here: setup.sh fails
+    # fast on a STUDIO_HOME override that does not, exactly so a typo cannot materialise an
+    # empty workspace, and making the cache under it first would satisfy that guard and let the
+    # update run on against a tree with no venv.
+    if STUDIO_HOME.is_dir():
+        try:
+            studio_cache.mkdir(parents = True, exist_ok = True)
+        except OSError:
+            pass
+        if not _uv_cache_is_writable(studio_cache):
+            # Explicitly absent rather than a bare `return env`: the other branches all hand back
+            # a dict, and setup.sh's own probe wants the variable gone, not inherited from here.
+            unset = {**(env or os.environ)}
+            unset.pop("UV_CACHE_DIR", None)
+            return unset
     return {**(env or os.environ), "UV_CACHE_DIR": str(studio_cache)}
 
 

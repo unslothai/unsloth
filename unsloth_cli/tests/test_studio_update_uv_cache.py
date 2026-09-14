@@ -1061,3 +1061,20 @@ def test_a_store_with_a_two_digit_version_is_probed(tmp_path):
     finally:
         (cache / "simple-v24").chmod(0o755)
     assert studio._uv_cache_is_writable(cache) is True
+
+
+def test_a_mistyped_studio_home_is_not_materialised_by_the_probe(monkeypatch, tmp_path):
+    """setup.sh fails fast on a STUDIO_HOME override that does not exist, so a typo cannot
+    leave an empty workspace behind. Creating the cache under it first satisfies that guard
+    and the update runs on against a tree with no venv."""
+    studio = _studio()
+    missing = tmp_path / "typo studio home"
+    monkeypatch.setattr(studio, "STUDIO_HOME", missing)
+    monkeypatch.delenv("UV_CACHE_DIR", raising = False)
+    monkeypatch.setattr(studio, "_uv_default_cache_dir", lambda cwd = None: tmp_path / "no default")
+
+    env = studio._with_studio_uv_cache(None)
+
+    assert not missing.exists(), sorted(p.name for p in tmp_path.iterdir())
+    # Still named, so setup.sh is told the same path it would have picked itself.
+    assert env["UV_CACHE_DIR"] == str(missing / "cache" / "uv")
