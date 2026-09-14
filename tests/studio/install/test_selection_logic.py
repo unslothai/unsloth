@@ -1,6 +1,7 @@
 """Binary selection logic in install_llama_prebuilt.py; all I/O monkeypatched."""
 
 import importlib.util
+import inspect
 import json
 import os
 import socket
@@ -8,6 +9,7 @@ import subprocess
 import sys
 import textwrap
 import types
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -2483,7 +2485,7 @@ class TestDirectUpstreamBlackwellPin:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "detect_torch_cuda_runtime_preference",
-            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
+            lambda host, **_: CudaRuntimePreference(runtime_line = None, selection_log = []),
         )
 
     def test_blackwell_13_1_falls_to_cpu(self, monkeypatch):
@@ -2636,7 +2638,7 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "detect_torch_cuda_runtime_preference",
-            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
+            lambda host, **_: CudaRuntimePreference(runtime_line = None, selection_log = []),
         )
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
@@ -2663,7 +2665,7 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "detect_torch_cuda_runtime_preference",
-            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
+            lambda host, **_: CudaRuntimePreference(runtime_line = None, selection_log = []),
         )
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
@@ -2692,7 +2694,7 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "detect_torch_cuda_runtime_preference",
-            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
+            lambda host, **_: CudaRuntimePreference(runtime_line = None, selection_log = []),
         )
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
@@ -2730,7 +2732,7 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "detect_torch_cuda_runtime_preference",
-            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
+            lambda host, **_: CudaRuntimePreference(runtime_line = None, selection_log = []),
         )
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
@@ -2752,6 +2754,40 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
             "portable" not in a.name for a in attempts
         ), "an sm_61 host must not be handed a bundle whose floor is sm_70"
         assert all(a.install_kind != "linux-cpu" for a in attempts)
+
+    def test_the_masked_host_keeps_torchs_runtime_preference(self, monkeypatch):
+        """Both of the usual gates answer "no GPU" under the mask.
+
+        has_usable_nvidia is false by definition and torch.cuda.is_available() sees no
+        devices, so the preference was skipped and selection fell back to newest-first:
+        a CUDA 13 bundle for a cu12 venv, which is the stray-runtime mismatch the
+        unmasked path exists to avoid. torch.version.cuda is a build-time constant no
+        mask touches.
+        """
+        fake_torch = SimpleNamespace(
+            version = SimpleNamespace(cuda = "12.8"),
+            cuda = SimpleNamespace(is_available = lambda: False),
+        )
+        monkeypatch.setitem(sys.modules, "torch", fake_torch)
+        host = make_host(
+            has_physical_nvidia = True,
+            has_usable_nvidia = False,
+            visible_cuda_devices = "",
+        )
+
+        skipped = INSTALL_LLAMA_PREBUILT.detect_torch_cuda_runtime_preference(host)
+        assert skipped.runtime_line is None
+
+        preferred = INSTALL_LLAMA_PREBUILT.detect_torch_cuda_runtime_preference(
+            host, gpu_hidden_by_mask = True
+        )
+        assert preferred.runtime_line == "cuda12"
+        assert any("hidden by CUDA_VISIBLE_DEVICES" in line for line in preferred.selection_log)
+
+    def test_the_masked_branch_asks_for_the_masked_preference(self):
+        # The opt-in has to actually be passed, or the branch silently loses the shortcut.
+        source = inspect.getsource(INSTALL_LLAMA_PREBUILT._linux_published_attempts)
+        assert "gpu_hidden_by_mask = True" in source
 
     def _cuda_and_cpu_bundle(self):
         """A release carrying both a covering CUDA bundle and the CPU tail."""
@@ -2959,7 +2995,7 @@ class TestResolveReleaseAssetChoicePin:
         monkeypatch.setattr(
             INSTALL_LLAMA_PREBUILT,
             "detect_torch_cuda_runtime_preference",
-            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
+            lambda host, **_: CudaRuntimePreference(runtime_line = None, selection_log = []),
         )
 
     def test_no_cuda_attempt_on_published_path_for_13_1(self, monkeypatch):

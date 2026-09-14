@@ -6465,7 +6465,9 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
                     "selecting against the physical compute caps "
                     f"{','.join(selection_host.compute_caps)} the mask hid"
                 )
-            torch_preference = detect_torch_cuda_runtime_preference(selection_host)
+            torch_preference = detect_torch_cuda_runtime_preference(
+                selection_host, gpu_hidden_by_mask = True
+            )
             masked_selection = linux_cuda_choice_from_release(
                 selection_host,
                 bundle,
