@@ -1743,9 +1743,16 @@ exit 1
     # is not uv's. Mirrors _uv_is_bucket_name, suffix from the LAST `-v` included.
     function Test-StudioUvBucketName {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Name)
-        $at = $Name.LastIndexOf("-v")
+        # Lowercased whole, because Windows matches names case-insensitively unless a directory
+        # was explicitly flagged: `Archive-V0` IS uv's `archive-v0` and has to be probed as one.
+        # The `-v` marker varies with the kind, so folding only the kind would still miss it.
+        # Invariant, or a Turkish locale maps I to a dotless one and `flat-Index-v4` escapes.
+        # install.sh stays case-sensitive on purpose: there the two really are different
+        # directories, and uv creates its own lowercase one.
+        $lower = $Name.ToLowerInvariant()
+        $at = $lower.LastIndexOf("-v")
         if ($at -lt 0) { return $false }
-        $suffix = $Name.Substring($at + 2)
+        $suffix = $lower.Substring($at + 2)
         if ([string]::IsNullOrEmpty($suffix)) { return $false }
         # \A and \z, not ^ and $: in .NET `$` also matches before a final newline, so
         # `archive-v1<LF>` passed here while the sh helper rejected it.
@@ -1754,7 +1761,7 @@ exit 1
         # cache is not uv's to write, but it condemned the whole cache, so the install
         # redownloaded what it already had and an offline one failed outright. Every CacheBucket
         # in uv 0.12.1, $UvPinnedVersion below; keep in step with install.sh on a pin bump.
-        return ($Name.Substring(0, $at) -cin @(
+        return ($lower.Substring(0, $at) -in @(
             "archive", "binaries", "builds", "built-wheels", "environments", "flat-index",
             "git", "interpreter", "osv", "python", "sdists", "simple", "wheels"))
     }
@@ -1803,8 +1810,11 @@ exit 1
         try {
             $buckets = Get-ChildItem -LiteralPath $Cache -Directory -Force -ErrorAction Stop |
                 Where-Object {
+                    # Lowercased like the helper: LastIndexOf is case-sensitive, so an
+                    # `Archive-V0` the helper now accepts would index -1 and throw here.
                     (Test-StudioUvBucketName -Name $_.Name) -and
-                    ($_.Name.Substring(0, $_.Name.LastIndexOf("-v")) -in
+                    ($_.Name.ToLowerInvariant().Substring(0, $_.Name.LastIndexOf("-v",
+                        [System.StringComparison]::OrdinalIgnoreCase)) -in
                         @("archive", "builds", "built-wheels", "wheels", "sdists"))
                 }
         } catch {

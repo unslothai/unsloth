@@ -458,6 +458,21 @@ def test_a_read_only_managed_python_bucket_still_condemns_the_cache(tmp_path):
 
 
 @requires_pwsh
+def test_a_differently_cased_bucket_is_still_uvs(tmp_path):
+    """Windows resolves uv's `archive-v0` to an existing `Archive-V0`, so it is the same
+    bucket and an unwritable one has to condemn the cache rather than go unprobed."""
+    default = _warm(tmp_path / "uvdefault")
+    (default / "Python-V0").mkdir()
+    if os.name != "nt":
+        (default / "Python-V0").chmod(0o555)
+    try:
+        assert _select(tmp_path / "studio", str(default))["mode"] == "studio"
+    finally:
+        if os.name != "nt":
+            (default / "Python-V0").chmod(0o755)
+
+
+@requires_pwsh
 def test_a_bucket_that_is_not_a_directory_is_refused(tmp_path):
     """A file where a bucket goes is an existing path to the create uv makes, which fails."""
     default = _warm(tmp_path / "uvdefault")

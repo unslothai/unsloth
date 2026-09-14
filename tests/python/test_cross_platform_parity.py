@@ -1235,8 +1235,17 @@ class TestInstallUvCacheRootParity:
         # rejected it from the start, so this was a real split.
         bucket_sh = sh.split("_uv_is_bucket_name() {", 1)[1].split("\n}", 1)[0]
         assert "''|*[!0-9]*) return 1 ;;" in bucket_sh, bucket_sh
-        bucket_ps1 = ps1.split("function Test-StudioUvBucketName", 1)[1].split("\n}", 1)[0]
+        # To the NEXT function, not the first "\n}": the body is indented, so that split ran
+        # two functions on and every assertion below it read the wrong code.
+        bucket_ps1 = ps1.split("function Test-StudioUvBucketName", 1)[1].split(
+            "function Test-StudioUvCacheWritable", 1
+        )[0]
         assert "IsNullOrEmpty($suffix)" in bucket_ps1, bucket_ps1
+        # Case-insensitively on the PowerShell side alone: Windows resolves `Archive-V0` to
+        # uv's `archive-v0`, so it is the same bucket and must be probed. sh keeps `case`,
+        # which is case-sensitive, because on POSIX they are two directories.
+        assert "ToLowerInvariant()" in bucket_ps1, bucket_ps1
+        assert "-cin" not in bucket_ps1, bucket_ps1
         # and the KIND has to be one uv creates, on BOTH sides with the same list: a
         # bucket-shaped `unused-v999` is not uv's to write, and condemning a warm cache for it
         # redownloaded what the cache already held. A list that drifts splits the two answers.
@@ -1256,7 +1265,7 @@ class TestInstallUvCacheRootParity:
         kinds_sh = set(re.findall(r"[a-z\-]+", case_body))
         assert kinds_sh == probe_kinds, sorted(kinds_sh ^ probe_kinds)
         kinds_ps1 = set(
-            re.findall(r'"([a-z\-]+)"', ps1.split("-cin @(", 1)[1].split("))", 1)[0])
+            re.findall(r'"([a-z\-]+)"', bucket_ps1.split("-in @(", 1)[1].split("))", 1)[0])
         )
         assert kinds_ps1 == probe_kinds, sorted(kinds_ps1 ^ probe_kinds)
         # and the CLI validates the whole suffix too, or `unsloth studio update` prefers a
