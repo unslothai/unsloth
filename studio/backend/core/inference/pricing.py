@@ -110,7 +110,6 @@ OPENAI_WEB_SEARCH_USD_PER_1K = 10.0
 OPENAI_CONTAINER_USD_PER_HOUR = 0.09  # 1g default tier
 
 
-# Sonnet 5 launched at $2/$10 per MTok through 2026-08-31 while ANTHROPIC_PRICING carries the standard $3/$15
 # Claude Sonnet 5 launched on introductory pricing of $2/$10 per MTok, in force through 2026-08-31; ANTHROPIC_PRICING
 # carries the standard $3/$15 that takes over on 2026-09-01. Billing the standard rate early overstates every Sonnet 5
 # turn by 50%, so overlay the launch rate while it lasts. The entry expires on its own and can be deleted after the
@@ -190,9 +189,8 @@ def calculate_cost(provider: str, model: str, usage: dict[str, Any]) -> dict[str
         "cache_read_input_tokens" in usage and usage.get("cache_read_input_tokens") is not None
     )
     cache_read = max(0, int(usage.get("cache_read_input_tokens") or 0))
-    # an explicit native cache_read_input_tokens of 0 is authoritative
-    # Fall back to mirrored prompt_tokens_details only when native cache_read_input_tokens is absent; an explicit native
-    # 0 is authoritative, so a stale proxy mirror can't inflate cache_read.
+    # Fall back to mirrored prompt_tokens_details only when native cache_read_input_tokens is absent; an explicit
+    # native 0 is authoritative, so a stale proxy mirror can't inflate cache_read.
     if not cache_read_native_present:
         details = usage.get("prompt_tokens_details") or {}
         if isinstance(details, dict):

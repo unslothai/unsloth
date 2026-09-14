@@ -7,10 +7,11 @@
 // raises that event once per chunk. One shared subscription, one request per thread.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test, { mock } from "node:test";
 
 import { loadWithStubs } from "./helpers/module-stubs.ts";
+
+import { readSrc } from "./helpers/kit.ts";
 
 const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 
@@ -166,10 +167,7 @@ test("two threads on screen cost one request each", async () => {
 });
 
 test("the badge no longer owns a listener or a per-message request", () => {
-  const thread = readFileSync(
-    new URL("../src/components/assistant-ui/thread.tsx", import.meta.url),
-    "utf8",
-  );
+  const thread = readSrc("components/assistant-ui/thread.tsx");
   assert.doesNotMatch(thread, /getForkCount\(/);
   assert.doesNotMatch(thread, /addEventListener\(CHAT_HISTORY_UPDATED_EVENT/);
   assert.match(thread, /subscribeForkCounts\(remoteId, onChange\)/);

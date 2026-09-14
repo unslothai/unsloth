@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -311,6 +312,7 @@ function LearningRecipeCards({
 }
 
 export function DataRecipesPage(): ReactElement {
+  const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
   const { recipes, ready } = useRecipes();
   const [creatingRecipe, setCreatingRecipe] = useState(false);
@@ -325,8 +327,8 @@ export function DataRecipesPage(): ReactElement {
       return;
     }
     reloadReadySent.current = true;
-    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
-  }, [ready]);
+    signalReady();
+  }, [ready, signalReady]);
 
   useEffect(() => {
     if (sessionStorage.getItem(OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY) !== "1") {

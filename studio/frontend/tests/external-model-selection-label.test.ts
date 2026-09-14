@@ -19,7 +19,7 @@ import type {
   ExternalConnectionRef,
   ExternalModelRef,
 } from "../src/features/model-picker/components/model-selector/missing-external-model.ts";
-import { registerBundlerResolver } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 // Both helpers reach across the tree the way vite resolves it: the "@/" alias and an
 // extensionless relative import.
@@ -416,10 +416,7 @@ test("the picker trigger resolves a dropped connected model before naming it", (
 // The catalogue only reaches the picker if chat-page builds it from the connections and
 // passes it down both the single-chat and compare paths.
 test("the chat page feeds the picker the connections behind the options", () => {
-  const page = readFileSync(
-    fileURLToPath(new URL("../src/features/chat/chat-page.tsx", import.meta.url)),
-    "utf8",
-  );
+  const page = readSrc("features/chat/chat-page.tsx");
   assert.match(page, /availableModels: provider\.availableModels/);
   // Once for the memo's own type, then every hop from chat-page to the picker.
   assert.ok(
@@ -430,12 +427,7 @@ test("the chat page feeds the picker the connections behind the options", () => 
 });
 
 test("the compare and audio toasts use the external-aware labels", () => {
-  const composer = readFileSync(
-    fileURLToPath(
-      new URL("../src/features/chat/shared-composer.tsx", import.meta.url),
-    ),
-    "utf8",
-  );
+  const composer = readSrc("features/chat/shared-composer.tsx");
   assert.match(
     composer,
     /const name1 = model1\?\.id \? compareModelDisplayName\(/,
@@ -447,15 +439,7 @@ test("the compare and audio toasts use the external-aware labels", () => {
   // The local split("/") helper that leaked the id must be gone.
   assert.doesNotMatch(composer, /function modelDisplayName\(/);
 
-  const audio = readFileSync(
-    fileURLToPath(
-      new URL(
-        "../src/features/chat/audio-attachment-adapter.ts",
-        import.meta.url,
-      ),
-    ),
-    "utf8",
-  );
+  const audio = readSrc("features/chat/audio-attachment-adapter.ts");
   assert.match(
     audio,
     /activeModel\?\.name \|\|\s*externalModelLabel\(checkpoint\) \|\|/,

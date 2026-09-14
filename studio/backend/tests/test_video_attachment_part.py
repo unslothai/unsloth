@@ -18,6 +18,9 @@ from pathlib import Path
 
 import pytest
 
+_CLIP_B64 = "AAAAGGZ0eXBtcDQy"  # a bare mp4 box header, decoded byte-for-byte by the backend
+_DATA_URI = f"data:video/mp4;base64,{_CLIP_B64}"
+
 pytest.importorskip("torch")
 
 from routes.inference import _inject_video_part  # noqa: E402
@@ -156,14 +159,48 @@ def test_an_external_provider_refuses_video_rather_than_ignoring_it():
     start = source.index("if payload.provider_id or payload.provider_type:")
     branch = source[start : source.index("_proxy_to_external_provider(payload", start)]
     assert "payload.video_base64" in branch
-    assert "Video input is only supported on a local GGUF model" in branch
+    assert "_VIDEO_INPUT_REFUSAL" in branch
 
 
-def test_a_non_gguf_model_refuses_video_rather_than_ignoring_it():
-    """Injection lives in the GGUF branch, so a transformers model would answer
-    as if nothing were attached."""
+def _model_info(**fields):
+    return {"is_vision": True, **fields}
+
+
+def test_a_video_backend_is_handed_the_bare_clip():
+    from fastapi import HTTPException
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _VIDEO_INPUT_REFUSAL, _local_video_clip
+
+    payload = ChatCompletionRequest(model = "m", messages = [], video_base64 = _DATA_URI)
+    assert _local_video_clip(payload, _model_info(has_video_input = True)) == _CLIP_B64
+    payload = ChatCompletionRequest(model = "m", messages = [], video_base64 = _CLIP_B64)
+    assert _local_video_clip(payload, _model_info(has_video_input = True)) == _CLIP_B64
+
+    with pytest.raises(HTTPException) as exc:
+        _local_video_clip(payload, _model_info())
+    assert exc.value.status_code == 400 and exc.value.detail == _VIDEO_INPUT_REFUSAL
+    payload = ChatCompletionRequest(model = "m", messages = [], video_base64 = "data:video/mp4;base64,")
+    with pytest.raises(HTTPException) as exc:
+        _local_video_clip(payload, _model_info(has_video_input = True))
+    assert exc.value.status_code == 400
+
+
+def test_a_non_gguf_model_takes_the_clip_through_one_gate_and_hands_it_to_generation():
+    """The gate precedes the early-returning dispatches, and the clip rides the generation kwargs."""
     source = _inference_source()
-    assert "if payload.video_base64 and not using_gguf:" in source
+    handler = source.index("using_gguf = llama_backend.is_loaded")
+    gate = source.index("_video_clip = _local_video_clip(payload, model_info)", handler)
+    speech = source.index("return await _monitored_generate_audio(model_name)", handler)
+    audio_input = source.index("# ── Audio INPUT path", handler)
+    assert gate < speech and gate < audio_input
+    assert 'gen_kwargs["video"] = _video_clip' in source
+    use_tools = source.index("_sf_use_tools = (", handler)
+    assert "and _video_clip is None" in source[use_tools : use_tools + 400]
+    assert "(image is not None or _video_clip is not None) and not _sf_use_tools" in source
+    # Settled at the gate: a model without audio input never enters the audio-input path.
+    conflict = source.index("if payload.audio_base64:", gate)
+    assert conflict < speech
+    assert "_AUDIO_VIDEO_INPUT_DETAIL" in source[conflict : conflict + 200]
 
 
 def test_token_counting_refuses_video_like_image_and_audio():
@@ -180,4 +217,4 @@ def test_both_video_checks_share_one_rule():
     """Two size checks that drift let the pre-switch one pass what the post-load
     one refuses, which is the model load this was meant to avoid."""
     source = _inference_source()
-    assert source.count("_video_b64_rejection(payload.video_base64)") == 2
+    assert source.count("_video_b64_rejection(payload.video_base64)") == 3

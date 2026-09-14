@@ -3,6 +3,8 @@
 
 "use client";
 
+import { AppPortalGate } from "@/components/app-readiness";
+
 import { Dialog as DialogPrimitive } from "radix-ui";
 import type * as React from "react";
 import { createContext, useContext } from "react";
@@ -33,7 +35,11 @@ function DialogTrigger({
 function DialogPortal({
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Portal>) {
-  return <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />;
+  return (
+    <AppPortalGate>
+      <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />
+    </AppPortalGate>
+  );
 }
 
 function DialogClose({

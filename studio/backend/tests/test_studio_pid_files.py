@@ -20,6 +20,15 @@ from types import SimpleNamespace
 
 import pytest
 
+
+def _shared_setup_1(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
+    )
+    return events
+
+
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
@@ -432,6 +441,21 @@ def test_a_hostname_resolves_the_same_way_the_bind_does(tmp_path):
     assert run._addresses_collide(recorded, "localhost", 8889) is True
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows socket semantics")
+def test_windows_reuseaddr_listener_is_not_reported_as_a_free_port():
+    # Python HTTP servers commonly enable SO_REUSEADDR. On Windows, putting the
+    # same option on the probe lets its bind succeed even while that server is
+    # listening; uvicorn then fails later with WinError 10048 instead of using
+    # the existing 8888-8908 fallback.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+
+        assert run._is_port_free("127.0.0.1", port) is False
+
+
 def test_a_hostname_records_every_address_it_resolves_to(tmp_path):
     # `localhost` binds 127.0.0.1 AND ::1. Recording only the first lets a later
     # launch on the other literal miss us and start a duplicate.
@@ -442,7 +466,10 @@ def test_a_hostname_records_every_address_it_resolves_to(tmp_path):
         assert run._addresses_collide(recorded, literal, 8889) is True
 
 
-def test_port_probe_checks_every_resolved_bind_address(monkeypatch):
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+@pytest.mark.parametrize("occupied", [False, True])
+def test_port_probe_checks_every_resolved_bind_address(monkeypatch, platform, occupied):
+    monkeypatch.setattr(run, "sys", SimpleNamespace(platform = platform))
     bind_attempts = []
     sockets = []
 
@@ -450,14 +477,15 @@ def test_port_probe_checks_every_resolved_bind_address(monkeypatch):
         def __init__(self, family):
             self.family = family
             self.closed = False
+            self.options = []
             sockets.append(self)
 
-        def setsockopt(self, *_args):
-            pass
+        def setsockopt(self, *args):
+            self.options.append(args)
 
         def bind(self, sockaddr):
             bind_attempts.append((self.family, sockaddr))
-            if self.family == socket.AF_INET6:
+            if occupied and self.family == socket.AF_INET6:
                 raise OSError("address already in use")
 
         def close(self):
@@ -467,8 +495,8 @@ def test_port_probe_checks_every_resolved_bind_address(monkeypatch):
         socket,
         "getaddrinfo",
         lambda *_args, **_kwargs: [
-            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("0.0.0.0", 8888)),
-            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::", 8888, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 8888)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 8888, 0, 0)),
         ],
     )
     monkeypatch.setattr(
@@ -477,12 +505,18 @@ def test_port_probe_checks_every_resolved_bind_address(monkeypatch):
         lambda family, _socktype, _proto: _ProbeSocket(family),
     )
 
-    assert run._is_port_free("dual-wildcard.test", 8888) is False
+    assert run._is_port_free("dual-stack.test", 8888) is (not occupied)
     assert bind_attempts == [
-        (socket.AF_INET, ("0.0.0.0", 8888)),
-        (socket.AF_INET6, ("::", 8888, 0, 0)),
+        (socket.AF_INET, ("127.0.0.1", 8888)),
+        (socket.AF_INET6, ("::1", 8888, 0, 0)),
     ]
     assert all(probe.closed for probe in sockets)
+    for probe in sockets:
+        assert ((socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) in probe.options) is (
+            platform != "win32"
+        )
+        if probe.family == socket.AF_INET6 and hasattr(socket, "IPV6_V6ONLY"):
+            assert (socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1) in probe.options
 
 
 def test_a_multi_address_record_matches_either_literal(tmp_path):
@@ -631,11 +665,28 @@ def test_the_legacy_file_is_taken_over_from_a_dead_server(tmp_path, monkeypatch)
     assert (tmp_path / "studio.pid").read_text(encoding = "utf-8") == str(os.getpid())
 
 
-def test_a_live_sibling_is_found_so_the_shared_cache_survives(tmp_path):
-    # The compiled cache is install-tree relative, so a second backend of this
-    # install must not wipe it out from under the first.
-    (tmp_path / "studio-8888-8550.pid").write_text("8550\n\n127.0.0.1", encoding = "utf-8")
-
+@pytest.mark.parametrize(
+    "filename, contents",
+    [
+        # The compiled cache is install-tree relative, so a second backend of this
+        # install must not wipe it out from under the first.
+        pytest.param(
+            "studio-8888-8550.pid",
+            "8550\n\n127.0.0.1",
+            id = "a_live_sibling_is_found_so_the_shared_cache_survives",
+        ),
+        # The window Codex flagged: lifespan startup runs, and would clear the
+        # cache, long before uvicorn reports a port for _write_pid_file to record.
+        pytest.param(
+            "studio-starting-8550.marker", "8550\n", id = "a_sibling_that_is_still_binding_is_found"
+        ),
+        # A pre-upgrade server is recorded here and nowhere else, and so is one
+        # whose best-effort per-port write failed.
+        pytest.param("studio.pid", "8550", id = "a_legacy_only_sibling_is_found"),
+    ],
+)
+def test_live_sibling_backend_finds_the_recorded_port(tmp_path, filename, contents):
+    (tmp_path / filename).write_text(contents, encoding = "utf-8")
     assert run.live_sibling_backend() == 8550
 
 
@@ -661,22 +712,6 @@ def test_a_reused_pid_is_not_a_sibling(tmp_path, monkeypatch):
     (tmp_path / "studio-8888-8550.pid").write_text("8550\n1.0\n127.0.0.1", encoding = "utf-8")
 
     assert run.live_sibling_backend() is None
-
-
-def test_a_sibling_that_is_still_binding_is_found(tmp_path):
-    # The window Codex flagged: lifespan startup runs, and would clear the
-    # cache, long before uvicorn reports a port for _write_pid_file to record.
-    (tmp_path / "studio-starting-8550.marker").write_text("8550\n", encoding = "utf-8")
-
-    assert run.live_sibling_backend() == 8550
-
-
-def test_a_legacy_only_sibling_is_found(tmp_path):
-    # A pre-upgrade server is recorded here and nowhere else, and so is one
-    # whose best-effort per-port write failed.
-    (tmp_path / "studio.pid").write_text("8550", encoding = "utf-8")
-
-    assert run.live_sibling_backend() == 8550
 
 
 def test_a_dead_legacy_record_is_not_a_sibling(tmp_path, monkeypatch):
@@ -839,10 +874,7 @@ def test_a_lock_that_cannot_be_taken_at_all_still_clears(tmp_path, monkeypatch):
     blocked = tmp_path / "not-a-directory"
     blocked.write_text("", encoding = "utf-8")
     monkeypatch.setattr(cache_cleanup, "cache_coordination_dir", lambda: blocked / "lock")
-    events = []
-    monkeypatch.setattr(
-        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
-    )
+    events = _shared_setup_1(monkeypatch)
 
     with cache_cleanup.compiled_cache_lock() as state:
         assert state == cache_cleanup.LOCK_UNAVAILABLE
@@ -853,10 +885,7 @@ def test_a_lock_that_cannot_be_taken_at_all_still_clears(tmp_path, monkeypatch):
 
 
 def test_a_live_sibling_keeps_the_compiled_cache(tmp_path, monkeypatch):
-    events = []
-    monkeypatch.setattr(
-        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
-    )
+    events = _shared_setup_1(monkeypatch)
 
     cache_cleanup.clear_compiled_cache_unless_shared(lambda: 8550)
 
@@ -865,10 +894,7 @@ def test_a_live_sibling_keeps_the_compiled_cache(tmp_path, monkeypatch):
 
 def test_no_sibling_probe_clears_unconditionally(tmp_path, monkeypatch):
     # An embedded app or a test never sets the probe, and the old behaviour stands.
-    events = []
-    monkeypatch.setattr(
-        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
-    )
+    events = _shared_setup_1(monkeypatch)
 
     cache_cleanup.clear_compiled_cache_unless_shared(None)
 
@@ -1039,10 +1065,7 @@ def test_a_filesystem_that_cannot_lock_is_not_read_as_contention(tmp_path, monke
         raise OSError(errno.ENOSYS, "flock not supported")
 
     monkeypatch.setattr(cache_cleanup, "_try_lock", unsupported)
-    events = []
-    monkeypatch.setattr(
-        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
-    )
+    events = _shared_setup_1(monkeypatch)
 
     with cache_cleanup.compiled_cache_lock(timeout = 30.0) as state:
         assert state == cache_cleanup.LOCK_UNAVAILABLE
@@ -1157,10 +1180,7 @@ def test_two_cold_starts_keep_rather_than_delete_each_others_modules(tmp_path, m
     # The documented limitation of scoping this back: both keep a cache neither
     # cleaned, which is the safe direction. The failure being replaced is the two
     # of them deleting each other's modules mid-run.
-    events = []
-    monkeypatch.setattr(
-        cache_cleanup, "clear_unsloth_compiled_cache", lambda *a, **k: events.append("clear")
-    )
+    events = _shared_setup_1(monkeypatch)
 
     cache_cleanup.clear_compiled_cache_unless_shared(lambda: 8550)
     cache_cleanup.clear_compiled_cache_unless_shared(lambda: 8551)

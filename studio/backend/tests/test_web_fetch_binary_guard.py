@@ -49,7 +49,7 @@ class _FakeOpener:
 def _fetch_with(monkeypatch, body: bytes, content_type: str | None) -> str:
     # Pass SSRF validation and skip real DNS/network.
     monkeypatch.setattr(
-        tools, "_validate_and_resolve_host", lambda host, port: (True, "", "93.184.216.34")
+        tools, "_validate_and_resolve_host", lambda host, port: (True, "", ["93.184.216.34"])
     )
     monkeypatch.setattr(
         tools.urllib.request,

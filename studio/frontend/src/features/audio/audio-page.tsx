@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Audio page: Generate (TTS via the main inference slot) and Transcribe (STT via the
-// dictation sidecar). The page stays mounted across tab switches (see __root.tsx), so `active`
-// gates polling, popovers and the recorder rather than lifecycle.
+// The Audio page: Generate (TTS via the main inference slot) and Transcribe (STT via the dictation sidecar).
+// The page stays mounted across tab switches (see __root.tsx), so `active` gates polling, popovers and the
+// recorder rather than lifecycle.
 
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import {
@@ -346,10 +346,9 @@ export function AudioPage({
   const [audioInstructions, setAudioInstructions] = useState("");
   const [audioLanguage, setAudioLanguage] = useState("");
   const [temperature, setTemperature] = useState(0.6);
-  // Sending temperature unconditionally puts it in the request's model_fields_set, which the
-  // backend reads as an explicit client override that beats the per-model recommendation, so
-  // only send it once the user has moved the slider.
-  // Spark-TTS wants 0.8, OuteTTS 0.4, so only send it once the user has moved the slider.
+  // Sending temperature unconditionally puts it in the request's model_fields_set, which the backend reads as an
+  // explicit client override that beats the per-model recommendation (Spark-TTS wants 0.8, OuteTTS 0.4), so only
+  // send it once the user has moved the slider.
   const [temperatureEdited, setTemperatureEdited] = useState(false);
   const handleTemperatureChange = useCallback((value: number) => {
     setTemperatureEdited(true);
@@ -434,11 +433,10 @@ export function AudioPage({
   const sttStatusRefreshGeneration = useRef(0);
   const sttLoadGeneration = useRef(0);
   const sttLoadingGeneration = useRef<number | null>(null);
-  // Residency is not ownership: the activation resync adopts whatever a sidecar already holds,
-  // including a model chat dictation loaded. The identity, not a boolean, since another
-  // surface can replace the sidecar's model while Audio is inactive and a bare flag would claim
-  // that too. Keyed on the model alone, since a "gguf" pick without whisper-server comes back
-  // resident under the Transformers fallback.
+  // Residency is not ownership: the activation resync adopts whatever a sidecar already holds, including a model
+  // chat dictation loaded. The identity, not a boolean, since another surface can replace the sidecar's model
+  // while Audio is inactive and a bare flag would claim that too. Keyed on the model alone, since a "gguf" pick
+  // without whisper-server comes back resident under the Transformers fallback.
   const sttLoadedByThisPage = useRef<string | null>(null);
   const sttLoadAbort = useRef<AbortController | null>(null);
   const deferredSttLoad = useRef<{
@@ -643,9 +641,9 @@ export function AudioPage({
       forget();
       return;
     }
-    // Forget only once the sidecar is actually released: clearing first left a failed unload with the
-    // model in VRAM and no Eject to retry with. Scoped to the model this page claimed, since
-    // another surface can switch the same engine before the request lands.
+    // Forget only once the sidecar is actually released: clearing first left a failed unload with the model in
+    // VRAM and no Eject to retry with. Scoped to the model this page claimed, since another surface can switch the
+    // same engine before the request lands.
     await unloadSttModel(sttEngineForRepoId(selected), claim);
     forget();
     await refreshSttStatus();
@@ -853,7 +851,6 @@ export function AudioPage({
     };
   }, [active, refreshGallery]);
 
-  // The selected clip needs its bytes before the player can play it.
   useEffect(() => {
     const clip = clips.find((c) => c.id === selectedId);
     if (clip) void ensureClipSrc(clip);
@@ -878,10 +875,9 @@ export function AudioPage({
     async (
       repoId: string,
       ggufFilename?: string | null,
-      // Where the weights actually are: a row cached in a NON-ACTIVE HF cache is loadable only by its
-      // snapshot path, which the picker supplies as meta.loadId, and sending the display repo id
-      // instead failed offline or re-downloaded into the active cache. Chat threads the same field
-      // (chat-page.tsx).
+      // Where the weights actually are: a row cached in a NON-ACTIVE HF cache is loadable only by its snapshot path,
+      // which the picker supplies as meta.loadId, and sending the display repo id instead failed offline or
+      // re-downloaded into the active cache. Chat threads the same field (chat-page.tsx).
       loadId?: string | null,
       audioType?: string | null,
       remoteCodeApproval?: RemoteCodeApproval,
@@ -901,9 +897,8 @@ export function AudioPage({
         };
         return;
       }
-      // A load stops every chat on the shared llama-server, so ask the way Chat does instead of
-      // dead-ending on the backend's 409. Claimed before the await: a routed pick arriving while
-      // the dialog is open must queue.
+      // A load stops every chat on the shared llama-server, so ask the way Chat does instead of dead-ending on the
+      // backend's 409. Claimed before the await: a routed pick arriving while the dialog is open must queue.
       ttsLoadInFlight.current = true;
       // Chat's gate, held across the question and the load. Without it a queue can materialize while
       // the dialog is open, outside the snapshot the answer was given for.
@@ -945,9 +940,9 @@ export function AudioPage({
       const pending = {
         generation,
         repoId,
-        // What the request actually sent. Cancelling under the display id works only when the load target
-        // is a standard HF cache snapshot; a pinned directory elsewhere does not match and
-        // _cancel_scoped_load_attempt then refuses.
+        // What the request actually sent. Cancelling under the display id works only when the load target is a
+        // standard HF cache snapshot; a pinned directory elsewhere does not match and _cancel_scoped_load_attempt then
+        // refuses.
         loadTarget: loadId || repoId,
         loadRequestId,
         controller,
@@ -999,9 +994,8 @@ export function AudioPage({
             trust_remote_code: trustRemoteCode,
             approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
             audio_device: wantsCpu ? "cpu" : "auto",
-            // GGUF ignores audio_device: llama.cpp offloads unless told not to.
-            // An absent speculative_type resolves to "auto", which may attach a GPU
-            // drafter, and the backend then evicts image/video for a CPU load.
+            // GGUF ignores audio_device: llama.cpp offloads unless told not to. An absent speculative_type resolves to
+            // "auto", which may attach a GPU drafter, and the backend then evicts image/video for a CPU load.
             ...(wantsCpu && isGgufLoad
               ? // biome-ignore lint/style/useNamingConvention: API schema
                 {
@@ -1016,9 +1010,9 @@ export function AudioPage({
             runtime: "tts",
             onRequestStart: () => {
               pending.requestStarted = true;
-              // Queued prompts would otherwise start on the model this load replaces. Only once /load is
-              // actually going out: loadModel returns without sending when a stored token is invalid, and
-              // cancelling earlier threw away accepted sends for a swap that never happened.
+              // Queued prompts would otherwise start on the model this load replaces. Only once /load is actually going
+              // out: loadModel returns without sending when a stored token is invalid, and cancelling earlier threw away
+              // accepted sends for a swap that never happened.
               cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
               requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
             },
@@ -1063,9 +1057,8 @@ export function AudioPage({
         releaseLifecycle();
         busyRef.current = null;
         setBusy(null);
-        // Only while Audio is visible: replaying unconditionally started a load with activeRef already
-        // false, which the deactivation effect never saw to cancel, so a hidden page could replace
-        // the model Chat had loaded.
+        // Only while Audio is visible: replaying unconditionally started a load with activeRef already false, which
+        // the deactivation effect never saw to cancel, so a hidden page could replace the model Chat had loaded.
         if (activeRef.current) replayQueuedTtsPick();
       }
     },
@@ -1262,9 +1255,9 @@ export function AudioPage({
         }
       }
 
-      // Hub TTS picks use the same managed path as Chat. Native models can also depend on a second
-      // codec repository, so the selected repo's downloaded badge is not enough: the cache-aware
-      // backend plan owns every missing file.
+      // Hub TTS picks use the same managed path as Chat. Native models can also depend on a second codec
+      // repository, so the selected repo's downloaded badge is not enough: the cache-aware backend plan owns every
+      // missing file.
       if (meta.source === "hub" && !ggufFilename) {
         let plan;
         try {
@@ -1372,9 +1365,9 @@ export function AudioPage({
         selectedSttRepoRef.current === repoId;
 
       setBusy("loading");
-      // Ownership is claimed only once the requested model is actually resident: claiming it up front
-      // meant a cancelled download left the flag set while the backend kept the previous model, so
-      // leaving Transcribe unloaded another surface's model.
+      // Ownership is claimed only once the requested model is actually resident: claiming it up front meant a
+      // cancelled download left the flag set while the backend kept the previous model, so leaving Transcribe
+      // unloaded another surface's model.
       const toastId = toast.loading(`Preparing ${sidecarKey}…`);
       try {
         try {
@@ -1576,11 +1569,10 @@ export function AudioPage({
       if (!transitionMode("speak")) return;
       // Serialize against a Transcribe release started by that transition.
       const releaseInFlight = pendingTranscribeRelease.current;
-      // A release that failed leaves the sidecar resident, so do not stack a speech model on top of
-      // it. Back to Transcribe, where Eject can retry.
-      // Claimed before the await below, not after: the button only disables on `busy`, so a slow release
-      // let several clicks through, each resuming into its own generateAudio while generateAbort
-      // tracked only the last.
+      // A release that failed leaves the sidecar resident, so do not stack a speech model on top of it: back to
+      // Transcribe, where Eject can retry. Claimed before the await below, not after: the button only disables on
+      // `busy`, so a slow release let several clicks through, each resuming into its own generateAudio while
+      // generateAbort tracked only the last.
       if (releaseInFlight && !(await releaseInFlight)) {
         setMode("transcribe");
         return;
@@ -1809,9 +1801,8 @@ export function AudioPage({
     setBusy("unloading");
     void (async () => {
       try {
-        // Ejecting stops every chat on the shared llama-server, and unforced the backend refused with a
-        // 409 the user could only read. Nothing is torn down until the answer is in, so declining
-        // leaves the page as it was.
+        // Ejecting stops every chat on the shared llama-server, and unforced the backend refused with a 409 the
+        // user could only read. Nothing is torn down until the answer is in, so declining leaves the page as it was.
         const stopDecision = await confirmStopRunningChatsIfNeeded(
           "Unloading the model",
           "unload",
@@ -1866,11 +1857,10 @@ export function AudioPage({
   const handleGenerate = useCallback(async () => {
     const text = prompt.trim();
     if (!text) return;
-    // Same gate the TTS load path uses: switching straight from Transcribe with a speech model
-    // already resident needs no load, so nothing else waits for the sidecar teardown, and
-    // generating beside a dictation model OOMs a device that fits either alone. Claimed before
-    // the await below, since the button only disables on `busy` and a slow release let several
-    // clicks each resume into their own generateAudio.
+    // Same gate the TTS load path uses: switching straight from Transcribe with a speech model already resident
+    // needs no load, so nothing else waits for the sidecar teardown, and generating beside a dictation model OOMs a
+    // device that fits either alone. Claimed before the await below, since the button only disables on `busy` and a
+    // slow release let several clicks each resume into their own generateAudio.
     if (busyRef.current) return;
     busyRef.current = "generating";
     setBusy("generating");
@@ -1921,9 +1911,9 @@ export function AudioPage({
         setFallbackClip(null);
         selectClip(generatedClip.id);
       } else if (generated.clip_id) {
-        // The server did persist it; only this refresh missed it. Select the id so a later refresh shows
-        // the real record, but keep the response audio too: selectedClip resolves against `clips`,
-        // so an id that is not there yet would render the empty state.
+        // The server did persist it; only this refresh missed it. Select the id so a later refresh shows the real
+        // record, but keep the response audio too: selectedClip resolves against `clips`, so an id that is not there
+        // yet would render the empty state.
         setFallbackClip({
           url: `data:audio/wav;base64,${generated.audio.data}`,
           prompt: text,
@@ -2239,9 +2229,8 @@ export function AudioPage({
     [dropClip, refreshGallery],
   );
 
-  // This page stays mounted across route changes, so a restore from the Settings archive would not
-  // reach History until a reload. Refresh the loaded window, not just the first page: a clip
-  // re-enters at its own age.
+  // This page stays mounted across route changes, so a restore from the Settings archive would not reach
+  // History until a reload. Refresh the loaded window, not just the first page: a clip re-enters at its own age.
   useEffect(
     () =>
       subscribeGalleryChanged("audio", () => {

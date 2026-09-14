@@ -36,7 +36,8 @@ def get_preview_sharing_enabled() -> bool:
     """
     try:
         from storage.studio_db import get_app_setting
-        stored = get_app_setting(PREVIEW_SHARING_SETTING_KEY, None)
+        from utils.account_context import OWNER, run_as
+        stored = run_as(OWNER, get_app_setting, PREVIEW_SHARING_SETTING_KEY, None)
     except Exception:
         return False
     parsed = _coerce_bool(stored)
