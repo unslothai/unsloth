@@ -24,13 +24,10 @@ command -v docker >/dev/null 2>&1 \
 # Measured on `docker info` with a 50ms pause mid-output: status 141, the Docker Desktop guard skipped,
 # and the script elevating to install on the one daemon it exists to leave alone.
 
-# No Mac takes an NVIDIA GPU, and a Windows shell (Git Bash, MSYS2, Cygwin) drives Docker
-# Desktop, whose WSL 2 backend brings its own GPU support; the toolkit is a Linux package.
-# Both are answered before the endpoint check below, which sent colima and Rancher Desktop
-# users off to configure a socket by hand. The one case either host needs the toolkit is a
-# CLI pointed at a remote Linux daemon (tcp://, ssh://, a bare host:port), which gets the
-# same answer as any remote endpoint. Same precedence as the endpoint check: DOCKER_CONTEXT
-# over DOCKER_HOST over the selected context.
+# Mac and Windows shells never need the toolkit (no NVIDIA GPU on a Mac; Docker Desktop's
+# WSL 2 backend brings its own), so answer before the endpoint check, which sent colima and
+# Rancher Desktop users off to configure a socket. Only a remote Linux daemon gets the
+# remote answer; DOCKER_CONTEXT over DOCKER_HOST over the selected context, as below.
 host_os="$(uname -s)"
 case "$host_os" in
     Darwin|MINGW*|MSYS*|CYGWIN*)
@@ -40,8 +37,7 @@ case "$host_os" in
         else
             host_endpoint="$DOCKER_HOST"
         fi
-        # loopback tcp is this machine too: Docker Desktop's "expose daemon on
-        # tcp://localhost:2375" setting, or a socket proxied through localhost
+        # loopback tcp is this machine too (Docker Desktop's "expose daemon on tcp://localhost:2375")
         case "$host_endpoint" in
             ""|unix://*|npipe://*) ;;
             tcp://localhost|tcp://localhost:*|tcp://127.*|tcp://\[::1\]*|localhost:*|127.*) ;;
@@ -52,11 +48,8 @@ case "$host_os" in
             say "The image runs CPU-only there: drop --gpus and set UNSLOTH_ALLOW_CPU=1."
             exit 0
         fi
-        # On Windows the GPU comes from Docker Desktop's WSL 2 backend only
-        # (https://docs.docker.com/desktop/features/gpu/); the Hyper-V backend runs a LinuxKit VM
-        # that no NVIDIA GPU reaches, and answering it "nothing to install" left the user with a
-        # --gpus that fails at the daemon. The two backends differ in the kernel the daemon reports:
-        # WSL 2 is Microsoft's (5.15.167.4-microsoft-standard-WSL2), Hyper-V is Docker's own (6.6.x-linuxkit).
+        # GPU support is the WSL 2 backend only (docs.docker.com/desktop/features/gpu/); Hyper-V's
+        # LinuxKit VM has none. The kernel string tells them apart: *-microsoft-standard-WSL2 vs *-linuxkit.
         desktop_info="$(docker info --format '{{.OperatingSystem}}|{{.KernelVersion}}' 2>/dev/null)" \
             || fail "Docker Desktop is not running, or the Docker CLI cannot reach it. Start Docker Desktop,
        wait until it reports running, then run this again." 2

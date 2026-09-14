@@ -93,8 +93,7 @@ DOCKER_BUILDKIT=1 docker build \
 echo
 echo "Built ${IMAGE_NAME}:${TAG}"
 echo
-# the build host is whatever the user has; the message named the one it was written on
-# only a successful query names a GPU: a failing nvidia-smi prints its error on stdout
+# name the GPU only from a successful query: a failing nvidia-smi prints its error on stdout
 HOST_GPU=""
 if HOST_GPU_QUERY="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null)"; then
     HOST_GPU="$(printf '%s\n' "$HOST_GPU_QUERY" | head -1)"

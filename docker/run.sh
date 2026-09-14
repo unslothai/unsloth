@@ -92,8 +92,7 @@ if [[ ${#GPU_FLAG[@]} -gt 0 ]] && ! host_has_nvidia; then
             done
         fi
         printf "      AMD devices found: passing /dev/kfd and /dev/dri through.\n" >&2
-        # true of the published images; a custom image may well carry a HIP or Vulkan build
-        # the untagged name too: Docker resolves it to :latest, which is a published image
+        # published images only (untagged is :latest); a custom image may carry a HIP or Vulkan build
         if [[ "$IMAGE" == unsloth/unsloth || "$IMAGE" == unsloth/unsloth:* ]]; then
             printf "      Nothing in the image uses them yet: torch is cu128 and the bundled\n" >&2
             printf "      llama.cpp has no HIP or Vulkan backend, so this container runs on the CPU.\n" >&2

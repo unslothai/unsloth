@@ -21,12 +21,9 @@
 set -euo pipefail
 
 export JUPYTER_PORT="${JUPYTER_PORT:-8888}"
-# Studio's port is fixed at 8000 (studio_run.sh). JupyterLab starts first and wins the
-# bind, so Studio falls back to an unpublished 8001 while the summary below still sends
-# the user to 8000: Studio is simply gone, with no error.
-# Compared the way Jupyter reads it: traitlets hands the string to int(), which takes
-# surrounding whitespace, leading zeros, a leading + and digit-group underscores, so
-# "08000", " 8000", "+8000" and "8_000" all bind 8000 too.
+# Studio is fixed at 8000 (studio_run.sh); JupyterLab starts first and wins the bind, so
+# Studio silently falls back to an unpublished 8001. Compared as traitlets does, via int():
+# whitespace, leading zeros, a leading + and underscores ("08000", " 8000", "8_000") all bind 8000.
 jupyter_port_digits="${JUPYTER_PORT//[[:space:]_]/}"
 jupyter_port_digits="${jupyter_port_digits#+}"
 if [[ "$jupyter_port_digits" =~ ^[0-9]+$ ]] && (( 10#$jupyter_port_digits == 8000 )); then
@@ -34,8 +31,7 @@ if [[ "$jupyter_port_digits" =~ ^[0-9]+$ ]] && (( 10#$jupyter_port_digits == 800
     printf "       Leave JupyterLab on 8888 and map the host side instead: -p 9000:8888\n" >&2
     exit 1
 fi
-# The regression tests run this launcher on the test host; past this point it writes
-# /etc/profile.d, /root/.jupyter and /workspace, which is the container's business only.
+# tests run this on the host; everything past here writes /etc/profile.d, /root/.jupyter, /workspace
 [[ "${UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY:-0}" == 1 ]] && exit 0
 export UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"
 export UNSLOTH_JUPYTER_CLOUDFLARE="${UNSLOTH_JUPYTER_CLOUDFLARE:-0}"
