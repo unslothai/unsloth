@@ -2047,7 +2047,7 @@ class TestTheWindowsXpuTritonSwapReachesADirectRun:
         source = inspect.getsource(stack_mod._ensure_xpu_triton)
         assert "if NO_TORCH or IS_MACOS:" in source, "Windows must no longer be excluded outright"
         assert (
-            'IS_WINDOWS and os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG"' in source
+            "IS_WINDOWS and _handover_torch_flavor_tag()" in source
         ), "under setup.ps1 the swap is still that script's job"
 
     def test_the_windows_branch_runs_it_after_the_invariant(self):
@@ -2192,6 +2192,81 @@ class TestARepairedTorchThatCannotImport:
         monkeypatch.setattr(stack_mod, "pip_install", _pip)
         assert stack_mod._ensure_expected_torch_flavor() is False
         assert any("cannot be imported" in ln for ln in lines), lines
+
+
+class TestACpuHandoverDoesNotDisarmTheInvariant:
+    """setup.ps1 publishes UNSLOTH_EXPECTED_TORCH_TAG=cpu when its nvidia-smi probe comes
+    back empty, and the invariant used to return pass on that tag without ever reading the
+    installed wheel. On the update path that reported a venv rebuilt as 2.11.0+cpu as a
+    successful install, which is exactly how a working CUDA machine ends up on CPU: the
+    llama.cpp bundle stays cuda, but the CUDA ggml backend cannot load cudart64_*.dll /
+    cublas64_*.dll out of a +cpu venv, so llama-server enumerates no devices at all.
+
+    The handover is the probe's answer, not a stated choice, so it must not outrank the
+    manifest. It still loses to a real pin, and it is still honoured on a host whose GPU
+    has genuinely gone."""
+
+    def test_a_cpu_handover_is_overruled_by_a_recorded_cuda_flavor(self):
+        ok, mock_pip = _run_flavor_invariant(
+            expected_env = "cpu",
+            recorded = "cu128",
+            nvidia = True,
+            repaired = "2.11.0+cu128",
+        )
+        assert ok is True
+        assert mock_pip.call_count == 1
+        assert _index_url(mock_pip).endswith("/cu128")
+
+    def test_the_unrepaired_case_fails_the_install_rather_than_reporting_success(self):
+        # repaired = None: the reinstall left the venv on +cpu. Reporting success here is
+        # the state the whole invariant exists to prevent.
+        ok, _mock_pip = _run_flavor_invariant(
+            expected_env = "cpu",
+            recorded = "cu128",
+            nvidia = True,
+            repaired = None,
+        )
+        assert ok is False
+
+    def test_a_host_whose_gpu_really_went_away_is_left_alone(self):
+        # Both facts have to hold. Repairing here would install a CUDA wheel that cannot
+        # load on a machine with no NVIDIA GPU.
+        ok, mock_pip = _run_flavor_invariant(
+            expected_env = "cpu",
+            recorded = "cu128",
+            nvidia = False,
+        )
+        assert ok is True
+        assert mock_pip.call_count == 0
+
+    def test_a_cpu_handover_with_nothing_recorded_still_skips(self):
+        ok, mock_pip = _run_flavor_invariant(
+            expected_env = "cpu",
+            recorded = None,
+            nvidia = True,
+        )
+        assert ok is True
+        assert mock_pip.call_count == 0
+
+    def test_an_explicit_cpu_index_pin_still_wins(self):
+        # A stated choice, not a probe result: the user asked for the CPU index, so a
+        # cu128 record must not drag them back onto CUDA.
+        ok, mock_pip = _run_flavor_invariant(
+            expected_env = "cpu",
+            index_url = f"{stack_mod._PYTORCH_WHL_BASE}/cpu",
+            recorded = "cu128",
+            nvidia = True,
+            installed = "2.11.0+cpu",
+        )
+        assert ok is True
+        assert mock_pip.call_count == 0
+
+    def test_both_handover_readers_go_through_one_helper(self):
+        # The tag is read in three places now; an inline os.environ read that drifts out of
+        # step with the helper is how the skip came back the first time.
+        source = inspect.getsource(stack_mod)
+        assert source.count('os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG"') == 1
+        assert "def _handover_torch_flavor_tag(" in source
 
 
 # What a localized nvidia-smi writes, which -X utf8 decodes as UTF-8 (#10173).

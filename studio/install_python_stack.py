@@ -3738,7 +3738,7 @@ def _ensure_xpu_triton() -> None:
     """
     if NO_TORCH or IS_MACOS:
         return
-    if IS_WINDOWS and os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG", "").strip():
+    if IS_WINDOWS and _handover_torch_flavor_tag():
         return
     pin = _explicit_xpu_torch_index_url()
     if pin is None:
@@ -4047,6 +4047,16 @@ def _torch_build_is_gpu() -> bool:
     return (not label) or _is_gpu_torch_label(label)
 
 
+def _handover_torch_flavor_tag() -> str:
+    """The flavor setup.sh / setup.ps1 published for this run, lowercased, or "".
+
+    Named rather than read inline because the invariant has to tell a handover apart from
+    the other sources of the same string: the setup scripts publish "cpu" both when the
+    user asked for it and when their GPU probe simply came back empty.
+    """
+    return os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG", "").strip().lower()
+
+
 def _expected_torch_flavor_tag() -> str:
     """The torch flavor this venv is SUPPOSED to hold, or "" when nothing can say.
 
@@ -4068,7 +4078,7 @@ def _expected_torch_flavor_tag() -> str:
          Only an NVIDIA host, or an explicit pin, can expect a GPU build -- otherwise
          return "" rather than invent an expectation from an absent GPU.
     """
-    env = os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG", "").strip().lower()
+    env = _handover_torch_flavor_tag()
     if env:
         return env
     pin = _explicit_torch_index_url()
@@ -4117,7 +4127,7 @@ def _expected_torch_flavor_is_explicit() -> bool:
     False when only the live hardware probe can answer, which is the one case a
     visibility mask has any business overruling.
     """
-    if os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG", "").strip():
+    if _handover_torch_flavor_tag():
         return True
     if _explicit_torch_index_url() is not None:
         return True
@@ -4528,6 +4538,22 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     # The PIN, not the handover: setup.ps1 also publishes "cpu" when its nvidia-smi probe
     # comes back empty, and that host must not be downgraded.
     _cpu_pinned = expected == "cpu" and _explicit_cpu_torch_index_pin()
+    # ... but skipping the invariant on that same handover is what let the update path
+    # report a venv silently rebuilt as 2.11.0+cpu as a success. "cpu" from setup.ps1 is the
+    # probe's ANSWER, and an empty probe is indistinguishable from a host with no GPU, so it
+    # cannot outrank what the last completed install recorded. Trust the manifest instead
+    # when it names a CUDA family AND the GPU is still there: both facts have to hold, or a
+    # machine that genuinely lost its GPU would be repaired into a wheel it cannot load.
+    # An explicit pin is a stated choice and still wins; see _expected_torch_flavor_tag.
+    if expected == "cpu" and not _cpu_pinned and _handover_torch_flavor_tag() == "cpu":
+        _recorded = (_RECORDED_TORCH_TAG or "").strip().lower()
+        if _is_cuda_family_leaf(_recorded) and _has_usable_nvidia_gpu():
+            _safe_print(
+                f"   [WARN] the installer handed over a CPU torch expectation, but this venv "
+                f"was recorded as {_recorded} and an NVIDIA GPU is still present; "
+                f"enforcing {_recorded}."
+            )
+            expected = _recorded
     if not (_is_cuda_family_leaf(expected) or expected in ("xpu", "rocm") or _cpu_pinned):
         return True
     if _TORCH_BACKEND in ("rocm", "xpu", "cpu") and _TORCH_BACKEND != expected:
