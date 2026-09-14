@@ -327,7 +327,7 @@ async function* mergedModelIterator(
   // Start the pinned lookup now so it runs in parallel with Phase 1 instead of blocking Phase 2.
   const pinnedPromise = pinnedId
     ? cachedModelInfo({
-      hubUrl: getHfEndpoint(),
+        hubUrl: getHfEndpoint(),
         name: pinnedId,
         additionalFields: ALL_FIELDS,
         fetch: makeHfFetch(signal),
@@ -498,7 +498,6 @@ async function* channelUnslothFirstIterator(
   const seen = new Set<string>();
 
   const unslothIter = listModels({
-
     hubUrl: getHfEndpoint(),
     search: {
       ...(queryString ? { query: queryString } : {}),
@@ -519,7 +518,6 @@ async function* channelUnslothFirstIterator(
   }
 
   const generalIter = listModels({
-
     hubUrl: getHfEndpoint(),
     search: {
       ...(queryString ? { query: queryString } : {}),

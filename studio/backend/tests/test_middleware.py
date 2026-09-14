@@ -1307,3 +1307,29 @@ class TestCspHfEndpoints:
         sources = _connect_src(r.headers["content-security-policy"])
         assert "https://hf-mirror.com" in sources
         assert "https://ds.example.com" in sources
+
+    @pytest.mark.parametrize(
+        "endpoint, expected_source",
+        [
+            ("https://hub.internal/hf", "https://hub.internal"),
+            ("https://hub.internal:8443/hf/v2", "https://hub.internal:8443"),
+            ("https://hf-mirror.com", "https://hf-mirror.com"),
+            ("http://localhost:8080", "http://localhost:8080"),
+        ],
+    )
+    def test_a_path_prefixed_mirror_is_listed_as_an_origin(
+        self, main_module, monkeypatch, endpoint, expected_source
+    ):
+        """CSP3 6.7.2.7: a host-source with a path that does not end in "/" matches
+        that path EXACTLY. Listing "https://hub.internal/hf" would therefore allow
+        exactly that one URL and block every /hf/api/... request under it, in
+        Chrome, Edge, Firefox and Safari alike. The path belongs in the request
+        URL; the policy gets the origin.
+        """
+        monkeypatch.setenv("HF_ENDPOINT", endpoint)
+        sources = _connect_src(main_module._build_csp("NONCE"))
+        assert expected_source in sources
+        # And the path form is never emitted.
+        assert not any(
+            s.count("/") > 2 for s in sources if s.startswith(("http://", "https://"))
+        ), sources

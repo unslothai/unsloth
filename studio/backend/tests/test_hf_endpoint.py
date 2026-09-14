@@ -138,6 +138,13 @@ MALFORMED_ENDPOINTS = [
     "https://user:pass@hf-mirror.com",
     "https://hf-mirror.com?x=1",
     "https://hf-mirror.com#frag",
+    "https://hf-mirror.com:",
+    "https://hf-mirror.com:not-a-port",
+    # "*" would reach the CSP connect-src as "https://*", which allows every
+    # https origin -- the opposite of what the policy exists for.
+    "*",
+    "https://*",
+    "https://*.evil.com",
 ]
 
 

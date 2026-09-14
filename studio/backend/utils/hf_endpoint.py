@@ -78,6 +78,14 @@ def _sanitize(candidate: str, default: str, var_name: str) -> str:
             # so "javascript:alert(1)" becomes "https://javascript:alert(1)" -- a
             # syntactically fine URL whose port is nonsense.
             reason = "has an invalid port"
+        elif parts.netloc.endswith(":"):
+            # "host:" parses with port None, but is not a valid CSP host-source.
+            reason = "has an empty port"
+        elif "*" in parts.netloc:
+            # HF_ENDPOINT="*" becomes "https://*", which as a CSP source allows
+            # EVERY https origin -- the opposite of what the policy is for. A
+            # wildcard is never a usable endpoint to send requests to either.
+            reason = "contains a wildcard host"
         else:
             return candidate
     if candidate not in _rejected_warned:
@@ -90,6 +98,24 @@ def _sanitize(candidate: str, default: str, var_name: str) -> str:
             default,
         )
     return default
+
+
+def csp_connect_sources() -> tuple[str, str]:
+    """The two endpoints as CSP ``connect-src`` sources, i.e. origins only.
+
+    A CSP host-source carrying a path is matched *exactly* unless the path ends
+    in a solidus (CSP3 6.7.2.7), so listing a path-prefixed mirror verbatim --
+    ``https://hub.internal/hf`` -- allows exactly that one URL and blocks every
+    ``/hf/api/models`` request under it, in Chrome, Edge, Firefox and Safari
+    alike. The path belongs in the request URL, not in the policy, so the source
+    is reduced to scheme://host[:port].
+    """
+    return (_origin_of(get_hf_endpoint()), _origin_of(get_hf_datasets_server()))
+
+
+def _origin_of(endpoint: str) -> str:
+    parts = urlsplit(endpoint)
+    return f"{parts.scheme}://{parts.netloc}" if parts.netloc else endpoint
 
 
 def get_hf_endpoint() -> str:

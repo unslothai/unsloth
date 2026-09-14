@@ -1834,7 +1834,24 @@ fn configured_hf_endpoints() -> Vec<String> {
             with_scheme.trim_end_matches('/').to_string()
         })
         .filter(|endpoint| is_usable_csp_source(endpoint))
+        .map(|endpoint| csp_origin_of(&endpoint))
         .collect()
+}
+
+/// Reduce an endpoint to scheme://host[:port] for use as a CSP source.
+///
+/// A host-source carrying a path is matched *exactly* unless the path ends in a
+/// solidus (CSP3 6.7.2.7), so a path-prefixed mirror listed verbatim allows that
+/// one URL and blocks every request beneath it. The path belongs in the request
+/// URL, not the policy. Mirrors `utils/hf_endpoint.py::csp_connect_sources`.
+fn csp_origin_of(endpoint: &str) -> String {
+    match endpoint.split_once("://") {
+        Some((scheme, rest)) => {
+            let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+            format!("{scheme}://{authority}")
+        }
+        None => endpoint.to_string(),
+    }
 }
 
 /// A CSP source list is whitespace-separated and semicolon-delimited, so an
@@ -1861,6 +1878,11 @@ fn is_usable_csp_source(endpoint: &str) -> bool {
         .next()
         .unwrap_or_default();
     if host.is_empty() || host.contains('@') || authority.contains('?') || authority.contains('#') {
+        return false;
+    }
+    // "*" would reach the policy as "https://*", a source that allows EVERY https
+    // origin -- the opposite of what the policy is for.
+    if host.contains('*') {
         return false;
     }
     // A scheme-less value keeps everything before the first ':' as the host, so
@@ -2212,6 +2234,19 @@ mod tests {
     }
 
     #[test]
+    fn a_path_prefixed_mirror_is_reduced_to_its_origin() {
+        // Listing the path verbatim would allow exactly that one URL and block
+        // every request beneath it, in every browser.
+        assert_eq!(csp_origin_of("https://hub.internal/hf"), "https://hub.internal");
+        assert_eq!(
+            csp_origin_of("https://hub.internal:8443/hf/v2"),
+            "https://hub.internal:8443"
+        );
+        assert_eq!(csp_origin_of("https://hf-mirror.com"), "https://hf-mirror.com");
+        assert_eq!(csp_origin_of("http://localhost:8080"), "http://localhost:8080");
+    }
+
+    #[test]
     fn a_plain_https_origin_is_a_usable_csp_source() {
         assert!(is_usable_csp_source("https://hf-mirror.com"));
         assert!(is_usable_csp_source("http://localhost:8080"));
@@ -2250,6 +2285,9 @@ mod tests {
             "https://javascript:alert(1)",
             "https://hf-mirror.com:",
             "https://hf-mirror.com:80x",
+            // Would reach connect-src as a wildcard allowing every https origin.
+            "https://*",
+            "https://*.evil.com",
         ] {
             assert!(!is_usable_csp_source(bad), "should reject {bad:?}");
         }

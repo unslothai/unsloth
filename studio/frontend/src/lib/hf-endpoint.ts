@@ -52,6 +52,11 @@ function normalizeEndpoint(raw: string | null | undefined): string | null {
   }
   if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return null;
   if (!parsed.hostname) return null;
+  // "*" would reach the backend's CSP connect-src as "https://*", a source that
+  // allows every https origin, and is never a host to send a request to.
+  if (parsed.hostname.includes("*")) return null;
+  if (withScheme.replace(/^https?:\/\//, "").startsWith(":")) return null;
+  if (/:$/.test(withScheme)) return null;
   // Credentials, query and fragment are meaningless on a base URL and would be
   // carried into every request built from it.
   if (parsed.username || parsed.password || parsed.search || parsed.hash) {

@@ -30,9 +30,15 @@ const { isHuggingFaceOffline, markRemoteNetworkOffline, clearRemoteBackoff } =
 test("before /api/health answers, both endpoints are the official ones", () => {
   resetHfEndpoints();
   assert.equal(getHfEndpoint(), "https://huggingface.co");
-  assert.equal(getHfDatasetsServerBase(), "https://datasets-server.huggingface.co");
+  assert.equal(
+    getHfDatasetsServerBase(),
+    "https://datasets-server.huggingface.co",
+  );
   assert.equal(DEFAULT_HF_ENDPOINT, "https://huggingface.co");
-  assert.equal(DEFAULT_DATASETS_SERVER, "https://datasets-server.huggingface.co");
+  assert.equal(
+    DEFAULT_DATASETS_SERVER,
+    "https://datasets-server.huggingface.co",
+  );
 });
 
 test("a mirror reported by the backend is applied to both getters", () => {
@@ -93,6 +99,11 @@ test("a value that could widen the CSP is refused, not propagated", () => {
     "https://user:pass@hf-mirror.com",
     "https://hf-mirror.com?x=1",
     "https://hf-mirror.com#frag",
+    "https://hf-mirror.com:",
+    "https://hf-mirror.com:not-a-port",
+    "*",
+    "https://*",
+    "https://*.evil.com",
   ]) {
     resetHfEndpoints();
     setHfEndpoints(hostile, hostile);
@@ -119,7 +130,10 @@ test("the datasets server stays independent of the hub mirror", () => {
   resetHfEndpoints();
   setHfEndpoints("https://hf-mirror.com", undefined);
   assert.equal(getHfEndpoint(), "https://hf-mirror.com");
-  assert.equal(getHfDatasetsServerBase(), "https://datasets-server.huggingface.co");
+  assert.equal(
+    getHfDatasetsServerBase(),
+    "https://datasets-server.huggingface.co",
+  );
 });
 
 test("the Hub offline backoff keys on the configured mirror, not huggingface.co", () => {
@@ -131,8 +145,10 @@ test("the Hub offline backoff keys on the configured mirror, not huggingface.co"
   clearRemoteBackoff("https://hf-mirror.com");
   assert.equal(isHuggingFaceOffline(), false);
   markRemoteNetworkOffline("https://hf-mirror.com", 60_000, {
-    kind: "connectivity",
+    kind: "network-opaque",
+    message: "the mirror could not be reached",
     origin: "https://hf-mirror.com",
+    retryable: true,
   });
   assert.equal(isHuggingFaceOffline(), true);
   // The official Hub going down is a different origin and must not be conflated.
