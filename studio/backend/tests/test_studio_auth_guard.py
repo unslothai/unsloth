@@ -422,3 +422,36 @@ def test_a_key_is_masked_in_the_live_stream_however_it_is_chunked():
     # Held-back text that turns out to be ordinary must still be emitted, not swallowed.
     assert _stream_chunks(["hello ", "sk-unslo"]) == "hello sk-unslo"
     assert _stream_chunks(["plain output\n"]) == "plain output\n"
+
+
+def test_the_auth_path_assembled_through_a_shell_variable(monkeypatch, tmp_path):
+    # Bypass Permissions keeps STUDIO_HOME in the child env, so the shell resolves
+    # `r=$STUDIO_HOME; sqlite3 "$r/auth/auth.db"` to the protected database while the literal text
+    # names neither the directory nor a credential basename. auth.db carries no `sk-unsloth-`
+    # prefix either, so the result redactor cannot mask the JWT secret on the way back out.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    sandbox = home / "sandbox" / "sess1"
+    sandbox.mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setenv("STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for command in (
+            'r=$STUDIO_HOME; sqlite3 "$r/auth/auth.db" "select jwt_secret from auth_user"',
+            "r=$STUDIO_HOME; cat $r/auth/auth.db",
+            f"h={home}; cat $h/auth/auth.db",
+            'sqlite3 "$STUDIO_HOME/auth/auth.db"',
+        ):
+            assert tools._references_studio_credential_here(command, str(sandbox)), command
+
+        # Naming the studio home is ordinary work, and so is any other assignment.
+        for command in (
+            "r=$STUDIO_HOME; ls $r/models",
+            "d=/tmp; cat $d/notes.txt",
+            "echo $HOME",
+            "git commit -m fix",
+        ):
+            assert not tools._references_studio_credential_here(command, str(sandbox)), command
+    finally:
+        tools._studio_auth_markers_cache = None

@@ -2787,6 +2787,14 @@ def _references_studio_credential_here(text: str, workdir: "str | None") -> bool
     leave the sandbox at all."""
     if _references_studio_credential(text):
         return True
+    # `r=$STUDIO_HOME; sqlite3 "$r/auth/auth.db"` names the database through one level of shell
+    # indirection. Bypass Permissions keeps STUDIO_HOME in the child env, so the shell resolves it
+    # and the literal scan above sees nothing. `_expand_shell_assignments` is the same best-effort
+    # substitution the sensitive-path scan already uses, and it only ever ADDS detections.
+    if "$" in text:
+        expanded = _expand_shell_assignments(text)
+        if expanded != text and _references_studio_credential(expanded):
+            return True
     if not workdir or ".." not in text:
         return False
     for token in _TRAVERSAL_TOKEN_RE.findall(text):
