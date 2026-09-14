@@ -145,8 +145,7 @@ def _getch_posix() -> str:  # pragma: no cover - needs a real tty
 _getch: Callable[[], str] = _getch_windows if os.name == "nt" else _getch_posix
 
 
-# run.py reads this off the module: an OLDER terminal_prompt.py, which a torn
-# `studio update` can leave behind, returns False for the deadline AND a refusal.
+# run.py reads this: an OLDER terminal_prompt.py returns False for the deadline too.
 UNATTENDED_RETURNS_NONE = True
 
 

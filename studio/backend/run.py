@@ -2374,12 +2374,10 @@ def _terminal_password_gate(
         return True, True
     if tunnel_will_start:
         return False, False
-    # Ctrl+C / EOF is a refusal, but only a module that reports the deadline as
-    # None can tell the two apart; an older one folds both into False, where
-    # reading refusal would stop the detached-pty launch (`docker run -dt`).
+    # Only a module reporting the deadline as None can tell a refusal from it;
+    # an older one folds both into False, stopping `docker run -dt`.
     if changed is False and getattr(_terminal_prompt, "UNATTENDED_RETURNS_NONE", False):
         return False, False
-    # Only the unattended raw bind keeps the historical startup behavior.
     # Which is sometimes NO protection: UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 never
     # arms the deadline, so say what will actually happen rather than promise a
     # shutdown -- that is the one sentence an operator acts on.
