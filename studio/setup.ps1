@@ -4986,13 +4986,10 @@ function Test-UvOfflineRequested {
 }
 
 function Invoke-FastPathEscapes {
-    # Every reason an "up to date" package is still not a working install, run by both callers that
-    # can keep the fast path (the version compare and the UV_OFFLINE rule) so an offline skip meets
-    # the online bar; inline in the compare alone, an offline update below the desktop floor
-    # reported success and repaired nothing. Test-StudioInstallVerified stays out (each caller words
-    # it differently), as does the AMD/ROCm probe (after the chain, as in setup.sh). Scope: a plain
-    # assignment in a function is LOCAL, so the flag is copied in, written unqualified by the arms,
-    # and published once on the way out.
+    # Every reason an "up to date" package is still not a working install. Both callers that can
+    # keep the fast path run it, so an offline skip meets the online bar. Test-StudioInstallVerified
+    # and the AMD/ROCm probe stay out (each caller words them differently). A plain assignment in a
+    # function is LOCAL, so the flag is copied in and published once on the way out.
     $SkipPythonDeps = $script:SkipPythonDeps
 
     # The documented escape hatch, first: install_python_stack.py honours UNSLOTH_STUDIO_FULL_DEPS

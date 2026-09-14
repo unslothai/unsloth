@@ -1876,18 +1876,14 @@ _uv_offline_requested() {
 }
 
 _fast_path_escapes() {
-    # Every reason an "up to date" package is still not a working install, run by both callers that
-    # can keep the fast path (the version compare and the UV_OFFLINE rule) so an offline skip meets
-    # the online bar; inline in the compare alone, an offline update below the desktop floor
-    # reported success and repaired nothing. The incomplete-install check stays out: each caller
-    # words it differently. _SKIP_PYTHON_DEPS is set directly (shared scope).
+    # Every reason an "up to date" package is still not a working install. Both callers that can
+    # keep the fast path run it, so an offline skip meets the online bar. The incomplete-install
+    # check stays out: each caller words it differently.
 
-    # First, costing no probe: the user asked by hand. UNSLOTH_STUDIO_FULL_DEPS is
-    # install_python_stack.py's own hatch, and this branch never starts that module, so
-    # `UNSLOTH_STUDIO_FULL_DEPS=1 unsloth studio update` printed "up to date" and did nothing.
-    # Inline so the suites can slice this function out whole. The values are
-    # install_python_stack.py's ("1", "true", "yes", "on"), deliberately NOT
-    # _uv_offline_requested's, which also takes uv's bare `t` and `y`.
+    # First, costing no probe: the user asked by hand. This branch never starts
+    # install_python_stack.py, whose hatch this is, so the variable used to do nothing here.
+    # Inline so the suites can slice the function out whole. Values are that module's
+    # ("1", "true", "yes", "on"), deliberately NOT _uv_offline_requested's bare `t` and `y`.
     _fpe_full=${UNSLOTH_STUDIO_FULL_DEPS:-}
     _fpe_full=${_fpe_full#"${_fpe_full%%[![:space:]]*}"}
     _fpe_full=${_fpe_full%"${_fpe_full##*[![:space:]]}"}
@@ -2030,14 +2026,9 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
         substep "$_setup_pin_leaf pinned over an XPU wheel -- forcing dependency pass to migrate..."
         _SKIP_PYTHON_DEPS=false
     fi
-    # The same rule between the other curated families, mirroring setup.ps1's "Torch-index
-    # pin changed" branch: an explicit cu*/rocm*/cpu pin over a venv whose torch carries
-    # ANOTHER family's label is a request only the dependency pass acts on
-    # (_ensure_cuda_torch, _ensure_rocm_torch and _ensure_cpu_torch reinstall from the
-    # pin), and the version compare above would otherwise call the install up to date and
-    # keep the old wheel. Labelled wheels only: an untagged torch (PyPI's, macOS) names no
-    # family to disagree with, and escaping on it would force a pass on every update.
-    # Custom leaves (a private mirror) are left alone, as everywhere else.
+    # An explicit cu*/rocm*/cpu pin over a torch labelled with ANOTHER family: only the
+    # dependency pass reinstalls from the pin, and the compare above would keep the old wheel.
+    # Labelled wheels only (an untagged torch names no family), custom leaves left alone.
     _setup_pin_have_family=""
     case "${_setup_pin_ver:-}" in
         *+cu[0-9]*) _setup_pin_have_family=cu ;;
