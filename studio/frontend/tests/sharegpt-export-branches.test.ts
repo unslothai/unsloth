@@ -6,6 +6,7 @@ import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 
+import * as liveThreadHead from "../src/features/chat/utils/live-thread-head.ts";
 import { orderByParentChain } from "../src/features/chat/utils/message-order.ts";
 import {
   exportFormatIncludesSiblings,
@@ -53,11 +54,7 @@ function storedMessages(
   }));
 }
 
-function loadExporters(
-  stored: StoredMessage[],
-  downloads: string[] = [],
-  headId: string | null = null,
-) {
+function loadExporters(stored: StoredMessage[], downloads: string[] = []) {
   const javascript = ts.transpileModule(
     [
       sliceSource(
@@ -79,7 +76,7 @@ function loadExporters(
     exports: {},
     toast: { info: () => {} },
     listStoredChatMessages: async () => stored,
-    liveThreadHeadId: () => headId,
+    ...liveThreadHead,
     orderByParentChain,
     exportFormatIncludesSiblings,
     ndjsonBody,
@@ -94,14 +91,42 @@ function loadExporters(
   return context.__exporters as Exporters;
 }
 
-async function shareGptConversations(
+async function withLiveBranch<T>(
+  ids: string[] | null,
+  run: () => Promise<T>,
+): Promise<T> {
+  if (!ids) return run();
+  const unregister = liveThreadHead.registerLiveThreadView({
+    threadListItem: () => ({ getState: () => ({ remoteId: "thread" }) }),
+    thread: () => ({
+      getState: () => ({ messages: ids.map((id) => ({ id })) }),
+    }),
+  });
+  try {
+    return await run();
+  } finally {
+    unregister();
+  }
+}
+
+async function shareGptExport(
   stored: StoredMessage[],
-  headId: string | null = null,
+  liveBranch: string[] | null = null,
 ) {
   const downloads: string[] = [];
-  const exporters = loadExporters(stored, downloads, headId);
-  await exporters.exportConversationShareGPT("thread");
-  const bulk = await exporters.buildThreadContent("thread", "sharegpt");
+  const exporters = loadExporters(stored, downloads);
+  return withLiveBranch(liveBranch, async () => {
+    await exporters.exportConversationShareGPT("thread");
+    const bulk = await exporters.buildThreadContent("thread", "sharegpt");
+    return { downloads, bulk };
+  });
+}
+
+async function shareGptConversations(
+  stored: StoredMessage[],
+  liveBranch: string[] | null = null,
+) {
+  const { downloads, bulk } = await shareGptExport(stored, liveBranch);
   assert.ok(bulk);
   assert.deepEqual(downloads, [`${bulk}\n`]);
   return JSON.parse(bulk).conversations;
@@ -134,7 +159,7 @@ test("ShareGPT exports only the edited prompt and its reply", async () => {
 });
 
 test("ShareGPT exports the branch picked in the branch picker", async () => {
-  assert.deepEqual(await shareGptConversations(regenerated, "a1"), [
+  assert.deepEqual(await shareGptConversations(regenerated, ["u1", "a1"]), [
     { from: "human", value: "Name one fruit." },
     { from: "gpt", value: "Apples." },
   ]);
@@ -144,17 +169,33 @@ test("ShareGPT exports the branch picked in the branch picker", async () => {
     ["u1-edit", null, "user", "Name one animal."],
     ["a1-edit", "u1-edit", "assistant", "Cat."],
   ]);
-  assert.deepEqual(await shareGptConversations(edited, "a1"), [
+  assert.deepEqual(await shareGptConversations(edited, ["u1", "a1"]), [
     { from: "human", value: "Name one color." },
     { from: "gpt", value: "Blue." },
   ]);
 });
 
-test("ShareGPT falls back to the newest branch when the head is not stored", async () => {
-  assert.deepEqual(await shareGptConversations(regenerated, "unsaved"), [
-    { from: "human", value: "Name one fruit." },
-    { from: "gpt", value: "Apples!" },
+test("ShareGPT leaves out the replaced reply while its regeneration is unsaved", async () => {
+  const saved = storedMessages([
+    ["u1", null, "user", "Name one fruit."],
+    ["a1", "u1", "assistant", "Apples."],
   ]);
+  assert.deepEqual(await shareGptConversations(saved, ["u1", "a1-retry"]), [
+    { from: "human", value: "Name one fruit." },
+  ]);
+});
+
+test("ShareGPT exports nothing from the replaced branch while an edited first prompt is unsaved", async () => {
+  const saved = storedMessages([
+    ["u1", null, "user", "Name one color."],
+    ["a1", "u1", "assistant", "Blue."],
+  ]);
+  const { downloads, bulk } = await shareGptExport(saved, [
+    "u1-edit",
+    "a1-edit",
+  ]);
+  assert.deepEqual(downloads, []);
+  assert.equal(bulk, null);
 });
 
 test("CSV still exports every branch", async () => {

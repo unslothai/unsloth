@@ -18,12 +18,11 @@ export function registerLiveThreadView(view: LiveThreadView): () => void {
 }
 
 // The branch picker moves the head only in memory, so storage alone cannot say which branch is on screen.
-export function liveThreadHeadId(threadId: string): string | null {
+export function liveThreadBranch(threadId: string): string[] | null {
   for (const view of views) {
     try {
       if (view.threadListItem().getState().remoteId !== threadId) continue;
-      const headId = view.thread().getState().messages.at(-1)?.id;
-      if (headId) return headId;
+      return view.thread().getState().messages.map((message) => message.id);
     } catch {
       // A view torn down mid-switch has no thread to read.
     }

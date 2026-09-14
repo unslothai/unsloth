@@ -56,8 +56,9 @@ export function orderBySelectedBranch<T extends ParentLinkedMessage>(
 
   const chain: T[] = [];
   const seen = new Set<string>();
+  // undefined follows the newest message; null is a live branch with nothing saved yet.
   let currentId: string | null =
-    headId != null && byId.has(headId) ? headId : (sorted.at(-1)?.id ?? null);
+    headId === undefined ? (sorted.at(-1)?.id ?? null) : headId;
   while (currentId != null && !seen.has(currentId)) {
     seen.add(currentId);
     const message = byId.get(currentId);

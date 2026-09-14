@@ -94,7 +94,7 @@ import {
   type ConversationJsonlLayout,
 } from "../utils/ndjson";
 import { orderByParentChain } from "../utils/message-order";
-import { liveThreadHeadId } from "../utils/live-thread-head";
+import { liveThreadBranch } from "../utils/live-thread-head";
 import { unwrapPastedTextContent } from "../utils/pasted-text.ts";
 import {
   buildConversationMarkdown,
@@ -246,10 +246,13 @@ async function loadConversationMessages(
   // No parentId = legacy flat thread (already DB createdAt-sorted); walking the chain would invert order.
   const hasParentIds = raw.some((m) => (m as { parentId?: unknown }).parentId != null);
   if (!hasParentIds) return raw;
-  return orderByParentChain(raw, {
-    includeSiblings,
-    headId: liveThreadHeadId(threadId),
-  }) as typeof raw;
+  // Newest saved turn of the branch on screen: a reply still generating is not stored yet, and falling back to the newest leaf would export the reply it replaces.
+  const liveBranch = liveThreadBranch(threadId);
+  const storedIds = new Set(raw.map((m) => m.id));
+  const headId = liveBranch
+    ? ([...liveBranch].reverse().find((id) => storedIds.has(id)) ?? null)
+    : undefined;
+  return orderByParentChain(raw, { includeSiblings, headId }) as typeof raw;
 }
 
 function exportTs(): string {
