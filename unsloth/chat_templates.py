@@ -1,11 +1,8 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
-#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
-#
 #     http://www.apache.org/licenses/LICENSE-2.0
-#
 # Unless required by applicable law or agreed to in writing, software
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -2371,8 +2368,15 @@ def get_ollama_eos_tokens(tokenizer, extra_eos_tokens = []):
     added_tokens_decoder = tokenizer.added_tokens_decoder.values()
     added_tokens_decoder = [str(x) for x in added_tokens_decoder]
 
-    # Remove added_tokens_decoder duplicates
-    added_tokens_decoder = list(set(added_tokens_decoder) - set(extra_eos_tokens))
+    # Longest first, never through a set: the collapse below rewrites joined_text as it goes,
+    # so a family member must be seen before any shorter token sharing its prefix (`<unused0>`
+    # before `<unk>`), and set() order over strings varies with PYTHONHASHSEED.
+    skip_eos_tokens = set(extra_eos_tokens)
+    added_tokens_decoder = sorted(
+        (x for x in dict.fromkeys(added_tokens_decoder) if x not in skip_eos_tokens),
+        key = len,
+        reverse = True,
+    )
 
     # Remove BOS
     if getattr(tokenizer, "bos_token", None) is not None:

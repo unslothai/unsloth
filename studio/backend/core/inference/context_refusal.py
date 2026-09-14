@@ -137,10 +137,10 @@ def _blame_latest_turn(context_tokens: int):
     # a turn between the two really would have been served and only earns the soft wording. `>=` to match that check.
     # Compared without the shared floor, since the hard wording is a claim about the turn's own size.
     window = recorded_context or context_tokens
-    # Reached only on a counted turn, so this is a claim about a measured size Reached only on a counted turn, per the
-    # gate above, so this is a claim about a size that was measured. A turn the template renders as nothing on its own
-    # is counted by difference, so every Gemma tool result can earn this wording again rather than being hedged down for
-    # being a guess. Not defaulted to "user": `describe_oversize` gives an unnameable role generic advice.
+    # Reached only on a counted turn, per the gate above, so this is a claim about a size that was measured. A turn
+    # the template renders as nothing on its own is counted by difference, so every Gemma tool result can earn this
+    # wording again rather than being hedged down for being a guess. Not defaulted to "user": `describe_oversize`
+    # gives an unnameable role generic advice.
     role = str(refusal.get("latest_turn_role") or "")
     return role, not (window and latest_turn >= window)
 
@@ -173,10 +173,9 @@ def _history_cannot_help(context_tokens: int) -> bool:
     return irreducible > 0 and window > 0 and irreducible >= window
 
 
-# split by role because of the lever: "send it in smaller pieces" is useless for turns the user did not type
 # Per role: what to call the turn when it merely dominates, what to call it when it does not fit at all, and the lever
-# worth offering. The lever is why this splits by role -- "send it in smaller pieces" is useless for turns the user did
-# not type.
+# worth offering. The lever is why this splits by role -- "send it in smaller pieces" is useless for turns the user
+# did not type.
 _ROLE_ADVICE = {
     "user": (
         "Most of this prompt is the message just sent",
@@ -196,7 +195,6 @@ _ROLE_ADVICE = {
         "The file the model passed to a tool does not fit on its own",
         "ask for a smaller file, or raise the Context Length before retrying",
     ),
-    # the same shape with no file in it: "ask for a smaller file" names the wrong thing
     # The same shape with no file in it: an oversized program, command, query or MCP payload. "Ask for a smaller file"
     # names the wrong thing and cannot be acted on, so this one says what is actually true of every tool.
     "assistant_tool_payload": (
@@ -221,18 +219,14 @@ _ROLE_ADVICE["function"] = _ROLE_ADVICE["tool"]
 _ROLE_ADVICE["developer"] = _ROLE_ADVICE["system"]
 
 
-def describe_oversize(request_tokens: int, context_tokens: int) -> str:
-    """The user-facing message for a prompt that exceeds the loaded context window.
+def oversize_advice(context_tokens: int) -> str:
+    """The remedy half of an oversize refusal: what the user can actually do.
 
-    The advice splits on the only two things that change what the user can do: whose
-    turn is the bulk of the prompt, and whether that turn is merely most of the prompt
-    or actually too big to send at all. An unrecognised role falls back to the generic
-    wording rather than blaming a turn it cannot describe.
+    Split out from :func:`describe_oversize` so a surface that must keep its own head
+    wording -- the Anthropic passthrough sends Anthropic's "Prompt is too long: N
+    tokens > M maximum", which is what its clients key on -- can still pair it with
+    this diagnosis instead of prescribing compaction for a prompt no compaction fits.
     """
-    head = (
-        f"Message too long: {request_tokens} tokens exceeds the "
-        f"{context_tokens}-token context window. "
-    )
     blamed = _blame_latest_turn(context_tokens)
     advice = _ROLE_ADVICE.get(blamed[0]) if blamed else None
     if advice is None:
@@ -243,26 +237,36 @@ def describe_oversize(request_tokens: int, context_tokens: int) -> str:
             # say which of them it is -- `shared_prompt_tokens` bundles the template wrapper with the catalogue, so a
             # large one does not prove there are tools. Both levers are offered, and neither is claimed to be the cause.
             return (
-                head + "Even with every earlier turn dropped, this prompt would still be "
+                "Even with every earlier turn dropped, this prompt would still be "
                 "too long, so shortening the conversation will not help. Increase the "
                 "Context Length in Model settings, or reduce what every request carries: "
                 "the system prompt and any tools that are enabled."
             )
-        return (
-            head + "Try increasing the Context Length in Model settings, or shorten the "
-            "conversation."
-        )
+        return "Try increasing the Context Length in Model settings, or shorten the conversation."
     dominant_cause, oversize_cause, lever = advice
     fits_alone = blamed[1]
     cause = dominant_cause if fits_alone else oversize_cause
     hedge = "will not help much" if fits_alone else "will not help"
     return (
-        f"{head}{cause}, so shortening the conversation {hedge}. Increase the Context "
+        f"{cause}, so shortening the conversation {hedge}. Increase the Context "
         f"Length in Model settings, or {lever}."
     )
 
 
-# anything absent gets the neutral line: an MCP tool's payload is not a file and not a program
+def describe_oversize(request_tokens: int, context_tokens: int) -> str:
+    """The user-facing message for a prompt that exceeds the loaded context window.
+
+    The advice splits on the only two things that change what the user can do: whose
+    turn is the bulk of the prompt, and whether that turn is merely most of the prompt
+    or actually too big to send at all. An unrecognised role falls back to the generic
+    wording rather than blaming a turn it cannot describe.
+    """
+    return (
+        f"Message too long: {request_tokens} tokens exceeds the "
+        f"{context_tokens}-token context window. "
+    ) + oversize_advice(context_tokens)
+
+
 # What the user can actually shorten, per tool. Anything absent gets the neutral line: an MCP tool's payload is not a
 # file and not a program, and guessing at it is worse than saying the one thing that is true of every tool.
 _TOOL_LEVERS = {

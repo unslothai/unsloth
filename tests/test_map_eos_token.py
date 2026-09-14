@@ -110,10 +110,9 @@ def test_other_map_eos_token_combinations_are_unchanged():
 
 
 def test_opt_out_is_refused_when_the_template_rewrites_the_vocab():
-    # gemma_chatml / gemma2_chatml: <|im_end|> only exists because <eos> is renamed to it,
-    # so the opt-out cannot be honored without leaving eos_token dangling. This pins the
-    # common shape, where eos_token is the renamed piece; the next test pins the checkpoints
-    # where it is not, which is the case keying on tokenizer.eos_token used to miss.
+    # gemma_chatml / gemma2_chatml: <|im_end|> only exists because <eos> is renamed to it, so the opt-out cannot be
+    # honored without leaving eos_token dangling. This pins the common shape, where eos_token is the renamed piece;
+    # the next test pins the checkpoints where it is not, which is the case keying on tokenizer.eos_token used to miss.
     resolved, messages = _resolve(
         map_eos_token = False,
         yes_map_eos_token = True,
@@ -125,10 +124,9 @@ def test_opt_out_is_refused_when_the_template_rewrites_the_vocab():
 
 
 def test_opt_out_is_refused_when_eos_token_is_not_the_renamed_piece():
-    # gemma-3-270m-it and gemma-3-1b-it ship eos_token = "<end_of_turn>", not "<eos>", yet
-    # gemma_chatml still renames <eos> away to build <|im_end|>. Keying the guard on
-    # tokenizer.eos_token misses these and rebuilds the tokenizer with no eos_token, so
-    # the class default re-adds the just-removed <eos> as a fresh id past the embeddings.
+    # gemma-3-270m-it and gemma-3-1b-it ship eos_token = "<end_of_turn>", not "<eos>", yet gemma_chatml still renames
+    # <eos> away to build <|im_end|>. Keying the guard on tokenizer.eos_token misses these and rebuilds the tokenizer
+    # with no eos_token, so the class default re-adds the just-removed <eos> as a fresh id past the embeddings.
     resolved, messages = _resolve(
         map_eos_token = False,
         yes_map_eos_token = True,
@@ -140,8 +138,8 @@ def test_opt_out_is_refused_when_eos_token_is_not_the_renamed_piece():
 
 
 def test_a_template_veto_still_wins_over_the_refusal():
-    # The refusal only overrides the caller. A template that does not want eos mapping at
-    # all keeps map_eos_token = False even if it carries a token_mapping.
+    # The refusal only overrides the caller. A template that does not want eos mapping at all keeps
+    # map_eos_token = False even if it carries a token_mapping.
     resolved, messages = _resolve(
         map_eos_token = True,
         yes_map_eos_token = False,
@@ -153,8 +151,8 @@ def test_a_template_veto_still_wins_over_the_refusal():
 
 
 def test_opt_out_still_honored_when_the_template_leaves_the_vocab_alone():
-    # chatml / gemma / gemma2 carry no token_mapping, so nothing is half-applied when the
-    # mapping is skipped and the caller's choice stands.
+    # chatml / gemma / gemma2 carry no token_mapping, so nothing is half-applied when the mapping is skipped and the
+    # caller's choice stands.
     resolved, messages = _resolve(
         map_eos_token = False,
         yes_map_eos_token = True,
@@ -182,11 +180,9 @@ def test_shipped_templates_still_have_the_shape_the_guard_keys_on():
     assert mapping["<eos>"] == stop_word == "<|im_end|>"
 
 
-# The resolved flag only matters for what the vocab surgery below it then does, so run
-# that surgery against a real fast tokenizer and look at the vocabulary and the eos
-# metadata directly. Built in memory from a word-level model: no download, no GPU, and
-# no sentencepiece, but a genuine tokenizers backend rather than a stand-in.
-
+# The resolved flag only matters for what the vocab surgery below it then does, so run that surgery against a real fast
+# tokenizer and look at the vocabulary and the eos metadata directly. Built in memory from a word-level model: no
+# download, no GPU, and no sentencepiece, but a genuine tokenizers backend rather than a stand-in.
 GEMMA_CHATML_MAPPING = {"<start_of_turn>": "<|im_start|>", "<eos>": "<|im_end|>"}
 STOP_WORD = "<|im_end|>"
 VOCAB = {
@@ -238,11 +234,10 @@ def _tiny_fast_tokenizer():
 
 def _map_tokens(monkeypatch, map_eos_token, token_mapping):
     """Run the shipped surgery over a fresh tiny tokenizer and hand back the result."""
-    # The block ends in `from .tokenizer_utils import fix_sentencepiece_tokenizer`, and
-    # that import would drag in the GPU-bound unsloth package. The function mirrors the
-    # rename into a tokenizer.model file and returns new_tokenizer untouched when there
-    # is none, which is this tokenizer's case, so stand in for it with that identity and
-    # leave it to its own tests under tests/saving/.
+    # The block ends in `from .tokenizer_utils import fix_sentencepiece_tokenizer`, and that import would drag in the
+    # GPU-bound unsloth package. The function mirrors the rename into a tokenizer.model file and returns new_tokenizer
+    # untouched when there is none, which is this tokenizer's case, so stand in for it with that identity and leave it
+    # to its own tests under tests/saving/.
     package = types.ModuleType("_unsloth_map_eos_stub")
     package.__path__ = []
     tokenizer_utils = types.ModuleType("_unsloth_map_eos_stub.tokenizer_utils")

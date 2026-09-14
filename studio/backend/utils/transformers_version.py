@@ -34,6 +34,7 @@ import importlib.util
 import json
 import structlog
 from loggers import get_logger
+import contextlib
 import os
 import re
 import shutil
@@ -49,9 +50,12 @@ from hub.utils.hf_tokens import (
     ANONYMOUS_CACHE_IDENTITY,
     HfTokenArg,
     apply_token_to_child_env,
+    cache_reads_authorized,
     is_anonymous,
+    qualify_cache_identity,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
+from utils.prebuilt.update_flow import resolves_into_studio_app_tree
 from utils.native_tls import inline_gate_source, vendor_dir
 from utils.child_stdio import utf8_child_env
 from utils.hf_cache_settings import get_hf_cache_paths
@@ -675,14 +679,19 @@ def _token_cache_key(model_name: str, hf_token: HfTokenArg) -> tuple[str, str | 
     """Cache key that keeps authenticated and unauthenticated reads separate, so an
     unauthenticated miss on a gated/private repo never poisons a later authed lookup.
 
-    Forced-anonymous is its own credential, so it takes its own slot too.
+    Forced-anonymous is its own credential, so it takes its own slot too, and so is a UI
+    session: the marker hashes to the same bytes as a plain token of the same value, and the
+    tokenizer and config-tier caches keyed here return before any authorization check, so
+    without the qualifier an API caller reads back the classification a UI session cached.
     """
     import hashlib
 
     if is_anonymous(hf_token):
         return (model_name, ANONYMOUS_CACHE_IDENTITY)
-    tok = hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else None
-    return (model_name, tok)
+    if not hf_token:
+        return (model_name, None)
+    digest = hashlib.sha256(hf_token.encode()).hexdigest()[:16]
+    return (model_name, qualify_cache_identity(hf_token, digest))
 
 
 def _is_canonical_repo_id(model_name: str) -> bool:
@@ -902,10 +911,20 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     network fetch, so an online read never serves stale metadata.
     """
     cache_key = _token_cache_key(model_name, hf_token)
-    if cache_key in _config_json_cache:
-        return _config_json_cache[cache_key]
-
     local_cfg = Path(model_name) / "config.json"
+    if cache_key in _config_json_cache:
+        # A hit predates the 60 s authorization TTL, so an explicit token revoked since the
+        # fetch would keep reading this repo's metadata for the life of the process. Local
+        # paths are the caller's own and never went through the Hub. A miss here re-fetches,
+        # which is what tells a revoked token no.
+        if (
+            not isinstance(hf_token, str)
+            or _safe_is_file(local_cfg)
+            or _safe_is_dir(Path(model_name))
+            or cache_reads_authorized(hf_token, repo_id = model_name)
+        ):
+            return _config_json_cache[cache_key]
+
     if _safe_is_file(local_cfg):
         try:
             with open(local_cfg, encoding = "utf-8-sig") as f:
@@ -924,18 +943,19 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     # Every route to the hub cache below reads it without authorizing, so a caller denied
     # the ambient credential is refused them all: keying the memo apart is not enough when
     # the value it memoizes came off disk in the first place.
-    if is_anonymous(hf_token):
-        cache_denied = True
-    else:
-        cache_denied = False
+    cache_denied = not cache_reads_authorized(hf_token, repo_id = model_name)
 
     if _env_offline():
         # No network: a downloaded repo can still tier from the hub cache. Cache a real hit,
-        # never the miss, so a later online read still fetches the config.
+        # never the miss, so a later online read still fetches the config. An unverified
+        # explicit token is denied here; ambient None keeps the cache path.
         if cache_denied:
             return None
         cfg = _config_json_from_hf_cache(model_name)
-        if cfg is not None:
+        # Ambient/anonymous only: this came off the operator's disk, and an untimed memo
+        # outlives the 60 s cache_reads_authorized grants it, so a revoked token would keep
+        # reading. Explicit tokens re-derive per call.
+        if cfg is not None and not isinstance(hf_token, str):
             _config_json_cache[cache_key] = cfg
         return cfg
 
@@ -2008,6 +2028,16 @@ _VENV_T5_550_PACKAGES = (
 # Backwards-compat alias
 _VENV_T5_PACKAGES = _VENV_T5_550_PACKAGES
 
+# Setup installs tiktoken best-effort, so the runtime must agree or it deletes the sidecar and
+# retries the same impossible install.
+_OPTIONAL_SIDECAR_PACKAGES = frozenset({"tiktoken"})
+
+
+def _sidecar_package_is_optional(pkg_spec: str) -> bool:
+    return (
+        pkg_spec.split("==", 1)[0].strip().lower().replace("_", "-") in _OPTIONAL_SIDECAR_PACKAGES
+    )
+
 
 _SIDECAR_FILE_CHECK_ENV = "UNSLOTH_SKIP_SIDECAR_FILE_CHECK"
 
@@ -2132,6 +2162,7 @@ def _sidecar_scan_impl(venv_dir: str, limit: int = 3) -> tuple[list[str], bool]:
         return [], True
     for di in dist_infos:
         name = di.name.split("-")[0]
+        # Absent is fine; present, its RECORD is held to the same standard.
         try:
             record = (di / "RECORD").read_text(encoding = "utf-8", errors = "replace")
         except FileNotFoundError:
@@ -2250,6 +2281,8 @@ def _venv_dir_is_valid(venv_dir: str, packages: tuple[str, ...]) -> bool:
         if not any(
             (Path(venv_dir) / d).is_dir() for d in (pkg_name_norm, pkg_name_norm.replace("_", "-"))
         ):
+            if _sidecar_package_is_optional(pkg_spec):
+                continue
             return False
         # Unpinned packages: existence is enough.
         if pkg_version is None:
@@ -2393,12 +2426,344 @@ def _mark_studio_owned(venv_dir: str) -> None:
         pass
 
 
+# An unavailable wheel is asked for once per session.
+_OPTIONAL_TOP_UP_ATTEMPTED: set[tuple[str, str]] = set()
+
+
+def _optional_package_absent(venv_dir: str, pkg_spec: str) -> bool:
+    """Whether *pkg_spec* is missing from the sidecar, or only partly there.
+
+    The top-up moves a package in entry by entry with its dist-info last, so a package
+    counts as present only when its dist-info has landed: a payload directory on its
+    own is an interrupted top-up, which nothing else would ever finish.
+    """
+    name = pkg_spec.split("==")[0].replace("-", "_")
+    root = Path(venv_dir)
+    if not any((root / d / "__init__.py").is_file() for d in (name, name.replace("_", "-"))):
+        return True
+    return not any(
+        (root / entry / "RECORD").is_file() for entry in _dist_info_entries(venv_dir, name)
+    )
+
+
+def _optional_package_entries(venv_dir: str, pkg_spec: str) -> list[str]:
+    """Every top-level entry of the sidecar the optional package's wheel owns."""
+    stem = pkg_spec.split("==")[0].lower().replace("-", "_")
+    try:
+        entries = os.listdir(venv_dir)
+    except OSError:
+        return []
+    return [
+        entry
+        for entry in entries
+        if entry.lower().replace("-", "_") == stem
+        or entry.lower().replace("-", "_").startswith((stem + "_", stem + "."))
+    ]
+
+
+def _optional_package_partly_there(venv_dir: str, pkg_spec: str) -> bool:
+    """A payload without the dist-info that would make it count: an interrupted top-up
+    (or a failed install) left it, and it sits ahead of site-packages."""
+    return _optional_package_absent(venv_dir, pkg_spec) and bool(
+        _optional_package_entries(venv_dir, pkg_spec)
+    )
+
+
+def _remove_optional_remnants(venv_dir: str, pkg_spec: str) -> bool:
+    """Drop what a failed optional install left: the payload directory and every dist-info.
+
+    An installer that exits nonzero part-way (a full disk, an interrupted copy) can leave
+    the package directory without its native extension, or metadata without the package;
+    with both gone, _optional_package_absent reads the package as absent and the next
+    top-up tries again instead of the sidecar shadowing a working ambient copy.
+
+    Answers whether nothing of the package is left. A remnant that would not go (a file
+    another process holds open on Windows, a permission) still sits ahead of
+    site-packages, and the caller has to treat the directory as not usable rather than
+    report a sidecar that will fail at tokenization.
+    """
+    # Every top-level entry the wheel owns; the prefix is the project name then end, _, . or -.
+    root = Path(venv_dir)
+
+    def _owned() -> list[str]:
+        return _optional_package_entries(venv_dir, pkg_spec)
+
+    for entry in _owned():
+        path = root / entry
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path, ignore_errors = True)
+        elif path.exists() or path.is_symlink():
+            try:
+                path.unlink()
+            except OSError:
+                pass
+    left = _owned()
+    if left:
+        logger.warning(
+            "%s could not be removed from %s after a failed install of %s; the directory is not usable",
+            ", ".join(sorted(left)[:5]),
+            venv_dir,
+            pkg_spec,
+        )
+    return not left
+
+
+def _remove_recordless_dist_infos(venv_dir: str, pkg_spec: str) -> None:
+    """Drop every `<pkg>-*.dist-info` with no RECORD: metadata uv cannot uninstall."""
+    name = pkg_spec.split("==")[0]
+    root = Path(venv_dir)
+    for entry in _dist_info_entries(venv_dir, name):
+        if not (root / entry / "RECORD").is_file():
+            shutil.rmtree(root / entry, ignore_errors = True)
+
+
+def _dist_info_entries(venv_dir: str, name: str) -> list[str]:
+    wanted = name.lower().replace("-", "_")
+    try:
+        entries = os.listdir(venv_dir)
+    except OSError:
+        return []
+    return [
+        entry
+        for entry in entries
+        if entry.endswith(".dist-info")
+        and entry[: -len(".dist-info")].rsplit("-", 1)[0].lower().replace("-", "_") == wanted
+    ]
+
+
+# Recorded beside the sidecar so every worker sees them; retried later in case it was the network.
+_OPTIONAL_TOP_UP_FAILED = ".optional-top-up-failed.json"
+_OPTIONAL_TOP_UP_RETRY_SECONDS = 6 * 60 * 60.0
+
+
+def _top_up_failure_path(venv_dir: str) -> str:
+    return os.path.join(venv_dir, _OPTIONAL_TOP_UP_FAILED)
+
+
+def _read_top_up_failures(venv_dir: str) -> dict:
+    try:
+        with open(_top_up_failure_path(venv_dir), encoding = "utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_top_up_failures(venv_dir: str, failures: dict) -> None:
+    path = _top_up_failure_path(venv_dir)
+    try:
+        if not failures:
+            if os.path.exists(path):
+                os.unlink(path)
+            return
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding = "utf-8") as fh:
+            json.dump(failures, fh)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _top_up_failed_recently(venv_dir: str, pkg: str) -> bool:
+    when = _read_top_up_failures(venv_dir).get(pkg)
+    if not isinstance(when, (int, float)):
+        return False
+    age = time.time() - when
+    return 0 <= age < _OPTIONAL_TOP_UP_RETRY_SECONDS
+
+
+def _record_top_up_outcome(venv_dir: str, pkg: str, ok: bool) -> None:
+    failures = _read_top_up_failures(venv_dir)
+    if ok:
+        if pkg not in failures:
+            return
+        failures.pop(pkg, None)
+    else:
+        failures[pkg] = time.time()
+    _write_top_up_failures(venv_dir, failures)
+
+
+def _top_up_optional_packages(venv_dir: str, packages: tuple[str, ...]) -> bool:
+    """Add an optional package a valid sidecar is missing, without touching the rest.
+
+    _venv_dir_is_valid accepts a sidecar without tiktoken, so a transient failure while
+    the sidecar was built (the latest sidecar in particular, which no setup top-up
+    visits) left Qwen tokenizers broken until the user deleted the directory. Best
+    effort and non-destructive: a failure is logged, recorded beside the sidecar and
+    not retried by any worker process for a while (each job spawns its own workers,
+    which would otherwise each sit through the same doomed install), and nothing is
+    attempted while the session is offline (a worker would otherwise sit through
+    network retries for a model that may not even need the package).
+
+    Workers activate tiers independently and share the sidecar, so the add is staged:
+    the package is installed into a scratch directory beside the sidecar and its
+    entries are renamed in, payload first and dist-info last, so a scan by another
+    worker never meets a RECORD whose files have not landed and reads the sidecar as
+    damaged. One process at a time does this; another that finds the lock held waits
+    for it, then finds the package there.
+    """
+    usable = True
+    offline = (
+        _env_offline() or os.environ.get("UV_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
+    )
+    for pkg in packages:
+        if not _sidecar_package_is_optional(pkg):
+            continue
+        if offline:
+            # A payload without its dist-info counts as absent yet would shadow the ambient copy.
+            if _optional_package_partly_there(venv_dir, pkg):
+                with _optional_top_up_lock(venv_dir) as held:
+                    if held and _optional_package_partly_there(venv_dir, pkg):
+                        logger.warning(
+                            "%s: removing the partial %s an interrupted add left", venv_dir, pkg
+                        )
+                        if not _remove_optional_remnants(venv_dir, pkg):
+                            usable = False
+                    elif not held:
+                        usable = False
+            continue
+        # The staging cleanup never reaches a recordless dist-info, and metadata still answers it.
+        _remove_recordless_dist_infos(venv_dir, pkg)
+        if not _optional_package_absent(venv_dir, pkg):
+            continue
+        key = (os.path.normcase(os.path.abspath(venv_dir)), pkg)
+        if key in _OPTIONAL_TOP_UP_ATTEMPTED:
+            continue
+        _OPTIONAL_TOP_UP_ATTEMPTED.add(key)
+        with _optional_top_up_lock(venv_dir) as held:
+            if not held:
+                logger.warning(
+                    "%s: another process held the top-up lock too long; left as is", venv_dir
+                )
+                if _optional_package_partly_there(venv_dir, pkg):
+                    usable = False
+                continue
+            if not _optional_package_absent(venv_dir, pkg):
+                continue
+            if _top_up_failed_recently(venv_dir, pkg):
+                logger.info(
+                    "%s: a recent attempt to add %s failed; not retrying yet", venv_dir, pkg
+                )
+                continue
+            logger.info("Adding %s to %s (optional package missing) ...", pkg, venv_dir)
+            ok = _stage_optional_package(pkg, venv_dir)
+            _record_top_up_outcome(venv_dir, pkg, ok)
+            if not ok:
+                logger.warning(
+                    "%s could not be added to %s; continuing without it (Qwen tokenizers may fail)",
+                    pkg,
+                    venv_dir,
+                )
+                if _optional_package_partly_there(venv_dir, pkg):
+                    usable = False
+    return usable
+
+
+def _stage_optional_package(pkg: str, venv_dir: str) -> bool:
+    """Install *pkg* beside the sidecar, then move its entries in, dist-info last."""
+    staging = os.path.join(venv_dir, ".top-up-staging")
+    shutil.rmtree(staging, ignore_errors = True)
+    try:
+        os.makedirs(staging, exist_ok = True)
+        if not _install_to_dir(pkg, staging):
+            # A partial payload would shadow the ambient copy for the whole backoff.
+            _remove_optional_remnants(venv_dir, pkg)
+            return False
+        entries = sorted(os.listdir(staging), key = lambda name: name.endswith(".dist-info"))
+        # uv cannot uninstall a recordless dist-info and metadata answers whichever it meets first.
+        for name in entries:
+            if not name.endswith(".dist-info"):
+                continue
+            project = name[: -len(".dist-info")].rsplit("-", 1)[0]
+            for stale in _dist_info_entries(venv_dir, project):
+                if stale != name:
+                    shutil.rmtree(os.path.join(venv_dir, stale), ignore_errors = True)
+        for name in entries:
+            source = os.path.join(staging, name)
+            target = os.path.join(venv_dir, name)
+            if os.path.isdir(target) and not os.path.islink(target):
+                shutil.rmtree(target, ignore_errors = True)
+            elif os.path.lexists(target):
+                os.unlink(target)
+            os.replace(source, target)
+        return True
+    except OSError as exc:
+        logger.warning("staging %s into %s failed: %s", pkg, venv_dir, exc)
+        _remove_optional_remnants(venv_dir, pkg)
+        return False
+    finally:
+        shutil.rmtree(staging, ignore_errors = True)
+
+
+_OPTIONAL_TOP_UP_LOCK = ".optional-top-up.lock"
+
+
+_OPTIONAL_TOP_UP_WAIT_SECONDS = 120.0
+
+
+@contextlib.contextmanager
+def _optional_top_up_lock(venv_dir: str):
+    """A cross-process lock on a sidecar's optional top-up, waited for up to a bound.
+
+    Workers activate tiers independently, so two can find the package absent at once;
+    two installers writing one --target tree leave it half-written, and a worker that
+    went on without waiting would activate with the package still absent. Yields True
+    when this process holds the lock, False when another kept it past the bound (or
+    the lock cannot be taken at all, read as "someone else's turn" rather than a
+    reason to write unguarded).
+    """
+    handle = None
+    try:
+        handle = open(os.path.join(venv_dir, _OPTIONAL_TOP_UP_LOCK), "a+b")
+        deadline = time.monotonic() + _OPTIONAL_TOP_UP_WAIT_SECONDS
+        while True:
+            try:
+                if sys.platform == "win32":
+                    import msvcrt
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.25)
+    except OSError:
+        if handle is not None:
+            handle.close()
+        yield False
+        return
+    try:
+        yield True
+    finally:
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        handle.close()
+
+
 def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bool:
     """Ensure *venv_dir* exists with all *packages*. Install if missing."""
     if _venv_dir_is_valid_and_undamaged(venv_dir, packages):
-        return True
+        return _top_up_optional_packages(venv_dir, packages)
 
     logger.warning("%s not found or incomplete at %s -- installing at runtime", label, venv_dir)
+    # The Docker image links its sidecars into the Studio home (UNSLOTH_STUDIO_APP). rmtree refuses a
+    # symlink and ignore_errors hides that, so the damaged files would survive the "wipe" and a
+    # version-satisfied install would leave them in place. Repair the directory the link points at,
+    # but only when it is the image's own tree: a link a user made to some other disk is not ours
+    # to delete, so that keeps the old behaviour.
+    if os.path.islink(venv_dir) and resolves_into_studio_app_tree(Path(venv_dir)):
+        venv_dir = os.path.realpath(venv_dir)
     shutil.rmtree(venv_dir, ignore_errors = True)
     os.makedirs(venv_dir, exist_ok = True)
     _mark_studio_owned(venv_dir)
@@ -2406,6 +2771,22 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
     for idx, pkg in enumerate(packages, start = 1):
         logger.info("Installing %s (%d/%d) into %s ...", pkg, idx, total, venv_dir)
         if not _install_to_dir(pkg, venv_dir):
+            if _sidecar_package_is_optional(pkg):
+                logger.warning(
+                    "%s could not be installed into %s; continuing without it (Qwen tokenizers may fail)",
+                    pkg,
+                    venv_dir,
+                )
+                # Only absent is safe: a half-copied payload fails at tokenization.
+                if _remove_optional_remnants(venv_dir, pkg):
+                    # Recorded like the top-up path's failures: the sidecar reads as valid from
+                    # here on, so without it the next activation and every worker a job spawns
+                    # would sit through the same doomed install.
+                    _record_top_up_outcome(venv_dir, pkg, False)
+                    _OPTIONAL_TOP_UP_ATTEMPTED.add(
+                        (os.path.normcase(os.path.abspath(venv_dir)), pkg)
+                    )
+                    continue
             return False
     logger.info("Installed %s to %s", label, venv_dir)
     return True
@@ -2827,7 +3208,8 @@ def _ensure_venv_t5_latest_exists() -> bool:
         # Only a scan that actually read the files may retire it; one that hit EIO has not.
         if conclusive:
             _clear_latest_repair_request()
-        return True
+        # Activation is where a missing tiktoken gets topped up.
+        return _top_up_optional_packages(_VENV_T5_LATEST_DIR, packages)
     # Broken, and every path below can still fail to fix it (offline, a child, a swap already
     # running, pip). Flag it here rather than per bailout, so the routing predicate withholds
     # the sidecar whichever we take: it cannot see sub-file damage itself, and a mapping
@@ -2904,7 +3286,7 @@ def ensure_latest_transformers_venv(
         and tuple(pin["packages"]) == packages
         and _venv_dir_is_valid_and_undamaged(_VENV_T5_LATEST_DIR, packages)
     ):
-        return True
+        return _top_up_optional_packages(_VENV_T5_LATEST_DIR, packages)
     return _stage_and_swap_latest_venv(version, packages, before_swap = before_swap)
 
 

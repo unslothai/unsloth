@@ -80,6 +80,16 @@ export function isSttModelLanguageCompatible(
 
 export type DictationEngine = "browser" | "model" | "custom";
 
+/** Mirrors the backend's `SttLoadRequest.device`. "gpu" is not offered in the
+ * UI: it differs from "auto" only where it cannot be honoured anyway. */
+export type SttDevice = "auto" | "cpu";
+
+export const DEFAULT_STT_DEVICE: SttDevice = "auto";
+
+function normalizeSttDevice(value: unknown): SttDevice {
+  return value === "cpu" ? "cpu" : DEFAULT_STT_DEVICE;
+}
+
 export type TtsEngine = "system" | "studio" | "custom";
 
 /**
@@ -106,6 +116,11 @@ export interface VoiceSettingsState {
   /** STT model to use when dictationEngine is "model". */
   sttModel: SttModel;
   setSttModel: (value: SttModel) => void;
+
+  /** "cpu" holds the dictation model in system RAM instead of the GPU. Sent
+   *  with every load and transcribe, so a change applies on the next load. */
+  sttDevice: SttDevice;
+  setSttDevice: (value: SttDevice) => void;
 
   sttProviderId: string;
   setSttProviderId: (value: string) => void;
@@ -224,6 +239,9 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
               : DEFAULT_STT_MODEL,
           };
         }),
+
+      sttDevice: DEFAULT_STT_DEVICE,
+      setSttDevice: (value) => set({ sttDevice: normalizeSttDevice(value) }),
 
       sttProviderId: "",
       setSttProviderId: (sttProviderId) => set({ sttProviderId }),
@@ -362,6 +380,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           micDeviceId: asString(saved?.micDeviceId, "default"),
           dictationEngine,
           sttModel,
+          sttDevice: normalizeSttDevice(saved?.sttDevice),
           sttProviderId: asString(saved?.sttProviderId, ""),
           sttProviderModel: asString(saved?.sttProviderModel, ""),
           dictationLanguage,

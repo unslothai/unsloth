@@ -182,6 +182,34 @@ export const en = {
     },
   },
   settings: {
+    accounts: {
+      title: "Accounts",
+      description: "Create private Studio accounts. New users sign in with a one-time setup code and choose a password.",
+      username: "Username",
+      create: "Create account",
+      setupCode: "Setup code",
+      setupFor: "Setup code for {username}",
+      shownOnce: "Copy this code now and share it with the account holder. It is shown only here and can be used once within 60 minutes.",
+      expires: "Expires {expiry}",
+      copy: "Copy setup code",
+      copied: "Copied",
+      copyFailed: "Could not copy. Select and copy the setup code above.",
+      dismiss: "Done",
+      owner: "Installation owner",
+      active: "Active",
+      inactive: "Inactive",
+      regenerate: "Regenerate setup code",
+      resetTitle: "Reset {username}'s password?",
+      resetDescription: "Regenerating the setup code replaces {username}'s password, signs them out and revokes their API keys. Give them the new code so they can choose a password again.",
+      deactivate: "Deactivate",
+      reactivate: "Reactivate",
+      delete: "Delete account",
+      deleteTitle: "Delete {username}?",
+      deleteDescription: "This revokes {username}'s sessions and cancels their work. Their chats, settings, credentials, uploads, datasets, training runs, outputs, exports, galleries, sandboxes, projects and temporary files are retired. Directories are renamed aside, never deleted. Creating this username again starts a fresh account with none of this data.",
+      cancel: "Cancel",
+      retry: "Refresh accounts",
+      failed: "Account request failed.",
+    },
     title: "Settings",
     dialog: {
       title: "Settings",
@@ -193,6 +221,7 @@ export const en = {
       panelReload: "Reload",
     },
     tabs: {
+      accounts: "Accounts",
       general: "General",
       profile: "Profile",
       appearance: "Appearance",
@@ -465,8 +494,18 @@ export const en = {
       droppedNotice: "Some lines were skipped: the log was written faster than it could be read.",
       morePending: "More lines are still being read; they arrive on the next refresh.",
       staleSession: "File logging is turned off, so this is an earlier session and will not update.",
-      // Not rendered: extra terms the settings search matches this tab on, so
-      // the pane is still reachable by searching for debug or an error.
+      downloadAllLogs: "Download all logs (.zip)",
+      downloadingAllLogs: "Packing logs...",
+      exportMaskedNote: "Credentials are masked in the exported files. Very large logs keep only their most recent lines, and some logs may be left out entirely; see EXPORT_WARNINGS.txt in the archive.",
+      downloadedTo: "Saved to {path}",
+      downloadedToBrowser: "Download started.",
+      showInFolder: "Show in folder",
+      openLogsFolder: "Open logs folder",
+      openLogsFolderFailed: "Could not open the logs folder.",
+      exportFailed: "Could not download the logs.",
+      exportTooOld: "Running Unsloth backend is too old to export logs. Update that backend and restart.",
+      exportForbidden: "Downloading all logs needs a signed-in Studio session. An API key is not enough.",
+      // Not rendered: extra terms the settings search matches this tab on.
       keywords: "debug debugging log logs error errors crash traceback stack trace troubleshoot diagnostics failed",
     },
     voice: {
@@ -493,6 +532,13 @@ export const en = {
         customModelDescription: "Model name sent to /v1/audio/transcriptions.",
         sttModelLabel: "Speech recognition model",
         sttModelDescription: "Choose or search a STT model to run locally.",
+        sttDeviceLabel: "Load into",
+        sttDeviceAuto: "GPU when available",
+        sttDeviceCpu: "CPU RAM",
+        sttDeviceAutoDescription:
+          "Use the GPU when there is one, and the CPU otherwise.",
+        sttDeviceCpuDescription:
+          "Keep the model in system RAM. Transcription is slower, but no GPU memory is used.",
         sttModelSearchPlaceholder: "Search any model on HF",
         sttModelSearching: "Searching Hugging Face…",
         sttModelValidating: "Checking Whisper compatibility…",
@@ -909,7 +955,11 @@ export const en = {
         currentStreak: "Current streak",
         longestStreak: "Longest streak",
         activityTitle: "Token activity",
-        activityDescription: "{total} over the last {weeks}",
+        activityDescription: {
+          daily: "{total} over the last {weeks}",
+          weekly: "Peak week {total} · last {weeks}",
+          cumulative: "{total} accumulated over the last {weeks}",
+        },
         mode: {
           daily: "Daily",
           weekly: "Weekly",
@@ -1183,8 +1233,8 @@ export const en = {
         keepResidentDescription: "Stay in VRAM between prompts.",
         keepResidentHint: "Don't hand the weights back to system RAM while the model stays loaded. Turns off idle auto-unload, and when the weights do sit in host RAM (unified memory, or a partial GPU offload) it also passes --mlock so the OS can't page them out and re-upload them on your next prompt.",
         noRamReserve: "Don't reserve system RAM for the model",
-        noRamReserveDescription: "Keep no full copy in RAM.",
-        noRamReserveHint: "Stream the weights into VRAM instead of keeping a full copy in RAM. Keeps llama.cpp's memory-mapped loading and drops --no-mmap and --mlock.",
+        noRamReserveDescription: "Reduce host RAM held for model weights.",
+        noRamReserveHint: "Skips memory-mapped loading on supported Windows builds when the model is fully offloaded to the GPU, so its pages are not held resident. Otherwise keeps memory-mapped loading. Required CPU buffers can still use RAM. Drops --no-mmap and --mlock.",
         mlockVetoed: "--mlock stays off: pinning the model in place would reserve RAM for all of it. Idle auto-unload is still disabled.",
         memlockCapped: "This system caps locked memory at {limit}. A larger model will not be fully pinned; raise the limit with ulimit -l.",
         reloadRequired: "Reload the model to apply the new memory flags.",
@@ -1240,11 +1290,12 @@ export const en = {
       description:
         "Connect coding agents like Claude Code and Codex to a local model with unsloth start.",
       intro:
-        "connects Claude Code, Codex, Hermes, OpenClaw, OpenCode and other agents to a model served locally by Unsloth, fully offline. It runs an OpenAI-compatible server and never touches your agent's config files.",
+        "connects Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode and other agents to a model served locally by Unsloth, fully offline. It runs an OpenAI-compatible server and never touches your agent's config files.",
       readDocs: "Read the docs",
       copy: "Copy",
       copied: "Copied",
       commandBuilder: "Command builder",
+      commandShell: "Shell for all commands",
       agent: "Coding agent",
       model: "Model",
       searchModels: "Search GGUF models...",
@@ -1690,7 +1741,7 @@ export const en = {
         desktopCheckingDescription: "This usually takes a few seconds.",
         desktopAvailable: "Desktop app {version} is available",
         desktopAvailableDescription:
-          "Update now to prepare it in the background. You keep working and restart when it is ready.",
+          "Update now and the desktop app will restart when it finishes.",
         desktopExternalServer:
           "Run `unsloth studio update` from the terminal that started your server.",
         desktopManualInstall:
@@ -1700,20 +1751,11 @@ export const en = {
         desktopCurrent: "Desktop app is up to date",
         desktopCurrentDescription:
           "Unsloth will continue checking automatically.",
-        desktopPreparingDescription:
-          "The update is being prepared in the background. You can keep working.",
-        desktopReadyToRestartDescription:
-          "Everything is ready. Restart to finish installing the update.",
-        desktopReadyToInstallDescription:
-          "The app update is downloaded. Finish updating the backend to install it.",
         checkForUpdates: "Check for updates",
         checkAgain: "Check again",
         retryCheck: "Try again",
         checking: "Checking...",
-        preparing: "Preparing...",
         updateNow: "Update now",
-        restartToUpdate: "Restart to update",
-        finishUpdate: "Finish update",
         openReleasePage: "Open release page",
         unknownInstall:
           "Could not detect how Unsloth was installed. For installer or PyPI installs, use the commands above.",
@@ -1868,6 +1910,7 @@ export const en = {
       sourceHfCache: "HF cache",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "Custom folder",
       sourceLocalModel: "Local model",
       vramOomBadge: "OOM",
@@ -2118,6 +2161,7 @@ export const en = {
       memoryEfficient: "Memory Efficient",
       weightDecomposed: "Weight-Decomposed",
       notSupportedAppleSilicon: "Not supported on Apple Silicon",
+      doraNeedsVisionLayersOff: "Turn off vision layer training to use DoRA",
       optimization: "Optimization",
       schedule: "Schedule",
       memory: "Memory",
@@ -2414,8 +2458,7 @@ export const en = {
       "Weights {model} + context {context} = {total} of {budget} usable VRAM",
     readoutWithSpec:
       "Weights {model} + KV {kv} + MTP draft {spec} = {total} of {budget} usable VRAM",
-    // Measured against llama.cpp: the cache is allocated at context creation,
-    // sized to n_ctx, so the rate is what a longer context actually costs.
+    // Measured against llama.cpp: the cache is allocated at context creation, sized to n_ctx.
     kvRate: "KV reserved, ~{rate}/token",
     oomLikely: "With current settings OOM likely",
     tooLarge: "Larger than VRAM, will offload to CPU. A smaller quantization runs faster",

@@ -5,7 +5,10 @@ import {
   OPEN_DOCUMENT_ATTACHMENT_EXTENSIONS,
   isOpenDocumentAttachmentName,
 } from "../chat/open-document-accept.ts";
-import { TEXT_ATTACHMENT_EXTENSIONS } from "../chat/text-attachment-accept.ts";
+import {
+  TEXT_ATTACHMENT_EXTENSIONS,
+  isTextAttachmentName,
+} from "../chat/text-attachment-accept.ts";
 import { RAG_UPLOAD_ACCEPT } from "../rag/types/rag.ts";
 
 const DOC_EXTS = RAG_UPLOAD_ACCEPT.split(",").map((ext) =>
@@ -23,11 +26,13 @@ export function isComposerAttachmentName(path: string): boolean {
 }
 
 function isTextDropName(path: string): boolean {
-  // Rust classifies on Path::extension, which a dotfile like ".env" has none of.
   const name = nativeFileName(path).toLowerCase();
+  if (!name.includes(".") && isTextAttachmentName(name)) {
+    return true;
+  }
+  // A dotfile like ".env" has no extension and remains unsupported.
   const dot = name.lastIndexOf(".");
-  if (dot <= 0) return false;
-  return TEXT_EXTS.includes(name.slice(dot));
+  return dot > 0 && TEXT_EXTS.includes(name.slice(dot));
 }
 
 /** Vision chat attachments; keep in sync with `shared-composer` `IMAGE_ACCEPT`. */
@@ -38,7 +43,8 @@ const IMAGE_EXTS = CHAT_IMAGE_DROP_ACCEPT.split(",").map((ext) =>
 );
 
 /** Chat audio attachments; keep in sync with `audio-attachment-adapter.ts` `accept`. */
-export const CHAT_AUDIO_DROP_ACCEPT = ".wav,.mp3,.m4a,.ogg,.oga,.flac";
+export const CHAT_AUDIO_DROP_ACCEPT =
+  ".wav,.mp3,.m4a,.ogg,.oga,.opus,.flac,.aac,.aiff,.aif,.aifc,.caf,.wma,.amr,.mp2";
 
 const AUDIO_EXTS = CHAT_AUDIO_DROP_ACCEPT.split(",").map((ext) =>
   ext.trim().toLowerCase(),
@@ -47,7 +53,8 @@ const AUDIO_EXTS = CHAT_AUDIO_DROP_ACCEPT.split(",").map((ext) =>
 /** Chat video attachments; keep in sync with `native_path_policy.rs`
  * `VIDEO_ATTACHMENT_EXTS`. llama-server decodes with ffmpeg, so this is what
  * ffmpeg reads, not what the webview can play. */
-export const CHAT_VIDEO_DROP_ACCEPT = ".mp4,.mov,.webm,.mkv,.avi";
+export const CHAT_VIDEO_DROP_ACCEPT =
+  ".mp4,.m4v,.mov,.webm,.mkv,.avi,.mpg,.mpeg,.wmv,.flv,.3gp,.ogv";
 
 const VIDEO_EXTS = CHAT_VIDEO_DROP_ACCEPT.split(",").map((ext) =>
   ext.trim().toLowerCase(),

@@ -2,17 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // Harness page for tests/studio/playwright_collapse_layout.py.
-//
 // It answers one question: when a collapsible toggles, does the browser lay out the WHOLE document,
 // and does that cost scale with how big the document is?
-//
 // The design point that makes the answer readable is that the COLLAPSIBLE'S OWN CONTENT IS
 // IDENTICAL IN EVERY RUN. Only the filler around it changes size. So if a toggle gets more
 // expensive as `fillers` grows, the extra cost cannot be the pane's own content -- it is the rest
 // of the document being laid out because of a toggle that has nothing to do with it.
-//
 // Four arms, selected with `?arm=`:
-//
 //   radix-height     Radix `CollapsibleContent` + the `animate-collapsible-*` height keyframes.
 //                    Today's mechanism.
 //   radix-grid       Radix `CollapsibleContent` + a `grid-template-rows: 0fr -> 1fr` transition,
@@ -26,7 +22,6 @@
 //   reasoning        The real `ReasoningRoot` / `ReasoningTrigger` / `ReasoningContent` /
 //                    `ReasoningText`, which follow GRID_COLLAPSE_REASONING_ENABLED. Run the page
 //                    once per flag value to get the real before/after rather than a model of it.
-//
 // No backend, no runtime: the reasoning primitives are plain components, and giving them a
 // synthetic runtime would only add nodes that are not part of what is being measured.
 
@@ -99,17 +94,15 @@ function PaneBody({ extra }: { extra: number }) {
 // `animate-collapsible-down` / `animate-collapsible-up`, and tailwind-merge does not know those as
 // members of its `animate` group, so a wrapper-based grid arm would silently keep the height
 // keyframes and the comparison would be between two things that both animate height.
-//
-// `heightContentClass` is `reasoning.tsx`'s own list with the duration inlined.
-//
-// The two grid arms do NOT share a class string, and the first attempt at this got it wrong in a
-// way worth recording. Radix has no "presence separate from state", so its arm has to drive the
-// row size off `data-state`. `UnmeasuredCollapsibleContent` drives it off its own staged
-// `expanded`, which lags `data-state` by two frames precisely so the `0fr` start value exists.
-// Giving the unmeasured arm the `data-[state=open]:grid-rows-[1fr]` variant as well let the
-// attribute selector -- higher specificity than the plain class -- win at mount, and the pane
-// snapped open with no transition while still reporting a clean layout count. A cheap-looking
-// number for an animation that was not running.
+// `heightContentClass` is `reasoning.tsx`'s own list with the duration inlined. The two grid arms
+// do NOT share a class string, and the first attempt at this got it wrong in a way worth recording.
+// Radix has no "presence separate from state", so its arm has to drive the row size off
+// `data-state`. `UnmeasuredCollapsibleContent` drives it off its own staged `expanded`, which lags
+// `data-state` by two frames precisely so the `0fr` start value exists. Giving the unmeasured arm
+// the `data-[state=open]:grid-rows-[1fr]` variant as well let the attribute selector -- higher
+// specificity than the plain class -- win at mount, and the pane snapped open with no transition
+// while still reporting a clean layout count. A cheap-looking number for an animation that was not
+// running.
 const heightContentClass =
   "overflow-hidden ease-out data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down data-[state=closed]:fill-mode-forwards data-[state=open]:duration-200 data-[state=closed]:duration-200";
 

@@ -81,13 +81,14 @@ def _load_helper():
 _OS_CELLS = {
     "windows": (ntpath, r"D:\Models\Merged Models\MyModel"),
     "linux": (posixpath, "/home/u/models/MyModel"),
-    # WSL reaches a Windows drive through drvfs; it is an ordinary POSIX path.
+    # WSL reaches a Windows drive through drvfs;
+    # it is an ordinary POSIX path.
     "wsl": (posixpath, "/mnt/d/Models/MyModel"),
     "macos": (posixpath, "/Users/u/models/MyModel"),
 }
 
-# Cells that are not real products. Kept as invariance checks only -- passing
-# here is NOT a claim that Unsloth supports CUDA or ROCm on macOS.
+# Cells that are not real products.
+# passing here is NOT a claim that Unsloth supports CUDA or ROCm on macOS.
 _UNREAL_CELLS = {("macos", "nvidia"), ("macos", "rocm")}
 
 

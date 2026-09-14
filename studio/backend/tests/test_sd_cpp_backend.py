@@ -25,6 +25,49 @@ from core.inference.sd_cpp_backend import (
 from core.inference.sd_cpp_engine import SdCppCancelled
 
 
+def _shared_setup_1(b, fake, monkeypatch):
+    monkeypatch.setattr(b, "_resolve_engine", lambda: fake)
+    monkeypatch.setattr(b, "_asset_specs", lambda *a, **k: [])
+    monkeypatch.setattr(b, "_set_expected_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(
+        b,
+        "_fetch_assets",
+        lambda *a, **k: {"diffusion_model": "/m/z.gguf", "vae": "/m/vae.sft", "llm": "/m/llm.sft"},
+    )
+    monkeypatch.setattr(
+        bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cpu")
+    )
+
+
+def _shared_setup_2(b, fam):
+    b._run_load(
+        repo_id = "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z.gguf",
+        base = fam.base_repo,
+        fam = fam,
+        hf_token = None,
+        _load_token = 1,
+    )
+
+
+def _shared_setup_3(monkeypatch, own):
+    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: str(own))
+    monkeypatch.setattr(bk, "is_managed_binary", lambda _b: False)
+    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_args: _PRE_H3_HELP)
+
+    with pytest.raises(RuntimeError, match = "does not advertise MiniMax-H3") as excinfo:
+        bk.ensure_h3_sd_cpp_binary()
+    return excinfo
+
+
+def _shared_setup_4(monkeypatch):
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    monkeypatch.setattr(
+        SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: {})
+    )
+    return b
+
+
 class _FakeEngine:
     """Stands in for SdCppEngine: writes a 1x1 PNG and records the args."""
 
@@ -390,10 +433,7 @@ def test_download_plan_restages_a_native_asset_that_changed_size(monkeypatch):
 def test_download_plan_is_empty_when_every_native_asset_is_cached(monkeypatch):
     from core.inference.diffusion import DiffusionBackend
 
-    b = SdCppDiffusionBackend(engine = _FakeEngine())
-    monkeypatch.setattr(
-        SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: {})
-    )
+    b = _shared_setup_4(monkeypatch)
     monkeypatch.setattr(
         DiffusionBackend,
         "_hub_file_is_cached",
@@ -533,10 +573,7 @@ def test_download_plan_stages_the_mirrored_asset_repo(monkeypatch):
     """STAGED before the load runs, so a gated asset repo left here 401s an anonymous user and
     _fetch_assets' swap is never reached. FLUX.1's VAE lives in the gated FLUX.1-schnell."""
     _no_cache(monkeypatch)
-    b = SdCppDiffusionBackend(engine = _FakeEngine())
-    monkeypatch.setattr(
-        SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: {})
-    )
+    b = _shared_setup_4(monkeypatch)
 
     plan = b.download_plan(
         "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf", model_kind = "gguf"
@@ -554,10 +591,7 @@ def test_download_plan_and_fetch_assets_pick_the_same_repo(monkeypatch):
     """Staging one repo and then downloading from the other is the failure this feature removes,
     so both sides take the decision from the same per-repo file list."""
     _no_cache(monkeypatch)
-    b = SdCppDiffusionBackend(engine = _FakeEngine())
-    monkeypatch.setattr(
-        SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: {})
-    )
+    b = _shared_setup_4(monkeypatch)
     pulled: list = []
     monkeypatch.setattr(
         "utils.hf_xet_fallback.hf_hub_download_with_xet_fallback",
@@ -1051,12 +1085,7 @@ def test_h3_binary_gate_refuses_but_keeps_a_user_supplied_build(monkeypatch, tmp
     # all), so the load fails with a message naming the binary instead.
     own = tmp_path / "sd-cli"
     own.write_text("binary")
-    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: str(own))
-    monkeypatch.setattr(bk, "is_managed_binary", lambda _b: False)
-    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_args: _PRE_H3_HELP)
-
-    with pytest.raises(RuntimeError, match = "does not advertise MiniMax-H3") as excinfo:
-        bk.ensure_h3_sd_cpp_binary()
+    excinfo = _shared_setup_3(monkeypatch, own)
     assert own.exists()
     # Not Unsloth's to delete, so the refusal must not ask for anything to be removed. The old
     # wording said "remove that directory" whatever the binary was, and PATH discovery hands this
@@ -1074,12 +1103,7 @@ def test_h3_binary_gate_offers_to_clear_an_unmarked_install_directory(monkeypatc
     root.mkdir(parents = True)
     own.write_text("binary")
     monkeypatch.setattr(bk, "managed_install_root", lambda: root)
-    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: str(own))
-    monkeypatch.setattr(bk, "is_managed_binary", lambda _b: False)
-    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_args: _PRE_H3_HELP)
-
-    with pytest.raises(RuntimeError, match = "does not advertise MiniMax-H3") as excinfo:
-        bk.ensure_h3_sd_cpp_binary()
+    excinfo = _shared_setup_3(monkeypatch, own)
     assert f"move {root} aside" in str(excinfo.value)
     assert "remove" not in str(excinfo.value)
     assert own.exists()
@@ -1096,12 +1120,7 @@ def test_h3_binary_gate_never_offers_to_delete_the_in_tree_developer_build(monke
     # raising = False because the hint does not import it. The patch is what makes this a
     # regression guard: re-add the root to _h3_replacement_hint and it resolves to this tree.
     monkeypatch.setattr(bk, "in_tree_install_root", lambda: root, raising = False)
-    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", lambda **_kwargs: str(own))
-    monkeypatch.setattr(bk, "is_managed_binary", lambda _b: False)
-    monkeypatch.setattr(bk, "_sd_cpp_probe_output", lambda *_args: _PRE_H3_HELP)
-
-    with pytest.raises(RuntimeError, match = "does not advertise MiniMax-H3") as excinfo:
-        bk.ensure_h3_sd_cpp_binary()
+    excinfo = _shared_setup_3(monkeypatch, own)
     assert "remove" not in str(excinfo.value)
     assert own.exists()
 
@@ -1672,17 +1691,7 @@ def test_a_cancel_during_server_revalidation_stops_before_the_process_spawns(mon
 
     monkeypatch.setattr(bk, "SdCppServer", _RecordingServer)
     fake = _FakeEngine()
-    monkeypatch.setattr(b, "_resolve_engine", lambda: fake)
-    monkeypatch.setattr(b, "_asset_specs", lambda *a, **k: [])
-    monkeypatch.setattr(b, "_set_expected_bytes", lambda *a, **k: None)
-    monkeypatch.setattr(
-        b,
-        "_fetch_assets",
-        lambda *a, **k: {"diffusion_model": "/m/z.gguf", "vae": "/m/vae.sft", "llm": "/m/llm.sft"},
-    )
-    monkeypatch.setattr(
-        bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cpu")
-    )
+    _shared_setup_1(b, fake, monkeypatch)
     fam = detect_family("z-image")
     b._load_token = 1
     b._run_load(
@@ -1720,27 +1729,10 @@ def test_server_start_failure_falls_back_to_oneshot(monkeypatch):
 
     monkeypatch.setattr(bk, "SdCppServer", _BadServer)
     fake = _FakeEngine()
-    monkeypatch.setattr(b, "_resolve_engine", lambda: fake)
-    monkeypatch.setattr(b, "_asset_specs", lambda *a, **k: [])
-    monkeypatch.setattr(b, "_set_expected_bytes", lambda *a, **k: None)
-    monkeypatch.setattr(
-        b,
-        "_fetch_assets",
-        lambda *a, **k: {"diffusion_model": "/m/z.gguf", "vae": "/m/vae.sft", "llm": "/m/llm.sft"},
-    )
-    monkeypatch.setattr(
-        bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cpu")
-    )
+    _shared_setup_1(b, fake, monkeypatch)
     fam = detect_family("z-image")
     b._load_token = 1
-    b._run_load(
-        repo_id = "unsloth/Z-Image-Turbo-GGUF",
-        gguf_filename = "z.gguf",
-        base = fam.base_repo,
-        fam = fam,
-        hf_token = None,
-        _load_token = 1,
-    )
+    _shared_setup_2(b, fam)
     assert b._state is not None and b._state.mode == "oneshot" and b._state.server is None
     # The server it started and stopped must not stay published: _pending_server means "a native
     # process is running out of the managed tree", which suppresses every later accelerator
@@ -1775,17 +1767,7 @@ def test_server_start_failure_keeps_the_engine_the_fallback_resolved(monkeypatch
     monkeypatch.setattr(bk, "SdCppServer", _BadServer)
     fake = _FakeEngine()
     fake.binary = "/x/sd-cli"
-    monkeypatch.setattr(b, "_resolve_engine", lambda: fake)
-    monkeypatch.setattr(b, "_asset_specs", lambda *a, **k: [])
-    monkeypatch.setattr(b, "_set_expected_bytes", lambda *a, **k: None)
-    monkeypatch.setattr(
-        b,
-        "_fetch_assets",
-        lambda *a, **k: {"diffusion_model": "/m/z.gguf", "vae": "/m/vae.sft", "llm": "/m/llm.sft"},
-    )
-    monkeypatch.setattr(
-        bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cpu")
-    )
+    _shared_setup_1(b, fake, monkeypatch)
     # Keyed on the binary, not constant: the whole bug is that the recorded accelerator was read
     # off None, so a stub that answers the same for every argument would pass either way.
     monkeypatch.setattr(
@@ -1793,14 +1775,7 @@ def test_server_start_failure_keeps_the_engine_the_fallback_resolved(monkeypatch
     )
     fam = detect_family("z-image")
     b._load_token = 1
-    b._run_load(
-        repo_id = "unsloth/Z-Image-Turbo-GGUF",
-        gguf_filename = "z.gguf",
-        base = fam.base_repo,
-        fam = fam,
-        hf_token = None,
-        _load_token = 1,
-    )
+    _shared_setup_2(b, fam)
     assert b._state is not None and b._state.mode == "oneshot"
     assert b._state.sd_accelerator == "cuda"
     # The check the recorded value exists for: the per-image re-resolution must accept the very
@@ -1830,31 +1805,14 @@ def test_server_unusable_after_the_download_keeps_the_engine_the_fallback_resolv
     monkeypatch.setattr(bk, "ensure_sd_server_binary", lambda **_k: "/x/sd-server")
     fake = _FakeEngine()
     fake.binary = "/x/sd-cli"
-    monkeypatch.setattr(b, "_resolve_engine", lambda: fake)
-    monkeypatch.setattr(b, "_asset_specs", lambda *a, **k: [])
-    monkeypatch.setattr(b, "_set_expected_bytes", lambda *a, **k: None)
-    monkeypatch.setattr(
-        b,
-        "_fetch_assets",
-        lambda *a, **k: {"diffusion_model": "/m/z.gguf", "vae": "/m/vae.sft", "llm": "/m/llm.sft"},
-    )
-    monkeypatch.setattr(
-        bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cpu")
-    )
+    _shared_setup_1(b, fake, monkeypatch)
     # One tree, one accelerator, and nothing replaces it during this load: every refusal this test
     # can see is the pin being read off the wrong engine, never a genuine swap.
     monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: "cuda" if binary else None)
     fam = detect_family("z-image")
     b._load_token = 1
     b._loading = bk._SdLoading(repo_id = "unsloth/Z-Image-Turbo-GGUF", base_repo = fam.base_repo)
-    b._run_load(
-        repo_id = "unsloth/Z-Image-Turbo-GGUF",
-        gguf_filename = "z.gguf",
-        base = fam.base_repo,
-        fam = fam,
-        hf_token = None,
-        _load_token = 1,
-    )
+    _shared_setup_2(b, fam)
     assert b._state is not None, f"the fallback was refused: {b.load_progress().get('error')}"
     assert b._state.mode == "oneshot" and b._state.server is None
     assert b._state.sd_accelerator == "cuda"
@@ -1893,14 +1851,7 @@ def test_a_oneshot_load_refuses_a_cli_swapped_during_the_asset_download(monkeypa
     fam = detect_family("z-image")
     b._load_token = 1
     b._loading = bk._SdLoading(repo_id = "unsloth/Z-Image-Turbo-GGUF", base_repo = fam.base_repo)
-    b._run_load(
-        repo_id = "unsloth/Z-Image-Turbo-GGUF",
-        gguf_filename = "z.gguf",
-        base = fam.base_repo,
-        fam = fam,
-        hf_token = None,
-        _load_token = 1,
-    )
+    _shared_setup_2(b, fam)
 
     assert b._state is None
     assert "different accelerator" in (b.load_progress()["error"] or "")

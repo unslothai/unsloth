@@ -80,8 +80,8 @@ def _load(
         ):
             exec(ast.get_source_segment(_SRC, node), ns)
 
-    # planner_quantization_kwargs reads the shared skip list; stub it so the test never
-    # imports the real unsloth_zoo (and so the assertions do not track its contents).
+    # planner_quantization_kwargs reads the shared skip list;
+    # stub it so the test never imports the real unsloth_zoo (and so the assertions do not track its contents).
     peft_utils = types.ModuleType("unsloth_zoo.peft_utils")
     peft_utils.SKIP_QUANTIZATION_MODULES = list(_SKIP_MODULES)
     sys.modules["unsloth_zoo.peft_utils"] = peft_utils
@@ -99,9 +99,6 @@ class _Plan:
 
     def describe(self):
         return "  (fabricated plan)"
-
-
-# ------------------------------------------------- what an existing caller still gets
 
 
 @pytest.mark.parametrize(
@@ -379,9 +376,6 @@ def test_an_infeasible_plan_is_raised_not_swallowed():
     ns = _load(planner = _infeasible)
     with pytest.raises(DeviceMapInfeasible):
         ns["resolve_unsloth_device_map"]("unsloth", "m")
-
-
-# ------------------------------------------------- the second name, whose decline shards
 
 
 @pytest.mark.parametrize(
