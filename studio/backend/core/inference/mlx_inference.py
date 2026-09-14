@@ -764,12 +764,23 @@ _VIDEO_PROBE_MESSAGES = [
 
 
 def _mlx_vlm_decodes_video() -> bool:
-    """mlx-vlm gained its clip decoder in 0.5.0; a release without it takes no video."""
+    """mlx-vlm gained its clip decoder in 0.5.0; a release without it takes no video.
+
+    OpenCV is that decoder: ``load_video`` imports cv2 itself, and so does the frame budget. It
+    arrives with mlx-vlm, but a stack that lost it reads no clip either, and answering False here
+    refuses one by name instead of raising ModuleNotFoundError inside the generation stream.
+    """
     try:
         from mlx_vlm import utils as vlm_utils
     except ImportError:
         return False
-    return callable(getattr(vlm_utils, "load_video", None))
+    if not callable(getattr(vlm_utils, "load_video", None)):
+        return False
+    try:
+        import cv2  # noqa: F401
+    except ImportError:
+        return False
+    return True
 
 
 def _video_placeholder(processor):
@@ -822,6 +833,30 @@ def _write_video_clip(video_b64: str) -> str:
 _VIDEO_DECODE_BUDGET_BYTES = 2 << 30
 
 
+# load_video's own defaults, unchanged across 0.5.0 to 0.7.0. Only reached when a release leaves
+# a knob unnamed or unset, so the rate stays mlx-vlm's rather than becoming a TypeError on a clip.
+_VIDEO_SAMPLING_FALLBACK = {"fps": 2.0, "min_frames": 4}
+
+
+def _sampled(name, value):
+    """*value*, or mlx-vlm's own default for *name* when the installed release settled nothing."""
+    return _VIDEO_SAMPLING_FALLBACK[name] if value is None else value
+
+
+def _declared_video_sampling(processor) -> dict:
+    """The sampling a processor asks for, read the way mlx-vlm's own
+    ``processor_video_sampling`` reads it, so both branches below agree on one model."""
+    component = getattr(processor, "video_processor", None)
+    if component is None:
+        return {}
+    for owner in (component, processor):
+        hook = getattr(owner, "video_sampling_defaults", None)
+        if callable(hook):
+            declared = hook()
+            return dict(declared) if isinstance(declared, dict) else vars(declared)
+    return {name: getattr(component, name, None) for name in ("fps", "min_frames", "max_frames")}
+
+
 def _video_sampling_target(processor) -> tuple[float, int, Optional[int]]:
     """mlx-vlm's (fps, min_frames, nframes); older releases pass only ``fps`` to ``load_video``."""
     import inspect
@@ -831,9 +866,32 @@ def _video_sampling_target(processor) -> tuple[float, int, Optional[int]]:
     resolve = getattr(vlm_utils, "resolve_video_sampling", None)
     if resolve is not None:
         sampling = resolve(processor, {})
-        return sampling.fps, sampling.min_frames, sampling.nframes
+        # Its merge chain terminates in mlx-vlm's own defaults, so neither is unset today; naming
+        # them anyway keeps a rate the budget can divide by out of the hands of a future release.
+        return (
+            _sampled("fps", sampling.fps),
+            _sampled("min_frames", sampling.min_frames),
+            sampling.nframes,
+        )
+    # Older releases resolve nothing: prepare_inputs forwards only ``fps`` and leaves
+    # load_video's defaults for the rest. So the model's own rate has to be applied here --
+    # nothing else on this path would apply it, and Studio pins mlx-vlm below 0.7.0, so this
+    # is the branch a real install takes. ``min_frames`` stays the decoder's, because that is
+    # the count it will really decode: nothing forwards a processor's.
     defaults = inspect.signature(vlm_utils.load_video).parameters
-    return defaults["fps"].default, defaults["min_frames"].default, None
+
+    def _default(name):
+        parameter = defaults.get(name)
+        if parameter is None or parameter.default is inspect.Parameter.empty:
+            return None
+        return parameter.default
+
+    declared_fps = _declared_video_sampling(processor).get("fps")
+    return (
+        _sampled("fps", _default("fps") if declared_fps is None else declared_fps),
+        _sampled("min_frames", _default("min_frames")),
+        None,
+    )
 
 
 def _video_frame_rate(clip_path: str, processor) -> Optional[float]:

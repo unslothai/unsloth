@@ -5085,6 +5085,29 @@ def test_mlx_unset_budget_falls_back_when_the_prompt_cannot_be_counted(monkeypat
 _CLIP_B64 = "AAAAGGZ0eXBtcDQy"  # a bare mp4 box header, decoded byte-for-byte by the backend
 
 
+def _require_video_stack_module():
+    """`_require_video_stack`, returning the package so a test can restand its ``utils``."""
+    _require_video_stack()
+    import mlx_vlm
+
+    return mlx_vlm
+
+
+def _require_video_stack():
+    """The clip path needs both halves of mlx-vlm's decoder: the library and OpenCV.
+
+    OpenCV installs as an mlx-vlm dependency, so a runner has both or neither -- but guarding on
+    one of them alone let a test that needs both run on a runner that had only the other. The
+    decoder itself lands in 0.5.0, and the install floor is 0.4.4, so the package being importable
+    is not the same question as the clip path existing.
+    """
+    utils = pytest.importorskip("mlx_vlm.utils")
+    if not callable(getattr(utils, "load_video", None)):
+        pytest.skip("the installed mlx-vlm predates the 0.5.0 clip decoder")
+    pytest.importorskip("cv2")
+    return utils
+
+
 def _video_vlm_backend(monkeypatch, streams):
     from core.inference import mlx_inference
 
@@ -5102,7 +5125,7 @@ def _video_vlm_backend(monkeypatch, streams):
         yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
 
     mlx_vlm.stream_generate = _vlm_stream
-    real_vlm_utils = pytest.importorskip("mlx_vlm.utils")
+    real_vlm_utils = _require_video_stack()
     monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
     monkeypatch.setitem(sys.modules, "mlx_vlm.utils", real_vlm_utils)
     monkeypatch.setattr(
@@ -5214,8 +5237,10 @@ def _tiny_clip(
     height = 24,
     frames = 12,
 ):
-    import cv2
-    import numpy as np
+    # importorskip, not a bare import: OpenCV arrives with mlx-vlm and is absent from the
+    # bare runners, and two of the three callers reach here before any other guard.
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
 
     writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 4.0, (width, height))
     for index in range(frames):
@@ -5232,7 +5257,7 @@ def test_mlx_vlm_the_decoded_frame_stack_is_bounded(monkeypatch, tmp_path):
 
     from core.inference import mlx_inference
 
-    pytest.importorskip("mlx_vlm.utils")
+    _require_video_stack()
     clip = _tiny_clip(tmp_path / "clip.mp4")
     per_frame = 2 * 3 * 32 * 24
     plain = SimpleNamespace()
@@ -5259,6 +5284,7 @@ def test_mlx_vlm_a_clip_with_an_unreadable_rate_is_still_bounded(monkeypatch):
     budget here is the one path around it."""
     from core.inference import mlx_inference
 
+    _require_video_stack()
     cv2 = pytest.importorskip("cv2")
     measurements = {
         cv2.CAP_PROP_FRAME_WIDTH: 32.0,
@@ -5289,7 +5315,7 @@ def test_mlx_vlm_the_frame_rate_follows_an_older_mlx_vlm_decoder(monkeypatch, tm
     """Older releases hand load_video only ``fps``, so its signature is the sampling source."""
     from core.inference import mlx_inference
 
-    mlx_vlm = pytest.importorskip("mlx_vlm")
+    mlx_vlm = _require_video_stack_module()
 
     def load_video(
         video_path,
@@ -5392,7 +5418,7 @@ def test_mlx_generate_chat_response_attaches_the_video_part_and_forwards_the_cli
     from core.inference import mlx_inference
     from core.inference.mlx_inference import MLXInferenceBackend
 
-    pytest.importorskip("mlx_vlm")
+    _require_video_stack()
     backend = MLXInferenceBackend()
     backend._model = object()
     backend._is_vlm = True
@@ -5421,7 +5447,7 @@ def test_mlx_vlm_decodes_video_only_with_its_clip_decoder(monkeypatch):
     """The declared mlx-vlm range starts before load_video existed."""
     from core.inference import mlx_inference
 
-    mlx_vlm = pytest.importorskip("mlx_vlm")
+    mlx_vlm = _require_video_stack_module()
 
     assert mlx_inference._mlx_vlm_decodes_video() is True
     monkeypatch.setattr(mlx_vlm, "utils", SimpleNamespace(prepare_inputs = object()))
@@ -5433,7 +5459,7 @@ def test_mlx_reads_video_asks_the_processor_and_the_template(monkeypatch):
     from core.inference import mlx_inference
     from core.inference.mlx_inference import _VIDEO_PROBE_MESSAGES, _mlx_reads_video
 
-    pytest.importorskip("mlx_vlm")
+    _require_video_stack()
     renders = {}
 
     def _render(_target, messages, **_kwargs):
@@ -5468,7 +5494,7 @@ def test_mlx_reads_video_rejects_a_clip_rendered_as_prose(monkeypatch):
     render while marking nothing -- the model would then answer without the clip."""
     from core.inference.mlx_inference import _VIDEO_PROBE_MESSAGES, _mlx_reads_video
 
-    pytest.importorskip("mlx_vlm")
+    _require_video_stack()
     renders = {}
 
     def _render(_target, messages, **_kwargs):
@@ -5494,3 +5520,121 @@ def test_mlx_reads_video_rejects_a_clip_rendered_as_prose(monkeypatch):
     unnamed = SimpleNamespace(video_processor = object(), tokenizer = SimpleNamespace())
     renders["video"] = "video hi"
     assert _mlx_reads_video(unnamed) is True
+
+
+def _sampling_release(monkeypatch, **utils_fields):
+    """Stand mlx_vlm.utils up in one release's shape, so one processor can be read on each."""
+    mlx_vlm = _require_video_stack_module()
+    monkeypatch.setattr(mlx_vlm, "utils", SimpleNamespace(**utils_fields))
+
+
+def _legacy_load_video(video_path, fps = 2.0, nframes = None, min_frames = 4, max_frames = 768):
+    raise AssertionError("never decoded here")
+
+
+def _resolving_utils():
+    """The 0.7.0 shape: a resolver that reads the processor, terminating in the library defaults."""
+
+    def resolve_video_sampling(processor, _overrides):
+        component = getattr(processor, "video_processor", None)
+        declared = {}
+        if component is not None:
+            hook = getattr(component, "video_sampling_defaults", None)
+            declared = (
+                hook()
+                if callable(hook)
+                else {n: getattr(component, n, None) for n in ("fps", "min_frames")}
+            )
+        return SimpleNamespace(
+            fps = declared.get("fps") or 2.0,
+            min_frames = declared.get("min_frames") or 4,
+            nframes = declared.get("nframes"),
+        )
+
+    return {"load_video": _legacy_load_video, "resolve_video_sampling": resolve_video_sampling}
+
+
+@pytest.mark.parametrize(
+    "processor, expected_fps",
+    [
+        (SimpleNamespace(), 2.0),
+        (SimpleNamespace(video_processor = SimpleNamespace(fps = 1.0)), 1.0),
+        (SimpleNamespace(video_processor = SimpleNamespace(fps = 4.0)), 4.0),
+        (SimpleNamespace(video_processor = SimpleNamespace()), 2.0),
+        (
+            SimpleNamespace(
+                video_processor = SimpleNamespace(
+                    video_sampling_defaults = lambda: {"fps": 0.5, "min_frames": 4}
+                )
+            ),
+            0.5,
+        ),
+    ],
+)
+def test_mlx_vlm_every_release_reads_one_models_rate_the_same_way(
+    monkeypatch, processor, expected_fps
+):
+    """A model's declared rate must not depend on which mlx-vlm is installed.
+
+    Studio pins ``mlx-vlm>=0.4.4,<0.7.0``, so the release without a resolver is the one a real
+    install runs; reading the rate only through the resolver left every shipped install sampling
+    at the library default instead of the rate the checkpoint asked for.
+    """
+    from core.inference import mlx_inference
+
+    seen = []
+    for utils_fields in (
+        {"load_video": _legacy_load_video},  # 0.5.0 and the whole 0.6 line
+        _resolving_utils(),  # 0.7.0
+    ):
+        with pytest.MonkeyPatch.context() as patch:
+            _sampling_release(patch, **utils_fields)
+            seen.append(mlx_inference._video_sampling_target(processor))
+
+    assert seen[0] == seen[1], "the installed mlx-vlm changed the sampling this model asked for"
+    assert seen[0] == (expected_fps, 4, None)
+
+
+def test_mlx_vlm_a_release_naming_no_fps_knob_still_bounds_a_clip(monkeypatch):
+    """Forward compatibility: an unknown load_video signature must not make a clip a KeyError."""
+    from core.inference import mlx_inference
+
+    def load_video(video_path, sampling = None, **sampling_kwargs):
+        raise AssertionError("never decoded here")
+
+    _sampling_release(monkeypatch, load_video = load_video)
+    assert mlx_inference._video_sampling_target(SimpleNamespace()) == (2.0, 4, None)
+    assert mlx_inference._video_sampling_target(
+        SimpleNamespace(video_processor = SimpleNamespace(fps = 1.0))
+    ) == (1.0, 4, None)
+
+
+def test_mlx_vlm_without_opencv_refuses_a_clip_by_name(monkeypatch):
+    """The capability must not promise what the decoder cannot deliver.
+
+    mlx-vlm's ``load_video`` and the frame budget both import cv2. OpenCV ships as an mlx-vlm
+    dependency, but a stack that lost it used to still report ``has_video_input``, so the composer
+    offered video and the request died with ModuleNotFoundError mid-stream instead of being refused.
+    """
+    from core.inference import mlx_inference
+
+    _require_video_stack()
+    assert mlx_inference._mlx_vlm_decodes_video() is True
+
+    monkeypatch.setitem(sys.modules, "cv2", None)
+    assert mlx_inference._mlx_vlm_decodes_video() is False
+    assert (
+        _mlx_reads_video_probe(monkeypatch) is False
+    ), "a model must not advertise video once the decoder is gone"
+
+
+def _mlx_reads_video_probe(monkeypatch):
+    from core.inference.mlx_inference import _mlx_reads_video
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda _t, _m, **_k: "<video> marked",
+    )
+    return _mlx_reads_video(
+        SimpleNamespace(video_processor = object(), tokenizer = SimpleNamespace())
+    )
