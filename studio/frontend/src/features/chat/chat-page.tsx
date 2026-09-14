@@ -447,7 +447,9 @@ const SingleContent = memo(function SingleContent({
         data-artifact-layout-animating={
           isArtifactLayoutAnimating ? "true" : "false"
         }
-        className="chat-artifact-split min-h-0 min-w-0 flex-1 basis-0 overflow-hidden"
+        // Keep chat borders, progress decorations and in-page surfaces below global dialogs.
+        // Raising Settings instead would hide its body-portaled confirmations and menus.
+        className="chat-artifact-split isolate min-h-0 min-w-0 flex-1 basis-0 overflow-hidden"
       >
         <ResizablePanel
           id="chat-thread"
