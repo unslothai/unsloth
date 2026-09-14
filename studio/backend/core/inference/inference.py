@@ -452,6 +452,12 @@ class _StopSequenceStreamer:
             abort()
 
 
+def _named_turn(turn: dict, source) -> dict:
+    if isinstance(source, dict) and source.get("name"):
+        turn["name"] = source["name"]
+    return turn
+
+
 def _prompt_already_has_bos(tokenizer, prompt):
     """Did the rendered chat template emit BOS itself?
 
@@ -1601,6 +1607,17 @@ class InferenceBackend:
                         {"type": "text", "text": user_message},
                     ],
                 }
+                _named_turn(
+                    user_msg,
+                    next(
+                        (
+                            m
+                            for m in reversed(messages)
+                            if isinstance(m, dict) and m.get("role") == "user"
+                        ),
+                        None,
+                    ),
+                )
                 if system_prompt:
                     vision_messages = [
                         {
@@ -1615,10 +1632,13 @@ class InferenceBackend:
                 # Resume the partial answer instead of opening a new turn.
                 if continue_partial:
                     vision_messages.append(
-                        {
-                            "role": "assistant",
-                            "content": [{"type": "text", "text": continue_partial}],
-                        }
+                        _named_turn(
+                            {
+                                "role": "assistant",
+                                "content": [{"type": "text", "text": continue_partial}],
+                            },
+                            messages[-1],
+                        )
                     )
 
                 # Processor's own template skips the choke point (#7066). Rebind user_msg
@@ -2736,16 +2756,20 @@ class InferenceBackend:
                     import re
                     clean_content = re.sub(r"<[^>]+>", "", content).strip()
                     if clean_content:
-                        chat_messages.append({"role": role, "content": clean_content})
+                        chat_messages.append(
+                            _named_turn({"role": role, "content": clean_content}, msg)
+                        )
                         last_role = role
                 elif role == "assistant":
-                    assistant_message = {"role": role, "content": content}
+                    assistant_message = _named_turn({"role": role, "content": content}, msg)
                     if has_reasoning_content:
                         assistant_message["reasoning_content"] = reasoning_content
                     chat_messages.append(assistant_message)
                     last_role = role
-                elif role == "system":
-                    continue
+                elif role == "system" and last_role is None:
+                    # A named system turn arrives in messages with no system_prompt beside it.
+                    chat_messages.append(_named_turn({"role": role, "content": content}, msg))
+                    last_role = role
 
         # A continuation resumes that turn, so dropping it would restart the answer.
         _continuing = continue_final_message and bool(

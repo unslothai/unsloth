@@ -258,6 +258,25 @@ def test_no_tools_request_untouched(monkeypatch):
     assert choice["message"].get("tool_calls") is None
 
 
+def test_named_system_turn_reaches_the_local_backend(monkeypatch):
+    backend = _ScriptedBackend(_fixed("ok"))
+    payload = _request(
+        stream = False,
+        messages = [
+            ChatMessage(role = "system", name = "supervisor", content = "be brief"),
+            ChatMessage(role = "user", name = "alice", content = "hi"),
+        ],
+    )
+    _call(payload, monkeypatch, backend)
+    sent = backend.calls[0]
+    assert sent["system_prompt"] == ""
+    assert [(m["role"], m.get("name")) for m in sent["messages"]] == [
+        ("system", "supervisor"),
+        ("user", "alice"),
+    ]
+    assert sent["messages"][0]["content"].endswith("be brief")
+
+
 def test_prose_around_call_retained(monkeypatch):
     text = "Let me look:\n" + _CALL_XML + "\ndone"
     backend = _ScriptedBackend(_fixed(text))

@@ -573,6 +573,30 @@ def test_a_folded_system_turn_is_wrapped_as_content_parts():
     assert out[0] is not None
 
 
+def test_the_collapsed_vision_turn_keeps_the_participant_name():
+    backend, seen = _vision_probe()
+    _drain(
+        backend,
+        messages = [{"role": "user", "name": "alice", "content": "what is in this picture"}],
+    )
+    assert [(m["role"], m.get("name")) for m in seen["messages"]] == [("user", "alice")]
+
+
+def test_a_named_system_turn_reaches_the_vision_template():
+    backend, seen = _vision_probe()
+    _drain(
+        backend,
+        messages = [
+            {"role": "system", "name": "supervisor", "content": "be brief"},
+            {"role": "user", "name": "alice", "content": "what is in this picture"},
+        ],
+    )
+    assert [(m["role"], m.get("name")) for m in seen["messages"]] == [
+        ("system", "supervisor"),
+        ("user", "alice"),
+    ]
+
+
 def test_a_nudge_retry_keeps_the_image_on_the_question_turn():
     """A plain reverse scan hands the image marker to the nudge retry's appended
     correction, so the question that asked about the picture renders image-less (#10092)."""
