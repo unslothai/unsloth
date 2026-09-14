@@ -4818,22 +4818,31 @@ case "$_torch_index_leaf" in
         fi
         _runtime_gfx=""
         if [ -n "$_gfx_all" ]; then
-            # first-set-wins over hip/rocr/cuda, mirroring _pick_visible_index in studio/install_python_stack.py
-            _vis_var=""
-            if [ -n "${HIP_VISIBLE_DEVICES+x}" ]; then
-                _vis_var=HIP_VISIBLE_DEVICES; _vis="$HIP_VISIBLE_DEVICES"
-            elif [ -n "${ROCR_VISIBLE_DEVICES+x}" ]; then
-                _vis_var=ROCR_VISIBLE_DEVICES; _vis="$ROCR_VISIBLE_DEVICES"
-            elif [ -n "${CUDA_VISIBLE_DEVICES+x}" ]; then
-                _vis_var=CUDA_VISIBLE_DEVICES; _vis="$CUDA_VISIBLE_DEVICES"
+            # first-set-wins, mirroring _pick_visible_index in studio/install_python_stack.py.
+            # WHICH layers are still live depends on who probed. rocminfo is an ROCr client,
+            # so its output is ALREADY filtered by ROCR_VISIBLE_DEVICES, and indexing by that
+            # same variable would apply one layer twice. The HIP layer then selects among the
+            # survivors, so CUDA_VISIBLE_DEVICES (its alias) has to stay reachable instead of
+            # being shadowed by an ROCr mask that has already done its work: with
+            # ROCR_VISIBLE_DEVICES=2,1 and CUDA_VISIBLE_DEVICES=1, the target is the SECOND
+            # survivor. Mirrors _HIP_LAYER_MASKS in studio/install_python_stack.py.
+            if [ "$_gfx_probe" = rocminfo ]; then
+                _vis_masks="HIP_VISIBLE_DEVICES CUDA_VISIBLE_DEVICES"
             else
-                _vis=""
+                _vis_masks="HIP_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES CUDA_VISIBLE_DEVICES"
             fi
+            _vis_var=""
+            _vis=""
+            for _vis_m in $_vis_masks; do
+                eval "_vis_m_set=\${$_vis_m+x}"
+                if [ -n "$_vis_m_set" ]; then
+                    _vis_var="$_vis_m"
+                    eval "_vis=\$$_vis_m"
+                    break
+                fi
+            done
             _idx=0
-            # rocminfo already applied an rocr mask, so its output IS the runtime order and must not be indexed again
-            if [ "$_gfx_probe" = rocminfo ] && [ "$_vis_var" = ROCR_VISIBLE_DEVICES ]; then
-                _idx=0
-            elif [ -n "$_vis" ] && [ "$_vis" != "-1" ]; then
+            if [ -n "$_vis" ] && [ "$_vis" != "-1" ]; then
                 _first=${_vis%%,*}
                 case "$_first" in
                     ''|*[!0-9]*) _idx=0 ;;

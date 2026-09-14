@@ -387,6 +387,38 @@ for _fn in _rocminfo_gpu_records _amd_smi_gpu_records _gfx_arch_slots _amd_smi_h
     fi
 done
 
+echo "=== the ROCr layer and the HIP layer compose, they do not shadow ==="
+# rocminfo is an ROCr client, so its output is already the ROCr survivors. The HIP layer
+# (HIP_VISIBLE_DEVICES, or its alias CUDA_VISIBLE_DEVICES) then selects among THOSE. An
+# ROCr mask that has already done its work must not shadow the CUDA one: with
+# ROCR_VISIBLE_DEVICES=2,1 the survivors are gfx1200 then gfx1100, so CUDA_VISIBLE_DEVICES=1
+# names gfx1100. Mirrors _HIP_LAYER_MASKS in studio/install_python_stack.py.
+_mask_case() {
+    # $1 = env assignments, $2 = expected arch
+    _got=$(env -u HIP_VISIBLE_DEVICES -u ROCR_VISIBLE_DEVICES -u CUDA_VISIBLE_DEVICES \
+        sh -c "
+            $1
+            _gfx_probe=rocminfo
+            _gfx_all='gfx1200
+gfx1100'
+            $(sed -n '/# first-set-wins, mirroring _pick_visible_index/,/^            _idx=0$/p' "$INSTALL_SH")
+            if [ -n \"\$_vis\" ] && [ \"\$_vis\" != \"-1\" ]; then
+                _first=\${_vis%%,*}
+                case \"\$_first\" in ''|*[!0-9]*) _idx=0 ;; *) _idx=\$_first ;; esac
+            fi
+            printf '%s\\n' \"\$_gfx_all\" | awk -v idx=\"\$_idx\" 'NF { v[n++]=\$0 } END { if (idx<0||idx>=n) idx=0; if (n>0) print v[idx] }'
+        " 2>/dev/null)
+    if [ "$_got" = "$2" ]; then
+        echo "  PASS: [$1] -> $2"; PASS=$((PASS + 1))
+    else
+        echo "  FAIL: [$1] expected $2, got '$_got'"; FAIL=$((FAIL + 1))
+    fi
+}
+_mask_case "export ROCR_VISIBLE_DEVICES=2,1" "gfx1200"
+_mask_case "export ROCR_VISIBLE_DEVICES=2,1; export CUDA_VISIBLE_DEVICES=1" "gfx1100"
+_mask_case "export ROCR_VISIBLE_DEVICES=2,1; export HIP_VISIBLE_DEVICES=1" "gfx1100"
+_mask_case "export HIP_VISIBLE_DEVICES=0" "gfx1200"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
