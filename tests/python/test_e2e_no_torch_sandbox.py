@@ -28,6 +28,7 @@ FORMAT_DETECTION = DATASETS_DIR / "format_detection.py"
 MODEL_MAPPINGS = DATASETS_DIR / "model_mappings.py"
 VLM_PROCESSING = DATASETS_DIR / "vlm_processing.py"
 ITERABLE = DATASETS_DIR / "iterable.py"
+CELLS = DATASETS_DIR / "cells.py"
 HARDWARE_PY = HARDWARE_DIR / "hardware.py"
 
 STUDIO_VENV = Path.home() / ".unsloth" / "studio" / "unsloth_studio"
@@ -277,6 +278,10 @@ class TestBeforeAfterImportChain:
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             source = source.replace('from .iterable import', 'from iterable import')
+            # cells.py is stdlib-only, so the exec sites import the real module
+            # rather than another stub: the suite checks what actually ships.
+            sys.path.insert(0, {str(CHAT_TEMPLATES.parent)!r})
+            source = source.replace('from .cells import', 'from cells import')
             exec(source)
             print("OK")
         """)
@@ -317,6 +322,7 @@ class TestBeforeAfterImportChain:
             DATA_COLLATORS,
             CHAT_TEMPLATES,
             ITERABLE,
+            CELLS,
         ]:
             if src.exists():
                 shutil.copy2(src, pkg_dir / src.name)
@@ -430,6 +436,8 @@ class TestDataclassInstantiation:
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             source = source.replace('from .iterable import', 'from iterable import')
+            sys.path.insert(0, {str(CHAT_TEMPLATES.parent)!r})
+            source = source.replace('from .cells import', 'from cells import')
             exec(source, ns)
             assert 'Instruction' in ns['DEFAULT_ALPACA_TEMPLATE']
             print("OK")
@@ -545,6 +553,8 @@ class TestEdgeCasesBrokenTorch:
             source = source.replace('from .format_detection import', 'from format_detection import')
             source = source.replace('from .model_mappings import', 'from model_mappings import')
             source = source.replace('from .iterable import', 'from iterable import')
+            sys.path.insert(0, {str(CHAT_TEMPLATES.parent)!r})
+            source = source.replace('from .cells import', 'from cells import')
             exec(source, ns)
 
             # Import succeeds -- this is the fix

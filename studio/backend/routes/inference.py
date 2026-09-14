@@ -49,6 +49,7 @@ from utils.account_context import (
     account_thread,
     current_account,
     current_account_id,
+    is_owner_context,
     run_as,
 )
 from utils.security.consent import MANAGED_REMOTE_CODE_REFUSAL, managed_remote_code_refused
@@ -1747,6 +1748,7 @@ _TEARDOWN_TASK_STOP_TIMEOUT_S = 5.0
 # (e.g. prompt prefill between tool iterations). A second layer atop the
 # tool_stream_exec heartbeats, keeping proxies (Cloudflare drops idle at ~100s).
 _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S = 15.0
+_APPROVAL_CACHE_RECLAIM_POLL_S = 0.25
 
 
 def _openai_llama_admission_capacity(request: Optional[Request], llama_backend = None) -> int:
@@ -2224,6 +2226,7 @@ def _openai_llama_admission_recost(
     output_tokens: Optional[int] = None,
     cancel_event = None,
     injected_tools = None,
+    cache_is_empty: bool = False,
 ) -> None:
     """Charge a tool loop for what its conversation now is, not what it opened as.
 
@@ -2240,6 +2243,10 @@ def _openai_llama_admission_recost(
     Safe to wait here because it is between rounds and the slot is idle at llama-server.
     Idle is not reclaimed, though, so the yield is gated on
     ``_openai_llama_admission_can_yield``; where it is False this declines instead.
+
+    ``cache_is_empty`` overrides that gate for a round whose cells were explicitly erased.
+    The gate exists because an idle slot's KV stays resident, which an erased slot's does
+    not, so yielding there hands back room that really is free.
     """
     if reservation is None:
         return
@@ -2286,7 +2293,7 @@ def _openai_llama_admission_recost(
         lease.recost_waiting(
             want,
             cancel_event = cancel_event,
-            allow_yield = _openai_llama_admission_can_yield(llama_backend),
+            allow_yield = cache_is_empty or _openai_llama_admission_can_yield(llama_backend),
         )
     except Exception:  # pragma: no cover - accounting must not break a live run
         logger.debug("llama admission recost failed", exc_info = True)
@@ -3447,19 +3454,8 @@ async def _authenticate_header_or_query(request: Request, token: Optional[str]) 
 
     Routed through ``credentials_for_token`` so a scope that covers this path serves it
     without a key, the way the routes behind ``security`` already do."""
-    auth_header = request.headers.get("authorization") or ""
-    header_token = auth_header[7:] if auth_header.lower().startswith("bearer ") else ""
-    # A blank header is the absent header, so the `?token=` an <img src> sends is still owed.
-    jwt_token = header_token.strip() or token or None
-    from auth.authentication import credentials_for_token
-
-    creds = await credentials_for_token(request, jwt_token)
-    if creds is None:
-        raise HTTPException(
-            status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = "Missing authentication token",
-        )
-    return await get_current_subject(creds)
+    from auth.authentication import subject_for_header_or_query_token
+    return await subject_for_header_or_query_token(request, token)
 
 
 @studio_router.get("/artifact-preview-frame", include_in_schema = False)
@@ -3843,7 +3839,11 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
     return policy is not False and (payload.enable_tools is True or bool(payload.mcp_enabled))
 
 
-def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> bool:
+def _selects_only_provider_hosted_tools(
+    payload,
+    provider_type: str | None,
+    enabled_skills: list[dict] | None = None,
+) -> bool:
     """True when the request's tool selection is nothing but the provider's own
     hosted builtins, so the provider must execute them as it always has.
 
@@ -3875,6 +3875,15 @@ def _selects_only_provider_hosted_tools(payload, provider_type: str | None) -> b
     # reaches the loop anyway. Neither is a hosted-tool request.
     if not enabled or not isinstance(enabled, list):
         return False
+
+    # Skill tools named with no skill enabled select nothing.
+    if {"read_skill", "create_skill"} & set(enabled):
+        if enabled_skills is None:
+            enabled_skills = _enabled_agent_skills()
+        if not enabled_skills:
+            enabled = [name for name in enabled if name not in {"read_skill", "create_skill"}]
+            if not enabled:
+                return True
     if not provider_hosted_tools(provider_type):
         return False
     # Matched against the whole hosted vocabulary rather than this provider's own
@@ -4848,6 +4857,69 @@ _TOOL_ARTIFACT_TIP = (
 )
 
 
+_AGENT_SKILLS_CACHE_TTL_S = 1.0
+_AGENT_SKILLS_CACHE_LOCK = threading.Lock()
+# One entry per acting account (None is the owner); catalogs never cross accounts.
+_AGENT_SKILLS_CACHE: dict[Optional[str], tuple[float, list[dict]]] = {}
+
+
+def _agent_skills_cache_key() -> Optional[str]:
+    return None if is_owner_context() else current_account_id()
+
+
+def _invalidate_agent_skills_cache() -> None:
+    with _AGENT_SKILLS_CACHE_LOCK:
+        _AGENT_SKILLS_CACHE.clear()
+
+
+def _enabled_agent_skills() -> list[dict]:
+    """The acting account's enabled skills, at most one filesystem scan per second.
+
+    Synchronous: the scan opens every SKILL.md under the roots, so async callers go through
+    ``asyncio.to_thread`` (which carries the account ContextVar) instead of calling this on
+    the event loop.
+    """
+    from core.inference.skills import SkillError, enabled_skills
+
+    key = _agent_skills_cache_key()
+    with _AGENT_SKILLS_CACHE_LOCK:
+        cached_at, cached = _AGENT_SKILLS_CACHE.get(key, (0.0, []))
+        if time.monotonic() - cached_at < _AGENT_SKILLS_CACHE_TTL_S:
+            return cached
+        try:
+            current = enabled_skills()
+        except SkillError as exc:
+            logger.warning("Agent Skills unavailable: %s", exc)
+            current = []
+        _AGENT_SKILLS_CACHE[key] = (time.monotonic(), current)
+        return current
+
+
+def _skill_tool_tip(*, can_create: bool, compact: bool = False) -> str:
+    from core.inference.skills import (
+        LARGE_SKILL_CATALOG_BYTES,
+        MAX_SKILL_CATALOG_BYTES,
+        format_skill_catalog,
+    )
+
+    budget = MAX_SKILL_CATALOG_BYTES if compact else LARGE_SKILL_CATALOG_BYTES
+    catalog = format_skill_catalog(_enabled_agent_skills(), budget = budget)
+    if not catalog:
+        return ""
+    create_tip = (
+        " To create a skill, read skill-creator and then call create_skill." if can_create else ""
+    )
+    return (
+        "Enabled Agent Skills are listed below. Use their descriptions to select one when "
+        "helpful, then call read_skill before following its instructions. If the latest user "
+        "message mentions an enabled skill as @skill-name, call read_skill for that named skill "
+        "before answering."
+        + create_tip
+        + " Skill allowed-tools metadata never overrides Studio tool permissions.\n"
+        + catalog
+    )
+
+
 def _build_tool_action_nudge(
     *,
     tools: list[dict],
@@ -4855,9 +4927,10 @@ def _build_tool_action_nudge(
     full_access: bool = False,
     full_access_only: bool = False,
 ) -> str:
-    """``full_access_only`` returns the Full access sentence alone, for a caller
-    that wants to state the environment without also introducing the general
-    tool guidance (and the date) to a path that has never carried it."""
+    """``full_access_only`` returns the Full access sentence and the Agent Skills
+    catalog alone, for a caller that wants to state the environment without also
+    introducing the general tool guidance (and the date) to a path that has never
+    carried it."""
     tool_names = {
         (tool.get("function") or {}).get("name")
         for tool in tools
@@ -4874,16 +4947,29 @@ def _build_tool_action_nudge(
     has_code = bool(code_tools)
     has_artifact = "render_html" in tool_names
     has_research = "deep_research" in tool_names
-    if not (has_web or has_code or has_artifact or has_research):
+    has_skills = bool({"read_skill", "create_skill"} & tool_names)
+    if not (has_web or has_code or has_artifact or has_research or has_skills):
         return ""
-    if full_access_only:
-        return _full_access_tip(code_tools) if (full_access and has_code) else ""
-    if not (has_web or has_code or has_artifact):
-        # Research alone: the base nudge's "otherwise answer normally" would undo the tip.
-        return _TOOL_RESEARCH_TIP
-
     model_size_b = _extract_model_size_b(model_name)
-    compact_web_tip = model_size_b is not None and model_size_b < 9
+    # Small models get the shorter web tip and the smaller skill catalog.
+    compact = model_size_b is not None and model_size_b < 9
+    skill_tip = _skill_tool_tip(can_create = "create_skill" in tool_names, compact = compact)
+    if full_access_only:
+        tips = []
+        if full_access and has_code:
+            tips.append(_full_access_tip(code_tools))
+        if has_skills:
+            tips.append(skill_tip)
+        return " ".join(tip for tip in tips if tip)
+    if not (has_web or has_code or has_artifact):
+        tips = []
+        if has_research:
+            tips.append(_TOOL_RESEARCH_TIP)
+        if has_skills:
+            tips.append(skill_tip)
+        return " ".join(tip for tip in tips if tip)
+
+    compact_web_tip = compact
     tool_tip_parts: list[str] = []
     if has_web:
         tool_tip_parts.append(_TOOL_WEB_COMPACT_TIP if compact_web_tip else _TOOL_WEB_EXPANDED_TIP)
@@ -4897,6 +4983,8 @@ def _build_tool_action_nudge(
         tool_tip_parts.append(_TOOL_ARTIFACT_TIP)
     if has_research:
         tool_tip_parts.append(_TOOL_RESEARCH_TIP)
+    if has_skills:
+        tool_tip_parts.append(skill_tip)
     # the date rides on the system prompt instead, so a tool-less chat is not left date-blind.
     return _TOOL_BASE_NUDGE + " " + " ".join(tool_tip_parts)
 
@@ -5227,6 +5315,22 @@ async def _select_request_tools(
     else:
         # Copy so the shared module-global tool list can't be mutated by callers.
         tools = list(ALL_TOOLS)
+    tools = [
+        tool for tool in tools if tool["function"]["name"] not in {"read_skill", "create_skill"}
+    ]
+    # Inline on purpose: an await here escapes the api_monitor cancel handling; the cache bounds it.
+    enabled_skills = _enabled_agent_skills() if tools_on else []
+    if enabled_skills:
+        from core.inference.tools import CREATE_SKILL_TOOL, READ_SKILL_TOOL
+
+        skill_tools = (READ_SKILL_TOOL,)
+        if any(skill["name"] == "skill-creator" for skill in enabled_skills):
+            skill_tools += (CREATE_SKILL_TOOL,)
+        if payload.enabled_tools is not None:
+            skill_tools = tuple(
+                tool for tool in skill_tools if tool["function"]["name"] in payload.enabled_tools
+            )
+        tools.extend(skill_tools)
     # Drop the RAG tool without a scope: nothing to search over.
     if not payload.rag_scope:
         tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]
@@ -7520,6 +7624,37 @@ def _target_accepts_audio_input(load_path: str) -> bool:
         return True
 
 
+def _names_video_token(config) -> bool:
+    if not isinstance(config, dict):
+        return False
+    return any(
+        (key in ("video_token_id", "video_token_index") and value is not None)
+        or _names_video_token(value)
+        for key, value in config.items()
+    )
+
+
+def _target_accepts_video_input(load_path: str) -> bool:
+    """Whether an MLX target's config names a video placeholder token; a config that cannot
+    be read is left to the load."""
+    from utils.hardware import DeviceType, get_device
+
+    if get_device() != DeviceType.MLX:
+        return False
+    from core.inference.mlx_inference import _mlx_vlm_decodes_video
+
+    if not _mlx_vlm_decodes_video():
+        return False
+    try:
+        config = json.loads(
+            (Path(load_path).expanduser() / "config.json").read_text(encoding = "utf-8")
+        )
+    except Exception as exc:
+        logger.debug("auto-switch: video probe failed for %s: %s", load_path, exc)
+        return True
+    return _names_video_token(config)
+
+
 def _target_accepts_request_input(
     load_path: str,
     is_gguf: bool,
@@ -7535,7 +7670,7 @@ def _target_accepts_request_input(
     A local GGUF takes both capabilities from its companion mmproj, so one probe
     answers for either, modality-aware through ``need_image``. Other checkpoints
     declare them apart: vision in the config architecture, audio input in the
-    tokenizer's special tokens.
+    tokenizer's special tokens, video input as a placeholder token in the config.
     """
     if is_gguf:
         if not gguf_companion_roots:
@@ -7546,8 +7681,7 @@ def _target_accepts_request_input(
             need_image,
             gguf_companion_roots,
         )
-    # input_video is llama.cpp's own part type, so a clip is refused right after the load.
-    if needs_video:
+    if needs_video and not _target_accepts_video_input(load_path):
         return False
     if needs_audio and not _target_accepts_audio_input(load_path):
         return False
@@ -7794,6 +7928,7 @@ def _preflight_speech_codec_for_switch(
 _AUDIO_IMAGE_INPUT_DETAIL = (
     "This model takes audio or an image in one message, not both. Send the image on its own turn."
 )
+_AUDIO_VIDEO_INPUT_DETAIL = "This model takes audio or a video in one message, not both."
 
 
 async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: bool) -> None:
@@ -7831,6 +7966,8 @@ async def _preflight_audio_for_switch(audio_preflight: dict, target_is_gguf: boo
                 ),
             ) from None
         return
+    if audio_preflight.get("has_video"):
+        raise HTTPException(status_code = 400, detail = _AUDIO_VIDEO_INPUT_DETAIL)
     if audio_preflight.get("continue_final"):
         raise HTTPException(
             status_code = 400,
@@ -8730,8 +8867,8 @@ async def _maybe_auto_switch_model(
     can't strand a preview-owned model as Unsloth-owned. ``require_image`` makes that
     rejection modality-aware for a GGUF, whose one projector carries both, and
     ``require_audio_input`` covers a non-GGUF checkpoint, which declares the two
-    separately, and ``require_video`` rules a non-GGUF target out entirely, since
-    only llama.cpp takes a clip. ``modality_label`` names the inputs attached, so the
+    separately, and ``require_video`` asks a non-GGUF target for a video placeholder
+    token. ``modality_label`` names the inputs attached, so the
     rejection does not report a modality the request never carried. ``gguf_only``
     marks an endpoint that reads llama.cpp alone, where loading a non-GGUF model
     would unload the resident one and leave the handler with nothing to serve.
@@ -10591,6 +10728,7 @@ def _estimate_gguf_required_gb(
             _extra_args_requests_dspark,
             _extra_args_set_spec_type,
             _mmproj_env_is_audio_only,
+            _mtp_drafter_loads_standalone,
             extra_args_disable_mmproj,
         )
 
@@ -10774,7 +10912,13 @@ def _estimate_gguf_required_gb(
                 ):
                     _sized_attrs.append("gguf_dflash_file")
             else:
-                _sized_attrs.append("gguf_mtp_file")
+                # The launch drops a drafter it cannot open, so charging one would refuse
+                # a load that fits.
+                _mtp = getattr(config, "gguf_mtp_file", None)
+                if not (
+                    _mtp and Path(_mtp).is_file() and not _mtp_drafter_loads_standalone(str(_mtp))
+                ):
+                    _sized_attrs.append("gguf_mtp_file")
 
         for attr in _sized_attrs:
             f = getattr(config, attr, None)
@@ -14710,6 +14854,7 @@ async def _load_model_impl(
                     is_audio = _model_info.get("is_audio", False),
                     audio_type = _model_info.get("audio_type"),
                     has_audio_input = _model_info.get("has_audio_input", False),
+                    has_video_input = _model_info.get("has_video_input", False),
                     is_mlx = bool(_model_info.get("is_mlx", False)),
                     mlx_kv_bits = _model_info.get("mlx_kv_bits"),
                     mlx_kv_bits_requested = _model_info.get("mlx_kv_bits_requested"),
@@ -15502,6 +15647,7 @@ async def _load_model_impl(
             is_audio = _model_info.get("is_audio", config.is_audio),
             audio_type = _model_info.get("audio_type", config.audio_type),
             has_audio_input = _model_info.get("has_audio_input", config.has_audio_input),
+            has_video_input = _model_info.get("has_video_input", False),
             is_mlx = bool(_model_info.get("is_mlx", False)),
             mlx_kv_bits = _model_info.get("mlx_kv_bits"),
             mlx_kv_bits_requested = _model_info.get("mlx_kv_bits_requested"),
@@ -17658,6 +17804,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         is_audio = False
         audio_type = None
         has_audio_input = False
+        has_video_input = False
         model_info = {}
         if backend.active_model_name:
             model_info = backend.models.get(backend.active_model_name, {})
@@ -17665,6 +17812,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             is_audio = model_info.get("is_audio", False)
             audio_type = model_info.get("audio_type")
             has_audio_input = model_info.get("has_audio_input", False)
+            has_video_input = model_info.get("has_video_input", False)
         chat_template_info = model_info.get("chat_template_info", {})
         chat_template = (
             chat_template_info.get("template") if isinstance(chat_template_info, dict) else None
@@ -17695,6 +17843,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             is_audio = is_audio,
             audio_type = audio_type,
             has_audio_input = has_audio_input,
+            has_video_input = has_video_input,
             is_mlx = bool(model_info.get("is_mlx", False)),
             mlx_kv_bits = model_info.get("mlx_kv_bits"),
             mlx_kv_bits_requested = model_info.get("mlx_kv_bits_requested"),
@@ -20080,6 +20229,21 @@ def _prepare_audio_for_llama(b64: str) -> tuple[str, str]:
     return base64.b64encode(_mono_f32_to_wav_bytes(arr, sr)).decode("ascii"), "wav"
 
 
+_VIDEO_INPUT_REFUSAL = (
+    "Video input is only supported on a local GGUF or MLX model with video support."
+)
+
+
+def _local_video_clip(payload, model_info) -> str:
+    """The clip, as bare base64, that a non-GGUF backend is handed, else a refusal by name."""
+    if not model_info.get("has_video_input"):
+        raise HTTPException(status_code = 400, detail = _VIDEO_INPUT_REFUSAL)
+    video_b64, rejection = _video_b64_rejection(payload.video_base64)
+    if rejection is not None:
+        raise HTTPException(status_code = rejection[0], detail = rejection[1])
+    return video_b64
+
+
 def _video_b64_rejection(video_b64: str) -> tuple[str, Optional[tuple[int, str]]]:
     """The clip's base64 without its data URI header, plus why it is refused.
 
@@ -20928,7 +21092,8 @@ async def _proxy_to_external_provider(
         # a request for this loop. Checked here rather than inside the loop so the
         # whole path (catalog selection, nudge, confirm gate) is skipped and the
         # request proxies through byte-for-byte as it did before the loop existed.
-        and not _selects_only_provider_hosted_tools(payload, provider_type)
+        # Last, so a request that never asked for tools never scans the skill roots.
+        and not _selects_only_provider_hosted_tools(payload, provider_type, _enabled_agent_skills())
     )
     codex_studio_tool_loop = studio_tool_loop and provider_type == "openai_codex"
     # The loop relays the same control frames the local routes gate (see UI_STREAM_EVENTS_HEADER).
@@ -21180,19 +21345,14 @@ async def _proxy_to_external_provider(
             tool_payloads = studio_tool_payloads
             # This path runs python/terminal locally too (disable_sandbox =
             # bypass_permissions), so it has the same false-isolation problem.
-            # Only the Full access sentence is added: the path has never carried
-            # the general tool nudge, and widening it would change every
-            # non-Full-access Codex run as a side effect.
-            if payload.bypass_permissions:
-                _codex_full_access_nudge = _build_tool_action_nudge(
-                    tools = studio_tool_payloads,
-                    model_name = model,
-                    full_access = True,
-                    full_access_only = True,
-                )
-                chat_messages = _append_to_codex_instructions(
-                    chat_messages, _codex_full_access_nudge
-                )
+            # Only the Full access sentence and the skill catalog; this path never carried the general nudge.
+            _codex_nudge = _build_tool_action_nudge(
+                tools = studio_tool_payloads,
+                model_name = model,
+                full_access = bool(payload.bypass_permissions),
+                full_access_only = True,
+            )
+            chat_messages = _append_to_codex_instructions(chat_messages, _codex_nudge)
         chat_messages = _prepend_current_date_to_messages(
             chat_messages,
             request,
@@ -21526,13 +21686,13 @@ async def _proxy_to_external_provider(
         )
     # Built before the date, because whether a nudge exists decides whether the Modelfile
     # exemption is worth claiming: _append_to_system_message below displaces that prompt anyway.
-    # Full access disables the sandbox at execution time, so the schemas must say so too.
+    # Full access disables the sandbox, so the schemas say so; the general nudge stays off this path.
     _external_nudge = ""
-    if run_studio_tool_loop and payload.bypass_permissions:
+    if run_studio_tool_loop:
         _external_nudge = _build_tool_action_nudge(
             tools = external_studio_tools,
             model_name = model,
-            full_access = True,
+            full_access = bool(payload.bypass_permissions),
             full_access_only = True,
         )
     chat_messages = _prepend_current_date_to_messages(
@@ -22186,13 +22346,9 @@ async def produce_openai_chat_completions(
         untrack_current_request(request.scope)
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("external provider chat completions")
-        # input_video is llama.cpp's own part type, so the proxy has nowhere to
-        # put the clip. Say so rather than answering as if there were no video.
+        # The proxy has nowhere to put the clip; say so rather than answering without it.
         if payload.video_base64:
-            raise HTTPException(
-                status_code = 400,
-                detail = "Video input is only supported on a local GGUF model with video support.",
-            )
+            raise HTTPException(status_code = 400, detail = _VIDEO_INPUT_REFUSAL)
         # _build_external_messages carries no input_audio case, so the recording would be
         # stripped and the provider would answer the text alone -- a plausible reply to a
         # question about audio nobody heard. Refuse it the way video is refused.
@@ -22390,6 +22546,7 @@ async def produce_openai_chat_completions(
             "continue_final": _continue_final_message(payload),
             "has_image": _images_in_last_user_message(payload.messages)
             or _legacy_image_is_distinct(payload),
+            "has_video": _needs_video,
         }
         if _needs_audio_input
         else None
@@ -22534,6 +22691,14 @@ async def produce_openai_chat_completions(
         # Clean public id so the response never echoes a local path; the audio
         # branch below receives this sanitized label too.
         model_name = _orchestrator_public_model_id(backend) or payload.model
+        model_info = backend.models.get(backend.active_model_name, {})
+        # Before the speech and audio-input dispatches, which return before the clip is attached.
+        _video_clip = None
+        if payload.video_base64:
+            _video_clip = _local_video_clip(payload, model_info)
+            # Settled here: a model without audio input never enters the audio-input path.
+            if payload.audio_base64:
+                raise HTTPException(status_code = 400, detail = _AUDIO_VIDEO_INPUT_DETAIL)
         # Restated here because the pre-switch check runs only when an automatic
         # load may: one SSE stream carries a single choice either way.
         if payload.stream and _wants_multiple_choices(payload):
@@ -22887,15 +23052,6 @@ async def produce_openai_chat_completions(
                 code = "unsupported_parameter",
                 param = "n",
             ),
-        )
-
-    # Injection lives in the GGUF branch below, since input_video is llama.cpp's
-    # own part type. Without this a transformers model answers as if the clip
-    # were never attached.
-    if payload.video_base64 and not using_gguf:
-        raise _reject(
-            400,
-            "Video input is only supported on a local GGUF model with video support.",
         )
 
     # Apply per-model recommended sampling (and any operator UNSLOTH_SAMPLING_* pin) to the
@@ -23298,8 +23454,19 @@ async def produce_openai_chat_completions(
             # reservation exists but not ITERATED until after, so the callback always sees
             # a reservation by the time a round can call it.
             _gguf_admission_hold: dict = {"reservation": None}
+            _gguf_decode_lock = threading.Lock()
+            _gguf_decode: dict = {"slot": None, "erased": False}
+
+            def _gguf_record_decode_slot(base_url: str, slot: int) -> None:
+                with _gguf_decode_lock:
+                    _gguf_decode["slot"] = (base_url, slot)
+                    _gguf_decode["erased"] = False
 
             def _gguf_recost(conversation) -> None:
+                with _gguf_decode_lock:
+                    erased = _gguf_decode["erased"]
+                    _gguf_decode["slot"] = None
+                    _gguf_decode["erased"] = False
                 _openai_llama_admission_recost(
                     _gguf_admission_hold["reservation"],
                     conversation,
@@ -23316,6 +23483,8 @@ async def produce_openai_chat_completions(
                     # A round waiting for cache room must still answer Stop. Same event
                     # the loop polls each iteration, so a wait ends where a cancel would.
                     cancel_event = cancel_event,
+                    # Erased cells make yielding honest, so a grown round may wait.
+                    cache_is_empty = erased,
                 )
 
             # Active tool names gating the bare-rehearsal strip, matching the loop gate.
@@ -23381,6 +23550,10 @@ async def produce_openai_chat_completions(
                     permission_mode = payload.permission_mode,
                     perf_callback = _gguf_perf_callback,
                     on_conversation_grew = _gguf_recost,
+                    # Only the streaming path parks and reclaims, so only it can use a slot.
+                    on_decode_slot = _gguf_record_decode_slot
+                    if payload.stream and _effective_confirm and not payload.bypass_permissions
+                    else None,
                     context_overflow = _rolling_context_policy(payload),
                     context_policy = _request_context_policy(payload),
                     compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
@@ -23433,6 +23606,77 @@ async def produce_openai_chat_completions(
                 # otherwise unanswered prompts hold every slot.
                 _parked = False
 
+                _reclaim_task = None
+                _reclaim_stop = asyncio.Event()
+
+                def _erase_and_record(target) -> bool:
+                    if not llama_backend.release_idle_chat_slot(*target):
+                        return False
+                    with _gguf_decode_lock:
+                        _gguf_decode["erased"] = True
+                    return True
+
+                async def _reclaim_approval_cache(lease):
+                    """Erase this round's cached context once a queued chat needs its room.
+
+                    On demand only: the engine drops the cells rather than spilling them,
+                    so this costs the approved chat a full reprocess. Stopping is honoured
+                    only before the erase is sent; past that the cells are going regardless.
+                    """
+                    try:
+                        while not lease.reclaim_would_admit():
+                            try:
+                                await asyncio.wait_for(
+                                    _reclaim_stop.wait(), _APPROVAL_CACHE_RECLAIM_POLL_S
+                                )
+                            except asyncio.TimeoutError:
+                                continue
+                            return
+                        with _gguf_decode_lock:
+                            target = _gguf_decode["slot"]
+                            erased = _gguf_decode["erased"]
+                        if target is None or _reclaim_stop.is_set():
+                            return
+                        if not erased and not await asyncio.to_thread(_erase_and_record, target):
+                            return
+                        lease.release_parked_cache()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.debug("Approval cache reclamation failed", exc_info = True)
+
+                def _watch_for_reclaim(lease) -> None:
+                    nonlocal _reclaim_task
+                    with _gguf_decode_lock:
+                        known = _gguf_decode["slot"] is not None
+                    if not known or _reclaim_task is not None:
+                        return
+                    _reclaim_stop.clear()
+                    _reclaim_task = asyncio.create_task(_reclaim_approval_cache(lease))
+
+                async def _settle_reclaim_watch() -> None:
+                    """Wait out a reclamation that is already sending, before resuming.
+
+                    Cancelling would not stop it: the worker runs on and the erase lands
+                    anyway, leaving the resumed round priced against cells mid-drop.
+                    """
+                    nonlocal _reclaim_task
+                    task, _reclaim_task = _reclaim_task, None
+                    if task is None:
+                        return
+                    _reclaim_stop.set()
+                    try:
+                        await task
+                    except Exception:
+                        logger.debug("Approval cache reclamation failed", exc_info = True)
+
+                def _stop_reclaim_watch() -> None:
+                    nonlocal _reclaim_task
+                    _reclaim_stop.set()
+                    if _reclaim_task is not None:
+                        _reclaim_task.cancel()
+                        _reclaim_task = None
+
                 async def _park_admission(on: bool, *, wait: bool = True):
                     nonlocal _parked
                     if on == _parked:
@@ -23443,16 +23687,15 @@ async def produce_openai_chat_completions(
                     if lease is None:
                         return
                     if on:
-                        # Refused when the budget is spent: the slot stays here,
-                        # so there is nothing to take back afterwards.
                         if not lease.park():
                             return
+                        _watch_for_reclaim(lease)
                     elif wait:
-                        # Resuming: park() may have handed our slot to a waiter, so wait for room instead
-                        # of putting two holders on one slot.
+                        await _settle_reclaim_watch()
                         await lease.unpark_async(cancel_event = cancel_event)
                     else:
                         # Tearing down; the lease is released separately.
+                        _stop_reclaim_watch()
                         lease.unpark()
                     _parked = on
 
@@ -25001,6 +25244,7 @@ async def produce_openai_chat_completions(
         (_sf_tools_on or _sf_mcp_allowed)
         and _sf_features.get("supports_tools", False)
         and image is None
+        and _video_clip is None
         and not _sf_is_gptoss
         and _sf_tool_budget > 0
     )
@@ -25513,6 +25757,8 @@ async def produce_openai_chat_completions(
         logit_bias = payload.logit_bias,
         stop = normalized_stop,
     )
+    if _video_clip is not None:
+        gen_kwargs["video"] = _video_clip
     # Forward reasoning kwargs; the worker/template wrapper peels off any the
     # template doesn't accept.
     if payload.enable_thinking is not None:
@@ -25530,9 +25776,10 @@ async def produce_openai_chat_completions(
     # supports_tools=False falls through to plain relay (GGUF gate parity).
     _sf_has_tool_msgs = any(m.role == "tool" or m.tool_calls for m in payload.messages)
     # Resolved BEFORE the capability gate below, which classifies from this body (#10092).
+    # A clip renders through the processor as an image does.
     _sf_image_tpl = (
         (_sf_model_info.get("chat_template_info") or {}).get("processor_template")
-        if image is not None
+        if image is not None or _video_clip is not None
         else None
     )
     # Differs from processor_template: a template-less processor still places the image.
@@ -25555,9 +25802,8 @@ async def produce_openai_chat_completions(
         # Read the resolved value, not a fresh _effective_enable_tools: the gate
         # above withdraws the launcher default for exactly these requests, and
         # recomputing here would hide that and drop the client catalog.
-        # Once an image rules out the server loop the passthrough takes the request, or
-        # image-plus-tools is answered with prose and no schemas at all (#10092).
-        (not _sf_tools_on or (image is not None and not _sf_use_tools))
+        # An image or a clip rules out the server loop, so the passthrough takes the request (#10092).
+        (not _sf_tools_on or ((image is not None or _video_clip is not None) and not _sf_use_tools))
         and not _sf_use_tools
         and not _sf_is_gptoss
         and _sf_supports_tools
@@ -26033,11 +26279,15 @@ async def produce_openai_chat_completions(
                                 # Mark the owning turn before the correction is appended,
                                 # or the reverse scan attaches the picture to it (#10092).
                                 _nudge_base = gen_kwargs["messages"]
-                                if _sf_renders_image:
+                                if _sf_renders_image or _video_clip is not None:
                                     from core.inference.chat_template_helpers import (
                                         messages_with_attached_image as _nudge_attach,
                                     )
-                                    _nudge_base = _nudge_attach(_nudge_base)
+                                    _nudge_base = _nudge_attach(
+                                        _nudge_base,
+                                        image = _sf_renders_image,
+                                        video = _video_clip is not None,
+                                    )
                                 retry_messages = [
                                     *_nudge_base,
                                     *nudge_messages(_data, _sf_heal),
@@ -26590,9 +26840,10 @@ def _openai_model_objects() -> list[dict]:
             entry["task"] = _TTS_MODEL_TASK
         models.append(entry)
 
-    # Check Unsloth backend
-    backend = get_inference_backend()
-    if backend.active_model_name:
+    # Describing residency must not construct an unused orchestrator: its cold
+    # initialization runs device detection even when only llama.cpp is loaded.
+    backend = _peek_inference_backend()
+    if backend is not None and backend.active_model_name:
         model_info = backend.models.get(backend.active_model_name, {})
         entry = {
             # The alias, or an LM Studio model switched to by repo id loses its publisher.
@@ -27188,8 +27439,8 @@ async def _openai_catalog_objects() -> list[dict]:
     _created = int(time.time())
     # Loaded models first (clean ids + context fields), marked loaded.
     by_id: dict[str, dict] = {}
-    # Off-loop: _openai_model_objects() is sync and calls get_inference_backend(), whose cold
-    # build waits on detection. Inline, an early GET /v1/models held the loop for the import.
+    # Off-loop: _openai_model_objects() is sync and its per-entry quant probe reads the
+    # resolver index. Inline, an early GET /v1/models held the loop for that work.
     for entry in await asyncio.to_thread(_openai_model_objects):
         by_id[entry["id"]] = {**entry, "loaded": True}
     orchestrator = _peek_inference_backend()
@@ -27244,6 +27495,18 @@ async def _openai_catalog_objects() -> list[dict]:
     return list(by_id.values())
 
 
+@studio_router.get("/loaded-models")
+async def loaded_inference_models(current_subject: str = Depends(get_current_subject)):
+    """Loaded llama.cpp/orchestrator models for agent startup, without a disk catalog scan.
+
+    Keep the public ids and context fields shared with /v1/models. The full catalog
+    also discovers unloaded and media models, which an attaching coding agent does
+    not need and which can take longer than its HTTP deadline on slow scan folders.
+    """
+    models = await asyncio.to_thread(_openai_model_objects)
+    return {"object": "list", "data": [{**entry, "loaded": True} for entry in models]}
+
+
 # Some OpenAI-compatible clients (notably DEVONthink) probe ``/v1/models/``
 # literally and do not follow FastAPI's automatic slash redirect. Register the
 # slash form directly so model discovery reaches authentication and returns the
@@ -27277,7 +27540,7 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     # Loaded models resolve without a catalog scan (the common case); only build
     # the full catalog -- which may hit the filesystem -- for unloaded ids. Match
     # case-insensitively, like the catalog loop below and the resolver's index.
-    # Off-loop like the catalog helper: the singleton's cold build waits on detection.
+    # Off-loop like the catalog helper, and for the same sync resolver-index work.
     _loaded = await asyncio.to_thread(_openai_model_objects)
     for entry in _loaded:
         eid = entry["id"]
@@ -30496,6 +30759,7 @@ _STUDIO_ANTHROPIC_TOOL_ALIASES = {
     "web_fetch_20260209": "web_search",
     "python": "python",
     "terminal": "terminal",
+    "read_skill": "read_skill",
 }
 # Server tools that never need a confirmation prompt (read-only / non code-
 # executing; mirrors the unconditional-safe names in is_potentially_unsafe_tool_call).
@@ -30504,7 +30768,7 @@ _STUDIO_ANTHROPIC_TOOL_ALIASES = {
 # asks then. render_html is excluded because a networked canvas prompts in auto,
 # and this channel invokes the loop without confirm; auto/ask reject, off/full run.
 _ANTHROPIC_UNPROMPTED_SAFE_TOOLS = frozenset(
-    {"web_search", "search_knowledge_base", "search_conversation"}
+    {"web_search", "search_knowledge_base", "search_conversation", "read_skill"}
 )
 
 
@@ -30571,14 +30835,18 @@ def _select_anthropic_server_tools(
     all_tools: list[dict], requested_studio_tools: set[str], enabled_tools: Optional[list[str]]
 ) -> list[dict]:
     """Select Unsloth tools requested through Anthropic tools and extensions."""
+    available = list(all_tools)
+    if _enabled_agent_skills():
+        from core.inference.tools import READ_SKILL_TOOL
+        available.append(READ_SKILL_TOOL)
     if not requested_studio_tools and enabled_tools is None:
-        return all_tools
+        return available
 
     selected_names = set(requested_studio_tools)
     if enabled_tools is not None:
         selected_names.update(enabled_tools)
 
-    return [tool for tool in all_tools if tool["function"]["name"] in selected_names]
+    return [tool for tool in available if tool["function"]["name"] in selected_names]
 
 
 def _image_bytes_to_png_b64(raw: bytes) -> str:
@@ -31349,6 +31617,27 @@ async def anthropic_count_tokens(
             request,
             include_api_key = _count_server_tools,
         )
+    if _count_server_tools:
+        from core.inference.tools import ALL_TOOLS as _ANTHROPIC_COUNT_TOOLS
+
+        openai_tools = _tools_for_search_images(
+            _select_anthropic_server_tools(
+                _ANTHROPIC_COUNT_TOOLS,
+                _count_studio_tools,
+                payload.enabled_tools,
+            )
+        )
+        _count_full_access = bool(getattr(payload, "bypass_permissions", False))
+        if _count_full_access:
+            # Same schemas /messages renders under Full access, or the count prices a different prompt.
+            from core.inference.tools import apply_full_access_tool_descriptions
+            openai_tools = apply_full_access_tool_descriptions(openai_tools)
+        _count_nudge = _build_tool_action_nudge(
+            tools = openai_tools,
+            model_name = _llama_public_model_id(llama_backend, payload.model),
+            full_access = _count_full_access,
+        )
+        openai_messages = _append_to_system_message(openai_messages, _count_nudge)
 
     # Render with the same reasoning controls generation will use: on switchable
     # templates thinking / reasoning_effort / preserve_thinking change the
@@ -36767,10 +37056,10 @@ async def diffusion_load_progress(current_subject: str = Depends(get_current_sub
 @studio_router.get("/images/generate-progress", response_model = DiffusionGenerateProgressResponse)
 async def diffusion_generate_progress(current_subject: str = Depends(get_current_subject)):
     if account_access.managed_account() and account_access.generation_is_foreign("diffusion"):
-        return account_access.hidden_resident_response()
+        return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
     mine = account_access.generation_is_mine("diffusion")
     if not mine and account_access.resident_hidden("diffusion"):
-        return account_access.hidden_resident_response()
+        return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
     if (
@@ -36780,7 +37069,7 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
             "diffusion", get_active_diffusion_engine().status().get("repo_id")
         )
     ):
-        return account_access.hidden_resident_response()
+        return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
 
     progress = get_active_diffusion_engine().generate_progress()
     log_media_generation_progress("image", progress)

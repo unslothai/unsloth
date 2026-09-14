@@ -413,9 +413,9 @@ def _routes_source() -> str:
     "needle",
     [
         # external provider (OpenAI / Anthropic / any proxied backend)
-        'raise HTTPException(\n                status_code = 400,\n                detail = "Video input is only supported on a local GGUF model with video support.",',
-        # local non-GGUF (transformers, MLX)
-        "if payload.video_base64 and not using_gguf:",
+        "raise HTTPException(status_code = 400, detail = _VIDEO_INPUT_REFUSAL)",
+        # local non-GGUF: served on a backend reporting video input, refused elsewhere
+        "_video_clip = _local_video_clip(payload, model_info)",
         # GGUF that cannot take video
         'if not getattr(llama_backend, "_has_video_input", False):',
         # tool / guided-decoding passthrough
