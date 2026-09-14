@@ -8033,6 +8033,14 @@ def _legacy_lock_for(name: str) -> threading.Lock:
         return _legacy_session_locks.setdefault(name, threading.Lock())
 
 
+def _legacy_move_began(name: str) -> bool:
+    """Whether a move of this session has already started. Only a mover creates the entry, and
+    it does so before it touches the tree, so this is true for exactly the window in which the
+    legacy copy can be missing while the destination is not in place yet."""
+    with _legacy_locks_guard:
+        return name in _legacy_session_locks
+
+
 # Where every id the old code could not use as a directory name went. One bucket for all of them, which is what this
 # change stops doing, so it is never moved up as though it were a chat: several chats' files are in there.
 _LEGACY_SHARED_BUCKET = "_invalid"
@@ -8073,7 +8081,17 @@ def _migrate_one_legacy_session(root: str, name: str) -> None:
     if not is_owner_context() or _legacy_sandbox_migrated:
         return
     source = os.path.join(_legacy_sandbox_root(), name)
-    if os.path.islink(source) or not os.path.isdir(source):
+    if os.path.islink(source):
+        return
+    # A missing source is not proof there is nothing to wait for. _staged_move renames the tree
+    # aside into staging before renaming it into place, so through that window the legacy copy is
+    # already gone and the destination does not exist yet. Returning there let this caller create
+    # an empty sandbox under the very name the pending rename needs; that rename then fails with
+    # ENOTEMPTY and puts the tree back at the legacy root, so the chat that asked is handed an
+    # empty directory and its files show up nowhere. A lock entry exists only once a move of this
+    # name has begun, which is what separates that window from a name that was never there, and
+    # reading it creates nothing, so the lock table stays bounded by the chats that had a folder.
+    if not os.path.isdir(source) and not _legacy_move_began(name):
         return
     with _legacy_lock_for(name):
         if not os.path.isdir(source):
