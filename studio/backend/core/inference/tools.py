@@ -8220,7 +8220,9 @@ def _migrate_legacy_sandbox_locked(root: str) -> bool:
         # since one that started and ended inside the pass leaves nothing in flight to find. The legacy root has to
         # stay too, as that is where a rollback renames back into. Reporting unfinished is what brings the next pass.
         with _legacy_locks_guard:
-            overlapped = bool(_legacy_moves_in_flight) or _legacy_moves_done - moves_before != own_moves
+            overlapped = (
+                bool(_legacy_moves_in_flight) or _legacy_moves_done - moves_before != own_moves
+            )
             if not overlapped and complete:
                 _legacy_sandbox_migrated = True
         if overlapped:

@@ -956,7 +956,9 @@ def test_a_move_that_begins_and_ends_inside_the_pass_still_counts(tmp_path, monk
         entries = real_listdir(path, *args, **kwargs)
         # Once, right after the pass reads the legacy root: a whole move, start to rollback,
         # inside the pass and invisible to it.
-        if not ran and os.path.realpath(str(path)) == os.path.realpath(str(fake_home / "studio_sandbox")):
+        if not ran and os.path.realpath(str(path)) == os.path.realpath(
+            str(fake_home / "studio_sandbox")
+        ):
             ran.append(True)
             monkeypatch.setattr(tools.os, "rename", failing_rename)
             try:
@@ -975,9 +977,9 @@ def test_a_move_that_begins_and_ends_inside_the_pass_still_counts(tmp_path, monk
     assert ran, "the nested move never ran"
     assert rename_failed, "the rename was never made to fail"
     assert (legacy / "data.csv").is_file(), "the rollback did not restore the legacy copy"
-    assert not tools._legacy_sandbox_migrated, (
-        "the pass finished over a move it never listed, so the restored copy is stranded"
-    )
+    assert (
+        not tools._legacy_sandbox_migrated
+    ), "the pass finished over a move it never listed, so the restored copy is stranded"
 
     workdir = Path(tools.get_sandbox_workdir("__LOCALID_inside"))
     assert (workdir / "data.csv").is_file(), f"{workdir} never got the restored files"
