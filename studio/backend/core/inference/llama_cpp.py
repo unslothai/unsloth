@@ -9397,6 +9397,10 @@ class LlamaCppBackend:
                 by_bus = {}
         physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
         corrected: list[tuple[int, int, int]] = []
+        # The ids rewritten here, so every consumer downstream can tell which rows
+        # describe the host's RAM rather than a card's own memory without having to
+        # re-derive the classification in the wrong id space.
+        unified_ids: set[int] = set()
         available_mib = None
         for idx, free_mib, total_mib in gpus:
             # nvidia-smi reports physical ids; the driver's ordinals are what the
@@ -9441,7 +9445,34 @@ class LlamaCppBackend:
                 f"pool is {pool_mib}MiB -- offering {usable_mib}MiB after the host reserve"
             )
             corrected.append((idx, usable_mib, 0))
+            unified_ids.add(idx)
+        LlamaCppBackend._UNIFIED_MEMORY_SMI_IDS = unified_ids
         return corrected
+
+    @staticmethod
+    def _unified_memory_gpu_ids() -> set[int]:
+        """Ids from the LAST `_get_gpu_memory` whose free figure IS host RAM.
+
+        In whichever id space that probe used, which is the only space its rows can
+        be matched against. The nvidia-smi leg reports PCI indices and records what
+        it corrected; the torch leg reports physical ids, where
+        `_integrated_cuda_gpu_ids` is already the right answer. Empty before any
+        probe has run, and empty on a discrete host, so every caller keeps its
+        existing behaviour.
+
+        Vulkan is not handled here: it marks its own iGPUs through `shared_gpu_ids`
+        by reporting total 0, which this must not imitate. Off Vulkan a zero total
+        also comes from MIG, vGPU and the two-column probe, none of which is unified
+        memory, so "total <= 0" would drag discrete cards into the shared pool.
+        """
+        try:
+            if LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is True:
+                return set(LlamaCppBackend._UNIFIED_MEMORY_SMI_IDS)
+            if LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is False:
+                return LlamaCppBackend._integrated_cuda_gpu_ids()
+        except Exception:
+            pass
+        return set()
 
     def _rocm_classification_answered() -> bool:
         """Whether `_rocm_unified_memory_gpu_ids` could actually look at the devices.
@@ -10264,6 +10295,15 @@ class LlamaCppBackend:
     # only under PCI_BUS_ID, so a caller pinning the child's device order has to
     # know which it holds (#10613).
     _GPU_IDS_ARE_PCI_INDICES = None
+
+    # Row ids the nvidia-smi correction rewrote as unified memory, in the SAME id
+    # space as the rows it returned. Recorded rather than recomputed because the
+    # correction joins on PCI bus id, and the ids it hands back are nvidia-smi
+    # indices while `_integrated_cuda_gpu_ids` answers in physical ids: asking the
+    # second question about the first answer's ids classifies a different card on
+    # any host where the two orders differ. Read through
+    # `_unified_memory_gpu_ids`, never directly.
+    _UNIFIED_MEMORY_SMI_IDS: set = set()
 
     # Boot-time property: read once, not per launch (the #10613 host has 175
     # groups). Only the default root is cached; an explicit root (tests) re-reads.
@@ -13085,10 +13125,15 @@ class LlamaCppBackend:
             # "VRAM" IS host RAM. Without this its free figure and the host RAM it
             # is carved from were both credited, so the planner sized a load to
             # roughly twice the memory the machine has.
-            if self._integrated_cuda_unified_memory(pinned):
-                shared |= {
-                    idx for idx, _free in rows if self._integrated_cuda_unified_memory([idx])
-                }
+            #
+            # Taken from the probe's own record rather than re-asking the driver,
+            # because `rows` carry nvidia-smi indices whenever that leg answered,
+            # and `_integrated_cuda_gpu_ids` speaks physical ids. Re-deriving here
+            # would classify a different card on any host where the two orders
+            # disagree, which is the case this PR's bus-id join exists for.
+            _unified = self._unified_memory_gpu_ids()
+            if _unified:
+                shared |= {idx for idx, _free in rows if idx in _unified}
         # --no-kv-offload puts the WHOLE cache in host RAM whatever the layer placement
         # says (llama-kv-cache.cpp upgrades a layer's buffer type only inside
         # `if (offload)`), so free VRAM may not pay for it. Resolved off the same
@@ -21548,10 +21593,21 @@ class LlamaCppBackend:
                     _detected_gpus = list(gpus)
                     # Vulkan reports total 0 only for integrated GPUs. Their
                     # free "VRAM" is the same host pool the RAM guard prices.
+                    #
+                    # An integrated NVIDIA part (GB10 / Jetson) is the same one pool
+                    # and has to be named here too, not only in the fit predicate:
+                    # `_launch_host_shortfall_message` prices its free figure as VRAM
+                    # and then ADDS available RAM, so a 30 GiB model on a GB10 with
+                    # 20 GiB spare read as 19 GiB of VRAM plus 20 GiB of RAM and the
+                    # pageable-load guard never fired. Marking it at the source is
+                    # what makes every consumer of `_shared_gpu_ids` agree.
                     _shared_gpu_ids = (
                         {idx for idx, _free in _detected_gpus if total_by_idx.get(idx, 1) <= 0}
                         if is_vulkan_backend
-                        else set()
+                        else {
+                            idx for idx, _free in _detected_gpus
+                            if idx in LlamaCppBackend._unified_memory_gpu_ids()
+                        }
                     )
                     # The --fit fallback is llama.cpp's own fitter, which knows nothing
                     # about this budget: it keeps its own margin and packs the rest on,

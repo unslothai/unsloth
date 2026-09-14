@@ -739,8 +739,8 @@ def _integrated_fit(monkeypatch, *, integrated, free_mib, avail_mib, model_bytes
         def _amd_apu_wants_unified_memory(self, gpu_indices = None):
             return False
 
-        def _integrated_cuda_unified_memory(self, gpu_indices = None):
-            return integrated
+        def _unified_memory_gpu_ids(self):
+            return {0} if integrated else set()
 
     return LlamaCppBackend._fit_derived_load_mode(
         _Stub(),
@@ -777,3 +777,95 @@ def test_an_integrated_pool_that_really_does_hold_the_model_still_fits(monkeypat
         free_mib = 40 * 1024, avail_mib = 40 * 1024, model_bytes = 8 * GIB,
     )
     assert got == LlamaCppBackend._FIT_LOAD_MODE
+
+
+# ── the probe's record, and every consumer reading the same ids ──────────────
+def test_the_correction_records_the_rows_it_rewrote(HW, monkeypatch):
+    """Downstream guards need to know WHICH rows describe host RAM, and they can
+    only match the ids the probe actually returned."""
+    monkeypatch.setattr(
+        HW, "_cuda_device_integrated_and_total",
+        lambda index: (True, _REAL_POOL_BYTES) if index == 1 else (False, 24 * GIB),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+    )
+    monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", True)
+    LlamaCppBackend._apply_cuda_unified_memory_correction([(0, 20000, 24564), (1, 7929, 8128)])
+    assert LlamaCppBackend._unified_memory_gpu_ids() == {1}
+
+
+def test_a_discrete_host_records_nothing(HW, discrete, monkeypatch):
+    monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", True)
+    LlamaCppBackend._apply_cuda_unified_memory_correction([(0, 20000, 24564)])
+    assert LlamaCppBackend._unified_memory_gpu_ids() == set()
+
+
+def test_the_smi_record_is_not_answered_from_physical_ids(HW, monkeypatch):
+    """nvidia-smi enumerates by bus id while CUDA defaults to FASTEST_FIRST, so the
+    two orders disagree. The accessor must hand back the ids the ROWS carry, not a
+    fresh driver classification in the other space."""
+    monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", True)
+    monkeypatch.setattr(LlamaCppBackend, "_UNIFIED_MEMORY_SMI_IDS", {1})
+    monkeypatch.setattr(
+        LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: {0})
+    )
+    assert LlamaCppBackend._unified_memory_gpu_ids() == {1}
+
+
+def test_the_torch_leg_answers_in_its_own_id_space(HW, monkeypatch):
+    """No nvidia-smi: the rows carry physical ids, where the driver classification
+    IS the right answer."""
+    monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", False)
+    monkeypatch.setattr(LlamaCppBackend, "_UNIFIED_MEMORY_SMI_IDS", {1})
+    monkeypatch.setattr(
+        LlamaCppBackend, "_integrated_cuda_gpu_ids", staticmethod(lambda: {0})
+    )
+    assert LlamaCppBackend._unified_memory_gpu_ids() == {0}
+
+
+def test_nothing_is_shared_before_a_probe_has_run(HW, monkeypatch):
+    monkeypatch.setattr(LlamaCppBackend, "_GPU_IDS_ARE_PCI_INDICES", None)
+    assert LlamaCppBackend._unified_memory_gpu_ids() == set()
+
+
+def test_the_launch_guard_prices_one_pool_once(monkeypatch):
+    """The item this closes: `_launch_host_shortfall_message` subtracts free VRAM
+    and then charges the rest to available RAM, so an unmarked GB10 was credited
+    19 GiB of VRAM PLUS 20 GiB of RAM for one 20 GiB pool and the pageable-load
+    guard never fired on a 30 GiB model.
+
+    Driven through a REAL backend with only the four readings stubbed, rather than
+    a hand-built stub: the guard reaches a dozen helpers, and a stub deep enough to
+    satisfy them is a second implementation that can agree with itself while
+    disagreeing with the code that ships.
+    """
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    monkeypatch.setattr(
+        LlamaCppBackend, "_get_gguf_size_bytes", lambda self, _p: 30 * GIB, raising = False
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 20 * 1024)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_cgroup_available_memory_mib", staticmethod(lambda: None)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_amd_apu_wants_unified_memory", staticmethod(lambda _i = None: False)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_host_offload_warning_opted_out", staticmethod(lambda: False)
+    )
+    rows = [(0, 20 * 1024)]
+
+    def _message(shared):
+        return backend._launch_host_shortfall_message(
+            ["llama-server", "-m", "m.gguf"], rows, {}, shared_gpu_ids = shared,
+        )
+
+    # Unmarked: the 20 GiB pool is credited as VRAM and then again as RAM, the
+    # 30 GiB model looks like it fits, and nothing is reported.
+    assert _message(set()) is None
+    # Marked: the whole 30 GiB has to come out of 20 GiB of host RAM, and the
+    # shortfall is reported.
+    assert _message({0}) is not None
