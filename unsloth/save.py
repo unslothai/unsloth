@@ -2633,7 +2633,8 @@ def create_huggingface_repo(
             username = username,
             base_model = model.config._name_or_path,
             model_type = model.config.model_type,
-            method = "",
+            # "finetuned" for the same reason the other call sites say it: Unsloth trained it.
+            method = "finetuned",
             extra = "unsloth",
         )
         card = ModelCard(content)
@@ -2684,7 +2685,7 @@ def upload_to_huggingface(
             username = username,
             base_model = model.config._name_or_path,
             model_type = model.config.model_type,
-            method = "",
+            method = method,
             extra = extra,
         )
         card = ModelCard(content)
@@ -5445,7 +5446,7 @@ def _push_merged_to_hub_revision(save_kwargs):
                     username = username,
                     base_model = base_model,
                     model_type = model.config.model_type,
-                    method = "",
+                    method = "finetuned",
                     extra = "unsloth",
                 )
             )
