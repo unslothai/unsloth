@@ -3452,7 +3452,10 @@ def _launches_a_child_process(node: "ast.Call", aliases: "dict | None" = None) -
 
 
 def _call_runs_from_a_credential_directory(
-    node: "ast.Call", cwds: "list", name_bases: "dict", process_aliases: "dict | None" = None
+    node: "ast.Call",
+    cwds: "list",
+    name_bases: "dict",
+    process_aliases: "dict | None" = None,
 ) -> bool:
     """True when a call hands a child process a directory that makes one of its paths a credential.
 
