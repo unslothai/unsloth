@@ -8075,6 +8075,8 @@ _FULL_DEPS_ENV = "UNSLOTH_STUDIO_FULL_DEPS"
 _INSTALL_ACTIONS = 0
 # Last run's evidence, or None when this pass must do everything.
 _PASS_EVIDENCE: "dict | None" = None
+# False when a peer is already inside a pass on this venv, which refuses the evidence below.
+_PASS_UNCONTENDED = True
 # What this pass did per step. Only "ran" and "skipped" let the NEXT run skip.
 _STEP_RESULTS: "dict[str, str]" = {}
 # The with-deps requirements steps this pass audited, for the closure record below.
@@ -8244,6 +8246,10 @@ def _plan_pass(package_name: str, local_repo: str, ci_source_overlay: str) -> "d
         manifest_error = True
     if _full_deps_requested():
         return _refuse_evidence("UNSLOTH_STUDIO_FULL_DEPS requested")
+    # A peer inside its own pass is replacing the packages this evidence describes, so every
+    # step runs. The parked copy is consumed above either way.
+    if not _PASS_UNCONTENDED:
+        return _refuse_evidence("another install is already running in this venv")
     # Dev shapes: an editable overlay or another package name is not the tree the manifest
     # describes.
     if local_repo or ci_source_overlay or package_name != "unsloth":
@@ -8901,6 +8907,20 @@ def _local_plugin_digest(plugin_dir: Path) -> "str | None":
     return digest.hexdigest()
 
 
+def _under_pass_lock(func):
+    """Run the pass holding the pass lock, and record whether a peer already had it."""
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        global _PASS_UNCONTENDED
+        with install_manifest.pass_lock() as uncontended:
+            _PASS_UNCONTENDED = uncontended
+            return func(*args, **kwargs)
+
+    return wrapper
+
+
+@_under_pass_lock
 def install_python_stack() -> int:
     global USE_UV, _STEP, _TOTAL, _PROGRESS_LINE_ACTIVE
     global _INSTALL_ACTIONS, _PASS_EVIDENCE, _CONSTRAINTS_CACHE, _CLOSURE_INDEX_CACHE
