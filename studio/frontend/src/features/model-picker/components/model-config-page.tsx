@@ -1862,8 +1862,11 @@ export function ModelConfigPage({
   rememberRef.current = remember;
   const setConfig = useCallback(
     (action: SetStateAction<PerModelConfig>) => {
+      // A plain value REPLACES, as the useState setter this stands in for does. Merging it
+      // left Reset's DEFAULT_PER_MODEL_CONFIG, which carries no GPU fields at all, unable to
+      // clear a manual placement: the rows still showed the pick and the next Run used it.
       patchModelConfigDraft(draftKey, (current) =>
-        typeof action === "function" ? action(current) : { ...current, ...action },
+        typeof action === "function" ? action(current) : action,
       );
     },
     [draftKey],
