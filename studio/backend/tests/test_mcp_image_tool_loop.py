@@ -238,6 +238,34 @@ def test_stale_snapshotless_image_request_is_rejected(image_request, location):
     assert exc.value.status_code == 400
 
 
+def test_policy_snapshot_allows_text_followup_with_historical_image(image_request):
+    f = image_request
+    f.payload.mcp_image_attachment = None
+    f.payload.messages = [
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": f.data_url}}]},
+        {"role": "assistant", "content": "a red rectangle"},
+        {"role": "user", "content": "describe it again"},
+    ]
+    f.payload.image_base64 = f.encoded
+
+    run, _ = prepare(f)
+    assert run is None
+
+
+@pytest.mark.parametrize("location", ["message", "legacy"])
+def test_policy_snapshot_rejects_new_ordinary_image_without_private_selection(image_request, location):
+    f = image_request
+    f.payload.mcp_image_attachment = None
+    if location == "message":
+        f.payload.messages = [
+            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": f.data_url}}]}
+        ]
+    else:
+        f.payload.image_base64 = base64.b64encode(b"a different image").decode()
+    with pytest.raises(McpImageDisclosureError, match = "settings changed"):
+        prepare(f)
+
+
 def test_changed_image_policy_revision_is_rejected_before_model_dispatch(image_request):
     image_request.payload.mcp_image_policy.servers[0].config_revision = 2
     with pytest.raises(McpImageDisclosureError, match = "settings changed"):

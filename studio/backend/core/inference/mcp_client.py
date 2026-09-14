@@ -45,9 +45,11 @@ logger = get_logger(__name__)
 # writers and diagnostics cannot enforce the disclosure boundary.
 _private_recipients = {}
 _private_recipients_lock = threading.Lock()
+_private_recipient_connects = {}
 _private_reaper_started = False
 _PRIVATE_RESPONSE_LIMIT = 64 * 1024 * 1024
 _PRIVATE_RECIPIENT_TTL = 300.0
+_PRIVATE_DEFAULT_TIMEOUT = object()
 
 
 class _PrivateMcpTransport:
@@ -165,12 +167,12 @@ class _PrivateMcpTransport:
     def _check(self, deadline, cancel_event):
         if self.closed.is_set() or (cancel_event is not None and cancel_event.is_set()):
             raise _MCPCancelled
-        if time.monotonic() >= deadline:
+        if deadline is not None and time.monotonic() >= deadline:
             raise asyncio.TimeoutError
 
     def _connection(self, deadline):
         parsed = urlsplit(self.url)
-        remaining = max(0.01, deadline - time.monotonic())
+        remaining = None if deadline is None else max(0.01, deadline - time.monotonic())
         if parsed.scheme == "https":
             connection = http.client.HTTPSConnection(
                 parsed.hostname,
@@ -222,10 +224,12 @@ class _PrivateMcpTransport:
         arguments = None,
         config_check = None,
         cancel_event = None,
-        timeout = None,
+        timeout = _PRIVATE_DEFAULT_TIMEOUT,
         notify = False,
     ):
-        deadline = time.monotonic() + (self.timeout if timeout is None else timeout)
+        if timeout is _PRIVATE_DEFAULT_TIMEOUT:
+            timeout = self.timeout
+        deadline = None if timeout is None else time.monotonic() + timeout
         self._check(deadline, cancel_event)
         request_id = self.next_id
         self.next_id += 1
@@ -279,9 +283,12 @@ class _PrivateMcpTransport:
             while True:
                 self._check(deadline, cancel_event)
                 try:
-                    data = self.messages.get(
-                        timeout = min(0.05, max(0.001, deadline - time.monotonic()))
+                    wait = (
+                        0.05
+                        if deadline is None
+                        else min(0.05, max(0.001, deadline - time.monotonic()))
                     )
+                    data = self.messages.get(timeout = wait)
                 except queue.Empty:
                     continue
                 material += len(data)
@@ -356,9 +363,12 @@ class _PrivateMcpTransport:
             while True:
                 self._check(deadline, cancel_event)
                 try:
-                    succeeded, value = outcome.get(
-                        timeout = min(0.05, max(0.001, deadline - time.monotonic()))
+                    wait = (
+                        0.05
+                        if deadline is None
+                        else min(0.05, max(0.001, deadline - time.monotonic()))
                     )
+                    succeeded, value = outcome.get(timeout = wait)
                 except queue.Empty:
                     continue
                 if succeeded:
@@ -456,6 +466,36 @@ class _PrivateMcpTransport:
                 break
 
 
+def _reserve_private_recipient():
+    """Claim one account-local slot before opening a process or socket."""
+    account = current_account_id()
+    reserved = False
+    with _private_recipients_lock:
+        stale = _pop_private_recipients(
+            lambda item: time.monotonic() - item.created_at > _PRIVATE_RECIPIENT_TTL
+            or item.closed.is_set()
+        )
+        active = sum(item.account == account for item in _private_recipients.values())
+        connecting = _private_recipient_connects.get(account, 0)
+        if active + connecting < _DEFAULT_MAX_SESSIONS:
+            _private_recipient_connects[account] = connecting + 1
+            reserved = True
+    for item in stale:
+        item.close()
+    if not reserved:
+        raise _PrivateTransportUnavailable
+    return account
+
+
+def _release_private_recipient(account):
+    with _private_recipients_lock:
+        remaining = _private_recipient_connects.get(account, 1) - 1
+        if remaining:
+            _private_recipient_connects[account] = remaining
+        else:
+            _private_recipient_connects.pop(account, None)
+
+
 def prepare_mcp_image_recipient(
     url,
     headers = None,
@@ -474,6 +514,7 @@ def prepare_mcp_image_recipient(
     if use_oauth or timeout is None or timeout <= 0:
         raise _PrivateTransportUnavailable
     validate_mcp_address(url)
+    reservation = _reserve_private_recipient()
     transport = None
     try:
         transport = _PrivateMcpTransport(url, headers, timeout)
@@ -493,12 +534,6 @@ def prepare_mcp_image_recipient(
         transport.protocol = initialized["protocolVersion"]
         transport.exchange("notifications/initialized", {}, cancel_event = cancel_event, notify = True)
         with _private_recipients_lock:
-            stale = _pop_private_recipients(
-                lambda item: time.monotonic() - item.created_at > _PRIVATE_RECIPIENT_TTL
-                or item.closed.is_set()
-            )
-            if len(_private_recipients) >= _DEFAULT_MAX_SESSIONS:
-                raise _PrivateTransportUnavailable
             # Initialization may be slow. The disclosure lifetime begins only
             # once this initialized recipient is ready to be shown to the user.
             transport.created_at = time.monotonic()
@@ -507,13 +542,13 @@ def prepare_mcp_image_recipient(
                 _private_reaper_started = True
                 account_thread(target = _private_recipient_reaper, daemon = True).start()
                 atexit.register(close_mcp_sessions, all_accounts = True)
-        for item in stale:
-            item.close()
         return transport.identity
     except BaseException:
         if transport is not None:
             transport.close()
         raise _PrivateTransportUnavailable from None
+    finally:
+        _release_private_recipient(reservation)
 
 
 def _private_recipient_reaper():
@@ -1995,6 +2030,7 @@ def _reset_after_fork() -> None:
     global _private_recipients_lock, _private_reaper_started
     _private_recipients_lock = threading.Lock()
     _private_recipients.clear()
+    _private_recipient_connects.clear()
     _private_reaper_started = False
     # Replaced, not just cleared: a lock the fork caught held belongs to a thread that no longer exists here, so the
     # child would block on it forever.

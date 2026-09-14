@@ -71,6 +71,45 @@ def _request_contains_model_image(payload):
     return False
 
 
+def _request_contains_new_model_image(payload):
+    """Detect an image on the newest user turn, including a distinct legacy field."""
+    latest_user_seen = False
+    latest_image = None
+    newest_has_image = False
+    for message in reversed(list(getattr(payload, "messages", None) or [])):
+        role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
+        if role != "user":
+            continue
+        content = (
+            message.get("content")
+            if isinstance(message, dict)
+            else getattr(message, "content", None)
+        )
+        values = []
+        has_image_part = False
+        for part in content if isinstance(content, list) else []:
+            part_type = part.get("type") if isinstance(part, dict) else getattr(part, "type", None)
+            if part_type not in {"image_url", "input_image", "image"}:
+                continue
+            has_image_part = True
+            value = part.get("image_url") if isinstance(part, dict) else getattr(part, "image_url", None)
+            if isinstance(value, dict):
+                value = value.get("url")
+            elif value is not None and not isinstance(value, str):
+                value = getattr(value, "url", None)
+            if value is None and part_type == "image":
+                value = part.get("image") if isinstance(part, dict) else getattr(part, "image", None)
+            if isinstance(value, str) and value:
+                values.append(value.partition(",")[2] if value.startswith("data:") else value)
+        if not latest_user_seen:
+            newest_has_image = has_image_part
+            latest_user_seen = True
+        if values and latest_image is None:
+            latest_image = values[0]
+    legacy = getattr(payload, "image_base64", None)
+    return newest_has_image or bool(legacy and legacy != latest_image)
+
+
 def _validate_image_policy_snapshot(payload):
     snapshot = getattr(payload, "mcp_image_policy", None)
     selection = getattr(payload, "mcp_image_attachment", None)
@@ -90,7 +129,8 @@ def _validate_image_policy_snapshot(payload):
         supplied != sorted(set(supplied))
         or current != supplied
         or snapshot.tool_only != bool(current)
-        or snapshot.tool_only != (selection is not None)
+        or (selection is not None and not snapshot.tool_only)
+        or (selection is None and snapshot.tool_only and _request_contains_new_model_image(payload))
     ):
         raise McpImageDisclosureError(
             "MCP image sharing settings changed. Remove and attach the image again."

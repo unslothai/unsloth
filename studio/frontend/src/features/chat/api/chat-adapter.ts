@@ -5010,7 +5010,7 @@ export function createOpenAIStreamAdapter(
           (attachment) => attachment.type === "image",
         ) ?? [];
       let mcpImagePolicy: McpImagePolicySnapshot | undefined;
-      if (submittedImages.length) {
+      if (hasOutboundImage || submittedImages.length) {
         try {
           mcpImagePolicy = mcpImagePolicySnapshot(
             mcpEnabledForChat && supportsTools ? await listMcpServers() : [],
@@ -5020,7 +5020,10 @@ export function createOpenAIStreamAdapter(
             "Could not verify MCP image attachment settings. Try again.",
           );
         }
-        if (submittedImages.every(isMcpToolOnly) !== mcpImagePolicy.tool_only) {
+        if (
+          submittedImages.length &&
+          submittedImages.every(isMcpToolOnly) !== mcpImagePolicy.tool_only
+        ) {
           throw new Error(
             "MCP image sharing settings changed. Remove and attach the image again.",
           );

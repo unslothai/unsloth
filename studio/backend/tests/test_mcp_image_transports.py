@@ -71,8 +71,120 @@ def cleanup_recipients():
     with mcp_client._private_recipients_lock:
         recipients = list(mcp_client._private_recipients.values())
         mcp_client._private_recipients.clear()
+        mcp_client._private_recipient_connects.clear()
     for recipient in recipients:
         recipient.close()
+
+
+def test_recipient_capacity_is_reserved_before_initialization(monkeypatch):
+    entered = threading.Semaphore(0)
+    release = threading.Event()
+    constructed = []
+
+    class SlowTransport:
+        def __init__(self, url, headers, timeout):
+            self.url = url
+            self.account = mcp_client.current_account_id()
+            self.identity = f"recipient-{len(constructed)}"
+            self.created_at = time.monotonic()
+            self.closed = threading.Event()
+            constructed.append(self)
+
+        def exchange(self, method, *args, **kwargs):
+            if method == "initialize":
+                entered.release()
+                release.wait(5)
+                return {"protocolVersion": "2024-11-05"}
+            return None
+
+        def close(self):
+            self.closed.set()
+
+    monkeypatch.setattr(mcp_client, "_DEFAULT_MAX_SESSIONS", 2)
+    monkeypatch.setattr(mcp_client, "_PrivateMcpTransport", SlowTransport)
+    monkeypatch.setattr(mcp_client, "validate_mcp_address", lambda _: None)
+    results = []
+
+    def prepare():
+        try:
+            results.append(mcp_client.prepare_mcp_image_recipient("https://recipient.test/mcp"))
+        except Exception:
+            results.append("rejected")
+
+    workers = [threading.Thread(target = prepare) for _ in range(2)]
+    for worker in workers:
+        worker.start()
+    assert entered.acquire(timeout = 2) and entered.acquire(timeout = 2)
+
+    started = time.monotonic()
+    prepare()
+    assert time.monotonic() - started < 1
+    assert results == ["rejected"]
+    assert len(constructed) == 2
+
+    release.set()
+    for worker in workers:
+        worker.join(timeout = 2)
+        assert not worker.is_alive()
+    assert len(results) == 3
+    assert mcp_client._private_recipient_connects == {}
+
+
+def test_recipient_capacity_is_isolated_per_account(monkeypatch):
+    other = SimpleNamespace(
+        account = "other",
+        created_at = time.monotonic(),
+        closed = threading.Event(),
+        close = lambda: None,
+    )
+    mcp_client._private_recipients["other"] = other
+    monkeypatch.setattr(mcp_client, "_DEFAULT_MAX_SESSIONS", 1)
+    monkeypatch.setattr(mcp_client, "current_account_id", lambda: "mine")
+
+    reservation = mcp_client._reserve_private_recipient()
+    assert reservation == "mine"
+    mcp_client._release_private_recipient(reservation)
+
+
+def test_private_tool_call_can_be_explicitly_unbounded(monkeypatch):
+    transport = mcp_client._PrivateMcpTransport("http://example.test/mcp", {}, 0.01)
+
+    class Response:
+        status = 200
+
+        def getheader(self, name, default = None):
+            return "application/json" if name == "Content-Type" else default
+
+        def read(self, _limit):
+            return json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {"protocolVersion": "2024-11-05"},
+                }
+            ).encode()
+
+        def close(self):
+            pass
+
+    class Connection:
+        sock = None
+
+        def request(self, *args, **kwargs):
+            pass
+
+        def getresponse(self):
+            time.sleep(0.05)
+            return Response()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(transport, "_connection", lambda _: Connection())
+    try:
+        assert transport.exchange("initialize", {}, timeout = None)["protocolVersion"] == "2024-11-05"
+    finally:
+        transport.close()
 
 
 def test_http_send_is_one_use_and_withholds_all_results(http_recipient, caplog, monkeypatch):
