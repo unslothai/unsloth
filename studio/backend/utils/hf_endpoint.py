@@ -151,19 +151,56 @@ def _sanitize(candidate: str, default: str, var_name: str) -> str:
     return default
 
 
+def is_private_host(hostname: str | None) -> bool:
+    """Is this an address literal that is only meaningful on some local network?
+
+    RFC 1918 and friends, plus link-local and unique-local IPv6. Reserved and
+    documentation ranges count too, which is the conservative direction: an
+    address that is not routable on the internet is one whose meaning depends on
+    where you stand. A NAME is not private by this test even if it resolves to
+    such an address: there is nothing here to resolve it with, and a name at
+    least means the same thing to both ends when their DNS agrees.
+    """
+    if not hostname:
+        return False
+    try:
+        address = ipaddress.ip_address(hostname.strip("[]").lower())
+    except ValueError:
+        return False
+    return address.is_private or address.is_link_local
+
+
+def endpoint_is_reachable_by(endpoint: str, client_host: str | None) -> bool:
+    """Would a browser at ``client_host`` reach the SAME host this endpoint names?
+
+    A loopback endpoint names a proxy on the machine the BACKEND runs on, so it
+    means the browser's own localhost anywhere else. A private-network address
+    has the same problem one step out: through the managed tunnel, or from the
+    internet, ``https://10.0.0.5:8443`` is an address on the VISITOR's network,
+    where it is either dead or some unrelated service that would be offered the
+    user's Hub token. A private address is therefore reported only to a client
+    that is itself local, which keeps the ordinary LAN deployment working, and a
+    loopback one only to a loopback client.
+    """
+    parts = _split(endpoint)
+    if parts is None:
+        return True
+    host = parts.hostname
+    if is_loopback_host(host):
+        return is_loopback_host(client_host)
+    if is_private_host(host):
+        return is_loopback_host(client_host) or is_private_host(client_host)
+    return True
+
+
 def client_reachable_endpoint(client_host: str | None) -> str:
     """The hub endpoint to hand to a browser at ``client_host``.
 
-    A loopback endpoint names a proxy on the MACHINE THE BACKEND RUNS ON, so it
-    means something else entirely to a browser elsewhere: its own localhost. It
-    is reported, and linked to, only when the client is on this machine too.
-    Everything the backend does itself keeps using ``get_hf_endpoint()``.
+    Everything the backend does itself keeps using ``get_hf_endpoint()``; this is
+    only for values that leave for a browser (``/api/health``, the publish link).
     """
     endpoint = get_hf_endpoint()
-    parts = _split(endpoint)
-    if parts is not None and is_loopback_host(parts.hostname) and not is_loopback_host(client_host):
-        return _DEFAULT_HF_ENDPOINT
-    return endpoint
+    return endpoint if endpoint_is_reachable_by(endpoint, client_host) else _DEFAULT_HF_ENDPOINT
 
 
 def _canonical(parts, folded: str) -> str:

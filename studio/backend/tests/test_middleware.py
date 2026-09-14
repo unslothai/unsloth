@@ -1350,7 +1350,7 @@ class TestCspHfEndpoints:
         """
         monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:9700")
         c = TestClient(main_module.app, client = ("127.0.0.1", 40000))
-        tunneled = c.get("/api/health", headers = {"CF-Connecting-IP": "203.0.113.7"})
+        tunneled = c.get("/api/health", headers = {"CF-Connecting-IP": "8.8.8.8"})
         assert tunneled.json()["hf_endpoint"] == "https://huggingface.co"
         # The same socket peer without the tunnel header really is local.
         assert c.get("/api/health").json()["hf_endpoint"] == "http://127.0.0.1:9700"
@@ -1358,3 +1358,35 @@ class TestCspHfEndpoints:
         remote = TestClient(main_module.app, client = ("192.168.1.50", 40000))
         forged = remote.get("/api/health", headers = {"CF-Connecting-IP": "127.0.0.1"})
         assert forged.json()["hf_endpoint"] == "https://huggingface.co"
+
+    @pytest.mark.parametrize(
+        "endpoint, remote_sees",
+        [
+            ("http://127.0.0.1:9700", "https://huggingface.co"),
+            ("https://10.0.0.5:8443", "https://huggingface.co"),
+            ("https://192.168.1.9", "https://huggingface.co"),
+            ("https://[fd00::1]", "https://huggingface.co"),
+            ("https://hf-mirror.com", "https://hf-mirror.com"),
+        ],
+    )
+    def test_a_private_network_endpoint_is_not_reported_to_a_remote_browser(
+        self, main_module, monkeypatch, endpoint, remote_sees
+    ):
+        """10.0.0.5 means the VISITOR's 10.0.0.5, one step out from localhost.
+
+        Through the tunnel, or from the internet, the browser resolves a private
+        address on its own network: dead, or an unrelated service that would be
+        offered the user's Hub token. A LAN client is on the backend's network, so
+        it still gets the real value; a public client does not.
+        """
+        monkeypatch.setenv("HF_ENDPOINT", endpoint)
+        tunneled = TestClient(main_module.app, client = ("127.0.0.1", 40000))
+        seen = tunneled.get(
+            "/api/health", headers = {"CF-Connecting-IP": "8.8.8.8"}
+        ).json()["hf_endpoint"]
+        assert seen == remote_sees
+        # A LAN browser reaches the backend's own network, so nothing is hidden
+        # from it except the backend's private-to-itself loopback.
+        lan = TestClient(main_module.app, client = ("192.168.1.50", 40000))
+        lan_expected = "https://huggingface.co" if "127.0.0.1" in endpoint else endpoint
+        assert lan.get("/api/health").json()["hf_endpoint"] == lan_expected

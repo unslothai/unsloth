@@ -357,16 +357,15 @@ from utils.cache_cleanup import (
 )
 from utils.lifespan_shutdown import run_lifespan_shutdown
 from utils.native_path_leases import native_path_leases_supported
-from urllib.parse import urlsplit
 
 from utils.client_ip import client_ip
 from utils.hf_endpoint import (
     DEFAULTS_BY_HEALTH_KEY as _HF_ENDPOINT_DEFAULTS,
+    endpoint_is_reachable_by as _endpoint_is_reachable_by,
     csp_asset_sources,
     csp_connect_sources,
     get_hf_endpoint,
     get_hf_datasets_server,
-    is_loopback_host as _is_loopback_host,
 )
 from utils.update_status import (
     get_studio_install_source_status,
@@ -939,37 +938,29 @@ _IS_COLAB = os.path.isdir("/content") and (
 )
 
 
-def _request_is_loopback(request) -> bool:
-    """Is the CLIENT on this machine? Not the same question as the backend being.
-
-    Through the managed Cloudflare tunnel the socket peer IS loopback: it is the
-    local cloudflared process, not the visitor. client_ip() is the existing
-    resolution for exactly that topology (CF-Connecting-IP, honoured only when
-    the peer is loopback so a direct caller cannot forge it), and it answers
-    "_unknown" rather than guessing, which reads here as "not local".
-    """
-    return _is_loopback_host(client_ip(request))
-
-
 def _reportable_hf_endpoints(request) -> dict:
     """The endpoints to hand the browser, which are not always the ones we use.
 
-    A loopback endpoint names a proxy on the MACHINE THE BACKEND RUNS ON. Handing
-    that to a browser on another machine makes it fetch its OWN localhost: the
-    calls either fail, or hit an unrelated local service that, if it answers the
-    CORS preflight, is handed the user's Hub bearer token. So a loopback endpoint
-    is reported only to a loopback client, where the two are the same machine.
-    The backend keeps using its own value either way.
+    A loopback endpoint names a proxy on the MACHINE THE BACKEND RUNS ON, and a
+    private-network one an address on the backend's LAN. Handing either to a
+    browser elsewhere makes it fetch its OWN localhost or its OWN 10.0.0.5: the
+    calls either fail, or hit an unrelated service that, if it answers the CORS
+    preflight, is handed the user's Hub bearer token. endpoint_is_reachable_by
+    holds the rule; the backend keeps using its own value either way.
+
+    The client comes from client_ip(), not the socket peer: through the managed
+    Cloudflare tunnel the peer IS loopback, being the local cloudflared process
+    rather than the visitor, and an address it cannot determine reads as remote.
     """
     reported = {}
     for key, value in (
         ("hf_endpoint", get_hf_endpoint()),
         ("hf_datasets_server", get_hf_datasets_server()),
     ):
-        if _is_loopback_host(urlsplit(value).hostname) and not _request_is_loopback(request):
-            reported[key] = _HF_ENDPOINT_DEFAULTS[key]
-        else:
+        if _endpoint_is_reachable_by(value, client_ip(request)):
             reported[key] = value
+        else:
+            reported[key] = _HF_ENDPOINT_DEFAULTS[key]
     return reported
 
 

@@ -375,3 +375,25 @@ def test_the_environment_is_normalised_for_huggingface_hub(monkeypatch):
     monkeypatch.delenv("HF_ENDPOINT", raising = False)
     hf_endpoint.normalize_hf_endpoint_env()
     assert "HF_ENDPOINT" not in os.environ
+
+
+def test_a_private_endpoint_reaches_only_a_client_on_a_local_network(monkeypatch):
+    """The publish link follows the same rule /api/health does.
+
+    A private address means the VISITOR's network when the visitor is elsewhere,
+    so it is handed out only to a client that is itself local. A public mirror is
+    the same host for everyone.
+    """
+    monkeypatch.setenv("HF_ENDPOINT", "https://10.0.0.5:8443")
+    assert client_reachable_endpoint("192.168.1.50") == "https://10.0.0.5:8443"
+    assert client_reachable_endpoint("127.0.0.1") == "https://10.0.0.5:8443"
+    assert client_reachable_endpoint("8.8.8.8") == "https://huggingface.co"
+    assert client_reachable_endpoint(None) == "https://huggingface.co"
+    # A loopback endpoint stays stricter: a LAN client is not the same machine.
+    monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:9700")
+    assert client_reachable_endpoint("192.168.1.50") == "https://huggingface.co"
+    assert client_reachable_endpoint("127.0.0.1") == "http://127.0.0.1:9700"
+    # A named mirror is left alone: nothing here can resolve it, and a name means
+    # the same thing at both ends when their DNS agrees.
+    monkeypatch.setenv("HF_ENDPOINT", "https://hub.internal")
+    assert client_reachable_endpoint("8.8.8.8") == "https://hub.internal"
