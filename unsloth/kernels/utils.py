@@ -227,7 +227,10 @@ if DEVICE_TYPE == "xpu":
         XPU_STREAMS = ()
         WEIGHT_BUFFERS = []
         ABSMAX_BUFFERS = []
-elif DEVICE_TYPE == "mlx":
+elif DEVICE_TYPE in ("mlx", "npu"):
+    # npu joins mlx rather than falling to the else: that arm reads CUDA streams via
+    # torch._C._cuda_getCurrentRawStream, which an Ascend build has no runtime for, so
+    # DEVICE_COUNT > 0 would raise here during `import unsloth`.
     CUDA_STREAMS = ()
     XPU_STREAMS = ()
     WEIGHT_BUFFERS = []
