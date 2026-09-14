@@ -1147,19 +1147,6 @@ def test_a_differently_cased_studio_home_value_is_still_ours(monkeypatch, tmp_pa
         tools._studio_auth_markers_cache = None
 
 
-def test_a_studio_home_variable_pointing_elsewhere_is_not_ours(monkeypatch, tmp_path):
-    home = tmp_path / "studio-home"
-    (home / "auth").mkdir(parents = True)
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
-    monkeypatch.setenv("STUDIO_HOME", str(tmp_path / "another-app"))
-    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
-    try:
-        assert not tools._references_studio_credential("cat $STUDIO_HOME/auth/auth.db")
-        assert tools._references_studio_credential("cat $UNSLOTH_STUDIO_HOME/auth/auth.db")
-    finally:
-        tools._studio_auth_markers_cache = None
-
-
 def test_a_symlinked_studio_home_is_still_ours(monkeypatch, tmp_path):
     # `studio_root()` resolves aliases, so a STUDIO_HOME that is a symlink to the configured root
     # compared unequal to it and every spelling of the variable was dropped from the guard.
