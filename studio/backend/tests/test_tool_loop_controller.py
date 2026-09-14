@@ -584,6 +584,34 @@ def test_replayed_arguments_keep_the_order_the_model_generated():
     )
 
 
+def test_two_xml_calls_written_in_different_orders_replay_in_their_own():
+    """Each call's own order, not one fixed order that happens to look unsorted.
+
+    The expectation in `test_an_mcp_tool_call_parsed_from_xml_arrives_typed` is a single
+    ordering, and a sorted encoder that merely sorted into that ordering would satisfy it.
+    Two calls carrying the same parameters in different document orders cannot both be
+    satisfied by any fixed order, so this is what separates tracking from coincidence: on
+    the sorted encoder both of these replay as the same string.
+    """
+
+    def replay(*parameters):
+        content = (
+            "<function=mcp__notes__search>"
+            + "".join(f"<parameter={key}>{value}</parameter>" for key, value in parameters)
+            + "</function>"
+        )
+        calls = parse_tool_calls_from_text(content)
+        decision = ToolLoopController(tools = _mcp_tool_schemas()).prepare_call(calls[0])
+        return decision.as_assistant_tool_call()["function"]["arguments"]
+
+    assert replay(("query", "ship dates"), ("limit", 25), ("fuzzy", "false")) == (
+        '{"query":"ship dates","limit":25,"fuzzy":false}'
+    )
+    assert replay(("fuzzy", "false"), ("query", "ship dates"), ("limit", 25)) == (
+        '{"fuzzy":false,"query":"ship dates","limit":25}'
+    )
+
+
 def test_a_declared_type_nested_in_a_container_is_read_too():
     """`edit_file` declares replace_all inside `edits.items`, so the top level is not enough
     and text that spells a boolean must survive as text."""
