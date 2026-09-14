@@ -72,8 +72,9 @@ def test_mlx_fusion_import_never_fails_the_request(monkeypatch, error, feature):
 
 
 @pytest.mark.parametrize("feature", ["moe_gate_up", "decode_conv_silu"])
-def test_mlx_fusion_that_cannot_be_entered_keeps_native(monkeypatch, mlx_inference_patches,
-                                                        feature):
+def test_mlx_fusion_that_cannot_be_entered_keeps_native(
+    monkeypatch, mlx_inference_patches, feature
+):
     """Packing can fail on the model in hand (headroom, an unsupported layout) after the
     module imported cleanly. That must degrade to native, not fail the request."""
     from core.inference import mlx_inference
