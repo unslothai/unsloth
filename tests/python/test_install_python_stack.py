@@ -76,12 +76,14 @@ STACK_SOURCE = (STUDIO_DIR / "install_python_stack.py").read_text(encoding = "ut
 @pytest.fixture(autouse = True)
 def _hermetic_pinned_pip_config(request):
     ips._PINNED_PIP_CONFIG_LISTING = None
+    ips._PINNED_PIP_CONFIG_ATTEMPTS = 2
     if "reads_real_pip_config" in request.keywords:
         yield
     else:
         with mock.patch.object(ips, "_pinned_pip_config_overrides", lambda *a, **k: {}):
             yield
     ips._PINNED_PIP_CONFIG_LISTING = None
+    ips._PINNED_PIP_CONFIG_ATTEMPTS = 2
 
 
 class TestUvOnlyBinaryOnPinnedCommands:
@@ -103,6 +105,20 @@ class TestUvOnlyBinaryOnPinnedCommands:
         with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":none:,numpy"}):
             cmd = ips._build_uv_cmd(self.PINNED)
         assert cmd[-4:] == ["--only-binary", ":none:", "--only-binary", "numpy"]
+
+    @pytest.mark.reads_real_pip_config
+    def test_the_flag_and_the_environment_can_never_disagree(self, monkeypatch):
+        """Both come from one read. Asking twice let a transient failure put the policy in
+        the environment while leaving it off the argv that actually decides."""
+        # Pre-seeded, so the read is the cached one and no subprocess is involved.
+        monkeypatch.setattr(ips, "_PINNED_PIP_CONFIG_LISTING", b"global.only-binary=':all:'\n")
+        with mock.patch.dict(
+            os.environ, {k: v for k, v in os.environ.items() if k != "PIP_ONLY_BINARY"}, clear = True
+        ):
+            cmd = ips._build_uv_cmd(self.PINNED)
+            env = ips._install_env_for_cmd(cmd)
+        flagged = cmd[cmd.index("--only-binary") + 1] if "--only-binary" in cmd else None
+        assert flagged == env.get("PIP_ONLY_BINARY") == ":all:"
 
     def test_a_non_pinned_command_is_left_alone(self):
         """It keeps its config file, so uv applies the operator's policy itself."""
@@ -803,6 +819,47 @@ class TestHardenedPipConfigRelaxation:
         assert ips._parse_pinned_pip_config(b"global.cert=\xff\xfe\x00") == {}
 
     @pytest.mark.reads_real_pip_config
+    def test_a_wedged_pip_costs_the_run_one_budget_not_one_per_command(self, monkeypatch):
+        """Failures are deliberately not memoised, so a transient miss cannot cost the
+        operator their cert for the whole run. Unbounded, a HANG paid the timeout once per
+        pinned command instead of once."""
+        attempts = []
+
+        def always_fails(cmd, **kwargs):
+            attempts.append(kwargs.get("timeout"))
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+        monkeypatch.setattr(ips.subprocess, "run", always_fails)
+        ips._PINNED_PIP_CONFIG_LISTING = None
+        ips._PINNED_PIP_CONFIG_ATTEMPTS = 2
+        for _ in range(25):
+            assert ips._pinned_pip_config_overrides() == {}
+        assert len(attempts) == 2, attempts
+        assert set(attempts) == {ips._PINNED_PIP_CONFIG_TIMEOUT}
+        # ...and the budget is small enough that the worst case is a wait, not a hang.
+        assert ips._PINNED_PIP_CONFIG_TIMEOUT * 2 <= 60
+
+    @pytest.mark.reads_real_pip_config
+    def test_a_cheap_failure_does_not_spend_the_budget(self, monkeypatch):
+        """A fresh venv has no pip for the first part of the run. That answer is instant,
+        so budgeting it would mean the operator's cert is lost for the rest of the run the
+        moment pip does appear."""
+        calls = []
+
+        def missing_then_present(cmd, **kwargs):
+            calls.append(1)
+            if len(calls) < 8:
+                raise OSError("no pip yet")
+            return subprocess.CompletedProcess(cmd, 0, b"global.cert='/etc/corp/ca.pem'\n")
+
+        monkeypatch.setattr(ips.subprocess, "run", missing_then_present)
+        ips._PINNED_PIP_CONFIG_LISTING = None
+        ips._PINNED_PIP_CONFIG_ATTEMPTS = 2
+        for _ in range(7):
+            assert ips._pinned_pip_config_overrides() == {}
+        assert ips._pinned_pip_config_overrides() == {"PIP_CERT": "/etc/corp/ca.pem"}
+
+    @pytest.mark.reads_real_pip_config
     def test_the_read_dictates_the_child_encoding(self, monkeypatch):
         """Sniffing cannot recover an undictated encoding, so the child is told one."""
         seen = {}
@@ -813,6 +870,7 @@ class TestHardenedPipConfigRelaxation:
 
         monkeypatch.setattr(ips.subprocess, "run", fake_run)
         ips._PINNED_PIP_CONFIG_LISTING = None
+        ips._PINNED_PIP_CONFIG_ATTEMPTS = 2
         ips._pinned_pip_config_overrides()
         assert seen.get("PYTHONIOENCODING") == "utf-8"
 

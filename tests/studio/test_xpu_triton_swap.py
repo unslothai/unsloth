@@ -76,6 +76,8 @@ def _load_real_index_env_scrub():
         ("_PINNED_PIP_CONFIG_SEPARATORS = ", "\n", 1),
         ("_PINNED_PIP_CONFIG_ACCUMULATING = ", "\n", 1),
         ("_PINNED_PIP_CONFIG_LISTING: ", "\n", 1),
+        ("_PINNED_PIP_CONFIG_TIMEOUT = ", "\n", 1),
+        ("_PINNED_PIP_CONFIG_ATTEMPTS = ", "\n", 1),
         ("def _pip_subcommand_of(", "\n\ndef ", 0),
         ("def _decode_pip_output(", "\n\ndef ", 0),
         ("def _pinned_pip_config_overrides(", "\n\ndef ", 0),

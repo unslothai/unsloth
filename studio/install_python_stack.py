@@ -7312,9 +7312,10 @@ def _uv_only_binary_args(cmd: "list[str]") -> "list[str]":
     """
     if not _is_pinned_index_cmd(cmd):
         return []
-    value = os.environ.get("PIP_ONLY_BINARY") or _pinned_pip_config_overrides().get(
-        "PIP_ONLY_BINARY", ""
-    )
+    # Read it off the env this very command will run with, not by asking again: two reads
+    # can disagree if the first fails and the second succeeds, which would put the policy
+    # in the environment while leaving it off the argv that decides.
+    value = (_install_env_for_cmd(cmd) or {}).get("PIP_ONLY_BINARY", "")
     args: list[str] = []
     # Repeatable rather than comma joined, which is the spelling uv takes (pip takes both).
     for part in value.split(","):
@@ -7801,6 +7802,13 @@ _PINNED_PIP_CONFIG_ACCUMULATING = frozenset({"only-binary"})
 
 _PINNED_PIP_CONFIG_LISTING: "bytes | None" = None
 
+# Failures are NOT memoised, so a transient miss cannot cost the operator their cert and
+# proxy for the whole run, and a venv that has no pip YET can answer once it does. Only the
+# expensive failure is budgeted: a hang would otherwise pay the timeout once per pinned
+# command. A fast failure costs milliseconds and stays freely retryable.
+_PINNED_PIP_CONFIG_TIMEOUT = 30
+_PINNED_PIP_CONFIG_ATTEMPTS = 2
+
 
 def _pip_subcommand_of(cmd: "list[str]") -> str:
     """The pip subcommand ``cmd`` runs, or the default when it is not a pip command."""
@@ -7816,12 +7824,16 @@ def _pinned_pip_config_overrides(
     """pip's configured transport and binary policy, as PIP_ environment variables.
 
     ONLY a successful read is memoised, or a transient miss would cost the operator their
-    cert and proxy for the rest of the run. Empty when pip cannot answer, the normal case
-    in a venv with no pip yet. `:env:` rows are skipped: the child inherits those already.
+    cert and proxy for the rest of the run, and a venv with no pip yet could never answer
+    once it has one. A HANG is budgeted instead, so a wedged pip costs the run one timeout
+    budget rather than one per pinned command. Empty when pip cannot answer, the normal
+    case early in a fresh venv. `:env:` rows are skipped: the child inherits those.
     """
-    global _PINNED_PIP_CONFIG_LISTING
+    global _PINNED_PIP_CONFIG_LISTING, _PINNED_PIP_CONFIG_ATTEMPTS
     if _PINNED_PIP_CONFIG_LISTING is not None:
         return _parse_pinned_pip_config(_PINNED_PIP_CONFIG_LISTING, subcommand)
+    if _PINNED_PIP_CONFIG_ATTEMPTS <= 0:
+        return {}
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pip", "config", "list"],
@@ -7830,10 +7842,12 @@ def _pinned_pip_config_overrides(
             # Dictate the child's encoding; see _decode_pip_output. Guessing loses a
             # non-ASCII cert path, and pip then fails rather than dropping the setting.
             env = {**os.environ, "PYTHONIOENCODING": "utf-8"},
-            # On the path to every pinned install: a wedged pip costs a minute, not more.
-            timeout = 60,
+            timeout = _PINNED_PIP_CONFIG_TIMEOUT,
             **_windows_hidden_subprocess_kwargs(),
         )
+    except subprocess.TimeoutExpired:
+        _PINNED_PIP_CONFIG_ATTEMPTS -= 1
+        return {}
     except (OSError, subprocess.SubprocessError):
         return {}
     if result.returncode != 0:
