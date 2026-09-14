@@ -1306,11 +1306,9 @@ def _is_start_title(token: str) -> bool:
     )
 
 
-# Built once at import. `_BLOCKED_COMMANDS` is a module-level frozenset assigned at line 192 and
-# never mutated, so this alternation is a compile-time constant. It used to be rebuilt on every
-# call, which cost an `re.escape` per blocked name per command: profiling the scan over a 2637
-# command corpus put that genexpr at the top, 567k calls to `re.escape` and 0.60s cumulative out of
-# 3.9s. None means the set is empty, which only happens if the tables above are emptied.
+# `_BLOCKED_COMMANDS` is a never-mutated frozenset, so this alternation is a constant. Rebuilding it
+# per call cost an `re.escape` per blocked name: over a 2637 command corpus that was 567k calls and
+# 0.60s of 3.9s. None only if the set is empty.
 _BLOCKED_WORD_RE = (
     re.compile(
         r"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)"
