@@ -70,15 +70,13 @@ def _load_real_index_env_scrub():
         ("_PM_HASH_ENV_VARS = (", "\n)\n", 2),
         ("_PM_FORCE_SOURCE_ENV_VARS = (", "\n)\n", 2),
         # One line, so it ends at the first newline; "\n)\n" would swallow the file.
-        ("_PIP_SOURCE_CONFIG_KEYS = (", "\n", 1),
-        ("def _pip_config_without_sources(", "\n\ndef ", 0),
+        ("_PINNED_PIP_CONFIG_KEEP_KEYS = (", "\n)\n", 2),
+        ("_PINNED_PIP_CONFIG_SECTIONS = (", "\n", 1),
+        ("@functools.lru_cache(maxsize = 1)\ndef _pinned_pip_config_overrides(", "\n\ndef ", 0),
         ("def _relaxed_pip_policy_env(", "\n\ndef ", 0),
         ("def _is_pip_subcommand(", "\n\ndef ", 0),
         ("def _is_pinned_index_cmd(", "\n\ndef ", 0),
         ("def _install_env_for_cmd(", "\n\ndef ", 0),
-        ("_PINNED_PIP_CONFIG: ", "\n", 1),
-        ("def _pinned_pip_config_file(", "\n\ndef ", 0),
-        ("def _uv_config_build_policy(", "\n\ndef ", 0),
     ):
         start = src.index(anchor)
         exec(compile(src[start : src.index(end, start) + keep], str(STACK), "exec"), ns)
@@ -419,29 +417,28 @@ class TestTheFetchIgnoresTheUsersIndexEnvironment:
         assert env is not None, "the fetch inherited the ambient environment"
         assert var not in env
 
-    def test_the_fetch_neutralises_the_pip_config_sources(self, monkeypatch, tmp_path):
-        # A pip.conf index-url outranks nothing on the CLI, but no-index in it does, so the
-        # fetch runs against a REWRITE of pip's config with the source keys removed --
-        # not devnull, which would drop the operator's cert, proxy and build policy too.
+    def test_the_fetch_neutralises_the_pip_config_file(self, monkeypatch, tmp_path):
+        # A pip.conf index-url outranks nothing on the CLI, but no-index in it does, and
+        # devnull is the only spelling that reaches a SITE or GLOBAL file.
         mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
         mod.__dict__["_ensure_xpu_triton"]()
         env = mod.__dict__["_test_download_envs"][0]
-        assert env["PIP_CONFIG_FILE"] != os.devnull
-        assert os.path.basename(env["PIP_CONFIG_FILE"]) == "pip.conf"
+        assert env["PIP_CONFIG_FILE"] == os.devnull
         assert env["UV_NO_CONFIG"] == "1"
 
     def test_the_fetch_keeps_the_operators_build_policy(self, monkeypatch, tmp_path):
-        # The pin is a wheel, so a no-build / only-binary policy costs it nothing; only hash
-        # enforcement, which no requirement we ship can satisfy, is cleared.
-        monkeypatch.setenv("UV_NO_BUILD", "1")
+        # The pin is a wheel, so an only-binary / exclude-newer policy costs it nothing;
+        # only hash enforcement, which no requirement we ship can satisfy, is cleared. The
+        # fetch is `pip download`, so PIP_ONLY_BINARY is the one that decides here.
         monkeypatch.setenv("PIP_ONLY_BINARY", ":all:")
+        monkeypatch.setenv("UV_EXCLUDE_NEWER", "2024-01-01T00:00:00Z")
         monkeypatch.setenv("PIP_REQUIRE_HASHES", "1")
         mod, _ = _load(monkeypatch, tmp_path, spec = "pytorch-triton-xpu==3.5.0", generic = "3.7.1")
         mod.__dict__["_ensure_xpu_triton"]()
         env = mod.__dict__["_test_download_envs"][0]
-        assert env["UV_NO_BUILD"] == "1"
         assert env["PIP_ONLY_BINARY"] == ":all:"
-        assert env["PIP_REQUIRE_HASHES"] == "0"
+        assert env["UV_EXCLUDE_NEWER"] == "2024-01-01T00:00:00Z"
+        assert "PIP_REQUIRE_HASHES" not in env
 
     def test_unrelated_environment_survives(self, monkeypatch, tmp_path):
         # Scrub the index vars, not the environment: HTTPS_PROXY and friends are how a corporate host reaches the index

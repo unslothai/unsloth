@@ -67,6 +67,8 @@ sys.path.insert(0, str(STUDIO_DIR))
 
 import install_python_stack as ips
 
+STACK_SOURCE = (STUDIO_DIR / "install_python_stack.py").read_text(encoding = "utf-8")
+
 
 class TestBuildUvCmdTorchBackend:
     """Verify _build_uv_cmd only adds --torch-backend when UV_TORCH_BACKEND is set."""
@@ -311,45 +313,17 @@ class TestPinnedIndexClearsUvEnv:
         assert env.get("UV_NO_CONFIG") == "1"
         assert "UV_CONFIG_FILE" not in env
 
-    def test_pinned_cmd_neutralises_pip_config_sources_only(self):
-        """The pip FALLBACK honours user/site pip config files (pip config set
-        global.extra-index-url) even with the PIP_* env vars stripped, so the pinned
-        branch has to point PIP_CONFIG_FILE somewhere else. Somewhere else is a REWRITE
-        of pip's own config minus the four source keys, not devnull: devnull would take
-        the operator's cert, proxy, trusted-host and only-binary policy with it, and
-        dropping a security policy is not what pinning an index is for."""
+    def test_pinned_cmd_disables_pip_config_files(self):
+        """devnull is the ONLY spelling that stops a SITE or GLOBAL pip.conf reaching a
+        pinned install: measured on pip 26.2, pointing PIP_CONFIG_FILE at a real file
+        suppresses the per-user file alone, so a venv-level `no-index` still killed the
+        pin (`No matching distribution found`, against an explicit --index-url). The
+        operator's own settings come back through _pinned_pip_config_overrides()."""
         env = ips._install_env_for_cmd(
             ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
         )
         assert env is not None
-        path = env.get("PIP_CONFIG_FILE")
-        assert path and path != os.devnull and os.path.basename(path) == "pip.conf"
-        # Idempotent: one rewrite per run, so the same path comes back every call.
-        again = ips._install_env_for_cmd(
-            ["python", "-m", "pip", "install", "torch", "--index-url", "https://x/cu128"]
-        )
-        assert again["PIP_CONFIG_FILE"] == path
-
-    def test_pinned_pip_config_rewrite_drops_sources_and_forced_source_builds(self, tmp_path):
-        """What the rewrite keeps is the point: everything except the index keys and
-        no-binary, which would force a source build of the wheel the pin exists to
-        fetch."""
-        listing = (
-            "global.index-url='https://mirror/simple'\n"
-            "global.extra-index-url='https://other/simple'\n"
-            "global.no-binary=':all:'\n"
-            "global.only-binary=':all:'\n"
-            "global.require-hashes='true'\n"
-            "global.cert='/etc/ssl/corp.pem'\n"
-        )
-        with mock.patch.object(ips.subprocess, "run") as run:
-            run.return_value = mock.Mock(returncode = 0, stdout = listing.encode())
-            path = ips._pip_config_without_sources(str(tmp_path), drop = ("no-binary",))
-        written = Path(path).read_text(encoding = "utf-8")
-        for gone in ("index-url", "extra-index-url", "no-binary ="):
-            assert gone not in written, f"{gone} must not survive the rewrite"
-        for kept in ("only-binary", "require-hashes", "cert"):
-            assert kept in written, f"the rewrite dropped operator policy: {kept}"
+        assert env.get("PIP_CONFIG_FILE") == os.devnull
 
     def test_non_pinned_cmd_keeps_uv_config_discovery(self):
         """Non-pinned installs inherit the caller env unchanged, so a user's uv
@@ -566,41 +540,108 @@ class TestHardenedPipConfigRelaxation:
         assert env is not None
         assert "PIP_NO_BINARY" not in env and "UV_NO_BINARY" not in env
 
-    def test_pinned_pip_cmd_still_overrides_a_config_require_hashes(self):
-        """The pinned pip.conf rewrite keeps require-hashes if the operator set it there,
-        and it would abort the pinned install exactly as the env var would; env beats
-        config, so the pinned branch spells it out for pip commands."""
-        env = ips._install_env_for_cmd(
-            ["python", "-m", "pip", "download", "triton", "--index-url", "https://x/xpu"]
-        )
-        assert env["PIP_REQUIRE_HASHES"] == "0"
+    LISTING = (
+        "global.index-url='https://mirror/simple'\n"
+        "global.extra-index-url='https://other/simple'\n"
+        "global.no-index='true'\n"
+        "global.no-binary=':all:'\n"
+        "global.require-hashes='true'\n"
+        "install.only-binary=':all:'\n"
+        "global.cert='/etc/ssl/corp.pem'\n"
+        "global.proxy='http://proxy.corp:3128'\n"
+        "global.trusted-host='a.corp\\nb.corp'\n"
+        "list.format='columns'\n"
+        ":env:.no-binary=':all:'\n"
+    )
 
-    def test_pinned_uv_cmd_reasserts_a_uv_toml_no_build(self, tmp_path, monkeypatch):
-        """UV_NO_CONFIG=1 is how the pin outranks a uv.toml `[[index]]`, but it takes the
-        whole file with it. A `no-build` in that file is an operator control, so it is
-        read back and re-asserted rather than silently lost."""
-        pytest.importorskip("tomllib")
-        config = tmp_path / "uv.toml"
-        config.write_text("no-build = true\n", encoding = "utf-8")
-        monkeypatch.setenv("UV_CONFIG_FILE", str(config))
-        monkeypatch.delenv("UV_NO_BUILD", raising = False)
-        env = ips._install_env_for_cmd(
-            ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
-        )
-        assert env["UV_NO_BUILD"] == "1"
-        assert "UV_CONFIG_FILE" not in env and env["UV_NO_CONFIG"] == "1"
+    def _overrides(self, listing = None):
+        ips._pinned_pip_config_overrides.cache_clear()
+        with mock.patch.object(ips.subprocess, "run") as run:
+            run.return_value = mock.Mock(
+                returncode = 0, stdout = (self.LISTING if listing is None else listing).encode()
+            )
+            try:
+                return ips._pinned_pip_config_overrides()
+            finally:
+                ips._pinned_pip_config_overrides.cache_clear()
 
-    def test_a_uv_toml_without_a_policy_asserts_nothing(self, tmp_path, monkeypatch):
-        """Conservative: only a literal `no-build = true` is re-asserted, so an
-        unreadable or policy-free config leaves the environment as it was."""
-        config = tmp_path / "uv.toml"
-        config.write_text('[[index]]\nurl = "https://mirror/simple"\n', encoding = "utf-8")
-        monkeypatch.setenv("UV_CONFIG_FILE", str(config))
-        monkeypatch.delenv("UV_NO_BUILD", raising = False)
-        env = ips._install_env_for_cmd(
-            ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+    def test_devnull_gives_the_operators_policy_and_transport_back(self):
+        """What devnull switches off is put back one key at a time. only-binary is the
+        security half; cert / proxy / trusted-host are the half that makes a private
+        index reachable at all, which devnull alone used to drop."""
+        overrides = self._overrides()
+        assert overrides["PIP_ONLY_BINARY"] == ":all:"
+        assert overrides["PIP_CERT"] == "/etc/ssl/corp.pem"
+        assert overrides["PIP_PROXY"] == "http://proxy.corp:3128"
+        # A repeatable setting is newline separated by `pip config list` and whitespace
+        # separated in the environment, which is how pip splits an append option.
+        assert overrides["PIP_TRUSTED_HOST"] == "a.corp b.corp"
+
+    def test_the_pin_and_the_unsatisfiable_policy_never_come_back(self):
+        """The four source keys are what the pin replaces; no-binary would force a source
+        build of the pinned wheel; require-hashes cannot be met by an unhashed
+        requirement. None of them may be re-asserted."""
+        overrides = self._overrides()
+        for name in (
+            "PIP_INDEX_URL",
+            "PIP_EXTRA_INDEX_URL",
+            "PIP_NO_INDEX",
+            "PIP_NO_BINARY",
+            "PIP_REQUIRE_HASHES",
+        ):
+            assert name not in overrides, f"{name} must not survive the pinned scrub"
+
+    def test_options_from_unrelated_sections_are_not_translated(self):
+        """A config file can hold options for any subcommand. `list.format` becoming
+        PIP_FORMAT would apply it to install, so only the sections this module runs are
+        read."""
+        assert "PIP_FORMAT" not in self._overrides()
+
+    def test_env_entries_are_skipped(self):
+        """`:env:` rows are the caller's own variables, which the child already inherits.
+        Re-asserting them would undo the vars the pinned branch just cleared."""
+        assert "PIP_NO_BINARY" not in self._overrides()
+
+    def test_a_pip_that_cannot_answer_changes_nothing(self):
+        """A venv with no pip yet is the normal case early in a fresh install."""
+        ips._pinned_pip_config_overrides.cache_clear()
+        with mock.patch.object(ips.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode = 1, stdout = b"")
+            assert ips._pinned_pip_config_overrides() == {}
+        ips._pinned_pip_config_overrides.cache_clear()
+        with mock.patch.object(ips.subprocess, "run", side_effect = OSError("no pip")):
+            assert ips._pinned_pip_config_overrides() == {}
+        ips._pinned_pip_config_overrides.cache_clear()
+
+    def test_the_callers_own_environment_wins(self):
+        """The re-assertion fills gaps; it never overwrites a variable the caller set."""
+        with (
+            mock.patch.object(
+                ips, "_pinned_pip_config_overrides", lambda: {"PIP_CERT": "/etc/ssl/corp.pem"}
+            ),
+            mock.patch.dict(os.environ, {"PIP_CERT": "/home/me/mine.pem"}),
+        ):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env["PIP_CERT"] == "/home/me/mine.pem"
+
+    def test_no_uv_env_var_is_invented_for_a_uv_toml_no_build(self):
+        """uv reads `no-build` from its CONFIG FILE only: measured against uv 0.10.7,
+        UV_NO_BUILD / UV_NO_BINARY / UV_ONLY_BINARY are not uv environment variables and a
+        `no-build = true` uv.toml is what actually refuses an sdist. The pin cannot leave
+        that file enabled, so nothing here may pretend to carry it across; a pinned command
+        installs wheels, so there is nothing for it to bite on either way."""
+        src = STACK_SOURCE
+        assert "_uv_config_build_policy" not in src, (
+            "re-asserting UV_NO_BUILD would promise a guarantee uv does not honour"
         )
-        assert "UV_NO_BUILD" not in env
+        # What uv DOES read from the environment is kept.
+        with mock.patch.dict(os.environ, {"UV_EXCLUDE_NEWER": "2024-01-01T00:00:00Z"}):
+            env = ips._install_env_for_cmd(
+                ["uv", "pip", "install", "torch", "--index-url", "https://x/cu128"]
+            )
+        assert env["UV_EXCLUDE_NEWER"] == "2024-01-01T00:00:00Z"
 
     @pytest.mark.parametrize(
         "cmd",
@@ -625,6 +666,40 @@ class TestHardenedPipConfigRelaxation:
             ips._install_env_for_cmd(["uv", "pip", "install", "x", "--index-url", "https://y"])
             assert os.environ["PIP_REQUIRE_HASHES"] == "1"
             assert os.environ["UV_NO_BUILD"] == "1"
+
+    @pytest.mark.parametrize(
+        "cmd, relaxed",
+        [
+            # Windows spellings: the launcher, the console script, a versioned one, and a
+            # path with a space. os.path.basename does not split a backslash off-Windows,
+            # so these are the shapes a naive stem test gets wrong.
+            ([r"C:\Python313\python.exe", "-m", "pip", "install", "x"], True),
+            ([r"C:\venv\Scripts\pip.exe", "install", "x"], True),
+            ([r"C:\venv\Scripts\pip3.13.exe", "download", "x"], True),
+            ([r"C:\Program Files\venv\Scripts\python.exe", "-m", "pip", "wheel", "x"], True),
+            (["/venv/bin/pip", "install", "x"], True),
+            (["/venv/bin/pip3", "install", "x"], True),
+            (["python", "-m", "pip", "-q", "install", "x"], True),
+            (["python", "-m", "pip", "--isolated", "install", "x"], True),
+            # ...and the ones that only LOOK like an install.
+            (["python", "-m", "pip", "uninstall", "-y", "install"], False),
+            (["python", "-m", "pip", "show", "wheel"], False),
+            (["python", "-m", "pip", "check", "install.txt"], False),
+            (["python", "/opt/tools/install.py"], False),
+            ([r"C:\tools\installer.exe", "--download"], False),
+        ],
+    )
+    def test_the_subcommand_test_reads_every_platform_spelling(self, cmd, relaxed):
+        assert ips._is_pip_subcommand(cmd, ("install", "download", "wheel")) is relaxed
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [[], [""], ["uv"], ["python"], ["python", "-m"], ["python", "-m", "pip"]],
+    )
+    def test_a_degenerate_command_never_raises(self, cmd):
+        """run() routes EVERY command through this helper, so it has to tolerate one that
+        is not a command at all rather than take the install down with an IndexError."""
+        assert ips._install_env_for_cmd(cmd) is None
 
     def test_the_pip_fallback_receives_the_relaxation(self):
         """End of the real path: uv fails, pip_install falls back through run(), and
