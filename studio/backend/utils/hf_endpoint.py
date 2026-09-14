@@ -124,9 +124,7 @@ def get_hf_endpoint() -> str:
     Wraps :func:`utils.utils.hf_endpoint_url` so callers get a value that is
     safe for ``f"{endpoint}/path"`` concatenation.
     """
-    return _sanitize(
-        hf_endpoint_url().rstrip("/"), _DEFAULT_HF_ENDPOINT, "HF_ENDPOINT"
-    )
+    return _sanitize(hf_endpoint_url().rstrip("/"), _DEFAULT_HF_ENDPOINT, "HF_ENDPOINT")
 
 
 def get_hf_datasets_server() -> str:
@@ -140,9 +138,7 @@ def get_hf_datasets_server() -> str:
     raw = (os.environ.get("HF_DATASETS_SERVER") or "").strip()
     if raw:
         endpoint = raw if "://" in raw else "https://" + raw
-        return _sanitize(
-            endpoint.rstrip("/"), _DEFAULT_DATASETS_SERVER, "HF_DATASETS_SERVER"
-        )
+        return _sanitize(endpoint.rstrip("/"), _DEFAULT_DATASETS_SERVER, "HF_DATASETS_SERVER")
     global _ds_mirror_warned
     if not _ds_mirror_warned and get_hf_endpoint() != _DEFAULT_HF_ENDPOINT:
         _ds_mirror_warned = True

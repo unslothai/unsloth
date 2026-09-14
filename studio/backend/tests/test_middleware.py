@@ -1203,21 +1203,15 @@ class TestCspHfEndpoints:
             ({"docs": True}, _MAIN_CSP_DOCS),
         ],
     )
-    def test_unmirrored_policy_is_byte_identical_to_pre_pr(
-        self, main_module, kwargs, expected
-    ):
+    def test_unmirrored_policy_is_byte_identical_to_pre_pr(self, main_module, kwargs, expected):
         assert main_module._build_csp("NONCE", **kwargs) == expected
 
-    def test_unmirrored_colab_policy_is_byte_identical_to_pre_pr(
-        self, main_module, monkeypatch
-    ):
+    def test_unmirrored_colab_policy_is_byte_identical_to_pre_pr(self, main_module, monkeypatch):
         monkeypatch.setattr(main_module, "_IS_COLAB", True)
         assert main_module._build_csp("NONCE") == _MAIN_CSP_COLAB
 
     @pytest.mark.parametrize("blank", ["", "   ", "\t"])
-    def test_blank_env_vars_leave_the_policy_identical(
-        self, main_module, monkeypatch, blank
-    ):
+    def test_blank_env_vars_leave_the_policy_identical(self, main_module, monkeypatch, blank):
         monkeypatch.setenv("HF_ENDPOINT", blank)
         monkeypatch.setenv("HF_DATASETS_SERVER", blank)
         assert main_module._build_csp("NONCE") == _MAIN_CSP_DEFAULT
@@ -1226,9 +1220,7 @@ class TestCspHfEndpoints:
         self, main_module, monkeypatch
     ):
         monkeypatch.setenv("HF_ENDPOINT", "https://huggingface.co")
-        monkeypatch.setenv(
-            "HF_DATASETS_SERVER", "https://datasets-server.huggingface.co"
-        )
+        monkeypatch.setenv("HF_DATASETS_SERVER", "https://datasets-server.huggingface.co")
         assert main_module._build_csp("NONCE") == _MAIN_CSP_DEFAULT
 
     def test_a_mirror_adds_exactly_its_two_origins(self, main_module, monkeypatch):
@@ -1258,9 +1250,7 @@ class TestCspHfEndpoints:
                 continue
             assert actual[directive] == value, directive
 
-    def test_a_mirrored_colab_policy_keeps_every_colab_source(
-        self, main_module, monkeypatch
-    ):
+    def test_a_mirrored_colab_policy_keeps_every_colab_source(self, main_module, monkeypatch):
         monkeypatch.setattr(main_module, "_IS_COLAB", True)
         monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com")
         sources = _connect_src(main_module._build_csp("NONCE"))
@@ -1268,9 +1258,7 @@ class TestCspHfEndpoints:
             assert required in sources, required
         assert "https://hf-mirror.com" in sources
 
-    def test_a_mirror_is_listed_once_even_if_both_vars_name_it(
-        self, main_module, monkeypatch
-    ):
+    def test_a_mirror_is_listed_once_even_if_both_vars_name_it(self, main_module, monkeypatch):
         monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com")
         monkeypatch.setenv("HF_DATASETS_SERVER", "https://hf-mirror.com")
         sources = _connect_src(main_module._build_csp("NONCE"))
@@ -1287,9 +1275,7 @@ class TestCspHfEndpoints:
             "https://user:pass@hf-mirror.com",
         ],
     )
-    def test_an_endpoint_cannot_forge_a_directive(
-        self, main_module, monkeypatch, hostile
-    ):
+    def test_an_endpoint_cannot_forge_a_directive(self, main_module, monkeypatch, hostile):
         """A bad env var must not widen the policy -- it falls back to the default."""
         monkeypatch.setenv("HF_ENDPOINT", hostile)
         policy = main_module._build_csp("NONCE")
@@ -1297,9 +1283,7 @@ class TestCspHfEndpoints:
         # No directive was added and script-src was not touched.
         assert policy.count(";") == _MAIN_CSP_DEFAULT.count(";")
 
-    def test_the_header_on_a_real_response_carries_the_mirror(
-        self, main_module, monkeypatch
-    ):
+    def test_the_header_on_a_real_response_carries_the_mirror(self, main_module, monkeypatch):
         monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com")
         monkeypatch.setenv("HF_DATASETS_SERVER", "https://ds.example.com")
         app = _make_csp_app(main_module)
