@@ -69,9 +69,11 @@ def _load_real_index_env_scrub():
         ("_PM_FORCE_SOURCE_ENV_VARS = (", "\n)\n", 2),
         # One line, so it ends at the first newline; "\n)\n" would swallow the file.
         ("_PINNED_PIP_CONFIG_KEEP_KEYS = (", "\n)\n", 2),
-        ("_PINNED_PIP_CONFIG_SECTIONS = (", "\n", 1),
+        ("_PINNED_PIP_CONFIG_GLOBAL_SECTION = ", "\n", 1),
+        ("_PINNED_PIP_CONFIG_DEFAULT_SECTION = ", "\n", 1),
         ("_PINNED_PIP_CONFIG_LIST_KEYS = ", "\n", 1),
-        ("_PINNED_PIP_CONFIG_CACHE: ", "\n", 1),
+        ("_PINNED_PIP_CONFIG_LISTING: ", "\n", 1),
+        ("def _pip_subcommand_of(", "\n\ndef ", 0),
         ("def _pinned_pip_config_overrides(", "\n\ndef ", 0),
         # Omitting it left the exec'd copy raising NameError into a broad except, so the
         # scrub this file executes returned {} and agreed with anything.

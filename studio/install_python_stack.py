@@ -7390,8 +7390,8 @@ def _install_env_for_cmd(cmd: "list[str]") -> "dict[str, str] | None":
     for name in _PM_HASH_ENV_VARS + _PM_FORCE_SOURCE_ENV_VARS:
         env.pop(name, None)
     # Both config files go for the pin, so re-assert what they carried that it does not
-    # conflict with.
-    for name, value in _pinned_pip_config_overrides().items():
+    # conflict with, from the section belonging to THIS command.
+    for name, value in _pinned_pip_config_overrides(_pip_subcommand_of(cmd)).items():
         env.setdefault(name, value)
     env["UV_NO_CONFIG"] = "1"
     env["PIP_CONFIG_FILE"] = os.devnull
@@ -7412,28 +7412,39 @@ _PINNED_PIP_CONFIG_KEEP_KEYS = (
     "only-binary",
 )
 
-# A PIP_ variable applies to whatever command runs, so `[wheel] only-binary` is a different
-# command's setting, not a weaker `[install]` one. Install wins; other sections are ignored.
-_PINNED_PIP_CONFIG_SECTIONS = ("global", "install")
+# pip config is per subcommand: measured on pip 26.2, `[download] no-index` stops a
+# `pip download` and leaves `pip install` alone. A PIP_ variable is command-wide, so the
+# only faithful translation reads `[global]` plus the section for the command being run.
+# A uv command defaults to install, since the PIP_ vars only reach its pip fallback.
+_PINNED_PIP_CONFIG_GLOBAL_SECTION = "global"
+_PINNED_PIP_CONFIG_DEFAULT_SECTION = "install"
 
 # Keys pip accumulates as a LIST, where the newline `pip config list` renders is a
 # separator. Nowhere else: it would corrupt `C:\Program  Files\ca.pem`. Measured
 # separators: only-binary comma, trusted-host space.
 _PINNED_PIP_CONFIG_LIST_KEYS = {"trusted-host": " ", "only-binary": ","}
 
-_PINNED_PIP_CONFIG_CACHE: "dict[str, str] | None" = None
+_PINNED_PIP_CONFIG_LISTING: "bytes | None" = None
 
 
-def _pinned_pip_config_overrides() -> "dict[str, str]":
+def _pip_subcommand_of(cmd: "list[str]") -> str:
+    """The pip subcommand ``cmd`` runs, or the default when it is not a pip command."""
+    for name in ("install", "download", "wheel"):
+        if _is_pip_subcommand(cmd, (name,)):
+            return name
+    return _PINNED_PIP_CONFIG_DEFAULT_SECTION
+
+
+def _pinned_pip_config_overrides(subcommand: str = _PINNED_PIP_CONFIG_DEFAULT_SECTION) -> "dict[str, str]":
     """pip's configured transport and binary policy, as PIP_ environment variables.
 
     ONLY a successful read is memoised, or a transient miss would cost the operator their
     cert and proxy for the rest of the run. Empty when pip cannot answer, the normal case
     in a venv with no pip yet. `:env:` rows are skipped: the child inherits those already.
     """
-    global _PINNED_PIP_CONFIG_CACHE
-    if _PINNED_PIP_CONFIG_CACHE is not None:
-        return _PINNED_PIP_CONFIG_CACHE
+    global _PINNED_PIP_CONFIG_LISTING
+    if _PINNED_PIP_CONFIG_LISTING is not None:
+        return _parse_pinned_pip_config(_PINNED_PIP_CONFIG_LISTING, subcommand)
     try:
         result = subprocess.run(
             [sys.executable, "-m", "pip", "config", "list"],
@@ -7447,23 +7458,27 @@ def _pinned_pip_config_overrides() -> "dict[str, str]":
         return {}
     if result.returncode != 0:
         return {}
-    _PINNED_PIP_CONFIG_CACHE = _parse_pinned_pip_config(result.stdout or b"")
-    return _PINNED_PIP_CONFIG_CACHE
+    _PINNED_PIP_CONFIG_LISTING = result.stdout or b""
+    return _parse_pinned_pip_config(_PINNED_PIP_CONFIG_LISTING, subcommand)
 
 
-def _parse_pinned_pip_config(stdout: bytes) -> "dict[str, str]":
+def _parse_pinned_pip_config(
+    stdout: bytes, subcommand: str = _PINNED_PIP_CONFIG_DEFAULT_SECTION
+) -> "dict[str, str]":
     """`pip config list` output, filtered to the allowlist, as PIP_ variables.
 
-    `[install]` beats `[global]`, pip's own precedence, resolved by position rather than
-    by the order the listing prints in. An unparseable line is skipped, never fatal.
+    Reads `[global]` plus `[<subcommand>]`, the two sections pip itself would apply to that
+    command, with the command section winning. Resolved by position rather than by the
+    order the listing prints in. An unparseable line is skipped, never fatal.
     """
+    sections = (_PINNED_PIP_CONFIG_GLOBAL_SECTION, subcommand)
     found: dict[str, dict[str, str]] = {}
     for line in stdout.decode("utf-8", "replace").splitlines():
         name, separator, raw = line.partition("=")
         if not separator or name.startswith(":env:"):
             continue
         section, _, option = name.strip().rpartition(".")
-        if section not in _PINNED_PIP_CONFIG_SECTIONS:
+        if section not in sections:
             continue
         if option not in _PINNED_PIP_CONFIG_KEEP_KEYS:
             continue
@@ -7480,7 +7495,7 @@ def _parse_pinned_pip_config(stdout: bytes) -> "dict[str, str]":
             found.setdefault(option, {})[section] = text
     overrides: dict[str, str] = {}
     for option, by_section in found.items():
-        for section in _PINNED_PIP_CONFIG_SECTIONS:   # global first, so install overwrites
+        for section in sections:   # global first, so the command's own section overwrites
             if section in by_section:
                 overrides[f"PIP_{option.upper().replace('-', '_')}"] = by_section[section]
     return overrides

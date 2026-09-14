@@ -75,13 +75,13 @@ STACK_SOURCE = (STUDIO_DIR / "install_python_stack.py").read_text(encoding = "ut
 # mocks subprocess could poison the memoised read for whatever runs next under -p randomly.
 @pytest.fixture(autouse = True)
 def _hermetic_pinned_pip_config(request):
-    ips._PINNED_PIP_CONFIG_CACHE = None
+    ips._PINNED_PIP_CONFIG_LISTING = None
     if "reads_real_pip_config" in request.keywords:
         yield
     else:
-        with mock.patch.object(ips, "_pinned_pip_config_overrides", lambda: {}):
+        with mock.patch.object(ips, "_pinned_pip_config_overrides", lambda *a, **k: {}):
             yield
-    ips._PINNED_PIP_CONFIG_CACHE = None
+    ips._PINNED_PIP_CONFIG_LISTING = None
 
 
 class TestBuildUvCmdTorchBackend:
@@ -569,8 +569,10 @@ class TestHardenedPipConfigRelaxation:
         ":env:.no-binary=':all:'\n"
     )
 
-    def _overrides(self, listing = None):
-        return ips._parse_pinned_pip_config((self.LISTING if listing is None else listing).encode())
+    def _overrides(self, listing = None, subcommand = "install"):
+        return ips._parse_pinned_pip_config(
+            (self.LISTING if listing is None else listing).encode(), subcommand
+        )
 
     def test_devnull_gives_the_operators_policy_and_transport_back(self):
         """only-binary is the security half; cert / proxy / trusted-host are the half
@@ -659,13 +661,46 @@ class TestHardenedPipConfigRelaxation:
         ):
             assert ips._parse_pinned_pip_config(listing)["PIP_ONLY_BINARY"] == "numpy"
 
-    def test_a_different_subcommands_section_never_redefines_the_policy(self):
-        """`[wheel] only-binary` is a different command's setting, not a more specific
-        one; letting it through downgrades an install-wide policy to one package."""
-        listing = b"install.only-binary=':all:'\nwheel.only-binary='numpy'\ndownload.timeout='5'\n"
-        parsed = ips._parse_pinned_pip_config(listing)
-        assert parsed["PIP_ONLY_BINARY"] == ":all:"
-        assert "PIP_TIMEOUT" not in parsed
+    def test_the_section_read_is_the_one_pip_would_apply(self):
+        """pip config is per subcommand: measured on pip 26.2, `[download] no-index` stops
+        a `pip download` and leaves `pip install` alone. A PIP_ variable is command-wide,
+        so reading `[install]` for a download both drops that command's own settings and
+        imposes another command's."""
+        listing = (b"global.timeout='30'\ninstall.only-binary=':all:'\n"
+                   b"install.timeout='9'\ndownload.timeout='5'\ndownload.cert='/etc/dl.pem'\n")
+        for_install = ips._parse_pinned_pip_config(listing, "install")
+        assert for_install["PIP_TIMEOUT"] == "9" and for_install["PIP_ONLY_BINARY"] == ":all:"
+        assert "PIP_CERT" not in for_install
+        for_download = ips._parse_pinned_pip_config(listing, "download")
+        assert for_download["PIP_TIMEOUT"] == "5" and for_download["PIP_CERT"] == "/etc/dl.pem"
+        assert "PIP_ONLY_BINARY" not in for_download, "an install-only policy is not a download one"
+        # A section belonging to neither is never read.
+        assert "PIP_FORMAT" not in ips._parse_pinned_pip_config(b"list.format='columns'\n", "install")
+
+    @pytest.mark.parametrize(
+        "cmd, expected",
+        [
+            (["python", "-m", "pip", "install", "x", "--index-url", "u"], "install"),
+            (["python", "-m", "pip", "download", "x", "--index-url", "u"], "download"),
+            (["python", "-m", "pip", "wheel", "x", "--index-url", "u"], "wheel"),
+            # uv reads none of the PIP_ vars; they exist for its pip FALLBACK, an install.
+            (["uv", "pip", "install", "x", "--index-url", "u"], "install"),
+            (["python", "-m", "pip", "uninstall", "-y", "x"], "install"),
+        ],
+    )
+    def test_the_subcommand_drives_which_section_is_read(self, cmd, expected):
+        assert ips._pip_subcommand_of(cmd) == expected
+
+    @pytest.mark.reads_real_pip_config
+    def test_the_xpu_download_gets_the_download_section(self):
+        """_ensure_xpu_triton's pinned fetch is a `pip download`, so a corporate
+        `[download] cert` must reach it rather than an `[install]` one."""
+        listing = b"download.cert='/etc/dl.pem'\ninstall.cert='/etc/inst.pem'\n"
+        with mock.patch.object(ips, "_PINNED_PIP_CONFIG_LISTING", listing):
+            env = ips._install_env_for_cmd(
+                ["python", "-m", "pip", "download", "triton", "--index-url", "https://x/xpu"]
+            )
+        assert env["PIP_CERT"] == "/etc/dl.pem"
 
     @pytest.mark.parametrize(
         "listing, expected",
@@ -693,7 +728,9 @@ class TestHardenedPipConfigRelaxation:
         """The re-assertion fills gaps; it never overwrites a variable the caller set."""
         with (
             mock.patch.object(
-                ips, "_pinned_pip_config_overrides", lambda: {"PIP_CERT": "/etc/ssl/corp.pem"}
+                ips,
+                "_pinned_pip_config_overrides",
+                lambda *a, **k: {"PIP_CERT": "/etc/ssl/corp.pem"},
             ),
             mock.patch.dict(os.environ, {"PIP_CERT": "/home/me/mine.pem"}),
         ):
