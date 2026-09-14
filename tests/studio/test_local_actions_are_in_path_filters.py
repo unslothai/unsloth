@@ -15,6 +15,7 @@ This makes that a rule rather than a thing someone remembered once.
 A workflow with no `paths:` filter runs on everything and is not at risk, so it is skipped.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -24,18 +25,16 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 
-# Actions already unlisted across 18 workflows when this guard was written. Recorded rather
-# than fixed here so the guard can block NEW ones today; adding each of these to the filters
-# of every workflow that uses it is a separate change, and one that needs its own thought
-# about which of them can actually change a job's behaviour rather than only its cache.
+# The one action pair still missing from the filters of the six workflows that use it
+# (consolidated-tests-ci, mlx-ci, notebooks-ci, studio-backend-ci, studio-export-capability-ci,
+# version-compat-ci). Every other local action in the repo is already listed, by its
+# action.yml, which is the convention this guard enforces.
+#
+# Waived rather than fixed here because adding them means touching six workflows unrelated to
+# this change. The test below deletes the waiver's right to exist as soon as that is done.
 _PRE_EXISTING = {
     ".github/actions/pip-cache-restore",
     ".github/actions/pip-cache-save",
-    ".github/actions/uv-cache-restore",
-    ".github/actions/uv-cache-save",
-    ".github/actions/frontend-dist-restore",
-    ".github/actions/frontend-dist-save",
-    ".github/actions/install-unsloth-local",
 }
 
 
@@ -44,13 +43,31 @@ def _triggers(doc: dict) -> dict:
     return doc.get(True) or doc.get("on") or {}
 
 
+def _resolve(used: str) -> str:
+    """The action's real location in this repo, given a `uses:` path.
+
+    Some workflows check the repo into a subdirectory and so say
+    `uses: ./unsloth/.github/actions/pip-cache-restore`. No such directory exists here; the
+    action being referenced is the repo-root one. Taking the literal string would put a path
+    under `unsloth/` into the check, where a `unsloth/**` filter entry satisfies it and the
+    guard passes on a workflow that would still skip. So leading segments are dropped until
+    the result is a directory that actually holds an action.
+    """
+    parts = used.split("/")
+    for start in range(len(parts)):
+        candidate = "/".join(parts[start:])
+        if (REPO_ROOT / candidate / "action.yml").is_file():
+            return candidate
+    return used
+
+
 def _local_actions(node) -> set:
     """Every `uses: ./path` in the workflow, at any depth."""
     found = set()
     if isinstance(node, dict):
         uses = node.get("uses")
         if isinstance(uses, str) and uses.startswith("./"):
-            found.add(uses[2:].rstrip("/"))
+            found.add(_resolve(uses[2:].rstrip("/")))
         for value in node.values():
             found |= _local_actions(value)
     elif isinstance(node, list):
@@ -60,11 +77,25 @@ def _local_actions(node) -> set:
 
 
 def _covers(pattern: str, path: str) -> bool:
-    """Does a `paths:` entry select `path`? Only the `**` suffix form needs handling."""
+    """Does a `paths:` entry select `path`?
+
+    `path` is a FILE inside the action, not the action directory, because that is what
+    GitHub matches a filter against. The distinction decides real cases: a bare
+    `.github/actions/foo` entry selects only a file literally at that path, so it does NOT
+    cover `.github/actions/foo/action.yml` and the workflow still skips. Only the `/**`
+    form works, and the guard has to say so.
+    """
     pattern = pattern.strip("'\"")
-    if pattern.endswith("/**"):
-        return path == pattern[:-3] or path.startswith(pattern[:-3] + "/")
-    return pattern == path or path.startswith(pattern.rstrip("/") + "/")
+    regex = re.escape(pattern).replace(r"\*\*", ".*").replace(r"\*", "[^/]*")
+    return re.fullmatch(regex, path) is not None
+
+
+def _action_files(action: str) -> list:
+    """The files GitHub would report as changed for an edit to this action."""
+    for name in ("action.yml", "action.yaml"):
+        if (REPO_ROOT / action / name).is_file():
+            return [f"{action}/{name}"]
+    return [f"{action}/action.yml"]
 
 
 def _workflows() -> list:
@@ -85,7 +116,9 @@ def test_a_path_filtered_workflow_lists_the_actions_it_uses(workflow):
         if not paths:
             continue  # unfiltered: it already runs on any change
         missing = sorted(
-            a for a in actions - _PRE_EXISTING if not any(_covers(p, a) for p in paths)
+            a
+            for a in actions - _PRE_EXISTING
+            if not all(any(_covers(p, f) for p in paths) for f in _action_files(a))
         )
         assert not missing, (
             f"{workflow.name} `{event}` is path-filtered but does not list {missing}, so a "
@@ -106,7 +139,11 @@ def test_the_pre_existing_list_does_not_outlive_the_problem():
             paths = (spec or {}).get("paths") if isinstance(spec, dict) else None
             if not paths:
                 continue
-            still_unlisted |= {a for a in actions if not any(_covers(p, a) for p in paths)}
+            still_unlisted |= {
+                a
+                for a in actions
+                if not all(any(_covers(p, f) for p in paths) for f in _action_files(a))
+            }
     settled = sorted(_PRE_EXISTING - still_unlisted)
     assert not settled, f"these are now listed everywhere and must leave _PRE_EXISTING: {settled}"
 
