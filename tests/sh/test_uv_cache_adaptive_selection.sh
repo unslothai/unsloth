@@ -33,8 +33,9 @@ INSTALL_SH="$SCRIPT_DIR/../../install.sh"
 
 _TMP=$(mktemp -d)
 _EARLY=$(mktemp)
+_BOOT=$(mktemp)
 _FN=$(mktemp)
-trap 'rm -rf "$_TMP" "$_EARLY" "$_FN"' EXIT
+trap 'rm -rf "$_TMP" "$_EARLY" "$_FN" "$_BOOT"' EXIT
 
 # The real code, anchored on text that PREDATES the fix so this suite also runs against the
 # old code and fails on an assertion, not on an empty extraction.
@@ -54,8 +55,41 @@ if ! grep -q '_UV_CACHE_MODE=shared' "$_FN"; then
     echo "FAIL: could not extract _configure_uv_cache from install.sh"
     exit 1
 fi
+# Extracting the pieces is not the same as being able to RUN them. If the early block calls a
+# helper this harness has not defined yet, the missing command exits 127, `if !` reads that as
+# an unwritable cache, and the block unsets the very default whose survival every ordering case
+# below depends on -- so the suite would pass while testing nothing. Assert the default lives.
+# Built ONCE and sourced by the runner and by the check below alike, so the order is stated in
+# a single place. A check that repeats the order instead of sharing it passes while the runner
+# does something else, which is exactly how this went unnoticed.
+cat "$_FN" "$_EARLY" > "$_BOOT"
+_selfcheck=$(
+    STUDIO_HOME=$(mktemp -d "$_TMP/selfcheck.XXXXXX")
+    export STUDIO_HOME
+    unset UV_CACHE_DIR
+    . "$_BOOT" 2>/dev/null
+    printf '%s' "${UV_CACHE_DIR:-<unset>}"
+)
+# Only that the block kept a cache it could create. NOT that the installer-default flag is
+# true: the flag is what this branch adds, and this suite has to keep running against code
+# that predates it, or it stops being able to demonstrate the bug at all.
+case "$_selfcheck" in
+    */cache/uv) ;;
+    *)
+        echo "FAIL: the early block did not keep its own default in this harness ($_selfcheck)."
+        echo "      Every case below would run as though the cache were unwritable."
+        exit 1
+        ;;
+esac
+unset _selfcheck
 
 _SH="${BASH:-/bin/bash}"
+
+# $_BOOT is _FN then _EARLY, which is install.sh's own order: the helpers are defined around
+# line 622 and the early block RUNS at line 1001. The other way round, the block's call to
+# _uv_cache_root_is_writable names a command that does not exist yet, the shell exits 127, the
+# block reads that as an unwritable cache, and every case with an unset UV_CACHE_DIR quietly
+# stops exercising the ordering bug this suite exists for.
 
 # $1 = STUDIO_HOME, $2 = preset UV_CACHE_DIR ("" for unset), $3 = uv's default cache dir,
 # $4 = "true" to isolate, $5 = UV_WORKING_DIR (also runs from $_TMP/cwd, so a relative $3
@@ -89,8 +123,7 @@ _run() {
         # skipped and the host's own uv would answer -- which is exactly how the first version
         # of this test passed against the wrong cache.
         PATH='$_stub_bin':\"\$PATH\"
-        . '$_EARLY'
-        . '$_FN'
+        . '$_BOOT'
         _configure_uv_cache >/dev/null 2>&1
         _mode=\"\${_UV_CACHE_MODE:-<none>}\"
         _dir=\"\${UV_CACHE_DIR:-<unset>}\"
