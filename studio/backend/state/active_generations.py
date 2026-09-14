@@ -169,22 +169,18 @@ def count_for_backend(backend: Any, account_id: Optional[str] = None) -> int:
         return sum(
             1
             for e in _ACTIVE.values()
-            if e["backend"] is backend
-            and (account_id is None or e["account_id"] == account_id)
+            if e["backend"] is backend and (account_id is None or e["account_id"] == account_id)
         )
 
 
-def active_thread_ids_for_backend(
-    backend: Any, account_id: Optional[str] = None
-) -> list[str]:
+def active_thread_ids_for_backend(backend: Any, account_id: Optional[str] = None) -> list[str]:
     """Conversation ids currently served by one backend instance."""
     seen: list[str] = []
     with _LOCK:
         entries = [
             e
             for e in _ACTIVE.values()
-            if e["backend"] is backend
-            and (account_id is None or e["account_id"] == account_id)
+            if e["backend"] is backend and (account_id is None or e["account_id"] == account_id)
         ]
     for e in sorted(entries, key = lambda e: e["started_at"]):
         thread_id = e["thread_id"]
@@ -222,8 +218,7 @@ def cancel_backend(backend: Any, account_id: Optional[str] = None) -> int:
         events = [
             e["event"]
             for e in _ACTIVE.values()
-            if e["backend"] is backend
-            and (account_id is None or e["account_id"] == account_id)
+            if e["backend"] is backend and (account_id is None or e["account_id"] == account_id)
         ]
     for event in events:
         try:
