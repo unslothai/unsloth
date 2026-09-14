@@ -7,7 +7,7 @@
 #
 # Why a separate workflow:
 #   - studio-backend-ci.yml's "Repo tests (CPU)" job already auto-discovers
-#     tests/ minus tests/qlora, tests/saving, tests/utils, tests/sh. The 21
+#     tests/ minus tests/qlora, tests/saving, tests/utils, tests/sh. The 24
 #     Bucket-A tests below live inside those --ignore dirs (CPU-runnable but
 #     historically excluded with their GPU siblings); pulling them out into
 #     a sibling job keeps the existing 760-passed baseline stable while we
@@ -305,6 +305,7 @@ jobs:
             tests/utils/test_attention_masks.py \
             tests/utils/test_packing.py \
             tests/utils/test_trunc_normal_patch.py \
+            tests/utils/test_q_galore.py \
             tests/python/test_fast_language_model_text_only.py
           # Collect from the zoo checkout, not from here: this repo ships a real
           # tests/ package, so a zoo test doing "from tests.foo import bar" binds
@@ -441,6 +442,7 @@ jobs:
             tests/utils/test_attention_masks.py \
             tests/utils/test_packing.py \
             tests/utils/test_trunc_normal_patch.py \
+            tests/utils/test_q_galore.py \
             tests/python/test_fast_language_model_text_only.py \
             tests/test_bad_mappings_redirect.py \
             tests/test_ollama_eos_token_order.py \
@@ -2332,7 +2334,7 @@ jobs:
           pip show unsloth_zoo
           echo "::endgroup::"
           echo "Consolidated job done. Coverage:"
-          echo "  - 21 unsloth Bucket-A tests under tests/saving/ + tests/utils/"
+          echo "  - 24 unsloth Bucket-A tests under tests/saving/ + tests/utils/"
           echo "  - 168 dataset_num_proc worker-bound guards (#2693)"
           echo "  - unsloth_zoo @ ${UNSLOTH_ZOO_REF} pytest tests/ (5 GPU cases deselected)"
           echo "  - unsloth_zoo.compiler.test_apply_fused_lm_head"
