@@ -130,6 +130,9 @@ test("Ollama models resolve by tag then by base name", () => {
   assert.equal(toggle.supportsReasoning, true);
   assert.equal(toggle.supportsReasoningOff, true);
 
+  const qwen3 = getExternalReasoningCapabilities("ollama", "qwen3:0.6b");
+  assert.equal(qwen3.reasoningStyle, "enable_thinking");
+  assert.equal(qwen3.supportsReasoning, true);
   assert.equal(getExternalReasoningCapabilities("ollama", "mystery:7b").supportsReasoning, false);
 });
 

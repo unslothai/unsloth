@@ -262,6 +262,7 @@ export function resolveModelCatalogEntry(
   if (normalizedProvider === "ollama") {
     const match = findByBaseName(snapshot, candidates[candidates.length - 1]);
     if (match) return fromSnapshotEntry(snapshot[match]);
+    return resolveModelCatalogEntryByName(modelId);
   }
   return null;
 }
