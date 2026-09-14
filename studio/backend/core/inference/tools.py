@@ -2846,19 +2846,28 @@ def _cwds_after_cd(workdir: str, text: str) -> "list[str]":
     `cd ../..` from the session sandbox lands on the Studio root, and the `auth/auth.db` that
     follows is then the protected database under a name that matches nothing on its own.
     """
-    cwd = workdir
+    # A set of possible directories, not one: a `cd` into a path that does not exist FAILS, and a
+    # shell carries on from where it was, so `cd missing; cd ../..; cat auth/auth.db` reaches the
+    # studio root from the sandbox. Assuming every `cd` succeeds resolved the rest against a
+    # directory the command was never in.
+    states: "list[str]" = [workdir]
     walked: "list[str]" = []
     seen: "set[str]" = set()
     for match in _CD_TARGET_RE.finditer(text):
         target = match.group(1).strip("'\"")
         if not target or target.startswith("-"):
             continue
-        cwd = target if os.path.isabs(target) else os.path.normpath(os.path.join(cwd, target))
-        # Deduplicated: `cd .` x8 spent the budget before the real ones.
-        if cwd in seen:
-            continue
-        seen.add(cwd)
-        walked.append(cwd)
+        moved: "list[str]" = []
+        for cwd in states:
+            nxt = target if os.path.isabs(target) else os.path.normpath(os.path.join(cwd, target))
+            if nxt not in moved:
+                moved.append(nxt)
+            # Deduplicated: `cd .` x8 spent the budget before the real ones.
+            if nxt not in seen:
+                seen.add(nxt)
+                walked.append(nxt)
+        # Both outcomes stay live, capped so a long chain cannot grow the set without bound.
+        states = (moved + [c for c in states if c not in moved])[:_MAX_TRACKED_CWDS]
         if len(walked) >= _MAX_TRACKED_CWDS:
             break
     return walked
@@ -2947,18 +2956,25 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
         ),
         key = lambda n: (getattr(n, "lineno", 0), getattr(n, "col_offset", 0)),
     )
-    cwd = workdir
+    # A list of possible directories, for the same reason the shell walk keeps one: a `chdir` into a
+    # path that does not exist raises, and code that catches it carries on from where it was.
+    cwds: "list[str | None]" = [workdir]
     for node in nodes:
         if isinstance(node, ast.Call) and _is_chdir_call(node) and node.args:
             target = _folded_path(node.args[0])
             if target and "\x00" not in target and "\x02" not in target:
-                cwd = (
-                    target
-                    if os.path.isabs(target) or not cwd
-                    else os.path.normpath(os.path.join(cwd, target))
-                )
-                if _references_studio_credential(cwd):
-                    return True
+                moved: "list[str | None]" = []
+                for cwd in cwds:
+                    nxt = (
+                        target
+                        if os.path.isabs(target) or not cwd
+                        else os.path.normpath(os.path.join(cwd, target))
+                    )
+                    if nxt not in moved:
+                        moved.append(nxt)
+                    if _references_studio_credential(nxt):
+                        return True
+                cwds = (moved + [c for c in cwds if c not in moved])[:_MAX_TRACKED_CWDS]
             continue
         folded = node.value if isinstance(node, ast.Constant) else _folded_path(node)
         if not folded or "\x02" in folded:  # a name bound more than once is not answerable here
@@ -2967,16 +2983,20 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
             # A dynamic piece is the sensitive-path analyzer's, unless the code reads a
             # studio-home variable: bypass keeps that in the child env, so its value is known.
             root = _studio_home_for_guard() if _code_reads_the_studio_home(code) else None
-            if root and _references_studio_credential_here(folded.replace("\x00", root), cwd):
+            if root and any(
+                _references_studio_credential_here(folded.replace("\x00", root), cwd)
+                for cwd in cwds
+            ):
                 return True
             continue
-        # Against the cwd by then: after `os.chdir('../..')`, `auth/auth.db` is the database.
-        if cwd and not os.path.isabs(folded):
-            joined = os.path.normpath(os.path.join(cwd, folded.replace("\\", "/")))
-            if _references_studio_credential(joined):
+        for cwd in cwds:
+            # Against the cwd by then: after `os.chdir('../..')`, `auth/auth.db` is the database.
+            if cwd and not os.path.isabs(folded):
+                joined = os.path.normpath(os.path.join(cwd, folded.replace("\\", "/")))
+                if _references_studio_credential(joined):
+                    return True
+            if _references_studio_credential_here(folded, cwd):
                 return True
-        if _references_studio_credential_here(folded, cwd):
-            return True
     return False
 
 

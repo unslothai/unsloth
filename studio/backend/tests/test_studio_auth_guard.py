@@ -972,3 +972,47 @@ def test_a_symlinked_studio_home_is_still_ours(monkeypatch, tmp_path):
         assert tools._references_studio_credential("cat $STUDIO_HOME/auth/.desktop_secret")
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_a_failed_directory_change_leaves_the_cwd_where_it_was(monkeypatch, tmp_path):
+    # `cd missing` fails and the shell carries on from where it was, so the NEXT `cd ../..` starts
+    # at the real sandbox and reaches the studio root. Assuming every change succeeds resolved the
+    # rest against a directory the command was never in. Python catching an OSError is the same.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for command in (
+            "cd definitely-missing; cd ../..; cat auth/auth.db",
+            'cd nope || true; cd ../.. ; sqlite3 auth/auth.db "select 1"',
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+        for code in (
+            "import os\ntry:\n    os.chdir('definitely-missing')\nexcept OSError:\n    pass\n"
+            "os.chdir('../..')\nprint(open('auth/auth.db').read())",
+            "import os, sqlite3\ntry:\n    os.chdir('nope')\nexcept Exception:\n    pass\n"
+            "os.chdir('../..')\nprint(sqlite3.connect('auth/auth.db'))",
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+        for ordinary in ("cd missing; ls", "cd ../data && cat x.csv"):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+        assert (
+            tools._python_exec(
+                "import os\nos.chdir('sub')\nprint(open('auth.db').read())",
+                None,
+                30,
+                _SESSION,
+                disable_sandbox = True,
+            )
+            != tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+    finally:
+        tools._studio_auth_markers_cache = None
