@@ -62,13 +62,19 @@ class _ResidentDouble:
 
     def matches_load_source(self, intent):
         requested = getattr(intent, "model_identifier", None)
-        return isinstance(requested, str) and requested.casefold() == self.model_identifier.casefold()
-
+        return (
+            isinstance(requested, str) and requested.casefold() == self.model_identifier.casefold()
+        )
 
     def load_cancelled(self):
         return False
 
-    def load_model(self, *, intent, load_cancel_event = None):
+    def load_model(
+        self,
+        *,
+        intent,
+        load_cancel_event = None,
+    ):
         self.loads += 1
         self.is_active = True
         self.is_loaded = True
@@ -79,6 +85,7 @@ class _ResidentDouble:
 
     def host_offload_warning_for_intent(self, _intent):
         return None
+
     def unload_model(self):
         self.unloads += 1
         self.is_loaded = False
@@ -283,7 +290,9 @@ def test_identical_secondary_promotes_without_reloading(residents, monkeypatch):
     monkeypatch.setattr(inference_route, "_request_used_api_key", lambda _request: False)
     monkeypatch.setattr(inference_route.api_monitor, "record_lifecycle", lambda **_kwargs: object())
     monkeypatch.setattr(inference_route.api_monitor, "discard", lambda _event: None)
-    monkeypatch.setattr("core.inference.gpu_arbiter.acquire_for_request", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "core.inference.gpu_arbiter.acquire_for_request", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr("hub.services.models.account_access.join_resident", lambda *_args: None)
     result = asyncio.run(
         inference_route._load_model_impl(
@@ -354,7 +363,9 @@ def test_runtime_changed_secondary_reloads_in_place_without_duplicate(
     )
     monkeypatch.setattr(inference_route, "_resolve_inherited_extra_args", lambda *_args: None)
     monkeypatch.setattr(inference_route, "_prepare_load_placement", _placement)
-    monkeypatch.setattr(inference_route, "_resolve_gguf_load_intent", lambda *_args, **_kwargs: intent)
+    monkeypatch.setattr(
+        inference_route, "_resolve_gguf_load_intent", lambda *_args, **_kwargs: intent
+    )
     monkeypatch.setattr(
         inference_route, "_guard_chat_load_against_training", lambda *_args, **_kwargs: None
     )

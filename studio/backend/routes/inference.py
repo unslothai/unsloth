@@ -17442,7 +17442,9 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                     await asyncio.to_thread(_loading_slot.backend.unload_model)
                     _resident_registry.drop_slot(_loading_slot.id, unload = False)
                     note_model_unloaded()
-                    logger.info("Cancelled scoped in-flight resident GGUF load: %s", request.model_path)
+                    logger.info(
+                        "Cancelled scoped in-flight resident GGUF load: %s", request.model_path
+                    )
                 return UnloadResponse(status = "unloaded", model = request.model_path)
             finally:
                 attempt.cancel_complete.set()
