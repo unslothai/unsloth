@@ -516,6 +516,30 @@ def test_a_deleted_empty_project_is_not_recreated_for_moved_chats(claude_home):
     assert studio_db.get_chat_thread(thread_id)["projectId"] is None
 
 
+def test_an_interrupted_first_import_writes_its_messages_on_retry(claude_home):
+    # upsert_chat_thread can commit before the messages and the ledger mark.
+    # The retry then sees a shell thread with no mark, which used to skip the
+    # body and record the session as already imported.
+    import_claude_chats()
+    thread_id = thread_id_for("session-one")
+    studio_db.sync_chat_messages(thread_id, [], prune_missing = True)
+    conn = studio_db.get_connection()
+    try:
+        conn.execute(
+            "DELETE FROM external_import_sessions WHERE source = ? AND session_id = ?",
+            ("claude", "session-one"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    summary = import_claude_chats()
+
+    assert len(studio_db.list_chat_messages(thread_id)) == 2
+    assert summary.messages == 2
+    assert studio_db.get_external_import_mark("claude", "session-one")["turnsImported"] == 2
+
+
 def test_a_chat_no_longer_in_studio_is_imported_whole_again(claude_home):
     # The ledger outlives the chats it describes -- a cleared history, a rolled
     # back database -- and must not leave those conversations half imported.
