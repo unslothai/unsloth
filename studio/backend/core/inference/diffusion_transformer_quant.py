@@ -11,9 +11,10 @@ runs on low-precision tensor cores. Measured on B200 (Z-Image-Turbo, 1024px/8 st
 faster and slightly more accurate, at a higher-memory dense load. Strictly opt-in; GGUF stays the
 low-memory default and fallback.
 
-Scheme by architecture (``auto`` picks the best supported, best first): nvfp4 / mxfp8 for Blackwell
-sm_100+ FP4 / MX tensor cores (biggest win; prototype), fp8 for Ada / Hopper / Blackwell (sm_89+),
-int8 for Ampere+ (sm_80+), the broadest-hardware lever.
+Scheme by architecture (``auto`` picks the best supported, best first): int8 leads every tier, then
+fp8 on Ada / Hopper / Blackwell (sm_89+) and mxfp8 on Blackwell (sm_100+); Ampere (sm_80+) has int8
+alone. nvfp4 is an explicit opt-in and is not in the auto ladder. ``_AUTO_LADDER`` is the ordering
+that ships, this is its summary.
 
 Every scheme needs ``torch.compile`` for the speedup (dynamic quant is ~30x slower eager); the
 loader compiles the repeated block after this. torch / torchao imported lazily; every probe is

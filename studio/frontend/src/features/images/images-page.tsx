@@ -3436,7 +3436,7 @@ export function ImagesPage({
       sendsTransformerQuant(status.model_kind, status.repo_id ?? "") ? (
         <AdvancedSelect
           label="Precision"
-          hint="How the model computes. Auto picks the fastest precision the hardware supports (at least INT8 on a capable GPU; FP8 on data-center cards) and quantises the transformer onto low-precision tensor cores. A GGUF pick reaches it by loading the FULL base model instead of the GGUF, and falls back to the GGUF as-is when the device, VRAM or disk can't take it; an official pipeline is already dense and is quantised in place, falling back to plain BF16. Off runs the checkpoint as-is."
+          hint="How the model computes. Auto picks the fastest precision the hardware supports (INT8 on every capable GPU, then FP8 where the card has it) and quantises the transformer onto low-precision tensor cores. A GGUF pick reaches it by loading the FULL base model instead of the GGUF, and falls back to the GGUF as-is when the device, VRAM or disk can't take it; an official pipeline is already dense and is quantised in place, falling back to plain BF16. Off runs the checkpoint as-is."
           badge={<ResolvedBadge status={status} controlKey="transformer_quant" />}
           value={transformerQuant}
           onValueChange={(v) => setTransformerQuant(v as typeof transformerQuant)}
