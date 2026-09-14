@@ -35,19 +35,8 @@ _PASS_STATE_DEFAULTS = {
 
 @functools.lru_cache(maxsize = None)
 def _realpath(path: str) -> str:
-    """realpath() for a module __file__, resolved once per distinct path per session.
-
-    The scan below has to realpath() every loaded module to find the ones that are
-    install_python_stack, and the autouse fixture runs it twice per test. sys.modules
-    holds several thousand entries once torch and unsloth are imported, so that was
-    ~4000 filesystem syscalls per test and 1940s of the directory's 2358s went into
-    fixture setup and teardown rather than into any test body.
-
-    A module's __file__ does not change once it is imported, and the same few thousand
-    paths recur on every single call, so resolving each one once is the same answer for
-    a fraction of the syscalls. Kept as an explicit helper rather than inlined because
-    the OSError contract below is part of what callers rely on.
-    """
+    """A module __file__ never changes once imported, so the scan below can resolve each
+    distinct path once instead of syscalling over all of sys.modules twice per test."""
     return os.path.realpath(path)
 
 
