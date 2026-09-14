@@ -985,6 +985,90 @@ def test_a_move_that_begins_and_ends_inside_the_pass_still_counts(tmp_path, monk
     assert (workdir / "data.csv").is_file(), f"{workdir} never got the restored files"
 
 
+def test_a_rollback_between_the_two_reads_is_not_read_as_nothing_to_do(tmp_path, monkeypatch):
+    """Whether the session directory is there and whether a move is running are two reads.
+
+    A failing rename between them restores the tree, so the absence the first read saw and the
+    quiet the second saw describe different instants and neither is now. A caller splitting its
+    decision across that pair leaves without the files, which are back at the legacy root, and
+    caches an empty sandbox in their place. Nothing else picks it up either: the rolled-back
+    mover is the live background migration, so _start_legacy_migration hands back that same
+    thread rather than starting the pass that would have found it."""
+    import os
+    import shutil
+    import threading
+
+    fake_home = tmp_path / "userprofile"
+    fake_home.mkdir()
+    _shared_setup_11(fake_home, monkeypatch, tmp_path)
+
+    legacy = fake_home / "studio_sandbox" / "__LOCALID_split"
+    legacy.mkdir(parents = True)
+    (legacy / "data.csv").write_text("a\n")
+
+    tools = _shared_setup_6()
+    root = tools.sandbox_root()
+
+    real_isdir = os.path.isdir
+    real_rename = os.rename
+    real_move = shutil.move
+    staged = threading.Event()
+    release = threading.Event()
+    rolled_back = threading.Event()
+    finish = threading.Event()
+    rename_failed = []
+    split = []
+
+    def failing_rename(source, destination, *args, **kwargs):
+        if str(destination).endswith("__LOCALID_split") and not rename_failed:
+            rename_failed.append(True)
+            raise OSError(39, "Directory not empty")
+        return real_rename(source, destination, *args, **kwargs)
+
+    def gated_move(source, destination, *args, **kwargs):
+        moved = real_move(source, destination, *args, **kwargs)
+        if "__LOCALID_split" in str(destination):
+            staged.set()
+            release.wait(10)
+        return moved
+
+    monkeypatch.setattr(tools.os, "rename", failing_rename)
+    monkeypatch.setattr(tools.shutil, "move", gated_move)
+
+    def run_mover():
+        try:
+            tools._migrate_one_legacy_session(root, "__LOCALID_split")
+        finally:
+            rolled_back.set()
+            finish.wait(10)  # stay alive, so this is still the running background migration
+
+    mover = threading.Thread(target = run_mover, daemon = True)
+    mover.start()
+    monkeypatch.setattr(tools, "_legacy_background", mover, raising = False)
+    assert staged.wait(10), "the move never reached the staging window"
+
+    def isdir_then_roll_back(path, *args, **kwargs):
+        answer = real_isdir(path, *args, **kwargs)
+        # The caller has just read the staged-away session. Let the rollback finish before it
+        # asks anything else, so its two reads straddle the restore.
+        if not split and str(path).endswith("__LOCALID_split") and not answer:
+            split.append(True)
+            release.set()
+            rolled_back.wait(10)
+        return answer
+
+    monkeypatch.setattr(tools.os.path, "isdir", isdir_then_roll_back)
+
+    workdir = Path(tools.get_sandbox_workdir("__LOCALID_split"))
+
+    monkeypatch.setattr(tools.os.path, "isdir", real_isdir)
+    finish.set()
+    mover.join(10)
+
+    assert rename_failed, "the rename was never made to fail"
+    assert split, "the caller never split its reads across the rollback"
+    assert (workdir / "data.csv").is_file(), f"{workdir} lost its files across the rollback"
+
 def test_every_reported_file_is_downloadable(tmp_path, monkeypatch):
     """The walk and the download route must agree, or the card advertises a
     file that always 404s."""

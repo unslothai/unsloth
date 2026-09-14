@@ -8117,10 +8117,19 @@ def _migrate_one_legacy_session(root: str, name: str) -> None:
     # strength of a move it never saw. So wait for the move rather than trust either one.
     if _legacy_sandbox_migrated and not _legacy_move_in_flight(name):
         return
-    source = os.path.join(_legacy_sandbox_root(), name)
-    if os.path.islink(source):
+    # Not a test on the session directory. Whether it is there and whether a move is running are
+    # two reads, and between them a failing rename can roll the tree back: the absence seen by the
+    # first and the quiet seen by the second then describe different instants, neither of them now,
+    # and the caller leaves without the files that are once again sitting at the legacy root. The
+    # root itself is the stable question, and the answer that matters, since it is removed once the
+    # migration is genuinely done and present for the whole of any move. Everything past here takes
+    # the lock and decides inside it, which is also the bound the lock table is documented to have:
+    # the chats that had a legacy folder.
+    legacy_root = _legacy_sandbox_root()
+    if not os.path.isdir(legacy_root):
         return
-    if not os.path.isdir(source) and not _legacy_move_in_flight(name):
+    source = os.path.join(legacy_root, name)
+    if os.path.islink(source):
         return
     with _legacy_lock_for(name):
         if not os.path.isdir(source):
