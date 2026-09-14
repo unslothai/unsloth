@@ -13,6 +13,52 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+import importlib
+import types
+from unittest.mock import MagicMock
+
+
+# core/inference/inference.py imports unsloth, and through it unsloth_zoo, at module scope.
+# This file reaches that module from inside a helper rather than at module scope, so the source
+# scan in test_backend_tests_stub_heavy_imports.py never saw the dependency. The pytest matrix
+# here deliberately does not install unsloth_zoo, so the import only ever succeeded when another
+# file on the same xdist worker had already stubbed unsloth. Sharding the job changed which
+# files share a worker and the luck ran out, so the stub is explicit here now.
+_STUBBED: list[str] = []
+
+
+def _stub_if_missing(name, attrs):
+    """Register a stub module for a dep the backend pytest job does not install.
+
+    Same helper and reason as test_trainer_stdout_quiet.py: core.training.trainer imports
+    unsloth (and through it unsloth_zoo) and trl at module scope, while the pytest matrix in
+    studio-backend-ci.yml installs studio.txt plus torch and transformers and deliberately
+    stops there, because the repo-cpu-tests job beside it is the one that installs
+    unsloth_zoo, for the REPO-ROOT tests/ tree. Unstubbed, this module fails COLLECTION and
+    takes the whole job down. A real install is left alone. __spec__ = None keeps the
+    trainer's own _ensure_real_packages namespace-shadow guard a no-op on the stub.
+    """
+    if name in sys.modules:
+        return
+    try:
+        importlib.import_module(name)
+        return
+    except Exception:  # noqa: BLE001 - unusable here either way, so stub it
+        pass
+    _STUBBED.append(name)
+    mod = types.ModuleType(name)
+    mod.__spec__ = None
+    for attr in attrs:
+        setattr(mod, attr, MagicMock())
+    sys.modules[name] = mod
+    parent, _, child = name.rpartition(".")
+    if parent and parent in sys.modules:
+        setattr(sys.modules[parent], child, mod)
+
+
+_stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
+_stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
+
 from core.inference.native_audio import (
     HIGGS_TTS2_CODEC_REPO,
     HIGGS_TTS3_CODEC_REPO,
