@@ -454,6 +454,7 @@ def _create_unsloth_optimizer(
     optimizer_cls,
     optimizer_kwargs,
     embedding_lr = 5e-5,
+    require_embedding_match = False,
 ):
     lr = optimizer_kwargs["lr"]
     weight_decay = optimizer_kwargs.get("weight_decay", 0.0)
@@ -476,6 +477,19 @@ def _create_unsloth_optimizer(
         else:
             param_groups["non_embeddings"][name] = param
 
+    if require_embedding_match and not param_groups["embeddings"]:
+        # Only checked on the delayed path, where the model has been through
+        # accelerator.prepare. FSDP1 renames parameters to _fsdp_wrapped_module._flat_param,
+        # so the modules_to_save match above finds nothing and embedding_learning_rate would
+        # be dropped without a word. Off the delayed path an empty group is ordinary: plenty
+        # of models simply do not train their embeddings.
+        raise ValueError(
+            "Unsloth: embedding_learning_rate was requested but no embedding parameter "
+            "matched after the model was wrapped, so the embeddings would train at the "
+            "ordinary learning rate. FSDP flattens parameter names; use FSDP2, train "
+            "without FSDP, or drop embedding_learning_rate."
+        )
+
     optimizer_grouped_parameters = [
         {
             "params": list(param_groups["non_embeddings"].values()),
@@ -492,24 +506,49 @@ def _create_unsloth_optimizer(
     return optimizer
 
 
+_SUPER_CREATE_OPTIMIZER_TAKES_MODEL = None
+
+
+def _super_create_optimizer_takes_model():
+    """Asked of the signature, not a version: trl sits between us and transformers."""
+    global _SUPER_CREATE_OPTIMIZER_TAKES_MODEL
+    if _SUPER_CREATE_OPTIMIZER_TAKES_MODEL is None:
+        try:
+            parameters = inspect.signature(SFTTrainer.create_optimizer).parameters
+            _SUPER_CREATE_OPTIMIZER_TAKES_MODEL = "model" in parameters
+        except (TypeError, ValueError):
+            _SUPER_CREATE_OPTIMIZER_TAKES_MODEL = False
+    return _SUPER_CREATE_OPTIMIZER_TAKES_MODEL
+
+
 class UnslothTrainer(SFTTrainer):
-    def create_optimizer(self):
+    def create_optimizer(self, model = None):
+        # The prepared model's parameters, not self.model's, are the ones to own under FSDP.
+        target_model = model if model is not None else self.model
+
         q_galore_config = getattr(self.args, "q_galore_config", None)
         if q_galore_config is not None and self.optimizer is None:
             embedding_lr = getattr(self.args, "embedding_learning_rate", None)
-            return self._create_q_galore_optimizer(q_galore_config, embedding_lr)
+            return self._create_q_galore_optimizer(
+                q_galore_config,
+                embedding_lr,
+                model = target_model,
+            )
 
         embedding_learning_rate = getattr(self.args, "embedding_learning_rate", None)
         if embedding_learning_rate is None:
+            if model is not None and _super_create_optimizer_takes_model():
+                return super().create_optimizer(model)
             return super().create_optimizer()
 
         if self.optimizer is None:
             optimizer_cls, optimizer_kwargs = SFTTrainer.get_optimizer_cls_and_kwargs(self.args)
             self.optimizer = _create_unsloth_optimizer(
-                self.model,
+                target_model,
                 optimizer_cls,
                 optimizer_kwargs,
                 embedding_learning_rate,
+                require_embedding_match = model is not None,
             )
         return self.optimizer
 
@@ -517,8 +556,11 @@ class UnslothTrainer(SFTTrainer):
         self,
         config: "QGaloreConfig",
         embedding_lr = None,
+        model = None,
     ):
-        """Build the Q-GaLore optimizer from a QGaloreConfig."""
+        """Build the Q-GaLore optimizer from a QGaloreConfig. ``model`` defaults to self.model."""
+        if model is None:
+            model = self.model
         from unsloth.optimizers.q_galore_adamw import (
             QGaLoreAdamW8bit,
             make_q_galore_param_groups,
@@ -529,7 +571,7 @@ class UnslothTrainer(SFTTrainer):
         weight_decay = self.args.weight_decay
 
         param_groups = make_q_galore_param_groups(
-            self.model,
+            model,
             lr = lr,
             weight_decay = weight_decay,
             rank = config.rank,
@@ -547,9 +589,21 @@ class UnslothTrainer(SFTTrainer):
             target_modules = config.target_modules,
         )
 
+        if not any("rank" in group for group in param_groups):
+            # make_q_galore_param_groups selects on param.dim() >= 2, and FSDP1 hands us 1-D
+            # views: FlatParameter with use_orig_params=False, and a 1-D sharded view even
+            # with use_orig_params=True. Nothing matches, so a requested Q-GaLore run would
+            # quietly become ordinary 8-bit AdamW. Say so instead.
+            raise ValueError(
+                "Unsloth: Q-GaLore was requested but no parameter matched, so the run would "
+                "silently be ordinary AdamW 8bit. Projection needs 2-D parameters; under FSDP "
+                "they arrive 1-D (flattened or sharded). Use FSDP2, train without FSDP, or set "
+                "q_galore_config = None."
+            )
+
         if embedding_lr is not None:
             # Fast param -> name lookup, O(N) instead of O(N*M).
-            param_to_name = {id(p): name for name, p in self.model.named_parameters()}
+            param_to_name = {id(p): name for name, p in model.named_parameters()}
 
             new_groups = []
             for group in param_groups:
@@ -592,14 +646,14 @@ class UnslothTrainer(SFTTrainer):
 
         if config.weight_quant:
             QGaLoreAdamW8bit.init_weight_quantization(
-                self.model,
+                model,
                 param_groups,
                 group_size = config.weight_group_size,
                 stochastic = config.stochastic_round,
             )
             # Pre-hooks dequantize INT8 weights to float before each forward, letting the optimizer free float
             # weight memory between steps.
-            install_weight_quant_hooks(self.model)
+            install_weight_quant_hooks(model)
 
         n_galore = sum(len(g["params"]) for g in param_groups if "rank" in g)
         n_other = sum(len(g["params"]) for g in param_groups if "rank" not in g)

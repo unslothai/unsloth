@@ -2,6 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
+import { minPSamplingPayload } from "../lib/min-p-policy";
+import {
+  createMinPRecoveryGuard,
+  invalidateMinPRecoveries,
+  shouldOfferMinPRecovery,
+} from "../lib/min-p-recovery";
 import {
   clearedServerTuningState,
   committedServerTuningState,
@@ -33,6 +39,28 @@ import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
 import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
 import { usePlatformStore } from "@/config/env";
+
+import { getSkillsSnapshot, settleSkillsForText } from "./skills-api";
+
+function lastUserText(
+  messages: readonly { role?: string; content?: unknown }[],
+): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== "user") continue;
+    const content = message.content;
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content
+      .map((part) =>
+        part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
+          ? (part as { text: string }).text
+          : "",
+      )
+      .join(" ");
+  }
+  return "";
+}
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
   IMAGE_SENTINEL_TOOLS,
@@ -257,6 +285,7 @@ import {
   budgetImpliesTruncation,
   CONTINUE_INSTRUCTION,
   createContinuationMerger,
+  incompleteLabel,
   type IncompleteReason,
   readIncompleteInfo,
   resolveIncompleteReason,
@@ -1325,7 +1354,10 @@ function toOpenAIMessages(
   }
 
   if (message.role === "assistant") {
-    return serializeAssistantReplayMessages(message, includeReasoningContent);
+    return fillStoppedAssistantReplay(
+      message,
+      serializeAssistantReplayMessages(message, includeReasoningContent),
+    );
   }
 
   const textContent = collectTextParts(message).join("\n");
@@ -1362,6 +1394,46 @@ function assistantTurnEndedEarly(message: RunMessage): boolean {
     message.status?.type === "incomplete" ||
     readIncompleteInfo((message as { metadata?: unknown }).metadata) !== null
   );
+}
+
+/** #10428: an empty Stop loses its prompt to the prune. Only `cancelled` in `status` is deliberate. */
+function stoppedAssistantReplayText(message: RunMessage): string {
+  const info = readIncompleteInfo(
+    (message as { metadata?: unknown }).metadata,
+  );
+  const status = message.status;
+  const fromStatus: IncompleteReason =
+    status?.type !== "incomplete" || status.reason === "cancelled"
+      ? "cancelled"
+      : status.reason === "length"
+        ? "length"
+        : "interrupted";
+  return incompleteLabel(info?.reason ?? fromStatus);
+}
+
+function fillStoppedAssistantReplay(
+  message: RunMessage,
+  serialized: SerializedMessage[],
+): SerializedMessage[] {
+  if (!assistantTurnEndedEarly(message)) {
+    return serialized;
+  }
+  if (serialized.length === 0) {
+    // Only a refusal serialises to nothing; filling it puts a stop label back on a dropped turn.
+    return serialized;
+  }
+  const [only, ...rest] = serialized;
+  if (rest.length !== 0 || only?.role !== "assistant") {
+    return serialized;
+  }
+  if (
+    hasReplayContent(only.content) ||
+    only.tool_calls ||
+    only.reasoning_content
+  ) {
+    return serialized;
+  }
+  return [{ ...only, content: stoppedAssistantReplayText(message) }];
 }
 
 /** A Stop before the turn produced anything serialises to a lone empty assistant message,
@@ -1754,13 +1826,19 @@ export async function buildLocalTokenCountExtras(
     ? await projectHasSources(ragProjectId)
     : false;
   const ragOn = ragEnabled || projectRagEnabled;
+
+  await settleSkillsForText("");
+  const hasEnabledSkills = getSkillsSnapshot().skills.some(
+    (skill) => skill.valid && !skill.shadowed && skill.enabled,
+  );
   if (
     !toolsEnabled &&
     !codeToolsEnabled &&
     !artifactsEnabled &&
     !mcpEnabledForChat &&
     !ragOn &&
-    !deepResearchEnabled
+    !deepResearchEnabled &&
+    !hasEnabledSkills
   ) {
     // Explicit false, not omission: the server defaults tools on. The permission level rides
     // along because `--enable-tools` still outranks that false in _effective_enable_tools.
@@ -1784,6 +1862,8 @@ export async function buildLocalTokenCountExtras(
       ...(toolsEnabled ? ["web_search"] : []),
       ...(codeToolsEnabled ? ["python", "terminal", "edit_file"] : []),
       ...(artifactsEnabled ? ["render_html"] : []),
+      // Same gate as the request: with no enabled skill neither tool is sent, so neither is priced.
+      ...(hasEnabledSkills ? ["read_skill", "create_skill"] : []),
     ],
     mcp_enabled: mcpEnabledForChat,
     // Top level, not inside rag_scope: an archived thread puts search_conversation and its
@@ -1963,7 +2043,8 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const check = () => {
       if (abortSignal?.aborted) {
-        reject(new Error("Aborted"));
+        // Uncaught in the adapter, and a Stop that is not an AbortError files as a failure (#10428).
+        reject(abortSignal.reason ?? new DOMException("Aborted", "AbortError"));
         return;
       }
       if (!useChatRuntimeStore.getState().modelLoading) {
@@ -5558,6 +5639,35 @@ export function createOpenAIStreamAdapter(
       // Stop handle for when this conversation is not the visible one, which cancelByThreadId
       // cannot reach. For an external provider the abort IS the stop: no cancel_id is registered.
       runtime.registerThreadServerCancel(threadKey, serverCancel);
+      const recoveryState = useChatRuntimeStore.getState();
+      const minPRecoveryGuard =
+        externalProvider?.providerType === "vllm" &&
+        recoveryState.activeThreadId === (resolvedThreadId ?? null) &&
+        recoveryState.params.checkpoint === params.checkpoint &&
+        recoveryState.params.minP === params.minP &&
+        recoveryState.params.minPMode === params.minPMode
+        ? createMinPRecoveryGuard(
+            () => {
+              const state = useChatRuntimeStore.getState();
+              const connections = useExternalProvidersStore.getState();
+              return [
+                state.activeThreadId,
+                state.params,
+                connections.providers,
+                connections.connectionsEnabled,
+              ];
+            },
+            (check) => {
+              const stopSettings = useChatRuntimeStore.subscribe(check);
+              const stopConnections = useExternalProvidersStore.subscribe(check);
+              return () => {
+                stopSettings();
+                stopConnections();
+              };
+            },
+          )
+        : null;
+      let keepMinPRecovery = false;
       try {
         if (runSignal.aborted) {
           onAbortCancel();
@@ -5674,6 +5784,12 @@ export function createOpenAIStreamAdapter(
         const buildRequestPayload = async (
           forceRefreshPublicKey = false,
         ): Promise<OpenAIChatCompletionsRequest> => {
+          if (supportsStudioToolsForThisTurn) {
+            await settleSkillsForText(lastUserText(outboundMessages));
+          }
+          const hasEnabledSkills = getSkillsSnapshot().skills.some(
+            (skill) => skill.valid && !skill.shadowed && skill.enabled,
+          );
           if (externalSelection && externalProvider) {
             // Per-thread container reuse; empty falls back to container_auto. Anthropic uses its own key.
             // Anthropic uses anthropicCodeExecContainerId.
@@ -5814,7 +5930,9 @@ export function createOpenAIStreamAdapter(
                 ? { thread_id: resolvedThreadId }
                 : {}),
               ...(externalCapabilities?.topK ? { top_k: params.topK } : {}),
-              ...(externalCapabilities?.minP ? { min_p: params.minP } : {}),
+              ...(externalCapabilities?.minP
+                ? minPSamplingPayload(externalProvider?.providerType, params)
+                : {}),
               ...(externalCapabilities?.repetitionPenalty
                 ? { repetition_penalty: params.repetitionPenalty }
                 : {}),
@@ -5829,6 +5947,7 @@ export function createOpenAIStreamAdapter(
                 mcpEnabledForChat ||
                 ragEnabled ||
                 projectRagEnabled ||
+                hasEnabledSkills ||
                 // Armed research needs Studio's loop: deep_research is appended past every tool filter, but
                 // only for a request that asked for the loop at all.
                 deepResearchArmed)
@@ -5839,6 +5958,9 @@ export function createOpenAIStreamAdapter(
                         ? ["search_knowledge_base"]
                         : []),
                       ...(toolsEnabled ? ["web_search"] : []),
+                      ...(hasEnabledSkills
+                        ? ["read_skill", "create_skill"]
+                        : []),
                       ...studioLocalCodeTools,
                       // Hosted tools with no local stand-in; their pills stay lit regardless, so listing only local
                       // names dropped Images/Fetch whenever another tool selected this branch. Search is excluded
@@ -5863,8 +5985,9 @@ export function createOpenAIStreamAdapter(
                     // Self-hosted models often write a call as text rather than emitting structured tool_calls, so
                     // the external loop heals like the local one; omitting this left the process default.
                     auto_heal_tool_calls: runtime.autoHealToolCalls,
-                    // Keep the external server-side loop under the same user setting as the local paths.
-                    nudge_tool_calls: runtime.nudgeToolCalls,
+                    // false, not omitted: omission follows UNSLOTH_TOOL_CALL_NUDGE, which the
+                    // launchers set to 1 when unset, so this loop would keep nudging (#9686, #9125).
+                    nudge_tool_calls: false,
                     // This branch runs the tools here, so say so by name: enabled_tools ["web_search"] is
                     // byte-identical to an older bundle's hosted search.
                     run_tools_locally: true,
@@ -6063,13 +6186,14 @@ export function createOpenAIStreamAdapter(
             bypass_permissions: bypassPermissions,
             ...(deepResearchArmed ? { deep_research_armed: true } : {}),
             ...(supportsTools &&
-            (toolsEnabled ||
-              codeToolsEnabled ||
-              renderHtmlToolEnabledForThisTurn ||
-              mcpEnabledForChat ||
-              ragEnabled ||
-              projectRagEnabled ||
-              deepResearchArmed)
+              (toolsEnabled ||
+                codeToolsEnabled ||
+                renderHtmlToolEnabledForThisTurn ||
+                mcpEnabledForChat ||
+                ragEnabled ||
+                projectRagEnabled ||
+                hasEnabledSkills ||
+                deepResearchArmed)
               ? {
                   enable_tools: true,
                   enabled_tools: [
@@ -6078,6 +6202,9 @@ export function createOpenAIStreamAdapter(
                       ? ["search_knowledge_base"]
                       : []),
                     ...(toolsEnabled ? ["web_search"] : []),
+                    ...(hasEnabledSkills
+                      ? ["read_skill", "create_skill"]
+                      : []),
                     ...(codeToolsEnabled
                       ? ["python", "terminal", "edit_file"]
                       : []),
@@ -6128,7 +6255,8 @@ export function createOpenAIStreamAdapter(
                     return mins >= 9999 ? 9999 : mins * 60;
                   })(),
                 }
-              :  // Explicit false, not omission: the server defaults tools on for a request that never mentions them.
+              : // Explicit false keeps UI-off tools disabled; --enable-tools still overrides it
+                // and sees no exhaustive enabled_tools list, so it can supply the default catalog.
                 { enable_tools: false }),
           };
         };
@@ -6197,7 +6325,17 @@ export function createOpenAIStreamAdapter(
                     releaseLiveGenerationRun(cancelId);
                   }
                   if (!generationRun) {
-                    if (generationDecision === "durable") return;
+                    // Null when the Stop won the race AND when json() could not parse a 2xx body;
+                    // a bare return settles both "complete" (#10428).
+                    if (generationDecision === "durable") {
+                      if (runSignal.aborted) {
+                        throw runSignal.reason ??
+                          new DOMException("Aborted", "AbortError");
+                      }
+                      throw new Error(
+                        "The server accepted the request without starting a generation run",
+                      );
+                    }
                   } else {
                     generationRunId = generationRun.id;
                     // Normally the same id claimed above; claimed again in case the server echoes a different one.
@@ -7700,7 +7838,40 @@ export function createOpenAIStreamAdapter(
         );
         if (!runSignal.aborted) {
           const msg = err instanceof Error ? err.message : String(err);
-          if (err instanceof GenerationLengthError) {
+          if (
+            minPRecoveryGuard?.isValid() &&
+            shouldOfferMinPRecovery(msg, externalProvider?.providerType, params)
+          ) {
+            keepMinPRecovery = true;
+            const cleanupTimer = setTimeout(
+              () => minPRecoveryGuard.dispose(),
+              8000,
+            );
+            const disposeRecovery = () => {
+              clearTimeout(cleanupTimer);
+              minPRecoveryGuard.dispose();
+            };
+            toast.error("Min P is incompatible with speculative decoding", {
+              description: `This server requires Min P to be disabled. Set it to 0, then retry. ${msg}`,
+              duration: 8000,
+              action: {
+                label: "Set Min P to 0",
+                onClick: () => {
+                  const valid = minPRecoveryGuard.isValid();
+                  disposeRecovery();
+                  if (valid) {
+                    const state = useChatRuntimeStore.getState();
+                    state.setParams(
+                      { ...state.params, minPMode: "custom", minP: 0 },
+                      { minPChoiceEdited: true },
+                    );
+                  }
+                },
+              },
+              onDismiss: disposeRecovery,
+              onAutoClose: disposeRecovery,
+            });
+          } else if (err instanceof GenerationLengthError) {
             toast.error("Response ran out of tokens", {
               // The error already chose between the Max Tokens and Context Length remedies; repeating the
               // Max Tokens advice here overrode that choice in the one place the user reads.
@@ -7789,44 +7960,43 @@ export function createOpenAIStreamAdapter(
           closeReasoningContent();
           const partialText = mergeContinuation(cumulativeText, { final: true });
           const partialContent = buildAssistantContent(partialText);
-          if (partialContent.length > 0) {
-            const partialTiming = buildTiming(
-              streamStartTime,
-              totalChunks,
-              firstTokenTime,
-              Date.now() - streamStartTime,
-              estimateTokenCount(partialText),
-              toolCallParts.length,
-            );
-            yield {
-              content: partialContent,
-              metadata: {
-                timing: partialTiming,
-                custom: {
-                  ...reasoningDurationTracker.metadata(),
-                  contextTruncation,
-                  // Unfinished too, so it also offers Continue -- unless the provider already
-                  // said why the model stopped.
-                  incomplete: {
-                    reason: resolveIncompleteReason(
-                      err instanceof GenerationLengthError
-                        ? ("length" as const)
-                        : err instanceof ChatGenerationTerminalError &&
-                            err.generationStatus === "cancelled"
-                          ? ("cancelled" as const)
-                          : ("interrupted" as const),
-                      contextWindowExceeded,
-                    ),
-                  },
-                  timing: partialTiming,
-                  ...generationCustom(),
+          const partialTiming = buildTiming(
+            streamStartTime,
+            totalChunks,
+            firstTokenTime,
+            Date.now() - streamStartTime,
+            estimateTokenCount(partialText),
+            toolCallParts.length,
+          );
+          yield {
+            content: partialContent,
+            metadata: {
+              timing: partialTiming,
+              custom: {
+                ...reasoningDurationTracker.metadata(),
+                contextTruncation,
+                // Unfinished too, so it also offers Continue -- unless the provider already
+                // said why the model stopped.
+                incomplete: {
+                  reason: resolveIncompleteReason(
+                    err instanceof GenerationLengthError
+                      ? ("length" as const)
+                      : err instanceof ChatGenerationTerminalError &&
+                          err.generationStatus === "cancelled"
+                        ? ("cancelled" as const)
+                        : ("interrupted" as const),
+                    contextWindowExceeded,
+                  ),
                 },
+                timing: partialTiming,
+                ...generationCustom(),
               },
-            };
-          }
+            },
+          };
         }
         throw err;
       } finally {
+        if (!keepMinPRecovery) minPRecoveryGuard?.dispose();
         // Unconditional, and both ids: the pre-admission claim uses `cancelId`, and a run left
         // claimed after its stream died would never be recovered.
         releaseLiveGenerationRun(cancelId);
@@ -7884,6 +8054,7 @@ export function createOpenAIStreamAdapter(
   } satisfies ChatModelAdapter;
   return {
     async *run(args) {
+      invalidateMinPRecoveries();
       const preStreamThreadIds = preStreamRunThreadIdsForAdapter(
         args.unstable_threadId,
         useChatRuntimeStore.getState().activeThreadId,

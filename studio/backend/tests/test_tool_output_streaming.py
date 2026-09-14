@@ -673,11 +673,19 @@ def test_bash_exec_unlimited_timeout_does_not_wait_for_a_job_the_namespace_reaps
     # The isolated counterpart, and the reason "detached_processes_die_with_the
     # _call" is a LIMITATION: the background job goes down with the leader, so the
     # call returns at once rather than blocking on a pipe nothing will write to.
+    from core.inference import tools as tools_module
+
     command = "( sleep 7; echo late-grandchild-output ) & echo parent-done"
     started = time.monotonic()
     result = _bash_exec(command, timeout = None, output_callback = lambda _t: None)
+    elapsed = time.monotonic() - started
     assert "parent-done" in result
-    assert time.monotonic() - started < 5
+    # A capability can disappear after collection, for example if an earlier
+    # launch invalidates a stale probe. Judge the launch that actually ran.
+    if tools_module._last_tool_execution_record.os_isolation:
+        assert elapsed < 5
+    else:
+        assert "late-grandchild-output" in result
 
 
 def test_bash_exec_finite_timeout_kills_grandchild_holding_stdout(tmp_path):
