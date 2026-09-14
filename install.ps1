@@ -3705,7 +3705,22 @@ exit 0
             $nvOut = Invoke-NvidiaSmiBounded $NvidiaSmiExe @('--query-gpu=name,compute_cap,driver_version', '--format=csv,noheader') -StdoutOnly
             $nvRows = @($nvOut -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
             if ($nvRows.Count -gt 0) {
-                $nvIdx = if ($env:CUDA_VISIBLE_DEVICES -match '^\d') { [int]($env:CUDA_VISIBLE_DEVICES -split ',')[0] } else { 0 }
+                # nvidia-smi ignores CUDA_VISIBLE_DEVICES, so the mask is resolved against
+                # its physical rows here. A non-numeric token is a GPU UUID, or a MIG id
+                # (MIG-<GPU-UUID>/<gi>/<ci>) embedding one; NVIDIA allows the UUID to be
+                # abbreviated to any unique leading portion, so it is matched on prefix.
+                $nvIdx = 0
+                $nvTok = if ($env:CUDA_VISIBLE_DEVICES) { ($env:CUDA_VISIBLE_DEVICES -split ',')[0].Trim() } else { '' }
+                if ($nvTok -match '^\d+$') {
+                    $nvIdx = [int]$nvTok
+                } elseif ($nvTok) {
+                    if ($nvTok -like 'MIG-*') { $nvTok = ($nvTok.Substring(4) -split '/')[0] }
+                    $nvUuidOut = Invoke-NvidiaSmiBounded $NvidiaSmiExe @('--query-gpu=uuid', '--format=csv,noheader') -StdoutOnly
+                    $nvUuids = @($nvUuidOut -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                    for ($i = 0; $i -lt $nvUuids.Count; $i++) {
+                        if ($nvUuids[$i].StartsWith($nvTok, [System.StringComparison]::OrdinalIgnoreCase)) { $nvIdx = $i; break }
+                    }
+                }
                 $nvRow = if ($nvIdx -lt $nvRows.Count) { $nvRows[$nvIdx] } else { $nvRows[0] }
                 # Split from the right: nvidia-smi does not quote, so a comma in a device
                 # name would otherwise shift every field.
@@ -3834,12 +3849,17 @@ exit 0
                     # format change can mislabel nothing -- the arch (which picks the wheel)
                     # never reads this.
                     $_hipAllNames = @([regex]::Matches($hipOut, "(?im)^\s*Name\s*:\s*(.+?)\s*$") | ForEach-Object { $_.Groups[1].Value.Trim() })
-                    $_hipVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
                     if ($_hipAllArches.Count -gt 0) {
-                        $ROCmGfxArch  = if ($_hipVisIdx -lt $_hipAllArches.Count) { $_hipAllArches[$_hipVisIdx] } else { $_hipAllArches[0] }
+                        # Entry 0, NOT the visible-device token, and the same choice
+                        # studio/setup.ps1 already makes: hipinfo is itself a HIP
+                        # application, so HIP/ROCR_VISIBLE_DEVICES has already filtered
+                        # its output and renumbered the survivors from 0. Indexing that
+                        # by the physical token applies the mask twice and lands on the
+                        # wrong card, which the banner now shows by name.
+                        $ROCmGfxArch  = $_hipAllArches[0]
                         $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"
                         if ($_hipAllNames.Count -eq $_hipAllArches.Count) {
-                            $ROCmGpuName = if ($_hipVisIdx -lt $_hipAllNames.Count) { $_hipAllNames[$_hipVisIdx] } else { $_hipAllNames[0] }
+                            $ROCmGpuName = $_hipAllNames[0]
                         }
                     } else {
                         $ROCmGpuLabel = "AMD ROCm"

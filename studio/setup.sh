@@ -677,10 +677,23 @@ _setup_nv_banner_fields() {
     _setup_nv_row=""; _setup_nv_cc=""
     [ -n "${_setup_nvsmi:-}" ] || return 0
     # nvidia-smi ignores CUDA_VISIBLE_DEVICES, so its rows are the physical devices
-    # and a numeric mask indexes them. A UUID or MIG mask names no index here, so
-    # the banner keeps the first row rather than guessing which card that is.
+    # and the mask has to be resolved against them by hand.
     _setup_nv_idx=0
-    case "${CUDA_VISIBLE_DEVICES:-}" in ''|*[!0-9,]*) ;; *) _setup_nv_idx="${CUDA_VISIBLE_DEVICES%%,*}" ;; esac
+    _setup_nv_vis="${CUDA_VISIBLE_DEVICES:-}"
+    _setup_nv_tok="${_setup_nv_vis%%,*}"
+    case "$_setup_nv_vis" in
+        '') ;;
+        *[!0-9,]*)
+            # A non-numeric mask is a GPU UUID, or a MIG id of the form
+            # MIG-<GPU-UUID>/<gi>/<ci> that embeds one. NVIDIA allows the UUID to be
+            # abbreviated to any unique leading portion, so this matches on prefix.
+            case "$_setup_nv_tok" in MIG-*) _setup_nv_tok="${_setup_nv_tok#MIG-}"; _setup_nv_tok="${_setup_nv_tok%%/*}" ;; esac
+            _setup_nv_idx=$(_setup_run_smi "$_setup_nvsmi" --query-gpu=uuid --format=csv,noheader 2>/dev/null \
+                | awk -v want="$_setup_nv_tok" 'NF { gsub(/^[[:space:]]+|[[:space:]]+$/,""); if (index($0, want) == 1) { print NR-1; exit } }' || true)
+            case "$_setup_nv_idx" in ''|*[!0-9]*) _setup_nv_idx=0 ;; esac
+            ;;
+        *) _setup_nv_idx="$_setup_nv_tok" ;;
+    esac
     _setup_nv_row=$(_setup_run_smi "$_setup_nvsmi" --query-gpu=name,compute_cap,driver_version --format=csv,noheader 2>/dev/null \
         | awk -v idx="$_setup_nv_idx" 'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }' || true)
     [ -n "$_setup_nv_row" ] || return 0
@@ -2308,6 +2321,11 @@ EOF
         substep "GGUF chat can still use this GPU through Vulkan: export UNSLOTH_LLAMA_CPP_BACKEND=vulkan,"
         substep "then re-run the installer. It picks the llama.cpp bundle at install time, so setting"
         substep "it afterwards has no effect until you install or update again."
+    elif [ -n "$_setup_mkt" ]; then
+        # Name without an arch, as install.sh does. Deliberately BELOW the unsupported
+        # arm above: a card with no ROCm wheels also reaches here with a name, and
+        # naming it quietly would drop the warning that training will not run.
+        step "gpu" "$_setup_mkt"
     else
         step "gpu" "AMD ROCm"
     fi

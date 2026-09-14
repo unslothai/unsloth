@@ -4640,10 +4640,25 @@ _nv_banner_fields() {
     _nv_name=""; _nv_sm=""; _nv_driver=""; _nv_row=""; _nv_cc=""
     [ -n "${_nvsmi:-}" ] || return 0
     # nvidia-smi ignores CUDA_VISIBLE_DEVICES, so its rows are the physical devices
-    # and a numeric mask indexes them. A UUID or MIG mask names no index here, so
-    # the banner keeps the first row rather than guessing which card that is.
+    # and the mask has to be resolved against them by hand.
     _nv_idx=0
-    case "${CUDA_VISIBLE_DEVICES:-}" in ''|*[!0-9,]*) ;; *) _nv_idx="${CUDA_VISIBLE_DEVICES%%,*}" ;; esac
+    _nv_vis="${CUDA_VISIBLE_DEVICES:-}"
+    _nv_tok="${_nv_vis%%,*}"
+    case "$_nv_vis" in
+        '') ;;
+        *[!0-9,]*)
+            # A non-numeric mask is a GPU UUID, or a MIG id of the form
+            # MIG-<GPU-UUID>/<gi>/<ci> that embeds one. NVIDIA allows the UUID to be
+            # abbreviated to any unique leading portion, so this matches on prefix.
+            # Resolved to an index here so the CSV parse below keeps its three
+            # documented columns.
+            case "$_nv_tok" in MIG-*) _nv_tok="${_nv_tok#MIG-}"; _nv_tok="${_nv_tok%%/*}" ;; esac
+            _nv_idx=$(_run_bounded "$_nvsmi" --query-gpu=uuid --format=csv,noheader 2>/dev/null \
+                | awk -v want="$_nv_tok" 'NF { gsub(/^[[:space:]]+|[[:space:]]+$/,""); if (index($0, want) == 1) { print NR-1; exit } }' || true)
+            case "$_nv_idx" in ''|*[!0-9]*) _nv_idx=0 ;; esac
+            ;;
+        *) _nv_idx="$_nv_tok" ;;
+    esac
     _nv_row=$(_run_bounded "$_nvsmi" --query-gpu=name,compute_cap,driver_version --format=csv,noheader 2>/dev/null \
         | awk -v idx="$_nv_idx" 'NF { a[n++]=$0 } END { if(idx>=n) idx=0; if(n>0) print a[idx] }' || true)
     [ -n "$_nv_row" ] || return 0
