@@ -4,6 +4,7 @@
 """Store tests: incremental writes, dedupe, delete, scope, dense + lexical."""
 
 import math
+import re
 import sqlite3
 
 import pytest
@@ -71,6 +72,36 @@ def test_dense_ranks_by_cosine(rag_conn):
     _add_doc(rag_conn, "kb_a", "d2", "f", "h2", ["hotel golf"])
     ranked = store.search_dense(rag_conn, "kb_a", embed("alpha"), 10)
     assert ranked[0][0] == "d1:0" and ranked[0][1] > 0.99
+
+
+def test_dense_knn_binds_k_rather_than_limit(rag_conn):
+    """The KNN bound must reach vec0 as ``k = ?``, never as a bare ``LIMIT ?``.
+
+    SQLite only hands a LIMIT to a virtual table's query planner from 3.41 on, so the LIMIT
+    spelling raises "A LIMIT or 'k = ?' constraint is required on vec0 knn queries" on older
+    runtimes and takes dense retrieval, hybrid retrieval and search_knowledge_base down with
+    it. Ubuntu 22.04 (3.37.2) and Debian 12 (3.40.1) both sit under that line.
+
+    Nothing else in this suite can catch a revert: CI runs SQLite 3.50.4, where both
+    spellings work and return the same rows. So this asserts the spelling that the runtime
+    actually saw, which is why it reads the statement off a trace callback rather than the
+    source file."""
+    _add_doc(rag_conn, "kb_a", "d1", "f", "h1", ["alpha alpha"])
+    seen = []
+    rag_conn.set_trace_callback(seen.append)
+    try:
+        store.search_dense(rag_conn, "kb_a", embed("alpha"), 5)
+    finally:
+        rag_conn.set_trace_callback(None)
+
+    knn = [sql for sql in seen if "chunks_vec" in sql and "MATCH" in sql.upper()]
+    assert knn, f"search_dense issued no vec0 MATCH query; statements were {seen}"
+    for sql in knn:
+        flat = " ".join(sql.split())
+        assert re.search(r"\bk\s*=", flat), f"vec0 KNN query has no k constraint: {flat}"
+        assert not re.search(
+            r"\bLIMIT\b", flat, re.IGNORECASE
+        ), f"vec0 KNN query still leans on LIMIT, which pre-3.41 SQLite never forwards: {flat}"
 
 
 def test_dense_empty_before_any_ingest(rag_conn):
