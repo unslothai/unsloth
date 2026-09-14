@@ -673,3 +673,40 @@ test("created files stay outside the collapsible on Python and Terminal cards", 
     );
   }
 });
+
+test("a call that created files keeps its group from collapsing", async () => {
+  const { hasCreatedFiles } = await import(
+    "../src/components/assistant-ui/sandbox-files.ts"
+  );
+  const wrapped = (files: unknown) => ({
+    text: "",
+    images: [],
+    sessionId: "s",
+    files,
+  });
+  assert.equal(hasCreatedFiles("terminal", wrapped([{ name: "a.txt", size: 3 }])), true);
+  assert.equal(hasCreatedFiles("python", wrapped([{ name: "a.txt", size: null }])), true);
+  assert.equal(hasCreatedFiles("terminal", wrapped([])), false);
+  assert.equal(hasCreatedFiles("terminal", wrapped(undefined)), false);
+  assert.equal(hasCreatedFiles("terminal", "plain output"), false);
+  assert.equal(
+    hasCreatedFiles("mcp__fs__write", wrapped([{ name: "a.txt", size: 3 }])),
+    false,
+  );
+
+  const source = await sourceOf(
+    "../src/components/assistant-ui/tool-group.tsx",
+  );
+  const call = find(
+    initializerOf(source, "containsUngroupedTool"),
+    (node) =>
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "hasCreatedFiles",
+  )[0] as ts.CallExpression | undefined;
+  assert.ok(call, "a grouped terminal call hides its created files again");
+  assert.deepEqual(
+    call.arguments.map((argument) => argument.getText()),
+    ["part.toolName", "part.result"],
+  );
+});
