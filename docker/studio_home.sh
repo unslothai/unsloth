@@ -92,6 +92,9 @@ shopt -s dotglob nullglob
 for entry in "$APP"/*; do
     name="${entry##*/}"
     [ "$name" = "$LEGACY_NAME" ] && continue
+    # unsloth-studio-update's staging and previous-tree directories, left in the app dir
+    # by a killed update: scratch, not code; never linked into the home
+    case "$name" in .src-update.*|.src-prev.*) continue;; esac
     target="$HOME_DIR/$name"
     if [ -L "$target" ]; then
         [ "$(readlink "$target")" = "$entry" ] && continue

@@ -366,6 +366,20 @@ def test_a_read_only_home_fails_loudly_and_touches_nothing(tmp_path):
     assert not (home / LEGACY).exists()
 
 
+def test_updater_scratch_in_the_app_dir_is_never_linked_into_the_home(tmp_path):
+    """unsloth-studio-update stages the new tree as .src-update.* and parks the old one as
+    .src-prev.* next to src; a killed update leaves them behind. They are scratch."""
+    app = _app(tmp_path)
+    (app / ".src-update.abc123").mkdir()
+    (app / ".src-prev.4242").mkdir()
+    home = tmp_path / "home"
+    res = _link(app, home)
+    assert res.returncode == 0, res.stderr
+    assert not (home / ".src-update.abc123").exists()
+    assert not (home / ".src-prev.4242").exists()
+    assert (home / "src").is_symlink()
+
+
 def test_the_linker_is_a_no_op_without_an_app_dir(tmp_path):
     """The entrypoint belongs to the base image too, which has no Studio."""
     home = tmp_path / "home"
