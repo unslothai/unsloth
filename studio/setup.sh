@@ -3763,7 +3763,7 @@ else:
     if [ "$_TORCHCODEC_STATE" = "ffmpeg" ]; then
         step "torchcodec" "installed but cannot load its FFmpeg libraries; audio datasets decode through soundfile instead, which covers wav/flac/mp3/ogg but not m4a/aac/webm; install an FFmpeg full-shared build to decode those" "$C_WARN"
     elif [ "$_TORCHCODEC_STATE" = "native" ]; then
-        step "torchcodec" "installed but cannot load its native libraries, and FFmpeg is already on the loader path; audio datasets decode through soundfile instead, which covers wav/flac/mp3/ogg but not m4a/aac/webm; either the FFmpeg here is a major it does not support (it takes 4 to 7) or this build does not match your torch" "$C_WARN"
+        step "torchcodec" "installed but cannot load its native libraries, and FFmpeg is already on the loader path; audio datasets decode through soundfile instead, which covers wav/flac/mp3/ogg but not m4a/aac/webm; likely causes are an FFmpeg major it does not support (it takes 4 to 8), a missing CUDA NPP runtime (nvidia-npp), or a build that does not match your torch" "$C_WARN"
     elif [ "$_TORCHCODEC_STATE" = "broken" ]; then
         step "torchcodec" "installed but fails to import for a reason other than its FFmpeg libraries; audio datasets decode through soundfile instead, which covers wav/flac/mp3/ogg but not m4a/aac/webm; reinstall torchcodec against this torch build" "$C_WARN"
     elif [ "$_TORCHCODEC_STATE" = "ok" ]; then

@@ -200,9 +200,18 @@ def test_both_installers_keep_ffmpeg_advice_out_of_the_other_failure(script):
 def test_both_installers_report_the_loader_failure_that_is_not_ffmpeg(script):
     line = _step_line(script.read_text(encoding = "utf-8"), "installed but cannot load its native")
     assert "install an FFmpeg" not in line, "FFmpeg is already there; this sends them at it anyway"
-    # Both remaining causes, since nothing available here picks between them.
+    # EVERY remaining cause, since nothing available here picks between them. Naming a
+    # subset reads as a diagnosis and sends people to rule out the wrong thing.
     assert "does not support" in line
     assert "torch" in line
+    # A missing NPP runtime lands in this same aggregate loader error: see
+    # _cuda_major_for_npp in studio/install_python_stack.py, whose own docstring records a
+    # +cu128 host that skipped NPP and then could not import the codec.
+    assert "NPP" in line
+    # The supported majors, kept in step with unsloth/import_fixes.py, which says 4 through
+    # 8. Saying 4 to 7 here sent an FFmpeg 8 user toward a downgrade that fixes nothing.
+    assert "4 to 8" in line, "the supported FFmpeg range must match import_fixes.py"
+    assert "4 to 7" not in line
 
 
 @pytest.mark.parametrize("script", [_SETUP_SH, _SETUP_PS1], ids = ["sh", "ps1"])
