@@ -140,11 +140,10 @@ export function KeyboardShortcutsTab() {
     if (!recording) return;
     const def = SHORTCUT_DEFS.find((entry) => entry.id === recording.id);
     const onKeyDown = (event: KeyboardEvent) => {
-      // Tab held bare is never an acceptable binding, so it is still what it
-      // was: the way out. Left swallowed with the rest, a row that records
-      // bare keys had no keyboard exit at all, since Escape is a chord there
-      // and Enter or Space on the focused pencil records instead of pressing
-      // it. Not prevented, so focus moves on as it would have.
+      // Tab held bare is never an acceptable binding, so it is still what it was: the way out. Left
+      // swallowed with the rest, a row that records bare keys had no keyboard exit at all, since
+      // Escape is a chord there and Enter or Space on the focused pencil records instead of
+      // pressing it. Not prevented, so focus moves on as it would have.
       if (
         event.code === "Tab" &&
         !event.metaKey &&
@@ -157,10 +156,9 @@ export function KeyboardShortcutsTab() {
       }
       event.preventDefault();
       event.stopPropagation();
-      // Every keydown is swallowed above, so bare Escape is the only way out of
-      // recording. The exception is a row that takes bare keys: Escape is the
-      // chord it ships, so recording it has to be possible, and the pencil
-      // cancels there instead.
+      // Every keydown is swallowed above, so bare Escape is the only way out of recording. The
+      // exception is a row that takes bare keys: Escape is the chord it ships, so recording it has
+      // to be possible, and the pencil cancels there instead.
       if (
         event.code === "Escape" &&
         !event.metaKey &&
@@ -291,9 +289,8 @@ export function KeyboardShortcutsTab() {
         const value = resolveBinding(overrides, def.id, slot);
         return !value || shortcutOwningBinding(overrides, value) !== def.id;
       });
-    // Anything this action ships an alternate for keeps its line, cleared or
-    // not: hiding a cleared slot would take its restore control with it, and
-    // Reset all is not a way back from one edit.
+    // Anything this action ships an alternate for keeps its line, cleared or not: hiding a cleared
+    // slot would take its restore control with it, and Reset all is not a way back from one edit.
     const hasAlternate =
       defaultBindingFor(def, "alternate", mac) !== null ||
       resolveBinding(overrides, def.id, "alternate") !== null ||

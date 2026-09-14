@@ -348,12 +348,23 @@ def render_columns(
     (console or Console()).print(table)
 
 
+def stats_hit_token_limit(stats) -> bool:
+    """Whether a backend's end-of-generation stats say the reply ran out of budget.
+
+    Safetensors reports ``truncated``; MLX and llama-server report a finish reason.
+    """
+    if not isinstance(stats, dict):
+        return False
+    return bool(stats.get("truncated")) or stats.get("finish_reason") == "length"
+
+
 class ChatBackend:
     """Uniform stream()/close() over the llama-server and Unsloth backends."""
 
     def __init__(self, kind: str, backend) -> None:
         self._kind = kind  # "gguf" | "unsloth"
         self._backend = backend
+        self.reply_hit_token_limit = False
 
     def stream(
         self,
@@ -363,25 +374,29 @@ class ChatBackend:
         temperature: float,
         top_p: float,
         top_k: int,
-        max_new_tokens: int,
+        max_new_tokens: Optional[int],
         repetition_penalty: float,
         enable_thinking: bool,
         use_adapter: Optional[bool] = None,
     ):
+        self.reply_hit_token_limit = False
         if self._kind == "gguf":
             # llama-server takes the system prompt as the first message.
             msgs = list(messages)
             if system_prompt:
                 msgs = [{"role": "system", "content": system_prompt}, *msgs]
-            return self._backend.generate_chat_completion(
-                messages = msgs,
-                temperature = temperature,
-                top_p = top_p,
-                top_k = top_k,
-                max_tokens = max_new_tokens,
-                repetition_penalty = repetition_penalty,
-                enable_thinking = enable_thinking,
+            return self._watch_metadata(
+                self._backend.generate_chat_completion(
+                    messages = msgs,
+                    temperature = temperature,
+                    top_p = top_p,
+                    top_k = top_k,
+                    max_tokens = max_new_tokens,
+                    repetition_penalty = repetition_penalty,
+                    enable_thinking = enable_thinking,
+                )
             )
+        holder: dict = {}
         gen_kwargs = dict(
             messages = messages,
             system_prompt = system_prompt,
@@ -391,12 +406,27 @@ class ChatBackend:
             max_new_tokens = max_new_tokens,
             repetition_penalty = repetition_penalty,
             enable_thinking = enable_thinking,
+            stats_holder = holder,
         )
         if use_adapter is not None:
-            return self._backend.generate_with_adapter_control(
+            stream = self._backend.generate_with_adapter_control(
                 use_adapter = use_adapter, **gen_kwargs
             )
-        return self._backend.generate_chat_response(**gen_kwargs)
+        else:
+            stream = self._backend.generate_chat_response(**gen_kwargs)
+        return self._watch_stats(stream, holder)
+
+    def _watch_metadata(self, stream):
+        """llama-server closes a turn with a metadata event carrying the finish reason."""
+        for chunk in stream:
+            if isinstance(chunk, dict) and chunk.get("type") == "metadata":
+                self.reply_hit_token_limit = chunk.get("finish_reason") == "length"
+            yield chunk
+
+    def _watch_stats(self, stream, holder: dict):
+        """The worker fills the holder once the turn is done, so read it at the end."""
+        yield from stream
+        self.reply_hit_token_limit = stats_hit_token_limit(holder.get("stats"))
 
     def close(self) -> None:
         # Shut the worker down directly: the graceful unload_model waits for an ack that compare mode can
@@ -725,6 +755,7 @@ class HttpChatBackend:
     def __init__(self, base_url: str, token: str) -> None:
         self._base = base_url
         self._token = token
+        self.reply_hit_token_limit = False
 
     def _request(
         self,
@@ -794,7 +825,7 @@ class HttpChatBackend:
         temperature: float,
         top_p: float,
         top_k: int,
-        max_new_tokens: int,
+        max_new_tokens: Optional[int],
         repetition_penalty: float,
         enable_thinking: bool,
         use_adapter: Optional[bool] = None,
@@ -804,21 +835,21 @@ class HttpChatBackend:
         msgs = list(messages)
         if system_prompt:
             msgs = [{"role": "system", "content": system_prompt}, *msgs]
-        resp = self._request(
-            "POST",
-            "/v1/chat/completions",
-            {
-                "model": "default",
-                "messages": msgs,
-                "stream": True,
-                "temperature": temperature,
-                "top_p": top_p,
-                "top_k": top_k,
-                "max_tokens": max_new_tokens,
-                "repetition_penalty": repetition_penalty,
-                "enable_thinking": enable_thinking,
-            },
-        )
+        body = {
+            "model": "default",
+            "messages": msgs,
+            "stream": True,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+            "repetition_penalty": repetition_penalty,
+            "enable_thinking": enable_thinking,
+        }
+        if max_new_tokens is not None:
+            body["max_tokens"] = max_new_tokens
+        resp = self._request("POST", "/v1/chat/completions", body)
+
+        self.reply_hit_token_limit = False
 
         def cumulative():
             # Accumulate SSE deltas into the full-text-so-far convention the stream helpers expect.
@@ -840,8 +871,15 @@ class HttpChatBackend:
                             f"Server error: {parsed['error'].get('message', 'Unknown server error')}"
                         )
                     try:
-                        delta = parsed["choices"][0]["delta"].get("content")
+                        choice = parsed["choices"][0]
                     except (KeyError, IndexError):
+                        continue
+                    # Read before the delta: the finish-reason chunk may carry no content.
+                    if choice.get("finish_reason") is not None:
+                        self.reply_hit_token_limit = choice["finish_reason"] == "length"
+                    try:
+                        delta = choice["delta"].get("content")
+                    except (KeyError, AttributeError, TypeError):
                         continue
                     if not delta:
                         continue

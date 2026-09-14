@@ -32,6 +32,22 @@ from core.inference.sd_cpp_engine import (
 from core.inference.sd_cpp_args import SdCppGenParams, SdCppModelFiles, SdCppUpscaleParams
 
 
+def _shared_setup_1(monkeypatch, tmp_path):
+    _clear_env(monkeypatch)
+    candidate = tmp_path / "sd"
+    candidate.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+    return candidate
+
+
+def _shared_setup_2(e, out):
+    e.generate(
+        SdCppModelFiles(diffusion_model = "/m/z.gguf"),
+        SdCppGenParams(prompt = "x"),
+        output_path = str(out),
+    )
+
+
 # ── binary discovery ────────────────────────────────────────────────────────
 
 
@@ -187,10 +203,7 @@ def test_identity_probe_is_memoized_per_file_revision(tmp_path, monkeypatch):
     # unrelated `sd` was re-executed several times per load -- once per full 10s timeout when the
     # candidate hangs. The verdict is keyed on the file, not the path, so an in-place replacement
     # is still re-probed rather than answered from a stale entry.
-    _clear_env(monkeypatch)
-    candidate = tmp_path / "sd"
-    candidate.write_text("#!/bin/sh\n")
-    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+    candidate = _shared_setup_1(monkeypatch, tmp_path)
     runs: list[list[str]] = []
 
     def _run(cmd, **_kwargs):
@@ -262,10 +275,7 @@ def test_identity_probe_does_not_memoize_a_nonzero_exit_it_learned_nothing_from(
     # exception, so it would otherwise be cached as a definitive "not stable-diffusion.cpp"
     # against a file that never changed -- and installing the missing library would not get it
     # re-probed until Unsloth restarted.
-    _clear_env(monkeypatch)
-    candidate = tmp_path / "sd"
-    candidate.write_text("#!/bin/sh\n")
-    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+    candidate = _shared_setup_1(monkeypatch, tmp_path)
     monkeypatch.setattr(
         eng.subprocess,
         "run",
@@ -292,10 +302,7 @@ def test_identity_probe_does_not_memoize_a_nonzero_exit_it_learned_nothing_from(
 def test_identity_probe_memoizes_an_identifying_build_that_exits_nonzero(tmp_path, monkeypatch):
     # The other half: older builds print usage and exit 1. Identifying output settles the question
     # whatever the exit code, so that verdict is decisive and worth keeping.
-    _clear_env(monkeypatch)
-    candidate = tmp_path / "sd"
-    candidate.write_text("#!/bin/sh\n")
-    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+    candidate = _shared_setup_1(monkeypatch, tmp_path)
     runs = []
     monkeypatch.setattr(
         eng.subprocess,
@@ -320,10 +327,7 @@ def test_identity_verdict_expires(tmp_path, monkeypatch):
     # unchanged. Hashing the binary on every lookup would cost a full read on a path walked for
     # every load; a short life bounds that staleness instead, and bounds whatever else the key
     # cannot see.
-    _clear_env(monkeypatch)
-    candidate = tmp_path / "sd"
-    candidate.write_text("#!/bin/sh\n")
-    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+    candidate = _shared_setup_1(monkeypatch, tmp_path)
     runs = []
 
     def _reject(cmd, **_kwargs):
@@ -355,10 +359,7 @@ def test_identity_probe_does_not_memoize_a_probe_that_failed(tmp_path, monkeypat
     # A timeout or a failed spawn does not touch the file, so its memo key does not change either.
     # Remembering that "no" would blacklist a genuine build for the life of the process over one
     # slow --help under disk or memory pressure -- Unsloth would have to be restarted to see it.
-    _clear_env(monkeypatch)
-    candidate = tmp_path / "sd"
-    candidate.write_text("#!/bin/sh\n")
-    monkeypatch.setattr(eng.shutil, "which", lambda stem: str(candidate) if stem == "sd" else None)
+    candidate = _shared_setup_1(monkeypatch, tmp_path)
 
     def _timeout(*_args, **_kwargs):
         raise eng.subprocess.TimeoutExpired("sd", 10)
@@ -627,16 +628,90 @@ def test_generate_success_returns_path_and_collects_logs(tmp_path, monkeypatch):
     assert str(Path(e.binary).resolve().parent) in _FakePopen.captured_env.get(var, "")
 
 
+@pytest.mark.parametrize(
+    "prompt, negative",
+    [
+        ("private prompt " * 40, "private negative prompt " * 20),
+        ("--mode=private-prompt", "a private negative prompt"),
+        ("a private prompt", "--mode=private-negative-prompt"),
+        ("--diffusion-model=private-prompt", "a private negative prompt"),
+        ("a private prompt", "--diffusion-model=private-negative-prompt"),
+    ],
+)
+def test_default_run_log_is_compact_and_omits_user_text_and_paths(
+    tmp_path, monkeypatch, caplog, prompt, negative
+):
+    monkeypatch.setattr(eng, "_verbose_native_logs", lambda: False)
+    caplog.set_level("INFO", logger = eng.__name__)
+    e = _engine(tmp_path)
+    out = tmp_path / "private-output.png"
+    _patch_popen(monkeypatch, lines = ["done"], returncode = 0, out_file = out)
+
+    e.generate(
+        SdCppModelFiles(diffusion_model = "/private/models/z.gguf"),
+        SdCppGenParams(
+            prompt = prompt,
+            negative_prompt = negative,
+            width = 768,
+            height = 512,
+            steps = 8,
+            seed = 7,
+        ),
+        output_path = str(out),
+    )
+
+    messages = [record.getMessage() for record in caplog.records if record.name == eng.__name__]
+    assert messages[0] == (
+        "sd-cli run started: mode=img_gen model=z.gguf size=768x512 steps=8 seed=7"
+    )
+    assert messages[1].startswith(
+        "sd-cli run completed: mode=img_gen model=z.gguf size=768x512 steps=8 seed=7 elapsed="
+    )
+    rendered = "\n".join(messages)
+    assert prompt not in rendered
+    assert negative not in rendered
+    assert "/private/models/z.gguf" not in rendered
+    assert str(out) not in rendered
+    cmd = _FakePopen.captured_cmd
+    assert cmd[cmd.index("--prompt") + 1] == prompt
+    assert cmd[cmd.index("--negative-prompt") + 1] == negative
+
+
+def test_verbose_run_log_keeps_argv_but_redacts_prompts(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(eng, "_verbose_native_logs", lambda: True)
+    caplog.set_level("INFO", logger = eng.__name__)
+    e = _engine(tmp_path)
+    out = tmp_path / "img.png"
+    _patch_popen(monkeypatch, lines = ["done"], returncode = 0, out_file = out)
+
+    e.generate(
+        SdCppModelFiles(diffusion_model = "/models/z.gguf"),
+        SdCppGenParams(prompt = "a private cat", negative_prompt = "a private dog"),
+        output_path = str(out),
+        extra_args = ["-p", "a second private cat", "-n=a second private dog"],
+    )
+
+    rendered = "\n".join(
+        record.getMessage() for record in caplog.records if record.name == eng.__name__
+    )
+    assert "/models/z.gguf" in rendered
+    assert str(out) in rendered
+    assert "--prompt <redacted>" in rendered
+    assert "--negative-prompt <redacted>" in rendered
+    assert "-p <redacted>" in rendered
+    assert "-n=<redacted>" in rendered
+    assert "a private cat" not in rendered
+    assert "a private dog" not in rendered
+    assert "a second private cat" not in rendered
+    assert "a second private dog" not in rendered
+
+
 def test_generate_raises_on_nonzero_exit(tmp_path, monkeypatch):
     e = _engine(tmp_path)
     out = tmp_path / "img.png"
     _patch_popen(monkeypatch, lines = ["boom: bad gguf"], returncode = 1, out_file = out, write = False)
     with pytest.raises(RuntimeError, match = "exited 1"):
-        e.generate(
-            SdCppModelFiles(diffusion_model = "/m/z.gguf"),
-            SdCppGenParams(prompt = "x"),
-            output_path = str(out),
-        )
+        _shared_setup_2(e, out)
 
 
 def test_generate_raises_when_no_output_despite_success(tmp_path, monkeypatch):
@@ -644,11 +719,7 @@ def test_generate_raises_when_no_output_despite_success(tmp_path, monkeypatch):
     out = tmp_path / "img.png"
     _patch_popen(monkeypatch, lines = ["ok"], returncode = 0, out_file = out, write = False)
     with pytest.raises(RuntimeError, match = "no image"):
-        e.generate(
-            SdCppModelFiles(diffusion_model = "/m/z.gguf"),
-            SdCppGenParams(prompt = "x"),
-            output_path = str(out),
-        )
+        _shared_setup_2(e, out)
 
 
 def test_generate_does_not_return_stale_preexisting_output(tmp_path, monkeypatch):
@@ -658,11 +729,7 @@ def test_generate_does_not_return_stale_preexisting_output(tmp_path, monkeypatch
     out.write_bytes(b"stale")
     _patch_popen(monkeypatch, lines = ["ok"], returncode = 0, out_file = out, write = False)
     with pytest.raises(RuntimeError, match = "no image"):
-        e.generate(
-            SdCppModelFiles(diffusion_model = "/m/z.gguf"),
-            SdCppGenParams(prompt = "x"),
-            output_path = str(out),
-        )
+        _shared_setup_2(e, out)
     assert not out.exists()
 
 
