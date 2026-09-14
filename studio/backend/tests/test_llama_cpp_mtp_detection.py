@@ -3550,3 +3550,97 @@ def test_the_dspark_gate_uses_the_probe_it_is_given():
     # No sidecar on disk and an incapable binary: the fetch is skipped, which is exactly
     # the degraded launch the accumulator has to remember.
     assert result is None
+
+
+def _write_head_only_drafter(path, *, with_token_embd: bool):
+    """A real GGUF the predicate will judge, so these exercise the actual verdict."""
+    import numpy as np
+    from gguf import GGUFWriter
+
+    writer = GGUFWriter(str(path), "qwen35")
+    names = ["output.weight", "blk.64.nextn.eh_proj.weight"]
+    if with_token_embd:
+        names.insert(0, "token_embd.weight")
+    for name in names:
+        writer.add_tensor(name, np.zeros((2, 2), dtype = np.float32))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    return path
+
+
+def test_repairing_an_unloadable_drafter_in_place_reloads(tmp_path):
+    """Apply after a repair must reload, or speculative decoding stays off for good.
+
+    The dedupe counts a deliberately dropped drafter as launched, comparing resolved
+    PATHS. Replace the rejected sidecar with a self-contained head at the same path and
+    a path-only comparison still says "already loaded", so the drafter-free server is
+    kept and nothing re-runs the header check.
+    """
+    sidecar = _write_head_only_drafter(tmp_path / "mtp-model.gguf", with_token_embd = False)
+    backend = _mtp_backend(
+        _speculative_type = "ngram-mod",
+        _requested_spec_mode = "auto",
+        _spec_fallback_reason = "drafter_unloadable",
+        _spec_drafter_kind = "mtp",
+        _mtp_draft_path = None,
+        _mtp_draft_suppressed_path = str(sidecar),
+        _mtp_draft_suppressed_reason = "unloadable",
+    )
+    # Still head-only: re-asking would drop it again, so a reload would buy nothing.
+    assert _matches_mtp(backend, mtp_draft_path = str(sidecar), compare_mtp_draft = True) is True
+
+    _write_head_only_drafter(tmp_path / "mtp-model.gguf", with_token_embd = True)
+    assert _matches_mtp(backend, mtp_draft_path = str(sidecar), compare_mtp_draft = True) is False
+
+
+def test_repairing_a_paravirtually_suppressed_drafter_does_not_reload(tmp_path):
+    """The negative: that drop is a property of the BUILD, not of the file's contents.
+
+    A drafter suppressed because the probe offered no draft-layer flag would be
+    suppressed again byte-for-byte, so re-asking the header question there would tear
+    down a healthy server for nothing.
+    """
+    sidecar = _write_head_only_drafter(tmp_path / "mtp-model.gguf", with_token_embd = True)
+    backend = _mtp_backend(
+        _speculative_type = "ngram-mod",
+        _requested_spec_mode = "auto",
+        _spec_fallback_reason = "drafter_not_found",
+        _spec_drafter_kind = "mtp",
+        _mtp_draft_path = None,
+        _mtp_draft_suppressed_path = str(sidecar),
+        _mtp_draft_suppressed_reason = "paravirtual",
+    )
+    assert _matches_mtp(backend, mtp_draft_path = str(sidecar), compare_mtp_draft = True) is True
+
+
+def test_a_drafter_dropped_as_unloadable_does_not_reload_to_refetch_it():
+    """Refetching returns the same file, so the retry rule must stand down."""
+    sidecar = "/cache/snapshots/abc/mtp-gemma-4-12b-it.gguf"
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+        _speculative_type = "ngram-mod",
+        _requested_spec_mode = "auto",
+        _spec_fallback_reason = "drafter_not_found",
+        _spec_drafter_kind = "mtp",
+        _mtp_draft_path = None,
+        _mtp_draft_suppressed_path = sidecar,
+    )
+    assert (
+        _matches(
+            backend,
+            gguf_path = None,
+            model_identifier = "unsloth/gemma-4-12b-it-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "auto",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+            mtp_draft_path = sidecar,
+            compare_mtp_draft = True,
+        )
+        is True
+    )
