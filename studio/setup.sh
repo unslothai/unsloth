@@ -3460,14 +3460,9 @@ else
             # compiled a CPU-only binary and installed it over the tree for good, which is
             # the same permanent downgrade the prebuilt selector avoids for masked hosts.
             #
-            # A MASKED card only claims the build when there is no AMD GPU to serve. The AMD
-            # probes run whenever NVIDIA is not usable, so a mixed host reaches here with
-            # _setup_amd_detected set, and the ROCm branch below only fires while GPU_BACKEND
-            # is empty: without this, hiding the NVIDIA card would build CUDA for the card
-            # the user hid instead of HIP for the one they left visible. A USABLE card still
-            # wins outright, which is the existing NVIDIA-priority rule.
-            if [ "$_setup_nvidia_usable" = true ] || \
-               { [ "$_setup_nvidia_physical" = true ] && [ "$_setup_amd_detected" != true ]; }; then
+            # One search, two callers: the usable-NVIDIA pass below and the masked-NVIDIA
+            # retry after ROCm. Sets NVCC_PATH / GPU_BACKEND, or leaves both untouched.
+            _select_nvcc() {
                 if command -v nvcc &>/dev/null; then
                     NVCC_PATH="$(command -v nvcc)"
                     GPU_BACKEND="cuda"
@@ -3481,6 +3476,10 @@ else
                     export PATH="$(dirname "$NVCC_PATH"):$PATH"
                     GPU_BACKEND="cuda"
                 fi
+            }
+
+            if [ "$_setup_nvidia_usable" = true ]; then
+                _select_nvcc
             fi
 
             # Check for ROCm (AMD) only if CUDA was not already selected, and
@@ -3502,6 +3501,18 @@ else
                     export PATH="$(dirname "$ROCM_HIPCC"):$PATH"
                     GPU_BACKEND="rocm"
                 fi
+            fi
+
+            # A card hidden by CUDA_VISIBLE_DEVICES is still a card, and a CPU-only binary
+            # built here is activated over the tree for good. So the masked card gets the
+            # build, but only AFTER ROCm has had its turn: on a mixed host the visible AMD
+            # GPU is the one the user asked for. Running the search here rather than gating
+            # the pass above on "no AMD detected" also covers the case where AMD was
+            # detected but no hipcc exists anywhere, which left GPU_BACKEND empty and sent a
+            # GPU host to a CPU source build with nvcc sitting right there.
+            # A CUDA toolkit with no GPU at all is still refused: this needs PHYSICAL NVIDIA.
+            if [ -z "$GPU_BACKEND" ] && [ "$_setup_nvidia_physical" = true ]; then
+                _select_nvcc
             fi
 
             _BUILD_DESC="building"

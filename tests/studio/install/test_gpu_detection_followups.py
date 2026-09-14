@@ -228,25 +228,24 @@ class TestSetupShHardening:
         assert "timeout 10" in body
         assert "command -v timeout" in body
 
-    def test_cuda_source_build_gated_on_physical_nvidia(self, setup_src):
-        """The nvcc search must require a PHYSICAL NVIDIA GPU, not merely a toolkit.
+    def test_cuda_source_build_gated_on_a_real_nvidia_gpu(self, setup_src):
+        """The nvcc search runs twice, and neither pass may fire on a toolkit alone.
 
-        Physical rather than usable: a card hidden by CUDA_VISIBLE_DEVICES="" is still a
-        card, and gating on usable compiled a CPU-only binary and activated it over the
-        tree for good. A toolkit with no GPU at all is still refused, which is what this
-        guard was written for.
+        First for a usable card, then after ROCm for a masked one. A card hidden by
+        CUDA_VISIBLE_DEVICES is still a card, and a CPU-only binary built here is
+        activated over the tree for good; but on a mixed host the visible AMD GPU gets
+        its turn first. TestSetupShSourceBuildBackendChoice drives the whole sequence.
         """
-        anchor = setup_src.find('NVCC_PATH=""\n')
-        assert anchor >= 0
-        window = setup_src[anchor : anchor + 1400]
+        anchor = setup_src.find("_select_nvcc() {")
+        assert anchor >= 0, "the nvcc search must be one function, not two copies"
+        window = setup_src[anchor : setup_src.find('_BUILD_DESC="building"', anchor)]
+        assert window.count("_select_nvcc\n") == 2, "one pass for usable, one for masked"
+        assert 'if [ "$_setup_nvidia_usable" = true ]; then' in window
         assert (
-            '"$_setup_nvidia_physical" = true' in window
-        ), "CUDA toolkit search must require a physically present NVIDIA GPU, not just nvcc"
-        # The masked arm is the one that must yield to AMD; the usable arm never does.
-        # TestSetupShSourceBuildBackendChoice runs the whole expression as a truth table.
-        assert (
-            '"$_setup_amd_detected" != true' in window
-        ), "a masked NVIDIA card must not take the build away from a usable AMD card"
+            '[ -z "$GPU_BACKEND" ] && [ "$_setup_nvidia_physical" = true ]' in window
+        ), "the masked retry must come after ROCm and require a physically present card"
+        # ROCm gets its turn between the two passes.
+        assert window.index("hipcc") < window.rindex("_select_nvcc")
 
     def test_nvidia_helper_honours_hidden_cvd(self, setup_src):
         """_setup_has_usable_nvidia_gpu must consult the hidden-CVD helper so CVD ""/-1 suppresses NVIDIA before AMD gating."""
@@ -503,52 +502,65 @@ class TestSetupShPhysicalNvidiaSurvivesTheMask:
 
 
 class TestSetupShSourceBuildBackendChoice:
-    """The three-flag gate in front of the nvcc search, exercised as a truth table.
+    """The source-build backend decision, driven as the real sequence rather than one gate.
 
-    Masked NVIDIA has to beat CPU without beating a usable AMD card: the AMD probes run
-    whenever NVIDIA is not usable, so a mixed host arrives here with _setup_amd_detected
-    set, and the ROCm branch only fires while GPU_BACKEND is still empty.
+    Three passes in order: usable NVIDIA takes nvcc, then ROCm, then a masked NVIDIA card
+    retries nvcc. The order is the point. A masked card must not take the build from a
+    visible AMD one, but it must still get it when ROCm cannot actually be built, which is
+    what a CPU source build activated permanently over the tree costs.
     """
 
     @staticmethod
-    def _decide(tmp_path, usable, physical, amd):
+    def _decide(
+        tmp_path,
+        usable,
+        physical,
+        amd,
+        hipcc = "false",
+        nvcc = "true",
+    ):
         import subprocess as sp
 
         src = SETUP_SH.read_text(encoding = "utf-8")
-        start = src.find('NVCC_PATH=""\n')
-        assert start >= 0
-        gate = src[src.find("if [", start) : src.find("; then", start) + len("; then")]
-        script = tmp_path / "gate.sh"
+        start = src.index("_select_nvcc() {")
+        end = src.index('_BUILD_DESC="building"', start)
+        body = src[start:end]
+        script = tmp_path / "decide.sh"
         script.write_text(
-            "#!/bin/sh\n"
+            "#!/bin/bash\n"
             f"_setup_nvidia_usable={usable}\n"
             f"_setup_nvidia_physical={physical}\n"
             f"_setup_amd_detected={amd}\n"
-            f"{gate}\n"
-            "  echo cuda\n"
-            'elif [ "$_setup_nvidia_usable" != true ] && [ "$_setup_amd_detected" = true ]; then\n'
-            "  echo rocm\n"
-            "else\n"
-            "  echo cpu\n"
-            "fi\n"
+            'GPU_BACKEND=""\nNVCC_PATH=""\nROCM_HIPCC=""\n'
+            # Stub the two toolchain lookups; everything else in the block is real.
+            f'command() {{ if [ "$2" = nvcc ]; then {nvcc}; '
+            f'elif [ "$2" = hipcc ]; then {hipcc}; else return 1; fi; }}\n'
+            "ls() { return 1; }\n"
+            f"{body}\n"
+            'echo "${GPU_BACKEND:-cpu}"\n'
         )
         return sp.run(
-            ["sh", str(script)], capture_output = True, text = True, timeout = 30
+            ["bash", str(script)], capture_output = True, text = True, timeout = 30
         ).stdout.strip()
 
     @pytest.mark.parametrize(
-        "usable, physical, amd, expected",
+        "usable, physical, amd, hipcc, expected",
         [
-            ("true", "true", "false", "cuda"),  # visible NVIDIA, no AMD
-            ("true", "true", "true", "cuda"),  # visible NVIDIA wins over AMD, as before
-            ("false", "true", "false", "cuda"),  # masked NVIDIA beats a CPU-only build
-            ("false", "true", "true", "rocm"),  # masked NVIDIA must NOT take the AMD card's build
-            ("false", "false", "true", "rocm"),  # AMD only
-            ("false", "false", "false", "cpu"),  # a toolkit with no GPU is still refused
+            ("true", "true", "false", "false", "cuda"),  # visible NVIDIA, no AMD
+            ("true", "true", "true", "true", "cuda"),  # visible NVIDIA wins over AMD
+            ("false", "true", "false", "false", "cuda"),  # masked NVIDIA beats a CPU build
+            ("false", "true", "true", "true", "rocm"),  # masked NVIDIA yields to a usable AMD
+            ("false", "true", "true", "false", "cuda"),  # ... but not when ROCm cannot build
+            ("false", "false", "true", "true", "rocm"),  # AMD only
+            ("false", "false", "false", "false", "cpu"),  # a toolkit with no GPU is refused
         ],
     )
-    def test_the_source_build_backend(self, tmp_path, usable, physical, amd, expected):
-        assert self._decide(tmp_path, usable, physical, amd) == expected
+    def test_the_source_build_backend(self, tmp_path, usable, physical, amd, hipcc, expected):
+        assert self._decide(tmp_path, usable, physical, amd, hipcc) == expected
+
+    def test_a_toolkit_without_any_gpu_never_selects_cuda(self, tmp_path):
+        # The guard the physical gate was written for: nvcc present, no GPU at all.
+        assert self._decide(tmp_path, "false", "false", "false", nvcc = "true") == "cpu"
 
 
 class TestRedactInstallOutput:
