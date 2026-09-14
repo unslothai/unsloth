@@ -266,6 +266,27 @@ def test_partially_mirrored_structured_content_keeps_its_own_fields():
     assert _flatten_result(_result(_audio(), structured = nested)) == (
         "{'type': 'success'}\n[audio attachment (audio/wav) not shown to the model]"
     )
+    colocated = {"type": "audio", "data": WAV_B64, "mimeType": "audio/wav", "transcript": "hello"}
+    assert _flatten_result(_result(_audio(), structured = colocated)) == (
+        "{'transcript': 'hello'}\n[audio attachment (audio/wav) not shown to the model]"
+    )
+    inner = {
+        "content": [
+            {
+                "type": "resource",
+                "resource": {
+                    "uri": "file:///out/report.pdf",
+                    "mimeType": "application/pdf",
+                    "blob": PNG_B64,
+                    "pages": 12,
+                },
+            }
+        ]
+    }
+    assert _flatten_result(_result(blob, structured = inner)) == (
+        "{'content': [{'resource': {'pages': 12}}]}\n"
+        "[file attachment (application/pdf) <file:///out/report.pdf> not shown to the model]"
+    )
 
 
 def test_audio_only_error_keeps_error_prefix():

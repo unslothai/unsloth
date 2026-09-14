@@ -1641,27 +1641,45 @@ def _block_attachment(block: Any) -> Optional[tuple[str, str]]:
 
 
 _MIRRORED = object()
+# fields MCP defines on image/audio and embedded resource blocks; anything else is the tool's own
+_MEDIA_FIELDS = frozenset({"type", "data", "mimeType", "mime_type", "annotations", "_meta"})
+_RESOURCE_BLOCK_FIELDS = frozenset({"type", "resource", "annotations", "_meta"})
+_RESOURCE_FIELDS = frozenset({"uri", "blob", "mimeType", "mime_type", "_meta"})
 
 
-def _mirrored_block(value: dict, payloads: set[str]) -> bool:
-    # an MCP content block copied from result.content: image/audio data or an embedded resource blob
+def _is_payload(value: Any, payloads: set[str]) -> bool:
+    return isinstance(value, str) and value in payloads
+
+
+def _mirrored_extras(value: dict, payloads: set[str]) -> Optional[dict]:
+    # the tool's own fields on a content block copied from result.content; None if it is not one
     kind = value.get("type")
-    if kind in ("image", "audio"):
-        payload = value.get("data")
-    elif kind == "resource" and isinstance(value.get("resource"), dict):
-        payload = value["resource"].get("blob")
-    else:
-        return False
-    return isinstance(payload, str) and payload in payloads
+    if kind in ("image", "audio") and _is_payload(value.get("data"), payloads):
+        return {k: v for k, v in value.items() if k not in _MEDIA_FIELDS}
+    resource = value.get("resource")
+    if (
+        kind == "resource"
+        and isinstance(resource, dict)
+        and _is_payload(resource.get("blob"), payloads)
+    ):
+        extras = {k: v for k, v in value.items() if k not in _RESOURCE_BLOCK_FIELDS}
+        inner = {k: v for k, v in resource.items() if k not in _RESOURCE_FIELDS}
+        if inner:
+            extras["resource"] = inner
+        return extras
+    return None
 
 
 def _strip_payloads(value: Any, payloads: set[str]) -> Any:
-    # drop mirrored blocks and bare payloads, then any container they leave empty
+    # drop mirrored payloads and the MCP fields of the blocks carrying them, then containers left empty
     if isinstance(value, str):
         return _MIRRORED if value in payloads else value
     if isinstance(value, dict):
-        if _mirrored_block(value, payloads):
-            return _MIRRORED
+        extras = _mirrored_extras(value, payloads)
+        if extras is not None:
+            if not extras:
+                return _MIRRORED
+            value = extras
         kept = {}
         for key, item in value.items():
             item = _strip_payloads(item, payloads)
