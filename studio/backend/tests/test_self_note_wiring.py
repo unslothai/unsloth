@@ -26,6 +26,7 @@ from routes.inference import (
     _apply_self_note_nudge,
     _extract_and_strip_self_note,
     _model_json_response_with_self_note,
+    _SelfNoteStreamExtractor,
 )
 
 
@@ -160,3 +161,102 @@ def test_response_without_note_is_unchanged_shape():
     # No note -> falls back to the plain serialization path: content stays a bare
     # string, not a content-part list. This is the byte-identical-when-disabled shape.
     assert body["choices"][0]["message"]["content"] == "Visible answer."
+
+
+# ── Task 7.6: the GGUF SSE streaming path ──────────────────────────────────
+#
+# The Studio chat UI always streams (chat-adapter.ts sends stream: true), so the
+# non-streaming wiring above is never exercised by a real user. `_SelfNoteStreamExtractor`
+# is the class actually wired into the GGUF tool-loop SSE generator in
+# `produce_openai_chat_completions`: it holds back a `<remember>` block (and any fragment
+# of its tags, across token boundaries) from the visible deltas the client receives, the
+# same holdback technique `_ResponsesReasoningExtractor` already uses for `<think>`.
+#
+# These tests drive the extractor directly with token-sized chunks -- exactly how the SSE
+# loop feeds it one `visible_delta` at a time -- rather than the full streaming route,
+# which is entangled with admission/monitor/cancellation machinery not worth mocking here.
+
+
+def _stream_tokens(extractor: _SelfNoteStreamExtractor, tokens: list[str]) -> str:
+    """Feed ``tokens`` one at a time, as the SSE loop feeds one delta at a time.
+
+    Returns the concatenation of everything the extractor allowed through -- i.e.
+    everything that would have been yielded to the client as a visible delta.
+    """
+    shown_parts = [extractor.feed(tok) for tok in tokens]
+    return "".join(shown_parts)
+
+
+def test_stream_never_emits_the_tag_or_note_body():
+    extractor = _SelfNoteStreamExtractor()
+    tokens = ["Here is the answer.", "<remember>", "note body", "</remember>"]
+    shown = _stream_tokens(extractor, tokens)
+    extractor.finish()
+    assert "<remember>" not in shown
+    assert "</remember>" not in shown
+    assert "note body" not in shown
+    assert shown == "Here is the answer."
+
+
+def test_stream_produces_a_self_note_part_with_the_note_content():
+    # The extractor only decides what is SAFE TO SHOW; the actual capture, exactly as
+    # wired in routes.inference, runs `extract_note` on the raw accumulated text (not the
+    # filtered visible text) once the stream ends.
+    tokens = ["Here is the answer.", "<remember>", "note body", "</remember>"]
+    full_text = "".join(tokens)
+    note = self_note_module.extract_note(full_text)
+    assert note == "note body"
+
+
+def test_tag_split_across_token_boundaries_is_held_back_and_still_captured():
+    # The case naive per-token stripping misses: neither "<reme" nor "mber>" nor
+    # "</rem" nor "ember>" contains the whole tag on its own, so a token-by-token
+    # search-and-remove would let fragments (or the whole raw tag) leak through.
+    tokens = ["Visible. ", "<reme", "mber>", "body", "</rem", "ember>", " more visible."]
+    extractor = _SelfNoteStreamExtractor()
+    shown = _stream_tokens(extractor, tokens)
+    extractor.finish()
+    assert shown == "Visible.  more visible."
+    assert "remember" not in shown.lower()
+    assert "body" not in shown
+
+    full_text = "".join(tokens)
+    note = self_note_module.extract_note(full_text)
+    assert note == "body"
+
+
+def test_disabled_feature_streams_byte_identically(monkeypatch):
+    monkeypatch.setattr(self_note_module, "SELF_NOTE_ENABLED", False)
+    # Mirrors the exact gate in the SSE loop: `_self_note_extractor` is only constructed
+    # when the feature is enabled, and `shown` falls back to the raw delta unchanged.
+    tokens = ["Here is the answer.", "<remember>", "note body", "</remember>"]
+    extractor = _SelfNoteStreamExtractor() if self_note_module.enabled() else None
+    shown_parts = []
+    for tok in tokens:
+        shown_parts.append(extractor.feed(tok) if extractor is not None else tok)
+    shown = "".join(shown_parts)
+    # Byte-identical to the raw stream: nothing held back, nothing stripped.
+    assert shown == "".join(tokens)
+    assert extractor is None
+
+
+def test_unterminated_remember_does_not_hang_or_raise_and_drops_only_the_note():
+    # Generation cut off mid-note (e.g. hit max_tokens before the closing tag).
+    extractor = _SelfNoteStreamExtractor()
+    tokens = ["Visible answer that finished. ", "<remember>", "cut off mid-note"]
+    shown = _stream_tokens(extractor, tokens)
+    # finish() must not raise and must not hang (there is no I/O in it, but it must
+    # return promptly and deterministically at true stream end).
+    extractor.finish()
+    # The visible answer before the tag is untouched; the unterminated note (and its
+    # partial tag) is held back and then dropped, not flushed as visible text -- flushing
+    # it would leak a half-written note into the reply, and `extract_note` already treats
+    # an unterminated block as no note at all, so this keeps both sides of the feature
+    # consistent (see `_SelfNoteStreamExtractor.finish()`'s docstring for the reasoning).
+    assert shown == "Visible answer that finished. "
+    assert "remember" not in shown.lower()
+    assert "cut off" not in shown
+
+    full_text = "".join(tokens)
+    note = self_note_module.extract_note(full_text)
+    assert note == ""  # extract_note agrees: an unterminated block is no note.
