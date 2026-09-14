@@ -91,17 +91,23 @@ KEEP_FREEZE="$SRC_DIR/.src-update.freeze"
 # and would leave the new tree's metadata in place), and what the update added taken
 # out. Returns 1 when pip could not do all of it.
 reinstall_recorded() {
-    local rollback="$1" freeze="$2" ok=0 _absent _added
+    local rollback="$1" freeze="$2" ok=0 _absent _added _now
     if [ -n "$freeze" ] && [ -s "$freeze" ]; then
         "$PY" -m pip install --no-deps -r "$freeze" >/dev/null \
             || { log "CRITICAL: pip could not put the previous dependency set back; re-run with --with-deps once the cause is fixed"; ok=1; }
-        # -r reinstalls what was there; what the update pulled in on top is taken out too
-        _added="$("$PY" -m pip freeze --exclude-editable 2>/dev/null | sed -E 's/[=<>!~ @].*//' | sort -u \
-            | comm -23 - <(sed -E 's/[=<>!~ @].*//' "$freeze" | sort -u) | tr '\n' ' ')"
-        if [ -n "${_added// /}" ]; then
-            # shellcheck disable=SC2086
-            "$PY" -m pip uninstall -y $_added >/dev/null \
-                || { log "CRITICAL: pip could not remove what the update pulled in: $_added"; ok=1; }
+        # -r reinstalls what was there; what the update pulled in on top is taken out too.
+        # A failed listing is a failed restore: with an empty list nothing would be removed.
+        if _now="$("$PY" -m pip freeze --exclude-editable 2>/dev/null)"; then
+            _added="$(printf '%s\n' "$_now" | sed -E 's/[=<>!~ @].*//' | sort -u \
+                | comm -23 - <(sed -E 's/[=<>!~ @].*//' "$freeze" | sort -u) | tr '\n' ' ')"
+            if [ -n "${_added// /}" ]; then
+                # shellcheck disable=SC2086
+                "$PY" -m pip uninstall -y $_added >/dev/null \
+                    || { log "CRITICAL: pip could not remove what the update pulled in: $_added"; ok=1; }
+            fi
+        else
+            log "CRITICAL: pip could not list the installed packages, so what the update pulled in was not removed"
+            ok=1
         fi
     fi
     if [ -n "$rollback" ] && [ -s "$rollback" ]; then
@@ -115,6 +121,16 @@ reinstall_recorded() {
         fi
     fi
     return "$ok"
+}
+
+# Sets SUPCTL and _st: 0 when supervisord runs studio, 3 when it manages a program that
+# is not running (STOPPED, EXITED, FATAL: what a failed earlier update leaves behind),
+# 4 when nothing here manages it.
+find_supctl() {
+    SUPCTL="$(command -v supervisorctl || true)"
+    [ -n "$SUPCTL" ] || SUPCTL="/opt/unsloth-venv/bin/supervisorctl"
+    _st=0
+    [ -x "$SUPCTL" ] && { "$SUPCTL" status studio >/dev/null 2>&1 || _st=$?; } || _st=4
 }
 
 log "Studio venv: $PY"
@@ -159,6 +175,22 @@ if [ -s "$KEEP_ROLLBACK" ]; then
     if reinstall_recorded "$KEEP_ROLLBACK" "$KEEP_FREEZE"; then
         rm -f "$KEEP_ROLLBACK" "$KEEP_FREEZE"
         log "the previous packages are back"
+        # The service may still be running the unverified code, or be FATAL from the
+        # interrupted restart: put it on the restored install before anything else.
+        if [ "$RESTART" = "1" ]; then
+            find_supctl
+            if [ "$_st" = "0" ] || [ "$_st" = "3" ]; then
+                _cmd=restart
+                [ "$_st" = "3" ] && _cmd=start
+                if "$SUPCTL" "$_cmd" studio >/dev/null 2>&1 && "$SUPCTL" status studio >/dev/null 2>&1; then
+                    log "the studio service is running the restored install"
+                else
+                    log "WARNING: supervisorctl $_cmd studio failed on the restored install (see docker logs)"
+                fi
+            fi
+        else
+            log "--no-restart: Studio may still be running the interrupted update; restart it to load the restored install"
+        fi
     else
         echo "unsloth-studio-update: could not put the previous packages back (see the CRITICAL lines above); fix the cause and run this again. Nothing else was changed." >&2
         exit 1
@@ -489,12 +521,7 @@ back_out() {
 }
 
 if [ "$RESTART" = "1" ]; then
-    SUPCTL="$(command -v supervisorctl || true)"
-    [ -n "$SUPCTL" ] || SUPCTL="/opt/unsloth-venv/bin/supervisorctl"
-    # `status` exits 3 for a program that exists but is not running (STOPPED, EXITED,
-    # FATAL), which is exactly the Studio a failed earlier update left behind.
-    _st=0
-    [ -x "$SUPCTL" ] && { "$SUPCTL" status studio >/dev/null 2>&1 || _st=$?; } || _st=4
+    find_supctl
     if [ "$_st" = "0" ] || [ "$_st" = "3" ]; then
         # a program that is not running gets `start`: `restart` first stops it, which
         # supervisorctl reports as an error
@@ -515,7 +542,8 @@ if [ "$RESTART" = "1" ]; then
             _deadline=$(( $(date +%s) + _wait ))
             _up=0
             while [ "$(date +%s)" -lt "$_deadline" ]; do
-                curl -sf -o /dev/null --max-time 3 http://127.0.0.1:8000/api/health && { _up=1; break; }
+                # --noproxy: a container-wide HTTP_PROXY must not answer for the loopback
+                curl -sf -o /dev/null --max-time 3 --noproxy '*' http://127.0.0.1:8000/api/health && { _up=1; break; }
                 sleep 2
             done
             if [ "$_up" = "1" ]; then

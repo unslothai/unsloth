@@ -95,7 +95,8 @@ def _studio_env(
         '  echo "STUB-PIP $*" >> "$STUB_LOG"\n'
         # a --with-deps run snapshots the dependency set first
         # after an install, a dependency the update pulled in shows up in the freeze
-        '  if [ "$3" = "freeze" ]; then [ -n "${STUB_FREEZE_EXIT:-}" ] && exit "$STUB_FREEZE_EXIT"; echo "transformers==4.0.0"; echo "torch==2.11.0+cu128"; [ -e "$STUB_LOG.installed" ] && echo "newdep==1.0"; exit 0; fi\n'
+        # STUB_FREEZE_EXIT fails every freeze; STUB_FREEZE_EXIT_AFTER only the ones after an install
+        '  if [ "$3" = "freeze" ]; then [ -n "${STUB_FREEZE_EXIT:-}" ] && exit "$STUB_FREEZE_EXIT"; [ -n "${STUB_FREEZE_EXIT_AFTER:-}" ] && [ -e "$STUB_LOG.installed" ] && exit "$STUB_FREEZE_EXIT_AFTER"; echo "transformers==4.0.0"; echo "torch==2.11.0+cu128"; [ -e "$STUB_LOG.installed" ] && echo "newdep==1.0"; exit 0; fi\n'
         '  case " $* " in *" -r "*) ;; *" install "*) : > "$STUB_LOG.installed" ;; esac\n'
         # the constraints file is deleted on exit, so record what it pinned
         '  _c=0; for _a in "$@"; do [ "$_c" = 1 ] && { echo "STUB-PIP-CONSTRAINTS $(tr "\\n" " " < "$_a")" >> "$STUB_LOG"; _c=0; }; [ "$_a" = "-c" ] && _c=1; done\n'
@@ -138,8 +139,9 @@ def _studio_env(
         bin_dir,
         "supervisorctl",
         'echo "STUB-SUPERVISORCTL $*" >> "$STUB_LOG"\n'
-        f'if [ "$1" = "status" ]; then exit {status_exit}; fi\n'
-        f'if [ "$1" = "restart" ] || [ "$1" = "start" ]; then exit {restart_exit}; fi\nexit 0\n',
+        # a program that was started reports RUNNING from then on
+        f'if [ "$1" = "status" ]; then [ -e "$STUB_LOG.started" ] && exit 0; exit {status_exit}; fi\n'
+        f'if [ "$1" = "restart" ] || [ "$1" = "start" ]; then [ {restart_exit} = 0 ] && : > "$STUB_LOG.started"; exit {restart_exit}; fi\nexit 0\n',
     )
     _stub(
         bin_dir,
@@ -545,6 +547,8 @@ def test_studio_update_fails_when_studio_does_not_answer_after_the_restart(tmp_p
     assert res.returncode != 0, res.stdout
     assert "did not answer on port 8000" in res.stdout, res.stdout
     assert "STUB-CURL" in calls
+    # a container-wide HTTP_PROXY must not answer for the loopback probe
+    assert "--noproxy * http://127.0.0.1:8000/api/health" in calls, calls
     assert "previous install is back in place" in res.stderr, res.stderr
     assert (home / "src" / "OLD_TREE").exists(), "the previous source tree was not put back"
     assert not (home / "src" / "NEW_TREE").exists()
@@ -711,6 +715,45 @@ def test_studio_update_finishes_the_package_restore_a_killed_run_left(tmp_path: 
     assert "-e file:///opt/prev-src" in reqs[1], reqs
     assert "STUB-PIP -m pip uninstall -y foo" in calls, calls
     assert not _scratch(home, ".src-update.*")
+
+
+@pytest.mark.parametrize("status_exit, verb", [(0, "restart"), (3, "start")])
+def test_studio_update_recovery_puts_the_service_on_the_restored_install(tmp_path: Path, status_exit, verb):
+    """The killed run may have restarted Studio on the unverified code, or left it
+    FATAL. After the packages are back the service is restarted on the restored
+    install before this run does anything else, so a run that stops early (the ref
+    cannot be fetched) still leaves Studio in a known state."""
+    env = _studio_env(tmp_path, status_exit = status_exit, git_ls_exit = 1)
+    home = Path(env["UNSLOTH_STUDIO_HOME"])
+    (home / ".src-update.rollback").write_text("-e file:///opt/prev-src\n")
+    res = _run(STUDIO_UPDATE, ["--ref", "main"], env)
+    calls = _calls(env)
+    assert res.returncode != 0, res.stdout
+    assert "the previous packages are back" in res.stdout, res.stdout
+    assert "running the restored install" in res.stdout, res.stdout
+    sup = [l for l in calls.splitlines() if l.startswith("STUB-SUPERVISORCTL")]
+    assert sup[1] == f"STUB-SUPERVISORCTL {verb} studio", sup
+    assert not (home / ".src-update.rollback").exists()
+    env = _studio_env(tmp_path / "noreset", git_ls_exit = 1)
+    home = Path(env["UNSLOTH_STUDIO_HOME"])
+    (home / ".src-update.rollback").write_text("-e file:///opt/prev-src\n")
+    res = _run(STUDIO_UPDATE, ["--ref", "main", "--no-restart"], env)
+    assert "STUB-SUPERVISORCTL" not in _calls(env), _calls(env)
+    assert "restart it to load the restored install" in res.stdout, res.stdout
+
+
+def test_studio_update_with_deps_rollback_fails_when_pip_cannot_list_packages(tmp_path: Path):
+    """The list of what the update pulled in comes from a second `pip freeze`; when
+    that fails, nothing would be removed, so the restore is reported as unfinished
+    and the record stays."""
+    env = _studio_env(tmp_path, import_ok = False)
+    env["STUB_FREEZE_EXIT_AFTER"] = "1"
+    res = _run(STUDIO_UPDATE, ["--with-deps", "--no-restart"], env)
+    home = Path(env["UNSLOTH_STUDIO_HOME"])
+    assert res.returncode != 0
+    assert "could not list the installed packages" in res.stdout, res.stdout
+    assert "could not be restored cleanly" in res.stdout, res.stdout
+    assert (home / ".src-update.rollback").is_file(), "the record was dropped after a failed restore"
 
 
 def test_studio_update_says_when_the_restore_did_not_finish(tmp_path: Path):
