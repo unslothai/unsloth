@@ -2782,12 +2782,15 @@ _RELATIVE_PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*[/\\][^\s'\"()\[\]
 # `cd DIR`, including the `cd /d DIR` spelling, at a command position.
 _CD_TARGET_RE = re.compile(r"(?:^|[;&|(]\s*|\s)cd\s+(?:/d\s+)?([^\s;&|)]+)")
 # Ceiling on the directories walked. A command with many `cd`s gains no signal from the long tail.
-_MAX_TRACKED_CWDS = 8
+# Distinct directories, not `cd` commands: padding a command with repeats must not spend the budget.
+_MAX_TRACKED_CWDS = 64
 
 
 # /proc/<pid>/cwd (and the self / thread-self aliases) is a symlink to the process's working
 # directory, which the kernel resolves before any `..` that follows it.
-_PROC_CWD_RE = re.compile(r"/proc/(?:self|thread-self|\d+)/cwd")
+# `$$` and `$BASHPID` are the shell's own PID, expanded before the path is opened, so they name the
+# same symlink as a literal number does.
+_PROC_CWD_RE = re.compile(r"/proc/(?:self|thread-self|\d+|\$\$|\$\{?BASHPID\}?|\$\{?PPID\}?)/cwd")
 
 
 def _cwds_after_cd(workdir: str, text: str) -> "list[str]":
@@ -2798,11 +2801,18 @@ def _cwds_after_cd(workdir: str, text: str) -> "list[str]":
     """
     cwd = workdir
     walked: "list[str]" = []
+    seen: "set[str]" = set()
     for match in _CD_TARGET_RE.finditer(text):
         target = match.group(1).strip("'\"")
         if not target or target.startswith("-"):
             continue
         cwd = target if os.path.isabs(target) else os.path.normpath(os.path.join(cwd, target))
+        # Deduplicated: counting `cd` commands let `cd .` repeated eight times swallow the budget,
+        # so the two that entered the auth directory after it were never looked at. The cap counts
+        # DISTINCT directories now, and sits high enough that a real command never reaches it.
+        if cwd in seen:
+            continue
+        seen.add(cwd)
         walked.append(cwd)
         if len(walked) >= _MAX_TRACKED_CWDS:
             break
@@ -2877,13 +2887,34 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
         if not isinstance(node, (ast.Call, ast.BinOp, ast.JoinedStr)):
             continue
         folded = _folded_path(node)
-        # NUL is a dynamic piece and \x02 a name bound more than once: neither is a path this can
-        # answer for, and both are already the sensitive-path analyzer's business.
-        if not folded or "\x00" in folded or "\x02" in folded:
+        if not folded or "\x02" in folded:  # a name bound more than once is not answerable here
+            continue
+        if "\x00" in folded:
+            # A dynamic piece is normally the sensitive-path analyzer's business, not this guard's.
+            # The exception is code that reads a studio-home variable and appends to it:
+            # `os.environ["UNSLOTH_STUDIO_HOME"] + "/auth/auth.db"` folds to NUL + the rest, and
+            # bypass mode keeps that variable in the child env, so the dynamic piece has a known
+            # value. Substituting it is not a guess.
+            root = _studio_home_for_guard() if _code_reads_the_studio_home(code) else None
+            if root and _references_studio_credential_here(folded.replace("\x00", root), workdir):
+                return True
             continue
         if _references_studio_credential_here(folded, workdir):
             return True
     return False
+
+
+def _code_reads_the_studio_home(code: str) -> bool:
+    """True when *code* mentions one of the environment variables that name the studio home."""
+    return any(var in code for var in _STUDIO_HOME_ENV_VARS)
+
+
+def _studio_home_for_guard() -> "str | None":
+    """This install's studio root, derived from the same resolution the markers use."""
+    auth_markers, _variable_markers, _cd_re = _studio_auth_dir_markers()
+    if not auth_markers:
+        return None
+    return os.path.dirname(auth_markers[0][0].rstrip("/\\")) or None
 
 
 def _tool_workdir_for_guard(session_id: "str | None") -> "str | None":

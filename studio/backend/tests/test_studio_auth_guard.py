@@ -612,3 +612,111 @@ def test_traversal_through_the_proc_cwd_symlink(monkeypatch, tmp_path):
             ), ordinary
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_padding_a_command_with_cds_does_not_spend_the_walk(monkeypatch, tmp_path):
+    # The walk counted `cd` commands, so eight no-op ones filled the budget and the two that
+    # entered the auth directory after them were never looked at.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        padded = ("cd .; " * 8) + 'cd ../..; cd auth; sqlite3 auth.db "select 1"'
+        assert tools._bash_exec(padded, None, 30, _SESSION, disable_sandbox = True) == (
+            tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+        distinct = (
+            "cd a; cd b; cd c; cd d; cd e; cd f; cd g; cd h; "
+            "cd ../..; cd ../../..; cd auth; cat .cli_api_key_cli_1"
+        )
+        assert tools._bash_exec(distinct, None, 30, _SESSION, disable_sandbox = True) == (
+            tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+        assert (
+            tools._bash_exec(
+                "cd .; cd models; ls",
+                None,
+                30,
+                _SESSION,
+                disable_sandbox = True,
+            )
+            != tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_the_shell_pid_spelling_of_the_proc_cwd_symlink(monkeypatch, tmp_path):
+    # `$$` is the shell's own PID, expanded before the path is opened, so it names the same symlink
+    # a literal number does.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        assert (
+            tools._bash_exec(
+                "cat /proc/$$/cwd/../../auth/auth.db",
+                None,
+                30,
+                _SESSION,
+                disable_sandbox = True,
+            )
+            == tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+        assert (
+            tools._python_exec(
+                "print(open('/proc/$$/cwd/../../auth/auth.db').read())",
+                None,
+                30,
+                _SESSION,
+                disable_sandbox = True,
+            )
+            == tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+        assert (
+            tools._bash_exec(
+                "echo $$",
+                None,
+                30,
+                _SESSION,
+                disable_sandbox = True,
+            )
+            != tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
+def test_a_python_path_rooted_in_the_studio_home_variable(monkeypatch, tmp_path):
+    # `os.environ["UNSLOTH_STUDIO_HOME"] + "/auth/auth.db"` folds to a dynamic piece plus the rest.
+    # Bypass mode keeps that variable in the child env, so the dynamic piece has a known value and
+    # substituting it is not a guess.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setenv("STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for code in (
+            'import os, sqlite3\np = os.environ["UNSLOTH_STUDIO_HOME"] + "/auth/auth.db"\n'
+            "print(sqlite3.connect(p))",
+            'import os\nprint(open(os.getenv("STUDIO_HOME") + "/auth/.desktop_secret").read())',
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+        # The same variable pointed anywhere else, and an unrelated variable, stay ordinary work.
+        for code in (
+            'import os\nprint(os.environ["UNSLOTH_STUDIO_HOME"] + "/models")',
+            'import os\nprint(os.environ.get("HOME") + "/auth")',
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+    finally:
+        tools._studio_auth_markers_cache = None
