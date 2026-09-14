@@ -2163,8 +2163,8 @@ def test_high_risk_dispatcher_non_terminal():
         # destructured string literals fold into the sensitive path
         ("d, f = ('/etc', 'passwd')\nopen('/'.join([d, f])).read()", True),
         # destructured literals reused through str.join
-        ("base, leaf = ('/tmp', 'x')\nopen(base + '/' + leaf).read()", False),
-        # benign destructured literals stay safe
+        ("base, leaf = ('/tmp', 'x')\nopen(base + '/' + leaf).read()", True),
+        # destructured literals fold to /tmp/x: no secret, but outside the sandbox's own TMPDIR
         ("open(b'/etc/passwd').read()", True),  # bytes path literal
         ("open(b'data.txt').read()", False),  # benign bytes literal stays safe
         (
@@ -3452,9 +3452,163 @@ def test_windows_spellings_are_treated_as_absolute():
 
 
 def test_unresolved_dynamic_paths_do_not_prompt():
-    """A path the folder could not resolve carries the NUL/parent sentinels; it is not a decidable
-    path, and the dynamic-alias checks cover those separately."""
+    """A path the folder could not resolve carries the NUL sentinel; it is not a decidable path, and
+    the dynamic-alias checks cover those separately."""
+    from core.inference import tools
+    assert tools._path_needs_approval("/media/\x00/file") is False
+
+
+def test_parent_escape_sentinel_asks():
+    """\x02 marks a pathlib .parent walking OUT of its root. It is an escape marker, so grouping it
+    with the unresolved marker would turn the signal into a pass."""
+    from core.inference import tools
+    assert tools._path_needs_approval("\x02/file") is True
+
+
+# Every payload below reached a host path with no approval prompt in the first cut of the
+# out-of-sandbox gate, and was found by reviewing it. They are kept as regressions because each one
+# is a DIFFERENT way of losing the path or its access mode, not a variation on one mistake.
+_REVIEWED_BYPASS_PYTHON = (
+    # The write mode was re-derived from a table that does not list `open`, so keyword writes were
+    # checked against the READ allowlist and every read-silent root became silently writable.
+    'open(file = "/etc/evil.conf", mode = "w").write("pwn")',
+    'open(file = "/usr/lib/evil.py", mode = "w")',
+    'import zipfile\nzipfile.ZipFile(file = "/usr/lib/evil.zip", mode = "w")',
+    # Path(p).open("w") carries the mode in the FIRST argument, because the receiver is the path.
+    'from pathlib import Path\nPath("/etc/new_service.conf").open("w").write("payload")',
+    'from pathlib import Path\nPath("/etc/evil.conf").open("w")',
+    # A name rebound later must not reclassify the read that already happened.
+    'p = "/media/x/report.txt"\nprint(open(p).read())\np = "local.txt"',
+    # Binding forms the first pass did not fold.
+    'print(open(p := "/media/x/report.txt").read())',
+    'p: str = "/media/alice/notes.txt"\nprint(open(p).read())',
+    'p, _ = "/media/x/memory.md", 1\nopen(p).read()',
+    # A later absolute component discards the earlier one, so the /usr prefix is not protection.
+    'import os\nopen(os.path.join("/usr", "/media/x/report.txt")).read()',
+    'from pathlib import Path\n(Path("/usr") / "/media/x/report.txt").read_text()',
+    # A child process is not bound by this scan, and its argv carries the access mode.
+    'import subprocess\nsubprocess.run(["touch", "/etc/evil.conf"])',
+    'import subprocess\nsubprocess.run(["cp", "./payload", "/etc/evil.conf"])',
+    'import subprocess\nsubprocess.run("echo evil > /etc/app.conf", shell = True)',
+    # Serializers put the destination second.
+    'import torch\ntorch.save(model, "/media/kuser/model.pt")',
+    'import torch\ntorch.save(model, f = "/media/kuser/model.pt")',
+    'import joblib\njoblib.dump(data, "/media/kuser/data.joblib")',
+    # As a method, the receiver is the source being moved away.
+    'from pathlib import Path\nPath("/media/x/memory.md").rename("stolen.md")',
+    # A single leading backslash is root-relative on Windows, not sandbox-relative.
+    'open(r"\\Users\\alice\\report.txt").read()',
+    # .parent walking out of its root is an escape marker, not an unresolved path.
+    'from pathlib import Path\np = Path("/media/x/sub/file").parent\nopen(p / "memory.md").read()',
+)
+
+_REVIEWED_BYPASS_TERMINAL = (
+    # shlex is not given < and > as punctuation, so the redirect target hid inside one token.
+    "echo CHANGED>/media/review/report.txt",
+    "cat</media/alice/notes.txt",
+    "printf changed>/media/alice/notes.txt",
+    "echo CLOBBERED >| /media/report.txt",
+    # A wrapper brings its own options, so skipping only its name left `5` reading as the command.
+    "timeout 5 cat /media/review/report.txt",
+    "nice -n 5 cat /media/review/report.txt",
+    "env -u UNUSED cat /media/alice/notes.txt",
+    "env -i cat /home/review/Documents/note.txt",
+    # A path can arrive as a flag VALUE, with the flag deciding read or write.
+    "cp --target-directory=/media/review payload.txt",
+    "cp -t /usr/share/review payload.txt",
+    "sort --output=/media/alice/notes.txt local.txt",
+    "sort -o/media/alice/notes.txt local.txt",
+    "sort -o /usr/local/share/note.txt local.txt",
+    "grep -f /media/alice/patterns.txt local.txt",
+    "grep --file=/media/report.txt local.txt",
+    "awk -f /media/kuser/script.awk file.txt",
+    "jq -f /media/kuser/filter.jq file.json",
+    # Creating an archive writes it; only extracting reads it.
+    "tar -cf /media/alice/out.tar local.txt",
+    "tar cf /media/x/out.tar .",
+    "tar -cf /etc/evil.tar .",
+    "tar -C /media/kuser -xf archive.tar",
+)
+
+# Flag values that merely LOOK like paths. A delimiter is data, and prompting on it would nag on
+# ordinary text processing.
+_FLAG_VALUE_NOT_A_PATH = (
+    "cut -d '/' -f 1 data.txt",
+    "sort -t / -k 2 data.txt",
+    "column -s / -t input.txt",
+    "paste -d / a.txt b.txt",
+    "echo a/b | cut -d '/' -f1",
+    "echo hello/world | tr '/' '_'",
+    "grep -e '/pattern' list.txt",
+    "sed -e '/foo/d' -e '/bar/d' file.txt",
+    "head -n 5 data.csv",
+    "tail -c 200 notes.txt",
+    "tar -xf archive.tar",
+    "tar czf out.tgz .",
+    "timeout 5 python train.py",
+    "nice -n 5 make",
+    "env -u FOO python train.py",
+    "sort -o out.txt in.txt",
+    "grep -f patterns.txt list.txt",
+)
+
+
+@pytest.mark.parametrize("code", _REVIEWED_BYPASS_PYTHON)
+def test_reviewed_python_bypasses_now_ask(code):
+    assert is_high_risk_tool_call("python", {"code": code}) is True
+
+
+@pytest.mark.parametrize("command", _REVIEWED_BYPASS_TERMINAL)
+def test_reviewed_terminal_bypasses_now_ask(command):
+    assert is_high_risk_tool_call("terminal", {"command": command}) is True
+
+
+@pytest.mark.parametrize("command", _FLAG_VALUE_NOT_A_PATH)
+def test_flag_values_that_look_like_paths_stay_silent(command):
+    assert is_high_risk_tool_call("terminal", {"command": command}) is False
+
+
+@pytest.mark.parametrize(
+    "code",
+    (
+        # The first argument is CONTENT; only the receiver is a path.
+        'from pathlib import Path\nPath("route.txt").write_text("/api/v1/items")',
+        'from pathlib import Path\nPath("manifest.txt").write_text("/media/alice/model.gguf")',
+        'from pathlib import Path\nPath("paths.txt").write_bytes(b"/home/review/Documents")',
+        # The builtin prompt is not a filename (the read entry exists for fileinput.input).
+        'val = input("/home/user/data directory: ")',
+        # numpy.save takes the path FIRST, unlike torch.save.
+        "import numpy as np\nnp.save('embeddings.npy', np.zeros(3))",
+        "import torch\ntorch.save(model, 'ckpt.pt')",
+        # C:relative.txt is relative to the drive's current directory, not rooted.
+        'open("C:relative.txt").read()',
+        "import subprocess\nsubprocess.run(['ls', '-la'])",
+    ),
+)
+def test_reviewed_false_positives_stay_silent(code):
+    assert is_high_risk_tool_call("python", {"code": code}) is False
+
+
+def test_high_risk_implies_potentially_unsafe():
+    """The stricter gate must stay a superset of the looser one. Gating the out-of-sandbox check on
+    a leading / or ~ broke that: every Windows spelling skipped the stricter classifier."""
+    for command in (*_REVIEWED_BYPASS_TERMINAL, "cat 'C:\\Users\\alice\\notes.txt'"):
+        if is_high_risk_tool_call("terminal", {"command": command}):
+            assert (
+                is_potentially_unsafe_tool_call("terminal", {"command": command}) is True
+            ), command
+
+
+def test_credentials_inside_a_silent_root_still_ask():
+    """A relocated cache is allowlisted wholesale, so the token store inside it needs a name-based
+    rule: the path no longer contains the directory name the credential regex looks for."""
     from core.inference import tools
 
-    assert tools._path_needs_approval("/media/\x00/file") is False
-    assert tools._path_needs_approval("\x02/file") is False
+    read_roots, _ = tools._silent_roots()
+    hf_roots = [root for root in read_roots if "huggingface" in root]
+    for root in hf_roots:
+        assert tools._path_needs_approval(os.path.join(root, "token")) is True
+        assert tools._path_needs_approval(os.path.join(root, "stored_tokens")) is True
+        assert tools._path_needs_approval(os.path.join(root, "hub", "m", "config.json")) is False
+    for path in ("/etc/gshadow", "/etc/krb5.keytab", "/etc/security/opasswd"):
+        assert tools._path_needs_approval(path) is True, path
