@@ -6962,7 +6962,31 @@ def _build_uv_cmd(args: tuple[str, ...]) -> list[str]:
     _tb = os.environ.get("UV_TORCH_BACKEND", "")
     if _tb and not _is_pinned_index_cmd(cmd):
         cmd.append(f"--torch-backend={_tb}")
+    cmd.extend(_uv_only_binary_args(cmd))
     return cmd
+
+
+def _uv_only_binary_args(cmd: "list[str]") -> "list[str]":
+    """The operator's only-binary, as uv flags, for a pinned command.
+
+    uv reads neither pip.conf nor PIP_ONLY_BINARY, and a pinned command runs with
+    UV_NO_CONFIG=1 because a discovered uv.toml outranks the CLI pin (#6898), so restoring
+    the policy in the environment alone leaves it unenforced on the leg that actually runs.
+    Measured against uv 0.10.7: with PIP_ONLY_BINARY=:all: set, a pinned `uv pip install`
+    builds the sdist anyway, and `--only-binary` refuses it. Only pinned commands: a
+    non-pinned one keeps its config file, so uv applies the policy itself.
+    """
+    if not _is_pinned_index_cmd(cmd):
+        return []
+    value = os.environ.get("PIP_ONLY_BINARY") or _pinned_pip_config_overrides().get(
+        "PIP_ONLY_BINARY", ""
+    )
+    args: list[str] = []
+    # Repeatable rather than comma joined, which is the spelling uv takes (pip takes both).
+    for part in value.split(","):
+        if part.strip():
+            args.extend(["--only-binary", part.strip()])
+    return args
 
 
 # uv ranks --index-url LOWEST, so inherited index vars defeat a pinned repair; neutralise them.
@@ -7235,13 +7259,16 @@ def _pip_config_without_sources(directory: str) -> str:
             [sys.executable, "-m", "pip", "config", "list"],
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
+            # Dictate the child's encoding; see _decode_pip_output for why sniffing it
+            # afterwards does not work. A non-ASCII cert path must survive this read.
+            env = {**os.environ, "PYTHONIOENCODING": "utf-8"},
             **_windows_hidden_subprocess_kwargs(),
         )
     except OSError:
         result = None
     sections: dict[str, list[tuple[str, str]]] = {}
     if result is not None and result.returncode == 0:
-        for line in (result.stdout or b"").decode("utf-8", "replace").splitlines():
+        for line in _decode_pip_output(result.stdout or b"").splitlines():
             name, separator, raw = line.partition("=")
             if not separator or name.startswith(":env:"):
                 continue
@@ -7463,6 +7490,12 @@ def _pinned_pip_config_overrides(
             [sys.executable, "-m", "pip", "config", "list"],
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
+            # Tell the child what to write rather than guessing what it wrote: a piped
+            # child otherwise encodes with ITS locale, the ANSI code page on Windows, and
+            # no decoder can reliably detect that after the fact (cp1252 "A3" bytes form
+            # valid UTF-8). Without this, a non-ASCII cert path decodes to one that exists
+            # nowhere, and pip fails the pinned install rather than losing the setting.
+            env = {**os.environ, "PYTHONIOENCODING": "utf-8"},
             # On the path to every pinned install: a wedged pip costs a minute, not more.
             timeout = 60,
             **_windows_hidden_subprocess_kwargs(),
@@ -7476,14 +7509,13 @@ def _pinned_pip_config_overrides(
 
 
 def _decode_pip_output(raw: bytes) -> str:
-    r"""`pip config list` bytes as text, decoded the way the child actually wrote them.
+    r"""`pip config list` bytes as text.
 
-    A piped child encodes its stdout with ITS locale encoding, which on Windows is the ANSI
-    code page rather than UTF-8, so a decode pinned to UTF-8 corrupts a setting such as
-    `cert = C:\Societe\ca.pem` spelled with non-ASCII characters. That is worse than
-    losing the setting: the corrupted path exists nowhere, so pip fails the pinned install
-    outright. UTF-8 is still tried first, strictly, because it is right everywhere except
-    that case and right there too under UTF-8 mode; the locale codec is the fallback.
+    The child is told to write UTF-8 (see PYTHONIOENCODING above), so this decodes UTF-8.
+    The fallback is for a listing produced some other way, a pip old enough to ignore the
+    variable among them: the locale codec is then the child's encoding, since parent and
+    child share a locale. Sniffing cannot replace either, because cp1252 bytes can form
+    valid UTF-8, so an undictated encoding is simply not recoverable afterwards.
     """
     try:
         return raw.decode("utf-8")

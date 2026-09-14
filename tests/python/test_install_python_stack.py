@@ -84,6 +84,38 @@ def _hermetic_pinned_pip_config(request):
     ips._PINNED_PIP_CONFIG_LISTING = None
 
 
+class TestUvOnlyBinaryOnPinnedCommands:
+    """uv reads neither pip.conf nor PIP_ONLY_BINARY, and a pinned command runs with
+    UV_NO_CONFIG=1, so restoring the policy in the environment alone leaves it unenforced
+    on the leg that actually runs. Measured against uv 0.10.7: with PIP_ONLY_BINARY=:all:
+    set, a pinned `uv pip install` builds the sdist anyway, and `--only-binary` refuses
+    it."""
+
+    PINNED = ("torch", "--index-url", "https://pin.example/whl")
+
+    def test_a_pinned_uv_command_carries_only_binary_as_flags(self):
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
+            cmd = ips._build_uv_cmd(self.PINNED)
+        assert cmd[-2:] == ["--only-binary", ":all:"]
+
+    def test_each_entry_becomes_its_own_flag(self):
+        """uv takes the option repeatably, not comma joined the way pip spells it."""
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":none:,numpy"}):
+            cmd = ips._build_uv_cmd(self.PINNED)
+        assert cmd[-4:] == ["--only-binary", ":none:", "--only-binary", "numpy"]
+
+    def test_a_non_pinned_command_is_left_alone(self):
+        """It keeps its config file, so uv applies the operator's policy itself."""
+        with mock.patch.dict(os.environ, {"PIP_ONLY_BINARY": ":all:"}):
+            cmd = ips._build_uv_cmd(("torch",))
+        assert "--only-binary" not in cmd
+
+    def test_no_policy_adds_no_flag(self):
+        env = {k: v for k, v in os.environ.items() if k != "PIP_ONLY_BINARY"}
+        with mock.patch.dict(os.environ, env, clear = True):
+            assert "--only-binary" not in ips._build_uv_cmd(self.PINNED)
+
+
 class TestBuildUvCmdTorchBackend:
     """Verify _build_uv_cmd only adds --torch-backend when UV_TORCH_BACKEND is set."""
 
@@ -752,14 +784,16 @@ class TestHardenedPipConfigRelaxation:
 
     def test_a_non_utf8_listing_is_decoded_the_way_the_child_wrote_it(self, monkeypatch):
         """A piped child encodes stdout with ITS locale encoding, which on Windows is the
-        ANSI code page, not UTF-8. Decoding cp1252 bytes as UTF-8 does not merely lose the
-        setting: it yields a cert path that exists nowhere, so pip fails the pinned install
-        outright on exactly the corporate host the allowlist exists to serve."""
-        listing = "global.cert='C:\\Soci\u00e9t\u00e9\\ca.pem'\n".encode("cp1252")
+        ANSI code page, not UTF-8. Getting that wrong does not merely lose the setting: it
+        yields a cert path that exists nowhere, so pip fails the pinned install outright on
+        exactly the corporate host the allowlist exists to serve. The read dictates the
+        child's encoding (below) rather than sniffing it, since cp1252 bytes can form valid
+        UTF-8; this covers the fallback, for a listing produced some other way."""
+        path = "C:\\Soci\u00e9t\u00e9\\ca.pem"
+        # repr, the way `pip config list` itself prints a value.
+        listing = f"global.cert={path!r}\n".encode("cp1252")
         monkeypatch.setattr(ips.locale, "getpreferredencoding", lambda *a: "cp1252")
-        assert ips._parse_pinned_pip_config(listing) == {
-            "PIP_CERT": "C:\\Soci\u00e9t\u00e9\\ca.pem"
-        }
+        assert ips._parse_pinned_pip_config(listing) == {"PIP_CERT": path}
         # UTF-8 is still tried first and strictly, so the POSIX case is untouched.
         assert (
             ips._decode_pip_output("cert='/etc/caf\u00e9/ca.pem'".encode())
@@ -767,6 +801,20 @@ class TestHardenedPipConfigRelaxation:
         )
         # Undecodable under either codec is skipped, never fatal.
         assert ips._parse_pinned_pip_config(b"global.cert=\xff\xfe\x00") == {}
+
+    @pytest.mark.reads_real_pip_config
+    def test_the_read_dictates_the_child_encoding(self, monkeypatch):
+        """Sniffing cannot recover an undictated encoding, so the child is told one."""
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen.update(kwargs.get("env") or {})
+            return subprocess.CompletedProcess(cmd, 0, b"")
+
+        monkeypatch.setattr(ips.subprocess, "run", fake_run)
+        ips._PINNED_PIP_CONFIG_LISTING = None
+        ips._pinned_pip_config_overrides()
+        assert seen.get("PYTHONIOENCODING") == "utf-8"
 
     def test_trusted_host_takes_section_precedence_instead(self):
         """Not every list key accumulates. Asked of pip 26.2's own parser with [global]
