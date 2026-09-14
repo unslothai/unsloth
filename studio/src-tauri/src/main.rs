@@ -12,6 +12,8 @@ mod install_watchdog;
 #[cfg(target_os = "linux")]
 mod linux_webkit;
 mod loopback_http;
+#[cfg(target_os = "macos")]
+mod macos_tray;
 mod native_backend_lease;
 mod native_clipboard;
 mod native_file_dialogs;
@@ -1710,10 +1712,18 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
     app.manage(TrayServerToggle(toggle));
 
-    TrayIconBuilder::new()
+    // macOS renders tray images at 18 points. Embed the 36 px scale for crisp Retina output;
+    // template mode lets AppKit choose the correct monochrome color for the current menu bar.
+    #[cfg(target_os = "macos")]
+    let tray_icon = tauri::include_image!("./icons/tray-icon@2x.png");
+    #[cfg(not(target_os = "macos"))]
+    let tray_icon = app.default_window_icon().unwrap().clone();
+
+    let tray = TrayIconBuilder::new()
         .menu(&menu)
         .tooltip("Unsloth")
-        .icon(app.default_window_icon().unwrap().clone())
+        .icon(tray_icon)
+        .icon_as_template(cfg!(target_os = "macos"))
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "open" => show_main_window(app),
             "toggle" => {
@@ -1733,6 +1743,14 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .build(app)?;
+
+    #[cfg(target_os = "macos")]
+    if let Err(error) = macos_tray::install_appearance_observer(&tray) {
+        // The template icon remains visible and adaptive if native observation is unavailable.
+        warn!("Could not install the macOS tray appearance observer: {error}");
+    }
+    #[cfg(not(target_os = "macos"))]
+    drop(tray);
 
     Ok(())
 }
@@ -2029,6 +2047,9 @@ fn main() {
                 // roughly 18s on Windows, where those first two graceful waits are
                 // `#[cfg(unix)]` and go straight to the force kill, but the backend spends
                 // its liveness, shutdown and CTRL_BREAK budgets in series instead.
+                #[cfg(target_os = "macos")]
+                macos_tray::remove_appearance_observer();
+
                 cleanup_child_processes(app);
             }
             _ => {}
