@@ -3122,18 +3122,28 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
         if isinstance(node, ast.Call) and _is_chdir_call(node, chdir_names):
             argument = _chdir_argument(node)
             target = None if argument is None else _folded_path(argument)
-            if target and "\x00" not in target and "\x02" not in target:
+            targets: "list[str]" = []
+            if target and "\x00" not in target:
+                # `os.chdir(Path.cwd().parents[1])` is an ordinary move, and the fold writes the
+                # walk as one marker, so resolve it here rather than ignoring the move.
+                targets = (
+                    _parent_walk_targets(argument, target, cwds, name_bases)
+                    if "\x02" in target
+                    else [target]
+                )
+            if targets:
                 moved: "list[str | None]" = []
-                for cwd in cwds:
-                    nxt = (
-                        target
-                        if os.path.isabs(target) or not cwd
-                        else os.path.normpath(os.path.join(cwd, target))
-                    )
-                    if nxt not in moved:
-                        moved.append(nxt)
-                    if _references_studio_credential(nxt):
-                        return True
+                for one in targets:
+                    for cwd in cwds:
+                        nxt = (
+                            one
+                            if os.path.isabs(one) or not cwd
+                            else os.path.normpath(os.path.join(cwd, one))
+                        )
+                        if nxt not in moved:
+                            moved.append(nxt)
+                        if _references_studio_credential(nxt):
+                            return True
                 cwds = (moved + [c for c in cwds if c not in moved])[:_MAX_TRACKED_CWDS]
             continue
         folded = node.value if isinstance(node, ast.Constant) else _folded_path(node)

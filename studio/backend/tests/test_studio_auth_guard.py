@@ -846,6 +846,36 @@ def test_home_is_the_workdir_under_bypass_permissions(monkeypatch, tmp_path):
         tools._studio_auth_markers_cache = None
 
 
+def test_a_chdir_to_a_parent_walk_moves_the_directory(monkeypatch, tmp_path):
+    # `os.chdir(Path.cwd().parents[1])` is an ordinary move into the studio root, but the fold
+    # writes the walk as one marker, so the move was ignored and the `auth/auth.db` that followed
+    # was still resolved against the sandbox.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for code in (
+            'import os, sqlite3\nfrom pathlib import Path\nos.chdir(Path.cwd().parents[1])\nprint(sqlite3.connect("auth/auth.db"))',
+            'import os\nfrom pathlib import Path\nos.chdir(Path.cwd().parent.parent)\nprint(open("auth/.desktop_secret").read())',
+            'import os\nfrom pathlib import Path\nos.chdir(Path.cwd().parents[1] / "auth")\nprint(open("auth.db", "rb").read())',
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+        # The same move, then ordinary work, and a walk from a literal base that is not the sandbox.
+        for code in (
+            'import os\nfrom pathlib import Path\nos.chdir(Path.cwd().parents[1])\nprint(open("models/m.gguf", "rb").read(4))',
+            'import os\nfrom pathlib import Path\nroot = Path("/tmp/project")\nos.chdir(root.parent)\nprint(open("auth/auth.db", "rb").read(4))',
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
 def test_a_quoted_cd_into_the_studio_root_is_not_a_move(monkeypatch, tmp_path):
     # `echo 'cd <root>'; grep auth README` prints the text and searches a project. Matched wherever
     # it appeared, the quoted text read as a move into the studio root and refused ordinary work.
