@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import type { CatalogGroup, ModelArtifact } from "./model-catalog.ts";
 import {
   AUDIO_CATALOG,
+  artifactForRepoId,
   IMAGE_CATALOG,
   VIDEO_CATALOG,
   canonicalKeyFor,
@@ -1129,6 +1130,217 @@ assert.ok(!groupMatchesQuery(qwenGroup, "mlx"));
 assert.ok(!groupMatchesQuery(qwenGroup, "ideogram"));
 assert.ok(groupMatchesQuery(ltx23, "ltx"));
 assert.ok(groupMatchesQuery(ltx23, "lightricks/ltx-2.3"));
+
+// --- Hosted pre-quantised checkpoints -------------------------------------------------------
+// An auto load on a dense-quant host fetches unsloth/<Model>-FP8's <Model>-<SCHEME>.pt instead of
+// the dense bf16 shards, so the row is judged by what will be resident rather than by the shards
+// it never downloads.
+const PREQUANT_ROWS = [
+  ["Tongyi-MAI/Z-Image-Turbo", "unsloth/Z-Image-Turbo-FP8"],
+  ["Qwen/Qwen-Image", "unsloth/Qwen-Image-FP8"],
+  ["black-forest-labs/FLUX.1-schnell", "unsloth/FLUX.1-schnell-FP8"],
+  ["krea/Krea-2-Turbo", "unsloth/Krea-2-Turbo-FP8"],
+] as const;
+
+for (const [id, repo] of PREQUANT_ROWS) {
+  const hit = artifactForRepoId(id, IMAGE_CATALOG);
+  assert.ok(hit, id);
+  assert.equal(hit.artifact.prequantRepo, repo, id);
+  // Only a row the quantiser can actually take may name a hosted checkpoint, or the fit rule
+  // would size a load by an artifact the backend never fetches.
+  assert.equal(curatedArtifactTakesDenseQuant(id, IMAGE_CATALOG), true, id);
+  // Both schemes, since the host decides which one runs: an Ampere card is offered int8 where an
+  // Ada card is offered fp8, and a missing size silently falls back to the dense figure.
+  for (const scheme of ["fp8", "int8"] as const) {
+    const size = hit.artifact.prequantSizeGb?.[scheme];
+    assert.ok(typeof size === "number" && size > 0, `${id} ${scheme}`);
+    // The quantised transformer cannot be bigger than the whole dense pipeline estimate.
+    assert.ok((size as number) < (hit.artifact.approxSizeGb ?? 0), `${id} ${scheme}`);
+  }
+  // The resident estimate backs the bf16 transformer out of approxSizeGb, so both figures must
+  // be there for the subtraction to mean anything.
+  assert.ok(hit.artifact.totalParams, id);
+  assert.ok(hit.artifact.approxSizeGb, id);
+}
+
+// Every hosted checkpoint belongs to a row that can take one.
+for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
+  for (const group of catalog) {
+    for (const artifact of group.artifacts) {
+      if (!artifact.prequantRepo && !artifact.prequantSizeGb) continue;
+      assert.equal(group.scope, "image", artifact.repoId);
+      assert.equal(artifact.format, "bf16", artifact.repoId);
+      assert.equal(artifact.loadKind, "pipeline", artifact.repoId);
+      assert.equal(artifact.denseQuantable, true, artifact.repoId);
+      // A size without a repo names no artifact to fetch, and a repo without sizes changes no
+      // verdict; neither half is usable alone.
+      assert.ok(artifact.prequantRepo, artifact.repoId);
+      assert.ok(artifact.prequantSizeGb, artifact.repoId);
+    }
+  }
+}
+
+// The quantised resident size is what a dense-quant host is judged against. Z-Image-Turbo is 30 GB
+// dense (42.9 GB of card under the 70% rule) and 24.4 GB pre-quantised (34.9 GB of card), so a
+// 40 GB card only fits the official row once the host reports a scheme.
+const zTurboId = "Tongyi-MAI/Z-Image-Turbo";
+assert.equal(
+  curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, { gpuGb: 40, systemRamGb: 128 }),
+  false,
+);
+for (const schemes of [["fp8"], ["int8"]]) {
+  assert.equal(
+    curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, {
+      gpuGb: 40,
+      systemRamGb: 128,
+      denseQuantSchemes: schemes,
+    }),
+    true,
+    schemes[0],
+  );
+}
+// An empty list is a host with no scheme to load under, so the dense rule stands.
+assert.equal(
+  curatedArtifactFitsDevice(zTurboId, IMAGE_CATALOG, {
+    gpuGb: 40,
+    systemRamGb: 128,
+    denseQuantSchemes: [],
+  }),
+  false,
+);
+// The schemes are sized separately: Qwen-Image is 19.06 GB at fp8 and 31.73 at int8, so a 64 GB
+// card takes the fp8 checkpoint and not the int8 one.
+assert.equal(
+  curatedArtifactFitsDevice("Qwen/Qwen-Image", IMAGE_CATALOG, {
+    gpuGb: 64,
+    systemRamGb: 128,
+    denseQuantSchemes: ["fp8"],
+  }),
+  true,
+);
+assert.equal(
+  curatedArtifactFitsDevice("Qwen/Qwen-Image", IMAGE_CATALOG, {
+    gpuGb: 64,
+    systemRamGb: 128,
+    denseQuantSchemes: ["int8"],
+  }),
+  false,
+);
+// A row with no hosted checkpoint is unmoved by the host's schemes.
+for (const id of ["black-forest-labs/FLUX.1-dev", "stabilityai/sdxl-turbo"]) {
+  assert.equal(
+    curatedArtifactFitsDevice(id, IMAGE_CATALOG, {
+      gpuGb: 40,
+      systemRamGb: 128,
+      denseQuantSchemes: ["fp8"],
+    }),
+    curatedArtifactFitsDevice(id, IMAGE_CATALOG, { gpuGb: 40, systemRamGb: 128 }),
+    id,
+  );
+}
+
+// ... and the router follows the same rule, so the card that only fits the quantised form is sent
+// to the official row rather than down the quant ladder.
+const zTurboGroup = groupForRepoId(zTurboId, IMAGE_CATALOG);
+assert.ok(zTurboGroup);
+assert.equal(
+  pickDefaultArtifact(zTurboGroup, {
+    gpuGb: 40,
+    systemRamGb: 128,
+    isDownloaded: notDownloaded,
+  }).format,
+  "bnb-4bit",
+);
+assert.equal(
+  pickDefaultArtifact(zTurboGroup, {
+    gpuGb: 40,
+    systemRamGb: 128,
+    denseQuantSchemes: ["fp8"],
+    isDownloaded: notDownloaded,
+  }).repoId,
+  zTurboId,
+);
+// Below the quantised form's own floor nothing changed: 24.4 GB still needs 34.9 GB of card.
+assert.equal(
+  pickDefaultArtifact(zTurboGroup, {
+    gpuGb: 24,
+    systemRamGb: 128,
+    denseQuantSchemes: ["fp8"],
+    isDownloaded: notDownloaded,
+  }).format,
+  "bnb-4bit",
+);
+
+// --- The row names the precision that will run ----------------------------------------------
+// The scheme comes from the host, so the same row reads FP8 on Ada and up and INT8 on Ampere.
+assert.deepEqual(curatedRowLabelFor(zTurboId, IMAGE_CATALOG, "dense-quant", ["fp8"]), {
+  name: "Z-Image-Turbo (Fast FP8)",
+  tags: ["BF16"],
+});
+assert.deepEqual(curatedRowLabelFor(zTurboId, IMAGE_CATALOG, "dense-quant", ["int8"]), {
+  name: "Z-Image-Turbo (Fast INT8)",
+  tags: ["BF16"],
+});
+// Only the first entry is read; the backend reports them best-first.
+assert.equal(
+  curatedRowLabelFor(zTurboId, IMAGE_CATALOG, "dense-quant", ["fp8", "int8"])?.name,
+  "Z-Image-Turbo (Fast FP8)",
+);
+// A capable host that names no scheme keeps the bare qualifier rather than inventing one.
+assert.equal(
+  curatedRowLabelFor(zTurboId, IMAGE_CATALOG, "dense-quant", [])?.name,
+  "Z-Image-Turbo (Fast)",
+);
+// The trigger and the row still agree once a precision is in the name.
+assert.equal(
+  curatedDisplayNameFor(zTurboId, IMAGE_CATALOG, "dense-quant", ["fp8"]),
+  "Z-Image-Turbo (Fast FP8)",
+);
+assert.equal(
+  catalogToModelOptions(IMAGE_CATALOG, "dense-quant", ["int8"]).find((o) => o.id === zTurboId)
+    ?.name,
+  "Z-Image-Turbo (Fast INT8)",
+);
+// A variant already called "Fast" is not renamed "Fast (Fast FP8)": the precision is dropped
+// rather than stacked, since the name can only carry the word once.
+assert.deepEqual(
+  curatedRowLabelFor("HiDream-ai/HiDream-I1-Fast", IMAGE_CATALOG, "dense-quant", ["fp8"]),
+  { name: "HiDream I1 (Fast (distilled))", tags: ["BF16"] },
+);
+// Its siblings, which carry no such word, do name the scheme.
+assert.equal(
+  curatedRowLabelFor("HiDream-ai/HiDream-I1-Dev", IMAGE_CATALOG, "dense-quant", ["fp8"])?.name,
+  "HiDream I1 (Dev (distilled)) (Fast FP8)",
+);
+
+// H3's qualifier names its scheme the same way, which is what it said before the flattening.
+assert.deepEqual(
+  curatedRowLabelFor("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG, "dense-quant", ["fp8"]),
+  { name: "MiniMax H3 (Fast FP8)", tags: ["BF16"] },
+);
+assert.deepEqual(
+  curatedRowLabelFor("MiniMaxAI/MiniMax-H3", VIDEO_CATALOG, "dense-quant", ["int8"]),
+  { name: "MiniMax H3 (Fast INT8)", tags: ["BF16"] },
+);
+// The GGUF sibling is still the slow row whatever the scheme.
+assert.equal(
+  curatedRowLabelFor("unsloth/MiniMax-H3-GGUF", VIDEO_CATALOG, "dense-quant", ["fp8"])?.name,
+  "MiniMax-H3-GGUF (Slow)",
+);
+// A chip is still the STORED precision; the scheme only reaches the name.
+for (const schemes of [[], ["fp8"], ["int8"]]) {
+  for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG]) {
+    for (const group of catalog) {
+      for (const artifact of group.artifacts) {
+        assert.deepEqual(
+          curatedRowLabelFor(artifact.repoId, catalog, "dense-quant", schemes)?.tags ?? [],
+          curatedRowLabelFor(artifact.repoId, catalog, "accelerated")?.tags ?? [],
+          `${artifact.repoId} ${schemes.join(",") || "none"}`,
+        );
+      }
+    }
+  }
+}
 
 console.log("model-catalog check: all assertions passed");
 

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useMemo, useState } from "react";
+import { normalizeDenseQuantSchemes } from "@/lib/dense-quant-schemes";
 import {
   type GpuIndexKind,
   type PinnableGpuContext,
@@ -48,6 +49,10 @@ export interface GpuInfo {
   backend: string;
   /** Backend-reported dense quant capability. False until system info arrives. */
   denseQuantSupported: boolean;
+  /** The dense quant schemes the backend says this host can run, best first ("fp8", "int8").
+   *  Empty until system info arrives, and empty on a backend too old to report the field, so a
+   *  reader naming a precision from it degrades to naming none rather than to guessing one. */
+  denseQuantSchemes: readonly string[];
   name: string;
   memoryTotalGb: number;
   memorySharedGb: number;
@@ -84,6 +89,7 @@ const DEFAULT_GPU: GpuInfo = {
   unifiedMemory: false,
   backend: "",
   denseQuantSupported: false,
+  denseQuantSchemes: [],
   name: "Unknown",
   memoryTotalGb: 0,
   memorySharedGb: 0,
@@ -110,6 +116,7 @@ function toGpuInfo(
   const base = {
     backend: data?.device_backend ?? "",
     denseQuantSupported: data?.dense_quant_supported === true,
+    denseQuantSchemes: normalizeDenseQuantSchemes(data?.dense_quant_schemes),
     cpuCore: data?.cpu?.physical_count ?? 0,
     cpuThread: data?.cpu?.logical_count ?? 0,
     systemRamAvailableGb: data?.memory?.available_gb ?? 0,
