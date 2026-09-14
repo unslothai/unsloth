@@ -9017,7 +9017,7 @@ def install_python_stack() -> int:
     # update stops at the same point.
     _parked = install_manifest.previous_manifest_path()
     install_manifest.consume_previous_manifest()
-    if _parked.exists():
+    if install_manifest.manifest_is_present(_parked):
         _safe_print(
             f"error: could not remove the parked {install_manifest.PREVIOUS_MANIFEST_NAME} "
             f"in {install_manifest.venv_root()}; refusing to install behind evidence the "
@@ -9027,7 +9027,7 @@ def install_python_stack() -> int:
         return 1
     if install_manifest.remove_manifest():
         install_manifest.consume_previous_manifest()
-        if _parked.exists():
+        if install_manifest.manifest_is_present(_parked):
             _safe_print(
                 f"error: could not remove the parked {install_manifest.PREVIOUS_MANIFEST_NAME} "
                 f"in {install_manifest.venv_root()}; refusing to install behind evidence the "
