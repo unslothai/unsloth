@@ -1927,6 +1927,12 @@ fn is_usable_csp_source(endpoint: &str) -> bool {
     {
         return false;
     }
+    // No IDNA encoder here, and the backend refuses a Unicode host outright
+    // (its CSP header is latin-1), so both take the punycode form and neither
+    // ends up allowing an origin the other does not.
+    if !endpoint.is_ascii() {
+        return false;
+    }
     // No credentials, query or fragment, and a non-empty host.
     let host = authority
         .split(['/', '?', '#'])
@@ -2398,6 +2404,15 @@ mod tests {
             "https://ds.internal/hf".to_string(),
         ]);
         assert_eq!(sources, vec!["https://hf-mirror.com", "https://ds.internal"]);
+    }
+
+    #[test]
+    fn a_unicode_host_is_refused_and_its_punycode_form_is_not() {
+        // The backend's CSP header is latin-1, so it refuses a Unicode host; if
+        // this allowed one the two would disagree about a single endpoint. Every
+        // URL parser produces the punycode form anyway.
+        assert!(!is_usable_csp_source("https://例子.测试"));
+        assert!(is_usable_csp_source("https://xn--fsqu00a.xn--0zwm56d"));
     }
 
     #[test]

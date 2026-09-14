@@ -90,6 +90,13 @@ def _sanitize(candidate: str, default: str, var_name: str) -> str:
         ord(ch) < 0x20 or ord(ch) == 0x7F for ch in candidate
     ):
         reason = "contains whitespace, a separator or a control character"
+    elif not candidate.isascii():
+        # A Unicode host reaches _build_csp, and Starlette encodes header values
+        # as latin-1, so one IDN mirror would turn EVERY response into a 500.
+        # The desktop CSP builder has no IDNA encoder available to it either, so
+        # rather than have the three disagree about one endpoint, all three take
+        # the punycode form (xn--...), which every URL parser produces anyway.
+        reason = "contains non-ASCII characters; use the punycode (xn--) form of the host"
     elif (parts := _split(candidate)) is None:
         # urlsplit RAISES on malformed bracketed-host syntax ("https://["), and
         # _build_csp runs on every response, so letting that escape turns one

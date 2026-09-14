@@ -45,9 +45,14 @@ function normalizeEndpoint(raw: string | null | undefined): string | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
   if (!trimmed) return null;
-  // Embedded whitespace or control characters never belong in an origin, and
-  // the backend sends the same value to the CSP connect-src directive.
-  if (/[\s;,'"\\]/.test(trimmed) || /[\u0000-\u001f\u007f]/.test(trimmed)) {
+  // Printable ASCII only. Whitespace and separators would add sources to the CSP
+  // connect-src the backend builds from this same value; control characters and
+  // non-ASCII ones cannot reach it at all, since Starlette encodes header values
+  // as latin-1, so a Unicode host there 500s every response. new URL() would
+  // punycode such a host, and accepting it here alone would point this frontend
+  // somewhere neither the backend nor the desktop CSP builder allows. The
+  // punycode (xn--) form is printable ASCII and is accepted by all three.
+  if (/[^\u0020-\u007e]/.test(trimmed) || /[\s;,'"\\]/.test(trimmed)) {
     return null;
   }
   const withScheme = trimmed.includes("://") ? trimmed : `https://${trimmed}`;

@@ -83,6 +83,17 @@ test("the empty-port rule reads the authority, not the whole URL", () => {
   }
 });
 
+test("a Unicode host is refused, its punycode form is not", () => {
+  // new URL() would happily punycode it, but the backend refuses it outright:
+  // its CSP header is latin-1, so one IDN mirror turns every response into a
+  // 500. All three implementations take the xn-- form instead.
+  resetHfEndpoints();
+  setHfEndpoints("https://例子.测试", null);
+  assert.equal(getHfEndpoint(), DEFAULT_HF_ENDPOINT);
+  setHfEndpoints("https://xn--fsqu00a.xn--0zwm56d", null);
+  assert.equal(getHfEndpoint(), "https://xn--fsqu00a.xn--0zwm56d");
+});
+
 test("an older backend that reports neither field keeps the configured mirror", () => {
   // /api/health on an older Studio carries no hf_endpoint at all. Treating that
   // as "reset to default" would send a mirror-only deployment back to a host it

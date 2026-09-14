@@ -308,3 +308,17 @@ def test_the_reachable_endpoint_follows_the_tunnel_aware_client_ip(monkeypatch):
 
     lan = request("192.168.1.50")
     assert client_reachable_endpoint(client_ip(lan)) == "https://huggingface.co"
+
+
+def test_a_unicode_host_cannot_reach_the_csp_header(monkeypatch):
+    """Starlette encodes header values as latin-1.
+
+    A Unicode hostname in connect-src therefore raises UnicodeEncodeError inside
+    the security-headers middleware and turns EVERY response, /api/health
+    included, into a 500. The punycode form is what every URL parser produces
+    and is accepted here, by the frontend and by the desktop CSP builder alike.
+    """
+    monkeypatch.setenv("HF_ENDPOINT", "https://例子.测试")
+    assert get_hf_endpoint() == "https://huggingface.co"
+    monkeypatch.setenv("HF_ENDPOINT", "https://xn--fsqu00a.xn--0zwm56d")
+    assert get_hf_endpoint() == "https://xn--fsqu00a.xn--0zwm56d"
