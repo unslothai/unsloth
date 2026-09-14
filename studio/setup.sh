@@ -992,10 +992,9 @@ _uv_cache_probe_writable() {
 }
 
 _uv_cache_usable() {
-    # Every directory uv owns, matched by uv's `<name>-v<n>` convention: uv 0.10.7 aborts on a
-    # 0555 archive-* ("failed to rename") and on an empty 0555 interpreter-v4 ("failed to create
-    # directory", before resolution). Not every subdirectory: an unrelated read-only one would
-    # disqualify a cache uv can use. install.sh's _probe_uv_cache_usable is the same check.
+    # The stores uv owns, by its `<name>-v<n>` naming: a 0555 archive-* or interpreter-v4 aborts
+    # uv. Not every subdirectory, or an unrelated read-only one disqualifies a usable cache.
+    # install.sh's _probe_uv_cache_usable is the same check.
     _uv_cache_probe_writable "$1" || return 1
     for _uvu_bucket in "$1"/*-v[0-9]*/; do
         _uvu_bucket=${_uvu_bucket%/}
