@@ -25,8 +25,8 @@ import {
   formatModelParamLabel,
   formatPipelineTag,
 } from "@/features/hub/lib/view-models";
+import { usePlatformStore } from "@/config/env";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
-import { getHfEndpoint } from "@/lib/hf-endpoint";
 import { cn, formatCompact } from "@/lib/utils";
 import {
   ArrowUpDownIcon,
@@ -478,7 +478,9 @@ function RowActions({
   isDataset: boolean;
   onSelect: (id: string) => void;
 }) {
-  const hfUrl = `${getHfEndpoint()}/${isDataset ? "datasets/" : ""}${row.result.id}`;
+  // From the store, not getHfEndpoint(): these rows are memoized.
+  const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
+  const hfUrl = `${hfEndpoint}/${isDataset ? "datasets/" : ""}${row.result.id}`;
   const actionClass =
     "pointer-events-auto inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:bg-foreground/[0.07] hover:text-foreground focus-visible:text-foreground data-[state=open]:bg-foreground/[0.07] data-[state=open]:text-foreground";
   return (

@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { apiUrl } from "@/lib/api-base";
-import { setHfEndpoints } from "@/lib/hf-endpoint";
+import {
+  getHfDatasetsServerBase,
+  getHfEndpoint,
+  setHfEndpoints,
+} from "@/lib/hf-endpoint";
 import {
   isDetectionDeferred,
   isProvisionalVerdict,
@@ -186,9 +190,8 @@ export async function fetchDeviceType(options?: {
       setHfEndpoints(data.hf_endpoint, data.hf_datasets_server);
       if (shouldKeepAuthoritativePlatform(options?.force)) {
         usePlatformStore.setState({
-          hfEndpoint: data.hf_endpoint ?? usePlatformStore.getState().hfEndpoint,
-          hfDatasetsServer:
-            data.hf_datasets_server ?? usePlatformStore.getState().hfDatasetsServer,
+          hfEndpoint: getHfEndpoint(),
+          hfDatasetsServer: getHfDatasetsServerBase(),
         });
         return usePlatformStore.getState().deviceType;
       }
@@ -223,8 +226,11 @@ export async function fetchDeviceType(options?: {
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,
         // Older backends carry neither field: keep what the store holds.
-        hfEndpoint: data.hf_endpoint ?? previous.hfEndpoint,
-        hfDatasetsServer: data.hf_datasets_server ?? previous.hfDatasetsServer,
+        // The store mirrors what setHfEndpoints accepted, never the raw reply, so
+        // a component reading the store and one calling getHfEndpoint() can never
+        // build URLs against different hosts.
+        hfEndpoint: getHfEndpoint(),
+        hfDatasetsServer: getHfDatasetsServerBase(),
         fetched: data.device_type !== undefined || keepPlatform,
         detectionDeferred: isDetectionDeferred(data),
       });
