@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The bias add for the NVFP4 layer's M x N output, on the EAGER path only.
+"""The bias add for the NVFP4 layer's M x N output, on the EAGER path only, at sizes where it pays.
 
 ``mm_fp4`` has no bias epilogue in FlashInfer 0.6.6, so the add is a separate pass that must stay
 bit-identical to ``Tensor.add_``; the fused CUTLASS FP4 epilogue is WRONG for that reason, adding
@@ -27,6 +27,11 @@ _TRUE_TOKENS = ("1", "true", "yes", "on")
 _FALSE_TOKENS = ("0", "false", "no", "off")
 
 _BLOCK = 4096
+# Below this the launch (20 to 28 us measured on B200) exceeds what the bandwidth win returns:
+# 1024x10240 runs 0.84x of ``add_``, 4096x3840 (15.7 M) 1.84x, 4096x10240 3.4x.
+_FAST_BIAS_MIN_NUMEL = 12 * 1024 * 1024
+# The kernel indexes with int32 offsets.
+_FAST_BIAS_MAX_NUMEL = 2**31 - 1
 
 
 if _HAVE_TRITON:
@@ -52,10 +57,12 @@ def fast_bias_enabled() -> bool:
 
 
 def _eligible(out: Any, bias: Any) -> bool:
-    """Whether this pair is covered; each clause is a case the flat 1-D indexing gets WRONG."""
+    """Whether this pair is covered; each clause is a case the flat 1-D indexing gets WRONG or
+    a size where the launch costs more than the pass saves."""
     import torch
     return (
         _HAVE_TRITON
+        and _FAST_BIAS_MIN_NUMEL <= out.numel() <= _FAST_BIAS_MAX_NUMEL
         and out.is_cuda
         and out.is_contiguous()
         and bias.is_contiguous()

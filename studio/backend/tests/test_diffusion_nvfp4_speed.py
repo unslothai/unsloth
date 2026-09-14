@@ -577,7 +577,7 @@ def test_auto_and_one_both_leave_it_on(monkeypatch, value):
     assert fb.fast_bias_enabled() is True
 
 
-def test_the_kernel_declines_a_shape_or_dtype_it_does_not_cover():
+def test_the_kernel_declines_a_shape_or_dtype_it_does_not_cover(monkeypatch):
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_nvfp4_bias as fb
 
@@ -586,6 +586,7 @@ def test_the_kernel_declines_a_shape_or_dtype_it_does_not_cover():
     if not torch.cuda.is_available():
         pytest.skip("needs CUDA")
 
+    monkeypatch.setattr(fb, "_FAST_BIAS_MIN_NUMEL", 0)
     out, bias = _bias_pair(torch, 8, 16)
     assert fb._eligible(out, bias)
     assert not fb._eligible(*_bias_pair(torch, 8, 16, dtype = torch.float32))
@@ -593,6 +594,25 @@ def test_the_kernel_declines_a_shape_or_dtype_it_does_not_cover():
     assert not fb._eligible(out.cpu(), bias.cpu())
     assert not fb._eligible(out, bias[:8])
     assert not fb._eligible(out, bias.reshape(1, 16))
+
+
+def test_the_kernel_declines_below_the_size_floor_and_above_int32(monkeypatch):
+    """Below the floor the launch costs more than the pass saves (1024x10240 measured 0.84x of
+    ``add_`` on B200); above int32 the flat offsets would wrap."""
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_nvfp4_bias as fb
+
+    if not fb._HAVE_TRITON:
+        pytest.skip("needs triton")
+    if not torch.cuda.is_available():
+        pytest.skip("needs CUDA")
+
+    out, bias = _bias_pair(torch, 1024, 3840)
+    assert not fb._eligible(out, bias)
+    monkeypatch.setattr(fb, "_FAST_BIAS_MIN_NUMEL", out.numel())
+    assert fb._eligible(out, bias)
+    monkeypatch.setattr(fb, "_FAST_BIAS_MAX_NUMEL", out.numel() - 1)
+    assert not fb._eligible(out, bias)
 
 
 def test_the_kernel_declines_while_tracing(monkeypatch):
@@ -610,7 +630,7 @@ def test_the_kernel_declines_while_tracing(monkeypatch):
 
 
 @pytest.mark.parametrize("m,n", BIAS_SHAPES)
-def test_the_fused_bias_is_bit_identical_to_add_(m, n):
+def test_the_fused_bias_is_bit_identical_to_add_(m, n, monkeypatch):
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_nvfp4_bias as fb
 
@@ -619,6 +639,8 @@ def test_the_fused_bias_is_bit_identical_to_add_(m, n):
     if not fb._HAVE_TRITON:
         pytest.skip("needs triton")
 
+    # The floor is a speed rule, not a correctness one: the kernel must be exact at every shape.
+    monkeypatch.setattr(fb, "_FAST_BIAS_MIN_NUMEL", 0)
     out, bias = _bias_pair(torch, m, n)
     want = out.clone().add_(bias)
     got = fb.fused_bias_add_(out, bias)
@@ -637,10 +659,12 @@ def test_an_empty_output_is_left_alone():
     assert fb.fused_bias_add_(out, torch.ones(32, device = "cuda", dtype = torch.bfloat16)) is out
 
 
-def test_m3_the_fused_bias_against_add_at_the_bench_shapes(capsys):
+def test_m3_the_fused_bias_against_add_at_the_bench_shapes(capsys, monkeypatch):
     """M3, reported rather than asserted: a timing threshold in a test file is a flake."""
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_nvfp4_bias as fb
+
+    monkeypatch.setattr(fb, "_FAST_BIAS_MIN_NUMEL", 0)
 
     if not torch.cuda.is_available():
         pytest.skip("needs CUDA")
