@@ -349,15 +349,19 @@ def _fp8_device_lacks_kernel(device):
     return torch.version.hip is None and torch.cuda.get_device_capability(device) < (8, 9)
 
 
-def _fp8_kernel_unsupported(tensor):
+def _fp8_kernel_unsupported(tensor, kernel_dtype = None):
     """True when triton here cannot compile this fp8 dtype, so kernels taking it must be avoided.
 
     triton adds fp8e4nv only from sm89 on, so compare the full (major, minor): sm89 (4090,
     L40S, L4) does support it. ROCm lists fp8e4nv always and its capability is gfx-derived.
+
+    kernel_dtype is the fp8 dtype the kernel really handles. It defaults to the tensor's own,
+    which is right for a dequant, but a forward must pass e4m3fn: act_quant emits e4m3fn
+    whatever the weight dtype is, so e5m2 weights hit the same unsupported kernel.
     """
     return (
         tensor.is_cuda
-        and tensor.dtype == torch.float8_e4m3fn
+        and (tensor.dtype if kernel_dtype is None else kernel_dtype) == torch.float8_e4m3fn
         and _fp8_device_lacks_kernel(tensor.device)
     )
 
@@ -454,7 +458,7 @@ class FP8BlockQuantLinear(torch.autograd.Function):
         if not weight.is_contiguous():
             weight = weight.contiguous()
 
-        if X.shape[-1] % block_size[1] != 0 or _fp8_kernel_unsupported(weight):
+        if X.shape[-1] % block_size[1] != 0 or _fp8_kernel_unsupported(weight, torch.float8_e4m3fn):
             # Hidden dim not divisible by the activation block, or a dtype this device cannot compile
             # (act_quant and the gemm below both take fp8e4nv pointers, so pre-sm89 must skip both):
             # dequant plus plain matmul, using the un-expanded scale so a scalar per-tensor scale
@@ -613,7 +617,7 @@ class FP8_fbgemm_block_linear(torch.autograd.Function):
         kernel_supported = (
             not per_tensor
             # triton_quantize_fp8_block below emits fp8e4nv, so pre-sm89 needs the dequant path too.
-            and not _fp8_kernel_unsupported(weight)
+            and not _fp8_kernel_unsupported(weight, torch.float8_e4m3fn)
             and weight_scale.dtype == torch.float32
             and (bs_m, bs_n, bs_k) == (128, 128, 128)
             and X.shape[-1] % 16 == 0
