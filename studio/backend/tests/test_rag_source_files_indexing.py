@@ -171,7 +171,7 @@ def test_routes_accept_source_file_native_drop(rag_home, tmp_path):
     source = tmp_path / "index.php"
     source.write_text("<?php echo 'drop works'; ?>", encoding = "utf-8")
 
-    stored_path, filename = _save_native_path_upload(_sign(source))
+    stored_path, filename, _ = _save_native_path_upload(_sign(source))
     assert filename == "index.php"
     assert os.path.isfile(stored_path)
     with open(stored_path, encoding = "utf-8") as f:
