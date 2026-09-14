@@ -21,6 +21,8 @@ from utils.paths import studio_root, workspace_root
 
 
 MAX_SKILL_MD_BYTES = 512 * 1024
+# Per skill, expanded: keeps a full catalog of 2,000 skills to tens of MB on the listing route.
+MAX_SKILL_METADATA_BYTES = 16 * 1024
 MAX_SKILL_FILE_BYTES = 2 * 1024 * 1024
 MAX_SKILL_PAGE_CHARS = 8_000
 MIN_SKILL_PAGE_CHARS = 64
@@ -310,12 +312,12 @@ def _parse_skill_markdown(raw: bytes, parent_name: Optional[str] = None) -> dict
         )
     ):
         raise SkillError("Skill metadata keys and values must be strings.")
-    # Aliases let a small file expand to gigabytes on serialisation; bound the expanded size.
+    # Aliases let a small file expand on serialisation; bound the expanded size.
     if (
         metadata is not None
-        and sum(len(k) + len(v) for k, v in metadata.items()) > MAX_SKILL_MD_BYTES
+        and sum(len(k) + len(v) for k, v in metadata.items()) > MAX_SKILL_METADATA_BYTES
     ):
-        raise SkillError("Skill metadata exceeds the 512 KB limit.")
+        raise SkillError("Skill metadata exceeds the 16 KB limit.")
     allowed_tools = frontmatter.get("allowed-tools")
     if allowed_tools is not None and not isinstance(allowed_tools, str):
         raise SkillError("Skill allowed-tools must be a space-separated string.")
