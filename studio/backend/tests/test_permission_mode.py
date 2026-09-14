@@ -3429,6 +3429,9 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     "sqlite3 /home/alice/private.db 'select 1'",
     # `rg --files [PATH ...]` takes no pattern, so the skip was eating the enumerated tree.
     "rg --files /media/kuser/MEDIA_SSD/private",
+    # git carries its working directory on a flag, so nothing sits in an operand position.
+    "git -C /media/kuser/MEDIA_SSD/private-repo show HEAD:secret.txt",
+    "git --git-dir=/media/kuser/MEDIA_SSD/r/.git log",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
@@ -3504,6 +3507,11 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
     "reader = open\nreader2 = reader\nreader2('/media/kuser/MEDIA_SSD/x').read()",
     # joinpath drops everything left of an absolute piece, exactly as `/` and os.path.join do.
     "from pathlib import Path\nPath('/usr').joinpath('/media/kuser/MEDIA_SSD/x.txt').read_text()",
+    # numpy.load takes a FILENAME, unlike every other `load` in these tables.
+    "import numpy as np\nnp.load('/media/kuser/MEDIA_SSD/private.npy')",
+    # A constructor or a join under an import alias builds the same path.
+    "from pathlib import Path as P\nP('/media/kuser/MEDIA_SSD/private.txt').read_text()",
+    "from os.path import join as j\nopen(j('/media/kuser/MEDIA_SSD', 'private.txt')).read()",
 )
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
@@ -3524,6 +3532,9 @@ _INDIRECT_BENIGN_TERMINAL = (
     "sqlite3 data.db 'select 1'",
     "rg --files src",
     "rg pattern src",
+    "git status",
+    "git -C src log",
+    'git -c user.name=x commit -m "y"',
     "cat ~/notes.txt",
     "mkdir ~/.config/myapp",
 )
@@ -3542,6 +3553,9 @@ _INDIRECT_BENIGN_PYTHON = (
     "reader = open\nreader2 = reader\nreader2('notes.txt').read()",
     "from pathlib import Path\nPath('/usr').joinpath('share', 'x.txt').read_text()",
     "open('~/notes.txt').read()",
+    "import numpy as np\nnp.load('data.npy')",
+    "import json\njson.load(open('cfg.json'))",
+    "from pathlib import Path as P\nP('data.csv').read_text()",
 )
 
 

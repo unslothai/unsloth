@@ -2832,8 +2832,15 @@ def _posix_join(parts) -> str:
     for part in parts:
         if not out:
             out = part
-        elif part.startswith("/") or _WIN_DRIVE_RE.match(part):
+        elif _WIN_DRIVE_RE.match(part):
             out = part
+        elif part[:1] in ("/", "\\"):
+            # A leading backslash is ROOTED on Windows, on the current drive: `C:\\Windows` joined
+            # with `\\Users\\alice` opens `C:\\Users\\alice`, so the drive survives and everything
+            # after it does not. Without this the fold kept the path under the read-silent
+            # `C:\\Windows`.
+            drive = _WIN_DRIVE_RE.match(out)
+            out = (out[:2] if drive else "") + part
         else:
             out = out.rstrip("/") + "/" + part
     return out
@@ -3236,6 +3243,9 @@ _PATH_SCRIPT_COMMANDS = frozenset(
         "duckdb",
     }
 )
+# `git` carries its paths on flags rather than in operand position, so it only needs the flag spec
+# below; listing it here would read a subcommand name as a path.
+_PATH_FLAG_ONLY_COMMANDS = frozenset({"git"})
 # Commands whose first positional is a PROGRAM or PATTERN, not a file: `sed '/etc/d' notes.txt` and
 # `grep /usr/bin list.txt` must not read as absolute-path operands. The value is how many positionals to skip.
 _PATH_ARG_SKIP = {
@@ -3420,6 +3430,17 @@ _PATH_FLAG_SPECS = {
         "--context": "skip",
         "-U": "skip",
         "--unified": "skip",
+    },
+    # `git -C <path>` runs the whole command in that directory, so `git -C /media/private-repo show
+    # HEAD:secret.txt` prints a file outside the sandbox with nothing in an operand position to show
+    # for it. `git -h` gives the form as `git [-C <path>] [--git-dir=<path>] ... <command>`.
+    "git": {
+        "-C": "read",
+        "--git-dir": "read",
+        "--work-tree": "read",
+        "-c": "skip",
+        "--exec-path": "skip",
+        "--namespace": "skip",
     },
     "zip": {"-x": "skip", "-i": "skip"},
     "cut": {
@@ -3633,9 +3654,10 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
         command = command[: -len(".exe")]
     args = segment[index + 1 :]
     read_cmd = command in _PATH_READ_COMMANDS or command in _PATH_SCRIPT_COMMANDS
+    flag_only = command in _PATH_FLAG_ONLY_COMMANDS
     write_cmd = command in _PATH_WRITE_COMMANDS
     dest_last = command in _PATH_DEST_LAST_COMMANDS
-    if not (read_cmd or write_cmd or dest_last):
+    if not (read_cmd or write_cmd or dest_last or flag_only):
         return []
     inplace = command in ("sed", "perl") and any(
         arg == flag
@@ -3836,6 +3858,12 @@ _ABSOLUTE_HINT_RE = re.compile(r"[/~\\]|^[A-Za-z]:")
 # Python callables whose first argument (or receiver, for a method) names a file being READ. Only names that take a
 # path are listed: `json.load(fh)` and `copy.copy(obj)` fold to nothing, so sharing a name with one of these costs
 # nothing.
+# Readers whose NAME alone is ambiguous, so they are keyed on the receiving module. `numpy.load`
+# takes a filename; the `load` of every other serializer in these tables takes a file object.
+_PY_QUALIFIED_READ_CALLS = {
+    "numpy": frozenset({"load"}),
+    "np": frozenset({"load"}),
+}
 _PY_PATH_READ_CALLS = frozenset(
     {
         "read_text",
@@ -4084,7 +4112,29 @@ def _python_module_aliases(tree) -> dict:
     return aliases
 
 
-def _python_path_bindings(tree) -> dict:
+def _python_path_fold_aliases(tree) -> "tuple[set, set]":
+    """`(path constructor names, os.path.join names)`, including the local names imports bind them to.
+
+    `from pathlib import Path as P` leaves `P(...)` under a name the fold does not know, so the call
+    resolves to nothing and the path it builds is never checked. The main analyzer already collects
+    these for its own fold; the operand pass needs the same two sets.
+    """
+    ctors = set(_PATH_CTORS)
+    joins: "set[str]" = set()
+    for node in _tree_nodes(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        module = node.module or ""
+        for entry in node.names:
+            local = entry.asname or entry.name
+            if entry.name in _PATH_CTORS:
+                ctors.add(local)
+            elif entry.name == "join" and (module == "os.path" or module.endswith(".path")):
+                joins.add(local)
+    return ctors, joins
+
+
+def _python_path_bindings(tree, ctors = None, joins = None) -> dict:
     """Names bound to a foldable path (`p = '/media/x'`, `p := Path('/media') / 'x'`), so a read
     through the variable folds to the same path a literal would.
 
@@ -4117,7 +4167,7 @@ def _python_path_bindings(tree) -> dict:
             if not isinstance(target, ast.Name):
                 continue
             try:
-                folded = _folded_path(bound, bindings)
+                folded = _folded_path(bound, bindings, ctors, joins)
             except Exception:  # noqa: BLE001 - folding is best effort
                 continue
             # A name this value is DERIVED from may itself have held other paths, and folding with
@@ -4130,7 +4180,9 @@ def _python_path_bindings(tree) -> dict:
                 for used in {n.id for n in ast.walk(bound) if isinstance(n, ast.Name)}:
                     for alternate in _capped_alternates(extra.get(used, ())):
                         try:
-                            other = _folded_path(bound, {**bindings, used: alternate})
+                            other = _folded_path(
+                                bound, {**bindings, used: alternate}, ctors, joins
+                            )
                         except Exception:  # noqa: BLE001 - folding is best effort
                             continue
                         if isinstance(other, str) and other and "\x00" not in other:
@@ -4198,7 +4250,8 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
     ``Path`` chain resolves the same way the credential scan resolves it. A path the folder cannot
     resolve yields nothing here; the dynamic-alias checks elsewhere cover those.
     """
-    bindings = _python_path_bindings(tree)
+    ctors, joins = _python_path_fold_aliases(tree)
+    bindings = _python_path_bindings(tree, ctors, joins)
     rebound = bindings.get(_REBOUND_PATHS_KEY) or {}
     module_aliases = _python_module_aliases(tree)
     function_aliases = _python_function_aliases(tree, module_aliases)
@@ -4237,7 +4290,7 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
         if isinstance(node, ast.NamedExpr):
             node = node.value
         try:
-            folded = _folded_path(node, bindings)
+            folded = _folded_path(node, bindings, ctors, joins)
         except Exception:  # noqa: BLE001
             return
         if isinstance(folded, str) and folded:
@@ -4322,6 +4375,10 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             add(first, True)
             if is_method:
                 add(func.value, True)
+        elif name in _PY_QUALIFIED_READ_CALLS.get(receiver_name, ()):
+            # Qualified, because the bare name is ambiguous: `numpy.load(p)` opens a path while
+            # `json.load(f)`, `pickle.load(f)` and `torch.load(f)` all take an already-open file.
+            add(first, False)
         elif name == "input" and is_method and getattr(func.value, "id", "") == "fileinput":
             # Qualified so the builtin input("/data directory: ") prompt is not read as a file.
             add(first, False)
