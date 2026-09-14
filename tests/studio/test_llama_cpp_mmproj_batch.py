@@ -307,6 +307,46 @@ def test_the_remote_estimate_honours_a_custom_ceiling_too():
     assert _remote_required_ubatch(config, ["--image-max-tokens", "4096"], False) == 4096
 
 
+@pytest.mark.parametrize(
+    "env, expected",
+    [
+        # arg.cpp gives --image-max-tokens the LLAMA_ARG_IMAGE_MAX_TOKENS twin.
+        ({"LLAMA_ARG_IMAGE_MAX_TOKENS": "1024"}, 1024),
+        # A value the stock micro-batch already holds changes nothing.
+        ({"LLAMA_ARG_IMAGE_MAX_TOKENS": "256"}, 0),
+        ({}, 0),
+    ],
+)
+def test_the_image_ceiling_env_twin_is_honoured(projector, env, expected):
+    """gemma3 sits at 256 today, and the environment can lift it past the stock 512."""
+    got = _mmproj_required_ubatch(projector("gemma3"), 2560, None, env)
+    assert got == expected
+
+
+def test_argv_still_wins_over_the_image_ceiling_env_twin(projector):
+    # arg.cpp applies the environment first and argv after it.
+    env = {"LLAMA_ARG_IMAGE_MAX_TOKENS": "1024"}
+    got = _mmproj_required_ubatch(projector("gemma3"), 2560, ["--image-max-tokens", "2048"], env)
+    assert got == 2048
+
+
+@pytest.mark.parametrize(
+    "env, expected",
+    [
+        # The LLAMA_ARG_MMPROJ_AUTO twin, parsed with llama.cpp's own truthy set.
+        ({"LLAMA_ARG_MMPROJ_AUTO": "1"}, _MMPROJ_UNKNOWN_UBATCH),
+        ({"LLAMA_ARG_MMPROJ_AUTO": "on"}, _MMPROJ_UNKNOWN_UBATCH),
+        ({"LLAMA_ARG_MMPROJ_AUTO": "0"}, 0),
+        # arg.cpp reads the NO_ form for any flag with a negative spelling, and its
+        # mere presence is falsey whatever it holds.
+        ({"LLAMA_ARG_MMPROJ_AUTO": "1", "LLAMA_ARG_NO_MMPROJ_AUTO": "anything"}, 0),
+        ({}, 0),
+    ],
+)
+def test_the_discovery_env_twin_is_honoured(env, expected):
+    assert _launch_required_ubatch(None, 3840, None, is_vision = False, env = env) == expected
+
+
 def test_the_batch_still_caps_what_is_emitted():
     # The batch caps the chunk mtmd cuts, so it caps the micro-batch that must hold it.
     assert _batch_ubatch_for_mmproj(4096, None, None, None, {})[1] == 2048

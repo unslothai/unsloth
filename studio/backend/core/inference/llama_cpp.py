@@ -5883,20 +5883,23 @@ def _read_gguf_embedding_length(path: Optional[str]) -> Optional[int]:
         return None
 
 
-def _unknown_projector_ubatch(extra_args: Optional[Iterable[str]] = None) -> int:
+def _unknown_projector_ubatch(
+    extra_args: Optional[Iterable[str]] = None, env: Optional[Mapping[str, str]] = None
+) -> int:
     """Micro-batch to assume for a projector this process cannot open and classify.
 
     Headroom rather than a ceiling, raised by ``--image-max-tokens`` like a known
     family's: the flag lifts whatever ceiling clip.cpp would have applied, and a chunk
     over the assumed size aborts the server just the same.
     """
-    return max(_MMPROJ_UNKNOWN_UBATCH, extra_args_image_max_tokens(extra_args) or 0)
+    return max(_MMPROJ_UNKNOWN_UBATCH, extra_args_image_max_tokens(extra_args, env) or 0)
 
 
 def _mmproj_required_ubatch(
     mmproj_path: Optional[str],
     n_embd_text: Optional[int] = None,
     extra_args: Optional[Iterable[str]] = None,
+    env: Optional[Mapping[str, str]] = None,
 ) -> int:
     """Micro-batch this projector's largest image needs, or 0 when the stock one holds it.
 
@@ -5919,9 +5922,9 @@ def _mmproj_required_ubatch(
     except Exception as e:
         logger.debug(f"mmproj capability read failed: {e}")
         family = ""
-    custom = extra_args_image_max_tokens(extra_args) or 0
+    custom = extra_args_image_max_tokens(extra_args, env) or 0
     if not family:
-        return _unknown_projector_ubatch(extra_args)
+        return _unknown_projector_ubatch(extra_args, env)
     if family not in _MMPROJ_NON_CAUSAL_IMAGE_TOKENS:
         return 0
     if family == "gemma4v" and n_embd_text in _GEMMA4V_CAUSAL_TEXT_N_EMBD:
@@ -5961,7 +5964,9 @@ def _launch_required_ubatch(
     # --no-mmproj, so it opens an image tower whatever else the request says.
     override = _extra_args_device(extra_args, {"--mmproj", "-mm"})
     if override:
-        required = max(required, _mmproj_required_ubatch(str(override), n_embd_text, extra_args))
+        required = max(
+            required, _mmproj_required_ubatch(str(override), n_embd_text, extra_args, env)
+        )
 
     if not vision_off:
         # The switch scrubs this pair. Without it they open whatever they name even
@@ -5969,27 +5974,29 @@ def _launch_required_ubatch(
         # mmproj.path. A URL names a download that has not happened, so it is unknown.
         source_env = os.environ if env is None else env
         if (source_env.get("LLAMA_ARG_MMPROJ_URL") or "").strip():
-            required = max(required, _unknown_projector_ubatch(extra_args))
+            required = max(required, _unknown_projector_ubatch(extra_args, env))
         inherited = (source_env.get("LLAMA_ARG_MMPROJ") or "").strip()
         if inherited:
-            required = max(required, _mmproj_required_ubatch(inherited, n_embd_text, extra_args))
+            required = max(
+                required, _mmproj_required_ubatch(inherited, n_embd_text, extra_args, env)
+            )
 
     if is_vision and not vision_off and not extra_args_disable_mmproj(extra_args):
         if mmproj_path:
             required = max(
-                required, _mmproj_required_ubatch(str(mmproj_path), n_embd_text, extra_args)
+                required, _mmproj_required_ubatch(str(mmproj_path), n_embd_text, extra_args, env)
             )
 
-    if not vision_off and extra_args_mmproj_auto(extra_args):
+    if not vision_off and extra_args_mmproj_auto(extra_args, env):
         # Forwarded unchanged, and llama-server runs its own adjacent-projector search,
         # so this does not depend on discovery here having called the model vision: the
         # two searches can disagree. The switch is still exempt, since the launch
         # appends --no-mmproj-auto after the extras when it suppresses a projector.
         required = max(
             required,
-            _mmproj_required_ubatch(str(mmproj_path), n_embd_text, extra_args)
+            _mmproj_required_ubatch(str(mmproj_path), n_embd_text, extra_args, env)
             if mmproj_path
-            else _unknown_projector_ubatch(extra_args),
+            else _unknown_projector_ubatch(extra_args, env),
         )
 
     return required
