@@ -4459,24 +4459,31 @@ class _TrackedCancel:
         run_id = None,
         model = None,
         kind = "chat",
+        backend = None,
     ):
         self.event = event
         self.keys = tuple(_account_cancel_key(k) for k in keys if k)
         # kind reaches the swap prompt: embeddings and raw completions have no conversation, so
         # naming them chats would offer to stop something the user never started from a thread.
         self._active = active_generations.ActiveGeneration(
-            event, thread_id = thread_id, run_id = run_id, model = model, kind = kind
+            event,
+            thread_id = thread_id,
+            run_id = run_id,
+            model = model,
+            kind = kind,
+            backend = backend,
         )
 
     @classmethod
-    def for_payload(cls, event: threading.Event, payload, *keys):
-        """Track the run against the conversation its request names."""
+    def for_payload(cls, event: threading.Event, payload, *keys, backend = None):
+        """Track the run against its request identity and serving backend."""
         return cls(
             event,
             *keys,
             thread_id = getattr(payload, "thread_id", None),
             run_id = getattr(payload, "generation_run_id", None),
             model = getattr(payload, "model", None),
+            backend = backend,
         )
 
     def __enter__(self):
@@ -7451,6 +7458,7 @@ async def _wait_for_model_switch_idle(
     *,
     current_request_counted: bool,
     cancel_pending: bool = False,
+    discount_registered: bool = False,
     timeout_s: Optional[float] = None,
 ) -> None:
     """Wait until a model replacement cannot interrupt active inference.
@@ -7462,11 +7470,12 @@ async def _wait_for_model_switch_idle(
 
     ``cancel_pending`` is set by a forced swap that has NOT cancelled yet: the
     registered generations are the ones it is about to stop, so waiting on them
-    would wait out exactly what the force exists to end. Excluding them lets the
-    drain finish ahead of the cancel, which keeps every check that can still
-    reject the swap in front of the destructive step. Recomputed each poll (not
-    snapshotted) so a generation that ends on its own stops being discounted and
-    the remaining, non-cancellable requests are still waited out.
+    would wait out exactly what the force exists to end. ``discount_registered``
+    similarly waits only for the middleware-visible pre-registration window
+    during a secondary teardown, without waiting on unrelated resident chats.
+    Recompute the count each poll (not snapshotted) so a generation that ends on
+    its own stops being discounted and the remaining, non-cancellable requests
+    are still waited out.
 
     ``timeout_s`` bounds the wait and returns rather than raising. Only the
     post-cancel drains pass it: what they wait on may never observe its cancel
@@ -7492,7 +7501,7 @@ async def _wait_for_model_switch_idle(
             current_request_counted = current_request_counted,
             include_pending = False,
         )
-        if cancel_pending:
+        if cancel_pending or discount_registered:
             cancellable = (
                 active_generations.count(account_id)
                 if account_id is not None
@@ -14070,20 +14079,13 @@ def _raise_or_cancel_active_generations(
     force: bool,
     action: str,
     cancel: bool = True,
+    backend = None,
 ) -> int:
-    """Gate a model swap on the chats currently generating.
+    """Gate teardown on the generations it would interrupt.
 
-    Every open conversation decodes on the single llama-server this route is
-    about to replace, so refuse with 409 and name them. force_cancel_active
-    instead stops them through the same events an explicit Stop uses. Returns
-    how many were cancelled. The frontend guard is bypassable from a second tab
-    or curl; this one is not.
-
-    ``cancel = False`` runs the refusal half only. /load calls it that way once
-    up front, so a non-forced swap still fails fast, and again with cancel just
-    before teardown: cancelling is destructive and unrecoverable, so it must not
-    run ahead of preflight checks that can still reject the load (see
-    _load_model_impl).
+    A whole-model replacement still uses the account-wide registry. A secondary
+    resident teardown passes its own backend so independent residents can keep
+    serving and only its requests are refused or cancelled.
     """
     from core.inference.gpu_arbiter import require_no_foreign_generations
 
@@ -14093,11 +14095,18 @@ def _raise_or_cancel_active_generations(
         # first would end the caller's chats for nothing. Keyed on account_scope(), whose count
         # drops while a deactivated account's generation still holds the GPU.
         require_no_foreign_generations(scope)
-    if not active_generations.count(scope):
+    if backend is None:
+        running = active_generations.count(scope)
+    else:
+        running = active_generations.count_for_backend(backend, scope)
+    if not running:
         return 0
     if not force:
-        thread_ids = active_generations.active_thread_ids(scope)
-        running = active_generations.count(scope)
+        thread_ids = (
+            active_generations.active_thread_ids(scope)
+            if backend is None
+            else active_generations.active_thread_ids_for_backend(backend, scope)
+        )
         raise HTTPException(
             status_code = 409,
             detail = {
@@ -14115,7 +14124,11 @@ def _raise_or_cancel_active_generations(
     if not cancel:
         # Refusal-only pass: the caller cancels later, once nothing can still reject the load.
         return 0
-    cancelled = active_generations.cancel_all(scope)
+    cancelled = (
+        active_generations.cancel_all(scope)
+        if backend is None
+        else active_generations.cancel_backend(backend, scope)
+    )
     if cancelled:
         logger.info(
             "model_swap_cancelled_active_generations",
@@ -14171,7 +14184,7 @@ async def _cancel_and_drain_for_sidecar_swap(timeout_s: Optional[float] = None) 
     await _drain(time.monotonic() + budget * 4 / 5, discount_registered = False)
 
 
-async def _drain_and_recancel_before_teardown(*, force: bool, action: str) -> None:
+async def _drain_and_recancel_before_teardown(*, force: bool, action: str, backend = None) -> None:
     """Wait out inference the registry cannot see, then stop anything new.
 
     A request that passed the keep-warm middleware but has not reached its
@@ -14181,15 +14194,29 @@ async def _drain_and_recancel_before_teardown(*, force: bool, action: str) -> No
     just cancelled and the ones still in that window, then cancel again for
     anything that registered while waiting.
 
-    Bounded and non-raising: an unload is a deliberate user action, so the worst
-    case stays what it is today rather than becoming a refusal.
+    A secondary resident discounts every registered generation while checking
+    that pre-registration window, then waits only for its own requests. Other
+    resident backends can continue decoding while that slot is torn down.
     """
-    await _wait_for_model_switch_idle(
-        current_request_counted = False,
-        timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
-    )
+    if backend is None:
+        await _wait_for_model_switch_idle(
+            current_request_counted = False,
+            timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
+        )
+    else:
+        await _wait_for_model_switch_idle(
+            current_request_counted = False,
+            discount_registered = True,
+            timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
+        )
+        scope = account_access.account_scope()
+        deadline = time.monotonic() + _POST_CANCEL_DRAIN_TIMEOUT_S
+        while active_generations.count_for_backend(backend, scope):
+            if time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(0.02)
     if force:
-        _raise_or_cancel_active_generations(force = True, action = action)
+        _raise_or_cancel_active_generations(force = True, action = action, backend = backend)
 
 
 _UNRESOLVED_BACKEND_STATE = object()
@@ -15277,12 +15304,26 @@ async def _load_model_impl(
                 gguf_intent, llama_backend
             )
 
+        # A fresh keep-existing GGUF slot does not replace a resident, so it
+        # must bypass the account-wide swap preflight as well as the later
+        # point-of-no-return cancellation.
+        _additive_resident_load = (
+            config.is_gguf
+            and request.keep_existing_loaded
+            and _resident_replacement_slot is None
+            and _resident_target_slot_needed(request, llama_backend)
+            and not backend.active_model_name
+        )
         # Config-resolved dedupe must run first: a duplicate must not refuse/cancel active chats.
         # Refusal is non-destructive; defer forced cancellation past every remaining rejection.
         account_access.require_idle_other_accounts()
-        if on_reload_confirmed is not None:
+        if on_reload_confirmed is not None and not _additive_resident_load:
             on_reload_confirmed(cancel = False)
-        cancel_pending = on_reload_confirmed is not None and bool(request.force_cancel_active)
+        cancel_pending = (
+            on_reload_confirmed is not None
+            and not _additive_resident_load
+            and bool(request.force_cancel_active)
+        )
 
         if not config.is_gguf and _mlx_distributed_launch_detected():
             raise HTTPException(
@@ -15547,36 +15588,44 @@ async def _load_model_impl(
                         status_code = 400,
                         detail = _resident_capacity_message(),
                     )
-
-            # Fast path only: a swap can still be reserved during the drain.
+            # Preserve the fast sidecar refusal for every GGUF load. Non-additive
+            # swaps recheck after draining because a sidecar can begin swapping
+            # while they wait.
             _raise_if_sidecar_swap_in_progress()
 
-            # Drain active generations first (the lifecycle gate blocks new starts); a forced swap
-            # excludes the ones it is about to cancel rather than waiting them out.
-            await _wait_for_model_switch_idle(
-                current_request_counted = current_request_counted,
-                cancel_pending = cancel_pending,
-            )
-            # Decisive recheck, and the last thing that can reject this load, so it runs BEFORE the
-            # cancel: rejecting after would stop every chat for nothing.
-            _raise_if_sidecar_swap_in_progress()
-
-            # Point of no return for the GGUF path: nothing left can reject this load, so stop the
-            # chats the swap interrupts (or refuse, if the caller never opted in).
-            _raise_if_scoped_load_cancelled()
-            if on_reload_confirmed is not None:
-                on_reload_confirmed(cancel = True)
-
-            # Let the cancelled generations unwind before the teardown; no check follows, so this cannot
-            # strand a cancelled chat behind a 409. Bounded: TTS observes no cancel event, so an
-            # unbounded wait would hold the gate for a whole audio run.
-            if cancel_pending:
+            # An additive resident load uses a fresh worker and leaves every
+            # existing GGUF process in place. It must not wait on, refuse, or
+            # cancel generations that continue on those residents.
+            if not _additive_resident_load:
+                # Drain active generations first (the lifecycle gate blocks new starts); a forced swap
+                # excludes the ones it is about to cancel rather than waiting them out.
                 await _wait_for_model_switch_idle(
                     current_request_counted = current_request_counted,
-                    timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
+                    cancel_pending = cancel_pending,
                 )
+                # Decisive recheck, and the last thing that can reject this load, so it runs BEFORE the
+                # cancel: rejecting after would stop every chat for nothing.
+                _raise_if_sidecar_swap_in_progress()
 
-            # every rejection and drain has completed. the load now owns the slot for studio.
+                # Point of no return for the GGUF path: nothing left can reject this load, so stop the
+                # chats the swap interrupts (or refuse, if the caller never opted in).
+                _raise_if_scoped_load_cancelled()
+                if on_reload_confirmed is not None:
+                    on_reload_confirmed(cancel = True)
+
+                # Let the cancelled generations unwind before the teardown; no check follows, so this cannot
+                # strand a cancelled chat behind a 409. Bounded: TTS observes no cancel event, so an
+                # unbounded wait would hold the gate for a whole audio run.
+                if cancel_pending:
+                    await _wait_for_model_switch_idle(
+                        current_request_counted = current_request_counted,
+                        timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
+                    )
+
+            if _additive_resident_load:
+                _raise_if_scoped_load_cancelled()
+
+            # Every rejection and drain has completed. The load now owns the slot for Studio.
             _set_preview_resident(None)
 
             # Unload any active Unsloth model only after every hub conflict check.
@@ -17496,15 +17545,13 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             logger.info(f"Cancelled in-flight GGUF load: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
-        # Same gate as /load: refusal only, so a non-forced unload fails fast before queueing on the
-        # lifecycle gate. Skipped when no teardown branch can fire, or a request naming a model
-        # another tab already replaced would 409 on chats it cannot interrupt.
-        #
-        # BEHIND the two "stop loading" fast paths above: both cancel a load that has not replaced
-        # anything yet, so neither can interrupt a chat, and refusing them counted a teardown that
-        # cannot happen (unretryably -- the frontend's Cancel sends this unload unforced and drops
-        # the error). Any other name still falls through here.
-        if await asyncio.to_thread(_unload_may_evict, request.model_path):
+        # A secondary has its own backend and must not be gated on work served
+        # by the active resident. Active and standard teardown retain the
+        # account-wide preflight below.
+        _secondary_slot = _named_secondary_slot(request.model_path)
+        if _secondary_slot is None and await asyncio.to_thread(
+            _unload_may_evict, request.model_path
+        ):
             _raise_or_cancel_active_generations(
                 force = request.force_cancel_active,
                 action = "Unloading the model",
@@ -17516,10 +17563,12 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
         # swap in a fresh subprocess mid-unload and the unload command would land on the
         # new worker. The gate makes load and unload exclusive.
         async with inference_lifecycle_gate():
-            # Rechecked under the gate, like /load: a chat can register while this one queues here (the
-            # middleware takes and releases the same gate). Still refusal only, and re-read rather
-            # than carried down, since a load may have finished meanwhile.
-            if await asyncio.to_thread(_unload_may_evict, request.model_path):
+            # Recheck under the lifecycle gate: a load can finish while this
+            # request waits, changing an active unload into a secondary unload.
+            _secondary_slot = _named_secondary_slot(request.model_path)
+            if _secondary_slot is None and await asyncio.to_thread(
+                _unload_may_evict, request.model_path
+            ):
                 _raise_or_cancel_active_generations(
                     force = request.force_cancel_active,
                     action = "Unloading the model",
@@ -17528,7 +17577,6 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             # A named secondary resident: unload just that slot. The active model,
             # the idle-reload stash and the account's share of the active slot are
             # all untouched -- and no other resident is promoted to active.
-            _secondary_slot = _named_secondary_slot(request.model_path)
             if _secondary_slot is not None:
                 # Same control boundary the active teardown enforces: a managed
                 # caller may only unload a resident its account published (or
@@ -17546,10 +17594,14 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 # is a deliberate user action, so it stops mid-stream requests rather
                 # than deferring to them.
                 _raise_or_cancel_active_generations(
-                    force = request.force_cancel_active, action = "Unloading the model"
+                    force = request.force_cancel_active,
+                    action = "Unloading the model",
+                    backend = _secondary_slot.backend,
                 )
                 await _drain_and_recancel_before_teardown(
-                    force = request.force_cancel_active, action = "Unloading the model"
+                    force = request.force_cancel_active,
+                    action = "Unloading the model",
+                    backend = _secondary_slot.backend,
                 )
                 await asyncio.to_thread(_resident_registry.drop_slot, _secondary_slot.id)
                 api_monitor.record_lifecycle(
@@ -17861,7 +17913,9 @@ async def generate_stream(
         # body never starts leaves nothing behind. Unregistered, this run passes /unload's 409 gate
         # (which runs no idle drain) and a forced swap has no event to signal. GenerateRequest
         # carries no thread_id: counted, not nameable.
-        _tracker = _TrackedCancel(cancel_event, model = backend.active_model_name)
+        _tracker = _TrackedCancel(
+            cancel_event, model = backend.active_model_name, backend = backend
+        )
         _tracker.__enter__()
         try:
             gen = backend.generate_chat_response(
@@ -18532,6 +18586,7 @@ async def _generate_tts_wav(
         thread_id = getattr(payload, "thread_id", None),
         model = model_name,
         kind = "audio",
+        backend = llama_backend if _direct_llama_tts else backend,
     ):
         # Stop in the UI aborts the fetch and nothing more, and this route has no cancel id to
         # address, so without watching the disconnect llama-server kept generating for the rest
@@ -23620,7 +23675,9 @@ async def produce_openai_chat_completions(
                 monitor_id = monitor_id,
             )
         _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
-        _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
+        _tracker = _TrackedCancel.for_payload(
+            cancel_event, payload, *_cancel_keys, backend = llama_backend
+        )
         _tracker.__enter__()
         try:
             return await _openai_passthrough_non_streaming(
@@ -24000,7 +24057,9 @@ async def produce_openai_chat_completions(
             _tool_decode_finished = False
 
             _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
-            _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
+            _tracker = _TrackedCancel.for_payload(
+                cancel_event, payload, *_cancel_keys, backend = llama_backend
+            )
             _tracker.__enter__()
 
             async def gguf_tool_stream():
@@ -24723,7 +24782,9 @@ async def produce_openai_chat_completions(
             if _wants_multiple_choices(payload):
                 raise _reject_unsupported_n("streaming GGUF chat completions")
             _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
-            _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
+            _tracker = _TrackedCancel.for_payload(
+                cancel_event, payload, *_cancel_keys, backend = llama_backend
+            )
             _tracker.__enter__()
             try:
                 reservation, admission_config = _openai_llama_admission_reserve(
@@ -25088,7 +25149,9 @@ async def produce_openai_chat_completions(
                 raise _openai_admission_http_exception(exc, status_code = 429)
 
             _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
-            _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
+            _tracker = _TrackedCancel.for_payload(
+                cancel_event, payload, *_cancel_keys, backend = llama_backend
+            )
             _tracker.__enter__()
             admission_lease = None
             admission_wait_started_at = None
@@ -28056,7 +28119,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             # Sharing disconnect_event lets a forced swap stop the relay through the check it already
             # polls. Entered inside the body generator, so a response whose body never starts leaves
             # nothing behind (see _responses_stream). No thread_id: public API surface, not a chat.
-            _tracker = _TrackedCancel(disconnect_event, model = monitor_model, kind = "completions")
+            _tracker = _TrackedCancel(
+                disconnect_event, model = monitor_model, kind = "completions", backend = llama_backend
+            )
             _tracker.__enter__()
             # Must stay the last statement before the try that decrements it: a raise in
             # between leaks a permanent +1, and there is no reset hook.
@@ -28175,7 +28240,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         # cancel-close hits this call only.
         _cancel_event = threading.Event()
         _client = _cancelable_nonstreaming_client()
-        _tracker = _TrackedCancel(_cancel_event, model = monitor_model, kind = "completions")
+        _tracker = _TrackedCancel(
+            _cancel_event, model = monitor_model, kind = "completions", backend = llama_backend
+        )
         _tracker.__enter__()
         _cancel_watcher = asyncio.create_task(
             _await_cancel_or_disconnect_then_close_client(
@@ -28771,6 +28838,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         _cancel_event,
         model = str(body.get("model") or _llama_public_model_id(llama_backend) or "default"),
         kind = "embeddings",
+        backend = llama_backend,
     )
     _tracker.__enter__()
     _cancel_watcher = asyncio.create_task(
@@ -29896,7 +29964,7 @@ async def _responses_stream(
     # of tearing the server down mid-response. Entered inside the body generator below, so a
     # response whose body never starts leaves nothing behind.
     cancel_event = threading.Event()
-    _tracker = _TrackedCancel.for_payload(cancel_event, payload, resp_id)
+    _tracker = _TrackedCancel.for_payload(cancel_event, payload, resp_id, backend = llama_backend)
     try:
         reservation, admission_config = _openai_llama_admission_reserve(
             request = request,
@@ -32323,7 +32391,9 @@ async def anthropic_messages(
         tool/plain siblings: the gate reaches a run through the registry, and
         keys would add a cancel surface to a public API.
         """
-        _tracker = _TrackedCancel(cancel_event, model = model_name, kind = "messages")
+        _tracker = _TrackedCancel(
+            cancel_event, model = model_name, kind = "messages", backend = llama_backend
+        )
         _tracker.__enter__()
         try:
             return await _monitored_anthropic(coro)
@@ -32870,7 +32940,9 @@ async def _anthropic_tool_stream(
         # non-forced /unload saw zero generations and tore the server down mid-response. Entered
         # inside the body generator so a response whose body never starts leaves nothing behind.
         # No thread_id: public API surface.
-        _tracker = _TrackedCancel(cancel_event, model = model_name, kind = "messages")
+        _tracker = _TrackedCancel(
+            cancel_event, model = model_name, kind = "messages", backend = llama_backend
+        )
         _tracker.__enter__()
         try:
             emitter = AnthropicStreamEmitter(
@@ -33037,7 +33109,9 @@ async def _anthropic_plain_stream(
 
         # Registered like the tool stream above: this default /v1/messages path decodes on
         # llama-server, so without an entry a non-forced /unload tore it down mid-response.
-        _tracker = _TrackedCancel(cancel_event, model = model_name, kind = "messages")
+        _tracker = _TrackedCancel(
+            cancel_event, model = model_name, kind = "messages", backend = llama_backend
+        )
         _tracker.__enter__()
         try:
             emitter = AnthropicStreamEmitter(
@@ -33889,6 +33963,7 @@ async def _anthropic_passthrough_stream(
         message_id,
         model = model_name,
         kind = "messages",
+        backend = llama_backend,
     )
 
     async def _stream():
@@ -34894,7 +34969,9 @@ async def _openai_passthrough_stream(
     monitor_id: Optional[str] = None,
 ):
     _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
-    _tracker = _TrackedCancel.for_payload(cancel_event, payload, *_cancel_keys)
+    _tracker = _TrackedCancel.for_payload(
+        cancel_event, payload, *_cancel_keys, backend = llama_backend
+    )
     _tracker.__enter__()
     try:
         reservation, admission_config = _openai_llama_admission_reserve(

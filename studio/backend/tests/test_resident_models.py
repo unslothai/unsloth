@@ -404,6 +404,133 @@ def test_runtime_changed_secondary_reloads_in_place_without_duplicate(
     assert len(registry.slots_for_sweep()) == 2
 
 
+
+
+def test_additive_resident_load_does_not_wait_for_or_cancel_active_model(
+    residents, monkeypatch
+):
+    """Loading B beside A never treats A's generation as a model swap."""
+    import contextlib
+
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    registry, load = residents
+    _, a = load("org/A-GGUF", make_active = True)
+    response = object()
+    config = SimpleNamespace(
+        identifier = "org/B-GGUF",
+        display_name = "B",
+        is_gguf = True,
+        is_lora = False,
+        is_vision = False,
+        is_audio = False,
+        is_local = False,
+        gguf_hf_repo = None,
+        gguf_path = None,
+    )
+    intent = GgufLoadIntent(model_identifier = "org/B-GGUF", hf_variant = "Q4_K_M")
+    cancellations = []
+    sidecar_checks = []
+
+    async def _placement(*_args, **_kwargs):
+        return inference_route._LoadPlacement(None, None, False, False)
+
+    async def _unexpected_wait(**_kwargs):
+        raise AssertionError("additive load waited for the active resident")
+
+    monkeypatch.setattr(
+        inference_route,
+        "_resolve_model_identifier_for_request",
+        lambda *_args, **_kwargs: ("org/B-GGUF", "org/B-GGUF", False),
+    )
+    monkeypatch.setattr(
+        inference_route, "resolve_effective_chat_template_override", lambda **_kwargs: None
+    )
+    monkeypatch.setattr(
+        inference_route, "get_inference_backend", lambda: SimpleNamespace(active_model_name = None)
+    )
+    monkeypatch.setattr(inference_route, "_active_gguf_intent", lambda *_args, **_kwargs: intent)
+    monkeypatch.setattr(inference_route.ModelConfig, "from_identifier", lambda **_kwargs: config)
+    monkeypatch.setattr(
+        inference_route, "_hf_offline_if_unreachable_for", lambda *_args: contextlib.nullcontext()
+    )
+    monkeypatch.setattr(inference_route, "_resolve_inherited_extra_args", lambda *_args: None)
+    monkeypatch.setattr(inference_route, "_prepare_load_placement", _placement)
+    monkeypatch.setattr(inference_route, "_resolve_gguf_load_intent", lambda *_args, **_kwargs: intent)
+    monkeypatch.setattr(
+        inference_route, "_guard_chat_load_against_training", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        inference_route, "_raise_if_sidecar_swap_in_progress", lambda: sidecar_checks.append(True)
+    )
+    monkeypatch.setattr(inference_route, "_wait_for_model_switch_idle", _unexpected_wait)
+    monkeypatch.setattr(inference_route, "_close_load_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(inference_route, "_gguf_load_response", lambda *_args, **_kwargs: response)
+    monkeypatch.setattr(inference_route, "_request_used_api_key", lambda _request: False)
+    monkeypatch.setattr(inference_route, "release_chat_gpu_claim", lambda: True)
+    monkeypatch.setattr(inference_route.api_monitor, "record_lifecycle", lambda **_kwargs: object())
+    monkeypatch.setattr(inference_route.api_monitor, "fail_open", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("core.inference.llama_cpp.zero_vram_chat_load", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.chat_load_in_flight", lambda: contextlib.nullcontext()
+    )
+    monkeypatch.setattr("core.inference.llama_keepwarm.note_model_loaded", lambda _backend: None)
+    monkeypatch.setattr("hub.services.models.account_access.publish_resident", lambda *_args: None)
+
+    result = asyncio.run(
+        inference_route._load_model_impl(
+            LoadRequest(
+                model_path = "org/B-GGUF",
+                gguf_variant = "Q4_K_M",
+                keep_existing_loaded = True,
+            ),
+            SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))),
+            "tester",
+            on_reload_confirmed = lambda **kwargs: cancellations.append(kwargs),
+        )
+    )
+
+    assert result is response
+    assert cancellations == []
+    assert sidecar_checks == [True]
+    assert a.is_loaded and a.unloads == 0
+    assert len(registry.slots_for_sweep()) == 2
+
+    async def _swap_wait(**_kwargs):
+        raise HTTPException(status_code = 409, detail = "swap guard reached")
+
+    intent = GgufLoadIntent(model_identifier = "org/C-GGUF", hf_variant = "Q4_K_M")
+    config.identifier = "org/C-GGUF"
+    config.display_name = "C"
+    monkeypatch.setattr(
+        inference_route,
+        "_resolve_model_identifier_for_request",
+        lambda *_args, **_kwargs: ("org/C-GGUF", "org/C-GGUF", False),
+    )
+    monkeypatch.setattr(
+        inference_route, "get_inference_backend", lambda: SimpleNamespace(active_model_name = "org/S")
+    )
+    monkeypatch.setattr(inference_route, "_wait_for_model_switch_idle", _swap_wait)
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            inference_route._load_model_impl(
+                LoadRequest(
+                    model_path = "org/C-GGUF",
+                    gguf_variant = "Q4_K_M",
+                    keep_existing_loaded = True,
+                ),
+                SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1))),
+                "tester",
+                on_reload_confirmed = lambda **kwargs: cancellations.append(kwargs),
+            )
+        )
+
+    assert excinfo.value.status_code == 409
+
+    assert cancellations == [{"cancel": False}]
+    assert a.is_loaded and a.unloads == 0
+
 def test_concurrent_open_and_drop_keeps_slot_ids_unique(residents, monkeypatch):
     registry, _ = residents
     monkeypatch.setenv("UNSLOTH_RESIDENT_MODEL_SLOTS", "16")
@@ -864,6 +991,36 @@ def test_unloading_a_named_secondary_leaves_the_active_model_serving(_unloadable
     assert inference_route.iter_resident_llama_backends() == [a]
     assert registry.slot_for_backend(b) is None and slot_b.id is not None
 
+
+
+def test_unloading_secondary_ignores_active_resident_generation(residents, monkeypatch):
+    """B's unload must not refuse or cancel a request that A serves."""
+    import contextlib
+
+    from models.inference import UnloadRequest
+    from state import active_generations
+    import core.inference.llama_keepwarm as keepwarm
+
+    @contextlib.asynccontextmanager
+    async def _gate():
+        yield
+
+    monkeypatch.setattr(keepwarm, "inference_lifecycle_gate", _gate)
+    monkeypatch.setattr(inference_route, "get_inference_backend", _fake_orchestrator)
+    registry, load = residents
+    _, a = load("org/A-GGUF", make_active = True)
+    _, b = load("org/B-GGUF")
+    active_a = threading.Event()
+
+    with active_generations.ActiveGeneration(active_a, backend = a):
+        response = asyncio.run(
+            inference_route._unload_model_impl(UnloadRequest(model_path = "org/B-GGUF"), "tester")
+        )
+
+    assert response.status == "unloaded"
+    assert not active_a.is_set()
+    assert a.is_loaded and not b.is_loaded
+    assert registry.active_backend() is a
 
 def test_stop_loading_cancels_fresh_secondary_without_unloading_active(_unloadable_world):
     from models.inference import UnloadRequest
