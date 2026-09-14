@@ -94,7 +94,9 @@ def _studio_env(
         'if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then\n'
         '  echo "STUB-PIP $*" >> "$STUB_LOG"\n'
         # a --with-deps run snapshots the dependency set first
-        '  if [ "$3" = "freeze" ]; then echo "transformers==4.0.0"; exit 0; fi\n'
+        '  if [ "$3" = "freeze" ]; then echo "transformers==4.0.0"; echo "torch==2.11.0+cu128"; exit 0; fi\n'
+        # the constraints file is deleted on exit, so record what it pinned
+        '  _c=0; for _a in "$@"; do [ "$_c" = 1 ] && { echo "STUB-PIP-CONSTRAINTS $(tr "\\n" " " < "$_a")" >> "$STUB_LOG"; _c=0; }; [ "$_a" = "-c" ] && _c=1; done\n'
         # an interrupted install: the updater is waiting on this child, so the signal
         # lands on it and its trap runs once we exit
         '  case " $* " in *" -e "*) [ -n "${STUB_PIP_INTERRUPT:-}" ] && kill -INT "$PPID" ;; esac\n'
@@ -111,6 +113,7 @@ def _studio_env(
         home / "node" / "bin",
         "npm",
         'echo "STUB-NPM $* in $PWD" >> "$STUB_LOG"\n'
+        'if [ "$1" = "ci" ]; then exit "${STUB_NPM_CI_EXIT:-0}"; fi\n'
         'if [ "$*" = "run build" ]; then\n'
         + (
             "  mkdir -p dist && echo '<html></html>' > dist/index.html; exit 0\n"
@@ -136,6 +139,7 @@ def _studio_env(
         '  checkout) mkdir -p "$dir/studio/frontend/src" "$dir/.git"'
         ' "$dir/studio/backend/core/data_recipe/oxc-validator";'
         ' echo "{}" > "$dir/studio/frontend/package.json";'
+        ' [ -n "${STUB_LOCKFILE:-}" ] && echo "{}" > "$dir/studio/frontend/package-lock.json";'
         ' echo "{}" > "$dir/studio/backend/core/data_recipe/oxc-validator/package.json";'
         ' echo new > "$dir/NEW_TREE" ;;\n'
         "esac\nexit 0\n",
@@ -242,7 +246,9 @@ def test_studio_update_ref_writes_through_a_linked_source_tree(tmp_path: Path):
     assert (real_src / "NEW_TREE").exists(), "the ref was not installed where the code lives"
     assert not list(home.glob(".src-*")), "staging trees must not land in the data volume"
     assert not list(real_src.parent.glob(".src-prev.*"))
-    assert f"install --no-deps -e {real_src}" in _calls(env), _calls(env)
+    # pip records the home path, so the install keeps resolving through the link and
+    # `unsloth-studio-home --restore` (back to a pre-split image) still finds it
+    assert f"install --no-deps -e {home / 'src'}" in _calls(env), _calls(env)
 
 
 def test_studio_update_ref_with_a_failed_frontend_build_changes_nothing(tmp_path: Path):
@@ -313,9 +319,26 @@ def test_studio_update_with_deps_puts_the_dependency_set_back(tmp_path: Path):
     assert calls.count("install --no-deps -r") == 2, (
         "dependency snapshot and previous install:\n" + calls
     )
+    # the backend's requirement set is the `studio` extra, and torch/CUDA must not be
+    # re-resolved (the venv's nvidia libs are linked into the base venv)
+    assert "unsloth[studio]" in calls, calls
+    assert "STUB-PIP-CONSTRAINTS torch==2.11.0+cu128" in calls, calls
+    assert "transformers==4.0.0" not in [
+        l for l in calls.splitlines() if l.startswith("STUB-PIP-CONSTRAINTS")
+    ], "only the torch/CUDA stack is a constraint"
     env = _studio_env(tmp_path / "nodeps", import_ok = False)
     res = _run(STUDIO_UPDATE, [], env)
     assert "freeze" not in _calls(env), "a --no-deps update has nothing to snapshot"
+    assert " -c " not in _calls(env)
+
+
+def test_studio_update_ref_with_deps_installs_the_studio_extra(tmp_path: Path):
+    env = _studio_env(tmp_path)
+    res = _run(STUDIO_UPDATE, ["--ref", "main", "--with-deps", "--no-restart"], env)
+    home = Path(env["UNSLOTH_STUDIO_HOME"])
+    assert res.returncode == 0, res.stderr + res.stdout
+    assert f"-e {home / 'src'}[studio]" in _calls(env), _calls(env)
+    assert "STUB-PIP-CONSTRAINTS torch==2.11.0+cu128" in _calls(env), _calls(env)
 
 
 def test_studio_update_ref_puts_the_old_tree_back_when_the_new_one_cannot_start(tmp_path: Path):
@@ -362,6 +385,113 @@ def test_studio_update_aborts_when_the_zoo_lookup_never_reached_the_remote(tmp_p
         "an unreachable remote must not be reported as a missing ref:\n" + res.stdout
     )
     assert "--zoo-ref" in res.stderr, "the remedy must be printed"
+
+
+def test_studio_update_puts_the_install_back_when_pip_itself_fails(tmp_path: Path):
+    env = _studio_env(tmp_path)
+    env["STUB_PIP_EXIT"] = "1"
+    res = _run(STUDIO_UPDATE, ["--ref", "main", "--no-restart"], env)
+    home = Path(env["UNSLOTH_STUDIO_HOME"])
+    assert res.returncode != 0
+    assert "previous install is back in place" in res.stderr, res.stderr
+    assert (home / "src" / "OLD_TREE").exists(), "the previous source tree was not put back"
+    assert not list(home.glob(".src-*"))
+    assert "STUB-SUPERVISORCTL" not in _calls(env)
+
+
+def test_studio_update_fails_when_studio_does_not_answer_after_the_restart(tmp_path: Path):
+    env = _studio_env(tmp_path)
+    env["UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT"] = "1"
+    _stub(tmp_path / "bin", "curl", 'echo "STUB-CURL $*" >> "$STUB_LOG"\nexit 22\n')
+    res = _run(STUDIO_UPDATE, [], env)
+    assert res.returncode != 0, res.stdout
+    assert "did not answer on port 8000" in res.stdout, res.stdout
+    assert "STUB-CURL" in _calls(env)
+    env = _studio_env(tmp_path / "ok")
+    env["UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT"] = "5"
+    _stub(tmp_path / "ok" / "bin", "curl", "exit 0\n")
+    res = _run(STUDIO_UPDATE, [], env)
+    assert res.returncode == 0, res.stdout
+    assert "answering on port 8000" in res.stdout
+    env = _studio_env(tmp_path / "junk")
+    env["UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT"] = "soon"
+    _stub(tmp_path / "junk" / "bin", "curl", "exit 0\n")
+    res = _run(STUDIO_UPDATE, [], env)
+    assert res.returncode == 0, res.stdout
+    assert "not a number" in res.stdout
+
+
+def test_studio_update_clears_leftovers_of_a_killed_run_before_it_starts(tmp_path: Path):
+    """`docker stop` ends in SIGKILL, so no trap ran: a previous tree can sit beside src
+    with a pid-derived name that a later run could reuse (mv would nest into it) and a
+    staging tree can sit there with its node_modules."""
+    env = _studio_env(tmp_path)
+    home = Path(env["UNSLOTH_STUDIO_HOME"])
+    (home / ".src-prev.4242" / "junk").mkdir(parents = True)
+    (home / ".src-update.abc123" / "node_modules").mkdir(parents = True)
+    res = _run(STUDIO_UPDATE, ["--ref", "main", "--no-restart"], env)
+    assert res.returncode == 0, res.stderr + res.stdout
+    assert "left behind by an earlier update" in res.stdout, res.stdout
+    assert (home / "src" / "NEW_TREE").exists()
+    assert not (home / "src" / "junk").exists(), "the tree was nested into the stale dir"
+    assert not list(home.glob(".src-*"))
+
+
+def test_studio_update_recovers_a_source_tree_a_killed_run_moved_aside(tmp_path: Path):
+    """SIGKILL between the two moves of the swap leaves no src at all, only .src-prev.*.
+    A later plain update must put it back rather than fail on a missing tree."""
+    env = _studio_env(tmp_path)
+    home = Path(env["UNSLOTH_STUDIO_HOME"])
+    (home / "src").rename(home / ".src-prev.abc123")
+    res = _run(STUDIO_UPDATE, [], env)
+    assert res.returncode == 0, res.stderr + res.stdout
+    assert "recovering the source tree" in res.stdout, res.stdout
+    assert (home / "src" / "OLD_TREE").exists()
+    assert not list(home.glob(".src-prev.*"))
+
+
+def test_studio_update_ref_uses_the_lockfile_and_does_not_fall_back_to_npm_install(tmp_path: Path):
+    env = _studio_env(tmp_path)
+    env["STUB_LOCKFILE"] = "1"
+    env["STUB_NPM_CI_EXIT"] = "1"
+    res = _run(STUDIO_UPDATE, ["--ref", "main", "--no-restart"], env)
+    home = Path(env["UNSLOTH_STUDIO_HOME"])
+    calls = _calls(env)
+    assert res.returncode != 0
+    assert "npm ci failed" in res.stdout, res.stdout
+    frontend_installs = [
+        l for l in calls.splitlines() if "STUB-NPM install" in l and l.endswith("frontend")
+    ]
+    assert not frontend_installs, (
+        "a lockfile that does not apply must not be re-resolved:\n" + calls
+    )
+    assert (home / "src" / "OLD_TREE").exists()
+    env = _studio_env(tmp_path / "nolock")
+    res = _run(STUDIO_UPDATE, ["--ref", "main", "--no-restart"], env)
+    calls = _calls(env)
+    assert res.returncode == 0, res.stderr + res.stdout
+    assert "STUB-NPM ci" not in calls, calls
+    assert "no package-lock.json" in res.stdout, res.stdout
+
+
+def test_studio_update_ref_threads_the_npm_registry_override(tmp_path: Path):
+    env = _studio_env(tmp_path)
+    env["STUB_LOCKFILE"] = "1"
+    env["UNSLOTH_NPM_REGISTRY"] = "https://mirror.example/npm/"
+    res = _run(STUDIO_UPDATE, ["--ref", "main", "--no-restart"], env)
+    assert res.returncode == 0, res.stderr + res.stdout
+    for line in [
+        l for l in _calls(env).splitlines() if "STUB-NPM ci" in l or "STUB-NPM install" in l
+    ]:
+        assert "--registry https://mirror.example/npm/" in line, line
+
+
+def test_studio_update_help_prints_only_the_header(tmp_path: Path):
+    env = _studio_env(tmp_path)
+    res = _run(STUDIO_UPDATE, ["--help"], env)
+    assert res.returncode == 0
+    assert "set -euo pipefail" not in res.stdout
+    assert "UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT" in res.stdout
 
 
 def _llama_env(

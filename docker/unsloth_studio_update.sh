@@ -6,16 +6,21 @@
 #
 #   docker exec <container> unsloth-studio-update              # latest PyPI release
 #   docker exec <container> unsloth-studio-update --ref main   # latest git main (builds its frontend)
-#   docker exec <container> unsloth-studio-update --with-deps  # also update deps
+#   docker exec <container> unsloth-studio-update --with-deps  # also update deps (torch/CUDA stay pinned)
 #   docker exec <container> unsloth-studio-update --no-restart # update, restart later
+#   --zoo-ref <ref>      unsloth-zoo ref to pair with --ref (default: the same ref, else main)
+#   --packages "<specs>" what a release update installs (default: unsloth unsloth_zoo)
+#   UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT=<seconds>  how long to wait for /api/health after the
+#                        restart (default 180; 0 skips the check)
+#   UNSLOTH_NPM_REGISTRY=<url>  npm registry for the --ref frontend build, as in the installer
 #
 # Not `unsloth studio update`: that re-runs the full installer, which re-probes the
 # host GPU for torch wheels and in a CPU-only container downgrades torch to CPU/cu126.
 #
-# Persistence: the update is written to the container's writable layer, so it
-# survives `docker restart`. To keep it across a full `docker rm` + `docker run`
-# (and to keep your chats/users/models), run Studio with its home on a named
-# volume: -v unsloth_studio_home:/opt/unsloth-studio
+# Persistence: the updated packages live in the image's copy of Studio, so they
+# survive `docker restart` but not `docker rm`; pull a new image for a lasting update.
+# Studio's data (accounts, chats, models) is separate: keep it with
+# -v unsloth-studio:/opt/unsloth-studio, which never pins Studio's code.
 set -euo pipefail
 
 STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"
@@ -25,7 +30,8 @@ NO_DEPS="--no-deps"
 RESTART=1
 PACKAGES="unsloth unsloth_zoo"
 
-usage() { sed -n '2,21p' "$0"; }
+# the header comment, up to the first line that is not one
+usage() { awk 'NR > 1 && !/^#/ { exit } NR > 1 { print }' "$0"; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -53,10 +59,13 @@ fi
 
 # Where the editable source tree really is: the Studio home may present it as a symlink
 # into the image's copy, and replacing that link with a directory would take the tree
-# out of the image's hands.
+# out of the image's hands. pip is still pointed at the home path (SRC_INSTALL), so the
+# recorded install keeps resolving through the link, whichever image serves it.
 SRC="$(readlink -f "$STUDIO_HOME/src" 2>/dev/null || true)"
 [ -n "$SRC" ] || SRC="$STUDIO_HOME/src"
 SRC_DIR="$(dirname "$SRC")"
+SRC_INSTALL="$STUDIO_HOME/src"
+[ -e "$SRC_INSTALL" ] || SRC_INSTALL="$SRC"
 
 version_of() { "$PY" -c "from importlib.metadata import version; print(version('unsloth'))" 2>/dev/null || echo "unknown"; }
 
@@ -64,6 +73,25 @@ log() { echo "[studio-update] $*"; }
 
 log "Studio venv: $PY"
 log "before: unsloth $(version_of)"
+
+# A run that was killed outright (docker stop ends in SIGKILL, so no trap ran) can leave
+# its previous tree beside src as .src-prev.*, or its staging tree as .src-update.*.
+# Nothing else writes those names here, and one updater runs at a time in a container,
+# so at start they are always leftovers: put a lone previous tree back when src is gone,
+# and clear the rest.
+shopt -s nullglob
+_prev=("$SRC_DIR"/.src-prev.*)
+if [ ! -e "$SRC" ] && [ "${#_prev[@]}" = "1" ] && [ -d "${_prev[0]}" ]; then
+    log "recovering the source tree an interrupted update left at ${_prev[0]}"
+    mv -T "${_prev[0]}" "$SRC"
+fi
+if [ -d "$SRC" ]; then
+    for _stale in "$SRC_DIR"/.src-update.* "$SRC_DIR"/.src-prev.*; do
+        log "removing $_stale, left behind by an earlier update"
+        rm -rf "$_stale"
+    done
+fi
+shopt -u nullglob
 
 # The tree Studio restarts into must import AND serve its UI: `unsloth studio` exits 1
 # when studio/frontend/dist is missing, and three quick exits leave it FATAL. From / so
@@ -83,6 +111,49 @@ if not os.path.isfile(index):
     sys.exit(1)
 PY
 }
+
+STAGE=""
+PREV_SRC=""
+SWAPPED=0
+DONE=0
+ROLLBACK=""
+FREEZE=""
+CONSTRAINTS=""
+restore() {
+    log "restoring the previous install"
+    if [ "$SWAPPED" = "1" ] && [ -d "$PREV_SRC" ]; then
+        rm -rf "$SRC"
+        if mv -T "$PREV_SRC" "$SRC"; then
+            SWAPPED=0
+        else
+            log "CRITICAL: could not put $PREV_SRC back at $SRC; move it there by hand"
+        fi
+    fi
+    if [ -n "$FREEZE" ] && [ -s "$FREEZE" ]; then
+        "$PY" -m pip install --no-deps -r "$FREEZE" >/dev/null \
+            || log "CRITICAL: pip could not put the previous dependency set back; re-run with --with-deps once the cause is fixed"
+    fi
+    if [ -n "$ROLLBACK" ] && [ -s "$ROLLBACK" ]; then
+        "$PY" -m pip install --no-deps -r "$ROLLBACK" >/dev/null \
+            || log "CRITICAL: pip could not reinstall: $(tr '\n' ' ' < "$ROLLBACK")"
+    fi
+}
+# Runs on every exit. An interrupt (Ctrl-C, or a TERM) after the swap started would
+# otherwise leave the half-installed tree in place and the previous one beside it.
+cleanup() {
+    if [ "$DONE" != "1" ] && [ "$SWAPPED" = "1" ]; then
+        log "interrupted after the source tree was swapped; putting the previous one back"
+        restore
+    fi
+    [ -n "$STAGE" ] && rm -rf "$STAGE"
+    [ -n "$ROLLBACK" ] && rm -f "$ROLLBACK"
+    [ -n "$FREEZE" ] && rm -f "$FREEZE"
+    [ -n "$CONSTRAINTS" ] && rm -f "$CONSTRAINTS"
+    return 0
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # How each package is installed right now (editable tree, pinned commit or release), so
 # a failed update can put it back exactly.
@@ -112,67 +183,54 @@ PY
 
 # --with-deps lets pip move every dependency, and putting unsloth back alone would leave
 # that new dependency set under the old code. Snapshot it first (editable trees are
-# handled by ROLLBACK) so restore can pin it back.
-FREEZE=""
+# handled by ROLLBACK) so restore can pin it back. The torch/CUDA stack is pinned as
+# constraints for the install itself: the image links the venv's nvidia libraries into
+# the base venv, so a re-resolved torch would write over the base image's copy.
 if [ -z "$NO_DEPS" ]; then
     FREEZE="$(mktemp)"
     "$PY" -m pip freeze --exclude-editable > "$FREEZE" 2>/dev/null || : > "$FREEZE"
+    CONSTRAINTS="$(mktemp)"
+    grep -E '^(torch|torchvision|torchaudio|triton|nvidia-|xformers|bitsandbytes)' "$FREEZE" > "$CONSTRAINTS" || true
 fi
-
-STAGE=""
-PREV_SRC=""
-SWAPPED=0
-DONE=0
-restore() {
-    log "restoring the previous install"
-    if [ "$SWAPPED" = "1" ] && [ -d "$PREV_SRC" ]; then
-        rm -rf "$SRC"
-        mv "$PREV_SRC" "$SRC"
-        SWAPPED=0
-    fi
-    if [ -n "$FREEZE" ] && [ -s "$FREEZE" ]; then
-        "$PY" -m pip install --no-deps -r "$FREEZE" >/dev/null \
-            || log "CRITICAL: pip could not put the previous dependency set back; re-run with --with-deps once the cause is fixed"
-    fi
-    "$PY" -m pip install --no-deps -r "$ROLLBACK" >/dev/null \
-        || log "CRITICAL: pip could not reinstall: $(tr '\n' ' ' < "$ROLLBACK")"
-}
-# Runs on every exit. An interrupt (Ctrl-C, `docker stop`) after the swap would otherwise
-# leave the half-installed tree in place and the previous one beside it as .src-prev.*,
-# which the next container start links into the Studio home.
-cleanup() {
-    if [ "$DONE" != "1" ] && [ "$SWAPPED" = "1" ]; then
-        log "interrupted after the source tree was swapped; putting the previous one back"
-        restore
-    fi
-    [ -n "$STAGE" ] && rm -rf "$STAGE"
-    rm -f "$ROLLBACK"
-    [ -n "$FREEZE" ] && rm -f "$FREEZE"
-    return 0
-}
-trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+DEP_ARGS=()
+if [ -z "$NO_DEPS" ] && [ -s "$CONSTRAINTS" ]; then
+    DEP_ARGS=(-c "$CONSTRAINTS")
+fi
 
 # --ref installs the same shape the image was built with: an editable source tree whose
 # frontend is built here with the bundled Node. A plain `pip install git+...` has no
 # studio/frontend/dist (only release wheels ship one) and no oxc-validator runtime.
+NPM_REGISTRY_ARGS=()
+[ -n "${UNSLOTH_NPM_REGISTRY:-}" ] && NPM_REGISTRY_ARGS=(--registry "$UNSLOTH_NPM_REGISTRY")
 build_source_tree() {
-    local tree="$1" node_bin="$STUDIO_HOME/node/bin" oxc
-    [ -x "$node_bin/npm" ] || { log "ERROR: no bundled Node at $node_bin; cannot build the frontend for --ref"; return 1; }
+    local tree="$1" npm_bin="" oxc
+    if [ -x "$STUDIO_HOME/node/bin/npm" ]; then
+        npm_bin="$STUDIO_HOME/node/bin/npm"
+    else
+        # the installer uses the system Node when it is new enough and installs none of its own
+        npm_bin="$(command -v npm || true)"
+    fi
+    [ -n "$npm_bin" ] || { log "ERROR: no npm (neither $STUDIO_HOME/node/bin/npm nor one on PATH); cannot build the frontend for --ref"; return 1; }
     # errexit is ignored inside a `( ... ) || return` list, so each step fails explicitly
     (
-        export PATH="$node_bin:$PATH"
+        export PATH="$(dirname "$npm_bin"):$PATH"
         cd "$tree/studio/frontend" || exit 1
         log "installing frontend dependencies"
-        npm ci --no-fund --no-audit --loglevel=error || npm install --no-fund --no-audit --loglevel=error || exit 1
+        if [ -f package-lock.json ]; then
+            # the lockfile is the build's contract (.npmrc: `npm ci`, never `npm install`)
+            npm ci --no-fund --no-audit --loglevel=error ${NPM_REGISTRY_ARGS[@]+"${NPM_REGISTRY_ARGS[@]}"} \
+                || { log "ERROR: npm ci failed (lockfile drift or the registry; UNSLOTH_NPM_REGISTRY=<url> for a mirror)"; exit 1; }
+        else
+            log "no package-lock.json in this ref; resolving with npm install"
+            npm install --no-fund --no-audit --loglevel=error ${NPM_REGISTRY_ARGS[@]+"${NPM_REGISTRY_ARGS[@]}"} || exit 1
+        fi
         log "building the frontend"
         npm run build || { log "ERROR: npm run build failed"; exit 1; }
         oxc="$tree/studio/backend/core/data_recipe/oxc-validator"
         if [ -f "$oxc/package.json" ]; then
             cd "$oxc" || exit 1
             log "installing the oxc validator runtime"
-            npm install --no-fund --no-audit --loglevel=error || exit 1
+            npm install --no-fund --no-audit --loglevel=error ${NPM_REGISTRY_ARGS[@]+"${NPM_REGISTRY_ARGS[@]}"} || exit 1
         fi
     ) || return 1
     rm -rf "$tree/studio/frontend/node_modules"
@@ -201,7 +259,7 @@ if [ -n "$REF" ]; then
         fi
     fi
     if [ ! -d "$SRC" ]; then
-        echo "unsloth-studio-update: no source tree at $SRC (a wheel install has none); --ref needs the image's Studio checkout. Use a plain update instead; nothing was changed." >&2
+        echo "unsloth-studio-update: no source tree at $SRC (a wheel install has none, and a broken src link points at nothing); --ref needs the image's Studio checkout. Use a plain update instead; nothing was changed." >&2
         exit 1
     fi
     log "installing from git: unsloth @${REF}, unsloth-zoo @${_zoo_ref}"
@@ -219,26 +277,37 @@ if [ -n "$REF" ]; then
         echo "unsloth-studio-update: the frontend for '${REF}' did not build; nothing was changed." >&2
         exit 1
     fi
-    PREV_SRC="$SRC_DIR/.src-prev.$$"
-    mv "$SRC" "$PREV_SRC"
-    if ! mv "$STAGE" "$SRC"; then
-        mv "$PREV_SRC" "$SRC"
+    # a fresh name (mktemp) and -T: an existing directory of the same name would make mv
+    # nest the tree inside it, and restore would then move that wrapper over src
+    PREV_SRC="$(mktemp -d "$SRC_DIR/.src-prev.XXXXXX")" && rmdir "$PREV_SRC"
+    # SWAPPED before the first move: a signal between the two moves must still restore
+    SWAPPED=1
+    mv -T "$SRC" "$PREV_SRC"
+    if ! mv -T "$STAGE" "$SRC"; then
+        mv -T "$PREV_SRC" "$SRC" && SWAPPED=0
         echo "unsloth-studio-update: could not move the new source tree into place; nothing was changed." >&2
         exit 1
     fi
     STAGE=""
-    SWAPPED=1
+    _spec="$SRC_INSTALL"
+    # with dependencies: the backend's own requirement set is the `studio` extra
+    [ -z "$NO_DEPS" ] && _spec="${SRC_INSTALL}[studio]"
     # shellcheck disable=SC2086
-    if ! "$PY" -m pip install $NO_DEPS -e "$SRC" \
+    if ! "$PY" -m pip install $NO_DEPS ${DEP_ARGS[@]+"${DEP_ARGS[@]}"} -e "$_spec" \
             "git+https://github.com/unslothai/unsloth-zoo.git@${_zoo_ref}#egg=unsloth_zoo"; then
         restore
         echo "unsloth-studio-update: pip could not install '${REF}'; the previous install is back in place." >&2
         exit 1
     fi
 else
-    log "installing latest release of: $PACKAGES"
+    _pkgs="$PACKAGES"
+    if [ -z "$NO_DEPS" ]; then
+        # a release update with dependencies must bring the backend's requirement set too
+        _pkgs="$(printf '%s\n' $PACKAGES | sed 's/^unsloth$/unsloth[studio]/' | tr '\n' ' ')"
+    fi
+    log "installing latest release of: $_pkgs"
     # shellcheck disable=SC2086
-    if ! "$PY" -m pip install -U $NO_DEPS $PACKAGES; then
+    if ! "$PY" -m pip install -U $NO_DEPS ${DEP_ARGS[@]+"${DEP_ARGS[@]}"} $_pkgs; then
         restore
         echo "unsloth-studio-update: pip failed; the previous install is back in place." >&2
         exit 1
@@ -259,10 +328,12 @@ if ! studio_tree_ok; then
     log "If a new dependency is missing, re-run with --with-deps."
     exit 1
 fi
+# DONE before the previous tree goes: a signal after that must not "restore" the old
+# package pins on top of the new tree
+DONE=1
 if [ "$SWAPPED" = "1" ]; then
     rm -rf "$PREV_SRC"
 fi
-DONE=1
 
 if [ "$RESTART" = "1" ]; then
     SUPCTL="$(command -v supervisorctl || true)"
@@ -283,6 +354,7 @@ if [ "$RESTART" = "1" ]; then
             exit 1
         fi
         _wait="${UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT:-180}"
+        case "$_wait" in ''|*[!0-9]*) log "ignoring UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT='${_wait}' (not a number of seconds); using 180"; _wait=180;; esac
         _deadline=$(( $(date +%s) + _wait ))
         _up=0
         while [ "$(date +%s)" -lt "$_deadline" ]; do
@@ -295,6 +367,8 @@ if [ "$RESTART" = "1" ]; then
             log "ERROR: Studio did not answer on port 8000 within ${_wait}s; the update is installed but Studio is not serving (see docker logs)"
             "$SUPCTL" status studio || true
             exit 1
+        else
+            log "health check skipped (UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT=0)"
         fi
     else
         log "supervisor not managing 'studio' here; restart Studio yourself"
