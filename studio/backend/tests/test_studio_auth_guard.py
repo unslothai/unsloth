@@ -846,6 +846,56 @@ def test_home_is_the_workdir_under_bypass_permissions(monkeypatch, tmp_path):
         tools._studio_auth_markers_cache = None
 
 
+def test_pwd_is_the_workdir_under_bypass_permissions(monkeypatch, tmp_path):
+    # Bash rewrites PWD on every `cd`, so under bypass it names the tool workdir and `$PWD/../..`
+    # is the auth directory's parent. Left as a literal segment it read as `<workdir>/$PWD/...`.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for command in (
+            'sqlite3 "$PWD/../../auth/auth.db" "select jwt_secret from auth_user"',
+            "cat ${PWD}/../../auth/.desktop_secret",
+            "cat $PWD/../../auth/.cli_api_key_cli_1",
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+        # Python reads the same directory by name or by call.
+        for code in (
+            'import os, sqlite3\nprint(sqlite3.connect(os.environ["PWD"] + "/../../auth/auth.db"))',
+            'import os\nprint(open(os.getcwd() + "/../../auth/auth.db").read())',
+            'from pathlib import Path\nprint((Path.cwd() / ".." / ".." / "auth" / "auth.db").read_bytes())',
+        ):
+            assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), code
+        # Ordinary work names the working directory constantly and must still run.
+        for ordinary in (
+            "echo $PWD",
+            "ls $PWD/../models",
+            "cat $PWD/notes.md",
+            "echo $PWDX",
+        ):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+        assert (
+            tools._python_exec(
+                'import os\nprint(os.environ["PWD"] + "/data")',
+                None,
+                30,
+                _SESSION,
+                disable_sandbox = True,
+            )
+            != tools._STUDIO_CREDENTIAL_BLOCKED
+        )
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
 def test_pushd_and_a_python_chdir_move_the_directory_too(monkeypatch, tmp_path):
     # `pushd DIR` makes DIR the working directory exactly as `cd` does, and `os.chdir('../..')`
     # moves every path AFTER it in the same snippet. Checked independently, the move reaches only

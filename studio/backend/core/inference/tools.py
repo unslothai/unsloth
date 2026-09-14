@@ -2717,6 +2717,9 @@ _BRACKET_CLASS_RE = re.compile(r"\[[^\]/\s]{1,64}\]")
 # The spellings of the home directory a shell expands before the command sees them. The bare `~` only
 # counts at the head of a path, so `file~` and `a~b` are left alone.
 _HOME_VARIABLE_RE = re.compile(r"\$\{HOME\}|\$HOME\b|%HOME%|(?<![\w~.])~(?=[/\\])", re.IGNORECASE)
+# The shell's spellings of the working directory. Bypass sets PWD to the tool workdir, so
+# `$PWD/../..` is the sandbox walked two levels up, exactly as `$HOME/../..` is.
+_CWD_VARIABLE_RE = re.compile(r"\$\{PWD\}|\$PWD\b|%CD%|\$env:PWD\b", re.IGNORECASE)
 
 
 def _glob_can_name_the_marker(lowered: str, marker: str) -> bool:
@@ -2914,6 +2917,10 @@ def _references_studio_credential_here(text: str, workdir: "str | None") -> bool
             return True
     # Bypass repoints HOME at the tool workdir, so `$HOME/../..` is the auth directory's parent.
     # Substituted, not replaced: the raw text still carries the real-home spellings.
+    if workdir and ("pwd" in text.lower() or "%cd%" in text.lower()):
+        here = _CWD_VARIABLE_RE.sub(lambda _m: workdir.rstrip("/\\"), text)
+        if here != text and _references_studio_credential_here(here, workdir):
+            return True
     if workdir and ("home" in text.lower() or "~" in text):
         homed = _HOME_VARIABLE_RE.sub(lambda _m: workdir.rstrip("/\\"), text)
         # A workdir spelling `~` would substitute to another match, so recurse only once it is gone.
@@ -3022,6 +3029,13 @@ def _python_builds_a_credential_path(code: str, workdir: "str | None") -> bool:
             root = _studio_home_for_guard() if _code_reads_the_studio_home(code) else None
             if root and any(
                 _references_studio_credential_here(folded.replace("\x00", root), cwd)
+                for cwd in cwds
+            ):
+                return True
+            # `os.environ["PWD"] + "/../../auth/auth.db"` reads the cwd the same way, and bypass
+            # sets PWD to the tool workdir, so the dynamic piece is known here too.
+            if _code_reads_the_working_directory(code) and any(
+                cwd and _references_studio_credential_here(folded.replace("\x00", cwd), cwd)
                 for cwd in cwds
             ):
                 return True
@@ -3157,6 +3171,12 @@ def _code_reads_the_studio_home(code: str) -> bool:
     lowercased, so this brings the python fold into line with them."""
     lowered = code.lower()
     return any(var.lower() in lowered for var in _STUDIO_HOME_ENV_VARS)
+
+
+def _code_reads_the_working_directory(code: str) -> bool:
+    """True when *code* asks for the working directory by any of its usual names."""
+    lowered = code.lower()
+    return '"pwd"' in lowered or "'pwd'" in lowered or "getcwd" in lowered or "cwd()" in lowered
 
 
 def _studio_home_for_guard() -> "str | None":
