@@ -3,6 +3,7 @@
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { listMcpServers } from "./api/mcp-servers-api";
+import { mcpImagePolicySnapshot } from "./api/mcp-image-privacy";
 import { authFetch } from "@/features/auth";
 import {
   classifiedAttachmentFile,
@@ -282,13 +283,7 @@ class VisionImageAdapter implements AttachmentAdapter {
   private async mcpToolOnlyEnabled(): Promise<boolean> {
     if (!useChatRuntimeStore.getState().mcpEnabledForChat) return false;
     try {
-      const servers = await listMcpServers();
-      return servers.some(
-        (server) =>
-          server.is_enabled &&
-          server.allow_image_attachments &&
-          (server.image_input_mappings?.length ?? 0) > 0,
-      );
+      return mcpImagePolicySnapshot(await listMcpServers()).tool_only;
     } catch {
       const reason = "Could not verify MCP image attachment settings. Try again.";
       toast.error(reason);

@@ -51,6 +51,46 @@ export type McpImageAttachmentSelection = {
   attachment_id: string;
 };
 
+export type McpImagePolicySnapshot = {
+  tool_only: boolean;
+  servers: { server_id: string; config_revision: number }[];
+};
+
+export function mcpImagePolicySnapshot(
+  servers: readonly {
+    id: string;
+    config_revision?: number;
+    is_enabled: boolean;
+    allow_image_attachments: boolean;
+    image_input_mappings?: readonly unknown[];
+  }[],
+): McpImagePolicySnapshot {
+  const configured = servers
+    .filter(
+      (server) =>
+        server.is_enabled &&
+        server.allow_image_attachments &&
+        (server.image_input_mappings?.length ?? 0) > 0,
+    )
+    .map((server) => {
+      if (
+        !Number.isSafeInteger(server.config_revision) ||
+        server.config_revision! < 1
+      ) {
+        throw new Error("MCP image attachment settings are missing a revision.");
+      }
+      return { server_id: server.id, config_revision: server.config_revision! };
+    })
+    .sort((left, right) =>
+      left.server_id < right.server_id
+        ? -1
+        : left.server_id > right.server_id
+          ? 1
+          : 0,
+    );
+  return { tool_only: configured.length > 0, servers: configured };
+}
+
 /** Select only a tool-only image that is already durable in this exact conversation. */
 export function mcpImageAttachmentForTokenCount(
   messages: readonly IdentifiedMessage[],

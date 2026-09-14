@@ -227,8 +227,29 @@ class _PrivateMcpTransport:
             message["id"] = request_id
         connection = None
         wire = None
+        settled = threading.Event()
+        watcher = None
+
+        def interrupt_http_wait():
+            while not settled.wait(0.05):
+                if (
+                    cancel_event is not None and cancel_event.is_set()
+                ) or time.monotonic() >= deadline:
+                    self.closed.set()
+                    active = self.http
+                    if active is not None:
+                        try:
+                            if active.sock is not None:
+                                active.sock.shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
+                        active.close()
+                    return
+
         try:
             if self.process is None:
+                watcher = account_thread(target = interrupt_http_wait, daemon = True)
+                watcher.start()
                 connection = self._connection(deadline)
             elif self.process.poll() is not None:
                 raise _PrivateTransportUnavailable
@@ -310,11 +331,14 @@ class _PrivateMcpTransport:
                 if isinstance(item, dict) and item.get("id") == request_id and "method" not in item:
                     return self._response(item, request_id)
         finally:
+            settled.set()
             if wire is not None:
                 wire.clear()
             if connection is not None:
                 connection.close()
                 self.http = None
+            if watcher is not None:
+                watcher.join(timeout = 0.2)
 
     def _response(self, item, request_id):
         if (

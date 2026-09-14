@@ -2,8 +2,10 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 import json
+import socket
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -95,6 +97,50 @@ def test_http_send_is_one_use_and_redacts_echoes(http_recipient, caplog, monkeyp
         == PRIVATE_CALL_ERROR
     )
     assert len(calls) == 1
+
+
+def test_http_initialize_cancel_interrupts_blocked_response(monkeypatch):
+    transport = mcp_client._PrivateMcpTransport("http://example.test/mcp", {}, 30)
+    left, right = socket.socketpair()
+
+    class Response:
+        status = 200
+
+        def getheader(
+            self,
+            name,
+            default = None,
+        ):
+            return "application/json" if name == "Content-Type" else default
+
+        def read(self, *_):
+            return left.recv(1)
+
+    class Connection:
+        sock = left
+
+        def request(self, *args, **kwargs):
+            pass
+
+        def getresponse(self):
+            return Response()
+
+        def close(self):
+            left.close()
+
+    monkeypatch.setattr(
+        transport,
+        "_connection",
+        lambda _: setattr(transport, "http", Connection()) or transport.http,
+    )
+    cancel = threading.Event()
+    threading.Timer(0.1, cancel.set).start()
+    started = time.monotonic()
+    with pytest.raises(Exception):
+        transport.exchange("initialize", {}, cancel_event = cancel)
+    assert cancel.is_set()
+    assert time.monotonic() - started < 2
+    right.close()
 
 
 def test_stdio_send_redacts_results_and_side_channels(tmp_path, monkeypatch, capfd):

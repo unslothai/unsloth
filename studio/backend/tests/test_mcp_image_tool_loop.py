@@ -78,6 +78,9 @@ def image_request(tmp_path, monkeypatch):
         )
         tools.append({"type": "function", "function": {"name": name, "parameters": schema}})
     monkeypatch.setattr(image_loop, "_mapping_for_name", rows.get)
+    monkeypatch.setattr(
+        image_loop, "_image_policy_revisions", lambda: [("classify", 1), ("inspect", 1)]
+    )
     recipient_events = []
     monkeypatch.setattr(
         mcp_client,
@@ -93,6 +96,13 @@ def image_request(tmp_path, monkeypatch):
     fixture = SimpleNamespace(
         payload = SimpleNamespace(
             mcp_image_attachment = SimpleNamespace(message_id = "message", attachment_id = "image"),
+            mcp_image_policy = SimpleNamespace(
+                tool_only = True,
+                servers = [
+                    SimpleNamespace(server_id = "classify", config_revision = 1),
+                    SimpleNamespace(server_id = "inspect", config_revision = 1),
+                ],
+            ),
             messages = [{"role": "user", "content": "Find this image"}],
             stream = True,
             mcp_enabled = True,
@@ -201,8 +211,15 @@ def test_request_validation_rejects_invalid_private_selection(image_request, cha
 def test_unselected_request_rewrites_only_configured_image_fields(image_request):
     f = image_request
     f.payload.mcp_image_attachment = None
+    f.payload.mcp_image_policy = None
     run, tools = prepare(f)
     assert run is None
     assert tools[0]["function"]["parameters"]["properties"]["picture_blob"]["title"] == (
         "Image attachment reference"
     )
+
+
+def test_changed_image_policy_revision_is_rejected_before_model_dispatch(image_request):
+    image_request.payload.mcp_image_policy.servers[0].config_revision = 2
+    with pytest.raises(McpImageDisclosureError, match = "settings changed"):
+        prepare(image_request)

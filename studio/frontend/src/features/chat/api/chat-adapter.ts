@@ -5,9 +5,12 @@ import { mlxRuntimeStateFrom } from "../lib/mlx-runtime-state";
 import {
   isMcpToolOnly,
   markImageDisclosureReceived,
+  mcpImagePolicySnapshot,
   modelVisibleMessage,
   type ImageDisclosure,
+  type McpImagePolicySnapshot,
 } from "./mcp-image-privacy";
+import { listMcpServers } from "./mcp-servers-api";
 import {
   clearedServerTuningState,
   committedServerTuningState,
@@ -4966,6 +4969,27 @@ export function createOpenAIStreamAdapter(
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");
+      const submittedImages =
+        generationUserMessage?.attachments?.filter(
+          (attachment) => attachment.type === "image",
+        ) ?? [];
+      let mcpImagePolicy: McpImagePolicySnapshot | undefined;
+      if (submittedImages.length) {
+        try {
+          mcpImagePolicy = mcpImagePolicySnapshot(
+            mcpEnabledForChat ? await listMcpServers() : [],
+          );
+        } catch {
+          throw new Error(
+            "Could not verify MCP image attachment settings. Try again.",
+          );
+        }
+        if (submittedImages.every(isMcpToolOnly) !== mcpImagePolicy.tool_only) {
+          throw new Error(
+            "MCP image sharing settings changed. Remove and attach the image again.",
+          );
+        }
+      }
       const privateImages = generationUserMessage?.attachments?.filter(isMcpToolOnly) ?? [];
       let mcpImageAttachment: { message_id: string; attachment_id: string } | undefined;
       if (privateImages.length) {
@@ -6219,6 +6243,9 @@ export function createOpenAIStreamAdapter(
               );
               if (mcpImageAttachment) {
                 requestPayload = { ...requestPayload, mcp_image_attachment: mcpImageAttachment } as OpenAIChatCompletionsRequest;
+              }
+              if (mcpImagePolicy) {
+                requestPayload = { ...requestPayload, mcp_image_policy: mcpImagePolicy };
               }
             } catch (error) {
               clearSelectedImageEditReference();

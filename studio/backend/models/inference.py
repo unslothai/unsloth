@@ -1971,6 +1971,18 @@ class McpImageAttachmentSelection(BaseModel):
     attachment_id: str = Field(..., min_length = 1, max_length = 256)
 
 
+class McpImagePolicyServerRevision(BaseModel):
+    model_config = {"extra": "forbid"}
+    server_id: str = Field(..., min_length = 1, max_length = 256)
+    config_revision: int = Field(..., ge = 1)
+
+
+class McpImagePolicySnapshot(BaseModel):
+    model_config = {"extra": "forbid"}
+    tool_only: bool
+    servers: list[McpImagePolicyServerRevision] = Field(default_factory = list, max_length = 256)
+
+
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible chat completion request.
 
@@ -2181,6 +2193,10 @@ class ChatCompletionRequest(BaseModel):
             "[x-unsloth] Private MCP image selected from the current persisted user message. "
             "Studio resolves it and gives the model only an opaque reference."
         ),
+    )
+    mcp_image_policy: Optional[McpImagePolicySnapshot] = Field(
+        None,
+        description = "[x-unsloth] Studio's checked per-server image-policy revisions for this submission.",
     )
     deep_research_armed: Optional[bool] = Field(
         None,

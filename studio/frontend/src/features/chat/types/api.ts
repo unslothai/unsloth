@@ -596,6 +596,10 @@ export interface OpenAIChatCompletionsRequest {
   enabled_tools?: string[];
   /** Local models + enable_tools only. */
   mcp_enabled?: boolean;
+  mcp_image_policy?: {
+    tool_only: boolean;
+    servers: { server_id: string; config_revision: number }[];
+  };
   /** The replayed tool calls came from Studio's own local tool loop. */
   studio_tool_history?: boolean;
   /** Local models + enable_tools only. */

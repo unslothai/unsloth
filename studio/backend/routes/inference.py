@@ -5200,8 +5200,10 @@ def _thread_has_checkpoint(thread_id, branch_messages = None) -> bool:
 
 
 async def _prepare_mcp_image_for_route(payload, current_subject, tools, cancel_event, ui_events):
-    if getattr(payload, "mcp_image_attachment", None) is None and (
-        not tools or not getattr(payload, "mcp_enabled", False)
+    if (
+        getattr(payload, "mcp_image_attachment", None) is None
+        and getattr(payload, "mcp_image_policy", None) is None
+        and (not tools or not getattr(payload, "mcp_enabled", False))
     ):
         return None, tools
     from core.inference.mcp_image_tool_loop import prepare_image_tool_request

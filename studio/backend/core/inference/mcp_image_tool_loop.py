@@ -38,8 +38,48 @@ from state.tool_approvals import (
 _COUNT_ATTACHMENT_REFERENCE = "mcp-image-ref-xQ7m9K2vP4sN8dF1hJ6cL0wR3tY5uB7eG9aZ2iC4oEU"
 
 
+def _image_policy_revisions():
+    from storage import mcp_servers_db
+
+    current = []
+    for server in mcp_servers_db.list_servers():
+        try:
+            mappings = json.loads(server.get("image_input_mappings_json") or "[]")
+        except (TypeError, ValueError):
+            mappings = []
+        if (
+            server.get("is_enabled")
+            and server.get("allow_image_attachments")
+            and isinstance(mappings, list)
+            and mappings
+        ):
+            current.append((server["id"], int(server.get("config_revision") or 0)))
+    return sorted(current)
+
+
+def _validate_image_policy_snapshot(payload):
+    snapshot = getattr(payload, "mcp_image_policy", None)
+    selection = getattr(payload, "mcp_image_attachment", None)
+    if snapshot is None:
+        if selection is not None:
+            raise McpImageDisclosureError("MCP image sharing settings must be checked again")
+        return
+    current = _image_policy_revisions() if getattr(payload, "mcp_enabled", False) else []
+    supplied = [(item.server_id, item.config_revision) for item in snapshot.servers]
+    if (
+        supplied != sorted(set(supplied))
+        or current != supplied
+        or snapshot.tool_only != bool(current)
+        or snapshot.tool_only != (selection is not None)
+    ):
+        raise McpImageDisclosureError(
+            "MCP image sharing settings changed. Remove and attach the image again."
+        )
+
+
 def prepare_image_tool_request(payload, *, subject, tools, cancel_event, ui_events):
     """Validate the private selection before any model receives this request."""
+    _validate_image_policy_snapshot(payload)
     selection = getattr(payload, "mcp_image_attachment", None)
     if selection is None:
         if tools is not None and getattr(payload, "mcp_enabled", False):
