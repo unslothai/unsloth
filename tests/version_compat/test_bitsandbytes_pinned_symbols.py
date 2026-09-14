@@ -5,11 +5,31 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 
 from tests.version_compat._fetch import fetch_text, first_match, has_def
 
+
+
+def first_match_signature(src: str, class_name: str) -> str | None:
+    """The text of ``class_name``'s __init__ parameter list, or None."""
+    at = src.find(f"class {class_name}")
+    if at == -1:
+        return None
+    at = src.find("def __init__", at)
+    if at == -1:
+        return None
+    depth = 0
+    for i in range(src.index("(", at), len(src)):
+        if src[i] == "(":
+            depth += 1
+        elif src[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return src[src.index("(", at) : i + 1]
+    return None
 
 # pyproject pin: bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0 Test floor + each safe minor since.
 BNB_TAGS = [
@@ -217,3 +237,49 @@ def test_bnb_version_parseable(tag: str):
     assert (
         has_literal or has_subimport or has_metadata or has_version_attr
     ), f"{tag}: bnb.__version__ not exported"
+
+
+def test_bnb_optimizer2state_options_are_not_passed_positionally(tag: str):
+    """QGaLoreAdamW8bit must not pass percentile_clipping / block_wise by position.
+
+    bitsandbytes 0.50.0 removed both from Optimizer2State.__init__ (PR #1871), so positions
+    10 and 11 became max_unorm and skip_zeros. Arity still matched, nothing raised, and the
+    optimiser silently received max_unorm=100 / skip_zeros=True. Since Q-GaLore zeroes
+    p.data before the update, param_norm was 0, the unorm clip scaled every update to 0 and
+    projected parameters stopped moving entirely.
+
+    Checked here rather than at runtime because the failure is invisible on the installed
+    version alone: it needs the signature from a version the test environment does not have.
+    """
+    src = fetch_text(
+        "bitsandbytes-foundation/bitsandbytes",
+        tag,
+        "bitsandbytes/optim/optimizer.py",
+    )
+    if src is None:
+        pytest.skip(f"{tag}: bitsandbytes/optim/optimizer.py missing")
+
+    signature = first_match_signature(src, "Optimizer2State")
+    if signature is None:
+        pytest.skip(f"{tag}: could not read Optimizer2State.__init__ signature")
+
+    removed = [n for n in ("percentile_clipping", "block_wise") if n not in signature]
+    caller = (
+        Path(__file__).resolve().parents[2]
+        / "unsloth"
+        / "optimizers"
+        / "q_galore_adamw.py"
+    ).read_text()
+
+    call = caller[caller.index("class QGaLoreAdamW8bit") :]
+    call = call[: call.index("@torch.no_grad()")]
+    assert "optim_bits = 8" in call, (
+        f"{tag}: QGaLoreAdamW8bit passes optim_bits positionally. bitsandbytes reorders "
+        f"this constructor between minors ({removed or 'nothing'} gone in this tag), so a "
+        f"positional call silently lands values in the wrong parameters."
+    )
+    for name in ("percentile_clipping", "block_wise"):
+        if name in call:
+            assert f"{name} = " in call or f'"{name}"' in call, (
+                f"{tag}: QGaLoreAdamW8bit mentions {name} without passing it by keyword."
+            )
