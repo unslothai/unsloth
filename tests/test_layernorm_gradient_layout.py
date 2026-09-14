@@ -60,8 +60,7 @@ def test_layernorm_backward_gradient_layout(layout, dtype, input_layout):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA Triton kernels required")
 @pytest.mark.parametrize("source_layout", ["columns", "rows", "transposed", "expanded"])
 def test_layernorm_gradient_reaches_a_live_strided_source(source_layout):
-    # The matrix above detaches its strided view into a leaf, so it never checks that
-    # the gradient is scattered back through the slice/transpose/expand that produced it.
+    # The matrix above detaches its views, so it never checks the scatter back to the source.
     from unsloth.kernels.layernorm import fast_layernorm
 
     torch.manual_seed(42)
@@ -104,9 +103,6 @@ def test_layernorm_gradient_reaches_a_live_strided_source(source_layout):
     "dtype", [torch.float32, torch.float16, torch.bfloat16], ids = ["float32", "float16", "bfloat16"]
 )
 def test_layernorm_weight_and_bias_layout(layout, dtype):
-    # The kernels read W and b with plain column offsets, no parameter stride, so a
-    # strided affine parameter is mis-read the same way a strided input is. This is the
-    # LayerNorm half of the materialization that #10617 added to the RMSNorm kernel.
     from unsloth.kernels.layernorm import fast_layernorm
 
     torch.manual_seed(42)
@@ -151,8 +147,6 @@ def test_layernorm_weight_and_bias_layout(layout, dtype):
     "no_grad", [torch.no_grad, torch.inference_mode], ids = ["no_grad", "inference_mode"]
 )
 def test_layernorm_forward_layout_without_autograd(layout, no_grad):
-    # Inference never enters backward, so the forward's own layout handling needs
-    # its own guard rather than riding along on the gradient assertions.
     from unsloth.kernels.layernorm import fast_layernorm
 
     torch.manual_seed(42)
