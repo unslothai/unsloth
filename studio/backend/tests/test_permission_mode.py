@@ -3443,6 +3443,10 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     "curl -o /media/kuser/MEDIA_SSD/out.txt https://example.com",
     # sqlite3 creates the database when absent, so the operand is a write by default.
     "sqlite3 /usr/share/catalog.db 'DELETE FROM entries'",
+    # A POSIX lexer eats the backslash, so every Windows absolute path was invisible to the gate.
+    # Asserted on every host, because what a path text means must not depend on the classifier's OS.
+    r"cat C:\Users\alice\Documents\private.txt",
+    r"type \\server\share\private.txt",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (

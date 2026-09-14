@@ -443,10 +443,14 @@ def _credential_under_silent_root(candidate: str) -> bool:
     """True for a secret sitting inside an otherwise silent root, so the allowlist cannot expose it."""
     if os.path.basename(candidate) in _CREDENTIAL_BASENAMES:
         return True
-    if any(candidate.endswith(suffix) for suffix in _CREDENTIAL_PATH_SUFFIXES):
+    # Compared on a separator-unified copy: the candidate is normalised to the HOST separator, so on
+    # Windows `/etc/gshadow` arrived as `\\etc\\gshadow` and matched none of these. What a path text
+    # means must not depend on which machine classifies it.
+    unified = candidate.replace("\\", "/")
+    if any(unified.endswith(suffix) for suffix in _CREDENTIAL_PATH_SUFFIXES):
         return True
     # Studio's own identity database and key material live under <studio home>/auth.
-    return f"{os.sep}auth{os.sep}" in candidate + os.sep
+    return "/auth/" in unified + "/"
 
 
 # Commands whose file operands are READ. Deliberately narrow: only names whose operands are unambiguously paths, so a
@@ -1263,16 +1267,47 @@ def _add_flag_operand(operands, kind, value: str, write_cmd: bool, creating: boo
     operands.append((value, writing))
 
 
-def _terminal_reaches_outside_sandbox(tokens) -> bool:
-    """True when a command list reads or writes an absolute path outside the silent roots."""
-    # Nothing that can name an absolute path means nothing to weigh, and that is the overwhelmingly common case
-    # (`ls -la`, `pytest`, `git commit -m fix`). Checking first keeps the operand walk off the hot path entirely.
+def _terminal_reaches_outside_sandbox(tokens, text: "str | None" = None) -> bool:
+    """True when a command list reads or writes an absolute path outside the silent roots.
+
+    *text*, when given, is the command the tokens came from. A POSIX lexer treats a backslash as an
+    escape, so `cat C:\\Users\\alice\\notes.txt` arrives here as `C:Usersalicenotes.txt` and every
+    Windows absolute path was invisible to the gate. The raw text is re-lexed without that rule when
+    it carries a drive or a UNC share, and the operands from both passes are weighed.
+    """
     if not any(_ABSOLUTE_HINT_RE.search(token) for token in tokens):
-        return False
-    return any(
+        # A POSIX lex may have eaten the separators that make the path absolute, so a Windows
+        # spelling in the raw text still deserves the second pass below.
+        if not (text and _WINDOWS_SPELLING_RE.search(text)):
+            return False
+    if any(
         _path_needs_approval(path, writing = writing)
         for path, writing in _terminal_path_operands(tokens)
+    ):
+        return True
+    if not text or not _WINDOWS_SPELLING_RE.search(text):
+        return False
+    raw = _lex_keeping_backslashes(text)
+    if raw is None or raw == list(tokens):
+        return False
+    return any(
+        _path_needs_approval(path, writing = writing) for path, writing in _terminal_path_operands(raw)
     )
+
+
+# A drive-qualified path or a UNC share, the two spellings a POSIX lexer destroys.
+_WINDOWS_SPELLING_RE = re.compile(r"[A-Za-z]:[\\/]|\\\\[^\\/]")
+
+
+def _lex_keeping_backslashes(text: str) -> "list[str] | None":
+    """Split *text* with the backslash left alone, so a Windows path survives. None if unparseable."""
+    try:
+        lexer = shlex.shlex(text, posix = False, punctuation_chars = ";&|()")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    return [t[1:-1] if len(t) > 1 and t[0] == t[-1] and t[0] in "\"'" else t for t in tokens]
 
 
 # A token can only carry an absolute path if it holds a separator, a tilde or a drive colon.

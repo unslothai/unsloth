@@ -3284,8 +3284,8 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     # contains RELATIVE paths. Run unconditionally, matching _terminal_is_high_risk: gating this on a leading / or ~
     # would skip every Windows spelling (C:\..., \\server\share) and every attached redirection, leaving the stricter
     # classifier weaker than the looser one.
-    if _terminal_reaches_outside_sandbox(tokens) or (
-        scan_tokens is not tokens and _terminal_reaches_outside_sandbox(scan_tokens)
+    if _terminal_reaches_outside_sandbox(tokens, command) or (
+        scan_tokens is not tokens and _terminal_reaches_outside_sandbox(scan_tokens, command)
     ):
         return True
     if any(t.startswith("/") or t.startswith("~") for t in scan_tokens):
@@ -5372,7 +5372,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
         # The sandbox directory is a working directory, not a boundary, so an absolute operand outside the silent
         # roots reads or rewrites the user's own files. Runs per expansion pass, so a path assembled from a variable
         # is judged on its resolved form too.
-        if _terminal_reaches_outside_sandbox(tokens):
+        if _terminal_reaches_outside_sandbox(tokens, text):
             return True
         recursive = any(
             t in ("-R", "--recursive")
