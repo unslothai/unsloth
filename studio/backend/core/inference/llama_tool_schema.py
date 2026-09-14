@@ -64,19 +64,26 @@ def _resolve_ref(ref: Any, root: dict) -> Any:
     return node
 
 
+def _follow_refs(schema: Any, root: dict) -> Any:
+    seen = set()
+    while isinstance(schema, dict) and isinstance(schema.get("$ref"), str):
+        ref = schema["$ref"]
+        target = _resolve_ref(ref, root)
+        if ref in seen or not isinstance(target, dict):
+            break
+        seen.add(ref)
+        schema = target
+    return schema
+
+
 def _reorderable(schema: dict, root: dict) -> bool:
+    schema = _follow_refs(schema, root)
     if _optional_key_count(schema) >= 2:
-        return True
-    if _optional_key_count(_resolve_ref(schema.get("$ref"), root)) >= 2:
         return True
     parts = schema.get("allOf")
     if not isinstance(parts, list):
         return False
-    merged = 0
-    for part in parts:
-        target = _resolve_ref(part.get("$ref"), root) if isinstance(part, dict) else None
-        merged += _optional_key_count(target if isinstance(target, dict) else part)
-    return merged >= 2
+    return sum(_optional_key_count(_follow_refs(part, root)) for part in parts) >= 2
 
 
 def _relax(schema: Any, *, nested: bool, root: dict) -> Any:

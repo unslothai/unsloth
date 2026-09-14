@@ -168,6 +168,32 @@ def test_allof_ref_is_wrapped_around_the_use_and_not_the_definition():
     assert relax_nested_object_key_order(recursive_root) is recursive_root
 
 
+def test_references_are_followed_to_the_object_llama_cpp_builds():
+    parts = [
+        {"type": "object", "properties": {"start_cursor": {"type": "string"}}},
+        {"type": "object", "properties": {"page_size": {"type": "integer"}}},
+    ]
+    parameters = {
+        "type": "object",
+        "properties": {
+            "composed": {"$ref": "#/$defs/Paging"},
+            "aliased": {"$ref": "#/$defs/Alias"},
+            "looped": {"$ref": "#/$defs/Loop"},
+        },
+        "$defs": {
+            "Paging": {"allOf": copy.deepcopy(parts)},
+            "Alias": {"$ref": "#/$defs/Paging"},
+            "Loop": {"$ref": "#/$defs/Loop"},
+        },
+    }
+    relaxed = relax_nested_object_key_order(parameters)
+
+    assert relaxed["properties"]["composed"] == _relaxed({"$ref": "#/$defs/Paging"})
+    assert relaxed["properties"]["aliased"] == _relaxed({"$ref": "#/$defs/Alias"})
+    assert relaxed["properties"]["looped"] == {"$ref": "#/$defs/Loop"}
+    assert relaxed["$defs"] is parameters["$defs"]
+
+
 def test_a_caller_union_shaped_like_the_wrapper_is_read_as_written():
     from core.inference.tool_loop_controller import coerce_arguments_by_schema
 
