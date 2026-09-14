@@ -76,18 +76,34 @@ def _local_actions(node) -> set:
     return found
 
 
-def _covers(pattern: str, path: str) -> bool:
-    """Does a `paths:` entry select `path`?
+def _matches(pattern: str, path: str) -> bool:
+    """One `paths:` glob against one file path, with GitHub's wildcard semantics.
 
     `path` is a FILE inside the action, not the action directory, because that is what
     GitHub matches a filter against. The distinction decides real cases: a bare
     `.github/actions/foo` entry selects only a file literally at that path, so it does NOT
-    cover `.github/actions/foo/action.yml` and the workflow still skips. Only the `/**`
-    form works, and the guard has to say so.
+    cover `.github/actions/foo/action.yml` and the workflow still skips.
     """
-    pattern = pattern.strip("'\"")
     regex = re.escape(pattern).replace(r"\*\*", ".*").replace(r"\*", "[^/]*")
     return re.fullmatch(regex, path) is not None
+
+
+def _selects(paths: list, path: str) -> bool:
+    """Does the whole `paths:` list select `path`?
+
+    The list is ordered and `!` negates, with the LAST matching pattern deciding, so the
+    entries cannot be tested independently: `.github/actions/**` followed by
+    `!.github/actions/foo/**` does not select foo. This repo already uses negation
+    (startup-profile-ci.yml excludes `!studio/backend/tests/**`), so reading `!` as a
+    literal character would quietly pass a workflow that really does skip.
+    """
+    selected = False
+    for entry in paths:
+        entry = str(entry).strip("'\"")
+        negated = entry.startswith("!")
+        if _matches(entry[1:] if negated else entry, path):
+            selected = not negated
+    return selected
 
 
 def _action_files(action: str) -> list:
@@ -118,12 +134,31 @@ def test_a_path_filtered_workflow_lists_the_actions_it_uses(workflow):
         missing = sorted(
             a
             for a in actions - _PRE_EXISTING
-            if not all(any(_covers(p, f) for p in paths) for f in _action_files(a))
+            if not all(_selects(paths, f) for f in _action_files(a))
         )
         assert not missing, (
             f"{workflow.name} `{event}` is path-filtered but does not list {missing}, so a "
             f"change to only that action runs none of the jobs that depend on it"
         )
+
+
+def test_an_ordered_negation_is_not_read_as_a_literal_bang():
+    """`paths:` is ordered and `!` negates, with the last match deciding.
+
+    Testing the entries independently would accept `.github/actions/**` followed by
+    `!.github/actions/foo/**` as covering foo, while GitHub skips the workflow on a
+    foo-only change. This repo already negates in startup-profile-ci.yml, so the case is
+    reachable rather than theoretical.
+    """
+    action = ".github/actions/foo/action.yml"
+    assert _selects([".github/actions/**"], action)
+    assert not _selects([".github/actions/**", "!.github/actions/foo/**"], action)
+    assert _selects(["!.github/actions/foo/**", ".github/actions/**"], action)
+    # The negation this repo actually carries, and a sibling it must not touch.
+    assert not _selects(
+        ["studio/backend/**", "!studio/backend/tests/**"], "studio/backend/tests/x.py"
+    )
+    assert _selects(["studio/backend/**", "!studio/backend/tests/**"], "studio/backend/main.py")
 
 
 def test_the_pre_existing_list_does_not_outlive_the_problem():
@@ -140,9 +175,7 @@ def test_the_pre_existing_list_does_not_outlive_the_problem():
             if not paths:
                 continue
             still_unlisted |= {
-                a
-                for a in actions
-                if not all(any(_covers(p, f) for p in paths) for f in _action_files(a))
+                a for a in actions if not all(_selects(paths, f) for f in _action_files(a))
             }
     settled = sorted(_PRE_EXISTING - still_unlisted)
     assert not settled, f"these are now listed everywhere and must leave _PRE_EXISTING: {settled}"
