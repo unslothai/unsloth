@@ -1851,7 +1851,14 @@ def test_auto_tensor_parallel_drops_user_split_when_it_exceeds_budget(tmp_path):
 
 def test_auto_tensor_parallel_records_split_for_reload_matching(tmp_path):
     """An auto tensor-parallel load with a concrete ratio must not be reused
-    when a later request asks for a different ratio."""
+    when a later request asks for a different ratio.
+
+    What is recorded is the ratio the load was ASKED for, normalized, not the
+    list that was emitted: the planner's own split is in per-device MiB and a
+    declined ratio emits nothing, so recording the emitted value would
+    mismatch every identical repeat and reload forever. See
+    ``_auto_split_fingerprint``.
+    """
     backend, gguf = _backend_non_vulkan(
         tmp_path,
         memory = [(0, 24_000, 24_000), (1, 24_000, 24_000)],
@@ -1872,7 +1879,24 @@ def test_auto_tensor_parallel_records_split_for_reload_matching(tmp_path):
         n_ctx = 4096,
     )
 
-    assert backend._auto_tensor_split == (3.0, 1.0)
+    assert backend._auto_tensor_split == (0.75, 0.25)
+
+    # The same ratio written differently is the same instruction to llama.cpp,
+    # so it reuses; a different one reloads.
+    def _intent(split):
+        return GgufLoadIntent(
+            gguf_path = str(gguf),
+            model_identifier = "test",
+            gpu_memory_mode = "auto",
+            tensor_parallel = True,
+            tensor_split = split,
+            gpu_ids = [0, 1],
+            n_ctx = 4096,
+        )
+
+    assert backend.adopt_load_intent_if_matched(_intent([3, 1])) is True
+    assert backend.adopt_load_intent_if_matched(_intent([6, 2])) is True
+    assert backend.adopt_load_intent_if_matched(_intent([1, 3])) is False
 
     intent_same = GgufLoadIntent(
         model_identifier = "test",
