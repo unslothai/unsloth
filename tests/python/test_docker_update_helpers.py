@@ -545,7 +545,11 @@ def test_a_signal_during_the_health_wait_puts_the_service_back_too(tmp_path: Pat
     The cleanup restarts it on the restored install, as back_out does."""
     env = _studio_env(tmp_path)
     env["UNSLOTH_STUDIO_UPDATE_HEALTH_WAIT"] = "30"
-    _stub(tmp_path / "bin", "curl", 'echo "STUB-CURL $*" >> "$STUB_LOG"\nkill -TERM "$PPID"\nexit 22\n')
+    _stub(
+        tmp_path / "bin",
+        "curl",
+        'echo "STUB-CURL $*" >> "$STUB_LOG"\nkill -TERM "$PPID"\nexit 22\n',
+    )
     res = _run(STUDIO_UPDATE, ["--ref", "main"], env)
     home = Path(env["UNSLOTH_STUDIO_HOME"])
     calls = _calls(env).splitlines()
@@ -741,7 +745,9 @@ def test_studio_update_finishes_the_package_restore_a_killed_run_left(tmp_path: 
 
 
 @pytest.mark.parametrize("status_exit, verb", [(0, "restart"), (3, "start")])
-def test_studio_update_recovery_puts_the_service_on_the_restored_install(tmp_path: Path, status_exit, verb):
+def test_studio_update_recovery_puts_the_service_on_the_restored_install(
+    tmp_path: Path, status_exit, verb
+):
     """The killed run may have restarted Studio on the unverified code, or left it
     FATAL. After the packages are back the service is restarted on the restored
     install before this run does anything else, so a run that stops early (the ref
@@ -776,7 +782,9 @@ def test_studio_update_with_deps_rollback_fails_when_pip_cannot_list_packages(tm
     assert res.returncode != 0
     assert "could not list the installed packages" in res.stdout, res.stdout
     assert "could not be restored cleanly" in res.stdout, res.stdout
-    assert (home / ".src-update.rollback").is_file(), "the record was dropped after a failed restore"
+    assert (
+        home / ".src-update.rollback"
+    ).is_file(), "the record was dropped after a failed restore"
 
 
 def test_recover_finishes_a_killed_update_and_does_nothing_else(tmp_path: Path):
@@ -853,13 +861,19 @@ def test_studio_update_with_deps_adds_the_studio_extra_to_a_qualified_unsloth_sp
     """--packages can pin or qualify unsloth; the studio extra must still ride along,
     and unsloth_zoo must not be mistaken for it."""
     env = _studio_env(tmp_path)
-    res = _run(STUDIO_UPDATE, ["--with-deps", "--no-restart", "--packages", "unsloth==2026.9.1 unsloth_zoo"], env)
+    res = _run(
+        STUDIO_UPDATE,
+        ["--with-deps", "--no-restart", "--packages", "unsloth==2026.9.1 unsloth_zoo"],
+        env,
+    )
     assert res.returncode == 0, res.stderr + res.stdout
     calls = _calls(env)
     assert "unsloth[studio]==2026.9.1" in calls, calls
     assert "unsloth[studio]_zoo" not in calls and " unsloth_zoo" in calls, calls
     env = _studio_env(tmp_path / "extras")
-    res = _run(STUDIO_UPDATE, ["--with-deps", "--no-restart", "--packages", "unsloth[cu128]>=2026.9"], env)
+    res = _run(
+        STUDIO_UPDATE, ["--with-deps", "--no-restart", "--packages", "unsloth[cu128]>=2026.9"], env
+    )
     assert "unsloth[studio,cu128]>=2026.9" in _calls(env), _calls(env)
 
 
