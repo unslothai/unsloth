@@ -2776,7 +2776,7 @@ def _studio_auth_dir_markers() -> tuple:
     # searches a project, and matched unanchored it read as a move into the studio root.
     cd_re = (
         re.compile(
-            r"(?:^|[;&|(\n]\s*|\b(?:then|do|else)\s+)(?:(?:builtin|command|exec)\s+)*"
+            r"(?:^|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)(?:(?:builtin|command|exec)\s+)*"
             r"(?:cd|pushd)\s+(?:/d\s+)?[\"']?(?:"
             + "|".join(re.escape(m) for m in roots)
             + r")(?:[\"']|\s|[;&|]|$|[/\\]auth(?![\w-]))",
@@ -2965,7 +2965,7 @@ _RELATIVE_PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*[/\\][^\s'\"()\[\]
 _CD_TARGET_RE = re.compile(
     # `builtin cd ..` and `command cd ..` run the same builtin with the same argument, so a walk
     # that only knows the bare name resolves everything after them against the wrong directory.
-    r"(?:^|[;&|(\n]\s*|\b(?:then|do|else)\s+)(?:(?:builtin|command|exec)\s+)*(?:cd|pushd)\s+"
+    r"(?:^|[;&|({\n]\s*|\b(?:then|do|else|if|elif|while|until)\s+)(?:(?:builtin|command|exec)\s+)*(?:cd|pushd)\s+"
     r"(?:(?:-[LPe@]+|--|/d)\s+)*([^\s;&|)]+)",
     re.IGNORECASE,
 )

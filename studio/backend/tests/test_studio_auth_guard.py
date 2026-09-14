@@ -846,6 +846,40 @@ def test_home_is_the_workdir_under_bypass_permissions(monkeypatch, tmp_path):
         tools._studio_auth_markers_cache = None
 
 
+def test_a_cd_in_a_conditional_position_moves_the_directory(monkeypatch, tmp_path):
+    # `if cd ../..; then ...; fi` runs the move as the condition itself, and a brace group is just
+    # another command position. Only `then`/`do`/`else` were recognised, so those moves went
+    # unrecorded and the auth database that followed was resolved against the sandbox.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    root = str(home)
+    try:
+        for command in (
+            "if cd ../..; then sqlite3 auth/auth.db 'select jwt_secret from auth_user'; fi",
+            "while cd ../..; do cat auth/auth.db; done",
+            "until cd ../..; do cat auth/.desktop_secret; done",
+            "{ cd ../..; cat auth/auth.db; }",
+            "if false; then :; elif cd ../..; then cat auth/auth.db; fi",
+            f"if cd {root}; then cat auth/auth.db; fi",
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+        for ordinary in (
+            "if cd ../..; then cat models/m.gguf; fi",
+            "echo 'if cd ../..'; grep auth README",
+            "if true; then cat auth.py; fi",
+        ):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None
+
+
 def test_a_chdir_to_a_parent_walk_moves_the_directory(monkeypatch, tmp_path):
     # `os.chdir(Path.cwd().parents[1])` is an ordinary move into the studio root, but the fold
     # writes the walk as one marker, so the move was ignored and the `auth/auth.db` that followed
