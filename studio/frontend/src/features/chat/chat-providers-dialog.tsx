@@ -83,6 +83,7 @@ import { useExternalProvidersStore } from "./stores/external-providers-store";
 import {
   mergeLearnedModelCapabilities,
   pruneProviderModelIds,
+  refreshProviderModelCatalogs,
   syncExternalProvidersFromBackend,
 } from "./sync-external-providers";
 
@@ -755,6 +756,7 @@ export function ChatProvidersSettings({
       ];
       providersRef.current = nextProviders;
       onProvidersChange(nextProviders);
+      void refreshProviderModelCatalogs([provider]);
       setSelectedModelIds(models);
       setAvailableModels(available);
       setEditingProviderId(created.id);
@@ -881,6 +883,7 @@ export function ChatProvidersSettings({
         ...providers.filter((p) => p.id !== created.id),
         provider,
       ]);
+      void refreshProviderModelCatalogs([provider]);
       resetForm();
       autoOpenedAddFormRef.current = true;
       setPage("list");
@@ -1030,6 +1033,7 @@ export function ChatProvidersSettings({
             : provider,
         ),
       );
+      void refreshProviderModelCatalogs([existing]);
       toast.success("Connection updated.");
       resetForm();
       autoOpenedAddFormRef.current = true;

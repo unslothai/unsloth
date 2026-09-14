@@ -2549,14 +2549,20 @@ export function ChatPage({
       : effortLevels.includes("medium")
         ? "medium"
         : clampedEffort;
+    const catalogDefaultEffort =
+      reasoningCaps.defaultEffort &&
+      effortLevels.includes(reasoningCaps.defaultEffort)
+        ? reasoningCaps.defaultEffort
+        : null;
     const nextReasoningEffort = reasoningCaps.supportsReasoning
-      ? isAnthropic
-        ? anthropicTopEffort
-        : isOpenAI
-          ? openaiDefaultEffort
-          : effortLevels.includes("medium")
-            ? "medium"
-            : clampedEffort
+      ? (catalogDefaultEffort ??
+        (isAnthropic
+          ? anthropicTopEffort
+          : isOpenAI
+            ? openaiDefaultEffort
+            : effortLevels.includes("medium")
+              ? "medium"
+              : clampedEffort))
       : state.reasoningEffort;
     const supportsBuiltinWebSearch = providerSupportsBuiltinWebSearch(
       provider?.providerType,
@@ -3165,14 +3171,20 @@ export function ChatPage({
           : effortLevels.includes("medium")
             ? "medium"
             : clampedEffort;
+        const catalogDefaultEffort =
+          reasoningCaps.defaultEffort &&
+          effortLevels.includes(reasoningCaps.defaultEffort)
+            ? reasoningCaps.defaultEffort
+            : null;
         const nextReasoningEffort = reasoningCaps.supportsReasoning
-          ? isAnthropic
-            ? anthropicTopEffort
-            : isOpenAI
-              ? openaiDefaultEffort
-              : effortLevels.includes("medium")
-                ? "medium"
-                : clampedEffort
+          ? (catalogDefaultEffort ??
+            (isAnthropic
+              ? anthropicTopEffort
+              : isOpenAI
+                ? openaiDefaultEffort
+                : effortLevels.includes("medium")
+                  ? "medium"
+                  : clampedEffort))
           : store.reasoningEffort;
         // Clear any cached router-picked openrouter/free model unless staying on openrouter/free, else
         // the chip keeps a stale ":<chosen>" suffix.

@@ -617,6 +617,7 @@ _MISTRAL_THINKING_SPECS = (
     ),
 )
 
+_OPENROUTER_REASONING_EFFORTS = frozenset({"minimal", "low", "medium", "high", "xhigh", "max"})
 _OPENROUTER_MANDATORY_REASONING_MODELS = frozenset(
     {
         "~google/gemini-pro-latest",
@@ -1297,15 +1298,15 @@ class ExternalProviderClient:
         # (`*_MANDATORY_REASONING_MODELS`) 400 on explicit off.
         if self.provider_type == "openrouter":
             normalized_or_model = model.strip().lower()
-            if reasoning_effort in ("low", "medium", "high"):
+            if reasoning_effort in _OPENROUTER_REASONING_EFFORTS:
                 body["reasoning"] = {"effort": reasoning_effort}
-            elif enable_thinking is True:
-                body["reasoning"] = {"enabled": True}
-            elif enable_thinking is False:
+            elif reasoning_effort == "none" or enable_thinking is False:
                 if normalized_or_model in _OPENROUTER_MANDATORY_REASONING_MODELS:
                     body.pop("reasoning", None)
                 else:
                     body["reasoning"] = {"enabled": False}
+            elif enable_thinking is True:
+                body["reasoning"] = {"enabled": True}
 
             # OpenRouter web plugin works on every model id including meta-routers (unlike `:online`). Forced-function
             # tool_choice suppresses it, matching Gemini/Anthropic.

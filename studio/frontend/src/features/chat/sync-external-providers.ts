@@ -9,10 +9,15 @@ import {
 import {
   type ProviderRegistryEntry,
   listProviderConfigs,
+  listProviderModelCapabilities,
   listProviderRegistry,
   migrateProviderApiKey,
   updateProviderConfig,
 } from "./api/providers-api";
+import {
+  providerModelCatalogFetchedAt,
+  setProviderModelCatalog,
+} from "./model-catalog";
 import {
   CUSTOM_BACKEND_PROVIDER_TYPE,
   CUSTOM_PROVIDER_PRESETS,
@@ -311,5 +316,36 @@ export async function syncExternalProvidersFromBackend(
   if (isCurrent && !isCurrent()) return existingProviders;
 
   await settleTasksIfCurrent(backfillTasks, isCurrent);
+  void refreshProviderModelCatalogs(syncedProviders, isCurrent);
   return syncedProviders;
+}
+
+const MODEL_CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
+const MODEL_CATALOG_PROVIDER_TYPES = new Set(["openrouter"]);
+
+export async function refreshProviderModelCatalogs(
+  providers: readonly ExternalProviderConfig[],
+  isCurrent?: () => boolean,
+): Promise<void> {
+  const refreshed = new Set<string>();
+  for (const provider of providers) {
+    const providerType = provider.providerType;
+    if (!MODEL_CATALOG_PROVIDER_TYPES.has(providerType) || refreshed.has(providerType)) {
+      continue;
+    }
+    refreshed.add(providerType);
+    const fetchedAt = providerModelCatalogFetchedAt(providerType);
+    if (fetchedAt != null && Date.now() - fetchedAt < MODEL_CATALOG_TTL_MS) continue;
+    try {
+      const models = await listProviderModelCapabilities({
+        providerType,
+        providerId: provider.id,
+        apiKey: "",
+      });
+      if (isCurrent && !isCurrent()) return;
+      if (models.length > 0) setProviderModelCatalog(providerType, models);
+    } catch {
+      // Offline or unauthorized: the bundled snapshot answers until the next sync.
+    }
+  }
 }

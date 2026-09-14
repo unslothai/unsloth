@@ -5,6 +5,12 @@ import {
   normalizeProviderMaxOutputTokens,
   providerModelSupportsStudioTools,
 } from "./external-providers";
+import {
+  type ModelCatalogEntry,
+  REASONING_EFFORT_SCALE,
+  type ReasoningEffortLevel,
+  resolveModelCatalogEntry,
+} from "./model-catalog";
 
 /** Per-provider sampling capability matrix from each provider's chat docs (2026-05).
  *  Params a provider rejects are hidden; local models use a null capability, so all render. */
@@ -31,28 +37,9 @@ export type ExternalReasoningCapabilities = {
   reasoningStyle: "enable_thinking" | "reasoning_effort" | "enable_thinking_effort";
   reasoningAlwaysOn: boolean;
   supportsReasoningOff: boolean;
-  reasoningEffortLevels: readonly (
-    | "none"
-    | "minimal"
-    | "low"
-    | "medium"
-    | "high"
-    | "max"
-    | "xhigh"
-  )[];
+  reasoningEffortLevels: readonly ReasoningEffortLevel[];
+  defaultEffort?: ReasoningEffortLevel | null;
 };
-
-/** Weakest -> strongest. Must stay in sync with _REASONING_EFFORT_SCALE in
- *  backend core/inference/llama_cpp.py. */
-const REASONING_EFFORT_SCALE = [
-  "none",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-] as const satisfies ExternalReasoningCapabilities["reasoningEffortLevels"];
 
 /** Pick a stored effort level present in `effortLevels`, mapping legacy "xhigh" to "max"
  *  when only the latter is exposed (Claude 4.6).
@@ -249,7 +236,9 @@ function _publishedMaxOutputTokens(
   providerType: string | null | undefined,
   modelId: string | null | undefined,
 ): number | null {
-  if (providerType === "openrouter") return null;
+  if (providerType === "openrouter") {
+    return resolveModelCatalogEntry(providerType, modelId)?.maxOutputTokens ?? null;
+  }
   return _documentedMaxOutputTokens(providerType, modelId);
 }
 
@@ -265,6 +254,10 @@ function _documentedMaxOutputTokens(
   if (!providerType || !modelId) return null;
   const normalized = modelId.trim().toLowerCase();
   if (!normalized) return null;
+  if (providerType === "openrouter") {
+    const live = resolveModelCatalogEntry(providerType, normalized)?.maxOutputTokens;
+    if (live != null) return live;
+  }
   const stripped =
     providerType === "openrouter" && normalized.includes("/")
       ? normalized.split("/").slice(-1)[0]
@@ -1003,6 +996,29 @@ function resolveConnectionLevelReasoning(
   return null;
 }
 
+function resolveCatalogReasoningCapabilities(
+  entry: ModelCatalogEntry,
+  offSwitchOnWire: boolean,
+): ExternalReasoningCapabilities {
+  if (!entry.reasoning) return withEnableThinkingStyle();
+  if (entry.efforts.length > 0) {
+    return {
+      ...withReasoningEffortStyle({
+        supportsReasoning: true,
+        supportsReasoningOff:
+          !entry.mandatory && (offSwitchOnWire || entry.efforts.includes("none")),
+        reasoningEffortLevels: entry.efforts,
+      }),
+      defaultEffort: entry.defaultEffort,
+    };
+  }
+  return withEnableThinkingStyle({
+    supportsReasoning: true,
+    reasoningAlwaysOn: entry.mandatory,
+    supportsReasoningOff: !entry.mandatory,
+  });
+}
+
 /** Resolve external-model thinking capabilities. Per-provider resolvers do the matching;
  *  anything else defaults to no reasoning controls. */
 export function getExternalReasoningCapabilities(
@@ -1046,6 +1062,10 @@ export function getExternalReasoningCapabilities(
   const isMistralProvider = normalizedProvider === "mistral";
   const isOpenRouterProvider = normalizedProvider === "openrouter";
   if (isOpenRouterProvider) {
+    if (!normalizedModel.startsWith("openrouter/")) {
+      const entry = resolveModelCatalogEntry("openrouter", normalizedModel);
+      if (entry) return resolveCatalogReasoningCapabilities(entry, true);
+    }
     // OpenRouter's unified `reasoning` param is accepted everywhere and no-ops for non-reasoning
     // models, so past the mandatory guard everything gets a toggleable control.
     return {
@@ -1066,6 +1086,10 @@ export function getExternalReasoningCapabilities(
     }
     return resolveGeminiReasoningCapabilities(modelForMatching);
   }
+  if (normalizedProvider === "ollama") {
+    const entry = resolveModelCatalogEntry("ollama", normalizedModel);
+    return entry ? resolveCatalogReasoningCapabilities(entry, true) : withEnableThinkingStyle();
+  }
   if (!isOpenAIProvider && !isAnthropicProvider) {
     return withEnableThinkingStyle();
   }
@@ -1076,6 +1100,14 @@ export function getExternalReasoningCapabilities(
   if (providerCaps.supportsReasoning) {
     return withReasoningEffortStyle(providerCaps);
   }
+  if (isOpenAIProvider && OPENAI_NON_REASONING_CHAT_ALIAS.test(modelForMatching)) {
+    return withEnableThinkingStyle();
+  }
+  const entry = resolveModelCatalogEntry(
+    isOpenAIProvider ? "openai" : "anthropic",
+    modelForMatching,
+  );
+  if (entry) return resolveCatalogReasoningCapabilities(entry, false);
 
   return withEnableThinkingStyle();
 }
