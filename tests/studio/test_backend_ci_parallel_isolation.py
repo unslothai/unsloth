@@ -256,6 +256,9 @@ def _is_timed(node: ast.AST, names: set, helpers: set) -> bool:
     return False
 
 
+_FRAGILE_CACHE: dict = {}
+
+
 def _fragile_timing_asserts(path: Path) -> list:
     """Assertions whose outcome depends on how the process was scheduled.
 
@@ -268,10 +271,24 @@ def _fragile_timing_asserts(path: Path) -> list:
 
     Read with ast, not a regex: grepping `< 0.05` matches a float tolerance, and grepping
     `elapsed` matches whatever a variable happens to be called.
+
+    Memoised on (resolved path, file text). Two tests below scan all 924 backend test
+    files and the dict comprehension in one of them calls this twice per path, so the
+    same parse-and-walk ran roughly three times over: 19.0s + 20.6s of the file's 37.8s.
+    The read is deliberately still done every call and the text is part of the key, so a
+    file rewritten mid-session is rescanned rather than served a stale verdict; only the
+    parse and the walks are shared. The stored list is copied out, so no caller can
+    mutate another's result, and the tree never leaves this function.
     """
+    source = path.read_text(encoding = "utf-8", errors = "replace")
+    key = (str(path.resolve()), source)
+    cached = _FRAGILE_CACHE.get(key)
+    if cached is not None:
+        return list(cached)
     try:
-        tree = ast.parse(path.read_text(encoding = "utf-8", errors = "replace"))
+        tree = ast.parse(source)
     except SyntaxError:
+        _FRAGILE_CACHE[key] = []
         return []
     # Helpers first: a name can hold a duration only because a helper returned one.
     helpers = _timing_helpers(tree)
@@ -311,7 +328,8 @@ def _fragile_timing_asserts(path: Path) -> list:
                 elif isinstance(upper, ast.Constant) and isinstance(upper.value, (int, float)):
                     if upper.value <= TIGHT_BOUND_S:
                         found.append(f"{path.name}:{node.lineno} duration < {upper.value}")
-    return found
+    _FRAGILE_CACHE[key] = found
+    return list(found)
 
 
 @pytest.mark.parametrize("path, reason", ISOLATED, ids = [p for p, _ in ISOLATED])
