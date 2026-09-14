@@ -31522,7 +31522,14 @@ async def anthropic_count_tokens(
         and bool(_count_openai_client_tools)
         and getattr(llama_backend, "supports_tool_passthrough", llama_backend.supports_tools)
     )
-    if not _count_client_tools:
+    if _count_client_tools:
+        from core.inference.chat_template_helpers import forced_tool_catalog
+
+        openai_tools = (
+            forced_tool_catalog(anthropic_tool_choice_to_openai(payload.tool_choice), openai_tools)
+            or openai_tools
+        )
+    else:
         openai_messages = _prepend_current_date_to_messages(
             openai_messages,
             request,
@@ -33271,6 +33278,7 @@ def _build_passthrough_payload(
     markup = None,
 ):
     from core.inference.chat_template_helpers import (
+        forced_tool_catalog,
         neutralize_control_markup_in_messages,
         neutralize_tool_descriptions,
         reconciled_tool_choice,
@@ -33292,11 +33300,15 @@ def _build_passthrough_payload(
     # "tools": [] would still advertise tool use.
     safe_tools = neutralize_tool_descriptions(openai_tools, None, _pt_markup)
     if safe_tools:
-        body["tools"] = _llama_compatible_tools(safe_tools)
         # A mixed catalog keeps safe_tools non-empty while dropping the one tool the client
         # forced; forwarding that choice would name an unadvertised function and hand
         # llama-server back the raw markup. Fall back to "auto" to stay consistent (#7066).
         tool_choice = reconciled_tool_choice(tool_choice, openai_tools, safe_tools)
+        # llama-server reads tool_choice only as a string and treats an object as "auto".
+        forced_tools = forced_tool_catalog(tool_choice, safe_tools)
+        if forced_tools:
+            safe_tools, tool_choice = forced_tools, "required"
+        body["tools"] = _llama_compatible_tools(safe_tools)
         if tool_choice is not None:
             body["tool_choice"] = tool_choice
     _apply_seeded_llama_request(body, seed)
@@ -33457,6 +33469,8 @@ async def _anthropic_passthrough_stream(
         markup = getattr(llama_backend, "markup_profile", None),
     )
 
+    from core.inference.chat_template_helpers import forced_tool_catalog
+
     # Prompt-token count for message_start.usage.input_tokens. count_chat_tokens
     # makes blocking HTTP calls to llama-server, so run it off the event loop.
     # Pass the tools through so tool-schema tokens are counted (otherwise the
@@ -33467,7 +33481,7 @@ async def _anthropic_passthrough_stream(
         lambda: llama_backend.count_chat_tokens(
             openai_messages,
             None,
-            openai_tools,
+            forced_tool_catalog(tool_choice, openai_tools) or openai_tools,
             chat_template_kwargs = _reasoning_template_kwargs(
                 llama_backend, enable_thinking, reasoning_effort, preserve_thinking
             ),
@@ -33507,7 +33521,7 @@ async def _anthropic_passthrough_stream(
         # was already sent as "auto", and gating on the stale name would intersect the safe
         # names with a removed one and disable healing outright. "none" survives
         # reconciliation, so it still forbids promotion (#7066).
-        _allowed_tools = heal_gate(auto_heal_tool_calls, _healing_tools, body.get("tool_choice"))
+        _allowed_tools = heal_gate(auto_heal_tool_calls, body.get("tools"), body.get("tool_choice"))
         if _allowed_tools:
             emitter.enable_healing(
                 _allowed_tools,
@@ -33827,7 +33841,7 @@ async def _anthropic_passthrough_non_streaming(
         # was already sent as "auto", and gating on the stale name would intersect the safe
         # names with a removed one and disable healing outright. "none" survives
         # reconciliation, so it still forbids promotion (#7066).
-        _allowed_tools = heal_gate(auto_heal_tool_calls, _healing_tools, body.get("tool_choice"))
+        _allowed_tools = heal_gate(auto_heal_tool_calls, body.get("tools"), body.get("tool_choice"))
 
         # Opt-in single-retry nudge (mirrors the OpenAI passthrough): the tool call came out
         # unusable; re-ask with the prompt prefix intact so the KV cache is reused.
