@@ -40,7 +40,7 @@ on:
         required: false
         default: ''
       rocm_gfx:
-        description: 'AMD per-arch wheels for one gfx (gfx1150/1151/1152/1200/1201); blank = generic'
+        description: 'AMD per-arch wheels for one gfx (gfx1150/1151/1152/1200/1201), or gfx906 (generic index, no bitsandbytes; pair with rocm_version 6.3.4); blank = generic'
         required: false
         default: ''
 
@@ -168,8 +168,8 @@ jobs:
           INDEX="${IN_INDEX:-https://download.pytorch.org/whl/rocm${ROCM%.*}}"
           GFX="${IN_GFX}"
           case "$GFX" in
-              ""|gfx1150|gfx1151|gfx1152|gfx1200|gfx1201) ;;
-              *) echo "::error::rocm_gfx='${GFX}' has no per-arch wheel index"; exit 1 ;;
+              ""|gfx906|gfx1150|gfx1151|gfx1152|gfx1200|gfx1201) ;;
+              *) echo "::error::rocm_gfx='${GFX}' has no per-arch wheel index (gfx906 = generic index without bitsandbytes)"; exit 1 ;;
           esac
           # DEFAULTS: every input other than the gfx at its default. STABLE adds a
           # blank gfx. A per-arch build gets its gfx tag only under DEFAULTS, so a

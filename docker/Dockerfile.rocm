@@ -26,7 +26,11 @@
 #
 # Build:
 #   bash docker/build.sh --rocm
-#   docker build -f docker/Dockerfile.rocm -t unsloth-rocm:latest docker/
+# build.sh freezes UNSLOTH_REF / UNSLOTH_ZOO_REF to commits first; a bare
+# `docker build` with the default "main" keeps the cached git-install layer
+# after upstream moves, so pass resolved shas if you call docker directly:
+#   docker build -f docker/Dockerfile.rocm --build-arg UNSLOTH_REF=<sha> \
+#     --build-arg UNSLOTH_ZOO_REF=<sha> -t unsloth-rocm:latest docker/
 # Run:
 #   bash docker/run.sh --rocm
 #   docker run --device /dev/kfd --device /dev/dri --group-add <video gid> \

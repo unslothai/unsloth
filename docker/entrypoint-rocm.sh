@@ -16,10 +16,6 @@ set -euo pipefail
 err()  { printf "\033[1;31mERROR:\033[0m %s\n" "$*" >&2; }
 warn() { printf "\033[1;33mWARN:\033[0m %s\n"  "$*" >&2; }
 
-if [[ "${UNSLOTH_SKIP_GPU_CHECK:-0}" == "1" ]]; then
-    exec "$@"
-fi
-
 # UNSLOTH_DEV_ROOT prefixes the /dev probes (DESTDIR idiom) so the regression
 # tests can stage a device tree; leave it unset in normal use.
 DEV_ROOT="${UNSLOTH_DEV_ROOT:-}"
@@ -42,6 +38,12 @@ case "$IMAGE_GFX" in
             unset HSA_OVERRIDE_GFX_VERSION
         fi ;;
 esac
+
+# The skip flag bypasses the diagnostics only; the override cleanup above
+# still applies, since it changes what the command sees.
+if [[ "${UNSLOTH_SKIP_GPU_CHECK:-0}" == "1" ]]; then
+    exec "$@"
+fi
 
 # --- Check 1: /dev/kfd is accessible ----------------------------------------
 # /dev/kfd is the AMD Kernel Fusion Driver node. It must exist AND be readable

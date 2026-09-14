@@ -498,6 +498,23 @@ class TestRocmEntrypoint:
                                    command = "echo ${HSA_OVERRIDE_GFX_VERSION:-unset}")
         assert rc == 0 and (tmp_path / "g" / "ran").read_text().strip() == "11.0.0", err
 
+    def test_the_skip_flag_still_drops_a_stale_override_on_a_per_arch_image(self, tmp_path):
+        """UNSLOTH_SKIP_GPU_CHECK=1 skips the diagnostics, not the override cleanup."""
+        rc, ran, err = _entrypoint(tmp_path, kfd = False, build_info_gfx = "gfx1151",
+                                   env_extra = {"UNSLOTH_SKIP_GPU_CHECK": "1", "HSA_OVERRIDE_GFX_VERSION": "11.0.0"},
+                                   command = "echo ${HSA_OVERRIDE_GFX_VERSION:-unset}")
+        assert rc == 0 and ran, err
+        assert (tmp_path / "ran").read_text().strip() == "unset"
+        assert "ignoring HSA_OVERRIDE_GFX_VERSION" in err and "/dev/kfd" not in err, err
+
+    def test_the_workflow_accepts_a_gfx906_dispatch(self):
+        """Dockerfile.rocm relies on ROCM_GFX=gfx906 to leave out bitsandbytes, so the
+        dispatch validation must let it through (with a 6.3 base)."""
+        body = open(_WORKFLOW, encoding = "utf-8").read()
+        assert '""|gfx906|gfx1150|gfx1151|gfx1152|gfx1200|gfx1201) ;;' in body
+        docker = open(_DOCKERFILE, encoding = "utf-8").read()
+        assert "--build-arg UNSLOTH_REF=<sha>" in docker, "the bare docker build line must not suggest mutable refs"
+
     def test_a_gfx906_build_ships_without_bitsandbytes(self):
         """No prebuilt bitsandbytes wheel has gfx906 kernels; install.sh skips it for
         gfx906 and the image must too, or its own 4-bit smoke test cannot run."""
