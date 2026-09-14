@@ -2659,11 +2659,14 @@ def get_statistics(local_files_only = False):
         disabled = True
     _get_statistics(None)
     _get_statistics("repeat", force_download = False)
-    total_memory = (
-        torch.xpu.get_device_properties(0).total_memory
-        if DEVICE_TYPE == "xpu"
-        else torch.cuda.get_device_properties(0).total_memory
-    )
+    if DEVICE_TYPE == "xpu":
+        total_memory = torch.xpu.get_device_properties(0).total_memory
+    elif DEVICE_TYPE == "npu":
+        # from_pretrained always calls this, and an Ascend build has no CUDA runtime to
+        # answer the else arm with.
+        total_memory = torch.npu.get_device_properties(0).total_memory
+    else:
+        total_memory = torch.cuda.get_device_properties(0).total_memory
     vram = total_memory / 1024 / 1024 / 1024
     if vram <= 8:
         vram = 8
