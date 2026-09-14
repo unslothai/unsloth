@@ -86,6 +86,14 @@ def _make_run(
         result.returncode = smi_rc
         if len(cmd) > 1 and str(cmd[1]) == "--query-gpu=compute_cap":
             out = "".join(f"{cap}\n" for cap in compute_caps)
+        elif len(cmd) > 1 and str(cmd[1]) == "-L":
+            # The GPU-presence predicate both probes now share. A driver that reports a
+            # CUDA version has a GPU to report it for, so this tracks cuda_version.
+            out = (
+                "GPU 0: NVIDIA GeForce RTX 4090 (UUID: GPU-x)\n"
+                if cuda_version
+                else "No devices were found\n"
+            )
         else:
             out = f"CUDA Version: {cuda_version}\n" if cuda_version else "No devices found\n"
         result.stdout = out if kwargs.get("text") else out.encode()
@@ -768,6 +776,14 @@ def _run_flavor_invariant(
             result.returncode = 0
             if len(cmd) > 1 and str(cmd[1]) == "--query-gpu=compute_cap":
                 out = "8.6\n"
+            elif len(cmd) > 1 and str(cmd[1]) == "-L":
+                # The shared GPU-presence predicate; a driver reporting a CUDA version
+                # has a GPU to report it for.
+                out = (
+                    "GPU 0: NVIDIA GeForce RTX 4090 (UUID: GPU-x)\n"
+                    if cuda_version
+                    else "No devices were found\n"
+                )
             else:
                 out = f"CUDA Version: {cuda_version}\n" if cuda_version else "No devices\n"
         result.stdout = out if kwargs.get("text") else out.encode()
@@ -2047,7 +2063,7 @@ class TestTheWindowsXpuTritonSwapReachesADirectRun:
         source = inspect.getsource(stack_mod._ensure_xpu_triton)
         assert "if NO_TORCH or IS_MACOS:" in source, "Windows must no longer be excluded outright"
         assert (
-            'IS_WINDOWS and os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG"' in source
+            "IS_WINDOWS and _handover_torch_flavor_tag()" in source
         ), "under setup.ps1 the swap is still that script's job"
 
     def test_the_windows_branch_runs_it_after_the_invariant(self):
@@ -2194,11 +2210,303 @@ class TestARepairedTorchThatCannotImport:
         assert any("cannot be imported" in ln for ln in lines), lines
 
 
+class TestACpuHandoverDoesNotDisarmTheInvariant:
+    """setup.ps1 publishes UNSLOTH_EXPECTED_TORCH_TAG=cpu on an empty nvidia-smi probe, and
+    the invariant used to pass on that tag without ever reading the installed wheel: a venv
+    rebuilt as 2.11.0+cpu was reported as a successful update. The handover is the probe's
+    answer, not a stated choice, so it loses to the manifest but still beats a real pin and
+    is still honoured on a host whose GPU has genuinely gone."""
+
+    def test_a_cpu_handover_is_overruled_by_a_recorded_cuda_flavor(self):
+        # cuda_version has to agree with the record: the enforced family comes from the
+        # DRIVER, and a 12.4 driver under a cu128 record is the downgrade case below.
+        ok, mock_pip = _run_flavor_invariant(
+            expected_env = "cpu",
+            recorded = "cu128",
+            nvidia = True,
+            cuda_version = "12.8",
+            repaired = "2.11.0+cu128",
+        )
+        assert ok is True
+        assert mock_pip.call_count == 1
+        assert _index_url(mock_pip).endswith("/cu128")
+
+    def test_a_downgraded_driver_is_repaired_onto_its_own_family_end_to_end(self):
+        # Record says cu128, driver reports CUDA 12.4: install cu124, not the record.
+        ok, mock_pip = _run_flavor_invariant(
+            expected_env = "cpu",
+            recorded = "cu128",
+            nvidia = True,
+            cuda_version = "12.4",
+            repaired = "2.11.0+cu124",
+        )
+        assert ok is True
+        assert _index_url(mock_pip).endswith("/cu124")
+
+    def test_the_unrepaired_case_fails_the_install_rather_than_reporting_success(self):
+        # repaired = None: the reinstall left the venv on +cpu, the state this invariant exists
+        # to catch.
+        ok, _mock_pip = _run_flavor_invariant(
+            expected_env = "cpu",
+            recorded = "cu128",
+            nvidia = True,
+            repaired = None,
+        )
+        assert ok is False
+
+    def test_a_host_whose_gpu_really_went_away_is_left_alone(self):
+        # Repairing here would install a CUDA wheel onto a machine with no NVIDIA GPU.
+        ok, mock_pip = _run_flavor_invariant(
+            expected_env = "cpu",
+            recorded = "cu128",
+            nvidia = False,
+        )
+        assert ok is True
+        assert mock_pip.call_count == 0
+
+    def test_a_cpu_handover_with_nothing_recorded_still_skips(self):
+        ok, mock_pip = _run_flavor_invariant(
+            expected_env = "cpu",
+            recorded = None,
+            nvidia = True,
+        )
+        assert ok is True
+        assert mock_pip.call_count == 0
+
+    def test_an_explicit_cpu_index_pin_still_wins(self):
+        # A stated choice, not a probe result: a cu128 record must not override the CPU index.
+        ok, mock_pip = _run_flavor_invariant(
+            expected_env = "cpu",
+            index_url = f"{stack_mod._PYTORCH_WHL_BASE}/cpu",
+            recorded = "cu128",
+            nvidia = True,
+            installed = "2.11.0+cpu",
+        )
+        assert ok is True
+        assert mock_pip.call_count == 0
+
+    def test_the_enforced_tag_reaches_the_manifest(self, monkeypatch):
+        """One resolved tag feeds both the invariant and _recordable_torch_flavor_tag.
+
+        Overriding only the invariant's copy repaired the venv and then wrote "cpu" to the
+        manifest, leaving the next update no CUDA record to fire on: a one-shot fix.
+        """
+        monkeypatch.setenv("UNSLOTH_EXPECTED_TORCH_TAG", "cpu")
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+        monkeypatch.setattr(stack_mod, "_RECORDED_TORCH_TAG", "cu128")
+        monkeypatch.setattr(stack_mod, "_has_usable_nvidia_gpu", lambda: True)
+        monkeypatch.setattr(stack_mod, "_driver_cuda_torch_flavor_tag", lambda: "cu128")
+
+        resolved = stack_mod._expected_torch_flavor_tag()
+        assert resolved == "cu128"
+        assert stack_mod._recordable_torch_flavor_tag(resolved) == "cu128"
+
+    def test_the_driver_probe_finds_a_windows_nvidia_smi_off_path(self, monkeypatch, tmp_path):
+        """Both probes have to look in the same places.
+
+        _has_usable_nvidia_gpu already probed the Windows fixed locations, so a host with
+        nvidia-smi.exe off PATH answered "GPU present" while the family probe read PATH
+        only, fell back to its cu126 default, and recorded a family the driver never
+        reported. On Blackwell that wheel has no supported kernels.
+        """
+        program_files = tmp_path / "Program Files"
+        smi = program_files / "NVIDIA Corporation" / "NVSMI" / "nvidia-smi.exe"
+        smi.parent.mkdir(parents = True)
+        smi.write_text("")
+        monkeypatch.setattr(stack_mod, "IS_WINDOWS", True)
+        monkeypatch.setenv("ProgramFiles", str(program_files))
+        monkeypatch.setenv("SystemRoot", str(tmp_path / "Windows"))
+        monkeypatch.setattr(stack_mod.shutil, "which", lambda _name: None)
+
+        assert str(smi) in stack_mod._nvidia_smi_candidates()
+        assert stack_mod._nvidia_smi_path() == str(smi)
+
+    def test_the_candidate_list_is_shared_by_both_probes(self):
+        # Two callers that disagree about where nvidia-smi lives disagree about the host.
+        assert "_nvidia_smi_candidates()" in inspect.getsource(stack_mod._has_usable_nvidia_gpu)
+        assert "_nvidia_smi_candidates()" in inspect.getsource(
+            stack_mod._nvidia_smi_usable_candidates
+        )
+        assert "_nvidia_smi_usable_candidates()" in inspect.getsource(
+            stack_mod._detect_cuda_torch_index_url
+        )
+
+    def test_a_which_result_is_trusted_without_an_isfile_check(self, monkeypatch):
+        """shutil.which already proved its result runnable.
+
+        Gating it on os.path.isfile rejects a bare "nvidia-smi" relative to a CWD it does
+        not live in. That is both what a stubbed test double looks like and, on a GPU-free
+        runner with nothing at /usr/bin/nvidia-smi, a silent fall back to the cu126 default.
+        """
+        monkeypatch.setattr(stack_mod, "IS_WINDOWS", False)
+        monkeypatch.setattr(stack_mod.shutil, "which", lambda name, *a, **k: "nvidia-smi")
+        monkeypatch.setattr(stack_mod.os.path, "isfile", lambda p: "nvidia-smi" not in str(p))
+        assert stack_mod._nvidia_smi_path() == "nvidia-smi"
+
+    def test_the_family_probe_walks_past_a_stale_candidate(self, monkeypatch, tmp_path):
+        """A stale nvidia-smi on PATH must not decide the family.
+
+        _has_usable_nvidia_gpu already walks past it to the working copy and confirms the
+        GPU; stopping at the stale one here read no version and defaulted to cu126, which
+        on Blackwell has no kernels.
+        """
+        working = tmp_path / "nvidia-smi.exe"
+        working.write_text("")
+        monkeypatch.setattr(stack_mod, "IS_WINDOWS", False)
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+        monkeypatch.setattr(stack_mod.shutil, "which", lambda name, *a, **k: "stale-smi")
+        monkeypatch.setattr(
+            stack_mod, "_nvidia_smi_candidates", lambda: ["stale-smi", str(working)]
+        )
+        monkeypatch.setattr(stack_mod, "_cap_cuda_family_for_pre_turing", lambda f, e: f)
+
+        def _run(command, *a, **k):
+            if command[0] == "stale-smi":
+                return SimpleNamespace(returncode = 9, stdout = "", stderr = "")
+            if len(command) > 1 and command[1] == "-L":
+                return SimpleNamespace(
+                    returncode = 0, stdout = "GPU 0: NVIDIA RTX (UUID: GPU-x)", stderr = ""
+                )
+            return SimpleNamespace(
+                returncode = 0, stdout = "| NVIDIA-SMI 591.86  CUDA Version: 12.8 |", stderr = ""
+            )
+
+        monkeypatch.setattr(stack_mod.subprocess, "run", _run)
+        assert stack_mod._detect_cuda_torch_index_url().endswith("/cu128")
+
+    def test_a_banner_without_a_gpu_does_not_decide_the_family(self, monkeypatch, tmp_path):
+        """Exiting 0 with a parseable banner is not enough; -L has to list a GPU.
+
+        A stale copy can print "CUDA Version: 12.6" and enumerate nothing. The presence
+        probe rejects it and walks on to the working copy, and setup.ps1 keeps whichever
+        executable passes Test-NvidiaSmiHasGpu, so accepting it here reads the family off
+        the wrong driver.
+        """
+        working = tmp_path / "nvidia-smi.exe"
+        working.write_text("")
+        monkeypatch.setattr(stack_mod, "IS_WINDOWS", False)
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_FAMILY", raising = False)
+        monkeypatch.setattr(stack_mod.shutil, "which", lambda name, *a, **k: "stale-smi")
+        monkeypatch.setattr(
+            stack_mod, "_nvidia_smi_candidates", lambda: ["stale-smi", str(working)]
+        )
+        monkeypatch.setattr(stack_mod, "_cap_cuda_family_for_pre_turing", lambda f, e: f)
+
+        def _run(command, *a, **k):
+            listing = len(command) > 1 and command[1] == "-L"
+            if command[0] == "stale-smi":
+                # Exits 0 either way, but lists nothing.
+                return SimpleNamespace(
+                    returncode = 0,
+                    stdout = "" if listing else "| NVIDIA-SMI 550.1  CUDA Version: 12.6 |",
+                    stderr = "",
+                )
+            return SimpleNamespace(
+                returncode = 0,
+                stdout = (
+                    "GPU 0: NVIDIA RTX (UUID: GPU-x)"
+                    if listing
+                    else "| NVIDIA-SMI 591.86  CUDA Version: 13.1 |"
+                ),
+                stderr = "",
+            )
+
+        monkeypatch.setattr(stack_mod.subprocess, "run", _run)
+        assert stack_mod._detect_cuda_torch_index_url().endswith("/cu130")
+
+    def test_both_probes_share_the_gpu_presence_predicate(self):
+        # Two callers that disagree about what counts as a working nvidia-smi disagree
+        # about the host, which is how the family came off the wrong driver twice.
+        assert "_nvidia_smi_lists_a_gpu" in inspect.getsource(stack_mod._has_usable_nvidia_gpu)
+        assert "_nvidia_smi_lists_a_gpu" in inspect.getsource(
+            stack_mod._detect_cuda_torch_index_url
+        )
+
+    def test_an_explicit_cuda_pin_outranks_the_driver_probe(self, monkeypatch):
+        # The repair helpers install from the pinned URL, so expecting the driver's family
+        # instead would flag the venv they just built correctly.
+        monkeypatch.setenv("UNSLOTH_EXPECTED_TORCH_TAG", "cpu")
+        monkeypatch.setenv("UNSLOTH_TORCH_INDEX_URL", "https://download.pytorch.org/whl/cu128")
+        monkeypatch.setattr(stack_mod, "_RECORDED_TORCH_TAG", "cu124")
+        monkeypatch.setattr(stack_mod, "_has_usable_nvidia_gpu", lambda: True)
+        monkeypatch.setattr(stack_mod, "_driver_cuda_torch_flavor_tag", lambda: "cu126")
+
+        assert stack_mod._expected_torch_flavor_tag() == "cu128"
+
+    def test_a_driver_too_old_for_any_cuda_wheel_keeps_the_cpu_handover(self, monkeypatch):
+        # Get-PytorchCudaTag returns "cpu" for a driver below CUDA 11, so the handover is a
+        # STATEMENT here, not an empty probe. Reinstating cu128 would install a wheel this
+        # driver cannot load. _detect_cuda_torch_index_url mirrors that and yields "" .
+        monkeypatch.setenv("UNSLOTH_EXPECTED_TORCH_TAG", "cpu")
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+        monkeypatch.setattr(stack_mod, "_RECORDED_TORCH_TAG", "cu128")
+        monkeypatch.setattr(stack_mod, "_has_usable_nvidia_gpu", lambda: True)
+        monkeypatch.setattr(stack_mod, "_driver_cuda_torch_flavor_tag", lambda: "")
+
+        resolved = stack_mod._expected_torch_flavor_tag()
+        assert resolved == "cpu"
+        assert stack_mod._recordable_torch_flavor_tag(resolved) == "cpu"
+
+    def test_a_downgraded_driver_gets_its_own_family_not_the_recorded_one(self, monkeypatch):
+        # A driver downgrade, or Get-CudaFamilyCappedForPreTuring lowering the family, leaves
+        # the manifest naming a family the host outgrew. The record proves this venv is meant
+        # to be CUDA; it does not get to pick which CUDA.
+        monkeypatch.setenv("UNSLOTH_EXPECTED_TORCH_TAG", "cpu")
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+        monkeypatch.setattr(stack_mod, "_RECORDED_TORCH_TAG", "cu128")
+        monkeypatch.setattr(stack_mod, "_has_usable_nvidia_gpu", lambda: True)
+        monkeypatch.setattr(stack_mod, "_driver_cuda_torch_flavor_tag", lambda: "cu118")
+
+        resolved = stack_mod._expected_torch_flavor_tag()
+        assert resolved == "cu118"
+        assert stack_mod._recordable_torch_flavor_tag(resolved) == "cu118"
+
+    def test_the_driver_family_probe_mirrors_the_index_url(self, monkeypatch):
+        # The helper reads _detect_cuda_torch_index_url's leaf, so an ancient-driver "cpu"
+        # URL has to come back as "" rather than as a family named "cpu".
+        monkeypatch.setattr(
+            stack_mod,
+            "_detect_cuda_torch_index_url",
+            lambda: "https://download.pytorch.org/whl/cpu",
+        )
+        assert stack_mod._driver_cuda_torch_flavor_tag() == ""
+        monkeypatch.setattr(
+            stack_mod,
+            "_detect_cuda_torch_index_url",
+            lambda: "https://download.pytorch.org/whl/cu126/",
+        )
+        assert stack_mod._driver_cuda_torch_flavor_tag() == "cu126"
+
+    def test_a_host_that_lost_its_gpu_records_cpu(self, monkeypatch):
+        # Without the GPU the handover stands and the manifest records cpu.
+        monkeypatch.setenv("UNSLOTH_EXPECTED_TORCH_TAG", "cpu")
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+        monkeypatch.setattr(stack_mod, "_RECORDED_TORCH_TAG", "cu128")
+        monkeypatch.setattr(stack_mod, "_has_usable_nvidia_gpu", lambda: False)
+
+        assert stack_mod._expected_torch_flavor_tag() == "cpu"
+
+    def test_both_handover_readers_go_through_one_helper(self):
+        # Three call sites read this tag; an inline os.environ read drifting out of step with
+        # the helper is how the skip came back the first time.
+        source = inspect.getsource(stack_mod)
+        assert source.count('os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG"') == 1
+        assert "def _handover_torch_flavor_tag(" in source
+
+
 # What a localized nvidia-smi writes, which -X utf8 decodes as UTF-8 (#10173).
 _LOCALIZED_NVIDIA_SMI = (
     "import sys\n"
     "if sys.argv[1:] == ['--query-gpu=compute_cap', '--format=csv,noheader,nounits']:\n"
     "    sys.stdout.buffer.write(b'8.6\\n')\n"
+    # -L is the GPU-presence predicate the family probe now shares with
+    # _has_usable_nvidia_gpu. Without an arm for it this double prints the banner, which
+    # lists no GPU, and the candidate is skipped: the test then passes only on a host that
+    # happens to have a REAL nvidia-smi to fall through to, and fails on a GPU-free runner.
+    "elif sys.argv[1:] == ['-L']:\n"
+    "    sys.stdout.buffer.write(b'GPU 0: NVIDIA GeForce RTX 4090 (UUID: GPU-x)\\n')\n"
     "else:\n"
     "    sys.stdout.buffer.write(b'| NVIDIA-SMI 591.86    CUDA Version: 13.1 |\\n')\n"
     "    sys.stdout.buffer.write('\\u4e02\\u4fdd\\u7559\\u6240\\u6709\\u6743\\u5229\\u3002\\n'.encode('gbk'))\n"
