@@ -2623,6 +2623,9 @@ def test_qwen38_flash_next_plan_includes_the_loaders_nested_mtp_choice():
             _sibling("MTP/mtp-Qwen3.8-Flash-Next-BF16.gguf", 7_700, "bf16"),
             _sibling("MTP/mtp-Qwen3.8-Flash-Next-Q8_0.gguf", 4_100, "q8"),
             _sibling("MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf", 2_600, "shared-q8"),
+            # A real weight copy under MTP/ is hidden from the variant menu by the broad path
+            # predicate, but the loader refuses it as a drafter because its basename is not published.
+            _sibling("MTP/aaa-Q8_0.gguf", 900, "not-a-drafter"),
         ]
     )
 
@@ -4276,6 +4279,7 @@ def test_gguf_variants_partial_marker_overrides_size_only_downloaded(monkeypatch
 
     result = asyncio.run(gguf_variants.get_gguf_variants_response("Org/PartialRepo"))
 
+    assert result.dependencies_resolved is False
     assert result.variants[0].downloaded is False
     assert result.variants[0].partial is True
 
@@ -4343,7 +4347,14 @@ def test_gguf_variants_scopes_partial_state_to_requested_cache(monkeypatch, tmp_
 
 @pytest.mark.parametrize(
     "cache_case",
-    ["current", "partial-mtp", "alternate-projector", "stale-main", "planned-projector"],
+    [
+        "current",
+        "partial-mtp",
+        "alternate-projector",
+        "stale-main",
+        "planned-projector",
+        "cross-snapshot",
+    ],
 )
 def test_cached_flash_next_quant_needs_managed_mtp_before_it_is_downloaded(
     monkeypatch, tmp_path, cache_case
@@ -4367,6 +4378,13 @@ def test_cached_flash_next_quant_needs_managed_mtp_before_it_is_downloaded(
         _sibling(main_name, 100, "main"),
         _sibling(mtp_name, 20, "mtp"),
     ]
+    snapshots = [snapshot]
+    if cache_case == "cross-snapshot":
+        companion_snapshot = snapshot.parent / "rev1"
+        companion = companion_snapshot / mtp_name
+        companion.parent.mkdir(parents = True)
+        companion.write_bytes(b"d" * 20)
+        snapshots.append(companion_snapshot)
     local_blobs = {main_name: {"old-main" if cache_case == "stale-main" else "main"}}
     if cache_case in {"alternate-projector", "planned-projector"}:
         siblings.extend(
@@ -4406,7 +4424,7 @@ def test_cached_flash_next_quant_needs_managed_mtp_before_it_is_downloaded(
     monkeypatch.setattr(
         gguf_variants,
         "iter_hf_cache_snapshots",
-        lambda _repo_id, root = None: [snapshot],
+        lambda _repo_id, root = None: snapshots,
     )
     monkeypatch.setattr(
         gguf_variants.download_registry,
@@ -4415,6 +4433,7 @@ def test_cached_flash_next_quant_needs_managed_mtp_before_it_is_downloaded(
     )
 
     before = asyncio.run(gguf_variants.get_gguf_variants_response(repo_id))
+    assert before.dependencies_resolved is True
     assert before.variants[0].downloaded is False
     assert before.variants[0].download_size_bytes == (130 if "projector" in cache_case else 120)
     assert before.variants[0].partial is (cache_case == "partial-mtp")

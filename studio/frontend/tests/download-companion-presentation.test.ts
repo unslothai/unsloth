@@ -4,8 +4,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { presentedProgress } from "../src/features/hub/download-manager/download-presentation.ts";
-import { pendingDrafterPresentation } from "../src/features/model-picker/components/model-selector/variant-download-presentation.ts";
+import {
+  pendingDrafterPresentation,
+  presentationForJobStart,
+  presentedProgress,
+} from "../src/features/hub/download-manager/download-presentation.ts";
+import { readSrc } from "./helpers/kit.ts";
 
 test("a pending MTP file becomes the download manager presentation", () => {
   assert.deepEqual(
@@ -13,8 +17,7 @@ test("a pending MTP file becomes the download manager presentation", () => {
       filename: "Qwen3.8-Flash-Next-Q4.gguf",
       quant: "Q4",
       size_bytes: 100,
-      pending_drafter_filename:
-        "MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf",
+      pending_drafter_filename: "MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf",
       pending_drafter_size_bytes: 20,
     }),
     {
@@ -58,4 +61,58 @@ test("ordinary downloads retain their plan-wide counters", () => {
     }),
     { expectedBytes: 100, downloadedBytes: 25, fraction: 0.25 },
   );
+});
+
+test("backend-active adoption keeps and stabilizes persisted presentation", () => {
+  const existing = {
+    label: "MTP companion",
+    filename: "mtp-shared-Q8_0.gguf",
+    expectedBytes: 20,
+  };
+  assert.deepEqual(presentationForJobStart(undefined, existing, 120, true), {
+    ...existing,
+    cachedPlanPrefixBytes: 100,
+  });
+  assert.equal(
+    presentationForJobStart(undefined, existing, 120, false),
+    undefined,
+  );
+});
+
+test("adoption defers stabilization while the backend total is unknown", () => {
+  const existing = {
+    label: "MTP companion",
+    filename: "mtp-shared-Q8_0.gguf",
+    expectedBytes: 20,
+  };
+  assert.deepEqual(presentationForJobStart(undefined, existing, 0, true), existing);
+});
+
+test("a later plan-total increase cannot move companion progress backwards", () => {
+  const presentation = presentationForJobStart(
+    {
+      label: "MTP companion",
+      filename: "mtp-shared-Q8_0.gguf",
+      expectedBytes: 20,
+    },
+    undefined,
+    120,
+    false,
+  );
+  assert.deepEqual(
+    presentedProgress({
+      expectedBytes: 200,
+      downloadedBytes: 105,
+      fraction: 0.525,
+      presentation,
+    }),
+    { expectedBytes: 20, downloadedBytes: 5, fraction: 0.25 },
+  );
+});
+
+test("Models Hub forwards companion presentation on start and update", () => {
+  const card = readSrc("features/hub/catalog/gguf-download-card.tsx");
+  assert.match(card, /presentation:\s*selectedPresentation/);
+  assert.match(card, /pendingDrafterPresentation\(updateTargetVariant\)/);
+  assert.match(card, /presentation\s*\?\s*\{ presentation \}/);
 });

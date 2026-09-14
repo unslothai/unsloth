@@ -109,12 +109,16 @@ def preferred_mmproj_sibling(siblings: Sequence) -> Optional[object]:
 
 def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
     """Choose the root MTP drafter used by normal llama.cpp discovery, or the loader-compatible nested sidecar required by Qwen3.8 Flash Next."""
+    from utils.models.drafters import is_published_drafter_filename
+
     # Root-level only: the MTP/ subdir copies now share the mtp- prefix too.
     candidates = sorted(
         (
             s
             for s in siblings
-            if (name := _gguf_rfilename(s)) and "/" not in name and name.lower().startswith("mtp-")
+            if (name := _gguf_rfilename(s))
+            and "/" not in name
+            and is_published_drafter_filename(name, kind = "mtp", allow_legacy_suffix = False)
         ),
         key = lambda s: getattr(s, "rfilename"),
     )
@@ -141,6 +145,7 @@ def preferred_mtp_sibling(siblings: Sequence) -> Optional[object]:
         if (name := _gguf_rfilename(sibling))
         and "/" in name.replace("\\", "/")
         and is_mtp_drafter_path(name)
+        and is_published_drafter_filename(name.replace("\\", "/").rsplit("/", 1)[-1], kind = "mtp")
     ]
     return (
         min(nested, key = lambda sibling: mtp_preference_key(sibling.rfilename)) if nested else None

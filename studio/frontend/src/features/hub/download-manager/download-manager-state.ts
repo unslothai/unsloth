@@ -31,6 +31,7 @@ import {
   downloadInventoryHintKind,
   scopedDownloadInventoryKind,
 } from "./download-manager-types";
+import { stabilizeDownloadPresentation } from "./download-presentation";
 import {
   clearRuntimeTimer,
   pruneSuppressedCompletedInventoryHints as pruneRuntimeSuppressedHints,
@@ -58,7 +59,8 @@ function nonNegativeNumber(value: unknown, fallback = 0): number {
 
 function presentationOfPersisted(value: Record<string, unknown>) {
   if (!isRecord(value.presentation)) return {};
-  const { label, filename, expectedBytes } = value.presentation;
+  const { label, filename, expectedBytes, cachedPlanPrefixBytes } =
+    value.presentation;
   if (
     typeof label !== "string" ||
     !label.trim() ||
@@ -75,6 +77,11 @@ function presentationOfPersisted(value: Record<string, unknown>) {
       label: label.trim(),
       filename: filename.trim(),
       expectedBytes,
+      ...(typeof cachedPlanPrefixBytes === "number" &&
+      Number.isFinite(cachedPlanPrefixBytes) &&
+      cachedPlanPrefixBytes >= 0
+        ? { cachedPlanPrefixBytes }
+        : {}),
     },
   };
 }
@@ -682,8 +689,16 @@ export function setExpectedBytesForJob(
 ): void {
   const job = selectActiveJob(getState(), kind, repoId, variant);
   if (!job || job.state !== "running" || bytes <= job.expectedBytes) return;
+  const presentationPlanBytes =
+    job.presentation && job.expectedBytes < job.presentation.expectedBytes
+      ? bytes
+      : job.expectedBytes;
   patchJob(job.key, {
     expectedBytes: bytes,
+    presentation: stabilizeDownloadPresentation(
+      job.presentation,
+      presentationPlanBytes,
+    ),
     // Measured against the old, smaller total, so wrong the moment the total grows.
     etaSeconds: 0,
     fraction:

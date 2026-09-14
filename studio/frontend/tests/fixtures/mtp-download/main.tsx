@@ -10,7 +10,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 /* eslint-disable no-restricted-imports -- the harness exercises these internal boundaries directly */
 import { AUTH_TOKEN_KEY } from "@/features/auth/session";
 import { wantsDownloadManagerStaging } from "@/features/chat/utils/model-download-staging";
-import { pendingDrafterPresentation } from "../../../src/features/model-picker/components/model-selector/variant-download-presentation";
+import { pendingDrafterPresentation } from "../../../src/features/hub/download-manager/download-presentation";
 import {
   DownloadManagerPanel,
   __resetDownloadManagerForTests,

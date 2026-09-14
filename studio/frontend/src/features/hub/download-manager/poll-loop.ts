@@ -101,6 +101,7 @@ import {
   hasObservedExpectedBytes,
   resolveProgressUpdate,
 } from "./progress-reconcile";
+import { presentationForJobStart } from "./download-presentation";
 import {
   clearWatchdog,
   runtimeRegistry,
@@ -694,6 +695,12 @@ export async function startJob(
     : { transport: mode, cancelTransport: undefined };
   const activeTransport = adopted.transport;
   const inventoryKind = downloadRequestInventoryKind(req);
+  const presentation = presentationForJobStart(
+    req.presentation,
+    existing?.presentation,
+    expected,
+    opts.adopt === true,
+  );
   if (!opts.adopt && hasActiveRepoPeer(req.kind, req.repoId, key, req.variant)) {
     teardownRuntime(key);
     return;
@@ -709,7 +716,7 @@ export async function startJob(
     completedBytes: seedCompleted,
     completeOnDisk: false,
     expectedBytes: expected,
-    ...(req.presentation ? { presentation: req.presentation } : {}),
+    ...(presentation ? { presentation } : {}),
     fraction: seedFraction,
     bytesPerSec: 0,
     error: null,

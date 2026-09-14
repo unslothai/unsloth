@@ -1426,8 +1426,7 @@ async def get_gguf_variants_answer(
 
         # Per-snapshot accounting: split GGUFs need every shard together, sizes are max across snapshots
         # so shared blobs are not double-counted, and keys are lowercased since cache casing can differ.
-        cached_filenames_by_snapshot: list[dict[str, int]] = []
-        cached_quant_bytes_by_snapshot: list[dict[str, int]] = []
+        cached_snapshots: list[tuple[dict[str, int], dict[str, int]]] = []
         # A gated repo can list its files publicly, so reaching here is not authorization:
         # everything below reads the local caches, and would report `downloaded`, `partial`
         # and remaining bytes for the operator's copy to a caller the other paths refuse.
@@ -1466,10 +1465,8 @@ async def get_gguf_variants_answer(
                         continue
                     q = q.lower()
                     by_quant[q] = by_quant.get(q, 0) + size
-                if by_filename:
-                    cached_filenames_by_snapshot.append(by_filename)
-                if by_quant:
-                    cached_quant_bytes_by_snapshot.append(by_quant)
+                if by_filename or by_quant:
+                    cached_snapshots.append((by_filename, by_quant))
 
         requirements_by_quant = {
             v.quant.lower(): _variant_requirement_cache_get(
@@ -1486,42 +1483,38 @@ async def get_gguf_variants_answer(
                 if requirements_by_quant.get(key) is None:
                     requirements_by_quant[key] = fetched_requirements.get(key)
 
-        def _filenames_cached(filenames: frozenset[str], expected_size: int) -> bool:
+        def _filenames_cached_in_snapshot(
+            by_filename: dict[str, int], filenames: frozenset[str], expected_size: int
+        ) -> bool:
             if not filenames:
                 return False
             wanted = [name.lower() for name in filenames]
+            cached = 0
+            for name in wanted:
+                size = by_filename.get(name)
+                if size is None:
+                    return False
+                cached += size
+            return expected_size <= 0 or cached >= expected_size * 0.99
+
+        def _filenames_cached(filenames: frozenset[str], expected_size: int) -> bool:
             # All files must live in a single snapshot, not spread across several.
-            for by_filename in cached_filenames_by_snapshot:
-                cached = 0
-                for name in wanted:
-                    size = by_filename.get(name)
-                    if size is None:
-                        break
-                    cached += size
-                else:
-                    return expected_size <= 0 or cached >= expected_size * 0.99
-            return False
+            return any(
+                _filenames_cached_in_snapshot(by_filename, filenames, expected_size)
+                for by_filename, _by_quant in cached_snapshots
+            )
 
         def _any_mmproj_cached(filenames: frozenset[str]) -> bool:
             if any(
                 by_filename.get(name.lower()) is not None
-                for by_filename in cached_filenames_by_snapshot
+                for by_filename, _by_quant in cached_snapshots
                 for name in filenames
             ):
                 return True
             return any(
                 _is_mmproj_filename(name.rsplit("/", 1)[-1])
-                for by_filename in cached_filenames_by_snapshot
+                for by_filename, _by_quant in cached_snapshots
                 for name in by_filename
-            )
-
-        def _quant_bytes_present(quant: str, size_bytes: int) -> bool:
-            # Small rounding tolerance for symlinks vs real sizes.
-            if size_bytes <= 0:
-                return False
-            return any(
-                by_quant.get(quant, 0) >= size_bytes * 0.99
-                for by_quant in cached_quant_bytes_by_snapshot
             )
 
         def _non_mmproj_companions(requirement: Optional[_GgufVariantRequirement]) -> tuple:
@@ -1533,44 +1526,70 @@ async def get_gguf_variants_answer(
                 if _is_mtp_drafter_path(file.path) and not _is_mmproj_filename(file.path)
             )
 
-        def _companions_ready(companions: tuple) -> bool:
-            return not companions or _filenames_cached(
+        def _snapshot_has_companions(by_filename: dict[str, int], companions: tuple) -> bool:
+            return not companions or _filenames_cached_in_snapshot(
+                by_filename,
                 frozenset(file.path for file in companions),
                 sum(max(0, int(file.size or 0)) for file in companions),
             )
 
+        def _main_and_companions_ready(requirement: _GgufVariantRequirement) -> bool:
+            companions = _non_mmproj_companions(requirement)
+            filenames = requirement.main_filenames | frozenset(file.path for file in companions)
+            expected_size = requirement.main_size_bytes + sum(
+                max(0, int(file.size or 0)) for file in companions
+            )
+            return any(
+                _filenames_cached_in_snapshot(by_filename, filenames, expected_size)
+                for by_filename, _by_quant in cached_snapshots
+            )
+
+        def _quant_and_companions_ready(quant: str, size_bytes: int, companions: tuple) -> bool:
+            if size_bytes <= 0:
+                return False
+            return any(
+                by_quant.get(quant, 0) >= size_bytes * 0.99
+                and _snapshot_has_companions(by_filename, companions)
+                for by_filename, by_quant in cached_snapshots
+            )
+
         def _pending_drafter(requirement: Optional[_GgufVariantRequirement], quant: str):
             """Name one companion-only transfer without mislabelling a model pull."""
-            if requirement is None or not _filenames_cached(
-                requirement.main_filenames,
-                requirement.main_size_bytes,
-            ):
+            if requirement is None:
                 return None
-            missing = tuple(
-                file
-                for file in _non_mmproj_companions(requirement)
-                if not _filenames_cached(
-                    frozenset({file.path}),
-                    max(0, int(file.size or 0)),
-                )
-            )
-            if len(missing) != 1:
-                return None
-            local_blobs = local_blobs_by_quant.get(quant.lower(), {})
-            for expected in requirement.expected_files:
-                if expected.path == missing[0].path:
-                    continue
-                if not _filenames_cached(frozenset({expected.path}), expected.size):
-                    return None
-                # Only subtract files the worker can reuse at the planned revision.
-                identities = local_blobs.get(expected.path.replace("\\", "/"), set())
-                if (
-                    expected.sha256
-                    and expected.sha256 not in identities
-                    and not _size_identity_matches(identities, expected.size)
+            for by_filename, _by_quant in cached_snapshots:
+                if not _filenames_cached_in_snapshot(
+                    by_filename, requirement.main_filenames, requirement.main_size_bytes
                 ):
-                    return None
-            return missing[0]
+                    continue
+                missing = tuple(
+                    file
+                    for file in _non_mmproj_companions(requirement)
+                    if not _filenames_cached_in_snapshot(
+                        by_filename, frozenset({file.path}), max(0, int(file.size or 0))
+                    )
+                )
+                if len(missing) != 1:
+                    continue
+                local_blobs = local_blobs_by_quant.get(quant.lower(), {})
+                for expected in requirement.expected_files:
+                    if expected.path == missing[0].path:
+                        continue
+                    if not _filenames_cached_in_snapshot(
+                        by_filename, frozenset({expected.path}), expected.size
+                    ):
+                        break
+                    # Only subtract files the worker can reuse at the planned revision.
+                    identities = local_blobs.get(expected.path.replace("\\", "/"), set())
+                    if (
+                        expected.sha256
+                        and expected.sha256 not in identities
+                        and not _size_identity_matches(identities, expected.size)
+                    ):
+                        break
+                else:
+                    return missing[0]
+            return None
 
         def _is_fully_downloaded(variant) -> bool:
             quant = variant.quant.lower()
@@ -1583,15 +1602,11 @@ async def get_gguf_variants_answer(
             # with no Downloads-panel row. Keep the existing any-precision
             # mmproj rule below; the loader can genuinely use any compatible
             # projector, while it selects one exact planned drafter.
-            companions_ready = _companions_ready(_non_mmproj_companions(requirement))
+            companions = _non_mmproj_companions(requirement)
             # Vision repos ship an mmproj adapter; any precision on disk suffices.
             if (
                 requirement is not None
-                and _filenames_cached(
-                    requirement.main_filenames,
-                    requirement.main_size_bytes,
-                )
-                and companions_ready
+                and _main_and_companions_ready(requirement)
                 and (
                     not requirement.mmproj_filenames
                     or _any_mmproj_cached(requirement.mmproj_filenames)
@@ -1600,9 +1615,7 @@ async def get_gguf_variants_answer(
                 return True
             # Byte fallback so a present quant is not demoted by a filename mismatch; vision repos still need an
             # mmproj cached, at any precision.
-            if not _quant_bytes_present(quant, variant.size_bytes):
-                return False
-            if not companions_ready:
+            if not _quant_and_companions_ready(quant, variant.size_bytes, companions):
                 return False
             if (
                 requirement is not None
@@ -1763,6 +1776,7 @@ async def get_gguf_variants_answer(
             variants = [_variant_detail(v) for v in variants],
             has_vision = has_vision,
             default_variant = default_variant,
+            dependencies_resolved = siblings is not None,
         )
 
     def _compute_with_cleanables() -> VariantsAnswer:

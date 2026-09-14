@@ -1,7 +1,64 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { ManagedDownload } from "./download-manager-types";
+import type { GgufVariantDetail } from "../inventory";
+import type {
+  DownloadPresentation,
+  ManagedDownload,
+} from "./download-manager-types";
+
+/** Describe a sole missing drafter as the transfer, not as the cached model. */
+export function pendingDrafterPresentation(
+  variant: GgufVariantDetail | null | undefined,
+): DownloadPresentation | undefined {
+  const filename = variant?.pending_drafter_filename?.trim();
+  const expectedBytes = variant?.pending_drafter_size_bytes ?? 0;
+  if (!filename || !Number.isFinite(expectedBytes) || expectedBytes <= 0) {
+    return undefined;
+  }
+  const basename = filename.replaceAll("\\", "/").split("/").at(-1) ?? filename;
+  const lower = basename.toLowerCase();
+  const label = lower.startsWith("mtp-")
+    ? "MTP companion"
+    : lower.startsWith("dspark-") || lower.startsWith("dflash-")
+      ? "Draft companion"
+      : "Model companion";
+  return { label, filename: basename, expectedBytes };
+}
+
+export function stabilizeDownloadPresentation(
+  presentation: DownloadPresentation | undefined,
+  planExpectedBytes: number,
+): DownloadPresentation | undefined {
+  if (
+    !presentation ||
+    presentation.cachedPlanPrefixBytes !== undefined ||
+    !Number.isFinite(planExpectedBytes) ||
+    planExpectedBytes < presentation.expectedBytes
+  ) {
+    return presentation;
+  }
+  return {
+    ...presentation,
+    cachedPlanPrefixBytes: Math.max(
+      0,
+      planExpectedBytes - presentation.expectedBytes,
+    ),
+  };
+}
+
+/** A backend-active adoption has no UI metadata, so retain the persisted scope. */
+export function presentationForJobStart(
+  requested: DownloadPresentation | undefined,
+  existing: DownloadPresentation | undefined,
+  planExpectedBytes: number,
+  adopt: boolean,
+): DownloadPresentation | undefined {
+  return stabilizeDownloadPresentation(
+    requested ?? (adopt ? existing : undefined),
+    planExpectedBytes,
+  );
+}
 
 /** Project plan-wide cache counters onto the sole artifact still transferring. */
 export function presentedProgress(
@@ -19,7 +76,9 @@ export function presentedProgress(
     };
   }
   const expectedBytes = presentation.expectedBytes;
-  const cachedPlanPrefix = Math.max(0, job.expectedBytes - expectedBytes);
+  const cachedPlanPrefix =
+    presentation.cachedPlanPrefixBytes ??
+    Math.max(0, job.expectedBytes - expectedBytes);
   const downloadedBytes = Math.min(
     expectedBytes,
     Math.max(0, job.downloadedBytes - cachedPlanPrefix),
@@ -27,6 +86,7 @@ export function presentedProgress(
   return {
     expectedBytes,
     downloadedBytes,
-    fraction: expectedBytes > 0 ? downloadedBytes / expectedBytes : job.fraction,
+    fraction:
+      expectedBytes > 0 ? downloadedBytes / expectedBytes : job.fraction,
   };
 }

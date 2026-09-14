@@ -60,6 +60,9 @@ export interface DownloadPresentation {
   label: string;
   filename: string;
   expectedBytes: number;
+  /** Plan bytes already present before this sole artifact starts. Frozen when
+   *  the presentation is attached, because later metadata may grow the plan. */
+  cachedPlanPrefixBytes?: number;
 }
 
 export interface CallerToast {

@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -71,6 +72,24 @@ def _sibling(name: str, size: int, sha: str) -> SimpleNamespace:
     return SimpleNamespace(rfilename = name, size = size, lfs = {"sha256": sha})
 
 
+class _LogicalGgufPath:
+    """A tiny physical fixture whose scan reports the model's real logical size."""
+
+    def __init__(self, path: Path, size: int):
+        self._path = path
+        self._size = size
+
+    @property
+    def name(self) -> str:
+        return self._path.name
+
+    def relative_to(self, root: Path) -> Path:
+        return self._path.relative_to(root)
+
+    def stat(self) -> SimpleNamespace:
+        return SimpleNamespace(st_size = self._size)
+
+
 def _backend_payload_here() -> dict[str, object]:
     """Ask this checkout's production inventory code about a main-only cache."""
     sys.path.insert(0, str(REPO_DIR / "studio" / "backend"))
@@ -86,10 +105,13 @@ def _backend_payload_here() -> dict[str, object]:
             root / "cache" / "models--unsloth--Qwen3.8-Flash-Next-GGUF" / "snapshots" / "rev0"
         )
         snapshot.mkdir(parents = True)
-        with (snapshot / MAIN_FILENAME).open("wb") as cached_main:
-            cached_main.truncate(MAIN_BYTES)
+        cached_main = snapshot / MAIN_FILENAME
+        cached_main.write_bytes(b"m")
 
         gguf_variants.asyncio.to_thread = _run_inline
+        gguf_variants._iter_gguf_paths = lambda _snapshot: [
+            _LogicalGgufPath(cached_main, MAIN_BYTES)
+        ]
         gguf_variants.list_gguf_variants = lambda *_args, **_kwargs: (
             [
                 SimpleNamespace(
@@ -174,9 +196,10 @@ def main() -> None:
     port = _free_port()
     base_url = f"http://127.0.0.1:{port}"
     vite_log = (ART_DIR / f"{SIDE.lower()}-vite.log").open("w", encoding = "utf-8")
+    npm = shutil.which("npm") or "npm"
     vite = subprocess.Popen(
         [
-            "npm",
+            npm,
             "run",
             "dev",
             "--",

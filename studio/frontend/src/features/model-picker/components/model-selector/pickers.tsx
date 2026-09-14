@@ -62,6 +62,7 @@ import {
   useDownloadManagerStore,
   useHfTokenStore,
   useOnlineStatus,
+  pendingDrafterPresentation,
 } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import {
@@ -203,6 +204,7 @@ import {
   soleQuantFingerprint,
   soleQuantKey,
   takeDriftedRepos,
+  verifiedSoleHubVariant,
 } from "./sole-quant-cache";
 import type {
   DeletedModelRef,
@@ -221,7 +223,6 @@ import {
   h3PickerHasOnlyPrunedBuilds,
   preferredGgufVariantByGroup,
 } from "./variant-presentation";
-import { pendingDrafterPresentation } from "./variant-download-presentation";
 import {
   shouldMountVariantExpander,
   toggleAutoExpandedRow,
@@ -1338,6 +1339,7 @@ function normalizeGgufVariantsResponse(
         has_vision?: unknown;
         context_length?: unknown;
         resolved_locally?: unknown;
+        dependencies_resolved?: unknown;
       }
     | null
     | undefined,
@@ -1347,6 +1349,7 @@ function normalizeGgufVariantsResponse(
   hasVision: boolean;
   contextLength: number | null;
   resolvedLocally: boolean;
+  dependenciesResolved: boolean;
 } {
   const contextLength = res?.context_length;
   return {
@@ -1367,6 +1370,9 @@ function normalizeGgufVariantsResponse(
     // The backend's own verdict, which resolves existence-first: a marker-less relative name that
     // exists on disk is a local model. A server predating the field leaves the prefix test.
     resolvedLocally: res?.resolved_locally === true,
+    // Missing/false means the server used local or offline fallback metadata. That cannot prove
+    // whether a cached main GGUF still needs a managed drafter companion.
+    dependenciesResolved: res?.dependencies_resolved === true,
   };
 }
 
@@ -1386,22 +1392,22 @@ interface SoleDownloadedQuant {
   hasVision: boolean;
 }
 
-/** The repo's one complete quant, or null when it holds none, holds several, or could not be
- *  read. Disk-only and client-cached. */
+/** The repo's one complete quant, or null when Hub metadata cannot verify its dependencies. */
 async function readSoleQuant(
   target: SoleQuantTarget,
   hfToken?: string,
 ): Promise<SoleDownloadedQuant | null> {
   try {
     const res = await listGgufVariantsCached(target.repoId, hfToken, {
-      preferLocalCache: true,
       localPath: target.localSource,
     });
     const normalized = normalizeGgufVariantsResponse(res);
-    const local = normalized.variants;
-    // One file on disk and nothing torn beside it; a partial quant keeps the expander, where it can be resumed.
-    if (local.length !== 1 || local[0].downloaded !== true) return null;
-    return { variant: local[0], hasVision: normalized.hasVision };
+    const variant = verifiedSoleHubVariant(
+      normalized.variants,
+      normalized.resolvedLocally,
+      normalized.dependenciesResolved,
+    );
+    return variant ? { variant, hasVision: normalized.hasVision } : null;
   } catch {
     return null;
   }
@@ -5193,16 +5199,17 @@ export function HubModelPicker({
     // Carried anyway: if that ever stops holding, the row states what is on disk instead of
     // handing a torn file to the loader.
     const isPartial = c.partial === true;
+    const isDownloaded = variant.downloaded === true && !isPartial;
     const selectMeta: ModelSelectorChangeMeta = {
       source: "hub",
       isLora: false,
       // Only for a complete snapshot, as the variant select already does. A loadId names a
       // revision on disk, and the Audio route carries no isDownloaded field, so a forwarded
       // one is read there as proof the weights are present.
-      loadId: isPartial ? undefined : c.load_id,
+      loadId: isDownloaded ? c.load_id : undefined,
       ggufVariant: variant.quant,
       ggufFilename: variant.filename,
-      isDownloaded: !isPartial,
+      isDownloaded,
       expectedBytes,
       isGguf: true,
       pipelineTag: c.task ?? null,
