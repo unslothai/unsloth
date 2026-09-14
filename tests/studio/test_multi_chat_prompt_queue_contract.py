@@ -13,7 +13,9 @@ THREAD = (FRONTEND / "components/assistant-ui/thread.tsx").read_text(encoding = 
 APP_SIDEBAR = (FRONTEND / "components/app-sidebar.tsx").read_text(encoding = "utf-8")
 CHAT_ADAPTER = (FRONTEND / "features/chat/api/chat-adapter.ts").read_text(encoding = "utf-8")
 DURABLE_GATE = (FRONTEND / "features/chat/api/durable-gate.ts").read_text(encoding = "utf-8")
-CHAT_GENERATION_API = (FRONTEND / "features/chat/api/chat-generation-api.ts").read_text(encoding = "utf-8")
+CHAT_GENERATION_API = (FRONTEND / "features/chat/api/chat-generation-api.ts").read_text(
+    encoding = "utf-8"
+)
 MODEL_RUNTIME = (FRONTEND / "features/chat/hooks/use-chat-model-runtime.ts").read_text(
     encoding = "utf-8"
 )
