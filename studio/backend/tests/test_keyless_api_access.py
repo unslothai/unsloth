@@ -132,6 +132,20 @@ def test_exact_route_matrix_matches_registered_topology():
     assert intended <= registered
 
 
+def test_the_allowlisted_studio_paths_name_routes_that_exist():
+    # The matrix above pins the /v1 router. This one covers the studio router, whose
+    # paths carry a mount prefix, so a rename there cannot silently strand an entry.
+    from routes.inference import studio_router
+    from utils.keyless_api_access import _INFERENCE_ROUTES
+
+    registered = {("/api/inference" + route.path, method)
+                  for route in studio_router.routes
+                  for method in getattr(route, "methods", set())}
+    for method, path in _INFERENCE_ROUTES:
+        if path.startswith("/api/inference/"):
+            assert (path, method) in registered, path
+
+
 @pytest.mark.parametrize("token", [None, "not-needed"])
 def test_resident_model_discovery_preserves_keyless_inference_access(token):
     seed_user()

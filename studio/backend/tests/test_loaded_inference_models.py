@@ -119,3 +119,24 @@ def test_discovery_does_not_construct_an_unused_orchestrator(
         ["Local-Q4"] if gguf_loaded else []
     )
     assert orchestrator.peek_inference_backend() is None
+
+
+def test_a_resident_quant_is_advertised_without_letting_the_probe_scan(
+    resident_backends, monkeypatch
+):
+    from core.inference import local_model_resolver
+
+    llama, _ = resident_backends
+    llama.hf_variant = "Q4_K_M"
+    seen = []
+
+    def resolve(spec, allow_scan = True):
+        seen.append((spec, allow_scan))
+        return "/models/Local-Q4.gguf"
+
+    monkeypatch.setattr(local_model_resolver, "resolve_local_gguf", resolve)
+    monkeypatch.setattr(local_model_resolver, "index_is_built", lambda: True)
+    with TestClient(_app()) as client:
+        entry = client.get("/api/inference/loaded-models").json()["data"][0]
+    assert entry["quant"] == "Q4_K_M"
+    assert seen == [("Local-Q4:Q4_K_M", False)]
