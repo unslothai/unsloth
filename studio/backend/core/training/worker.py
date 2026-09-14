@@ -1313,8 +1313,7 @@ def _attempt_package_install(
                 result.stdout,
             )
     elif wheel_available is None:
-        # Refused, not a 404. Skip the prebuilt fast path and install from PyPI rather
-        # than return: a throttled release host must not cost the package entirely.
+        # Refused, not a 404: fall through to PyPI rather than call the wheel unpublished.
         _send_status(
             event_queue,
             f"Could not check the {display_name} prebuilt wheel; installing from PyPI.",

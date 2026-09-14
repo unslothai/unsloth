@@ -6398,8 +6398,7 @@ def _ensure_flash_attn() -> None:
     if wheel_url is None:
         _step("warning", "No compatible flash-attn prebuilt wheel found", _cyan)
     elif wheel_available is None:
-        # The release host refused the probe, which is not a 404. Calling the wheel
-        # unpublished would send the user looking for one that exists.
+        # Refused, not a 404: calling the wheel unpublished would send the user looking for one that exists.
         _step(
             "warning",
             "Could not check the flash-attn prebuilt wheel; skipped it",

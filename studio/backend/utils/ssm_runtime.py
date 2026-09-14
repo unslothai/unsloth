@@ -322,9 +322,7 @@ def _install_kernel(
                     getattr(result, "stdout", ""),
                 )
     elif wheel_available is None:
-        # Refused, not a 404. Skip the prebuilt fast path but keep going: returning here
-        # would make ensure_ssm_runtime raise for a Mamba model that a source build,
-        # which needs no GitHub at all, still installs.
+        # Refused, not a 404: fall through to the source build, which needs no GitHub at all.
         _emit(
             status_cb,
             f"Could not check the {display_name} prebuilt wheel; building it from source.",

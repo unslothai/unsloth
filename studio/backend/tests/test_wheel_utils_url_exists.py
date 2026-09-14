@@ -1,14 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""url_exists must tell a missing wheel (404) from GitHub refusing us (403/429/5xx, dropped
-connection). A refusal is retried once and then reported as None. Callers still take their
-slow path either way, since the wheel may well exist and a source build needs no GitHub;
-what changes is the message ("could not check", never "not published") and that a refusal
-is never treated as proof that no prebuilt exists."""
+"""url_exists must tell a missing wheel (404) from a refusal, and callers must reach their slow path either way."""
 
 from __future__ import annotations
 
+import http.client
 import sys
 import urllib.error
 from pathlib import Path
@@ -53,16 +50,52 @@ def test_a_404_is_final_after_one_probe(monkeypatch):
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("status", [403, 429, 503])
-def test_a_refusal_is_retried_once_then_reported(monkeypatch, caplog, status):
+def _headers(**values):
+    import email.message
+
+    message = email.message.Message()
+    for key, value in values.items():
+        message[key.replace("_", "-")] = value
+    return message
+
+
+@pytest.mark.parametrize(
+    ("status", "headers", "probes"),
+    [
+        # Retrying a refusal asks a throttled host twice as often as it asked to be.
+        (403, None, 1),
+        (429, None, 1),
+        (503, _headers(Retry_After = "60"), 1),
+        (503, None, 2),
+        (408, None, 2),
+    ],
+)
+def test_a_refusal_is_reported_and_only_a_server_fault_is_retried(
+    monkeypatch, caplog, status, headers, probes
+):
     def refused(_n):
-        raise urllib.error.HTTPError("u", status, "unavailable", None, None)
+        raise urllib.error.HTTPError("u", status, "unavailable", headers, None)
 
     calls = _patch(monkeypatch, refused)
     with caplog.at_level("WARNING", logger = wheel_utils._logger.name):
         assert wheel_utils.url_exists("https://github.com/x/releases/download/v1/w.whl") is None
-    assert len(calls) == 2
+    assert len(calls) == probes
     assert any(f"HTTP {status}" in rec.getMessage() for rec in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        http.client.RemoteDisconnected("peer closed"),
+        http.client.BadStatusLine("HTTP/1.1 \\x00garbage"),
+        ConnectionResetError("reset"),
+    ],
+)
+def test_a_dropped_or_garbled_response_is_absorbed_and_retried(monkeypatch, exc):
+    """None is a URLError, so an escape aborts the install instead of taking the slow path."""
+    calls = _patch(monkeypatch, lambda _n: (_ for _ in ()).throw(exc))
+    assert wheel_utils.url_exists("https://github.com/x/releases/download/v1/w.whl") is None
+    assert len(calls) == 2
 
 
 def test_a_transient_failure_recovers_on_the_retry(monkeypatch):
@@ -88,9 +121,7 @@ def test_a_timeout_is_not_retried(monkeypatch):
 @pytest.mark.parametrize("installer", ["training", "inference"])
 @pytest.mark.parametrize("status", [403, 429, 503, 404])
 def test_a_refused_probe_still_reaches_the_source_build(monkeypatch, installer, status):
-    """Whatever the probe answered, the slow path still runs. A refusal skips only the
-    prebuilt fast path: PyPI and the source build need no GitHub, and returning early
-    would make a throttled release host cost the package -- for mamba-ssm, the model."""
+    """PyPI and the source build need no GitHub, so a refusal must not cost the package."""
     from core.training import worker
     from utils import ssm_runtime
 
@@ -135,8 +166,7 @@ def test_a_refused_probe_still_reaches_the_source_build(monkeypatch, installer, 
 
 
 def test_a_refused_probe_does_not_fail_a_mamba_model(monkeypatch):
-    """ensure_ssm_runtime raises when mamba-ssm does not install, so a refused probe
-    that returned early turned a throttled GitHub into an unloadable model."""
+    """ensure_ssm_runtime raises when mamba-ssm is missing, so an early return breaks the model."""
     from utils import ssm_runtime
 
     url = "https://github.com/x/releases/download/v1/w.whl"
@@ -149,7 +179,7 @@ def test_a_refused_probe_does_not_fail_a_mamba_model(monkeypatch):
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     monkeypatch.setattr(ssm_runtime, "probe_torch_wheel_env", lambda **kw: {})
     monkeypatch.setattr(ssm_runtime, "direct_wheel_url", lambda **kw: url)
-    # Absent before the build, present after it.
+
     built = []
     monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: bool(built))
     monkeypatch.setattr(ssm_runtime.shutil, "which", lambda name: None)
