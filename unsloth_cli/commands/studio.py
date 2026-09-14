@@ -3174,8 +3174,19 @@ _PS_PROXY_DEFAULTS_PRELUDE = (
 _UV_CACHE_BUCKETS = ("archive", "builds", "built-wheels", "wheels", "sdists")
 # Every CacheBucket in uv 0.12.1 (UV_PINNED_VERSION) plus built-wheels, as install.sh lists them.
 _UV_CACHE_STORES = (
-    "archive", "binaries", "builds", "built-wheels", "environments", "flat-index",
-    "git", "interpreter", "osv", "python", "sdists", "simple", "wheels",
+    "archive",
+    "binaries",
+    "builds",
+    "built-wheels",
+    "environments",
+    "flat-index",
+    "git",
+    "interpreter",
+    "osv",
+    "python",
+    "sdists",
+    "simple",
+    "wheels",
 )
 _UV_CACHE_METADATA_SUFFIXES = (".lock", ".msgpack", ".http", ".rev")
 
@@ -3340,9 +3351,7 @@ def _uv_cache_is_writable(cache_dir: Path) -> bool:
     try:
         # Only the directories uv OWNS: an unrelated read-only one must not disqualify a
         # usable cache, and that is what the kind list above is for.
-        probes.extend(
-            p for p in cache_dir.iterdir() if _uv_is_store_name(p.name) and p.is_dir()
-        )
+        probes.extend(p for p in cache_dir.iterdir() if _uv_is_store_name(p.name) and p.is_dir())
     except OSError:
         return False
     for target in probes:

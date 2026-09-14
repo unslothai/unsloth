@@ -1037,7 +1037,6 @@ def test_an_unwritable_studio_cache_is_not_forced_on_setup(monkeypatch, tmp_path
         studio_cache.chmod(0o755)
     assert "UV_CACHE_DIR" not in seen["env"], seen["env"].get("UV_CACHE_DIR")
 
-
     # Writable again, and it is handed over as before.
     seen = _run_posix(monkeypatch, tmp_path)
     assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache)
