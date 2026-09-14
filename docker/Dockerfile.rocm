@@ -5,8 +5,11 @@
 # Default build: ROCm 7.2.4 base + the pytorch.org rocm7.2 wheels. That index
 # carries kernels for RDNA2 (gfx1030), RDNA3 (gfx1100-1102), RDNA4
 # (gfx1200/1201) and CDNA (gfx908, gfx90a, gfx942); gfx906 (Radeon VII, MI50)
-# was dropped from ROCm after 6.3, so a gfx906 host needs ROCM_VERSION=6.3.x
-# and TORCH_INDEX_URL=.../rocm6.3.
+# was dropped from ROCm after 6.3, so a gfx906 host needs the last base that
+# carries it, and no bitsandbytes (no prebuilt gfx906 kernels; install.sh
+# skips it for gfx906 as well):
+#   ROCM_GFX=gfx906 ROCM_VERSION=6.3.4 TORCH_INDEX_URL=https://download.pytorch.org/whl/rocm6.3 \
+#     bash docker/build.sh --rocm
 #
 # Strix APUs (gfx1150 Strix Point, gfx1151 Strix Halo, gfx1152 Krackan) and
 # RDNA4 get AMD's per-arch wheels instead, which carry fixes the generic index
@@ -75,14 +78,15 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 #   ROCM_GFX: AMD's per-arch index and the torch 2.11 line, as install.sh's
 #             Strix/RDNA4 reroute does (gfx1200/1201 share the gfx120X-all family)
 RUN set -eu; \
-    IDX="${TORCH_INDEX_URL}"; SPEC="torch torchvision torchaudio"; \
+    IDX="${TORCH_INDEX_URL}"; SPEC="torch torchvision torchaudio"; FAM=""; \
     case "${ROCM_GFX}" in \
         "") ;; \
+        gfx906) ;; \
         gfx1200|gfx1201) FAM=gfx120X-all ;; \
         gfx1150|gfx1151|gfx1152) FAM="${ROCM_GFX}" ;; \
-        *) echo "ROCM_GFX=${ROCM_GFX}: no per-arch wheel index (known: gfx1150 gfx1151 gfx1152 gfx1200 gfx1201)" >&2; exit 1 ;; \
+        *) echo "ROCM_GFX=${ROCM_GFX}: no per-arch wheel index (known: gfx1150 gfx1151 gfx1152 gfx1200 gfx1201; gfx906 = generic index without bitsandbytes)" >&2; exit 1 ;; \
     esac; \
-    if [ -n "${ROCM_GFX}" ]; then \
+    if [ -n "${FAM}" ]; then \
         IDX="https://repo.amd.com/rocm/whl/${FAM}/"; \
         SPEC="torch>=2.11.0,<2.12.0 torchvision>=0.26.0,<0.27.0 torchaudio>=2.11.0,<2.12.0"; \
     fi; \
@@ -151,13 +155,20 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # (1.33.7rc0) does not match its metadata version, and uv refuses that mismatch.
 # The fallback is the first PyPI release with the fix; 0.49.x and below produce
 # NaNs at decode shape on every AMD GPU, so it is never installed here.
-# Same URL and fallback as install.sh's _install_bnb_rocm().
-RUN _BNB_WHL="https://github.com/bitsandbytes-foundation/bitsandbytes/releases/download/continuous-release_main/bitsandbytes-1.33.7.preview-py3-none-manylinux_2_24_x86_64.whl" \
- && (${VENV}/bin/python -m pip install \
-        --force-reinstall --no-cache-dir --no-deps "${_BNB_WHL}" \
-    || (echo "[WARN] bnb pre-release install failed; falling back to PyPI bitsandbytes>=0.50.0" >&2 \
-        && ${VENV}/bin/python -m pip install \
-            --force-reinstall --no-cache-dir --no-deps "bitsandbytes>=0.50.0"))
+# Same URL and fallback as install.sh's _install_bnb_rocm(). No prebuilt wheel
+# carries gfx906 kernels, so a gfx906 build ships without bitsandbytes (as
+# install.sh does) rather than with one that fails on the first 4-bit op.
+RUN if grep -q '^ROCM_GFX=gfx906$' /etc/unsloth-rocm-build; then \
+        echo "gfx906: no prebuilt bitsandbytes kernels; removing bitsandbytes from the stack"; \
+        ${VENV}/bin/python -m pip uninstall -y bitsandbytes || true; \
+    else \
+        _BNB_WHL="https://github.com/bitsandbytes-foundation/bitsandbytes/releases/download/continuous-release_main/bitsandbytes-1.33.7.preview-py3-none-manylinux_2_24_x86_64.whl" \
+        && (${VENV}/bin/python -m pip install \
+                --force-reinstall --no-cache-dir --no-deps "${_BNB_WHL}" \
+            || (echo "[WARN] bnb pre-release install failed; falling back to PyPI bitsandbytes>=0.50.0" >&2 \
+                && ${VENV}/bin/python -m pip install \
+                    --force-reinstall --no-cache-dir --no-deps "bitsandbytes>=0.50.0")); \
+    fi
 
 # Pin record (informational; the resolver's own lock is stack.lock.txt beside it).
 # Read with: docker run --rm <image> cat /opt/unsloth-venv/requirements.lock.txt
@@ -178,10 +189,12 @@ assert torch.version.hip is not None, (
 )
 print(f"OK: torch {torch.__version__}  HIP {torch.version.hip}")
 
+BUILD_GFX = re.search(r"^ROCM_GFX=(.*)$", open("/etc/unsloth-rocm-build").read(), re.M).group(1)
+WANT_BNB = BUILD_GFX != "gfx906"
 REQUIRED = [
-    "torch", "bitsandbytes", "unsloth", "unsloth-zoo",
+    "torch", "unsloth", "unsloth-zoo",
     "transformers", "trl", "peft", "accelerate",
-]
+] + (["bitsandbytes"] if WANT_BNB else [])
 missing = []
 for pkg in REQUIRED:
     try:
@@ -221,9 +234,17 @@ print(f"OK: triton {triton.__version__} ({pin_name}) with backends {backends}")
 
 # Importing bitsandbytes here catches a broken or ABI-mismatched wheel at build
 # time instead of at the first training step on a real GPU.
-import bitsandbytes  # noqa: E402, F401
+if WANT_BNB:
+    import bitsandbytes  # noqa: E402, F401
 
-print(f"OK: bitsandbytes {bitsandbytes.__version__} imports on a no-GPU host")
+    print(f"OK: bitsandbytes {bitsandbytes.__version__} imports on a no-GPU host")
+else:
+    try:
+        version("bitsandbytes")
+    except PackageNotFoundError:
+        print("OK: gfx906 build carries no bitsandbytes")
+    else:
+        raise SystemExit("FAIL: a gfx906 build must not carry bitsandbytes")
 PY
 
 # Strip __pycache__ and bundled test suites to shrink the layer.

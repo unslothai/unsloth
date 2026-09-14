@@ -14,7 +14,9 @@
 # repo.amd.com/rocm/whl/<family>/ and the torch 2.11 line, as install.sh does:
 #   ./build.sh --rocm --gfx gfx1151        # Strix Halo
 #   ROCM_GFX=gfx1201 ./build.sh --rocm     # RX 9070 XT
-# Other bases: ROCM_VERSION=6.3.4 TORCH_INDEX_URL=https://download.pytorch.org/whl/rocm6.3
+# gfx906 (Radeon VII / MI50) needs the last base that carries it, and --gfx gfx906
+# leaves out bitsandbytes (no prebuilt gfx906 kernels):
+#   ROCM_VERSION=6.3.4 ./build.sh --rocm --gfx gfx906
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -108,7 +110,9 @@ fi
 if [[ $ROCM -eq 1 ]]; then
     echo "Building ${IMAGE_NAME}:${TAG}  [AMD ROCm]"
     echo "  ROCm           ${ROCM_VERSION}  Python ${PYTHON_VERSION}"
-    if [[ -n "$ROCM_GFX" ]]; then
+    if [[ "$ROCM_GFX" == gfx906 ]]; then
+        echo "  torch index    ${TORCH_INDEX_URL} (gfx906: no bitsandbytes)"
+    elif [[ -n "$ROCM_GFX" ]]; then
         echo "  torch index    AMD per-arch wheels for ${ROCM_GFX} (repo.amd.com/rocm/whl)"
     else
         echo "  torch index    ${TORCH_INDEX_URL}"

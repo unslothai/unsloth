@@ -23,6 +23,7 @@ _RUN_SH = os.path.join(_DOCKER, "run.sh")
 _BUILD_SH = os.path.join(_DOCKER, "build.sh")
 _ENTRYPOINT = os.path.join(_DOCKER, "entrypoint-rocm.sh")
 _DOCKERFILE = os.path.join(_DOCKER, "Dockerfile.rocm")
+_SMOKE = os.path.join(_DOCKER, "smoke_test_rocm.py")
 _WORKFLOW = os.path.join(_REPO, ".github", "workflows", "docker-publish-rocm.yml")
 
 _posix_shell = pytest.mark.skipif(
@@ -325,7 +326,7 @@ class TestBuildShRocm:
 
 
 def _entrypoint(tmp_path, *, kfd = True, readable = True, smi_sees_gpu = True,
-                python_body = None, env_extra = None, build_info_gfx = ""):
+                python_body = None, env_extra = None, build_info_gfx = "", command = "echo ran"):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     dev_root = tmp_path / "root"
@@ -349,7 +350,7 @@ def _entrypoint(tmp_path, *, kfd = True, readable = True, smi_sees_gpu = True,
     }
     env.update(env_extra or {})
     proc = subprocess.run(
-        [shutil.which("bash") or "/bin/bash", _ENTRYPOINT, "bash", "-c", f"echo ran > {dump}"],
+        [shutil.which("bash") or "/bin/bash", _ENTRYPOINT, "bash", "-c", f"{command} > {dump}"],
         env = env, capture_output = True, text = True, timeout = 60,
     )
     return proc.returncode, dump.exists(), proc.stderr
@@ -480,6 +481,35 @@ class TestRocmEntrypoint:
         rc, ran, err = _entrypoint(tmp_path / "d", python_body = self._fake_torch(tmp_path / "d", "gfx1201"),
                                    build_info_gfx = "gfx1151")
         assert rc == 0 and "ROCM_GFX=gfx1201 bash docker/build.sh --rocm" in err, err
+
+    def test_a_per_arch_image_drops_a_stale_gfx_override_and_a_generic_one_keeps_it(self, tmp_path):
+        """HSA_OVERRIDE_GFX_VERSION=11.0.0 is the generic-wheel workaround on Strix; a
+        gfx1151 image has native kernels the override would hide (install.sh clears it)."""
+        body = self._fake_torch(tmp_path, "gfx1151")
+        rc, ran, err = _entrypoint(tmp_path, python_body = body, build_info_gfx = "gfx1151",
+                                   env_extra = {"HSA_OVERRIDE_GFX_VERSION": "11.0.0"},
+                                   command = "echo ${HSA_OVERRIDE_GFX_VERSION:-unset}")
+        assert rc == 0 and ran, err
+        assert (tmp_path / "ran").read_text().strip() == "unset"
+        assert "ignoring HSA_OVERRIDE_GFX_VERSION=11.0.0" in err, err
+        (tmp_path / "g").mkdir()
+        rc, ran, err = _entrypoint(tmp_path / "g", python_body = self._fake_torch(tmp_path / "g", "gfx1100"),
+                                   env_extra = {"HSA_OVERRIDE_GFX_VERSION": "11.0.0"},
+                                   command = "echo ${HSA_OVERRIDE_GFX_VERSION:-unset}")
+        assert rc == 0 and (tmp_path / "g" / "ran").read_text().strip() == "11.0.0", err
+
+    def test_a_gfx906_build_ships_without_bitsandbytes(self):
+        """No prebuilt bitsandbytes wheel has gfx906 kernels; install.sh skips it for
+        gfx906 and the image must too, or its own 4-bit smoke test cannot run."""
+        docker = open(_DOCKERFILE, encoding = "utf-8").read()
+        assert "gfx906) ;;" in docker
+        assert "grep -q '^ROCM_GFX=gfx906$' /etc/unsloth-rocm-build" in docker
+        assert "pip uninstall -y bitsandbytes" in docker
+        assert 'WANT_BNB = BUILD_GFX != "gfx906"' in docker
+        smoke = open(_SMOKE, encoding = "utf-8").read()
+        assert "load_in_4bit = four_bit" in smoke and 'ROCM_GFX=gfx906' in smoke
+        entry = open(_ENTRYPOINT, encoding = "utf-8").read()
+        assert "ROCM_GFX=gfx906 ROCM_VERSION=6.3.4" in entry
 
     def test_the_gfx_tag_needs_every_other_input_at_its_default(self):
         """A feature-branch ref plus rocm_gfx=gfx1151 must not replace the public

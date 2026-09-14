@@ -91,9 +91,12 @@ def check_imports() -> None:
     print(f"triton      {triton.__version__}  backends={sorted(triton.backends.backends)}")
     assert "amd" in triton.backends.backends, "FAIL: triton has no amd backend"
 
-    import bitsandbytes as bnb
+    if _bnb_expected():
+        import bitsandbytes as bnb
 
-    print(f"bnb         {bnb.__version__}")
+        print(f"bnb         {bnb.__version__}")
+    else:
+        print("bnb         not part of a gfx906 build (no prebuilt kernels)")
 
     import transformers
 
@@ -124,19 +127,29 @@ def check_unsloth_import() -> None:
     print(f"FastLanguageModel  {FastLanguageModel}")
 
 
+def _bnb_expected() -> bool:
+    """A gfx906 build (ROCM_GFX=gfx906 in the build record) ships no bitsandbytes."""
+    try:
+        record = open("/etc/unsloth-rocm-build", encoding = "utf-8").read()
+    except OSError:
+        return True
+    return "ROCM_GFX=gfx906\n" not in record
+
+
 def check_tiny_train() -> None:
     banner("tiny LoRA train (5 steps)")
     import unsloth  # noqa: F401
     from unsloth import FastLanguageModel
     import torch
 
-    model_name = "unsloth/Llama-3.2-1B-Instruct-bnb-4bit"
-    print(f"loading     {model_name}")
+    four_bit = _bnb_expected()
+    model_name = "unsloth/Llama-3.2-1B-Instruct" + ("-bnb-4bit" if four_bit else "")
+    print(f"loading     {model_name} (load_in_4bit={four_bit})")
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = model_name,
         max_seq_length = 512,
         dtype = None,
-        load_in_4bit = True,
+        load_in_4bit = four_bit,
     )
     model = FastLanguageModel.get_peft_model(
         model,

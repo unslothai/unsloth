@@ -31,6 +31,17 @@ if [[ -r "$BUILD_INFO" ]]; then
     IMAGE_ROCM="$(sed -n 's/^ROCM_VERSION=//p' "$BUILD_INFO")"
     IMAGE_GFX="$(sed -n 's/^ROCM_GFX=//p' "$BUILD_INFO")"
 fi
+# A per-arch image carries native kernels for its gfx, so a host's leftover
+# HSA_OVERRIDE_GFX_VERSION (the generic-wheel workaround for Strix/RDNA4) would
+# only hide them: ROCr would present the device as the override's arch, which
+# this image has no kernels for. install.sh clears it the same way.
+case "$IMAGE_GFX" in
+    gfx1150|gfx1151|gfx1152|gfx1200|gfx1201)
+        if [[ -n "${HSA_OVERRIDE_GFX_VERSION:-}" ]]; then
+            warn "ignoring HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION}: this image carries native ${IMAGE_GFX} kernels"
+            unset HSA_OVERRIDE_GFX_VERSION
+        fi ;;
+esac
 
 # --- Check 1: /dev/kfd is accessible ----------------------------------------
 # /dev/kfd is the AMD Kernel Fusion Driver node. It must exist AND be readable
@@ -228,6 +239,11 @@ for i in range(torch.cuda.device_count()):
     if image_gfx:
         if arch == image_gfx or (arch in RDNA4 and image_gfx in RDNA4):
             print(f"  -> {fam}: this image was built for {image_gfx}")
+            if image_gfx == "gfx906":
+                print("     (no bitsandbytes: no prebuilt gfx906 kernels, so load_in_4bit is unavailable)")
+        elif image_gfx == "gfx906":
+            print(f"  NOTE: this image was built for gfx906 (ROCm 6.3, no bitsandbytes), not {arch}.")
+            print("        Use the generic image: unsloth/unsloth-rocm:latest (bash docker/build.sh --rocm).")
         elif arch in STRIX or arch in RDNA4:
             print(f"  NOTE: this image carries per-arch wheels for {image_gfx}, not {arch}. Rebuild:")
             print(f"          ROCM_GFX={arch} bash docker/build.sh --rocm")
@@ -238,8 +254,9 @@ for i in range(torch.cuda.device_count()):
     elif arch == "gfx906":
         if here >= (6, 4):
             print(f"  NOTE: {arch} ({fam}) has no kernels in ROCm {image_rocm}: AMD dropped it after 6.3,")
-            print("        so rocBLAS will fail on the first matmul. Rebuild on the last ROCm that carries it:")
-            print("          ROCM_VERSION=6.3.4 TORCH_INDEX_URL=https://download.pytorch.org/whl/rocm6.3 \\")
+            print("        so rocBLAS will fail on the first matmul. Rebuild on the last ROCm that carries it")
+            print("        (ROCM_GFX=gfx906 leaves out bitsandbytes, which has no gfx906 kernels):")
+            print("          ROCM_GFX=gfx906 ROCM_VERSION=6.3.4 TORCH_INDEX_URL=https://download.pytorch.org/whl/rocm6.3 \\")
             print("            bash docker/build.sh --rocm")
         else:
             print(f"  -> {fam} (no prebuilt bitsandbytes kernels for gfx906: 4-bit needs a source build)")
