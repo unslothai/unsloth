@@ -657,7 +657,7 @@ class ServerOptions(NamedTuple):
 
 
 def _split_repo_variant(model: str) -> tuple:
-    """Split ``org/name:QUANT`` into ``("org/name", "QUANT")``. ``unsloth run`` and llama.cpp accept ``--model org/name:QUANT`` as shorthand for ``--model org/name --gguf-variant QUANT``, so mirror that here and a ``:variant`` suffix resolves against the already-loaded ``org/name`` (which /v1/models lists without the suffix) instead of trying to load a repo id containing ``:``, which Hugging Face rejects and which would evict a model another session is using. Local paths, Windows drive letters and ids without a ``:`` pass through unchanged."""
+    """Split ``org/name:QUANT`` into ``("org/name", "QUANT")``. ``unsloth run`` and llama.cpp accept ``--model org/name:QUANT`` as shorthand for ``--model org/name --gguf-variant QUANT``, so mirror that here and a ``:variant`` suffix resolves against the already-loaded ``org/name`` (which the loaded listing shows without the suffix) instead of trying to load a repo id containing ``:``, which Hugging Face rejects and which would evict a model another session is using. Local paths, Windows drive letters and ids without a ``:`` pass through unchanged."""
     s = (model or "").strip()
     if not s or s.startswith(("/", "./", "../", "~")) or s == ".":
         return s, None
@@ -749,6 +749,13 @@ def _http_error_detail(exc: urllib.error.HTTPError) -> str:
         return str(exc)
 
 
+def _fail_request(exc: Exception, error: str) -> NoReturn:
+    """Fail with `error` plus whatever the server or the transport gave as a reason."""
+    if isinstance(exc, urllib.error.HTTPError):
+        _fail(f"{error}: {_http_error_detail(exc)}")
+    _fail(f"{error}: {getattr(exc, 'reason', None) or exc}")
+
+
 def _http_json(
     method: str,
     url: str,
@@ -757,7 +764,7 @@ def _http_json(
     timeout = 30,
     error = None,
 ):
-    """On HTTPError: raise if `error` is None, else fail with `error` plus the server's detail."""
+    """On a failed request: raise if `error` is None, else fail with `error` plus the reason."""
     request = urllib.request.Request(
         url,
         data = None if payload is None else json.dumps(payload).encode(),
@@ -774,14 +781,10 @@ def _http_json(
             body = json.loads(response.read().decode() or "{}")
         # A padded /load or /unload commits its 200 early, so a late failure arrives in-band; raise it as the HTTPError handled below.
         return raise_for_deferred_error(url, body)
-    except urllib.error.HTTPError as exc:
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
         if error is None:
             raise
-        _fail(f"{error}: {_http_error_detail(exc)}")
-    except (urllib.error.URLError, TimeoutError) as exc:
-        if error is None:
-            raise
-        _fail(f"{error}: {getattr(exc, 'reason', None) or exc}")
+        _fail_request(exc, error)
 
 
 # A server that WE auto-started (never one we merely found). Kept at module scope so failure paths and the atexit backstop can tear it down without threading a handle through all six agent commands. Only one agent runs per process, so one slot is enough.
@@ -1481,10 +1484,35 @@ def _remember_key(cache: Path, base: str, key: str, source: str) -> None:
         pass  # worst case the next launch mints another key
 
 
+def _loaded_models_response(
+    base: str,
+    key: str,
+    timeout = 30,
+) -> dict:
+    """Raw listing of what this server has resident. Startup and key checks need no more.
+
+    /v1/models answers the same question but waits for disk and media discovery first,
+    which on a slow scan folder outlasts the deadline below.
+    """
+    try:
+        answer = _http_json("GET", f"{base}/api/inference/loaded-models", key, timeout = timeout)
+        if isinstance(answer.get("data"), list):
+            return answer
+        # A Studio older than the 404-ing catch-all answers an unknown /api path with a
+        # 200 and {"error": ...}, which read as an empty listing reports a resident model
+        # as unloaded. Anything without a "data" list means the route is not there.
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+    # Fall back, never on an auth or server error. An older Studio still answers on
+    # /v1/models, with the unloaded catalog entries every caller below already filters out.
+    return _http_json("GET", f"{base}/v1/models", key, timeout = timeout)
+
+
 def _key_accepted(base: str, key: str) -> bool:
     # Only a genuine auth rejection (401/403) means "this key is bad, skip it and try the next cached key or mint a fresh one". A 5xx or a network blip is a server-side outage, not a bad key: fail with a clean message instead of silently discarding a working key and minting extras against a struggling server.
     try:
-        _http_json("GET", f"{base}/v1/models", key)
+        _loaded_models_response(base, key)
         return True
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
@@ -1561,12 +1589,15 @@ def _agent_api_key(
 
 
 def _loaded_models(base: str, key: str) -> list:
-    return _http_json("GET", f"{base}/v1/models", key, error = "Couldn't list models").get("data", [])
+    try:
+        return _loaded_models_response(base, key).get("data", [])
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+        _fail_request(exc, "Couldn't list models")
 
 
 def _model_still_loaded(base: str, key: str, model_id: object) -> bool:
     try:
-        models = _http_json("GET", f"{base}/v1/models", key, timeout = 5).get("data", [])
+        models = _loaded_models_response(base, key, timeout = 5).get("data", [])
     except Exception:
         return False
     return any(m.get("id") == model_id and m.get("loaded") is not False for m in models)
@@ -1611,7 +1642,7 @@ def _is_model_path(value: str) -> bool:
 
 
 def _public_model_id(value: Optional[str]) -> Optional[str]:
-    """The id Unsloth advertises for a model loaded by path. /v1/models never echoes a host path: it reports the file or directory name with any .gguf suffix stripped (core.inference.model_ids.public_model_id), so a path we asked to load has to be matched by that name too."""
+    """The id Unsloth advertises for a model loaded by path. The loaded listing never echoes a host path: it reports the file or directory name with any .gguf suffix stripped (core.inference.model_ids.public_model_id), so a path we asked to load has to be matched by that name too."""
     if not value or not _is_model_path(value):
         return None
     name = os.path.basename(value.replace("\\", "/").rstrip("/"))
@@ -1645,7 +1676,7 @@ def _inference_status(base: str, key: str) -> dict:
 
 
 def _resident_load_target(models: list, status: dict, allow_casefold: bool):
-    """(identifier to post, id it is advertised as) for the running model. /v1/models shows only the sanitized basename while _same_loaded_identifier compares resident paths exactly, so the load must carry the identifier status reports."""
+    """(identifier to post, id it is advertised as) for the running model. The loaded listing shows only the sanitized basename while _same_loaded_identifier compares resident paths exactly, so the load must carry the identifier status reports."""
     if status.get("is_diffusion"):
         # An image runtime answers with an active_model like any other, but it cannot serve chat: targeting it would tear down the diffusion server and then point the agent at a model that can never answer it.
         _fail(
@@ -1665,7 +1696,7 @@ def _resident_load_target(models: list, status: dict, allow_casefold: bool):
             None,
         )
     if entry is None and not status:
-        # Only when there is no status at all (older server). A status that ANSWERED with active_model null is stating there is no chat resident. Catalog ORDER is not evidence either: /v1/models lists loaded speech sidecars too, so the first entry can be one. Answer only when the catalog is unambiguous.
+        # Only when there is no status at all (older server). A status that ANSWERED with active_model null is stating there is no chat resident. Listing ORDER is not evidence either: a loaded speech sidecar is listed like any other resident model, so the first entry can be one. Answer only when the catalog is unambiguous.
         loaded = [m for m in models if m.get("loaded") is not False]
         if len(loaded) == 1:
             entry = loaded[0]
@@ -1810,7 +1841,7 @@ def _resolve_model(
     load_requested = False
     # Only casefold-match ids against a loopback Unsloth, where _is_hub_model_id's local existence probe can actually reject a server-side path; see the note there.
     allow_casefold = is_loopback_url(base)
-    # /v1/models reports the model id but not the active GGUF variant or runtime load settings, so an id match alone can hide the wrong quant (Q8_0 serving while the user asked for UD-Q4_K_XL). When the user passed any explicit load knob, defer to /api/inference/load: the server's already-loaded dedup answers "already_loaded" without reloading when the variant AND settings match, so a second session running the same command still attaches without evicting the first.
+    # The loaded listing carries the active GGUF variant only while that quant reference still resolves, and never the runtime load settings, so an id match alone can hide the wrong quant (Q8_0 serving while the user asked for UD-Q4_K_XL). When the user passed any explicit load knob, defer to /api/inference/load: the server's already-loaded dedup answers "already_loaded" without reloading when the variant AND settings match, so a second session running the same command still attaches without evicting the first.
     overrides = load.overrides()
     load_has_overrides = bool(overrides)
     # Inferred-attach path only: `requested` becomes the resident's internal identifier (possibly a server path), so this is the id to show and to match on.
@@ -1822,7 +1853,7 @@ def _resolve_model(
         status_snapshot = _inference_status(base, key)
         requested, attach_public_id = _resident_load_target(models, status_snapshot, allow_casefold)
         inferred_differs = _load_settings_differ(status_snapshot, load, overrides)
-        # preload_check deliberately survives: it is the only gate before the load evicts the shared model (_require_gguf_for_codex runs after _connect returns). /v1/models also lists cached-but-unloaded catalog entries (loaded == False); matching one would skip /api/inference/load and leave the agent pointed at a model that is not resident, so only attach to an entry that is actually loaded.
+        # preload_check deliberately survives: it is the only gate before the load evicts the shared model (_require_gguf_for_codex runs after _connect returns). An older server answers this listing from the full catalog, which also carries cached-but-unloaded entries (loaded == False); matching one would skip /api/inference/load and leave the agent pointed at a model that is not resident, so only attach to an entry that is actually loaded.
     match = (
         None
         if requested and load_has_overrides
@@ -1856,7 +1887,7 @@ def _resolve_model(
         if preload_check is not None:
             # An explicit knob forces match to None so the server's disk-free dedupe can answer already_loaded; gating it would reject a second session for the model already serving, whose file may have moved. Only the quant is checked below: any other run knob changes the runtime intent, a real reload nothing dedupes.
             other_overrides = bool(overrides - {"gguf_variant"})
-            # /v1/models shows a path-loaded GGUF under its basename, so match that spelling too, or a second session reruns the gate.
+            # The loaded listing shows a path-loaded GGUF under its basename, so match that spelling too, or a second session reruns the gate.
             wanted_ids = {requested, _public_model_id(requested)} - {None}
             resident_serves_request = not other_overrides and any(
                 m.get("loaded") is not False
@@ -1869,7 +1900,7 @@ def _resolve_model(
             # A proven no-op evicts nothing, so the gate has nothing to protect, and running it would reject an attach the disk-free already-loaded path can still serve (a direct .gguf the server has mapped but that has since moved).
             if attach_public_id is not None and not inferred_differs:
                 resident_serves_request = True
-            # /v1/models shows only the basename, so confirm a path request against the identifier the server loaded, else /new/foo.gguf reads as resident because /old/foo.gguf is.
+            # The loaded listing shows only the basename, so confirm a path request against the identifier the server loaded, else /new/foo.gguf reads as resident because /old/foo.gguf is.
             if resident_serves_request and _is_model_path(requested):
                 try:
                     status = _http_json("GET", f"{base}/api/inference/status", key)
@@ -1916,7 +1947,7 @@ def _resolve_model(
             typer.echo("This unloads the current model for every attached session.")
             announced_switch = True
         elif active_id and load.gguf_variant:
-            # Same repo id but an explicit quant still replaces the resident weights; /v1/models has no variant, so ask the status endpoint.
+            # Same repo id but an explicit quant still replaces the resident weights; the loaded listing does not carry a variant for every resident model, so ask the status endpoint.
             try:
                 status = _http_json("GET", f"{base}/api/inference/status", key)
             except Exception:
@@ -1995,7 +2026,7 @@ def _resolve_model(
             # Show the public id on the inferred path; `requested` may be a server path.
             shown = attach_public_id or requested
             typer.echo(f"Reusing loaded model: {_display_model_spec(shown, load.gguf_variant)}")
-        # Unsloth registers the model under a canonical id (resolved identifier, casing) that /v1/models echoes but which may differ from the path we passed; match on the id the load reports so we do not silently fall through to models[0] and connect to a different loaded model. attach_public_id: our _public_model_id only strips a basename, while the server also maps an HF cache path to its repo id, so the two can disagree.
+        # Unsloth registers the model under a canonical id (resolved identifier, casing) that the loaded listing echoes but which may differ from the path we passed; match on the id the load reports so we do not silently fall through to models[0] and connect to a different loaded model. attach_public_id: our _public_model_id only strips a basename, while the server also maps an HF cache path to its repo id, so the two can disagree.
         wanted = {requested, _public_model_id(requested), attach_public_id} - {None}
         if isinstance(loaded, dict):
             wanted |= {loaded.get("model"), loaded.get("display_name")} - {None}
@@ -2016,21 +2047,18 @@ def _resolve_model(
             typer.echo(f"Reusing loaded model: {_display_model_spec(requested, load.gguf_variant)}")
         return match
     if requested:
-        # We asked Unsloth to load it and it did not surface in /v1/models; do not silently hand back an unrelated loaded model.
+        # We asked Unsloth to load it and it did not surface as loaded; do not silently hand back an unrelated loaded model.
         _fail(
             f"Unsloth didn't report '{requested}' as loaded. Double-check the model "
             "id, or load it from the model dropdown in the UI."
         )
-    if not models:
+    resident = next((m for m in models if m.get("loaded") is not False), None)
+    if resident is None:
+        # An empty listing and one holding only unloaded entries are the same situation
+        # to the user, and which one a server sends depends only on its version.
         _fail(
             "No model is loaded in Unsloth. Load one from the model dropdown in "
             "the UI, or pass --model <hf-id-or-path> to load it from here."
-        )
-    resident = next((m for m in models if m.get("loaded") is not False), None)
-    if resident is None:
-        _fail(
-            "No model is currently resident in Unsloth. Pass --model <hf-id-or-path> "
-            "to reload one, or load it from the model dropdown in the UI."
         )
     return resident
 

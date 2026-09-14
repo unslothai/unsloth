@@ -183,8 +183,12 @@ class CoercedArguments:
 
 
 def canonical_arguments_text(arguments: Any) -> str:
-    """The one JSON encoding of an argument mapping, so the card and the replay agree."""
-    return json.dumps(arguments, ensure_ascii = False, sort_keys = True, separators = (",", ":"))
+    """The one JSON encoding of an argument mapping, so the card and the replay agree.
+
+    Not sorted: the replay must match the token sequence already in the prompt cache (#10791).
+    `canonical_tool_call_key` keeps its own sorted key for dedup.
+    """
+    return json.dumps(arguments, ensure_ascii = False, sort_keys = False, separators = (",", ":"))
 
 
 @dataclass(frozen = True)
@@ -935,6 +939,7 @@ _SANDBOX_TOOLS = frozenset({"python", "terminal"})
 # than the card the user is looking at.
 _IMAGE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"code_execution"}
 _SOURCE_MAP_TOOLS = frozenset({"search_knowledge_base", "search_conversation"})
+_WORKSPACE_TOOLS = _SANDBOX_TOOLS | {"edit_file"}
 
 
 def strip_result_for_model(result: str, tool_name: "str | None" = None) -> str:
@@ -1030,6 +1035,10 @@ class ToolLoopController:
         self._one_shot_tools = one_shot_tools
         self._completed_one_shot_tools: set[str] = set()
         self._successful_keys: set[str] = set()
+        # `_workspace_novel_at[key]` is the distinct-call count when `key` last ran.
+        self._workspace_ran: set[str] = set()
+        self._workspace_novel = 0
+        self._workspace_novel_at: dict[str, int] = {}
         self._duplicate_noop_counts: dict[str, int] = {}
         self._duplicate_noop_limit = max(1, duplicate_noop_limit)
         self._history: list[_ToolCallRecord] = []
@@ -1121,6 +1130,23 @@ class ToolLoopController:
                 action = decision.action,
             )
         )
+        # One rerun per piece of NEW work, not per call: `read, edit, read, edit` would
+        # otherwise apply the edit twice. Here as well as in the prefilters, which a
+        # structured batch skips. A failed command can still have written, so it counts too.
+        if decision.tool_name in _WORKSPACE_TOOLS:
+            if decision.key not in self._workspace_ran:
+                self._workspace_ran.add(decision.key)
+                self._workspace_novel += 1
+            stale = {
+                key
+                for key in self._successful_keys
+                if key.partition(":")[0] in _WORKSPACE_TOOLS
+                and self._workspace_novel_at.get(key, 0) < self._workspace_novel
+            }
+            self._successful_keys -= stale
+            for key in stale:
+                self._duplicate_noop_counts.pop(key, None)
+            self._workspace_novel_at[decision.key] = self._workspace_novel
         if not failed:
             self._successful_keys.add(decision.key)
             if decision.tool_name in self._one_shot_tools:
