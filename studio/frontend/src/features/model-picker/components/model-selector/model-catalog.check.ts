@@ -1254,6 +1254,33 @@ for (const id of ["black-forest-labs/FLUX.1-dev", "stabilityai/sdxl-turbo"]) {
   );
 }
 
+// The "Fits on device" group filter sizes a row the same way the badge and the router do: Krea-2-Turbo
+// is 18 GB dense and ~12 GB as its hosted int8 / fp8 artifact, and its group has no GGUF fallback row,
+// so filtering on the dense figure hid the whole group on a card the backend loads it on.
+const kreaTurboGroup = groupForRepoId("krea/Krea-2-Turbo", IMAGE_CATALOG);
+assert.ok(kreaTurboGroup);
+assert.equal(
+  catalogGroupFitsDevice(kreaTurboGroup, { gpuGb: 24, systemRamGb: 0 }, notDownloaded),
+  false,
+);
+assert.equal(
+  catalogGroupFitsDevice(
+    kreaTurboGroup,
+    { gpuGb: 24, systemRamGb: 0, denseQuantSchemes: ["int8", "fp8"] },
+    notDownloaded,
+  ),
+  true,
+);
+// A card too small for the quantised artifact too is still refused.
+assert.equal(
+  catalogGroupFitsDevice(
+    kreaTurboGroup,
+    { gpuGb: 16, systemRamGb: 0, denseQuantSchemes: ["int8", "fp8"] },
+    notDownloaded,
+  ),
+  false,
+);
+
 // The router follows the same rule as the fit verdict.
 const zTurboGroup = groupForRepoId(zTurboId, IMAGE_CATALOG);
 assert.ok(zTurboGroup);

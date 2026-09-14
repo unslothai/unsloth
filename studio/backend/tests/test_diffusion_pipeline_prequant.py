@@ -833,6 +833,28 @@ def test_an_artifact_sized_plan_that_offloads_at_load_time_drops_the_seed(
     assert spy.restored and set(DENOISER_SHARDS) <= set(spy.restored[0])
 
 
+def test_a_dropped_seed_replans_once_the_dense_shards_are_back(fake_runtime, monkeypatch):
+    """The plan the dense load runs on is taken AFTER the skipped transformer shards are restored."""
+    # A pipeline plan prices CACHED bytes, so the plan taken while transformer/ was skipped saw
+    # companions only: left in place it reads 'none' and the load keeps the bf16 denoiser resident.
+    backend, spy = _load_backend(monkeypatch, offload = "sequential")
+    _load(backend)
+
+    assert spy.seeds == []
+    assert spy.restored and set(DENOISER_SHARDS) <= set(spy.restored[0])
+    assert len(spy.plans) == 3
+    assert spy.plans[-1].get("transformer_resident_override_mib") is None
+
+
+def test_nothing_skipped_takes_no_extra_plan(fake_runtime, monkeypatch):
+    """A load that skipped no shards re-plans nothing: there is no under-counted plan to redo."""
+    backend, spy = _load_backend(monkeypatch, offload = "sequential")
+    _load(backend, _pipeline_prequant_skipped = ())
+
+    assert spy.restored == []
+    assert len(spy.plans) == 2
+
+
 def test_a_declined_plan_never_seeds_at_the_load(fake_runtime, monkeypatch):
     backend, spy = _load_backend(monkeypatch)
     _load(

@@ -4709,6 +4709,23 @@ class DiffusionBackend:
                                     base_local_dir = _base_local_dir,
                                     local_files_only = local_files_only,
                                 )
+                                # A pipeline plan prices CACHED bytes, and the plan above was taken while the
+                                # prefetch had transformer/ skipped, so it saw companions only. Re-plan now the
+                                # dense shards are back, or an under-counted 'none' keeps the bf16 denoiser
+                                # resident and the quant re-plan below never runs.
+                                plan = self._plan_memory(
+                                    target,
+                                    single_file_path,
+                                    base,
+                                    fam,
+                                    memory_mode,
+                                    cpu_offload,
+                                    kind = kind,
+                                    repo_id = repo_id,
+                                    base_local_dir = _base_local_dir,
+                                    fetch_base = fetch_base,
+                                )
+                                bf16_pipeline_plan = plan
                             # The prefetched snapshot dir keeps from_pretrained off the hub (24 GB per FLUX.1
                             # otherwise)
                             pipe = pipeline_cls.from_pretrained(

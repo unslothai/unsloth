@@ -1309,6 +1309,9 @@ export function catalogGroupFitsDevice(
         (tier) => budget.gpuGb >= tier.gpuGb && budget.systemRamGb >= tier.systemRamGb,
       );
     }
-    return a.approxSizeGb !== undefined && a.approxSizeGb <= budgetGb;
+    // The same quantised sizing the row badge and pickDefaultArtifact use: filtering on the dense
+    // figure drops a group whose hosted int8 / fp8 form is what the backend would load.
+    const sizeGb = residentSizeGb(group, a, budget, budgetGb);
+    return sizeGb !== undefined && sizeGb <= budgetGb;
   });
 }
