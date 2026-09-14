@@ -492,21 +492,55 @@ def _create_unsloth_optimizer(
     return optimizer
 
 
+_SUPER_CREATE_OPTIMIZER_TAKES_MODEL = None
+
+
+def _super_create_optimizer_takes_model():
+    """Whether the base Trainer.create_optimizer accepts a positional model.
+
+    transformers 5.x declares `create_optimizer(self, model=None)`; 4.x declares
+    `create_optimizer(self)`. Checked once, at first use, rather than against a version
+    string, because trl sits between us and transformers and could introduce its own
+    override.
+    """
+    global _SUPER_CREATE_OPTIMIZER_TAKES_MODEL
+    if _SUPER_CREATE_OPTIMIZER_TAKES_MODEL is None:
+        try:
+            parameters = inspect.signature(SFTTrainer.create_optimizer).parameters
+            _SUPER_CREATE_OPTIMIZER_TAKES_MODEL = "model" in parameters
+        except (TypeError, ValueError):
+            _SUPER_CREATE_OPTIMIZER_TAKES_MODEL = False
+    return _SUPER_CREATE_OPTIMIZER_TAKES_MODEL
+
+
 class UnslothTrainer(SFTTrainer):
-    def create_optimizer(self):
+    def create_optimizer(self, model = None):
+        # transformers 5.x calls `self.create_optimizer(model)` positionally on the delayed
+        # optimizer creation path (FSDP, SageMaker MP, FSDP-XLA), passing the
+        # accelerator-prepared model. transformers 4.x calls it with no argument. Accepting
+        # `model` optionally keeps both working; without it, 5.x raises
+        # "create_optimizer() takes 1 positional argument but 2 were given" before training
+        # starts. `model` is what we must build param groups from on that path, because the
+        # prepared model's parameters are the ones the optimizer has to own.
+        target_model = model if model is not None else self.model
+
         q_galore_config = getattr(self.args, "q_galore_config", None)
         if q_galore_config is not None and self.optimizer is None:
             embedding_lr = getattr(self.args, "embedding_learning_rate", None)
-            return self._create_q_galore_optimizer(q_galore_config, embedding_lr)
+            return self._create_q_galore_optimizer(
+                q_galore_config, embedding_lr, model = target_model,
+            )
 
         embedding_learning_rate = getattr(self.args, "embedding_learning_rate", None)
         if embedding_learning_rate is None:
+            if model is not None and _super_create_optimizer_takes_model():
+                return super().create_optimizer(model)
             return super().create_optimizer()
 
         if self.optimizer is None:
             optimizer_cls, optimizer_kwargs = SFTTrainer.get_optimizer_cls_and_kwargs(self.args)
             self.optimizer = _create_unsloth_optimizer(
-                self.model,
+                target_model,
                 optimizer_cls,
                 optimizer_kwargs,
                 embedding_learning_rate,
@@ -517,8 +551,15 @@ class UnslothTrainer(SFTTrainer):
         self,
         config: "QGaloreConfig",
         embedding_lr = None,
+        model = None,
     ):
-        """Build the Q-GaLore optimizer from a QGaloreConfig."""
+        """Build the Q-GaLore optimizer from a QGaloreConfig.
+
+        ``model`` defaults to ``self.model``; on the delayed optimizer creation path it is
+        the accelerator-prepared model that ``create_optimizer`` was handed.
+        """
+        if model is None:
+            model = self.model
         from unsloth.optimizers.q_galore_adamw import (
             QGaLoreAdamW8bit,
             make_q_galore_param_groups,
@@ -529,7 +570,7 @@ class UnslothTrainer(SFTTrainer):
         weight_decay = self.args.weight_decay
 
         param_groups = make_q_galore_param_groups(
-            self.model,
+            model,
             lr = lr,
             weight_decay = weight_decay,
             rank = config.rank,
@@ -549,7 +590,7 @@ class UnslothTrainer(SFTTrainer):
 
         if embedding_lr is not None:
             # Fast param -> name lookup, O(N) instead of O(N*M).
-            param_to_name = {id(p): name for name, p in self.model.named_parameters()}
+            param_to_name = {id(p): name for name, p in model.named_parameters()}
 
             new_groups = []
             for group in param_groups:
@@ -592,14 +633,14 @@ class UnslothTrainer(SFTTrainer):
 
         if config.weight_quant:
             QGaLoreAdamW8bit.init_weight_quantization(
-                self.model,
+                model,
                 param_groups,
                 group_size = config.weight_group_size,
                 stochastic = config.stochastic_round,
             )
             # Pre-hooks dequantize INT8 weights to float before each forward, letting the optimizer free float
             # weight memory between steps.
-            install_weight_quant_hooks(self.model)
+            install_weight_quant_hooks(model)
 
         n_galore = sum(len(g["params"]) for g in param_groups if "rank" in g)
         n_other = sum(len(g["params"]) for g in param_groups if "rank" not in g)
