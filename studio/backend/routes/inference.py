@@ -3024,14 +3024,20 @@ async def _aiter_llama_stream_items(
             waiting_first_item = last_item_at is None
             if item_task is None:
                 if response is not None:
-                    # Socket ceiling only: httpcore latches this once per body,
-                    # so the wall-clock deadlines below are what bound a stall.
-                    _set_stream_response_read_timeout(
-                        response,
-                        max(first_token_deadline - time.monotonic(), 0.0)
-                        if waiting_first_item
-                        else _post_first_timeout_s(),
-                    )
+                    # Socket ceiling only: httpcore latches this once per body
+                    # (_receive_response_body reads it before the loop), so the
+                    # wall-clock deadlines below are what bound a stall. The
+                    # first arm is the latched one, so it must also cover the
+                    # post-token stall: a lowered first-token env would other-
+                    # wise cap the whole body under the stall guard.
+                    post_first_s = _post_first_timeout_s()
+                    if waiting_first_item:
+                        ceiling = None if post_first_s is None else max(
+                            first_token_deadline - time.monotonic(), post_first_s
+                        )
+                    else:
+                        ceiling = post_first_s
+                    _set_stream_response_read_timeout(response, ceiling)
                 item_task = asyncio.ensure_future(async_iter.__anext__())
 
             if waiting_first_item:
@@ -3045,9 +3051,9 @@ async def _aiter_llama_stream_items(
                 else "The model stopped producing tokens mid-response."
             )
 
-            remaining_s = None if hard_deadline is None else hard_deadline - time.monotonic()
-            if remaining_s is not None and remaining_s <= 0:
-                raise httpx.ReadTimeout(timed_out_message)
+            remaining_s = None if hard_deadline is None else max(
+                hard_deadline - time.monotonic(), 0.0
+            )
             if keepalive_interval_s:
                 wait_s = (
                     keepalive_interval_s
@@ -3059,6 +3065,11 @@ async def _aiter_llama_stream_items(
 
             done, _pending = await asyncio.wait({item_task}, timeout = wait_s)
             if not done:
+                # Deadlines are only ever enforced here, on an EMPTY `done`: a read
+                # that landed while the pump was suspended on a keepalive yield is
+                # a real token, and outranks a clock that expired behind its back.
+                if hard_deadline is not None and time.monotonic() >= hard_deadline:
+                    raise httpx.ReadTimeout(timed_out_message)
                 # Must not advance last_item_at, or the stall guard never fires.
                 if keepalive_interval_s:
                     yield _LLAMA_STREAM_KEEPALIVE
