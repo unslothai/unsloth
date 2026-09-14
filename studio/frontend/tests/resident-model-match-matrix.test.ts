@@ -10,7 +10,7 @@
  *   version   older backends published no model_identifier, or put the RAW path in
  *             active_model; a native lease withholds it on every version
  *
- * The table is those two crossed with the model kinds Studio loads. Every row states the
+ * The table is those two crossed with the model kinds Unsloth loads. Every row states the
  * answer the USER needs, not the one the code happens to give.
  */
 
@@ -268,7 +268,7 @@ for (const active of [null, undefined, ""]) {
   });
 }
 
-// ── Older Studio backends, i.e. an install that predates these fields ────────
+// ── Older Unsloth backends, i.e. an install that predates these fields ────────
 ROWS.push({
   host: "old-install",
   what: "a status with no model_identifier field falls back to the display id",
@@ -381,7 +381,7 @@ test("the matrix covers every host and backend shape it claims to", () => {
  * single-letter mount point gets the same treatment, so two files there differing only in
  * case read as one. Fixing it needs a platform signal the browser does not have, and the
  * comparator is shared with the Hub, so this stays as-is: the cost is one skipped reload
- * for a path shape no Studio install creates on its own.
+ * for a path shape no Unsloth install creates on its own.
  */
 test("case folding under /mnt/<letter> is WSL-shaped, and known to over-match on Linux", () => {
   assert.equal(

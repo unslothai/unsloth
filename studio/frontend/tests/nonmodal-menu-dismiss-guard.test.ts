@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 const SRC = fileURLToPath(new URL("../src/", import.meta.url));
 
 const TAG_NAME = /^<([A-Za-z0-9_.]+)/;
-const GUARD = /<MenuDismissGuard\s*\/>/;
+const GUARD = /<MenuDismissGuard\b(?=[^>]*\btriggerRef=\{)[^>]*\/>/;
 
 /** Explicit non-modal menus that intentionally remain unguarded. */
 const UNGUARDED = new Map<string, string>([
@@ -133,7 +133,7 @@ test("the element scan does not confuse a tag with one that merely starts the sa
     "<DropdownMenu modal={false}>",
     "  <DropdownMenuTrigger />",
     "</DropdownMenu>",
-    "<MenuDismissGuard />",
+    "<MenuDismissGuard triggerRef={triggerRef} />",
   ].join("\n");
   const { tag, body } = element(source, source.indexOf("modal={false}"));
   assert.equal(tag, "DropdownMenu");
@@ -157,7 +157,7 @@ test("the guard component is what mounts the watcher", () => {
   );
   assert.match(
     guard,
-    /useDismissingClickGuard\(\)/,
-    "MenuDismissGuard must install the document watcher, or every mount above is decoration",
+    /useDismissingClickGuard\(triggerRef\)/,
+    "MenuDismissGuard must give the document watcher its trigger, or every mount above loses focus restoration",
   );
 });

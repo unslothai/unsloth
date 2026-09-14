@@ -318,9 +318,8 @@ export function ProjectSourceDropzone({
           rows can carry their own remove buttons. */}
       <div
         ref={nativeDropRef}
-        // preventDefault runs even while disabled: nothing else on the page
-        // cancels a file drop, so the browser would navigate to the file and
-        // kill the uploads in flight.
+        // preventDefault runs even while disabled: nothing else on the page cancels a file drop, so
+        // the browser would navigate to the file and kill the uploads in flight.
         onDragEnter={(e) => {
           e.preventDefault();
           if (disabled) return;
@@ -391,6 +390,7 @@ export function ProjectSourceDropzone({
                     className="size-4 shrink-0 text-muted-foreground"
                   />
                   <span
+                    data-reload-snapshot-sensitive
                     className="min-w-0 flex-1 truncate text-ui-14 text-foreground"
                     title={entry.name}
                   >
@@ -401,6 +401,7 @@ export function ProjectSourceDropzone({
                   </span>
                   <button
                     type="button"
+                    data-reload-snapshot-sensitive
                     aria-label={`Remove ${entry.name}`}
                     disabled={disabled}
                     onClick={() =>

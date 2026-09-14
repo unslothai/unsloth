@@ -35,12 +35,11 @@ import type { AvatarShape } from "../stores/user-profile-store";
 
 const PUSH_DEBOUNCE_MS = 800;
 
-// Version 2 payloads store the language preference ("auto" or a pinned
-// locale). Version 1 always serialized the resolved locale, so its "en" is
-// usually the old default rather than an explicit pick.
-// Version 3 migrates untouched sidebar layouts to keep Video under More.
-// Version 4 pins Video under Images. Without this bump a synced profile
-// rehydrates its stored layout over the local migration.
+// Version 2 payloads store the language preference ("auto" or a pinned locale). Version 1 always
+// serialized the resolved locale, so its "en" is usually the old default rather than an explicit
+// pick. Version 3 migrates untouched sidebar layouts to keep Video under More. Version 4 pins Video
+// under Images. Without this bump a synced profile rehydrates its stored layout over the local
+// migration.
 const PERSONALIZATION_VERSION = 4;
 
 type ProfileSnapshot = {
@@ -146,10 +145,9 @@ function serialized(data: PersonalizationWrite): string {
   return JSON.stringify(data);
 }
 
-// Version 1 clients wrote language on every save, so a legacy "en" usually
-// means the user never picked a language. Map it to auto; explicit picks of
-// other locales (the old default was English) are kept. Version 2 payloads
-// are trusted verbatim, so a deliberate English pick stays pinned.
+// Version 1 clients wrote language on every save, so a legacy "en" usually means the user never
+// picked a language. Map it to auto; explicit picks of other locales (the old default was English)
+// are kept. Version 2 payloads are trusted verbatim, so a deliberate English pick stays pinned.
 export function remoteLanguagePreference(
   version: unknown,
   language: unknown,
@@ -239,11 +237,10 @@ export function usePersonalizationSync(enabled: boolean): void {
         const remote = await loadPersonalization();
         if (cancelled) return;
         if (remote.saved) {
-          // Legacy records predating a field come back server-defaulted. Keep
-          // the local value and re-push it (lastSaved below records the remote
-          // default so the push detects the diff) rather than treating the
-          // default as an explicit remote choice. A record that actually stored
-          // the field reports <field>Saved=true and still wins.
+          // Legacy records predating a field come back server-defaulted. Keep the local value and
+          // re-push it (lastSaved below records the remote default so the push detects the diff)
+          // rather than treating the default as an explicit remote choice. A record that actually
+          // stored the field reports <field>Saved=true and still wins.
           const localGreeting =
             useUserProfileStore.getState().showGreetingSloth;
           const remoteGreeting = remote.profile.showGreetingSloth !== false;
@@ -302,11 +299,10 @@ export function usePersonalizationSync(enabled: boolean): void {
           if (nextLanguage !== latestLanguageRef.current) {
             const localeResult = await setLocale(nextLanguage, {
               signal: localeHydrationController.signal,
-              // A catalog that will not load must not decide whether the rest of
-              // personalization syncs. Adopting the preference and rendering
-              // English keeps the local preference equal to the server's, so the
-              // baseline below is honest and the debounced push cannot overwrite
-              // the remote language with a stale local one.
+              // A catalog that will not load must not decide whether the rest of personalization
+              // syncs. Adopting the preference and rendering English keeps the local preference
+              // equal to the server's, so the baseline below is honest and the debounced push
+              // cannot overwrite the remote language with a stale local one.
               adoptOnFailure: true,
               // And a catalog request that is accepted but never completes
               // must not hold hydration, and with it every save for the rest
@@ -314,12 +310,11 @@ export function usePersonalizationSync(enabled: boolean): void {
               timeoutMs: LOCALE_INITIALIZATION_TIMEOUT_MS,
             });
             if (cancelled) return;
-            // "superseded" means a newer request took over, so this language is
-            // no longer the one in effect and must not be recorded as the
-            // synchronized baseline: the newer request may itself have failed,
-            // leaving the local preference on neither value. Hydration still has
-            // to finish, or every later save stays paused for the session; an
-            // empty baseline makes the next push send whatever is in effect.
+            // "superseded" means a newer request took over, so this language is no longer the one
+            // in effect and must not be recorded as the synchronized baseline: the newer request
+            // may itself have failed, leaving the local preference on neither value. Hydration
+            // still has to finish, or every later save stays paused for the session; an empty
+            // baseline makes the next push send whatever is in effect.
             if (localeResult === "cancelled") return;
             if (localeResult === "superseded") {
               if (authGenerationRef.current === generation) {
@@ -329,9 +324,8 @@ export function usePersonalizationSync(enabled: boolean): void {
               return;
             }
           }
-          // lastSaved records what the server actually has (server-side defaults
-          // for legacy fields) so the debounced push re-uploads preserved local
-          // values.
+          // lastSaved records what the server actually has (server-side defaults for legacy fields)
+          // so the debounced push re-uploads preserved local values.
           lastSavedRef.current = serialized({
             ...payload(
               { ...nextProfile, showGreetingSloth: remoteGreeting },

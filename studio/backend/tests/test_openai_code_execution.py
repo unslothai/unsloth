@@ -19,6 +19,23 @@ from core.inference import external_provider as ep_mod
 from core.inference.external_provider import ExternalProviderClient
 
 
+async def run():
+    client = _make_client()
+    return await _collect(
+        client._stream_openai_responses(
+            messages = [{"role": "user", "content": "hi"}],
+            model = "gpt-5.5",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 4096,
+            enable_thinking = None,
+            reasoning_effort = None,
+            enabled_tools = ["code_execution"],
+            openai_code_exec_container_id = "cntr_stale_999",
+        )
+    )
+
+
 def _drive(coro):
     return asyncio.new_event_loop().run_until_complete(coro)
 
@@ -350,22 +367,6 @@ def test_stale_container_emits_invalidated(monkeypatch):
 
     _mock_http_client(monkeypatch, handler)
 
-    async def run():
-        client = _make_client()
-        return await _collect(
-            client._stream_openai_responses(
-                messages = [{"role": "user", "content": "hi"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 4096,
-                enable_thinking = None,
-                reasoning_effort = None,
-                enabled_tools = ["code_execution"],
-                openai_code_exec_container_id = "cntr_stale_999",
-            )
-        )
-
     lines = _drive(run())
     events = _tool_events(lines)
     invalidated = [e for e in events if e["type"] == "container_invalidated"]
@@ -420,22 +421,6 @@ def test_expired_container_triggers_transparent_retry(monkeypatch):
 
     _mock_http_client(monkeypatch, handler)
 
-    async def run():
-        client = _make_client()
-        return await _collect(
-            client._stream_openai_responses(
-                messages = [{"role": "user", "content": "hi"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 4096,
-                enable_thinking = None,
-                reasoning_effort = None,
-                enabled_tools = ["code_execution"],
-                openai_code_exec_container_id = "cntr_stale_999",
-            )
-        )
-
     lines = _drive(run())
     events = _tool_events(lines)
 
@@ -487,22 +472,6 @@ def test_expired_container_retries_only_once(monkeypatch):
         )
 
     _mock_http_client(monkeypatch, handler)
-
-    async def run():
-        client = _make_client()
-        return await _collect(
-            client._stream_openai_responses(
-                messages = [{"role": "user", "content": "hi"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 4096,
-                enable_thinking = None,
-                reasoning_effort = None,
-                enabled_tools = ["code_execution"],
-                openai_code_exec_container_id = "cntr_stale_999",
-            )
-        )
 
     lines = _drive(run())
 

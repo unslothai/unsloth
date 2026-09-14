@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { accountTransitionPending } from "@/lib/account-transition";
 import { apiUrl, isTauri } from "@/lib/api-base";
 import {
   clearAuthTokens,
@@ -17,12 +18,34 @@ type RefreshResponse = {
   must_change_password: boolean;
 };
 
+type AuthFetchOptions = {
+  retryNetworkErrors?: boolean;
+  /** Synchronous policy check run immediately before any retry sends bytes. */
+  beforeRetry?: () => void;
+};
+
 let isRedirecting = false;
 let refreshInflight: Promise<boolean> | null = null;
 let refreshInflightToken: string | null = null;
 let logoutGeneration = 0;
 
 const TAURI_FETCH_RETRY_DELAYS_MS = [250, 750, 1500] as const;
+const BROWSER_TIMEZONE_HEADER = "X-Unsloth-Timezone";
+const BROWSER_TIMEZONE_OFFSET_HEADER =
+  "X-Unsloth-Timezone-Offset-Minutes";
+
+function addBrowserTimezoneHeaders(headers: Headers): void {
+  try {
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (timezone) headers.set(BROWSER_TIMEZONE_HEADER, timezone);
+    headers.set(
+      BROWSER_TIMEZONE_OFFSET_HEADER,
+      String(new Date().getTimezoneOffset()),
+    );
+  } catch {
+    // runtimes without Intl keep the backend-local fallback.
+  }
+}
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -36,6 +59,7 @@ async function fetchWithTauriNetworkRetry(
   input: RequestInfo | URL,
   init?: RequestInit,
   retryNetworkErrors = true,
+  beforeRetry?: () => void,
 ): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -50,11 +74,14 @@ async function fetchWithTauriNetworkRetry(
         throw error;
       }
       await wait(TAURI_FETCH_RETRY_DELAYS_MS[attempt]);
+      beforeRetry?.();
     }
   }
 }
 
-async function isPasswordChangeRequiredResponse(response: Response): Promise<boolean> {
+async function isPasswordChangeRequiredResponse(
+  response: Response,
+): Promise<boolean> {
   if (response.status !== 403) return false;
 
   try {
@@ -65,7 +92,7 @@ async function isPasswordChangeRequiredResponse(response: Response): Promise<boo
   }
 }
 
-async function redirectToAuth(): Promise<void> {
+async function redirectToAuth(passwordChangeRequired = false): Promise<void> {
   if (isRedirecting) return;
   isRedirecting = true;
 
@@ -73,12 +100,18 @@ async function redirectToAuth(): Promise<void> {
   try {
     const res = await fetch(apiUrl("/api/auth/status"));
     if (res.ok) {
-      const data = (await res.json()) as { requires_password_change: boolean };
-      // Server truth wins; keep localStorage in sync both ways.
-      if (data.requires_password_change !== mustChangePassword()) {
-        setMustChangePassword(data.requires_password_change);
+      const data = (await res.json()) as {
+        requires_password_change: boolean;
+        login_mode?: "single" | "multi";
+      };
+      // Public status describes the owner. A managed session carries its own requirement.
+      const requiresChange = data.login_mode === "multi"
+        ? passwordChangeRequired || mustChangePassword()
+        : data.requires_password_change;
+      if (requiresChange !== mustChangePassword()) {
+        setMustChangePassword(requiresChange);
       }
-      if (data.requires_password_change) target = "/change-password";
+      if (requiresChange) target = "/change-password";
     }
   } catch {
     // Fall through to /login on error
@@ -95,7 +128,11 @@ function asTransportFailure(err: unknown): unknown {
   // fetch TypeError = offline | backend down | CORS/DNS. Tagged so callers tell "never reached"
   // from "rejected"; Tauri is always backend-down, the web build distinguishes offline.
   if (!(err instanceof TypeError)) return err;
-  if (!isTauri && typeof navigator !== "undefined" && navigator.onLine === false) {
+  if (
+    !isTauri &&
+    typeof navigator !== "undefined" &&
+    navigator.onLine === false
+  ) {
     return Object.assign(
       new Error(
         "You appear to be offline. Check your network connection and try again.",
@@ -113,8 +150,11 @@ async function retryWithCurrentToken(
   input: RequestInfo | URL,
   init?: RequestInit,
   retryNetworkErrors = true,
+  beforeRetry?: () => void,
 ): Promise<Response> {
+  beforeRetry?.();
   const retryHeaders = new Headers(init?.headers);
+  addBrowserTimezoneHeaders(retryHeaders);
   const token = getAuthToken();
   if (token) retryHeaders.set("Authorization", `Bearer ${token}`);
   // Retries are tagged like the first attempt; an untagged TypeError reads as a rejection.
@@ -123,6 +163,7 @@ async function retryWithCurrentToken(
       input,
       { ...init, headers: retryHeaders },
       retryNetworkErrors,
+      beforeRetry,
     );
   } catch (err) {
     throw asTransportFailure(err);
@@ -133,11 +174,12 @@ async function retryWithTauriAutoAuth(
   input: RequestInfo | URL,
   init?: RequestInit,
   retryNetworkErrors = true,
+  beforeRetry?: () => void,
 ): Promise<Response | null> {
   clearAuthTokens();
   const { tauriAutoAuth } = await import("./tauri-auto-auth");
   if (await tauriAutoAuth()) {
-    return retryWithCurrentToken(input, init, retryNetworkErrors);
+    return retryWithCurrentToken(input, init, retryNetworkErrors, beforeRetry);
   }
   return null;
 }
@@ -189,10 +231,15 @@ export async function refreshSession(): Promise<boolean> {
 export async function authFetch(
   input: RequestInfo | URL,
   init?: RequestInit,
-  options?: { retryNetworkErrors?: boolean },
+  options?: AuthFetchOptions,
 ): Promise<Response> {
-  const resolvedInput = typeof input === 'string' ? apiUrl(input) : input;
+  // Another tab is mid-switch: its new tokens are published before this tab reloads, so a
+  // request now would carry this tab's account content under the next account's credentials.
+  if (accountTransitionPending())
+    throw new Error("Another tab is switching accounts; this tab will reload.");
+  const resolvedInput = typeof input === "string" ? apiUrl(input) : input;
   const headers = new Headers(init?.headers);
+  addBrowserTimezoneHeaders(headers);
   const accessToken = getAuthToken();
   if (accessToken) {
     headers.set("Authorization", `Bearer ${accessToken}`);
@@ -207,6 +254,7 @@ export async function authFetch(
         headers,
       },
       options?.retryNetworkErrors ?? true,
+      options?.beforeRetry,
     );
   } catch (err) {
     throw asTransportFailure(err);
@@ -219,10 +267,11 @@ export async function authFetch(
           resolvedInput,
           init,
           options?.retryNetworkErrors ?? true,
+          options?.beforeRetry,
         )) ?? response
       );
     }
-    void redirectToAuth();
+    void redirectToAuth(true);
     return response;
   }
   if (response.status !== 401) return response;
@@ -236,6 +285,7 @@ export async function authFetch(
           resolvedInput,
           init,
           options?.retryNetworkErrors ?? true,
+          options?.beforeRetry,
         )) ?? response
       );
     }
@@ -251,6 +301,7 @@ export async function authFetch(
           resolvedInput,
           init,
           options?.retryNetworkErrors ?? true,
+          options?.beforeRetry,
         )) ?? response
       );
     }
@@ -263,10 +314,13 @@ export async function authFetch(
     resolvedInput,
     init,
     options?.retryNetworkErrors ?? true,
+    options?.beforeRetry,
   );
 }
 
-async function postLogout(accessToken: string | null): Promise<Response | null> {
+async function postLogout(
+  accessToken: string | null,
+): Promise<Response | null> {
   try {
     return await fetchWithTauriNetworkRetry(apiUrl("/api/auth/logout"), {
       method: "POST",

@@ -167,7 +167,10 @@ test("streaming reparses only the active Markdown tail", () => {
     jsxAttribute(streamdown, "parseMarkdownIntoBlocksFn")?.initializer?.getText(
       source,
     ),
-    "{incrementalRender?.parseMarkdownIntoBlocks}",
+    "{\n" +
+      "              incrementalRender?.parseMarkdownIntoBlocks ??\n" +
+      "              parseMarkdownIntoRenderableBlocks\n" +
+      "            }",
   );
 });
 
@@ -178,6 +181,6 @@ test("dropping retained blocks moves Streamdown's render identity", () => {
   assert.ok(streamdown, "chat <Streamdown> is missing");
   assert.equal(
     jsxAttribute(streamdown, "key")?.initializer?.getText(source),
-    "{`${messageId}:${incrementalCache.renderGeneration}`}",
+    "{`${messageId}:${incrementalCache.renderGeneration}:${renderKey}`}",
   );
 });

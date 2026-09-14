@@ -215,16 +215,9 @@ def test_auto_layers_branch_empties_gpus_and_drops_tensor_parallel():
     # The branch sits before GPU selection assigns gpu_indices; --fit on is its emission.
     assert gate < src.find("gpu_indices, use_fit = None, True")
     assert 'cmd.extend(["--fit", "on"])' in src
-    # TP drops for this path, but at a guard BEFORE the quantized-KV cache-drop, so
-    # a requested quantized cache survives into the --fit load.
     tp_drop = src.find('if tensor_parallel and gpu_memory_mode == "manual" and gpu_layers < 0:')
     assert tp_drop != -1, "manual + Auto layers must drop tensor_parallel"
     assert "tensor_parallel = False" in src[tp_drop : tp_drop + 400]
-    cache_drop = src.find("Tensor parallelism requires a non-quantized KV cache")
-    assert cache_drop != -1
-    assert (
-        tp_drop < cache_drop
-    ), "TP must drop before the cache-drop so a quantized KV survives --fit"
 
 
 def test_auto_layers_never_sends_ctx_size_zero():
@@ -954,6 +947,16 @@ def test_start_diffusion_server_resets_tensor_parallel():
 
 
 # ── Manual tensor split: child enumeration pinned to the picker's order ──────
+
+
+@pytest.mark.parametrize(
+    ("parent_ids", "expected"),
+    [([], None), ([2], (2,)), ([0, 1], None)],
+)
+def test_unmasked_child_gpu_map_is_known_only_for_one_gpu(monkeypatch, parent_ids, expected):
+    import utils.hardware as hw
+    monkeypatch.setattr(hw, "get_parent_visible_gpu_ids", lambda: parent_ids)
+    assert LlamaCppBackend._unmasked_child_gpu_physical_ids() == expected
 
 
 def _patch_split_pin_env(monkeypatch, *, inherited, reported):

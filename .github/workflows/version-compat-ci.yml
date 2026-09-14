@@ -168,6 +168,7 @@ jobs:
         # exist and the step fails with "Can't find 'action.yml'".
         uses: ./unsloth/.github/actions/pip-cache-restore
         with:
+          name: version-compat-spoof
           key-files: |
             unsloth/.github/workflows/version-compat-ci.yml
 
@@ -276,6 +277,7 @@ jobs:
         # exist and the step fails with "Can't find 'action.yml'".
         uses: ./unsloth/.github/actions/pip-cache-restore
         with:
+          name: version-compat-grpo
           key-files: |
             unsloth/.github/workflows/version-compat-ci.yml
 

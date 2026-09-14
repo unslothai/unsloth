@@ -17,16 +17,55 @@ import os
 import sys
 from typing import Callable, TextIO
 
-# Keep in sync with studio/backend/models/auth.py ChangePasswordRequest
-# (new_password min_length) and studio/backend/auth/storage.py.
+# Keep in sync with studio/backend/models/auth.py ChangePasswordRequest and auth/storage.py.
+# The bound is `new_password` min_length.
 MIN_PASSWORD_LENGTH = 8
 
-# Env var that supplies the initial admin password non-interactively (mirror in
-# studio/backend/auth/terminal_prompt.py). Keep the name in sync.
+# Mirror of studio/backend/auth/terminal_prompt.py; keep the name in sync.
 SUPPLIED_PASSWORD_ENV = "UNSLOTH_STUDIO_PASSWORD"
 
 _BACKSPACE_CHARS = ("\x7f", "\x08")
 _SUBMIT_CHARS = ("\r", "\n")
+
+
+class PromptUnattended(Exception):
+    """A terminal is attached but nobody answered before the deadline.
+
+    A pty is not a person: ``tmux new -d`` / ``docker run -dt`` allocate a real
+    foreground pty nobody reads, so isatty() is True on both streams and the read
+    never returns. Callers that must not block a launch treat this as a refusal.
+    Mirror of studio/backend/auth/terminal_prompt.py -- keep the two in sync.
+    """
+
+
+def _wait_for_first_key(timeout: float) -> bool:
+    """Whether a keystroke arrived within ``timeout`` seconds.
+
+    Requires cbreak mode already set: canonical mode holds input until a newline,
+    so the fd would not become readable on the first character. True on any doubt
+    (the blocking behaviour).
+    """
+    if os.name == "nt":
+        import time
+
+        try:
+            import msvcrt
+        except ImportError:
+            return True
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if msvcrt.kbhit():
+                return True
+            time.sleep(0.05)
+        return False
+    import select
+
+    try:
+        fd = sys.stdin.fileno()
+        ready, _, _ = select.select([fd], [], [], timeout)
+    except (AttributeError, OSError, ValueError):
+        return True
+    return bool(ready)
 
 
 class _RestoreTtyOnSignals:
@@ -57,7 +96,7 @@ class _RestoreTtyOnSignals:
                 continue
             try:
                 self._previous.append((sig, signal.signal(sig, _restore_and_reraise)))
-            except (ValueError, OSError):  # non-main thread / unsupported
+            except (ValueError, OSError):
                 pass
         return self
 
@@ -70,7 +109,11 @@ class _RestoreTtyOnSignals:
                 pass
 
 
-def _read_masked_posix(prompt: str, out: TextIO) -> str:
+def _read_masked_posix(
+    prompt: str,
+    out: TextIO,
+    first_key_timeout: "float | None" = None,
+) -> str:
     import codecs
     import termios
     import tty
@@ -82,32 +125,32 @@ def _read_masked_posix(prompt: str, out: TextIO) -> str:
     chars: list[str] = []
     try:
         with _RestoreTtyOnSignals(fd, old_attrs):
-            # cbreak + ISIG off (mirrors terminal_prompt.py): with ISIG on,
-            # Ctrl-Z would suspend mid-read and leave the shell no-echo before
-            # the finally restores it. Ctrl-C/Ctrl-Z arrive as \x03/\x1a here.
+            # cbreak + ISIG off (mirrors terminal_prompt.py): with ISIG on, Ctrl-Z suspends mid-read and leaves
+            # the shell no-echo.
             tty.setcbreak(fd)
             new_attrs = termios.tcgetattr(fd)
             new_attrs[3] &= ~termios.ISIG
             termios.tcsetattr(fd, termios.TCSADRAIN, new_attrs)
-            # Decode byte-at-a-time with errors="replace" (mirrors
-            # terminal_prompt.py): text-mode read(1) can raise UnicodeDecodeError
-            # on a pasted non-UTF-8 password or yield a lone surrogate that later
-            # crashes pbkdf2. os.read + incremental decoder maps bad bytes to
-            # U+FFFD and continues.
+            # FIRST keystroke only: a detached pty is a terminal nobody will type
+            # into, and blocking there means the socket never binds.
+            if first_key_timeout is not None and not _wait_for_first_key(first_key_timeout):
+                raise PromptUnattended
+            # os.read + incremental decoder with errors="replace": text-mode read(1) can raise or yield a lone
+            # surrogate that later crashes pbkdf2.
+            # It raises UnicodeDecodeError.
             decoder = codecs.getincrementaldecoder(sys.stdin.encoding or "utf-8")("replace")
             submitted = False
             while not submitted:
                 raw = os.read(fd, 1)
                 if not raw:  # stream ended mid-line: abort, don't submit
                     raise EOFError
-                # One byte can complete >1 char, so iterate over the decoder's output.
                 for ch in decoder.decode(raw):
                     if ch in _SUBMIT_CHARS:
                         submitted = True
                         break
                     if ch == "\x03":  # Ctrl-C (ISIG off: surfaces as a char)
                         raise KeyboardInterrupt
-                    if ch in ("\x04", "\x1a"):  # Ctrl-D / Ctrl-Z
+                    if ch in ("\x04", "\x1a"):
                         if not chars:
                             raise EOFError
                         continue
@@ -117,7 +160,7 @@ def _read_masked_posix(prompt: str, out: TextIO) -> str:
                             out.write("\b \b")
                             out.flush()
                         continue
-                    if ch < " ":  # other control characters
+                    if ch < " ":
                         continue
                     chars.append(ch)
                     out.write("*")
@@ -129,24 +172,30 @@ def _read_masked_posix(prompt: str, out: TextIO) -> str:
     return "".join(chars)
 
 
-def _read_masked_windows(prompt: str, out: TextIO) -> str:
+def _read_masked_windows(
+    prompt: str,
+    out: TextIO,
+    first_key_timeout: "float | None" = None,
+) -> str:
     import msvcrt
 
     out.write(prompt)
     out.flush()
     chars: list[str] = []
     try:
+        if first_key_timeout is not None and not _wait_for_first_key(first_key_timeout):
+            raise PromptUnattended
         while True:
             ch = msvcrt.getwch()
             if ch in _SUBMIT_CHARS:
                 break
             if ch == "\x03":  # Ctrl-C: getwch swallows the signal, re-raise
                 raise KeyboardInterrupt
-            if ch in ("\x04", "\x1a"):  # Ctrl-D / Ctrl-Z
+            if ch in ("\x04", "\x1a"):
                 if not chars:
                     raise EOFError
                 continue
-            if ch in ("\x00", "\xe0"):  # function/arrow key: swallow the code
+            if ch in ("\x00", "\xe0"):
                 msvcrt.getwch()
                 continue
             if ch in _BACKSPACE_CHARS:
@@ -166,27 +215,45 @@ def _read_masked_windows(prompt: str, out: TextIO) -> str:
     return "".join(chars)
 
 
-def read_masked(prompt: str, out: TextIO | None = None) -> str:
+def read_masked(
+    prompt: str,
+    out: TextIO | None = None,
+    *,
+    first_key_timeout: "float | None" = None,
+) -> str:
     """Read one line with ``*`` echo. Raises KeyboardInterrupt on Ctrl-C and
-    EOFError on Ctrl-D/Ctrl-Z at an empty prompt."""
+    EOFError on Ctrl-D/Ctrl-Z at an empty prompt, and PromptUnattended when
+    ``first_key_timeout`` passes with no keystroke at all."""
     if out is None:
         out = sys.stderr
     if os.name == "nt":
-        return _read_masked_windows(prompt, out)
-    return _read_masked_posix(prompt, out)
+        return _read_masked_windows(prompt, out, first_key_timeout)
+    return _read_masked_posix(prompt, out, first_key_timeout)
 
 
-def prompt_new_password(verify_current: Callable[[str], bool], out: TextIO | None = None) -> str:
+def prompt_new_password(
+    verify_current: Callable[[str], bool],
+    out: TextIO | None = None,
+    *,
+    first_key_timeout: "float | None" = None,
+) -> str:
     """Prompt for a new admin password until a valid, confirmed one is given.
 
     ``verify_current`` returns True when the candidate equals the current stored
     password; such candidates are rejected. KeyboardInterrupt/EOFError propagate
     so the caller can abort the launch.
+
+    ``first_key_timeout`` bounds the wait for the FIRST keystroke and raises
+    PromptUnattended if it never comes; once someone types there is no deadline.
+    Only a caller that must not block a launch passes it: a detached pty
+    (``tmux new -d``, ``docker run -dt``) is a terminal nobody will answer.
     """
     if out is None:
         out = sys.stderr
+    pending_timeout = first_key_timeout
     while True:
-        password = read_masked("New password: ", out)
+        password = read_masked("New password: ", out, first_key_timeout = pending_timeout)
+        pending_timeout = None
         if len(password) < MIN_PASSWORD_LENGTH:
             out.write(f"Password must be at least {MIN_PASSWORD_LENGTH} characters. Try again.\n")
             out.flush()

@@ -9,7 +9,7 @@ elsewhere. ``get_device_properties`` and ``get_device_capability`` do not, which
 why the System tab already reads totals through properties.
 
 NVIDIA hosts were already safe because the probe asks nvidia-smi first. ROCm hosts
-were not: they fell straight through to torch, so a Studio backend serving GGUF
+were not: they fell straight through to torch, so an Unsloth backend serving GGUF
 models paid a permanent ~700 MiB for a number it only reads, on a card whose models
 run in a llama-server CHILD that then cannot use it. amd-smi answers the same
 question from a subprocess.

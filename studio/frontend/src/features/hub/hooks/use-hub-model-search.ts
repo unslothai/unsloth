@@ -786,12 +786,11 @@ export function useHubModelSearch(
   );
   const search = useHubPaginatedSearch(createIter, mapModel, { enabled });
 
-  // Secondary sort only with no user query (the merged iterator already floats unsloth results)
-  // and outside channel scoping.
-  //
-  // STABLE-APPEND CONTRACT: when a later page lands, keep the sorted prefix verbatim and append
-  // only the new tail, else a late unsloth/* repo jumps earlier and bumps the viewport. Sort only
-  // when the listing resets (length shrinks or zeros), where re-ordering is safe.
+  // Secondary sort only with no user query (the merged iterator already floats unsloth results) and
+  // outside channel scoping. STABLE-APPEND CONTRACT: when a later page lands, keep the sorted
+  // prefix verbatim and append only the new tail, else a late unsloth/* repo jumps earlier and
+  // bumps the viewport. Sort only when the listing resets (length shrinks or zeros), where
+  // re-ordering is safe.
   const [stableCache, setStableCache] = useState<{
     source: HfModelResult[] | null;
     length: number;

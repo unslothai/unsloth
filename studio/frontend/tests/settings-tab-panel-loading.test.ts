@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * The dialog is closed for the whole launch, yet its twelve tab panels were static imports
+ * The dialog is closed for the whole launch, yet its tab panels were static imports
  * and so ran before first paint. One static `./tabs/...` edge from anywhere reachable at
  * startup puts them all back, so these assert the import graph, not rendered output.
  */

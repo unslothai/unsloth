@@ -12,10 +12,7 @@ import { useExportRuntimeStore } from "../stores/export-runtime-store";
 
 const STATUS_POLL_INTERVAL_MS = 5000;
 const STREAM_RECONNECT_DELAY_MS = 600;
-// JSON log poll cadence. The SSE stream is the low-latency path on localhost,
-// but Cloudflare quick tunnels (`--secure`) buffer `text/event-stream`, so this
-// poll is the transport that actually delivers logs over the tunnel. Short
-// JSON responses are never buffered, so this works through any proxy.
+// Short-response fallback cadence, for a proxy that drops or stalls the log stream.
 const LOG_POLL_INTERVAL_MS = 750;
 
 /**
@@ -59,12 +56,11 @@ export function useExportRuntimeLifecycle(): void {
       store.getState().setConnected(false);
     };
 
-    // ── JSON log polling (tunnel-safe fallback) ──────────────────────────
-    // Runs for the whole active run, in parallel with the SSE stream. On
-    // localhost the SSE delivers first and these polls are de-duped away by
-    // seq; over a Cloudflare tunnel the SSE is buffered and these polls are
-    // what actually fill the log panel. A successful poll marks the stream
-    // "connected" so the panel shows "streaming" rather than "connecting...".
+    // ── JSON log polling (tunnel-safe fallback) ────────────────────────── Runs for the whole
+    // active run, in parallel with the SSE stream. On localhost the SSE delivers first and these
+    // polls are de-duped away by seq; over a Cloudflare tunnel the SSE is buffered and these polls
+    // are what actually fill the log panel. A successful poll marks the stream "connected" so the
+    // panel shows "streaming" rather than "connecting...".
     const pollLogsOnce = async () => {
       if (disposed || !store.getState().isExporting) return;
       try {
@@ -137,11 +133,10 @@ export function useExportRuntimeLifecycle(): void {
         if (streamController === controller) {
           streamController = null;
         }
-        // Do NOT clear `connected` here: over a Cloudflare tunnel the SSE drops
-        // and reconnects repeatedly (buffered / premature complete), which used
-        // to flap the indicator back to "connecting...". The log poll owns the
-        // connected flag for the duration of the run; stopStream clears it when
-        // the run actually ends.
+        // Do NOT clear `connected` here: over a Cloudflare tunnel the SSE drops and reconnects
+        // repeatedly (buffered / premature complete), which used to flap the indicator back to
+        // "connecting...". The log poll owns the connected flag for the duration of the run;
+        // stopStream clears it when the run actually ends.
 
         if (
           !disposed &&

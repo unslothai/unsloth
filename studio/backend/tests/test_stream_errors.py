@@ -224,3 +224,45 @@ class TestTheNonStreamingPathAlsoReportsTheCause:
             == "An internal error occurred"
         )
         assert "/srv/secret" not in safe_error_detail(RuntimeError("/srv/secret/path blew up"))
+
+
+class TestTheStarvationTextDoesNotReadAsAContextLimitOnTheClient:
+    """The chat client re-classifies by substring, so the wording is load bearing.
+
+    `studio/frontend/src/features/chat/api/chat-adapter.ts::isContextLimitError` decides
+    which toast a failed generation gets from the error message alone: the backend's
+    `code` never reaches it, because `chat-api.ts` turns an in-band error chunk into
+    `new Error(parsed.error.message)` and throws only the text. Any of the substrings
+    below wins the "Context limit reached" toast, whose advice is "The conversation has
+    filled the model's context window ... or start a new chat".
+
+    That is the wrong remedy for starvation, and it is the exact claim this message was
+    written to deny: nothing about the conversation was too long, so starting a new chat
+    fails identically while the other generation is still running. Asserted here rather
+    than in the frontend because the message lives here and the wording is what breaks.
+    """
+
+    # Mirrors isContextLimitError. Keep in step with chat-adapter.ts.
+    CLIENT_CONTEXT_LIMIT_MARKERS = (
+        "context size",
+        "context shift",
+        "exceeds the available context",
+        "message too long",
+        "context window",
+    )
+
+    def test_the_curated_starvation_message_avoids_the_client_heuristic(self):
+        lowered = KV_STARVATION_MESSAGE.lower()
+        assert [m for m in self.CLIENT_CONTEXT_LIMIT_MARKERS if m in lowered] == []
+
+    def test_the_message_still_names_the_cause_and_both_remedies(self):
+        lowered = KV_STARVATION_MESSAGE.lower()
+        assert "same time" in lowered
+        assert "fewer running at once" in lowered
+        assert "context length" in lowered
+
+    def test_the_server_wording_it_replaces_would_have_hit_the_heuristic(self):
+        """Guards the test itself: the raw text is what the rewrite exists to avoid."""
+        raw = "Context size has been exceeded."
+        assert any(m in raw.lower() for m in self.CLIENT_CONTEXT_LIMIT_MARKERS)
+        assert describe_stream_error(raw) == KV_STARVATION_MESSAGE
