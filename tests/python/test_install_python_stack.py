@@ -118,7 +118,59 @@ class TestUnslothZooGitSpec:
         monkeypatch.delenv("UNSLOTH_ZOO_REF", raising = False)
 
         assert ips._unsloth_zoo_git_spec() == f"{ips._UNSLOTH_ZOO_GIT_URL}@{sha}"
-        assert calls[0][-3:] == ["ls-remote", ips._UNSLOTH_ZOO_GIT_REPO, "main"]
+        assert calls[0][-4:] == [
+            ips._UNSLOTH_ZOO_GIT_REPO,
+            "refs/heads/main", "refs/tags/main", "refs/tags/main^{}",
+        ]
+
+    def test_a_ref_that_merely_ends_in_the_name_is_not_the_ref(self, monkeypatch):
+        """`main` as a pattern also matches refs/heads/archive/main, which sorts first.
+
+        ls-remote matches a pattern against the tail of a ref name at slash
+        boundaries, so the first line is not necessarily the branch that was asked
+        for. Taking it would pin an unrelated history and install it.
+        """
+        wanted, archived = "a" * 40, "b" * 40
+        self._fake_ls_remote(
+            monkeypatch,
+            f"{archived}\trefs/heads/archive/main\n{wanted}\trefs/heads/main\n".encode(),
+        )
+        monkeypatch.delenv("UNSLOTH_ZOO_REF", raising = False)
+
+        assert ips._unsloth_zoo_git_spec() == f"{ips._UNSLOTH_ZOO_GIT_URL}@{wanted}"
+
+    def test_a_branch_wins_over_a_tag_of_the_same_name(self, monkeypatch):
+        branch, tag = "a" * 40, "b" * 40
+        self._fake_ls_remote(
+            monkeypatch,
+            f"{branch}\trefs/heads/x\n{tag}\trefs/tags/x\n".encode(),
+        )
+        monkeypatch.setenv("UNSLOTH_ZOO_REF", "x")
+
+        assert ips._unsloth_zoo_git_spec() == f"{ips._UNSLOTH_ZOO_GIT_URL}@{branch}"
+
+    def test_an_annotated_tag_pins_the_commit_it_points_at(self, monkeypatch):
+        """`refs/tags/v1` is the tag object; `refs/tags/v1^{}` is its commit.
+
+        Both install the same code, since uv and pip dereference the tag object, but
+        a pin that names a commit is the point of resolving at all.
+        """
+        tag_object, commit = "a" * 40, "b" * 40
+        self._fake_ls_remote(
+            monkeypatch,
+            f"{tag_object}\trefs/tags/v1\n{commit}\trefs/tags/v1^{{}}\n".encode(),
+        )
+        monkeypatch.setenv("UNSLOTH_ZOO_REF", "v1")
+
+        assert ips._unsloth_zoo_git_spec() == f"{ips._UNSLOTH_ZOO_GIT_URL}@{commit}"
+
+    def test_a_full_ref_name_is_asked_for_as_given(self, monkeypatch):
+        sha = "a" * 40
+        calls = self._fake_ls_remote(monkeypatch, f"{sha}\trefs/heads/main\n".encode())
+        monkeypatch.setenv("UNSLOTH_ZOO_REF", "refs/heads/main")
+
+        assert ips._unsloth_zoo_git_spec() == f"{ips._UNSLOTH_ZOO_GIT_URL}@{sha}"
+        assert calls[0][-2:] == ["refs/heads/main", "refs/heads/main^{}"]
 
     def test_the_probe_can_never_stop_and_ask_a_human(self, monkeypatch):
         """A 401 from a proxy must not send git to a credential helper and wait.
@@ -166,7 +218,33 @@ class TestUnslothZooGitSpec:
         monkeypatch.setenv("UNSLOTH_ZOO_REF", "v1")
 
         assert ips._unsloth_zoo_git_spec() == f"{ips._UNSLOTH_ZOO_GIT_URL}@{sha}"
-        assert calls[0][-1] == "v1"
+        assert calls[0][-3:] == ["refs/heads/v1", "refs/tags/v1", "refs/tags/v1^{}"]
+
+    @pytest.mark.parametrize("ref", ["feature+cuda", "release/2026.5", "v2026.5.4", "a.b_c-d"])
+    def test_a_legal_branch_name_is_not_quietly_rewritten_to_main(self, monkeypatch, ref):
+        """`+` is legal in a branch name and inert in a requirement, so it must pass.
+
+        The character set here is narrower than git's own rules because the ref lands
+        inside a pip requirement, but narrowing it past what a requirement can carry
+        would silently install main when a specific ref was asked for.
+        """
+        sha = "e" * 40
+        calls = self._fake_ls_remote(monkeypatch, f"{sha}\trefs/heads/{ref}\n".encode())
+        monkeypatch.setenv("UNSLOTH_ZOO_REF", ref)
+
+        assert ips._unsloth_zoo_git_spec() == f"{ips._UNSLOTH_ZOO_GIT_URL}@{sha}"
+        assert calls[0][-3] == f"refs/heads/{ref}"
+
+    def test_a_refused_ref_is_announced_rather_than_silently_replaced(self, monkeypatch):
+        said = []
+        monkeypatch.setattr(ips, "_step", lambda _label, msg, *a, **k: said.append(msg))
+        self._fake_ls_remote(monkeypatch, b"")
+        ips._ZOO_REF_WARNED.clear()
+        monkeypatch.setenv("UNSLOTH_ZOO_REF", "release@2026")
+
+        ips._unsloth_zoo_git_spec()
+
+        assert any("UNSLOTH_ZOO_REF" in msg and "release@2026" in msg for msg in said)
 
     def test_a_full_commit_is_used_without_asking_git(self, monkeypatch):
         sha = "d" * 40
@@ -217,6 +295,11 @@ class TestUnslothZooGitSpec:
             "../../attacker/repo",
             "-oProxyCommand=evil",
             "main\nunsloth-zoo @ git+https://example.invalid/repo",
+            # A legal git ref, but the requirement grammar takes the revision after the
+            # last @, so uv reads this as revision "2026" against a repository URL that
+            # does not exist. Percent-encoding does not rescue it either: uv asks the
+            # remote for a ref literally named release%402026.
+            "release@2026",
         ],
     )
     def test_a_malformed_ref_never_reaches_the_requirement(self, monkeypatch, ref):

@@ -71,6 +71,45 @@ assert_contains "the probe is bounded"        "$(cat "$STUB_LOG")" "bounded by t
 assert_eq "and the variable is left exactly as the caller had it" \
     "$_PROMPT_BEFORE" "${GIT_TERMINAL_PROMPT-unset}"
 
+echo "=== a ref that merely ends in the name is not the ref ==="
+# An ls-remote pattern matches the tail of a ref at slash boundaries, so `main` also
+# matches refs/heads/archive/main, and that sorts first. Taking the first line pinned
+# an unrelated history.
+STUB_OUT="596da1d58adf69924b2977dc04f1d49a89cbfa60	refs/heads/archive/main
+$SHA	refs/heads/main"
+unset UNSLOTH_ZOO_REF
+: > "$STUB_LOG"
+_resolve_zoo_git_spec
+assert_eq "archive/main is not mistaken for main" "$URL@$SHA" "$_ZOO_GIT_SPEC"
+assert_contains "the full ref names are what was asked for" "$(cat "$STUB_LOG")" \
+    "refs/heads/main refs/tags/main refs/tags/main^{}"
+
+echo "=== an annotated tag pins the commit, not the tag object ==="
+UNSLOTH_ZOO_REF="v9"
+export UNSLOTH_ZOO_REF
+STUB_OUT="54700b3135d07a9bf78128b6c677fb909289e06d	refs/tags/v9
+$SHA	refs/tags/v9^{}"
+_resolve_zoo_git_spec
+assert_eq "peeled to its commit" "$URL@$SHA" "$_ZOO_GIT_SPEC"
+
+echo "=== a legal branch name is not quietly rewritten to main ==="
+# `+` is legal in a branch name and inert inside a requirement; rejecting it installed
+# main when a specific branch was asked for.
+UNSLOTH_ZOO_REF="feature+cuda"
+export UNSLOTH_ZOO_REF
+STUB_OUT="$SHA	refs/heads/feature+cuda"
+: > "$STUB_LOG"
+_resolve_zoo_git_spec
+assert_eq "feature+cuda survives validation" "$URL@$SHA" "$_ZOO_GIT_SPEC"
+assert_contains "and is what git was asked for" "$(cat "$STUB_LOG")" "refs/heads/feature+cuda"
+
+echo "=== a ref a requirement cannot carry is refused out loud ==="
+# uv reads `repo@release@2026` as revision "2026", so this ref cannot be expressed.
+# Falling back to main is right; doing it silently is not.
+_WARNING="$(UNSLOTH_ZOO_REF='release@2026' _resolve_zoo_git_spec 2>&1 >/dev/null)"
+assert_contains "the refusal names the variable and the value" "$_WARNING" \
+    "UNSLOTH_ZOO_REF='release@2026'"
+
 echo "=== an explicit ref is honored and pinned ==="
 UNSLOTH_ZOO_REF="v2026.5.4"
 export UNSLOTH_ZOO_REF

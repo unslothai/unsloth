@@ -6200,11 +6200,15 @@ def _shared_base_requirements() -> Path | None:
 _UNSLOTH_ZOO_GIT_REPO = "https://github.com/unslothai/unsloth-zoo"
 _UNSLOTH_ZOO_GIT_URL = f"unsloth-zoo @ git+{_UNSLOTH_ZOO_GIT_REPO}"
 
-# The ref is pasted into a pip direct-reference requirement, so it is only ever a
-# branch, tag or commit name. Anything else is not a ref pip could resolve anyway,
-# and refusing it keeps an environment variable from steering the requirement
-# somewhere the hard-coded repository URL above does not point.
-_GIT_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
+# The ref is pasted into a pip direct-reference requirement, which is why this is
+# narrower than git's own ref rules: `git check-ref-format` accepts `a#b`, `a;b` and
+# `release@2026`, and each of those means something else again inside a requirement
+# string (fragment, marker separator, and the revision delimiter itself -- measured,
+# uv reads `repo@release@2026` as revision "2026" and fails). `+` IS safe and is a
+# real branch-name character, so it is allowed. Percent-encoding is not an escape
+# hatch here: uv passes `%40` through literally and asks the remote for a ref by
+# that name.
+_GIT_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/+-]{0,199}$")
 _GIT_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 
 # Resolved once per process: the overlay spec is read again by the staging and
@@ -6240,6 +6244,43 @@ def _unsloth_zoo_ref() -> str:
     return _requested_unsloth_zoo_ref() or "main"
 
 
+def _zoo_ls_remote_patterns(ref: str) -> list:
+    """Full ref names to ask ls-remote for, never the bare name.
+
+    An ls-remote pattern matches the TAIL of a ref name at slash boundaries, so
+    `main` also matches `refs/heads/archive/main`, and that one sorts first: taking
+    the first line would pin an archived branch and install code from a different
+    history. Asking for the full names, and then matching them exactly below, is the
+    only way to get the ref that was asked for.
+    """
+    if ref.startswith("refs/"):
+        return [ref, ref + "^{}"]
+    return [f"refs/heads/{ref}", f"refs/tags/{ref}", f"refs/tags/{ref}^{{}}"]
+
+
+def _pick_zoo_commit(output: str, ref: str) -> str:
+    """The commit for `ref` in ls-remote output, matching the ref name exactly.
+
+    A branch beats a tag of the same name, which is what `git clone --branch` does.
+    `refs/tags/<ref>^{}` is the commit an annotated tag points at and beats the tag
+    object itself: both install the same code (uv and pip dereference the tag), but
+    the pin should name the commit it resolved to, not an object that points at one.
+    """
+    found = {}
+    for line in output.splitlines():
+        sha, _tab, name = line.partition("\t")
+        name = name.strip()
+        if name and _GIT_COMMIT_RE.match(sha.strip()):
+            found.setdefault(name, sha.strip())
+    for candidate in (
+        f"refs/heads/{ref}", f"refs/tags/{ref}^{{}}", f"refs/tags/{ref}",
+        ref + "^{}", ref,
+    ):
+        if candidate in found:
+            return found[candidate]
+    return ""
+
+
 def _resolve_unsloth_zoo_commit(ref: str) -> str:
     """The commit `ref` names on unslothai/unsloth-zoo right now, or "".
 
@@ -6272,7 +6313,8 @@ def _resolve_unsloth_zoo_commit(ref: str) -> str:
             # ls-remote exits 0 whether or not a ref matched, so an empty stdout is
             # "no such ref" and has to be treated like a failure to resolve.
             result = subprocess.run(
-                [git, "-c", "credential.helper=", "ls-remote", _UNSLOTH_ZOO_GIT_REPO, ref],
+                [git, "-c", "credential.helper=", "ls-remote", _UNSLOTH_ZOO_GIT_REPO,
+                 *_zoo_ls_remote_patterns(ref)],
                 stdout = subprocess.PIPE,
                 stderr = subprocess.DEVNULL,
                 # 20s, the same bound install.sh and install.ps1 use: a ref
@@ -6283,9 +6325,7 @@ def _resolve_unsloth_zoo_commit(ref: str) -> str:
                 **_windows_hidden_subprocess_kwargs(),
             )
             if result.returncode == 0 and result.stdout:
-                first = result.stdout.decode(errors = "replace").split("\n", 1)[0].split()
-                if first and _GIT_COMMIT_RE.match(first[0]):
-                    commit = first[0]
+                commit = _pick_zoo_commit(result.stdout.decode(errors = "replace"), ref)
         except (OSError, subprocess.SubprocessError):
             commit = ""
     _ZOO_COMMIT_CACHE[ref] = commit

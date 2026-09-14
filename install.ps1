@@ -2435,7 +2435,10 @@ exit 1
             $env:GIT_TERMINAL_PROMPT = '0'
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $git.Source
-            $psi.Arguments = '-c credential.helper= ls-remote https://github.com/unslothai/unsloth-zoo main'
+            # The full ref name, never the bare one: an ls-remote pattern matches the
+            # TAIL of a ref at slash boundaries, so `main` also matches
+            # refs/heads/archive/main, which sorts first and would pin another history.
+            $psi.Arguments = '-c credential.helper= ls-remote https://github.com/unslothai/unsloth-zoo refs/heads/main'
             $psi.UseShellExecute = $false
             $psi.RedirectStandardOutput = $true
             $psi.RedirectStandardError = $true
@@ -2449,9 +2452,16 @@ exit 1
             }
             if ($proc.ExitCode -ne 0) { return }
             # ls-remote exits 0 whether or not a ref matched, so an empty result is "no such ref".
-            $lines = @("$($outTask.Result)" -split "`r?`n" | Where-Object { $_ -ne '' })
-            if ($lines.Count -eq 0) { return }
-            $sha = ("$($lines[0])".Trim() -split '\s+')[0]
+            # Matched by exact ref name, so a second line for some other ref can never
+            # be the one that is taken.
+            $sha = ''
+            foreach ($line in @("$($outTask.Result)" -split "`r?`n")) {
+                $parts = "$line".Trim() -split '\s+', 2
+                if ($parts.Count -eq 2 -and $parts[1].Trim() -eq 'refs/heads/main') {
+                    $sha = $parts[0]
+                    break
+                }
+            }
             if ($sha -match '^[0-9a-f]{40}$') {
                 $script:ZooGitSpec = "$zooUrl@$sha"
                 $script:ZooGitLabel = "main ($($sha.Substring(0, 12)))"

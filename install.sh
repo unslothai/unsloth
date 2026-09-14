@@ -3027,11 +3027,17 @@ esac
 # auditability, it is not a gate on the install.
 _resolve_zoo_git_spec() {
     _ZOO_REF="${UNSLOTH_ZOO_REF:-main}"
-    # The ref is pasted into a pip requirement, so it is only ever a branch, tag or
-    # commit name; anything else cannot resolve anyway and is dropped rather than
-    # handed to uv.
+    # Narrower than git's own ref rules on purpose: `git check-ref-format` accepts
+    # `a#b`, `a;b` and `release@2026`, and inside a pip requirement those read as a
+    # fragment, a marker separator and the revision delimiter itself (measured: uv
+    # reads `repo@release@2026` as revision "2026"). `+` is legal in a branch name and
+    # inert here, so it is allowed. Percent-encoding does not help: uv asks the remote
+    # for a ref literally named `release%402026`.
     case "$_ZOO_REF" in
-        -*|*..*|*[!A-Za-z0-9._/-]*)
+        -*|*..*|*[!A-Za-z0-9._/+-]*)
+            # Said out loud: silently installing main when a specific ref was asked for
+            # is the failure this whole function exists to prevent.
+            echo "unsloth: UNSLOTH_ZOO_REF='${_ZOO_REF}' cannot be used in a pip requirement; installing unsloth-zoo main instead" >&2
             _ZOO_REF="main" ;;
     esac
     _ZOO_PIN=""
@@ -3044,15 +3050,26 @@ _resolve_zoo_git_spec() {
         # The two branches are spelled out rather than built from a "timeout 20" prefix
         # variable: an unquoted expansion is one word in zsh, so a prefix would run as a
         # command literally named "timeout 20" for anyone who invokes this with zsh.
+        # Full ref names, never the bare one: an ls-remote pattern matches the TAIL of a
+        # ref at slash boundaries, so `main` also matches refs/heads/archive/main, which
+        # sorts first and would pin an unrelated history.
         if command -v timeout >/dev/null 2>&1; then
-            _ZOO_LS="$(GIT_TERMINAL_PROMPT=0 timeout 20 git -c credential.helper= ls-remote https://github.com/unslothai/unsloth-zoo "$_ZOO_REF" 2>/dev/null | head -n1 | cut -f1 || true)"
+            _ZOO_LS_OUT="$(GIT_TERMINAL_PROMPT=0 timeout 20 git -c credential.helper= ls-remote https://github.com/unslothai/unsloth-zoo "refs/heads/$_ZOO_REF" "refs/tags/$_ZOO_REF" "refs/tags/$_ZOO_REF^{}" 2>/dev/null || true)"
         else
-            _ZOO_LS="$(GIT_TERMINAL_PROMPT=0 git -c credential.helper= ls-remote https://github.com/unslothai/unsloth-zoo "$_ZOO_REF" 2>/dev/null | head -n1 | cut -f1 || true)"
+            _ZOO_LS_OUT="$(GIT_TERMINAL_PROMPT=0 git -c credential.helper= ls-remote https://github.com/unslothai/unsloth-zoo "refs/heads/$_ZOO_REF" "refs/tags/$_ZOO_REF" "refs/tags/$_ZOO_REF^{}" 2>/dev/null || true)"
         fi
-        case "$_ZOO_LS" in
-            *[!0-9a-f]*) ;;
-            ????????????????????????????????????????) _ZOO_PIN="$_ZOO_LS" ;;
-        esac
+        # Branch first, then the commit an annotated tag points at, then the tag object:
+        # the same order `git clone --branch` resolves a name in.
+        # 2>/dev/null on the awk: a minimal image without it (the log filter at the top
+        # of this file allows for the same) must cost the pin and nothing else, least of
+        # all a "command not found" in the middle of the install output.
+        for _ZOO_WANT in "refs/heads/$_ZOO_REF" "refs/tags/$_ZOO_REF^{}" "refs/tags/$_ZOO_REF"; do
+            _ZOO_LS="$(printf '%s\n' "$_ZOO_LS_OUT" | awk -F'\t' -v want="$_ZOO_WANT" '$2 == want { print $1; exit }' 2>/dev/null || true)"
+            case "$_ZOO_LS" in
+                *[!0-9a-f]*) ;;
+                ????????????????????????????????????????) _ZOO_PIN="$_ZOO_LS"; break ;;
+            esac
+        done
     fi
     _ZOO_GIT_SPEC="unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo@${_ZOO_PIN:-$_ZOO_REF}"
     # What the progress lines show: the branch plus the commit it was pinned to.
