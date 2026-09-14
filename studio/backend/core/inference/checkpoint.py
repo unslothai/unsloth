@@ -80,8 +80,16 @@ _NOT_SEARCHABLE = (
     "Everything else that was dropped is still stored, but you cannot retrieve it on this "
     "turn, so answer from what you have rather than saying you will look it up."
 )
-# only the delimiters themselves, so a user who writes about the feature is not mangled
-_DELIMITERS = re.compile(r"</?carried_forward>", re.IGNORECASE)
+# Only the delimiters themselves, so a user who writes ABOUT the feature is not mangled.
+# `self_note` is included alongside `carried_forward` -- and must stay in step with the
+# identical pattern in `self_note.py` -- because the note section renders INSIDE this
+# block, so its tags are an escape route out of the marked region too. Without it a user
+# who typed a literal `<self_note>` had it quoted verbatim into a bullet, and
+# `_SELF_NOTE_SECTION` (unterminated-tolerant by design) then deleted from that bullet to
+# the end of the block on the NEXT compaction -- silent loss of the user's own
+# instructions, on the default-OFF path. Defanged here, a real `<self_note>` can only be
+# one Unsloth rendered.
+_DELIMITERS = re.compile(r"</?(?:self_note|carried_forward)>", re.IGNORECASE)
 
 
 def enabled() -> bool:
@@ -400,7 +408,13 @@ _BLOCK = re.compile(
 # quoted verbatim" on the next reset. A terminated section is cut out whole; an unterminated
 # one (a block truncated mid-note) has no closing tag to anchor on, so everything from the
 # opening tag to the end of the body is cut instead of falling through to the bullet walk.
-_SELF_NOTE_SECTION = re.compile(r"<self_note>.*?(?:</self_note>|\Z)", re.IGNORECASE | re.DOTALL)
+# Anchored to line-start (`^` with MULTILINE) for defence in depth: `render_self_note`
+# always emits the opening tag at the start of its own line, so the anchor costs the real
+# section nothing, while a stray tag mid-line -- which `_neutralise` should now have
+# defanged before it ever got here -- can no longer trigger the greedy cut to end-of-body.
+_SELF_NOTE_SECTION = re.compile(
+    r"^<self_note>.*?(?:</self_note>|\Z)", re.IGNORECASE | re.DOTALL | re.MULTILINE
+)
 
 
 def _block_items(text: str) -> list[str]:
@@ -408,7 +422,8 @@ def _block_items(text: str) -> list[str]:
 
     Parsed rather than discarded: by the second reset the turns that produced the first
     block are gone, so its text is the only copy of those instructions left. `_neutralise`
-    defangs quoted delimiters, so a real `</carried_forward>` can only be one we wrote.
+    defangs quoted delimiters -- `carried_forward` AND `self_note` -- so a real one of
+    either can only be a tag we wrote.
     """
     items: list[str] = []
     for body in _BLOCK.findall(text):
