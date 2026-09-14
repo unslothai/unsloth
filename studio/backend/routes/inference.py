@@ -8004,9 +8004,41 @@ def _validate_image_base64(encoded: str) -> None:
         image.load()
 
 
-async def _preflight_image_for_switch(image_preflight: dict, target_is_gguf: bool) -> None:
+def _local_target_may_take_several_images(load_path: Optional[str]) -> bool:
+    import json
+
+    from utils.hardware import DeviceType, get_device
+    try:
+        if get_device() != DeviceType.MLX:
+            return False
+        from mlx_vlm.prompt_utils import SINGLE_IMAGE_ONLY_MODELS
+
+        config_path = Path(os.path.expanduser(load_path or ""))
+        if config_path.is_dir():
+            config_path = config_path / "config.json"
+        if not config_path.is_file():
+            return False
+        with open(config_path, encoding = "utf-8") as f:
+            config = json.load(f)
+        model_type = config.get("model_type") if isinstance(config, dict) else None
+        return bool(model_type) and model_type not in SINGLE_IMAGE_ONLY_MODELS
+    except BaseException:
+        return False
+
+
+async def _preflight_image_for_switch(
+    image_preflight: dict,
+    target_is_gguf: bool,
+    target_takes_several: bool = False,
+) -> None:
     """Apply target-specific image checks before loading the resolved target."""
-    if not target_is_gguf and image_preflight.get("multiple"):
+    serves_several = (
+        target_takes_several
+        and len(image_preflight.get("admitted", ())) > 1
+        and not image_preflight.get("unservable_alongside")
+    )
+    # Structural: one real image beside a payloadless URL is still a multi-image request.
+    if not target_is_gguf and image_preflight.get("multiple") and not serves_several:
         raise HTTPException(
             status_code = 400,
             detail = (
@@ -8019,6 +8051,7 @@ async def _preflight_image_for_switch(image_preflight: dict, target_is_gguf: boo
             status_code = 400,
             detail = "Remote image URLs are not supported. Use a base64 data URL.",
         )
+    # Only what the single-image path selects: an architecture guess must not refuse the rest.
     encoded_images = (
         image_preflight.get("b64s", ()) if target_is_gguf else (image_preflight.get("b64"),)
     )
@@ -9303,7 +9336,12 @@ async def _maybe_auto_switch_model(
             and resolved is not None
             and (target_is_gguf or not require_audio_input)
         ):
-            await _preflight_image_for_switch(image_preflight, target_is_gguf)
+            await _preflight_image_for_switch(
+                image_preflight,
+                target_is_gguf,
+                target_takes_several = not target_is_gguf
+                and await asyncio.to_thread(_local_target_may_take_several_images, target_id),
+            )
         speech_cache_environment = None
         speech_codec_path = None
         if speech_type is not None:
@@ -17449,6 +17487,26 @@ def _decode_and_resize_image(backend, encoded: str):
     return image
 
 
+async def _decode_request_images(
+    backend,
+    encoded_images,
+    decoded = None,
+):
+    """The images *encoded_images* names, in that order, reusing anything *decoded* already holds.
+
+    One at a time, because a decode is forced at full resolution before the resize shrinks it:
+    Pillow admits images up to about 179 million pixels, so decoding a conversation's images
+    together would hold that many rasters at once where one image has always held one.
+    """
+    ready = dict(decoded or {})
+    images = []
+    for encoded in encoded_images:
+        if encoded not in ready:
+            ready[encoded] = await asyncio.to_thread(_decode_and_resize_image, backend, encoded)
+        images.append(ready[encoded])
+    return images
+
+
 @router.post("/generate/stream")
 async def generate_stream(
     request: GenerateRequest,
@@ -20478,7 +20536,9 @@ def _inject_audio_part(messages: list[dict], audio_b64: str, audio_format: str) 
             return
 
 
-def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[str]"]:
+def _extract_content_parts(
+    messages: list, structured: bool = False
+) -> tuple[str, list[dict], "Union[Optional[str], list[str]]"]:
     """
     Parse OpenAI-format messages into components the inference backend expects.
 
@@ -20487,14 +20547,16 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
 
     Returns:
         system_prompt:  System message text (empty string if none).
-        chat_messages:  Non-system messages with content flattened to strings and
-                        assistant reasoning_content preserved.
-        image_base64:   Base64 of the most recent image found, or ``None``.
+        chat_messages:  Non-system messages, reasoning_content preserved and content flattened
+                        to strings -- or, when *structured*, parts with each served image cut
+                        to ``{"type": "image"}`` in place.
+        images:         The newest image's base64 -- or every served image's in document order.
     """
     system_parts: list[str] = []
     chat_messages: list[dict] = []
     latest_image_b64: Optional[str] = None
     latest_user_image_b64: Optional[str] = None
+    served_images: list[str] = []
 
     for msg in messages:
         # ── System / developer messages → extract as system_prompt ────────
@@ -20507,6 +20569,12 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
             continue
 
         # ── User / assistant messages ─────────────────────────
+        if structured and isinstance(msg.content, list):
+            parts, payloads = _conversation_with_image_markers([msg])
+            served_images.extend(payloads)
+            chat_messages.append(dict(parts[0]))
+            continue
+
         combined_text: Optional[str] = None
         if isinstance(msg.content, str):
             # Plain string content - pass through
@@ -20558,7 +20626,7 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
     return (
         "\n\n".join(p for p in system_parts if p),
         chat_messages,
-        latest_user_image_b64 or latest_image_b64,
+        served_images if structured else (latest_user_image_b64 or latest_image_b64),
     )
 
 
@@ -20671,6 +20739,94 @@ def _latest_user_image_payload(messages) -> "Optional[str]":
             if encoded:
                 return encoded
     return None
+
+
+def _part_attr(part, name):
+    return part.get(name) if isinstance(part, dict) else getattr(part, name, None)
+
+
+def _image_part_payload(part) -> "Optional[str]":
+    """Shared, so extraction, the tool rebuild and the preflight agree on what is servable."""
+    if _part_attr(part, "type") != "image_url":
+        return None
+    image_url = _part_attr(part, "image_url")
+    url = image_url.get("url") if isinstance(image_url, dict) else getattr(image_url, "url", None)
+    if not isinstance(url, str) or not url.startswith("data:"):
+        return None
+    return url.partition(",")[2] or None
+
+
+def _conversation_with_image_markers(messages) -> tuple[list[dict], list[str]]:
+    """Markers stay where they stood: the backend binds pixel values to image tokens by position."""
+    rebuilt: list[dict] = []
+    payloads: list[str] = []
+    for message in messages or ():
+        plain = message if isinstance(message, dict) else message.model_dump(exclude_none = True)
+        content = plain.get("content")
+        if not isinstance(content, list):
+            rebuilt.append(plain)
+            continue
+        parts = []
+        for part in content:
+            if _part_attr(part, "type") == "image_url":
+                # User turns only: several templates leave an assistant's own image unmarked.
+                served = _image_part_payload(part) if plain.get("role") == "user" else None
+                if served is not None:
+                    payloads.append(served)
+                    parts.append({"type": "image"})
+                # Otherwise dropped: a part left here claims a marker nothing can bind.
+                continue
+            parts.append(part)
+        rebuilt.append({**plain, "content": parts})
+    return rebuilt, payloads
+
+
+def _serves_several_images(backend) -> bool:
+    entry = (getattr(backend, "models", None) or {}).get(
+        getattr(backend, "active_model_name", None), {}
+    )
+    return bool((entry.get("chat_template_info") or {}).get("accepts_multiple_images"))
+
+
+def _serve_legacy_image_on_the_newest_turn(
+    messages: list[dict], payloads: list[str], encoded: str
+) -> list[str]:
+    newest = len(messages)
+    for position in range(len(messages) - 1, -1, -1):
+        if messages[position].get("role") == "user":
+            newest = position
+            break
+
+    marker = {"type": "image"}
+    if newest == len(messages):
+        messages.append({"role": "user", "content": [marker]})
+    else:
+        content = messages[newest].get("content")
+        messages[newest] = {
+            **messages[newest],
+            "content": (
+                [*content, marker]
+                if isinstance(content, list)
+                else [{"type": "text", "text": content or ""}, marker]
+            ),
+        }
+    return [*payloads, encoded]
+
+
+def _newest_turn_shows_more_images_than_it_sends(messages, legacy_is_distinct: bool) -> bool:
+    """The shape the one-image-per-message refusal answers, rather than answering about the rest."""
+    for message in reversed(messages or ()):
+        role = message.get("role") if isinstance(message, dict) else message.role
+        if role != "user":
+            continue
+        content = message.get("content") if isinstance(message, dict) else message.content
+        if not isinstance(content, list):
+            return False
+        parts = [part for part in content if _part_attr(part, "type") == "image_url"]
+        if len(parts) + int(legacy_is_distinct) < 2:
+            return False
+        return any(_image_part_payload(part) is None for part in parts)
+    return False
 
 
 def _local_image_payloads_from_messages(messages) -> list[str]:
@@ -22641,13 +22797,22 @@ async def produce_openai_chat_completions(
         _image_b64 = _pre_parsed[2] or payload.image_base64
         if _image_b64 is None and _local_image_payloads:
             _image_b64 = _local_image_payloads[0]
+        # Read the way the render reads it; separate from b64s, which GGUF validates unchanged.
+        _admitted_payloads = _conversation_with_image_markers(payload.messages)[1]
+        if _legacy_image_distinct:
+            _admitted_payloads = [*_admitted_payloads, payload.image_base64]
         _image_preflight = {
             "b64": _image_b64,
             "b64s": _local_image_payloads,
+            "admitted": _admitted_payloads,
             "remote": _messages_have_remote_image(payload.messages),
             "multiple": (
                 _images_on_turn + int(_legacy_image_distinct) > 1
                 or bool(_pre_parsed[2] and _legacy_image_distinct)
+            ),
+            # Refused after the load whatever the target is, so refused before evicting for it.
+            "unservable_alongside": _newest_turn_shows_more_images_than_it_sends(
+                payload.messages, _legacy_image_distinct
             ),
         }
 
@@ -25098,6 +25263,23 @@ async def produce_openai_chat_completions(
                 _tracker.__exit__(None, None, None)
     # ── Standard Unsloth path ─────────────────────────────────
 
+    # Re-derived, not reused from the pre-switch parse: an auto-switch may have changed models.
+    served_images: list[str] = []
+    images: list = []
+    if _serves_several_images(backend):
+        _, _msgs, _payloads = _extract_content_parts(payload.messages, structured = True)
+        _legacy_distinct = _legacy_image_is_distinct(payload)
+        # A legacy image the messages do not carry joins the newest user turn, as GGUF splices it.
+        if _legacy_distinct:
+            _payloads = _serve_legacy_image_on_the_newest_turn(
+                _msgs, _payloads, payload.image_base64
+            )
+        # Only above one image, so an ordinary single-image request renders exactly as before.
+        if len(_payloads) > 1 and not _newest_turn_shows_more_images_than_it_sends(
+            payload.messages, _legacy_distinct
+        ):
+            chat_messages, served_images = _msgs, _payloads
+
     # Decode image (from content parts OR legacy field)
     image_b64 = extracted_image_b64 or payload.image_base64
     image = None
@@ -25124,8 +25306,9 @@ async def produce_openai_chat_completions(
             # misses, a turn with no part while an earlier one has: selection is
             # `extracted_image_b64 or image_base64`, so the legacy one goes unread.
             _legacy_is_distinct = _legacy_image_is_distinct(payload)
-            if images_on_turn + int(_legacy_is_distinct) > 1 or (
-                extracted_image_b64 and _legacy_is_distinct
+            if not served_images and (
+                images_on_turn + int(_legacy_is_distinct) > 1
+                or (extracted_image_b64 and _legacy_is_distinct)
             ):
                 raise _reject(
                     400,
@@ -25135,7 +25318,9 @@ async def produce_openai_chat_completions(
                     ),
                 )
 
-            if image_b64:
+            if served_images:
+                images = await _decode_request_images(backend, served_images)
+            elif image_b64:
                 image = await asyncio.to_thread(
                     _decode_and_resize_image,
                     backend,
@@ -25327,6 +25512,7 @@ async def produce_openai_chat_completions(
         (_sf_tools_on or _sf_mcp_allowed)
         and _sf_features.get("supports_tools", False)
         and image is None
+        and not images
         and _video_clip is None
         and not _sf_is_gptoss
         and _sf_tool_budget > 0
@@ -25828,6 +26014,7 @@ async def produce_openai_chat_completions(
         messages = chat_messages,
         system_prompt = system_prompt,
         image = image,
+        images = images,
         temperature = payload.temperature,
         top_p = payload.top_p,
         top_k = payload.top_k,
@@ -25859,14 +26046,15 @@ async def produce_openai_chat_completions(
     # supports_tools=False falls through to plain relay (GGUF gate parity).
     _sf_has_tool_msgs = any(m.role == "tool" or m.tool_calls for m in payload.messages)
     # Resolved BEFORE the capability gate below, which classifies from this body (#10092).
+    _sf_has_image = image is not None or bool(images)
     # A clip renders through the processor as an image does.
     _sf_image_tpl = (
         (_sf_model_info.get("chat_template_info") or {}).get("processor_template")
-        if image is not None or _video_clip is not None
+        if _sf_has_image or _video_clip is not None
         else None
     )
     # Differs from processor_template: a template-less processor still places the image.
-    _sf_renders_image = image is not None and bool(
+    _sf_renders_image = _sf_has_image and bool(
         (_sf_model_info.get("chat_template_info") or {}).get("renders_image")
     )
     if _sf_image_tpl is not None:
@@ -25886,7 +26074,7 @@ async def produce_openai_chat_completions(
         # above withdraws the launcher default for exactly these requests, and
         # recomputing here would hide that and drop the client catalog.
         # An image or a clip rules out the server loop, so the passthrough takes the request (#10092).
-        (not _sf_tools_on or ((image is not None or _video_clip is not None) and not _sf_use_tools))
+        (not _sf_tools_on or ((_sf_has_image or _video_clip is not None) and not _sf_use_tools))
         and not _sf_use_tools
         and not _sf_is_gptoss
         and _sf_supports_tools
@@ -25947,19 +26135,32 @@ async def produce_openai_chat_completions(
         # Re-derive from payload.messages so tool_calls / role="tool" history
         # survives templating; fold system/developer into one leading system
         # message (templates reject "developer") and clear prompt to avoid a dup.
-        gen_kwargs["messages"] = _set_or_prepend_system_message(
-            _structured_tool_history_for_local_template(
-                _flatten_content_parts_for_local_template(
-                    # Not a llama-server body: the flatten below drops image parts.
-                    _openai_messages_for_passthrough(payload, normalize_images = False)
-                )
-            ),
-            system_prompt,
-        )
+        if served_images:
+            # One pass over the conversation this renders, so markers and payloads stay in step.
+            _sf_rebuilt, _sf_payloads = _conversation_with_image_markers(
+                _openai_messages_for_passthrough(payload, normalize_images = False)
+            )
+            # The same pictures the extraction already decoded, unless the rebuild dropped one.
+            gen_kwargs["images"] = await _decode_request_images(
+                backend, _sf_payloads, dict(zip(served_images, images))
+            )
+            gen_kwargs["messages"] = _set_or_prepend_system_message(
+                _structured_tool_history_for_local_template(_sf_rebuilt), system_prompt
+            )
+        else:
+            gen_kwargs["messages"] = _set_or_prepend_system_message(
+                _structured_tool_history_for_local_template(
+                    _flatten_content_parts_for_local_template(
+                        # Not a llama-server body: the flatten below drops image parts.
+                        _openai_messages_for_passthrough(payload, normalize_images = False)
+                    )
+                ),
+                system_prompt,
+            )
         # Mark the turn that owns the image so the newest-user-turn scan does not move an
         # older picture onto a later question. Gated on _sf_renders_image, not on an image:
-        # a text-template render must not be handed part lists (#10092).
-        if _sf_renders_image:
+        # a text-template render must not be handed part lists (#10092). Kept markers need none.
+        if _sf_renders_image and not served_images:
             _sf_image_ordinal = _user_ordinal_supplying_the_image(payload.messages)
             if _sf_image_ordinal is not None:
                 gen_kwargs["messages"] = _mark_image_owner_turn(
@@ -34456,16 +34657,12 @@ def _openai_messages_for_passthrough(payload, normalize_images: bool = True) -> 
     remote URLs are forwarded as-is. The vision guard lives in the callers,
     which reject a non-vision model before the body is built.
 
-    ``normalize_images=False`` is for callers that are not building a
-    llama-server body: the local-template path flattens image parts away, and
-    only reaches this helper when the turn has no decodable image at all, so
-    re-encoding there can only turn an image it was already ignoring -- a
-    payloadless ``data:`` URL -- into a 400.
+    ``normalize_images=False`` is for callers that decode these bytes themselves: re-encoding
+    converts to RGB, which the resize they apply would then resample.
 
     When a client uses Unsloth's legacy ``image_base64`` top-level field, the
-    image is re-encoded to PNG (llama-server's stb_image has limited format
-    support) and spliced into the last user message as an OpenAI ``image_url``
-    content part so vision + function-calling requests work transparently.
+    image is spliced into the last user message as an OpenAI ``image_url`` content part -- as PNG
+    while normalizing, since llama-server's stb_image is limited, byte-for-byte otherwise.
 
     Only when it is a real second image, matching ``_openai_messages_for_gguf_chat`` and
     what admission charges for. Studio echoes the current image into both spellings, so
@@ -34483,16 +34680,19 @@ def _openai_messages_for_passthrough(payload, normalize_images: bool = True) -> 
     if not _legacy_image_is_distinct(payload):
         return messages
 
-    try:
-        raw = base64.b64decode(payload.image_base64)
-        png_b64 = _image_bytes_to_png_b64(raw)
-    except Exception:
-        raise HTTPException(
-            status_code = 400,
-            detail = "Failed to process image.",
-        )
-
-    data_url = f"data:image/png;base64,{png_b64}"
+    if normalize_images:
+        try:
+            raw = base64.b64decode(payload.image_base64)
+            png_b64 = _image_bytes_to_png_b64(raw)
+        except Exception:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Failed to process image.",
+            )
+        data_url = f"data:image/png;base64,{png_b64}"
+    else:
+        # As it arrived; the media type is never read back.
+        data_url = f"data:application/octet-stream;base64,{payload.image_base64}"
     image_part = {"type": "image_url", "image_url": {"url": data_url}}
 
     _splice_image_into_last_user(messages, image_part)
