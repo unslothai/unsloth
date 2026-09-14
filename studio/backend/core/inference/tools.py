@@ -3433,7 +3433,7 @@ _WRAPPER_VALUE_FLAGS = frozenset(
 )
 # Wrappers whose first bare operand belongs to the wrapper (`timeout 5 cat x`).
 _WRAPPER_LEADING_VALUE_COMMANDS = frozenset({"timeout", "nice", "ionice", "stdbuf"})
-_WRAPPER_DURATION_RE = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
+_WRAPPER_LEADING_DURATION_RE = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
 # A token has to carry one of these before it can spell an absolute path in any supported syntax.
 _PATH_HINT_RE = re.compile(r"[/~\\:]")
 # `sed -i` rewrites its operands in place, unlike a plain sed.
@@ -3570,7 +3570,9 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
                     index += 1
                 continue
             # `timeout 5 cat x`: a bare duration is the wrapper's own operand, not the command.
-            if base in _WRAPPER_LEADING_VALUE_COMMANDS and _WRAPPER_DURATION_RE.match(candidate):
+            if base in _WRAPPER_LEADING_VALUE_COMMANDS and _WRAPPER_LEADING_DURATION_RE.match(
+                candidate
+            ):
                 index += 1
                 continue
             break
