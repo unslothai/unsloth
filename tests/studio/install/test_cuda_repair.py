@@ -2261,6 +2261,33 @@ class TestACpuHandoverDoesNotDisarmTheInvariant:
         assert ok is True
         assert mock_pip.call_count == 0
 
+    def test_the_enforced_tag_reaches_the_manifest(self, monkeypatch):
+        """The override lives in _expected_torch_flavor_tag, not in the invariant's local copy.
+
+        install_python_stack() resolves the tag once, passes it to the invariant AND records
+        it via _recordable_torch_flavor_tag. Overriding only the invariant's copy repaired the
+        venv and then wrote "cpu" to the manifest, so the next update found no CUDA record,
+        the branch did not fire, and the venv could go back to CPU: a one-shot fix.
+        """
+        monkeypatch.setenv("UNSLOTH_EXPECTED_TORCH_TAG", "cpu")
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+        monkeypatch.setattr(stack_mod, "_RECORDED_TORCH_TAG", "cu128")
+        monkeypatch.setattr(stack_mod, "_has_usable_nvidia_gpu", lambda: True)
+
+        resolved = stack_mod._expected_torch_flavor_tag()
+        assert resolved == "cu128"
+        assert stack_mod._recordable_torch_flavor_tag(resolved) == "cu128"
+
+    def test_a_host_that_lost_its_gpu_records_cpu(self, monkeypatch):
+        # The other half of the pair: without the GPU the handover stands, so the manifest
+        # records cpu and nothing is repaired into a wheel the host cannot load.
+        monkeypatch.setenv("UNSLOTH_EXPECTED_TORCH_TAG", "cpu")
+        monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
+        monkeypatch.setattr(stack_mod, "_RECORDED_TORCH_TAG", "cu128")
+        monkeypatch.setattr(stack_mod, "_has_usable_nvidia_gpu", lambda: False)
+
+        assert stack_mod._expected_torch_flavor_tag() == "cpu"
+
     def test_both_handover_readers_go_through_one_helper(self):
         # The tag is read in three places now; an inline os.environ read that drifts out of
         # step with the helper is how the skip came back the first time.

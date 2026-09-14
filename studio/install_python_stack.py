@@ -4080,6 +4080,25 @@ def _expected_torch_flavor_tag() -> str:
     """
     env = _handover_torch_flavor_tag()
     if env:
+        # ... with one exception. The setup scripts publish "cpu" both when the user asked for
+        # it and when their GPU probe simply came back empty, and skipping the invariant on the
+        # second reading is what let an update report a venv rebuilt as 2.11.0+cpu as a success.
+        # An unpinned "cpu" handover is a probe ANSWER, so it does not outrank a manifest that
+        # names a CUDA family while the GPU is still present. Both facts have to hold, or a host
+        # that genuinely lost its GPU would be repaired into a wheel it cannot load. Resolved
+        # HERE rather than inside _ensure_expected_torch_flavor so the caller records the
+        # enforced tag too: overriding only the invariant's local copy repaired the venv and
+        # then wrote "cpu" to the manifest, leaving the next update with no CUDA record to
+        # defend and making the whole thing a one-shot.
+        if env == "cpu" and not _explicit_cpu_torch_index_pin():
+            recorded = (_RECORDED_TORCH_TAG or "").strip().lower()
+            if _is_cuda_family_leaf(recorded) and _has_usable_nvidia_gpu():
+                _safe_print(
+                    f"   [WARN] the installer handed over a CPU torch expectation, but this venv "
+                    f"was recorded as {recorded} and an NVIDIA GPU is still present; "
+                    f"enforcing {recorded}."
+                )
+                return recorded
         return env
     pin = _explicit_torch_index_url()
     if pin is not None:
@@ -4538,22 +4557,6 @@ def _ensure_expected_torch_flavor(expected: "str | None" = None) -> bool:
     # The PIN, not the handover: setup.ps1 also publishes "cpu" when its nvidia-smi probe
     # comes back empty, and that host must not be downgraded.
     _cpu_pinned = expected == "cpu" and _explicit_cpu_torch_index_pin()
-    # ... but skipping the invariant on that same handover is what let the update path
-    # report a venv silently rebuilt as 2.11.0+cpu as a success. "cpu" from setup.ps1 is the
-    # probe's ANSWER, and an empty probe is indistinguishable from a host with no GPU, so it
-    # cannot outrank what the last completed install recorded. Trust the manifest instead
-    # when it names a CUDA family AND the GPU is still there: both facts have to hold, or a
-    # machine that genuinely lost its GPU would be repaired into a wheel it cannot load.
-    # An explicit pin is a stated choice and still wins; see _expected_torch_flavor_tag.
-    if expected == "cpu" and not _cpu_pinned and _handover_torch_flavor_tag() == "cpu":
-        _recorded = (_RECORDED_TORCH_TAG or "").strip().lower()
-        if _is_cuda_family_leaf(_recorded) and _has_usable_nvidia_gpu():
-            _safe_print(
-                f"   [WARN] the installer handed over a CPU torch expectation, but this venv "
-                f"was recorded as {_recorded} and an NVIDIA GPU is still present; "
-                f"enforcing {_recorded}."
-            )
-            expected = _recorded
     if not (_is_cuda_family_leaf(expected) or expected in ("xpu", "rocm") or _cpu_pinned):
         return True
     if _TORCH_BACKEND in ("rocm", "xpu", "cpu") and _TORCH_BACKEND != expected:
