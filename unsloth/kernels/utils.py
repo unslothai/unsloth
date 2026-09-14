@@ -55,6 +55,12 @@ else:
 if DEVICE_TYPE == "xpu":
     torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "xpu")
     torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "xpu")
+elif DEVICE_TYPE == "npu":
+    # A device_type that does not match the running device makes these decorators inert
+    # rather than raising (pytorch#165730), so leaving the "cuda" default would silently
+    # drop autocast in the fused LoRA autograd functions.
+    torch_amp_custom_fwd = torch.amp.custom_fwd(device_type = "npu")
+    torch_amp_custom_bwd = torch.amp.custom_bwd(device_type = "npu")
 
 
 # tl.math.tanh is now libdevice.tanh.
