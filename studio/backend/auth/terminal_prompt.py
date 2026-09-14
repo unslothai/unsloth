@@ -347,7 +347,14 @@ def prompt_for_password_change(
         out.flush()
         return None
     except (KeyboardInterrupt, EOFError):
-        out.write("Password change aborted; not exposing Unsloth.\n")
+        # Same reason as the banner: a caller that continues must not be told
+        # Unsloth is not being exposed, or the operator walks away from a bind
+        # that is about to serve the auto-generated password.
+        out.write(
+            "Password change aborted; not exposing Unsloth.\n"
+            if refusal_aborts
+            else "Password change skipped; leaving the auto-generated admin password in place.\n"
+        )
         out.flush()
         return False
 

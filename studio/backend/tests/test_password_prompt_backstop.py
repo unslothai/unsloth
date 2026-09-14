@@ -533,6 +533,11 @@ def test_the_banner_never_promises_an_abort_the_caller_will_not_perform(monkeypa
     assert "Ctrl+C to abort" in banners[True], banners[True]
     assert "Ctrl+C to skip" in banners[False], banners[False]
     assert "Ctrl+C to abort" not in banners[False], banners[False]
+    # The line printed AFTER the interrupt has to agree with the banner, or the
+    # operator is told Unsloth is not being exposed by a caller that exposes it.
+    assert "not exposing Unsloth" in banners[True], banners[True]
+    assert "not exposing Unsloth" not in banners[False], banners[False]
+    assert "leaving the auto-generated admin password in place" in banners[False], banners[False]
 
 
 def test_an_older_run_py_can_still_call_this_prompt(monkeypatch):
