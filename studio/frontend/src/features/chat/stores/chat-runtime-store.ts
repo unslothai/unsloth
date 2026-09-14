@@ -2726,13 +2726,9 @@ const SCALAR_SETTING_KEYS = [
 // Ids this browser holds a local answer for. Hydration keeps these and merges the rest, so a
 // pre-hydration edit cannot drop other models.
 const locallyRememberedModels = new Set<string>();
-/** Per-key mutation counters, built on first use rather than at module scope.
- *
- * A function, not a module-scope read: per-model-params is inside the @/features/chat
- * import cycle, so it can still be initializing when this module's body runs, and naming
- * PERSISTED_INFERENCE_PARAM_KEYS here would read a const in its temporal dead zone and
- * throw at import time. Same deferral as watchedStorageKeys() in hooks/use-model-memory.ts.
- * Memoized: the record keeps one identity, so the `+= 1` bumps below still accumulate. */
+/** Deferred, not module scope: per-model-params is in the @/features/chat import cycle, so
+ *  naming PERSISTED_INFERENCE_PARAM_KEYS here reads a const in its TDZ and throws at import
+ *  time (as watchedStorageKeys() avoids). Memoized, or the `+= 1` bumps stop accumulating. */
 let inferenceParamMutationVersionsCache: Record<
   PersistedInferenceParamKey,
   number
@@ -2859,8 +2855,7 @@ function getChangedInferenceParams(
   minPChoiceEdited = false,
 ): PersistedInferenceParams {
   const changedParams: PersistedInferenceParams = {};
-  // Mode and retained number describe one choice. Fence and persist the pair even
-  // when the user toggles only the mode while a saved numeric value is in flight.
+  // Mode and number are one choice: fence the pair even if only the mode moved.
   const minPChoiceChanged =
     bumpVersions &&
     (minPChoiceEdited ||
@@ -2881,8 +2876,7 @@ function getChangedInferenceParams(
       setInferenceParam(changedParams as InferenceParams, key, nextValue);
     }
   }
-  // A newly written number always carries its known mode. Recommendations retain
-  // that mode, so the next read cannot mistake a fresh default for legacy intent.
+  // A written number carries its mode, or the next read reads it as legacy intent.
   if (changedParams.minP !== undefined && nextParams.minPMode !== undefined) {
     changedParams.minPMode = nextParams.minPMode;
   }
@@ -4307,8 +4301,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // setCheckpoint only later, so replay here or the switch never restores the model's own settings.
       noteLoadedContext(params.checkpoint, options?.maxTokensCap);
       const replayed = checkpointChanged || fromModelDefaults;
-      // Recommendations carry a number, not a mode choice. The live mode can
-      // belong to the open thread; recover its default before model replay.
+      // A recommendation carries no mode, and the live one may belong to the thread.
       const incomingParams = fromModelDefaults
         ? { ...params, minPMode: withoutActiveThreadParams(state, params).minPMode }
         : params;
