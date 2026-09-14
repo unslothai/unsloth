@@ -94,6 +94,7 @@ import {
   importCursorChats,
   loadCursorImportStatus,
 } from "../api/cursor-import";
+import { describeExternalImportToast } from "../lib/external-import-toast";
 import { ArchivedChatsView } from "../components/archived-chats-dialog";
 import {
   type ArchivedMediaKind,
@@ -413,17 +414,20 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
       notifyChatProjectsUpdated();
       setCount(await countAllChats().catch(() => count));
       setCursorStatus(await loadCursorImportStatus().catch(() => cursorStatus));
-      toast.success(
-        result.chats === 0
-          ? t("settings.chat.importCursorNoChats")
-          : result.newChats === 0
-            ? t("settings.chat.cursorUpToDate")
-            : result.newChats === 1
-              ? t("settings.chat.importedCursorOneChat")
-              : t("settings.chat.importedCursorChatCount", {
-                  count: result.newChats,
-                }),
-      );
+      const shown = describeExternalImportToast(result, {
+        none: t("settings.chat.importCursorNoChats"),
+        upToDate: t("settings.chat.cursorUpToDate"),
+        one: t("settings.chat.importedCursorOneChat"),
+        many: t("settings.chat.importedCursorChatCount", {
+          count: result.newChats,
+        }),
+        partial: t("settings.chat.importedCursorPartial"),
+      });
+      if (shown.kind === "warning") {
+        toast.warning(shown.title, { description: shown.description });
+      } else {
+        toast.success(shown.title);
+      }
     } catch (error) {
       toast.error(t("settings.chat.importFailed"), {
         description: error instanceof Error ? error.message : String(error),
@@ -440,17 +444,20 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
       notifyChatProjectsUpdated();
       setCount(await countAllChats().catch(() => count));
       setClaudeStatus(await loadClaudeImportStatus().catch(() => claudeStatus));
-      toast.success(
-        result.chats === 0
-          ? t("settings.chat.importClaudeNoChats")
-          : result.newChats === 0
-            ? t("settings.chat.claudeUpToDate")
-            : result.newChats === 1
-              ? t("settings.chat.importedClaudeOneChat")
-              : t("settings.chat.importedClaudeChatCount", {
-                  count: result.newChats,
-                }),
-      );
+      const shown = describeExternalImportToast(result, {
+        none: t("settings.chat.importClaudeNoChats"),
+        upToDate: t("settings.chat.claudeUpToDate"),
+        one: t("settings.chat.importedClaudeOneChat"),
+        many: t("settings.chat.importedClaudeChatCount", {
+          count: result.newChats,
+        }),
+        partial: t("settings.chat.importedClaudePartial"),
+      });
+      if (shown.kind === "warning") {
+        toast.warning(shown.title, { description: shown.description });
+      } else {
+        toast.success(shown.title);
+      }
     } catch (error) {
       toast.error(t("settings.chat.importFailed"), {
         description: error instanceof Error ? error.message : String(error),

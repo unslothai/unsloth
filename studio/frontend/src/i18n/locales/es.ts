@@ -1681,6 +1681,8 @@ export const es = {
         "Se importaron {count} conversaciones desde Cursor.",
       cursorUpToDate:
         "Las conversaciones de Cursor ya están actualizadas.",
+      importedCursorPartial:
+        "No se pudieron importar algunas conversaciones de Cursor.",
       importFromClaude: "Importar desde Claude Code",
       importFromClaudeDescription:
         "Copia tus conversaciones de Claude Code a Studio, agrupadas por proyecto.",
@@ -1690,6 +1692,8 @@ export const es = {
         "Se importaron {count} conversaciones desde Claude Code.",
       claudeUpToDate:
         "Las conversaciones de Claude Code ya están actualizadas.",
+      importedClaudePartial:
+        "No se pudieron importar algunas conversaciones de Claude Code.",
       clearHistory: "Borrar historial de chat",
       clearHistoryDescription: "Elimina el historial de chat de este dispositivo.",
       clearAction: "Borrar",

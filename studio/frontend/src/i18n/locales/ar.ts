@@ -1649,6 +1649,7 @@ export const ar = {
       importedCursorChatCount:
         "تم استيراد المحادثات من Cursor. العدد: {count}.",
       cursorUpToDate: "محادثات Cursor محدَّثة بالفعل.",
+      importedCursorPartial: "تعذّر استيراد بعض محادثات Cursor.",
       importFromClaude: "الاستيراد من Claude Code",
       importFromClaudeDescription:
         "انسخ محادثات Claude Code إلى Studio، مجمّعة حسب المشروع.",
@@ -1656,6 +1657,7 @@ export const ar = {
       importedClaudeOneChat: "تم استيراد محادثة واحدة من Claude Code.",
       importedClaudeChatCount: "تم استيراد {count} محادثات من Claude Code.",
       claudeUpToDate: "محادثات Claude Code محدَّثة بالفعل.",
+      importedClaudePartial: "تعذّر استيراد بعض محادثات Claude Code.",
       clearHistory: "مسح سجل المحادثات",
       clearHistoryDescription: "حذف سجل المحادثات من هذا الجهاز.",
       clearAction: "مسح",

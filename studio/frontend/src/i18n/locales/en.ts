@@ -1642,6 +1642,7 @@ export const en = {
       importedCursorOneChat: "Imported 1 conversation from Cursor.",
       importedCursorChatCount: "Imported {count} conversations from Cursor.",
       cursorUpToDate: "Cursor conversations are already up to date.",
+      importedCursorPartial: "Some Cursor conversations could not be imported.",
       importFromClaude: "Import from Claude Code",
       importFromClaudeDescription:
         "Copy your Claude Code conversations into Studio, grouped by the project they belong to.",
@@ -1650,6 +1651,7 @@ export const en = {
       importedClaudeChatCount:
         "Imported {count} conversations from Claude Code.",
       claudeUpToDate: "Claude Code conversations are already up to date.",
+      importedClaudePartial: "Some Claude Code conversations could not be imported.",
       clearHistory: "Clear chat history",
       clearHistoryDescription: "Delete chat history from this device.",
       clearAction: "Clear",

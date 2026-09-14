@@ -1656,6 +1656,7 @@ export const hi = {
       importedCursorChatCount:
         "Cursor से {count} वार्तालाप इंपोर्ट किए गए।",
       cursorUpToDate: "Cursor वार्तालाप पहले से अद्यतित हैं।",
+      importedCursorPartial: "कुछ Cursor वार्तालाप इंपोर्ट नहीं हो सके।",
       importFromClaude: "Claude Code से आयात करें",
       importFromClaudeDescription:
         "अपनी Claude Code वार्तालापों को प्रोजेक्ट के अनुसार समूहित करके Studio में कॉपी करें।",
@@ -1664,6 +1665,7 @@ export const hi = {
       importedClaudeChatCount:
         "Claude Code से {count} वार्तालाप आयात की गईं।",
       claudeUpToDate: "Claude Code वार्तालाप पहले से अद्यतित हैं।",
+      importedClaudePartial: "कुछ Claude Code वार्तालाप इंपोर्ट नहीं हो सके।",
       clearHistory: "चैट इतिहास साफ़ करें",
       clearHistoryDescription: "इस डिवाइस से चैट इतिहास हटाएं।",
       clearAction: "साफ़ करें",

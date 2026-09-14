@@ -1662,6 +1662,7 @@ export const ru = {
       importedCursorOneChat: "Импортирован 1 диалог из Cursor.",
       importedCursorChatCount: "Импортировано диалогов из Cursor: {count}.",
       cursorUpToDate: "Диалоги Cursor уже актуальны.",
+      importedCursorPartial: "Некоторые диалоги Cursor не удалось импортировать.",
       importFromClaude: "Импорт из Claude Code",
       importFromClaudeDescription:
         "Скопируйте ваши диалоги Claude Code в Studio, сгруппированные по проектам.",
@@ -1670,6 +1671,7 @@ export const ru = {
       importedClaudeChatCount:
         "Импортировано диалогов из Claude Code: {count}.",
       claudeUpToDate: "Диалоги Claude Code уже актуальны.",
+      importedClaudePartial: "Некоторые диалоги Claude Code не удалось импортировать.",
       clearHistory: "Очистить историю чатов",
       clearHistoryDescription: "Удалить историю чатов с этого устройства.",
       clearAction: "Очистить",
