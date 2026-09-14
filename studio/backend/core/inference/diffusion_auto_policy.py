@@ -27,9 +27,9 @@ from typing import Any, Optional
 
 _MIB_PER_GB = 1000.0**3 / (1024.0 * 1024.0)  # component sizes below are decimal GB
 
-# int8/fp8 store one byte per param plus per-row scales (~0.52x with slack for bf16 norms/embeddings);
-# Steady size of a torchao-quantised transformer relative to bf16: int8/fp8 store one byte per param plus per-row scales
-# (~0.52x with slack for bf16 norms/embeddings); nvfp4 packs two per byte plus block scales. Measured on live loads.
+# Steady size of a torchao-quantised transformer relative to bf16: int8/fp8 store one byte per param plus per-row
+# scales (~0.52x with slack for bf16 norms/embeddings); nvfp4 packs two per byte plus block scales. Measured on live
+# loads.
 _QUANT_STEADY_FACTOR: dict[str, float] = {
     "int8": 0.55,
     "fp8": 0.55,
@@ -37,8 +37,6 @@ _QUANT_STEADY_FACTOR: dict[str, float] = {
     "nvfp4": 0.33,
 }
 
-# what they occupy on device after the dtype cast, NOT the download size (Z-Image-Turbo ships fp32: 24.6 GB of shards ->
-# 12.3 GB bf16).
 # bf16-RESIDENT component sizes in decimal GB: (transformer, text encoders, VAE). What they occupy on device after the
 # dtype cast, NOT the download size (Z-Image-Turbo ships fp32: 24.6 GB of shards -> 12.3 GB bf16). From HF sibling
 # metadata.
@@ -55,7 +53,6 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "lumina-2": (5.2, 5.2, 0.2),
     # 17B dual-stream DiT (32.5 GB bf16 on disk) + Qwen2.5-VL 15.5 GB + ByT5 0.8 GB.
     "hunyuanimage-2.1": (32.5, 16.3, 0.8),
-    # 17B MoE DiT + four text encoders (CLIP-L, CLIP-G, T5-XXL), plus Llama-3.1-8B from the open mirror at load time
     # 17B MoE DiT (34.2 GB bf16) + FOUR text encoders: CLIP-L 0.5 + CLIP-G 2.8 + T5-XXL 9.5, plus Llama-3.1-8B (~16 GB
     # bf16) from the open mirror at load time.
     "hidream-i1": (34.2, 28.8, 0.2),
@@ -64,24 +61,20 @@ _FAMILY_BF16_GB: dict[str, tuple[float, float, float]] = {
     "ideogram-4": (37.2, 16.3, 0.2),
 }
 
-# Hub DOWNLOAD bytes relative to the resident sizes above, for families not stored at bf16 Hub DOWNLOAD bytes relative
-# to the bf16-resident sizes above, for families whose published checkpoints are not stored at bf16. The free-disk gate
-# needs what lands in the HF cache, which differs by 2x in either direction here. From HF metadata: z-image Turbo
-# transformer/ 23,479 MiB fp32 -> 11,730 MiB resident (2.00x) lumina-2 transformer/ 9,956 MiB fp32 -> 4,959 MiB resident
-# (2.01x) ideogram-4 transformer/ + unconditional_transformer/ 17,718 MiB fp8 -> 35,477 MiB resident (0.50x) Anything
-# absent ships bf16 and downloads what it occupies (measured 0.99-1.07x).
+# Hub DOWNLOAD bytes relative to the bf16-resident sizes above, for families whose published checkpoints are not
+# stored at bf16. The free-disk gate needs what lands in the HF cache, which differs by 2x in either direction here.
+# From HF metadata: z-image and lumina-2 publish fp32 (2.00x), ideogram-4 publishes fp8 (0.50x). Anything absent ships
+# bf16 and downloads what it occupies (measured 0.99-1.07x).
 _FAMILY_HUB_DOWNLOAD_FACTOR: dict[str, float] = {
     "z-image": 2.0,
     "lumina-2": 2.0,
     "ideogram-4": 0.5,
 }
 
-# only Tongyi-MAI/Z-Image needs one: the distilled Turbo publishes fp32 while the undistilled base ships bf16 and
-# downloads exactly what it occupies
-# Per-base overrides of the factor above, for a checkpoint stored at a different precision from its family default. Only
-# Tongyi-MAI/Z-Image needs one: the family key exists because the distilled Turbo publishes fp32 (23,479 MiB), while the
-# undistilled base ships bf16 (11,740 MiB) and so downloads exactly what it occupies. Without it the free-disk gate
-# demands twice the real size.
+# Per-base overrides of the factor above, for a checkpoint stored at a different precision from its family default.
+# Only Tongyi-MAI/Z-Image needs one: the family key exists because the distilled Turbo publishes fp32 (23,479 MiB),
+# while the undistilled base ships bf16 (11,740 MiB) and so downloads exactly what it occupies. Without it the
+# free-disk gate demands twice the real size.
 _BASE_REPO_HUB_DOWNLOAD_FACTOR: dict[str, float] = {
     "tongyi-mai/z-image": 1.0,
 }
@@ -158,12 +151,11 @@ def hub_download_factor(fam: Any, base_repo: Optional[str] = None) -> float:
     return _FAMILY_HUB_DOWNLOAD_FACTOR.get(getattr(fam, "name", None), 1.0)
 
 
-# flux.2-klein ships FOUR checkpoints under one entry
 # Base-repo overrides for families offering multiple sizes under one entry (the table carries the family default).
 # flux.2-klein ships FOUR checkpoints under one entry: 4B / base-4B (the family default, Qwen3-4B encoder) and 9B /
 # base-9B (18.2 GB transformer, Qwen3-8B encoder). The 9B pair needs an override on BOTH ids: sizing klein-BASE-9B off
-# the family default understates it by 2.3x, and the base variants are the ones the upstream guidance points fine-tuning
-# at, so it is the likelier of the two to be loaded.
+# the family default understates it by 2.3x, and the base variants are the ones upstream guidance points fine-tuning
+# at.
 _BASE_REPO_BF16_GB: dict[str, tuple[float, float, float]] = {
     "black-forest-labs/flux.2-klein-9b": (18.2, 16.4, 0.2),
     "black-forest-labs/flux.2-klein-base-9b": (18.2, 16.4, 0.2),
@@ -210,9 +202,8 @@ class DenseQuantEstimate:
     companions_mib: int
     prequant: bool
     download_transformer_mib: int = 0
-    # the memory planner needs the text-encoder share to price the group tier that streams the encoders;
-    # The TEXT-ENCODER share of ``companions_mib``. The memory planner needs it to price the group tier that streams the
-    # encoders instead of keeping them resident, and this table is the only place the split exists on the
+    # The TEXT-ENCODER share of ``companions_mib``. The memory planner needs it to price the group tier that streams
+    # the encoders instead of keeping them resident, and this table is the only place the split exists on the
     # dense-candidate path. Defaulted so any construction that predates it still works (the planner reads a 0 split as
     # "no split", i.e. no new tier).
     text_encoders_mib: int = 0
@@ -325,7 +316,6 @@ def resolve_dense_quant_candidate(
                 # no bytes, which is the opposite of what the retry assumes about local paths.
                 prequant_cached = True
             elif src is not None:
-                # pin the ACTIVE root, as the retry and loader do
                 # Pin the ACTIVE root, as the retry and the loader both do. Unpinned, cached_checkpoint_path searches
                 # only huggingface_hub's import-time constant, so after a cache-folder change the retry proves the
                 # checkpoint cached in the live root and this would still call it uncached and re-apply the gate.
@@ -374,13 +364,11 @@ def resolve_dense_quant_candidate(
     return estimate
 
 
-# an `auto` precision is a delegation, so falling back is the feature working
-# ── strict precision (fail closed on a declined EXPLICIT request) ──────────── An `auto` precision is a delegation, so
-# falling back down the ladder is the feature working. An EXPLICIT scheme is a contract: silently loading the GGUF (or a
-# dense bf16 DiT) instead produced a perfectly good image at a precision nobody asked for, which is exactly what made a
-# successful render worthless as proof that the requested precision ran. Escape hatch for anyone who relied on the old
-# behaviour; unset (the default) fails closed.
-# ── strict precision (fail closed on a declined EXPLICIT request) ────────────
+# Strict precision: fail closed on a declined EXPLICIT request. An `auto` precision is a delegation, so falling back
+# down the ladder is the feature working. An EXPLICIT scheme is a contract: silently loading the GGUF (or a dense bf16
+# DiT) instead produced a perfectly good image at a precision nobody asked for, which is what made a successful render
+# worthless as proof that the requested precision ran. Escape hatch for anyone who relied on the old behaviour; unset
+# (the default) fails closed.
 _PRECISION_FALLBACK_ENV = "UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK"
 
 
@@ -414,11 +402,9 @@ def precision_refusal_message(
     return f"{control}='{requested}' could not be used: {reason}. {remedy}"
 
 
-# how the engaged value relates to what the caller asked for
-# ── resolved-record (status surface) ───────────────────────────────────────── How the engaged value relates to what
-# the caller asked for. Additive on the status payload: every honored request and every auto decision reports "applied",
-# so a client that ignores the field sees exactly today's behaviour.
-# ── resolved-record (status surface) ─────────────────────────────────────────
+# Resolved-record (status surface). How the engaged value relates to what the caller asked for. Additive on the status
+# payload: every honored request and every auto decision reports "applied", so a client that ignores the field sees
+# exactly today's behaviour.
 RESOLVED_APPLIED = "applied"  # the ask was honored (or there was no ask)
 RESOLVED_FELL_BACK = "fell_back"  # an explicit ask was declined and something ELSE engaged
 RESOLVED_UNSUPPORTED = "unsupported"  # an explicit ask cannot run on this host / model at all

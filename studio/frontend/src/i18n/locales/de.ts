@@ -186,6 +186,34 @@ export const de = {
     },
   },
   settings: {
+    accounts: {
+      title: "Konten",
+      description: "Private Studio-Konten anlegen. Neue Nutzer melden sich mit einem einmaligen Einrichtungscode an und wählen ein Passwort.",
+      username: "Benutzername",
+      create: "Konto anlegen",
+      setupCode: "Einrichtungscode",
+      setupFor: "Einrichtungscode für {username}",
+      shownOnce: "Kopieren Sie diesen Code jetzt und geben Sie ihn an den Kontoinhaber weiter. Er wird nur hier angezeigt und kann innerhalb von 60 Minuten einmal verwendet werden.",
+      expires: "Läuft ab: {expiry}",
+      copy: "Einrichtungscode kopieren",
+      copied: "Kopiert",
+      copyFailed: "Kopieren nicht möglich. Markieren und kopieren Sie den Einrichtungscode oben.",
+      dismiss: "Fertig",
+      owner: "Installationsinhaber",
+      active: "Aktiv",
+      inactive: "Inaktiv",
+      regenerate: "Einrichtungscode neu erstellen",
+      resetTitle: "Passwort von {username} zurücksetzen?",
+      resetDescription: "Ein neu erstellter Einrichtungscode ersetzt das Passwort von {username}, meldet die Person ab und widerruft ihre API-Schlüssel. Geben Sie ihr den neuen Code, damit sie wieder ein Passwort wählen kann.",
+      deactivate: "Deaktivieren",
+      reactivate: "Reaktivieren",
+      delete: "Konto löschen",
+      deleteTitle: "{username} löschen?",
+      deleteDescription: "Dadurch werden die Sitzungen von {username} widerrufen und laufende Arbeiten abgebrochen. Chats, Einstellungen, Zugangsdaten, Uploads, Datensätze, Trainingsläufe, Ausgaben, Exporte, Galerien, Sandboxes, Projekte und temporäre Dateien werden stillgelegt. Verzeichnisse werden beiseite umbenannt, nie gelöscht. Wird dieser Benutzername erneut angelegt, beginnt ein neues Konto ohne diese Daten.",
+      cancel: "Abbrechen",
+      retry: "Konten aktualisieren",
+      failed: "Kontoanfrage fehlgeschlagen.",
+    },
     title: "Einstellungen",
     dialog: {
       title: "Einstellungen",
@@ -197,6 +225,7 @@ export const de = {
       panelReload: "Neu laden",
     },
     tabs: {
+      accounts: "Konten",
       general: "Allgemein",
       profile: "Profil",
       appearance: "Darstellung",
@@ -469,6 +498,17 @@ export const de = {
       droppedNotice: "Einige Zeilen wurden übersprungen: Das Protokoll wurde schneller geschrieben, als es gelesen werden konnte.",
       morePending: "Weitere Zeilen werden noch gelesen; sie erscheinen bei der nachsten Aktualisierung.",
       staleSession: "Die Protokollierung in Dateien ist deaktiviert, daher ist dies eine fruhere Sitzung und wird nicht aktualisiert.",
+      downloadAllLogs: "Alle Protokolle herunterladen (.zip)",
+      downloadingAllLogs: "Protokolle werden gepackt...",
+      exportMaskedNote: "In den exportierten Dateien werden Zugangsdaten maskiert. Sehr große Logs behalten nur ihre neuesten Zeilen, und einzelne Logs können ganz fehlen; siehe EXPORT_WARNINGS.txt im Archiv.",
+      downloadedTo: "Gespeichert unter {path}",
+      downloadedToBrowser: "Download gestartet.",
+      showInFolder: "Im Ordner anzeigen",
+      openLogsFolder: "Protokollordner öffnen",
+      openLogsFolderFailed: "Der Protokollordner konnte nicht geöffnet werden.",
+      exportFailed: "Die Protokolle konnten nicht heruntergeladen werden.",
+      exportTooOld: "Das laufende Unsloth-Backend ist zu alt für den Protokollexport. Aktualisieren Sie dieses Backend und starten Sie es neu.",
+      exportForbidden: "Zum Herunterladen aller Protokolle ist eine angemeldete Studio-Sitzung erforderlich. Ein API-Schlüssel genügt nicht.",
       keywords: "Fehlersuche Debugging Protokoll Protokolle Log Logs Fehler Absturz Stacktrace Diagnose Problembehebung debug",
     },
     voice: {
@@ -1226,8 +1266,8 @@ export const de = {
         keepResidentDescription: "Zwischen Prompts im VRAM bleiben.",
         keepResidentHint: "Die Gewichte werden nicht an den System-RAM zurückgegeben, solange das Modell geladen bleibt. Deaktiviert das automatische Entladen im Leerlauf und übergibt zusätzlich --mlock, wenn die Gewichte tatsächlich im Host-RAM liegen (Unified Memory oder teilweises GPU-Offload), damit das Betriebssystem sie nicht auslagert und beim nächsten Prompt neu hochlädt.",
         noRamReserve: "Keinen System-RAM für das Modell reservieren",
-        noRamReserveDescription: "Keine vollständige Kopie im RAM behalten.",
-        noRamReserveHint: "Die Gewichte werden in den VRAM gestreamt, statt eine vollständige Kopie im RAM zu halten. Behält das speicherabgebildete Laden von llama.cpp bei und entfernt --no-mmap und --mlock.",
+        noRamReserveDescription: "Weniger RAM für die Modellgewichte belegen.",
+        noRamReserveHint: "Überspringt auf unterstützten Windows-Builds das speicherabgebildete Laden, wenn das Modell vollständig auf die GPU ausgelagert ist, sodass dessen Seiten nicht im Speicher gehalten werden. Andernfalls bleibt das speicherabgebildete Laden erhalten. Erforderliche CPU-Puffer können weiterhin RAM belegen. Entfernt --no-mmap und --mlock.",
         mlockVetoed: "--mlock bleibt aus: das Fixieren des Modells würde RAM für das gesamte Modell reservieren. Das automatische Entladen im Leerlauf bleibt deaktiviert.",
         memlockCapped: "Dieses System begrenzt gesperrten Speicher auf {limit}. Ein größeres Modell wird nicht vollständig fixiert; erhöhen Sie das Limit mit ulimit -l.",
         reloadRequired: "Modell neu laden, um die neuen Speicheroptionen anzuwenden.",
@@ -1288,6 +1328,7 @@ export const de = {
       copy: "Kopieren",
       copied: "Kopiert",
       commandBuilder: "Befehlsgenerator",
+      commandShell: "Shell für alle Befehle",
       agent: "Coding-Agent",
       model: "Modell",
       searchModels: "GGUF-Modelle suchen...",
@@ -1305,9 +1346,8 @@ export const de = {
       docs: "Dokumentation",
       agentDocs: "Einrichtungsdokumentation zu {agent} öffnen",
       copyGeneratedCommand: "Generierten Befehl kopieren",
-      // English is the baseline until these are translated. The three-part
-      // sentence below is assembled in a fixed order around an inline link, so
-      // it needs restructuring before it can be translated well.
+      // English is the baseline until translated: the three-part sentence is assembled around an
+      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -1417,6 +1457,7 @@ export const de = {
           "Elemente im seitlichen Plus-Menü des Chats anheften. Die übrigen werden unter „Mehr“ angezeigt.",
         chatWithFiles: "Chat mit Dateien (RAG)",
         mcp: "MCP",
+        skills: "Agentenfähigkeiten",
         savedPrompts: "Gespeicherte Prompts",
         compareChat: "Chats vergleichen",
         exportChat: "Chat exportieren",
@@ -1757,7 +1798,7 @@ export const de = {
           "Dies dauert in der Regel einige Sekunden.",
         desktopAvailable: "Version {version} der Desktop-App ist verfügbar",
         desktopAvailableDescription:
-          "Aktualisieren Sie jetzt, um das Update im Hintergrund vorzubereiten. Sie können weiterarbeiten und neu starten, sobald es bereit ist.",
+          "Aktualisieren Sie jetzt. Die Desktop-App wird nach Abschluss des Updates neu gestartet.",
         desktopExternalServer:
           "Führen Sie `unsloth studio update` in dem Terminal aus, über das Sie Ihren Server gestartet haben.",
         desktopManualInstall:
@@ -1768,20 +1809,11 @@ export const de = {
         desktopCurrent: "Die Desktop-App ist auf dem neuesten Stand",
         desktopCurrentDescription:
           "Unsloth sucht weiterhin automatisch nach Updates.",
-        desktopPreparingDescription:
-          "Das Update wird im Hintergrund vorbereitet. Sie können weiterarbeiten.",
-        desktopReadyToRestartDescription:
-          "Alles ist bereit. Starten Sie neu, um die Installation abzuschließen.",
-        desktopReadyToInstallDescription:
-          "Das App-Update wurde heruntergeladen. Schließen Sie das Backend-Update ab, um es zu installieren.",
         checkForUpdates: "Nach Updates suchen",
         checkAgain: "Erneut suchen",
         retryCheck: "Erneut versuchen",
         checking: "Wird geprüft...",
-        preparing: "Wird vorbereitet...",
         updateNow: "Jetzt aktualisieren",
-        restartToUpdate: "Zum Aktualisieren neu starten",
-        finishUpdate: "Update abschließen",
         openReleasePage: "Release-Seite öffnen",
         unknownInstall:
           "Es konnte nicht erkannt werden, wie Unsloth installiert wurde. Verwenden Sie für Installer- oder PyPI-Installationen die obigen Befehle.",
@@ -1950,6 +1982,7 @@ export const de = {
       sourceHfCache: "HF-Cache",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "Benutzerdefinierter Ordner",
       sourceLocalModel: "Lokales Modell",
       vramOomBadge: "OOM",
@@ -2518,5 +2551,23 @@ export const de = {
     kvRate: "KV reserviert, ca. {rate}/Token",
     oomLikely: "Mit den aktuellen Einstellungen ist ein Speicherüberlauf wahrscheinlich",
     tooLarge: "Größer als der VRAM, wird auf die CPU ausgelagert. Eine kleinere Quantisierung läuft schneller",
+  },
+  skills: {
+    title: "Agentenfähigkeiten",
+    description: "Fähigkeiten werden aus deinen Standard-Agentenordnern erkannt. Aktiviere sie hier und tippe dann @ im Chat, um eine zu erwähnen.",
+    precedence: "~/.agents/skills hat Vorrang vor ~/.claude/skills.",
+    refresh: "Aktualisieren",
+    empty: "Keine Agentenfähigkeiten gefunden. Lege einen SKILL.md-Ordner unter ~/.agents/skills oder ~/.claude/skills an und aktualisiere dann.",
+    sourceAgents: "Agents",
+    sourceClaude: "Claude",
+    sourceBundled: "Mitgeliefert",
+    shadowed: "Überdeckt",
+    invalid: "Ungültig",
+    compatibility: "Kompatibilität: {value}",
+    shadowedBy: "Eine andere Fähigkeit ({source}) mit diesem Namen hat Vorrang.",
+    enable: "{name} aktivieren",
+    disable: "{name} deaktivieren",
+    updateError: "Agentenfähigkeit konnte nicht aktualisiert werden",
+    mentions: "Agentenfähigkeiten",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

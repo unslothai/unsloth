@@ -44,8 +44,9 @@ def _no_leaked_unattended_marker(monkeypatch):
     later test and silently suppresses the prompt they assert on.
     """
     import unsloth_cli.commands.studio as studio_mod
-
     monkeypatch.delenv(studio_mod._UNATTENDED_PROMPT_DONE_ENV, raising = False)
+
+
 _NEW_PW = "brand-new-password"
 
 
@@ -1609,6 +1610,44 @@ def test_cli_update_password_truncates_locked_bootstrap_after_change(monkeypatch
     assert bootstrap_file.read_text() == ""
 
 
+def test_reset_clears_cached_cli_api_keys(monkeypatch, tmp_path):
+    # reset-password DELETEs every api_keys row, so a cached key is left as
+    # plaintext for a credential that no longer exists.
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    _seed_auth(studio_mod)
+    for name in ("cli", "my key"):
+        studio_mod._write_auth_secret(
+            studio_mod._cli_api_key_secret_path(name), "sk-unsloth-" + "0" * 32
+        )
+    auth_dir = tmp_path / "auth"
+    assert len(list(auth_dir.glob(f"{studio_mod.CLI_API_KEY_FILE_PREFIX}*"))) == 2
+
+    conn = studio_mod._connect_auth_db()
+    studio_mod._cli_update_password(
+        conn, studio_mod.DEFAULT_ADMIN_USERNAME, "fresh-new-pw-123", revoke_api_keys = True
+    )
+    conn.close()
+
+    assert list(auth_dir.glob(f"{studio_mod.CLI_API_KEY_FILE_PREFIX}*")) == []
+
+
+def test_ordinary_password_change_keeps_cached_cli_api_keys(monkeypatch, tmp_path):
+    # Without revoke_api_keys the api_keys rows survive, so the cached key is
+    # still valid and deleting it would just force a pointless re-mint.
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    _seed_auth(studio_mod)
+    path = studio_mod._cli_api_key_secret_path("cli")
+    studio_mod._write_auth_secret(path, "sk-unsloth-" + "0" * 32)
+
+    conn = studio_mod._connect_auth_db()
+    studio_mod._cli_update_password(conn, studio_mod.DEFAULT_ADMIN_USERNAME, "fresh-new-pw-123")
+    conn.close()
+
+    assert path.exists()
+
+
 def test_connect_auth_db_creates_private_files(monkeypatch, tmp_path):
     # Fresh install: the CLI gate writes the password hash + JWT secret before
     # the backend ever runs, so this path must apply the same 0700/0600 modes
@@ -1892,6 +1931,12 @@ def test_cli_and_backend_agree_on_which_hosts_are_exposed(monkeypatch, host):
 # ── a backgrounded shell job is not a usable terminal ─────────────────
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
+    "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+    "which test_windows_has_no_terminal_ownership_to_lose pins.",
+)
 def test_a_backgrounded_raw_bind_does_not_prompt(monkeypatch):
     """`unsloth studio -H 0.0.0.0 &` must still launch.
 
@@ -1925,8 +1970,8 @@ def test_a_backgrounded_raw_bind_does_not_prompt(monkeypatch):
 @pytest.mark.skipif(
     os.name == "nt",
     reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
-             "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
-             "which test_windows_has_no_terminal_ownership_to_lose pins.",
+    "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+    "which test_windows_has_no_terminal_ownership_to_lose pins.",
 )
 def test_a_foreground_raw_bind_still_prompts(monkeypatch):
     """The ordinary interactive case is untouched."""
@@ -2050,8 +2095,8 @@ def test_a_raw_bind_prompt_carries_the_unattended_deadline(monkeypatch, tmp_path
 @pytest.mark.skipif(
     os.name == "nt",
     reason = "POSIX terminal semantics: Windows has no process groups, no SIGTTOU and no pty, "
-             "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
-             "which test_windows_has_no_terminal_ownership_to_lose pins.",
+    "so there is nothing here to assert. _prompt_owns_the_terminal fails open there, "
+    "which test_windows_has_no_terminal_ownership_to_lose pins.",
 )
 def test_read_masked_gives_up_on_a_pty_nobody_types_into(monkeypatch):
     """The mechanism itself, against a real pty with no writer."""
@@ -2126,13 +2171,11 @@ def test_the_cli_deadline_sentence_tracks_the_configured_timeout(monkeypatch):
         assert "shuts down after" not in sentence, disabled
 
 
-def test_a_raw_bind_ctrl_c_does_not_abort_the_launch(monkeypatch, tmp_path):
-    """Ctrl+C on `unsloth studio -H 0.0.0.0` must leave it starting.
+def test_a_raw_bind_ctrl_c_aborts_the_launch(monkeypatch, tmp_path):
+    """Ctrl+C on `unsloth studio -H 0.0.0.0` is an explicit refusal."""
+    import os as _os
+    import typer
 
-    The CLI mirror is the gate that actually runs for that command, so exiting
-    here makes run.py's warn-and-proceed unreachable and leaves the
-    `docker run -it` case unprotected.
-    """
     studio_mod = _studio()
     events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
     _seed_auth(studio_mod)
@@ -2142,12 +2185,49 @@ def test_a_raw_bind_ctrl_c_does_not_abort_the_launch(monkeypatch, tmp_path):
 
     monkeypatch.setattr(studio_mod._password_prompt, "prompt_new_password", _abort)
 
-    # Returns rather than raising typer.Exit: the launch continues.
-    studio_mod._enforce_password_change_before_exposure(
-        cloudflare = None, host = "0.0.0.0", secure = False, api_only = False
-    )
+    with pytest.raises(typer.Exit):
+        studio_mod._enforce_password_change_before_exposure(
+            cloudflare = None, host = "0.0.0.0", secure = False, api_only = False
+        )
     assert _auth_state(studio_mod)["must_change_password"] == 1
+    assert _os.environ.get(studio_mod._UNATTENDED_PROMPT_DONE_ENV) is None
     del events
+
+
+@pytest.mark.parametrize(
+    "args,present,absent",
+    [
+        # A raw bind passed neither flag; -H 127.0.0.1 is its way off the network.
+        (dict(cloudflare = None, host = "0.0.0.0", secure = False), "-H 127.0.0.1", "--cloudflare"),
+        (
+            dict(cloudflare = None, host = "127.0.0.1", secure = True),
+            "--secure/--cloudflare",
+            "-H 127.0.0.1",
+        ),
+    ],
+)
+def test_the_abort_names_a_remedy_this_launch_actually_has(
+    monkeypatch, tmp_path, capsys, args, present, absent
+):
+    """An abort that leaves no way forward just gets retried the same way."""
+    import typer
+
+    studio_mod = _studio()
+    _install_prompt_env(monkeypatch, tmp_path, interactive = True)
+    _seed_auth(studio_mod)
+
+    def _abort(*_a, **_kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(studio_mod._password_prompt, "prompt_new_password", _abort)
+
+    with pytest.raises(typer.Exit):
+        studio_mod._enforce_password_change_before_exposure(api_only = False, **args)
+
+    err = capsys.readouterr().err
+    assert "UNSLOTH_STUDIO_PASSWORD" in err, err
+    assert present in err, err
+    assert absent not in err, err
 
 
 def test_a_tunnel_ctrl_c_still_aborts(monkeypatch, tmp_path):
@@ -2179,7 +2259,11 @@ def test_a_second_cli_gate_does_not_re_wait_the_same_dead_terminal(monkeypatch, 
     studio_mod = _studio()
     calls = []
 
-    def _fake_prompt(verify_current, out = None, **kw):
+    def _fake_prompt(
+        verify_current,
+        out = None,
+        **kw,
+    ):
         calls.append(kw)
         raise studio_mod._password_prompt.PromptUnattended
 
@@ -2192,6 +2276,7 @@ def test_a_second_cli_gate_does_not_re_wait_the_same_dead_terminal(monkeypatch, 
     _invoke_studio_default(monkeypatch, events, ["-H", "0.0.0.0"])
     assert len(calls) == 1
     import os as _os
+
     assert _os.environ.get(studio_mod._UNATTENDED_PROMPT_DONE_ENV) == "1"
 
     # Child, after the re-exec: same terminal, must not sit on it again.
@@ -2205,7 +2290,11 @@ def test_the_mark_never_lets_a_tunnel_skip_its_prompt(monkeypatch, tmp_path):
     studio_mod = _studio()
     calls = []
 
-    def _fake_prompt(verify_current, out = None, **kw):
+    def _fake_prompt(
+        verify_current,
+        out = None,
+        **kw,
+    ):
         calls.append(kw)
         return _NEW_PW
 
@@ -2222,15 +2311,19 @@ def test_the_mark_never_lets_a_tunnel_skip_its_prompt(monkeypatch, tmp_path):
 def _banner(monkeypatch, tmp_path, args):
     """Run the gate far enough to capture the banner it prints, then bail out.
 
-    Clears the unattended mark first: bailing out with an interrupt SETS it on a
-    raw bind, so a second call in the same test would capture no banner.
+    Clears the unattended mark first so one banner assertion cannot inherit the
+    marker from another.
     """
     import os as _os
 
     studio_mod = _studio()
     _os.environ.pop(studio_mod._UNATTENDED_PROMPT_DONE_ENV, None)
 
-    def _fake_prompt(verify_current, out = None, **kw):
+    def _fake_prompt(
+        verify_current,
+        out = None,
+        **kw,
+    ):
         raise KeyboardInterrupt
 
     events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
@@ -2241,19 +2334,10 @@ def _banner(monkeypatch, tmp_path, args):
     return (result.output or "") + (getattr(result, "stderr", "") or "")
 
 
-def test_the_banner_does_not_promise_an_abort_a_raw_bind_will_not_perform(
-    monkeypatch, tmp_path,
-):
-    """`Ctrl+C to abort` is true for a tunnel and false for a raw bind.
-
-    On a raw bind the interrupt declines the prompt and the launch continues by
-    design, because it worked before this gate existed. An operator who reads
-    "abort", presses Ctrl+C and walks away would be leaving a server up on the
-    network with the auto-generated password.
-    """
+def test_the_banner_promises_abort_for_every_exposed_bind(monkeypatch, tmp_path):
     raw = _banner(monkeypatch, tmp_path, ["-H", "0.0.0.0"])
-    assert "Ctrl+C to abort" not in raw
-    assert "Ctrl+C to skip" in raw
+    assert "Ctrl+C to abort" in raw
+    assert "Ctrl+C to skip" not in raw
 
     tunnel = _banner(monkeypatch, tmp_path, ["--secure"])
     assert "Ctrl+C to abort" in tunnel

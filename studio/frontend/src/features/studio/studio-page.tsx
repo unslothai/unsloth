@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { usePlatformStore } from "@/config/env";
 import { Button } from "@/components/ui/button";
 import { useSidebar } from "@/components/ui/sidebar";
@@ -50,6 +51,7 @@ import { useParamMode } from "./wizard/training-param-mode";
 import { TrainingWizard } from "./wizard/training-wizard";
 
 export function StudioPage(): ReactElement {
+  const signalReady = useAppShellReadySignal();
   const t = useT();
   const [paramMode, setParamMode] = useParamMode();
   useTrainingRuntimeLifecycle();
@@ -172,8 +174,8 @@ export function StudioPage(): ReactElement {
       return;
     }
     reloadReadySent.current = true;
-    window.dispatchEvent(new Event("unsloth:app-shell-ready"));
-  }, [capabilitiesUnknown, hasHydratedRuntime, isHydratingRuntime]);
+    signalReady();
+  }, [capabilitiesUnknown, hasHydratedRuntime, isHydratingRuntime, signalReady]);
   // Two waits share this panel. Hardware detection is a cold `import torch` that can run for
   // minutes and says so, the way the Video page does; a hydrating runtime is quick and keeps
   // the runtime wording, which on a machine still being measured just reads as a hang.

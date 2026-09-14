@@ -8,11 +8,11 @@
 // be honoured.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
   installLocalStorageFake,
+  readText,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
@@ -39,22 +39,18 @@ const { wantsDownloadManagerStaging } = await import(
   "../src/features/chat/utils/model-download-staging.ts"
 );
 
-function read(path: string): string {
-  return readFileSync(new URL(path, import.meta.url), "utf8");
-}
-
-const notice = read("../src/features/chat/components/chat-model-notice.tsx");
-const page = read("../src/features/chat/chat-page.tsx");
-const runtimeProvider = read("../src/features/chat/runtime-provider.tsx");
-const adapter = read("../src/features/chat/api/chat-adapter.ts");
-const chatApi = read("../src/features/chat/api/chat-api.ts");
-const types = read("../src/features/chat/types.ts");
-const thread = read("../src/components/assistant-ui/thread.tsx");
-const researchPanel = read(
+const notice = readText("../src/features/chat/components/chat-model-notice.tsx");
+const page = readText("../src/features/chat/chat-page.tsx");
+const runtimeProvider = readText("../src/features/chat/runtime-provider.tsx");
+const adapter = readText("../src/features/chat/api/chat-adapter.ts");
+const chatApi = readText("../src/features/chat/api/chat-api.ts");
+const types = readText("../src/features/chat/types.ts");
+const thread = readText("../src/components/assistant-ui/thread.tsx");
+const researchPanel = readText(
   "../src/features/chat/components/research-activity-panel.tsx",
 );
-const artifact = read("../src/features/chat/artifacts/artifact-surface.tsx");
-const switchSource = read(
+const artifact = readText("../src/features/chat/artifacts/artifact-surface.tsx");
+const switchSource = readText(
   "../src/features/chat/components/chat-model-notice-switch.ts",
 );
 
@@ -382,7 +378,7 @@ test("a queued empty-model send backfills its resolved GGUF variant", () => {
     /queuedEmptyModelRuntime !== null[\s\S]{0,100}queuedEmptyModelRuntime\.activeGgufVariant[\s\S]{0,80}liveRuntime\.activeGgufVariant/,
   );
   assert.match(adapter, /params\.checkpoint,\s*runtime\.activeGgufVariant/);
-  const queuedSettings = read(
+  const queuedSettings = readText(
     "../src/features/chat/utils/queued-chat-run-settings.ts",
   );
   assert.match(queuedSettings, /"activeGgufVariant"/);

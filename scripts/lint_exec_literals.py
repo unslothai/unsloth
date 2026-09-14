@@ -35,19 +35,16 @@ import json
 import sys
 from pathlib import Path
 
-# Only the bare names. `re.compile(pattern)` and `model.eval()` are not these builtins, and matching on the attribute
-# reported 69 of them across the two repositories.
+# Only the bare names: `re.compile(pattern)` and `model.eval()` are not these builtins, and matching on the attribute reported 69 of them across the two repositories.
 SINKS = ("exec", "eval", "compile")
 
-# Notebooks are scanned too: in the notebooks repository they are the maintained source, and a cell runs the same
-# interpreter a module does.
+# Notebooks are scanned too: in the notebooks repository they are the maintained source, and a cell runs the same interpreter a module does.
 SUFFIXES = (".py", ".ipynb")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BASELINE_PATH = Path(__file__).resolve().parent / "exec_literals_baseline.json"
 
-# Not part of any commit, or not ours to fail on. `tests` is excluded because a test legitimately keeps a real `exec`
-# around as the thing it is asserting about.
+# Not part of any commit, or not ours to fail on. `tests` is excluded because a test legitimately keeps a real `exec` around as the thing it is asserting about.
 EXCLUDED_PARTS = frozenset(
     {
         "tests",
@@ -82,11 +79,7 @@ def _is_written_out(node: ast.AST) -> bool:
 
 
 def _key(relative: str, call: ast.Call) -> dict:
-    """How a call is remembered: its file, its sink, and a digest of its own source.
-
-    The digest is over `ast.unparse`, so reformatting and moving the call leave the
-    entry alone while changing what is passed does not.
-    """
+    """How a call is remembered: its file, its sink, and a digest of its own source. The digest is over `ast.unparse`, so reformatting and moving the call leave the entry alone while changing what is passed does not."""
     return {
         "file": relative,
         "sink": call.func.id,
@@ -95,12 +88,7 @@ def _key(relative: str, call: ast.Call) -> dict:
 
 
 def _notebook_source(path: Path, relative: str) -> str:
-    """The Python of a notebook's code cells, one blank line apart.
-
-    A cell is not a module, so they are joined rather than parsed one at a time; a
-    `%magic` or `!command` line is not Python at all and is blanked, which keeps the
-    line count and therefore the reported line numbers honest.
-    """
+    """The Python of a notebook's code cells, one blank line apart. A cell is not a module, so they are joined rather than parsed one at a time; a `%magic` or `!command` line is not Python at all and is blanked, which keeps the line count and therefore the reported line numbers honest."""
     try:
         document = json.loads(path.read_text(encoding = "utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -126,11 +114,9 @@ def scan_file(path: Path, relative: str) -> list[dict]:
         tree = ast.parse(source, filename = str(path))
     except (SyntaxError, ValueError, MemoryError, RecursionError) as error:
         if path.suffix == ".ipynb":
-            # A notebook that does not parse as one module is ordinary: a cell may be mid-edit, or depend on an
-            # earlier `%%capture`. Nothing to check, and failing the build for it would be noise.
+            # A notebook that does not parse as one module is ordinary: a cell may be mid-edit, or depend on an earlier `%%capture`. Nothing to check, and failing the build for it would be noise.
             return []
-        # A .py file that will not parse has not been checked, and reporting it clean is the bypass this whole gate
-        # exists to avoid.
+        # A .py file that will not parse has not been checked, and reporting it clean is the bypass this whole gate exists to avoid.
         raise SystemExit(f"{relative}: could not be parsed ({error.__class__.__name__})")
     found = []
     for node in ast.walk(tree):
@@ -155,8 +141,7 @@ def collect(targets: list[str]) -> list[dict]:
         elif root.is_dir():
             paths = sorted(q for s in SUFFIXES for q in root.rglob(f"*{s}"))
         else:
-            # A target that resolves to nothing means the gate covers less than it claims to, which is a silent hole
-            # rather than a passing run.
+            # A target that resolves to nothing means the gate covers less than it claims to, which is a silent hole rather than a passing run.
             raise SystemExit(
                 f"{target}: scan target does not exist, so nothing under it was checked"
             )
@@ -175,8 +160,7 @@ def collect(targets: list[str]) -> list[dict]:
 
 
 def _counted(entries: list[dict]) -> dict:
-    """Identity -> how many times it appears. Identity AND count, so a new call cannot
-    take the place of one that was removed."""
+    """Identity -> how many times it appears. Identity AND count, so a new call cannot take the place of one that was removed."""
     counts: dict = {}
     for entry in entries:
         counts[(entry["file"], entry["sink"], entry["digest"])] = (
@@ -200,8 +184,7 @@ def main() -> int:
     found = collect(targets)
 
     if arguments.update:
-        # Existing reasons are carried over. Rebuilding the list from scratch reset every hand-written
-        # justification to nothing, which is how a reviewed entry silently becomes an unreviewed one.
+        # Existing reasons are carried over: rebuilding the list from scratch reset every hand-written justification to nothing, which is how a reviewed entry silently becomes an unreviewed one.
         reasons = {
             (e["file"], e["sink"], e["digest"]): e.get("reason", "") for e in document["entries"]
         }
@@ -251,8 +234,7 @@ def main() -> int:
 
     stale = sorted(k for k in allowed if k not in observed)
     if stale:
-        # A baseline that outlives its call site quietly re-permits whatever lands on that digest next, so it is an
-        # error rather than a note.
+        # A baseline that outlives its call site quietly re-permits whatever lands on that digest next, so it is an error rather than a note.
         print(f"{len(stale)} baseline entr(y/ies) no longer match any call. Run --update:\n")
         for f, s, d in stale:
             print(f"  {f}  {s}  {d}")
@@ -283,11 +265,7 @@ def f(name, source):
 
 
 def self_test() -> int:
-    """The rule has to fire on the bad shapes and stay quiet on the good ones.
-
-    Written out here rather than in the test suite as well, so the gate can prove
-    itself on a runner that installs nothing but Python.
-    """
+    """The rule has to fire on the bad shapes and stay quiet on the good ones. Written out here rather than only in the test suite, so the gate can prove itself on a runner that installs nothing but Python."""
     import tempfile
 
     failures = []

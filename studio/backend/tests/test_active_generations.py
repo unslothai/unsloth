@@ -71,7 +71,9 @@ def test_snapshot_is_json_safe_and_ordered_by_start():
     assert [e["thread_id"] for e in snap] == ["first", "second"]
     # The threading.Event must not leak into an HTTP response body.
     assert all("event" not in e for e in snap)
-    assert {"handle", "thread_id", "run_id", "model", "kind", "started_at"} == set(snap[0])
+    assert {"handle", "thread_id", "run_id", "model", "kind", "account_id", "started_at"} == set(
+        snap[0]
+    )
 
 
 def test_thread_ids_are_deduped_and_skip_unnamed_runs():

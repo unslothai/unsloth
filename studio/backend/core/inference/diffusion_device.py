@@ -29,7 +29,6 @@ class DiffusionDeviceTarget:
     supports_default_torch_compile: bool
     supports_pinned_transfer: bool
     supports_float64: bool = True
-    # kept OUT of `device`: the memory, speed and attention policies compare that string against "cuda"
     # Selected CUDA/ROCm physical index, kept OUT of ``device``: the memory, speed and attention policies compare that
     # string against "cuda", so a "cuda:1" there disables them silently.
     ordinal: Optional[int] = None
@@ -479,11 +478,9 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
         # first or the allocator caps at ~1.7x recommendedMaxWorkingSet and can OOM a model that would fit. setdefault
         # respects an override.
         os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
-        # NEVER silent float16: modern DiTs produce activations far outside fp16's range (Z-Image MLP peaks near 9e5 ->
-        # inf -> NaN -> black image)
-        # Prefer bfloat16, else float32, NEVER silent float16: modern DiTs produce activations far outside fp16's range
-        # (Z-Image MLP peaks near 9e5 -> inf -> NaN -> black image). bf16 (macOS 14+) shares fp32's exponent range;
-        # older macOS uses fp32.
+        # Prefer bfloat16, else float32, NEVER silent float16: modern DiTs produce activations far outside fp16's
+        # range (Z-Image MLP peaks near 9e5 -> inf -> NaN -> black image). bf16 (macOS 14+) shares fp32's exponent
+        # range; older macOS uses fp32.
         dtype = torch.bfloat16 if _mps_supports_bfloat16(torch) else torch.float32
         return DiffusionDeviceTarget(
             device = "mps",

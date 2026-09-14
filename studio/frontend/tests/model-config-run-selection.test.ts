@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 
@@ -14,6 +13,7 @@ import type {
 } from "../src/features/model-picker/components/model-selector/types.ts";
 import {
   installLocalStorageFake,
+  readText,
   registerBundlerResolver,
 } from "./helpers/kit.ts";
 
@@ -29,7 +29,7 @@ const { DEFAULT_PER_MODEL_CONFIG } = await import(
 function readSource(relativePath: string): ts.SourceFile {
   return ts.createSourceFile(
     relativePath,
-    readFileSync(new URL(relativePath, import.meta.url), "utf8"),
+    readText(relativePath),
     ts.ScriptTarget.Latest,
     true,
     ts.ScriptKind.TSX,

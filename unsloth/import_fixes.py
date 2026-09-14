@@ -5755,6 +5755,221 @@ def fix_torchao_nf4tensor_move():
     sys.meta_path.append(_TorchaoNF4AliasFinder())
 
 
+_TORCHAO_INTMM_MODULES = (
+    "torchao.kernel.intmm",  # every release up to and including 0.18.0
+    "torchao.quantization.quantize_.workflows.int8.kernels",  # main after pytorch/ao#4718
+)
+_TORCHAO_INTMM_MODULE = _TORCHAO_INTMM_MODULES[0]  # kept for callers that named the old home
+_TORCHAO_INTMM_SENTINEL = "__unsloth_torchao_intmm_patch__"
+_TORCHAO_INT_MM_ENV = "UNSLOTH_TORCHAO_INT_MM_FIX"
+
+# The copy below hard-codes torchao's cuBLAS guards and fp32 fallback: ALL must be in the installed source.
+_TORCHAO_SAFE_INT_MM_MARKERS = (
+    "input.__repr__()",
+    "dynamo_is_compiling()",
+    "out_dtype(torch.ops.aten.mm.default",
+    "j_is_nonzero_multiple_of_8",
+    "k_is_nonzero_multiple_of_8",
+    "mat2.is_contiguous()",
+)
+
+
+def _is_fake_tensor(x):
+    """Covers exactly the set the substring repr probe did: ``is_fake`` unwraps FunctionalTensor too."""
+    try:
+        from torch._subclasses.fake_tensor import is_fake
+        return bool(is_fake(x))
+    except Exception:
+        pass
+    try:
+        from torch._subclasses.fake_tensor import FakeTensor
+        return isinstance(x, FakeTensor)
+    except Exception:
+        return False
+
+
+def _make_safe_int_mm(mod, original):
+    """A FULL copy of torchao 0.17.0's body, not a wrapper: its very first statement IS the probe."""
+    import torch
+
+    out_dtype = mod.out_dtype
+    dynamo_is_compiling = mod.dynamo_is_compiling
+
+    @functools.wraps(original)
+    def safe_int_mm(input: torch.Tensor, mat2: torch.Tensor) -> torch.Tensor:
+        if dynamo_is_compiling() or _is_fake_tensor(input):
+            if input.device.type == "cpu":
+                # Matmul in int32 is slow on CPU and not supported well by Inductor cpp backend
+                return out_dtype(
+                    torch.ops.aten.mm.default, torch.int32, input.float(), mat2.float()
+                )
+            return out_dtype(torch.ops.aten.mm.default, torch.int32, input, mat2)
+
+        assert (
+            mat2.device == input.device
+        ), f"need both tensors to be on the same device but got {mat2.device} and {input.device}"
+        device_cpu = "cpu" in [mat2.device.type, input.device.type]
+        j_is_nonzero_multiple_of_8 = (input.shape[1] % 8 == 0) and (input.shape[1] > 0)
+        k_is_nonzero_multiple_of_8 = (mat2.shape[1] % 8 == 0) and (mat2.shape[1] > 0)
+        bad_dimensions_for_cublas = not (j_is_nonzero_multiple_of_8 and k_is_nonzero_multiple_of_8)
+
+        if device_cpu or bad_dimensions_for_cublas:
+            return torch.matmul(input.cpu().to(torch.int32), mat2.cpu().to(torch.int32)).to(
+                input.device.type
+            )
+
+        if not mat2.is_contiguous():  # silently gives incorrect result without this
+            mat2 = mat2.contiguous()
+        if (not input.is_contiguous()) and (
+            input.shape[0] % 8 != 0
+        ):  # gives cryptic error without this
+            input = input.contiguous()
+        try:
+            return out_dtype(torch.ops.aten.mm.default, torch.int32, input, mat2)
+        except Exception:
+            # H100 float8: "addmm_cuda" not implemented for 'Float8_e4m3fn'
+            return torch.matmul(input.to(torch.float32), mat2.to(torch.float32)).to(torch.int32)
+
+    safe_int_mm.__unsloth_patched__ = True
+    safe_int_mm.__unsloth_original__ = original
+    return safe_int_mm
+
+
+def _patch_torchao_intmm_module(mod):
+    """Rebind ``safe_int_mm`` on either torchao home; True when this call installed it."""
+    original = getattr(mod, "safe_int_mm", None)
+    if original is None or not callable(original):
+        return False
+    if getattr(original, "__unsloth_patched__", False):
+        return False
+    # Off the module, never imported here, so this fails closed rather than borrowing our own operators.
+    if not hasattr(mod, "out_dtype") or not hasattr(mod, "dynamo_is_compiling"):
+        return False
+    try:
+        source = inspect.getsource(original)
+    except Exception:
+        return False
+    missing = [marker for marker in _TORCHAO_SAFE_INT_MM_MARKERS if marker not in source]
+    if missing:
+        if "input.__repr__()" not in missing:
+            logger.warning(
+                "Unsloth: torchao's safe_int_mm still probes input.__repr__() but its body "
+                "changed (%s missing), so the capture-safe replacement was not installed. "
+                "Eager int8 keeps syncing the device on every linear.",
+                ", ".join(missing),
+            )
+        return False
+    patched = _make_safe_int_mm(mod, original)
+    try:
+        mod.safe_int_mm = patched
+    except Exception:
+        return False
+    # `torchao.kernel` and `torchao.quantization` re-export the function OBJECT, so they need a sweep.
+    for name, other in tuple(sys.modules.items()):
+        if other is None or not (name == "torchao" or name.startswith("torchao.")):
+            continue
+        if getattr(other, "safe_int_mm", None) is original:
+            try:
+                setattr(other, "safe_int_mm", patched)
+            except Exception:
+                pass
+    return True
+
+
+class _TorchaoIntmmLoader(importlib.abc.Loader):
+    """The real loader, plus the patch once the module body finishes. Failures here leave torchao unpatched."""
+
+    __slots__ = ("_loader",)
+
+    def __init__(self, loader):
+        self._loader = loader
+
+    def create_module(self, spec):
+        create = getattr(self._loader, "create_module", None)
+        if create is None:
+            return None
+        return create(spec)
+
+    def exec_module(self, module):
+        self._loader.exec_module(module)
+        try:
+            _patch_torchao_intmm_module(module)
+        except Exception:
+            pass
+
+    def __getattr__(self, attribute):
+        return getattr(self._loader, attribute)
+
+
+class _TorchaoIntmmPatchFinder(importlib.abc.MetaPathFinder):
+    """Inserted at the FRONT of sys.meta_path: the module really exists, so PathFinder would answer first."""
+
+    __slots__ = (_TORCHAO_INTMM_SENTINEL, "_finding")
+
+    def __init__(self):
+        setattr(self, _TORCHAO_INTMM_SENTINEL, True)
+        self._finding = False  # find_spec below walks sys.meta_path again
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname not in _TORCHAO_INTMM_MODULES or self._finding:
+            return None
+        self._finding = True
+        try:
+            spec = importlib.util.find_spec(fullname)
+        except Exception:
+            return None
+        finally:
+            self._finding = False
+        if spec is None or spec.loader is None:
+            return None
+        if not hasattr(spec.loader, "exec_module"):
+            return None  # a loader from before PEP 451; leave the import entirely alone
+        try:
+            spec.loader = _TorchaoIntmmLoader(spec.loader)
+        except Exception:
+            return None
+        return spec
+
+
+def fix_torchao_safe_int_mm_repr_probe():
+    """Stop torchao's int8 GEMM from syncing the device to ask whether it is being traced.
+
+    ``safe_int_mm`` branches on ``"FakeTensor" in input.__repr__()``; a real CUDA tensor's repr calls
+    ``.item()``, so eager int8 syncs per linear and ``torch.cuda.graph`` capture fails outright. The
+    gate is structural, not version-based, and the meta path finder covers a torchao imported after
+    this call, which the int8 prequant path needs since it never calls ``quantize_``.
+    ``UNSLOTH_TORCHAO_INT_MM_FIX=0`` keeps upstream's behaviour. True when patched or the finder was
+    installed, False when there is nothing to do, None when torchao is absent or the fix is off."""
+    if os.environ.get(_TORCHAO_INT_MM_ENV, "1").strip() == "0":
+        return None
+    try:
+        if importlib.util.find_spec("torchao") is None:
+            return None
+    except Exception:
+        return None
+    patched_now = False
+    for name in _TORCHAO_INTMM_MODULES:
+        module = sys.modules.get(name)
+        if module is None:
+            continue
+        try:
+            patched_now = _patch_torchao_intmm_module(module) or patched_now
+        except Exception:
+            pass
+    if all(name in sys.modules for name in _TORCHAO_INTMM_MODULES):
+        return patched_now  # nothing left for a finder to catch
+    for finder in sys.meta_path:
+        if getattr(finder, _TORCHAO_INTMM_SENTINEL, False):
+            return patched_now
+    sys.meta_path.insert(0, _TorchaoIntmmPatchFinder())
+    return True
+
+
 # `datasets` fingerprints through dill, and dill._dill._is_builtin_module pickles a module by
 # reference only if its __file__ starts with a sys prefix, ends with an extension suffix, or
 # contains the literal `site-packages`. An install matching none (pip install --target, a
@@ -6052,5 +6267,81 @@ def fix_dill_module_by_value_pickling():
             "Unsloth: patched dill to pickle importable modules by reference; "
             f"{getattr(probe, '__name__', '?')} is installed outside a "
             "site-packages tree."
+        )
+    return True
+
+
+# Windows refuses sentencepiece's compiled extension on some machines. Smart App Control and
+# App Control for Business judge by reputation, one file at a time, so a freshly published
+# unsigned .pyd can be refused on a machine where everything else loads. The user sees a Bad
+# Image dialog naming the file, and transformers keeps saying the package is available,
+# because it decides that from find_spec and installed metadata and loads nothing.
+#
+# There is no way to ask whether this machine will refuse the file that does not involve
+# handing the file to the loader, which is the thing being avoided: a probe IS the dialog. So
+# on Windows the extension is simply never imported.
+DISABLE_SENTENCEPIECE_VARIABLE = "UNSLOTH_DISABLE_SENTENCEPIECE"
+_SENTENCEPIECE_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_SENTENCEPIECE_FALSY = frozenset({"0", "false", "no", "off"})
+
+
+def sentencepiece_should_be_disabled():
+    """Whether to make sentencepiece absent in this process.
+
+    Windows by default; every other platform only when asked. WSL reports ``linux`` and is
+    treated as the Linux box it is, since App Control does not enforce over ELF binaries in
+    the guest.
+
+    An unrecognised value falls back to the platform default rather than raising. This runs at
+    the very top of the process, where a typo in an environment variable must not be fatal.
+    """
+    value = (os.environ.get(DISABLE_SENTENCEPIECE_VARIABLE) or "").strip().lower()
+    if value in _SENTENCEPIECE_TRUTHY:
+        return True
+    if value in _SENTENCEPIECE_FALSY:
+        return False
+    return sys.platform == "win32"
+
+
+def disable_sentencepiece_on_windows():
+    """Make ``import sentencepiece`` fail the way an uninstalled package does.
+
+    A ``None`` entry in ``sys.modules`` is CPython's documented sentinel for this: the import
+    raises ``ModuleNotFoundError`` (an ``ImportError``, so every ``try/except ImportError`` in
+    transformers already handles it) and nothing on disk is opened, so the compiled extension
+    is never handed to the Windows loader and there is no dialog to see.
+
+    Deliberately NOT a monkey patch of ``is_sentencepiece_available``. transformers derives
+    that from ``find_spec``, which now finds the sentinel and answers False on its own, so the
+    process is in the ordinary "sentencepiece was never installed" configuration rather than a
+    state where the flag and the package disagree. That distinction is load bearing: on
+    transformers 4.52 through 4.57 a flag that lies sends ``tokenizer_class_from_name`` into a
+    fallback that imports the slow tokenizer module and reaches its unguarded
+    ``import sentencepiece as spm``, which is the loader error this is meant to prevent.
+
+    Must run before transformers is imported, since transformers reads availability during
+    its own import. Once transformers is in sys.modules this declines rather than installing a
+    sentinel it has already contradicted. Returns True only when this call is what made it
+    absent.
+    """
+    if not sentencepiece_should_be_disabled():
+        return False
+    if "sentencepiece" in sys.modules:
+        # Already imported by something earlier, or already disabled by an earlier call.
+        # Replacing a live module here would break whoever is holding it.
+        return sys.modules["sentencepiece"] is None
+    if "transformers" in sys.modules:
+        # Too late, and installing it anyway would be worse than doing nothing. transformers
+        # has already read availability from find_spec and cached "installed", so the sentinel
+        # would only produce the disagreement described above, and a tokenizer that loads
+        # today would start raising ModuleNotFoundError. Whoever imported transformers first
+        # keeps the ordinary behaviour.
+        return False
+    sys.modules["sentencepiece"] = None
+    if UNSLOTH_ENABLE_LOGGING:
+        logger.info(
+            "Unsloth: sentencepiece is not imported on Windows, so a code integrity policy "
+            "cannot refuse its extension. Models needing it will say so. Set "
+            f"{DISABLE_SENTENCEPIECE_VARIABLE}=0 to import it again."
         )
     return True

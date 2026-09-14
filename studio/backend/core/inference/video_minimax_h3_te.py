@@ -57,7 +57,6 @@ from .diffusion_convrot import (  # noqa: F401  (re-export: callers and tests na
     rotate_convrot_activation,
 )
 
-# no longer H3_COMPONENT_REPO: the VAEs moved to the GGUF mirror and the conditioner did not
 # The repo the prequantized denoisers already come from, so this adds no new dependency. It is no longer
 # H3_COMPONENT_REPO: the VAEs moved to the GGUF mirror and the conditioner did not, so the two are now separate repos
 # and aliasing them would send this file to the wrong one.
@@ -67,8 +66,7 @@ H3_TE_QUANT_REPO = "unsloth/MiniMax-H3-FP8"
 # and is read through h3_te_quant_source below.
 H3_LEGACY_TE_QUANT_REPO = "Comfy-Org/MiniMax-H3"
 
-# nvfp4 is deliberately absent: an AWQ NVFP4 layout with two levels of scale
-# Hosted quantized conditioners, by ``text_encoder_quant`` scheme.  nvfp4
+# Hosted quantized conditioners, by ``text_encoder_quant`` scheme. nvfp4
 # (``qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors``, 14.61 GiB) is deliberately absent: it is an AWQ NVFP4 layout with
 # two levels of scale and a per-tensor global scale, a different loader and a different kernel, and shipping it needs
 # its own numerical verification. The table is the one place to add it.
@@ -76,8 +74,7 @@ H3_TE_QUANT_FILES: dict[str, str] = {
     "int8": "text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
 }
 
-# the released conditioner is a 66.7 GB dense bfloat16 Qwen3-VL of 64 layers and H3 reads hidden_states[50]
-# The scheme an UNSET ``text_encoder_quant`` resolves to on a device that supports it.  The released conditioner is a
+# The scheme an UNSET ``text_encoder_quant`` resolves to on a device that supports it. The released conditioner is a
 # 66.7 GB dense bfloat16 Qwen3-VL of 64 decoder layers and H3 reads ``hidden_states[50]``; transformers has no early
 # exit, so the default runs all 64 layers and streams 66.7 GB across the CPU-offload boundary every generation. The
 # hosted artifact is 27.1 GB over 50 layers with the same read, which is why it is the default rather than an opt-in.
@@ -85,19 +82,15 @@ H3_TE_QUANT_FILES: dict[str, str] = {
 # is bytes moved and layers executed, not faster math.
 H3_TE_QUANT_DEFAULT = "int8"
 
-# Resident decimal GB, measured from the safetensors headers (2026-08-09): bf16 51.51 GB, int8_convrot 27.14 GB.
 # Resident bytes of each conditioner, decimal GB, measured from the safetensors headers on the Hub (2026-08-09) as the
-# end of the last tensor's data. The quantized load is storage-faithful -- INT8 stays INT8, the per-output-channel
-# scales stay float32, the vision tower and the embedding table stay bfloat16 -- so the file size IS the resident size,
-# unlike a cast-on-load path whose peak is the dense encoder. qwen3vl_32b_minimax_h3_bf16.safetensors 51.51 GB (47.97
-# GiB) qwen3vl_32b_minimax_h3_int8_convrot.safetensors 27.14 GB (25.28 GiB) The bfloat16 number here is the HOSTED
-# 50-layer file. The budget default elsewhere is the RELEASED 64-layer encoder (66.7 GB), which is what a load without
-# this path materialises.
+# end of the last tensor's data: bf16 51.51 GB, int8_convrot 27.14 GB. The quantized load is storage-faithful -- INT8
+# stays INT8, the per-output-channel scales stay float32, the vision tower and the embedding table stay bfloat16 -- so
+# the file size IS the resident size, unlike a cast-on-load path whose peak is the dense encoder. The bfloat16 number
+# here is the HOSTED 50-layer file; the budget default elsewhere is the RELEASED 64-layer encoder (66.7 GB).
 H3_TE_QUANT_RESIDENT_GB: dict[str, float] = {
     "int8": 27.2,
 }
 
-# must stay equal to MiniMaxH3ModularPipeline.text_encoder_layer
 # Which Qwen3-VL hidden state conditions the transformer. Must stay equal to
 # ``MiniMaxH3ModularPipeline.text_encoder_layer``; ``h3_te_layer_budget`` below is the only reader.
 H3_TE_READ_LAYER = 50
@@ -106,7 +99,6 @@ H3_TE_READ_LAYER = 50
 # rather than assumed, so a re-upload under a different group is refused instead of silently decoding to noise.
 H3_TE_CONVROT_GROUP = 256
 
-# any other value in a tensor's `comfy_quant` blob is a format this code has not been verified against
 # The quantization format the loader below implements. Any other value in a tensor's ``comfy_quant`` blob is a format
 # this code has not been verified against, and is refused.
 _H3_TE_EXPECTED_QUANT = {"format": "int8_tensorwise", "convrot": True}
@@ -167,18 +159,15 @@ def h3_te_resident_gb(scheme: Optional[str], *, bf16_gb: float) -> float:
 # orthogonal, so H @ H == I exactly).
 
 
-# ── ConvRot INT8 ────────────────────────────────────────────────────────────── W_rot = W @ H_block^T offline, x_rot =
-# x @ H_block online, and H is a NORMALIZED REGULAR Hadamard, which is symmetric and orthogonal, so H @ H == I exactly
-# and x_rot @ W_rot^T == x @ H @ H @ W^T == x @ W^T. The rotation is what lets INT8 survive Qwen3-VL's per-channel
-# activation outliers; dequantizing WITHOUT it is not an approximation, it is noise (measured against the hosted
-# bfloat16 file for one projection: 0.9% relative error with the rotation, 137% without).  This mirrors comfy-kitchen's
-# ``_build_hadamard`` / ``_rotate_activation`` / ``_rotate_weight`` exactly, in a few lines of torch, rather than taking
-# a dependency on a wheel Unsloth does not ship.  ``build_convrot_hadamard`` and ``rotate_convrot_activation`` are
-# imported at the top of this module from ``diffusion_convrot``, where they now live. The DENOISER runs the same ConvRot
-# on its own hosted INT8 checkpoint, and the two rotations have to agree with the same comfy-kitchen definition down to
-# the normalizer -- two copies of a matrix nobody re-derives at review time is exactly how they would stop agreeing.
-# Both stay importable from here.
-# ── ConvRot INT8 ──────────────────────────────────────────────────────────────
+# ConvRot INT8. W_rot = W @ H_block^T offline, x_rot = x @ H_block online, and H is a NORMALIZED REGULAR Hadamard,
+# which is symmetric and orthogonal, so H @ H == I exactly and x_rot @ W_rot^T == x @ W^T. The rotation is what lets
+# INT8 survive Qwen3-VL's per-channel activation outliers; dequantizing WITHOUT it is not an approximation, it is
+# noise (measured against the hosted bfloat16 file for one projection: 0.9% relative error with the rotation, 137%
+# without). This mirrors comfy-kitchen's ``_build_hadamard`` / ``_rotate_activation`` / ``_rotate_weight`` exactly
+# rather than taking a dependency on a wheel Unsloth does not ship. ``build_convrot_hadamard`` and
+# ``rotate_convrot_activation`` live in ``diffusion_convrot`` and are imported at the top of this module: the DENOISER
+# runs the same ConvRot on its own hosted INT8 checkpoint, and two copies of a matrix nobody re-derives at review time
+# is exactly how they would stop agreeing. Both stay importable from here.
 @lru_cache(maxsize = None)
 def _int8_convrot_linear_class() -> Any:
     """The ConvRot INT8 ``nn.Linear`` stand-in, built lazily so importing this module never imports
@@ -273,14 +262,9 @@ def _terminator_layer_class() -> Any:
     return H3TextEncoderTerminatorLayer
 
 
-# the hosted checkpoint uses the ComfyUI flattening of the Qwen3-VL tree while transformers nests under `model.`;
-
-
-# ── name mapping ────────────────────────────────────────────────────────────── The hosted checkpoint uses the ComfyUI
-# flattening of the Qwen3-VL tree; transformers nests the language model and the vision tower under ``model.``. Verified
-# exhaustive on 2026-08-09: all 902 hosted names map into ``MiniMaxAI/MiniMax-H3``
-# ``text_encoder/model.safetensors.index.json``, with nothing left over on this side.
-# ── name mapping ──────────────────────────────────────────────────────────────
+# Name mapping. The hosted checkpoint uses the ComfyUI flattening of the Qwen3-VL tree; transformers nests the
+# language model and the vision tower under ``model.``. Verified exhaustive on 2026-08-09: all 902 hosted names map
+# into ``MiniMaxAI/MiniMax-H3`` ``text_encoder/model.safetensors.index.json``, with nothing left over on this side.
 def h3_te_remap_key(key: str) -> str:
     """A hosted checkpoint tensor name in transformers' ``Qwen3VLForConditionalGeneration`` naming."""
     if key.startswith("visual."):
@@ -363,7 +347,6 @@ def load_h3_quantized_text_encoder(
             filename,
             hf_token,
             cache_dir = cache_dir,
-            # resolve through whichever root holds it, exactly as the stager did
             # Resolve the artifact through whichever root holds it, exactly as the stager that cleared this load did;
             # pinned to cache_dir alone a moved cache folder re-pulls 27 GB.
             reuse_other_cache_root = True,
@@ -389,23 +372,20 @@ def load_h3_quantized_text_encoder(
                 f"{base} text_encoder has {released_layers} layers; MiniMax-H3 reads "
                 f"hidden_states[{H3_TE_READ_LAYER}] and needs more than that"
             )
-        # one slot past the read layer, so the read lands on the raw state rather than the post-norm one
         # See the module docstring: one slot past the read layer, so the read lands on the raw state rather than the
         # post-norm one.
         text_config.num_hidden_layers = H3_TE_READ_LAYER + 1
 
-        # Include_buffers=False: PARAMETERS go to meta and are replaced wholesale by assign=True below
-        # include_buffers=False (it is also accelerate's default, but the whole load turns on it): PARAMETERS go to meta
-        # and are replaced wholesale by ``assign=True`` below, while BUFFERS -- the rotary inverse frequencies, which no
-        # state dict carries because they are non-persistent -- are built for real on CPU. They are a few KB. Putting
-        # them on meta instead would leave the encoder with meta tensors after the load and force a dense CPU rebuild,
-        # i.e. the 51 GB allocation this path exists to avoid.
+        # include_buffers=False (it is also accelerate's default, but the whole load turns on it): PARAMETERS go to
+        # meta and are replaced wholesale by ``assign=True`` below, while BUFFERS -- the rotary inverse frequencies,
+        # which no state dict carries because they are non-persistent -- are built for real on CPU. They are a few KB.
+        # Putting them on meta instead would leave the encoder with meta tensors after the load and force a dense CPU
+        # rebuild, i.e. the 51 GB allocation this path exists to avoid.
         with init_empty_weights(include_buffers = False):
             encoder = transformers.Qwen3VLForConditionalGeneration(config)
 
         language_model = encoder.model.language_model
         language_model.layers[H3_TE_READ_LAYER] = _terminator_layer_class()()
-        # neither can reach the conditioning: `norm` is only applied to the terminator's output
         # Neither is in the artifact and neither can reach the conditioning: ``norm`` is only ever applied to the
         # terminator's output, and the head is never called (the pipeline invokes ``text_encoder.model``, not
         # ``text_encoder``). Dropping the head alone saves 1.56 GB.
@@ -485,10 +465,9 @@ def load_h3_quantized_text_encoder(
                 f"path budgets for"
             )
         encoder.load_state_dict(state_dict, strict = True, assign = True)
-        # a dense CPU rebuild is NOT an acceptable repair here (it is the 51 GB allocation this path avoids)
-        # Nothing may be left on meta. A dense CPU rebuild is NOT an acceptable repair here (it is the 51 GB allocation
-        # this path exists to avoid), so a leftover is a refusal and the caller falls back to the released encoder,
-        # which at least loads correctly.
+        # Nothing may be left on meta. A dense CPU rebuild is NOT an acceptable repair here (it is the 51 GB
+        # allocation this path exists to avoid), so a leftover is a refusal and the caller falls back to the released
+        # encoder, which at least loads correctly.
         stranded = _meta_tensor_names(encoder)
         if stranded:
             raise ValueError(
