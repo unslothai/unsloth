@@ -3419,6 +3419,34 @@ def test_an_mtp_drafter_llama_server_cannot_load_is_dropped(tmp_path):
     assert backend.mtp_draft_suppressed_path == str(drafter)
 
 
+def test_an_advanced_argument_drafter_survives_the_unloadable_drop(tmp_path):
+    """A user-named --model-draft wins last, so the head-only sibling never opens.
+
+    Dropping it anyway made the load read as drafterless, and the fallback emits
+    ngram-mod or --spec-default BEFORE the extras are appended, so the override stopped
+    running as MTP at all. Nothing here needs protecting: the file llama-server opens is
+    the user's, and the sibling is not passed.
+    """
+    backend, gguf = _headless_mtp_backend(tmp_path)
+    bad = _write_mtp_drafter(tmp_path / "mtp-model.gguf", with_token_embd = False)
+    good = _write_mtp_drafter(tmp_path / "user-draft.gguf", with_token_embd = True)
+
+    cmd = _launch(
+        backend, gguf,
+        mtp_draft_path = str(bad),
+        speculative_type = "mtp",
+        extra_args = ["--model-draft", str(good)],
+    )["cmd"]
+
+    # The user's file is what runs, as MTP, and the rejected sibling is nowhere.
+    assert cmd[-2:] == ["--model-draft", str(good)]
+    assert "draft-mtp" in cmd
+    assert "--spec-default" not in cmd
+    assert "ngram-mod" not in cmd
+    assert backend.mtp_draft_suppressed_path is None
+    assert backend.spec_fallback_reason is None
+
+
 def test_a_drafter_carrying_its_own_embeddings_still_reaches_the_command(tmp_path):
     """The control for the drop above: same load, one tensor different."""
     backend, gguf = _headless_mtp_backend(tmp_path)

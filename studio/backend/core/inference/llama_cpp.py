@@ -20900,9 +20900,22 @@ class LlamaCppBackend:
 
             # Before the fit prices it, or a drafter that never launches pushes layers
             # off the GPU. DSpark/DFlash borrow token_embd from the target by design.
+            #
+            # Not when the extras name their own drafter. Draft flags are last-wins, so
+            # the user's --model-draft is the file llama-server opens and the head-only
+            # sibling is never touched: there is nothing here to protect against. Worse,
+            # dropping it makes the load read as drafterless, and the fallback emits
+            # ngram-mod or --spec-default BEFORE the extras are appended, so the
+            # override stops running as MTP at all. Same question the paravirtual drop
+            # below asks, through the same helper and the same child-env rule: the
+            # inherited LLAMA_ARG_SPEC_DRAFT_* counts only where it survives to the
+            # child, which is only when the extras own --spec-type.
             if (
                 mtp_draft_path
                 and _spec_canon not in ("dspark", "dflash")
+                and not _extra_args_mtp_draft_path(
+                    extra_args, env = _child_spec_env(extra_args)
+                )
                 and not _mtp_drafter_loads_standalone(mtp_draft_path)
             ):
                 logger.warning(
