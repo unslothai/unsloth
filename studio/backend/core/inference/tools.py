@@ -3297,6 +3297,10 @@ _PY_MODULE_OPEN_RECEIVERS = frozenset(
         # the module itself read as the path and the real one was never added.
         "builtins",
         "__builtin__",
+        # `from PIL import Image; Image.open(p)` is a module-level open taking the path first, so
+        # without it the bare `Image` folded as the path and the file was never seen.
+        "PIL",
+        "Image",
     }
 )
 # Receivers that are MODULES rather than paths, for every path-taking call, not only `open`. An
@@ -4037,11 +4041,25 @@ def _python_function_aliases(tree, module_aliases: "dict | None" = None) -> dict
                 assigned.pop(target.id, None)
                 continue
             seen_twice.add(target.id)
-            if real and real in _PY_ALIASABLE_PATH_CALLS and real != target.id:
+            # Recorded even when the right-hand side is not itself a modelled name: `reader2 =
+            # reader` only becomes meaningful once the chain below resolves it, and an entry that
+            # never lands on a modelled call is dropped there.
+            if real and real != target.id:
                 assigned[target.id] = real
     for name, real in assigned.items():
         aliases.setdefault(name, real)
-    return aliases
+    # `reader = open; reader2 = reader` binds the same function one step further out, so each alias
+    # is followed to the modelled name at the end of its chain. Bounded by the number of aliases,
+    # and a cycle simply stops when a name repeats.
+    resolved: dict = {}
+    for name, real in aliases.items():
+        seen = {name}
+        while real in aliases and real not in seen:
+            seen.add(real)
+            real = aliases[real]
+        if real in _PY_ALIASABLE_PATH_CALLS:
+            resolved[name] = real
+    return resolved
 
 
 def _python_module_aliases(tree) -> dict:
@@ -4258,7 +4276,12 @@ def _python_path_operands(tree) -> "list[tuple[str, bool]]":
             # resolved above, or the call reads as a Path-style method and the path argument is
             # never looked at.
             receiver = receiver_name
-            path_is_receiver = is_method and receiver not in _PY_MODULE_OPEN_RECEIVERS
+            # A dotted receiver has no `.id`, so `PIL.Image.open(p)` left receiver_name empty and
+            # read as a Path-style method. The trailing name is the one the table is keyed on.
+            tail = func.value.attr if is_method and isinstance(func.value, ast.Attribute) else ""
+            path_is_receiver = is_method and not (
+                receiver in _PY_MODULE_OPEN_RECEIVERS or tail in _PY_MODULE_OPEN_RECEIVERS
+            )
             writing = _open_call_writes(node, mode_index = 0 if path_is_receiver else 1) or (
                 receiver in ("os", "posix")
             )

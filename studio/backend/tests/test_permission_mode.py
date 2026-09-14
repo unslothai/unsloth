@@ -3497,6 +3497,11 @@ _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
     # The builtin under a qualified name, and under an alias of the module.
     'import builtins\nbuiltins.open("/media/kuser/MEDIA_SSD/x", "w").write("y")',
     'import builtins as b\nb.open("/media/kuser/MEDIA_SSD/x").read()',
+    # A module-level open whose receiver is not a path.
+    "from PIL import Image\nImage.open('/media/kuser/MEDIA_SSD/photo.png')",
+    "import PIL.Image\nPIL.Image.open('/media/kuser/MEDIA_SSD/photo.png')",
+    # An alias of an alias binds the same function.
+    "reader = open\nreader2 = reader\nreader2('/media/kuser/MEDIA_SSD/x').read()",
 )
 
 # The same indirections pointed somewhere ordinary: these must stay silent.
@@ -3527,6 +3532,8 @@ _INDIRECT_BENIGN_PYTHON = (
     # Bound twice, so which function it holds at the call is not answerable.
     "reader = open\nreader = None\nprint(reader)",
     'import builtins\nbuiltins.open("notes.txt").read()',
+    "from PIL import Image\nImage.open('local.png')",
+    "reader = open\nreader2 = reader\nreader2('notes.txt').read()",
 )
 
 
