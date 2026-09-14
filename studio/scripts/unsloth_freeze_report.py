@@ -529,7 +529,13 @@ def classify(
             "this started"
         )
 
-    # Did the interface stop polling partway through while the watchdog carried on?
+    # Did the interface stop polling partway through while the watchdog carried on? That is the reported
+    # symptom, and a total that looks healthy can still hide it.
+    # Only after the warmup boundary: on a cold launch the native watchdog is answering before the webview
+    # has finished loading, so the very first samples always show a still interface count and a rising
+    # watchdog count, and comparing them reported healthy runs as FROZE at the moment they finished starting.
+    # A freeze does not recover, so a gap the interface polls its way out of is a delayed request rather
+    # than the symptom.
     post = [s for s in samples if s[0] >= warmup]
     resumed_at = _last_rise(post, 1)
     watchdog_last = _last_rise(post, 2)

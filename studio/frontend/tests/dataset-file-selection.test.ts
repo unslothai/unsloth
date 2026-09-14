@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -17,6 +16,8 @@ import {
   oversizedChunk,
   selectDatasetFiles,
 } from "../src/features/images/train/dataset-files.ts";
+
+import { readSrcAsync, readText } from "./helpers/kit.ts";
 
 /** a picked file of a given byte size. chunking reads only `size`, so the payload is stubbed:
  *  materializing it made these cases allocate over a gigabyte between them. */
@@ -36,10 +37,7 @@ function picked(name: string, path?: string): File {
 }
 
 test("accepts exactly the extensions the backend accepts", async () => {
-  const source = await readFile(
-    new URL("../../backend/routes/training.py", import.meta.url),
-    "utf8",
-  );
+  const source = readText("../../backend/routes/training.py");
   const literals = (name: string) => {
     const match = new RegExp(`${name}\\s*=\\s*\\{([^}]+)\\}`).exec(source);
     assert.ok(match, `${name} not found in training.py`);
@@ -53,10 +51,7 @@ test("accepts exactly the extensions the backend accepts", async () => {
 
   // clips are defined once, in core/training/diffusion_clip_formats.py, and read from there by
   // both the routes and the trainer's clip discovery. The picker has to mirror that same list.
-  const clipSource = await readFile(
-    new URL("../../backend/core/training/diffusion_clip_formats.py", import.meta.url),
-    "utf8",
-  );
+  const clipSource = readText("../../backend/core/training/diffusion_clip_formats.py");
   const clipMatch = /CLIP_EXTS\s*=\s*frozenset\(\{([^}]+)\}\)/.exec(clipSource);
   assert.ok(clipMatch, "CLIP_EXTS not found in diffusion_clip_formats.py");
   assert.deepEqual(
@@ -477,10 +472,7 @@ test("uses the flat list when the entries API is unavailable", async () => {
 test("the labeling grid is gated on images, not just its toggle", async () => {
   // A mixed folder keeps its listing on clip_count alone, so deleting the last image leaves the
   // grid with no toggle to close it unless the grid itself sits inside the same guard.
-  const source = await readFile(
-    new URL("../src/features/images/train/diffusion-train-panel.tsx", import.meta.url),
-    "utf8",
-  );
+  const source = await readSrcAsync("features/images/train/diffusion-train-panel.tsx");
   const guard = "{selectedDataset.image_count > 0 && (";
   const toggle = source.indexOf("<LabelingGridToggle");
   const grid = source.indexOf("<DatasetLabelingGrid");

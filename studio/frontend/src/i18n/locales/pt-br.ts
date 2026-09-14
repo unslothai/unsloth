@@ -184,6 +184,34 @@ export const ptBR = {
     },
   },
   settings: {
+    accounts: {
+      title: "Contas",
+      description: "Crie contas privadas do Studio. Novos usuários entram com um código de configuração de uso único e escolhem uma senha.",
+      username: "Nome de usuário",
+      create: "Criar conta",
+      setupCode: "Código de configuração",
+      setupFor: "Código de configuração para {username}",
+      shownOnce: "Copie este código agora e compartilhe com o titular da conta. Ele é mostrado apenas aqui e pode ser usado uma vez em até 60 minutos.",
+      expires: "Expira {expiry}",
+      copy: "Copiar código de configuração",
+      copied: "Copiado",
+      copyFailed: "Não foi possível copiar. Selecione e copie o código de configuração acima.",
+      dismiss: "Concluído",
+      owner: "Proprietário da instalação",
+      active: "Ativa",
+      inactive: "Inativa",
+      regenerate: "Gerar novo código de configuração",
+      resetTitle: "Redefinir a senha de {username}?",
+      resetDescription: "Gerar um novo código de configuração substitui a senha de {username}, encerra as sessões dela e revoga suas chaves de API. Entregue o novo código para que ela escolha outra senha.",
+      deactivate: "Desativar",
+      reactivate: "Reativar",
+      delete: "Excluir conta",
+      deleteTitle: "Excluir {username}?",
+      deleteDescription: "Isso revoga as sessões de {username} e cancela o trabalho em andamento. Chats, configurações, credenciais, uploads, conjuntos de dados, treinamentos, saídas, exportações, galerias, sandboxes, projetos e arquivos temporários são retirados. Os diretórios são renomeados à parte, nunca excluídos. Criar este nome de usuário novamente inicia uma conta nova sem nenhum desses dados.",
+      cancel: "Cancelar",
+      retry: "Atualizar contas",
+      failed: "A solicitação da conta falhou.",
+    },
     title: "Configurações",
     dialog: {
       title: "Configurações",
@@ -195,6 +223,7 @@ export const ptBR = {
       panelReload: "Recarregar",
     },
     tabs: {
+      accounts: "Contas",
       general: "Geral",
       profile: "Perfil",
       appearance: "Aparência",
@@ -467,6 +496,17 @@ export const ptBR = {
       droppedNotice: "Algumas linhas foram ignoradas: o log foi gravado mais rápido do que era possível ler.",
       morePending: "Mais linhas ainda estao sendo lidas; elas chegam na proxima atualizacao.",
       staleSession: "O registro em arquivo esta desativado, portanto esta e uma sessao anterior e nao sera atualizada.",
+      downloadAllLogs: "Baixar todos os logs (.zip)",
+      downloadingAllLogs: "Compactando os logs...",
+      exportMaskedNote: "As credenciais são mascaradas nos arquivos exportados. Logs muito grandes mantêm apenas as linhas mais recentes, e alguns podem ficar de fora por completo; veja EXPORT_WARNINGS.txt no arquivo.",
+      downloadedTo: "Salvo em {path}",
+      downloadedToBrowser: "Download iniciado.",
+      showInFolder: "Mostrar na pasta",
+      openLogsFolder: "Abrir a pasta de logs",
+      openLogsFolderFailed: "Não foi possível abrir a pasta de logs.",
+      exportFailed: "Não foi possível baixar os logs.",
+      exportTooOld: "O backend do Unsloth em execução é antigo demais para exportar os logs. Atualize esse backend e reinicie.",
+      exportForbidden: "Para baixar todos os logs é preciso uma sessão do Studio conectada. Uma chave de API não basta.",
       keywords: "depuracao depurar registro registros log logs erro erros falha rastreamento diagnostico solucao de problemas debug",
     },
     voice: {
@@ -932,7 +972,11 @@ export const ptBR = {
         currentStreak: "Sequência atual",
         longestStreak: "Maior sequência",
         activityTitle: "Atividade de tokens",
-        activityDescription: "Período: {weeks} · {total}",
+        activityDescription: {
+          daily: "Período: {weeks} · {total}",
+          weekly: "Semana de pico {total} · últimas {weeks}",
+          cumulative: "{total} acumulados nas últimas {weeks}",
+        },
         mode: {
           daily: "Diária",
           weekly: "Semanal",
@@ -1205,8 +1249,8 @@ export const ptBR = {
         keepResidentDescription: "Permanece na VRAM entre os prompts.",
         keepResidentHint: "Não devolve os pesos à RAM do sistema enquanto o modelo continuar carregado. Desativa a descarga automática por inatividade e, quando os pesos de fato ficam na RAM do host (memória unificada ou offload parcial para a GPU), também passa --mlock, para que o sistema operacional não os pagine e os reenvie no próximo prompt.",
         noRamReserve: "Não reservar RAM do sistema para o modelo",
-        noRamReserveDescription: "Não mantém uma cópia completa na RAM.",
-        noRamReserveHint: "Transfere os pesos para a VRAM em vez de manter uma cópia completa na RAM. Mantém o carregamento mapeado em memória do llama.cpp e remove --no-mmap e --mlock.",
+        noRamReserveDescription: "Reduz a RAM ocupada pelos pesos do modelo.",
+        noRamReserveHint: "Ignora o carregamento mapeado em memória nas versões compatíveis do Windows quando o modelo está totalmente descarregado na GPU, para que suas páginas não fiquem residentes. Caso contrário, mantém o carregamento mapeado em memória. Buffers de CPU necessários ainda podem usar RAM. Remove --no-mmap e --mlock.",
         mlockVetoed: "--mlock continua desativado: fixar o modelo reservaria RAM para todo ele. A descarga automática por inatividade continua desativada.",
         memlockCapped: "Este sistema limita a memória bloqueada a {limit}. Um modelo maior não será totalmente fixado; aumente o limite com ulimit -l.",
         reloadRequired: "Recarregue o modelo para aplicar as novas opções de memória.",
@@ -1266,6 +1310,7 @@ export const ptBR = {
       copy: "Copiar",
       copied: "Copiado",
       commandBuilder: "Construtor de comandos",
+      commandShell: "Shell para todos os comandos",
       agent: "Agente de código",
       model: "Modelo",
       searchModels: "Buscar modelos GGUF...",
@@ -1283,9 +1328,8 @@ export const ptBR = {
       docs: "Documentação",
       agentDocs: "Abrir a documentação de configuração do {agent}",
       copyGeneratedCommand: "Copiar comando gerado",
-      // English is the baseline until these are translated. The three-part
-      // sentence below is assembled in a fixed order around an inline link, so
-      // it needs restructuring before it can be translated well.
+      // English is the baseline until translated: the three-part sentence is assembled around an
+      // inline link and needs restructuring first.
       automaticSettingsNote:
         "Unsloth automatically applies the model’s recommended settings if you have not set any flags.",
       configurationNote:
@@ -1392,6 +1436,7 @@ export const ptBR = {
           "Fixe itens no menu lateral do botão + do chat. Os demais ficam em “Mais”.",
         chatWithFiles: "Chat com arquivos (RAG)",
         mcp: "MCP",
+        skills: "Habilidades de agentes",
         savedPrompts: "Prompts salvos",
         compareChat: "Comparar chats",
         exportChat: "Exportar chat",
@@ -1728,7 +1773,7 @@ export const ptBR = {
         desktopAvailable:
           "A versão {version} do aplicativo de desktop está disponível",
         desktopAvailableDescription:
-          "Atualize agora para preparar em segundo plano. Você continua trabalhando e reinicia quando estiver pronto.",
+          "Atualize agora. O aplicativo de desktop será reiniciado quando a atualização terminar.",
         desktopExternalServer:
           "Execute `unsloth studio update` no terminal usado para iniciar o servidor.",
         desktopManualInstall:
@@ -1739,20 +1784,11 @@ export const ptBR = {
         desktopCurrent: "O aplicativo de desktop está atualizado",
         desktopCurrentDescription:
           "O Unsloth continuará verificando automaticamente.",
-        desktopPreparingDescription:
-          "A atualização está sendo preparada em segundo plano. Você pode continuar trabalhando.",
-        desktopReadyToRestartDescription:
-          "Tudo pronto. Reinicie para concluir a instalação da atualização.",
-        desktopReadyToInstallDescription:
-          "A atualização do aplicativo foi baixada. Conclua a atualização do backend para instalá-la.",
         checkForUpdates: "Verificar se há atualizações",
         checkAgain: "Verificar novamente",
         retryCheck: "Tentar novamente",
         checking: "Verificando...",
-        preparing: "Preparando...",
         updateNow: "Atualizar agora",
-        restartToUpdate: "Reiniciar para atualizar",
-        finishUpdate: "Concluir atualização",
         openReleasePage: "Abrir página de lançamentos",
         unknownInstall:
           "Não foi possível detectar como o Unsloth foi instalado. Para instalações via instalador ou PyPI, use os comandos acima.",
@@ -1919,6 +1955,7 @@ export const ptBR = {
       sourceHfCache: "Cache do HF",
       sourceLmStudio: "LM Studio",
       sourceOllama: "Ollama",
+      sourceHermes: "Hermes",
       sourceCustomFolder: "Pasta personalizada",
       sourceLocalModel: "Modelo local",
       vramOomBadge: "OOM",
@@ -2169,6 +2206,7 @@ export const ptBR = {
       memoryEfficient: "Eficiente em Memória",
       weightDecomposed: "Pesos Decompostos",
       notSupportedAppleSilicon: "Não compatível com Apple Silicon",
+      doraNeedsVisionLayersOff: "Desative o treinamento das camadas de visão para usar DoRA",
       optimization: "Otimização",
       schedule: "Cronograma",
       memory: "Memória",
@@ -2473,5 +2511,23 @@ export const ptBR = {
     kvRate: "KV reservado, ~{rate}/token",
     oomLikely: "Com as configurações atuais, é provável um erro de memória",
     tooLarge: "Maior que a VRAM, será descarregado para a CPU. Uma quantização menor roda mais rápido",
+  },
+  skills: {
+    title: "Habilidades de agentes",
+    description: "As habilidades são descobertas nas suas pastas padrão de agentes. Ative-as aqui e digite @ no chat para mencionar uma.",
+    precedence: "~/.agents/skills tem precedência sobre ~/.claude/skills.",
+    refresh: "Atualizar",
+    empty: "Nenhuma habilidade encontrada. Adicione uma pasta com SKILL.md em ~/.agents/skills ou ~/.claude/skills e atualize.",
+    sourceAgents: "Agents",
+    sourceClaude: "Claude",
+    sourceBundled: "Incluída",
+    shadowed: "Ocultada",
+    invalid: "Inválida",
+    compatibility: "Compatibilidade: {value}",
+    shadowedBy: "Outra habilidade ({source}) com este nome tem precedência.",
+    enable: "Ativar {name}",
+    disable: "Desativar {name}",
+    updateError: "Não foi possível atualizar a habilidade",
+    mentions: "Habilidades de agentes",
   },
 } satisfies DeepPartialMessageTree<typeof en>;

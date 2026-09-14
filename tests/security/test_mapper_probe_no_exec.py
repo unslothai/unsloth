@@ -804,7 +804,7 @@ def test_a_mutation_above_a_class_shadow_still_counts(monkeypatch):
 
 
 # How mapper.py looks on any release older than `build_mappers`: the five exports are
-# initialised empty and filled by a module-scope loop the installed builder reproduces.
+# initialised empty and filled by a module-scope loop rather than by a builder call.
 _NO_BUILDER_MAPPER = (
     '__INT_TO_FLOAT_MAPPER = {"vendor/x-bnb-4bit": ("vendor/x",)}\n'
     "INT_TO_FLOAT_MAPPER  = {}\n"

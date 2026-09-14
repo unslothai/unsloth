@@ -543,3 +543,38 @@ async def test_stopping_the_sweeper_does_not_spend_the_desktop_exit_budget(monke
     await sweeper.stop()
     elapsed = _time.monotonic() - started
     assert elapsed < 2.0, f"sweeper.stop() took {elapsed:.2f}s of the graceful-exit budget"
+
+
+def test_sweep_still_reaps_a_deactivated_accounts_stalled_run(clock, tmp_path, monkeypatch):
+    """Deactivation only sets the cancel event; a wedged producer keeps its GPU reservation."""
+    import secrets
+
+    from auth import policy, storage
+    from utils.account_context import AccountContext, run_as
+
+    monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth" / "auth.db")
+    monkeypatch.setattr(storage, "_BOOTSTRAP_PW_PATH", tmp_path / "auth" / ".bootstrap_password")
+    monkeypatch.setattr(storage, "_bootstrap_password", None)
+    policy.invalidate_account_cache()
+    storage.create_initial_user("unsloth", "owner-password", secrets.token_urlsafe(32))
+    try:
+        record = storage.issue_account_setup_code(username = "alice")["account"]
+        alice = AccountContext(record["account_id"], "alice")
+        run_as(alice, _running_run)
+        clock.advance_ms(11 * _MINUTE_MS)
+        storage.set_account_active(record["account_id"], False)
+        policy.invalidate_account_cache()
+        assert policy.installation_is_multi_user() is False
+        cancelled = []
+        app = SimpleNamespace(
+            state = SimpleNamespace(
+                chat_generation_supervisor = SimpleNamespace(cancel = cancelled.append)
+            )
+        )
+        assert asyncio.run(_sweeper(app, timeout_s = 600.0).sweep_once()) == ["run-1"]
+        assert cancelled == ["run-1"]
+        assert run_as(alice, lambda: runs_db.get_run("run-1", "alice"))["finishReason"] == (
+            "interrupted"
+        )
+    finally:
+        policy.invalidate_account_cache()

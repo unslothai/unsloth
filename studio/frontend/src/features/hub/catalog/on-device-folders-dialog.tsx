@@ -153,10 +153,9 @@ export function OnDeviceFoldersDialog({
     onInventoryChange?.();
   }, [onInventoryChange]);
 
-  // Relocating the cache changes which repos are on disk, but
-  // updateHuggingFaceCacheSettings already bumps the inventory version, which
-  // re-fetches every source. Refreshing here too would scan twice, since the
-  // two rounds carry different version keys and cannot be deduplicated.
+  // Relocating the cache changes which repos are on disk, but updateHuggingFaceCacheSettings
+  // already bumps the inventory version, which re-fetches every source. Refreshing here too would
+  // scan twice, since the two rounds carry different version keys and cannot be deduplicated.
   const saveDownloadLocation = useCallback(async (nextPath: string | null) => {
     setDownloadSaving(true);
     try {

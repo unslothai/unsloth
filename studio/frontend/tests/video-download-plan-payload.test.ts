@@ -10,14 +10,11 @@
  */
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-const source = readFileSync(
-  fileURLToPath(new URL("../src/features/video/video-page.tsx", import.meta.url)),
-  "utf8",
-);
+import { readSrc } from "./helpers/kit.ts";
+
+const source = readSrc("features/video/video-page.tsx");
 
 test("the video download plan is asked with the selected precision", () => {
   const call = source.slice(

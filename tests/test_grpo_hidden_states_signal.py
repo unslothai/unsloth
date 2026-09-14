@@ -282,8 +282,8 @@ class _SquareModel:
         self.lm_head = lm_head
         self.returns_hidden_states = returns_hidden_states
         if signal == "compiled":
-            # the compiler writes the marker onto the class it generated, so give
-            # this instance its own class rather than marking every _SquareModel
+            # The compiler writes the marker onto the class it generated, so give this instance its own class rather
+            # than marking every _SquareModel.
             self.__class__ = type("_CompiledSquareModel", (_SquareModel,), {MARKER: True})
         elif signal in ("wrapped", "degraded"):
             setattr(self, WRAPPED, True)

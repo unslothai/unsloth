@@ -34,8 +34,8 @@ TRANSFORMERS_TAGS = [
     "v5.10.0",
     "v5.10.1",
     "v5.10.2",
-    # Upstream tagged PyPI 5.10.4 as v5.10.3 (the tag's __init__ says 5.10.4);
-    # there is no v5.10.4 tag and no 5.10.3 on PyPI, so fetch by the tag name.
+    # Upstream tagged PyPI 5.10.4 as v5.10.3 (the tag's __init__ says 5.10.4); there is no v5.10.4 tag and no 5.10.3 on
+    # PyPI, so fetch by the tag name.
     "v5.10.3",
     "v5.11.0",
     "v5.12.0",
@@ -47,11 +47,11 @@ TRANSFORMERS_TAGS = [
     "main",
 ]
 
+# Every check runs once per tag; one that cannot skips from inside so the tag stays in the report.
+pytestmark = pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
+
 
 # Trainer surface: unsloth/models/_utils.py rewrites Trainer.{__init__, training_step, get_batch_samples, compute_loss}.
-
-
-@pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_trainer_class_importable_path(tag: str):
     """transformers.Trainer must remain at trainer.py or trainer/__init__.py."""
     candidates = ["src/transformers/trainer.py", "src/transformers/trainer/__init__.py"]
@@ -61,7 +61,6 @@ def test_trainer_class_importable_path(tag: str):
     assert has_def(src, "Trainer", "class"), f"{tag}: class Trainer missing"
 
 
-@pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_trainer_compute_loss_num_items_in_batch_param(tag: str):
     """unsloth-zoo#159 + unsloth#4998 + #4616: Trainer.compute_loss must accept num_items_in_batch kwarg."""
     candidates = ["src/transformers/trainer.py", "src/transformers/trainer/__init__.py"]
@@ -77,7 +76,6 @@ def test_trainer_compute_loss_num_items_in_batch_param(tag: str):
     )
 
 
-@pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_trainer_training_step_grad_accum_pattern(tag: str):
     """unsloth#3598 patches Trainer.training_step source; drift = silent no-op = double-scale loss bug."""
     candidates = ["src/transformers/trainer.py", "src/transformers/trainer/__init__.py"]
@@ -99,7 +97,6 @@ def test_trainer_training_step_grad_accum_pattern(tag: str):
         )
 
 
-@pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_trainer_get_batch_samples_returns_num_items(tag: str):
     """unsloth-zoo loss_utils.py:241 replaces Trainer.get_batch_samples; must keep the num_items_in_batch return."""
     candidates = ["src/transformers/trainer.py", "src/transformers/trainer/__init__.py"]
@@ -113,7 +110,6 @@ def test_trainer_get_batch_samples_returns_num_items(tag: str):
     ), f"{tag}: Trainer.get_batch_samples / num_items_in_batch contract missing"
 
 
-@pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_trainer_inner_training_loop_inplace_loss_v5(tag: str):
     """unsloth-zoo#543: transformers 5.0+ switched out-of-place tr_loss add to in-place `self._tr_loss +=`."""
     candidates = ["src/transformers/trainer.py", "src/transformers/trainer/__init__.py"]
@@ -131,9 +127,6 @@ def test_trainer_inner_training_loop_inplace_loss_v5(tag: str):
 
 
 # modeling_utils: checkpoint, PushToHubMixin, ALL_ATTENTION_FUNCTIONS.
-
-
-@pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_modeling_utils_exposes_checkpoint(tag: str):
     """unsloth-zoo#549: transformers 5.2+ uses modeling_utils.checkpoint; patch must replace it, not just torch's."""
     src = fetch_text("huggingface/transformers", tag, "src/transformers/modeling_utils.py")
@@ -155,21 +148,16 @@ def test_modeling_utils_exposes_checkpoint(tag: str):
     )
 
 
-@pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_pushtohubmixin_create_repo_status(tag: str):
     """unsloth-zoo#393: transformers 5.x removed PushToHubMixin._create_repo; snapshot which side."""
     src = fetch_text("huggingface/transformers", tag, "src/transformers/modeling_utils.py")
     if src is None:
         pytest.skip(f"{tag}: modeling_utils.py missing")
     has_create = bool(re.search(r"def _create_repo\b", src) or "_create_repo" in src)
-    # Informational only.
     _ = has_create
 
 
 # integrations.bitsandbytes: _replace_with_bnb_linear vs new path.
-
-
-@pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_integrations_bitsandbytes_module_present(tag: str):
     src = fetch_text(
         "huggingface/transformers", tag, "src/transformers/integrations/bitsandbytes.py"
@@ -181,7 +169,6 @@ def test_integrations_bitsandbytes_module_present(tag: str):
     ), f"{tag}: integrations/bitsandbytes.py has no Linear4bit reference"
 
 
-@pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_quantizers_should_convert_module_signature(tag: str):
     """unsloth-zoo#491/#488: 5.x moved is_replaceable to quantizers_utils.should_convert_module; snapshot its form."""
     src = fetch_text(
@@ -193,16 +180,11 @@ def test_quantizers_should_convert_module_signature(tag: str):
         pytest.skip(f"{tag}: quantizers/quantizers_utils.py missing")
     if not has_def(src, "should_convert_module", "func"):
         pytest.skip(f"{tag}: should_convert_module not yet present (4.x)")
-    # Catch substring matching in `.{key}.` form.
     has_dot_form = ".{key}." in src or "f'.{key}.'" in src or 'f".{key}."' in src
-    # Informational only.
     _ = has_dot_form
 
 
 # integrations.finegrained_fp8.FP8Linear: bias/has_bias rename in v5.
-
-
-@pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_fp8linear_init_param_names(tag: str):
     """unsloth-zoo#572: transformers 5.x renamed FP8Linear.__init__ `bias` -> `has_bias`."""
     src = fetch_text(
@@ -221,10 +203,6 @@ def test_fp8linear_init_param_names(tag: str):
     ), f"{tag}: FP8Linear.__init__ has neither `bias` nor `has_bias` param"
 
 
-# processing_utils: Unpack importable.
-
-
-@pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_processing_utils_unpack_importable(tag: str):
     """unsloth-zoo#583/584: transformers.processing_utils.Unpack must keep importing."""
     src = fetch_text("huggingface/transformers", tag, "src/transformers/processing_utils.py")
@@ -240,7 +218,6 @@ def test_processing_utils_unpack_importable(tag: str):
 # Models: gemma3, gpt_oss forward signature drift.
 
 
-@pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_gemma3_attention_forward_present(tag: str):
     src = fetch_text(
         "huggingface/transformers",
@@ -252,7 +229,6 @@ def test_gemma3_attention_forward_present(tag: str):
     assert has_def(src, "Gemma3Attention", "class"), f"{tag}: class Gemma3Attention missing"
 
 
-@pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_gpt_oss_model_forward_present(tag: str):
     src = fetch_text(
         "huggingface/transformers",
@@ -267,7 +243,6 @@ def test_gpt_oss_model_forward_present(tag: str):
 # auto_factory: unsloth#5155 _LazyAutoMapping private API.
 
 
-@pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_auto_factory_lazy_mapping_private_api(tag: str):
     """unsloth#5155: resolve_model_class needs all four _LazyAutoMapping private attrs to remain."""
     src = fetch_text(
@@ -290,10 +265,6 @@ def test_auto_factory_lazy_mapping_private_api(tag: str):
     )
 
 
-# configuration_utils: PreTrainedConfig vs PretrainedConfig in 5.x.
-
-
-@pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_configuration_utils_alias(tag: str):
     """transformers 5.x renamed PretrainedConfig -> PreTrainedConfig; unsloth-zoo imports both defensively."""
     src = fetch_text(
@@ -312,9 +283,6 @@ def test_configuration_utils_alias(tag: str):
 
 
 # tokenization: apply_chat_template return_dict default flip in v5.
-
-
-@pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_apply_chat_template_signature_present(tag: str):
     """unsloth-zoo#572: apply_chat_template `return_dict` default flipped False -> True in transformers 5.x."""
     src = fetch_text(
@@ -330,9 +298,6 @@ def test_apply_chat_template_signature_present(tag: str):
 
 
 # Generic-importability sweep: every transformers symbol unsloth/zoo imports must stay reachable.
-
-
-@pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_modeling_attn_mask_utils_symbols(tag: str):
     """_prepare_4d_attention_mask_for_sdpa is imported by unsloth/models/llama.py + sentence_transformer.py."""
     src = fetch_text(
@@ -349,7 +314,7 @@ def test_modeling_attn_mask_utils_symbols(tag: str):
     ), f"{tag}: _prepare_4d_attention_mask_for_sdpa missing"
 
 
-@pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
+# Generic-importability sweep:
 def test_cache_utils_classes(tag: str):
     src = fetch_text("huggingface/transformers", tag, "src/transformers/cache_utils.py")
     if src is None:
@@ -359,7 +324,6 @@ def test_cache_utils_classes(tag: str):
         assert has_def(src, cls, "class"), f"{tag}: transformers.cache_utils.{cls} missing"
 
 
-@pytest.mark.parametrize("tag", TRANSFORMERS_TAGS)
 def test_training_args_parallel_mode_importable(tag: str):
     src = fetch_text("huggingface/transformers", tag, "src/transformers/training_args.py")
     if src is None:

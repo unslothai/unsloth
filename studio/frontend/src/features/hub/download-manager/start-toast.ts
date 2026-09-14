@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The one toast announcing a download start, and the one place it is dismissed.
-//
-// Chat used to raise its own alongside the Xet notice, so one download produced two
-// stacked toasts; callers now hand their message over instead. The 8s duration says
-// nothing about the transfer, so the id is derived from the job key and finalize()
-// dismisses it (nothing can be stored: teardownRuntime runs first).
+// The one toast announcing a download start, and the one place it is dismissed. Chat used to raise
+// its own alongside the Xet notice, so one download produced two stacked toasts; callers now hand
+// their message over instead. The 8s duration says nothing about the transfer, so the id is derived
+// from the job key and finalize() dismisses it (nothing can be stored: teardownRuntime runs first).
 
 import { toast } from "@/lib/toast";
 

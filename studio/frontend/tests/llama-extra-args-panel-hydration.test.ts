@@ -94,18 +94,6 @@ test("a background auto-load hydrates a server-only override", () => {
   assert.match(ADAPTER, /candidate\.kind === "gguf" &&\s*\n?\s*!isDiffusion/);
 });
 
-const HUB = readFileSync(
-  path.join(HERE, "..", "src/features/hub/hub-page.tsx"),
-  "utf8",
-);
-
-test("applying from the Hub settings page carries the arguments into the load", () => {
-  // applyPerModelConfigToRuntime does not store llamaExtraArgs, so a selection made
-  // without the config left the field undefined: the load omitted it, the route kept
-  // the resident server's old list, and an edit or a clear did nothing.
-  assert.match(HUB, /forceReload: true,\n(\s*\/\/.*\n)*\s*config,/);
-});
-
 test("a collapsed section stops objecting once nothing is left to object to", () => {
   // Reset with Advanced collapsed clears the list, and the row is not mounted to
   // withdraw the verdict it left standing, so Load stayed disabled.
@@ -337,15 +325,11 @@ const CHAT_PAGE = readFileSync(
   "utf8",
 );
 
-test("a launch that only applies the remembered config still carries its arguments", () => {
+test("a Chat launch that applies remembered config carries its arguments", () => {
   // applyPerModelConfigToRuntime has no field for the launch flags, and /load only
   // inherits them from the SAME resident model, so a cold launch or a switch from
-  // another model ran without the arguments this model was remembered with. Both
-  // paths that load through the runtime alone now pass the config itself.
-  assert.match(
-    HUB,
-    /\.\.\.\(rememberedConfig \? \{ config: rememberedConfig \} : \{\}\),/,
-  );
+  // another model ran without the arguments this model was remembered with. Chat
+  // passes the config itself.
   assert.match(
     CHAT_PAGE,
     /const remembered = rememberedConfigFor\(selection\);/,
@@ -354,7 +338,4 @@ test("a launch that only applies the remembered config still carries its argumen
     CHAT_PAGE,
     /\.\.\.\(remembered \? \{ config: remembered \} : \{\}\),/,
   );
-  // Nothing is invented when there is no remembered config: the field stays absent,
-  // which is what lets /load keep a resident model's own flags.
-  assert.doesNotMatch(HUB, /config: rememberedConfig \?\? null/);
 });

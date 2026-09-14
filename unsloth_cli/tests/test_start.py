@@ -45,6 +45,11 @@ def _assert_env_unset(output: str, name: str) -> None:
     assert needle in output, f"{needle!r} not found in:\n{output}"
 
 
+def _assert_env_kept(output: str, name: str) -> None:
+    needle = f"Remove-Item Env:{name}" if os.name == "nt" else f"unset {name}"
+    assert needle not in output, f"{needle!r} unexpectedly found in:\n{output}"
+
+
 def _assert_env_cwd(output: str, name: str) -> None:
     needle = f"$env:{name} = (Get-Location).Path" if os.name == "nt" else f'export {name}="$PWD"'
     assert needle in output, f"{needle!r} not found in:\n{output}"
@@ -1504,12 +1509,14 @@ def fake_studio(tmp_path, monkeypatch):
         error = None,
     ):
         calls.append((method, url, payload))
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {"object": "list", "data": state["models"]}
         if url.endswith("/api/inference/status"):
             return {"is_gguf": True, "model_identifier": state["models"][0]["id"]}
         if url.endswith("/api/auth/api-keys"):
             return {"key": "sk-unsloth-feedfacefeedface"}
+        if url.endswith("/api/settings/embedding-model"):
+            return {"embedding_model": "unsloth/bge-small-en-v1.5"}
         if url.endswith("/api/inference/load"):
             already_loaded = state["models"][0]["id"] == payload["model_path"]
             state["models"] = [{"id": payload["model_path"], "context_length": 4096}]
@@ -2284,6 +2291,8 @@ def test_connect_claude_no_launch_windows_shim_from_wsl_prints_wslenv(
 def test_connect_codex_no_launch(fake_studio, tmp_path):
     result = CliRunner().invoke(start.start_app, ["codex", "--no-launch"])
     assert result.exit_code == 0, result.output
+    for name in start._CODEX_ENV_UNSET:
+        _assert_env_unset(result.output, name)
     _assert_env_set(result.output, "UNSLOTH_STUDIO_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
     assert "codex --oss --profile unsloth_api" in result.output
     # Config lands in the session-scoped CODEX_HOME, not the user's ~/.codex.
@@ -2318,6 +2327,8 @@ def test_connect_codex_as_subagent_preserves_cloud_parent(fake_studio, tmp_path,
     assert "--model" not in command
     parent_home = tmp_path / "agents" / "codex-subagent" / "parent"
     _assert_env_set(result.output, "CODEX_HOME", str(parent_home))
+    for name in start._CODEX_ENV_UNSET:
+        _assert_env_kept(result.output, name)
     assert start._CODEX_ENV_KEY not in result.output
     assert "sk-unsloth-feedfacefeedface" not in result.output
     home = tmp_path / "agents" / "codex-subagent"
@@ -2373,7 +2384,7 @@ def test_resolve_model_matches_loaded_canonical_case_after_load(monkeypatch, cap
         error = None,
     ):
         calls.append((method, url, payload))
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {
                 "data": [
                     {
@@ -2415,7 +2426,7 @@ def test_resolve_model_matches_snapshot_path_by_public_id(monkeypatch):
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {"data": [{"id": "abc123"}] if state["loaded"] else []}
         if url.endswith("/api/inference/load"):
             state["loaded"] = True
@@ -2478,7 +2489,7 @@ def test_resolve_model_loads_when_catalog_hit_is_not_loaded(monkeypatch):
         error = None,
     ):
         calls.append((method, url))
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {
                 "data": [
                     {
@@ -2510,7 +2521,7 @@ def test_resolve_model_does_not_attach_if_catalog_stays_unloaded(monkeypatch):
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {
                 "data": [
                     {
@@ -2544,7 +2555,7 @@ def test_resolve_model_attaches_to_loaded_catalog_hit_without_reload(monkeypatch
         error = None,
     ):
         calls.append((method, url))
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {
                 "data": [{"id": "unsloth/Gemma-4-GGUF", "loaded": True, "context_length": 131072}]
             }
@@ -2593,7 +2604,7 @@ def test_resolve_model_remote_studio_does_not_casefold_attach(monkeypatch):
         error = None,
     ):
         calls.append((method, url))
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {
                 "data": [{"id": "unsloth/Gemma-4-GGUF", "loaded": True, "context_length": 131072}]
             }
@@ -2799,7 +2810,7 @@ def test_connect_skips_cached_keys_the_server_rejects(fake_studio, tmp_path, mon
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/v1/models") and token == "sk-unsloth-stale":
+        if url.endswith("/api/inference/loaded-models") and token == "sk-unsloth-stale":
             raise urllib.error.HTTPError(url, 401, "Unauthorized", None, None)
         return inner(method, url, token, payload, timeout, error)
 
@@ -2827,7 +2838,7 @@ def test_connect_saved_key_server_outage_surfaces_not_reminted(fake_studio, tmp_
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/v1/models") and token == "sk-unsloth-saved":
+        if url.endswith("/api/inference/loaded-models") and token == "sk-unsloth-saved":
             raise urllib.error.HTTPError(url, 503, "Service Unavailable", None, None)
         return inner(method, url, token, payload, timeout, error)
 
@@ -2918,7 +2929,7 @@ def test_connect_model_flag_matches_canonical_id(fake_studio, monkeypatch):
     ):
         if url.endswith("/api/inference/load"):
             return {"model": canonical, "display_name": canonical}
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             # Decoy sorts first, so models[0] is the wrong pick on the old code.
             return {"object": "list", "data": [MODEL, {"id": canonical, "context_length": 4096}]}
         return inner(method, url, token, payload, timeout, error)
@@ -3537,7 +3548,7 @@ def test_connect_requested_model_not_loaded_fails(fake_studio, monkeypatch):
     ):
         if url.endswith("/api/inference/load"):
             return {}
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {"object": "list", "data": [MODEL]}  # decoy; request never appears
         return inner(method, url, token, payload, timeout, error)
 
@@ -3673,7 +3684,9 @@ def test_connect_minted_cache_requires_identity_check(fake_studio, tmp_path, mon
     result = CliRunner().invoke(start.start_app, ["claude", "--no-launch"])
     assert result.exit_code == 1
     assert "--api-key" in result.output
-    assert not any(c[1].endswith("/v1/models") for c in fake_studio)  # minted key never sent
+    assert not any(
+        c[1].endswith("/api/inference/loaded-models") for c in fake_studio
+    )  # minted key never sent
 
 
 def test_connect_explicit_key_skips_identity_check(fake_studio, monkeypatch):
@@ -3933,6 +3946,8 @@ def test_start_studio_server_polls_progress_from_early_key(monkeypatch):
     created = []
 
     class FakeProgress:
+        downloaded_bytes = 0
+
         def __init__(self, base, key, model, variant):
             created.append((base, key, model, variant, "created"))
 
@@ -4220,7 +4235,7 @@ def test_resolve_model_refused_load_reports_survivor(monkeypatch, capsys):
     ):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
-        assert url.endswith("/v1/models"), url
+        assert url.endswith("/api/inference/loaded-models"), url
         return {"data": models}
 
     def refuse_load(base, key, model, load, payload):
@@ -4287,7 +4302,7 @@ def test_resolve_model_failed_load_stays_quiet_when_model_gone(monkeypatch, caps
     ):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
-        assert url.endswith("/v1/models"), url
+        assert url.endswith("/api/inference/loaded-models"), url
         return {"data": []}
 
     def failing_load(base, key, model, load, payload):
@@ -4706,11 +4721,19 @@ def test_connect_openclaw_no_launch(fake_studio, tmp_path, monkeypatch):
     # Config + state are scoped to the session dir, not the user's ~/.openclaw.
     _assert_env_set(result.output, "OPENCLAW_CONFIG_PATH", str(config_path))
     _assert_env_set(result.output, "OPENCLAW_STATE_DIR", str(tmp_path / "agents" / "openclaw"))
+    for name in start._OPENCLAW_ENV_UNSET:
+        _assert_env_unset(result.output, name)
     config = json.loads(config_path.read_text())
     assert config["models"]["providers"]["unsloth"]["apiKey"] == "sk-unsloth-feedfacefeedface"
     assert config["agents"]["defaults"]["model"]["primary"] == f"unsloth/{MODEL['id']}"
     assert config["agents"]["defaults"]["skipBootstrap"] is True
     assert config["agents"]["defaults"]["workspace"] == "${OPENCLAW_WORKSPACE_DIR}"
+    assert config["memory"]["search"] == {
+        "provider": "openai-compatible",
+        "model": "unsloth/bge-small-en-v1.5",
+        "fallback": "none",
+        "remote": {"baseUrl": f"{BASE}/v1", "apiKey": "sk-unsloth-feedfacefeedface"},
+    }
     _assert_env_cwd(result.output, "OPENCLAW_WORKSPACE_DIR")
     assert _launch_command(result.output) == ["openclaw", "tui", "--local"]
     # OpenAI /v1/chat/completions works on either backend — no GGUF gate.
@@ -6409,7 +6432,7 @@ def test_agent_api_key_auto_started_rejected_env_key_falls_back(fake_studio, tmp
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/v1/models") and token == "sk-unsloth-other-server":
+        if url.endswith("/api/inference/loaded-models") and token == "sk-unsloth-other-server":
             raise urllib.error.HTTPError(url, 401, "Unauthorized", None, None)
         return inner(method, url, token, payload, timeout, error)
 
@@ -7846,7 +7869,7 @@ def test_codex_preload_gate_checks_direct_path_identity(fake_studio, monkeypatch
         timeout = 30,
         error = None,
     ):
-        if url.endswith("/v1/models"):
+        if url.endswith("/api/inference/loaded-models"):
             return {"data": [{"id": "foo-Q4_K_M", "loaded": True}]}
         if url.endswith("/api/inference/status"):
             return {
@@ -8731,3 +8754,147 @@ def test_a_status_body_without_is_gguf_still_launches(fake_studio, monkeypatch, 
     result = CliRunner().invoke(start.start_app, [agent, "--no-launch"])
     assert result.exit_code == 0, result.output
     assert "needs a GGUF model" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("agent", "unset"),
+    [
+        ("codex", ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")),
+        ("openclaw", ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN")),
+    ],
+)
+def test_launch_drops_provider_credentials(agent, unset, fake_studio, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: f"/usr/local/bin/{agent}")
+    for name in unset:
+        monkeypatch.setenv(name, "sk-stale")
+    captured = _capture_launch(monkeypatch, [agent])
+    for name in unset:
+        assert name not in captured["env"]
+
+
+@pytest.mark.parametrize("enabled", ["1", "true", "yes", "on"])
+def test_openclaw_launch_disables_the_login_shell_key_fallback(enabled, fake_studio, monkeypatch):
+    # openclaw 2026.9.2 reads dropped keys back from a login shell (src/infra/shell-env.ts).
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/openclaw")
+    monkeypatch.setenv("OPENCLAW_LOAD_SHELL_ENV", enabled)
+    captured = _capture_launch(monkeypatch, ["openclaw"])
+    assert captured["env"]["OPENCLAW_LOAD_SHELL_ENV"] == "0"
+
+
+def test_openclaw_no_launch_recipe_disables_the_login_shell_key_fallback(fake_studio):
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    _assert_env_set(result.output, "OPENCLAW_LOAD_SHELL_ENV", "0")
+
+
+def test_openclaw_state_dir_is_a_real_path_not_a_blank(fake_studio, monkeypatch):
+    # An empty state dir sends OpenClaw back to the user's real home, undoing the scoping.
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/openclaw")
+    captured = _capture_launch(monkeypatch, ["openclaw"])
+    assert captured["env"]["OPENCLAW_STATE_DIR"].strip()
+
+
+def test_openclaw_config_pins_the_shell_env_fallback_off(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "agents" / "openclaw" / "openclaw.json"
+    config_path.parent.mkdir(parents = True)
+    config_path.write_text(json.dumps({"env": {"shellEnv": {"enabled": True}}}))
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = json.loads(config_path.read_text())
+    assert config["env"]["shellEnv"]["enabled"] is False
+
+
+def _openclaw_without_the_settings_route(monkeypatch, exc = RuntimeError("404")):
+    real = start._http_json
+
+    def older_server(method, url, *args, **kwargs):
+        if url.endswith("/api/settings/embedding-model"):
+            raise exc
+        return real(method, url, *args, **kwargs)
+
+    monkeypatch.setattr(start, "_http_json", older_server)
+
+
+def test_openclaw_memory_search_asks_for_keyword_only_without_the_settings_route(
+    fake_studio, tmp_path, monkeypatch
+):
+    # A server that cannot name its embedder will not serve it either, and that name
+    # beside fallback "none" is the one shape OpenClaw cannot degrade out of.
+    _openclaw_without_the_settings_route(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = json.loads((tmp_path / "agents" / "openclaw" / "openclaw.json").read_text())
+    search = config["memory"]["search"]
+    assert search == {"provider": "none", "fallback": "none"}
+
+
+def test_openclaw_memory_search_drops_a_stale_remote_when_the_route_is_gone(
+    fake_studio, tmp_path, monkeypatch
+):
+    # A --persist config must not keep the old endpoint and key for a dropped provider.
+    _openclaw_without_the_settings_route(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "agents" / "openclaw" / "openclaw.json"
+    config_path.parent.mkdir(parents = True)
+    config_path.write_text(
+        json.dumps(
+            {
+                "memory": {
+                    "search": {
+                        "provider": "openai-compatible",
+                        "model": "unsloth/bge-small-en-v1.5",
+                        "fallback": "none",
+                        "remote": {
+                            "baseUrl": "http://127.0.0.1:8888/v1",
+                            "apiKey": "sk-unsloth-old",
+                        },
+                    }
+                }
+            }
+        )
+    )
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    search = json.loads(config_path.read_text())["memory"]["search"]
+    assert search == {"provider": "none", "fallback": "none"}
+
+
+def test_openclaw_memory_search_model_is_stripped(fake_studio, tmp_path, monkeypatch):
+    # The model goes to /v1/embeddings verbatim, so padding would reach the request.
+    real = start._http_json
+
+    def padded(method, url, *args, **kwargs):
+        if url.endswith("/api/settings/embedding-model"):
+            return {"embedding_model": "  unsloth/bge-small-en-v1.5\n"}
+        return real(method, url, *args, **kwargs)
+
+    monkeypatch.setattr(start, "_http_json", padded)
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = json.loads((tmp_path / "agents" / "openclaw" / "openclaw.json").read_text())
+    assert config["memory"]["search"]["model"] == "unsloth/bge-small-en-v1.5"
+
+
+def test_openclaw_memory_search_does_not_swallow_a_cli_abort(fake_studio, tmp_path, monkeypatch):
+    # typer.Exit is a RuntimeError subclass: a bare except would degrade the config silently.
+    _openclaw_without_the_settings_route(monkeypatch, exc = typer.Exit(2))
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
+    assert result.exit_code == 2, result.output
+
+
+def test_openclaw_memory_search_clears_a_stale_external_fallback(
+    fake_studio, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    config_path = tmp_path / "agents" / "openclaw" / "openclaw.json"
+    config_path.parent.mkdir(parents = True)
+    config_path.write_text(json.dumps({"memory": {"search": {"fallback": "openai"}}}))
+    result = CliRunner().invoke(start.start_app, ["openclaw", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = json.loads(config_path.read_text())
+    assert config["memory"]["search"]["fallback"] == "none"
+    assert config["memory"]["search"]["provider"] == "openai-compatible"
