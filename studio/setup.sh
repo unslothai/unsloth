@@ -637,10 +637,9 @@ _setup_cvd_hides_nvidia() {
 # via CUDA_VISIBLE_DEVICES=""/-1 counts as NOT usable (matches
 # install_llama_prebuilt.py has_usable_nvidia), so the AMD probes still run
 # and a mixed host steered to its AMD card keeps the ROCm route.
-_setup_has_usable_nvidia_gpu() {
-    if _setup_cvd_hides_nvidia; then
-        return 1
-    fi
+# Present, mask or no mask. The two differ by exactly one thing, the CUDA_VISIBLE_DEVICES
+# check, so the usable probe is written in terms of this one rather than beside it.
+_setup_has_physical_nvidia_gpu() {
     _setup_nvsmi=""
     if command -v nvidia-smi >/dev/null 2>&1; then
         _setup_nvsmi="nvidia-smi"
@@ -658,6 +657,13 @@ _setup_has_usable_nvidia_gpu() {
         return 0
     fi
     return 1
+}
+
+_setup_has_usable_nvidia_gpu() {
+    if _setup_cvd_hides_nvidia; then
+        return 1
+    fi
+    _setup_has_physical_nvidia_gpu
 }
 
 _cuda_driver_max_version() {
@@ -2157,6 +2163,7 @@ if ! command -v rocminfo >/dev/null 2>&1 && [ -x /opt/rocm/bin/rocminfo ]; then
 fi
 _setup_amd_detected=false
 _setup_nvidia_usable=false
+_setup_nvidia_physical=false
 _setup_gfx_all=""
 _setup_gfx=""
 _setup_hip_map_missing=0
@@ -2335,6 +2342,9 @@ _setup_supported_gfx_from_name() {
 # a usable-NVIDIA host (mirrors _has_rocm_gpu in install_python_stack.py).
 # This also keeps a wedged rocminfo/amd-smi from hanging setup before the
 # host is classified; the AMD probes themselves run under _setup_run_smi.
+if _setup_has_physical_nvidia_gpu; then
+    _setup_nvidia_physical=true
+fi
 if _setup_has_usable_nvidia_gpu; then
     _setup_nvidia_usable=true
 fi
@@ -3204,13 +3214,14 @@ else
 
             GPU_BACKEND=""
             NVCC_PATH=""
-            # Gate the CUDA toolkit search on an actually-usable NVIDIA GPU
-            # (_setup_nvidia_usable, computed in the GPU summary block above;
-            # already false when hidden via CUDA_VISIBLE_DEVICES=""/-1).
-            # A CUDA toolkit alone (CPU-only build container, leftover packages)
-            # is not proof of a GPU: building with -DGGML_CUDA=ON there yields a
-            # binary that fails at runtime, so fall through to the CPU build.
-            if [ "$_setup_nvidia_usable" = true ]; then
+            # Gate the CUDA toolkit search on a PHYSICALLY present NVIDIA GPU. A CUDA
+            # toolkit alone (CPU-only build container, leftover packages) is not proof of a
+            # GPU: building with -DGGML_CUDA=ON there yields a binary that fails at runtime,
+            # so fall through to the CPU build. But a card hidden by CUDA_VISIBLE_DEVICES=""
+            # is still a card, and _setup_nvidia_usable is false for it. Gating on that
+            # compiled a CPU-only binary and installed it over the tree for good, which is
+            # the same permanent downgrade the prebuilt selector avoids for masked hosts.
+            if [ "$_setup_nvidia_physical" = true ]; then
                 if command -v nvcc &>/dev/null; then
                     NVCC_PATH="$(command -v nvcc)"
                     GPU_BACKEND="cuda"

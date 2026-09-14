@@ -204,12 +204,18 @@ class TestSetupShHardening:
         assert "_setup_has_usable_nvidia_gpu()" in setup_src
 
     def test_helper_uses_proc_fallback(self, setup_src):
-        start = setup_src.find("_setup_has_usable_nvidia_gpu()")
+        # The fallback lives in the physical probe, which the usable one delegates to.
+        start = setup_src.find("_setup_has_physical_nvidia_gpu()")
         end = setup_src.find("\n}", start)
         body = setup_src[start:end]
         assert (
             "/proc/driver/nvidia/gpus" in body
-        ), "_setup_has_usable_nvidia_gpu must fall back to /proc/driver/nvidia/gpus"
+        ), "_setup_has_physical_nvidia_gpu must fall back to /proc/driver/nvidia/gpus"
+        start = setup_src.find("_setup_has_usable_nvidia_gpu() {")
+        end = setup_src.find("\n}", start)
+        assert (
+            "_setup_has_physical_nvidia_gpu" in setup_src[start:end]
+        ), "_setup_has_usable_nvidia_gpu must reach the fallback through the physical probe"
 
     def test_gpu_summary_uses_helper(self, setup_src):
         assert "if _setup_has_usable_nvidia_gpu; then" in setup_src
@@ -222,14 +228,21 @@ class TestSetupShHardening:
         assert "timeout 10" in body
         assert "command -v timeout" in body
 
-    def test_cuda_source_build_gated_on_usable_nvidia(self, setup_src):
-        """The nvcc source-build search must be gated on _setup_nvidia_usable."""
+    def test_cuda_source_build_gated_on_physical_nvidia(self, setup_src):
+        """The nvcc search must require a PHYSICAL NVIDIA GPU, not merely a toolkit.
+
+        Physical rather than usable: a card hidden by CUDA_VISIBLE_DEVICES="" is still a
+        card, and gating on usable compiled a CPU-only binary and activated it over the
+        tree for good. A toolkit with no GPU at all is still refused, which is what this
+        guard was written for.
+        """
         anchor = setup_src.find('NVCC_PATH=""\n')
         assert anchor >= 0
-        window = setup_src[anchor : anchor + 700]
+        window = setup_src[anchor : anchor + 900]
         assert (
-            'if [ "$_setup_nvidia_usable" = true ]' in window
-        ), "CUDA toolkit search must require a usable NVIDIA GPU, not just nvcc"
+            'if [ "$_setup_nvidia_physical" = true ]' in window
+        ), "CUDA toolkit search must require a physically present NVIDIA GPU, not just nvcc"
+        assert "$_setup_nvidia_usable" not in window
 
     def test_nvidia_helper_honours_hidden_cvd(self, setup_src):
         """_setup_has_usable_nvidia_gpu must consult the hidden-CVD helper so CVD ""/-1 suppresses NVIDIA before AMD gating."""
@@ -457,10 +470,32 @@ class TestHiddenCvdNotUsable:
         out = self._run_sh_helper(
             tmp_path,
             src,
-            ["_setup_run_smi", "_setup_cvd_hides_nvidia", "_setup_has_usable_nvidia_gpu"],
+            [
+                "_setup_run_smi",
+                "_setup_cvd_hides_nvidia",
+                "_setup_has_physical_nvidia_gpu",
+                "_setup_has_usable_nvidia_gpu",
+            ],
             cvd,
         )
         assert out == expected
+
+
+class TestSetupShPhysicalNvidiaSurvivesTheMask:
+    """The nvcc source-build search is gated on this probe, so it has to answer true under
+    a mask that makes the usable probe answer false. Gated on usable, a masked host
+    compiled a CPU-only binary and activated it over the tree permanently."""
+
+    @pytest.mark.parametrize("cvd", [None, "", "-1", "0"])
+    def test_the_physical_probe_ignores_every_mask(self, tmp_path, cvd):
+        src = SETUP_SH.read_text(encoding = "utf-8")
+        out = TestHiddenCvdNotUsable()._run_sh_helper(
+            tmp_path,
+            src,
+            ["_setup_run_smi", "_setup_cvd_hides_nvidia", "_setup_has_physical_nvidia_gpu"],
+            cvd,
+        )
+        assert out == "usable"
 
 
 class TestRedactInstallOutput:

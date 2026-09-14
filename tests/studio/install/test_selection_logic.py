@@ -2675,7 +2675,10 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
             has_usable_nvidia = False,
             visible_cuda_devices = "",
             driver_cuda_version = (12, 8),
-            compute_caps = ["89"],
+            # As detect_host really leaves a masked host: select_visible_gpu_rows drops
+            # every row, so the VISIBLE caps are empty and only the physical ones survive.
+            compute_caps = [],
+            physical_compute_caps = ["89"],
         )
         attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(
             host, self._cuda_and_cpu_bundle()
@@ -2701,7 +2704,8 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
             has_usable_nvidia = False,
             visible_cuda_devices = "",
             driver_cuda_version = (12, 8),
-            compute_caps = ["89"],
+            compute_caps = [],
+            physical_compute_caps = ["89"],
         )
         attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(host, self._cpu_only_bundle())
         assert attempts == []
@@ -2718,6 +2722,36 @@ class TestLinuxPublishedAttemptsNvidiaCpuGate:
             host, self._vulkan_and_cpu_bundle()
         )
         assert all(a.install_kind not in ("linux-vulkan", "linux-cpu") for a in attempts)
+
+    def test_a_masked_host_below_the_bundle_floor_is_not_handed_it(self, monkeypatch):
+        # An emptied mask empties compute_caps, which is the selector's unknown-SM path:
+        # it takes a portable artifact WITHOUT checking min_sm/max_sm. sm_61 against a
+        # floor of sm_70 would install and then offload nothing once the mask came off.
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detect_torch_cuda_runtime_preference",
+            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detected_linux_runtime_lines",
+            lambda: (["cuda12"], {"cuda12": ["/usr/local/cuda/lib64"]}),
+        )
+        host = make_host(
+            has_physical_nvidia = True,
+            has_usable_nvidia = False,
+            visible_cuda_devices = "",
+            driver_cuda_version = (12, 8),
+            compute_caps = [],
+            physical_compute_caps = ["61"],
+        )
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(
+            host, self._cuda_and_cpu_bundle()
+        )
+        assert all(
+            "portable" not in a.name for a in attempts
+        ), "an sm_61 host must not be handed a bundle whose floor is sm_70"
+        assert all(a.install_kind != "linux-cpu" for a in attempts)
 
     def _cuda_and_cpu_bundle(self):
         """A release carrying both a covering CUDA bundle and the CPU tail."""

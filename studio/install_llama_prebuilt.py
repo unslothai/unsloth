@@ -376,6 +376,11 @@ class HostInfo:
     has_physical_nvidia: bool
     has_usable_nvidia: bool
     has_rocm: bool = False
+    # Every compute cap nvidia-smi reported, before CUDA_VISIBLE_DEVICES filtering.
+    # compute_caps holds the VISIBLE ones and goes empty under an emptied mask, which is
+    # the unknown-SM path in the selector: it accepts a portable artifact without checking
+    # min_sm/max_sm, so a masked sm_61 host could be handed an sm_70 floor.
+    physical_compute_caps: list[str] = field(default_factory = list)
     has_intel_gpu: bool = False
     # AMD GPU present but ROCm unusable. Linux only, probed only when there is no usable
     # NVIDIA and no ROCm, so the ROCm branches still own every host where ROCm works.
@@ -2541,6 +2546,7 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
     nvidia_smi = shutil.which("nvidia-smi")
     driver_cuda_version = None
     compute_caps: list[str] = []
+    physical_compute_caps: list[str] = []
     visible_cuda_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
     visible_device_tokens = parse_cuda_visible_devices(visible_cuda_devices)
     has_physical_nvidia = False
@@ -2593,6 +2599,11 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                 if len(parts) != 3:
                     continue
                 index, uuid, cap = parts
+                normalized_cap = normalize_compute_cap(cap)
+                # Recorded before the mask filter: an emptied CUDA_VISIBLE_DEVICES drops
+                # every row, and a selection made for the hardware still needs its SMs.
+                if normalized_cap is not None and normalized_cap not in physical_compute_caps:
+                    physical_compute_caps.append(normalized_cap)
                 visible_gpu_row = select_visible_gpu_rows(
                     [(index, uuid, cap)],
                     visible_device_tokens,
@@ -2600,7 +2611,6 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
                 if not visible_gpu_row:
                     continue
                 visible_gpu_rows.extend(visible_gpu_row)
-                normalized_cap = normalize_compute_cap(cap)
                 if normalized_cap is None:
                     continue
                 if normalized_cap not in compute_caps:
@@ -2806,6 +2816,7 @@ def detect_host(*, probe_rocm_with_nvidia: bool = False) -> HostInfo:
         nvidia_smi = nvidia_smi,
         driver_cuda_version = driver_cuda_version,
         compute_caps = compute_caps,
+        physical_compute_caps = physical_compute_caps,
         visible_cuda_devices = visible_cuda_devices,
         has_physical_nvidia = has_physical_nvidia,
         has_usable_nvidia = has_usable_nvidia,
@@ -6428,10 +6439,10 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
         # physical-without-usable means exactly one thing: the GPU is there and
         # CUDA_VISIBLE_DEVICES is empty or -1. The mask is scoped to this process;
         # activate_install_tree is not, so one masked run would leave a CUDA machine on the
-        # CPU bundle for good. Select CUDA as if unmasked: compute_cap and the driver CUDA
-        # version are driver queries and keep answering under an empty mask, so the normal
-        # coverage match applies. The mask still bites at RUN time, where the CUDA build sees
-        # no devices and runs on CPU exactly as the CPU bundle would.
+        # CPU bundle for good. Select CUDA as if unmasked: nvidia-smi is NVML and keeps
+        # answering under the mask, so the driver CUDA version and every compute cap are
+        # still readable. The mask still bites at RUN time, where the CUDA build sees no
+        # devices and runs on CPU exactly as the CPU bundle would.
         # Below ROCm and Vulkan on purpose: a masked NVIDIA host with usable ROCm keeps ROCm,
         # and an explicit CPU request never arrives here at all because _apply_host_overrides
         # has already cleared has_physical_nvidia.
@@ -6441,9 +6452,22 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
                 f"{host.visible_cuda_devices!r}; selecting the CUDA bundle for the hardware "
                 "rather than installing the CPU bundle over it"
             )
-            torch_preference = detect_torch_cuda_runtime_preference(host)
+            # Select against the PHYSICAL caps. host.compute_caps holds the visible ones and
+            # is empty here by construction, which is the selector's unknown-SM path: it
+            # takes a portable artifact without checking min_sm/max_sm, so a masked sm_61
+            # host would accept an sm_70 floor and still have no offload once unmasked.
+            selection_host = host
+            if host.physical_compute_caps and not host.compute_caps:
+                selection_host = dataclasses_replace(
+                    host, compute_caps = list(host.physical_compute_caps)
+                )
+                log(
+                    "selecting against the physical compute caps "
+                    f"{','.join(selection_host.compute_caps)} the mask hid"
+                )
+            torch_preference = detect_torch_cuda_runtime_preference(selection_host)
             masked_selection = linux_cuda_choice_from_release(
-                host,
+                selection_host,
                 bundle,
                 preferred_runtime_line = torch_preference.runtime_line,
                 selection_preamble = torch_preference.selection_log,
