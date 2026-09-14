@@ -264,6 +264,102 @@ def test_chatbackend_normal_path_skips_adapter_control():
     assert fake.calls[0][0] == "plain"
 
 
+class _FakeGgufBackend:
+    def __init__(self):
+        self.calls = []
+
+    def generate_chat_completion(self, **kwargs):
+        self.calls.append(kwargs)
+        return iter(["hi"])
+
+
+def test_chat_max_new_tokens_is_unset_by_default():
+    opt = _option(chatmod.chat, "max_new_tokens")
+    assert getattr(opt, "default", "missing") is None
+    assert "--max-new-tokens" in (getattr(opt, "param_decls", None) or [])
+
+
+def test_chatbackend_forwards_an_unset_max_new_tokens_unset():
+    # Only the backend, once it has counted the prompt, can size an unset limit.
+    fake = _FakeBackend()
+    backend = ChatBackend("unsloth", fake)
+
+    list(
+        backend.stream(
+            [{"role": "user", "content": "x"}],
+            **{**_STREAM_KWARGS, "max_new_tokens": None},
+        )
+    )
+
+    assert fake.calls[0][2]["max_new_tokens"] is None
+
+
+def test_chatbackend_honours_an_explicit_max_new_tokens():
+    fake = _FakeBackend()
+    backend = ChatBackend("unsloth", fake)
+
+    list(backend.stream([{"role": "user", "content": "x"}], **_STREAM_KWARGS))
+
+    assert fake.calls[0][2]["max_new_tokens"] == 8
+
+
+def test_chatbackend_gguf_leaves_max_tokens_unset_for_llama_server():
+    fake = _FakeGgufBackend()
+    backend = ChatBackend("gguf", fake)
+
+    list(
+        backend.stream(
+            [{"role": "user", "content": "x"}],
+            **{**_STREAM_KWARGS, "max_new_tokens": None},
+        )
+    )
+    list(backend.stream([{"role": "user", "content": "x"}], **_STREAM_KWARGS))
+
+    assert [call["max_tokens"] for call in fake.calls] == [None, 8]
+
+
+class _FakeStatsBackend:
+    def __init__(self, stats):
+        self._stats = stats
+
+    def generate_chat_response(self, **kwargs):
+        holder = kwargs.get("stats_holder")
+
+        def stream():
+            yield "hi"
+            if holder is not None:
+                holder["stats"] = self._stats
+
+        return stream()
+
+
+def _drain_unsloth(stats):
+    backend = ChatBackend("unsloth", _FakeStatsBackend(stats))
+    list(backend.stream([{"role": "user", "content": "x"}], **_STREAM_KWARGS))
+    return backend.reply_hit_token_limit
+
+
+def test_chatbackend_reports_whether_a_reply_ran_out_of_budget():
+    assert _drain_unsloth({"truncated": True}) is True
+    assert _drain_unsloth({"finish_reason": "length"}) is True
+    assert _drain_unsloth({"truncated": False}) is False
+    assert _drain_unsloth({"finish_reason": "stop"}) is False
+    assert _drain_unsloth(None) is False
+
+
+def test_chatbackend_gguf_reports_a_length_finish_from_the_metadata_event():
+    class _Meta:
+        def generate_chat_completion(self, **kwargs):
+            return iter(["hi", {"type": "metadata", "finish_reason": "length"}])
+
+    backend = ChatBackend("gguf", _Meta())
+    chunks = list(backend.stream([{"role": "user", "content": "x"}], **_STREAM_KWARGS))
+
+    assert backend.reply_hit_token_limit is True
+    # The metadata event still reaches the stream helpers, which skip non-strings.
+    assert chunks[0] == "hi"
+
+
 def test_collect_stream_returns_last_cumulative_think_stripped():
     stream = iter(["<think>r</think>hel", "<think>r</think>hello"])
     assert collect_stream(stream, show_thinking = False) == "hello"
@@ -922,6 +1018,59 @@ def test_http_backend_streams_cumulative_text(monkeypatch):
     assert out == ["He", "Hello"]
 
 
+def _http_stream_body(monkeypatch, max_new_tokens):
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    bodies = []
+
+    def fake_request(
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
+        bodies.append(payload)
+        return _FakeSSEResponse([b"data: [DONE]\n"])
+
+    monkeypatch.setattr(backend, "_request", fake_request)
+    list(
+        backend.stream(
+            [{"role": "user", "content": "hi"}],
+            **{**_STREAM_KWARGS, "max_new_tokens": max_new_tokens},
+        )
+    )
+    return bodies[0]
+
+
+def test_http_backend_omits_max_tokens_when_unset(monkeypatch):
+    # The server documents max_tokens=None as "generate until EOS"; sending a cap
+    # the user never asked for truncates every reply.
+    assert "max_tokens" not in _http_stream_body(monkeypatch, None)
+
+
+def test_http_backend_sends_an_explicit_max_tokens(monkeypatch):
+    assert _http_stream_body(monkeypatch, 128)["max_tokens"] == 128
+
+
+def _http_finish(monkeypatch, finish_reason):
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    chunk = json.dumps({"choices": [{"delta": {"content": "hi"}, "finish_reason": finish_reason}]})
+    monkeypatch.setattr(
+        backend,
+        "_request",
+        lambda *a, **k: _FakeSSEResponse([f"data: {chunk}\n".encode(), b"data: [DONE]\n"]),
+    )
+    out = list(backend.stream([{"role": "user", "content": "hi"}], **_STREAM_KWARGS))
+    return backend.reply_hit_token_limit, out
+
+
+def test_http_backend_reports_whether_a_reply_ran_out_of_budget(monkeypatch):
+    hit, out = _http_finish(monkeypatch, "length")
+    assert hit is True
+    # The finish-reason chunk carries a delta too; it must not be dropped.
+    assert out == ["hi"]
+    assert _http_finish(monkeypatch, "stop")[0] is False
+
+
 class _FakeLoadResponse:
     """A /api/inference/load reply that records whether its body was drained.
 
@@ -1424,6 +1573,41 @@ def test_chat_prefers_running_studio_server(monkeypatch):
     assert local_loads == []
     assert "stays warm" in result.output
     assert closed == ["http"]
+
+
+def _chat_run_with_limit_flag(monkeypatch, hit, *flags):
+    class _FakeHttpBackend:
+        def __init__(self):
+            self.reply_hit_token_limit = False
+
+        def stream(self, *a, **k):
+            self.reply_hit_token_limit = hit
+            return iter(["hello"])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+    monkeypatch.setattr(chatmod, "connect_studio_server", lambda *a, **k: _FakeHttpBackend())
+    monkeypatch.setattr(chatmod, "load_chat_backend", lambda *a, **k: None)
+    monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+
+    result = CliRunner().invoke(_chat_app(), ["fake-model", *flags], input = "hi\n/exit\n")
+    assert result.exit_code == 0, result.output
+    return result.output
+
+
+def test_chat_tells_the_user_when_a_reply_stopped_at_the_token_limit(monkeypatch):
+    unset = _chat_run_with_limit_flag(monkeypatch, True)
+    capped = _chat_run_with_limit_flag(monkeypatch, True, "--max-new-tokens", "8")
+
+    # Only an unset limit grows with the context; a chosen one has to be raised itself.
+    assert "--max-seq-length" in unset and "--max-new-tokens" not in unset
+    assert "--max-new-tokens" in capped and "--max-seq-length" not in capped
+
+
+def test_chat_stays_quiet_when_a_reply_ended_on_its_own(monkeypatch):
+    assert "token limit" not in _chat_run_with_limit_flag(monkeypatch, False)
 
 
 def test_chat_forwards_gguf_runtime_options_to_loader(monkeypatch):

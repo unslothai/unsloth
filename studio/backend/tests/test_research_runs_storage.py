@@ -69,7 +69,7 @@ def _shared_setup_6():
 @pytest.fixture
 def research_home(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     studio_db.upsert_chat_thread(
         {
             "id": "thread-1",
@@ -549,7 +549,7 @@ def test_schema_and_state_transitions(research_home):
 
 def test_owner_scoped_claim_schema_migrates_to_global(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     studio_db.upsert_chat_thread(
         {
             "id": "shared-thread",
@@ -594,7 +594,7 @@ def test_owner_scoped_claim_schema_migrates_to_global(tmp_path, monkeypatch):
     finally:
         conn.close()
 
-    studio_db._schema_ready = False
+    studio_db._schema_ready = set()
     conn = studio_db.get_connection()
     try:
         primary_key = [
@@ -619,7 +619,7 @@ def test_owner_scoped_claim_schema_migrates_to_global(tmp_path, monkeypatch):
 
 def test_owner_scoped_claim_migration_rolls_back_on_interruption(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(studio_db, "_schema_ready", False)
+    monkeypatch.setattr(studio_db, "_schema_ready", set())
     studio_db.upsert_chat_thread(
         {
             "id": "shared-thread",
@@ -661,14 +661,14 @@ def test_owner_scoped_claim_migration_rolls_back_on_interruption(tmp_path, monke
         return real_connect(path, *args, **kwargs)
 
     monkeypatch.setattr(studio_db.sqlite3, "connect", _failing_connect)
-    studio_db._schema_ready = False
+    studio_db._schema_ready = set()
     with pytest.raises(RuntimeError, match = "simulated crash"):
         studio_db.get_connection()
 
     # Recover: the interrupted migration left nothing half-applied, so a clean boot
     # completes the migration and preserves the original claim exactly once.
     monkeypatch.setattr(studio_db.sqlite3, "connect", real_connect)
-    studio_db._schema_ready = False
+    studio_db._schema_ready = set()
     conn = studio_db.get_connection()
     try:
         primary_key = [
@@ -2978,6 +2978,65 @@ def test_create_run_rejects_binding_to_populated_reply(research_home):
     )
     run = _create(assistant_message_id = "empty-placeholder")
     assert run["assistantMessageId"] == "empty-placeholder"
+
+
+def test_create_run_binds_through_a_preamble_beside_the_handoff(research_home):
+    # A thinking model narrates before it calls a tool, so both arrive in one message.
+    studio_db.upsert_chat_message(
+        {
+            "id": "preamble-and-call",
+            "threadId": "thread-1",
+            "parentId": "user-1",
+            "role": "assistant",
+            "content": [
+                {"type": "reasoning", "text": "the user wants research"},
+                {"type": "text", "text": "I'll research that now."},
+                {"type": "tool-call", "toolName": "deep_research", "toolCallId": "c1"},
+            ],
+            "createdAt": 6,
+        }
+    )
+    run = _create(assistant_message_id = "preamble-and-call")
+    assert run["assistantMessageId"] == "preamble-and-call"
+
+
+def test_create_run_still_rejects_an_answer_beside_an_unrelated_tool_call(research_home):
+    studio_db.upsert_chat_message(
+        {
+            "id": "answer-and-other-call",
+            "threadId": "thread-1",
+            "parentId": "user-1",
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "existing answer"},
+                {"type": "tool-call", "toolName": "search_knowledge_base", "toolCallId": "c2"},
+            ],
+            "createdAt": 7,
+        }
+    )
+    with pytest.raises(research_db.ResearchConflictError):
+        _create(assistant_message_id = "answer-and-other-call")
+    assert research_db.get_run("run-1") is None
+
+
+def test_create_run_rejects_a_completed_answer_even_beside_the_handoff(research_home):
+    studio_db.upsert_chat_message(
+        {
+            "id": "sources-and-call",
+            "threadId": "thread-1",
+            "parentId": "user-1",
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "existing answer"},
+                {"type": "source", "sourceType": "url", "url": "https://kept.example"},
+                {"type": "tool-call", "toolName": "deep_research", "toolCallId": "c3"},
+            ],
+            "createdAt": 8,
+        }
+    )
+    with pytest.raises(research_db.ResearchConflictError):
+        _create(assistant_message_id = "sources-and-call")
+    assert research_db.get_run("run-1") is None
 
 
 def test_update_assistant_replaces_report_parts_without_duplication(research_home):

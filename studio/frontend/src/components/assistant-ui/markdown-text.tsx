@@ -813,50 +813,35 @@ function useCoalescedStreamingText(
 /** False inside the reasoning block, which renders through this same component. */
 export const SearchImagesEnabledContext = createContext(true);
 
-const MarkdownTextImpl = () => {
-  const allowSearchImages = useContext(SearchImagesEnabledContext);
-  const aui = useAui();
-  const { text, status } = useMessagePartText();
-  const partIndex =
-    aui.part.source === "message" && aui.part.query.type === "index"
-      ? aui.part.query.index
-      : 0;
-  // Parts are keyed by index, so switching conversations hands this instance a different message, and Streamdown
-  // only extends its parsed blocks: key it per message. The cache generation joins the key for the case the
-  // Markdown string cannot express, an edit that drops retained blocks without changing the tail.
-  const messageId = useAuiState(({ message }) => message.id);
-  // Read once here for every block below: see RenderHtmlToolPresenceContext.
-  const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
-    message.parts.some(isRenderableRenderHtmlToolPart),
-  );
-  // A string, not the Map: selector results are compared by identity.
-  const searchImagesKey = useAuiState(({ message }) =>
-    allowSearchImages ? searchImagesSignature(message.parts) : "",
-  );
+type MarkdownTextRendererProps = {
+  isStreaming: boolean;
+  messageHasRenderableRenderHtmlTool: boolean;
+  messageId: string;
+  messageTextKey: string;
+  precedingText: string;
+  searchImagesKey: string;
+  statusType: string;
+  text: string;
+};
+
+function MarkdownTextRenderer({
+  isStreaming,
+  messageHasRenderableRenderHtmlTool,
+  messageId,
+  messageTextKey,
+  precedingText,
+  searchImagesKey,
+  statusType,
+  text,
+}: MarkdownTextRendererProps) {
   const searchImages = useMemo(
     () => parseSearchImagesSignature(searchImagesKey),
     [searchImagesKey],
-  );
-  // What earlier text parts said, so a subject named in two of them gets one card.
-  const precedingText = useAuiState(({ message }) =>
-    allowSearchImages
-      ? precedingTextForMessagePart(message.parts, partIndex)
-      : "",
-  );
-  const messageTextKey = useAuiState(({ message }) =>
-    allowSearchImages
-      ? JSON.stringify(
-          message.parts
-            .filter((part) => part.type === "text")
-            .map((part) => part.text),
-        )
-      : "[]",
   );
   const messageTexts = useMemo(
     () => JSON.parse(messageTextKey) as string[],
     [messageTextKey],
   );
-  const isStreaming = status.type === "running";
   const displayText = useCoalescedStreamingText(text, isStreaming, messageId);
   const processedText = useMemo(
     () =>
@@ -909,7 +894,7 @@ const MarkdownTextImpl = () => {
       value={messageHasRenderableRenderHtmlTool}
     >
       <SearchImagesContext.Provider value={searchImages}>
-        <div data-status={status.type} className="min-w-0 max-w-full">
+        <div data-status={statusType} className="min-w-0 max-w-full">
           <Streamdown
             key={`${messageId}:${incrementalCache.renderGeneration}:${renderKey}`}
             mode="streaming"
@@ -935,6 +920,86 @@ const MarkdownTextImpl = () => {
       </SearchImagesContext.Provider>
     </RenderHtmlToolPresenceContext.Provider>
   );
+}
+
+const MarkdownTextImpl = () => {
+  const allowSearchImages = useContext(SearchImagesEnabledContext);
+  const aui = useAui();
+  const { text, status } = useMessagePartText();
+  const partIndex =
+    aui.part.source === "message" && aui.part.query.type === "index"
+      ? aui.part.query.index
+      : 0;
+  // Parts are keyed by index, so switching conversations hands this instance a
+  // different message, and Streamdown only extends its parsed blocks: key it per
+  // message. The cache generation joins the key for the case the Markdown string
+  // cannot express, an edit that drops retained blocks without changing the tail.
+  const messageId = useAuiState(({ message }) => message.id);
+  // Read once here for every block below: see RenderHtmlToolPresenceContext.
+  const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
+    message.parts.some(isRenderableRenderHtmlToolPart),
+  );
+  // A string, not the Map: selector results are compared by identity.
+  const searchImagesKey = useAuiState(({ message }) =>
+    allowSearchImages ? searchImagesSignature(message.parts) : "",
+  );
+  // What earlier text parts said, so a subject named in two of them gets one card.
+  const precedingText = useAuiState(({ message }) =>
+    allowSearchImages
+      ? precedingTextForMessagePart(message.parts, partIndex)
+      : "",
+  );
+  const messageTextKey = useAuiState(({ message }) =>
+    allowSearchImages
+      ? JSON.stringify(
+          message.parts
+            .filter((part) => part.type === "text")
+            .map((part) => part.text),
+        )
+      : "[]",
+  );
+
+  return (
+    <MarkdownTextRenderer
+      isStreaming={status.type === "running"}
+      messageHasRenderableRenderHtmlTool={messageHasRenderableRenderHtmlTool}
+      messageId={messageId}
+      messageTextKey={messageTextKey}
+      precedingText={precedingText}
+      searchImagesKey={searchImagesKey}
+      statusType={status.type}
+      text={text}
+    />
+  );
 };
 
+type MarkdownTextSourceProps = {
+  messageHasRenderableRenderHtmlTool: boolean;
+  messageId: string;
+  sourceText: string;
+  streaming: boolean;
+};
+
+const MarkdownTextSourceImpl = ({
+  messageHasRenderableRenderHtmlTool,
+  messageId,
+  sourceText,
+  streaming,
+}: MarkdownTextSourceProps) => (
+  <MarkdownTextRenderer
+    isStreaming={streaming}
+    messageHasRenderableRenderHtmlTool={messageHasRenderableRenderHtmlTool}
+    messageId={messageId}
+    messageTextKey="[]"
+    precedingText=""
+    searchImagesKey=""
+    statusType={streaming ? "running" : "complete"}
+    text={sourceText}
+  />
+);
+
 export const MarkdownText = withSmoothContextProvider(MarkdownTextImpl);
+// Reasoning pages render at message-group scope, where assistant-ui deliberately
+// exposes no `part`. Its smooth wrapper reads that property, so the source-fed
+// renderer must stay independent of both the part adapter and that wrapper.
+export const MarkdownTextSource = MarkdownTextSourceImpl;

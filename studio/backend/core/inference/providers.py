@@ -342,6 +342,7 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         # through the chat template, 400ing on strict-alternation templates
         # (Gemma 3). The chat-completions path takes messages verbatim.
         "notes": "Self-hosted vLLM server. Always routed to /v1/chat/completions.",
+        "supports_chat_template_kwargs": True,
         # Surfaced via the frontend's CUSTOM_PROVIDER_PRESETS, not the dropdown.
         "hidden": True,
     },
@@ -360,7 +361,9 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "User-supplied OpenAI-compatible server. Routed to "
             "/v1/chat/completions; /models is optional."
         ),
-        # A strict gateway 400s on an unknown key, and a pre-upgrade tab still spreads top_k.
+        # A strict gateway 400s on an unknown key, and a pre-upgrade tab still spreads top_k. Same reason this entry
+        # does not set supports_chat_template_kwargs: a base_url is not evidence of what serves it, and Deep Research
+        # sends enable_thinking=False on every planner call, so the key would break runs nobody asked to change.
         "body_omit": ("top_k", "min_p", "repetition_penalty"),
         # Surfaced by the frontend's generic Custom option, not the dropdown.
         "hidden": True,
@@ -398,6 +401,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "Local llama.cpp server (llama-server). OpenAI-compatible "
             "/v1/chat/completions. Surfaced via CUSTOM_PROVIDER_PRESETS."
         ),
+        # llama-server reads chat_template_kwargs when started with --jinja, and ignores it otherwise.
+        "supports_chat_template_kwargs": True,
         "hidden": True,
     },
     "openrouter": {
@@ -689,6 +694,19 @@ _REGISTRY_HOSTNAMES = frozenset(
 )
 
 
+def _public_registry_hostname(host: str) -> bool:
+    """A shipped public vendor hostname, usable by a managed account without a lookup."""
+    host = (host or "").lower().rstrip(".")
+    if host not in _REGISTRY_HOSTNAMES:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return False
+    try:
+        return ipaddress.ip_address(_canonical_host(host)).is_global
+    except ValueError:
+        return True
+
+
 def _metadata_address(address: str) -> bool:
     """``_metadata_host`` for a RESOLVED address: the exact services, no net.
 
@@ -834,7 +852,13 @@ def _resolves_to_metadata(hostname: str, port: int | None, scheme: str) -> bool:
     )
 
 
-def _reject_non_public(hostname: str, port: int | None, scheme: str) -> None:
+def _managed_account_caller() -> bool:
+    """True when this validation runs for a managed (non-owner) account."""
+    from utils.account_context import is_owner_context
+    return not is_owner_context()
+
+
+def _reject_non_public(hostname: str, port: int | None, scheme: str, reason: str) -> None:
     """Raise when ``hostname`` is, or resolves to, a non-public address."""
     try:
         addresses = [ipaddress.ip_address(hostname)]
@@ -862,10 +886,37 @@ def _reject_non_public(hostname: str, port: int | None, scheme: str) -> None:
             resolved = tuple(str(info[4][0]) for info in infos)
         addresses = [ipaddress.ip_address(address.split("%", 1)[0]) for address in resolved]
     if not addresses or any(not ip.is_global for ip in addresses):
-        raise ValueError(
-            "Provider base URL points at a private address, which is disabled on this "
-            f"server ({_BLOCK_PRIVATE_ENV}=1)."
-        )
+        raise ValueError(reason)
+
+
+def public_provider_address(url: str) -> str:
+    """Resolve ``url``'s host now and return one public address to dial, or raise ``ValueError``.
+
+    Re-resolving per connection stops a name rebinding to loopback or the LAN after the
+    cached check.
+    """
+    import socket
+
+    parts = urlsplit(url)
+    hostname = (parts.hostname or "").rstrip(".")
+    if not hostname:
+        raise ValueError("Provider URL must contain a hostname.")
+    reason = "Managed accounts may only use public-network provider base URLs."
+    try:
+        addresses = [ipaddress.ip_address(_canonical_host(hostname))]
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(
+                _transport_host(hostname),
+                parts.port or (443 if parts.scheme == "https" else 80),
+                type = socket.SOCK_STREAM,
+            )
+        except (OSError, UnicodeError) as exc:
+            raise ValueError("Provider base URL hostname could not be resolved.") from exc
+        addresses = [ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]) for info in infos]
+    if not addresses or any(not ip.is_global for ip in addresses):
+        raise ValueError(reason)
+    return str(addresses[0])
 
 
 def validate_provider_base_url(base_url: str) -> str:
@@ -878,7 +929,8 @@ def validate_provider_base_url(base_url: str) -> str:
     loopback, LAN hosts, odd ports, query strings and basic-auth userinfo all
     stay valid -- Ollama, llama.cpp, vLLM and custom gateways rely on them. A
     caller-supplied hostname is resolved far enough to apply the metadata block
-    to DNS aliases of it; rejecting other private addresses stays opt-in.
+    to DNS aliases of it; rejecting other private addresses stays opt-in for the
+    owner, and is always on for a managed account (as managed MCP servers are).
 
     Normalization is strip + trailing-slash removal only (what the client did
     before), so validating an already-validated URL returns it unchanged.
@@ -910,7 +962,21 @@ def validate_provider_base_url(base_url: str) -> str:
         raise ValueError("Cloud metadata endpoints cannot be used as a provider base URL.")
 
     if os.environ.get(_BLOCK_PRIVATE_ENV) == "1":
-        _reject_non_public(hostname, port, scheme)
+        _reject_non_public(
+            hostname,
+            port,
+            scheme,
+            "Provider base URL points at a private address, which is disabled on this "
+            f"server ({_BLOCK_PRIVATE_ENV}=1).",
+        )
+    elif _managed_account_caller() and not _public_registry_hostname(hostname):
+        # Caller-controlled egress must not reach the owner's loopback models or LAN.
+        _reject_non_public(
+            hostname,
+            port,
+            scheme,
+            "Managed accounts may only use public-network provider base URLs.",
+        )
 
     return raw.rstrip("/")
 
