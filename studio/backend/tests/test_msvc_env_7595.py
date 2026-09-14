@@ -542,3 +542,72 @@ def test_gate_does_not_disable_where_triton_already_compiles(monkeypatch, tmp_pa
 
     _msvc_env.gate_torch_compile_on_windows(logging.getLogger("test_gate_7595"))
     assert "TORCHDYNAMO_DISABLE" not in os.environ
+
+
+def test_torch_is_rocm_build_reads_the_wheel_version(monkeypatch):
+    """TheRock ROCm wheels version like "2.11.0+rocm7.13.0"; the local version segment is the
+    only signal that does not require importing torch to learn it."""
+    import importlib.metadata as md
+
+    monkeypatch.setattr(md, "version", lambda dist: "2.11.0+rocm7.13.0")
+    assert _msvc_env._torch_is_rocm_build() is True
+    monkeypatch.setattr(md, "version", lambda dist: "2.11.0+cu128")
+    assert _msvc_env._torch_is_rocm_build() is False
+
+    def boom(dist):
+        raise RuntimeError("metadata is unreadable")
+
+    monkeypatch.setattr(md, "version", boom)
+    assert _msvc_env._torch_is_rocm_build() is False
+
+
+def _record_torch_triton_imports(monkeypatch, imported, *, torch_raises = False):
+    """`import torch` on an already-imported module is silent, so the import itself is what
+    must be observed; __import__ sees the name before any binding happens."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def recording(name, *args, **kwargs):
+        if name in ("torch", "triton"):
+            imported.append(name)
+            if name == "torch" and torch_raises:
+                raise RuntimeError("torch_hip.dll: WinError 126")
+            return types.ModuleType(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", recording)
+
+
+def _gate_imports(monkeypatch, *, rocm, torch_raises = False):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("TORCHDYNAMO_DISABLE", "")
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE")
+    monkeypatch.setattr(_msvc_env, "_torch_is_rocm_build", lambda: rocm)
+    monkeypatch.setattr(_msvc_env, "crt_headers_reachable", lambda: True)
+    imported = []
+    _record_torch_triton_imports(monkeypatch, imported, torch_raises = torch_raises)
+    _msvc_env.gate_torch_compile_on_windows(logging.getLogger("test_gate_7595"))
+    return imported
+
+
+def test_gate_imports_torch_before_triton_on_a_rocm_build(monkeypatch):
+    """triton-windows#35: importing Triton first loads the driver's System32 amdhip64_7.dll,
+    after which torch_hip.dll fails with WinError 126. Order is the whole fix, so it is what
+    is asserted."""
+    assert _gate_imports(monkeypatch, rocm = True) == ["torch", "triton"]
+    assert "TORCHDYNAMO_DISABLE" not in os.environ
+
+
+def test_gate_does_not_preload_torch_on_a_cuda_or_cpu_build(monkeypatch):
+    """The preload is a workaround, and a workaround stays scoped to the build that needs it:
+    importing torch into every worker to fix a ROCm-only bug costs the others the startup time."""
+    assert _gate_imports(monkeypatch, rocm = False) == ["triton"]
+    assert "TORCHDYNAMO_DISABLE" not in os.environ
+
+
+def test_gate_survives_the_torch_preload_raising(monkeypatch):
+    """The preload is best-effort: a torch that cannot import must not take down the gate, and
+    Triton is still asked the toolchain question either way."""
+    assert _gate_imports(monkeypatch, rocm = True, torch_raises = True) == ["torch", "triton"]
+    assert "TORCHDYNAMO_DISABLE" not in os.environ

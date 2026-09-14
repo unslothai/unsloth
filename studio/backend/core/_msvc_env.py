@@ -197,9 +197,27 @@ def crt_headers_reachable() -> bool:
     return _headers_complete(triton_dirs + env_dirs)
 
 
+def _torch_is_rocm_build() -> bool:
+    # Wheel metadata only, no import: TheRock ROCm wheels version like "2.11.0+rocm7.13.0".
+    try:
+        from importlib.metadata import version  # noqa: PLC0415
+
+        return "+rocm" in version("torch")
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def gate_torch_compile_on_windows(log: logging.Logger) -> None:
     if sys.platform != "win32":
         return
+    if _torch_is_rocm_build():
+        try:
+            # torch must be imported before triton: on TheRock ROCm builds, importing
+            # triton first loads the driver's System32 amdhip64_7.dll, after which
+            # torch_hip.dll fails to load with WinError 126 (triton-windows#35).
+            import torch  # noqa: F401, PLC0415
+        except Exception:  # noqa: BLE001
+            pass
     try:
         import triton  # noqa: F401, PLC0415
     except ImportError:
