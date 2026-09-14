@@ -30,6 +30,7 @@ SHARED_FUNCTIONS = (
     "Get-PathState",
     "Get-LlamaCppInstallReadState",
     "Get-PathDenialDetail",
+    "Get-SecuritySoftwareNote",
     "Write-PathAccessDenied",
     "Get-CanonicalDir",
     "Test-StudioHomeIsCustom",
@@ -65,9 +66,10 @@ def _normalized(source: str) -> str:
 @pytest.mark.parametrize("name", SHARED_FUNCTIONS)
 def test_installer_copy_matches_setup(name: str) -> None:
     """Edit one file, not the other, and this fails naming the function."""
-    assert _normalized(_function_source(INSTALL_PS1, name)) == _normalized(
-        _function_source(SETUP_PS1, name)
-    ), name
+    assert (
+        _normalized(_function_source(INSTALL_PS1, name))
+        == _normalized(_function_source(SETUP_PS1, name))
+    ), f"{name} differs between install.ps1 and studio/setup.ps1; run python3 scripts/sync_shared_ps1_helpers.py"
 
 
 def test_every_function_in_the_shared_block_is_compared() -> None:
@@ -230,8 +232,11 @@ def test_a_tree_the_user_pointed_at_is_never_called_a_cache_we_own() -> None:
         "$suppliedDir = if ($WithLlamaCppDir) { $WithLlamaCppDir }"
         " else { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR }" in body
     )
-    # Compare canonical paths, including denied paths whose spelling differs.
-    assert "(Get-CanonicalDir -Path $suppliedDir) -eq (Get-CanonicalDir -Path $dir)" in body
+    # Compare canonical paths, including denied paths whose spelling differs,
+    # and every ancestor of the override: a build supplied from inside the
+    # managed tree is the user's too.
+    assert "$probe = [string](Get-CanonicalDir -Path $suppliedDir)" in body
+    assert "if ([string](Get-CanonicalDir -Path $probe) -eq $canonicalDir) {" in body
     assert "$LocalIsCanonical = ($ResolvedLocal -eq $LlamaCppDir)" in SETUP_PS1
     assert (
         "Exit-PathAccessDenied -Path $ResolvedLocal"
@@ -311,3 +316,139 @@ def test_setup_sh_reports_a_denied_default_home_cache() -> None:
     assert '_path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"' in block
     # Preserve the custom-home ownership guard's more cautious wording.
     assert block.index("_assert_studio_owned_or_absent") < block.index("_studio_dir_unreadable")
+
+
+def test_the_denial_detail_survives_a_directory_it_cannot_open() -> None:
+    """Get-Item returns nothing for a directory whose ACL denies read, which is the
+    one case this detail exists for, so the attributes have to come through an API
+    that needs only FILE_READ_ATTRIBUTES."""
+    for text in (INSTALL_PS1, SETUP_PS1):
+        body = _function_source(text, "Get-PathDenialDetail")
+        assert "[System.IO.File]::GetAttributes($Path)" in body
+        # Get-Item may still run, but only after the attributes are in hand and
+        # only to name a link target, which is the one thing it adds.
+        assert body.index("GetAttributes($Path)") < body.index("Get-Item -LiteralPath")
+        # The three causes elevation cannot fix, each named rather than folded
+        # into the takeown and icacls advice that cannot clear them.
+        assert "Encrypted" in body
+        assert "cloud placeholder" in body
+        assert "ReparsePoint" in body
+        # Every caller passes a directory, where Encrypted only means new
+        # descendants are encrypted by default. Listing never needs the key, so
+        # claiming EFS there sends an ordinary ACL denial after a certificate.
+        assert body.index("FileAttributes]::Directory") < body.index("FileAttributes]::Encrypted")
+        assert "-not $isDirectory" in body
+        # RECALL_ON_OPEN and RECALL_ON_DATA_ACCESS are missing from the
+        # FileAttributes enum on Windows PowerShell 5.1.
+        assert "0x00040000" in body and "0x00400000" in body
+
+
+def test_the_security_software_holding_the_folder_is_named() -> None:
+    """takeown and icacls cannot clear a filter-driver block, and neither can
+    elevation, so the Defender mode that blocks file access, and any third-party
+    antivirus registered instead, are called out by name. A user told only that
+    "antivirus can deny this" cannot tell which product to open."""
+    for text in (INSTALL_PS1, SETUP_PS1):
+        body = _function_source(text, "Get-SecuritySoftwareNote")
+        # Neither branch correlates the block with this path, so neither may say
+        # the ACL repair printed above it is pointless. Controlled folder access
+        # gates writes, and a registered antivirus need not be involved at all.
+        assert "will not help" not in body
+        # A product that is not running cannot be holding the folder, and naming
+        # it sends the user to the wrong console: 0xF000 carries the run state.
+        assert "productState" in body and "0xF000" in body
+        # Name the log that can actually attribute a Defender block.
+        assert body.count("1123 and 1124") == 2
+        # Absent Defender must read the same as a Defender that says no.
+        assert "Get-Command Get-MpPreference -ErrorAction SilentlyContinue" in body
+        # Every failure to tell must answer "" rather than guess: no Defender
+        # module, no SecurityCenter registration, and a query that throws all
+        # read the same as a machine that says no.
+        assert "catch { $mode = $null }" in body
+        assert "catch { $others = @() }" in body
+        assert _normalized(body).rstrip().endswith('return ""\n}')
+        # 1 Enabled blocks file access. 3 and 4 are direct disk-sector writes, so
+        # they cannot explain a denied folder and must not be reported as if they
+        # could. 2 AuditMode logs instead of blocking, so it rules itself out.
+        assert "$mode -eq 1" in body
+        assert "$mode -eq 2" in body
+        assert "$mode -eq 3" not in body and "$mode -eq 4" not in body
+        # Third-party suites ship the same feature under their own names, and
+        # SecurityCenter2 is the registration all of them make.
+        assert "root/SecurityCenter2" in body
+        assert "AntiVirusProduct" in body
+        # Defender registers there too, and it is covered by the mode check.
+        assert "Windows Defender" in body and "Microsoft Defender" in body
+        reporter = _function_source(text, "Write-PathAccessDenied")
+        assert "Get-SecuritySoftwareNote" in reporter
+        # After the generic line, so an empty answer leaves it standing.
+        assert reporter.index("Antivirus or Controlled folder access") < reporter.index(
+            "$securitySoftware = Get-SecuritySoftwareNote"
+        )
+
+
+def test_a_denied_cache_is_moved_aside_only_when_it_is_ours_to_move() -> None:
+    """Renaming needs DELETE on the folder plus write on its parent, neither of
+    which is read access, so it recovers denials takeown and icacls do not. It is
+    only allowed for the tree the guidance already tells the user to delete."""
+    for text in (INSTALL_PS1, SETUP_PS1):
+        body = _function_source(text, "Invoke-ManagedLlamaCppPreflight")
+        assert "Move-Item -LiteralPath $dir -Destination $asideDir" in body
+        guard = "if (-not $userSupplied -and -not $homeIsCustom -and -not $isLink) {"
+        assert guard in body
+        # Setup never makes this a link, so a link is the user's own arrangement
+        # and moving it would change which tree they run.
+        assert body.index("ReparsePoint") < body.index(guard)
+        # Unreadable attributes prove nothing, which must not mean movable.
+        assert "$isLink = $true" in body
+        # A failed move falls through to the guidance rather than stopping.
+        assert body.index(guard) < body.index("Write-PathAccessDenied -Path $dir")
+        # A build supplied from inside this tree goes with it, and the later
+        # --with-llama-cpp-dir check then aborts on a path we made disappear, so
+        # containment counts as user-supplied and not just an exact match.
+        assert "Split-Path -Parent $probe" in body
+        assert body.index("$probe = $parent") < body.index(guard)
+        # This runs before the install lock, so a second run can move the folder
+        # first; reporting a denial for a path that is gone stops an install
+        # that could have carried on.
+        reprobe = '(Get-LlamaCppInstallReadState -Path $dir) -ne "Denied"'
+        assert body.count(reprobe) == 2
+        assert body.rindex(reprobe) < body.index("Write-PathAccessDenied -Path $dir")
+
+
+def test_the_shared_helpers_have_a_sync_script() -> None:
+    """Hand-copying ten helpers between two files is how they drifted before."""
+    script = (ROOT / "scripts" / "sync_shared_ps1_helpers.py").read_text(encoding = "utf-8")
+    assert SHARED_BEGIN in script
+    assert "--check" in script
+
+
+def test_a_denied_node_cache_gets_the_same_guidance_as_the_llama_cache() -> None:
+    """The same denial reaches the Node cache, where it used to read "unexpected
+    error" and then "install Node yourself, or check your network". Neither is
+    the fix, and a user whose antivirus holds the folder can spend a long time on
+    the second one."""
+    node = (ROOT / "studio" / "install_node_prebuilt.py").read_text(encoding = "utf-8")
+    assert "EXIT_DENIED = 4" in node
+    assert "except PermissionError as exc:" in node
+    # Windows does not always deliver winerror 5 as PermissionError.
+    assert 'getattr(exc, "winerror", None) == 5' in node
+    assert "errno.EACCES" in node
+    assert "import errno" in node
+    # The catch-all must stay last, or the classification never runs.
+    tail = node[node.rindex("def main(") :]
+    assert tail.index("except PermissionError") < tail.index("except Exception as exc:")
+    # setup.ps1 turns the new code into the shared guidance rather than the
+    # nodejs.org and network advice that follows every other nonzero exit.
+    caller = SETUP_PS1.split("install_node_prebuilt.py", 1)[1].split("$env:PATH = ", 1)[0]
+    assert "$nodeExit -eq 4" in caller
+    assert 'Exit-PathAccessDenied -Path $NodeDir -Label "Node install"' in caller
+    assert caller.index("$nodeExit -eq 4") < caller.index("https://nodejs.org/")
+    # The install lock and the .staging root live in the parent, so half of the
+    # denials that reach exit 4 are not on the cache at all. Deleting the cache
+    # cannot make a parent writable, and the parent is never ours to offer up.
+    assert 'DENIED_SCOPE_MARKER = "denied-scope: "' in node
+    assert 'DENIED_SCOPE_PARENT = "parent"' in node
+    assert '$nodeOut -match "denied-scope: parent"' in caller
+    assert "Exit-PathAccessDenied -Path $NodeParent" in caller
+    assert "-OwnershipUnverified" in caller

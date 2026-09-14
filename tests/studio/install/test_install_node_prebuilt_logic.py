@@ -848,3 +848,33 @@ def test_swap_into_place_survives_a_transient_lock(monkeypatch, tmp_path):
     monkeypatch.setattr(M.os, "replace", flaky)
     M._swap_into_place(extracted, install_dir)
     assert (install_dir / "marker.txt").read_text(encoding = "utf-8") == "node"
+
+
+def test_a_denial_in_the_cache_is_reported_against_the_cache(capsys, tmp_path):
+    install_dir = tmp_path / "node"
+    exc = PermissionError(
+        13, "Access is denied", str(install_dir / "UNSLOTH_NODE_PREBUILT_INFO.json")
+    )
+    assert M._report_access_denied(exc, install_dir) == M.EXIT_DENIED
+    logged = "".join(capsys.readouterr())
+    assert f"{M.DENIED_PATH_MARKER}{install_dir / 'UNSLOTH_NODE_PREBUILT_INFO.json'}" in logged
+    assert f"{M.DENIED_SCOPE_MARKER}{M.DENIED_SCOPE_INSTALL_DIR}" in logged
+    assert "not a download problem" in logged
+
+
+def test_a_denial_on_the_lock_is_reported_against_the_parent(capsys, tmp_path):
+    # The install lock and the .staging root live one level up, so setup.ps1
+    # would otherwise tell the user to delete a cache that is not the problem
+    # and, when the parent is what is denied, may not even exist.
+    install_dir = tmp_path / "node"
+    exc = PermissionError(13, "Access is denied", str(M.install_lock_path(install_dir)))
+    assert M._report_access_denied(exc, install_dir) == M.EXIT_DENIED
+    assert f"{M.DENIED_SCOPE_MARKER}{M.DENIED_SCOPE_PARENT}" in "".join(capsys.readouterr())
+
+
+def test_a_denial_without_a_filename_still_exits_denied(capsys, tmp_path):
+    assert M._report_access_denied(PermissionError(13, "Access is denied"), tmp_path / "node") == (
+        M.EXIT_DENIED
+    )
+    # Nothing to classify, so the caller keeps its default and is told no lie.
+    assert M.DENIED_SCOPE_MARKER not in "".join(capsys.readouterr())
