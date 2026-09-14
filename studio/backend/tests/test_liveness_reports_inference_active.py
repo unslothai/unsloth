@@ -75,26 +75,30 @@ async def _nothing():
 app.add_api_route("/api/nothing", _nothing, methods = ["GET"])
 client = TestClient(app)
 
-def _control():
-    # Best of several: a ratio is only as tight as its denominator, and one descheduled
-    # control run inflates the budget far more than it inflates the measurement.
-    samples = []
-    for _ in range(5):
-        started = time.perf_counter()
-        client.get("/api/nothing")
-        samples.append(time.perf_counter() - started)
-    return min(samples)
+def _timed(path):
+    started = time.perf_counter()
+    response = client.get(path)
+    return time.perf_counter() - started, response
 
 def probe():
-    started = time.perf_counter()
-    response = client.get("/api/liveness")
-    elapsed = time.perf_counter() - started
+    # Interleaved, and best of three on each side. Taken in one batch after the fact, a
+    # control shares no scheduler delay with what it is compared against, so a pause that
+    # lands on the measured request alone is not divided out. Alternating them gives each
+    # side the same chance of being unlucky, and a minimum over three is not moved by a
+    # pause that has to hit all three to count.
+    mine, controls, response = [], [], None
+    for _ in range(3):
+        control_elapsed, _ = _timed("/api/nothing")
+        elapsed, response = _timed("/api/liveness")
+        controls.append(control_elapsed)
+        mine.append(elapsed)
     body = response.json()
     return {
         "status_code": response.status_code,
         "status": body.get("status"),
         "service": body.get("service"),
-        "elapsed": elapsed,
+        "elapsed": min(mine),
+        "control": min(controls),
         "inference_active": body.get("inference_active"),
         "has_busy_key": "inference_active" in body,
     }
@@ -136,7 +140,6 @@ probes["broken"] = probe()
 
 print("RESULT" + json.dumps({
     "probes": probes,
-    "control": _control(),
     "media_import_free": media_import_free,
     "media_modules": list(media_modules),
     "scanned": scanned,
@@ -208,8 +211,7 @@ def _watchdog_probe_budget_s() -> float:
 def test_the_marker_costs_nothing_to_read():
     """A probe every 15s cannot pay for anything that waits, which is why the route reads
     a registry len() rather than asking the backend what it is doing."""
-    measured = _probe()
-    result = measured["probes"]
+    result = _probe()["probes"]
 
     # Two bounds, because they answer different questions and neither covers the other.
     #
@@ -222,10 +224,10 @@ def test_the_marker_costs_nothing_to_read():
     # The second is the absolute one the watchdog imposes: at or over its per-probe budget
     # every real probe times out. A relative bound cannot see that, because a control that
     # somehow took seconds would scale with it.
-    control = measured["control"]
-    relative = max(control * 40, 0.05)
-    ceiling = min(relative, _watchdog_probe_budget_s() / 2)
     for state, sample in result.items():
+        control = sample["control"]
+        relative = max(control * 40, 0.05)
+        ceiling = min(relative, _watchdog_probe_budget_s() / 2)
         assert sample["elapsed"] < ceiling, (
             f"/api/liveness took {sample['elapsed'] * 1000:.1f}ms while {state}, against "
             f"{control * 1000:.1f}ms to answer a route that does nothing; it must read "

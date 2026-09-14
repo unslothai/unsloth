@@ -290,18 +290,19 @@ def test_max_wait_respected_when_never_settles():
         drift["v"] += 500
         return [(0, drift["v"])]
 
+    # On the fake clock, for the same reason the slow-probe test is: the lower bound below
+    # says "did not stop early", and real time spent outside sleep() -- a GC pause, a
+    # deschedule -- retires the deadline without appearing in the naps, so a correct helper
+    # returns having napped less than the window and reads as an early exit.
     ctx, _state = _patch_probe([_drifty])
-    with ctx, _Sleeps() as sleeps:
-        start = time.monotonic()
+    with ctx, _Clock() as clock, _Sleeps(clock) as sleeps:
         LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 0.5, interval = 0.1))
-        elapsed = time.monotonic() - start
     # Both ends, because only the pair says "polled for the whole window and no longer".
     # A loop accidentally capped at two iterations records [0.1, 0.1] and returns after
     # 0.2s while the VRAM is still moving, which is how the next model gets launched
     # early; a ceiling alone calls that a pass.
     assert sleeps.total <= 0.5 + 1e-9, f"helper napped past max_wait: {sleeps.durations}"
-    assert sleeps.total >= 0.5 - 0.1, f"helper gave up inside max_wait: {sleeps.durations}"
-    assert elapsed < 20.0, f"helper never returned: elapsed={elapsed:.3f}s"
+    assert sleeps.total >= 0.5 - 1e-9, f"helper gave up inside max_wait: {sleeps.durations}"
 
 
 def test_max_wait_respected_when_probe_is_slow():

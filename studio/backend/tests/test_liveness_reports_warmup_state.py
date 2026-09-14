@@ -104,18 +104,21 @@ async def _nothing():
 app.add_api_route("/api/nothing", _nothing, methods = ["GET"])
 client = TestClient(app)
 
-# Best of several: a ratio is only as tight as its denominator, and one descheduled
-# control run inflates the budget far more than it inflates the measurement.
-_controls = []
-for _ in range(5):
+# Interleaved, and best of three on each side. Taken in one batch before the measured
+# request, a control shares no scheduler delay with it, so a pause that lands on the
+# measurement alone is not divided out. Alternating them gives each side the same chance
+# of being unlucky, and a minimum over three is not moved by a pause that has to hit all
+# three to count.
+_controls, _mine, response = [], [], None
+for _ in range(3):
     _c0 = time.perf_counter()
     client.get("/api/nothing")
     _controls.append(time.perf_counter() - _c0)
+    _m0 = time.perf_counter()
+    response = client.get("/api/liveness")
+    _mine.append(time.perf_counter() - _m0)
 control = min(_controls)
-
-started = time.perf_counter()
-response = client.get("/api/liveness")
-elapsed = time.perf_counter() - started
+elapsed = min(_mine)
 body = response.json()
 
 print("RESULT" + json.dumps({
