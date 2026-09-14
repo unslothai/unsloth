@@ -4,6 +4,9 @@ SDPA packed-mask fallback). The gate now probes the real op instead of guessing 
 compute-capability major version."""
 
 import pytest
+from real_accelerator import (
+    has_real_accelerator,
+)  # tests/_shared, on sys.path via tests/conftest.py
 import torch
 import unsloth  # noqa: F401
 
@@ -33,11 +36,11 @@ def test_capability_gate(capability, probe_result, expect_disabled):
 
 
 @pytest.mark.skipif(
-    not (torch.cuda.is_available() and ad.HAS_XFORMERS),
+    not (has_real_accelerator() and ad.HAS_XFORMERS),
     reason = "needs a CUDA GPU with a working xformers build",
 )
 @pytest.mark.skipif(
-    torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 12,
+    has_real_accelerator() and torch.cuda.get_device_capability()[0] >= 12,
     reason = "on real sm_120+ the probe legitimately returns False when the build ships no "
     "sm_120 kernel, so asserting True there would be a false failure",
 )

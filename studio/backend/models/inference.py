@@ -319,11 +319,15 @@ class LoadRequest(BaseModel):
     tensor_split: Optional[List[float]] = Field(
         None,
         description = (
-            "Manual mode only: relative share of the model per GPU (--tensor-split), "
-            "in the order of the GPUs in use, e.g. [2, 1] for 2:1. Omit it to let "
-            "llama.cpp use its default, which splits by free VRAM. Any list given is "
-            "passed through as-is, so send [1, 1] to force an even split. Ignored "
-            "unless gpu_memory_mode is 'manual' with gpu_layers >= 0."
+            "Relative share of the model per GPU (--tensor-split), in the order of "
+            "the GPUs in use, e.g. [2, 1] for 2:1. Omit it to let llama.cpp use its "
+            "default, which splits by free VRAM. Values are relative, so [1, 1] "
+            "forces an even split and [3, 1] and [75, 25] mean the same thing. "
+            "In manual mode (gpu_layers >= 0) the list is passed through as-is. In "
+            "auto mode it applies only with tensor_parallel, and only when the "
+            "placement planner did not size the split itself; a ratio that does not "
+            "fit the planner's per-GPU budget is dropped rather than forwarded. "
+            "Ignored entirely when gpu_memory_mode is 'manual' with gpu_layers < 0."
         ),
     )
 
@@ -1278,7 +1282,7 @@ class _InferenceRuntimeFields(BaseModel):
     )
     tensor_split: Optional[List[float]] = Field(
         None,
-        description = "Manual mode: relative model share per GPU (--tensor-split); None = default (split by free VRAM).",
+        description = "Relative model share per GPU (--tensor-split) used by the active load; None = default (split by free VRAM).",
     )
     n_layers: Optional[int] = Field(
         None,
@@ -1770,8 +1774,6 @@ class CompactionContentPart(BaseModel):
 
 
 class InputAudio(BaseModel):
-    # Non-empty: an empty payload is not lifted, so the turn would otherwise proceed as
-    # text alone and answer "transcribe this" about a recording that was never sent.
     data: str = Field(
         ..., min_length = 1, description = "Base64-encoded audio, without a data: prefix."
     )
@@ -1781,15 +1783,11 @@ class InputAudio(BaseModel):
 
 
 class InputAudioContentPart(BaseModel):
-    """Audio content part in a multimodal message, in OpenAI's documented shape."""
-
     type: Literal["input_audio"]
     input_audio: InputAudio
 
 
 class UnknownContentPart(BaseModel):
-    """Catch-all for unmodelled part types, mirroring ``ResponsesUnknownContentPart``."""
-
     type: str
 
     model_config = {"extra": "allow"}
@@ -1810,8 +1808,7 @@ _KNOWN_CONTENT_PART_TAGS = frozenset(
 
 def _content_part_discriminator(v):
     tag = v.get("type") if isinstance(v, dict) else getattr(v, "type", None)
-    # A list or dict tag is unhashable, so testing membership would raise TypeError out of
-    # request validation as a 500. Declining to name a member leaves pydantic to report it.
+    # An unhashable tag would raise TypeError out of validation as a 500.
     if not isinstance(tag, str):
         return None
     return tag if tag in _KNOWN_CONTENT_PART_TAGS else "unknown"
@@ -2119,7 +2116,7 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = (
             "[x-unsloth] Base64-encoded video (mp4/mov/webm/mkv/avi) for video-input "
-            "models. GGUF only: llama-server samples frames with ffmpeg."
+            "models: a GGUF served by llama-server, or an MLX model whose processor reads video."
         ),
     )
     use_adapter: Optional[Union[bool, str]] = Field(
