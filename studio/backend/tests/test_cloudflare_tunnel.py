@@ -9,11 +9,13 @@ checked by AST so we never import its heavy deps (uvicorn/structlog).
 """
 
 import ast
+import errno
 import importlib.util
 import io
 import os
 import sys
 import tarfile
+import tempfile
 import threading as _real_threading
 import types
 from pathlib import Path
@@ -1750,6 +1752,127 @@ def test_download_does_not_retry_an_unwritable_cache(monkeypatch, tmp_path):
     assert ct._download("https://github.com/cloudflare/cloudflared/x", tmp_path / "cf") is False
     assert slept == []
     assert opened == []
+
+
+@pytest.mark.parametrize("fails_on", ["write", "close", "publish"])
+def test_download_does_not_retry_a_disk_that_fills_mid_transfer(monkeypatch, tmp_path, fails_on):
+    """A volume that runs out of space does not gain any on the next attempt, and each retry
+    re-downloads the whole asset before hitting the same wall. Every step that touches the disk
+    counts: the temporary file is buffered, so a write can succeed and the space only run out
+    when the buffer reaches the disk on close, or later when the finished file is renamed."""
+    import io
+    import pathlib
+    import urllib.request
+
+    calls = []
+    slept = []
+
+    def responding(req, timeout = None):
+        calls.append(timeout)
+        return io.BytesIO(b"cloudflared-bytes")
+
+    class _FullDisk:
+        name = str(tmp_path / "cf.tmp-full")
+
+        def __enter__(self):
+            # Written so a bypassed failure reaches a healthy stat() and a passing download
+            # rather than a FileNotFoundError that looks like the failure under test.
+            pathlib.Path(self.name).write_bytes(b"cloudflared-bytes")
+            return self
+
+        def __exit__(self, *a):
+            self.close()
+            return False
+
+        def _no_space(self):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        def write(self, data):
+            if fails_on == "write":
+                self._no_space()
+
+        def close(self):
+            if fails_on == "close":
+                self._no_space()
+
+    monkeypatch.setattr(urllib.request, "urlopen", responding)
+    monkeypatch.setattr(ct.time, "sleep", slept.append)
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", lambda **k: _FullDisk())
+    if fails_on == "publish":
+
+        def full_rename(src, dst):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(ct.os, "replace", full_rename)
+    assert ct._download("https://github.com/cloudflare/cloudflared/x", tmp_path / "cf") is False
+    assert len(calls) == 1
+    assert slept == []
+
+
+def test_download_retries_an_empty_body(monkeypatch, tmp_path):
+    """An asset that arrives with no bytes is the transfer going wrong, not the disk, so it
+    keeps the attempt it had before the local failures were separated out."""
+    import io
+    import urllib.request
+
+    calls = []
+
+    def truncated(req, timeout = None):
+        calls.append(timeout)
+        return io.BytesIO(b"" if len(calls) == 1 else b"cloudflared-bytes")
+
+    monkeypatch.setattr(urllib.request, "urlopen", truncated)
+    monkeypatch.setattr(ct.time, "sleep", lambda s: None)
+    dest = tmp_path / "cf"
+    assert ct._download("https://github.com/cloudflare/cloudflared/x", dest) is True
+    assert dest.read_bytes() == b"cloudflared-bytes"
+    assert len(calls) == 2
+
+
+def test_download_does_not_retry_when_a_reset_unwinds_into_a_full_disk(monkeypatch, tmp_path):
+    """A reset on its own is worth another attempt, but if the buffered close then reports the
+    volume is full it is that error the caller sees, and the disk will be just as full next
+    time. The transfer error is compared by identity so the one that replaced it wins."""
+    import pathlib
+    import tempfile
+    import urllib.request
+
+    calls = []
+    slept = []
+
+    class _Reset:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self, n = -1):
+            raise ConnectionResetError(errno.ECONNRESET, "Connection reset by peer")
+
+    class _FullOnClose:
+        name = str(tmp_path / "cf.tmp-reset")
+
+        def __enter__(self):
+            pathlib.Path(self.name).write_bytes(b"partial")
+            return self
+
+        def __exit__(self, *a):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        def write(self, data):
+            pass
+
+    def responding(req, timeout = None):
+        calls.append(timeout)
+        return _Reset()
+
+    monkeypatch.setattr(urllib.request, "urlopen", responding)
+    monkeypatch.setattr(ct.time, "sleep", slept.append)
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", lambda **k: _FullOnClose())
+    assert ct._download("https://github.com/cloudflare/cloudflared/x", tmp_path / "cf") is False
+    assert len(calls) == 1
+    assert slept == []
 
 
 def test_download_retries_share_one_deadline(monkeypatch, tmp_path):

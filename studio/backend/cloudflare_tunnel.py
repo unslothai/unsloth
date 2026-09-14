@@ -156,6 +156,7 @@ def find_cloudflared() -> Optional[str]:
 
 
 _DOWNLOAD_ATTEMPTS = 3
+_COPY_CHUNK = 1 << 16
 
 
 def _download(
@@ -184,24 +185,37 @@ def _download(
         if remaining <= 0:
             break
         tmp_path: Optional[Path] = None
+        # Held from the two calls that touch the network, so everything else in the attempt
+        # is known to be the local filesystem. Nothing else can tell them apart: ENOSPC from
+        # a full disk and ENETUNREACH from a dropped link are both a bare OSError. Compared
+        # by identity, so a close that fails while a transfer error unwinds counts as local.
+        transfer_exc: Optional[BaseException] = None
         try:
             dest.parent.mkdir(parents = True, exist_ok = True)
-            handle = tempfile.NamedTemporaryFile(
+            with tempfile.NamedTemporaryFile(
                 prefix = dest.name + ".tmp-", dir = dest.parent, delete = False
-            )
-        except OSError as exc:
-            # A cache directory that cannot be written answers the same every attempt.
-            last_error = exc
-            break
-        try:
-            with handle:
+            ) as handle:
                 tmp_path = Path(handle.name)
                 # GitHub's CDN 403s the default Python-urllib User-Agent.
                 req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
-                with urllib.request.urlopen(req, timeout = remaining) as response:
-                    shutil.copyfileobj(response, handle)
+                try:
+                    response = urllib.request.urlopen(req, timeout = remaining)
+                except Exception as exc:
+                    transfer_exc = exc
+                    raise
+                with response:
+                    while True:
+                        try:
+                            chunk = response.read(_COPY_CHUNK)
+                        except Exception as exc:
+                            transfer_exc = exc
+                            raise
+                        if not chunk:
+                            break
+                        handle.write(chunk)
             if tmp_path.stat().st_size == 0:
-                raise RuntimeError("empty download")
+                transfer_exc = RuntimeError("empty download")
+                raise transfer_exc
             os.replace(tmp_path, dest)
             return True
         except Exception as exc:
@@ -214,7 +228,8 @@ def _download(
             reason = getattr(exc, "reason", None)
             resolver = exc if isinstance(exc, socket.gaierror) else reason
             terminal = (
-                isinstance(exc, TimeoutError)
+                exc is not transfer_exc
+                or isinstance(exc, TimeoutError)
                 or isinstance(reason, TimeoutError)
                 # EAI_AGAIN is the resolver asking to be tried again; the rest are answers.
                 or (isinstance(resolver, socket.gaierror) and resolver.errno != socket.EAI_AGAIN)
