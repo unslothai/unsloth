@@ -998,8 +998,13 @@ class TestNoTorchPersistenceParity:
         # Written after the manifest is dropped and before the dependency pass, so
         # a pass killed part-way still leaves the mode recorded somewhere.
         assert text.index("install_manifest.set_no_torch_marker(NO_TORCH)") > text.index(
-            "if not install_manifest.remove_manifest():"
+            "if install_manifest.remove_manifest():"
         )
+        # And the parked copy goes with it before the pass starts, so a pass killed part-way leaves
+        # no evidence of a finished one.
+        removed_at = text.index("if install_manifest.remove_manifest():")
+        consumed_at = text.index("install_manifest.consume_previous_manifest()", removed_at)
+        assert consumed_at < text.index("install_manifest.set_no_torch_marker(NO_TORCH)")
 
     def test_both_sides_use_the_same_marker_filename(self):
         manifest = (REPO_ROOT / "studio" / "install_manifest.py").read_text(encoding = "utf-8")
@@ -1259,8 +1264,19 @@ class TestInstallUvCacheRootParity:
         # and it decides only the NAME: a colliding file must reach the rejection below.
         assert writable_sh.index("_uv_w_fold") < writable_sh.index('[ ! -d "$_uv_w_dir" ]')
         probe_kinds = {
-            "archive", "binaries", "builds", "built-wheels", "environments", "flat-index",
-            "git", "interpreter", "osv", "python", "sdists", "simple", "wheels",
+            "archive",
+            "binaries",
+            "builds",
+            "built-wheels",
+            "environments",
+            "flat-index",
+            "git",
+            "interpreter",
+            "osv",
+            "python",
+            "sdists",
+            "simple",
+            "wheels",
         }
         assert 'UV_PINNED_VERSION="0.12.1"' in sh, "re-read uv-cache/src/lib.rs for the new pin"
         case_body = re.search(
