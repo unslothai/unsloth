@@ -4270,6 +4270,22 @@ def test_the_mlx_mcp_snapshot_is_taken_under_the_same_guard_the_gguf_count_uses(
     assert guard < snapshot, "the guard must be held across the snapshot, not after it"
 
 
+def _uncopyable_naive_detokenizer(detokenizers):
+    """mlx-vlm's naive detokenizer as it behaves BELOW 0.6.0, which is where ``__copy__`` arrived.
+
+    Pinning the behaviour rather than the installed version: on 0.6.0 and later ``copy.copy``
+    succeeds, so a test that let the real class decide passed only on an older wheel and said
+    nothing about the branch it meant to cover."""
+
+    class _Uncopyable(detokenizers.NaiveStreamingDetokenizer):
+        def __copy__(self):
+            raise AttributeError(
+                "property 'text' of 'NaiveStreamingDetokenizer' object has no setter"
+            )
+
+    return _Uncopyable
+
+
 class _SpmTurn:
     """One generated turn, standing in for both the tokenizer and the runtime's detokenizer.
 
@@ -4305,7 +4321,7 @@ class _SpmTurn:
             self.eos_token_ids = tuple(eos_ids)
             self.eos_token_id = eos_ids[-1]
         self.detokenizer = (
-            detokenizers.NaiveStreamingDetokenizer(self)
+            _uncopyable_naive_detokenizer(detokenizers)(self)
             if detokenizer_class == "naive"
             else detokenizers.SPMStreamingDetokenizer(self, trim_space = False)
         )
@@ -4601,7 +4617,7 @@ def test_mlx_stream_detokenizer_rebuilds_the_one_a_retained_source_cannot_copy()
 
     class _Retained:
         def __init__(self):
-            self.detokenizer = detokenizers.NaiveStreamingDetokenizer(_Tok())
+            self.detokenizer = _uncopyable_naive_detokenizer(detokenizers)(_Tok())
 
     source = _Retained()
     with pytest.raises(AttributeError):
