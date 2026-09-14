@@ -5031,6 +5031,7 @@ class TestWindowsRocmTorchaoGuard:
         with patch.object(stack_mod, "IS_WINDOWS", False):
             assert stack_mod._installed_torch_is_windows_rocm() is False
 
+    @patch.object(stack_mod, "_repair_bad_accelerate")
     @patch.object(stack_mod, "_repair_bad_anyio")
     @patch.object(stack_mod, "_ensure_rocm_torch")
     @patch.object(stack_mod, "_ensure_cuda_torch")
@@ -5038,7 +5039,8 @@ class TestWindowsRocmTorchaoGuard:
     @patch.object(stack_mod, "run")
     @patch.object(stack_mod, "pip_install")
     def test_install_python_stack_skips_torchao_when_windows_rocm_torch_is_installed(
-        self, mock_pip, mock_run, mock_has_nvidia, mock_cuda, mock_rocm, mock_anyio, tmp_path
+        self, mock_pip, mock_run, mock_has_nvidia, mock_cuda, mock_rocm, mock_anyio,
+        mock_accelerate, tmp_path
     ):
         unstructured_plugin = tmp_path / "unstructured"
         github_plugin = tmp_path / "github"
@@ -5102,6 +5104,7 @@ class TestProgressStepCountMatchesTotal:
             patch.object(stack_mod, "_installed_torch_is_windows_rocm", return_value = False),
             patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True),
             patch.object(stack_mod, "_repair_bad_anyio"),
+            patch.object(stack_mod, "_repair_bad_accelerate"),
             patch.object(stack_mod, "_ensure_cuda_torch"),
             patch.object(stack_mod, "_ensure_rocm_torch"),
             patch.object(stack_mod, "_ensure_cpu_torch"),
@@ -5140,6 +5143,72 @@ class TestProgressStepCountMatchesTotal:
             skip_base = skip_base,
         )
         assert step == total, f"progress {step} != total {total}"
+
+
+class TestAccelerateRepair:
+    """accelerate 1.15.0 made prepare_model call model_has_dtensor() unconditionally, which
+    imports torch._C._distributed_c10d -- absent from AMD's Windows ROCm wheels, so training
+    dies at trainer start (huggingface/accelerate#4249). constraints.txt caps it, but only
+    the core-packages step passes -c, and install.ps1 sets SKIP_STUDIO_BASE=1 to skip that
+    step after resolving accelerate itself without -c. The repair covers that path."""
+
+    def _repair(self, installed, *, is_windows = True):
+        with (
+            patch.object(stack_mod, "IS_WINDOWS", is_windows),
+            patch.object(stack_mod, "_installed_version", return_value = installed),
+            patch.object(stack_mod, "pip_install") as mock_pip,
+        ):
+            stack_mod._repair_bad_accelerate()
+        return mock_pip
+
+    @pytest.mark.parametrize("installed", [(1, 15), (1, 16), (2, 0)])
+    def test_repairs_a_capped_out_accelerate_on_windows(self, installed):
+        mock_pip = self._repair(installed)
+        args = [str(a) for a in mock_pip.call_args.args]
+        assert "accelerate<1.15.0" in args
+
+    @pytest.mark.parametrize("installed", [None, (1, 14), (1, 9), (0, 34)])
+    def test_leaves_a_good_or_missing_accelerate_alone(self, installed):
+        """None is "not installed"; (1, 9) guards against a string compare, where "1.9"
+        would sort above "1.15" and trigger a needless downgrade."""
+        assert self._repair(installed).call_count == 0
+
+    @pytest.mark.parametrize("is_windows", [False, True])
+    def test_only_windows_is_touched(self, is_windows):
+        """The cap's marker is sys_platform == "win32". Linux, WSL (sys.platform "linux")
+        and macOS ship a distributed build, so they keep current accelerate."""
+        assert self._repair((1, 15), is_windows = is_windows).call_count == int(is_windows)
+
+    def test_repair_is_no_deps(self):
+        """accelerate requires torch>=2.0.0. A with-deps reinstall would re-resolve torch
+        and put a generic PyPI build over the ROCm wheel this exists to keep working."""
+        args = [str(a) for a in self._repair((1, 15)).call_args.args]
+        assert "--no-deps" in args
+        assert "--force-reinstall" not in args
+
+    def test_repair_survives_flag_translation_to_uv(self):
+        """pip_install prefers uv, so --no-deps must reach uv too, not just pip."""
+        args = ("--no-cache-dir", "--no-deps", "accelerate<1.15.0")
+        assert "--no-deps" in stack_mod._translate_pip_args_for_uv(args)
+        assert "--no-deps" in stack_mod._build_pip_cmd(args)
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [("1.15.0", (1, 15)), ("1.15", (1, 15)), ("1.15.0.dev0", (1, 15)),
+         ("1.14.0", (1, 14)), ("1.9.0", (1, 9)), ("unknown", None)],
+    )
+    def test_version_parsing(self, raw, expected):
+        with patch.object(stack_mod, "_installed_version", wraps = stack_mod._installed_version):
+            with patch("importlib.metadata.version", return_value = raw):
+                assert stack_mod._installed_version("accelerate") == expected
+
+    def test_constraints_file_caps_accelerate_on_win32_only(self):
+        """The repair and the constraint must agree, or install and update disagree."""
+        text = (PACKAGE_ROOT / "studio" / "backend" / "requirements"
+                / "single-env" / "constraints.txt").read_text(encoding = "utf-8")
+        line = next(ln for ln in text.splitlines()
+                    if ln.strip().startswith("accelerate") and not ln.strip().startswith("#"))
+        assert line.strip() == 'accelerate<1.15.0; sys_platform == "win32"'
 
 
 # TEST: worker.py -- Windows ROCm patches (source-level checks)

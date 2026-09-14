@@ -328,8 +328,10 @@ def _base_total(**flags) -> int:
 
 class TestStepTotals:
     def test_windows_totals_include_torchcodec(self):
-        assert _base_total(IS_WINDOWS = True) == 15
-        assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 13
+        # One above the other platforms in both modes: the accelerate repair (step 8c,
+        # #10819) is Windows-only, and its gate does not look at NO_TORCH.
+        assert _base_total(IS_WINDOWS = True) == 16
+        assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 14
 
     @pytest.mark.parametrize(
         "flags,total",
