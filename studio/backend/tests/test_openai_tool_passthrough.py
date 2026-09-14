@@ -10132,6 +10132,57 @@ class TestGgufChatHistoryAlternation:
         out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
         assert [m.get("name") for m in out] == ["supervisor", "alice", "researcher", "alice"]
 
+    def test_system_name_survives_the_route_system_rebuild(self):
+        req = ChatCompletionRequest.model_validate(
+            {
+                "model": "default",
+                "messages": [
+                    {"role": "system", "name": "supervisor", "content": "be brief"},
+                    {"role": "user", "name": "alice", "content": "hi"},
+                ],
+            }
+        )
+        out, _ = _openai_messages_for_gguf_chat(req, is_vision = False)
+        system_prompt, _, _ = _extract_content_parts(req.messages)
+        rebuilt = _set_or_prepend_system_message(out, f"Today is Monday.\n\n{system_prompt}")
+        assert [(m["role"], m.get("name")) for m in rebuilt] == [
+            ("system", "supervisor"),
+            ("user", "alice"),
+        ]
+
+    @pytest.mark.parametrize(
+        "first, second",
+        [({"name": "supervisor"}, {"name": "auditor"}), ({"name": "supervisor"}, {})],
+    )
+    def test_differing_system_names_are_dropped_on_rebuild(self, first, second):
+        messages = [
+            {"role": "system", **first, "content": "be brief"},
+            {"role": "developer", **second, "content": "cite sources"},
+            {"role": "user", "content": "hi"},
+        ]
+        rebuilt = _set_or_prepend_system_message(messages, "be brief\n\ncite sources")
+        assert rebuilt[0] == {"role": "system", "content": "be brief\n\ncite sources"}
+
+    def test_local_backends_receive_participant_names(self):
+        req = ChatCompletionRequest.model_validate(
+            {
+                "model": "default",
+                "messages": [
+                    {"role": "system", "name": "supervisor", "content": "be brief"},
+                    {"role": "user", "name": "alice", "content": "hi"},
+                    {"role": "assistant", "name": "researcher", "content": "hello"},
+                    {"role": "user", "content": "again"},
+                ],
+            }
+        )
+        system_prompt, chat_messages, _ = _extract_content_parts(req.messages)
+        assert system_prompt == "be brief"
+        assert chat_messages == [
+            {"role": "user", "name": "alice", "content": "hi"},
+            {"role": "assistant", "name": "researcher", "content": "hello"},
+            {"role": "user", "content": "again"},
+        ]
+
 
 class TestExternalProviderParticipantNames:
     @pytest.mark.parametrize("provider_type", ["openai", "anthropic", "gemini", "mistral"])

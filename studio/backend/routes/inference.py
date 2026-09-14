@@ -20465,6 +20465,8 @@ def _extract_content_parts(messages: list) -> tuple[str, list[dict], "Optional[s
         if combined_text is None:
             continue
         chat_message = {"role": msg.role, "content": combined_text}
+        if msg.name:
+            chat_message["name"] = msg.name
         if msg.role == "assistant" and msg.reasoning_content:
             chat_message["reasoning_content"] = msg.reasoning_content
         chat_messages.append(chat_message)
@@ -31598,7 +31600,11 @@ def _set_or_prepend_system_message(
     # Drop existing system/developer turns so the backend never sees duplicate
     # or conflicting system instructions, then prepend the resolved prompt.
     others = [dict(msg) for msg in safe_messages if msg.get("role") not in ("system", "developer")]
-    return [{"role": "system", "content": system_prompt}, *others]
+    system = {"role": "system", "content": system_prompt}
+    names = {msg.get("name") for msg in safe_messages if msg.get("role") in ("system", "developer")}
+    if len(names) == 1 and (name := names.pop()):
+        system["name"] = name
+    return [system, *others]
 
 
 @router.post("/messages")
