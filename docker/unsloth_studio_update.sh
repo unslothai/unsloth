@@ -12,10 +12,10 @@
 # Not `unsloth studio update`: that re-runs the full installer, which re-probes the
 # host GPU for torch wheels and in a CPU-only container downgrades torch to CPU/cu126.
 #
-# Persistence: the update is written to the container's writable layer, so it
-# survives `docker restart`. To keep it across a full `docker rm` + `docker run`
-# (and to keep your chats/users/models), run Studio with its home on a named
-# volume: -v unsloth_studio_home:/opt/unsloth-studio
+# Persistence: the updated packages live in the image's copy of Studio, so they
+# survive `docker restart` but not `docker rm`; pull a new image for a lasting update.
+# Studio's data (accounts, chats, models) is separate: keep it with
+# -v unsloth-studio:/opt/unsloth-studio, which never pins Studio's code.
 set -euo pipefail
 
 STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"
@@ -100,10 +100,11 @@ if ! "$PY" -c "import studio.backend.main" >/dev/null 2>&1; then
     echo "[studio-update] serving whatever it has already imported. That is the only" >&2
     echo "[studio-update] thing still working: the venv on disk is ALREADY replaced." >&2
     echo "[studio-update] Anything it imports lazily from here on fails the same way," >&2
-    echo "[studio-update] any restart parks Studio in FATAL, and because the venv lives" >&2
-    echo "[studio-update] under \$UNSLOTH_STUDIO_HOME, a persisted home keeps it broken" >&2
-    echo "[studio-update] across docker rm + docker run. Fix it before restarting." >&2
-    echo "[studio-update] Once fixed:  supervisorctl restart studio" >&2
+    echo "[studio-update] and any restart parks Studio in FATAL. The venv is the image's" >&2
+    echo "[studio-update] copy (\$UNSLOTH_STUDIO_APP), not part of the Studio home volume," >&2
+    echo "[studio-update] so docker rm + docker run brings back the image's working venv" >&2
+    echo "[studio-update] and keeps your data. Or fix it in place before restarting;" >&2
+    echo "[studio-update] once fixed:  supervisorctl restart studio" >&2
     exit 1
 fi
 

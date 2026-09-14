@@ -77,6 +77,7 @@ export {
   preferFullToolOutput,
   preferSanitizedFullToolOutput,
   toolOutputKey,
+  toolResultText,
   toolThreadScope,
   useToolOutputFor,
   useUnresolvedToolPaneScope,

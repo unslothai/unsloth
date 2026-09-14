@@ -47,11 +47,10 @@ interface EmbeddingModelState {
 // and shows an error, or an older model, over what the newer one just read.
 let latestLoad = 0;
 
-// Each surface keeps its own pending flag, so the one the user switches to can
-// write while the first write is still out. Request order is the best guess at
-// which one the user meant, but not proof of what the backend ended on: the
-// later one can fail verification, or persist first. So the newest answer wins
-// the moment it lands, and once every overlapping write has settled the store
+// Each surface keeps its own pending flag, so the one the user switches to can write while the
+// first write is still out. Request order is the best guess at which one the user meant, but not
+// proof of what the backend ended on: the later one can fail verification, or persist first. So the
+// newest answer wins the moment it lands, and once every overlapping write has settled the store
 // re-reads instead of trusting the guess.
 let latestSave = 0;
 let savesInFlight = 0;

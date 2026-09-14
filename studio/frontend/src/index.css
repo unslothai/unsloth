@@ -1964,8 +1964,9 @@ html[data-chat-font] .aui-root {
 	.unsloth-composer-left {
 		@apply flex min-w-0 flex-wrap items-center gap-0.5;
 		order: 1;
-		/* Pull the plus button closer to the composer edge. */
-		margin-left: -0.25rem;
+		/* Pull the plus button closer to the composer edge. Logical, so RTL
+		   pulls it outward instead of into the action group. */
+		margin-inline-start: -0.25rem;
 	}
 
 	.unsloth-composer-line .unsloth-composer-input {
@@ -1974,9 +1975,9 @@ html[data-chat-font] .aui-root {
 
 	.unsloth-composer-line .aui-composer-action-wrapper {
 		order: 3;
-		margin-left: auto;
+		margin-inline-start: auto;
 		/* 12px surface + 4px line padding minus this = 12px edge gap. */
-		margin-right: -0.25rem;
+		margin-inline-end: -0.25rem;
 	}
 
 	.unsloth-composer-line[data-expanded="true"] .unsloth-composer-input {
@@ -2034,6 +2035,183 @@ html[data-chat-font] .aui-root {
 		transform: rotate(45deg);
 	}
 
+	/* Size container for the composer. Sits outside the surface so the tight
+	   rules below can trim the surface's own padding. */
+	.unsloth-composer-shell {
+		container-type: inline-size;
+		container-name: composer-shell;
+	}
+
+	/* Mobile and very shrunk windows: the dictate/send cluster was dropping to
+	   a second line. Take the width back from the gutters, not the controls. */
+	@container composer-shell (max-width: 30rem) {
+		/* Was 12px; the 32px corner still clears the plus/send circles. */
+		.unsloth-composer-surface {
+			padding-left: 0.5rem;
+			padding-right: 0.5rem;
+		}
+
+		.unsloth-composer-line {
+			padding-left: 0;
+			padding-right: 0;
+			/* One gap for every control, so the row spaces evenly. */
+			--composer-tight-gap: 0.125rem;
+		}
+
+		.unsloth-composer-left,
+		.unsloth-composer-line .aui-composer-action-wrapper {
+			gap: var(--composer-tight-gap);
+		}
+
+		/* Plus and send hug their edges by the same amount. */
+		.unsloth-composer-left {
+			margin-inline-start: -0.125rem;
+		}
+
+		.unsloth-composer-line .aui-composer-action-wrapper {
+			margin-inline-end: -0.125rem;
+		}
+
+		/* Send's own inset stacks on the gap above; drop it. The running state
+		   puts that inset on a wrapper div instead of the button. */
+		.unsloth-composer-line .aui-composer-action-wrapper > button.aui-composer-send,
+		.unsloth-composer-line .aui-composer-action-wrapper > button.aui-composer-cancel,
+		.unsloth-composer-line .aui-composer-run-controls {
+			margin-left: 0;
+		}
+
+		/* Keeps the text starting just right of the plus glyph below it. */
+		.unsloth-composer-line[data-expanded="true"] .unsloth-composer-input {
+			padding-left: 0.5rem;
+		}
+
+		/* Recording swaps the input for the dictation bar, whose timer and
+		   actions are shrink-0. They set its floor, and the fieldset is
+		   min-width 0, so past that floor it overflows the surface instead of
+		   shrinking. Trim the same paddings the rest of the row gives up. */
+		.unsloth-dictation-wave {
+			padding-left: 0.5rem;
+			padding-right: 0.25rem;
+		}
+
+		.unsloth-dictation-timer {
+			margin-inline-end: 0.5rem;
+		}
+
+		/* Past its floor the bar has to stop taking width it cannot use. Left
+		   at min-width 0 it keeps shrinking and its shrink-0 children spill
+		   out of the surface, taking send with them; with a floor the pill
+		   row yields first and wraps, which is recoverable. */
+		.unsloth-composer-line[data-dictating="true"] .unsloth-dictation-bar {
+			min-width: min-content;
+		}
+	}
+
+	/* ~400px and under: settle the control row toward the bottom edge, since
+	   12px under a 32px circle is more air than the trimmed sides carry. */
+	@container composer-shell (max-width: 23.5rem) {
+		.unsloth-composer-surface {
+			padding-bottom: 0.5rem;
+		}
+	}
+
+	/* ~375px and under. Each control is a circle around a much smaller glyph,
+	   so the built-in air, not the gap, sets the spacing. Shrink the circles
+	   by 4px; overlapping them instead would make adjacent hit areas share
+	   pixels, and the later button would win the taps in between. */
+	@container composer-shell (max-width: 22rem) {
+		.unsloth-composer-line {
+			--composer-tight-gap: 0rem;
+		}
+
+
+		/* A 32px corner is a big fraction of a box this small. The drop
+		   overlay tracks it, or its edge shows against the surface. */
+		.unsloth-composer-surface,
+		.unsloth-composer-surface .aui-composer-drop-overlay {
+			border-radius: 1.5rem;
+		}
+
+		/* 32px to 28px for every control, and 36px to 28px for plus and send,
+		   which were the row's only oversized ends. Each selector has to
+		   outrank the compact pill rules, hence the longer shapes. */
+		/* Scoped to the right-control cluster. The dictation bar also renders
+		   an .aui-composer-send inside this line, and its stop button carries
+		   neither of our classes, so a looser selector shrinks one of that
+		   pair and not the other. */
+		.unsloth-composer-left > .unsloth-composer-plus,
+		.unsloth-composer-line .aui-composer-action-wrapper > button,
+		.unsloth-composer-line .aui-composer-run-controls > button {
+			width: 1.75rem;
+			height: 1.75rem;
+			/* The thinking pill reserves a text line; that would win over height. */
+			min-height: 1.75rem;
+		}
+
+		/* Tool pills only once the fit hook has collapsed their labels. Applied
+		   unconditionally, a 28px box makes a labelled pill measure as if it
+		   fit, and the hook keeps labels that then overflow it. */
+		.unsloth-composer-left[data-pill-compact="true"] > button.composer-pill-btn,
+		.unsloth-composer-left[data-pill-compact="first"]
+			> button.composer-pill-btn.composer-pill-permissions {
+			width: 1.75rem;
+			height: 1.75rem;
+			min-height: 1.75rem;
+		}
+
+		/* Send commits, so keep it clear of the toggle strip. Needs the same
+		   `> button` shape as the pull above to outrank it. */
+		.unsloth-composer-line
+			.aui-composer-action-wrapper
+			> button.aui-composer-send,
+		.unsloth-composer-line
+			.aui-composer-action-wrapper
+			> button.aui-composer-cancel,
+		.unsloth-composer-line
+			.aui-composer-action-wrapper
+			> .aui-composer-run-controls {
+			margin-left: 0.25rem;
+		}
+
+		/* Same 28px as the row above, and both of the bar's buttons together:
+		   stop carries none of our classes, so they have to be sized as a
+		   pair or the recording controls come out mismatched. */
+		.unsloth-dictation-actions {
+			gap: 0.375rem;
+		}
+
+		.unsloth-dictation-actions > button {
+			width: 1.75rem;
+			height: 1.75rem;
+			min-height: 1.75rem;
+		}
+
+		/* The wave is flex-1 and min-width 0, so all it still contributes at
+		   this size is its own padding. Drop it and the bar's min-content is
+		   exactly the timer plus the two buttons. */
+		.unsloth-dictation-wave {
+			padding-left: 0;
+			padding-right: 0;
+		}
+
+		.unsloth-dictation-timer {
+			margin-inline-end: 0.25rem;
+		}
+	}
+
+	/* ~275px and under: trim the vertical padding and row gap so the box is no
+	   taller than the rows it holds. */
+	@container composer-shell (max-width: 16rem) {
+		.unsloth-composer-surface {
+			padding-top: 0.5rem;
+			padding-bottom: 0.5rem;
+		}
+
+		.unsloth-composer-line[data-expanded="true"] {
+			row-gap: 0.5rem;
+		}
+	}
+
 	/* Keyboard focus shows a subtle brand ring, not the browser's blue outline;
 	   mouse clicks (no :focus-visible) stay ring-free. */
 	.composer-pill-btn:focus-visible,
@@ -2082,6 +2260,64 @@ html[data-chat-font] .aui-root {
 			var(--font-sans)
 		);
 		font-weight: 500;
+	}
+
+	/* Narrow panes shrink the greeting along with the composer under it, or a
+	   30px title wraps over two lines above a tightened box. Sized off the
+	   text tokens so the UI font scale still applies.
+
+	   The gutters here are on the pane's width, not the window's: an artifact
+	   split can leave a 42% thread pane inside a wide window, and a viewport
+	   breakpoint would keep the full 20px there. */
+	@container (max-width: 31.5rem) {
+		.unsloth-composer-dock-inner {
+			padding-left: 0.75rem;
+			padding-right: 0.75rem;
+		}
+
+		/* The welcome screen is inside the viewport's own 20px gutter, so pull
+		   back to the dock's 12px rather than adding to it; otherwise the empty
+		   state is 40px narrower than the thread it turns into. */
+		.aui-thread-welcome-message {
+			padding-left: 0;
+			padding-right: 0;
+			margin-left: -0.5rem;
+			margin-right: -0.5rem;
+			/* w-full would pin the width and the margins would only shift the
+			   box left. An explicit width widens it into the gutter instead;
+			   auto would shrink-wrap, since the parent centres its children. */
+			width: calc(100% + 1rem);
+		}
+
+		.unsloth-welcome-title {
+			font-size: var(--text-2xl);
+		}
+
+		.unsloth-welcome-sloth {
+			width: 2.125rem;
+			height: 2.125rem;
+		}
+
+		.unsloth-welcome-greeting {
+			gap: 0.625rem;
+		}
+	}
+
+	/* ~300px and under: one step further, so the greeting holds a single line
+	   beside the mascot instead of wrapping over the composer. */
+	@container (max-width: 18.75rem) {
+		.unsloth-welcome-title {
+			font-size: var(--text-xl);
+		}
+
+		.unsloth-welcome-sloth {
+			width: 1.75rem;
+			height: 1.75rem;
+		}
+
+		.unsloth-welcome-greeting {
+			gap: 0.5rem;
+		}
 	}
 
 	/* Right-side Thinking pill (toggle or dropdown). pl-2 matches the left
@@ -3340,6 +3576,15 @@ html[data-chat-font] .aui-root {
 	& .unsloth-composer-plus svg {
 		width: calc(var(--ui-icon-size) * 1.375);
 		height: calc(var(--ui-icon-size) * 1.375);
+	}
+	/* ~375px and under the plus sits in a 32px circle, which 1.375x fills.
+	   Step down to the dictate glyph's 1.2x. Must live here: this block is
+	   unlayered, so a copy in @layer utilities would lose to it. */
+	@container composer-shell (max-width: 22rem) {
+		& .unsloth-composer-plus svg {
+			width: calc(var(--ui-icon-size) * 1.2);
+			height: calc(var(--ui-icon-size) * 1.2);
+		}
 	}
 	& svg.size-\[36px\] { width: min(calc(36px * var(--ui-font-scale, 1)), calc(18px + 18px * var(--ui-font-scale, 1))); height: min(calc(36px * var(--ui-font-scale, 1)), calc(18px + 18px * var(--ui-font-scale, 1))); }
 	& svg.w-3 { width: min(calc(0.75rem * var(--ui-font-scale, 1)), calc(0.375rem + 0.375rem * var(--ui-font-scale, 1))); }
