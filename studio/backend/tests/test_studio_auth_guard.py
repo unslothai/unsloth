@@ -162,6 +162,10 @@ def test_equivalent_spellings_of_the_auth_path_are_all_covered(monkeypatch, tmp_
             f"{home}//auth//auth.db",
             f"{home}/a/b/../../auth/auth.db",
             str(home).replace("/", "\\") + "\\.\\auth\\auth.db",
+            # Mixed separators with a doubled slash, which is what a Windows runner produces. The
+            # canonical form collapsed `//` only in the slash-normalised candidate, built from the
+            # raw text, so this spelling matched neither until the collapse moved into the fold.
+            str(home).replace("/", "\\") + "//auth//auth.db",
         ):
             assert tools._references_studio_credential(f"cat {spelling}"), spelling
         # Cancelling `..` must not invent a match that was never there.
@@ -470,7 +474,9 @@ def test_a_python_path_built_in_pieces_is_still_the_auth_dir(monkeypatch, tmp_pa
         for code in (
             'import os\nprint(open(os.path.join("..", "..", "auth", "auth.db")).read())',
             'from pathlib import Path\nprint((Path("..") / ".." / "auth" / "auth.db").read_text())',
-            f'import os\nprint(open(os.path.join("{home}", "auth", "auth.db")).read())',
+            # as_posix(), not str(): a Windows path inside a python string literal turns its
+            # separators into escapes (\U, \A, \t), so the snippet stops being the path it names.
+            f'import os\nprint(open(os.path.join("{home.as_posix()}", "auth", "auth.db")).read())',
         ):
             assert tools._python_exec(code, None, 30, _SESSION, disable_sandbox = True) == (
                 tools._STUDIO_CREDENTIAL_BLOCKED

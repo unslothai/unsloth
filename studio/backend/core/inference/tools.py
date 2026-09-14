@@ -2679,7 +2679,13 @@ def _canonical_path_text(text: str) -> str:
     """
     unified = text.replace("\\", "/")
     out: "list[str]" = []
-    for segment in unified.split("/"):
+    for index, segment in enumerate(unified.split("/")):
+        # `a//b` is `a/b` to every OS. The first two positions are exempt so a leading "/" and a UNC
+        # "//server/share" keep their shape. Without this the collapse only happened in the separate
+        # slash-normalised candidate, which is built from the RAW text, so a Windows path written
+        # with mixed separators (`C:\Studio\studio-home//auth//auth.db`) matched neither.
+        if segment == "" and index > 1:
+            continue
         if segment == ".":
             continue
         if segment == ".." and out and out[-1] not in ("", ".."):
