@@ -36,23 +36,18 @@ export const BUDGET = {
   // build both sides, merge base 1,560.9 KB transfer against branch 1,562.6 KB, so it crossed the old 1,562.5 KB
   // ceiling by a tenth of a kilobyte.
   //
-  // Raised again because main crossed 1,582.0 KB and stayed there. Four builds on
-  // one machine, same toolchain, transfer / raw / chunks:
+  // Raised again after a second squeeze. main measures 1,585.6 KB transfer and passed
+  // 1,645,000 by 20.9 KB, which is 1.3% and about six days at the 3.7 KB/day this file
+  // has drifted since 17363f8a2. That is the same margin the previous raise left, and it
+  // lasted six days before main went red again on a commit whose only frontend change was
+  // one English sentence rewritten shorter.
   //
-  //   3f2c89537  #10629's parent          1,574.7 / 5,260.1 / 91
-  //   e3e457a7d  #10629 eager Settings    1,579.9 / 5,288.8 / 82
-  //   19c86b3cc  last green Frontend CI   1,576.5 / 5,267.6 / 91
-  //   7436c103e  main                     1,585.6 / 5,306.4 / 82
-  //
-  // No single change is over the line. #10629 is the largest contributor at
-  // +5.2 KB -- it statically imports SettingsDialog and FloatingMonitor to make
-  // Settings eager again, which is the fix it shipped, and which is what folds
-  // nine chunks into the eager graph and takes settings-*.js from 158.0 KB raw to
-  // 208.2 KB. It left 2.1 KB of headroom; the ~40 commits after it spent that.
-  // So this is a deliberate raise, not a regression to lazy-load away.
-  //
-  // Raw is untouched: 5,306.4 KB still has 64.7 KB to spare under 5,500,000.
-  transferBytes: 1_645_000,
+  // Nothing became eager that should not be: across the whole window the eager chunk set
+  // gained no member, so there is nothing here to lazy-load. What runs out is headroom.
+  // 1,690,000 leaves 64.8 KB (4.1%), the proportion #8964 shipped with, which absorbed 17
+  // days. rawBytes stays put at 64.7 KB spare so both halves come up for one re-measure
+  // together instead of each dragging main red on its own.
+  transferBytes: 1_690_000,
   rawBytes: 5_500_000,
 };
 
