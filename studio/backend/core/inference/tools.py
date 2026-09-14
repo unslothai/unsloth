@@ -1306,6 +1306,23 @@ def _is_start_title(token: str) -> bool:
     )
 
 
+# Built once at import. `_BLOCKED_COMMANDS` is a module-level frozenset assigned at line 192 and
+# never mutated, so this alternation is a compile-time constant. It used to be rebuilt on every
+# call, which cost an `re.escape` per blocked name per command: profiling the scan over a 2637
+# command corpus put that genexpr at the top, 567k calls to `re.escape` and 0.60s cumulative out of
+# 3.9s. None means the set is empty, which only happens if the tables above are emptied.
+_BLOCKED_WORD_RE = (
+    re.compile(
+        r"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)"
+        r"(?:[\w./\\-]*/|[a-zA-Z]:[/\\][\w./\\-]*)?"
+        r"(" + "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS)) + r")"
+        r"(?:\.(?:exe|com|bat|cmd))?\b"
+    )
+    if _BLOCKED_COMMANDS
+    else None
+)
+
+
 def _find_blocked_commands(command: str) -> set[str]:
     """Detect blocked commands at shell command position only.
 
@@ -1540,14 +1557,8 @@ def _find_blocked_commands(command: str) -> set[str]:
     # Regex catches blocked words at command boundaries shlex misses: inside $(rm -rf), <(rm), backtick chains, or
     # "foo;rm". Anchored to command-position delimiters, so it doesn't match in argument position.
     lowered = command.lower()
-    if _BLOCKED_COMMANDS:
-        words_alt = "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS))
-        pattern = (
-            rf"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)"
-            rf"(?:[\w./\\-]*/|[a-zA-Z]:[/\\][\w./\\-]*)?"
-            rf"({words_alt})(?:\.(?:exe|com|bat|cmd))?\b"
-        )
-        blocked.update(re.findall(pattern, lowered))
+    if _BLOCKED_WORD_RE is not None:
+        blocked.update(_BLOCKED_WORD_RE.findall(lowered))
 
     # A substitution at command position synthesizes the executed word, so `$(ls /usr/bin | grep
     # "^reb")` never reaches the scan above; screen the body instead. A variable launders the same
