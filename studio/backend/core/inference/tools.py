@@ -2531,8 +2531,8 @@ _SENSITIVE_PATH_RE = re.compile(
     re.IGNORECASE,
 )
 # Studio's own auth directory ($STUDIO_HOME/auth) holds this install's credentials in the clear: the reusable CLI
-# bearer (.cli_api_key_<stem>_<digest>), the bootstrap password, the desktop secret, the llama.cpp stream key, and
-# auth.db with the JWT secret. Tool subprocesses run as the backend's OS user, so the 0600 modes those files carry are
+# bearer (.cli_api_key_<stem>_<digest>), the coding-agent keys (agent_api_key.json), the bootstrap password, the
+# desktop secret, the llama.cpp stream key, and auth.db with the JWT secret. Tool subprocesses run as the backend's OS user, so the 0600 modes those files carry are
 # no boundary against them, and a provider that talks the model into `cat`ing one gets a live key replayed back to it.
 # Deliberately narrow: only these basenames and the auth directory itself, so an application's own auth/ package,
 # auth.py or `grep -r auth src/` stays ordinary work.
@@ -2543,7 +2543,9 @@ _STUDIO_CREDENTIAL_BASENAME_RE = re.compile(
     # `llama_api_key` also reads as an ordinary identifier, so only its path form counts. auth.db is
     # deliberately absent: a project's own auth/auth.db is spelled the same way, and Studio's copy is
     # already covered by the auth-directory patterns below.
-    r"|[/\\]llama_api_key(?:$|[\s'\"])",
+    r"|[/\\]llama_api_key(?:$|[\s'\"])"
+    # `unsloth start` keeps the coding-agent keys here, in the same directory and in the clear.
+    r"|(?:^|[/\\\s'\"=])agent_api_key\.json(?:$|[\s'\"])",
     re.IGNORECASE,
 )
 # The default install layout, for the common case where the path is spelled out rather than resolved.
@@ -2565,6 +2567,7 @@ _STUDIO_CREDENTIAL_HINTS = (
     ".bootstrap_password",
     ".desktop_secret",
     "llama_api_key",
+    "agent_api_key",
 )
 
 _studio_auth_markers_cache: "tuple | None" = None

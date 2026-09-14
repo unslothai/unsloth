@@ -38,6 +38,9 @@ _CREDENTIAL_COMMANDS = (
     "ls -a ~/.unsloth/studio/auth",
     "cat /home/u/.unsloth/studio/auth/.bootstrap_password",
     "sqlite3 /home/u/.unsloth/studio/auth/auth.db .dump",
+    # `unsloth start` caches the coding-agent keys here, in the same directory.
+    "cat /home/u/.unsloth/studio/auth/agent_api_key.json",
+    "cat agent_api_key.json",
 )
 _CREDENTIAL_CODE = (
     "from pathlib import Path\n"
