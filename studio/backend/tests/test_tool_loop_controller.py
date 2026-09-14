@@ -608,7 +608,58 @@ def test_an_mcp_tool_call_parsed_from_xml_arrives_typed():
     }
     # The turn replayed to the model carries the typed values too, not the strings.
     assert decision.as_assistant_tool_call()["function"]["arguments"] == (
-        '{"depth":null,"fuzzy":false,"limit":25,"query":"ship dates","tags":["a","b"]}'
+        '{"query":"ship dates","limit":25,"fuzzy":false,"tags":["a","b"],"depth":null}'
+    )
+
+
+def test_replayed_arguments_keep_the_order_the_model_generated():
+    """The replay is the text the model is told it wrote, so its key order must survive (#10791)."""
+    edit_file = next(t for t in ALL_TOOLS if t["function"]["name"] == "edit_file")
+    arguments = {
+        "path": "calc.py",
+        "edits": [{"new_string": "def subtract", "old_string": "def add"}],
+    }
+    controller = ToolLoopController(tools = [edit_file])
+    decision = controller.prepare_call(
+        {"function": {"name": "edit_file", "arguments": json.dumps(arguments)}}
+    )
+
+    replayed = decision.as_assistant_tool_call()["function"]["arguments"]
+    assert (
+        replayed
+        == '{"path":"calc.py","edits":[{"new_string":"def subtract","old_string":"def add"}]}'
+    )
+    assert decision.tool_start_payload()["arguments_text"] == replayed
+    flipped = {
+        "path": "calc.py",
+        "edits": [{"old_string": "def add", "new_string": "def subtract"}],
+    }
+    assert canonical_tool_call_key("edit_file", decision.arguments) == (
+        canonical_tool_call_key("edit_file", flipped)
+    )
+
+
+def test_two_xml_calls_written_in_different_orders_replay_in_their_own():
+    """Each call's own order, not one fixed order that happens to look unsorted.
+
+    No fixed order satisfies both, so on the sorted encoder both replay as the same string.
+    """
+
+    def replay(*parameters):
+        content = (
+            "<function=mcp__notes__search>"
+            + "".join(f"<parameter={key}>{value}</parameter>" for key, value in parameters)
+            + "</function>"
+        )
+        calls = parse_tool_calls_from_text(content)
+        decision = ToolLoopController(tools = _mcp_tool_schemas()).prepare_call(calls[0])
+        return decision.as_assistant_tool_call()["function"]["arguments"]
+
+    assert replay(("query", "ship dates"), ("limit", 25), ("fuzzy", "false")) == (
+        '{"query":"ship dates","limit":25,"fuzzy":false}'
+    )
+    assert replay(("fuzzy", "false"), ("query", "ship dates"), ("limit", 25)) == (
+        '{"fuzzy":false,"query":"ship dates","limit":25}'
     )
 
 
