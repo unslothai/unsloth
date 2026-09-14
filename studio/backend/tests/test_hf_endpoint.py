@@ -282,3 +282,29 @@ def test_a_loopback_endpoint_is_not_handed_to_a_remote_browser(monkeypatch):
     # A non-loopback mirror is the same host for every client and passes through.
     monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com")
     assert client_reachable_endpoint("192.168.1.50") == "https://hf-mirror.com"
+
+
+def test_the_reachable_endpoint_follows_the_tunnel_aware_client_ip(monkeypatch):
+    """Every caller pairs this with client_ip(), never with the raw socket peer.
+
+    Through the managed Cloudflare tunnel the peer is the local cloudflared
+    process, so the pair is what decides correctly; the publish link and
+    /api/health both go through it.
+    """
+    from types import SimpleNamespace
+
+    from utils.client_ip import client_ip
+
+    monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:9700")
+
+    def request(peer: str, headers: dict | None = None):
+        return SimpleNamespace(client = SimpleNamespace(host = peer), headers = headers or {})
+
+    local = request("127.0.0.1")
+    assert client_reachable_endpoint(client_ip(local)) == "http://127.0.0.1:9700"
+
+    tunneled = request("127.0.0.1", {"cf-connecting-ip": "203.0.113.7"})
+    assert client_reachable_endpoint(client_ip(tunneled)) == "https://huggingface.co"
+
+    lan = request("192.168.1.50")
+    assert client_reachable_endpoint(client_ip(lan)) == "https://huggingface.co"

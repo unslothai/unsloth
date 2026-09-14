@@ -38,6 +38,7 @@ from models.data_recipe import (
     PublishDatasetResponse,
     RecipePayload,
 )
+from utils.client_ip import client_ip
 from utils.hf_endpoint import client_reachable_endpoint, get_hf_endpoint
 from utils.host_policy import dial_host, self_request_host
 from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
@@ -606,9 +607,10 @@ def publish_job_dataset(
             description = description,
             hf_token = hf_token or None,
             private = payload.private,
-            link_endpoint = client_reachable_endpoint(
-                getattr(getattr(request, "client", None), "host", None)
-            ),
+            # client_ip, not the socket peer: through the managed Cloudflare tunnel
+            # the peer is the local cloudflared process, so the peer alone would
+            # aim the "Open repo" link at the visitor's own localhost.
+            link_endpoint = client_reachable_endpoint(client_ip(request)),
         )
     except RecipeDatasetPublishError as exc:
         raise log_and_http_error(
