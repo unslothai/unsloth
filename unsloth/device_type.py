@@ -14,6 +14,7 @@
 
 __all__ = [
     "is_hip",
+    "npu_is_available",
     "get_device_type",
     "DEVICE_TYPE",
     "DEVICE_TYPE_TORCH",
@@ -30,6 +31,7 @@ __all__ = [
 ]
 
 import functools
+import importlib.util
 import inspect
 import os
 import re
@@ -59,6 +61,37 @@ def is_hip():
 
 
 @functools.cache
+def npu_is_available():
+    """True only when torch.npu is present AND usable.
+
+    torch_npu >= 2.5.1 registers the torch.npu namespace during `import torch` through
+    its torch.backends entry point, but older releases and
+    TORCH_DEVICE_BACKEND_AUTOLOAD=0 do not, so fall back to importing it here.
+    Every probe stays guarded: torch_npu without CANN or a driver raises on import
+    (missing libascend_hal.so), and that must not take `import unsloth` down on the
+    CUDA, ROCm and XPU hosts that never had an NPU in the first place.
+    """
+    if _IS_MLX:
+        return False
+    npu = getattr(torch, "npu", None)
+    if npu is None:
+        # find_spec first: on a host without torch_npu this answers None and costs nothing.
+        if importlib.util.find_spec("torch_npu") is None:
+            return False
+        try:
+            import torch_npu  # noqa: F401
+        except Exception:
+            return False
+        npu = getattr(torch, "npu", None)
+        if npu is None:
+            return False
+    try:
+        return bool(npu.is_available())
+    except Exception:
+        return False
+
+
+@functools.cache
 def get_device_type():
     # MLX first: torch is never imported on the MLX runtime, so claiming "cuda" here would NameError in
     # get_device_count. Matches unsloth/__init__.py and unsloth_zoo.device_type.
@@ -72,22 +105,25 @@ def get_device_type():
         if is_hip():
             return "hip"
         return "cuda"
-    elif hasattr(torch, "npu") and torch.npu.is_available():
-        return "npu"
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         return "xpu"
+    # After xpu, not before it: a host exposing both must keep selecting xpu, as it did
+    # before Ascend was known about.
+    elif npu_is_available():
+        return "npu"
     if hasattr(torch, "accelerator"):
         if not torch.accelerator.is_available():
             raise NotImplementedError("Unsloth cannot find any torch accelerator? You need a GPU.")
         accelerator = str(torch.accelerator.current_accelerator())
-        if accelerator in ("cuda", "xpu", "hip"):
+        # "npu" joins this list rather than returning it: reaching here means torch.npu is
+        # missing or unusable, so returning "npu" would only defer the failure to
+        # torch.npu.device_count() as an unhelpful AttributeError.
+        if accelerator in ("cuda", "xpu", "hip", "npu"):
             raise RuntimeError(
-                f"Unsloth: Weirdly `torch.cuda.is_available()`, `torch.xpu.is_available()` and `is_hip` all failed.\n"
+                f"Unsloth: Weirdly `torch.cuda.is_available()`, `torch.xpu.is_available()`, `torch.npu.is_available()` and `is_hip` all failed.\n"
                 f"But `torch.accelerator.current_accelerator()` works with it being = `{accelerator}`\n"
                 f"Please reinstall torch - it's most likely broken :("
             )
-        if accelerator == "npu":
-            return "npu"
     raise NotImplementedError(
         "Unsloth currently only works on NVIDIA, AMD, Intel and Ascend NPU GPUs."
     )
@@ -258,7 +294,13 @@ def get_device_stats() -> tuple[str, str, float]:
         snippet = f"Intel Toolkit: {torch.version.xpu}."
     elif DEVICE_TYPE == "npu":
         name = gpu_stats.name + ". " if gpu_stats.name else "Ascend NPU Device. "
-        snippet = "Ascend NPU: " + name
+        # Mirrors the cuda/xpu arms by reporting the toolkit version rather than
+        # repeating the device name, which "Ascend NPU: " + name already put in `name`.
+        try:
+            import torch_npu
+            snippet = f"Ascend NPU. torch_npu: {torch_npu.__version__}."
+        except Exception:
+            snippet = "Ascend NPU."
     else:
         name = gpu_stats.name + ". " if gpu_stats.name else "NVIDIA GPU Device. "
         snippet = f"CUDA: {gpu_stats.major}.{gpu_stats.minor}. CUDA Toolkit: {torch.version.cuda}."
