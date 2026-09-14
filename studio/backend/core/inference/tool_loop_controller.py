@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
 
+from core.inference.llama_tool_schema import unrelaxed
 from core.inference.tool_call_parser import TOOL_ERROR_NUDGE, TOOL_ERROR_PREFIXES
 
 
@@ -478,6 +479,7 @@ def _read_schema(spec: Any) -> "tuple[Any, str | None, bool]":
     ``(None, ...)`` leaves it alone. A union collapses to its single non-null branch, so
     every branch must name one: reading the integer branch of ``anyOf: [{integer}, {$ref}]``
     would turn ``"001"`` into 1."""
+    spec = unrelaxed(spec)
     if not _readable(spec):
         return None, None, False
     union = _UNION_KEYWORDS & spec.keys()

@@ -128,7 +128,7 @@ def test_relaxing_twice_changes_nothing():
     assert relax_nested_object_key_order(once) is once
 
 
-def test_objects_under_items_and_defs_are_wrapped():
+def test_objects_under_items_and_refs_are_wrapped_where_they_are_used():
     row = {"type": "object", "properties": {"id": {"type": "string"}, "note": {"type": "string"}}}
     parameters = {
         "type": "object",
@@ -143,8 +143,90 @@ def test_objects_under_items_and_defs_are_wrapped():
 
     assert relaxed["properties"]["rows"]["items"] == _relaxed(row)
     assert relaxed["properties"]["first"]["prefixItems"] == [_relaxed(row)]
-    assert relaxed["$defs"]["Row"] == _relaxed(row)
-    assert relaxed["properties"]["page"] == {"$ref": "#/$defs/Row"}
+    assert relaxed["properties"]["page"] == _relaxed({"$ref": "#/$defs/Row"})
+    assert relaxed["$defs"]["Row"] == row
+
+
+def test_allof_ref_parts_keep_their_definition_bare():
+    # llama.cpp merges an allOf $ref part by the target's own properties, so a wrapped
+    # definition compiles to "{}" and every key is dropped.
+    paging = {
+        "type": "object",
+        "properties": {"start_cursor": {"type": "string"}, "page_size": {"type": "integer"}},
+    }
+    parameters = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "filter": {"allOf": [{"$ref": "#/$defs/Filter"}], "description": "paging"},
+        },
+        "required": ["query"],
+        "$defs": {"Filter": copy.deepcopy(paging)},
+    }
+    assert relax_nested_object_key_order(parameters) is parameters
+
+    recursive_root = {"$defs": {"Node": copy.deepcopy(paging)}, "allOf": [{"$ref": "#/$defs/Node"}]}
+    assert relax_nested_object_key_order(recursive_root) is recursive_root
+
+
+def test_root_union_branches_are_the_root_and_stay_bare():
+    by_id = {
+        "type": "object",
+        "properties": {"id": {"type": "string"}, "a": {"type": "string"}, "b": {"type": "integer"}},
+        "required": ["id"],
+    }
+    by_url = {"type": "object", "properties": {"url": {"type": "string"}, "c": {"type": "string"}}}
+    parameters = {"type": "object", "anyOf": [by_id, by_url]}
+    assert relax_nested_object_key_order(parameters) is parameters
+
+    root_ref = {"$ref": "#/$defs/Args", "$defs": {"Args": copy.deepcopy(by_id)}}
+    assert relax_nested_object_key_order(root_ref) is root_ref
+
+
+def test_passthrough_healer_types_arguments_against_the_original_schema():
+    import json
+
+    from core.inference.passthrough_healing import heal_openai_message
+    from routes.inference import _build_passthrough_payload
+
+    data = {
+        "type": "object",
+        "properties": {
+            "view_url": {"type": "string"},
+            "start_cursor": {"type": "string"},
+            "page_size": {"type": "integer"},
+            "is_archived": {"type": "boolean"},
+        },
+        "required": ["view_url"],
+    }
+    tool = _tool({"type": "object", "properties": {"data": data}, "required": ["data"]}, name = "q")
+    body = _build_passthrough_payload(
+        [{"role": "user", "content": "hi"}],
+        [tool],
+        temperature = 0.7,
+        top_p = 0.9,
+        top_k = 40,
+        stream = False,
+        tool_choice = "auto",
+        max_tokens = 16,
+        stop = None,
+        backend_ctx = 4096,
+    )
+    assert body["tools"][0]["function"]["parameters"]["properties"]["data"] == _relaxed(data)
+
+    call = {
+        "name": "q",
+        "arguments": {
+            "data": {"view_url": "u", "page_size": "1", "is_archived": "false", "start_cursor": "c"}
+        },
+    }
+    message = {"role": "assistant", "content": f"<tool_call>{json.dumps(call)}</tool_call>"}
+    assert heal_openai_message(message, {"q"}, body["tools"])
+
+    arguments = json.loads(message["tool_calls"][0]["function"]["arguments"])
+    assert arguments == {
+        "data": {"view_url": "u", "page_size": 1, "is_archived": False, "start_cursor": "c"}
+    }
 
 
 def test_nullable_nested_object_is_wrapped():

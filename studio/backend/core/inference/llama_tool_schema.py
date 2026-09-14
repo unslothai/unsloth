@@ -10,7 +10,16 @@ from __future__ import annotations
 from typing import Any
 
 _PERMISSIVE_OBJECT = {"type": "object", "additionalProperties": True}
-_MAP_KEYWORDS = ("$defs", "definitions", "dependentSchemas", "patternProperties", "properties")
+# Child mode per keyword: True wraps, False never wraps, None inherits the parent's instance.
+# Definitions and allOf parts stay bare because llama.cpp merges a $ref or allOf part by its
+# own properties, and a wrapped part contributes none.
+_MAP_KEYWORDS = {
+    "$defs": False,
+    "definitions": False,
+    "dependentSchemas": True,
+    "patternProperties": True,
+    "properties": True,
+}
 _SINGLE_KEYWORDS = (
     "additionalProperties",
     "contains",
@@ -24,7 +33,7 @@ _SINGLE_KEYWORDS = (
     "unevaluatedItems",
     "unevaluatedProperties",
 )
-_LIST_KEYWORDS = ("allOf", "anyOf", "items", "oneOf", "prefixItems")
+_LIST_KEYWORDS = {"allOf": False, "anyOf": None, "items": True, "oneOf": None, "prefixItems": True}
 
 
 def _has_reorderable_keys(schema: dict) -> bool:
@@ -51,35 +60,58 @@ def _is_relaxed(schema: dict) -> bool:
     )
 
 
-def _relax(schema: Any, *, nested: bool) -> Any:
+def _resolve_ref(ref: Any, root: dict) -> Any:
+    if not isinstance(ref, str) or not ref.startswith("#/"):
+        return None
+    node: Any = root
+    for part in ref[2:].split("/"):
+        if not isinstance(node, dict):
+            return None
+        node = node.get(part.replace("~1", "/").replace("~0", "~"))
+    return node
+
+
+def _relax(schema: Any, *, nested: bool, root: dict) -> Any:
     if not isinstance(schema, dict) or _is_relaxed(schema):
         return schema
     out = schema
-    for keyword in _MAP_KEYWORDS:
+    for keyword, child_nested in _MAP_KEYWORDS.items():
         children = schema.get(keyword)
         if isinstance(children, dict):
-            relaxed = {key: _relax(value, nested = True) for key, value in children.items()}
+            relaxed = {
+                key: _relax(value, nested = child_nested, root = root)
+                for key, value in children.items()
+            }
             if any(relaxed[key] is not children[key] for key in children):
                 out = {**out, keyword: relaxed}
     for keyword in _SINGLE_KEYWORDS:
         child = schema.get(keyword)
         if isinstance(child, dict):
-            relaxed = _relax(child, nested = True)
+            relaxed = _relax(child, nested = True, root = root)
             if relaxed is not child:
                 out = {**out, keyword: relaxed}
-    for keyword in _LIST_KEYWORDS:
+    for keyword, child_nested in _LIST_KEYWORDS.items():
         children = schema.get(keyword)
         if isinstance(children, list):
-            relaxed = [_relax(value, nested = True) for value in children]
+            mode = nested if child_nested is None else child_nested
+            relaxed = [_relax(value, nested = mode, root = root) for value in children]
             if any(new is not old for new, old in zip(relaxed, children)):
                 out = {**out, keyword: relaxed}
-    if nested and _has_reorderable_keys(out):
+    if not nested:
+        return out
+    target = _resolve_ref(out.get("$ref"), root)
+    if _has_reorderable_keys(out) or (isinstance(target, dict) and _has_reorderable_keys(target)):
         return {"anyOf": [dict(_PERMISSIVE_OBJECT), out]}
     return out
 
 
 def relax_nested_object_key_order(parameters: Any) -> Any:
-    return _relax(parameters, nested = False)
+    root = parameters if isinstance(parameters, dict) else {}
+    return _relax(parameters, nested = False, root = root)
+
+
+def unrelaxed(schema: Any) -> Any:
+    return schema["anyOf"][1] if isinstance(schema, dict) and _is_relaxed(schema) else schema
 
 
 def llama_grammar_tools(tools: Any) -> Any:
