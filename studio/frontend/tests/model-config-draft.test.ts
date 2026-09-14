@@ -71,11 +71,7 @@ test("remember toggle keeps saved baseline until save", () => {
   assert.equal(draft?.savedRemember, false);
 });
 
-// The two hosts do not spell a model the same way. The sidebar keys off
-// inferenceParams.checkpoint, which /status echoes back in whatever spelling the backend
-// resolved; the picker keys off the row's advertised id. Both reach the SAME settings row,
-// because modelStorageKey normalizes, so the draft has to fold the same spellings or the two
-// panels quietly edit separate drafts for the model they are both showing.
+// The sidebar keys off the checkpoint as /status spells it, the picker off the row's id.
 const SAME_MODEL_SPELLINGS: [string, string | null, string, string | null][] = [
   ["C:\\models\\Qwen3.gguf", null, "C:/models/Qwen3.gguf", null],
   ["c:\\models\\Qwen3.gguf", null, "C:\\models\\Qwen3.gguf", null],
@@ -106,8 +102,7 @@ test("quants of one repo keep their own drafts", () => {
 });
 
 test("a colon in the model id is not read as a quant", () => {
-  // Ollama ids carry one. A `${id}:${variant}` join would hand "ollama/qwen3:8b" with no
-  // variant and "ollama/qwen3" at 8b the same draft, and those are two different models.
+  // A `${id}:${variant}` join gave "ollama/qwen3:8b" and "ollama/qwen3" at 8b one draft.
   assert.notEqual(
     modelConfigDraftKey("ollama/qwen3:8b", null),
     modelConfigDraftKey("ollama/qwen3", "8b"),
@@ -121,19 +116,16 @@ test("the draft outlives one host but not the last one", () => {
   primeModelConfigDraft(key, { config: SEED, remembered: true }, "none");
   patchModelConfigDraft(key, { nParallel: 6 });
   markExtraArgsHydratedForDraft(key, "identity");
-  // Closing the dropdown leaves the sidebar editing: that sharing is the whole point.
   dropdown();
   assert.equal(readModelConfigDraft(key)?.config.nParallel, 6);
-  // The last one out discards it, or a value typed and never applied would come back as this
-  // model's settings, and a row saved elsewhere in between would never be read.
+  // Or a value typed and never applied comes back as this model's settings.
   sidebar();
   assert.equal(readModelConfigDraft(key), undefined);
   assert.equal(extraArgsHydrationIdentityForDraft(key), null);
 });
 
 test("a release that fires twice does not drop another host's draft", () => {
-  // StrictMode replays effects, so one mount's cleanup can run more than once. A release that
-  // decremented again would take the count past the host that is still showing the draft.
+  // StrictMode replays effects: a second decrement would go past the host still showing it.
   const key = modelConfigDraftKey("unsloth/Double-Release-GGUF", VARIANT);
   const dropdown = retainModelConfigDraft(key);
   const sidebar = retainModelConfigDraft(key);

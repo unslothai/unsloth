@@ -1,23 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// One in-memory draft per model settings identity so the sidebar and model-dropdown
-// Run settings pages cannot diverge.
+// One draft per model settings identity, so the two Run settings editors cannot diverge.
 
-// Relative, not through the hub barrel: this module is imported by the editor and by
-// node --test, and the barrel pulls in React and the download manager.
+// Relative: the hub barrel pulls in React and the download manager.
 import {
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
 } from "../../hub/lib/model-identity.ts";
 import type { PerModelConfig } from "./per-model-config";
 
-// The same identity the settings themselves are stored under (modelStorageKey in
-// ./model-identity). A Windows path spelled with either separator, a drive letter in either
-// case, a trailing separator and a repo id in another case all name ONE model, so keying the
-// draft on the raw text would hand the two hosts separate drafts for the model they are both
-// showing. The JSON pair also keeps "repo:quant with no variant" apart from "repo with variant
-// quant", which a `${id}:${variant}` join folds together.
+// Normalized like modelStorageKey, or one model spelled two ways is two drafts. The JSON pair
+// also keeps "repo:quant" apart from "repo" at "quant", which a string join folds together.
 function draftStorageKey(
   modelId: string,
   ggufVariant: string | null | undefined,
@@ -38,15 +32,11 @@ export type ModelConfigDraftSnapshot = {
 
 const drafts = new Map<string, ModelConfigDraftSnapshot>();
 const listeners = new Set<() => void>();
-// How many editors are currently showing each draft. A draft outlives one host, which is the
-// point -- the sidebar copy stays mounted while collapsed and the dropdown opens over it -- but
-// it must not outlive the LAST one, or a value typed and never applied would come back as the
-// model's settings the next time the panel opens, and a row saved elsewhere in the meantime
-// would never be read. An unmounted useState used to do that job.
+// Editors showing each draft. It must outlive one and not the last, or a value typed and never
+// applied returns as the model's settings, over a row saved elsewhere meanwhile.
 const hostCounts = new Map<string, number>();
-// Which server-override read has already been folded into each draft. Shared with the draft
-// rather than held per editor, so opening the second host does not re-run the read and write
-// the stored row back over what the first host is showing.
+// Per draft, not per editor: opening the second host must not re-run the read and write the
+// stored row back over what the first is showing.
 const extraArgsHydratedByDraftKey = new Map<string, string>();
 
 /** Stable React key: model + quant only. Live config sync goes through the draft store. */
@@ -83,10 +73,7 @@ export function readModelConfigDraft(
   return drafts.get(key);
 }
 
-/**
- * Registers one mounted editor against a draft and returns its release. The draft, and the
- * hydration mark that goes with it, live exactly as long as some editor is showing them.
- */
+/** Registers one editor and returns its release; the draft and its mark live while any holds. */
 export function retainModelConfigDraft(key: string): () => void {
   hostCounts.set(key, (hostCounts.get(key) ?? 0) + 1);
   let released = false;
@@ -165,9 +152,6 @@ export function replaceModelConfigDraft(
   notify();
 }
 
-// The three writers below need a primed draft and do nothing without one. Every editor primes
-// in a layout effect before it can paint a control, and holds a retain for as long as it is
-// mounted, so a write with no draft means the retain and the prime have come apart.
 export function patchModelConfigDraft(
   key: string,
   patch:

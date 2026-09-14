@@ -2983,17 +2983,10 @@ def test_the_sidebar_settings_editor_reseeds_when_the_live_config_lands():
     page = " ".join(_read("features/model-picker/components/model-config-page.tsx").split())
     assert "primeModelConfigDraft(" in page
     assert "loadedConfigSignature(loadedConfig)" in page
-    # The draft is shared, so it lives as long as SOME editor shows it and no longer: an
-    # unmounted useState used to discard a typed-but-never-applied value, and a draft that
-    # outlived every host would come back as the model's settings on the next open.
-    # A LAYOUT effect, because both hosts key this component on loadedConfigSignature: a live
-    # config change deletes and remounts the instance under the same draft key in one commit,
-    # and only a layout cleanup runs before the incoming instance re-primes. Released passively
-    # it deleted the draft the new instance had just seeded, and the panel stopped taking edits.
+    # LAYOUT: both hosts key on loadedConfigSignature, so a live change remounts under the same
+    # draft key and only a layout cleanup runs before the new instance re-primes.
     assert "useLayoutEffect(() => retainModelConfigDraft(draftKey), [draftKey])" in page
-    # And the server-override read is marked once per draft rather than once per mounted
-    # editor, so opening the second host cannot write the stored row back over what the
-    # first one is showing.
+    # And the server-override read is marked per draft, not per editor.
     assert "resetExtraArgsHydrationForDraft(" not in page
     assert "extraArgsHydrationIdentityForDraft(draftKey)" in page
 
