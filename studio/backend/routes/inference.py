@@ -23614,11 +23614,9 @@ async def produce_openai_chat_completions(
                 _parked = False
 
                 _reclaim_task = None
+                _reclaim_stop = threading.Event()
 
                 def _erase_and_record(target) -> bool:
-                    # Recorded in the worker, not back on the loop: answering the approval
-                    # cancels this watcher, and an erase already sent must still be known
-                    # or the next round reserves cells llama-server no longer holds.
                     if not llama_backend.release_idle_chat_slot(*target):
                         return False
                     with _gguf_decode_lock:
@@ -23630,20 +23628,23 @@ async def produce_openai_chat_completions(
 
                     On demand only: the engine drops the cells rather than spilling them to
                     its prompt cache, so this costs the approved chat a full reprocess.
+
+                    Stops on request only before the erase is sent. Past that the request is
+                    already with llama-server, so the cells are going whatever this chat does
+                    now, and the resume has to be told rather than spared.
                     """
                     try:
                         while not lease.reclaim_would_admit():
+                            if _reclaim_stop.is_set():
+                                return
                             await asyncio.sleep(_APPROVAL_CACHE_RECLAIM_POLL_S)
                         with _gguf_decode_lock:
                             target = _gguf_decode["slot"]
                             erased = _gguf_decode["erased"]
-                        if target is None:
+                        if target is None or _reclaim_stop.is_set():
                             return
                         if not erased and not await asyncio.to_thread(_erase_and_record, target):
                             return
-                        # Left on the loop, where the cancel that answers the approval skips
-                        # it: handing tokens back beside a resume that has already priced
-                        # itself would leave this chat decoding on a commitment of nothing.
                         lease.release_parked_cache()
                     except asyncio.CancelledError:
                         raise
@@ -23656,10 +23657,30 @@ async def produce_openai_chat_completions(
                         known = _gguf_decode["slot"] is not None
                     if not known or _reclaim_task is not None:
                         return
+                    _reclaim_stop.clear()
                     _reclaim_task = asyncio.create_task(_reclaim_approval_cache(lease))
+
+                async def _settle_reclaim_watch() -> None:
+                    """Wait out a reclamation that is already sending, before resuming.
+
+                    Cancelling would not stop it -- the worker thread runs on, and the erase
+                    lands whether or not anyone is still listening. The resumed round would
+                    then price itself against cells llama-server was in the middle of
+                    dropping. Bounded by the erase request's own timeout.
+                    """
+                    nonlocal _reclaim_task
+                    task, _reclaim_task = _reclaim_task, None
+                    if task is None:
+                        return
+                    _reclaim_stop.set()
+                    try:
+                        await task
+                    except Exception:
+                        logger.debug("Approval cache reclamation failed", exc_info = True)
 
                 def _stop_reclaim_watch() -> None:
                     nonlocal _reclaim_task
+                    _reclaim_stop.set()
                     if _reclaim_task is not None:
                         _reclaim_task.cancel()
                         _reclaim_task = None
@@ -23681,7 +23702,7 @@ async def produce_openai_chat_completions(
                     elif wait:
                         # Parking gave the slot away and reclamation may have given the
                         # room away, so win both back rather than decode without them.
-                        _stop_reclaim_watch()
+                        await _settle_reclaim_watch()
                         await lease.unpark_async(cancel_event = cancel_event)
                     else:
                         # Tearing down; the lease is released separately.

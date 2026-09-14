@@ -11,6 +11,7 @@ gates a tool call on confirmation, which is the only place that wiring exists.
 import asyncio
 import json
 import threading
+import time
 
 import pytest
 from fastapi import FastAPI
@@ -305,9 +306,6 @@ def test_a_recost_may_wait_for_room_once_the_cells_were_erased(cache_is_empty, e
 class _GrowsAfterApprovalBackend(_ApprovalGatedBackend):
     """Runs the next round after the approval, which is where the grown cost is charged."""
 
-    def after_resume(self):
-        pass
-
     def generate_chat_completion_with_tools(self, **kwargs):
         kwargs["on_decode_slot"](BASE_URL, DECODE_SLOT)
         yield {
@@ -318,9 +316,6 @@ class _GrowsAfterApprovalBackend(_ApprovalGatedBackend):
         }
         self.answered.wait(10)
         yield {"type": "tool_end", "name": "python", "result": "ok"}
-        # The route has resumed the chat by now, so a subclass can hold the next round
-        # back until whatever the resume raced with has finished.
-        self.after_resume()
         kwargs["on_conversation_grew"](
             [
                 {"role": "user", "content": "compute 17 * 23 " + "x " * 4000},
@@ -407,29 +402,22 @@ def test_the_round_after_a_reclaim_is_told_its_cells_are_gone(monkeypatch):
 
 
 class _SlowErasureBackend(_GrowsAfterApprovalBackend):
-    """The erase is still in flight when the approval is answered and cancels the watch.
+    """The erase is still running when the approval is answered.
 
-    It then lands in the window the cancel opens: after the resume, before the grown
-    round is priced.
+    Nothing in the test orders it against the resume: the route has to, or the grown
+    round is priced while llama-server is still dropping the cells.
     """
+
+    ERASE_S = 0.3
 
     def __init__(self):
         super().__init__()
         self.erase_entered = threading.Event()
-        self.resumed = threading.Event()
-        self.erase_returned = threading.Event()
 
     def release_idle_chat_slot(self, base_url, slot):
         self.erase_entered.set()
-        self.resumed.wait(10)
-        try:
-            return super().release_idle_chat_slot(base_url, slot)
-        finally:
-            self.erase_returned.set()
-
-    def after_resume(self):
-        self.resumed.set()
-        self.erase_returned.wait(10)
+        time.sleep(self.ERASE_S)
+        return super().release_idle_chat_slot(base_url, slot)
 
 
 def test_an_erase_that_outlives_its_watcher_is_still_recorded(monkeypatch):
