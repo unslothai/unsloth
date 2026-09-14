@@ -3409,8 +3409,15 @@ _CHILD_PROCESS_RECEIVERS = {
     "os": frozenset({"popen"}),
 }
 _CHILD_PROCESS_BARE_NAMES = frozenset(
-    {"run", "Popen", "call", "check_call", "check_output", "create_subprocess_exec",
-     "create_subprocess_shell"}
+    {
+        "run",
+        "Popen",
+        "call",
+        "check_call",
+        "check_output",
+        "create_subprocess_exec",
+        "create_subprocess_shell",
+    }
 )
 
 
