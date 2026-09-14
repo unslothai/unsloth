@@ -205,9 +205,12 @@ def test_edit_file_cannot_reach_the_auth_dir_even_with_the_sandbox_off():
     assert result == tools._STUDIO_CREDENTIAL_BLOCKED
 
 
-def test_the_user_facing_tool_card_is_unchanged():
-    # Redaction is on the model path only: record_result / tool_end_event keep the raw text so the
-    # card the user sees renders exactly as before.
+def test_the_user_facing_tool_card_is_masked_too():
+    # Originally the mask was on the model path only, so the card kept the raw text. That is the
+    # replay hole: the frontend PERSISTS this payload and serializes the stored value back into a
+    # role="tool" message on the user's next turn, so the key was hidden from the continuation and
+    # then sent to the provider one turn later. The card shows the user their own key, so masking
+    # it costs them nothing and closes the stored copy as well.
     from core.inference.tool_loop_controller import ToolCallCompletion, ToolCallDecision
 
     decision = ToolCallDecision(
@@ -219,7 +222,8 @@ def test_the_user_facing_tool_card_is_unchanged():
     completion = ToolCallCompletion(
         decision = decision, result = _FAKE_KEY, is_error = False, executed = True
     )
-    assert completion.tool_end_payload()["result"] == _FAKE_KEY
+    assert _FAKE_KEY not in completion.tool_end_payload()["result"]
+    assert _FAKE_KEY not in completion.tool_end_event()["result"]
     assert _FAKE_KEY not in completion.tool_message()["content"]
 
 
@@ -234,3 +238,21 @@ def test_the_cli_cache_path_still_matches_what_the_guard_blocks():
         source = f.read()
     assert 'CLI_API_KEY_FILE_PREFIX = ".cli_api_key_"' in source
     assert 'BOOTSTRAP_PASSWORD_FILE = ".bootstrap_password"' in source
+
+
+def test_tool_end_payload_masks_a_leaked_studio_key():
+    """The frontend persists this payload and replays it into a role="tool" message on the user's
+    next turn, so redacting only the in-memory continuation hides the key this turn and sends it
+    the next one."""
+    from core.inference.tool_loop_controller import ToolLoopController
+
+    key = "sk-unsloth-" + "A" * 48
+    controller = ToolLoopController(tools = [{"type": "function", "function": {"name": "terminal"}}])
+    decision = controller.prepare_call(
+        {"id": "call_0", "function": {"name": "terminal", "arguments": '{"command":"env"}'}}
+    )
+    completion = controller.record_result(decision, f"UNSLOTH_API_KEY={key}")
+
+    assert key not in completion.tool_end_payload()["result"]
+    assert key not in completion.tool_end_event()["result"]
+    assert key not in completion.model_message()["content"]

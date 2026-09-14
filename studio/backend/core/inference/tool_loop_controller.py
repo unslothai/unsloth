@@ -285,10 +285,15 @@ class ToolCallCompletion:
     executed: bool = False
 
     def tool_end_payload(self) -> dict[str, Any]:
+        # Masked here, not only in model_message(): this payload is what the frontend renders AND
+        # persists, and on the user's next turn the stored value is serialized back into a
+        # role="tool" message and sent to the provider. Redacting only the in-memory continuation
+        # would hide a leaked key from this turn and replay it on the next one.
+        result = self.result
         return {
             "tool_name": self.decision.tool_name,
             "tool_call_id": self.decision.card_id,
-            "result": self.result,
+            "result": redact_studio_credentials(result) if isinstance(result, str) else result,
             "provenance": self.decision.provenance,
         }
 

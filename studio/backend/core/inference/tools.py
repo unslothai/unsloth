@@ -2620,6 +2620,21 @@ _STUDIO_CREDENTIAL_BLOCKED = (
 )
 
 
+def _marker_is_a_path_segment(lowered: str, marker: str) -> bool:
+    """True when ``marker`` appears in ``lowered`` as a whole path, not merely as a prefix.
+
+    ``<home>/auth`` must match ``<home>/auth/auth.db`` and a bare ``<home>/auth``, but not
+    ``<home>/authors/notes.txt`` or ``<home>/auth-backup``.
+    """
+    start = lowered.find(marker)
+    while start != -1:
+        end = start + len(marker)
+        if end == len(lowered) or lowered[end] in "/\\'\" \t;:&|)":
+            return True
+        start = lowered.find(marker, start + 1)
+    return False
+
+
 def _references_studio_credential(text: str) -> bool:
     """True if *text* names Studio's auth directory or one of the credential files in it."""
     if not text:
@@ -2630,12 +2645,27 @@ def _references_studio_credential(text: str) -> bool:
     # skipping for the ordinary command that mentions none of them.
     if not any(hint in lowered for hint in _STUDIO_CREDENTIAL_HINTS):
         return False
-    if _STUDIO_CREDENTIAL_BASENAME_RE.search(text) or _STUDIO_AUTH_DIR_RE.search(text):
+    # The OS resolves `<home>//auth/auth.db` and `<home>/./auth/auth.db` to the same file, so collapse those
+    # spellings first; matching the raw text alone let either one walk past the guard.
+    normalized = _REDUNDANT_SLASH_RE.sub("", text)
+    lowered_normalized = normalized.lower()
+    if any(
+        pattern.search(candidate)
+        for pattern in (_STUDIO_CREDENTIAL_BASENAME_RE, _STUDIO_AUTH_DIR_RE)
+        for candidate in ({text, normalized})
+    ):
         return True
     auth_markers, cd_into_root_re = _studio_auth_dir_markers()
     if not auth_markers:
         return False
-    if any(marker in lowered for marker in auth_markers):
+    # A bare substring test also matches a path that merely STARTS with the directory name, so
+    # `<home>/authors/notes.txt` and `<home>/auth-backup/` were refused in every permission mode. The
+    # marker has to end at a separator or at the end of the path to be the auth directory itself.
+    if any(
+        _marker_is_a_path_segment(candidate, marker)
+        for marker in auth_markers
+        for candidate in (lowered, lowered_normalized)
+    ):
         return True
     return bool(
         cd_into_root_re is not None
