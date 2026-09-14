@@ -80,8 +80,30 @@ test("invalidating a refresh hands back the in-flight marker", () => {
 test("a delete for another scope does not drop a row from the list on screen", () => {
   assert.match(
     hookSource,
-    /if \(forCurrentScope\) \{\s*\n\s*setDocuments\(\(rows\) => \{\s*\n\s*restore = rows\.find/,
+    /if \(forCurrentScope\) \{\s*\n\s*setDocuments\(\(rows\) => \{\s*\n\s*const index = rows\.findIndex\(/,
     "the optimistic drop must be confined to the mounted scope",
+  );
+});
+
+test("a failed delete puts the row back where it was, not at the end", () => {
+  // The KB dialog and the thread bar render `documents` in the order the server
+  // sent it and never sort, and they are the two callers with no reconciling
+  // refresh, so appending the restored row visibly moves it to the bottom of the
+  // list until the scope is remounted. The panel re-sorts, which is what hid it.
+  assert.match(
+    hookSource,
+    /restore = \{ doc: rows\[index\], index \};/,
+    "the rollback must capture the row's position, not just the row",
+  );
+  assert.match(
+    hookSource,
+    /return \[\.\.\.rows\.slice\(0, index\), doc, \.\.\.rows\.slice\(index\)\];/,
+    "the rollback must re-insert at that position",
+  );
+  assert.doesNotMatch(
+    hookSource,
+    /\[\.\.\.rows, restore\]/,
+    "appending the restored row is the ordering bug this guards against",
   );
 });
 

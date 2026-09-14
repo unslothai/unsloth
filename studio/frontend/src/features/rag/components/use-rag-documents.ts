@@ -639,11 +639,15 @@ export function useRagDocuments(
       }
       // Restore by re-inserting this one row rather than reinstating a whole
       // snapshot: during a batch an earlier snapshot still holds the rows previous
-      // iterations deleted, and replaying it would resurrect them.
-      let restore: TrackedDocument | undefined;
+      // iterations deleted, and replaying it would resurrect them. Carry the
+      // index too, so the row comes back where it was and not at the end: the KB
+      // dialog and the thread bar render the list in the order the server sent it
+      // and never sort, while being the two callers with no reconciling refresh.
+      let restore: { doc: TrackedDocument; index: number } | undefined;
       if (forCurrentScope) {
         setDocuments((rows) => {
-          restore = rows.find((row) => row.id === documentId);
+          const index = rows.findIndex((row) => row.id === documentId);
+          if (index !== -1) restore = { doc: rows[index], index };
           return rows.filter((row) => row.id !== documentId);
         });
       }
@@ -666,12 +670,14 @@ export function useRagDocuments(
         return true;
       } catch (err) {
         // `restore` is only set for the mounted scope, so a stale batch's
-        // rollback cannot insert its row into the list now on screen.
-        setDocuments((rows) =>
-          !restore || rows.some((row) => row.id === documentId)
-            ? rows
-            : [...rows, restore],
-        );
+        // rollback cannot insert its row into the list now on screen. The slice
+        // clamps on its own if the list has shrunk since, which puts the row last
+        // rather than dropping it.
+        setDocuments((rows) => {
+          if (!restore || rows.some((row) => row.id === documentId)) return rows;
+          const { doc, index } = restore;
+          return [...rows.slice(0, index), doc, ...rows.slice(index)];
+        });
         if (prevSig !== undefined) sigByDocId.current.set(documentId, prevSig);
         toast.error("Delete failed", {
           description: err instanceof Error ? err.message : String(err),

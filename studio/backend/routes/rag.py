@@ -234,8 +234,14 @@ def _stored_size(stored_path: str | None) -> int | None:
         return None
 
 
-def _doc_view(row: dict) -> dict:
-    return {
+def _doc_view(row: dict, *, with_size: bool = False) -> dict:
+    """Wire form of a document row.
+
+    `with_size` is opt-in because it stats each row: the sources panel sorts by
+    size and the settings Data tab shows it, but the KB and thread lists render
+    neither and are polled every four seconds while something indexes.
+    """
+    view = {
         "id": row["id"],
         "filename": row["filename"],
         "status": row["status"],
@@ -247,8 +253,10 @@ def _doc_view(row: dict) -> dict:
         "linkedFolderId": row.get("linked_folder_id"),
         "managed": bool(row.get("linked_folder_id")),
         "createdAt": row.get("created_at"),
-        "sizeBytes": _stored_size(row.get("stored_path")),
     }
+    if with_size:
+        view["sizeBytes"] = _stored_size(row.get("stored_path"))
+    return view
 
 
 class CreateKbRequest(BaseModel):
@@ -648,7 +656,9 @@ def list_project_documents(project_id: str, subject: str = Depends(get_current_s
     conn = _rag_connection()
     try:
         docs = store.list_documents(conn, store.project_scope(project_id))
-        return {"documents": [_doc_view(d) for d in docs]}
+        # Only here and the settings list carry sizes: this one is the sources
+        # panel, which sorts by them.
+        return {"documents": [_doc_view(d, with_size = True) for d in docs]}
     finally:
         conn.close()
 
@@ -774,7 +784,7 @@ def list_all_uploaded_documents(subject: str = Depends(get_current_subject)) -> 
 
     out = []
     for doc in docs:
-        view = _doc_view(doc)
+        view = _doc_view(doc, with_size = True)
         view["kbName"] = kb_names.get(doc.get("kb_id"))
         view["projectName"] = project_names.get(doc.get("project_id"))
         out.append(view)

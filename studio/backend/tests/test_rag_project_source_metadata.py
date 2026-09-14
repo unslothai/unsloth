@@ -53,7 +53,7 @@ def test_doc_view_reports_size_for_a_project_source(rag_home, stub_embeddings):
     conn = rag_db.get_connection()
     try:
         docs = store.list_documents(conn, store.project_scope("P1"))
-        view = _doc_view(docs[0])
+        view = _doc_view(docs[0], with_size = True)
     finally:
         conn.close()
 
@@ -76,6 +76,32 @@ def test_size_reads_the_actual_byte_count(tmp_path):
     path = tmp_path / "sized.bin"
     path.write_bytes(b"x" * 1234)
     assert _stored_size(str(path)) == 1234
+
+
+def test_size_is_opt_in_so_unrelated_lists_do_not_stat(tmp_path):
+    """The KB and thread lists are polled every four seconds and render no size,
+    so they must not pay a stat per row to produce one. Only the sources panel
+    and the settings Data tab ask for it."""
+    from routes.rag import _doc_view
+
+    path = tmp_path / "sized.bin"
+    path.write_bytes(b"x" * 10)
+    row = {
+        "id": "d1",
+        "filename": "sized.bin",
+        "status": "completed",
+        "error": None,
+        "num_chunks": 1,
+        "kb_id": None,
+        "thread_id": "t1",
+        "project_id": None,
+        "linked_folder_id": None,
+        "created_at": "2026-01-01T00:00:00",
+        "stored_path": str(path),
+    }
+
+    assert "sizeBytes" not in _doc_view(row)
+    assert _doc_view(row, with_size = True)["sizeBytes"] == 10
 
 
 def test_remove_never_touches_a_file_outside_the_uploads_root(rag_home, tmp_path):
