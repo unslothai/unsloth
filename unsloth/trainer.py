@@ -574,6 +574,18 @@ class UnslothTrainer(SFTTrainer):
             target_modules = config.target_modules,
         )
 
+        if not any("rank" in group for group in param_groups):
+            # make_q_galore_param_groups selects on param.dim() >= 2, and FSDP1 hands us 1-D
+            # views: FlatParameter with use_orig_params=False, and a 1-D sharded view even
+            # with use_orig_params=True. Nothing matches, so a requested Q-GaLore run would
+            # quietly become ordinary 8-bit AdamW. Say so instead.
+            raise ValueError(
+                "Unsloth: Q-GaLore was requested but no parameter matched, so the run would "
+                "silently be ordinary AdamW 8bit. Projection needs 2-D parameters; under FSDP "
+                "they arrive 1-D (flattened or sharded). Use FSDP2, train without FSDP, or set "
+                "q_galore_config = None."
+            )
+
         if embedding_lr is not None:
             # Fast param -> name lookup, O(N) instead of O(N*M).
             param_to_name = {id(p): name for name, p in model.named_parameters()}

@@ -48,3 +48,44 @@ def test_create_optimizer_does_not_raise_typeerror_on_a_positional_model():
             pytest.fail(f"create_optimizer rejected a positional model: {message}")
     except Exception:
         pass  # reached the body and failed on the fake self: the expected outcome
+
+
+def test_q_galore_refuses_a_model_with_no_projectable_parameters():
+    """FSDP1 hands back 1-D views, which match nothing, so the run must not quietly
+    downgrade to ordinary AdamW."""
+    import torch
+    import torch.nn as nn
+    from types import SimpleNamespace
+    from unsloth.trainer import QGaloreConfig
+
+    flattened = nn.Module()
+    flattened.register_parameter("_flat_param", nn.Parameter(torch.ones(64)))
+    args = SimpleNamespace(
+        learning_rate = 1e-3, weight_decay = 0.0,
+        adam_beta1 = 0.9, adam_beta2 = 0.999, adam_epsilon = 1e-8,
+    )
+    trainer = SimpleNamespace(args = args, model = flattened, optimizer = None)
+    with pytest.raises(ValueError, match = "no parameter matched"):
+        UnslothTrainer._create_q_galore_optimizer(
+            trainer, QGaloreConfig(rank = 8, weight_quant = False), None,
+        )
+
+
+def test_q_galore_still_builds_when_parameters_are_projectable():
+    """The guard must not fire on an ordinary unwrapped model."""
+    import torch
+    import torch.nn as nn
+    from types import SimpleNamespace
+    from unsloth.trainer import QGaloreConfig
+
+    model = nn.Sequential()
+    model.add_module("q_proj", nn.Linear(64, 64, bias = False))
+    args = SimpleNamespace(
+        learning_rate = 1e-3, weight_decay = 0.0,
+        adam_beta1 = 0.9, adam_beta2 = 0.999, adam_epsilon = 1e-8,
+    )
+    trainer = SimpleNamespace(args = args, model = model, optimizer = None)
+    optimizer = UnslothTrainer._create_q_galore_optimizer(
+        trainer, QGaloreConfig(rank = 8, weight_quant = False), None,
+    )
+    assert any("rank" in group for group in optimizer.param_groups)
