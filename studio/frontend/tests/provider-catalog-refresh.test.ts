@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { createServer, type ViteDevServer } from "vite";
 
+import { readSrc } from "./helpers/kit.ts";
+
 let vite: ViteDevServer;
 
 before(async () => {
@@ -71,6 +73,37 @@ test("an OpenRouter connection on a gateway base URL never writes the shared cat
     assert.deepEqual(asked, ["openrouter"]);
     assert.deepEqual(catalog.resolveModelCatalogEntry("openrouter", "acme/fresh")?.efforts, ["low", "high"]);
   } finally {
+    catalog.clearProviderModelCatalog("openrouter");
+  }
+});
+
+test("editing a connection refreshes the catalog with the saved base URL, not the one it replaced", async () => {
+  const dialog = readSrc("features/chat/chat-providers-dialog.tsx");
+  const saveAt = dialog.indexOf("async function saveProviderEdits()");
+  const save = dialog.slice(saveAt, dialog.indexOf("\n  async function ", saveAt + 1));
+  const refreshed = save.match(/refreshProviderModelCatalogs\(\[(\w+)\]\)/)?.[1];
+  assert.ok(saveAt > 0 && refreshed, "the edit save path no longer refreshes the catalog");
+  const literalAt = save.indexOf(`const ${refreshed}: ExternalProviderConfig = {`);
+  assert.ok(literalAt > 0, `${refreshed} is not the edited connection`);
+  assert.match(save.slice(literalAt, save.indexOf("\n      };", literalAt)), /baseUrl: updated\.base_url/);
+
+  const { refreshProviderModelCatalogs } = await vite.ssrLoadModule(
+    "/src/features/chat/sync-external-providers.ts",
+  );
+  const catalog = await vite.ssrLoadModule("/src/features/chat/model-catalog.ts");
+  const asked: string[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    asked.push(JSON.parse(String(init?.body)).provider_id);
+    return Response.json([{ id: "acme/fresh", reasoning: { supported_efforts: ["low", "high"] } }]);
+  }) as typeof fetch;
+  try {
+    await refreshProviderModelCatalogs([
+      { id: "edited", providerType: "openrouter", baseUrl: "https://openrouter.ai/api/v1" },
+    ]);
+    assert.deepEqual(asked, ["edited"]);
+  } finally {
+    globalThis.fetch = realFetch;
     catalog.clearProviderModelCatalog("openrouter");
   }
 });
