@@ -765,6 +765,10 @@ def test_read_resource_rejects_ancestor_swapped_after_selection(isolated_skills,
         skills.read_skill_resource("reader", "guide.md", home = home)
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "Windows sharing semantics refuse to replace a manifest that is still open for writing",
+)
 def test_failed_create_keeps_a_manifest_another_writer_replaced(isolated_skills, monkeypatch):
     home, _ = isolated_skills
     manifest = home / ".agents" / "skills" / "racer" / "SKILL.md"
