@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Wrappers for the backend's three OpenAI shell-tool container endpoints
- * (studio/backend/routes/inference.py). Each proxies to OpenAI's
- * /v1/containers using a saved provider key or encrypted request override. Backend rejects any
- * base URL but api.openai.com (the shell tool is managed-cloud only).
- */
+/** Wrappers for the backend's three OpenAI shell-tool container endpoints (routes/inference.py).
+ *  Each proxies to OpenAI's /v1/containers using a saved provider key or encrypted request
+ *  override. The backend rejects any base URL but api.openai.com. */
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
@@ -113,8 +110,8 @@ export async function deleteOpenAIContainer(
       }),
     },
   );
-  // 404 = container already gone; treat as idempotent success so a stale
-  // list entry doesn't surface as a confusing error.
+  // 404 means the container is already gone; treat as idempotent success so a stale list entry does
+  // not surface as a confusing error.
   if (!response.ok && response.status !== 204 && response.status !== 404) {
     throw new Error(await parseError(response));
   }

@@ -50,10 +50,18 @@ from core.inference.sd_cpp_args import SdCppModelFiles, build_sd_cpp_server_comm
 from core.inference.sd_cpp_engine import (
     NATIVE_GENERATION_TIMEOUT_S,
     SdCppCancelled,
+    _sd_cpp_command_for_log,
+    _sd_cpp_command_summary,
+    _verbose_native_logs,
     runtime_env,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
-from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
+from utils.process_lifetime import (
+    adopt_pid,
+    child_popen_kwargs,
+    forget_pid,
+    is_process_shutting_down,
+)
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
 logger = logging.getLogger(__name__)
@@ -66,7 +74,6 @@ _TRANSPORT_ERRORS = (
     httpx.WriteError,
 )
 
-# the port binds only after the model loads, so any 200 means ready
 # Readiness probe: the port binds only after the model loads, so any 200 means ready. Use trivial /v1/models, not the
 # capabilities endpoint (which can block).
 _READY_PATH = "/v1/models"
@@ -241,7 +248,13 @@ class SdCppServer:
             run_env = runtime_env(self.binary, child_env_without_native_path_secret())
             if env:
                 run_env.update(env)
-            logger.info("starting sd-server: %s", " ".join(cmd))
+            if _verbose_native_logs():
+                logger.info("starting sd-server: %s", " ".join(_sd_cpp_command_for_log(cmd)))
+            else:
+                logger.info(
+                    "starting sd-server: %s",
+                    _sd_cpp_command_summary(cmd, default_mode = "server"),
+                )
             # Clear in place; reassigning [] would drop the maxlen bound and grow unbounded.
             self._tail.clear()
             self._resident_params_vram_gb = None
@@ -251,6 +264,16 @@ class SdCppServer:
             # Spawn INSIDE the long-lived drain thread: child_popen_kwargs() sets PR_SET_PDEATHSIG, bound to the
             # creating thread on Linux, so the creator must outlive the child.
             def _own_process() -> None:
+                # One flag at every spawn. No _graceful_shutdown step unloads the
+                # diffusion engine and cancel_pending_loads only knows about chat loads,
+                # so without this a quit during an /images/load can start a multi-GB
+                # sd-server after the step-7 sweep has taken its snapshot.
+                if is_process_shutting_down():
+                    self._spawn_error = RuntimeError(
+                        "Studio is shutting down; not starting sd-server"
+                    )
+                    spawned.set()
+                    return
                 try:
                     proc = subprocess.Popen(
                         cmd,
@@ -270,6 +293,33 @@ class SdCppServer:
                 self._process = proc
                 self.port = port
                 adopt_pid(proc.pid)  # so a global shutdown sweep also reaps it
+                # Recheck once the pid is recorded, for the window between the gate and
+                # this record. Adoption runs first, so a child killed here was in the
+                # sweep record for as long as it existed.
+                if is_process_shutting_down():
+                    logger.info("shutdown began during the spawn; killing the new sd-server")
+                    try:
+                        proc.kill()
+                        proc.wait(timeout = 5)
+                    except Exception:  # noqa: BLE001 - the reap is best-effort
+                        pass
+                    # Only drop the record once the child is confirmed gone. If the kill
+                    # or the wait raised, the server is still alive with the sweep
+                    # already past it, and this record is the last thing that could
+                    # reap it; forgetting it here would be the orphan this PR is about.
+                    if proc.poll() is not None:
+                        forget_pid(proc.pid)
+                    else:
+                        logger.warning(
+                            "sd-server pid %s survived the shutdown kill; leaving it adopted",
+                            proc.pid,
+                        )
+                    self._process = None
+                    self._spawn_error = RuntimeError(
+                        "Studio is shutting down; not starting sd-server"
+                    )
+                    spawned.set()
+                    return
                 spawned.set()
                 self._drain_stdout(proc)
                 try:
@@ -462,8 +512,6 @@ class SdCppServer:
             if self._stdout_thread is not None:
                 self._stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
-
-    # ── generation ───────────────────────────────────────────────────────────
 
     def img_gen(
         self,

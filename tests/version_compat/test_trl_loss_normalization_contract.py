@@ -44,9 +44,8 @@ import pytest
 if importlib.util.find_spec("torch") is None:
     pytest.skip("torch not installed", allow_module_level = True)
 
-# Unsloth refuses to import without a torch accelerator, so the GPU-less runner
-# needs the same spoof the sibling CPU canaries use. Must precede any unsloth
-# import, which is why it sits at module scope rather than in a fixture.
+# Unsloth refuses to import without a torch accelerator, so the GPU-less runner needs the same spoof the sibling CPU
+# canaries use. Must precede any unsloth import, which is why it sits at module scope rather than in a fixture.
 _SPOOF_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_SPOOF_DIR))
 import _zoo_aggressive_cuda_spoof as _spoof  # noqa: E402
@@ -106,10 +105,9 @@ def _pristine_sft_config_cls():
     """TRL's own SFTConfig, not the generated subclass patching rebinds over it."""
     import trl
 
-    # Go by the marker rather than the name: the generated subclass is renamed
-    # onto TRL's own name so that instances of it keep pickling, so `Unsloth`
-    # no longer appears in `__name__`. `__dict__` rather than `getattr`, so a
-    # user subclass of the generated class does not inherit its way past this.
+    # Go by the marker rather than the name: the generated subclass is renamed onto TRL's own name so that instances
+    # of it keep pickling, so `Unsloth` no longer appears in `__name__`. `__dict__` rather than `getattr`, so a user
+    # subclass of the generated class does not inherit its way past this.
     cls = trl.SFTConfig
     while "_unsloth_patched_rl_config" in cls.__dict__ or cls.__name__.startswith("Unsloth"):
         cls = cls.__mro__[1]
@@ -298,8 +296,8 @@ def test_rl_py_scopes_loss_type_to_sft_trainer():
         keys = [k.value for k in node.value.keys if isinstance(k, ast.Constant)]
         if "loss_type" not in keys:
             continue
-        # A loss_type entry is only legitimate inside an `if trainer_file == ...`
-        # branch. Find the nearest enclosing If and check its test.
+        # A loss_type entry is only legitimate inside an `if trainer_file == ...` branch. Find the nearest enclosing
+        # If and check its test.
         guarded = False
         for parent in ast.walk(tree):
             if not isinstance(parent, ast.If):

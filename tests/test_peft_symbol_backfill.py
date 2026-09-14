@@ -133,8 +133,6 @@ def test_required_symbols_match_peft_import_list():
 # Inert donors are right wherever the symbol never existed, but not for a
 # transformers 5 that merely renamed one, so warn rather than silently skip
 # work peft should have done.
-
-
 def test_a_missing_mapping_function_is_announced():
     _fake_real_module(
         CONV,

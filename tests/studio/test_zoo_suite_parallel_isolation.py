@@ -32,7 +32,7 @@ ISOLATED = [
 
 ZOO_MARKER = "--dist loadfile tests/"
 
-# Deselected because it needs a GPU. It rides whichever command owns its file.
+# Deselected because it needs a GPU.
 MLX_DESELECT = (
     "tests/test_mlx_finetune_last_n_layers.py::"
     "test_get_peft_model_passes_finetune_last_n_layers_through"

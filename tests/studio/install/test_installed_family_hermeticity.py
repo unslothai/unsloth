@@ -36,10 +36,7 @@ _STACK_SPEC.loader.exec_module(stack_mod)
 
 _MARK = stack_mod._TORCH_PROBE_MARKER
 
-# `rocm` Requires-Dist, torch Requires-Dist, distributions on disk. Two are pip behaviours,
-# not hypotheticals: installing a generic wheel over a per-arch one drops rocm[libraries]
-# from torch but leaves `rocm` naming the old family, and a family switch upgrades `rocm`
-# in place without uninstalling the superseded runtime.
+# `rocm` Requires-Dist, torch Requires-Dist, distributions on disk.
 AMBIENT_STATES: "dict[str, tuple]" = {
     "bare": (None, ["filelock"], []),
     "perarch-gfx1151": (

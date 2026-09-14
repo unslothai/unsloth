@@ -2,23 +2,15 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
+
+import { readSrc } from "./helpers/kit.ts";
 
 test("gallery overlay actions follow interaction state instead of stale mouse focus", async () => {
   const [menu, imagesPage, videoPage] = await Promise.all([
-    readFile(
-      new URL("../src/components/gallery-item-menu.tsx", import.meta.url),
-      "utf8",
-    ),
-    readFile(
-      new URL("../src/features/images/images-page.tsx", import.meta.url),
-      "utf8",
-    ),
-    readFile(
-      new URL("../src/features/video/video-page.tsx", import.meta.url),
-      "utf8",
-    ),
+    readSrc("components/gallery-item-menu.tsx"),
+    readSrc("features/images/images-page.tsx"),
+    readSrc("features/video/video-page.tsx"),
   ]);
 
   const closedClasses =

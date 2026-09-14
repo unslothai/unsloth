@@ -2,8 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
+
+import { readSrc } from "./helpers/kit.ts";
+
+const APP_SIDEBAR = readSrc("components/app-sidebar.tsx");
 
 // Both spinners are ml-auto, so each one sits at its row's padding-right plus
 // its own margin-right. The two rows carry different padding, so the margins
@@ -22,30 +25,26 @@ function grab(source: string, pattern: RegExp, what: string): string {
 }
 
 test("nav and Recents spinners land on one trailing column", async () => {
-  const source = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
 
   const navRow = grab(
-    source,
+    APP_SIDEBAR,
     /className="(sidebar-nav-btn h-\[33px\] rounded-full[^"]*)"/,
     "NavItem row",
   );
   const navSpinner = grab(
-    source,
+    APP_SIDEBAR,
     /<Spinner className="(ml-auto[^"]*group-data-\[collapsible=icon\]:hidden)"/,
     "NavItem spinner",
   );
   const chatRow = grab(
-    source,
+    APP_SIDEBAR,
     // Row height is a density choice and moves independently of the trailing
     // column, so match any h-[Npx]; cursor-pointer is what makes this the chat row.
     /"(sidebar-nav-btn h-\[\d+px\] cursor-pointer rounded-full[^"]*)"/,
     "Recents chat row",
   );
   const chatSpinner = grab(
-    source,
+    APP_SIDEBAR,
     /data-testid="chat-row-spinner"[\s\S]{0,400}?className="(ml-auto[^"]*)"/,
     "Recents chat spinner",
   );
@@ -64,8 +63,8 @@ test("nav and Recents spinners land on one trailing column", async () => {
 // The kebab overlays the row's right edge, so a spinner row must pad past it.
 test("a working Recents row clears the kebab on hover", async () => {
   const [source, css] = await Promise.all([
-    readFile(new URL("../src/components/app-sidebar.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../src/index.css", import.meta.url), "utf8"),
+    readSrc("components/app-sidebar.tsx"),
+    readSrc("index.css"),
   ]);
 
   const kebabInset =
@@ -153,8 +152,8 @@ test("a pending row is marked so both renderers can show its tooltip", async () 
 
 test("the expanded row and the flyout both show a pending tooltip", async () => {
   const [sidebar, appSidebar] = await Promise.all([
-    readFile(new URL("../src/components/ui/sidebar.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../src/components/app-sidebar.tsx", import.meta.url), "utf8"),
+    readSrc("components/ui/sidebar.tsx"),
+    readSrc("components/app-sidebar.tsx"),
   ]);
 
   // The rail-only rule has to make an exception, or an enabled row is silent while expanded.
@@ -177,12 +176,8 @@ test("the expanded row and the flyout both show a pending tooltip", async () => 
 });
 
 test("both capability rows carry a pending tooltip", async () => {
-  const source = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
   for (const row of ["train", "video"]) {
-    const block = source.slice(source.indexOf(`    ${row}: {`));
+    const block = APP_SIDEBAR.slice(APP_SIDEBAR.indexOf(`    ${row}: {`));
     const body = block.slice(0, block.indexOf("\n    },"));
     assert.match(
       body,
@@ -213,14 +208,10 @@ test("a measured row is left exactly as it was", async () => {
 // Two render sites take these props: the inline rows and the More flyout. A row moved into
 // More by Settings -> Appearance must not go back to rendering the guess.
 test("both nav render sites resolve pending the same way", async () => {
-  const source = await readFile(
-    new URL("../src/components/app-sidebar.tsx", import.meta.url),
-    "utf8",
-  );
-  const resolves = source.match(/const rowState = resolveNavRowState\(row\);/g) ?? [];
+  const resolves = APP_SIDEBAR.match(/const rowState = resolveNavRowState\(row\);/g) ?? [];
   assert.equal(resolves.length, 2, `expected both render sites to resolve, got ${resolves.length}`);
   // And neither passes the raw fields past it.
   for (const raw of ["disabled={row.disabled}", "tooltip={row.tooltip}", "spinner={row.spinner}"]) {
-    assert.ok(!source.includes(raw), `a render site still passes ${raw} unresolved`);
+    assert.ok(!APP_SIDEBAR.includes(raw), `a render site still passes ${raw} unresolved`);
   }
 });

@@ -78,10 +78,9 @@ export function useVramBudgetFraction(): number | null {
 
   useEffect(() => {
     let alive = true;
-    // Subscribe BEFORE loading. A save committed while the GET is in the air
-    // would otherwise be missed entirely, leaving the badge scoring against a
-    // fraction the user has already replaced. This is also what keeps the
-    // module cache honest: every writer publishes on this event.
+    // Subscribe BEFORE loading. A save committed while the GET is in the air would otherwise be
+    // missed entirely, leaving the badge scoring against a fraction the user has already replaced.
+    // This is also what keeps the module cache honest: every writer publishes on this event.
     const unsubscribe = subscribeVramBudgetSettings((settings) => {
       cachedFraction = settings.fraction;
       routeAbsent = false;

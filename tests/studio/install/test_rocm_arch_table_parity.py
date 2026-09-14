@@ -231,8 +231,6 @@ class TestSupportedWheelArchList:
 # (case-insensitive, and the only place a negative lookahead is available).
 # Rather than diff the patterns -- which legitimately differ in syntax -- run
 # every copy against the same real GPU names and require the same answer.
-
-
 def _name_table_sh_function(source: str, name: str) -> list[tuple[list[str], str]]:
     body = _sh_function_body(source, name)
     rows: list[tuple[list[str], str]] = []
@@ -281,20 +279,14 @@ def _match_ps(rows: list[tuple[str, str]], gpu_name: str) -> str | None:
     return None
 
 
-# Real strings as amd-smi / rocm-smi / WMI report them, including the two
-# ordering traps: "RX 9070 XT" must beat the bare "9070" arm, and "RX 7700S"
-# must beat the "RX 7700" arm.
-#
-# The expectation is the *AMD pip index leaf*, not the gfx id. The leaf is what
-# the tables exist to produce -- it picks the wheel -- and it is what a wrong
-# answer actually costs the user. Exact gfx ids are pinned separately in
-# _AMD_DOCUMENTED_ARCH, sourced from AMD rather than from these tables.
+# Real strings as amd-smi / rocm-smi / WMI report them, including the two ordering traps: "RX 9070 XT" must beat the
+# bare "9070" arm, and "RX 7700S" must beat the "RX 7700" arm.
 _GPU_NAME_LEAF_CASES = [
     ("AMD Radeon RX 9070 XT", "gfx120X-all"),
     ("AMD Radeon RX 9070", "gfx120X-all"),
-    # Workstation Navi 48, gfx1201 per rocminfo in #7624 / #7307. Its name holds neither
-    # "9070" nor "9080", so every table returned None and a host without the HIP SDK, where
-    # name inference is the only path left, got CPU torch ("not detected", PR #8398).
+    # Workstation Navi 48, gfx1201 per rocminfo in #7624 / #7307.
+    # Its name holds neither "9070" nor "9080", so every table returned None and a host without the HIP SDK, where name
+    # inference is the only path left, got CPU torch ("not detected", PR #8398).
     ("AMD Radeon AI PRO R9700", "gfx120X-all"),
     ("AMD Radeon RX 9060 XT", "gfx120X-all"),
     ("AMD Radeon 8060S Graphics", "gfx1151"),
@@ -316,21 +308,12 @@ _GPU_NAME_LEAF_CASES = [
     ("AMD Radeon RX 6500 XT", "gfx103X-all"),
 ]
 
-# Exact gfx ids, transcribed from AMD's ROCm compatibility matrix (the "Radeon
-# GPU" list at rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html),
-# NOT from the installer tables. This is the ground truth the tables are supposed
-# to reproduce, so it has to come from outside them.
-#
-# Three of these were wrong until the commit that added this table: RX 9070
-# (non-XT) said gfx1200, RX 7800 XT / 7700 XT / PRO W7700 said gfx1100, and PRO
-# V710 said gfx1102. Nobody was misrouted, because each wrong id happened to
-# share an index leaf with the right one, which is exactly why it went unnoticed
-# through five copies of the table. The leaf assertions above cannot catch that
-# class of error; only an external source can.
-#
-# The APU rows were added after that: Krackan Point (860M / 840M) said gfx1150
-# but is gfx1152, and unlike the three above that one DID change the wheel,
-# since gfx1150 and gfx1152 are separate index leaves on repo.amd.com.
+# Exact gfx ids, transcribed from AMD's ROCm compatibility matrix (the "Radeon GPU" list at
+# rocm.docs.amd.com/en/latest/compatibility/compatibility-matrix.html), NOT from the installer tables.
+# Three of these were wrong until the commit that added this table: RX 9070 (non-XT) said gfx1200, RX 7800 XT / 7700 XT
+# / PRO W7700 said gfx1100, and PRO V710 said gfx1102.
+# The APU rows were added after that: Krackan Point (860M / 840M) said gfx1150 but is gfx1152, and unlike the three
+# above that one DID change the wheel, since gfx1150 and gfx1152 are separate index leaves on repo.amd.com.
 _AMD_DOCUMENTED_ARCH = {
     # RDNA 4 -- Navi 48 is gfx1201, Navi 44 is gfx1200.
     "AMD Radeon RX 9070 XT": "gfx1201",
@@ -338,10 +321,9 @@ _AMD_DOCUMENTED_ARCH = {
     "AMD Radeon RX 9070": "gfx1201",
     "AMD Radeon RX 9060 XT": "gfx1200",
     "AMD Radeon RX 9060": "gfx1200",
-    # Navi 48 again, as the R9000 series workstation card. Sourced from the reporters'
+    # Navi 48 again, as the R9000 series workstation card.
     # own rocminfo output (#7624, #7307), not from these tables.
     "AMD Radeon AI PRO R9700": "gfx1201",
-    # RDNA 3 -- Navi 31 / 32 / 33.
     "AMD Radeon RX 7900 XTX": "gfx1100",
     "AMD Radeon PRO W7900": "gfx1100",
     "AMD Radeon PRO W7800": "gfx1100",
@@ -352,8 +334,9 @@ _AMD_DOCUMENTED_ARCH = {
     "AMD Radeon RX 7600 XT": "gfx1102",
     "AMD Radeon RX 7700S": "gfx1102",
     "AMD Radeon PRO W7600": "gfx1102",
-    # RDNA 3.5 APUs -- Strix Point is gfx1150, Krackan Point (860M/840M) is
-    # gfx1152, per AMD's own lemonade GPU table (src/cpp/server/system_info.cpp).
+    # RDNA 3.5 APUs
+    # Strix Point is gfx1150, Krackan Point (860M/840M) is gfx1152, per AMD's own lemonade GPU table
+    # (src/cpp/server/system_info.cpp).
     "AMD Radeon 8060S Graphics": "gfx1151",
     "AMD Radeon 890M Graphics": "gfx1150",
     "AMD Radeon 880M Graphics": "gfx1150",
@@ -368,12 +351,9 @@ def _name_tables() -> dict[str, object]:
         "install.sh:_infer_amd_gfx_arch_from_gpu_name": _name_table_sh_function(
             install_sh, "_infer_amd_gfx_arch_from_gpu_name"
         ),
-        # install.sh carries the table TWICE. The second copy drives the detection
-        # banner and, more importantly, the "Tip: set UNSLOTH_ROCM_GFX_ARCH=<arch>"
-        # line, so a wrong id there gets pasted into a user's environment where it
-        # becomes authoritative. Neither this copy nor the two below were in this
-        # parity check until the arch-id fix went looking for every place the
-        # table lives -- six, not four.
+        # install.sh carries the table TWICE.
+        # The second copy drives the detection banner and, more importantly, the "Tip: set UNSLOTH_ROCM_GFX_ARCH=<arch>"
+        # line, so a wrong id there gets pasted into a user's environment where it becomes authoritative.
         "install.sh:_gpu_disp_gfx": _name_table_sh_case(
             install_sh, '"$_gpu_disp_mkt"', "_gpu_disp_gfx"
         ),
@@ -427,19 +407,13 @@ def _spoof_profiles() -> dict[str, str]:
     raise AssertionError("_PROFILES not found in tests/_zoo_rocm_spoof.py")
 
 
-# The spoof fixture states the mapping backwards (gfx -> the name torch should
-# report), so it is the one copy written from the hardware's point of view
-# instead of the installer's. That makes it a useful independent witness: it had
-# gfx1101 -> "RX 7800 XT" and gfx1201 -> "RX 9070 XT" correct while all six
-# installer copies were wrong, and nothing compared the two.
-#
-# RX 6700 XT is a known, deliberate divergence rather than drift. AMD's
-# compatibility matrix documents no consumer RX 6000 card and no gfx1031 at all
-# (only "AMD Radeon PRO W6800 (gfx1030)"), the installer arm is commented
-# "gfx103X family", and no code consumes the exact id -- gfx1031 appears only as
-# a key in the index-family maps, never as a value any name table emits. With no
-# external source to correct it against, changing shipped behaviour here would be
-# guesswork, so the divergence is pinned instead of silently normalised.
+# The spoof fixture states the mapping backwards (gfx -> the name torch should report), so it is the one copy written
+# from the hardware's point of view instead of the installer's.
+# That makes it a useful independent witness: it had gfx1101 -> "RX 7800 XT" and gfx1201 -> "RX 9070 XT" correct while
+# all six installer copies were wrong, and nothing compared the two.
+# RX 6700 XT is a known, deliberate divergence rather than drift.
+# AMD's compatibility matrix documents no consumer RX 6000 card and no gfx1031 at all (only "AMD Radeon PRO W6800
+# (gfx1030)"), the installer arm is commented "gfx103X family", and no code consumes the exact id
 _SPOOF_DIVERGENCES = {
     "gfx1031": "installers group Navi 22 into the gfx1030 arm; see comment above",
 }
@@ -582,22 +556,16 @@ class TestSpoofFixtureParity:
             assert answers != {gfx}, f"{gfx} now agrees everywhere; drop it from _SPOOF_DIVERGENCES"
 
 
+# A table line names a card and gives its arch.
 # ── The meta-guard: find copies nobody registered ────────────────────────────
 
-
-# A table line names a card and gives its arch. Matching both on one line is what
-# separates a real table from the many files that merely mention a gfx id (kernel
-# dispatch, OOM guards, doc comments).
 _MKT_NAME = re.compile(r"(RX\s*\d{4}|PRO\s*[WV]\d{3,4}|\b90[5-8]0\b)", re.IGNORECASE)
 _GFX_ID = re.compile(r"gfx1[0-2][0-9a-z]{1,2}")
 
-# Skip dirs of third-party or generated code; scanning them is slow and any hit
-# would not be ours to fix.
+# Skip dirs of third-party or generated code; scanning them is slow and any hit would not be ours to fix.
 _SCAN_SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "build", "dist", "__pycache__"}
 
 # Every file allowed to carry a name/arch table, as a repo-relative posix path.
-# Adding a copy means adding it here AND wiring it into a parity check above;
-# that is the point of the guard.
 _REGISTERED_TABLE_FILES = {
     "install.sh",
     "install.ps1",
@@ -608,11 +576,9 @@ _REGISTERED_TABLE_FILES = {
     "tests/_zoo_rocm_spoof.py",
 }
 
-# Three or more such lines means a table. One or two means prose: the two known
-# single-line hits are comments ("Verified on gfx1151 (Radeon 8060S)" in
-# scripts/install_rocm_wsl_strixhalo.sh, and a parenthetical in
-# studio/install_llama_prebuilt.py). Real tables score 9 to 17, so the gap is
-# wide and the threshold is not load-bearing.
+# Three or more such lines means a table.
+# One or two means prose: the two known single-line hits are comments ("Verified on gfx1151 (Radeon 8060S)" in
+# scripts/install_rocm_wsl_strixhalo.sh, and a parenthetical in studio/install_llama_prebuilt.py).
 _TABLE_LINE_THRESHOLD = 3
 
 
@@ -643,9 +609,9 @@ def _files_carrying_a_name_arch_table(root: Path = PACKAGE_ROOT) -> dict[str, in
             continue
         if _under_cargo_output(path, root):
             continue
-        # Tests that *assert* on the tables quote card names next to gfx ids by
-        # nature. Fixtures like _zoo_rocm_spoof.py do not start with test_ and so
-        # stay in scope, which is how the seventh copy surfaced.
+        # Tests that *assert* on the tables quote card names next to gfx ids by nature.
+        # Fixtures like _zoo_rocm_spoof.py do not start with test_ and so stay in scope, which is how the seventh copy
+        # surfaced.
         if path.name.startswith("test_"):
             continue
         try:
@@ -765,13 +731,13 @@ class TestShadowingIntegratedGfxParity:
         assert self._setup_ps1_list() == set(stack_mod._SHADOWING_INTEGRATED_GFX)
 
     def test_install_llama_prebuilt_matches_install_python_stack(self):
-        # _apply_host_overrides() honours setup's repick only for these arches, so drift
-        # re-splits torch and llama.cpp across two GPUs on a mixed host.
+        # _apply_host_overrides() honours setup's repick only for these arches, so drift re-splits torch and llama.cpp
+        # across two GPUs on a mixed host.
         assert self._prebuilt_list() == set(stack_mod._SHADOWING_INTEGRATED_GFX)
 
     def test_strix_is_excluded_from_every_copy(self):
-        # Supported training targets, not shadowing APUs: listing them would silently
-        # redirect Strix hosts.
+        # Supported training targets, not shadowing APUs: listing them would silently redirect
+        # Strix hosts.
         assert not (self._STRIX & set(stack_mod._SHADOWING_INTEGRATED_GFX))
         assert not (self._STRIX & self._setup_ps1_list())
         assert not (self._STRIX & self._prebuilt_list())

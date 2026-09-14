@@ -496,3 +496,71 @@ def test_a_changed_visibility_mask_is_not_answered_from_cache(HW, spawned, monke
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
     assert HW._cuda_device_integrated_and_total(0) == (False, 25757220864)
     assert len(calls) == 2, "the mask change must force a fresh probe"
+
+
+# ── the correction has to be REACHED, not merely present ─────────────────────
+
+
+def test_the_probe_actually_calls_the_correction(HW, integrated, monkeypatch):
+    """`_get_gpu_memory`'s nvidia-smi arm must route through the correction.
+
+    This exists because of how the conflict between this branch and `main` reads
+    when it is resolved by keeping both sides:
+
+        LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
+        return gpus                                        # main's
+        return LlamaCppBackend._apply_cuda_unified_memory_correction(...)
+
+    That parses, imports, and passes every test that does not load a Spark, while
+    this entire branch does nothing. Observed once, on a trial merge. Asserting on
+    the returned numbers rather than on the source keeps it honest.
+    """
+    calls = []
+    real = LlamaCppBackend._apply_cuda_unified_memory_correction
+
+    def recording(gpus, bus_ids = None):
+        calls.append((list(gpus), dict(bus_ids or {})))
+        return real(gpus, bus_ids = bus_ids)
+
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apply_cuda_unified_memory_correction", staticmethod(recording)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b: False)
+    )
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.subprocess.run",
+        lambda *a, **k: types.SimpleNamespace(
+            returncode = 0, stdout = "0, 7929, 8128, 00000000:01:00.0\n", stderr = ""
+        ),
+    )
+    gpus = LlamaCppBackend._get_gpu_memory()
+
+    assert calls, "the nvidia-smi arm returned without applying the correction"
+    # And the caller got the corrected numbers, not nvidia-smi's carve-out.
+    assert gpus == [(0, 46477 - 1024, 0)]
+
+
+def test_the_probe_still_reports_pci_index_ids(HW, integrated, monkeypatch):
+    """The other half of that conflict: `main` sets `_GPU_IDS_ARE_PCI_INDICES` on
+    this arm, and callers feed these ids back as CUDA_VISIBLE_DEVICES. Resolving
+    the conflict in this branch's favour alone drops the flag, and the ids are
+    then read as torch ordinals."""
+    monkeypatch.setattr(
+        LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: 60000)
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda b: False)
+    )
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.subprocess.run",
+        lambda *a, **k: types.SimpleNamespace(
+            returncode = 0, stdout = "0, 7929, 8128, 00000000:01:00.0\n", stderr = ""
+        ),
+    )
+    LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = False
+    LlamaCppBackend._get_gpu_memory()
+    assert LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is True

@@ -52,7 +52,8 @@ def _request():
         return False
 
     return SimpleNamespace(
-        headers = {},
+        # These cases drive the tool loop, whose confirm gate asks over these frames.
+        headers = {"X-Unsloth-Events": "1"},
         state = SimpleNamespace(skip_api_monitor = True),
         is_disconnected = is_disconnected,
     )

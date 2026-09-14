@@ -7,83 +7,32 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 
-// ── Types ──
 
 #[derive(Default)]
 pub struct UpdateProcess {
     pub child: Option<Box<dyn ChildWrapper + Send>>,
     pub intentional_stop: bool,
     pub current_attempt: Option<AttemptLog>,
-    pub staged: bool,
-    pub staged_shell_version: Option<String>,
 }
 
 pub type UpdateState = Arc<Mutex<UpdateProcess>>;
-
-/// report staged work owned by this app or a surviving cli process.
-pub(crate) fn is_staged_update_running(state: &UpdateState) -> bool {
-    let local = state
-        .lock()
-        .map(|s| s.child.is_some() && s.staged)
-        .unwrap_or(false);
-    local || staged_update_is_owned_elsewhere()
-}
-
-pub(crate) fn staged_update_is_owned_elsewhere() -> bool {
-    let home = crate::diagnostics::studio_dir();
-    staged_update_is_owned_elsewhere_at(&home, || {
-        crate::process::with_studio_runtime_launch_guard(|| Ok(()))
-    })
-}
-
-fn staged_update_is_owned_elsewhere_at(
-    home: &std::path::Path,
-    try_gate: impl FnOnce() -> Result<(), String>,
-) -> bool {
-    if !home.join(crate::staged_update::STAGE_DIR).is_dir() {
-        return false;
-    }
-    try_gate().is_err()
-}
-
-pub(crate) fn staged_update_shell_version(state: &UpdateState) -> Option<String> {
-    state.lock().ok().and_then(|update| {
-        (update.child.is_some() && update.staged)
-            .then(|| update.staged_shell_version.clone())
-            .flatten()
-    })
-}
 
 pub fn new_update_state() -> UpdateState {
     Arc::new(Mutex::new(UpdateProcess::default()))
 }
 
 const UPDATE_ARGS: &[&str] = &["studio", "update"];
-const STAGE_ARGS: &[&str] = &["studio", "update", "--stage"];
-const SHELL_VERSION_ENV: &str = "UNSLOTH_TAURI_SHELL_VERSION";
 
 pub(crate) enum UpdateKind {
     Backend,
     Repair(String),
-    Staged {
-        shell_version: Option<String>,
-        backend_version: Option<String>,
-    },
 }
 
 impl UpdateKind {
-    fn args(&self) -> &'static [&'static str] {
-        match self {
-            UpdateKind::Staged { .. } => STAGE_ARGS,
-            _ => UPDATE_ARGS,
-        }
-    }
-
     fn progress_event(&self) -> &'static str {
         match self {
             UpdateKind::Backend => "update-progress",
             UpdateKind::Repair(_) => "repair-progress",
-            UpdateKind::Staged { .. } => "stage-progress",
         }
     }
 
@@ -91,41 +40,31 @@ impl UpdateKind {
         match self {
             UpdateKind::Backend => Some(("update-complete", "update-failed")),
             UpdateKind::Repair(_) => None,
-            UpdateKind::Staged { .. } => Some(("stage-complete", "stage-failed")),
         }
-    }
-
-    fn mutates_live_environment(&self) -> bool {
-        !matches!(self, UpdateKind::Staged { .. })
     }
 }
 
-// ── Spawn ──
 fn build_update_command(bin: &std::path::Path, args: &[&str]) -> Result<Command, String> {
     // Only the Windows arm below mutates it.
     #[cfg_attr(not(windows), allow(unused_mut))]
-    // Isolated, as this call site shipped. It is the one managed invocation nobody
-    // types by hand, and the one that decides which install gets rewritten: a
-    // user-site unsloth_cli must not be able to answer `from unsloth_cli import app`
-    // here. Everything else inherits, because the console script does.
+    // Isolated, as this call site shipped: it is the one managed invocation nobody types by
+    // hand and the one that decides which install gets rewritten, so a user-site unsloth_cli
+    // must not answer `from unsloth_cli import app` here.
     let mut cmd = crate::process::build_managed_cli_command_with(
         bin,
         args,
         crate::process::Isolation::Isolated,
     )?;
-    // The only managed invocation that scrubs, and the only one that shipped doing it.
-    // Elsewhere inheriting is the point, since the console script honours these. Here
-    // the failure is unrecoverable: a foreign PYTHONHOME stops the managed interpreter
-    // finding its own site-packages, and a PYTHONPATH pointing at another checkout
-    // makes `from unsloth_cli import app` update the wrong install.
+    // The only managed invocation that scrubs: a foreign PYTHONHOME stops the managed
+    // interpreter finding its own site-packages, and a PYTHONPATH pointing at another checkout
+    // updates the wrong install.
     cmd.env_remove("PYTHONHOME");
     cmd.env_remove("PYTHONPATH");
     Ok(cmd)
 }
 
 fn configure_tauri_update_environment(cmd: &mut Command) {
-    // The desktop owns both its shortcuts and its frontend bundle. The managed
-    // Python update only needs backend dependencies and native helpers.
+    // The desktop owns its shortcuts and frontend bundle; this update needs only backend deps.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
     cmd.env("UNSLOTH_TAURI_UPDATE", "1");
@@ -136,30 +75,15 @@ fn configure_tauri_update_environment(cmd: &mut Command) {
     );
 }
 
-fn configure_staged_update_environment(cmd: &mut Command) {
-    for name in [
-        "UNSLOTH_LOCAL_LLAMA_CPP_DIR",
-        "UNSLOTH_LLAMA_FORCE_COMPILE",
-        "UNSLOTH_LLAMA_FORCE_COMPILE_REF",
-        "UNSLOTH_LLAMA_PR",
-        "UNSLOTH_LLAMA_PR_FORCE",
-    ] {
-        cmd.env_remove(name);
-    }
-}
-
-fn configure_runtime_gate_environment(cmd: &mut Command, kind: &UpdateKind) {
-    if kind.mutates_live_environment() {
-        cmd.env(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
-    } else {
-        cmd.env_remove(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV);
-    }
+// The shell holds the retained POSIX flock around the whole update child, so the CLI must
+// inherit the gate rather than take it again. Set everywhere, as Windows always did.
+fn configure_runtime_gate_environment(cmd: &mut Command) {
+    cmd.env(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV, "1");
 }
 
 fn spawn_update(
     bin: &std::path::Path,
     state: &UpdateState,
-    kind: &UpdateKind,
 ) -> Result<
     (
         Option<std::process::ChildStdout>,
@@ -172,24 +96,11 @@ fn spawn_update(
         return Err("Update is already running.".to_string());
     }
     update.intentional_stop = false;
-    update.staged = matches!(kind, UpdateKind::Staged { .. });
-    update.staged_shell_version = match kind {
-        UpdateKind::Staged { shell_version, .. } => shell_version.clone(),
-        _ => None,
-    };
 
-    let mut cmd = build_update_command(bin, kind.args())?;
+    let mut cmd = build_update_command(bin, UPDATE_ARGS)?;
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    if let UpdateKind::Staged {
-        shell_version: Some(version),
-        ..
-    } = kind
-    {
-        cmd.env(SHELL_VERSION_ENV, version);
-    }
 
-    // A login-started desktop inherits C:\Windows\system32, which the CLI refuses
-    // to run from; the Windows branch above hits the same guard. Pin both.
+    // A login-started desktop inherits C:\Windows\system32, which the CLI refuses to run from.
     crate::process::apply_managed_cli_context(&mut cmd).map_err(|error| {
         format!(
             "Failed to pick a working directory for the update: {}",
@@ -197,22 +108,17 @@ fn spawn_update(
         )
     })?;
 
-    // PYTHONPATH is dropped by the context itself on Windows, where -I covers
-    // only the first interpreter and the update starts more.
+    // PYTHONPATH is dropped by the context itself on Windows, where -I covers only the first
+    // interpreter and the update starts more.
 
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env(&mut cmd);
 
-    // Keep the update on the desktop-managed install and avoid rebuilding assets
-    // that are already compiled into the signed Tauri bundle.
+    // Keep the update on the desktop-managed install and skip assets already in the bundle.
     configure_tauri_update_environment(&mut cmd);
-    if matches!(kind, UpdateKind::Staged { .. }) {
-        configure_staged_update_environment(&mut cmd);
-    }
-    configure_runtime_gate_environment(&mut cmd, kind);
+    configure_runtime_gate_environment(&mut cmd);
 
-    // read_lossy_lines decodes as UTF-8, and here the child is Python itself,
-    // which otherwise encodes redirected streams with the locale code page.
+    // read_lossy_lines decodes as UTF-8; the child is Python, which otherwise uses the locale page.
     #[cfg(windows)]
     {
         cmd.env("PYTHONUTF8", "1");
@@ -244,7 +150,6 @@ fn spawn_update(
     Ok((stdout, stderr))
 }
 
-// ── Stream ──
 
 fn read_lossy_lines<R: std::io::Read>(
     stream: R,
@@ -324,7 +229,6 @@ fn stream_output(
     threads
 }
 
-// ── Wait ──
 
 fn wait_for_exit(state: &UpdateState) -> Result<(ExitStatus, bool), String> {
     const MAX_WAIT_ITERATIONS: u32 = 72_000; // 2h at 100ms intervals
@@ -336,13 +240,11 @@ fn wait_for_exit(state: &UpdateState) -> Result<(ExitStatus, bool), String> {
             Some(child) => match child.try_wait() {
                 Ok(Some(status)) => {
                     update.child = None;
-                    update.staged_shell_version = None;
                     return Ok((status, intentional));
                 }
                 Ok(None) => {}
                 Err(e) => {
                     update.child = None;
-                    update.staged_shell_version = None;
                     return Err(format!("Error waiting for update: {}", e));
                 }
             },
@@ -357,7 +259,6 @@ fn wait_for_exit(state: &UpdateState) -> Result<(ExitStatus, bool), String> {
     Err("Update timed out after 2 hours".to_string())
 }
 
-// ── Public API ──
 
 pub fn run_backend_update(
     app: AppHandle,
@@ -374,24 +275,6 @@ pub(crate) fn run_backend_update_for_repair(
     repair_group_id: String,
 ) -> Result<(), String> {
     run_update(app, state, diagnostics, UpdateKind::Repair(repair_group_id))
-}
-
-pub(crate) fn run_staged_update(
-    app: AppHandle,
-    state: UpdateState,
-    diagnostics: DiagnosticsState,
-    shell_version: Option<String>,
-    backend_version: Option<String>,
-) -> Result<(), String> {
-    run_update(
-        app,
-        state,
-        diagnostics,
-        UpdateKind::Staged {
-            shell_version,
-            backend_version,
-        },
-    )
 }
 
 fn run_update(
@@ -430,9 +313,16 @@ fn run_update(
     let _ = app.emit(progress_event, "Starting backend update...");
 
     let explicit_error = Arc::new(Mutex::new(None));
-    let run_child = || {
+    // Update mutates the managed environment for its whole lifetime. Synchronous, so the
+    // thread-owned Win32 mutex never crosses an await.
+    let result = crate::process::with_studio_runtime_launch_guard(|| {
+        crate::process::ensure_managed_environment_is_idle(&bin)?;
+        // Under the gate and after the idle scan. A 805-807 rollback the last launch deferred
+        // still names the live runtime as something to undo, and updating on top of that journal
+        // has the next idle launch restoring the pre-update trees over everything installed here.
+        crate::staged_update::reconcile_before_update(&crate::diagnostics::studio_dir())?;
         let (stdout, stderr) =
-            spawn_update(&bin, &state, &kind).map_err(|msg| format!("spawn_update: {msg}"))?;
+            spawn_update(&bin, &state).map_err(|msg| format!("spawn_update: {msg}"))?;
         let threads = stream_output(
             &app,
             progress_event,
@@ -448,16 +338,7 @@ fn run_update(
             let _ = handle.join();
         }
         result
-    };
-    // the staged cli owns the gate so it remains held after a hard desktop exit.
-    let result = if kind.mutates_live_environment() {
-        crate::process::with_studio_runtime_launch_guard(|| {
-            crate::process::ensure_managed_environment_is_idle(&bin)?;
-            run_child()
-        })
-    } else {
-        run_child()
-    };
+    });
     // Read only after the guard returned, so both reader threads are joined.
     let explicit_error = explicit_error.lock().ok().and_then(|error| error.clone());
 
@@ -471,21 +352,6 @@ fn run_update(
                 None,
             );
             clear_current_attempt(&state);
-            if let UpdateKind::Staged {
-                backend_version: Some(required),
-                ..
-            } = &kind
-            {
-                let home = crate::diagnostics::studio_dir();
-                if let Err(msg) = crate::staged_update::staged_backend_meets(&home, required) {
-                    crate::staged_update::discard(&home);
-                    error!("[update] {msg}");
-                    if let Some((_, failed)) = kind.terminal_events() {
-                        let _ = app.emit(failed, &msg);
-                    }
-                    return Err(msg);
-                }
-            }
             info!("[update] Backend update complete");
             if let Some((complete, _)) = kind.terminal_events() {
                 let _ = app.emit(complete, ());
@@ -595,7 +461,6 @@ pub fn stop_update(state: &UpdateState) -> Result<(), String> {
             }
         };
         update.intentional_stop = true;
-        update.staged_shell_version = None;
         update.child.take()
     };
 
@@ -726,11 +591,8 @@ mod tests {
         assert_eq!(
             cmd.get_args().map(OsString::from).collect::<Vec<_>>(),
             vec![
-                // -I here and nowhere else. This is the invocation that decides
-                // which install gets rewritten, and it shipped isolated; a
-                // user-site unsloth_cli answering `from unsloth_cli import app`
-                // would update the wrong one. Every invocation a user could have
-                // typed instead inherits, because the console script does.
+                // -I here and nowhere else: this invocation decides which install gets
+                // rewritten, and a user-site unsloth_cli would update the wrong one.
                 OsString::from("-X"),
                 OsString::from("utf8"),
                 OsString::from("-I"),
@@ -740,9 +602,8 @@ mod tests {
                 OsString::from("update")
             ]
         );
-        // The updater's PYTHONHOME / PYTHONPATH handling is asserted once, in
-        // windows_update_command_still_scrubs_the_python_search_path below. This
-        // test owns the program and the argument vector.
+        // PYTHONHOME / PYTHONPATH handling is asserted in
+        // windows_update_command_still_scrubs_the_python_search_path below.
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -757,9 +618,7 @@ mod tests {
             .contains("python.exe"));
     }
 
-    // The Windows trampoline moved into process.rs; nothing about the POSIX
-    // Dropping -I made this load bearing rather than belt and braces: without -E the
-    // child now reads both. See build_update_command for what each one breaks.
+    // Without -E the child reads PYTHONHOME and PYTHONPATH; see build_update_command.
     #[test]
     fn update_command_scrubs_the_python_search_path() {
         let dir = std::env::temp_dir().join(format!(
@@ -787,7 +646,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    // command may move with it. macOS and Linux still exec the console script.
+    // macOS and Linux still exec the console script.
     #[cfg(not(windows))]
     #[test]
     fn posix_update_command_still_execs_the_console_script() {
@@ -808,92 +667,19 @@ mod tests {
         }
     }
 
+    // POSIX updates fail "busy" against the shell's own retained flock unless the child
+    // inherits it, so the handoff is set on every platform.
     #[test]
-    fn staged_update_drops_source_build_overrides() {
+    fn update_child_uses_the_parent_runtime_gate_on_every_platform() {
         use std::ffi::OsStr;
 
         let mut cmd = Command::new("unused");
-        configure_staged_update_environment(&mut cmd);
-
-        for name in [
-            "UNSLOTH_LOCAL_LLAMA_CPP_DIR",
-            "UNSLOTH_LLAMA_FORCE_COMPILE",
-            "UNSLOTH_LLAMA_FORCE_COMPILE_REF",
-            "UNSLOTH_LLAMA_PR",
-            "UNSLOTH_LLAMA_PR_FORCE",
-        ] {
-            assert!(cmd
-                .get_envs()
-                .any(|(key, value)| key == OsStr::new(name) && value.is_none()));
-        }
-    }
-
-    #[test]
-    fn staged_update_child_acquires_its_own_runtime_gate() {
-        use std::ffi::OsStr;
-
-        let mut cmd = Command::new("unused");
-        configure_runtime_gate_environment(
-            &mut cmd,
-            &UpdateKind::Staged {
-                shell_version: None,
-                backend_version: None,
-            },
-        );
-
-        assert!(cmd.get_envs().any(|(key, value)| {
-            key == OsStr::new(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV) && value.is_none()
-        }));
-    }
-
-    #[test]
-    fn live_update_child_uses_the_parent_runtime_gate() {
-        use std::ffi::OsStr;
-
-        let mut cmd = Command::new("unused");
-        configure_runtime_gate_environment(&mut cmd, &UpdateKind::Backend);
+        configure_runtime_gate_environment(&mut cmd);
 
         assert!(cmd.get_envs().any(|(key, value)| {
             key == OsStr::new(crate::process::STUDIO_RUNTIME_GATE_HANDOFF_ENV)
                 && value == Some(OsStr::new("1"))
         }));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn surviving_stage_gate_blocks_reopen_until_the_owner_exits() {
-        use std::os::fd::AsRawFd;
-
-        let home = tempfile::tempdir().unwrap();
-        std::fs::create_dir(home.path().join(crate::staged_update::STAGE_DIR)).unwrap();
-        let gate_path = home.path().join(".studio-runtime.lock");
-        let owner = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(&gate_path)
-            .unwrap();
-        assert_eq!(unsafe { libc::flock(owner.as_raw_fd(), libc::LOCK_EX) }, 0);
-
-        let probe = || {
-            let candidate = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&gate_path)
-                .map_err(|error| error.to_string())?;
-            let result =
-                unsafe { libc::flock(candidate.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-            if result == 0 {
-                unsafe { libc::flock(candidate.as_raw_fd(), libc::LOCK_UN) };
-                Ok(())
-            } else {
-                Err(std::io::Error::last_os_error().to_string())
-            }
-        };
-
-        assert!(staged_update_is_owned_elsewhere_at(home.path(), probe));
-        drop(owner);
-        assert!(!staged_update_is_owned_elsewhere_at(home.path(), probe));
     }
 
     #[cfg(unix)]

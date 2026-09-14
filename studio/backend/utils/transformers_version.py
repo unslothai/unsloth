@@ -49,7 +49,9 @@ from hub.utils.hf_tokens import (
     ANONYMOUS_CACHE_IDENTITY,
     HfTokenArg,
     apply_token_to_child_env,
+    cache_reads_authorized,
     is_anonymous,
+    qualify_cache_identity,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
 from utils.native_tls import inline_gate_source, vendor_dir
@@ -675,14 +677,19 @@ def _token_cache_key(model_name: str, hf_token: HfTokenArg) -> tuple[str, str | 
     """Cache key that keeps authenticated and unauthenticated reads separate, so an
     unauthenticated miss on a gated/private repo never poisons a later authed lookup.
 
-    Forced-anonymous is its own credential, so it takes its own slot too.
+    Forced-anonymous is its own credential, so it takes its own slot too, and so is a UI
+    session: the marker hashes to the same bytes as a plain token of the same value, and the
+    tokenizer and config-tier caches keyed here return before any authorization check, so
+    without the qualifier an API caller reads back the classification a UI session cached.
     """
     import hashlib
 
     if is_anonymous(hf_token):
         return (model_name, ANONYMOUS_CACHE_IDENTITY)
-    tok = hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else None
-    return (model_name, tok)
+    if not hf_token:
+        return (model_name, None)
+    digest = hashlib.sha256(hf_token.encode()).hexdigest()[:16]
+    return (model_name, qualify_cache_identity(hf_token, digest))
 
 
 def _is_canonical_repo_id(model_name: str) -> bool:
@@ -902,10 +909,20 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     network fetch, so an online read never serves stale metadata.
     """
     cache_key = _token_cache_key(model_name, hf_token)
-    if cache_key in _config_json_cache:
-        return _config_json_cache[cache_key]
-
     local_cfg = Path(model_name) / "config.json"
+    if cache_key in _config_json_cache:
+        # A hit predates the 60 s authorization TTL, so an explicit token revoked since the
+        # fetch would keep reading this repo's metadata for the life of the process. Local
+        # paths are the caller's own and never went through the Hub. A miss here re-fetches,
+        # which is what tells a revoked token no.
+        if (
+            not isinstance(hf_token, str)
+            or _safe_is_file(local_cfg)
+            or _safe_is_dir(Path(model_name))
+            or cache_reads_authorized(hf_token, repo_id = model_name)
+        ):
+            return _config_json_cache[cache_key]
+
     if _safe_is_file(local_cfg):
         try:
             with open(local_cfg, encoding = "utf-8-sig") as f:
@@ -924,18 +941,19 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     # Every route to the hub cache below reads it without authorizing, so a caller denied
     # the ambient credential is refused them all: keying the memo apart is not enough when
     # the value it memoizes came off disk in the first place.
-    if is_anonymous(hf_token):
-        cache_denied = True
-    else:
-        cache_denied = False
+    cache_denied = not cache_reads_authorized(hf_token, repo_id = model_name)
 
     if _env_offline():
         # No network: a downloaded repo can still tier from the hub cache. Cache a real hit,
-        # never the miss, so a later online read still fetches the config.
+        # never the miss, so a later online read still fetches the config. An unverified
+        # explicit token is denied here; ambient None keeps the cache path.
         if cache_denied:
             return None
         cfg = _config_json_from_hf_cache(model_name)
-        if cfg is not None:
+        # Ambient/anonymous only: this came off the operator's disk, and an untimed memo
+        # outlives the 60 s cache_reads_authorized grants it, so a revoked token would keep
+        # reading. Explicit tokens re-derive per call.
+        if cfg is not None and not isinstance(hf_token, str):
             _config_json_cache[cache_key] = cfg
         return cfg
 

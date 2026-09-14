@@ -108,7 +108,7 @@ def _isolate_studio_home(_studio_home_root, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
     for name, module in tuple(sys.modules.items()):
         if name.startswith(("storage.", "hub.storage.")) and hasattr(module, "_schema_ready"):
-            monkeypatch.setattr(module, "_schema_ready", False)
+            monkeypatch.setattr(module, "_schema_ready", set())
 
 
 # Pytest CLI options
@@ -781,7 +781,7 @@ def rag_home(tmp_path, monkeypatch, linkable_temp_base):
         root = linkable_temp_base / tmp_path.name
         root.mkdir(parents = True, exist_ok = True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(root))
-    monkeypatch.setattr(rag_db, "_schema_ready", False)
+    monkeypatch.setattr(rag_db, "_schema_ready", set())
     return root
 
 
@@ -807,8 +807,10 @@ def stub_embeddings(monkeypatch):
     import hashlib
     import math
 
-    from core.rag import embeddings
+    from core.rag import config, embeddings
 
+    # Pin the backend: "auto" reprobes the hardware (nvidia-smi) on every use.
+    monkeypatch.setattr(config, "EMBED_BACKEND", "sentence-transformers")
     dim = 32
 
     def _vec(text: str):
@@ -967,3 +969,39 @@ def _no_carried_over_hardware_measurements():
     _clear()
     yield
     _clear()
+
+
+@pytest.fixture(autouse = True)
+def _process_shutdown_latch_is_clear():
+    """Clear the process-wide shutdown latch around every test.
+
+    The latch is deliberately sticky in production: quitting is terminal, and only an
+    embedded host calling run_server again clears it. In a suite that makes it a
+    global one test can leave set for the rest of the file, and any test that tears a
+    backend down sets it, so a later spawn test sees a stale "quitting" and fails in
+    whatever order pytest happens to pick.
+    """
+    from utils import process_lifetime
+
+    def _reopen():
+        process_lifetime.begin_process_lifecycle()
+        # The ROUTE latch too. Any test that exercises _graceful_shutdown reaches
+        # cancel_pending_loads, which sets it, and only run_server clears it -- so one
+        # such test cancels every load admitted by every test that follows it. That is
+        # how four tunnel-safe tests came to fail in a full run and pass alone.
+        # Only if it is ALREADY imported. Importing it here would drag a heavy module
+        # into every test that never asked for it, which perturbed source-contract and
+        # import-order tests elsewhere; and the latch cannot have been set without the
+        # module being loaded, so there is nothing to miss.
+        mod = sys.modules.get("routes.inference")
+        if mod is not None:
+            try:
+                mod.begin_load_lifecycle()
+            except Exception:
+                pass
+
+    _reopen()
+    try:
+        yield
+    finally:
+        _reopen()

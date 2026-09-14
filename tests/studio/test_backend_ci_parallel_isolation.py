@@ -55,13 +55,11 @@ def _pytest_commands(text: str) -> list[str]:
     ]
 
 
-# Two different trees are run in parallel now, and the isolation below belongs to exactly
-# one of them. The repo-root job runs `tests/` from the checkout; the matrix job runs the
-# backend's own suite with `working-directory: studio/backend`, so `tests/studio/...` is
-# not a path that exists for it and demanding those ignores would be nonsense.
-#
-# Told apart by what they ignore, because that is the thing both the ignores and this
-# scan are about: only the repo-root run excludes directories that live at the repo root.
+# Two different trees are run in parallel now, and the isolation below belongs to exactly one of them. The repo-root
+# job runs `tests/` from the checkout; the matrix job runs the backend's own suite with
+# `working-directory: studio/backend`, so `tests/studio/...` is not a path that exists for it.
+# Told apart by what they ignore, because that is the thing both the ignores and this scan are about: only the
+# repo-root run excludes directories that live at the repo root.
 REPO_ROOT_MARKER = "--ignore=tests/qlora"
 
 
@@ -69,9 +67,9 @@ def _over_the_repo_root(command: str) -> bool:
     return REPO_ROOT_MARKER in command
 
 
-# The same pairing, for the backend matrix run. Ignoring a file from the parallel run and
-# running it again serially is two edits held together by nothing, and dropping the second
-# is silent: the job stays green while the tests stop running.
+# The same pairing, for the backend matrix run. Ignoring a file from the parallel run and running it again serially is
+# two edits held together by nothing, and dropping the second is silent: the job stays green while the tests stop
+# running.
 BACKEND_ISOLATED = [
     ("tests/test_streaming_stripper.py", "times itself against a reference in the same process"),
     ("tests/test_llama_cpp_wait_for_vram_settle.py", "asserts elapsed < 0.05"),
@@ -90,40 +88,35 @@ BACKEND_ISOLATED = [
     ("tests/test_profile_stats.py", "counts event-loop ticks during a 0.5s blocking call"),
 ]
 
-# What the scan above does NOT cover, recorded because the gap is structural rather than a
-# missing case. It finds assertions that COMPARE clock-derived values. A test can depend on
-# timing without any clock in it at all: test_tunnel_safe_long_post patches the keepalive
-# threshold to 0.05s and makes the work sleep 0.2s, then asserts on the RESULT -- that the
-# response starts with padding -- so whether it passes turns on which of two timers fired
-# first, and nothing in the expression is a duration. It failed exactly that way on a
-# staging 3.13 leg that had been green.
+# What the scan above does NOT cover, recorded because the gap is structural rather than a missing case. It finds
+# assertions that COMPARE clock-derived values. A test can depend on timing without any clock in it at all:
+# test_tunnel_safe_long_post patches the keepalive threshold to 0.05s and makes the work sleep 0.2s, then asserts on
+# the RESULT -- that the response starts with padding -- so whether it passes turns on which of two timers fired
+# first, and nothing in the expression is a duration. It failed exactly that way on a staging 3.13 leg that had been
+# green.
 #
-# test_scan_loras_off_event_loop is the same shape from the other direction: it counts how
-# many times a heartbeat coroutine ticked during a 0.3s sleep and requires at least three.
-# Descheduling the worker costs ticks without the scan being wrong, and the assertion
-# compares a COUNT, so again there is no duration to find.
+# test_scan_loras_off_event_loop is the same shape from the other direction: it counts how many times a heartbeat
+# coroutine ticked during a 0.3s sleep and requires at least three. Descheduling the worker costs ticks without the
+# scan being wrong, and the assertion compares a COUNT, so again there is no duration to find.
 #
-# Ten backend files pair a sub-second sleep with a small threshold constant. Four times the
-# threshold was not enough margin for the one that failed, so the ratio is not a usable
-# rule, and flagging all ten would serialise a large part of the suite on a guess.
+# Ten backend files pair a sub-second sleep with a small threshold constant. Four times the threshold was not enough
+# margin for the one that failed, so the ratio is not a usable rule, and flagging all ten would serialise a large part
+# of the suite on a guess.
 #
-# So this class is found by reading rather than by scanning. The first arrived from a
-# staging failure, the second from review, and the third from reading the other eight
-# candidates once the shape was clear: test_anthropic_messages counts SSE keepalives
-# emitted during a 0.24s stall, which loses keepalives to a descheduled worker exactly as
-# the heartbeat test loses ticks.
+# So this class is found by reading rather than by scanning. The first arrived from a staging failure, the second from
+# review, and the third from reading the other eight candidates once the shape was clear: test_anthropic_messages
+# counts SSE keepalives emitted during a 0.24s stall, which loses keepalives to a descheduled worker exactly as the
+# heartbeat test loses ticks.
 #
-# That same pass turned up one false positive worth naming, because the grep that finds
-# these is crude: test_diffusion_backend asserts len(staged) > 1 near a 0.2s sleep, but
-# `staged` is a list comprehension over cached filenames and has no timing in it at all.
-# It also costs 152s, so isolating it on the strength of a pattern match would have been
-# expensive as well as wrong. Read the assertion before adding a file here.
+# That same pass turned up one false positive worth naming, because the grep that finds these is crude:
+# test_diffusion_backend asserts len(staged) > 1 near a 0.2s sleep, but `staged` is a list comprehension over cached
+# filenames and has no timing in it at all. It also costs 152s, so isolating it on the strength of a pattern match
+# would have been expensive as well as wrong. Read the assertion before adding a file here.
 
-# Below this, an elapsed-time bound is inside the range of a single scheduler quantum, so
-# under four workers on four vCPUs it measures the scheduler as much as the code. Above it
-# there is enough headroom to survive being descheduled. Twenty-two backend files assert
-# some elapsed bound and serialising all of them would give back most of what -n 4 buys,
-# so the line is drawn where the measurement stops being about the code.
+# Below this, an elapsed-time bound is inside the range of a single scheduler quantum, so under four workers on four
+# vCPUs it measures the scheduler as much as the code. Above it there is enough headroom to survive being descheduled.
+# Twenty-two backend files assert some elapsed bound and serialising all of them would give back most of what -n 4
+# buys, so the line is drawn where the measurement stops being about the code.
 BACKEND_MARKER = "--ignore=tests/test_studio_api.py"
 
 
@@ -137,23 +130,23 @@ BACKEND_TESTS = Path(__file__).resolve().parents[2] / "studio" / "backend" / "te
 _CLOCKS = ("monotonic", "perf_counter", "process_time", "time")
 
 
-# Sites the scan finds and a human has read. The scan looks for a comparison between two
-# clock-derived quantities, which is the right net to cast, but not every such comparison
-# is a performance claim. None of these can be broken by descheduling:
+# Sites the scan finds and a human has read. The scan looks for a comparison between two clock-derived quantities,
+# which is the right net to cast, but not every such comparison is a performance claim. None of these can be broken
+# by descheduling:
 #
-#   a SANDWICH, `before <= recorded <= after`, asserts a stamp was taken between two
-#   reads. Widening the gap cannot falsify it.
-#   a POLL DEADLINE, `time.monotonic() < limit` inside a wait-for-condition loop, is the
-#   pattern that replaces a guessed sleep. Its 5s budget is a timeout, not a measurement.
+#   a SANDWICH, `before <= recorded <= after`, asserts a stamp was taken between two reads. Widening the gap cannot
+#   falsify it.
+#   a POLL DEADLINE, `time.monotonic() < limit` inside a wait-for-condition loop, is the pattern that replaces a
+#   guessed sleep. Its 5s budget is a timeout, not a measurement.
 #   a SENTINEL, `stamp < 0.0`, compares against a magic value rather than a duration.
 #
-# Keyed on the enclosing function rather than a line number, so an edit above it does not
-# silently move the exemption onto something else.
+# Keyed on the enclosing function rather than a line number, so an edit above it does not silently move the exemption
+# onto something else.
 BENIGN_TIMING = {
     ("test_media_auto_switch.py", "_until"),
     ("test_openai_auto_switch.py", "test_any_finished_download_drops_the_resolver_cache"),
-    # A 600-second expiry checked against the wall clock. Reading both sides of that gap
-    # late by whole seconds still leaves it true, and it only reaches this scan at all
+    # A 600-second expiry checked against the wall clock.
+    # Reading both sides of that gap late by whole seconds still leaves it true, and it only reaches this scan at all
     # because the widened operand walk now reads `x > time.time()` as a bound.
     (
         "test_openai_codex_subscription.py",
@@ -203,9 +196,8 @@ def _timing_helpers(tree: ast.AST) -> set:
         for node in functions:
             if node.name in helpers:
                 continue
-            # With the helpers found so far, not without them: `value = base()` inside
-            # a wrapper only counts as timed once `base` is known, and the pass that
-            # learns `base` is not the pass that reads the wrapper.
+            # With the helpers found so far, not without them: `value = base()` inside a wrapper only counts as
+            # timed once `base` is known, and the pass that learns `base` is not the pass that reads the wrapper.
             local = _timed_names(node, helpers)
             for inner in ast.walk(node):
                 if not isinstance(inner, ast.Return) or inner.value is None:
@@ -299,10 +291,10 @@ def _fragile_timing_asserts(path: Path) -> list:
         for cmp_node in ast.walk(node.test):
             if not isinstance(cmp_node, ast.Compare):
                 continue
-            # Every adjacent pair, not just the one starting at cmp_node.left. A chained
-            # `0.3 <= elapsed < 2.0` is a single Compare whose first operand is a literal,
-            # so requiring the leftmost operand to be timed skipped the `elapsed < 2.0`
-            # link and let the file stay in the -n 4 run with the guard still green.
+            # Every adjacent pair, not just the one starting at cmp_node.left.
+            # A chained `0.3 <= elapsed < 2.0` is a single Compare whose first operand is a literal, so requiring the
+            # leftmost operand to be timed skipped the `elapsed < 2.0` link and let the file stay in the -n 4 run with
+            # the guard still green.
             # test_llama_cpp_wait_for_vram_settle.py already writes bounds that way.
             operands = [cmp_node.left, *cmp_node.comparators]
             for index, op in enumerate(cmp_node.ops):
@@ -363,8 +355,8 @@ def test_the_command_scan_sees_the_parallel_run_and_the_serial_steps():
         f"checks above apply to that one, and a scan that matched none of them would pass "
         f"on nothing."
     )
-    # The line joins have to be resolved, or the parallel command reads as `pytest tests/ -q`
-    # with none of its --ignore flags and the first test above passes on nothing.
+    # The line joins have to be resolved, or the parallel command reads as `pytest tests/ -q` with none of its --ignore
+    # flags and the first test above passes on nothing.
     assert "--ignore=" in root[0]
     assert len(commands) > 1, "no serial pytest steps found; the ignore checks cannot fail"
 
@@ -474,7 +466,6 @@ def test_the_scan_finds_all_three_shapes():
     assert "test_diffusion_checkpoint_resume.py" in found, found  # helper, relative
 
     # The inline form, which the suite currently uses only at 0.2s, above the threshold.
-    # Recognised rather than isolated, so tightening that bound would trip the guard.
     inline = ast.parse(
         "import time\n"
         "def t():\n"

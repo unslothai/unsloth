@@ -48,34 +48,27 @@ import json
 import re
 from pathlib import Path
 
-# A llama-server holding less than this on the card is not offloading
-# anything worth calling offload -- CUDA context plus scratch alone is tens of
-# MiB, and a fully CPU-resident model can still show a context-sized
-# allocation if anything touched the device.
+# A llama-server holding less than this on the card is not offloading anything worth calling offload -- CUDA context
+# plus scratch alone is tens of MiB, and a fully CPU-resident model can still show a context-sized allocation if
+# anything touched the device.
 MIN_PROCESS_VRAM_MIB = 96
 
 # Device-wide growth across the load that no CPU-resident model explains.
 MIN_DEVICE_VRAM_DELTA_MIB = 256
 
-# GGUF's four-byte file magic. Checked before anything tries to load a file
-# the export path claims to have written: a truncated or half-moved file is a
-# far more likely export bug than a wrong-magic one, and both look like a
-# present file to `os.path.exists`.
+# GGUF's four-byte file magic.
+# Checked before anything tries to load a file the export path claims to have written: a truncated or half-moved file is
+# a far more likely export bug than a wrong-magic one, and both look like a present file to `os.path.exists`.
 GGUF_MAGIC = b"GGUF"
 
-# llama.cpp's own load report, e.g.
-#   load_tensors: offloaded 29/29 layers to GPU
 _OFFLOAD_RE = re.compile(r"offloaded\s+(\d+)\s*/\s*(\d+)\s+layers?\s+to\s+GPU")
 
-# e.g. "load_tensors:        CUDA0 model buffer size =   1918.35 MiB"
 _CUDA_BUFFER_RE = re.compile(
     r"(CUDA\d+|ROCm\d+)\s+model buffer size\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*MiB",
     re.IGNORECASE,
 )
 
-# Install kinds from studio/install_llama_prebuilt.py that mean the binaries
-# on disk carry CUDA kernels. Anything else -- linux-cpu, linux-vulkan,
-# linux-rocm -- is not the build this leg exists to exercise.
+# Install kinds from studio/install_llama_prebuilt.py that mean the binaries on disk carry CUDA kernels.
 CUDA_INSTALL_KINDS = frozenset({"linux-cuda", "linux-arm64-cuda"})
 
 # "cuda12", "cuda13", and whatever major comes next, anywhere in a runtime
@@ -192,11 +185,10 @@ def is_cuda_install(kind: str | None) -> bool:
     return bool(_CUDA_RUNTIME_RE.search(lowered)) or lowered in CUDA_INSTALL_KINDS
 
 
-# Where a llama.cpp install can be, most specific first. STUDIO_HOME is checked
-# because a caller may point an install there explicitly; the canonical
-# location is what `install_llama_prebuilt.py` uses by default (its
-# `Path.home() / ".unsloth" / "llama.cpp"`), and it is where `install.sh
-# --local` actually puts one.
+# Where a llama.cpp install can be, most specific first.
+# STUDIO_HOME is checked because a caller may point an install there explicitly;
+# the canonical location is what `install_llama_prebuilt.py` uses by default (its `Path.home() / ".unsloth" /
+# "llama.cpp"`), and it is where `install.sh --local` actually puts one.
 def llama_cpp_marker(studio_home: Path) -> Path | None:
     """The UNSLOTH_PREBUILT_INFO.json of the llama.cpp this box will use.
 
@@ -286,8 +278,8 @@ def offload_verdict(
     if buffer_mib is not None:
         evidence.append(f"llama.cpp device model buffer: {buffer_mib:.0f} MiB")
 
-    # Unsloth's status body carries no pid, so the caller also discovers the
-    # llama-server processes itself; either source is accepted here.
+    # Unsloth's status body carries no pid, so the caller also discovers the llama-server processes itself; either
+    # source is accepted here.
     candidates: list[int] = []
     for pid in [server_pid, *(server_pids or [])]:
         if isinstance(pid, int) and pid not in candidates:
