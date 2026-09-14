@@ -939,6 +939,83 @@ def test_a_verified_install_is_not_re_probed(tmp_path: Path, monkeypatch):
     assert spawns == ["npm"], "the recorded verification was not believed"
 
 
+def _runnable_node_tree(
+    root: Path,
+    host,
+    *,
+    version = "v24.17.0",
+    npm = "11.0.0",
+) -> Path:
+    """A node that really executes, so the probes under test are real subprocess runs.
+
+    _run_node invokes the node binary for BOTH probes -- `node -v` and, through it, npm-cli.js
+    -- which is the whole reason the record is allowed to skip only the first.
+    """
+    node = M.node_binary_path(root, host)
+    npm_cli = M.npm_cli_path(root, host)
+    node.parent.mkdir(parents = True, exist_ok = True)
+    npm_cli.parent.mkdir(parents = True, exist_ok = True)
+    # Padded to a fixed length so a later rewrite can preserve the byte count exactly.
+    script = f'#!/bin/sh\ncase "$1" in -v) echo {version} ;; *) echo {npm} ;; esac\n'
+    node.write_text(script.ljust(512), encoding = "utf-8")
+    node.chmod(0o755)
+    npm_cli.write_text("// npm launcher\n", encoding = "utf-8")
+    return node
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the stand-in node is a shell script")
+def test_a_node_that_no_longer_runs_is_caught_even_at_the_recorded_size_and_mtime(
+    tmp_path: Path, monkeypatch
+):
+    """The record compares size and mtime_ns, not the digest, so a rewrite that preserves
+    both is invisible TO THE RECORD. It is not invisible to the check: npm-cli.js is run BY
+    the node binary, and that probe is never skipped, so a node that cannot run is still
+    rejected and repaired. This pins the reason the digest is affordable to skip.
+    """
+    host = _host("linux", "x64")
+    node = _runnable_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+    recorded = M.load_metadata(tmp_path)["node_binary"]
+
+    original = node.stat()
+    node.write_bytes(b"\x00" * original.st_size)
+    os.utime(node, ns = (original.st_atime_ns, original.st_mtime_ns))
+    after = node.stat()
+    assert (after.st_size, after.st_mtime_ns) == (
+        recorded["size"],
+        recorded["mtime_ns"],
+    ), "the rewrite must be invisible to the record for this test to mean anything"
+
+    # Non-vacuity: the record itself is satisfied, so the rejection comes from the probe.
+    assert M._recorded_runtime_matches(tmp_path, host, M.load_metadata(tmp_path), "24.17.0") is True
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is False
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "the stand-in node is a shell script")
+def test_a_full_check_over_an_unchanged_install_does_not_rewrite_the_marker(
+    tmp_path: Path, monkeypatch
+):
+    """UNSLOTH_PREBUILT_FULL_CHECK re-proves what the record already says, on every run.
+    Publishing an identical marker each time moves its mtime and inode and re-applies its
+    mode and owner, which is a write, a chmod and a chown for bytes that did not change."""
+    host = _host("linux", "x64")
+    _runnable_node_tree(tmp_path, host)
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+
+    monkeypatch.setenv("UNSLOTH_PREBUILT_FULL_CHECK", "1")
+    marker = M.metadata_path(tmp_path)
+    before = marker.stat()
+    for _ in range(3):
+        assert M.existing_install_matches(tmp_path, host, version = "24.17.0") is True
+    after = marker.stat()
+    assert (after.st_ino, after.st_mtime_ns) == (
+        before.st_ino,
+        before.st_mtime_ns,
+    ), "an unchanged record was republished"
+
+
 def test_a_replaced_binary_is_probed_again(tmp_path: Path, monkeypatch):
     """The record describes bytes, not a directory: a node swapped underneath us has
     to answer for itself."""

@@ -792,11 +792,18 @@ def _file_record(path: Path) -> dict | None:
 def _file_record_matches(path: Path, recorded: object) -> bool:
     """Whether *path* is still the file *recorded* describes.
 
-    size and mtime_ns only. The digest is recorded too, and deliberately not compared
-    here: this runs on every launch of the installer, node is ~110 MB, and a rewrite
-    that preserved both the byte count and the nanosecond timestamp is not a failure
-    mode a re-download would fix anyway. The digest is there so a support log can say
-    which binary this is.
+    size and mtime_ns only. The digest is recorded too, and deliberately not compared here:
+    this runs on every launch of the installer and node is ~110 MB, so hashing it would cost
+    more than the `node -v` spawn the record exists to avoid. The digest is there so a support
+    log can say which binary this is.
+
+    What that gives up is narrower than it looks, in both directions. A node that no longer
+    RUNS is still caught, because npm-cli.js is run BY the node binary and that probe is never
+    skipped, so the case an update can actually repair is not the case being skipped. And the
+    record was never a tamper defence: it sits in a marker beside the binary, writable by
+    anyone who could rewrite the binary in place, so an edit careful enough to restore the
+    byte count and the nanosecond timestamp is an edit that can restore the record too. The
+    check before this one, `node -v`, could not prove any more than that either.
     """
     if not isinstance(recorded, dict):
         return False
@@ -827,14 +834,19 @@ def record_runtime_verification(
     npm_record = _file_record(npm_cli_path(install_dir, host))
     if node_record is None or npm_record is None:
         return
-    meta.update(
-        {
-            "node_binary": node_record,
-            "npm_cli": npm_record,
-            "node_version_checked": version,
-            "npm_major_checked": npm_major,
-        }
-    )
+    fresh = {
+        "node_binary": node_record,
+        "npm_cli": npm_record,
+        "node_version_checked": version,
+        "npm_major_checked": npm_major,
+    }
+    if all(meta.get(key) == value for key, value in fresh.items()):
+        # Nothing learned, so nothing is published. Reached on every run under
+        # UNSLOTH_PREBUILT_FULL_CHECK, which re-proves what the record already says: rewriting
+        # the marker there would move its mtime and inode, and re-apply its mode and owner,
+        # forever, for bytes that do not change.
+        return
+    meta.update(fresh)
     try:
         _write_metadata_payload(install_dir, meta)
     except Exception:  # noqa: BLE001
