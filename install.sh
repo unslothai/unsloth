@@ -606,6 +606,8 @@ _probe_uv_cache_writable() {
 # Warmth still counts package bytes only; interpreter and index metadata are not packages.
 _probe_uv_cache_usable() {
     _probe_uv_cache_writable "$1" || return 1
+    # Symlinked stores are followed on purpose: uv writes through them too, so probing the
+    # link target is what makes the answer match uv's.
     for _uv_probe_bucket in "$1"/*-v[0-9]*/; do
         _uv_probe_bucket=${_uv_probe_bucket%/}
         [ -d "$_uv_probe_bucket" ] || continue
