@@ -1063,3 +1063,36 @@ def test_cd_options_padding_and_a_keyword_chdir(monkeypatch, tmp_path):
         )
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_a_glob_is_read_per_token_not_per_command(monkeypatch, tmp_path):
+    # `sqlite3 <home>/a?th/auth.db` starts its segments at `sqlite3 <home>`, so comparing from
+    # segment zero could never line up with an absolute marker; the glob pass reads each path-shaped
+    # token on its own now.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for command in (
+            f"sqlite3 {home}/a?th/auth.db 'select jwt_secret from auth_user'",
+            f"cat {home}/au*/.desktop_secret",
+            f"cat {home}/a[u]th/auth.db",
+            "sqlite3 ../../a?th/auth.db 'select 1'",
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+        # Listing a parent, or globbing anywhere else, is ordinary work.
+        for ordinary in (
+            f"ls {home}/*",
+            f"ls {home}/models/*.gguf",
+            f"cat {home}/logs/*.log",
+            "grep -rn 'auth' src/*.py",
+        ):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None

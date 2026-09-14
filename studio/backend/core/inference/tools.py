@@ -2808,13 +2808,19 @@ def _references_studio_credential(text: str) -> bool:
         for candidate in lowered_canonicals
     ):
         return True
-    # Once more as a glob, gated on a wildcard being there at all.
-    if _GLOB_META_RE.search(lowered) and any(
-        _glob_can_name_the_marker(candidate, canonical_marker)
-        for _, canonical_marker in auth_markers
-        for candidate in lowered_canonicals
-    ):
-        return True
+    # Once more as a glob, gated on a wildcard being there at all. Per path-shaped TOKEN, not on
+    # the whole text: the segments of `sqlite3 <home>/a?th/auth.db` start at `sqlite3 <home>`, so
+    # comparing from segment zero could never line up with an absolute marker.
+    if _GLOB_META_RE.search(lowered):
+        glob_tokens = {t for c in lowered_canonicals for t in _PATH_TOKEN_RE.findall(c)}
+        glob_tokens.update(lowered_canonicals)
+        if any(
+            _glob_can_name_the_marker(token, canonical_marker)
+            for _, canonical_marker in auth_markers
+            for token in glob_tokens
+            if _GLOB_META_RE.search(token)
+        ):
+            return True
     return bool(
         cd_into_root_re is not None
         and _BARE_AUTH_SEGMENT_RE.search(text)
@@ -2822,6 +2828,8 @@ def _references_studio_credential(text: str) -> bool:
     )
 
 
+# Any run of text that could be a path argument, used to read one token at a time.
+_PATH_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]+")
 # Only traversal is worth resolving: a relative path without `..` stays inside the sandbox.
 _TRAVERSAL_TOKEN_RE = re.compile(r"[^\s'\"()\[\]{},;|&<>]*\.\.[^\s'\"()\[\]{},;|&<>]*")
 # Used only after a `cd`, where `auth/auth.db` stops meaning "inside the sandbox".
