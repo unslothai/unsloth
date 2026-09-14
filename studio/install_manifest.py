@@ -529,17 +529,27 @@ def remove_manifest(root: Optional[Path] = None) -> bool:
         return _remove_manifest_locked(root, path, parked)
 
 
+# What "not there" looks like, which is what pathlib ignored before 3.14: the name is absent,
+# a path component is not a directory, the descriptor is bad, or a symlink chain does not land.
+_ABSENT_ERRNOS = frozenset({errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP})
+
+
 def manifest_is_present(path: Path) -> bool:
     """Whether *path* is there, answering True when the filesystem refuses to say.
 
-    Path.exists() raises EACCES when the directory holding it is unsearchable, and every
-    caller here is deciding whether a marker still blocks the pass. Unknown has to read as
-    blocked, and it must not raise: remove_manifest reported a refusal before this existed.
+    stat, not Path.exists(): 3.13 raises EACCES out of exists() and 3.14 returns False from it
+    (gh-101357), so exists() means "absent" on one and "unknown" on the other. Every caller here
+    is deciding whether a marker still blocks the pass, and a marker that cannot be read is
+    still a marker. Never raises: remove_manifest reported a refusal before this existed.
     """
     try:
-        return path.exists()
-    except OSError:
-        return True
+        path.stat()
+    except OSError as exc:
+        return exc.errno not in _ABSENT_ERRNOS
+    except ValueError:
+        # A path this interpreter cannot encode holds no manifest.
+        return False
+    return True
 
 
 def _remove_manifest_locked(root: Optional[Path], path: Path, parked: Path) -> bool:
