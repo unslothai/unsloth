@@ -4,59 +4,43 @@
 import asyncio
 import base64
 import copy
-import io
-import json
 import threading
-from types import SimpleNamespace
+from types import SimpleNamespace as NS
 
 import pytest
 from fastapi import HTTPException
-from PIL import Image
-
 from core.inference import mcp_client, mcp_image_tool_loop as image_loop
 from core.inference.mcp_image_disclosure import (
     McpImageDisclosureError,
+    revoke_mcp_image_references,
     validate_image_input_mappings,
 )
+from routes import inference
 from state import tool_approvals
 from storage import studio_db
-from routes import inference
+from studio.backend.tests.test_chat_attachments import (
+    PNG_BYTES,
+    PNG_DATA_URL,
+    _image_attachment,
+    _message,
+    _reset_studio_db,
+    _thread,
+)
+
+MAPPINGS = (("inspect", "picture_blob", "base64"), ("classify", "frame_data", "data_url"))
 
 
 @pytest.fixture
 def image_request(tmp_path, monkeypatch):
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
-    monkeypatch.setattr(studio_db, "_schema_ready", set())
-    output = io.BytesIO()
-    Image.new("RGB", (2, 3), "red").save(output, format = "PNG")
-    encoded = base64.b64encode(output.getvalue()).decode("ascii")
-    data_url = "data:image/png;base64," + encoded
-    studio_db.upsert_chat_thread(
-        {"id": "thread", "title": "test", "createdAt": 1, "modelType": "base", "modelId": "mock"}
-    )
-    studio_db.upsert_chat_message(
-        {
-            "id": "message",
-            "threadId": "thread",
-            "role": "user",
-            "createdAt": 2,
-            "content": [{"type": "text", "text": "Find this image"}],
-            "attachments": [
-                {
-                    "id": "image",
-                    "type": "image",
-                    "mcpToolOnly": True,
-                    "content": [{"type": "image", "image": data_url}],
-                }
-            ],
-        }
-    )
+    _reset_studio_db(tmp_path, monkeypatch)
+    encoded, data_url = base64.b64encode(PNG_BYTES).decode("ascii"), PNG_DATA_URL
+    attachment = _image_attachment("image") | {"mcpToolOnly": True}
+    stored_message = _message("message", created_at = 2, attachments = [attachment], thread_id = "thread")
+    stored_message["content"] = [{"type": "text", "text": "Find this image"}]
+    studio_db.upsert_chat_thread(_thread("thread", title = "test"))
+    studio_db.upsert_chat_message(stored_message)
     tools, rows = [], {}
-    for raw, field, encoding in (
-        ("inspect", "picture_blob", "base64"),
-        ("classify", "frame_data", "data_url"),
-    ):
+    for raw, field, encoding in MAPPINGS:
         schema = {
             "type": "object",
             "properties": {field: {"type": "string"}, "threshold": {"type": "number"}},
@@ -67,75 +51,68 @@ def image_request(tmp_path, monkeypatch):
             [mapping], [{"name": raw, "inputSchema": schema}], server_key = raw
         )
         name = f"mcp__{raw}__{raw}"
-        rows[name] = (
-            {
-                "id": raw,
-                "is_enabled": True,
-                "allow_image_attachments": True,
-                "url": "https://example.test/mcp",
-                "display_name": raw,
-                "config_revision": 1,
-                "image_input_schema_digest": digest,
-            },
-            mapping,
-            schema,
-            digest,
-        )
+        server = {
+            "id": raw,
+            "is_enabled": True,
+            "allow_image_attachments": True,
+            "url": "https://example.test/mcp",
+            "display_name": raw,
+            "config_revision": 1,
+            "image_input_schema_digest": digest,
+        }
+        rows[name] = server, mapping, schema, digest
         tools.append({"type": "function", "function": {"name": name, "parameters": schema}})
     monkeypatch.setattr(image_loop, "_mapping_for_name", rows.get)
     monkeypatch.setattr(
         image_loop, "_image_policy_revisions", lambda: [("classify", 1), ("inspect", 1)]
     )
-    recipient_events = []
-    monkeypatch.setattr(
-        mcp_client,
-        "prepare_mcp_image_recipient",
-        lambda *a, **k: recipient_events.append(k.get("cancel_event")) or "recipient",
-    )
-    monkeypatch.setattr(
-        mcp_client, "mcp_image_recipient_location", lambda _: "https://example.test/mcp"
-    )
-    monkeypatch.setattr(mcp_client, "mcp_image_recipient_remaining_ms", lambda _: 300_000)
-    monkeypatch.setattr(mcp_client, "close_mcp_image_recipient", lambda _: None)
-    monkeypatch.setattr(mcp_client, "parse_server_headers", lambda _: {})
-    fixture = SimpleNamespace(
-        payload = SimpleNamespace(
-            mcp_image_attachment = SimpleNamespace(message_id = "message", attachment_id = "image"),
-            mcp_image_policy = SimpleNamespace(
-                tool_only = True,
-                servers = [
-                    SimpleNamespace(server_id = "classify", config_revision = 1),
-                    SimpleNamespace(server_id = "inspect", config_revision = 1),
-                ],
-            ),
-            messages = [{"role": "user", "content": "Find this image"}],
-            stream = True,
-            mcp_enabled = True,
-            thread_id = "thread",
-            session_id = "session",
-            cancel_id = "generation",
+    events = []
+    patches = {
+        "prepare_mcp_image_recipient": lambda *a, **k: events.append(k.get("cancel_event"))
+        or "recipient",
+        "mcp_image_recipient_location": lambda _: "https://example.test/mcp",
+        "mcp_image_recipient_remaining_ms": lambda _: 300_000,
+        "close_mcp_image_recipient": lambda _: None,
+        "parse_server_headers": lambda _: {},
+    }
+    for name, value in patches.items():
+        monkeypatch.setattr(mcp_client, name, value)
+    payload = NS(
+        mcp_image_attachment = NS(message_id = "message", attachment_id = "image"),
+        mcp_image_policy = NS(
+            tool_only = True,
+            servers = [NS(server_id = name, config_revision = 1) for name in ("classify", "inspect")],
         ),
+        messages = [{"role": "user", "content": "Find this image"}],
+        stream = True,
+        mcp_enabled = True,
+        thread_id = "thread",
+        session_id = "session",
+        cancel_id = "generation",
+    )
+    fixture = NS(
+        payload = payload,
         tools = tools,
         rows = rows,
         encoded = encoded,
         data_url = data_url,
         cancel = threading.Event(),
-        recipient_events = recipient_events,
+        events = events,
     )
     yield fixture
-    from core.inference.mcp_image_disclosure import revoke_mcp_image_references
-
     revoke_mcp_image_references(subject = "subject")
     tool_approvals.revoke_mcp_image_disclosures(subject = "subject")
 
 
-def prepare(fixture):
+def prepare(f):
     return image_loop.prepare_image_tool_request(
-        fixture.payload,
-        subject = "subject",
-        tools = fixture.tools,
-        cancel_event = fixture.cancel,
-        ui_events = True,
+        f.payload, subject = "subject", tools = f.tools, cancel_event = f.cancel, ui_events = True
+    )
+
+
+def approve(a):
+    return tool_approvals.resolve_mcp_image_disclosure(
+        a.approval_id, "allow", current_subject = "subject", session_id = "session"
     )
 
 
@@ -148,7 +125,7 @@ def test_two_mappings_share_only_after_exact_one_use_approval(image_request, too
     field = f.rows[name][1]["field"]
     arguments = {field: run.reference.reference, "threshold": 0.3}
     approval = run.prepare_call(name, arguments, "call")
-    assert f.recipient_events[-1] is f.cancel
+    assert f.events[-1] is f.cancel
     assert tools[tool_index]["function"]["parameters"]["properties"][field]["enum"] == [
         run.reference.reference
     ]
@@ -156,9 +133,7 @@ def test_two_mappings_share_only_after_exact_one_use_approval(image_request, too
     assert f.encoded not in repr(tools) + repr(approval.metadata) + repr(approval.binding)
     assert approval.metadata["expiresInMs"] == 300_000
     assert not tool_approvals.resolve_tool_decision(approval.approval_id, "allow", "session")
-    assert tool_approvals.resolve_mcp_image_disclosure(
-        approval.approval_id, "allow", current_subject = "subject", session_id = "session"
-    )
+    assert approve(approval)
     wire = approval.context.prepare_wire(arguments)
     assert wire[field] == (f.data_url if tool_index else f.encoded)
     assert arguments[field] == run.reference.reference
@@ -174,9 +149,7 @@ def test_changed_approval_binding_never_commits(image_request, change):
     run, _ = prepare(f)
     arguments = {"picture_blob": run.reference.reference}
     approval = run.prepare_call("mcp__inspect__inspect", arguments, "call")
-    assert tool_approvals.resolve_mcp_image_disclosure(
-        approval.approval_id, "allow", current_subject = "subject", session_id = "session"
-    )
+    assert approve(approval)
     if change == "server":
         f.rows["mcp__inspect__inspect"][0]["config_revision"] += 1
     elif change == "arguments":
@@ -190,91 +163,59 @@ def test_changed_approval_binding_never_commits(image_request, change):
     run.close()
 
 
-def test_sibling_branch_and_large_unrelated_image_remain_valid(image_request):
-    f = image_request
-    studio_db.upsert_chat_message(
-        {"id": "sibling", "threadId": "thread", "role": "user", "createdAt": 3, "content": []}
-    )
-    f.payload.messages[0]["content"] = "x" * (13 * 1024 * 1024)
-    run, _ = prepare(f)
-    run.close()
-
-
 @pytest.mark.parametrize(
-    "change", ["conversation", "private_payload", "legacy_private_payload", "no_channel"]
+    "case",
+    "sibling_large bad_conversation private_payload legacy_private no_channel unselected_schema "
+    "stale_message stale_legacy historical new_message new_legacy revision".split(),
 )
-def test_request_validation_rejects_invalid_private_selection(image_request, change):
+def test_request_policy_cases(image_request, case):
     f = image_request
-    if change == "conversation":
-        f.payload.thread_id = "other"
-    elif change == "private_payload":
-        f.payload.messages[0]["content"] = [{"type": "image_url", "image_url": {"url": f.data_url}}]
-    elif change == "legacy_private_payload":
-        f.payload.image_base64 = f.encoded
+    payload = f.payload
+    image = [{"type": "image_url", "image_url": {"url": f.data_url}}]
+    if case == "sibling_large":
+        studio_db.upsert_chat_message(_message("sibling", created_at = 3, thread_id = "thread"))
+        payload.messages[0]["content"] = "x" * (13 * 1024 * 1024)
+    elif case == "bad_conversation":
+        payload.thread_id = "other"
+    elif case == "private_payload":
+        payload.messages[0]["content"] = image
+    elif case == "legacy_private":
+        payload.image_base64 = f.encoded
+    elif case == "no_channel":
+        payload.stream = False
+    elif case in {"unselected_schema", "stale_message", "stale_legacy"}:
+        payload.mcp_image_attachment = payload.mcp_image_policy = None
     else:
-        f.payload.stream = False
-    with pytest.raises(McpImageDisclosureError):
-        prepare(f)
-
-
-def test_unselected_request_rewrites_only_configured_image_fields(image_request):
-    f = image_request
-    f.payload.mcp_image_attachment = None
-    f.payload.mcp_image_policy = None
-    run, tools = prepare(f)
-    assert run is None
-    assert tools[0]["function"]["parameters"]["properties"]["picture_blob"]["title"] == (
-        "Image attachment reference"
-    )
-
-
-@pytest.mark.parametrize("location", ["message", "legacy"])
-def test_stale_snapshotless_image_request_is_rejected(image_request, location):
-    f = image_request
-    f.payload.mcp_image_attachment = None
-    f.payload.mcp_image_policy = None
-    if location == "message":
-        f.payload.messages = [
-            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": f.data_url}}]}
+        payload.mcp_image_attachment = None
+    if case in {"stale_message", "new_message"}:
+        payload.messages = [{"role": "user", "content": image}]
+    elif case == "stale_legacy":
+        payload.image_base64 = f.encoded
+    elif case == "historical":
+        payload.messages = [
+            {"role": "user", "content": image},
+            {"role": "assistant", "content": "a red rectangle"},
+            {"role": "user", "content": "describe it again"},
         ]
+        payload.image_base64 = f.encoded
+    elif case == "new_legacy":
+        payload.image_base64 = base64.b64encode(b"a different image").decode()
+    elif case == "revision":
+        payload.mcp_image_policy.servers[0].config_revision = 2
+    if case.startswith("stale_"):
+        with pytest.raises(HTTPException, match = "settings must be checked") as exc:
+            asyncio.run(inference._prepare_mcp_image_for_route(payload, "user", [], None, []))
+        assert exc.value.status_code == 400
+    elif case in {"sibling_large", "historical", "unselected_schema"}:
+        run, tools = prepare(f)
+        assert run is None if case != "sibling_large" else run is not None
+        if case == "unselected_schema":
+            assert tools[0]["function"]["parameters"]["properties"]["picture_blob"]["title"] == (
+                "Image attachment reference"
+            )
+        if run:
+            run.close()
     else:
-        f.payload.image_base64 = f.encoded
-    with pytest.raises(HTTPException, match = "settings must be checked") as exc:
-        asyncio.run(inference._prepare_mcp_image_for_route(f.payload, "user", [], None, []))
-    assert exc.value.status_code == 400
-
-
-def test_policy_snapshot_allows_text_followup_with_historical_image(image_request):
-    f = image_request
-    f.payload.mcp_image_attachment = None
-    f.payload.messages = [
-        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": f.data_url}}]},
-        {"role": "assistant", "content": "a red rectangle"},
-        {"role": "user", "content": "describe it again"},
-    ]
-    f.payload.image_base64 = f.encoded
-
-    run, _ = prepare(f)
-    assert run is None
-
-
-@pytest.mark.parametrize("location", ["message", "legacy"])
-def test_policy_snapshot_rejects_new_ordinary_image_without_private_selection(
-    image_request, location
-):
-    f = image_request
-    f.payload.mcp_image_attachment = None
-    if location == "message":
-        f.payload.messages = [
-            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": f.data_url}}]}
-        ]
-    else:
-        f.payload.image_base64 = base64.b64encode(b"a different image").decode()
-    with pytest.raises(McpImageDisclosureError, match = "settings changed"):
-        prepare(f)
-
-
-def test_changed_image_policy_revision_is_rejected_before_model_dispatch(image_request):
-    image_request.payload.mcp_image_policy.servers[0].config_revision = 2
-    with pytest.raises(McpImageDisclosureError, match = "settings changed"):
-        prepare(image_request)
+        match = "settings changed" if case in {"new_message", "new_legacy", "revision"} else None
+        with pytest.raises(McpImageDisclosureError, match = match):
+            prepare(f)

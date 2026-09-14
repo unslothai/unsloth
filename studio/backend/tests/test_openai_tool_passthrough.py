@@ -9358,7 +9358,8 @@ class TestApiMonitorSafetensorsUsage:
                 *_args,
                 **_kwargs,
             ):
-                # Cancel image preparation or generation after the monitor row opens.
+                if _kwargs.get("cancel_event", 0) is None:
+                    return func(*_args, **_kwargs)
                 if getattr(func, "__name__", "") == "resolve_local_gguf":
                     return None
                 # Resolving what is already serving is pre-row work too, offloaded for the
@@ -9412,9 +9413,8 @@ class TestApiMonitorSafetensorsUsage:
             assert entry["status"] == "cancelled"
             assert monitor.active_count() == 0
             assert reset_called is True
-            assert cancelled_hops == [
-                "prepare_image_tool_request" if mcp_enabled else "_drain_to_text"
-            ]
+            expected = "prepare_image_tool_request" if mcp_enabled else "_drain_to_text"
+            assert cancelled_hops == [expected]
 
         asyncio.run(_run())
 

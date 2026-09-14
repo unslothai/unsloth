@@ -13,10 +13,14 @@ no model, no server -- so the race windows are fast and deterministic.
 
 import threading
 import time
+import json
 
 import pytest
 
 from state import tool_approvals
+from core.inference.mcp_image_disclosure import McpImageDisclosureError, stored_image_input_mappings
+from core.inference.mcp_image_tool_loop import _mapping_for_name
+from storage import mcp_servers_db
 from state.tool_approvals import (
     McpImageDisclosureBinding,
     TOOL_REJECTED_MESSAGE,
@@ -47,29 +51,16 @@ def _clear_pending():
 
 
 def _image_binding(**changes):
-    values = {
-        "subject": "account-a",
-        "session_id": "session-a",
-        "thread_id": "thread-a",
-        "generation_id": "generation-a",
-        "call_id": "call-a",
-        "attachment_ref": "mcp-image-ref-abcdefghijklmnopqrstuvwxyz012345",
-        "message_id": "message-a",
-        "attachment_id": "attachment-a",
-        "attachment_sha256": "1" * 64,
-        "mime_type": "image/png",
-        "size_bytes": 123,
-        "server_id": "server-a",
-        "config_revision": 4,
-        "tool_name": "inspect",
-        "field": "picture",
-        "encoding": "base64",
-        "schema_digest": "2" * 64,
-        "public_arguments_digest": "3" * 64,
-        "recipient": "recipient-a",
-    }
-    values.update(changes)
-    return McpImageDisclosureBinding(**values)
+    values = {name: name for name in McpImageDisclosureBinding.__annotations__}
+    values.update(size_bytes = 123, config_revision = 4)
+    return McpImageDisclosureBinding(**(values | changes))
+
+
+def _allow_image_disclosure(approval_id, slot, binding):
+    assert resolve_mcp_image_disclosure(
+        approval_id, "allow", current_subject = binding.subject, session_id = binding.session_id
+    )
+    assert wait_mcp_image_disclosure(slot, approval_id) == "allow"
 
 
 class _Waiter:
@@ -299,37 +290,17 @@ def test_image_disclosure_requires_subject_and_purpose_specific_resolver():
     binding = _image_binding()
     approval_id, slot = begin_mcp_image_disclosure(binding)
     assert resolve_tool_decision(approval_id, "allow", session_id = binding.session_id) is False
-    assert (
-        resolve_mcp_image_disclosure(
-            approval_id,
-            "allow",
-            current_subject = "account-b",
-            session_id = binding.session_id,
+    for subject, session_id in (("account-b", binding.session_id), (binding.subject, "session-b")):
+        assert not resolve_mcp_image_disclosure(
+            approval_id, "allow", current_subject = subject, session_id = session_id
         )
-        is False
-    )
-    assert (
-        resolve_mcp_image_disclosure(
-            approval_id,
-            "allow",
-            current_subject = binding.subject,
-            session_id = binding.session_id,
-        )
-        is True
-    )
-    assert wait_mcp_image_disclosure(slot, approval_id) == "allow"
+    _allow_image_disclosure(approval_id, slot, binding)
 
 
 def test_image_disclosure_is_bound_and_consumed_once():
     binding = _image_binding()
     approval_id, slot = begin_mcp_image_disclosure(binding)
-    assert resolve_mcp_image_disclosure(
-        approval_id,
-        "allow",
-        current_subject = binding.subject,
-        session_id = binding.session_id,
-    )
-    assert wait_mcp_image_disclosure(slot, approval_id) == "allow"
+    _allow_image_disclosure(approval_id, slot, binding)
     assert not consume_mcp_image_disclosure(
         approval_id, _image_binding(public_arguments_digest = "4" * 64), binding.recipient
     )
@@ -343,17 +314,31 @@ def test_revocation_cancels_pending_and_allowed_image_disclosures():
     second = _image_binding(call_id = "second")
     first_id, first_slot = begin_mcp_image_disclosure(first)
     second_id, second_slot = begin_mcp_image_disclosure(second)
-    assert resolve_mcp_image_disclosure(
-        second_id,
-        "allow",
-        current_subject = second.subject,
-        session_id = second.session_id,
-    )
-    assert revoke_mcp_image_disclosures(subject = "account-a", server_id = "server-a") == 2
+    _allow_image_disclosure(second_id, second_slot, second)
+    assert revoke_mcp_image_disclosures(subject = first.subject, server_id = first.server_id) == 2
     assert wait_mcp_image_disclosure(first_slot, first_id, timeout = 0.1) == "deny"
     assert wait_mcp_image_disclosure(second_slot, second_id, timeout = 0.1) == "deny"
     assert not consume_mcp_image_disclosure(second_id, second, second.recipient)
-    (consume_mcp_image_disclosure,)
-    (resolve_mcp_image_disclosure,)
-    (revoke_mcp_image_disclosures,)
-    (wait_mcp_image_disclosure,)
+
+
+@pytest.mark.parametrize("stored", [None, "", "broken", "null", "true", "5", "{}", '"text"', {}])
+def test_optional_mapping_display_tolerates_missing_or_invalid_storage(stored):
+    assert stored_image_input_mappings({"image_input_mappings_json": stored}) == []
+    assert stored_image_input_mappings({}) == []
+
+
+def test_mapping_reader_preserves_list_members_for_caller_validation():
+    entries = [None, 5, "bad", {}, {"tool": "inspect", "field": "image", "encoding": "base64"}]
+    assert (
+        stored_image_input_mappings({"image_input_mappings_json": json.dumps(entries)}) == entries
+    )
+
+
+@pytest.mark.parametrize("stored", ["broken", "null", "{}", "[null]", "[5]", '["bad"]'])
+def test_approval_mapping_lookup_rejects_corrupt_storage(monkeypatch, stored):
+    server = dict(
+        id = "server", is_enabled = True, allow_image_attachments = True, image_input_mappings_json = stored
+    )
+    monkeypatch.setattr(mcp_servers_db, "get_server_for_tool", lambda _: server)
+    with pytest.raises(McpImageDisclosureError, match = "configuration is invalid"):
+        _mapping_for_name("mcp__server__inspect")

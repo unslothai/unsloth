@@ -1,18 +1,39 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import asyncio
 import json
 
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
+import routes.mcp_servers as routes_mcp
+from models.mcp_servers import McpImageInputMapping, McpServerCreate, McpServerUpdate
 from storage import mcp_servers_db
 
 
 def _reset_db(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
+
+
+def _mapping(
+    field = "picture",
+    encoding = "base64",
+    tool = "inspect",
+):
+    return {"tool": tool, "field": field, "encoding": encoding}
+
+
+def _image_tool(name = "inspect", *fields):
+    return {
+        "name": name,
+        "inputSchema": {
+            "type": "object",
+            "properties": {field: {"type": "string"} for field in fields},
+        },
+    }
 
 
 # ── storage: mcp_servers_db ─────────────────────────────────────────
@@ -63,28 +84,14 @@ def test_update_server_coerces_bools(tmp_path, monkeypatch):
 
 
 def test_create_route_validates_and_round_trips_image_mapping(tmp_path, monkeypatch):
-    import asyncio
-
-    import routes.mcp_servers as routes_mcp
-    from models.mcp_servers import McpImageInputMapping, McpServerCreate
-
     _reset_db(tmp_path, monkeypatch)
 
-    async def fake_tools(**kwargs):
-        return [
-            {
-                "name": "inspect_picture",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "picture_blob": {"type": "string"},
-                        "threshold": {"type": "number"},
-                    },
-                },
-            }
-        ]
+    async def tools(**_):
+        tool = _image_tool("inspect_picture", "picture_blob", "threshold")
+        tool["inputSchema"]["properties"]["threshold"] = {"type": "number"}
+        return [tool]
 
-    monkeypatch.setattr(routes_mcp, "list_tools_async", fake_tools)
+    monkeypatch.setattr(routes_mcp, "list_tools_async", tools)
     monkeypatch.setattr(routes_mcp, "_validate_private_image_endpoint", lambda *_: asyncio.sleep(0))
     created = asyncio.run(
         routes_mcp.create_mcp_server(
@@ -93,79 +100,48 @@ def test_create_route_validates_and_round_trips_image_mapping(tmp_path, monkeypa
                 url = "https://example.com/mcp",
                 allow_image_attachments = True,
                 image_input_mappings = [
-                    McpImageInputMapping(
-                        tool = "inspect_picture", field = "picture_blob", encoding = "base64"
-                    )
+                    McpImageInputMapping(**_mapping("picture_blob", tool = "inspect_picture"))
                 ],
             ),
             current_subject = "u",
         )
     )
     assert [mapping.model_dump() for mapping in created.image_input_mappings] == [
-        {"tool": "inspect_picture", "field": "picture_blob", "encoding": "base64"}
+        _mapping("picture_blob", tool = "inspect_picture")
     ]
     assert created.allow_image_attachments is True
     row = mcp_servers_db.get_server(created.id)
     assert row["image_input_schema_digest"]
     assert row["config_revision"] == 1
 
-
-@pytest.mark.parametrize(
-    ("url", "use_oauth", "detail"),
-    [
-        ("https://example.test/mcp", True, "OAuth"),
-        ("https://example.test/sse", False, "legacy SSE"),
-    ],
-)
-def test_image_mapping_rejects_unsupported_private_transport(url, use_oauth, detail):
-    import asyncio
-    from fastapi import HTTPException
-    import routes.mcp_servers as routes_mcp
-
-    with pytest.raises(HTTPException, match = detail):
-        asyncio.run(
-            routes_mcp._validated_image_mappings(
-                [{"tool": "inspect", "field": "image", "encoding": "base64"}],
-                url = url,
-                headers = None,
-                use_oauth = use_oauth,
-                model_server_key = "server",
+    monkeypatch.setattr(
+        routes_mcp, "get_cached_tools", lambda _: [_image_tool("inspect", "picture", "frame")]
+    )
+    for revision, mappings in enumerate(
+        ([_mapping()], [_mapping("frame", "data_url")], []),
+        start = 2,
+    ):
+        response = asyncio.run(
+            routes_mcp.update_mcp_server(
+                created.id,
+                McpServerUpdate(image_input_mappings = mappings),
+                current_subject = "user",
             )
         )
+        assert [mapping.model_dump() for mapping in response.image_input_mappings] == mappings
+        row = mcp_servers_db.get_server(created.id)
+        assert row["config_revision"] == revision
+        assert bool(row["image_input_schema_digest"]) is bool(mappings)
 
-
-def test_private_image_endpoint_rejects_redirect(monkeypatch):
-    import asyncio
-    import routes.mcp_servers as routes_mcp
-
-    monkeypatch.setattr(routes_mcp, "prepare_mcp_image_recipient", lambda *_: int("redirect"))
-    with pytest.raises(HTTPException, match = "non-redirecting"):
-        asyncio.run(routes_mcp._validate_private_image_endpoint("https://example.test/mcp", None))
-
-
-def test_disabling_image_permission_does_not_probe_offline_server(tmp_path, monkeypatch):
-    import asyncio
-    import routes.mcp_servers as routes_mcp
-    from models.mcp_servers import McpServerUpdate
-
-    _reset_db(tmp_path, monkeypatch)
-    mcp_servers_db.create_server(
-        id = "images",
-        display_name = "Images",
-        url = "https://offline.test/mcp",
-        allow_image_attachments = True,
-        image_input_mappings_json = '[{"tool":"inspect","field":"image","encoding":"base64"}]',
-    )
-
-    async def unexpected_probe(**kwargs):
+    async def unexpected_probe(**_):
         raise AssertionError("permission revocation must not contact the server")
 
     monkeypatch.setattr(routes_mcp, "list_tools_async", unexpected_probe)
     updated = asyncio.run(
         routes_mcp.update_mcp_server(
-            "images",
+            created.id,
             McpServerUpdate(
-                url = "https://offline.test/mcp",
+                url = "https://example.com/mcp",
                 headers = None,
                 use_oauth = False,
                 allow_image_attachments = False,
@@ -176,50 +152,30 @@ def test_disabling_image_permission_does_not_probe_offline_server(tmp_path, monk
     assert updated.allow_image_attachments is False
 
 
-def test_mapping_only_updates_add_replace_and_clear(tmp_path, monkeypatch):
-    import asyncio
-    import routes.mcp_servers as routes_mcp
-    from models.mcp_servers import McpServerUpdate
-
-    _reset_db(tmp_path, monkeypatch)
-    mcp_servers_db.create_server(id = "images", display_name = "Images", url = "https://example.test/mcp")
-    discovered = [
-        {
-            "name": "inspect",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "picture": {"type": "string"},
-                    "frame": {"type": "string"},
-                },
-            },
-        }
-    ]
-    monkeypatch.setattr(routes_mcp, "get_cached_tools", lambda server_id: discovered)
-    monkeypatch.setattr(routes_mcp, "_validate_private_image_endpoint", lambda *_: asyncio.sleep(0))
-    for revision, mappings in enumerate(
-        (
-            [{"tool": "inspect", "field": "picture", "encoding": "base64"}],
-            [{"tool": "inspect", "field": "frame", "encoding": "data_url"}],
-            [],
-        ),
-        start = 2,
-    ):
-        response = asyncio.run(
-            routes_mcp.update_mcp_server(
-                "images",
-                McpServerUpdate(image_input_mappings = mappings),
-                current_subject = "user",
+@pytest.mark.parametrize(
+    ("url", "use_oauth", "detail"),
+    [
+        ("https://example.test/mcp", True, "OAuth"),
+        ("https://example.test/sse", False, "legacy SSE"),
+    ],
+)
+def test_image_mapping_rejects_unsupported_private_transport(url, use_oauth, detail):
+    with pytest.raises(HTTPException, match = detail):
+        asyncio.run(
+            routes_mcp._validated_image_mappings(
+                [_mapping("image")],
+                url = url,
+                headers = None,
+                use_oauth = use_oauth,
+                model_server_key = "server",
             )
         )
-        assert [mapping.model_dump() for mapping in response.image_input_mappings] == mappings
-        row = mcp_servers_db.get_server("images")
-        assert row["config_revision"] == revision
-        assert (
-            row["image_input_schema_digest"]
-            if mappings
-            else row["image_input_schema_digest"] is None
-        )
+
+
+def test_private_image_endpoint_rejects_redirect(monkeypatch):
+    monkeypatch.setattr(routes_mcp, "prepare_mcp_image_recipient", lambda *_: int("redirect"))
+    with pytest.raises(HTTPException, match = "non-redirecting"):
+        asyncio.run(routes_mcp._validate_private_image_endpoint("https://example.test/mcp", None))
 
 
 def test_update_server_empty_changes_returns_false(tmp_path, monkeypatch):

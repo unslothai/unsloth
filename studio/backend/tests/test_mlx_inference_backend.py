@@ -4054,68 +4054,44 @@ def test_an_mlx_count_prices_the_tools_the_completion_would_render(
     assert backend.messages[-1]["content"] == "sure  done", "stale markup the completion removes"
 
 
-def test_an_mlx_count_rewrites_a_mapped_image_payload_to_an_opaque_reference(tmp_path, monkeypatch):
-    from core.inference import mcp_client
-    from core.inference import tools as tools_mod
-    from core.inference.mcp_image_disclosure import validate_image_input_mappings
+def test_an_mlx_count_rewrites_a_mapped_image_payload_to_an_opaque_reference(monkeypatch):
+    from core.inference import mcp_image_tool_loop
     from routes import inference as route
     from state import tool_policy
-    from storage import mcp_servers_db
 
     schema = {
         "type": "object",
         "properties": {
             "image_payload": {
                 "type": "string",
-                "description": "raw base64 image bytes",
                 "default": "data:image/png;base64,PRIVATE_MLX_COUNT_CANARY",
-            },
-            "query": {"type": "string"},
+            }
         },
-        "required": ["query"],
     }
-    cached = [{"name": "lookup", "description": "d", "inputSchema": schema}]
-    mapping = {"tool": "lookup", "field": "image_payload", "encoding": "base64"}
-    _, digest = validate_image_input_mappings([mapping], cached, server_key = "mlx-image")
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
-    monkeypatch.setattr(tools_mod, "stdio_mcp_enabled", lambda: True)
-    monkeypatch.setattr(mcp_client, "_tool_cache", {})
-    monkeypatch.setattr(mcp_client, "_probe_cooloff_until", {})
-    monkeypatch.setattr(tool_policy, "get_tool_policy", lambda: True)
-    mcp_servers_db.create_server(
-        id = "mlx-image", display_name = "MLX", url = "http://mcp.test/sse", is_enabled = True
-    )
-    mcp_client.cache_tools("mlx-image", cached)
-    mcp_servers_db.update_server(
-        "mlx-image",
-        {
-            "image_input_mappings_json": json.dumps([mapping]),
-            "image_input_schema_digest": digest,
-            "allow_image_attachments": True,
-        },
+    tool = {
+        "function": {"name": "mcp__mlx-image__lookup", "parameters": schema},
+    }
+    monkeypatch.setattr(tool_policy, "_tool_policy_default", True)
+    monkeypatch.setattr(
+        mcp_image_tool_loop,
+        "_mapping_for_name",
+        lambda _: ({}, {"field": "image_payload"}, schema, "digest"),
     )
 
     async def _no_builtin_tools(_payload, *, tools_on, mcp_allowed):
-        assert tools_on is True
-        assert mcp_allowed is False
-        return []
+        assert (tools_on, mcp_allowed) == (True, False)
+        return [tool]
 
     monkeypatch.setattr(route, "_select_request_tools", _no_builtin_tools)
     backend = _RenderRecordingBackend()
     response = _count_hi(
         monkeypatch,
         backend,
-        mcp_enabled = True,
-        enabled_tools = [],
         mcp_image_attachment = {"message_id": "message-1", "attachment_id": "image-1"},
     )
 
     assert json.loads(response.body)["input_tokens"] == 11
-    tool = next(
-        item for item in backend.tools if item["function"]["name"] == "mcp__mlx-image__lookup"
-    )
-    public = tool["function"]["parameters"]
+    public = backend.tools[0]["function"]["parameters"]
     image_field = public["properties"]["image_payload"]
     assert image_field["title"] == "Image attachment reference"
     assert image_field["enum"][0].startswith("mcp-image-ref-")

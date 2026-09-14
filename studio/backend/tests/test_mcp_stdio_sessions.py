@@ -127,19 +127,17 @@ def test_stdio_call_without_scope_is_one_shot(fake_clients):
 
 def test_cached_stdio_rechecks_configuration_after_probe(fake_clients, monkeypatch):
     call_tool_sync(STDIO_URL, None, "t", {}, scope = "private-probe-test")
-    session = next(iter(mcp_client._mcp_sessions.values()))
-    session.dirty = True
-    current = {"value": True}
-    original = FakeClient.list_tools_mcp
+    next(iter(mcp_client._mcp_sessions.values())).dirty = True
+    current, original = [True], FakeClient.list_tools_mcp
 
     async def probe_then_revoke(self):
         result = await original(self)
-        current["value"] = False
+        current[0] = False
         return result
 
     monkeypatch.setattr(FakeClient, "list_tools_mcp", probe_then_revoke)
     result = call_tool_sync(
-        STDIO_URL, None, "t", {}, scope = "private-probe-test", config_check = lambda: current["value"]
+        STDIO_URL, None, "t", {}, scope = "private-probe-test", config_check = lambda: current[0]
     )
     assert "updated or removed" in result
     assert len(fake_clients[0].calls) == 1

@@ -309,41 +309,29 @@ def test_attachment_file_serves_image_bytes(tmp_path, monkeypatch):
     assert response.media_type == "image/png"
 
 
-def test_private_mcp_attachment_resolver_requires_exact_thread_and_marker(tmp_path, monkeypatch):
-    from core.inference.mcp_image_disclosure import (
-        McpImageDisclosureError,
-        resolve_tool_only_image,
-    )
+def test_private_mcp_attachment_resolver_enforces_marker_thread_and_lifetime(tmp_path, monkeypatch):
+    from core.inference.mcp_image_disclosure import McpImageDisclosureError, resolve_tool_only_image
 
     attachment = _image_attachment()
-    attachment["mcpToolOnly"] = True
     _seed(tmp_path, monkeypatch, [attachment])
+    with pytest.raises(McpImageDisclosureError, match = "not a private MCP image"):
+        resolve_tool_only_image(thread_id = "thread-1", message_id = "msg-1", attachment_id = "att-1")
+
+    attachment["mcpToolOnly"] = True
+    studio_db.upsert_chat_message(_message("msg-1", attachments = [attachment]))
 
     resolved = resolve_tool_only_image(
         thread_id = "thread-1", message_id = "msg-1", attachment_id = "att-1"
     )
-    assert resolved.data == PNG_BYTES
-    assert resolved.mime_type == "image/png"
-    assert resolved.size_bytes == len(PNG_BYTES)
+    assert (resolved.data, resolved.mime_type, resolved.size_bytes) == (
+        PNG_BYTES,
+        "image/png",
+        len(PNG_BYTES),
+    )
     assert (resolved.width, resolved.height) == (1, 1)
 
     with pytest.raises(McpImageDisclosureError, match = "no longer available"):
         resolve_tool_only_image(thread_id = "other-thread", message_id = "msg-1", attachment_id = "att-1")
-
-
-def test_private_mcp_attachment_resolver_rejects_ordinary_and_deleted_images(tmp_path, monkeypatch):
-    from core.inference.mcp_image_disclosure import (
-        McpImageDisclosureError,
-        resolve_tool_only_image,
-    )
-
-    _seed(tmp_path, monkeypatch, [_image_attachment()])
-    with pytest.raises(McpImageDisclosureError, match = "not a private MCP image"):
-        resolve_tool_only_image(thread_id = "thread-1", message_id = "msg-1", attachment_id = "att-1")
-
-    attachment = _image_attachment()
-    attachment["mcpToolOnly"] = True
-    studio_db.upsert_chat_message(_message("msg-1", attachments = [attachment]))
     assert studio_db.delete_chat_attachment("msg-1", "att-1") is True
     with pytest.raises(McpImageDisclosureError, match = "no longer available"):
         resolve_tool_only_image(thread_id = "thread-1", message_id = "msg-1", attachment_id = "att-1")
