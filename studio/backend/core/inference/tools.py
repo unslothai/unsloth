@@ -9872,21 +9872,28 @@ def execute_tool(
             image_mappings = json.loads(server.get("image_input_mappings_json") or "[]")
         except (ValueError, TypeError):
             image_mappings = []
-        mapped_image_tool = (
-            any(
-                isinstance(mapping, dict) and mapping.get("tool") == tool_name
-                for mapping in image_mappings
+        image_mapping = (
+            next(
+                (
+                    mapping
+                    for mapping in image_mappings
+                    if isinstance(mapping, dict) and mapping.get("tool") == tool_name
+                ),
+                None,
             )
             if isinstance(image_mappings, list)
-            else False
+            else None
         )
+        mapped_image_tool = image_mapping is not None
+        mapped_field = image_mapping.get("field") if mapped_image_tool else None
         private_selector = mapped_image_tool and any(
             isinstance(value, str) and value.startswith("mcp-image-ref-")
             for value in arguments.values()
         )
         private_enabled = mapped_image_tool and bool(server.get("allow_image_attachments"))
+        mapped_argument = isinstance(mapped_field, str) and mapped_field in arguments
         if (
-            private_selector or (mapped_image_tool and private_enabled)
+            private_selector or (private_enabled and mapped_argument)
         ) and mcp_image_context is None:
             return "Error: Sharing this image requires a new explicit image approval."
 

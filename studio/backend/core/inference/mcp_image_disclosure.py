@@ -159,7 +159,7 @@ def model_schema_for_mapping(
         properties[field]["enum"] = [attachment_ref]
     public["properties"] = properties
     required = [item for item in public.get("required", []) if isinstance(item, str)]
-    if field not in required:
+    if attachment_ref and field not in required:
         required.append(field)
     public["required"] = required
     for key in ("examples", "example", "default"):

@@ -64,6 +64,9 @@ def test_model_schema_offers_only_the_issued_opaque_reference():
     public = model_schema_for_mapping(original, "picture_blob", ref)
     assert public["properties"]["picture_blob"]["enum"] == [ref]
     assert "raw payload" not in repr(public["properties"]["picture_blob"])
+    optional = _tool("inspect", "picture_blob", required = False)["inputSchema"]
+    assert "picture_blob" not in model_schema_for_mapping(optional, "picture_blob")["required"]
+    assert "picture_blob" in model_schema_for_mapping(optional, "picture_blob", ref)["required"]
 
 
 @pytest.mark.parametrize(

@@ -197,3 +197,7 @@ def test_direct_dispatch_cannot_bypass_server_permission(monkeypatch, allowed):
     monkeypatch.setattr(tools, "_fit_result_to_room", lambda result, *args: result)
     result = tools.execute_tool("mcp__server-1__inspect_picture", {"picture": ENCODED})
     assert (result.startswith("Error:") and not calls) if allowed else bool(calls)
+    if allowed:
+        assert tools.execute_tool("mcp__server-1__inspect_picture", {"threshold": 0.5}) == (
+            "ordinary result"
+        )
