@@ -114,6 +114,12 @@ from ..device_type import (
     ALLOW_PREQUANTIZED_MODELS,
 )
 
+# torch.nn.RMSNorm only exists on torch >= 2.4.
+_NORM_MODULE_TYPES = tuple(
+    t for t in (getattr(torch.nn, "LayerNorm", None), getattr(torch.nn, "RMSNorm", None))
+    if t is not None
+)
+
 __all__ = [
     "FastBaseModel",
 ]
@@ -1733,6 +1739,11 @@ class FastBaseModel:
                     name.endswith(("norm", "norm1", "norm2", "norm3", "norm4"))
                     or "layernorm" in name
                     or "layer_norm" in name
+                    # Name alone misses norms named after their position, and
+                    # upcasting only some of a block's norms leaves the rest in
+                    # 16 bit on the same chain. Gemma 4's embed_vision has
+                    # pos_norm (matched) beside patch_ln1 / patch_ln2 (not).
+                    or isinstance(module, _NORM_MODULE_TYPES)
                 ) and hasattr(module, "weight"):
                     module._pre_set_compute_dtype = torch.float32
         if custom_datatype is not None:
