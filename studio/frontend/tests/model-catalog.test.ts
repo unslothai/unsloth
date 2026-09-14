@@ -207,3 +207,35 @@ test("Gemini aliases outside the prefix tables fall back to the snapshot", () =>
   assert.equal(caps.reasoningStyle, "enable_thinking");
   assert.equal(getExternalReasoningCapabilities("gemini", "gemini-3.1-pro-preview").reasoningStyle, "reasoning_effort");
 });
+
+test("a served models.dev catalog outranks the bundled snapshot and feeds the name index", async () => {
+  const { modelsDevCatalogFetchedAt, setModelsDevCatalog } = await import(
+    "../src/features/chat/model-catalog.ts"
+  );
+  assert.equal(modelsDevCatalogFetchedAt(), null);
+  assert.equal(getExternalReasoningCapabilities("deepseek", "deepseek-v9-ultra").supportsReasoning, false);
+  setModelsDevCatalog({
+    fetched_at: 1_700_000_000,
+    providers: {
+      deepseek: { "deepseek-v9-ultra": { reasoning: true, toggle: true, efforts: ["low", "max"], input: ["text"] } },
+      openrouter: { "deepseek/deepseek-v4-pro": { reasoning: true, toggle: true, efforts: ["low"], input: ["text", "image"] } },
+      huggingface: { "acme/newmodel-70b": { reasoning: true, efforts: ["low", "high"], input: ["text"] } },
+    },
+  });
+  try {
+    assert.equal(modelsDevCatalogFetchedAt(), 1_700_000_000);
+    const fresh = getExternalReasoningCapabilities("deepseek", "deepseek-v9-ultra");
+    assert.deepEqual([...fresh.reasoningEffortLevels], ["none", "low", "max"]);
+    assert.deepEqual(
+      [...getExternalReasoningCapabilities("openrouter", "deepseek/deepseek-v4-pro").reasoningEffortLevels],
+      ["none", "low"],
+    );
+    assert.equal(providerModelSupportsVision("openrouter", "deepseek/deepseek-v4-pro"), true);
+    const local = getExternalReasoningCapabilities("llama_cpp", "newmodel-8b-Q4_K_M.gguf");
+    assert.deepEqual([...local.reasoningEffortLevels], ["low", "high"]);
+    assert.equal(getExternalReasoningCapabilities("ollama", "gpt-oss:120b").supportsReasoning, true);
+  } finally {
+    setModelsDevCatalog({ fetched_at: 0, providers: {} });
+  }
+  assert.equal(getExternalReasoningCapabilities("deepseek", "deepseek-v9-ultra").supportsReasoning, false);
+});

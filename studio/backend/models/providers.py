@@ -171,6 +171,11 @@ class ProviderModelCapabilityInfo(BaseModel):
     supported_parameters: Optional[list[str]] = None
 
 
+class ModelCatalogResponse(BaseModel):
+    fetched_at: float
+    providers: dict[str, dict[str, dict]]
+
+
 class ProviderModelsRequest(BaseModel):
     """Request to list models from an external provider."""
 

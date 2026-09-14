@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { ProviderModelCapabilityInfo } from "./api/providers-api";
+import type { ModelCatalogResponse, ProviderModelCapabilityInfo } from "./api/providers-api";
 import {
   MODEL_CATALOG_SNAPSHOT,
   type ModelCatalogSnapshotEntry,
@@ -45,6 +45,10 @@ interface LiveCatalogRecord {
 const LIVE_CATALOG_KEY = "unsloth_chat_provider_model_catalog";
 const LIVE_CATALOG = new Map<string, LiveCatalogRecord>();
 let liveCatalogHydrated = false;
+
+const MODELS_DEV_KEY = "unsloth_chat_models_dev_catalog";
+let modelsDev: ModelCatalogResponse | null = null;
+let modelsDevHydrated = false;
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
@@ -101,6 +105,51 @@ function persistLiveCatalog(): void {
   } catch {
     // Storage failures leave the in-memory copy valid for this session.
   }
+}
+
+function hydrateModelsDev(): void {
+  if (modelsDevHydrated) return;
+  modelsDevHydrated = true;
+  if (!canUseStorage()) return;
+  try {
+    const parsed = JSON.parse(localStorage.getItem(MODELS_DEV_KEY) ?? "null") as ModelCatalogResponse | null;
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      typeof parsed.fetched_at === "number" &&
+      parsed.providers &&
+      typeof parsed.providers === "object"
+    ) {
+      modelsDev = parsed;
+    }
+  } catch {
+    // Invalid browser state; the next refresh rewrites it.
+  }
+}
+
+export function setModelsDevCatalog(catalog: ModelCatalogResponse): void {
+  hydrateModelsDev();
+  modelsDev = catalog;
+  nameIndex = null;
+  familyIndex = null;
+  if (!canUseStorage()) return;
+  try {
+    localStorage.setItem(MODELS_DEV_KEY, JSON.stringify(catalog));
+  } catch {
+    // Storage failures leave the in-memory copy valid for this session.
+  }
+}
+
+export function modelsDevCatalogFetchedAt(): number | null {
+  hydrateModelsDev();
+  return modelsDev?.fetched_at ?? null;
+}
+
+function snapshotNamespace(
+  providerType: string,
+): Readonly<Record<string, ModelCatalogSnapshotEntry>> | undefined {
+  hydrateModelsDev();
+  return modelsDev?.providers[providerType] ?? MODEL_CATALOG_SNAPSHOT[providerType];
 }
 
 function fromLiveModel(model: ProviderModelCapabilityInfo): ModelCatalogEntry {
@@ -204,7 +253,7 @@ export function resolveModelCatalogEntry(
       if (entry) return entry;
     }
   }
-  const snapshot = MODEL_CATALOG_SNAPSHOT[normalizedProvider];
+  const snapshot = snapshotNamespace(normalizedProvider);
   if (!snapshot) return null;
   for (const candidate of candidates) {
     const entry = snapshot[candidate];
@@ -253,7 +302,7 @@ function buildNameIndexes(): void {
   nameIndex = new Map();
   familyIndex = new Map();
   for (const namespace of NAME_INDEX_NAMESPACES) {
-    const models = MODEL_CATALOG_SNAPSHOT[namespace];
+    const models = snapshotNamespace(namespace);
     if (!models) continue;
     for (const [id, entry] of Object.entries(models)) {
       const name = bareModelName(id);
