@@ -454,6 +454,7 @@ def _create_unsloth_optimizer(
     optimizer_cls,
     optimizer_kwargs,
     embedding_lr = 5e-5,
+    require_embedding_match = False,
 ):
     lr = optimizer_kwargs["lr"]
     weight_decay = optimizer_kwargs.get("weight_decay", 0.0)
@@ -475,6 +476,19 @@ def _create_unsloth_optimizer(
             param_groups["embeddings"][name] = param
         else:
             param_groups["non_embeddings"][name] = param
+
+    if require_embedding_match and not param_groups["embeddings"]:
+        # Only checked on the delayed path, where the model has been through
+        # accelerator.prepare. FSDP1 renames parameters to _fsdp_wrapped_module._flat_param,
+        # so the modules_to_save match above finds nothing and embedding_learning_rate would
+        # be dropped without a word. Off the delayed path an empty group is ordinary: plenty
+        # of models simply do not train their embeddings.
+        raise ValueError(
+            "Unsloth: embedding_learning_rate was requested but no embedding parameter "
+            "matched after the model was wrapped, so the embeddings would train at the "
+            "ordinary learning rate. FSDP flattens parameter names; use FSDP2, train "
+            "without FSDP, or drop embedding_learning_rate."
+        )
 
     optimizer_grouped_parameters = [
         {
@@ -534,6 +548,7 @@ class UnslothTrainer(SFTTrainer):
                 optimizer_cls,
                 optimizer_kwargs,
                 embedding_learning_rate,
+                require_embedding_match = model is not None,
             )
         return self.optimizer
 

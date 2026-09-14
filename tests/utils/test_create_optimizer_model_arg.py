@@ -89,3 +89,34 @@ def test_q_galore_still_builds_when_parameters_are_projectable():
         trainer, QGaloreConfig(rank = 8, weight_quant = False), None,
     )
     assert any("rank" in group for group in optimizer.param_groups)
+
+
+def test_embedding_lr_is_rejected_when_wrapping_hid_the_embeddings():
+    """FSDP renames parameters, so the modules_to_save match finds nothing and the
+    requested embedding LR would be dropped in silence."""
+    import torch
+    import torch.nn as nn
+    from unsloth.trainer import _create_unsloth_optimizer
+
+    inner = nn.Module()
+    inner.register_parameter("_flat_param", nn.Parameter(torch.ones(64)))
+    wrapped = nn.Module()
+    wrapped.add_module("_fsdp_wrapped_module", inner)
+    assert [n for n, _ in wrapped.named_parameters()] == ["_fsdp_wrapped_module._flat_param"]
+    with pytest.raises(ValueError, match = "no embedding parameter matched"):
+        _create_unsloth_optimizer(
+            wrapped, torch.optim.AdamW, {"lr": 1e-3}, 5e-5,
+            require_embedding_match = True,
+        )
+
+
+def test_embedding_lr_without_embeddings_is_still_fine_off_the_delayed_path():
+    """The pre-existing behaviour: a model that simply does not train its embeddings is
+    ordinary, and must not start raising."""
+    import torch
+    import torch.nn as nn
+    from unsloth.trainer import _create_unsloth_optimizer
+
+    plain = nn.Linear(8, 8, bias = False)
+    optimizer = _create_unsloth_optimizer(plain, torch.optim.AdamW, {"lr": 1e-3}, 5e-5)
+    assert optimizer.param_groups[1]["params"] == []
