@@ -2195,16 +2195,11 @@ class TestARepairedTorchThatCannotImport:
 
 
 class TestACpuHandoverDoesNotDisarmTheInvariant:
-    """setup.ps1 publishes UNSLOTH_EXPECTED_TORCH_TAG=cpu when its nvidia-smi probe comes
-    back empty, and the invariant used to return pass on that tag without ever reading the
-    installed wheel. On the update path that reported a venv rebuilt as 2.11.0+cpu as a
-    successful install, which is exactly how a working CUDA machine ends up on CPU: the
-    llama.cpp bundle stays cuda, but the CUDA ggml backend cannot load cudart64_*.dll /
-    cublas64_*.dll out of a +cpu venv, so llama-server enumerates no devices at all.
-
-    The handover is the probe's answer, not a stated choice, so it must not outrank the
-    manifest. It still loses to a real pin, and it is still honoured on a host whose GPU
-    has genuinely gone."""
+    """setup.ps1 publishes UNSLOTH_EXPECTED_TORCH_TAG=cpu on an empty nvidia-smi probe, and
+    the invariant used to pass on that tag without ever reading the installed wheel: a venv
+    rebuilt as 2.11.0+cpu was reported as a successful update. The handover is the probe's
+    answer, not a stated choice, so it loses to the manifest but still beats a real pin and
+    is still honoured on a host whose GPU has genuinely gone."""
 
     def test_a_cpu_handover_is_overruled_by_a_recorded_cuda_flavor(self):
         ok, mock_pip = _run_flavor_invariant(
@@ -2218,8 +2213,8 @@ class TestACpuHandoverDoesNotDisarmTheInvariant:
         assert _index_url(mock_pip).endswith("/cu128")
 
     def test_the_unrepaired_case_fails_the_install_rather_than_reporting_success(self):
-        # repaired = None: the reinstall left the venv on +cpu. Reporting success here is
-        # the state the whole invariant exists to prevent.
+        # repaired = None: the reinstall left the venv on +cpu, the state this invariant exists
+        # to catch.
         ok, _mock_pip = _run_flavor_invariant(
             expected_env = "cpu",
             recorded = "cu128",
@@ -2229,8 +2224,7 @@ class TestACpuHandoverDoesNotDisarmTheInvariant:
         assert ok is False
 
     def test_a_host_whose_gpu_really_went_away_is_left_alone(self):
-        # Both facts have to hold. Repairing here would install a CUDA wheel that cannot
-        # load on a machine with no NVIDIA GPU.
+        # Repairing here would install a CUDA wheel onto a machine with no NVIDIA GPU.
         ok, mock_pip = _run_flavor_invariant(
             expected_env = "cpu",
             recorded = "cu128",
@@ -2249,8 +2243,7 @@ class TestACpuHandoverDoesNotDisarmTheInvariant:
         assert mock_pip.call_count == 0
 
     def test_an_explicit_cpu_index_pin_still_wins(self):
-        # A stated choice, not a probe result: the user asked for the CPU index, so a
-        # cu128 record must not drag them back onto CUDA.
+        # A stated choice, not a probe result: a cu128 record must not override the CPU index.
         ok, mock_pip = _run_flavor_invariant(
             expected_env = "cpu",
             index_url = f"{stack_mod._PYTORCH_WHL_BASE}/cpu",
@@ -2262,12 +2255,10 @@ class TestACpuHandoverDoesNotDisarmTheInvariant:
         assert mock_pip.call_count == 0
 
     def test_the_enforced_tag_reaches_the_manifest(self, monkeypatch):
-        """The override lives in _expected_torch_flavor_tag, not in the invariant's local copy.
+        """One resolved tag feeds both the invariant and _recordable_torch_flavor_tag.
 
-        install_python_stack() resolves the tag once, passes it to the invariant AND records
-        it via _recordable_torch_flavor_tag. Overriding only the invariant's copy repaired the
-        venv and then wrote "cpu" to the manifest, so the next update found no CUDA record,
-        the branch did not fire, and the venv could go back to CPU: a one-shot fix.
+        Overriding only the invariant's copy repaired the venv and then wrote "cpu" to the
+        manifest, leaving the next update no CUDA record to fire on: a one-shot fix.
         """
         monkeypatch.setenv("UNSLOTH_EXPECTED_TORCH_TAG", "cpu")
         monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
@@ -2279,8 +2270,7 @@ class TestACpuHandoverDoesNotDisarmTheInvariant:
         assert stack_mod._recordable_torch_flavor_tag(resolved) == "cu128"
 
     def test_a_host_that_lost_its_gpu_records_cpu(self, monkeypatch):
-        # The other half of the pair: without the GPU the handover stands, so the manifest
-        # records cpu and nothing is repaired into a wheel the host cannot load.
+        # Without the GPU the handover stands and the manifest records cpu.
         monkeypatch.setenv("UNSLOTH_EXPECTED_TORCH_TAG", "cpu")
         monkeypatch.delenv("UNSLOTH_TORCH_INDEX_URL", raising = False)
         monkeypatch.setattr(stack_mod, "_RECORDED_TORCH_TAG", "cu128")
@@ -2289,8 +2279,8 @@ class TestACpuHandoverDoesNotDisarmTheInvariant:
         assert stack_mod._expected_torch_flavor_tag() == "cpu"
 
     def test_both_handover_readers_go_through_one_helper(self):
-        # The tag is read in three places now; an inline os.environ read that drifts out of
-        # step with the helper is how the skip came back the first time.
+        # Three call sites read this tag; an inline os.environ read drifting out of step with
+        # the helper is how the skip came back the first time.
         source = inspect.getsource(stack_mod)
         assert source.count('os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG"') == 1
         assert "def _handover_torch_flavor_tag(" in source

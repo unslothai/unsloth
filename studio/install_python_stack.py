@@ -4050,9 +4050,8 @@ def _torch_build_is_gpu() -> bool:
 def _handover_torch_flavor_tag() -> str:
     """The flavor setup.sh / setup.ps1 published for this run, lowercased, or "".
 
-    Named rather than read inline because the invariant has to tell a handover apart from
-    the other sources of the same string: the setup scripts publish "cpu" both when the
-    user asked for it and when their GPU probe simply came back empty.
+    Named rather than read inline: the invariant has to tell a handover apart from the other
+    sources of the same string.
     """
     return os.environ.get("UNSLOTH_EXPECTED_TORCH_TAG", "").strip().lower()
 
@@ -4080,16 +4079,13 @@ def _expected_torch_flavor_tag() -> str:
     """
     env = _handover_torch_flavor_tag()
     if env:
-        # ... with one exception. The setup scripts publish "cpu" both when the user asked for
-        # it and when their GPU probe simply came back empty, and skipping the invariant on the
-        # second reading is what let an update report a venv rebuilt as 2.11.0+cpu as a success.
-        # An unpinned "cpu" handover is a probe ANSWER, so it does not outrank a manifest that
-        # names a CUDA family while the GPU is still present. Both facts have to hold, or a host
-        # that genuinely lost its GPU would be repaired into a wheel it cannot load. Resolved
-        # HERE rather than inside _ensure_expected_torch_flavor so the caller records the
-        # enforced tag too: overriding only the invariant's local copy repaired the venv and
-        # then wrote "cpu" to the manifest, leaving the next update with no CUDA record to
-        # defend and making the whole thing a one-shot.
+        # One exception. The setup scripts publish "cpu" both when the user asked for it and
+        # when their GPU probe came back empty, and honouring the second reading is what let an
+        # update report a venv rebuilt as 2.11.0+cpu as a success. Unpinned, "cpu" is a probe
+        # ANSWER and does not outrank a CUDA manifest while the GPU is still there; both facts
+        # must hold, or a host that really lost its GPU gets a wheel it cannot load. Resolved
+        # here rather than in _ensure_expected_torch_flavor so the caller records the enforced
+        # tag too, instead of repairing the venv and then writing "cpu" to the manifest.
         if env == "cpu" and not _explicit_cpu_torch_index_pin():
             recorded = (_RECORDED_TORCH_TAG or "").strip().lower()
             if _is_cuda_family_leaf(recorded) and _has_usable_nvidia_gpu():
