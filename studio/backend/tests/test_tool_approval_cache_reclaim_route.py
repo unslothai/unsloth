@@ -305,6 +305,9 @@ def test_a_recost_may_wait_for_room_once_the_cells_were_erased(cache_is_empty, e
 class _GrowsAfterApprovalBackend(_ApprovalGatedBackend):
     """Runs the next round after the approval, which is where the grown cost is charged."""
 
+    def after_resume(self):
+        pass
+
     def generate_chat_completion_with_tools(self, **kwargs):
         kwargs["on_decode_slot"](BASE_URL, DECODE_SLOT)
         yield {
@@ -315,6 +318,9 @@ class _GrowsAfterApprovalBackend(_ApprovalGatedBackend):
         }
         self.answered.wait(10)
         yield {"type": "tool_end", "name": "python", "result": "ok"}
+        # The route has resumed the chat by now, so a subclass can hold the next round
+        # back until whatever the resume raced with has finished.
+        self.after_resume()
         kwargs["on_conversation_grew"](
             [
                 {"role": "user", "content": "compute 17 * 23 " + "x " * 4000},
@@ -398,3 +404,98 @@ def test_the_round_after_a_reclaim_is_told_its_cells_are_gone(monkeypatch):
     asyncio.run(_drive())
 
     assert recosts == [True], f"the round after the erasure was told {recosts}"
+
+
+class _SlowErasureBackend(_GrowsAfterApprovalBackend):
+    """The erase is still in flight when the approval is answered and cancels the watch.
+
+    It then lands in the window the cancel opens: after the resume, before the grown
+    round is priced.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.erase_entered = threading.Event()
+        self.resumed = threading.Event()
+        self.erase_returned = threading.Event()
+
+    def release_idle_chat_slot(self, base_url, slot):
+        self.erase_entered.set()
+        self.resumed.wait(10)
+        try:
+            return super().release_idle_chat_slot(base_url, slot)
+        finally:
+            self.erase_returned.set()
+
+    def after_resume(self):
+        self.resumed.set()
+        self.erase_returned.wait(10)
+
+
+def test_an_erase_that_outlives_its_watcher_is_still_recorded(monkeypatch):
+    """The watcher is cancelled the moment the approval is answered, mid-erase.
+
+    The request has already gone out, so losing its result would leave the next round
+    reserving cells llama-server no longer holds.
+    """
+    backend = _SlowErasureBackend()
+    app = _install(monkeypatch, backend)
+    recosts = []
+    monkeypatch.setattr(
+        inference_route,
+        "_openai_llama_admission_recost",
+        lambda *a, **kw: recosts.append(kw.get("cache_is_empty")),
+    )
+
+    async def _drive():
+        body = json.dumps(
+            {
+                "messages": [{"role": "user", "content": "compute 17 * 23 " + "x " * 4000}],
+                "stream": True,
+                "confirm_tool_calls": True,
+            }
+        ).encode()
+        done = asyncio.Event()
+
+        async def receive():
+            if not done.is_set():
+                return {"type": "http.request", "body": body, "more_body": False}
+            await asyncio.Event().wait()
+
+        async def send(message):
+            if message.get("type") == "http.response.body":
+                if message.get("body", b"").decode() == inference_route._SSE_DONE_CHUNK:
+                    done.set()
+
+        task = asyncio.create_task(app(_request_scope(app, body), receive, send))
+        rival = None
+        try:
+            await _until(
+                lambda: _queue().snapshot().active == 0 and _queue().snapshot().committed > 0,
+                "the approval to park while still holding its context",
+            )
+            held = _queue().snapshot().committed
+            rival = _queue().reserve(
+                capacity = 4,
+                config = llama_admission.LlamaAdmissionConfig(),
+                tokens = BUDGET - held + 1,
+                budget = BUDGET,
+            )
+            assert rival.lease_nowait() is None
+            await _until(backend.erase_entered.is_set, "the erase to be in flight")
+            rival.cancel()
+            rival = None
+
+            # Answering here cancels the watcher while the erase is still running.
+            backend.answered.set()
+            await wait_for_frame(done, task, what = "the [DONE] frame")
+        finally:
+            if rival is not None:
+                rival.cancel()
+            backend.answered.set()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions = True)
+
+    asyncio.run(_drive())
+
+    assert recosts == [True], f"the round after the cancelled watch was told {recosts}"

@@ -23615,6 +23615,16 @@ async def produce_openai_chat_completions(
 
                 _reclaim_task = None
 
+                def _erase_and_record(target) -> bool:
+                    # Recorded in the worker, not back on the loop: answering the approval
+                    # cancels this watcher, and an erase already sent must still be known
+                    # or the next round reserves cells llama-server no longer holds.
+                    if not llama_backend.release_idle_chat_slot(*target):
+                        return False
+                    with _gguf_decode_lock:
+                        _gguf_decode["erased"] = True
+                    return True
+
                 async def _reclaim_approval_cache(lease):
                     """Erase this round's cached context once a queued chat needs its room.
 
@@ -23629,13 +23639,11 @@ async def produce_openai_chat_completions(
                             erased = _gguf_decode["erased"]
                         if target is None:
                             return
-                        if not erased:
-                            if not await asyncio.to_thread(
-                                llama_backend.release_idle_chat_slot, *target
-                            ):
-                                return
-                            with _gguf_decode_lock:
-                                _gguf_decode["erased"] = True
+                        if not erased and not await asyncio.to_thread(_erase_and_record, target):
+                            return
+                        # Left on the loop, where the cancel that answers the approval skips
+                        # it: handing tokens back beside a resume that has already priced
+                        # itself would leave this chat decoding on a commitment of nothing.
                         lease.release_parked_cache()
                     except asyncio.CancelledError:
                         raise
