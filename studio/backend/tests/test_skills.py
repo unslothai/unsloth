@@ -737,6 +737,8 @@ def test_read_skill_page_floor_reports_no_room_instead_of_slivers(isolated_skill
     monkeypatch.setattr(tools_module, "_fit_result_to_room", lambda result, name: result[:40])
     result = tools_module.execute_tool("read_skill", {"name": "long"})
     assert result.startswith("Error: Not enough context room")
+
+
 def test_read_resource_rejects_ancestor_swapped_after_selection(isolated_skills, monkeypatch):
     home, _ = isolated_skills
     root = _write_skill(home, "agents", "reader")
