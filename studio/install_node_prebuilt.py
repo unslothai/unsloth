@@ -65,6 +65,10 @@ RETRYABLE_HTTP_STATUS = {408, 429, 500, 502, 503, 504}
 HTTP_FETCH_ATTEMPTS = 4
 HTTP_FETCH_BASE_DELAY_SECONDS = 0.75
 INSTALL_LOCK_TIMEOUT_SECONDS = 300
+# The runtime-verification record is an optimisation, so it waits for the lock only briefly:
+# blocking a launch for the full install timeout to write a record that merely saves two
+# subprocess spawns next time is a worse outcome than never writing it.
+RECORD_LOCK_TIMEOUT_SECONDS = 5
 INSTALL_STAGING_ROOT_NAME = ".staging"
 METADATA_FILENAME = "UNSLOTH_NODE_PREBUILT_INFO.json"
 METADATA_SCHEMA_VERSION = 1
@@ -527,11 +531,12 @@ def _pid_is_alive(pid: int) -> bool:
 
 
 @contextmanager
-def install_lock(lock_path: Path) -> Iterator[None]:
+def install_lock(lock_path: Path, *, timeout: float | None = None) -> Iterator[None]:
+    seconds = INSTALL_LOCK_TIMEOUT_SECONDS if timeout is None else timeout
     lock_path.parent.mkdir(parents = True, exist_ok = True)
     if FileLock is None:
         fd: int | None = None
-        deadline = time.monotonic() + INSTALL_LOCK_TIMEOUT_SECONDS
+        deadline = time.monotonic() + seconds
         while True:
             try:
                 fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
@@ -563,7 +568,7 @@ def install_lock(lock_path: Path) -> Iterator[None]:
                     continue
                 if time.monotonic() >= deadline:
                     raise BusyInstallConflict(
-                        f"timed out after {INSTALL_LOCK_TIMEOUT_SECONDS}s waiting for install lock: {lock_path}"
+                        f"timed out after {seconds}s waiting for install lock: {lock_path}"
                     )
                 time.sleep(0.5)
         try:
@@ -575,11 +580,11 @@ def install_lock(lock_path: Path) -> Iterator[None]:
         return
 
     try:
-        with FileLock(str(lock_path), timeout = INSTALL_LOCK_TIMEOUT_SECONDS):
+        with FileLock(str(lock_path), timeout = seconds):
             yield
     except FileLockTimeout as exc:
         raise BusyInstallConflict(
-            f"timed out after {INSTALL_LOCK_TIMEOUT_SECONDS}s waiting for install lock: {lock_path}"
+            f"timed out after {seconds}s waiting for install lock: {lock_path}"
         ) from exc
 
 
@@ -886,7 +891,7 @@ def _record_runtime_verification_under_lock(
     that was verified, and the record merely costs the two spawns again next time.
     """
     try:
-        with install_lock(install_lock_path(install_dir)):
+        with install_lock(install_lock_path(install_dir), timeout = RECORD_LOCK_TIMEOUT_SECONDS):
             current = load_metadata(install_dir)
             if current is None:
                 return False
@@ -894,8 +899,12 @@ def _record_runtime_verification_under_lock(
                 return False
             record_runtime_verification(install_dir, host, version = version, npm_major = npm_major)
     except BusyInstallConflict:
-        # Another installer held the lock and may be replacing the tree: its locked re-check decides.
-        return False
+        # Busy is not evidence. The marker still being the one that was read IS evidence, and
+        # that is the False above; failing to look at it says only that nothing was written.
+        # Answering False here would send a legacy install on to the outer install lock, which
+        # the same holder also fails, so the first launch beside a running installer would exit
+        # busy where the pre-record path reported the install current and exited 0.
+        log("another installer holds the lock; keeping the verified install without a record")
     except Exception:  # noqa: BLE001
         pass
     return True

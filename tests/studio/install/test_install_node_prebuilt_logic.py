@@ -319,6 +319,55 @@ def test_install_prebuilt_short_circuits_when_version_matches(tmp_path: Path, mo
     assert rc == M.EXIT_SUCCESS
 
 
+def test_a_matching_install_beside_a_running_installer_still_exits_0(tmp_path: Path, monkeypatch):
+    """End to end, through install_prebuilt, with a REAL lock file held by a live PID.
+
+    The whole exit code is the thing under test: the record is an optimisation, and a
+    legacy install that cannot write it because another installer is running must still
+    report the install current. Exit 3 is fatal in setup.sh, so getting this wrong turns
+    "Studio was already installed" into a failed launch on the first update after upgrading.
+    """
+    host = _host("linux", "x64")
+    install_dir = tmp_path / "node"
+    install_dir.mkdir()
+    _real_node_tree(install_dir, host)
+    version = M.pinned_default_version(M.load_pins())
+    asset = M.node_asset_name(version, host)
+    # A marker written before the record existed: the one shape with something to backfill.
+    M.write_metadata(
+        install_dir,
+        version = version,
+        asset = asset,
+        sha256 = M.pinned_sha256(M.load_pins(), version, asset),
+    )
+    assert "node_version_checked" not in M.load_metadata(install_dir)
+
+    monkeypatch.setattr(M, "detect_host", lambda: host)
+    monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: version)
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+
+    def boom(*a, **k):
+        raise AssertionError("must not download when the install already matches")
+
+    monkeypatch.setattr(M, "download_file", boom)
+    monkeypatch.setattr(M, "download_bytes", boom)
+    # Held by this process, which is alive, so the stale-lock reclaim does not fire.
+    lock_path = M.install_lock_path(install_dir)
+    lock_path.parent.mkdir(parents = True, exist_ok = True)
+    lock_path.write_text(f"{os.getpid()}\n", encoding = "utf-8")
+    # The PID-file implementation, so the holder is a file this test can really write.
+    monkeypatch.setattr(M, "FileLock", None)
+    monkeypatch.setattr(M, "RECORD_LOCK_TIMEOUT_SECONDS", 0)
+    monkeypatch.setattr(M, "INSTALL_LOCK_TIMEOUT_SECONDS", 0)
+
+    assert M.install_prebuilt(install_dir, channel = "lts", min_major = 24, force = False) == (
+        M.EXIT_SUCCESS
+    )
+    # Nothing was written under a lock this run never held.
+    assert "node_version_checked" not in M.load_metadata(install_dir)
+
+
 def test_existing_install_usable_is_version_agnostic(tmp_path: Path, monkeypatch):
     host = _host("linux", "x64")
     assert M.existing_install_usable(tmp_path, host) is False
@@ -1184,8 +1233,8 @@ def test_the_pre_lock_record_is_written_under_the_lock_and_only_over_the_marker_
     real_record = M.record_runtime_verification
 
     @contextlib.contextmanager
-    def counting_lock(path):
-        with real_lock(path):
+    def counting_lock(path, **kwargs):
+        with real_lock(path, **kwargs):
             held["depth"] += 1
             try:
                 yield
@@ -1207,8 +1256,8 @@ def test_the_pre_lock_record_is_written_under_the_lock_and_only_over_the_marker_
     M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
 
     @contextlib.contextmanager
-    def swapping_lock(path):
-        with real_lock(path):
+    def swapping_lock(path, **kwargs):
+        with real_lock(path, **kwargs):
             M.write_metadata(tmp_path, version = "24.18.0", asset = "z", sha256 = "w")
             yield
 
@@ -1248,11 +1297,19 @@ def test_a_refreshed_marker_keeps_its_owner_and_group(tmp_path, monkeypatch):
     assert chowned == []
 
 
-def test_a_busy_install_lock_is_not_a_verified_match(tmp_path, monkeypatch):
-    """Another installer that held the lock for the whole wait may be replacing the tree
-    this run verified; the pre-lock answer must not stand in for the locked re-check."""
+def test_a_busy_install_lock_keeps_the_verified_install(tmp_path, monkeypatch):
+    """Busy says nothing about the tree. The evidence that another installer replaced it is
+    the marker no longer being the one that was read, and that check answers False on its own.
 
-    def busy(_path):
+    Answering False for a lock that was merely busy would send a legacy install -- the one
+    case that has a record to write -- on to the outer install lock, which the same holder
+    also fails. A first launch beside a running installer would then exit busy, where the
+    path before this record reported the install current and exited 0.
+    """
+    waited = {}
+
+    def busy(_path, *, timeout = None):
+        waited["timeout"] = timeout
         raise M.BusyInstallConflict("held elsewhere")
 
     monkeypatch.setattr(M, "install_lock", busy)
@@ -1260,5 +1317,31 @@ def test_a_busy_install_lock_is_not_a_verified_match(tmp_path, monkeypatch):
         M._record_runtime_verification_under_lock(
             tmp_path, object(), {"version": "v22.0.0"}, version = "v22.0.0", npm_major = 10
         )
+        is True
+    )
+    # ...and it does not hold the launch for the install timeout to write an optimisation.
+    assert waited["timeout"] == M.RECORD_LOCK_TIMEOUT_SECONDS
+    assert M.RECORD_LOCK_TIMEOUT_SECONDS < M.INSTALL_LOCK_TIMEOUT_SECONDS
+
+
+def test_a_tree_replaced_under_the_lock_is_still_not_a_match(tmp_path, monkeypatch):
+    """The half that DOES answer: the lock was taken, and the marker had changed hands."""
+    install_dir = tmp_path / "node"
+    install_dir.mkdir()
+    M.metadata_path(install_dir).write_text(
+        json.dumps({"version": "v22.9.9", "sha256": "b" * 64, "asset": "other.tar.xz"}),
+        encoding = "utf-8",
+    )
+    recorded = []
+    monkeypatch.setattr(M, "record_runtime_verification", lambda *a, **k: recorded.append(a))
+    assert (
+        M._record_runtime_verification_under_lock(
+            install_dir,
+            object(),
+            {"version": "v22.0.0", "sha256": "a" * 64, "asset": "node.tar.xz"},
+            version = "v22.0.0",
+            npm_major = 10,
+        )
         is False
     )
+    assert recorded == [], "a record was written over another installer's tree"
