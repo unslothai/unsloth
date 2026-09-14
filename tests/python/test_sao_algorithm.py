@@ -38,6 +38,16 @@ def _load_sao():
 _sao = _load_sao()
 
 SAOConfig = _sao.SAOConfig
+
+# Some installed trl/transformers combinations default TrainingArguments.bf16 to
+# True, which raises "doesn't support bf16/gpu" on a CPU-only runner before SAO's
+# own validation ever runs; the field is absent when neither trl nor transformers
+# is importable and SAOConfig falls back to its minimal dataclass stand-in.
+import dataclasses  # noqa: E402
+
+_SAO_CONFIG_KWARGS = (
+    {"bf16": False} if "bf16" in {f.name for f in dataclasses.fields(SAOConfig)} else {}
+)
 dis_calibrate = _sao.dis_calibrate
 freeze_critic_attention = _sao.freeze_critic_attention
 sao_policy_loss = _sao.sao_policy_loss
@@ -165,9 +175,9 @@ def test_freeze_critic_attention_freezes_only_attention_parameters():
 
 def test_sao_config_validates_hyperparameters():
     with pytest.raises(ValueError):
-        SAOConfig(output_dir = "sao", value_updates_per_policy_update = 0)
+        SAOConfig(output_dir = "sao", value_updates_per_policy_update = 0, **_SAO_CONFIG_KWARGS)
     with pytest.raises(ValueError):
-        SAOConfig(output_dir = "sao", eps_low = -0.1)
-    cfg = SAOConfig(output_dir = "sao")
+        SAOConfig(output_dir = "sao", eps_low = -0.1, **_SAO_CONFIG_KWARGS)
+    cfg = SAOConfig(output_dir = "sao", **_SAO_CONFIG_KWARGS)
     assert (cfg.eps_low, cfg.eps_high) == (0.3, 5.0)
     assert cfg.value_updates_per_policy_update == 2
