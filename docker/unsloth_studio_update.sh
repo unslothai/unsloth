@@ -173,6 +173,12 @@ restore() {
         # `unsloth==<version>`, and would leave the new tree's metadata in place
         "$PY" -m pip install --no-deps --force-reinstall -r "$ROLLBACK" >/dev/null \
             || log "CRITICAL: pip could not reinstall: $(tr '\n' ' ' < "$ROLLBACK")"
+        _absent="$(sed -n 's/^# absent: //p' "$ROLLBACK" | tr '\n' ' ')"
+        if [ -n "${_absent// /}" ]; then
+            # shellcheck disable=SC2086
+            "$PY" -m pip uninstall -y $_absent >/dev/null \
+                || log "CRITICAL: pip could not remove what the update added: $_absent"
+        fi
     fi
 }
 # Runs on every exit. An interrupt (Ctrl-C, or a TERM) after the swap started would
@@ -200,16 +206,21 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # How each package is installed right now (editable tree, pinned commit or release), so
-# a failed update can put it back exactly.
+# a failed update can put it back exactly. Every --packages target is recorded, and one
+# that is not installed yet is noted so a restore can take it out again.
 ROLLBACK="$(mktemp)"
-(cd / && "$PY" - "$ROLLBACK" unsloth unsloth_zoo) <<'PY'
+_names="unsloth unsloth_zoo"
+for _p in $PACKAGES; do _names="$_names ${_p%%[<>=!~\[@ ]*}"; done
+# shellcheck disable=SC2086
+(cd / && "$PY" - "$ROLLBACK" $_names) <<'PY'
 import json, sys
 from importlib.metadata import distribution, PackageNotFoundError
 out = []
-for name in sys.argv[2:]:
+for name in dict.fromkeys(sys.argv[2:]):
     try:
         dist = distribution(name)
     except PackageNotFoundError:
+        out.append("# absent: " + name)
         continue
     raw = dist.read_text("direct_url.json")
     info = json.loads(raw) if raw else {}
@@ -234,7 +245,10 @@ PY
 # the base venv, so a re-resolved torch would write over the base image's copy.
 if [ -z "$NO_DEPS" ]; then
     FREEZE="$(mktemp)"
-    "$PY" -m pip freeze --exclude-editable > "$FREEZE" 2>/dev/null || : > "$FREEZE"
+    if ! "$PY" -m pip freeze --exclude-editable > "$FREEZE" 2>/dev/null; then
+        echo "unsloth-studio-update: pip freeze failed, so a failed --with-deps update could not be rolled back; nothing was changed." >&2
+        exit 1
+    fi
     CONSTRAINTS="$(mktemp)"
     grep -E '^(torch|torchvision|torchaudio|triton|nvidia-|xformers|bitsandbytes)' "$FREEZE" > "$CONSTRAINTS" || true
 fi

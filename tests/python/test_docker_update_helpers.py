@@ -94,7 +94,7 @@ def _studio_env(
         'if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then\n'
         '  echo "STUB-PIP $*" >> "$STUB_LOG"\n'
         # a --with-deps run snapshots the dependency set first
-        '  if [ "$3" = "freeze" ]; then echo "transformers==4.0.0"; echo "torch==2.11.0+cu128"; exit 0; fi\n'
+        '  if [ "$3" = "freeze" ]; then [ -n "${STUB_FREEZE_EXIT:-}" ] && exit "$STUB_FREEZE_EXIT"; echo "transformers==4.0.0"; echo "torch==2.11.0+cu128"; exit 0; fi\n'
         # the constraints file is deleted on exit, so record what it pinned
         '  _c=0; for _a in "$@"; do [ "$_c" = 1 ] && { echo "STUB-PIP-CONSTRAINTS $(tr "\\n" " " < "$_a")" >> "$STUB_LOG"; _c=0; }; [ "$_a" = "-c" ] && _c=1; done\n'
         # so is the requirements file a restore reinstalls from
@@ -646,6 +646,35 @@ def test_studio_update_reads_the_install_record_from_the_venv_not_the_cwd(tmp_pa
     assert "STUB-PIP-REQ -e file:///opt/venv-src" in _calls(env), _calls(env)
     assert "checkout" not in _calls(env), _calls(env)
     assert "before: unsloth 2026.9.4" in res.stdout, res.stdout
+
+
+def test_studio_update_records_every_packages_target_for_the_rollback(tmp_path: Path):
+    """--packages can name more than unsloth and unsloth_zoo; a restore that put only
+    those two back would leave the extra target upgraded, or newly installed, while
+    reporting the previous install is back."""
+    env = _studio_env(tmp_path, import_ok = False)
+    site = tmp_path / "site"
+    info = site / "bar-1.0.dist-info"
+    info.mkdir()
+    (info / "METADATA").write_text("Metadata-Version: 2.1\nName: bar\nVersion: 1.0\n")
+    res = _run(STUDIO_UPDATE, ["--no-restart", "--packages", "unsloth unsloth_zoo bar>=2 foo==2"], env)
+    calls = _calls(env)
+    assert res.returncode != 0
+    req = [l for l in calls.splitlines() if l.startswith("STUB-PIP-REQ")][0]
+    assert "bar==1.0" in req, req
+    assert "# absent: foo" in req, req
+    assert "STUB-PIP -m pip uninstall -y foo" in calls, calls
+    assert "uninstall -y bar" not in calls
+
+
+def test_studio_update_with_deps_stops_when_the_dependency_snapshot_fails(tmp_path: Path):
+    """An empty snapshot would let the install run with nothing to pin back."""
+    env = _studio_env(tmp_path, import_ok = False)
+    env["STUB_FREEZE_EXIT"] = "1"
+    res = _run(STUDIO_UPDATE, ["--with-deps"], env)
+    assert res.returncode != 0
+    assert "pip freeze failed" in res.stderr and "nothing was changed" in res.stderr, res.stderr
+    assert "install" not in _calls(env), _calls(env)
 
 
 def test_studio_update_ref_uses_the_lockfile_and_does_not_fall_back_to_npm_install(tmp_path: Path):
