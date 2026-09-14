@@ -5154,8 +5154,7 @@ class TestProgressStepCountMatchesTotal:
 
 class TestAccelerateRepair:
     """accelerate 1.15 reaches torch._C._distributed_c10d, absent from AMD's Windows ROCm
-    wheels (huggingface/accelerate#4249). The constraints cap misses a fresh install, which
-    resolves accelerate with no -c and hands off with SKIP_STUDIO_BASE=1."""
+    wheels (#4249). The constraints cap misses a fresh install, which sets SKIP_STUDIO_BASE=1."""
 
     def _repair(
         self,
