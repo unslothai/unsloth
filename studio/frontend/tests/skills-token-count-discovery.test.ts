@@ -73,3 +73,8 @@ test("request building waits for skills and preserves the launcher tool catalog"
   assert.doesNotMatch(localToolCatalog, /^\s*"read_skill",$/m);
   assert.doesNotMatch(localToolCatalog, /^\s*"create_skill",$/m);
 });
+
+test("a sign-out drops the module-level skills snapshot", () => {
+  assert.ok(SKILLS_API_SOURCE.includes("window.addEventListener(AUTH_SESSION_CLEARED_EVENT"));
+  assert.ok(SKILLS_API_SOURCE.includes("publish(EMPTY_SNAPSHOT)"));
+});

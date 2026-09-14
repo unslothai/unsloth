@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth/session";
 import { useEffect, useSyncExternalStore } from "react";
 
 export type SkillRecord = {
@@ -189,6 +190,16 @@ export function useSkillsCatalog(): SkillsSnapshot {
       void listSkills().catch(() => undefined);
   }, [value.initialized, value.loading]);
   return value;
+}
+
+// The snapshot is module state, so a sign-out must drop it or the next account inherits it.
+if (typeof window !== "undefined") {
+  window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
+    requestGeneration += 1;
+    pending = null;
+    lastFetchedAt = 0;
+    publish(EMPTY_SNAPSHOT);
+  });
 }
 
 channel?.addEventListener("message", () => {

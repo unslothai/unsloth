@@ -934,3 +934,13 @@ def test_aliased_metadata_cannot_expand_past_the_manifest_limit(isolated_skills)
     record = next(r for r in skills.list_skills(home = home) if r["name"] == "aliased")
 
     assert record["valid"] is False and "16 KB" in record["error"]
+
+
+@pytest.mark.parametrize("field", ["allowed-tools", "license"])
+def test_oversized_scalar_fields_are_rejected(isolated_skills, field):
+    home, _ = isolated_skills
+    _write_skill(home, "agents", "wide", frontmatter = f"{field}: {'x' * 2000}")
+
+    record = next(r for r in skills.list_skills(home = home) if r["name"] == "wide")
+
+    assert record["valid"] is False and "1024" in record["error"]

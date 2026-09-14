@@ -319,11 +319,17 @@ def _parse_skill_markdown(raw: bytes, parent_name: Optional[str] = None) -> dict
     ):
         raise SkillError("Skill metadata exceeds the 16 KB limit.")
     allowed_tools = frontmatter.get("allowed-tools")
-    if allowed_tools is not None and not isinstance(allowed_tools, str):
-        raise SkillError("Skill allowed-tools must be a space-separated string.")
+    if allowed_tools is not None and (
+        not isinstance(allowed_tools, str) or len(allowed_tools) > 1024
+    ):
+        raise SkillError(
+            "Skill allowed-tools must be a space-separated string of at most 1024 characters."
+        )
     license_value = frontmatter.get("license")
-    if license_value is not None and not isinstance(license_value, str):
-        raise SkillError("Skill license must be a string.")
+    if license_value is not None and (
+        not isinstance(license_value, str) or len(license_value) > 1024
+    ):
+        raise SkillError("Skill license must be a string of at most 1024 characters.")
 
     parsed = {
         "name": name,
