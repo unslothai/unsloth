@@ -58,6 +58,9 @@ on:
       - 'pyproject.toml'
       - '.github/workflows/consolidated-tests-ci.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
+      # Both Core jobs `uses:` this action, so a change to it must run them.
+      - '.github/actions/core-cpu-setup/**'
+      # Both Core jobs `uses:` this action, so a change to it must run them.
   push:
     branches: [main]
     paths:
@@ -68,6 +71,9 @@ on:
       - 'pyproject.toml'
       - '.github/workflows/consolidated-tests-ci.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
+      # Both Core jobs `uses:` this action, so a change to it must run them.
+      - '.github/actions/core-cpu-setup/**'
+      # Both Core jobs `uses:` this action, so a change to it must run them.
   workflow_dispatch:
     inputs:
       unsloth_zoo_ref:
@@ -2174,7 +2180,7 @@ jobs:
             transformers_spec: "__from_pyproject__"
             trl_spec: "__from_pyproject__"
     name: "Core zoo (${{ matrix.combo.label }})"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # 25 rather than `consolidated`'s 35. This job runs the ~7.6 min zoo suite
     # on top of the preamble and nothing else, and the cap is what turns a hung
     # test into a bounded failure; see PYTEST_TIMEOUT in the step below, which
