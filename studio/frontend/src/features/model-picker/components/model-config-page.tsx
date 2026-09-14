@@ -2900,8 +2900,13 @@ export function ModelConfigPage({
         remember ? normalizedRuntimeConfig : null,
       );
     }
-    // What the draft holds is now what is stored, so the next editor may read a newer row again.
-    clearModelConfigDraftEdited(draftKey);
+    // Only once the write actually landed. A blocked or full localStorage leaves the unsaved
+    // values on screen, and clearing the mark anyway let the next editor's read replace them
+    // with the older stored row.
+    if (!saveFailed) {
+      // What the draft holds is now what is stored, so a later read may apply a newer row again.
+      clearModelConfigDraftEdited(draftKey);
+    }
     // Saving can push the local map over budget and drop other models, whose server entries would
     // keep applying with nothing able to forget them. Not a Forget: only mirrored fields go.
     for (const dropped of evicted) {
@@ -3172,7 +3177,14 @@ export function ModelConfigPage({
           <Checkbox
             id={rememberId}
             checked={remember}
-            onCheckedChange={(checked) => setRemember(checked === true)}
+            onCheckedChange={(checked) => {
+              // Marked here rather than in setRemember, which the save path also calls to settle
+              // the box afterwards. An unticked Remember is a pending Forget: left unmarked, the
+              // next editor's read passed its own guard, since it captured the already-changed
+              // value, and re-ticked it.
+              markModelConfigDraftEdited(draftKey);
+              setRemember(checked === true);
+            }}
           />
           <label
             htmlFor={rememberId}
