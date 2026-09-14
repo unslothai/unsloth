@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 """create_stopping_criteria must not assume CUDA.
 
 Before the device fix these all failed on any non-CUDA build with
@@ -5,6 +7,7 @@ Before the device fix these all failed on any non-CUDA build with
 cuda/cpu device mismatch on the first call. They need no accelerator, so they
 also cover CPU-only CI.
 """
+
 import types
 
 import pytest
@@ -19,7 +22,12 @@ class _FakeTokenizer:
     def __init__(self, eos_token_id = 2):
         self.eos_token_id = eos_token_id
 
-    def __call__(self, texts, add_special_tokens = False, return_tensors = "pt"):
+    def __call__(
+        self,
+        texts,
+        add_special_tokens = False,
+        return_tensors = "pt",
+    ):
         # "\n" + stop_word -> [newline, stop, stop]; the caller drops the newline.
         return types.SimpleNamespace(input_ids = torch.tensor([[13, 100, 101]]))
 
