@@ -1321,8 +1321,8 @@ def _local_metadata_component_is_complete(component: Path, class_name: str) -> O
     """Completeness for known config-only Diffusers/Transformers component classes.
 
     ``None`` means the component is not known to be metadata-only and must take the model-weight
-    path. That conservative default covers extension libraries such as LTX2, whose connector and
-    vocoder components carry ordinary config plus safetensors weights.
+    path for built-in library classes. Extension libraries are handled separately because their
+    serialization contracts need not match these filenames.
     """
     identity = class_name.replace("_", "").lower()
     for tokens, config_names in _LOCAL_PIPELINE_METADATA_CONFIGS:
@@ -1357,11 +1357,18 @@ def _local_metadata_component_is_complete(component: Path, class_name: str) -> O
 
 
 def _local_pipeline_component_is_complete(
-    component: Path, class_name: str, *, config_only_model_components: bool
+    component: Path, library_name: str, class_name: str, *, config_only_model_components: bool
 ) -> bool:
     try:
         if not component.is_dir():
             return False
+        if library_name not in {"diffusers", "transformers"}:
+            # Extension classes own their serialization contract. Do not import user code while
+            # scanning, or assume their configs/weights use Diffusers' standard filenames.
+            # Presence is all we can establish here; from_pretrained validates the contents.
+            return any(
+                child.is_file() and child.stat().st_size > 0 for child in component.iterdir()
+            )
         metadata_complete = _local_metadata_component_is_complete(component, class_name)
         if metadata_complete is not None:
             return metadata_complete
@@ -1375,7 +1382,12 @@ def _local_pipeline_component_is_complete(
 
 
 def _external_pipeline_component_is_complete(
-    base: Path, class_name: str, source_spec: object, *, config_only_model_components: bool
+    base: Path,
+    library_name: str,
+    class_name: str,
+    source_spec: object,
+    *,
+    config_only_model_components: bool,
 ) -> Optional[bool]:
     """Completeness at a modular component's explicit source, or ``None`` for no source.
 
@@ -1407,6 +1419,7 @@ def _external_pipeline_component_is_complete(
             component = rooted_source / Path(*relative.parts) if relative.parts else rooted_source
             return _local_pipeline_component_is_complete(
                 component,
+                library_name,
                 class_name,
                 config_only_model_components = config_only_model_components,
             )
@@ -1423,12 +1436,12 @@ def local_pipeline_components_are_complete(
     excluded_components: Sequence[str] = (),
     config_only_model_components: bool = False,
 ) -> bool:
-    """Whether every component declared by a local pipeline can be opened from that root.
+    """Check local component presence and known Diffusers/Transformers serialization layouts.
 
-    A valid manifest alone is not a loadable pipeline: interrupted copies commonly leave the
-    index but omit one component directory, model config, weight, or shard. Inventory and both
-    media preflights use this same conservative, import-free check so no row can be advertised and
-    then evict the resident model before failing in ``from_pretrained``. A companion base may
+    Interrupted copies commonly leave the index but omit a component, config, weight, or shard.
+    Inventory and both media preflights share this import-free check. Extension libraries own
+    their serialization contracts, so only their component directories and file presence are
+    checked here; their loaders remain responsible for validating contents. A companion base may
     exclude the denoiser component supplied by a separately selected GGUF/safetensors checkpoint;
     every remaining declared component is still checked, and at least one must remain. Modular
     manifests may explicitly source a component from another local root or Hub repository.
@@ -1444,7 +1457,7 @@ def local_pipeline_components_are_complete(
     if payload is None or not local_pipeline_manifest_is_valid(root, filename):
         return False
     base = Path(root).expanduser()
-    declared: list[tuple[str, str, object]] = []
+    declared: list[tuple[str, str, str, object]] = []
     for name, spec in payload.items():
         if (
             not isinstance(name, str)
@@ -1463,15 +1476,16 @@ def local_pipeline_components_are_complete(
             source_spec = (
                 spec[2] if filename == "modular_model_index.json" and len(spec) >= 3 else None
             )
-            declared.append((name, str(spec[1]), source_spec))
+            declared.append((name, str(spec[0]), str(spec[1]), source_spec))
 
     if not declared:
         return False
 
     try:
-        for name, class_name, source_spec in declared:
+        for name, library_name, class_name, source_spec in declared:
             external_complete = _external_pipeline_component_is_complete(
                 base,
+                library_name,
                 class_name,
                 source_spec,
                 config_only_model_components = config_only_model_components,
@@ -1483,6 +1497,7 @@ def local_pipeline_components_are_complete(
             component = base / name
             if not _local_pipeline_component_is_complete(
                 component,
+                library_name,
                 class_name,
                 config_only_model_components = config_only_model_components,
             ):

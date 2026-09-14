@@ -2221,6 +2221,31 @@ def test_validate_accepts_config_only_local_base_for_whole_pipeline_single_file(
         backend.validate_load_request(str(base), family_override = "sdxl")
 
 
+@pytest.mark.parametrize("optional_spec", [None, [None, None]])
+def test_validate_accepts_custom_local_components_and_disabled_optional(
+    fake_runtime, tmp_path, optional_spec
+):
+    manifest = {
+        "_class_name": "StableDiffusionXLPipeline",
+        "unet": ["local_extensions", "CustomModel"],
+        "scheduler": ["local_extensions", "CustomScheduler"],
+    }
+    if optional_spec is not None:
+        manifest["text_encoder"] = optional_spec
+        manifest["tokenizer"] = optional_spec
+    (tmp_path / "model_index.json").write_text(json.dumps(manifest))
+    (tmp_path / "unet").mkdir()
+    (tmp_path / "unet" / "custom_weights.safetensors").write_bytes(b"weights")
+    (tmp_path / "scheduler").mkdir()
+    (tmp_path / "scheduler" / "custom_schedule.json").write_text("{}")
+
+    backend = DiffusionBackend()
+    assert backend.validate_load_request(str(tmp_path), family_override = "sdxl").name == "sdxl"
+    status = backend.load_pipeline(str(tmp_path), family_override = "sdxl", speed_mode = "off")
+    assert status["loaded"] is True
+    assert _FakePipeline.last["base"] == str(tmp_path)
+
+
 def test_validate_rejects_a_malformed_local_pipeline_manifest(fake_runtime, tmp_path):
     backend = DiffusionBackend()
     (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")

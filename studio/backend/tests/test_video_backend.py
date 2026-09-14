@@ -744,6 +744,24 @@ def test_validate_rejects_local_pipeline_without_model_index(tmp_path):
     assert fam.name == "ltx-2"
 
 
+def test_validate_accepts_custom_local_components_and_null_optional(tmp_path, fake_runtime):
+    (tmp_path / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "LTX2Pipeline",
+                "transformer": ["local_extensions", "CustomModel"],
+                "audio_vae": [None, None],
+                "vocoder": [None, None],
+            }
+        )
+    )
+    (tmp_path / "transformer").mkdir()
+    (tmp_path / "transformer" / "custom_weights.safetensors").write_bytes(b"weights")
+    assert (
+        VideoBackend().validate_load_request(str(tmp_path), family_override = "ltx-2").name == "ltx-2"
+    )
+
+
 def test_validate_modular_family_requires_modular_manifest(tmp_path, fake_runtime, monkeypatch):
     backend = VideoBackend()
     root = tmp_path / "opaque-h3"

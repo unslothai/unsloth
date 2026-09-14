@@ -631,7 +631,7 @@ def test_local_pipeline_completeness_validates_metadata_component_contracts(tmp_
     assert local_pipeline_components_are_complete(pipeline, "model_index.json") is True
 
 
-def test_local_pipeline_completeness_treats_unknown_components_as_weight_bearing(tmp_path):
+def test_local_pipeline_completeness_keeps_builtin_model_weights_required(tmp_path):
     from core.inference.diffusion_families import local_pipeline_components_are_complete
 
     pipeline = tmp_path / "extension-component"
@@ -641,7 +641,7 @@ def test_local_pipeline_completeness_treats_unknown_components_as_weight_bearing
         json.dumps(
             {
                 "_class_name": "LTX2Pipeline",
-                "connectors": ["ltx2", "LTX2TextConnectors"],
+                "connectors": ["diffusers", "LTX2TextConnectors"],
             }
         )
     )
@@ -649,6 +649,63 @@ def test_local_pipeline_completeness_treats_unknown_components_as_weight_bearing
     assert local_pipeline_components_are_complete(pipeline, "model_index.json") is False
     _touch(component / "diffusion_pytorch_model.safetensors")
     assert local_pipeline_components_are_complete(pipeline, "model_index.json") is True
+
+
+@pytest.mark.parametrize("filename", ["model_index.json", "modular_model_index.json"])
+@pytest.mark.parametrize(
+    "class_name, asset",
+    [
+        ("CustomModel", "custom_weights.safetensors"),
+        ("CustomScheduler", "custom_schedule.json"),
+    ],
+)
+def test_local_pipeline_preserves_custom_component_contracts(tmp_path, filename, class_name, asset):
+    from core.inference.diffusion_families import local_pipeline_components_are_complete
+    from hub.services.models.common import _diffusers_pipeline_artifact_kind
+
+    (tmp_path / filename).write_text(
+        json.dumps(
+            {
+                "_class_name": "CustomPipeline",
+                "component": ["local_extensions", class_name],
+                "optional_component": [None, None],
+            }
+        )
+    )
+    component = tmp_path / "component"
+    assert not local_pipeline_components_are_complete(tmp_path, filename)
+    component.mkdir()
+    assert not local_pipeline_components_are_complete(tmp_path, filename)
+    (component / asset).write_bytes(b"")
+    assert not local_pipeline_components_are_complete(tmp_path, filename)
+    (component / asset).write_text("{}")
+    assert local_pipeline_components_are_complete(tmp_path, filename)
+    assert _diffusers_pipeline_artifact_kind(tmp_path) == (
+        "diffusers_pipeline" if filename == "model_index.json" else "diffusers_modular_pipeline"
+    )
+
+
+def test_local_pipeline_custom_modular_source_uses_its_own_layout(tmp_path):
+    from core.inference.diffusion_families import local_pipeline_components_are_complete
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "custom_weights.safetensors").write_bytes(b"weights")
+    (tmp_path / "modular_model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "CustomPipeline",
+                "component": [
+                    "local_extensions",
+                    "CustomModel",
+                    {
+                        "pretrained_model_name_or_path": str(source),
+                    },
+                ],
+            }
+        )
+    )
+    assert local_pipeline_components_are_complete(tmp_path, "modular_model_index.json")
 
 
 def test_local_pipeline_completeness_honors_modular_external_component_sources(tmp_path):
@@ -1282,3 +1339,21 @@ def test_adapter_base_is_found_in_the_cache_root_holding_the_adapter(tmp_path):
 
     assert _hub_cache_root_of(adapter_snapshot) == root
     assert _base_transformers_can_chat("Org/WhisperBase", None, adapter_snapshot) is False
+
+
+@pytest.mark.parametrize("optional_spec", [None, [None, None], ["transformers", "CLIPTextModel"]])
+def test_local_pipeline_optional_component_presence(tmp_path, optional_spec):
+    from core.inference.diffusion_families import local_pipeline_components_are_complete
+
+    manifest = {
+        "_class_name": "StableDiffusionXLPipeline",
+        "unet": ["diffusers", "UNet2DConditionModel"],
+    }
+    if optional_spec is not None:
+        manifest["text_encoder"] = optional_spec
+    (tmp_path / "model_index.json").write_text(json.dumps(manifest))
+    _touch(tmp_path / "unet" / "diffusion_pytorch_model.safetensors")
+    (tmp_path / "unet" / "config.json").write_text("{}")
+    assert local_pipeline_components_are_complete(tmp_path, "model_index.json") is (
+        optional_spec is None or optional_spec == [None, None]
+    )
