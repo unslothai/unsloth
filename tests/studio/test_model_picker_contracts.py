@@ -2986,7 +2986,10 @@ def test_the_sidebar_settings_editor_reseeds_when_the_live_config_lands():
     # LAYOUT: both hosts key on loadedConfigSignature, so a live change remounts under the same
     # draft key and only a layout cleanup runs before the new instance re-primes.
     assert "useLayoutEffect(() => retainModelConfigDraft(draftKey), [draftKey])" in page
-    # And the server-override read is marked per draft, not per editor.
+    # And the server-override read is marked per draft, not per editor, under the same
+    # normalized identity: the two hosts spell one model differently, so a raw join let
+    # the second editor miss the mark and write the stored row back over the first's edit.
+    assert 'keys.map(normalizeModelIdentity).join("\\u0000")' in page
     # Reset passes a plain object, and DEFAULT_PER_MODEL_CONFIG names no GPU field, so a
     # setConfig that merged could not clear a manual placement: the rows kept the pick and
     # the next Run used it. A plain value replaces, as the useState setter it stands in for does.

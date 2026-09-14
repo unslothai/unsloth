@@ -118,7 +118,10 @@ import {
   subscribeModelConfigDraft,
 } from "../model-config/model-config-draft";
 import { loadedConfigSignature } from "../model-config/config-signature";
-import { ggufQuantLabel } from "../model-config/model-identity";
+import {
+  ggufQuantLabel,
+  normalizeModelIdentity,
+} from "../model-config/model-identity";
 import {
   CACHE_RAM_LLAMA_DEFAULT,
   CACHE_RAM_MAX,
@@ -2135,8 +2138,12 @@ export function ModelConfigPage({
       ...(fileVariant ? [`${loadId}:${fileVariant}`] : []),
       configId,
     ].filter((key, index, all) => all.indexOf(key) === index);
-    // Joined because an array literal is a new value on every render.
-    const identity = keys.join("\u0000");
+    // Joined because an array literal is a new value on every render, and normalized the way
+    // the draft key is: the mark is shared per draft, and the two hosts spell one model
+    // differently, so a raw join let the second editor miss it, re-read the row and write it
+    // back over an edit the first had already made. The marker only; `keys` travels to the
+    // backend, whose own resolver owns those spellings.
+    const identity = keys.map(normalizeModelIdentity).join("\u0000");
     if (extraArgsHydrationIdentityForDraft(draftKey) === identity) {
       setExtraArgsHydrating(false);
       return;
