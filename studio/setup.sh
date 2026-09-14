@@ -1885,8 +1885,9 @@ _fast_path_escapes() {
     # First, costing no probe: the user asked by hand. UNSLOTH_STUDIO_FULL_DEPS is
     # install_python_stack.py's own hatch, and this branch never starts that module, so
     # `UNSLOTH_STUDIO_FULL_DEPS=1 unsloth studio update` printed "up to date" and did nothing.
-    # Inline so the suites can slice this function out whole; the values match _uv_offline_requested
-    # and install_python_stack.py's ("1", "true", "yes", "on").
+    # Inline so the suites can slice this function out whole. The values are
+    # install_python_stack.py's ("1", "true", "yes", "on"), deliberately NOT
+    # _uv_offline_requested's, which also takes uv's bare `t` and `y`.
     _fpe_full=${UNSLOTH_STUDIO_FULL_DEPS:-}
     _fpe_full=${_fpe_full#"${_fpe_full%%[![:space:]]*}"}
     _fpe_full=${_fpe_full%"${_fpe_full##*[![:space:]]}"}
@@ -2065,6 +2066,9 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
 
 _SKIP_PYTHON_DEPS=false
 _SKIP_VERSION_CHECK=false
+# Set here, not left to `${_OFFLINE_FAST_PATH:-false}`, so an exported value from the caller's
+# environment cannot reach it. setup.ps1 already initialises $script:OfflineFastPath the same way.
+_OFFLINE_FAST_PATH=false
 if [ "$_COLAB_NO_VENV" = true ]; then
     _SKIP_VERSION_CHECK=true
 fi
@@ -2215,10 +2219,7 @@ _sidecar_top_up_tiktoken() {
     # interrupted install can leave the dist-info with no package beside it, or METADATA
     # and the package without the native extension and RECORD; the sidecar predicate
     # accepts the sidecar either way (tiktoken is unpinned and optional), and a weaker
-    # check would skip this top-up forever while Qwen tokenizers fail. Under the offline keep this
-    # would reach the network through fast_install's pip fallback, and give a deferred tier a
-    # directory holding tiktoken alone.
-    [ "${_OFFLINE_FAST_PATH:-false}" = true ] && return 0
+    # check would skip this top-up forever while Qwen tokenizers fail.
     # A dist-info with no RECORD is one uv cannot uninstall: --upgrade warns and lands
     # the new version beside it, and importlib.metadata may keep answering the stale
     # one. It goes before the package is declared present, so a complete install that
@@ -2371,25 +2372,26 @@ _DEFER_T5_510=false
 # read UV_OFFLINE. Every stale or missing tier is left for the next online update.
 if [ "${_OFFLINE_FAST_PATH:-false}" != true ] && _uv_offline_requested; then
     for _ofp in "530 5.3.0" "550 5.5.0" "510 5.10.2"; do
-        set -- $_ofp
-        if eval "[ \"\$_NEED_T5_$1\" = true ]"; then
-            substep "transformers $2 sidecar is stale or missing but UV_OFFLINE is set -- left for the next online update"
-            eval "_NEED_T5_$1=false"
-            eval "_DEFER_T5_$1=true"
+        # Not `set --`: this runs at top-level scope, where that overwrites the script's own "$@".
+        _ofp_key=${_ofp%% *}; _ofp_ver=${_ofp#* }
+        if eval "[ \"\$_NEED_T5_$_ofp_key\" = true ]"; then
+            substep "transformers $_ofp_ver sidecar is stale or missing but UV_OFFLINE is set -- left for the next online update"
+            eval "_NEED_T5_$_ofp_key=false"
+            eval "_DEFER_T5_$_ofp_key=true"
         fi
     done
-    unset _ofp
+    unset _ofp _ofp_key _ofp_ver
 fi
 if [ "${_OFFLINE_FAST_PATH:-false}" = true ]; then
     for _ofp in "530 5.3.0" "550 5.5.0" "510 5.10.2"; do
-        set -- $_ofp
-        if eval "[ \"\$_NEED_T5_$1\" = true ]"; then
-            substep "transformers $2 sidecar is stale but UV_OFFLINE is set -- left for the next online update"
-            eval "_NEED_T5_$1=false"
-            eval "_DEFER_T5_$1=true"
+        _ofp_key=${_ofp%% *}; _ofp_ver=${_ofp#* }
+        if eval "[ \"\$_NEED_T5_$_ofp_key\" = true ]"; then
+            substep "transformers $_ofp_ver sidecar is stale but UV_OFFLINE is set -- left for the next online update"
+            eval "_NEED_T5_$_ofp_key=false"
+            eval "_DEFER_T5_$_ofp_key=true"
         fi
     done
-    unset _ofp
+    unset _ofp _ofp_key _ofp_ver
 fi
 
 if [ "$_NEED_T5_530" = true ]; then

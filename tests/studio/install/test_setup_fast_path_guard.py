@@ -327,7 +327,7 @@ def test_the_offline_fast_path_never_wipes_a_sidecar():
         < guard_sh
         < sh.index('if [ "$_NEED_T5_530" = true ]; then')
     )
-    assert 'eval "_NEED_T5_$1=false"' in sh[guard_sh : guard_sh + 900]
+    assert 'eval "_NEED_T5_$_ofp_key=false"' in sh[guard_sh : guard_sh + 900]
     keep_ps1 = ps1.index("keeping the verified install")
     assert "$script:OfflineFastPath = $true" in ps1[keep_ps1 : keep_ps1 + 400]
     guard_ps1 = ps1.index("if ($script:OfflineFastPath) {\n    foreach ($tier in")
@@ -373,7 +373,7 @@ def test_uv_offline_without_the_fast_path_still_keeps_an_existing_sidecar():
     # list (a space in the Studio home would split it).
     assert '[ -d "$' not in block_sh.split("for _ofp in", 1)[1].split("done", 1)[0]
     assert "$VENV_T5_530_DIR" not in block_sh.split("for _ofp in", 1)[1].split("\n", 1)[0]
-    assert 'eval "_NEED_T5_$1=false"' in block_sh and 'eval "_DEFER_T5_$1=true"' in block_sh
+    assert 'eval "_NEED_T5_$_ofp_key=false"' in block_sh and 'eval "_DEFER_T5_$_ofp_key=true"' in block_sh
     offline_ps1 = ps1.index("if (-not $script:OfflineFastPath -and (Test-UvOfflineRequested)) {")
     assert (
         ps1.index("Test-SidecarCurrent -TargetDir $VenvT5_510Dir")
