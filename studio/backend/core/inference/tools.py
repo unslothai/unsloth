@@ -9888,30 +9888,39 @@ def execute_tool(
 
         _invalidate_agent_skills_cache()
         return (
-            f"Created Agent Skill '{record['name']}' in ~/.agents/skills/{record['name']}/SKILL.md. "
+            f"Created Agent Skill '{record['name']}' at {record['path']}. "
             f"It is enabled and ready to use."
         )
 
     if name == "read_skill":
-        from .skills import MAX_SKILL_PAGE_CHARS, SkillError, read_skill_resource
+        from .skills import (
+            MAX_SKILL_PAGE_CHARS,
+            MIN_SKILL_PAGE_CHARS,
+            SkillError,
+            read_skill_resource,
+        )
         try:
             page_chars = MAX_SKILL_PAGE_CHARS
+            # A model that spells out every optional argument sends null, not nothing.
+            resource = arguments.get("resource")
+            offset = arguments.get("offset")
             while True:
                 result = read_skill_resource(
-                    arguments.get("name", ""),
-                    arguments.get("resource", "SKILL.md"),
-                    arguments.get("offset", 0),
+                    arguments.get("name") or "",
+                    "SKILL.md" if resource is None else resource,
+                    0 if offset is None else offset,
                     page_chars = page_chars,
                 )
                 fitted = _fit_result_to_room(result, name)
                 if fitted == result:
                     return result
-                if page_chars == 1:
+                # Below this the page is nothing but its own header and footer.
+                if page_chars < MIN_SKILL_PAGE_CHARS:
                     return (
                         "Error: Not enough context room to read this skill resource. "
                         "Reduce the conversation context and retry the same read_skill call."
                     )
-                page_chars = max(1, page_chars // 2)
+                page_chars //= 2
         except SkillError as exc:
             return f"Error: {exc}"
 
