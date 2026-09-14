@@ -7,15 +7,12 @@
 def cell_text(value):
     """The text to train on for a single Alpaca-style dataset cell.
 
-    Two things arrive here that are not text. A blank cell is a missing value to
-    every loader we use, so it arrives as None, and a column holding numbers is
-    typed by the reader, so a cell someone typed as 1 arrives as the float 1.0.
-    Handing either to a prompt template trains the word None into the row, and
-    handing a non-string to the ChatML conversion raises on .strip().
-
-    NaN is folded in with None: Arrow normalises a blank numeric cell to null
-    before we see it, but a dataset built straight from pandas need not have
-    passed through Arrow, and a NaN reaching a template writes the word nan.
+    A blank cell is a missing value to every loader we use, so it arrives as
+    None, and a column holding numbers arrives typed, so a cell typed as 1
+    arrives as 1.0. Untreated, the first trains the word None and the second
+    raises on .strip(). NaN counts as blank too: Arrow normalises a blank
+    numeric cell to null, but a dataset built straight from pandas need not have
+    passed through Arrow.
     """
     if value is None:
         return ""
