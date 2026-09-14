@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import functools
 import os
 import sys
 from pathlib import Path
@@ -32,6 +33,24 @@ _PASS_STATE_DEFAULTS = {
 }
 
 
+@functools.lru_cache(maxsize = None)
+def _realpath(path: str) -> str:
+    """realpath() for a module __file__, resolved once per distinct path per session.
+
+    The scan below has to realpath() every loaded module to find the ones that are
+    install_python_stack, and the autouse fixture runs it twice per test. sys.modules
+    holds several thousand entries once torch and unsloth are imported, so that was
+    ~4000 filesystem syscalls per test and 1940s of the directory's 2358s went into
+    fixture setup and teardown rather than into any test body.
+
+    A module's __file__ does not change once it is imported, and the same few thousand
+    paths recur on every single call, so resolving each one once is the same answer for
+    a fraction of the syscalls. Kept as an explicit helper rather than inlined because
+    the OSError contract below is part of what callers rely on.
+    """
+    return os.path.realpath(path)
+
+
 def _loaded_stacks(test_module):
     """Every live copy of install_python_stack, sys.modules or not.
 
@@ -43,7 +62,7 @@ def _loaded_stacks(test_module):
     runs together. So the module under test is looked up through the test file that
     holds it as well.
     """
-    target = os.path.realpath(_STACK_FILE)
+    target = _realpath(str(_STACK_FILE))
     found = {}
     candidates = list(sys.modules.values())
     if test_module is not None:
@@ -55,10 +74,12 @@ def _loaded_stacks(test_module):
         if not path:
             continue
         try:
-            if os.path.realpath(path) != target:
+            if _realpath(path) != target:
                 continue
         except OSError:
             continue
+        except TypeError:
+            continue  # an unhashable __file__ cannot be cached, and is not a path either
         found[id(module)] = module
     return found.values()
 
