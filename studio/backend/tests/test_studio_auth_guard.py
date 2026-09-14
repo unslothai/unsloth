@@ -811,3 +811,36 @@ def test_a_wildcard_that_expands_to_the_auth_directory(monkeypatch, tmp_path):
             ), ordinary
     finally:
         tools._studio_auth_markers_cache = None
+
+
+def test_home_is_the_workdir_under_bypass_permissions(monkeypatch, tmp_path):
+    # `_build_bypass_env` repoints HOME at the tool workdir, so `$HOME/../..` is the sandbox walked
+    # two levels up, which is the auth directory's parent. Joining the literal token under the
+    # workdir read it as `<workdir>/$HOME/...` and missed.
+    home = tmp_path / "studio-home"
+    (home / "auth").mkdir(parents = True)
+    (home / "sandbox" / _SESSION).mkdir(parents = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+    monkeypatch.setattr(tools, "_studio_auth_markers_cache", None)
+    try:
+        for command in (
+            'sqlite3 "$HOME/../../auth/auth.db" "select jwt_secret from auth_user"',
+            "cat ${HOME}/../../auth/auth.db",
+            "cat ~/../../auth/auth.db",
+            "cat $HOME/../../auth/.cli_api_key_cli_1",
+        ):
+            assert tools._bash_exec(command, None, 30, _SESSION, disable_sandbox = True) == (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), command
+        for ordinary in (
+            "cat $HOME/notes.md",
+            "ls ~/models",
+            "cat $HOME/../../models/m.gguf",
+            "echo $HOMEBREW_PREFIX",
+            "cat backup~/x.txt",
+        ):
+            assert tools._bash_exec(ordinary, None, 30, _SESSION, disable_sandbox = True) != (
+                tools._STUDIO_CREDENTIAL_BLOCKED
+            ), ordinary
+    finally:
+        tools._studio_auth_markers_cache = None

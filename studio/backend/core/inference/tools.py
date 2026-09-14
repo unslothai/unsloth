@@ -2698,6 +2698,9 @@ def _canonical_path_text(text: str) -> str:
 _GLOB_META_RE = re.compile(r"[*?\[]")
 # A bracket glob class, which matches exactly one character wherever it stands.
 _BRACKET_CLASS_RE = re.compile(r"\[[^\]/\s]{1,64}\]")
+# The spellings of the home directory a shell expands before the command sees them. The bare `~` only
+# counts at the head of a path, so `file~` and `a~b` are left alone.
+_HOME_VARIABLE_RE = re.compile(r"\$\{HOME\}|\$HOME\b|%HOME%|(?<![\w~.])~(?=[/\\])")
 
 
 def _glob_can_name_the_marker(lowered: str, marker: str) -> bool:
@@ -2888,6 +2891,17 @@ def _references_studio_credential_here(text: str, workdir: "str | None") -> bool
         substituted = _PROC_CWD_RE.sub(lambda _m: workdir.rstrip("/"), text)
         if substituted != text and _references_studio_credential(substituted):
             return True
+    # Bypass Permissions repoints HOME at the tool workdir (`_build_bypass_env`), so `$HOME/../..`
+    # is the sandbox walked two levels up, which is the auth directory's parent. Joining the literal
+    # token under the workdir instead read it as `<workdir>/$HOME/...` and missed. Substituted, not
+    # replaced: the unsubstituted text still carries the real-home spellings the markers know.
+    if workdir and ("HOME" in text or "~" in text):
+        homed = _HOME_VARIABLE_RE.sub(lambda _m: workdir.rstrip("/\\"), text)
+        # A workdir that itself spells `~` would substitute to another match, so the recursion is
+        # only entered once the spelling is gone.
+        if homed != text and not _HOME_VARIABLE_RE.search(homed):
+            if _references_studio_credential_here(homed, workdir):
+                return True
     # `r=$STUDIO_HOME; sqlite3 "$r/auth/auth.db"` names the database through one level of shell
     # indirection. Bypass Permissions keeps STUDIO_HOME in the child env, so the shell resolves it
     # and the literal scan above sees nothing. `_expand_shell_assignments` is the same best-effort
