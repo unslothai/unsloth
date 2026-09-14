@@ -78,9 +78,8 @@ RUN apt-get update \
 # build time would land on cpu/cu126). cu128 on both arches, mirroring the base.
 # Blackwell JIT (sm_103/sm_121) comes from the same cu13 NVRTC swap, repeated below.
 #
-# install.sh keeps its uv cache under $UNSLOTH_STUDIO_HOME/cache/uv (or $UV_CACHE_DIR when
-# the image sets it), not /root/.cache, so it is removed by path below. The venv's files are
-# hardlinks into it and survive; the ~5 GB the dedup replaced with symlinks had no other link.
+# install.sh's uv cache sits under $UNSLOTH_STUDIO_HOME/cache/uv (or $UV_CACHE_DIR), not
+# /root/.cache, so it is removed by path below; the venv's hardlinks survive, the rest is dead.
 #
 # UNSLOTH_PYTHON=3.12 pins the Studio venv to the base's Python minor so the
 # nvidia-*-cu12 wheels are byte-identical and the dedup below can symlink them.

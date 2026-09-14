@@ -253,8 +253,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # The action copies the repo's license (Apache-2.0), but both images carry
-          # Unsloth Studio (studio/, AGPL-3.0) too.
+          # The action copies the repo's Apache-2.0, but both images ship Studio (AGPL-3.0) too.
           labels: |
             org.opencontainers.image.licenses=Apache-2.0 AND AGPL-3.0-only
 
@@ -448,8 +447,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          # The action copies the repo's license (Apache-2.0), but both images carry
-          # Unsloth Studio (studio/, AGPL-3.0) too.
+          # The action copies the repo's Apache-2.0, but both images ship Studio (AGPL-3.0) too.
           labels: |
             org.opencontainers.image.licenses=Apache-2.0 AND AGPL-3.0-only
 
