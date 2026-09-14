@@ -5351,9 +5351,9 @@ if ($ROCmIndexUrl) {
     if ($installedTorchTag -ne "rocm") { $rocmForce = @("--force-reinstall") }
     if ($script:PinChangedForceReinstall) { $rocmForce = @("--force-reinstall") }
     if ($script:TorchImportDefinitivelyFailed) { $rocmForce = @("--force-reinstall") }
-    # +rocm names the family, not the architecture: a changed UNSLOTH_ROCM_GFX_ARCH or replaced card
-    # moves $ROCmIndexUrl while the trio still satisfies its pins, so the index a trio came from is
-    # recorded; another index, or no record, takes the reinstall.
+    # +rocm names the family, not the architecture: a changed UNSLOTH_ROCM_GFX_ARCH or replaced
+    # card moves $ROCmIndexUrl while the trio still satisfies its pins, so the index it came from
+    # is recorded. Another index, or no record, takes the reinstall.
     $script:RocmIndexRecord = Join-Path $VenvDir ".unsloth-rocm-index"
     $_rocmIndexIdentity = Get-IndexIdentity $ROCmIndexUrl
     $_recordedRocmIndex = ""
@@ -5369,13 +5369,12 @@ if ($ROCmIndexUrl) {
         $rocmForce = @("--force-reinstall")
     }
     if ($installedTorchTag -eq "rocm" -and $rocmForce.Count -eq 0 -and $VenvPyExe -and (Test-Path -LiteralPath $VenvPyExe)) {
-        # torch alone names the family: a companion re-resolved from PyPI (no local tag, or +cpu /
-        # +cuNNN) satisfies its pin without linking ROCm and the pinned install leaves it. AMD tags
-        # all three +rocm; community wheels carry a git hash. Payload too: a dist-info without its
-        # package, or a RECORD row gone or resized, is damage the pinned install would not repair.
-        # RECORD rows, not Distribution.files (3.13 filters to existing files); bytecode left out.
-        # No answer forces the trio. Only the companions the trio installs: Windows on ARM has no
-        # torchaudio, so a leftover one there is not a repairable mismatch.
+        # torch alone names the family: a companion re-resolved from PyPI (+cpu, +cuNNN or no
+        # tag) satisfies its pin without linking ROCm, and the pinned install leaves it. AMD tags
+        # all three +rocm. Payload too, since a dist-info without its package or a RECORD row gone
+        # or resized is damage the pinned install would not repair; rows, not Distribution.files
+        # (3.13 filters to existing files), bytecode left out. No answer forces the trio. Only the
+        # companions the trio installs: Windows on ARM has no torchaudio to repair.
         $_companionNames = if ($WinArm64NoAudio) { "('torchvision',)" } else { "('torchvision', 'torchaudio')" }
         $_companionProbe = Invoke-BoundedPythonProbe -PythonExe $VenvPyExe -Code "import csv, io, importlib.util as u, importlib.metadata as m, os; out = []`nfor n in $($_companionNames):`n    try:`n        d = m.distribution(n)`n    except m.PackageNotFoundError:`n        continue`n    v = d.version`n    if u.find_spec(n) is None:`n        out.append(n + '==' + v + ' (payload missing)')`n        continue`n    rec = d.read_text('RECORD')`n    damaged = not rec`n    for row in csv.reader(io.StringIO(rec or '')):`n        if damaged or len(row) < 3 or not row[0] or row[0].endswith('.pyc') or not row[2]:`n            continue`n        try:`n            damaged = os.stat(d.locate_file(row[0])).st_size != int(row[2])`n        except (OSError, ValueError):`n            damaged = True`n    if damaged:`n        out.append(n + '==' + v + ' (payload damaged)')`n        continue`n    t = (v.split('+', 1) + [''])[1].lower()`n    if not t or t.startswith('cpu') or t.startswith('cu') or t.startswith('xpu'):`n        out.append(n + '==' + v)`nprint(' '.join(out))"
         $_companionMismatch = if ($_companionProbe.Ok) { $_companionProbe.Output.Trim() } else { "probe did not answer" }
@@ -5940,8 +5939,8 @@ function Test-SidecarCurrent {
     $pins = @("transformers==$Version") + $SidecarCommonPins
     $out = ""
     # A bounded process, not a native command: a native nonzero exit terminates under
-    # $PSNativeCommandUseErrorActionPreference. argv is base64 so quoting cannot break -c.
-    # The venv interpreter first, as setup.sh does: a PATH `python` can be the Store alias stub.
+    # $PSNativeCommandUseErrorActionPreference. argv is base64 so quoting cannot break -c, and the
+    # venv interpreter comes first, as in setup.sh: a PATH `python` can be the Store alias stub.
     $pythonExe = $null
     $probe = $null
     if ($VenvPyExe -and (Test-Path -LiteralPath $VenvPyExe -PathType Leaf)) {

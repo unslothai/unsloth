@@ -34,15 +34,14 @@ MANIFEST_NAME = "unsloth_install_manifest.json"
 # evidence of the LAST completed pass; verify_install, the setup fast path and the desktop preflight
 # never do, so a venv without a live manifest still reads as half-built.
 PREVIOUS_MANIFEST_NAME = "unsloth_install_manifest.previous.json"
-# Serialises the three writers below against each other ACROSS processes. Two updates of one
-# venv are already guarded by the CLI, but setup.sh/setup.ps1 and the installer can be driven
-# directly, and the post-install MLX probe rewrites the manifest minutes after the pass ends:
-# without this, one updater's replace can land between another's remove and its mutations, and
-# recreate a completion marker over a half-built venv.
+# Serialises the three writers below ACROSS processes. The CLI guards two updates of one venv,
+# but the shells and the installer can be driven directly, and the MLX probe rewrites the
+# manifest minutes after the pass ends: unserialised, one writer's replace can land between
+# another's remove and its mutations and recreate a completion marker over a half-built venv.
 LOCK_NAME = "unsloth_install_manifest.lock"
-# How long a writer waits for a peer before going ahead unserialised. Matches what msvcrt's
-# LK_LOCK does on Windows: a peer suspended or killed while holding the lock must not wedge
-# every later update, and the work these writers do is measured in milliseconds.
+# How long a writer waits for a peer before going ahead unserialised, matching msvcrt's
+# LK_LOCK. These writers take milliseconds, and a peer killed holding the lock must not wedge
+# every later update.
 LOCK_WAIT_SECONDS = 10.0
 MANIFEST_SCHEMA = 1
 
@@ -316,14 +315,12 @@ def _publish_json(
     *,
     only_if_present: bool = False,
 ) -> bool:
-    """Write *payload* to *path* through a temp file of this writer's own, then replace.
+    """Write *payload* to *path* through this writer's own temp file, then replace.
 
-    The temp name is unique per call. A shared one (the old MANIFEST_NAME + ".tmp") is a
-    second writer's file as much as this one's: two writers on one venv could clobber each
-    other's copy between the write and the replace, and publish the wrong payload.
-
-    *only_if_present* declines to recreate a manifest another updater removed while this one
-    gathered what it merges. Callers hold the lock; this raises nothing they do not catch.
+    A shared temp name is a second writer's file as much as this one's: either could clobber
+    the other between the write and the replace and publish the wrong payload.
+    *only_if_present* declines to recreate a manifest another updater removed meanwhile.
+    Callers hold the lock; this raises nothing they do not already catch.
     """
     import tempfile  # noqa: PLC0415 - stdlib, and not needed to read a manifest
 
@@ -333,11 +330,9 @@ def _publish_json(
     try:
         with os.fdopen(descriptor, "w", encoding = "utf-8") as handle:
             handle.write(text)
-        # mkstemp creates at 0600. This file used to be written through Path.write_text, so it
-        # carried the umask default (0644 on a stock box) and anything else on the machine could
-        # read it; a mode this narrow is a change nobody asked for. Keep the mode the manifest
-        # already has when there is one, and otherwise the umask default, so the tightening a
-        # user chose is still theirs.
+        # mkstemp creates at 0600, where write_text gave the umask default (0644 on a stock
+        # box). Narrowing it is a change nobody asked for, so keep the mode the manifest
+        # already has, or the umask default: a tightening the user chose stays theirs.
         try:
             mode = path.stat().st_mode & 0o777
         except OSError:
@@ -367,20 +362,18 @@ def _publish_json(
 
 @contextlib.contextmanager
 def _manifest_lock(root: Optional[Path] = None):
-    """Hold an exclusive lock on LOCK_NAME for the block. Never raises, never blocks forever.
+    """Hold an exclusive lock on LOCK_NAME for the block. Never raises.
 
-    Best effort by design: this module has to import and run inside a half-built venv, so a
-    filesystem that cannot lock (a network mount, a read-only prefix, an interpreter without
-    fcntl or msvcrt) proceeds unserialised rather than failing an install. That is the same
-    guarantee as before this existed, and no worse anywhere else. It cannot outlast a stalled
-    filesystem call: the deadline below bounds the retries, not one syscall.
+    Best effort: this module has to run inside a half-built venv, so a filesystem that cannot
+    lock (a network mount, a read-only prefix, no fcntl or msvcrt) proceeds unserialised
+    rather than failing an install, as it did before this existed. The deadline below bounds
+    the retries, not one stalled syscall.
     """
     handle = None
     locked = False
     try:
-        # O_NOFOLLOW where it exists: a symlink sitting on the reserved name would otherwise be
-        # followed, creating or opening a file somewhere else entirely. O_CREAT|O_RDWR, never
-        # O_TRUNC -- nothing is ever written here, the lock lives on the descriptor.
+        # O_NOFOLLOW where it exists, or a symlink on the reserved name would be followed and
+        # open a file somewhere else. Never O_TRUNC: nothing is written, the lock is the fd.
         descriptor = os.open(
             (root or venv_root()) / LOCK_NAME,
             os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
@@ -393,9 +386,8 @@ def _manifest_lock(root: Optional[Path] = None):
         try:
             import fcntl  # noqa: PLC0415 - POSIX only, and absent on Windows
 
-            # Non-blocking with a deadline, never a bare LOCK_EX: that waits forever on a peer
-            # suspended or stopped while holding it, which is the one thing this must not do
-            # to an update.
+            # Non-blocking with a deadline, never a bare LOCK_EX: that waits forever on a
+            # peer suspended while holding it.
             deadline = time.monotonic() + LOCK_WAIT_SECONDS
             while True:
                 try:
@@ -403,9 +395,8 @@ def _manifest_lock(root: Optional[Path] = None):
                     locked = True
                     break
                 except OSError as exc:
-                    # Only contention is worth waiting out. A filesystem that does not implement
-                    # locking at all (some NFS and SMB mounts) answers immediately and would
-                    # otherwise cost the whole deadline on every manifest write.
+                    # Only contention is worth waiting out. A mount that does not implement
+                    # locking answers at once and would cost the deadline on every write.
                     if exc.errno not in (
                         errno.EWOULDBLOCK,
                         errno.EAGAIN,
@@ -455,16 +446,13 @@ def _manifest_lock(root: Optional[Path] = None):
 def remove_manifest(root: Optional[Path] = None) -> bool:
     """Called before the dependency pass so an aborted run cannot leave a valid one.
 
-    True when no manifest remains. A surviving marker (Windows raises on a
-    read-only or locked file) still names this version and these digests, so a
-    pass killed afterwards would verify as complete.
+    True when no manifest remains. A surviving marker still names this version and these
+    digests, so a pass killed afterwards would verify as complete.
 
-    The file is parked under PREVIOUS_MANIFEST_NAME rather than deleted: setup.ps1
-    calls this before pip, torch and triton are replaced, which is before
-    install_python_stack.py gets to read what the last pass recorded, and without the
-    parked copy every Windows update ran the whole dependency pass again. The parked
-    copy is evidence only (see read_previous_manifest) and is dropped by the next
-    write_manifest. Deleting it is still the fallback when the rename is refused.
+    Parked under PREVIOUS_MANIFEST_NAME rather than deleted: setup.ps1 calls this before pip,
+    torch and triton are replaced, so without the parked copy every Windows update re-ran the
+    whole pass. It is evidence only (see read_previous_manifest) and the next write_manifest
+    drops it. Deleting it stays the fallback when the rename is refused.
     """
     path = manifest_path(root)
     parked = previous_manifest_path(root)
@@ -476,20 +464,17 @@ def _remove_manifest_locked(root: Optional[Path], path: Path, parked: Path) -> b
     try:
         os.replace(path, parked)
     except FileNotFoundError:
-        # No live manifest: an interrupted run already took it. Nothing was parked by this
-        # call, so anything on the reserved name is from that dead run and has to go the same
-        # way -- a copy that survives would be read as this pass's evidence, and the pass
-        # refuses to run behind one it cannot clear, which on Windows lands after setup.ps1's
-        # mutations. Losing a dead run's evidence only costs a full pass; this cannot.
+        # No live manifest: an interrupted run took it. Nothing was parked by this call, so a
+        # copy on the reserved name is that dead run's and must go the same way, or the pass
+        # reads it as evidence and refuses behind one it cannot clear -- on Windows after
+        # setup.ps1's mutations. Losing a dead run's evidence only costs a full pass.
         consume_previous_manifest(root)
         return not parked.exists()
     except OSError:
-        # The rename was refused. Clear whatever holds the reserved name and retry before
-        # falling back to the unlink: setup.ps1 reads True here as permission to replace pip,
-        # torch and triton, and the dependency pass refuses to run behind a parked copy it
-        # cannot clear. Deleting the live manifest first would put that refusal AFTER the
-        # mutations, on a venv that can no longer verify, and every later update would stop
-        # at the same place.
+        # The rename was refused. Clear the reserved name and retry before falling back to
+        # the unlink: setup.ps1 reads True as permission to replace pip, torch and triton, and
+        # the pass refuses behind a parked copy it cannot clear. Dropping the live manifest
+        # first would put that refusal after the mutations, on a venv that cannot verify.
         consume_previous_manifest(root)
         if parked.exists():
             return False
@@ -611,9 +596,9 @@ def write_manifest(
         payload[key] = value
     path = manifest_path(root)
     try:
-        # The same lock the other two writers take: this is the marker that says the install
-        # finished, and it must not interleave with another process dropping it. The temp copy
-        # is written under it too, since the name belongs to whichever writer holds the lock.
+        # The lock the other two writers take: this marker means the install finished and must
+        # not interleave with another process dropping it. The temp copy is written under it
+        # too, since that name belongs to whichever writer holds the lock.
         with _manifest_lock(root):
             _publish_json(path, payload)
     # TypeError/ValueError too: `extra` is caller-composed, and raising here would abort a pass
@@ -631,15 +616,13 @@ def write_manifest(
 def update_manifest(root: Optional[Path] = None, **extra: object) -> bool:
     """Merge additive keys into an existing manifest. Never raises.
 
-    For evidence that is only available AFTER the manifest is written -- the MLX
-    import probe runs there so a kill during its 180 s timeout cannot lose a
-    finished install. False when there is nothing to update, which the callers
-    treat as "record nothing", never as a failed install.
+    For evidence only available AFTER the manifest is written: the MLX probe runs there so a
+    kill during its 180 s timeout cannot lose a finished install. False means "record
+    nothing", never a failed install.
 
-    PROTECTED_MANIFEST_KEYS are dropped, exactly as write_manifest drops them from
-    `extra`: this merges into a manifest that already means "the install finished",
-    so a caller able to rewrite the fields that claim describes could leave the file
-    valid-looking and wrong with nothing on disk contradicting it.
+    PROTECTED_MANIFEST_KEYS are dropped as write_manifest drops them: this merges into a file
+    that already claims the install finished, so rewriting the fields behind that claim could
+    leave it valid-looking and wrong.
     """
     values = {
         key: value
@@ -650,24 +633,22 @@ def update_manifest(root: Optional[Path] = None, **extra: object) -> bool:
         return False
     path = manifest_path(root)
     try:
-        # Read, merge and replace inside the lock. The caller gathers this evidence first and
-        # that takes minutes (the MLX import probe waits up to 180 s), so a manifest read before
-        # it started can be a different one by now: another updater may have removed it and
-        # finished a new pass, and merging into the copy read back then would put its fields
-        # back. Reading here means the merge is always into the manifest being replaced.
+        # Read, merge and replace inside the lock. The caller spends minutes gathering this
+        # (the MLX probe waits up to 180 s), so a manifest read before that can be a different
+        # one by now: another updater may have removed it and finished a new pass, and merging
+        # into the old copy would put its fields back.
         with _manifest_lock(root) as locked:
             if not locked:
-                # Advisory evidence only: a peer that timed out this lock is mid-pass, and
-                # publishing beside it could put its removed completion marker back over a
-                # half-built venv. Losing what this merges costs one probe; that does not.
+                # Advisory evidence only. A peer that timed out this lock is mid-pass, and
+                # publishing beside it could put its removed marker back over a half-built
+                # venv. Losing what this merges costs one probe.
                 return False
             data = read_manifest(root)
             if data is None:
                 return False
             data.update(values)
-            # only_if_present: a peer running an older build of this module removes without
-            # taking the lock, so the file is checked as late as it can be. Recreating it over
-            # a half-built venv is the one outcome this must never have.
+            # only_if_present: a peer on an older build of this module removes without taking
+            # the lock, so the file is checked as late as it can be.
             if not _publish_json(path, data, only_if_present = True):
                 return False
     except (OSError, TypeError, ValueError):
@@ -941,25 +922,20 @@ def closure_unmet_requirements(
     """Every requirement in *req_file*'s INSTALLED closure that is not met; [] if none.
 
     A missing distribution is reported by name, a version outside its specifier as
-    "name version". Reasons the audit could not run are reported as one "<...>" entry
-    and the walk stops there, so a caller reads any "<" entry as "cannot audit".
+    "name version", and a reason the audit could not run as one "<...>" entry that stops the
+    walk, so a caller reads any "<" entry as "cannot audit".
 
-    missing_requirements() reads the file's own lines, which stay true after a
-    transitive dependency is uninstalled: `mammoth>=1.8.0` is satisfied by a mammoth
-    whose `cobble` is gone, and importing it raises. The step that would have repaired
-    that is exactly the one being considered for a skip, so the audit has to follow
-    Requires-Dist down from each line.
+    missing_requirements() reads the file's own lines, which stay true after a transitive
+    dependency is uninstalled: `mammoth>=1.8.0` is satisfied by a mammoth whose `cobble` is
+    gone, and importing it raises. Repairing that is the step being considered for a skip, so
+    this follows Requires-Dist down from each line.
 
-    Only for steps installed WITH dependencies. A `--no-deps` step deliberately leaves
-    its requirements' own dependencies unresolved, so auditing one would report a
-    conflict the installer created on purpose and force that step to run forever.
+    Only for steps installed WITH dependencies: a `--no-deps` step leaves its requirements'
+    own dependencies unresolved on purpose, and auditing one would run it forever.
 
-    Fails CLOSED, unlike missing_requirements() and violated_constraints(): every
-    return path that is not a proven-complete closure names a reason, and the caller
-    reads any string as "install it". `packaging` absent, a direct URL requirement whose
-    provenance a version cannot answer, an unreadable file, a budget overrun -- none of
-    those are evidence that the closure holds, and the cost of being wrong is one
-    dependency pass rather than a broken import nobody repairs.
+    Fails CLOSED, unlike missing_requirements() and violated_constraints(). Absent
+    `packaging`, a direct URL, an unreadable file or a budget overrun are not evidence that
+    the closure holds, and being wrong costs one dependency pass rather than a broken import.
     """
     try:
         from packaging.requirements import Requirement
@@ -1043,15 +1019,13 @@ def violated_constraints(
 ) -> List[str]:
     """Constrained distributions whose INSTALLED version sits outside the pin.
 
-    A constraints file never asks for an install, so an absent distribution is
-    not a violation -- only a resident one outside its window is. That is exactly
-    what a skipped step has to rule out: `-c constraints.txt` is passed to every
-    constrained step, so a constraint that moved under an unchanged requirements
-    file is the one input digest equality cannot see.
+    A constraints file never asks for an install, so only a resident distribution outside its
+    window is a violation. `-c constraints.txt` reaches every constrained step, so a
+    constraint that moved under an unchanged requirements file is the one input digest
+    equality cannot see.
 
-    Empty on an unreadable file, matching missing_requirements: the caller's other
-    evidence still has to pass, and reporting a violation nobody can name would
-    force a full pass on every run.
+    Empty on an unreadable file, matching missing_requirements: the caller's other evidence
+    still has to pass, and a violation nobody can name would force a full pass every run.
     """
     path = req_file or (requirements_root() / "single-env" / "constraints.txt")
     try:
@@ -1324,23 +1298,19 @@ def verify_install(
 ) -> dict:
     """Report whether the managed install finished and can still boot.
 
-    `manifest` verifies the tree against a manifest the caller already holds -- the
-    dependency pass checking a parked one -- instead of the live file; everything
-    else about the verdict is unchanged.
+    `manifest` verifies against a manifest the caller already holds (the dependency pass
+    checking a parked one) instead of the live file; the verdict is otherwise unchanged.
 
-    Reason strings are surfaced verbatim by the desktop preflight as its
-    staleness reason, so keep them stable.
+    Reason strings are surfaced verbatim by the desktop preflight, so keep them stable.
 
-    Pass `installed`, `installed_conflicts`, and the matching `root` / `req_root`
-    to describe a venv other than this interpreter's; without them the version
-    and dependency checks would answer for the venv the caller happens to be
-    running in.
+    Pass `installed`, `installed_conflicts` and the matching `root` / `req_root` to describe
+    a venv other than this interpreter's, or the version and dependency checks answer for
+    whichever venv the caller runs in.
 
-    `deep` adds the payload scan, off by default because an external CLI loads
-    this module out of the venv it drives: opt-out would spend the desktop
-    preflight's 10 second budget with no way for an old caller to decline.
-    `scan_paths` names that venv's site-packages, without which RECORD rows
-    resolve against the wrong tree.
+    `deep` adds the payload scan, off by default because an external CLI loads this module
+    out of the venv it drives and opt-out would spend the preflight's 10 second budget with
+    no way for an old caller to decline. `scan_paths` names that venv's site-packages,
+    without which RECORD rows resolve against the wrong tree.
     """
     reqs = req_root or requirements_root()
     missing = missing_requirements(reqs / BOOT_REQUIREMENT_FILE, installed = installed)
@@ -1449,16 +1419,13 @@ def _current_ext_tag() -> str:
 def _sidecar_payload_present(root: Path, dist) -> bool:
     """Whether anything *dist* records as installed is on disk under *root*.
 
-    The fallback for the distributions a directory name cannot reach: one that ships
-    top-level MODULES (`six.py`, `typing_extensions.py`) has no directory to find, and
-    an import name that matches neither spelling of the project (pillow -> PIL,
-    protobuf -> google) has one under a name this cannot guess. Reported stale, they
-    make `sidecar_is_current` rebuild a healthy several-hundred-MB tree on every update.
+    The fallback for distributions a directory name cannot reach: one shipping top-level
+    MODULES (`six.py`) has no directory, and an import name matching neither spelling of the
+    project (pillow -> PIL) has one this cannot guess. Reported stale, they make
+    `sidecar_is_current` rebuild a healthy several-hundred-MB tree on every update.
 
-    Deliberately weaker than _sidecar_damaged_files, which is the check that reads
-    every RECORD row: this only has to answer "did the payload arrive at all", the
-    question the directory probe was asking. Anything unreadable answers no, so the
-    existing failure messages still cover the cases they always covered.
+    Deliberately weaker than _sidecar_damaged_files, which reads every RECORD row: this only
+    answers "did the payload arrive at all". Anything unreadable answers no.
     """
     try:
         recorded = list(dist.files or [])

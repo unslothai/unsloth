@@ -1044,12 +1044,9 @@ def test_a_package_named_only_by_the_flag_is_still_passed() -> None:
 
 
 def test_every_install_entry_point_is_counted() -> None:
-    """`pip check` and the metadata patch are gated on this counter, so a new install
-    site that does not increment it makes both skip a venv that just changed.
-
-    The two repairs are here for the same reason and were the ones that got missed:
-    neither installs anything through pip_install*, and both leave the environment
-    different from the one the cached constraint answer describes.
+    """`pip check` and the metadata patch are gated on this counter, so an install site that
+    does not increment it makes both skip a venv that just changed. The two repairs were the
+    ones missed: neither goes through pip_install*, and both change the environment.
     """
     source = STACK_PATH.read_text(encoding = "utf-8")
     tree = ast.parse(source)
@@ -2071,10 +2068,9 @@ def test_duplicate_constrained_metadata_is_a_violation_not_an_absence(monkeypatc
 def audited(monkeypatch, tmp_path):
     """One audited with-deps step, on a host where _effective_requirements really copies.
 
-    Windows and --no-torch hosts filter the file, so the gate and the record both read it
-    from disk. The record is taken as an argument to write_manifest, after every install
-    has landed, and the branch's own comment there says REQ_ROOT may have been replaced by
-    the core step -- so the file these paths hold can be gone, or no longer UTF-8.
+    Windows and --no-torch hosts filter the file, so the gate and the record read it from
+    disk. The record is an argument to write_manifest, after every install has landed and
+    after the core step may have replaced REQ_ROOT, so the file can be gone or not UTF-8.
     """
     req_root = tmp_path / "requirements"
     (req_root / "single-env").mkdir(parents = True)
@@ -2219,11 +2215,10 @@ def test_the_installed_index_is_rebuilt_against_a_fresh_metadata_listing(monkeyp
 def test_an_unclearable_parked_copy_refuses_before_the_live_manifest_is_dropped(
     monkeypatch, tmp_path
 ) -> None:
-    """A parked path that cannot be removed -- a directory on the name, a Windows handle
-    held open by an indexer -- used to be found only AFTER remove_manifest had taken the
-    live manifest away. The pass then exited 1 with the venv reading as half-built and
-    every later update refusing at the same point, on an install that was complete a
-    moment earlier. The refusal now happens while the manifest is still there.
+    """A parked path that cannot be removed (a directory on the name, a held handle) used to
+    be found only AFTER remove_manifest took the live manifest away: the pass exited 1, the
+    venv read as half-built and every later update refused at the same point, on an install
+    complete a moment earlier. The refusal now happens while the manifest is still there.
     """
     live = tmp_path / stack.install_manifest.MANIFEST_NAME
     live.write_text("{}", encoding = "utf-8")

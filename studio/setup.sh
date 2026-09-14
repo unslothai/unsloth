@@ -2042,8 +2042,7 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
         fi
         # As setup.ps1's "Torch-index pin changed" branch: an explicit cu*/rocm*/cpu pin over
         # ANOTHER family's torch is a request only the dependency pass acts on, and the version
-        # compare would call it up to date. Labelled wheels only (an untagged torch names no
-        # family); custom leaves left alone.
+        # compare calls it up to date. Labelled wheels only; custom leaves left alone.
         _setup_pin_have_family=""
         case "${_setup_pin_ver:-}" in
             *+cu[0-9]*) _setup_pin_have_family=cu ;;

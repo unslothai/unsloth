@@ -1047,9 +1047,9 @@ def _bnb_rocm_prerelease_url() -> str | None:
     return _BNB_ROCM_PRERELEASE_URLS.get(arch)
 
 
-# What this pass last installed bitsandbytes from. The second _ensure_rocm_torch() of a pass must
-# not repeat the download yet must still repair a bnb the steps between re-resolved, so this records
-# WHAT landed, not merely THAT something did.
+# What this pass last installed bitsandbytes from. The second _ensure_rocm_torch() must not
+# repeat the download yet must repair a bnb the steps between re-resolved, so this records WHAT
+# landed, not merely THAT something did.
 _BNB_ROCM_PASS_PROVENANCE: "str | None" = None
 # What the release URL served when this pass last looked (_bnb_asset_identity): the URL alone cannot
 # identify the build.
@@ -1083,11 +1083,10 @@ def _installed_direct_url(dist_name: str) -> "str | None":
 def _bnb_asset_identity(url: str) -> "str | None":
     """What is published at *url* right now, as an opaque string, or None if unreachable.
 
-    The preferred ROCm wheel comes from bitsandbytes' continuous-release_main release,
-    whose asset PATH never changes while its bytes do, so the URL pip recorded cannot
-    stand in for the build: it says where the wheel came from, not which one. One HEAD,
-    following the redirect to the object store, reads the ETag and size of the current
-    bytes; the pass records that beside the provenance and the next one compares.
+    The preferred ROCm wheel comes from bitsandbytes' continuous-release_main release, whose
+    asset PATH never changes while its bytes do, so the URL pip recorded says where the wheel
+    came from, not which one. One HEAD follows the redirect and reads the ETag and size of the
+    current bytes; the pass records that beside the provenance and the next one compares.
     """
     import urllib.request
 
@@ -1120,11 +1119,10 @@ def _bnb_wheel_version(url: str) -> "str | None":
 def _installed_bnb_provenance() -> "str | None":
     """What the resident bitsandbytes IS, or None when there is nothing to keep.
 
-    An opaque string, compared only against another one produced the same way: the URL
-    pip recorded for it, or its version when nothing recorded one. Deliberately says
-    nothing about whether it is the RIGHT build -- that is the caller's question, and
-    keeping the two apart is what lets a provenance recorded by the last run be checked
-    against both what is on disk now and what this run would install.
+    An opaque string compared only against another produced the same way: the URL pip
+    recorded, or the version when nothing did. It says nothing about whether that is the RIGHT
+    build, which is the caller's question; keeping the two apart lets a recorded provenance be
+    checked against both what is on disk and what this run would install.
     """
     installed = _installed_distribution_version("bitsandbytes")
     if not installed:
@@ -4635,9 +4633,8 @@ def _install_torchao_for_torch(torch_version: "str | None") -> None:
         _note(f"torch {torch_version or 'unknown'} detected -- {spec} is already installed")
         _record_step("torchao", "skipped")
         return
-    # The flag stays keyed off the pin alone, as it was before the skip existed: a matching build
-    # with no evidence behind it -- every install's first update on this build -- would otherwise
-    # re-download a wheel that pip was about to report as already satisfied.
+    # Keyed off the pin alone, as before the skip existed: a matching build with no evidence
+    # behind it (every install's first update here) would re-download a satisfied wheel.
     if needs_reinstall:
         args.insert(0, "--force-reinstall")
     _record_step("torchao", "ran")
@@ -6384,12 +6381,11 @@ UV_NEEDS_SYSTEM = False  # Set by _bootstrap_uv() via probe
 def _bootstrap_uv() -> bool:
     """Check if uv is available and probe whether --system is needed.
 
-    `pip freeze`, not `pip install --dry-run pip`: the question is only whether this uv
-    can address this interpreter, and a dry-run install answers it by RESOLVING pip
-    against the index. That is one PyPI round-trip on every run of the installer,
-    measured at most of the 12 s the "pip bootstrap" step costs, and it fails on an
-    offline host that uv could still have served entirely from its cache. freeze reads
-    the venv's own metadata: no resolution, no network, same answer.
+    `pip freeze`, not `pip install --dry-run pip`: the question is only whether this uv can
+    address this interpreter, and a dry-run answers it by RESOLVING pip against the index.
+    That is a PyPI round-trip on every run, most of the 12 s the "pip bootstrap" step cost,
+    and it fails offline where uv could have served from its cache. freeze reads the venv's
+    own metadata: no resolution, no network, same answer.
     """
     global UV_NEEDS_SYSTEM
     if not shutil.which("uv"):
@@ -6418,11 +6414,10 @@ def _bootstrap_uv() -> bool:
 def _venv_pip_is_usable() -> bool:
     """Whether this interpreter already has a pip new enough for the pass.
 
-    Read from metadata rather than by spawning it: the bootstrap below reinstalls pip
-    from the index on every single run, and on an install that already has one that is
-    a download and a resolve for a package nothing changed. 23.0 is the floor because
-    the constraint and override handling the pass relies on predates it comfortably; a
-    fresh uv venv has no pip at all and still bootstraps.
+    Read from metadata rather than by spawning it: the bootstrap below reinstalls pip from the
+    index on every run, a download and a resolve for a package nothing changed. 23.0 is the
+    floor because the constraint and override handling the pass relies on predates it
+    comfortably; a fresh uv venv has no pip at all and still bootstraps.
     """
     try:
         if importlib.util.find_spec("pip") is None:
@@ -7711,9 +7706,9 @@ def pip_install(
         constraint_args_pip = ["-c", str(CONSTRAINTS)]
         constraint_args_uv = ["-c", _uv_safe_path(CONSTRAINTS)]
 
-    # _effective_requirements also drops torchcodec where no wheel exists (Linux aarch64, Windows
-    # ARM64, Intel Mac); the skip gate audits the same file this installs from, or a filtered
-    # package would read as missing on every such host.
+    # _effective_requirements also drops torchcodec where no wheel exists (Linux aarch64,
+    # Windows ARM64, Intel Mac). The gate audits the file this installs from, or a filtered
+    # package reads as missing on every such host.
     actual_req = req
     temp_reqs: list[Path] = []
     if req is not None:
@@ -7852,9 +7847,9 @@ def _mlx_stack_is_current() -> bool:
             return False
     except Exception:  # noqa: BLE001 - no packaging, or a version it cannot parse
         return False
-    # The four pins are satisfied; their dependencies are a separate question. This step installs
-    # WITH dependencies, so it is what repairs an mlx-vlm whose miniaudio or mlx-audio is gone --
-    # the same reason the requirements steps audit their closure rather than their own lines.
+    # The four pins are satisfied; their dependencies are a separate question. This step
+    # installs WITH dependencies, so it repairs an mlx-vlm whose miniaudio is gone, and audits
+    # its closure for the same reason the requirements steps audit theirs.
     return not _mlx_closure_unmet()
 
 
@@ -7888,11 +7883,10 @@ def _mlx_closure_unmet() -> bool:
         handle = Path(_name)
         handle.write_text("\n".join([*_MLX_PINS, _MLX_VLM_SPEC]) + "\n", encoding = "utf-8")
         unmet = install_manifest.closure_unmet_requirements(handle, _installed_index())
-        # An override REPLACES every requirement on the package it names, so the version the
-        # installer leaves behind is the override's, not the one mlx-vlm's metadata asks for.
-        # Read raw, that disagreement is permanent and this step would run on every update
-        # forever. A package the override names and that is simply ABSENT still counts: the
-        # step is what installs it.
+        # An override REPLACES every requirement on the package it names, so the installed
+        # version is the override's, not the one mlx-vlm's metadata asks for. Read raw, that
+        # disagreement is permanent and this step runs on every update. An overridden package
+        # that is ABSENT still counts: the step is what installs it.
         overridden = _overridden_project_names()
         if overridden:
             unmet = [
@@ -7952,12 +7946,10 @@ def _mlx_health_fingerprint() -> dict:
 def _mlx_payload_present() -> bool:
     """The MLX stack's payload is on disk as its RECORDs describe it, without importing it.
 
-    The recorded verdict below is keyed on pins and interpreter, which a payload deleted
-    or truncated after the pass leaves unchanged. find_spec alone sees only the top-level
-    directory, so every file each distribution's RECORD names is checked for presence and
-    size (bytecode excepted, it is regenerated); a package missing an internal module
-    fails at the import the verdict vouches for. A few hundred stats, well under the
-    import the probe would pay.
+    The recorded verdict below is keyed on pins and interpreter, which a payload deleted or
+    truncated after the pass leaves unchanged, and find_spec sees only the top-level
+    directory. So every file each RECORD names is checked for presence and size (bytecode
+    excepted, it is regenerated): a few hundred stats, well under the import the probe pays.
     """
     try:
         import importlib.metadata
@@ -7986,11 +7978,10 @@ def _mlx_payload_present() -> bool:
 def _recorded_payload_damaged(dist_name: str) -> "bool | None":
     """Whether a file the distribution's RECORD names is gone or has another size.
 
-    None when the distribution has no readable RECORD, which is not evidence of an
-    intact payload. Read from RECORD rows, not Distribution.files: CPython 3.13 drops
-    paths that no longer exist from `files`, so a deleted file can never be found
-    through it. Bytecode is left out (recompiled after install); rows without a size
-    say nothing.
+    None when the distribution has no readable RECORD, which is not evidence of an intact
+    payload. Read from RECORD rows, not Distribution.files: CPython 3.13 drops paths that no
+    longer exist from `files`, so a deleted file is never found through it. Bytecode is left
+    out (recompiled after install); rows without a size say nothing.
     """
     import csv
     import io
@@ -8017,17 +8008,14 @@ def _recorded_payload_damaged(dist_name: str) -> "bool | None":
 def _report_mlx_stack_health(skipped: bool = False) -> None:
     """Name what would keep Train off on this Apple Silicon host, if anything.
 
-    Advisory only: the install has already succeeded, chat still works, and the
-    background self-heal gets another go at startup. It just must not be silent,
-    which is the whole of the reported "Train is blacked out after an update".
+    Advisory only: the install has succeeded, chat still works and the self-heal gets another
+    go at startup. It just must not be silent, which is the whole of "Train is blacked out
+    after an update".
 
-    Run out of process: the probe imports mlx, mlx_lm and mlx_vlm, and a half
-    installed one of those can abort rather than raise. That costs a full torch and
-    mlx import, so when the MLX step itself was skipped, nothing else in this pass
-    installed anything, and the last run recorded a healthy stack for these exact pins
-    and this exact interpreter, the recorded answer stands. Anything else -- a rebuild,
-    a moved pin, a moved interpreter, a dependency another step moved, a previous
-    verdict that was not clean -- runs the probe.
+    Run out of process, since a half-installed mlx can abort rather than raise. That costs a
+    full torch and mlx import, so the recorded verdict stands when the MLX step was skipped,
+    nothing else installed anything, and the last run recorded a healthy stack for these exact
+    pins and this interpreter. Anything else runs the probe.
     """
     fingerprint = _mlx_health_fingerprint()
     recorded = (_PASS_EVIDENCE or {}).get("mlx_health")
@@ -8077,10 +8065,9 @@ def _report_mlx_stack_health(skipped: bool = False) -> None:
         _step("", blocker, _cyan)
 
 
-# The idempotent dependency pass. A skip is legal only when (a) the previous run recorded this exact
-# work, (b) the inputs are byte-identical and (c) a cheap on-disk check of the OUTPUT passes; losing
-# any of the three runs the whole pass. When in doubt, do the work: a wrong skip ships a venv that
-# dies on `import structlog`.
+# The idempotent dependency pass. A skip is legal only when (a) the previous run recorded this
+# exact work, (b) the inputs are byte-identical and (c) a cheap on-disk check of the OUTPUT
+# passes. When in doubt, do the work: a wrong skip ships a venv that dies on `import structlog`.
 
 _FULL_DEPS_ENV = "UNSLOTH_STUDIO_FULL_DEPS"
 
@@ -8113,18 +8100,16 @@ def _record_step(key: str, result: str) -> None:
 def _closure_record() -> "dict[str, list[str]]":
     """What each audited with-deps step leaves unmet in its closure, after the pass.
 
-    Recorded for the next run's gate: a requirement still unmet once its step has run
-    is one the step cannot satisfy (sqlfluff 3.x pins click<=8.3.0 while huggingface-hub
-    1.23+ needs >=8.4.2, so no resolution holds both), and re-running the step for it on
-    every update resolved nothing and needed the index. A step that was skipped carries
-    the record it was skipped on. Audit failures are not recorded: a "<...>" entry would
-    otherwise let an unreadable environment skip the step next time.
+    Recorded for the next run's gate: a requirement still unmet once its step has run is one
+    the step cannot satisfy (sqlfluff 3.x pins click<=8.3.0 while huggingface-hub 1.23+ needs
+    >=8.4.2), and re-running the step for it resolved nothing and needed the index. A skipped
+    step carries the record it was skipped on. Audit failures are not recorded, or an
+    unreadable environment would skip the step next time.
     """
     record: dict[str, list[str]] = {}
     # Under a caller's PIP_NO_DEPS the unmet dependencies are deliberate, not known conflicts.
-    # A caller's UV_OVERRIDE is the same case and _plan_pass already refuses evidence for it:
-    # the override forces versions past the pins that asked for them, so what it leaves unmet is
-    # its own doing. Recorded, it would excuse the step that repairs it on every later update.
+    # UV_OVERRIDE is the same case (_plan_pass already refuses evidence for it): it forces
+    # versions past the pins that asked for them, so what it leaves unmet is its own doing.
     if _foreign_resolver_inputs() or _foreign_uv_override_in_effect():
         return record
     # A hand-edited manifest can carry anything under this key; it reaches here outside the
@@ -8150,17 +8135,16 @@ def _closure_record() -> "dict[str, list[str]]":
                 except OSError:
                     pass
         audited = not any(entry.startswith("<") for entry in unmet)
-        # Only a version CONFLICT can be a known conflict. closure_unmet_requirements reports a
-        # distribution that is absent by bare name and one outside its specifier as "name version";
-        # an absent one is work this step does (it installs with dependencies), and recording it
-        # would excuse the install that repairs it on every later update. Reached whenever the
-        # resolver was told to skip dependencies by something no digest covers -- a pip.conf with
-        # no-deps, not just the environment variables the guard above reads.
+        # Only a version CONFLICT can be a known conflict: closure_unmet_requirements names an
+        # absent distribution by itself and one outside its specifier as "name version". An
+        # absent one is work this step does, and recording it would excuse the install that
+        # repairs it. Reachable through a pip.conf with no-deps, which the guard above cannot
+        # see.
         unmet = [entry for entry in unmet if entry.startswith("<") or " " in entry]
         if _STEP_RESULTS.get(key) == "skipped":
-            # Narrowed to what is still unmet, or a later loss of a since-satisfied package would
-            # hide behind the record. An audit that could not run keeps it as it was. A step that
-            # did not run adopts nothing, so a record it never stood behind cannot excuse it.
+            # Narrowed to what is still unmet, or a later loss of a since-satisfied package
+            # hides behind the record. An audit that could not run keeps it as it was, and a
+            # step that did not run adopts nothing it never stood behind.
             carried = list(previous.get(key) or []) if isinstance(previous.get(key), list) else []
             # Same rule for a record written by an earlier build of this code.
             carried = [entry for entry in carried if " " in entry]
@@ -8178,20 +8162,15 @@ def _closure_record() -> "dict[str, list[str]]":
 def _may_skip_on_evidence() -> bool:
     """Whether a step is allowed to answer from what is already on disk.
 
-    The requirements steps ask this through _requirements_satisfied's first line. The
-    three pin-shaped steps -- torchao, the MLX stack and torchcodec -- compare against
-    the installed distribution rather than a recorded digest, so they have to ask for
-    themselves, and while they did not a satisfied pin outranked every reason _plan_pass
-    had for refusing last run's evidence: UNSLOTH_STUDIO_FULL_DEPS, which exists so that
-    a skip can be turned off; a failed deep verify, which says the tree those pins
-    describe is damaged; a moved interpreter, platform or torch flavour, which says the
-    resident wheel was built for something else.
+    The requirements steps ask through _requirements_satisfied. The three pin-shaped steps
+    (torchao, MLX, torchcodec) compare against the installed distribution rather than a
+    recorded digest, so they ask for themselves: otherwise a satisfied pin outranks every
+    reason _plan_pass had for refusing evidence, including UNSLOTH_STUDIO_FULL_DEPS, a failed
+    deep verify, and a moved interpreter, platform or torch flavour.
 
-    _full_deps_requested is asked again rather than left to _plan_pass, which already
-    refuses evidence for it: these steps are reachable from _ensure_expected_torch_flavor
-    and the post-repair torchao re-selection as well as from their own slot, and the one
-    switch a user is told to set has to hold everywhere without depending on which call
-    path got here.
+    _full_deps_requested is asked again rather than left to _plan_pass: these steps are also
+    reachable from _ensure_expected_torch_flavor and the post-repair torchao re-selection, and
+    the one switch a user is told to set has to hold on every path.
     """
     return _PASS_EVIDENCE is not None and not _full_deps_requested()
 
@@ -8488,13 +8467,11 @@ def _requirements_satisfied(
 ) -> bool:
     """Whether one requirements step can be skipped, on this run's evidence.
 
-    *label* is only for the caller's own bookkeeping; the manifest key is the file's
-    path under REQ_ROOT, so two steps can never collide and a renamed file can never
-    inherit another's record.
+    *label* is the caller's bookkeeping only; the manifest key is the file's path under
+    REQ_ROOT, so two steps cannot collide and a renamed file cannot inherit another's record.
 
-    *no_deps* says whether the step installs with `--no-deps`, and is deliberately
-    keyword-ONLY and REQUIRED: it decides whether the dependency closure is audited,
-    and a new step that forgot to answer would silently get the weaker check.
+    *no_deps* decides whether the dependency closure is audited, and is keyword-only and
+    required on purpose: a new step that forgot to answer would get the weaker check.
     """
     if _PASS_EVIDENCE is None:
         return False
@@ -8521,10 +8498,9 @@ def _requirements_satisfied(
     try:
         effective, temps = _effective_requirements(req)
         if _includes_another_requirements_file(effective):
-            # The digest covers this file; an -r line's target is a second file it does not name
-            # in pass_inputs, and missing_requirements skips flag lines, so a pin behind the
-            # include could move with nothing here able to see it. None of the shipped files uses
-            # one, which is exactly why the refusal costs nothing and the trap is worth closing.
+            # The digest covers this file; an -r target is a second file pass_inputs does not
+            # name, and missing_requirements skips flag lines, so a pin behind the include can
+            # move unseen. No shipped file uses one, so the refusal costs nothing today.
             return _refuse_step(key, "the file includes another requirements file")
         missing = install_manifest.missing_requirements(effective)
         if missing:
@@ -8533,9 +8509,9 @@ def _requirements_satisfied(
         # gone, and this step is what repaired that. Not asked of --no-deps steps.
         if not no_deps:
             unmet = install_manifest.closure_unmet_requirements(effective, _installed_index())
-            # What the last pass left unmet right after this step (disjoint pins) is not missing
-            # work; anything new is. Honoured only against the installed set it was recorded on,
-            # since a requirer that moved may have dropped the bound that made the conflict.
+            # What the last pass left unmet right after this step (disjoint pins) is not
+            # missing work; anything new is. Honoured only against the installed set it was
+            # recorded on, since a requirer that moved may have dropped the bound.
             known: set = set()
             if _PASS_EVIDENCE.get("known_unmet_index") == _installed_index_digest():
                 known = set((_PASS_EVIDENCE.get("known_unmet") or {}).get(key) or [])
@@ -8569,12 +8545,11 @@ def _skip_step(
 ) -> bool:
     """Announce one requirements step and say whether it is already satisfied.
 
-    The progress slot is spent either way, so the denominator does not depend on how
-    much of the install was already there.
+    The progress slot is spent either way, so the denominator does not depend on how much of
+    the install was already there.
 
-    *extra_check* is an additional on-disk predicate for a file whose requirements
-    importlib.metadata cannot fully answer -- today only the git direct reference in
-    triton-kernels.txt, where the version says nothing about which ref landed.
+    *extra_check* is an on-disk predicate for a file importlib.metadata cannot fully answer:
+    today only triton-kernels.txt, whose git ref no version reflects.
     """
     key = _pass_input_key(req) or str(req)
     if not no_deps and _pass_input_key(req) is not None:
@@ -8632,10 +8607,9 @@ _COMMIT_REVISION_RE = re.compile(r"[0-9a-fA-F]{7,40}")
 def _direct_reference_is_installed(req: Path, dist_name: str) -> bool:
     """Whether the resident *dist_name* came from the ref *req* names.
 
-    A version comparison says nothing about a git requirement: the same version is
-    published from every branch, so a release/3.6.x pin is satisfied, on paper, by a
-    build from main. pip and uv record what actually landed in direct_url.json, which is
-    the only place the ref survives the install.
+    A version says nothing about a git requirement: the same one is published from every
+    branch, so a release/3.6.x pin is satisfied on paper by a build from main. direct_url.json
+    is the only place the ref pip and uv actually installed survives.
     """
     wanted = _direct_reference_in_requirements(req)
     if wanted is None:
@@ -8655,9 +8629,9 @@ def _direct_reference_is_installed(req: Path, dist_name: str) -> bool:
         return False
     if _COMMIT_REVISION_RE.fullmatch(revision):
         return True
-    # A branch ref (release/3.6.x) moves without the requirements text changing: one `git ls-remote`
-    # says where it is now. Same commit skips, a moved ref runs the step, an unreachable remote
-    # keeps the resident build (the pass used to die here offline).
+    # A branch ref (release/3.6.x) moves without the requirements text changing, so one
+    # `git ls-remote` says where it is now. Same commit skips, a moved ref runs the step, an
+    # unreachable remote keeps the resident build (the pass used to die here offline).
     commit_id = str(vcs.get("commit_id") or "").strip().lower()
     if not _COMMIT_REVISION_RE.fullmatch(commit_id or "x"):
         return False
@@ -8684,12 +8658,11 @@ def _payload_recorded_intact(dist_name: str) -> bool:
 def _triton_kernels_step() -> None:
     """Install triton kernels, or keep the build that is there.
 
-    The requirement is a git branch, so this step's evidence is asked of the remote right
-    now (`_direct_reference_is_installed` runs one ls-remote) rather than read from a
-    record. It therefore holds on a pass that may use no recorded evidence too: a full
-    pass has no reason to rebuild a checkout the branch still points at, and an update run
-    with the git host unreachable must not die here for a speedup that is already
-    installed (it did, since the step ran on every pass and the fetch failed).
+    The requirement is a git branch, so the evidence is asked of the remote now (one
+    ls-remote in `_direct_reference_is_installed`) rather than read from a record, and holds
+    even on a pass with no recorded evidence: a full pass has no reason to rebuild a checkout
+    the branch still points at, and an unreachable git host must not fail an update over a
+    speedup that is already installed. It did, since the step ran every pass.
     """
     req = REQ_ROOT / "triton-kernels.txt"
     if not _has_working_git():
@@ -8750,9 +8723,8 @@ def _git_remote_commit(
     """The commit *revision* names on the remote right now (lower-case hex), or None
     when the remote cannot be asked: no git, no network, no such ref, a timeout.
 
-    A peeled tag (`refs/tags/x^{}`) wins over the tag object, a branch over a tag of the
-    same name; pip and uv record the commit the checkout landed on, which for an
-    annotated tag is the peeled one.
+    A peeled tag (`refs/tags/x^{}`) wins over the tag object and a branch over a tag of the
+    same name: pip and uv record the commit the checkout landed on, peeled for annotated tags.
     """
     exe = shutil.which("git")
     if exe is None or not revision:
@@ -8826,10 +8798,9 @@ def _installer_python_tag() -> str:
 def _patch_metadata_is_pending() -> bool:
     """Whether any METADATA the single-env patch owns still matches a pattern it rewrites.
 
-    The patch is idempotent, so running it again on a settled install rewrites nothing
-    and only costs a subprocess plus a full metadata walk on every update. Asking first
-    is the same walk without the interpreter start; on a fresh venv, where the
-    data-designer steps just ran, the caller does not even ask.
+    The patch is idempotent, so re-running it on a settled install rewrites nothing and costs
+    a subprocess plus a metadata walk. Asking first is the same walk without the interpreter
+    start; on a fresh venv, where the data-designer steps just ran, the caller does not ask.
     """
     try:
         sys.path.insert(0, str(SINGLE_ENV))
@@ -8853,12 +8824,10 @@ def _patch_metadata_is_pending() -> bool:
 def _run_patch_metadata() -> None:
     """Apply the single-env metadata patch, in process where that works.
 
-    A subprocess here is a whole interpreter start for a stdlib script that edits at
-    most three files. It stays as the fallback, because the script is also a supported
-    standalone entry point and an import failure must not fail the install.
-
-    The script prints its tally. run() captured that; in process it would land in the
-    middle of the progress line, so it is captured here too and kept for UNSLOTH_VERBOSE.
+    A subprocess is a whole interpreter start for a stdlib script that edits at most three
+    files. It stays the fallback: the script is also a standalone entry point, and an import
+    failure must not fail the install. Its tally, which run() captured, is captured here too
+    and kept for UNSLOTH_VERBOSE, or it lands in the middle of the progress line.
     """
     import contextlib  # noqa: PLC0415
     import io  # noqa: PLC0415
@@ -8887,8 +8856,7 @@ def _run_patch_metadata() -> None:
 
 
 # What building the plugin writes back into its directory (build/lib, src/<name>.egg-info).
-# Digesting those made the FIRST pass after an install rebuild the plugin, which failed offline;
-# only the sources decide.
+# Digesting those rebuilt the plugin on the first pass after an install, which failed offline.
 _PLUGIN_BUILD_ARTIFACT_DIRS = frozenset({"__pycache__", "build", "dist", ".eggs"})
 
 
@@ -8990,15 +8958,13 @@ def install_python_stack() -> int:
     # runs.
     _PASS_EVIDENCE = _plan_pass(package_name, local_repo, ci_source_overlay)
 
-    # Drop it up front: a missing manifest is what tells the CLI, setup.sh and the preflight that an
-    # interrupted run left the venv half-built. Stop if it survives rather than mutate the venv
-    # behind a marker that still verifies. The evidence is already in memory here, so the copy
-    # remove_manifest parks for setup.ps1's ordering goes before anything is mutated.
-    # Clear a stale parked copy FIRST, while the live manifest is still there: _plan_pass
-    # consumes the one it reads, so anything left is from a run that died. A path that cannot
-    # be cleared (a directory on the name, a Windows handle held open) must refuse here rather
-    # than after the live manifest is gone, or the venv is left unable to verify AND unable to
-    # finish, with every later update refusing at the same point.
+    # Drop it up front: a missing manifest is what tells the CLI, setup.sh and the preflight
+    # that an interrupted run left the venv half-built, so stop if it survives rather than
+    # mutate behind a marker that still verifies.
+    # A stale parked copy goes FIRST, while the live manifest is still there: _plan_pass
+    # consumes the one it reads, so anything left is from a run that died. One that cannot be
+    # cleared has to refuse here, or the venv can neither verify nor finish and every later
+    # update stops at the same point.
     _parked = install_manifest.previous_manifest_path()
     install_manifest.consume_previous_manifest()
     if _parked.exists():
@@ -9551,9 +9517,8 @@ def install_python_stack() -> int:
             ):
                 _codec_args += ("--force-reinstall",)
                 _codec_rebuild = True
-        # One decision, read twice (the line below names it). _may_skip_on_evidence is part of it: a
-        # forced pass or failed deep verify is a claim about the payload, which metadata cannot
-        # answer.
+        # One decision, read twice (the line below names it). _may_skip_on_evidence is part of
+        # it: a forced pass or failed deep verify is a claim metadata cannot answer.
         _codec_skip = (
             _may_skip_on_evidence()
             and not _codec_rebuild

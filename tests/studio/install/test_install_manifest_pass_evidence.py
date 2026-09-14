@@ -49,11 +49,9 @@ im = _load_module()
 
 
 def test_pass_inputs_are_a_superset_of_the_tracked_requirements() -> None:
-    """The pass reads more files than verify_install fingerprints.
-
-    They stay two lists: verify_install compares the whole `requirement_files`
-    dict, so widening THAT one reports every install in the field as
-    `studio_install_requirements_changed` and buys each of them a repair pass.
+    """The pass reads more files than verify_install fingerprints, and they stay two lists:
+    verify_install compares the whole `requirement_files` dict, so widening THAT one reports
+    every install in the field as `studio_install_requirements_changed`.
     """
     assert im.PASS_INPUT_FILES[: len(im.TRACKED_REQUIREMENT_FILES)] == (
         im.TRACKED_REQUIREMENT_FILES
@@ -490,11 +488,9 @@ def test_update_manifest_survives_a_corrupt_manifest(tmp_path: pathlib.Path) -> 
 
 
 def test_update_manifest_cannot_shadow_a_field_verify_install_reads(tmp_path: pathlib.Path) -> None:
-    """The same guard write_manifest applies to `extra`, on the merge path.
-
-    This one merges into a manifest that already means "the install finished", so a
-    caller able to rewrite `package_version`, `requirement_files` or `prefix` leaves a
-    file that still validates and describes an install nobody has.
+    """The same guard write_manifest applies to `extra`, on the merge path. This one merges
+    into a manifest that already means "the install finished", so a caller able to rewrite
+    `package_version` or `prefix` leaves a file that validates and describes nobody's install.
     """
     im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
     before = _payload(tmp_path)
@@ -527,11 +523,9 @@ def test_update_manifest_with_only_protected_keys_writes_nothing(tmp_path: pathl
 
 
 def test_both_writers_refuse_the_same_keys() -> None:
-    """One constant, because two copies of this list is how the two would drift.
-
-    Every key write_manifest sets from its own arguments is in it: the optional three
-    are there for the reason the docstring gives them, that absent means "unknown" and
-    only a build that knew the answer may write one.
+    """One constant, because two copies of this list is how the two writers would drift. Every
+    key write_manifest sets from its own arguments is in it, the optional three included:
+    absent means "unknown", and only a build that knew the answer may write one.
     """
     for key in (
         "schema",
@@ -941,11 +935,9 @@ def test_an_absent_tiktoken_is_optional_but_a_present_one_is_held_to_its_record(
 def test_write_manifest_never_raises_on_a_payload_json_cannot_encode(
     tmp_path: pathlib.Path,
 ) -> None:
-    """`extra` is composed by the caller from what the pass observed, and the docstring
-    promises this never raises. It is called as the last act of a pass that has already
-    installed everything, so a TypeError out of json.dumps would end the update with a
-    traceback and leave the venv with no manifest -- which every reader takes for a
-    half-built install. update_manifest already catches the same three.
+    """`extra` is caller-composed and the docstring promises this never raises. It is the last
+    act of a pass that has already installed everything, so a TypeError out of json.dumps
+    would end the update with no manifest, which every reader takes for a half-built install.
     """
     assert (
         im.write_manifest(
