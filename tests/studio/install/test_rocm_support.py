@@ -5164,14 +5164,30 @@ class TestAccelerateRepair:
         installed,
         *,
         is_windows = True,
+        succeeds = True,
     ):
         with (
             patch.object(stack_mod, "IS_WINDOWS", is_windows),
             patch.object(stack_mod, "_installed_version", return_value = installed),
-            patch.object(stack_mod, "pip_install") as mock_pip,
+            patch.object(stack_mod, "pip_install_try", return_value = succeeds) as mock_pip,
         ):
             stack_mod._repair_bad_accelerate()
         return mock_pip
+
+    def test_a_failed_repair_does_not_abort_the_install(self):
+        """pip_install exits the process. On Windows this step fires on essentially every
+        fresh install today, so using it would let one unreachable index turn an install
+        that used to finish into one that dies here. It must warn and carry on."""
+        mock_pip = self._repair((1, 15), succeeds = False)
+        assert mock_pip.call_count == 1
+
+    def test_the_repair_is_never_the_fatal_variant(self):
+        """Guards the same thing at the source level, since a future edit could swap the
+        call back without changing any behaviour the mock above can see."""
+        src = (PACKAGE_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
+        body = src.split("def _repair_bad_accelerate()")[1].split("\ndef ")[0]
+        assert "pip_install_try(" in body
+        assert "\n    pip_install(" not in body
 
     @pytest.mark.parametrize("installed", [(1, 15), (1, 16), (2, 0)])
     def test_repairs_a_capped_out_accelerate_on_windows(self, installed):

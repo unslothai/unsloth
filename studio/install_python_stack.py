@@ -977,13 +977,24 @@ def _repair_bad_accelerate() -> None:
     _note(f"accelerate {installed[0]}.{installed[1]} found -- reinstalling accelerate<1.15...")
     # --no-deps: accelerate requires torch>=2.0.0, so a with-deps reinstall would re-resolve
     # torch and drop a generic PyPI build over the ROCm wheel this exists to keep working.
-    pip_install(
+    #
+    # _try, so a failure is nonfatal. pip_install exits the process, and on Windows today
+    # this step fires on essentially every fresh install, so a transient PyPI blip would
+    # turn an install that used to finish into one that dies here. Same call that
+    # _ensure_rocm_torch makes for the AMD index, for the same reason. The user ends up
+    # where they already were, with a warning naming it, rather than with no Studio.
+    if not pip_install_try(
         "Repairing accelerate version",
         "--no-cache-dir",
         "--no-deps",
         "accelerate<1.15.0",
         constrain = False,
-    )
+    ):
+        _note(
+            "could not install accelerate<1.15 -- training on a Windows AMD GPU will fail "
+            "at trainer start until it is downgraded (huggingface/accelerate#4249)",
+            _red,
+        )
 
 
 # AMD Windows ROCm wheels (repo.amd.com/rocm/whl/{arch_family}/).
