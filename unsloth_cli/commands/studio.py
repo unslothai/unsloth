@@ -1411,9 +1411,7 @@ def _enforce_password_change_before_exposure(
             os.environ[_UNATTENDED_PROMPT_DONE_ENV] = "1"
             return
         except (KeyboardInterrupt, EOFError):
-            # The old raw-bind branch pointed at --password / the env var before it
-            # warned and continued; an abort needs that pointer more, not less, and
-            # the way off the network differs per launch.
+            # An abort needs the non-interactive hatch more than the old warn did.
             typer.echo(
                 "\nError: password change aborted; refusing to expose Unsloth "
                 "with the default admin password. Re-run and set a password, or "

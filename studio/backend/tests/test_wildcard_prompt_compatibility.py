@@ -143,8 +143,7 @@ def test_the_prompt_signature_stays_keyword_compatible():
 
     params = inspect.signature(terminal_prompt.prompt_for_password_change).parameters
     assert params["exposure"].default == "on the public internet"
-    # An interrupted `studio update` can pair an old run.py with this module, and
-    # that caller still passes refusal_aborts. Accepted and ignored, never absent.
+    # An old run.py still passes refusal_aborts: ignored, but never absent.
     assert "refusal_aborts" in params
     for name, param in params.items():
         assert param.kind is not inspect.Parameter.POSITIONAL_ONLY, name

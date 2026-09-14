@@ -485,11 +485,8 @@ def test_refusing_the_prompt_on_a_raw_bind_aborts(monkeypatch):
 def test_an_older_prompt_modules_ambiguous_false_still_starts_a_raw_bind(monkeypatch):
     """A torn tree must not turn the unattended fallback into a dead container.
 
-    An interrupted `studio update` can leave an OLDER terminal_prompt.py beside
-    this run.py. That version returns False for the unattended deadline as well
-    as for Ctrl+C, so reading False as a refusal would stop the detached-pty
-    launch (`docker run -dt`) the deadline exists to keep starting. The newer
-    module advertises the split with UNATTENDED_RETURNS_NONE.
+    An OLDER terminal_prompt.py returns False for the deadline as well as for
+    Ctrl+C, so reading False as a refusal would stop `docker run -dt`.
     """
     _patch_streams(monkeypatch, tty = True)
     _patch_seeded_admin(monkeypatch, requires_change = True)
@@ -518,9 +515,8 @@ def test_an_older_prompt_modules_false_still_aborts_a_tunnel(monkeypatch):
 def test_an_older_run_py_can_still_call_this_prompt(monkeypatch):
     """The other half of a torn tree: an OLD run.py passes refusal_aborts.
 
-    It is ignored now, but an unexpected-keyword TypeError would propagate out of
-    a gate that is deliberately not wrapped in a broad try/except, killing the
-    launch with a traceback. The read itself is faked: the binding is the subject.
+    The gate is deliberately not wrapped in a broad try/except, so an unexpected
+    keyword would kill the launch. The read is faked; the binding is the subject.
     """
 
     def _refuse(*_a, **_kw):

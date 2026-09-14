@@ -2153,8 +2153,7 @@ def test_a_raw_bind_ctrl_c_aborts_the_launch(monkeypatch, tmp_path):
 @pytest.mark.parametrize(
     "args,present,absent",
     [
-        # A raw bind passed neither flag, so "launch without --secure/--cloudflare"
-        # is a no-op for it; -H 127.0.0.1 is the way off the network.
+        # A raw bind passed neither flag; -H 127.0.0.1 is its way off the network.
         (dict(cloudflare = None, host = "0.0.0.0", secure = False), "-H 127.0.0.1", "--cloudflare"),
         (
             dict(cloudflare = None, host = "127.0.0.1", secure = True),
@@ -2166,11 +2165,7 @@ def test_a_raw_bind_ctrl_c_aborts_the_launch(monkeypatch, tmp_path):
 def test_the_abort_names_a_remedy_this_launch_actually_has(
     monkeypatch, tmp_path, capsys, args, present, absent
 ):
-    """An abort that leaves no way forward just gets retried the same way.
-
-    Warning-and-continuing used to point at --password / the env var; failing
-    closed needs that pointer more, not less.
-    """
+    """An abort that leaves no way forward just gets retried the same way."""
     import typer
 
     studio_mod = _studio()

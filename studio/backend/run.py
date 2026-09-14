@@ -2374,16 +2374,12 @@ def _terminal_password_gate(
         return True, True
     if tunnel_will_start:
         return False, False
-    # Ctrl+C / EOF is an explicit refusal for any reachable UI launch. Only trust
-    # a False to MEAN that when the prompt module separates the two outcomes: an
-    # interrupted `studio update` can leave an older terminal_prompt.py next to
-    # this file, and that one returns False for the unattended deadline too, so
-    # reading it as a refusal would stop the detached-pty launch (`docker run
-    # -dt`, `tmux new -d`) the deadline exists to keep starting.
+    # Ctrl+C / EOF is a refusal, but only a module that reports the deadline as
+    # None can tell the two apart; an older one folds both into False, where
+    # reading refusal would stop the detached-pty launch (`docker run -dt`).
     if changed is False and getattr(_terminal_prompt, "UNATTENDED_RETURNS_NONE", False):
         return False, False
-    # Only an unattended raw-bind prompt may preserve the historical startup
-    # behavior. It proceeds at the protection level this launch already had.
+    # Only the unattended raw bind keeps the historical startup behavior.
     # Which is sometimes NO protection: UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT=0 never
     # arms the deadline, so say what will actually happen rather than promise a
     # shutdown -- that is the one sentence an operator acts on.
@@ -2974,8 +2970,7 @@ def run_server(
         is_colab = _IS_COLAB,
     )
     if not _pw_proceed:
-        # Name the remedy this launch actually has: a raw bind passed neither
-        # --secure nor --cloudflare, so telling it to drop them is a no-op.
+        # A raw bind passed neither flag, so naming them is a no-op for it.
         print(
             "Not starting Unsloth; set a new admin password first, or pass one "
             "non-interactively with --password / UNSLOTH_STUDIO_PASSWORD. "
