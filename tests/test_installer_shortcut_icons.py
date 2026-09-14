@@ -11,6 +11,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from unsloth_pwsh_runner import run_pwsh
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SH = REPO_ROOT / "install.sh"
@@ -226,7 +227,10 @@ def test_windows_shortcut_prefers_the_packaged_icon_over_the_download(tmp_path):
                 block,
             ]
         )
-        return subprocess.run(
+        # run_pwsh, not subprocess.run: a pwsh killed at startup never read $packagedIcon,
+        # and check = True would report that as the precedence being wrong.
+        # See tests/_shared/unsloth_pwsh_runner.py.
+        return run_pwsh(
             ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
             check = True,
             capture_output = True,
@@ -260,7 +264,7 @@ def test_windows_packaged_icon_is_found_next_to_the_managed_python(tmp_path):
             "Write-Output $packagedIcon",
         ]
     )
-    found = subprocess.run(
+    found = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         check = True,
         capture_output = True,
@@ -311,7 +315,7 @@ def test_wsl_shortcut_script_copies_the_packaged_ico_instead_of_downloading(tmp_
             block,
         ]
     )
-    result = subprocess.run(
+    result = run_pwsh(
         ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
         check = True,
         capture_output = True,
