@@ -23,6 +23,7 @@ _SCRIPTS = str(_ROOT / "scripts")
 if _SCRIPTS not in sys.path:
     sys.path.insert(0, _SCRIPTS)
 
+import run_ruff_format  # noqa: E402
 from run_ruff_format import (  # noqa: E402
     ANY_VERSION_ENV,
     CONFIG,
@@ -74,10 +75,97 @@ class TestTheMismatchRule:
     def test_the_pinned_ruff_is_not(self):
         assert version_mismatch("0.6.9", "0.6.9") is False
 
-    def test_an_unreadable_ruff_is_not(self):
-        # `python -m ruff --version` failing means the format below fails too, and
-        # loudly. Refusing here would only replace one error with a worse one.
+    def test_an_unreadable_version_string_is_not(self):
+        # A ruff that runs but names itself in a shape this cannot parse is a
+        # question we could not ask, not a mismatch. A ruff that does not run at
+        # all is a different matter and is refused earlier, by
+        # ruff_unavailable_reason -- see TestRuffHasToBeRunnableFirst.
         assert version_mismatch("0.6.9", None) is False
+
+
+class TestRuffHasToBeRunnableFirst:
+    """No ruff means no run at all, decided before the first file is rewritten.
+
+    The version gate already refused before touching anything, but only when it
+    could read a version. With ruff missing or broken the script used to fall
+    through: the pre-pass stripped every magic comma it was given, `ruff format`
+    then died, and the post-pass never ran. What is left is neither the original
+    nor the formatted result, and the magic commas the pre-pass removes are ones
+    a full run puts back, so the files come out in the exact shape the hook
+    rejects. Observed on a `uv run --with ruff==...` whose ruff wheel carried no
+    binary: three signatures in one kernel lost their trailing commas and had to
+    be restored by hand.
+    """
+
+    def test_a_binary_that_is_not_there_is_reported_not_raised(self, tmp_path):
+        reason = run_ruff_format.ruff_unavailable_reason(str(tmp_path / "no-such-python"))
+        assert reason is not None
+        # The exception type is in the message: "cannot run ruff" without the
+        # underlying error sends people to reinstall a ruff that is already fine.
+        assert "Error" in reason or "error" in reason
+
+    def test_a_ruff_that_exits_nonzero_is_unavailable(self, monkeypatch):
+        monkeypatch.setattr(
+            run_ruff_format.subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 1, "", "No module named ruff"),
+        )
+        assert run_ruff_format.ruff_unavailable_reason() == "No module named ruff"
+
+    def test_a_silent_failure_still_says_something(self, monkeypatch):
+        # A non-zero exit with nothing on either stream would otherwise produce an
+        # empty parenthesis in the error and read like a bug in the check.
+        monkeypatch.setattr(
+            run_ruff_format.subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 3, "", ""),
+        )
+        reason = run_ruff_format.ruff_unavailable_reason()
+        assert reason and "3" in reason
+
+    def test_a_working_ruff_is_available(self, monkeypatch):
+        monkeypatch.setattr(
+            run_ruff_format.subprocess,
+            "run",
+            lambda *a, **k: subprocess.CompletedProcess(a[0], 0, "ruff 0.6.9\n", ""),
+        )
+        assert run_ruff_format.ruff_unavailable_reason() is None
+
+    def test_the_magic_commas_survive_a_run_with_no_ruff(self, tmp_path, monkeypatch):
+        # The regression itself, in the shape it was found: a signature whose
+        # trailing comma the pre-pass strips and ruff puts back.
+        target = tmp_path / "kernel.py"
+        original = "def f(\n    a,\n    b,\n):\n    return a\n"
+        target.write_text(original, encoding = "utf-8")
+        monkeypatch.setattr(
+            "run_ruff_format.ruff_unavailable_reason", lambda *a, **k: "No module named ruff"
+        )
+        assert main([str(target)]) == 1
+        assert target.read_text(encoding = "utf-8") == original
+
+    def test_the_override_does_not_buy_a_run_without_ruff(self, tmp_path, monkeypatch):
+        # ANY_VERSION_ENV waives "this is the wrong ruff". It cannot waive "there
+        # is no ruff", which is not a version question.
+        target = tmp_path / "sample.py"
+        original = "x = f(a=1)\n"
+        target.write_text(original, encoding = "utf-8")
+        monkeypatch.setattr(
+            "run_ruff_format.ruff_unavailable_reason", lambda *a, **k: "No module named ruff"
+        )
+        monkeypatch.setenv(ANY_VERSION_ENV, "1")
+        assert main([str(target)]) == 1
+        assert target.read_text(encoding = "utf-8") == original
+
+    def test_the_message_names_the_pin_to_install(self, tmp_path, monkeypatch, capsys):
+        target = tmp_path / "sample.py"
+        target.write_text("x = 1\n", encoding = "utf-8")
+        monkeypatch.setattr(
+            "run_ruff_format.ruff_unavailable_reason", lambda *a, **k: "No module named ruff"
+        )
+        assert main([str(target)]) == 1
+        err = capsys.readouterr().err
+        assert "pip install ruff==" in err
+        assert pinned_ruff_version(CONFIG.read_text(encoding = "utf-8")) in err
 
 
 class TestRefusing:

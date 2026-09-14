@@ -13,11 +13,21 @@ install nobody can tell apart from a finished one.
 
 from __future__ import annotations
 
+import ast
+import contextlib
+import errno
 import importlib.util
 import json
+import os
 import pathlib
+import stat
+import subprocess
 import sys
 import sysconfig
+import tempfile
+import textwrap
+import time
+import unittest.mock
 
 import pytest
 
@@ -139,6 +149,332 @@ def test_update_manifest_never_creates_one(tmp_path: pathlib.Path) -> None:
     must not be able to claim that on its own."""
     assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is False
     assert not (tmp_path / im.MANIFEST_NAME).exists()
+
+
+def test_update_manifest_merges_into_the_manifest_it_replaces(
+    tmp_path: pathlib.Path, monkeypatch
+) -> None:
+    """The caller spends minutes gathering this evidence (the MLX probe waits up to 180 s).
+    If a second updater removed the manifest and finished a new pass in that time, merging
+    into a copy read before the probe would put the old pass's fields back -- including
+    no_torch and the torch flavour, which a later update acts on."""
+    im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest", no_torch = True)
+    assert _payload(tmp_path)["no_torch"] is True
+    real_lock = im._manifest_lock
+    done: list[int] = []
+
+    @contextlib.contextmanager
+    def _lock_with_a_peer_ahead_of_us(root = None):
+        # The second updater got there first: it removed the manifest, ran its pass and wrote
+        # a new one. Everything it did is complete before this call takes the lock.
+        if not done:
+            done.append(1)
+            assert im.remove_manifest(root = tmp_path) is True
+            im.write_manifest(
+                root = tmp_path, req_root = tmp_path, package_name = "pytest", no_torch = False
+            )
+        with real_lock(root) as locked:
+            yield locked
+
+    monkeypatch.setattr(im, "_manifest_lock", _lock_with_a_peer_ahead_of_us)
+    assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is True
+    after = _payload(tmp_path)
+    assert after["mlx_health"] == {"ok": True}
+    assert after["no_torch"] is False, "the newer pass's fields were overwritten"
+
+
+def test_the_manifest_lock_is_exclusive_across_processes(tmp_path: pathlib.Path) -> None:
+    """The writers serialise against another PROCESS, not just another thread: setup.sh,
+    setup.ps1, the installer and the CLI are separate processes on one venv."""
+    order = tmp_path / "order.txt"
+    child_code = "\n".join(
+        [
+            f"import sys, time, pathlib",
+            f"sys.path.insert(0, {str(pathlib.Path(im.__file__).resolve().parent)!r})",
+            f"import install_manifest as im",
+            f"with im._manifest_lock(pathlib.Path({str(tmp_path)!r})):",
+            f"    pathlib.Path({str(tmp_path / 'held')!r}).write_text('1', encoding='utf-8')",
+            f"    time.sleep(1.5)",
+            f"    fh = open({str(order)!r}, 'a', encoding='utf-8')",
+            f"    fh.write('child-released\\n')",
+            f"    fh.close()",
+        ]
+    )
+    child = subprocess.Popen([sys.executable, "-c", child_code])
+    try:
+        held = tmp_path / "held"
+        deadline = time.time() + 20
+        while not held.exists() and time.time() < deadline:
+            time.sleep(0.02)
+        assert held.exists(), "the child never took the lock"
+        with im._manifest_lock(tmp_path):
+            with order.open("a", encoding = "utf-8") as fh:
+                fh.write("parent-acquired\n")
+    finally:
+        child.wait(timeout = 30)
+    # Ordering, not duration: the parent's acquire cannot land inside the child's hold.
+    assert order.read_text(encoding = "utf-8").split() == ["child-released", "parent-acquired"]
+
+
+def test_the_advisory_write_declines_rather_than_publish_unserialised(
+    tmp_path: pathlib.Path, monkeypatch
+) -> None:
+    """A peer holding the lock past the timeout is mid-pass. write_manifest and
+    remove_manifest must still go ahead there (failing an install is worse), but this one
+    merges evidence a probe gathered minutes ago: publishing beside that peer risks putting
+    its removed completion marker back over a half-built venv, and losing the evidence costs
+    one probe."""
+    monkeypatch.setattr(im, "LOCK_WAIT_SECONDS", 0.3)
+    im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+    before = _payload(tmp_path)
+    holder = "\n".join(
+        [
+            "import sys, time, pathlib",
+            f"sys.path.insert(0, {str(pathlib.Path(im.__file__).resolve().parent)!r})",
+            "import install_manifest as im",
+            f"with im._manifest_lock(pathlib.Path({str(tmp_path)!r})):",
+            f"    pathlib.Path({str(tmp_path / 'held')!r}).write_text('1', encoding='utf-8')",
+            "    time.sleep(30)",
+        ]
+    )
+    child = subprocess.Popen([sys.executable, "-c", holder])
+    try:
+        deadline = time.time() + 20
+        while not (tmp_path / "held").exists() and time.time() < deadline:
+            time.sleep(0.02)
+        assert (tmp_path / "held").exists(), "the child never took the lock"
+        assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is False
+        assert _payload(tmp_path) == before
+        # The two that must never fail an install still do their work.
+        assert im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+        assert im.remove_manifest(root = tmp_path) is True
+    finally:
+        child.kill()
+        child.wait(timeout = 30)
+
+
+@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason = "needs O_NOFOLLOW")
+def test_a_symlink_on_the_lock_name_is_not_followed(tmp_path: pathlib.Path) -> None:
+    """Followed, it would open or create a file somewhere else entirely, and a replacement
+    of the target behind it would let two holders think they had the same lock."""
+    elsewhere = tmp_path / "elsewhere.txt"
+    os.symlink(elsewhere, tmp_path / im.LOCK_NAME)
+    with im._manifest_lock(tmp_path) as locked:
+        assert locked is False
+    assert not elsewhere.exists(), "the symlink's target was created"
+    # ...and the writers still work, unserialised, as they did before the lock existed.
+    assert im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+
+
+def test_a_filesystem_without_locking_is_not_waited_out(
+    tmp_path: pathlib.Path, monkeypatch
+) -> None:
+    """Some NFS and SMB mounts answer immediately that they do not implement locking. Only
+    contention is worth waiting out; retrying that answer would cost the whole deadline on
+    every manifest write."""
+    fcntl = pytest.importorskip("fcntl")
+    monkeypatch.setattr(im, "LOCK_WAIT_SECONDS", 5.0)
+
+    def _unsupported(*_args, **_kwargs):
+        raise OSError(errno.ENOTSUP, "locking not supported")
+
+    monkeypatch.setattr(fcntl, "flock", _unsupported)
+    started = time.monotonic()
+    with im._manifest_lock(tmp_path) as locked:
+        assert locked is False
+    assert time.monotonic() - started < 1.0
+
+
+def test_a_stuck_peer_does_not_wedge_the_lock(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """A process suspended or stopped while holding the lock must not stop every later
+    update: after the wait the writer goes ahead unserialised, which is what shipped before
+    the lock existed. Windows does this on its own (msvcrt's LK_LOCK gives up); POSIX flock
+    waits forever unless asked not to."""
+    monkeypatch.setattr(im, "LOCK_WAIT_SECONDS", 0.3)
+    holder = "\n".join(
+        [
+            "import sys, time, pathlib",
+            f"sys.path.insert(0, {str(pathlib.Path(im.__file__).resolve().parent)!r})",
+            "import install_manifest as im",
+            f"with im._manifest_lock(pathlib.Path({str(tmp_path)!r})):",
+            f"    pathlib.Path({str(tmp_path / 'held')!r}).write_text('1', encoding='utf-8')",
+            "    time.sleep(30)",
+        ]
+    )
+    child = subprocess.Popen([sys.executable, "-c", holder])
+    try:
+        held = tmp_path / "held"
+        deadline = time.time() + 20
+        while not held.exists() and time.time() < deadline:
+            time.sleep(0.02)
+        assert held.exists(), "the child never took the lock"
+        started = time.monotonic()
+        with im._manifest_lock(tmp_path):
+            pass
+        waited = time.monotonic() - started
+        assert waited < 10, f"waited {waited:.1f}s on a peer that never lets go"
+        # ...and the writers still answer while that peer holds it.
+        assert im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+    finally:
+        child.kill()
+        child.wait(timeout = 30)
+
+
+def test_every_manifest_writer_takes_the_lock() -> None:
+    """A writer outside it reintroduces the race the lock exists for, and nothing in the
+    payloads themselves would show it."""
+    source = pathlib.Path(im.__file__).read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    writers = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name in ("write_manifest", "update_manifest", "remove_manifest")
+    }
+    assert set(writers) == {"write_manifest", "update_manifest", "remove_manifest"}
+    for name, node in writers.items():
+        body = ast.unparse(node)
+        assert "_manifest_lock(" in body, f"{name} replaces the manifest outside the lock"
+        assert "os.replace" not in body or "_manifest_lock(" in body
+
+
+def test_a_root_that_cannot_hold_a_lock_still_writes(tmp_path: pathlib.Path, monkeypatch) -> None:
+    """This module has to run inside a half-built venv and on filesystems that cannot lock.
+    Unserialised is the behaviour that shipped before; failing the install is not."""
+
+    def _no_open(*_args, **_kwargs):
+        raise OSError("no lock file here")
+
+    monkeypatch.setattr(pathlib.Path, "open", _no_open)
+    with im._manifest_lock(tmp_path):
+        pass
+    monkeypatch.undo()
+    assert im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+    assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is True
+    assert im.remove_manifest(root = tmp_path) is True
+
+
+def test_remove_manifest_keeps_the_live_one_when_the_parked_name_cannot_be_cleared(
+    tmp_path: pathlib.Path,
+) -> None:
+    """setup.ps1 reads True here as permission to replace pip, torch and triton, and the
+    dependency pass refuses to run behind a parked copy it cannot clear. Dropping the live
+    manifest first would put that refusal after the mutations, on a venv that can no longer
+    verify, and every later update would stop at the same place."""
+    im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+    live = tmp_path / im.MANIFEST_NAME
+    # A directory on the reserved name refuses both the rename and the unlink, on every OS.
+    blocked = tmp_path / im.PREVIOUS_MANIFEST_NAME
+    blocked.mkdir()
+    (blocked / "keep.txt").write_text("x", encoding = "utf-8")
+
+    assert im.remove_manifest(root = tmp_path) is False
+    assert live.exists(), "the venv must still verify when the pass cannot be entered"
+
+    # Cleared, the same call parks as usual.
+    (blocked / "keep.txt").unlink()
+    blocked.rmdir()
+    assert im.remove_manifest(root = tmp_path) is True
+    assert not live.exists() and (tmp_path / im.PREVIOUS_MANIFEST_NAME).exists()
+
+
+def test_remove_manifest_refuses_an_unclearable_parked_copy_with_no_live_manifest(
+    tmp_path: pathlib.Path,
+) -> None:
+    """An interrupted run already took the live manifest. Nothing is parked by this call, so
+    a surviving copy is that dead run's, and answering True would send setup.ps1 into its
+    pip/torch mutations ahead of the refusal the pass makes on exactly that path."""
+    blocked = tmp_path / im.PREVIOUS_MANIFEST_NAME
+    blocked.mkdir()
+    (blocked / "keep.txt").write_text("x", encoding = "utf-8")
+    assert im.remove_manifest(root = tmp_path) is False
+
+    (blocked / "keep.txt").unlink()
+    blocked.rmdir()
+    assert im.remove_manifest(root = tmp_path) is True
+
+
+def test_a_dead_runs_parked_copy_does_not_outlive_the_next_invalidation(
+    tmp_path: pathlib.Path,
+) -> None:
+    """It would otherwise be read as this pass's evidence."""
+    (tmp_path / im.PREVIOUS_MANIFEST_NAME).write_text("{}", encoding = "utf-8")
+    assert im.remove_manifest(root = tmp_path) is True
+    assert not (tmp_path / im.PREVIOUS_MANIFEST_NAME).exists()
+
+
+def test_remove_manifest_parks_over_a_stale_copy_it_can_clear(tmp_path: pathlib.Path) -> None:
+    """The ordinary case the fallback must not punish: a leftover file from a run that died
+    is replaced, not treated as an obstruction."""
+    im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+    (tmp_path / im.PREVIOUS_MANIFEST_NAME).write_text("{}", encoding = "utf-8")
+    assert im.remove_manifest(root = tmp_path) is True
+    assert not (tmp_path / im.MANIFEST_NAME).exists()
+    assert im.read_previous_manifest(root = tmp_path)["schema"] == im.MANIFEST_SCHEMA
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX file modes")
+def test_the_manifest_keeps_the_mode_it_had(tmp_path: pathlib.Path) -> None:
+    """It used to be written through Path.write_text, so it carried the umask default and
+    anything else on the machine could read it. mkstemp creates at 0600, and silently
+    narrowing a file other tooling may read is a change nobody asked for."""
+    previous = os.umask(0o022)
+    try:
+        im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+        live = tmp_path / im.MANIFEST_NAME
+        assert stat.S_IMODE(live.stat().st_mode) == 0o644
+        # ...and a mode the user tightened stays tightened.
+        os.chmod(live, 0o600)
+        assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is True
+        assert stat.S_IMODE(live.stat().st_mode) == 0o600
+        im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+        assert stat.S_IMODE(live.stat().st_mode) == 0o600
+    finally:
+        os.umask(previous)
+
+
+def test_two_writers_do_not_share_a_temp_file(tmp_path: pathlib.Path) -> None:
+    """A temp name shared between writers is a second writer's file as much as this one's:
+    one could remove or overwrite the other's copy between the write and the replace, and
+    publish the wrong payload into the manifest that says the install finished."""
+    seen: list[str] = []
+    real_mkstemp = tempfile.mkstemp
+
+    def _record(*args, **kwargs):
+        descriptor, name = real_mkstemp(*args, **kwargs)
+        seen.append(pathlib.Path(name).name)
+        return descriptor, name
+
+    with unittest.mock.patch.object(tempfile, "mkstemp", _record):
+        im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+        assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is True
+    assert len(seen) == 2 and seen[0] != seen[1], seen
+    assert all(name.startswith(im.MANIFEST_NAME + ".") for name in seen)
+    # Neither copy outlives its writer.
+    assert not list(tmp_path.glob("*.tmp"))
+    assert _payload(tmp_path)["mlx_health"] == {"ok": True}
+
+
+def test_update_manifest_does_not_recreate_one_removed_while_it_worked(
+    tmp_path: pathlib.Path, monkeypatch
+) -> None:
+    """A peer running an older build of this module removes the manifest without taking the
+    lock. Writing it back would put a completion marker over the venv that peer is part-way
+    through rebuilding."""
+    im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+    live = tmp_path / im.MANIFEST_NAME
+    real_read = im.read_manifest
+
+    def _read_then_the_peer_removes_it(root = None):
+        data = real_read(root)
+        live.unlink(missing_ok = True)
+        return data
+
+    monkeypatch.setattr(im, "read_manifest", _read_then_the_peer_removes_it)
+    assert im.update_manifest(root = tmp_path, mlx_health = {"ok": True}) is False
+    monkeypatch.undo()
+    assert not live.exists()
+    assert not list(tmp_path.glob("*.tmp")), "the temp copy outlived the call"
 
 
 def test_update_manifest_with_nothing_to_say_is_a_no_op(tmp_path: pathlib.Path) -> None:
@@ -600,3 +936,53 @@ def test_an_absent_tiktoken_is_optional_but_a_present_one_is_held_to_its_record(
     (sidecar / "hf_xet" / "__init__.py").unlink()
     current, reason = im.sidecar_is_current(sidecar, PINS)
     assert current is False and "hf_xet" in reason
+
+
+def test_write_manifest_never_raises_on_a_payload_json_cannot_encode(
+    tmp_path: pathlib.Path,
+) -> None:
+    """`extra` is composed by the caller from what the pass observed, and the docstring
+    promises this never raises. It is called as the last act of a pass that has already
+    installed everything, so a TypeError out of json.dumps would end the update with a
+    traceback and leave the venv with no manifest -- which every reader takes for a
+    half-built install. update_manifest already catches the same three.
+    """
+    assert (
+        im.write_manifest(
+            root = tmp_path,
+            req_root = tmp_path,
+            package_name = "pytest",
+            extra = {"known_unmet": {"studio.txt"}},
+        )
+        is None
+    )
+    assert not (tmp_path / im.MANIFEST_NAME).exists()
+
+
+def test_an_unencodable_extra_leaves_an_existing_manifest_alone(tmp_path: pathlib.Path) -> None:
+    """Refusing is the safe direction: the previous record is still true of this venv."""
+    im.write_manifest(
+        root = tmp_path, req_root = tmp_path, package_name = "pytest", extra = {"pip_check_ok": True}
+    )
+    before = _payload(tmp_path)
+    assert (
+        im.write_manifest(
+            root = tmp_path,
+            req_root = tmp_path,
+            package_name = "pytest",
+            extra = {"bad": object()},
+        )
+        is None
+    )
+    assert _payload(tmp_path) == before
+
+
+def test_both_writers_refuse_the_same_unencodable_payload(tmp_path: pathlib.Path) -> None:
+    im.write_manifest(root = tmp_path, req_root = tmp_path, package_name = "pytest")
+    assert im.update_manifest(root = tmp_path, mlx_health = {1, 2}) is False
+    assert (
+        im.write_manifest(
+            root = tmp_path, req_root = tmp_path, package_name = "pytest", extra = {"x": {1, 2}}
+        )
+        is None
+    )

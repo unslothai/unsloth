@@ -118,7 +118,12 @@ def test_mlx_install_respects_platform_mode_and_pins(
     enabled = platform == "macos_arm" and not no_torch
     assert len(calls) == int(enabled)
     if platform.startswith("macos"):
-        assert stack._TOTAL == (12 if skip_base and not shared_base else 13) + int(enabled)
+        # An update without torch announces the no-torch runtime deps on their own slot.
+        assert stack._TOTAL == (
+            (12 if skip_base and not shared_base else 13)
+            + int(enabled)
+            + int(no_torch and not skip_base)
+        )
     if enabled:
         # --upgrade-package takes a bare NAME, not a pin: skip its argument.
         args = list(calls[0].args[1:])

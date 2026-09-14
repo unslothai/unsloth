@@ -28,6 +28,7 @@ import sys
 
 import pytest
 import types as _types
+import os
 from pathlib import Path
 
 # The backend uses "from utils..." imports; ensure the backend dir is on sys.path.
@@ -175,6 +176,25 @@ def test_a_runtime_repair_survives_a_tiktoken_that_will_not_install(tmp_path, mo
 
     monkeypatch.setattr(tv, "_install_to_dir", fake_install_failing_required)
     assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is False
+
+
+def test_a_rebuild_records_the_optional_install_it_could_not_do(tmp_path, monkeypatch):
+    """The sidecar reads as valid from here on, so the next activation runs the top-up. Left
+    unrecorded, the outage that just failed this install would be met again by that top-up and
+    by every worker a job spawns, each sitting through the same doomed network retries."""
+    root = tmp_path / ".venv_t5_550"
+    monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: not pkg.startswith("tiktoken"))
+    monkeypatch.setattr(tv, "_venv_dir_is_valid_and_undamaged", lambda *a, **k: False)
+    tv._OPTIONAL_TOP_UP_ATTEMPTED.clear()
+
+    assert tv._ensure_venv_dir(str(root), tv._VENV_T5_550_PACKAGES, "test sidecar") is True
+
+    optional = next(p for p in tv._VENV_T5_550_PACKAGES if p.startswith("tiktoken"))
+    assert tv._top_up_failed_recently(str(root), optional) is True
+    assert (os.path.normcase(os.path.abspath(str(root))), optional) in tv._OPTIONAL_TOP_UP_ATTEMPTED
+    # A later attempt that succeeds clears it again.
+    tv._record_top_up_outcome(str(root), optional, True)
+    assert tv._top_up_failed_recently(str(root), optional) is False
 
 
 def test_a_remnant_that_will_not_go_fails_the_build_instead_of_shadowing(tmp_path, monkeypatch):

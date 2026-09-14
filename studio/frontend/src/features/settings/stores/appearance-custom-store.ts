@@ -356,8 +356,7 @@ function sanitizeSidebarMenu(value: unknown): SidebarMenuItemPref[] {
     seen.add(source.id);
     items.push({ id: source.id, visible: source.visible !== false });
   }
-  // Ids added after the payload was written land at the end with their
-  // default visibility.
+  // Ids added after the payload was written land at the end with their default visibility.
   for (const id of SIDEBAR_MENU_ITEM_IDS) {
     if (!seen.has(id))
       items.push({ id, visible: SIDEBAR_MENU_DEFAULT_VISIBLE[id] });
@@ -703,9 +702,8 @@ function syncImportedFonts(fonts: ImportedFont[]): void {
   const wanted = new Map(
     (Array.isArray(fonts) ? fonts : []).map((f) => [f.name, f.dataUrl]),
   );
-  // Drop faces whose name is gone OR whose bytes changed: document.fonts is a
-  // set of FontFace objects, not keyed by family, so a stale face must be
-  // deleted before the new bytes are added.
+  // Drop faces whose name is gone OR whose bytes changed: document.fonts is a set of FontFace
+  // objects, not keyed by family, so a stale face must be deleted before the new bytes are added.
   for (const [name, entry] of registeredFontFaces) {
     if (wanted.get(name) !== entry.dataUrl) {
       document.fonts.delete(entry.face);
@@ -823,10 +821,9 @@ export function applyCustomizationToDocument(
     setVar("--custom-chat-font", null);
   }
 
-  // The UI font size drives a typography scale factor, never the root font
-  // size: rem-based layout geometry must not move with the preference. The
-  // scale reaches text through the --text-* / --text-ui-* / --leading-*
-  // tokens in index.css.
+  // The UI font size drives a typography scale factor, never the root font size: rem-based layout
+  // geometry must not move with the preference. The scale reaches text through the --text-* /
+  // --text-ui-* / --leading-* tokens in index.css.
   const effectiveUiFontSize = c.uiFontSize ?? UI_FONT_SIZE_RANGE.default;
   if (effectiveUiFontSize !== UI_FONT_SIZE_RANGE.default) {
     setVar(

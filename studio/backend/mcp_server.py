@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Curated MCP tools for driving an Unsloth Studio instance.
-
-The MCP surface deliberately wraps the existing Unsloth services instead of
-duplicating training or export logic. It is opt-in because several tools can
-start GPU work or write model artifacts.
+"""Curated MCP tools for driving an Unsloth Studio instance. The MCP surface deliberately wraps the existing
+Unsloth services instead of duplicating training or export logic. It is opt-in because several tools can start
+GPU work or write model artifacts.
 """
 
 from __future__ import annotations
@@ -75,10 +73,8 @@ def _dump(value: Any) -> Any:
 
 
 def _clamp(value: int, low: int, high: int) -> int:
-    """Clamp an MCP-supplied integer into an inclusive range.
-
-    MCP tools call the Unsloth route functions directly, which skips FastAPI's
-    Query(ge=, le=) validation, so we re-apply the same bounds here.
+    """Clamp an MCP-supplied integer into an inclusive range. MCP tools call the Unsloth route functions
+    directly, which skips FastAPI's Query(ge=, le=) validation, so we re-apply the same bounds here.
     """
     return max(low, min(value, high))
 

@@ -3,32 +3,26 @@
 
 """Diffusion LoRA training for Unsloth Studio (text-to-image, SDXL).
 
-Trains a LoRA adapter on the U-Net of an SDXL pipeline from an image + caption dataset
-and exports it as a diffusers-format ``.safetensors`` that the Unsloth diffusion backend
-(and any diffusers pipeline via ``load_lora_weights``) can load.
+Trains a LoRA adapter on the U-Net of an SDXL pipeline from an image + caption dataset and exports
+it as a diffusers-format ``.safetensors`` the Unsloth diffusion backend (and any diffusers pipeline
+via ``load_lora_weights``) can load.
 
-Design:
-- Family-agnostic building blocks (dataset discovery, config normalisation + validation,
-  event emission, the stop protocol, adapter publishing, and the family/trainer registry)
-  live in ``diffusion_train_common`` and are shared with the DiT trainers. They are
-  re-exported here so existing import paths keep working.
-- ``run_diffusion_lora_training`` is the SDXL training loop. It reports progress through an
-  ``on_event`` callback whose payloads match the training worker's event protocol
-  (``{"type": ..., "ts": ...}``) so it can be spawned as a subprocess and streamed to the
-  UI, and it polls a ``should_stop`` callback so a stop request ends it cleanly (with a
-  partial save).
-- ``run_diffusion_training_process`` is the thin mp.Queue adapter; it dispatches to the
-  trainer registered for the resolved family (SDXL here, DiT families in a follow-up).
-  ``main`` is a CLI.
+Family-agnostic building blocks (dataset discovery, config normalisation and validation, event
+emission, the stop protocol, adapter publishing, and the family/trainer registry) live in
+``diffusion_train_common`` and are shared with the DiT trainers; they are re-exported here so
+existing import paths keep working. ``run_diffusion_lora_training`` is the SDXL training loop: it
+reports progress through an ``on_event`` callback whose payloads match the training worker's event
+protocol so it can be spawned as a subprocess and streamed to the UI, and it polls a ``should_stop``
+callback so a stop request ends it cleanly with a partial save. ``run_diffusion_training_process``
+is the thin mp.Queue adapter, dispatching to the trainer registered for the resolved family, and
+``main`` is a CLI.
 
-Memory/perf: captions are encoded once up front and the CLIP text encoders freed; VAE
-latents are likewise precomputed into a small CPU cache (``cache_latents``) and the VAE
-freed. The cache stores the posterior's affine pair (mean/std, scale folded in), so every
-step still draws a fresh VAE sample -- distribution-identical to encoding in the loop,
-without keeping the VAE resident or paying a per-step encode. TF32 matmuls + cudnn
-autotuning are enabled for the run under ``cfg.enable_tf32``, and the U-Net's repeated
-transformer blocks are regionally torch.compiled (``cfg.compile_transformer``, never
-fatal -- any failure falls back to eager with a warning event).
+Memory/perf: captions are encoded once up front and the CLIP text encoders freed; VAE latents are
+likewise precomputed into a small CPU cache (``cache_latents``) and the VAE freed. The cache stores
+the posterior's affine pair (mean/std, scale folded in), so every step still draws a fresh VAE
+sample, distribution-identical to encoding in the loop without keeping the VAE resident. TF32
+matmuls and cudnn autotuning are enabled under ``cfg.enable_tf32``, and the U-Net's repeated
+transformer blocks are regionally torch.compiled (``cfg.compile_transformer``, never fatal).
 """
 
 from __future__ import annotations
@@ -122,7 +116,6 @@ def _load_image_tensor(
     if random_flip and rng.random() < 0.5:
         img = img.transpose(Image.FLIP_LEFT_RIGHT)
         # A flip mirrors the crop's left origin, so report the mirrored offset (as diffusers does).
-        # Mirror the crop's left origin (same as _load_image_tensor's random flip).
         crop_left = max(0, resized_w - resolution - left)
     arr = np.asarray(img, dtype = np.float32) / 255.0
     tensor = torch.from_numpy(arr).permute(2, 0, 1) * 2.0 - 1.0

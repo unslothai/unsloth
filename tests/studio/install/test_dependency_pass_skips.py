@@ -20,10 +20,12 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import os
 import pathlib
 import platform
 import re
 import sys
+import tempfile
 import types
 
 import pytest
@@ -479,7 +481,10 @@ def test_a_mutable_git_ref_is_evidence_only_while_the_remote_still_points_at_it(
     # The remote cannot be reached: the installed build is kept, and the log says so.
     monkeypatch.setattr(stack, "_git_remote_commit", _remote(None))
     assert stack._direct_reference_is_installed(req, "triton_kernels") is True
-    assert "keeping the installed build 0123456789ab" in capsys.readouterr().out
+    # Whitespace-normalised: _note wraps to the terminal width, so on an 80-column
+    # terminal -- every xdist worker, and CI runs this suite with -n 4 -- the sentence
+    # breaks mid-phrase and a literal substring match fails for no reason of substance.
+    assert "keeping the installed build 0123456789ab" in " ".join(capsys.readouterr().out.split())
 
     # Without a recorded commit there is nothing to compare: the step runs, offline or not.
     without_commit = {**recorded, "vcs_info": {"vcs": "git", "requested_revision": "release/3.6.x"}}
@@ -661,6 +666,28 @@ def test_no_closure_record_is_kept_under_a_callers_no_deps(monkeypatch) -> None:
     assert stack._closure_record() == {}
 
 
+def test_no_closure_record_is_kept_under_a_callers_uv_override(monkeypatch, gated) -> None:
+    """uv applies an override past the pin that asked for the package, so what the pass
+    leaves unmet under one is the override's doing. _plan_pass already refuses evidence
+    for a caller's UV_OVERRIDE, but the pass still writes the manifest at the end: a
+    record kept here would excuse the step that repairs it on every later update, long
+    after the override is gone."""
+    _payload, req_root = gated
+    monkeypatch.setattr(stack, "_AUDITED_STEPS", {"studio.txt": req_root / "studio.txt"})
+    monkeypatch.setattr(stack, "_STEP_RESULTS", {"studio.txt": "ran"})
+    monkeypatch.setattr(
+        stack.install_manifest, "closure_unmet_requirements", lambda *a, **k: ["click 8.5.0"]
+    )
+    assert stack._closure_record() == {"studio.txt": ["click 8.5.0"]}
+    foreign = req_root / "my-overrides.txt"
+    foreign.write_text("click==8.5.0\n", encoding = "utf-8")
+    monkeypatch.setenv("UV_OVERRIDE", str(foreign))
+    assert stack._closure_record() == {}
+    # The module's own macOS arm64 file is a tracked input, not a caller's.
+    monkeypatch.setenv("UV_OVERRIDE", str(stack._MLX_OVERRIDES))
+    assert stack._closure_record() == {"studio.txt": ["click 8.5.0"]}
+
+
 def test_a_caller_supplied_uv_override_forces_a_full_pass(monkeypatch, manifest) -> None:
     """uv applies UV_OVERRIDE to every step and its versions replace requirements
     outright; the gate digests only the bundled macOS file, so a caller's own file is
@@ -717,6 +744,24 @@ def test_a_plugin_digest_is_stable_and_content_addressed(tmp_path) -> None:
     assert stack._local_plugin_digest(first) == stack._local_plugin_digest(second)
     (second / "src" / "mod.py").write_text("VALUE = 2\n", encoding = "utf-8")
     assert stack._local_plugin_digest(first) != stack._local_plugin_digest(second)
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Windows filenames are UTF-16, not bytes")
+def test_a_filename_that_is_not_utf_8_still_digests(tmp_path) -> None:
+    """POSIX filenames are bytes. A stray one beside the sources -- a download, an editor
+    backup -- used to raise UnicodeEncodeError out of the digest and end the update."""
+    plugin = tmp_path / "p"
+    plugin.mkdir()
+    (plugin / "ok.py").write_text("x\n", encoding = "utf-8")
+    odd = os.path.join(str(plugin), b"\xff.txt".decode("utf-8", "surrogateescape"))
+    try:
+        with open(odd, "wb") as handle:
+            handle.write(b"x")
+    except OSError:
+        # APFS and other filesystems enforce UTF-8 names, so there is nothing to test here.
+        pytest.skip("this filesystem refuses filenames that are not UTF-8")
+    digest = stack._local_plugin_digest(plugin)
+    assert digest and stack._local_plugin_digest(plugin) == digest
 
 
 def test_a_renamed_file_changes_the_plugin_digest(tmp_path) -> None:
@@ -861,6 +906,8 @@ def test_a_pip_that_cannot_run_is_bootstrapped_again(monkeypatch) -> None:
 def test_the_mlx_stack_is_current_only_when_all_four_hold(monkeypatch) -> None:
     versions = {"mlx": "0.32.1", "mlx-metal": "0.32.1", "mlx-lm": "0.31.3", "mlx-vlm": "0.5.0"}
     monkeypatch.setattr(stack, "_installed_distribution_version", lambda name: versions.get(name))
+    # The closure of a stack that is not installed on this host is its own test below.
+    monkeypatch.setattr(stack, "_mlx_closure_unmet", lambda: False)
     assert stack._mlx_stack_is_current() is True
     for name, wrong in (
         ("mlx", "0.32.0"),
@@ -873,6 +920,71 @@ def test_the_mlx_stack_is_current_only_when_all_four_hold(monkeypatch) -> None:
         broken[name] = wrong
         monkeypatch.setattr(stack, "_installed_distribution_version", lambda n, b = broken: b.get(n))
         assert stack._mlx_stack_is_current() is False, name
+
+
+def test_a_satisfied_mlx_pin_with_a_broken_closure_is_not_current(monkeypatch, tmp_path) -> None:
+    """This step installs WITH dependencies, so it is what repairs an mlx-vlm whose own
+    miniaudio or mlx-audio is gone. Versions alone would skip that repair."""
+    versions = {"mlx": "0.32.1", "mlx-metal": "0.32.1", "mlx-lm": "0.31.3", "mlx-vlm": "0.5.0"}
+    monkeypatch.setattr(stack, "_installed_distribution_version", lambda name: versions.get(name))
+    monkeypatch.setattr(stack, "_mlx_closure_unmet", lambda: True)
+    assert stack._mlx_stack_is_current() is False
+
+
+def test_the_mlx_audit_does_not_fight_the_bundled_override(monkeypatch) -> None:
+    """An override REPLACES every requirement on the package it names, so the version the
+    installer leaves behind is the override's, not the one mlx-vlm's metadata asks for. Read
+    raw, that disagreement is permanent and the MLX step would run on every update forever."""
+    monkeypatch.setattr(stack, "_installed_index", lambda: {})
+    names = stack._overridden_project_names()
+    # The bundled file is the source of truth; these three are what it currently replaces.
+    assert {"transformers", "anyio", "huggingface-hub"} <= names
+
+    monkeypatch.setattr(
+        stack.install_manifest,
+        "closure_unmet_requirements",
+        lambda *a, **k: ["transformers 5.5.0", "anyio 4.13.0"],
+    )
+    assert stack._mlx_closure_unmet() is False
+    # An override-named package that is ABSENT is still this step's work.
+    monkeypatch.setattr(
+        stack.install_manifest, "closure_unmet_requirements", lambda *a, **k: ["transformers"]
+    )
+    assert stack._mlx_closure_unmet() is True
+    # ...as is anything the override does not name.
+    monkeypatch.setattr(
+        stack.install_manifest,
+        "closure_unmet_requirements",
+        lambda *a, **k: ["transformers 5.5.0", "miniaudio 1.0"],
+    )
+    assert stack._mlx_closure_unmet() is True
+
+
+def test_the_mlx_closure_audit_reads_the_pins_and_cleans_up(monkeypatch, tmp_path) -> None:
+    seen: list[str] = []
+
+    def _closure(
+        req,
+        _index = None,
+        **_kwargs,
+    ):
+        seen.append(req.read_text(encoding = "utf-8"))
+        assert req.exists()
+        return ["miniaudio"]
+
+    monkeypatch.setattr(stack.install_manifest, "closure_unmet_requirements", _closure)
+    monkeypatch.setattr(stack, "_installed_index", lambda: {})
+    assert stack._mlx_closure_unmet() is True
+    assert seen and all(spec in seen[0] for spec in [*stack._MLX_PINS, stack._MLX_VLM_SPEC])
+    # A temp file per update, on a path the step is not allowed to leave behind.
+    assert not list(pathlib.Path(tempfile.gettempdir()).glob("unsloth-mlx-*.txt"))
+
+    def _raises(*_a, **_k):
+        raise RuntimeError("metadata unreadable")
+
+    monkeypatch.setattr(stack.install_manifest, "closure_unmet_requirements", _raises)
+    # An audit that cannot run is a reason to run the step, never to skip it.
+    assert stack._mlx_closure_unmet() is True
 
 
 def test_the_mlx_pins_match_the_runtime_repair() -> None:
@@ -1115,6 +1227,7 @@ class _FakePatchModule:
 
     def main(self):
         self.main_calls += 1
+        print("single-env metadata patch: checked=1, changed=1")
         if self._raise_on_main:
             raise RuntimeError("cannot patch in process")
         return 0
@@ -1176,6 +1289,22 @@ def test_the_patch_applies_in_process(monkeypatch, tmp_path) -> None:
     stack._run_patch_metadata()
     assert fake.main_calls == 1
     assert ran == []
+
+
+def test_the_in_process_patch_does_not_print_into_the_progress_line(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    """The script prints its tally, and the subprocess path it replaces captured that.
+    In process it would land in the middle of the progress bar."""
+    _patch_module(monkeypatch, tmp_path, UNPATCHED)
+    monkeypatch.setattr(stack, "run", lambda *a, **k: None)
+    monkeypatch.setattr(stack, "VERBOSE", False)
+    stack._run_patch_metadata()
+    assert capsys.readouterr().out == ""
+    # ...and it is not lost: UNSLOTH_VERBOSE prints no progress line for it to break.
+    monkeypatch.setattr(stack, "VERBOSE", True)
+    stack._run_patch_metadata()
+    assert "checked=1, changed=1" in capsys.readouterr().out
 
 
 def test_the_patch_still_falls_back_to_the_subprocess(monkeypatch, tmp_path) -> None:
@@ -1466,6 +1595,74 @@ def test_the_closure_record_never_carries_an_audit_failure(monkeypatch, gated) -
     assert stack._closure_record() == {"studio.txt": ["click 8.3.0"]}
 
 
+def test_a_known_unmet_field_that_is_not_a_mapping_is_ignored(monkeypatch, gated) -> None:
+    """Read from the manifest on disk and reached while write_manifest's arguments are
+    being built, so a hand-edited value here used to abort a pass whose installs had all
+    landed -- leaving the venv with no manifest at all."""
+    _payload, req_root = gated
+    monkeypatch.setattr(stack, "_AUDITED_STEPS", {"studio.txt": req_root / "studio.txt"})
+    monkeypatch.setattr(stack, "_STEP_RESULTS", {"studio.txt": "skipped"})
+    monkeypatch.setattr(
+        stack.install_manifest, "closure_unmet_requirements", lambda *a, **k: ["click 8.3.0"]
+    )
+    for value in (["click 8.3.0"], "click", 7):
+        stack._PASS_EVIDENCE["known_unmet"] = value
+        # The step ran for nothing it can prove was known, so nothing is carried.
+        assert stack._closure_record() == {}
+
+
+def test_a_requirement_that_is_simply_absent_is_never_a_known_conflict(monkeypatch, gated) -> None:
+    """closure_unmet_requirements names an absent distribution by itself and one outside its
+    specifier as "name version". Only the second can be a conflict nothing can resolve: an
+    absent one is work this step does, and recording it would excuse the install that repairs
+    it on every later update. Reachable whenever the resolver was told to skip dependencies by
+    something no digest covers -- a pip.conf with no-deps, not only the environment."""
+    _payload, req_root = gated
+    monkeypatch.setattr(stack, "_AUDITED_STEPS", {"studio.txt": req_root / "studio.txt"})
+    monkeypatch.setattr(stack, "_STEP_RESULTS", {"studio.txt": "ran"})
+    monkeypatch.setattr(
+        stack.install_manifest,
+        "closure_unmet_requirements",
+        lambda *a, **k: ["cobble", "click 8.3.0"],
+    )
+    assert stack._closure_record() == {"studio.txt": ["click 8.3.0"]}
+
+    # ...and a record an earlier build wrote with bare names does not excuse one either.
+    monkeypatch.setattr(stack, "_STEP_RESULTS", {"studio.txt": "skipped"})
+    stack._PASS_EVIDENCE["known_unmet"] = {"studio.txt": ["cobble", "click 8.3.0"]}
+    assert stack._closure_record() == {"studio.txt": ["click 8.3.0"]}
+
+
+def test_a_file_that_includes_another_one_is_never_skipped(monkeypatch, gated, tmp_path) -> None:
+    """pass_inputs digests this file; an -r line's target is a second file it does not name,
+    and missing_requirements skips flag lines, so a pin behind the include could move with
+    nothing in the gate able to see it."""
+    _payload, req_root = gated
+    outer = req_root / "studio.txt"
+    outer.write_text("-r nested.txt\n", encoding = "utf-8")
+    (req_root / "nested.txt").write_text("cobble==0.1.3\n", encoding = "utf-8")
+    monkeypatch.setattr(stack, "_inputs_unchanged", lambda keys: True)
+    monkeypatch.setattr(stack, "_effective_requirements", lambda r: (r, []))
+    assert stack._requirements_satisfied(outer, no_deps = True) is False
+    # Every shipped requirements file must stay skippable, or the gate does nothing. The repo's
+    # own tree, not the fixture's: REQ_ROOT points at the temporary copy here.
+    root = REPO_ROOT / "studio" / "backend" / "requirements"
+    shipped = [
+        name
+        for name in stack.install_manifest.PASS_INPUT_FILES
+        if (root / name).is_file() and stack._includes_another_requirements_file(root / name)
+    ]
+    assert shipped == []
+
+
+def test_an_unreadable_requirements_file_is_never_skipped(tmp_path) -> None:
+    """A file the gate cannot read is one whose contents it cannot stand behind."""
+    odd = tmp_path / "req.txt"
+    odd.write_bytes(b"\xff\xfe not utf-8\n")
+    assert stack._includes_another_requirements_file(odd) is True
+    assert stack._includes_another_requirements_file(tmp_path / "absent.txt") is True
+
+
 def test_a_carried_known_unmet_record_drops_what_is_met_again(monkeypatch, gated) -> None:
     """A skipped step carries its record, narrowed to what the closure still lacks: an
     entry satisfied since it was recorded was no conflict, and keeping it would let a
@@ -1652,6 +1849,14 @@ def test_a_satisfied_torchao_pin_is_still_reinstalled_on_a_forced_pass(monkeypat
     stack._install_torchao_for_torch("2.10.0")
     assert len(calls) == 1
     assert stack._STEP_RESULTS.get("torchao") == "ran"
+    # ...with the flags the step had before the skip existed. Every install's first update on
+    # this build has no evidence, and forcing there would re-download a wheel pip was about to
+    # report as already satisfied.
+    assert "--force-reinstall" not in calls[0]
+
+    monkeypatch.setattr(stack, "_pin_needs_reinstall", lambda *_a: True)
+    stack._install_torchao_for_torch("2.10.0")
+    assert "--force-reinstall" in calls[1]
 
 
 def test_the_mlx_and_codec_skips_ask_for_the_evidence_too() -> None:
@@ -1803,7 +2008,9 @@ def test_the_parked_manifest_goes_right_after_the_live_one_is_removed(monkeypatc
     source = open(stack.__file__, encoding = "utf-8").read()
     at = source.index("if install_manifest.remove_manifest():")
     assert "install_manifest.consume_previous_manifest()" in source[at : at + 200]
-    assert "previous_manifest_path().exists()" in source[at : at + 400]
+    # The path is bound above the removal so the same check can run BEFORE it as well; the
+    # invariant here is that the parked copy is read for and gone within this window.
+    assert "_parked.exists()" in source[at : at + 400]
 
 
 def test_an_input_missing_from_the_record_or_unreadable_now_is_changed(monkeypatch, tmp_path):
@@ -1855,3 +2062,201 @@ def test_duplicate_constrained_metadata_is_a_violation_not_an_absence(monkeypatc
     assert manifest.violated_constraints(req_file = req) == []
     versions["pyarrow"] = [""]
     assert manifest.violated_constraints(req_file = req) == ["pyarrow"]
+
+
+# -- nothing the gate reads may end a pass that already installed everything ----
+
+
+@pytest.fixture
+def audited(monkeypatch, tmp_path):
+    """One audited with-deps step, on a host where _effective_requirements really copies.
+
+    Windows and --no-torch hosts filter the file, so the gate and the record both read it
+    from disk. The record is taken as an argument to write_manifest, after every install
+    has landed, and the branch's own comment there says REQ_ROOT may have been replaced by
+    the core step -- so the file these paths hold can be gone, or no longer UTF-8.
+    """
+    req_root = tmp_path / "requirements"
+    (req_root / "single-env").mkdir(parents = True)
+    for name in stack.install_manifest.PASS_INPUT_FILES:
+        (req_root / name).write_text(f"# {name}\n", encoding = "utf-8")
+    monkeypatch.setattr(stack, "REQ_ROOT", req_root)
+    monkeypatch.setattr(stack, "CONSTRAINTS", req_root / "single-env" / "constraints.txt")
+    monkeypatch.setattr(stack, "IS_WINDOWS", True)
+    monkeypatch.setattr(stack, "NO_TORCH", False)
+    monkeypatch.setattr(stack, "IS_MAC_ARM", False)
+    monkeypatch.setattr(stack, "PLATFORM_LACKS_TORCHCODEC_WHEEL", False)
+    monkeypatch.setattr(stack.install_manifest, "missing_requirements", lambda *a, **k: [])
+    monkeypatch.setattr(stack.install_manifest, "violated_constraints", lambda *a, **k: [])
+    monkeypatch.setattr(stack.install_manifest, "closure_unmet_requirements", lambda *a, **k: [])
+    monkeypatch.setattr(stack.install_manifest, "installed_dependency_index", lambda *a, **k: {})
+    stack._AUDITED_STEPS["studio.txt"] = req_root / "studio.txt"
+    return req_root
+
+
+def test_a_requirements_file_the_update_replaced_still_lets_the_manifest_be_written(
+    audited,
+) -> None:
+    """The failure this guards is the worst shape available: every package installed, the
+    pass then dies with a traceback, and the venv is left with no manifest at all -- which
+    every reader takes for a half-built install."""
+    (audited / "studio.txt").unlink()
+    assert isinstance(stack._closure_record(), dict)
+
+
+def test_a_requirements_file_that_is_not_utf8_still_lets_the_manifest_be_written(audited) -> None:
+    (audited / "studio.txt").write_bytes(b"\xff\xfe studio\n")
+    assert isinstance(stack._closure_record(), dict)
+
+
+def test_a_temp_copy_that_cannot_be_written_still_lets_the_manifest_be_written(
+    audited, monkeypatch
+) -> None:
+    """_filter_requirements already falls back from the requirements tree to the system
+    temp dir; a host that refuses both is a reason to record nothing, not to fail."""
+
+    def _refuse(*a, **k):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(stack.tempfile, "NamedTemporaryFile", _refuse)
+    assert isinstance(stack._closure_record(), dict)
+
+
+def test_a_step_whose_file_moved_mid_pass_runs_rather_than_raising(audited) -> None:
+    """The same read, one line earlier, inside the gate."""
+    target = audited / "studio.txt"
+    stack._PASS_EVIDENCE = {
+        "pass_inputs": {"studio.txt": stack.install_manifest.digest_file(target)},
+        "step_results": {"studio.txt": "ran"},
+    }
+    target.unlink()
+    assert stack._requirements_satisfied(target, no_deps = False) is False
+
+
+def test_a_triton_requirements_file_that_is_not_utf8_does_not_end_the_step(tmp_path) -> None:
+    """triton-kernels.txt is read for its git direct reference. utf-8-sig raises a
+    UnicodeDecodeError, not an OSError, and this step could not fail before."""
+    target = tmp_path / "triton-kernels.txt"
+    target.write_bytes(b"\xff\xfe git+https://example.invalid/x@abcdef1\n")
+    assert stack._direct_reference_in_requirements(target) is None
+
+
+def test_every_uninstall_is_counted() -> None:
+    """A mutation the counter does not see leaves the constraint and closure caches
+    describing a venv that no longer exists, and lets the final `pip check` be skipped
+    right after something was removed. Three sites removed distributions without saying
+    so: the XPU generic-triton swap, the gfx906 bitsandbytes drop and the flash-attn
+    rejection."""
+    tree = ast.parse(STACK_PATH.read_text(encoding = "utf-8"))
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        body = ast.dump(node)
+        if "'uninstall'" not in body and '"uninstall"' not in body:
+            continue
+        if "_count_install_action" not in body:
+            offenders.append(node.name)
+    assert not offenders, f"uninstalls that do not move the counter: {offenders}"
+
+
+def test_rejecting_a_flash_attn_wheel_counts_as_an_install_action(monkeypatch) -> None:
+    monkeypatch.setattr(stack, "_INSTALL_ACTIONS", 0)
+    monkeypatch.setattr(stack, "USE_UV", False)
+    monkeypatch.setattr(
+        stack.subprocess, "run", lambda *a, **k: types.SimpleNamespace(returncode = 0)
+    )
+    assert stack._remove_rejected_flash_attn() is True
+    assert stack._INSTALL_ACTIONS == 1
+
+
+def test_installing_a_flash_attn_wheel_counts_as_an_install_action(monkeypatch) -> None:
+    """install_wheel lands a distribution without going through pip_install, so nothing
+    else on that path moves the counter."""
+    monkeypatch.setattr(stack, "_INSTALL_ACTIONS", 0)
+    monkeypatch.setattr(stack, "NO_TORCH", False)
+    monkeypatch.setattr(stack, "IS_WINDOWS", False)
+    monkeypatch.setattr(stack, "IS_MACOS", False)
+    monkeypatch.setattr(stack, "_flash_attn_install_disabled", lambda: False)
+    monkeypatch.setattr(stack, "_flash_attn_importable", lambda: False)
+    monkeypatch.setattr(stack, "probe_torch_wheel_env", lambda: {"torch": "2.8.0"})
+    monkeypatch.setattr(stack, "_build_flash_attn_wheel_url", lambda env: "https://x.invalid/w")
+    monkeypatch.setattr(stack, "url_exists", lambda url, **k: True)
+    monkeypatch.setattr(
+        stack,
+        "install_wheel",
+        lambda *a, **k: iter([("uv", types.SimpleNamespace(returncode = 1, stdout = "", stderr = ""))]),
+    )
+    monkeypatch.setattr(stack, "_print_optional_install_failure", lambda *a, **k: None)
+    monkeypatch.setattr(stack, "_step", lambda *a, **k: None)
+    stack._ensure_flash_attn()
+    assert stack._INSTALL_ACTIONS == 1
+
+
+def test_the_installed_index_is_rebuilt_against_a_fresh_metadata_listing(monkeypatch) -> None:
+    """importlib.metadata memoises directory listings and revalidates them on mtime, which
+    is one-second granular on some filesystems, so a rebuild in the same tick as the
+    install that triggered it can read the listing from before. The gate invalidates
+    before its own on-disk check; _closure_record reaches the index without one."""
+    calls = []
+    monkeypatch.setattr(stack, "_CLOSURE_INDEX_CACHE", None)
+    monkeypatch.setattr(stack, "_INSTALL_ACTIONS", 0)
+    monkeypatch.setattr(stack.importlib, "invalidate_caches", lambda: calls.append(1))
+    monkeypatch.setattr(
+        stack.install_manifest, "installed_dependency_index", lambda: {"a": ("1", [])}
+    )
+    assert stack._installed_index() == {"a": ("1", [])}
+    assert calls == [1]
+    # Cached while nothing moves: the invalidation is not paid per gated step.
+    stack._installed_index()
+    assert calls == [1]
+    # ...and paid again the moment something is installed.
+    stack._count_install_action()
+    stack._installed_index()
+    assert calls == [1, 1]
+
+
+def test_an_unclearable_parked_copy_refuses_before_the_live_manifest_is_dropped(
+    monkeypatch, tmp_path
+) -> None:
+    """A parked path that cannot be removed -- a directory on the name, a Windows handle
+    held open by an indexer -- used to be found only AFTER remove_manifest had taken the
+    live manifest away. The pass then exited 1 with the venv reading as half-built and
+    every later update refusing at the same point, on an install that was complete a
+    moment earlier. The refusal now happens while the manifest is still there.
+    """
+    live = tmp_path / stack.install_manifest.MANIFEST_NAME
+    live.write_text("{}", encoding = "utf-8")
+    parked = tmp_path / stack.install_manifest.PREVIOUS_MANIFEST_NAME
+    parked.mkdir()  # cannot be unlinked, and os.replace onto it raises
+
+    monkeypatch.setattr(stack.install_manifest, "venv_root", lambda *a, **k: tmp_path)
+    monkeypatch.setattr(stack.install_manifest, "manifest_path", lambda *a, **k: live)
+    monkeypatch.setattr(stack.install_manifest, "previous_manifest_path", lambda *a, **k: parked)
+    monkeypatch.setattr(stack, "_plan_pass", lambda *a, **k: None)
+    monkeypatch.setattr(stack, "_safe_print", lambda *a, **k: None)
+    monkeypatch.setattr(stack, "_step", lambda *a, **k: None)
+    monkeypatch.setattr(stack, "_progress", lambda *a, **k: None)
+
+    assert stack.install_python_stack() == 1
+    assert live.exists(), "the live manifest was dropped before the refusal"
+    assert stack.install_manifest.read_manifest(tmp_path) is not None
+
+
+def test_a_temp_copy_that_cannot_be_unlinked_does_not_end_the_pass(audited, monkeypatch) -> None:
+    """The audit's own cleanup runs after the last install and before the manifest write.
+    A Windows sharing violation on its temp copy -- an indexer or scanner holding the file
+    -- used to escape from the `finally` and end the update there, with everything
+    installed and no manifest written."""
+    real = stack.Path.unlink
+
+    def _locked(self, *a, **k):
+        if "-filtered-" in self.name:
+            raise PermissionError(32, "The process cannot access the file")
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(stack.Path, "unlink", _locked)
+    assert isinstance(stack._closure_record(), dict)
+    # The gate's own cleanup is the same shape, one step earlier: it must answer, not raise.
+    stack._PASS_EVIDENCE = {"pass_inputs": {}, "step_results": {}}
+    assert stack._requirements_satisfied(audited / "studio.txt", no_deps = False) is False

@@ -12,6 +12,7 @@ RULE=$(printf '\342\224\200%.0s' {1..52})
 # --local: install from the local repo checkout (overlays unsloth as editable
 # and unsloth-zoo from git main). Mirrors install.sh --local for the Colab
 # path that runs setup.sh directly without going through install.sh.
+# ── Parse flags ──
 if [ "$#" -gt 0 ]; then
     for _arg in "$@"; do
         case "$_arg" in
@@ -26,7 +27,6 @@ fi
 # ── Maintainer-editable defaults ──────────────────────────────────────────
 # Change these in the GitHub-hosted script so all users get updated defaults.
 # User environment variables always override these baked-in values.
-#
 #   _DEFAULT_LLAMA_PR_FORCE : PR number to build by default ("" = normal path)
 #   _DEFAULT_LLAMA_SOURCE   : git clone URL for source builds
 #   _DEFAULT_LLAMA_TAG      : llama.cpp ref to build ("latest" = newest release,
@@ -36,7 +36,6 @@ fi
 #                             forces a source build, and causes HTTP 422 errors.
 #                             Only use "master" temporarily when the latest release
 #                             is missing support for a new model architecture.
-#
 #   UNSLOTH_LLAMA_CPP_BACKEND : "auto" (default), "cpu", "cuda", "vulkan",
 #                           "hip", or "rocm". Concrete values select and persist a
 #                           backend across updates; "auto" restores detection.
@@ -2158,19 +2157,11 @@ _target_has_pkg_version() {
     done
     return 1
 }
-# The pins, once, audited by install_manifest.sidecar_is_current and installed by _install_sidecar.
-# Every name must be one the audit can reach (a package directory, or the RECORD's top-level names:
-# six.py, PIL), or it reads stale forever and every update refetches the sidecar. tiktoken is not a
-# pin: its install is optional, so a sidecar without it is finished; _sidecar_top_up_tiktoken
-# retries it alone.
+# Audited AND installed from here: a name the audit cannot reach on disk reads stale forever.
 _SIDECAR_COMMON_PINS="huggingface_hub==1.8.0 hf_xet==1.4.2"
 
-# A failed tiktoken install's remnants shadow a working ambient copy from ahead of site-packages,
-# and being unpinned nothing else clears them. Every entry the wheel owns, as the runtime's
-# _remove_optional_remnants.
+# Remnants of a failed tiktoken install shadow the ambient copy and nothing else clears them.
 _sidecar_drop_tiktoken() {
-    # 1 when an entry would not go (a permission, a file held open): the caller then retires the
-    # whole sidecar, which the predicate would still call current.
     for _sdt_entry in "$1"/tiktoken "$1"/tiktoken_ext "$1"/tiktoken.libs "$1"/tiktoken-*.dist-info; do
         [ -e "$_sdt_entry" ] && rm -rf "$_sdt_entry" 2>/dev/null
     done
@@ -2188,8 +2179,8 @@ _sidecar_drop_tiktoken() {
 }
 
 _sidecar_retire_after_failed_tiktoken() {
-    # Part of tiktoken remains: the sidecar goes, best effort; the runtime withholds the rest.
-    rm -rf "$1" 2>/dev/null
+    # `|| true`: best effort under `set -e`, or an undeletable file fails an otherwise fine update.
+    rm -rf "$1" 2>/dev/null || true
     substep "the $2 sidecar kept part of a failed tiktoken install; retired, rebuilt on the next update"
 }
 
@@ -2205,7 +2196,7 @@ _sidecar_top_up_tiktoken() {
     # other. A recordless dist-info goes first; uv cannot uninstall it, metadata still reads it.
     for _stt_info in "$_stt_dir"/tiktoken-*.dist-info; do
         if [ -d "$_stt_info" ] && [ ! -f "$_stt_info/RECORD" ]; then
-            rm -rf "$_stt_info"
+            rm -rf "$_stt_info" || true   # `|| true`: set -e; the reinstall below handles a leftover
         fi
     done
     unset _stt_info
@@ -2216,13 +2207,11 @@ _sidecar_top_up_tiktoken() {
         fi
     done
     unset _stt_meta
-    # Not present, so every tiktoken dist-info here describes a missing or damaged payload and goes
-    # before the install: --upgrade lands the new dist-info beside the old one.
+    # Dropping the metadata is what makes uv reinstall instead of calling the pin satisfied.
     for _stt_info in "$_stt_dir"/tiktoken-*.dist-info; do
-        [ -d "$_stt_info" ] && rm -rf "$_stt_info"
+        [ -d "$_stt_info" ] && { rm -rf "$_stt_info" || true; }
     done
     unset _stt_info
-    # --upgrade: a --target install without it keeps a damaged tiktoken/ under fresh metadata.
     if ! fast_install_sidecar --target "$_stt_dir" --no-deps --upgrade "tiktoken" >/dev/null 2>&1; then
         if _sidecar_drop_tiktoken "$_stt_dir"; then
             substep "could not install tiktoken into the $_stt_label sidecar -- Qwen tokenizers may fail"
@@ -2234,14 +2223,16 @@ _sidecar_top_up_tiktoken() {
 }
 
 _sidecar_current() {
-    # One predicate for both shells (install_manifest.py): the version grep called a half-written
-    # sidecar with a transformers 5.3.0 METADATA "current".
+    # One predicate for both shells: the version grep called a half-written sidecar current.
     _sc_dir="$1"
     _sc_ver="$2"
     [ -d "$_sc_dir" ] || return 1
-    # No venv interpreter is the Colab path (_COLAB_NO_VENV); the stdlib-only shim runs under the
-    # installer's own `python` there. Only a tree with no interpreter at all falls back to the grep,
-    # which read an interrupted sidecar as current.
+    # No shim: answer from the grep, as setup.ps1 does, or every tier reads stale.
+    if [ ! -f "$SCRIPT_DIR/install_manifest.py" ]; then
+        _target_has_pkg_version "$_sc_dir" "transformers" "$_sc_ver"
+        return $?
+    fi
+    # Colab has no venv interpreter but the stdlib-only shim runs under its own python.
     _sc_python="$VENV_DIR/bin/python"
     if [ ! -x "$_sc_python" ]; then
         _sc_python=$(command -v python 2>/dev/null || command -v python3 2>/dev/null || true)
@@ -2251,9 +2242,8 @@ _sidecar_current() {
         _target_has_pkg_version "$_sc_dir" "transformers" "$_sc_ver"
         return $?
     fi
-    # Bounded where a timeout exists: the shim cannot interrupt a stalled RECORD read (a wedged
-    # mount). A timeout reads as stale, and the rebuild follows.
-    # shellcheck disable=SC2086 - the pins are a deliberate word-split list
+    # Bounded where timeout exists: the shim cannot interrupt a stalled read. A timeout is stale.
+    # shellcheck disable=SC2086  # the pins are a deliberate word-split list
     if command -v timeout >/dev/null 2>&1; then
         _sc_out=$(timeout -k 5 60 "$_sc_python" "$SCRIPT_DIR/install_manifest.py" sidecar "$_sc_dir" \
             "transformers==$_sc_ver" $_SIDECAR_COMMON_PINS 2>/dev/null)
@@ -2263,13 +2253,11 @@ _sidecar_current() {
             "transformers==$_sc_ver" $_SIDECAR_COMMON_PINS 2>/dev/null)
         _sc_rc=$?
     fi
-    # 124 is the TERM after 60 s, 137 the KILL after it: an audit that did not answer.
+    # 124 is timeout's TERM, 137 its KILL.
     if [ "$_sc_rc" -eq 124 ] || [ "$_sc_rc" -eq 137 ]; then
         _sc_out="sidecar: audit did not answer within 60 seconds"
     fi
     unset _sc_python
-    # The marker, not the exit code alone: an install_manifest.py predating the shim exits 0
-    # silently.
     case "$_sc_out" in
         "sidecar: current")
             unset _sc_out _sc_rc
@@ -2282,14 +2270,14 @@ _sidecar_current() {
             ;;
     esac
     unset _sc_out
-    # No marker and a failure: the audit died, which is not the legacy silent exit 0. Stale.
+    # A failure with no marker is a dead audit, not the legacy silent exit 0.
     if [ "$_sc_rc" -ne 0 ]; then
         verbose_substep "sidecar $_sc_dir: audit failed (exit $_sc_rc)"
         unset _sc_rc
         return 1
     fi
     unset _sc_rc
-    # An old shim (clean, silent exit 0): fall back to the version grep this replaced.
+    # An old shim exits 0 silently: fall back to the grep this replaced.
     _target_has_pkg_version "$_sc_dir" "transformers" "$_sc_ver"
 }
 
@@ -2302,9 +2290,12 @@ _install_sidecar() {
     mkdir -p "$_is_dir"
     : > "$_is_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     run_quiet "install transformers $_is_ver" fast_install_sidecar --target "$_is_dir" --no-deps "transformers==$_is_ver"
-    run_quiet "install huggingface_hub for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "huggingface_hub==1.8.0"
-    run_quiet "install hf_xet for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "hf_xet==1.4.2"
-    # Optional, as in setup.ps1: retried by _sidecar_top_up_tiktoken on later updates.
+    # From $_SIDECAR_COMMON_PINS, not a copy: a pin demanded but never installed reads stale forever.
+    for _is_pin in $_SIDECAR_COMMON_PINS; do
+        run_quiet "install ${_is_pin%%==*} for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "$_is_pin"
+    done
+    unset _is_pin
+    # Optional, as in setup.ps1; _sidecar_top_up_tiktoken retries it later.
     if ! run_quiet_no_exit "install tiktoken for $_is_label" fast_install_sidecar --target "$_is_dir" --no-deps "tiktoken"; then
         if _sidecar_drop_tiktoken "$_is_dir"; then
             substep "could not install tiktoken into the $_is_label sidecar -- Qwen tokenizers may fail"
@@ -2315,20 +2306,15 @@ _install_sidecar() {
     step "transformers" "$_is_ver pre-installed"
 }
 
-# Per tier: the old single flag (with its `_SKIP_PYTHON_DEPS = false` clause) rebuilt all three
-# sidecars on every update that touched the dependency pass, 60-90 s on Windows for nothing.
 _NEED_T5_530=false
 _NEED_T5_550=false
 _NEED_T5_510=false
-# Under the offline keep, and under UV_OFFLINE without it: the migration is a wipe followed by three
-# rebuilds from a cache that may be cold, and the legacy tree is the only sidecar.
+# The migration is a wipe and three rebuilds from a cache that may be cold, and the legacy tree is
+# the only sidecar, so under UV_OFFLINE it waits for the next online update.
 if [ -d "$STUDIO_HOME/.venv_t5" ] && { [ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; }; then
-    # The migration is a wipe followed by three rebuilds; left for the next online update.
     substep "legacy transformers sidecar left in place -- UV_OFFLINE is set, migration waits for the next online update"
 elif [ -d "$STUDIO_HOME/.venv_t5" ]; then
-    # Legacy layout — migrate. The tiered venvs a staged run builds land under the
-    # stage root and may never be activated, so removing the live legacy one here
-    # would strip the running install of its only sidecar. The live update does it.
+    # Legacy layout. A staged run's venvs may never be activated, so only the live update migrates.
     if [ -z "$STAGE_ROOT" ]; then
         _assert_studio_owned_or_absent "$STUDIO_HOME/.venv_t5" "legacy transformers sidecar venv"
         rm -rf "$STUDIO_HOME/.venv_t5"

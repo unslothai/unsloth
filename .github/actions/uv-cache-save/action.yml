@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# The uv download cache, save half. Paired with uv-cache-restore, which owns the key.
+# Default branch only: a PR-scoped entry is restorable only by re-runs of that same PR,
+# while every PR can restore from main, so saving on PRs spends a near-full budget to evict
+# main's copy, the one everyone reads. A hit is not re-uploaded either.
+# `uv cache prune --ci` first: uv keeps built wheels AND unpacked source artifacts, only the
+# former worth carrying, so without it the entry grows without bound and re-opens the
+# eviction thrash the GGUF caches were fixed for. Best effort: an older uv without `--ci`,
+# or a uv off this step's PATH, must not fail an install that already succeeded.
+
+name: Save the uv download cache
+description: >-
+  Prune uv's download cache to what is worth carrying, then save it under the
+  restore step's key, on the default branch only.
+
+inputs:
+  cache-hit:
+    description: >-
+      uv-cache-restore's `cache-hit` output. 'true' skips the save: the key is
+      already present and re-uploading it is pure cost.
+    required: true
+  key:
+    description: uv-cache-restore's `key` output.
+    required: true
+  save:
+    description: >-
+      'false' to skip the upload. For a workflow whose triggers cannot routinely
+      put github.ref on refs/heads/main (no `push`, no `schedule`), where the save
+      below could only fire if a human dispatched the workflow from main by hand.
+      Such a workflow consumes the cache the producers fill and declares here that
+      it is not one of them, rather than carrying a save that never runs.
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Prune the uv download cache to what is worth carrying
+      if: >-
+        github.ref == 'refs/heads/main' && inputs.cache-hit != 'true'
+        && inputs.save != 'false'
+      shell: bash
+      run: |
+        uv_bin="$(command -v uv 2> /dev/null || true)"
+        for candidate in "$HOME/.local/bin/uv" "$HOME/.local/bin/uv.exe" "$HOME/.cargo/bin/uv" "$HOME/.cargo/bin/uv.exe"; do
+          [ -n "$uv_bin" ] && break
+          [ -x "$candidate" ] && uv_bin="$candidate"
+        done
+        if [ -n "$uv_bin" ]; then
+          "$uv_bin" cache prune --ci 2> /dev/null || true
+        else
+          echo "uv is not on PATH in this step; saving the cache unpruned"
+        fi
+        du -sh "${{ github.workspace }}/.uv-cache" 2> /dev/null || true
+
+    - name: Save the uv download cache
+      if: >-
+        github.ref == 'refs/heads/main' && inputs.cache-hit != 'true'
+        && inputs.save != 'false'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      continue-on-error: true
+      with:
+        path: ${{ github.workspace }}/.uv-cache
+        key: ${{ inputs.key }}

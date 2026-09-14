@@ -17,12 +17,37 @@ import threading
 
 import pytest
 
+from core.inference import passthrough_healing
 from core.inference import studio_tool_loop as loop_mod
 from core.inference.studio_tool_loop import (
     ToolLoopPolicy,
     ToolLoopRun,
     stream_with_studio_tools,
 )
+
+
+def _shared_setup_1():
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "function": {"name": "python", "arguments": "{}"},
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    return transport
 
 
 def _sse(
@@ -575,52 +600,14 @@ def test_auto_mode_prompts_only_for_high_risk_calls(executed, monkeypatch):
 
 
 def test_full_access_disables_the_sandbox_at_execution(executed):
-    transport = FakeTransport(
-        [
-            [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "python", "arguments": "{}"},
-                            }
-                        ]
-                    }
-                ),
-                _sse(finish = "tool_calls"),
-                _DONE,
-            ],
-            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
-        ]
-    )
+    transport = _shared_setup_1()
     _run(transport, tools = [PY], bypass_permissions = True)
 
     assert executed[0]["disable_sandbox"] is True
 
 
 def test_sandbox_stays_on_by_default(executed):
-    transport = FakeTransport(
-        [
-            [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "python", "arguments": "{}"},
-                            }
-                        ]
-                    }
-                ),
-                _sse(finish = "tool_calls"),
-                _DONE,
-            ],
-            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
-        ]
-    )
+    transport = _shared_setup_1()
     _run(transport, tools = [PY])
 
     assert executed[0]["disable_sandbox"] is False
@@ -779,8 +766,11 @@ def test_a_stalled_model_is_nudged_to_act(executed):
     assert second[-1]["role"] == "user"
 
 
-def test_a_stalled_model_is_not_nudged_by_default(executed):
+def test_a_stalled_model_is_not_nudged_by_default(executed, monkeypatch):
     """The external loop must not invent a retry for an omitted opt-in flag."""
+    # Pin it: _NUDGE_DEFAULT is import-time, so otherwise this passes only where
+    # UNSLOTH_TOOL_CALL_NUDGE happens to be unset.
+    monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", False)
     transport = FakeTransport(
         [
             [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
@@ -792,6 +782,53 @@ def test_a_stalled_model_is_not_nudged_by_default(executed):
     assert executed == []
     assert len(transport.requests) == 1
     assert "SHOULD NOT APPEAR" not in _visible_text(lines)
+
+
+def test_an_explicit_false_beats_a_process_default_of_on(executed, monkeypatch):
+    """What chat-adapter.ts sends externally, and it must beat a default of on."""
+    monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", True)
+    transport = FakeTransport(
+        [
+            [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
+            [_sse({"content": "SHOULD NOT APPEAR"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    lines = _run(transport, nudge_tool_calls = False)
+
+    assert executed == []
+    assert len(transport.requests) == 1
+    assert "SHOULD NOT APPEAR" not in _visible_text(lines)
+
+
+def test_an_omitted_flag_still_follows_a_process_default_of_on(executed, monkeypatch):
+    """The contract the explicit false works around: if omission ever stops
+    following the process default, this fails and the false can be reconsidered."""
+    monkeypatch.setattr(passthrough_healing, "_NUDGE_DEFAULT", True)
+    transport = FakeTransport(
+        [
+            [_sse({"content": "I'll search for that now."}), _sse(finish = "stop"), _DONE],
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "function": {"name": "web_search", "arguments": "{}"},
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "answer"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport)
+
+    assert [c["name"] for c in executed] == ["web_search"]
+    assert len(transport.requests) == 3
 
 
 def test_a_finished_answer_is_not_nudged(executed):
@@ -863,26 +900,7 @@ def test_tool_stdout_streams_while_the_call_runs(executed, monkeypatch):
         return "final"
 
     monkeypatch.setattr(loop_mod, "execute_tool", _execute)
-    transport = FakeTransport(
-        [
-            [
-                _sse(
-                    {
-                        "tool_calls": [
-                            {
-                                "index": 0,
-                                "id": "c1",
-                                "function": {"name": "python", "arguments": "{}"},
-                            }
-                        ]
-                    }
-                ),
-                _sse(finish = "tool_calls"),
-                _DONE,
-            ],
-            [_sse({"content": "ok"}), _sse(finish = "stop"), _DONE],
-        ]
-    )
+    transport = _shared_setup_1()
     lines = _run(transport, tools = [PY])
 
     progress = [line for line in lines if line.startswith("data: ") and "partial line" in line]

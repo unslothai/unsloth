@@ -99,10 +99,9 @@ MTMD_STT_MODELS: dict[str, MtmdSttModel] = {
 # complies. Parakeet and Nemotron ASR are too: llama.cpp has the audio graphs but not the text architectures.
 
 _TRANSCRIBE_PROMPT = "Transcribe the audio."
-# Speech runs about 3 tokens a second in English and more in scripts with no word boundaries Output cap per second of
-# audio. Speech runs about 3 tokens a second in English and more in scripts with no word boundaries, so this is
-# generous: generation stops at EOS long before it, and the cap only exists so a looping model cannot run to the request
-# timeout.
+# Output cap per second of audio. Speech runs about 3 tokens a second in English and more in scripts with no word
+# boundaries, so this is generous: generation stops at EOS long before it, and the cap only exists so a looping model
+# cannot run to the request timeout.
 _TRANSCRIPT_TOKENS_PER_SECOND = 30
 _MIN_TRANSCRIPT_TOKENS = 512
 # Well under any of these models' trained context, which also has to hold the audio. llama-server is left on its default
@@ -334,7 +333,6 @@ class _MtmdDownloadState:
                 "model": model_id if downloading else None,
                 "error": self._error,
                 "cancelled": self._cancelled,
-                # "model" goes None once the worker thread stops
                 # Which model the cancel applies to. "model" goes None once the worker thread stops, so a settled
                 # cancellation was indistinguishable from an unrelated one and a deferred load restarted the whole
                 # download.

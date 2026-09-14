@@ -80,8 +80,6 @@ from utils.process_lifetime import (
 
 logger = get_logger(__name__)
 
-# one repo per model; keys match the Transformers sidecar's ids so the frontend reuses one picker, values are the single
-# file inside each repo
 # Curated GGML checkpoints, one repo per model. Keys match the Transformers sidecar's ids so the frontend reuses one
 # picker; values are the single file inside each repo.
 GGML_STT_REPOS: dict[str, str] = {
@@ -151,14 +149,9 @@ def _managed_whisper_cpp_dir() -> Path:
 
 
 def find_whisper_server_binary() -> Optional[str]:
-    """Locate the whisper-server binary.
-
-    Search order:
-    1. WHISPER_SERVER_PATH environment variable (direct path to binary)
-    2. UNSLOTH_WHISPER_CPP_PATH env var (custom whisper.cpp install dir)
-    3. managed dir: <STUDIO_HOME or ~/.unsloth>/whisper.cpp/{,build/bin/}whisper-server
-    4. whisper-server on PATH
-    """
+    """Locate the whisper-server binary, in order: WHISPER_SERVER_PATH (direct path),
+    UNSLOTH_WHISPER_CPP_PATH (custom install dir), the managed dir <STUDIO_HOME or
+    ~/.unsloth>/whisper.cpp/{,build/bin/}whisper-server, then whisper-server on PATH."""
     binary_name = "whisper-server.exe" if sys.platform == "win32" else "whisper-server"
 
     def _layout_candidates(d: Path) -> list[Path]:
@@ -278,7 +271,6 @@ def slim_runtime_intact(binary: str) -> bool:
     return intact
 
 
-# a runtime that starts, answers GET /, then dies on the first inference
 # A runtime that starts, answers GET /, and then dies on the first actual inference. Reported on Windows with ROCm on
 # gfx1200, where rocBLAS is missing its TensileLibrary: the marker and the linked libraries are all present, so
 # slim_runtime_intact() is happy and is_available() said yes, which meant _resolve_serving_stt_engine never fell back
@@ -342,18 +334,13 @@ def ensure_engine_available() -> str:
     return binary
 
 
-# build the whisper-server env: prepend the binary dir (co-located libs win, and a backstop where the loader ignores the
-# rpath)
-
-# --------------------------------------------------------------------------- whisper-server child-process environment
-# --------------------------------------------------------------------------- Build the whisper-server env: prepend the
-# binary dir (co-located libs win, and a backstop where the loader ignores the rpath) and scrub secret-bearing vars the
-# binary never needs. On WSL2 ROCm the system HIP libs go first, since a bundle's bare-metal HIP cannot drive /dev/dxg.
-# A CUDA bundle ships libggml-cuda.so but not libcudart/libcublas (paired with the user's PyTorch), so add the
-# CUDA-from-PyTorch runtime dirs the selection gated on, else the backend cannot resolve a runtime that lives only in
-# wheels. Mirrors llama's binary_env(); the scrub/WSL/dedupe helpers live in utils.prebuilt.
-# Module-level aliases keep the historical patch points for tests and callers.
-# ---------------------------------------------------------------------------
+# whisper-server child-process environment. Build the env by prepending the binary dir (co-located libs win, and a
+# backstop where the loader ignores the rpath) and scrubbing secret-bearing vars the binary never needs. On WSL2 ROCm
+# the system HIP libs go first, since a bundle's bare-metal HIP cannot drive /dev/dxg. A CUDA bundle ships
+# libggml-cuda.so but not libcudart/libcublas (paired with the user's PyTorch), so add the CUDA-from-PyTorch runtime
+# dirs the selection gated on, else the backend cannot resolve a runtime that lives only in wheels. Mirrors llama's
+# binary_env(); the scrub/WSL/dedupe helpers live in utils.prebuilt, and the module-level aliases keep the historical
+# patch points for tests and callers.
 
 _wsl_system_rocm_lib_dirs = wsl_system_rocm_lib_dirs
 _dedupe_existing_dirs = dedupe_existing_dirs
@@ -397,9 +384,7 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
     return env
 
 
-# --------------------------------------------------------------------------- Model file download (single files;
-# deliberately outside the Model Hub flow) ---------------------------------------------------------------------------
-# ---------------------------------------------------------------------------
+# Model file download: single files, deliberately outside the Model Hub flow.
 
 
 def _cached_model_path(
@@ -469,7 +454,6 @@ class _GgmlDownloadState:
                 "model": self._model_id if downloading else None,
                 "error": self._error,
                 "cancelled": self._cancelled,
-                # "model" goes None once the worker thread stops
                 # Which model the cancel applies to. "model" goes None once the worker thread stops, so a settled
                 # cancellation was indistinguishable from an unrelated one and a deferred load restarted the whole
                 # download.
@@ -691,9 +675,6 @@ def cancel_model_download() -> bool:
     return _download_state.cancel()
 
 
-# ---------------------------------------------------------------------------
-
-
 def _pcm_to_wav_bytes(decoded_audio) -> bytes:
     """Wrap decoded float32 mono 16 kHz PCM into an in-memory 16-bit WAV."""
     import numpy as np
@@ -707,9 +688,6 @@ def _pcm_to_wav_bytes(decoded_audio) -> bytes:
         w.setframerate(_TARGET_SAMPLE_RATE)
         w.writeframes(pcm16.tobytes())
     return buf.getvalue()
-
-
-# ---------------------------------------------------------------------------
 
 
 class GgmlSttSidecar:
@@ -740,9 +718,8 @@ class GgmlSttSidecar:
 
     @property
     def loaded_model(self) -> Optional[str]:
-        # lock-free status read: transcribe() holds self._lock for the whole inference call
-        # Lock-free status read (like stt_sidecar.py): transcribe() holds self._lock for the whole inference call (up to
-        # _TRANSCRIBE_TIMEOUT_SECONDS), and status polls plus training admission must not block behind it.
+        # Lock-free status read (like stt_sidecar.py): transcribe() holds self._lock for the whole inference call (up
+        # to _TRANSCRIBE_TIMEOUT_SECONDS), and status polls plus training admission must not block behind it.
         # _process_alive() snapshots self._process before poll(), which subprocess guards with _waitpid_lock, so a
         # concurrent unload is safe.
         return self._model_id if self._process_alive() else None
@@ -764,8 +741,6 @@ class GgmlSttSidecar:
         # otherwise re-read None between the truthiness check and .poll().
         process = self._process
         return process is not None and process.poll() is None
-
-    # -- idle unload ------------------------------------------------------
 
     def _cancel_idle_unload_locked(self) -> None:
         self._idle_generation += 1
@@ -789,8 +764,6 @@ class GgmlSttSidecar:
                 return
             logger.info("Unloading idle GGUF STT model %s", self._model_id)
             self._release_locked()
-
-    # -- process lifecycle -------------------------------------------------
 
     def _release_locked(self) -> None:
         self._cancel_idle_unload_locked()
@@ -1102,8 +1075,6 @@ class GgmlSttSidecar:
         if process.poll() is not None:
             return False
         return b"whisper" in body.lower()
-
-    # -- transcription ------------------------------------------------------
 
     def transcribe(
         self,

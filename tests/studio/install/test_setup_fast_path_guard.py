@@ -150,8 +150,12 @@ def test_the_sidecar_predicate_asks_the_shim_on_colab_too():
     body = text[start : text.index("\n}\n", start)]
     assert "command -v python" in body
     assert '"$_sc_python" "$SCRIPT_DIR/install_manifest.py" sidecar' in body
-    # The grep is the last resort, for a tree with no interpreter to ask at all.
-    assert body.index("command -v python") < body.index("_target_has_pkg_version")
+    # Exactly one grep may precede the interpreter search: the guard for a tree that ships no
+    # shim at all. Every other fall back to the grep is a last resort behind `command -v python`,
+    # or Colab (venv-less but with an ambient python) would never reach the shim.
+    shim_guard = body.index('[ ! -f "$SCRIPT_DIR/install_manifest.py" ]')
+    assert shim_guard < body.index("command -v python")
+    assert body.index("command -v python") < body.rindex("_target_has_pkg_version")
 
 
 def test_the_ps1_sidecar_predicate_runs_the_shim_as_a_bounded_process():
@@ -340,7 +344,7 @@ def test_the_offline_fast_path_never_wipes_a_sidecar():
     # The legacy migration is itself a wipe above the guard: skipped under the offline keep, and
     # under UV_OFFLINE without the fast path.
     assert sh.index(
-        '[ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; }; then\n    # The migration'
+        '[ "${_OFFLINE_FAST_PATH:-false}" = true ] || _uv_offline_requested; }; then'
     ) < sh.index('rm -rf "$STUDIO_HOME/.venv_t5"')
     assert ps1.index(
         "(Test-Path -LiteralPath $VenvT5Legacy) -and ($script:OfflineFastPath -or (Test-UvOfflineRequested))"
@@ -491,3 +495,97 @@ def test_the_installer_reads_uv_offline_the_same_way_the_shell_does(tmp_path):
         assert shell == namespace["_uv_is_offline"](), (
             f"UV_OFFLINE={value!r}: setup.sh says {shell}, install_python_stack.py disagrees"
         )
+def test_the_installer_pins_come_from_the_audited_pin_list():
+    """The list the audit demands and the list the install performs must be one variable.
+
+    A pin `sidecar_is_current` requires but `_install_sidecar` never installs reads stale on
+    every run: all three tiers would be wiped and refetched on every update, silently, which
+    is the regression this whole change exists to remove.
+    """
+    sh = SETUP_SH.read_text(encoding = "utf-8")
+    start = sh.index("_install_sidecar() {")
+    body = sh[start : sh.index("\n}\n", start)]
+    assert "$_SIDECAR_COMMON_PINS" in body, (
+        "_install_sidecar hardcodes the common pins instead of reading "
+        "$_SIDECAR_COMMON_PINS; the audit and the install can now drift apart."
+    )
+    assert "huggingface_hub==" not in body, "a second copy of the pins crept back in"
+
+    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    start = ps1.index("function Install-T5Sidecar {")
+    body = (
+        ps1[start : ps1.index("\nfunction ", start + 1)]
+        if "\nfunction " in ps1[start + 1 :]
+        else ps1[start:]
+    )
+    assert (
+        "$SidecarCommonPins" in body
+    ), "Install-T5Sidecar hardcodes the common pins instead of reading $SidecarCommonPins."
+    assert "huggingface_hub==" not in body, "a second copy of the pins crept back in"
+
+
+def test_a_tree_without_the_shim_falls_back_to_the_version_grep():
+    """Both shells must answer from `_target_has_pkg_version` when install_manifest.py is
+    absent. Treating the missing file as a failed audit reports every tier stale and rebuilds
+    all three, and the two shells would disagree about the same tree."""
+    sh = SETUP_SH.read_text(encoding = "utf-8")
+    start = sh.index("_sidecar_current() {")
+    body = sh[start : sh.index("\n}\n", start)]
+    assert '[ ! -f "$SCRIPT_DIR/install_manifest.py" ]' in body, (
+        "_sidecar_current no longer checks that the shim exists before running it; a tree "
+        "without install_manifest.py now rebuilds all three sidecars."
+    )
+
+    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    start = ps1.index("function Test-SidecarCurrent {")
+    body = ps1[start : ps1.index("\nfunction ", start + 1)]
+    assert "Test-Path -LiteralPath $shim -PathType Leaf" in body
+
+
+def test_the_sidecar_cleanups_cannot_abort_the_installer():
+    """setup.sh runs under `set -euo pipefail`, and these functions are called bare.
+
+    Every `rm` here is best effort by construction: the paths that reach them are the ones
+    where something is already undeletable (a held file, a read-only parent). An unguarded
+    `rm` turns "the sidecar is current, skip the rebuild" into a silent exit 1 on an install
+    that is otherwise healthy.
+    """
+    sh = SETUP_SH.read_text(encoding = "utf-8")
+    for fn in ("_sidecar_retire_after_failed_tiktoken() {", "_sidecar_top_up_tiktoken() {"):
+        start = sh.index(fn)
+        body = sh[start : sh.index("\n}\n", start)]
+        for line in body.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("rm -rf") and "&& rm -rf" not in stripped:
+                continue
+            assert "|| true" in stripped, (
+                f"unguarded `rm` in {fn.rstrip('( {')}: {stripped!r}. Under `set -e` this "
+                "aborts the whole installer when the entry cannot be removed."
+            )
+
+
+def test_the_ps1_marker_reason_is_parsed_without_substring():
+    """`-like 'sidecar:*'` also matches the bare marker, and Substring past the end throws.
+
+    The sh side uses `${_sc_out#sidecar: }`, which degrades to the empty string; the two must
+    not differ on a malformed answer."""
+    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    start = ps1.index("function Test-SidecarCurrent {")
+    body = ps1[start : ps1.index("\nfunction ", start + 1)]
+    assert ".Substring(" not in body, (
+        "Test-SidecarCurrent parses the audit's reason with Substring again; a bare "
+        "'sidecar:' answer makes that throw."
+    )
+    assert "-replace '^sidecar:" in body
+
+
+def test_the_ps1_predicate_prefers_the_venv_interpreter():
+    """As setup.sh does. A PATH `python` on Windows can be the Store App Execution Alias
+    stub, whose failure reads as "audit died" and rebuilds all three tiers every run."""
+    ps1 = SETUP_PS1.read_text(encoding = "utf-8")
+    start = ps1.index("function Test-SidecarCurrent {")
+    body = ps1[start : ps1.index("\nfunction ", start + 1)]
+    assert "$VenvPyExe" in body, (
+        "Test-SidecarCurrent goes straight to a PATH python; setup.sh prefers "
+        "$VENV_DIR/bin/python and the two shells must pick the same interpreter."
+    )

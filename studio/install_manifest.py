@@ -17,6 +17,8 @@ Must import inside that half-installed venv: stdlib only, `packaging` optional.
 
 from __future__ import annotations
 
+import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -32,6 +34,16 @@ MANIFEST_NAME = "unsloth_install_manifest.json"
 # evidence of the LAST completed pass; verify_install, the setup fast path and the desktop preflight
 # never do, so a venv without a live manifest still reads as half-built.
 PREVIOUS_MANIFEST_NAME = "unsloth_install_manifest.previous.json"
+# Serialises the three writers below against each other ACROSS processes. Two updates of one
+# venv are already guarded by the CLI, but setup.sh/setup.ps1 and the installer can be driven
+# directly, and the post-install MLX probe rewrites the manifest minutes after the pass ends:
+# without this, one updater's replace can land between another's remove and its mutations, and
+# recreate a completion marker over a half-built venv.
+LOCK_NAME = "unsloth_install_manifest.lock"
+# How long a writer waits for a peer before going ahead unserialised. Matches what msvcrt's
+# LK_LOCK does on Windows: a peer suspended or killed while holding the lock must not wedge
+# every later update, and the work these writers do is measured in milliseconds.
+LOCK_WAIT_SECONDS = 10.0
 MANIFEST_SCHEMA = 1
 
 # Canonical truthy set for UNSLOTH_NO_TORCH, matching install.ps1 / install.sh.
@@ -298,6 +310,148 @@ def _installed_version(dist_name: str, installed: Optional[Dict[str, str]] = Non
     return installed_version_probe(dist_name)[0] or None
 
 
+def _publish_json(
+    path: Path,
+    payload: dict,
+    *,
+    only_if_present: bool = False,
+) -> bool:
+    """Write *payload* to *path* through a temp file of this writer's own, then replace.
+
+    The temp name is unique per call. A shared one (the old MANIFEST_NAME + ".tmp") is a
+    second writer's file as much as this one's: two writers on one venv could clobber each
+    other's copy between the write and the replace, and publish the wrong payload.
+
+    *only_if_present* declines to recreate a manifest another updater removed while this one
+    gathered what it merges. Callers hold the lock; this raises nothing they do not catch.
+    """
+    import tempfile  # noqa: PLC0415 - stdlib, and not needed to read a manifest
+
+    text = json.dumps(payload, indent = 2, sort_keys = True)
+    descriptor, name = tempfile.mkstemp(dir = str(path.parent), prefix = path.name + ".", suffix = ".tmp")
+    tmp = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding = "utf-8") as handle:
+            handle.write(text)
+        # mkstemp creates at 0600. This file used to be written through Path.write_text, so it
+        # carried the umask default (0644 on a stock box) and anything else on the machine could
+        # read it; a mode this narrow is a change nobody asked for. Keep the mode the manifest
+        # already has when there is one, and otherwise the umask default, so the tightening a
+        # user chose is still theirs.
+        try:
+            mode = path.stat().st_mode & 0o777
+        except OSError:
+            umask = os.umask(0)
+            os.umask(umask)
+            mode = 0o666 & ~umask
+        try:
+            os.chmod(tmp, mode)
+        except OSError:
+            pass  # Windows, or a filesystem without modes: the content is what matters
+        if only_if_present and not path.exists():
+            return False
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+    return True
+
+
+@contextlib.contextmanager
+def _manifest_lock(root: Optional[Path] = None):
+    """Hold an exclusive lock on LOCK_NAME for the block. Never raises, never blocks forever.
+
+    Best effort by design: this module has to import and run inside a half-built venv, so a
+    filesystem that cannot lock (a network mount, a read-only prefix, an interpreter without
+    fcntl or msvcrt) proceeds unserialised rather than failing an install. That is the same
+    guarantee as before this existed, and no worse anywhere else. It cannot outlast a stalled
+    filesystem call: the deadline below bounds the retries, not one syscall.
+    """
+    handle = None
+    locked = False
+    try:
+        # O_NOFOLLOW where it exists: a symlink sitting on the reserved name would otherwise be
+        # followed, creating or opening a file somewhere else entirely. O_CREAT|O_RDWR, never
+        # O_TRUNC -- nothing is ever written here, the lock lives on the descriptor.
+        descriptor = os.open(
+            (root or venv_root()) / LOCK_NAME,
+            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+            0o644,
+        )
+        handle = os.fdopen(descriptor, "a+b")
+    except OSError:
+        handle = None
+    if handle is not None:
+        try:
+            import fcntl  # noqa: PLC0415 - POSIX only, and absent on Windows
+
+            # Non-blocking with a deadline, never a bare LOCK_EX: that waits forever on a peer
+            # suspended or stopped while holding it, which is the one thing this must not do
+            # to an update.
+            deadline = time.monotonic() + LOCK_WAIT_SECONDS
+            while True:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    locked = True
+                    break
+                except OSError as exc:
+                    # Only contention is worth waiting out. A filesystem that does not implement
+                    # locking at all (some NFS and SMB mounts) answers immediately and would
+                    # otherwise cost the whole deadline on every manifest write.
+                    if exc.errno not in (
+                        errno.EWOULDBLOCK,
+                        errno.EAGAIN,
+                        errno.EACCES,
+                        errno.EINTR,
+                    ):
+                        break
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.02)
+        except ImportError:
+            try:
+                import msvcrt  # noqa: PLC0415 - the Windows half of the same thing
+
+                handle.seek(0)
+                # LK_LOCK retries for ~10 s and then raises; an update that waits longer than
+                # that on a stale lock has to proceed, or a crashed peer strands every later run.
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                locked = True
+            except (ImportError, OSError):
+                locked = False
+        except (OSError, ValueError):
+            locked = False
+    try:
+        # The flag, not just the block: a writer that may only publish while it really holds the
+        # lock has to be able to ask, and the two that must never fail an install can ignore it.
+        yield locked
+    finally:
+        if handle is not None:
+            if locked:
+                try:
+                    try:
+                        import fcntl  # noqa: PLC0415
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                    except ImportError:
+                        import msvcrt  # noqa: PLC0415
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                except (OSError, ValueError):
+                    pass
+            try:
+                handle.close()
+            except OSError:
+                pass
+
+
 def remove_manifest(root: Optional[Path] = None) -> bool:
     """Called before the dependency pass so an aborted run cannot leave a valid one.
 
@@ -313,11 +467,39 @@ def remove_manifest(root: Optional[Path] = None) -> bool:
     write_manifest. Deleting it is still the fallback when the rename is refused.
     """
     path = manifest_path(root)
+    parked = previous_manifest_path(root)
+    with _manifest_lock(root):
+        return _remove_manifest_locked(root, path, parked)
+
+
+def _remove_manifest_locked(root: Optional[Path], path: Path, parked: Path) -> bool:
     try:
-        os.replace(path, previous_manifest_path(root))
+        os.replace(path, parked)
     except FileNotFoundError:
-        return True
+        # No live manifest: an interrupted run already took it. Nothing was parked by this
+        # call, so anything on the reserved name is from that dead run and has to go the same
+        # way -- a copy that survives would be read as this pass's evidence, and the pass
+        # refuses to run behind one it cannot clear, which on Windows lands after setup.ps1's
+        # mutations. Losing a dead run's evidence only costs a full pass; this cannot.
+        consume_previous_manifest(root)
+        return not parked.exists()
     except OSError:
+        # The rename was refused. Clear whatever holds the reserved name and retry before
+        # falling back to the unlink: setup.ps1 reads True here as permission to replace pip,
+        # torch and triton, and the dependency pass refuses to run behind a parked copy it
+        # cannot clear. Deleting the live manifest first would put that refusal AFTER the
+        # mutations, on a venv that can no longer verify, and every later update would stop
+        # at the same place.
+        consume_previous_manifest(root)
+        if parked.exists():
+            return False
+        try:
+            os.replace(path, parked)
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError:
+            pass
         try:
             path.unlink()
         except FileNotFoundError:
@@ -429,10 +611,14 @@ def write_manifest(
         payload[key] = value
     path = manifest_path(root)
     try:
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, indent = 2, sort_keys = True), encoding = "utf-8")
-        os.replace(tmp, path)
-    except OSError:
+        # The same lock the other two writers take: this is the marker that says the install
+        # finished, and it must not interleave with another process dropping it. The temp copy
+        # is written under it too, since the name belongs to whichever writer holds the lock.
+        with _manifest_lock(root):
+            _publish_json(path, payload)
+    # TypeError/ValueError too: `extra` is caller-composed, and raising here would abort a pass
+    # that has already installed everything, leaving a venv with no manifest at all.
+    except (OSError, TypeError, ValueError):
         return None
     # The parked copy described the previous pass; the live file now does.
     try:
@@ -462,15 +648,28 @@ def update_manifest(root: Optional[Path] = None, **extra: object) -> bool:
     }
     if not values:
         return False
-    data = read_manifest(root)
-    if data is None:
-        return False
-    data.update(values)
     path = manifest_path(root)
     try:
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(data, indent = 2, sort_keys = True), encoding = "utf-8")
-        os.replace(tmp, path)
+        # Read, merge and replace inside the lock. The caller gathers this evidence first and
+        # that takes minutes (the MLX import probe waits up to 180 s), so a manifest read before
+        # it started can be a different one by now: another updater may have removed it and
+        # finished a new pass, and merging into the copy read back then would put its fields
+        # back. Reading here means the merge is always into the manifest being replaced.
+        with _manifest_lock(root) as locked:
+            if not locked:
+                # Advisory evidence only: a peer that timed out this lock is mid-pass, and
+                # publishing beside it could put its removed completion marker back over a
+                # half-built venv. Losing what this merges costs one probe; that does not.
+                return False
+            data = read_manifest(root)
+            if data is None:
+                return False
+            data.update(values)
+            # only_if_present: a peer running an older build of this module removes without
+            # taking the lock, so the file is checked as late as it can be. Recreating it over
+            # a half-built venv is the one outcome this must never have.
+            if not _publish_json(path, data, only_if_present = True):
+                return False
     except (OSError, TypeError, ValueError):
         return False
     return True
@@ -1314,8 +1513,7 @@ def _sidecar_pin_ok(root: Path, spec: str) -> Optional[str]:
                 payload_present = _sidecar_payload_present(root, dist)
     except Exception:
         return f"{name} metadata unreadable"
-    # An optional package (tiktoken) absent or left as a bare dist-info is the top-up's business,
-    # not a reason to rebuild; present, it is held to its pin.
+    # An optional package absent, or a bare dist-info, is the top-up's business, not a rebuild.
     if canonical in OPTIONAL_SIDECAR_PACKAGES and (
         not found or (not directory_present and not payload_present)
     ):
@@ -1359,18 +1557,16 @@ def _sidecar_damaged_files(
         return []
     for dist_info in dist_infos:
         name = dist_info.name.split("-")[0]
-        # An optional package may be absent; present, its RECORD is held to the same standard
-        # (mirrors _sidecar_scan_impl in transformers_version.py).
+        # Stricter than _sidecar_scan_impl on purpose: setup can rebuild to converge, the runtime cannot.
         try:
             record = (dist_info / "RECORD").read_text(encoding = "utf-8", errors = "replace")
         except FileNotFoundError:
-            # No RECORD under a pinned dist-info is an interrupted install (written last) whose
-            # truncations the size check cannot see; an optional package's top-up clears its own.
+            # No RECORD under a pinned dist-info is an interrupted install the size check cannot see.
             if _canonical(name) in required_names:
                 recordless.append(f"{name}: RECORD is missing")
             continue
         except OSError:
-            # Unreadable RECORD says nothing about damage.
+            # Unreadable says nothing about damage.
             continue
         try:
             rows = list(csv.reader(io.StringIO(record)))
@@ -1446,9 +1642,7 @@ def _sidecar_damaged_files(
     return found
 
 
-# Mirror of transformers_version._sidecar_file_check_disabled: the escape hatch for a false positive
-# (a several-hundred-MB reinstall) must hold on the setup side too. Then the packages a sidecar is
-# complete without (transformers_version._OPTIONAL_SIDECAR_PACKAGES).
+# Mirrors transformers_version: the escape hatch for a false positive must hold on the setup side too.
 OPTIONAL_SIDECAR_PACKAGES = frozenset({"tiktoken"})
 SIDECAR_FILE_CHECK_ENV = "UNSLOTH_SKIP_SIDECAR_FILE_CHECK"
 

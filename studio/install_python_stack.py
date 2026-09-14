@@ -1047,9 +1047,9 @@ def _bnb_rocm_prerelease_url() -> str | None:
     return _BNB_ROCM_PRERELEASE_URLS.get(arch)
 
 
-# The provenance this pass last installed bitsandbytes from. The SECOND _ensure_rocm_torch() of a
-# pass must not repeat the download yet must still repair a bnb the steps in between re-resolved, so
-# this records WHAT landed, not merely THAT something did.
+# What this pass last installed bitsandbytes from. The second _ensure_rocm_torch() of a pass must
+# not repeat the download yet must still repair a bnb the steps between re-resolved, so this records
+# WHAT landed, not merely THAT something did.
 _BNB_ROCM_PASS_PROVENANCE: "str | None" = None
 # What the release URL served when this pass last looked (_bnb_asset_identity): the URL alone cannot
 # identify the build.
@@ -4057,6 +4057,7 @@ def _ensure_xpu_triton() -> None:
                 )
             )
             return
+        _count_install_action()
         removed = subprocess.run(
             [sys.executable, "-m", "pip", "uninstall", "-y", "triton"],
             stdout = subprocess.DEVNULL,
@@ -4627,16 +4628,18 @@ def _install_torchao_for_torch(torch_version: "str | None") -> None:
     # --no-deps skips nothing today (no torchao release declares a runtime torch dependency)
     # and guards the second caller, which runs right after the torch repair.
     args = ["--no-deps", "--no-cache-dir"]
-    if _may_skip_on_evidence() and not _pin_needs_reinstall(
-        spec, _torch_index_tag(torch_version) if index else ""
-    ):
-        # This exact version from this exact index is what the pin asserts; running the install
-        # resolved it against the index on every update, twice after the torch repair.
-        # _may_skip_on_evidence first: a forced pass or a failed deep verify asks for the install.
+    needs_reinstall = _pin_needs_reinstall(spec, _torch_index_tag(torch_version) if index else "")
+    if _may_skip_on_evidence() and not needs_reinstall:
+        # This exact version from this exact index is what the pin asserts, and running it resolved
+        # against the index on every update. Evidence first: a forced pass asks for the install.
         _note(f"torch {torch_version or 'unknown'} detected -- {spec} is already installed")
         _record_step("torchao", "skipped")
         return
-    args.insert(0, "--force-reinstall")
+    # The flag stays keyed off the pin alone, as it was before the skip existed: a matching build
+    # with no evidence behind it -- every install's first update on this build -- would otherwise
+    # re-download a wheel that pip was about to report as already satisfied.
+    if needs_reinstall:
+        args.insert(0, "--force-reinstall")
     _record_step("torchao", "ran")
     _note(
         f"torch {torch_version or 'unknown'} detected -- installing {spec}"
@@ -5714,6 +5717,7 @@ def _ensure_rocm_torch() -> None:
         # (present before the base install) is left untouched.
         if _GFX906_BNB_ABSENT_BEFORE_BASE and _bitsandbytes_installed():
             _safe_print(_dim("   gfx906: removing generic bitsandbytes pulled in as a dependency"))
+            _count_install_action()
             subprocess.run(
                 [sys.executable, "-m", "pip", "uninstall", "-y", "bitsandbytes"],
                 capture_output = True,
@@ -6309,6 +6313,7 @@ def _remove_rejected_flash_attn() -> bool:
         cmd.extend(["--python", sys.executable, "flash-attn"])
     else:
         cmd = [sys.executable, "-m", "pip", "uninstall", "-y", "flash-attn"]
+    _count_install_action()
     removed = subprocess.run(cmd, stdout = subprocess.DEVNULL, stderr = subprocess.DEVNULL)
     return removed.returncode == 0
 
@@ -6326,6 +6331,8 @@ def _ensure_flash_attn() -> None:
     env = probe_torch_wheel_env()
     wheel_url = _build_flash_attn_wheel_url(env) if env else None
     if wheel_url and url_exists(wheel_url):
+        # Counted: it lands a distribution, so the caches keyed on the counter must be rebuilt.
+        _count_install_action()
         for installer, wheel_result in install_wheel(
             wheel_url,
             python_executable = sys.executable,
@@ -7848,9 +7855,70 @@ def _mlx_stack_is_current() -> bool:
         return False
     try:
         from packaging.requirements import Requirement
-        return Requirement(_MLX_VLM_SPEC).specifier.contains(installed, prereleases = True)
+        if not Requirement(_MLX_VLM_SPEC).specifier.contains(installed, prereleases = True):
+            return False
     except Exception:  # noqa: BLE001 - no packaging, or a version it cannot parse
         return False
+    # The four pins are satisfied; their dependencies are a separate question. This step installs
+    # WITH dependencies, so it is what repairs an mlx-vlm whose miniaudio or mlx-audio is gone --
+    # the same reason the requirements steps audit their closure rather than their own lines.
+    return not _mlx_closure_unmet()
+
+
+def _overridden_project_names() -> "set[str]":
+    """Canonical names the bundled macOS arm64 override file replaces every requirement on."""
+    names: set[str] = set()
+    try:
+        text = _MLX_OVERRIDES.read_text(encoding = "utf-8-sig")
+    except (OSError, ValueError, UnicodeDecodeError):
+        return names
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line or line.startswith("-"):
+            continue
+        head = re.split(r"[<>=!~;\[ ]", line, maxsplit = 1)[0].strip()
+        if head:
+            names.add(install_manifest._canonical(head))
+    return names
+
+
+def _mlx_closure_unmet() -> bool:
+    """Whether anything in the MLX pins' installed closure is missing or outside its pin."""
+    handle = None
+    try:
+        import tempfile as _tempfile  # noqa: PLC0415
+
+        # mkstemp hands back an OPEN descriptor. Left open it leaks one per update, and on
+        # Windows it also holds the file, so the unlink below cannot clear it.
+        _fd, _name = _tempfile.mkstemp(prefix = "unsloth-mlx-", suffix = ".txt", text = True)
+        os.close(_fd)
+        handle = Path(_name)
+        handle.write_text("\n".join([*_MLX_PINS, _MLX_VLM_SPEC]) + "\n", encoding = "utf-8")
+        unmet = install_manifest.closure_unmet_requirements(handle, _installed_index())
+        # An override REPLACES every requirement on the package it names, so the version the
+        # installer leaves behind is the override's, not the one mlx-vlm's metadata asks for.
+        # Read raw, that disagreement is permanent and this step would run on every update
+        # forever. A package the override names and that is simply ABSENT still counts: the
+        # step is what installs it.
+        overridden = _overridden_project_names()
+        if overridden:
+            unmet = [
+                entry
+                for entry in unmet
+                if " " not in entry
+                or install_manifest._canonical(entry.split(" ", 1)[0]) not in overridden
+            ]
+    except Exception:  # noqa: BLE001 - an audit that cannot run is a reason to run the step
+        return True
+    finally:
+        if handle is not None:
+            try:
+                handle.unlink(missing_ok = True)
+            except OSError:
+                pass
+    if unmet and VERBOSE:
+        _note(f"MLX stack: {unmet[0]} is not satisfied -- running the step")
+    return bool(unmet)
 
 
 _MLX_HEALTH_PROBE = (
@@ -8017,10 +8085,9 @@ def _report_mlx_stack_health(skipped: bool = False) -> None:
 
 
 # The idempotent dependency pass. A skip is legal only when (a) the previous run recorded this exact
-# work, (b) the inputs are byte-identical and (c) a cheap on-disk check of the OUTPUT passes.
-# Anything that drops (a) (a repair, a damaged install, a version / python / platform /
-# torch-flavour change, a missing manifest, UNSLOTH_STUDIO_FULL_DEPS) forces the whole pass. When in
-# doubt, do the work: a wrong skip ships a venv that dies on `import structlog`.
+# work, (b) the inputs are byte-identical and (c) a cheap on-disk check of the OUTPUT passes; losing
+# any of the three runs the whole pass. When in doubt, do the work: a wrong skip ships a venv that
+# dies on `import structlog`.
 
 _FULL_DEPS_ENV = "UNSLOTH_STUDIO_FULL_DEPS"
 
@@ -8062,23 +8129,48 @@ def _closure_record() -> "dict[str, list[str]]":
     """
     record: dict[str, list[str]] = {}
     # Under a caller's PIP_NO_DEPS the unmet dependencies are deliberate, not known conflicts.
-    if _foreign_resolver_inputs():
+    # A caller's UV_OVERRIDE is the same case and _plan_pass already refuses evidence for it:
+    # the override forces versions past the pins that asked for them, so what it leaves unmet is
+    # its own doing. Recorded, it would excuse the step that repairs it on every later update.
+    if _foreign_resolver_inputs() or _foreign_uv_override_in_effect():
         return record
-    previous = (_PASS_EVIDENCE or {}).get("known_unmet") or {}
+    # A hand-edited manifest can carry anything under this key; it reaches here outside the
+    # per-step try below, and this runs while write_manifest's arguments are being built.
+    previous = (_PASS_EVIDENCE or {}).get("known_unmet")
+    if not isinstance(previous, dict):
+        previous = {}
     for key, req in _AUDITED_STEPS.items():
-        effective, temps = _effective_requirements(req)
+        # An argument to write_manifest, so every install has already landed and nothing here may
+        # raise: the core step can have replaced the tree these paths came from.
+        temps: list[Path] = []
         try:
+            effective, temps = _effective_requirements(req)
             unmet = install_manifest.closure_unmet_requirements(effective, _installed_index())
         except Exception:  # noqa: BLE001 - nothing recorded means nothing ignored next time
             unmet = ["<audit failed>"]
         finally:
             for temp in temps:
-                temp.unlink(missing_ok = True)
+                # An unlink that raises here would end the pass between the last install and
+                # the manifest write. A temp file left behind is the cheaper outcome.
+                try:
+                    temp.unlink(missing_ok = True)
+                except OSError:
+                    pass
         audited = not any(entry.startswith("<") for entry in unmet)
-        if _STEP_RESULTS.get(key) == "skipped" and isinstance(previous.get(key), list):
+        # Only a version CONFLICT can be a known conflict. closure_unmet_requirements reports a
+        # distribution that is absent by bare name and one outside its specifier as "name version";
+        # an absent one is work this step does (it installs with dependencies), and recording it
+        # would excuse the install that repairs it on every later update. Reached whenever the
+        # resolver was told to skip dependencies by something no digest covers -- a pip.conf with
+        # no-deps, not just the environment variables the guard above reads.
+        unmet = [entry for entry in unmet if entry.startswith("<") or " " in entry]
+        if _STEP_RESULTS.get(key) == "skipped":
             # Narrowed to what is still unmet, or a later loss of a since-satisfied package would
-            # hide behind the record. An audit that could not run keeps it as it was.
-            carried = list(previous[key])
+            # hide behind the record. An audit that could not run keeps it as it was. A step that
+            # did not run adopts nothing, so a record it never stood behind cannot excuse it.
+            carried = list(previous.get(key) or []) if isinstance(previous.get(key), list) else []
+            # Same rule for a record written by an earlier build of this code.
+            carried = [entry for entry in carried if " " in entry]
             if audited:
                 carried = [entry for entry in carried if entry in unmet]
             if carried:
@@ -8188,9 +8280,8 @@ def _plan_pass(package_name: str, local_repo: str, ci_source_overlay: str) -> "d
     # gate; a caller's own file is an input no digest covers.
     if _foreign_uv_override_in_effect():
         return _refuse_evidence("a caller-supplied UV_OVERRIDE is in effect")
-    # Other resolver inputs from the environment: UV_CONSTRAINT / PIP_CONSTRAINT change what a step
-    # installs without touching a digested file, and PIP_NO_DEPS would leave the closure record
-    # carrying deliberate gaps as known.
+    # UV_CONSTRAINT / PIP_CONSTRAINT change what a step installs without touching a digested file,
+    # and PIP_NO_DEPS would leave the closure record carrying deliberate gaps as known.
     foreign = _foreign_resolver_inputs()
     if foreign:
         return _refuse_evidence(f"caller-supplied resolver input in effect: {', '.join(foreign)}")
@@ -8326,6 +8417,9 @@ def _installed_index() -> "dict | None":
     """
     global _CLOSURE_INDEX_CACHE
     if _CLOSURE_INDEX_CACHE is None or _CLOSURE_INDEX_CACHE[0] != _INSTALL_ACTIONS:
+        # importlib.metadata revalidates its listing cache on mtime, one-second granular on
+        # some filesystems, so a rebuild in the same tick as its install reads the old one.
+        importlib.invalidate_caches()
         try:
             index = install_manifest.installed_dependency_index()
         except Exception:  # noqa: BLE001 - None is "cannot audit", which installs
@@ -8367,6 +8461,31 @@ def _refuse_step(key: str, reason: str) -> bool:
     return False
 
 
+_INCLUDE_FLAGS = ("-r", "--requirement", "-c", "--constraint")
+
+
+def _includes_another_requirements_file(req: Path) -> bool:
+    """Whether *req* pulls in a second file the pass_inputs digests do not cover.
+
+    Unreadable counts as "yes": a file this cannot read is one whose contents the gate cannot
+    stand behind either, and the step running is the safe answer.
+    """
+    try:
+        text = req.read_text(encoding = "utf-8-sig")
+    except (OSError, ValueError, UnicodeDecodeError):
+        return True
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        head = line.split()[0].split("=", 1)[0]
+        if head in _INCLUDE_FLAGS or any(
+            line.startswith(flag) for flag in ("-r", "-c", "--requirement", "--constraint")
+        ):
+            return True
+    return False
+
+
 def _requirements_satisfied(
     req: Path,
     *,
@@ -8403,9 +8522,17 @@ def _requirements_satisfied(
         return _refuse_step(key, "an input file changed")
     # (c) the output is still on disk.
     importlib.invalidate_caches()
-    effective, temps = _effective_requirements(req)
-    # Inside the try: `effective` can be a temp copy the finally unlinks.
+    # Inside the try: on a filtering host this reads the file, and a tree the core step replaced
+    # mid-pass is a reason to run the step, not to end the update.
+    temps: list[Path] = []
     try:
+        effective, temps = _effective_requirements(req)
+        if _includes_another_requirements_file(effective):
+            # The digest covers this file; an -r line's target is a second file it does not name
+            # in pass_inputs, and missing_requirements skips flag lines, so a pin behind the
+            # include could move with nothing here able to see it. None of the shipped files uses
+            # one, which is exactly why the refusal costs nothing and the trap is worth closing.
+            return _refuse_step(key, "the file includes another requirements file")
         missing = install_manifest.missing_requirements(effective)
         if missing:
             return _refuse_step(key, f"not installed or outside the pin: {missing[:5]}")
@@ -8414,9 +8541,8 @@ def _requirements_satisfied(
         if not no_deps:
             unmet = install_manifest.closure_unmet_requirements(effective, _installed_index())
             # What the last pass left unmet right after this step (disjoint pins) is not missing
-            # work; anything new is. Only while the installed set is the one the record was made
-            # against: a requirer that moved since can have dropped the bound that made the
-            # conflict.
+            # work; anything new is. Honoured only against the installed set it was recorded on,
+            # since a requirer that moved may have dropped the bound that made the conflict.
             known: set = set()
             if _PASS_EVIDENCE.get("known_unmet_index") == _installed_index_digest():
                 known = set((_PASS_EVIDENCE.get("known_unmet") or {}).get(key) or [])
@@ -8431,7 +8557,10 @@ def _requirements_satisfied(
         return _refuse_step(key, f"audit raised {exc!r}")
     finally:
         for temp in temps:
-            temp.unlink(missing_ok = True)
+            try:
+                temp.unlink(missing_ok = True)
+            except OSError:
+                pass
     if constrain and _violated_constraints():
         return _refuse_step(key, f"constraints violated: {_violated_constraints()[:5]}")
     return True
@@ -8473,9 +8602,10 @@ def _direct_reference_in_requirements(req: Path) -> "tuple[str, str, str] | None
     The fragment is NOT an inline comment here: ``#subdirectory=`` is part of the URL,
     and a different subdirectory is a different package.
     """
+    # ValueError too: a requirements file that is not UTF-8 raises UnicodeDecodeError here.
     try:
         lines = req.read_text(encoding = "utf-8-sig").splitlines()
-    except OSError:
+    except (OSError, ValueError):
         return None
     for line in lines:
         stripped = line.strip()
@@ -8733,7 +8863,13 @@ def _run_patch_metadata() -> None:
     A subprocess here is a whole interpreter start for a stdlib script that edits at
     most three files. It stays as the fallback, because the script is also a supported
     standalone entry point and an import failure must not fail the install.
+
+    The script prints its tally. run() captured that; in process it would land in the
+    middle of the progress line, so it is captured here too and kept for UNSLOTH_VERBOSE.
     """
+    import contextlib  # noqa: PLC0415
+    import io  # noqa: PLC0415
+
     try:
         sys.path.insert(0, str(SINGLE_ENV))
         try:
@@ -8741,7 +8877,13 @@ def _run_patch_metadata() -> None:
         finally:
             if sys.path and sys.path[0] == str(SINGLE_ENV):
                 sys.path.pop(0)
-        patch_metadata.main()
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            patch_metadata.main()
+        if VERBOSE:
+            for line in captured.getvalue().splitlines():
+                if line.strip():
+                    _note(line.strip())
         return
     except Exception:  # noqa: BLE001
         pass
@@ -8785,7 +8927,11 @@ def _local_plugin_digest(plugin_dir: Path) -> "str | None":
             if path.is_file() and not _is_plugin_build_artifact(path.relative_to(plugin_dir))
         )
         for path in paths:
-            digest.update(path.relative_to(plugin_dir).as_posix().encode("utf-8"))
+            # surrogateescape, not strict: POSIX allows filenames that are not UTF-8, and
+            # a stray one beside the sources would otherwise end the update here.
+            digest.update(
+                path.relative_to(plugin_dir).as_posix().encode("utf-8", "surrogateescape")
+            )
             digest.update(b"\x00")
             digest.update(path.read_bytes())
             digest.update(b"\x00")
@@ -8838,6 +8984,10 @@ def install_python_stack() -> int:
             base_total += 1  # torch flavor invariant (step 13w), Windows
     if IS_MAC_ARM and not NO_TORCH:
         base_total += 1  # MLX stack, same gate as the step itself
+    if NO_TORCH and not skip_base:
+        # no-torch runtime deps, which this build announces on its own slot inside the core
+        # step rather than folding into it. Same gate as the step itself.
+        base_total += 1
     base_requirements = _shared_base_requirements() if skip_base else None
     # Core packages and shared base requirements occupy one progress slot. A
     # shell-installer handoff skips that slot only while base.txt has no work.
@@ -8847,14 +8997,28 @@ def install_python_stack() -> int:
     # runs.
     _PASS_EVIDENCE = _plan_pass(package_name, local_repo, ci_source_overlay)
 
-    # Drop it up front: a missing manifest is what tells the CLI, setup.sh and
-    # the preflight that an interrupted run left the venv half-built. Stop if it
-    # survives rather than mutate the venv behind a marker that still verifies.
-    # remove_manifest parks the live copy for setup.ps1's ordering; here the evidence is already in
-    # memory, so the parked copy goes before anything is mutated.
+    # Drop it up front: a missing manifest is what tells the CLI, setup.sh and the preflight that an
+    # interrupted run left the venv half-built. Stop if it survives rather than mutate the venv
+    # behind a marker that still verifies. The evidence is already in memory here, so the copy
+    # remove_manifest parks for setup.ps1's ordering goes before anything is mutated.
+    # Clear a stale parked copy FIRST, while the live manifest is still there: _plan_pass
+    # consumes the one it reads, so anything left is from a run that died. A path that cannot
+    # be cleared (a directory on the name, a Windows handle held open) must refuse here rather
+    # than after the live manifest is gone, or the venv is left unable to verify AND unable to
+    # finish, with every later update refusing at the same point.
+    _parked = install_manifest.previous_manifest_path()
+    install_manifest.consume_previous_manifest()
+    if _parked.exists():
+        _safe_print(
+            f"error: could not remove the parked {install_manifest.PREVIOUS_MANIFEST_NAME} "
+            f"in {install_manifest.venv_root()}; refusing to install behind evidence the "
+            "next run would read as a completed pass",
+            file = sys.stderr,
+        )
+        return 1
     if install_manifest.remove_manifest():
         install_manifest.consume_previous_manifest()
-        if install_manifest.previous_manifest_path().exists():
+        if _parked.exists():
             _safe_print(
                 f"error: could not remove the parked {install_manifest.PREVIOUS_MANIFEST_NAME} "
                 f"in {install_manifest.venv_root()}; refusing to install behind evidence the "
