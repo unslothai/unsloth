@@ -38,6 +38,7 @@ from models.data_recipe import (
     PublishDatasetResponse,
     RecipePayload,
 )
+from utils.hf_endpoint import client_reachable_endpoint
 from utils.host_policy import dial_host, self_request_host
 from utils.utils import safe_error_detail, safe_curated_detail, log_and_http_error
 
@@ -534,6 +535,7 @@ def job_dataset(
     response_model = PublishDatasetResponse,
 )
 def publish_job_dataset(
+    request: Request,
     job_id: str,
     payload: PublishDatasetRequest,
     allow_ambient: bool = Depends(allow_ambient_hf_token),
@@ -582,6 +584,9 @@ def publish_job_dataset(
             description = description,
             hf_token = hf_token or None,
             private = payload.private,
+            link_endpoint = client_reachable_endpoint(
+                getattr(getattr(request, "client", None), "host", None)
+            ),
         )
     except RecipeDatasetPublishError as exc:
         raise log_and_http_error(

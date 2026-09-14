@@ -144,6 +144,21 @@ def _sanitize(candidate: str, default: str, var_name: str) -> str:
     return default
 
 
+def client_reachable_endpoint(client_host: str | None) -> str:
+    """The hub endpoint to hand to a browser at ``client_host``.
+
+    A loopback endpoint names a proxy on the MACHINE THE BACKEND RUNS ON, so it
+    means something else entirely to a browser elsewhere: its own localhost. It
+    is reported, and linked to, only when the client is on this machine too.
+    Everything the backend does itself keeps using ``get_hf_endpoint()``.
+    """
+    endpoint = get_hf_endpoint()
+    parts = _split(endpoint)
+    if parts is not None and is_loopback_host(parts.hostname) and not is_loopback_host(client_host):
+        return _DEFAULT_HF_ENDPOINT
+    return endpoint
+
+
 def csp_connect_sources() -> tuple[str, str]:
     """The two endpoints as CSP ``connect-src`` sources, i.e. origins only.
 

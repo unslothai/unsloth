@@ -13,7 +13,11 @@ import logging
 
 import pytest
 
-from utils.hf_endpoint import get_hf_datasets_server, get_hf_endpoint
+from utils.hf_endpoint import (
+    client_reachable_endpoint,
+    get_hf_datasets_server,
+    get_hf_endpoint,
+)
 
 OFFICIAL_HF = "https://huggingface.co"
 OFFICIAL_DS = "https://datasets-server.huggingface.co"
@@ -260,3 +264,21 @@ def test_an_uppercase_scheme_is_accepted_and_folded(monkeypatch):
     # The loopback-only rule for http survives the case fold.
     monkeypatch.setenv("HF_ENDPOINT", "HTTP://hf-mirror.com")
     assert get_hf_endpoint() == "https://huggingface.co"
+
+
+def test_a_loopback_endpoint_is_not_handed_to_a_remote_browser(monkeypatch):
+    """Links and /api/health must agree: a loopback mirror is this machine only.
+
+    A remote browser handed http://127.0.0.1:9700 opens its OWN localhost, so the
+    publish dialog's repo link would be dead (or point at some unrelated local
+    service) where before the feature it was a working huggingface.co link.
+    """
+    monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:9700")
+    assert client_reachable_endpoint("127.0.0.1") == "http://127.0.0.1:9700"
+    assert client_reachable_endpoint("::1") == "http://127.0.0.1:9700"
+    assert client_reachable_endpoint("192.168.1.50") == "https://huggingface.co"
+    # An unknown client host is not known to be local, so it is treated as remote.
+    assert client_reachable_endpoint(None) == "https://huggingface.co"
+    # A non-loopback mirror is the same host for every client and passes through.
+    monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.com")
+    assert client_reachable_endpoint("192.168.1.50") == "https://hf-mirror.com"
