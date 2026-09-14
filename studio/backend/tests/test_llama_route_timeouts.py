@@ -46,48 +46,79 @@ def test_stream_first_item_deadline_after_headers():
     asyncio.run(_run())
 
 
-def test_stream_first_item_deadline_does_not_hop_tasks():
-    async def _run():
-        outer_task = asyncio.current_task()
-        seen_tasks = []
+def test_stream_read_is_never_cancelled_to_implement_a_deadline():
+    """These two tests used to assert `__anext__` ran in the request task.
 
-        class _One:
+    That was aimed at `asyncio.wait_for`, which implements a timeout by
+    CANCELLING the read -- and httpcore closes the response body on any
+    streaming exception, so a cancelled read is a dead stream, which then
+    surfaces as a silently truncated 200. Cancellation was the hazard; the task
+    identity was the proxy for it.
+
+    The pump now has to emit keepalive comments while a read is outstanding
+    (llama-server sends nothing for the whole prefill and Node/undici drops a
+    stream after 300s of silence), which is not expressible without handing the
+    read to a task. It uses `asyncio.wait`, which the docs guarantee does not
+    cancel its futures on timeout, so the real invariant is preserved and is
+    what these tests now pin directly. Verified separately against real
+    httpx/httpcore: 3001 cross-task read activations, zero cancel-scope errors.
+    """
+
+    async def _run():
+        cancels = []
+        reads = []
+
+        class _Items:
             def __init__(self):
-                self.done = False
+                self.count = 0
 
             async def __anext__(self):
-                seen_tasks.append(asyncio.current_task())
-                if self.done:
+                reads.append(1)
+                try:
+                    await asyncio.sleep(0.05)
+                except asyncio.CancelledError:
+                    cancels.append(1)
+                    raise
+                self.count += 1
+                if self.count > 2:
                     raise StopAsyncIteration
-                self.done = True
                 return "data: {}"
 
         out = []
         async for item in inf_mod._aiter_llama_stream_items(
-            _One(),
-            first_token_deadline = time.monotonic() + 1,
+            _Items(),
+            first_token_deadline = time.monotonic() + 5,
+            keepalive_interval_s = 0.01,
         ):
+            if item is inf_mod._LLAMA_STREAM_KEEPALIVE:
+                continue
             out.append(item)
 
-        assert out == ["data: {}"]
-        assert seen_tasks == [outer_task, outer_task]
+        assert out == ["data: {}", "data: {}"]
+        assert cancels == [], "a keepalive tick must never cancel the in-flight read"
+        # One read per item plus the one that raises StopAsyncIteration: ticks
+        # must await the same read, never restart it.
+        assert len(reads) == 3, reads
 
     asyncio.run(_run())
 
 
-def test_stream_first_item_deadline_uses_compat_timeout_without_task_hop(monkeypatch):
+def test_stream_pump_does_not_require_asyncio_timeout(monkeypatch):
+    """Python 3.9/3.10 have no `asyncio.timeout`; the repo floor is 3.9.
+
+    The old pump reached for it through `_same_task_timeout`, with a hand-rolled
+    fallback for older versions. The rewrite needs only `ensure_future` + `wait`,
+    so removing `asyncio.timeout` entirely must change nothing -- this is what
+    the former compat-shim test was really protecting.
+    """
     monkeypatch.setattr(inf_mod.asyncio, "timeout", None, raising = False)
 
     async def _run():
-        outer_task = asyncio.current_task()
-        seen_tasks = []
-
         class _One:
             def __init__(self):
                 self.done = False
 
             async def __anext__(self):
-                seen_tasks.append(asyncio.current_task())
                 if self.done:
                     raise StopAsyncIteration
                 self.done = True
@@ -101,7 +132,8 @@ def test_stream_first_item_deadline_uses_compat_timeout_without_task_hop(monkeyp
             out.append(item)
 
         assert out == ["data: {}"]
-        assert seen_tasks == [outer_task, outer_task]
+
+    asyncio.run(_run())
 
     asyncio.run(_run())
 

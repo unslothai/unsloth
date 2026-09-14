@@ -3103,6 +3103,14 @@ async def _aiter_llama_stream_items(
                 raise httpx.ReadTimeout(timed_out_message) from exc
             finally:
                 item_task = None
+            if last_item_at is None and response is not None:
+                # Re-arm before yielding, not before the next read: the consumer
+                # may sit on this item indefinitely, and until this runs the
+                # response still carries the first-token deadline. With the stall
+                # guard disabled the callable returns None, which clears it, so a
+                # long post-first-chunk gap cannot trip a deadline the operator
+                # turned off.
+                _set_stream_response_read_timeout(response, _post_first_timeout_s())
             last_item_at = time.monotonic()
             yield item
     finally:
