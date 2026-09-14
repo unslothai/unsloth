@@ -2969,7 +2969,7 @@ def messages_with_attached_image(
             for m in conversation
         )
     ]
-    if not parts:
+    if not parts and not fallback_user_text:
         return conversation
     for index in range(len(conversation) - 1, -1, -1):
         message = conversation[index]
@@ -2980,9 +2980,11 @@ def messages_with_attached_image(
             content = [{"type": "text", "text": content or fallback_user_text}]
         elif not isinstance(content, list):
             break
+        elif fallback_user_text and not last_user_text([message]):
+            content = [*content, {"type": "text", "text": fallback_user_text}]
         conversation[index] = {**message, "content": parts + list(content)}
         return conversation
-    if fallback_user_text:
+    if parts and fallback_user_text:
         conversation.append(
             {"role": "user", "content": parts + [{"type": "text", "text": fallback_user_text}]}
         )
