@@ -672,8 +672,13 @@ _setup_has_usable_nvidia_gpu() {
 # Row index of the GPU whose UUID starts with $1, or empty. NVIDIA allows a UUID to
 # be abbreviated to any unique leading portion, hence the prefix match.
 _setup_nv_idx_from_uuid() {
+    # NVIDIA accepts an abbreviation only when it is a UNIQUE leading portion, so a
+    # prefix matching two cards selects NO device. Counting instead of stopping at the
+    # first hit keeps the banner from naming one of them.
     _setup_run_smi "$_setup_nvsmi" --query-gpu=uuid --format=csv,noheader 2>/dev/null \
-        | awk -v want="$1" 'NF { gsub(/^[[:space:]]+|[[:space:]]+$/,""); if (index($0, want) == 1) { print NR-1; exit } }' || true
+        | awk -v want="$1" '
+            NF { gsub(/^[[:space:]]+|[[:space:]]+$/,""); if (index($0, want) == 1) { hits++; idx = NR-1 } }
+            END { if (hits == 1) print idx }' || true
 }
 
 # Resolves the banner's NVIDIA fields into _setup_nv_name / _setup_nv_sm /
@@ -721,8 +726,10 @@ _setup_nv_banner_fields() {
                 *)
                     _setup_nv_idx=$(_setup_nv_idx_from_uuid "$_setup_nv_tok") ;;
             esac
-            # Nothing matched, so row 0 is a guess again, not the named device.
-            case "$_setup_nv_idx" in ''|*[!0-9]*) _setup_nv_idx=0; _setup_nv_by_ordinal=1 ;; esac
+            # An identity mask that does not resolve means CUDA selected NO device: an
+            # abbreviation short enough to match two cards, or a UUID for a card that is
+            # not here. Row 0 is not a fallback for that -- it is a different card.
+            case "$_setup_nv_idx" in ''|*[!0-9]*) _setup_nv_idx=0; _setup_nv_ambiguous=1 ;; esac
             ;;
         *) _setup_nv_idx="$_setup_nv_tok" ;;
     esac

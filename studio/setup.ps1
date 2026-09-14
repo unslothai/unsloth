@@ -2410,9 +2410,11 @@ if ($HasNvidiaSmi -and $NvidiaSmiExe -and -not $script:NvidiaSmiWedged -and -not
             # abbreviated to any unique leading portion, so it is matched on prefix.
             $nvIdx = 0
             $nvTok = if ($env:CUDA_VISIBLE_DEVICES) { ($env:CUDA_VISIBLE_DEVICES -split ',')[0].Trim() } else { '' }
-            # True while nothing has IDENTIFIED a device: an ordinal, or an identity
-            # lookup that matched nothing and fell back to one.
+            # True while nothing has IDENTIFIED a device: a plain ordinal.
             $nvByOrdinal = $true
+            # Set when an identity mask was given but did not resolve, which means CUDA
+            # selected NO device. Row 0 is not a fallback for that.
+            $nvUnresolved = $false
             if ($nvTok -match '^\d+$') {
                 $nvIdx = [int]$nvTok
             } elseif ($nvTok -like 'MIG-*' -and $nvTok -notlike 'MIG-GPU-*') {
@@ -2427,7 +2429,7 @@ if ($HasNvidiaSmi -and $NvidiaSmiExe -and -not $script:NvidiaSmiWedged -and -not
                     if ($ln -match '^GPU\s+(\d+):') { $cur = [int]$Matches[1] }
                     if ($ln -match [regex]::Escape($nvTok)) { $nvIdx = $cur; $nvFound = $true; break }
                 }
-                if (-not $nvFound) { $nvByOrdinal = $true }
+                if (-not $nvFound) { $nvUnresolved = $true }
             } elseif ($nvTok) {
                 # Pre-R470 MIG names embed the parent UUID: MIG-<GPU-UUID>/<gi>/<ci>.
                 if ($nvTok -like 'MIG-GPU-*') { $nvTok = ($nvTok.Substring(4) -split '/')[0] }
@@ -2435,10 +2437,15 @@ if ($HasNvidiaSmi -and $NvidiaSmiExe -and -not $script:NvidiaSmiWedged -and -not
                 $nvUuids = @($nvUuidOut -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
                 $nvByOrdinal = $false
                 $nvFound = $false
+                # NVIDIA accepts an abbreviation only when it is a UNIQUE leading portion, so
+                # a prefix matching two cards selects NO device. Collect, do not stop at the
+                # first hit, or the banner names one of them.
+                $nvMatches = @()
                 for ($i = 0; $i -lt $nvUuids.Count; $i++) {
-                    if ($nvUuids[$i].StartsWith($nvTok, [System.StringComparison]::OrdinalIgnoreCase)) { $nvIdx = $i; $nvFound = $true; break }
+                    if ($nvUuids[$i].StartsWith($nvTok, [System.StringComparison]::OrdinalIgnoreCase)) { $nvMatches += $i }
                 }
-                if (-not $nvFound) { $nvByOrdinal = $true }
+                if ($nvMatches.Count -eq 1) { $nvIdx = $nvMatches[0]; $nvFound = $true }
+                if (-not $nvFound) { $nvUnresolved = $true }
             }
             $nvRow = if ($nvIdx -lt $nvRows.Count) { $nvRows[$nvIdx] } else { $nvRows[0] }
             # A numeric entry is a CUDA ordinal, and CUDA's default
@@ -2447,8 +2454,8 @@ if ($HasNvidiaSmi -and $NvidiaSmiExe -and -not $script:NvidiaSmiWedged -and -not
             # identifies an nvidia-smi row only when the order is pinned to PCI_BUS_ID, or
             # when the cards are interchangeable and every row gives the same answer
             # anyway. Compared on name and compute_cap, not the driver, which is host-wide.
-            $nvAmbiguous = $false
-            if ($nvByOrdinal) {
+            $nvAmbiguous = $nvUnresolved
+            if ($nvByOrdinal -and -not $nvAmbiguous) {
                 $nvOrder = (("$env:CUDA_DEVICE_ORDER") -replace '\s', '').ToUpperInvariant()
                 $nvModels = @($nvRows | ForEach-Object { $_ -replace ',[^,]*$', '' } |
                               Sort-Object -Unique).Count
@@ -2922,16 +2929,22 @@ if (-not $HasNvidiaSmi) {
             # drops out below, and indexing the shortened list would name the wrong card.
             $nameIdx = Resolve-VisibleGpuIndex $gpuNames.Count
             $nameArches = @()
-            foreach ($gpuName in $gpuNames) {
-                $inferred = Get-GfxArchFromGpuName -Name $gpuName -Table $nameArchTable
-                if ($inferred) { $nameArches += $inferred }
+            # Which ADAPTER each inferred arch came from. Unmappable names drop out, so
+            # $nameArches is shorter than $gpuNames and its positions stop lining up; the
+            # borrow below has to be able to say which card it borrowed from.
+            $nameArchSrc = @()
+            for ($_gi = 0; $_gi -lt $gpuNames.Count; $_gi++) {
+                $inferred = Get-GfxArchFromGpuName -Name $gpuNames[$_gi] -Table $nameArchTable
+                if ($inferred) { $nameArches += $inferred; $nameArchSrc += $_gi }
             }
             $pickedName = Get-GfxArchFromGpuName -Name $gpuNames[$nameIdx] -Table $nameArchTable
             # Borrow another adapter's arch only when unpinned: an unmappable leading
             # adapter is exactly the #7776 iGPU and the named discrete card should decide,
             # but under a mask substituting installs wheels for a GPU they masked away.
+            $_borrowedIdx = -1
             if (-not $pickedName -and -not (Test-VisibleDevicesPinned) -and $nameArches.Count -gt 0) {
                 $pickedName = $nameArches[0]
+                $_borrowedIdx = $nameArchSrc[0]
             }
             if ($pickedName) {
                 # Repick only when every adapter mapped: an unknown name may BE the
@@ -2958,6 +2971,12 @@ if (-not $HasNvidiaSmi) {
                         [array]::IndexOf($nameArches, $script:ROCmGfxArch)
                     }
                     if ($_nameArchIdx -ge 0) { $ROCmGpuName = $gpuNames[$_nameArchIdx] }
+                } elseif ($_borrowedIdx -ge 0) {
+                    # Not every adapter mapped, so the block above cannot run, but the arch
+                    # was borrowed from a KNOWN adapter and $ROCmGpuName is still adapter 0.
+                    # An unmappable iGPU ahead of an RX 9070 otherwise reads "AMD Radeon
+                    # Graphics (gfx1201)": the integrated name against the discrete arch.
+                    $ROCmGpuName = $gpuNames[$_borrowedIdx]
                 }
                 substep "gfx arch inferred from GPU name: $script:ROCmGfxArch" "Cyan"
                 substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$script:ROCmGfxArch to skip inference next time" "Cyan"

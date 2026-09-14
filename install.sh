@@ -2464,8 +2464,13 @@ _has_usable_nvidia_gpu() {
 # Row index of the GPU whose UUID starts with $1, or empty. NVIDIA allows a UUID to
 # be abbreviated to any unique leading portion, hence the prefix match.
 _nv_idx_from_uuid() {
+    # NVIDIA accepts an abbreviation only when it is a UNIQUE leading portion, so a
+    # prefix matching two cards selects NO device. Counting instead of stopping at the
+    # first hit keeps the banner from naming one of them.
     _run_bounded "$_nvsmi" --query-gpu=uuid --format=csv,noheader 2>/dev/null \
-        | awk -v want="$1" 'NF { gsub(/^[[:space:]]+|[[:space:]]+$/,""); if (index($0, want) == 1) { print NR-1; exit } }' || true
+        | awk -v want="$1" '
+            NF { gsub(/^[[:space:]]+|[[:space:]]+$/,""); if (index($0, want) == 1) { hits++; idx = NR-1 } }
+            END { if (hits == 1) print idx }' || true
 }
 
 # Resolves the banner's NVIDIA fields into _nv_name / _nv_sm / _nv_driver, each empty
@@ -2519,8 +2524,10 @@ _nv_banner_fields() {
                 *)
                     _nv_idx=$(_nv_idx_from_uuid "$_nv_tok") ;;
             esac
-            # Nothing matched, so row 0 is a guess again, not the named device.
-            case "$_nv_idx" in ''|*[!0-9]*) _nv_idx=0; _nv_by_ordinal=1 ;; esac
+            # An identity mask that does not resolve means CUDA selected NO device: an
+            # abbreviation short enough to match two cards, or a UUID for a card that is
+            # not here. Row 0 is not a fallback for that -- it is a different card.
+            case "$_nv_idx" in ''|*[!0-9]*) _nv_idx=0; _nv_ambiguous=1 ;; esac
             ;;
         *) _nv_idx="$_nv_tok" ;;
     esac

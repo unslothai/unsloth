@@ -5467,9 +5467,11 @@ exit 0
                 # abbreviated to any unique leading portion, so it is matched on prefix.
                 $nvIdx = 0
                 $nvTok = if ($env:CUDA_VISIBLE_DEVICES) { ($env:CUDA_VISIBLE_DEVICES -split ',')[0].Trim() } else { '' }
-                # True while nothing has IDENTIFIED a device: an ordinal, or an identity
-                # lookup that matched nothing and fell back to one.
+                # True while nothing has IDENTIFIED a device: a plain ordinal.
                 $nvByOrdinal = $true
+                # Set when an identity mask was given but did not resolve, which means CUDA
+                # selected NO device. Row 0 is not a fallback for that.
+                $nvUnresolved = $false
                 if ($nvTok -match '^\d+$') {
                     $nvIdx = [int]$nvTok
                 } elseif ($nvTok -like 'MIG-*' -and $nvTok -notlike 'MIG-GPU-*') {
@@ -5484,7 +5486,7 @@ exit 0
                         if ($ln -match '^GPU\s+(\d+):') { $cur = [int]$Matches[1] }
                         if ($ln -match [regex]::Escape($nvTok)) { $nvIdx = $cur; $nvFound = $true; break }
                     }
-                    if (-not $nvFound) { $nvByOrdinal = $true }
+                    if (-not $nvFound) { $nvUnresolved = $true }
                 } elseif ($nvTok) {
                     # Pre-R470 MIG names embed the parent UUID: MIG-<GPU-UUID>/<gi>/<ci>.
                     if ($nvTok -like 'MIG-GPU-*') { $nvTok = ($nvTok.Substring(4) -split '/')[0] }
@@ -5492,10 +5494,15 @@ exit 0
                     $nvUuids = @($nvUuidOut -split '\r?\n' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
                     $nvByOrdinal = $false
                     $nvFound = $false
+                    # NVIDIA accepts an abbreviation only when it is a UNIQUE leading portion, so
+                    # a prefix matching two cards selects NO device. Collect, do not stop at the
+                    # first hit, or the banner names one of them.
+                    $nvMatches = @()
                     for ($i = 0; $i -lt $nvUuids.Count; $i++) {
-                        if ($nvUuids[$i].StartsWith($nvTok, [System.StringComparison]::OrdinalIgnoreCase)) { $nvIdx = $i; $nvFound = $true; break }
+                        if ($nvUuids[$i].StartsWith($nvTok, [System.StringComparison]::OrdinalIgnoreCase)) { $nvMatches += $i }
                     }
-                    if (-not $nvFound) { $nvByOrdinal = $true }
+                    if ($nvMatches.Count -eq 1) { $nvIdx = $nvMatches[0]; $nvFound = $true }
+                    if (-not $nvFound) { $nvUnresolved = $true }
                 }
                 $nvRow = if ($nvIdx -lt $nvRows.Count) { $nvRows[$nvIdx] } else { $nvRows[0] }
                 # A numeric entry is a CUDA ordinal, and CUDA's default
@@ -5504,8 +5511,8 @@ exit 0
                 # identifies an nvidia-smi row only when the order is pinned to PCI_BUS_ID, or
                 # when the cards are interchangeable and every row gives the same answer
                 # anyway. Compared on name and compute_cap, not the driver, which is host-wide.
-                $nvAmbiguous = $false
-                if ($nvByOrdinal) {
+                $nvAmbiguous = $nvUnresolved
+                if ($nvByOrdinal -and -not $nvAmbiguous) {
                     $nvOrder = (("$env:CUDA_DEVICE_ORDER") -replace '\s', '').ToUpperInvariant()
                     $nvModels = @($nvRows | ForEach-Object { $_ -replace ',[^,]*$', '' } |
                                   Sort-Object -Unique).Count
