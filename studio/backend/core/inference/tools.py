@@ -1616,26 +1616,40 @@ def _find_blocked_commands(command: str) -> set[str]:
                 # `$(echo $c)`: the body runs over laundered text, so its output is unknowable.
                 blocked.add(_BLOCKED_SYNTHESIZED_COMMAND)
         if laundered_refs:
-            var_exec_pattern = (
-                _SUBST_CMD_SEP
-                + r"\s*"
-                + _SUBST_WRAPPER_RUN
-                # Named, not positional: a group added in front would silently renumber these.
-                + r"(?P<var>\"?\$(?:(?P<bare>"
+            # Named, not positional: a group added in front would silently renumber these.
+            var_word = (
+                r"(?P<var>\"?\$(?:(?P<bare>"
                 + laundered_refs
                 + r")|\{(?P<braced>"
                 + laundered_refs
                 + r")\})"
                 # The closing quote ends the word too, or `"$c"` - the recommended spelling -
-                # walks through the screen the bare one is caught by.
-                r"\"?)(?=\s|$|[;&|)\]}])"
+                # walks through the screen the bare one is caught by. Trailing word characters
+                # are part of the SAME word: bash concatenates the fragments, so `${x}m` runs
+                # `rm` when x holds `r`, and requiring the expansion to end the word let that
+                # through.
+                r"\"?[\w.\-]*)(?=\s|$|[;&|)\]}])"
             )
-            for hit in re.finditer(var_exec_pattern, command):
+            var_hits = list(
+                re.finditer(_SUBST_CMD_SEP + r"\s*" + _SUBST_WRAPPER_RUN + var_word, command)
+            )
+            # A case arm runs a laundered variable just as readily as a substitution.
+            var_hits += _case_arm_sites(
+                command, quote_states, re.compile(r"\)\s*" + _SUBST_WRAPPER_RUN + var_word)
+            )
+            for hit in var_hits:
                 if _is_wrapper_flag_operand(command, hit.start("var")):
                     continue  # `xargs -P $n`: operand of the option, not the command
                 name = hit.group("bare") or hit.group("braced")
                 precise = laundered.get(name)
-                blocked.add(precise if precise is not None else _BLOCKED_SYNTHESIZED_COMMAND)
+                # A precise literal only stands when the expansion IS the whole word; glued to
+                # more text it is a fragment of an unknown name (`${x}m`), not that name.
+                if precise is not None and hit.group("var").rstrip('"').endswith(
+                    ("$" + name, "{" + name + "}")
+                ):
+                    blocked.add(precise)
+                else:
+                    blocked.add(_BLOCKED_SYNTHESIZED_COMMAND)
 
     # Nested shell invocations (bash -c, cmd /c): on a -c/-/c flag, look back for a shell name (skipping flags) and
     # recursively scan the nested command string.
@@ -5037,7 +5051,12 @@ _COMMAND_SUBST_AT_CMD_RE = re.compile(
 )
 # Command-position separators for the screens below. `:` is absent on purpose: its arguments are
 # expanded but never executed.
-_SUBST_CMD_SEP = r"(?:^|[;&|\n({]|&&|\|\||\b(?:then|do|else|elif|if|while|until)\b\s*|!\s*)"
+# `coproc [NAME] command` (bash `help coproc`) executes COMMAND asynchronously, so its operand is
+# a command position; the optional NAME is matched only here, where it cannot widen anything else.
+_SUBST_CMD_SEP = (
+    r"(?:^|[;&|\n({]|&&|\|\||\b(?:then|do|else|elif|if|while|until)\b\s*"
+    r"|\bcoproc\b\s*(?:[A-Za-z_]\w*\s+)?|!\s*)"
+)
 # Wrappers forward to their operand. Repetitions are bounded and flat: unbounded nesting caused
 # catastrophic backtracking. A wrapper's arguments are flags, `VAR=value` and bare numbers (the
 # shapes _exec_child_index steps over), NOT "any word" - its first plain word IS its command, and
@@ -5050,11 +5069,13 @@ _WRAPPER_VALUE_FLAG_ALT = "|".join(
     re.escape(flag) for flag in sorted(_ALL_WRAPPER_VALUE_FLAGS, key = len, reverse = True)
 )
 # A bare number covers `nice 5`; timeout's DURATION is "a floating point number with an optional
-# suffix: 's', 'm', 'h' or 'd'" (timeout --help), so `timeout 1s $(...)` needs the suffixed and
-# fractional spellings too or the site behind them goes unscreened.
+# suffix: 's', 'm', 'h' or 'd'" (timeout --help). Floating point there means strtod, so the
+# scientific spellings are valid too and `timeout 1e1 $(...)` really runs - every form this does
+# not accept is a site that goes unscreened.
 _SUBST_WRAPPER_ARG = (
     r"(?:(?:" + _WRAPPER_VALUE_FLAG_ALT + r")\s+[^\s;&|()]+"
-    r"|-[^\s;&|()]*|[A-Za-z_]\w*=[^\s;&|()]*|(?:\d+(?:\.\d*)?|\.\d+)[smhd]?)"
+    r"|-[^\s;&|()]*|[A-Za-z_]\w*=[^\s;&|()]*"
+    r"|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?[smhd]?)"
 )
 # Both repetitions are UNBOUNDED. `env --help` documents `[OPTION]...` before COMMAND, so any cap
 # is a number of options an attacker just exceeds to make the whole site regex fail - opening, not
@@ -5159,12 +5180,19 @@ def _blocked_body_word_pattern_for(words: "frozenset[str]") -> "re.Pattern":
     return re.compile("|".join(parts) if parts else r"(?!)")
 
 
-def _case_arm_sites(command: str, quote_states: "list[str]") -> "list[re.Match]":
-    """Substitution sites opened by a `case` arm's `)`, which is a command position.
+def _case_arm_sites(
+    command: str,
+    quote_states: "list[str]",
+    pattern: "re.Pattern | None" = None,
+) -> "list[re.Match]":
+    """Matches of ``pattern`` anchored on a `case` arm's `)`, which is a command position.
 
     Only inside `case ... in ... esac`, and only for a `)` that does not close a substitution -
     otherwise the `)` of an ordinary `echo $(date) $(ls /tmp)` would read as an arm and refuse it.
+    ``pattern`` defaults to the substitution-site one; the variable-execution scan passes its own,
+    since a laundered `$c` runs in an arm just as readily as a substitution does.
     """
+    pattern = pattern if pattern is not None else _SUBST_CASE_ARM_RE
     if not _CASE_REGION_RE.search(command):
         return []
     # Every `)` that closes an unquoted `$(`: those belong to the substitution, not to an arm.
@@ -5179,7 +5207,7 @@ def _case_arm_sites(command: str, quote_states: "list[str]") -> "list[re.Match]"
     sites = []
     for region in _CASE_REGION_RE.finditer(command):
         start, stop = region.start(1), region.end(1)
-        for site in _SUBST_CASE_ARM_RE.finditer(command, start, stop):
+        for site in pattern.finditer(command, start, stop):
             if site.start() not in closers:
                 sites.append(site)
     return sites

@@ -889,6 +889,9 @@ class TestBashBlocklistPosition:
                 "timeout 1s python train.py --data $(ls -d data/*)",
                 id = "suffixed_duration_wrapper_spent_allowed",
             ),
+            pytest.param("coproc echo hi", id = "coproc_benign_allowed"),
+            # A laundered expansion glued into an ARGUMENT is not a command word.
+            pytest.param("v=$(date); echo ${v}Z", id = "laundered_prefix_in_argument_allowed"),
         ],
     )
     def test_bash_blocklist_finds_nothing_in_safe_commands(self, command):
@@ -1087,6 +1090,36 @@ class TestBashBlocklistPosition:
                 "command substitution",
                 "case x in x) $(ls /usr/bin | grep '^rm$') -rf victim;; esac",
                 id = "case_arm_subst_blocked",
+            ),
+            # timeout's DURATION is a float, so strtod accepts the scientific spellings too and
+            # `timeout 1e1 true` really runs.
+            pytest.param(
+                "command substitution",
+                "timeout 1e1 $(ls /usr/bin | grep '^rm$') -rf victim",
+                id = "scientific_duration_subst_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "timeout 1.5e1s $(ls /usr/bin | grep '^rm$') -rf victim",
+                id = "scientific_suffixed_duration_subst_blocked",
+            ),
+            # `coproc [NAME] command` (help coproc) runs COMMAND asynchronously.
+            pytest.param(
+                "command substitution",
+                "coproc $(ls /usr/bin | grep '^rm$') -rf victim",
+                id = "coproc_subst_blocked",
+            ),
+            # The two laundering routes the site fixes left behind: an arm runs a variable just
+            # as readily as a substitution, and bash concatenates `${x}m` into one command word.
+            pytest.param(
+                "command substitution",
+                "c=$(ls /usr/bin|grep '^rm$'); case x in x) $c -rf victim;; esac",
+                id = "case_arm_laundered_var_blocked",
+            ),
+            pytest.param(
+                "command substitution",
+                "x=$(printf r); ${x}m -rf victim",
+                id = "laundered_prefix_command_word_blocked",
             ),
         ],
     )
