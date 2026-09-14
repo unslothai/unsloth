@@ -193,9 +193,7 @@ def test_a_bucket_lookalike_is_not_warmth_for_the_update_either(monkeypatch, tmp
     assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache), seen["env"].get("UV_CACHE_DIR")
 
 
-def test_windows_keeps_uv_s_default_when_both_are_warm_and_unmarked(
-    monkeypatch, tmp_path, caches
-):
+def test_windows_keeps_uv_s_default_when_both_are_warm_and_unmarked(monkeypatch, tmp_path, caches):
     """Windows does NOT get the POSIX rule above, and the difference is historical.
 
     install.ps1's selection already worked before the marker shipped, so a pre-marker Windows
@@ -218,7 +216,11 @@ def test_windows_keeps_uv_s_default_when_both_are_warm_and_unmarked(
     class _Process:
         pass
 
-    def _fake_popen(argv, env = None, **kwargs):
+    def _fake_popen(
+        argv,
+        env = None,
+        **kwargs,
+    ):
         seen["env"] = env
         return _Process()
 

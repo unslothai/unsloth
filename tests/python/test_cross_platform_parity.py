@@ -1241,7 +1241,9 @@ class TestInstallUvCacheRootParity:
         # cache the installers just rejected. Its docstring claimed the same rule long before
         # it had it.
         assert "def _uv_is_bucket_name(name: str) -> bool:" in cli
-        assert '_UV_CACHE_BUCKETS = ("archive", "builds", "built-wheels", "wheels", "sdists")' in cli
+        assert (
+            '_UV_CACHE_BUCKETS = ("archive", "builds", "built-wheels", "wheels", "sdists")' in cli
+        )
         #   4. readable is not usable: a real create-and-delete, root and every bucket
         assert ".unsloth-write-probe." in sh
         assert ".unsloth-write-probe." in ps1
