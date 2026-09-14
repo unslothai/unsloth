@@ -35,6 +35,10 @@ _MCP_PROTOCOL_VERSION = "2025-06-18"
 _PARALLEL_API_KEY_MAX_LEN = 500
 _CONNECT_TIMEOUT = 10.0
 _SNIPPET_MAX_CHARS = 600
+# Candidate pool multiplier when a website policy will filter the results, mirroring
+# tools._POLICY_OVERFETCH. ``web_search`` takes no result-count argument, so the only lever on
+# pool size is how many ``search_queries`` the one call runs (the tool's own guidance is 2-3).
+_POLICY_OVERFETCH = 4
 
 
 def web_search_provider() -> str:
@@ -240,6 +244,22 @@ def _check_cancel(cancel_event) -> None:
         raise TimeoutError("Search cancelled.")
 
 
+def _search_queries(query: str, website_policy: dict | None) -> list[str]:
+    """The queries one ``web_search`` call runs: the scoped query, plus a per-domain fan-out
+    when the policy restricts. The filter below drops disallowed hits, so a page whose top
+    results are all disallowed otherwise yields nothing even when valid results rank just under
+    them - the ddgs path answers that by asking for ``_POLICY_OVERFETCH`` times the candidates,
+    and with no count argument here more queries in the one call is the equivalent lever. A
+    block-list-only policy has no domains to fan out over and keeps its single query."""
+    from .web_access_policy import scope_search_query, site_filter_window
+
+    scoped = scope_search_query(query, website_policy)
+    window = site_filter_window(query, website_policy)
+    if not window:
+        return [scoped]
+    return [scoped, *(f"{query} site:{domain}" for domain in window[: _POLICY_OVERFETCH - 1])]
+
+
 def parallel_web_search(
     query: str,
     max_results: int = 5,
@@ -249,16 +269,15 @@ def parallel_web_search(
     api_key: str | None = None,
 ) -> str:
     """Search via Parallel's MCP ``web_search``; same text format as ddgs."""
-    from .web_access_policy import check_url_access, scope_search_query
+    from .web_access_policy import check_url_access
 
     _check_cancel(cancel_event)
     deadline = None if timeout is None else time.monotonic() + timeout
-    effective_query = scope_search_query(query, website_policy)
     result = _call_tool(
         "web_search",
         {
             "objective": query.strip(),
-            "search_queries": [effective_query],
+            "search_queries": _search_queries(query, website_policy),
             "session_id": uuid.uuid4().hex,
         },
         api_key,
@@ -271,15 +290,21 @@ def parallel_web_search(
     if not isinstance(items, list) or not items:
         return "No results found."
     parts = []
+    seen: set[str] = set()
     for item in items:
         if len(parts) >= max_results:
             break
         if not isinstance(item, dict):
             continue
         href = str(item.get("url") or "").strip()
+        # The fan-out above runs several queries in one call, so the same page can come back more
+        # than once; a duplicate would spend one of the max_results slots twice.
+        if href in seen:
+            continue
         allowed, _reason, _hostname = check_url_access(href, website_policy)
         if not allowed:
             continue
+        seen.add(href)
         title = _clean(item.get("title"))
         excerpts = item.get("excerpts")
         snippet = ""
@@ -328,10 +353,19 @@ def parallel_web_fetch(
     payload = _structured_payload(result)
     items = payload.get("results")
     texts: list[str] = []
+    blocked = ""
     if isinstance(items, list):
         for item in items:
             if not isinstance(item, dict):
                 continue
+            # web_fetch follows redirects, so the page that answered is not necessarily the one
+            # cleared above: only the URL it reports back is. Every result carries it.
+            final_url = str(item.get("url") or "").strip()
+            if final_url:
+                allowed, reason, _final_host = check_url_access(final_url, website_policy)
+                if not allowed:
+                    blocked = reason
+                    continue
             excerpts = item.get("excerpts")
             if isinstance(excerpts, list):
                 texts.extend(str(e) for e in excerpts if e)
@@ -340,6 +374,10 @@ def parallel_web_fetch(
                 if isinstance(value, str) and value.strip():
                     texts.append(value)
     if not texts:
+        # The raw content blocks are that same payload unparsed, so a page the policy just
+        # refused must not come back through them.
+        if blocked:
+            return blocked
         texts = _content_texts(result)
     body = "\n\n".join(t.strip() for t in texts if str(t).strip()).strip()
     if not body:

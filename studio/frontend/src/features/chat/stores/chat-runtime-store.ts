@@ -641,6 +641,15 @@ function writeStorageValue(key: string, raw: string): void {
   }
 }
 
+function removeStorageValue(key: string): void {
+  if (!canUseStorage()) return;
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // Keep the in-memory setting when storage is unavailable.
+  }
+}
+
 type MirroredSettingCodec = {
   encode: (value: unknown) => string;
   decode: (raw: string) => unknown;
@@ -1905,13 +1914,7 @@ function saveString(key: string, value: string): void {
 // aliases map to their closest UI mode.
 function clearStringSetting(key: string): void {
   // A removal still mirrors an explicit empty value so the backend clears it too.
-  if (canUseStorage()) {
-    try {
-      localStorage.removeItem(key);
-    } catch {
-      // Keep the in-memory setting when storage is unavailable.
-    }
-  }
+  removeStorageValue(key);
   mirrorSettingToBackend(key, "");
 }
 
@@ -1927,7 +1930,9 @@ export function readPersistedParallelSearchApiKey(): string | null {
   const trimmed = (readStorageValue(CHAT_PARALLEL_SEARCH_API_KEY) ?? "")
     .trim()
     .slice(0, 500);
-  return trimmed || null;
+  // An install that cached a null before cacheHydratedSettings skipped them holds the literal
+  // "null"; it is not a Bearer key, and no real key is that string either.
+  return trimmed && trimmed !== "null" ? trimmed : null;
 }
 
 // Canonicalises any backend value onto the Speculative Decoding dropdown's
@@ -2935,11 +2940,19 @@ function cacheHydratedSettings(
 ): void {
   for (const [name, setting] of Object.entries(MIRRORED_SETTINGS)) {
     const field = name as MirroredSettingKey;
-    const value = settings[field];
+    const value: unknown = settings[field];
     if (value === undefined) continue;
     if (
       scalarSettingMutationVersions[field] !== versions.scalarSettings[field]
     ) {
+      continue;
+    }
+    // null is how the server says a nullable field is unset (the backend normalizes a blank
+    // Parallel key to it). STRING_SETTING.encode is String(), so caching one would store the
+    // literal "null" and readPersistedParallelSearchApiKey would then send it as a Bearer key.
+    // Clearing the slot is what "unset" means locally too.
+    if (value === null) {
+      removeStorageValue(setting.storageKey);
       continue;
     }
     writeStorageValue(setting.storageKey, setting.encode(value));

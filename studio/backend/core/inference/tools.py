@@ -15131,6 +15131,20 @@ def _search_failure_message(exc: BaseException, timeout: int) -> str:
     return f"Search failed: {exc}"
 
 
+def _parallel_search_cancelled(exc: BaseException, cancel_event) -> bool:
+    """Whether a Parallel provider call ended because the caller went away.
+
+    A cancel is the answer, not a provider failure: falling back to ddgs (or to a direct fetch)
+    would run a second sweep for a client that has already disconnected, and return its results
+    as if nothing had been cancelled. parallel_search signals it as TimeoutError("Search
+    cancelled."), which is otherwise indistinguishable from the genuine TimeoutError("Parallel
+    search timed out") the fallback exists for.
+    """
+    if cancel_event is not None and cancel_event.is_set():
+        return True
+    return isinstance(exc, TimeoutError) and "cancelled" in str(exc).lower()
+
+
 def _image_search_or_none(subjects: list, timeout, cancel_event, website_policy) -> "str | None":
     """``_image_search`` that reports a failure as None instead of raising. Every caller sits inside
     ``_web_search``'s own ``except``, which would turn a raise into Search failed: ... and throw
@@ -15205,6 +15219,8 @@ def _web_search(
                     max_chars = _page_char_budget(),
                 )
         except Exception as exc:  # noqa: BLE001 - fall back to the direct fetch
+            if _parallel_search_cancelled(exc, cancel_event):
+                return "Search cancelled."
             logger.debug("parallel fetch failed (%s), falling back", type(exc).__name__)
         return _fetch_page_text(
             url.strip(),
@@ -15248,6 +15264,8 @@ def _web_search(
                     api_key = parallel_api_key(),
                 )
             except Exception as exc:  # noqa: BLE001 - fall back to ddgs below
+                if _parallel_search_cancelled(exc, cancel_event):
+                    return "Search cancelled."
                 logger.debug(
                     "parallel search failed (%s), falling back to ddgs", type(exc).__name__
                 )

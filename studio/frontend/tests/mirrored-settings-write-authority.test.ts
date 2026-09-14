@@ -133,3 +133,29 @@ test("only the legacy-storage fallback is non-authoritative", () => {
   // Every other exit reports an answered GET, so absence stays meaningful.
   assert.ok((loader.match(/fromServer: true/g) ?? []).length >= 4);
 });
+
+test('a null from the server clears the cached slot instead of storing "null"', () => {
+  // STRING_SETTING.encode is String(), so caching a null would write the literal "null" into
+  // localStorage; the Parallel key reader would then hand that to the backend as a Bearer token.
+  const cache = slice(
+    store,
+    "function cacheHydratedSettings(",
+    "\n/** Seed the backend from this browser",
+  );
+  assert.match(cache, /if \(value === undefined\) continue;/);
+  assert.match(
+    cache,
+    /if \(value === null\) \{\s*removeStorageValue\(setting\.storageKey\);\s*continue;\s*\}/,
+  );
+  // Fixed once in the shared loop, so every nullable mirrored setting is covered.
+  assert.equal((cache.match(/writeStorageValue\(/g) ?? []).length, 1);
+});
+
+test('a cached "null" is never read back as a Parallel key', () => {
+  const reader = slice(
+    store,
+    "export function readPersistedParallelSearchApiKey(): string | null {",
+    "\n}",
+  );
+  assert.match(reader, /trimmed && trimmed !== "null" \? trimmed : null/);
+});
