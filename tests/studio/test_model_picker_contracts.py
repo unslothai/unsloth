@@ -2999,9 +2999,7 @@ def test_the_sidebar_settings_editor_reseeds_when_the_live_config_lands():
     assert "markModelConfigDraftEdited(draftKey)" in page
     # Only once the write landed: a blocked or full localStorage leaves the unsaved values on
     # screen, and clearing anyway let the next editor's read replace them with the stored row.
-    assert re.search(
-        r"if \(!saveFailed\) \{.*?clearModelConfigDraftEdited\(draftKey\);", page
-    )
+    assert re.search(r"if \(!saveFailed\) \{.*?clearModelConfigDraftEdited\(draftKey\);", page)
     # An unticked Remember is a pending Forget, and the read captures the already-changed value,
     # so its own guard passes and it would re-tick the box.
     assert "markModelConfigDraftEdited(draftKey); setRemember(checked === true);" in page
