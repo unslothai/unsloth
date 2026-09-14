@@ -165,7 +165,12 @@ import {
 } from "@/features/settings";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { create } from "zustand";
-import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
+import {
+  clampReasoningEffortToLevels,
+  getExternalReasoningCapabilities,
+  modelCatalogVersion,
+  subscribeModelCatalog,
+} from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-menu-item";
 import { PermissionModeComposerPill } from "@/features/chat/permission-mode-select";
@@ -5342,9 +5347,6 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     (s) => s.reasoningEffortLevels,
   );
   const setReasoningEffort = useChatRuntimeStore((s) => s.setReasoningEffort);
-  const lastOpenRouterChosenModel = useChatRuntimeStore(
-    (s) => s.lastOpenRouterChosenModel,
-  );
   const connectionsEnabled = useExternalProvidersStore(
     (s) => s.connectionsEnabled,
   );
@@ -5363,17 +5365,13 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
   );
   const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
   const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
-  const effectiveExternalModelId =
-    selectedExternalProvider?.providerType === "openrouter" &&
-    externalSelection?.modelId === "openrouter/free" &&
-    lastOpenRouterChosenModel
-      ? lastOpenRouterChosenModel
-      : externalSelection?.modelId;
+  useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
   const externalReasoningCaps =
     externalSelection != null
       ? getExternalReasoningCapabilities(
           selectedExternalProvider?.providerType,
-          effectiveExternalModelId,
+          // The adapter resolves reasoning for the selected id; openrouter/free can route each turn elsewhere.
+          externalSelection?.modelId,
           {
             isReasoningProvider:
               selectedExternalProvider?.isReasoningModel === true,
@@ -5396,8 +5394,14 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     effectiveSupportsReasoning &&
     (effectiveReasoningAlwaysOn || !effectiveSupportsReasoningOff);
   const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
+  // What the adapter sends: the stored effort clamped to the current ladder, so a catalog refresh that
+  // drops the stored level is shown truthfully without overwriting the choice.
+  const displayedEffort =
+    effectiveReasoningEffortLevels.length > 0
+      ? clampReasoningEffortToLevels(reasoningEffort, effectiveReasoningEffortLevels)
+      : reasoningEffort;
   const effectiveReasoningVisualEnabled =
-    effectiveReasoningEnabled && reasoningEffort !== "none";
+    effectiveReasoningEnabled && displayedEffort !== "none";
   const disabled = !(modelLoaded && effectiveSupportsReasoning);
   const formatEffortLabel = (level: typeof reasoningEffort): string => {
     if (level !== "xhigh")
@@ -5411,7 +5415,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     }
     return "Extra High";
   };
-  const effortLabel = formatEffortLabel(reasoningEffort);
+  const effortLabel = formatEffortLabel(displayedEffort);
 
   // Only rendered for models that can reason.
   if (!effectiveSupportsReasoning) {
@@ -5447,7 +5451,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
             aria-label={thinkEffortAriaLabel({
               modelLoaded,
               reasoningDisabled: disabled,
-              reasoningEffort,
+              reasoningEffort: displayedEffort,
             })}
           >
             <ThinkIcon />
@@ -5511,7 +5515,7 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
                       "unsloth-tick size-4",
                       !(
                         effectiveReasoningVisualEnabled &&
-                        reasoningEffort === level
+                        displayedEffort === level
                       ) && "opacity-0",
                     )}
                   />

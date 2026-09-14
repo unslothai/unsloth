@@ -156,6 +156,26 @@ class ProviderModelInfo(BaseModel):
     owned_by: Optional[str] = Field(None, description = "Model owner/organization")
 
 
+class ProviderModelReasoningInfo(BaseModel):
+    supported_efforts: Optional[list[str]] = None
+    mandatory: bool = False
+    default_effort: Optional[str] = None
+    default_enabled: Optional[bool] = None
+
+
+class ProviderModelCapabilityInfo(BaseModel):
+    id: str
+    input_modalities: Optional[list[str]] = None
+    reasoning: Optional[ProviderModelReasoningInfo] = None
+    max_output_tokens: Optional[int] = None
+    supported_parameters: Optional[list[str]] = None
+
+
+class ModelCatalogResponse(BaseModel):
+    fetched_at: float
+    providers: dict[str, dict[str, dict]]
+
+
 class ProviderModelsRequest(BaseModel):
     """Request to list models from an external provider."""
 

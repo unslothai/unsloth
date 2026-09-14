@@ -6109,7 +6109,7 @@ export function createOpenAIStreamAdapter(
                         }
                   : {
                       thinking: {
-                        type: reasoningEnabled ? "enabled" : "disabled",
+                        type: externalReasoningEnabled ? "enabled" : "disabled",
                       },
                     }
                 : {}),
