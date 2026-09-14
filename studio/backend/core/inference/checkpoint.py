@@ -394,6 +394,14 @@ _BLOCK = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# The self-note section rendered inside a captured block is the model's own speculation,
+# not the user's words, so it must not reach the bullet walk below: a note containing
+# markdown bullets would otherwise be laundered into "the user's own earlier instructions,
+# quoted verbatim" on the next reset. A terminated section is cut out whole; an unterminated
+# one (a block truncated mid-note) has no closing tag to anchor on, so everything from the
+# opening tag to the end of the body is cut instead of falling through to the bullet walk.
+_SELF_NOTE_SECTION = re.compile(r"<self_note>.*?(?:</self_note>|\Z)", re.IGNORECASE | re.DOTALL)
+
 
 def _block_items(text: str) -> list[str]:
     """The instructions a system message's existing block holds, oldest first.
@@ -404,6 +412,7 @@ def _block_items(text: str) -> list[str]:
     """
     items: list[str] = []
     for body in _BLOCK.findall(text):
+        body = _SELF_NOTE_SECTION.sub("", body)
         current: Optional[list[str]] = None
         for line in body.splitlines():
             if line.startswith("- "):
