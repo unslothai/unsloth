@@ -156,9 +156,13 @@ def denoiser_prequant_pipe_kwargs(
         return {}
 
 
-def prequant_artifact_label(source: Any) -> Optional[str]:
+def prequant_artifact_label(source: Any, module: Any = None) -> Optional[str]:
     """``prequant:<repo>/<file>`` for a hosted artifact, ``prequant:<path>`` for a local override;
-    the scheme alone cannot tell one from a runtime quantise."""
+    the scheme alone cannot tell one from a runtime quantise.
+
+    ``module`` is the seeded denoiser, which carries the file that really loaded: a repo holding
+    only ``fallback_filename`` serves that one, and ``source.filename`` then names a file nobody
+    fetched."""
     if source is None:
         return None
     kind = getattr(source, "kind", None)
@@ -167,8 +171,18 @@ def prequant_artifact_label(source: Any) -> Optional[str]:
         return None
     if kind != "repo":
         return f"prequant:{location}"
-    filename = getattr(source, "filename", None)
+    filename = _loaded_filename(module) or getattr(source, "filename", None)
     return f"prequant:{location}/{filename}" if filename else f"prequant:{location}"
+
+
+def _loaded_filename(module: Any) -> Optional[str]:
+    """The basename of the checkpoint ``module`` was loaded from, or None."""
+    path = getattr(module, "_unsloth_prequant_path", None)
+    if not path:
+        return None
+    import os
+
+    return os.path.basename(str(path)) or None
 
 
 def _warn(logger: Any, what: str, exc: Exception) -> None:

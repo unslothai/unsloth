@@ -710,6 +710,12 @@ def load_prequantized_transformer(
             transformer._unsloth_runtime_quant = scheme
         except Exception:  # noqa: BLE001 - marker is best-effort
             pass
+        try:
+            # The file that really loaded, which is the fallback name whenever the primary is absent
+            # from the repo: the provenance label has no other way to know which one it was.
+            transformer._unsloth_prequant_path = path
+        except Exception:  # noqa: BLE001 - marker is best-effort
+            pass
         if logger is not None:
             logger.info(
                 "diffusion.prequant: loaded %s checkpoint (%s) onto %s",

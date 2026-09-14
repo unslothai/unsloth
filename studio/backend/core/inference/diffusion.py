@@ -4676,7 +4676,8 @@ class DiffusionBackend:
                                             pipeline_seed_scheme,
                                             base_repo = base,
                                             path_override = transformer_prequant_path,
-                                        )
+                                        ),
+                                        next(iter(seeded.values()), None),
                                     )
                                 else:
                                     # The plan was priced on the seed landing, so re-plan at bf16 without it.

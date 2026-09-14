@@ -833,6 +833,28 @@ def test_an_artifact_sized_plan_that_offloads_at_load_time_drops_the_seed(
     assert spy.restored and set(DENOISER_SHARDS) <= set(spy.restored[0])
 
 
+def test_the_artifact_label_names_the_file_that_really_loaded():
+    """A repo serving only its fallback filename is labelled with the fallback, not the primary."""
+    # _resolve_checkpoint_path falls back when the primary name is absent, so labelling from
+    # source.filename would publish provenance for a file nobody fetched.
+    import types
+
+    from core.inference.diffusion_denoiser_prequant import prequant_artifact_label
+
+    source = types.SimpleNamespace(
+        kind = "repo", location = "unsloth/Z-Image-Turbo-FP8", filename = "Z-Image-Turbo-FP8.pt"
+    )
+    assert prequant_artifact_label(source) == (
+        "prequant:unsloth/Z-Image-Turbo-FP8/Z-Image-Turbo-FP8.pt"
+    )
+    loaded = types.SimpleNamespace(_unsloth_prequant_path = "/cache/blobs/Z-Image-Turbo-fp8.pt")
+    assert prequant_artifact_label(source, loaded) == (
+        "prequant:unsloth/Z-Image-Turbo-FP8/Z-Image-Turbo-fp8.pt"
+    )
+    local = types.SimpleNamespace(kind = "path", location = "/models/mine.pt", filename = None)
+    assert prequant_artifact_label(local, loaded) == "prequant:/models/mine.pt"
+
+
 def test_a_dropped_seed_replans_once_the_dense_shards_are_back(fake_runtime, monkeypatch):
     """The plan the dense load runs on is taken AFTER the skipped transformer shards are restored."""
     # A pipeline plan prices CACHED bytes, so the plan taken while transformer/ was skipped saw
