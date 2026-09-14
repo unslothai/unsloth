@@ -48,6 +48,7 @@ function App() {
 	const [results, setResults] = React.useState([]);
 	async function run() {
 		const checks = [];
+		const unsupportedFormats = [];
 		const show = (next) =>
 			flushSync(() => {
 				useChatRuntimeStore.setState({
@@ -94,6 +95,7 @@ function App() {
 		async function finish() {
 			const report = {
 				variant: config.variant,
+				unsupportedFormats,
 				userAgent: navigator.userAgent,
 				checks,
 				passed: checks.filter((c) => c.passed).length,
@@ -152,12 +154,43 @@ function App() {
 				route("thread-a", encodeURIComponent(name)),
 			);
 		}
-		for (const ext of config.formats)
-			await success(
-				`format: ${ext}`,
-				`plot.${ext}`,
-				route("thread-a", `plot.${ext}`),
-			);
+		for (const [ext, data] of Object.entries(config.formats)) {
+			await check(`format: ${ext}`, async () => {
+				const control = new Image();
+				control.src = data;
+				let supported = true;
+				try {
+					await control.decode();
+				} catch {
+					supported = false;
+				}
+				await clear();
+				show({ text: `![Plot](plot.${ext})`, id: `format-${ext}` });
+				if (supported) {
+					assert(control.naturalWidth === 32, "Invalid codec control");
+					await loaded();
+				} else {
+					assert(ext === "avif", `Required raster codec unavailable: ${ext}`);
+					unsupportedFormats.push(ext);
+					await until(() =>
+						document.querySelector(
+							'#subject [data-streamdown="image-fallback"]',
+						),
+					);
+					assert(
+						image().naturalWidth === 0,
+						"Unsupported image decoded unexpectedly",
+					);
+				}
+				assert(
+					(await requests()).some(
+						(r) => r.path === route("thread-a", `plot.${ext}`) && r.authorized,
+					),
+					"Missing authenticated format request",
+				);
+			});
+		}
+
 		await success(
 			"project scope",
 			"plot.png",

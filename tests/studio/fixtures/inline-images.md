@@ -16,6 +16,6 @@ temp/inline-image-validation/venv/bin/python tests/studio/playwright_inline_imag
 
 On Windows, use `venv/Scripts/python.exe` and set `PLAYWRIGHT_BROWSERS_PATH` in PowerShell. Install frontend dependencies first with `npm ci` in `studio/frontend`.
 
-Use `--browsers chrome msedge` for installed Chrome and Edge. `--manual` prints a URL for testing installed browsers, including Safari. WebKit automation is engine coverage, not a Safari application test.
+Use `--browsers chrome msedge` for installed Chrome and Edge. `--manual` prints a URL for testing installed browsers, including Safari. WebKit automation is engine coverage, not a Safari application test. Each format has an independent browser decode control. If the experimental Windows WebKit build cannot decode AVIF, the test requires the image fallback and records `unsupportedFormats`; required raster codecs must still decode.
 
 To reproduce the original failure, pass `--baseline FULL_COMMIT_SHA --output temp/inline-image-validation/before`. The baseline must lack the relative-image fix. The control expects a bare filename to fail while an explicit sandbox URL loads. Reports, downloads, and failure screenshots stay beneath the selected output directory.

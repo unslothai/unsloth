@@ -77,7 +77,12 @@ const server = await createServer({
 							"application/json",
 							JSON.stringify({
 								variant: baseline ? "before" : "after",
-								formats: Object.keys(images["32"]),
+								formats: Object.fromEntries(
+									Object.entries(images["32"]).map(([ext, value]) => [
+										ext,
+										`data:${value.type};base64,${value.data}`,
+									]),
+								),
 								dataImage: `data:image/png;base64,${images["32"].png.data}`,
 							}),
 						);
