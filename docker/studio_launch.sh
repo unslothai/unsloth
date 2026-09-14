@@ -24,8 +24,11 @@ export JUPYTER_PORT="${JUPYTER_PORT:-8888}"
 # Studio's port is fixed at 8000 (studio_run.sh). JupyterLab starts first and wins the
 # bind, so Studio falls back to an unpublished 8001 while the summary below still sends
 # the user to 8000: Studio is simply gone, with no error.
-# Compared as a number: Jupyter parses the port as an integer, so "08000" or " 8000" bind 8000 too.
-jupyter_port_digits="${JUPYTER_PORT//[[:space:]]/}"
+# Compared the way Jupyter reads it: traitlets hands the string to int(), which takes
+# surrounding whitespace, leading zeros, a leading + and digit-group underscores, so
+# "08000", " 8000", "+8000" and "8_000" all bind 8000 too.
+jupyter_port_digits="${JUPYTER_PORT//[[:space:]_]/}"
+jupyter_port_digits="${jupyter_port_digits#+}"
 if [[ "$jupyter_port_digits" =~ ^[0-9]+$ ]] && (( 10#$jupyter_port_digits == 8000 )); then
     printf "\033[1;31mERROR:\033[0m JUPYTER_PORT=8000 is Unsloth Studio's port inside the container.\n" >&2
     printf "       Leave JupyterLab on 8888 and map the host side instead: -p 9000:8888\n" >&2

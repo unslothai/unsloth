@@ -29,6 +29,18 @@ command -v docker >/dev/null 2>&1 \
 # Mac the toolkit concerns is a CLI pointed at a remote Linux daemon (tcp:// or ssh://):
 # that host needs it, and gets the same answer as any remote endpoint. Same precedence as
 # the endpoint check: DOCKER_CONTEXT over DOCKER_HOST over the selected context.
+# A Windows shell (Git Bash, MSYS2, Cygwin) drives Docker Desktop, whose WSL 2 backend brings
+# the GPU support itself; the toolkit is a Linux package and belongs inside a WSL 2 distro only
+# when that distro runs its own Docker Engine. Say so instead of treating Desktop as "Docker
+# Desktop for Linux" and the Windows driver as missing.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+        say "Windows: Docker Desktop with the WSL 2 backend brings its own GPU support, nothing to install here."
+        say "Keep a current NVIDIA Windows driver installed (from nvidia.com), then: docker run --gpus all ..."
+        say "Only a WSL 2 distro running its own Docker Engine needs this script; run it inside that distro."
+        exit 0 ;;
+esac
+
 if [[ "$(uname -s)" == Darwin ]]; then
     if [[ -n "${DOCKER_CONTEXT:-}" || -z "${DOCKER_HOST:-}" ]]; then
         mac_endpoint="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)" \

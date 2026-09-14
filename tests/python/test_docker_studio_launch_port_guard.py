@@ -39,16 +39,20 @@ def test_jupyter_on_studios_port_is_refused_with_a_remedy():
     assert "-p 9000:8888" in res.stderr, "the remedy must be printed:\n" + res.stderr
 
 
-@pytest.mark.parametrize("spelling", ["08000", " 8000", "8000 "])
+@pytest.mark.parametrize("spelling", ["08000", " 8000", "8000 ", "+8000", "8_000"])
 def test_other_spellings_of_8000_are_refused_too(spelling: str):
-    """Jupyter parses the port as an integer, so these bind 8000 as well."""
+    """Jupyter's port is a traitlets Integer, read with int(): whitespace, leading zeros,
+    a leading + and digit-group underscores all give 8000 as well."""
     res = _run(spelling)
     assert res.returncode != 0, spelling
     assert "JUPYTER_PORT=8000" in res.stderr, res.stderr
 
 
-def test_another_port_is_not_refused_here():
-    res = _run("8899")
+@pytest.mark.parametrize("port", ["8899", "8001", "8000.0", "0x1f40", "8000/tcp", "-8000"])
+def test_other_ports_and_values_jupyter_rejects_itself_pass_the_guard(port: str):
+    """Only what int() reads as 8000 is ours to refuse; "8000.0" or "0x1f40" fail in
+    Jupyter with its own message."""
+    res = _run(port)
     assert res.returncode == 0, res.stderr
     assert "JUPYTER_PORT=8000" not in res.stderr, res.stderr
 

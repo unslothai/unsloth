@@ -579,6 +579,24 @@ def test_a_mac_driving_a_remote_daemon_is_sent_to_that_host(tmp_path: Path):
     assert "remote daemon (gpu-box:2376)" in res.stderr
 
 
+@pytest.mark.parametrize(
+    "kernel", ["MINGW64_NT-10.0-22631", "MSYS_NT-10.0-22631", "CYGWIN_NT-10.0"]
+)
+def test_a_windows_shell_is_sent_to_docker_desktops_wsl2_backend(tmp_path: Path, kernel: str):
+    """Git Bash / MSYS2 / Cygwin drive Docker Desktop, whose WSL 2 backend has the GPU
+    support built in. The Linux path read Desktop as "Docker Desktop for Linux" (exit 2)
+    and, with a plain daemon, tried apt on Windows."""
+    _, log, env = _setup(tmp_path, desktop = True, driver = False)
+    _stub(
+        tmp_path / "bin" / "uname", f'if [ "$1" = -s ]; then echo {kernel}; else echo x86_64; fi\n'
+    )
+    res = _run(env)
+    assert res.returncode == 0, res.stdout + res.stderr
+    assert "WSL 2 backend" in res.stdout
+    assert "Docker Desktop for Linux" not in res.stderr
+    assert not any(c.startswith(("apt-get", "dnf", "nvidia-ctk", "systemctl")) for c in _calls(log))
+
+
 def test_a_mac_with_an_uninspectable_context_gets_the_error_not_nothing_to_install(tmp_path: Path):
     """Same rule as the endpoint check further down: a context lookup failure is an
     error, not a local daemon."""
