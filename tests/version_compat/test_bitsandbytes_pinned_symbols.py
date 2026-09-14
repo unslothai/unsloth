@@ -12,7 +12,6 @@ import pytest
 from tests.version_compat._fetch import fetch_text, first_match, has_def
 
 
-
 def first_match_signature(src: str, class_name: str) -> str | None:
     """The text of ``class_name``'s __init__ parameter list, or None."""
     at = src.find(f"class {class_name}")
@@ -30,6 +29,7 @@ def first_match_signature(src: str, class_name: str) -> str | None:
             if depth == 0:
                 return src[src.index("(", at) : i + 1]
     return None
+
 
 # pyproject pin: bitsandbytes>=0.45.5,!=0.46.0,!=0.48.0 Test floor + each safe minor since.
 BNB_TAGS = [
@@ -265,10 +265,7 @@ def test_bnb_optimizer2state_options_are_not_passed_positionally(tag: str):
 
     removed = [n for n in ("percentile_clipping", "block_wise") if n not in signature]
     caller = (
-        Path(__file__).resolve().parents[2]
-        / "unsloth"
-        / "optimizers"
-        / "q_galore_adamw.py"
+        Path(__file__).resolve().parents[2] / "unsloth" / "optimizers" / "q_galore_adamw.py"
     ).read_text()
 
     call = caller[caller.index("class QGaLoreAdamW8bit") :]
@@ -280,6 +277,6 @@ def test_bnb_optimizer2state_options_are_not_passed_positionally(tag: str):
     )
     for name in ("percentile_clipping", "block_wise"):
         if name in call:
-            assert f"{name} = " in call or f'"{name}"' in call, (
-                f"{tag}: QGaLoreAdamW8bit mentions {name} without passing it by keyword."
-            )
+            assert (
+                f"{name} = " in call or f'"{name}"' in call
+            ), f"{tag}: QGaLoreAdamW8bit mentions {name} without passing it by keyword."
