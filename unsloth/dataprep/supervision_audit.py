@@ -25,7 +25,7 @@ __all__ = [
 IGNORE_INDEX = -100
 
 # Columns the audit reads; everything else is left untouched (and, on datasets.Dataset, not even decoded).
-_COLUMNS = ("input_ids", "labels", "completion_mask", "attention_mask")
+_COLUMNS = ("input_ids", "labels", "completion_mask", "assistant_masks", "attention_mask")
 _BATCH_SIZE = 256
 _ZERO_ROW_INDICES_KEPT = 20
 _EXAMPLE_MAX_CHARS = 400
@@ -125,18 +125,20 @@ def audit_supervision(
     dataset,
     tokenizer = None,
     max_seq_length = None,
+    completion_only_loss = None,
     max_rows = 10_000,
     num_examples = 2,
     verbose = True,
 ) -> SupervisionAuditReport:
     """Report what an SFT dataset actually supervises, before the first training step.
 
-    Over the first `max_rows` rows it counts the non-padding tokens that carry a label
-    (`labels != -100`, else a truthy `completion_mask`, else every token), the rows that
+    Over the first `max_rows` rows it counts the non-padding tokens that carry a label, the rows that
     contribute no supervised token at all (the train_on_responses_only marker-mismatch
     symptom that otherwise surfaces as "All labels in your dataset are -100"), the rows
-    that are fully supervised, the rows sitting at `max_seq_length` with the response cut
-    off mid-span, whether EOS is present and supervised, and whether BOS is duplicated.
+    that are fully supervised, the rows at `max_seq_length` whose response is cut off before
+    its end (rows longer than the cap are audited cut to the first `max_seq_length` tokens, as
+    the trainer prepares them), whether EOS is present and supervised, and whether BOS is
+    duplicated.
     The first `num_examples` rows are decoded with their supervised spans marked.
 
     Typical use, right after masking the instruction tokens:
@@ -146,10 +148,18 @@ def audit_supervision(
         report = audit_supervision(trainer)
         assert report.ok, report.warnings
 
+    A token is supervised when every supervision signal the trainer applies keeps it, the same
+    rule as `_supervision_columns` in unsloth/models/rl.py: `labels` (kept where `!= -100`)
+    whenever the column exists, `assistant_masks` whenever the column exists, and
+    `completion_mask` only under `completion_only_loss`. With a trainer that flag is read as
+    the trainer resolved it (a None SFTConfig value means "the rows are prompt/completion");
+    without one a present `completion_mask` is applied unless `completion_only_loss = False`.
+    Without any signal every non-padding token is supervised.
+
     `dataset` may be a datasets.Dataset / IterableDataset, a list of row dicts, anything
-    indexable with a length, or a trainer (its `train_dataset`, `processing_class` and
-    `args.max_length` / `args.max_seq_length` are picked up). Read-only: nothing is
-    modified, and nothing is printed unless `verbose` is True.
+    indexable with a length, or a trainer (its `train_dataset`, `processing_class`,
+    `args.max_length` / `args.max_seq_length` and `completion_only_loss` are picked up).
+    Read-only: nothing is modified, and nothing is printed unless `verbose` is True.
     """
     if max_rows is not None and max_rows <= 0:
         raise ValueError(
@@ -172,6 +182,10 @@ def audit_supervision(
             max_seq_length = getattr(args, "max_length", None)
             if max_seq_length is None:
                 max_seq_length = getattr(args, "max_seq_length", None)
+        if completion_only_loss is None:
+            completion_only_loss = _trainer_completion_only_loss(trainer)
+    else:
+        trainer = None
 
     tokenizer = _unwrap_tokenizer(tokenizer)
     eos_token_id = getattr(tokenizer, "eos_token_id", None)
@@ -179,7 +193,8 @@ def audit_supervision(
     decode = getattr(tokenizer, "decode", None) if num_examples > 0 else None
 
     num_rows_total = _num_rows_total(dataset)
-    labels_source = _labels_source_from_columns(dataset)
+    has_trainer = trainer is not None
+    signals = _signals_from_columns(dataset, completion_only_loss, has_trainer)
 
     num_rows = 0
     num_tokens = 0
@@ -196,21 +211,17 @@ def audit_supervision(
     examples = []
 
     for index, row in _iter_rows(dataset, max_rows):
-        if labels_source is None:
-            labels_source = _labels_source_from_row(row)
+        if signals is None:
+            signals = _supervision_signals(row.keys(), completion_only_loss, has_trainer)
         input_ids = _to_list(row["input_ids"])
-        labels = _to_list(row.get("labels")) if labels_source == "labels" else None
-        completion_mask = (
-            _to_list(row.get("completion_mask")) if labels_source == "completion_mask" else None
-        )
+        # (name, column) per active signal; a row missing one of them is judged on the signals it has
+        signal_columns = [
+            (name, _to_list(row.get(name))) for name in signals if row.get(name) is not None
+        ]
         attention_mask = _to_list(row.get("attention_mask"))
 
         n_all = len(input_ids)
-        for name, column in (
-            ("labels", labels),
-            ("completion_mask", completion_mask),
-            ("attention_mask", attention_mask),
-        ):
+        for name, column in signal_columns + [("attention_mask", attention_mask)]:
             if column is not None and len(column) != n_all:
                 raise ValueError(
                     f"Unsloth: audit_supervision row {index} has {n_all} input_ids but "
@@ -220,19 +231,27 @@ def audit_supervision(
         # only. compress() is C-speed; the common unpadded row skips it.
         if attention_mask is not None and 0 in attention_mask:
             input_ids = list(compress(input_ids, attention_mask))
-            if labels is not None:
-                labels = list(compress(labels, attention_mask))
-            if completion_mask is not None:
-                completion_mask = list(compress(completion_mask, attention_mask))
+            signal_columns = [
+                (name, list(compress(column, attention_mask))) for name, column in signal_columns
+            ]
+
+        # Rows longer than max_seq_length are audited as the trainer will see them: cut to the first
+        # max_seq_length tokens, so a response that only starts past the cap counts as unsupervised.
+        at_max_length = max_seq_length is not None and 0 < max_seq_length <= len(input_ids)
+        if at_max_length and len(input_ids) > max_seq_length:
+            input_ids = input_ids[:max_seq_length]
+            signal_columns = [(name, column[:max_seq_length]) for name, column in signal_columns]
 
         n = len(input_ids)
-        # list.count() runs in C; a per-token Python comparison would dominate on 10k rows x 2k tokens.
-        if labels is not None:
-            n_supervised = n - labels.count(IGNORE_INDEX)
-        elif completion_mask is not None:
-            n_supervised = n - completion_mask.count(0)
-        else:
+        if not signal_columns:
             n_supervised = n
+        elif len(signal_columns) == 1:
+            # list.count() runs in C; a per-token Python comparison would dominate on 10k rows x 2k tokens.
+            name, column = signal_columns[0]
+            n_supervised = n - column.count(IGNORE_INDEX if name == "labels" else 0)
+        else:
+            # Several signals are intersected, as the trainer applies them one after another.
+            n_supervised = sum(1 for i in range(n) if _is_supervised(signal_columns, i))
 
         num_rows += 1
         num_tokens += n
@@ -245,14 +264,17 @@ def audit_supervision(
         elif n_supervised == n:
             fully_supervised_rows += 1
 
-        if max_seq_length is not None and 0 < max_seq_length <= n:
+        if at_max_length:
             rows_at_max_length += 1
-            if _is_supervised(labels, completion_mask, n - 1):
+            # A supervised final token means the response runs past the cap, unless that token is EOS:
+            # a row ending exactly at the cap with a supervised EOS is complete, not cut off.
+            ends_with_eos = eos_token_id is not None and input_ids[-1] == eos_token_id
+            if not ends_with_eos and _is_supervised(signal_columns, n - 1):
                 rows_truncated_mid_response += 1
 
         if eos_token_id is not None and eos_token_id in input_ids:
             rows_with_eos += 1
-            if _any_occurrence_supervised(input_ids, labels, completion_mask, eos_token_id):
+            if _any_occurrence_supervised(input_ids, signal_columns, eos_token_id):
                 rows_with_supervised_eos += 1
 
         if (
@@ -264,10 +286,9 @@ def audit_supervision(
             rows_with_duplicated_bos += 1
 
         if decode is not None and len(examples) < num_examples:
-            examples.append(_decode_segments(input_ids, labels, completion_mask, decode))
+            examples.append(_decode_segments(input_ids, signal_columns, decode))
 
-    if labels_source is None:
-        labels_source = "all_tokens"
+    labels_source = " & ".join(signals) if signals else "all_tokens"
 
     if supervised_per_row:
         supervised_tokens_per_row = {
@@ -290,19 +311,19 @@ def audit_supervision(
         )
     elif zero_supervision_rows > 0:
         warnings.append(
-            f"{_rows(zero_supervision_rows)} ({_pct(zero_supervision_rows, num_rows)}) have zero "
+            f"{zero_supervision_rows:,} rows ({_pct(zero_supervision_rows, num_rows)}) have zero "
             "supervised tokens and contribute nothing to training."
         )
     if max_seq_length is not None and rows_truncated_mid_response > 0:
         warnings.append(
-            f"{_rows(rows_truncated_mid_response)} ({_pct(rows_truncated_mid_response, num_rows)}) hit "
+            f"{rows_truncated_mid_response:,} rows ({_pct(rows_truncated_mid_response, num_rows)}) hit "
             f"max_seq_length = {max_seq_length:,} while still inside a supervised span, so their responses "
             "are cut off before the end (and before EOS)."
         )
     if eos_token_id is not None and rows_with_eos < num_rows:
         missing = num_rows - rows_with_eos
         warnings.append(
-            f"{_rows(missing)} ({_pct(missing, num_rows)}) do not contain the EOS token (id {eos_token_id}), "
+            f"{missing:,} rows ({_pct(missing, num_rows)}) do not contain the EOS token (id {eos_token_id}), "
             "so the model may never learn to stop generating."
         )
     # Skipped when every row is already unsupervised: the all-rows warning above covers it.
@@ -313,12 +334,12 @@ def audit_supervision(
     ):
         masked = rows_with_eos - rows_with_supervised_eos
         warnings.append(
-            f"{_rows(masked)} ({_pct(masked, num_rows)}) contain EOS only in masked (-100) positions, "
+            f"{masked:,} rows ({_pct(masked, num_rows)}) contain EOS only in masked (-100) positions, "
             "so the model does not learn to stop there."
         )
     if bos_token_id is not None and rows_with_duplicated_bos > 0:
         warnings.append(
-            f"{_rows(rows_with_duplicated_bos)} ({_pct(rows_with_duplicated_bos, num_rows)}) start with two "
+            f"{rows_with_duplicated_bos:,} rows ({_pct(rows_with_duplicated_bos, num_rows)}) start with two "
             "BOS tokens; your formatting adds BOS on top of the tokenizer's."
         )
 
@@ -367,27 +388,52 @@ def _num_rows_total(dataset):
         return None
 
 
-def _labels_source_from_columns(dataset):
-    """Pick the supervision column from the schema when there is one; None defers to the first row"""
+def _trainer_completion_only_loss(trainer):
+    """The trainer's effective completion_only_loss, as the collator sees it: Unsloth's patched
+    trainers record the resolved value on args, TRL resolves a None SFTConfig value from the
+    dataset shape at construction, and the raw SFTConfig field is the last resort"""
+    args = getattr(trainer, "args", None)
+    resolved = getattr(args, "_unsloth_resolved_completion_only", None)
+    if resolved is None:
+        resolved = getattr(trainer, "completion_only_loss", None)
+    if resolved is None:
+        resolved = getattr(args, "_unsloth_completion_only_loss", None)
+    if resolved is None:
+        resolved = getattr(args, "completion_only_loss", None)
+    return resolved
+
+
+def _supervision_signals(column_names, completion_only_loss, has_trainer):
+    """The columns that decide whether a token is supervised, in the order the trainer applies them.
+
+    Mirrors _supervision_columns in unsloth/models/rl.py: `labels` and `assistant_masks` count on
+    presence, `completion_mask` only under completion_only_loss. A None flag is resolved the way TRL
+    does it, from prompt/completion rows; when there is no trainer to resolve it against, a present
+    completion_mask is applied, since that is the only reason the column exists.
+    """
+    column_names = set(column_names)
+    signals = []
+    if "labels" in column_names:
+        signals.append("labels")
+    if "completion_mask" in column_names:
+        if completion_only_loss is None:
+            prompt_completion = "prompt" in column_names and "completion" in column_names
+            completion_only_loss = prompt_completion or not has_trainer
+        if completion_only_loss:
+            signals.append("completion_mask")
+    if "assistant_masks" in column_names:
+        signals.append("assistant_masks")
+    return signals
+
+
+def _signals_from_columns(dataset, completion_only_loss, has_trainer):
+    """Supervision signals from the schema when there is one; None defers to the first row"""
     column_names = getattr(dataset, "column_names", None)
     if not isinstance(column_names, (list, tuple)):
         return None
     if "input_ids" not in column_names:
         raise ValueError(_MISSING_INPUT_IDS)
-    if "labels" in column_names:
-        return "labels"
-    if "completion_mask" in column_names:
-        return "completion_mask"
-    return "all_tokens"
-
-
-def _labels_source_from_row(row):
-    """Pick the supervision column from a row dict (lists of dicts, streams without features)"""
-    if row.get("labels") is not None:
-        return "labels"
-    if row.get("completion_mask") is not None:
-        return "completion_mask"
-    return "all_tokens"
+    return _supervision_signals(column_names, completion_only_loss, has_trainer)
 
 
 def _iter_rows(dataset, max_rows):
@@ -451,18 +497,18 @@ def _to_list(value):
     return list(value)
 
 
-def _is_supervised(labels, completion_mask, i):
-    """Whether token i carries a label under the row's supervision column"""
-    if labels is not None:
-        return labels[i] != IGNORE_INDEX
-    if completion_mask is not None:
-        return completion_mask[i] != 0
+def _is_supervised(signal_columns, i):
+    """Whether token i is kept by every active supervision signal"""
+    for name, column in signal_columns:
+        value = column[i]
+        if (value == IGNORE_INDEX) if name == "labels" else not value:
+            return False
     return True
 
 
-def _any_occurrence_supervised(input_ids, labels, completion_mask, token_id):
+def _any_occurrence_supervised(input_ids, signal_columns, token_id):
     """Whether at least one occurrence of token_id is supervised (list.index is C-speed per hit)"""
-    if labels is None and completion_mask is None:
+    if not signal_columns:
         return True
     start = 0
     while True:
@@ -470,19 +516,14 @@ def _any_occurrence_supervised(input_ids, labels, completion_mask, token_id):
             i = input_ids.index(token_id, start)
         except ValueError:
             return False
-        if _is_supervised(labels, completion_mask, i):
+        if _is_supervised(signal_columns, i):
             return True
         start = i + 1
 
 
-def _decode_segments(input_ids, labels, completion_mask, decode):
+def _decode_segments(input_ids, signal_columns, decode):
     """Decode a row as (is_supervised, text) runs, consecutive tokens with the same status merged"""
-    if labels is not None:
-        flags = [label != IGNORE_INDEX for label in labels]
-    elif completion_mask is not None:
-        flags = [mask != 0 for mask in completion_mask]
-    else:
-        flags = [True] * len(input_ids)
+    flags = [_is_supervised(signal_columns, i) for i in range(len(input_ids))]
     segments = []
     for is_supervised, group in groupby(zip(input_ids, flags), key = lambda pair: pair[1]):
         text = decode([token for token, _ in group], skip_special_tokens = False)
@@ -521,11 +562,6 @@ def _render_segments(
 def _escape(text):
     """Show newlines and tabs as \\n and \\t so one example stays on one line"""
     return text.replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t")
-
-
-def _rows(count):
-    """`1 row` / `12 rows`, thousands-separated"""
-    return f"{count:,} row" if count == 1 else f"{count:,} rows"
 
 
 def _pct(count, total):

@@ -328,12 +328,25 @@ def test_completion_mask_path_and_labels_precedence():
         "Unsloth: Supervision audit of 2 rows (labels from `completion_mask`)"
     )
 
-    both = Dataset.from_dict({"input_ids": [ids0], "labels": [ids0], "completion_mask": [[0] * 6]})
+    # labels and completion_mask together are intersected, as the trainer folds the mask into the labels:
+    # valid labels next to an all-zero mask leave nothing to train on
+    both = Dataset.from_dict(
+        {
+            "input_ids": [ids0, ids1],
+            "labels": [ids0, ids1],
+            "completion_mask": [[0] * 6, [0, 0, 0, 0, 1, 1]],
+        }
+    )
     report = audit_supervision(both, tokenizer = tok, verbose = False)
-    assert report.labels_source == "labels"
-    assert report.num_supervised_tokens == 6
-    assert report.fully_supervised_rows == 1
-    assert report.warnings == []
+    assert report.labels_source == "labels & completion_mask"
+    assert report.num_supervised_tokens == 2
+    assert report.zero_supervision_rows == 1
+    assert report.fully_supervised_rows == 0
+    assert list(report.examples[1]) == [(False, "<s> user: Yo assistant:"), (True, "Hey </s>")]
+    assert report.render(color = False).splitlines()[0] == (
+        "Unsloth: Supervision audit of 2 rows (labels from `labels & completion_mask`)"
+    )
+    assert report.ok is False
 
 
 def test_no_labels_means_every_token_is_supervised():
@@ -393,9 +406,9 @@ def test_attention_mask_excludes_padding_everywhere():
     )
     assert report.fully_supervised_rows == 1
     assert report.zero_supervision_rows == 0
-    # only row 0 has 4 non-padding tokens; its last real token (EOS) is supervised
+    # only row 0 has 4 non-padding tokens; it ends with a supervised EOS, so it is complete, not cut off
     assert report.rows_at_max_length == 1
-    assert report.rows_truncated_mid_response == 1
+    assert report.rows_truncated_mid_response == 0
     # EOS inside a masked-out position does not count as present
     assert report.rows_with_eos == 2
     assert report.rows_with_supervised_eos == 2
@@ -403,16 +416,14 @@ def test_attention_mask_excludes_padding_everywhere():
     assert list(report.examples[0]) == [(False, "<s>"), (True, "a b </s>")]
     assert list(report.examples[1]) == [(True, "<s> c </s>")]
 
-    assert len(report.warnings) == 2
-    truncated, no_eos = report.warnings
-    assert truncated.startswith("1 row")
-    assert "(25.0%)" in truncated
-    assert "hit max_seq_length = 4 while still inside a supervised span" in truncated
+    # row 0 is complete (supervised EOS at the cap), so only the missing-EOS warning remains
+    assert len(report.warnings) == 1
+    (no_eos,) = report.warnings
     assert no_eos == (
         "2 rows (50.0%) do not contain the EOS token (id 2), so the model may never learn to stop generating."
     )
     lines = report.render(color = False).splitlines()
-    assert "  Rows at max_seq_length = 4: 1 (25.0%), 1 cut off mid-response" in lines
+    assert "  Rows at max_seq_length = 4: 1 (25.0%), 0 cut off mid-response" in lines
     assert "  Rows containing EOS: 2 (50.0%); rows with a supervised EOS: 2 (50.0%)" in lines
 
 
@@ -532,24 +543,27 @@ def test_trainer_supplies_tokenizer_and_max_seq_length():
     assert report.eos_token_id == 2
     assert report.bos_token_id == 1
     assert len(report.examples) == 2
-    # rows 0, 3 and 4 have 8 tokens; the last token of rows 0 and 4 is a supervised EOS, row 3 is fully masked
+    # rows 0, 3 and 4 have 8 tokens; rows 0 and 4 end with a supervised EOS (complete), row 3 is fully masked
     assert report.rows_at_max_length == 3
-    assert report.rows_truncated_mid_response == 2
+    assert report.rows_truncated_mid_response == 0
     assert report.warnings == [
         "2 rows (40.0%) have zero supervised tokens and contribute nothing to training.",
-        "2 rows (40.0%) hit max_seq_length = 8 while still inside a supervised span, so their responses are cut off before the end (and before EOS).",
         "2 rows (40.0%) contain EOS only in masked (-100) positions, so the model does not learn to stop there.",
     ]
     assert (
-        "  Rows at max_seq_length = 8: 3 (60.0%), 2 cut off mid-response"
+        "  Rows at max_seq_length = 8: 3 (60.0%), 0 cut off mid-response"
         in report.render(color = False).splitlines()
     )
 
     explicit = audit_supervision(trainer, max_seq_length = 6, verbose = False)
     assert explicit.max_seq_length == 6
-    # rows 0, 1, 3, 4 have >= 6 tokens; rows 1 and 3 are fully masked
+    # rows 0, 1, 3, 4 have >= 6 tokens and are audited cut to 6, as the trainer prepares them: row 0's
+    # response now lies entirely past the cap (zero supervision, like the fully masked rows 1 and 3), and
+    # row 4 is cut inside its response
     assert explicit.rows_at_max_length == 4
-    assert explicit.rows_truncated_mid_response == 2
+    assert explicit.rows_truncated_mid_response == 1
+    assert explicit.zero_supervision_rows == 3
+    assert explicit.num_supervised_tokens == 4 + 1
 
 
 def test_trainer_tokenizer_and_length_fallbacks():
@@ -573,10 +587,8 @@ def test_trainer_tokenizer_and_length_fallbacks():
     report = audit_supervision(vlm, verbose = False)
     assert report.eos_token_id == 2
     assert report.max_seq_length == 6
-    assert list(report.examples[0]) == [
-        (False, "<s> user: What is 2+2? assistant:"),
-        (True, "4 </s>"),
-    ]
+    # row 0 has 8 tokens and is audited cut to the cap of 6: only its masked prompt survives
+    assert list(report.examples[0]) == [(False, "<s> user: What is 2+2? assistant:")]
 
     bare = SimpleNamespace(train_dataset = ds, processing_class = tok, args = SimpleNamespace())
     report = audit_supervision(bare, verbose = False)
@@ -602,13 +614,17 @@ def test_truncation_counts_only_rows_whose_last_token_is_supervised():
 
     assert report.max_seq_length == 4
     assert report.rows_at_max_length == 3
-    assert report.rows_truncated_mid_response == 2
-    assert report.zero_supervision_rows == 0
+    # the 5-token row is audited cut to 4, as the trainer prepares it: its only supervised token lies past
+    # the cap, so it is a zero-supervision row rather than a response cut off mid-span
+    assert report.rows_truncated_mid_response == 1
+    assert report.zero_supervision_rows == 1
+    assert report.zero_supervision_row_indices == [3]
     assert report.warnings == [
-        "2 rows (50.0%) hit max_seq_length = 4 while still inside a supervised span, so their responses are cut off before the end (and before EOS).",
+        "1 rows (25.0%) have zero supervised tokens and contribute nothing to training.",
+        "1 rows (25.0%) hit max_seq_length = 4 while still inside a supervised span, so their responses are cut off before the end (and before EOS).",
     ]
     assert (
-        "  Rows at max_seq_length = 4: 3 (75.0%), 2 cut off mid-response"
+        "  Rows at max_seq_length = 4: 3 (75.0%), 1 cut off mid-response"
         in report.render(color = False).splitlines()
     )
 
@@ -810,7 +826,7 @@ def test_rows_of_length_zero_are_counted_but_contribute_no_tokens():
     assert report.rows_with_supervised_eos == 1
     assert report.rows_with_duplicated_bos == 0
     assert report.rows_at_max_length == 1
-    assert report.rows_truncated_mid_response == 1
+    assert report.rows_truncated_mid_response == 0  # ends with a supervised EOS: complete
     assert len(report.examples) == 2
     assert list(report.examples[0]) == []
     assert list(report.examples[1]) == [(False, "<s>"), (True, "a </s>")]
@@ -854,6 +870,130 @@ def test_missing_input_ids_and_bad_arguments_raise_value_error():
 
 
 # ── public surface ─────────────────────────────────────────────────────────
+
+
+def test_assistant_masks_apply_on_presence_and_intersect_with_labels():
+    tok = MockTokenizer()
+    ids = tok.ids("<s> user: Hi assistant: Hello </s>")
+
+    # assistant_masks alone: the trainer folds it into the labels whenever the column exists
+    report = audit_supervision(
+        [{"input_ids": ids, "assistant_masks": [0, 0, 0, 0, 1, 1]}], tokenizer = tok, verbose = False
+    )
+    assert report.labels_source == "assistant_masks"
+    assert report.num_supervised_tokens == 2
+    assert list(report.examples[0]) == [(False, "<s> user: Hi assistant:"), (True, "Hello </s>")]
+
+    # labels and assistant_masks together are intersected, as the trainer applies them one after another
+    both = [
+        {
+            "input_ids": ids,
+            "labels": [-100, -100, -100, -100, ids[4], ids[5]],
+            "assistant_masks": [0, 0, 0, 0, 0, 1],
+        }
+    ]
+    report = audit_supervision(both, tokenizer = tok, verbose = False)
+    assert report.labels_source == "labels & assistant_masks"
+    assert report.num_supervised_tokens == 1
+    assert report.rows_with_supervised_eos == 1
+
+    # an all-zero assistant mask next to valid labels leaves nothing to train on
+    nothing = [{"input_ids": ids, "labels": list(ids), "assistant_masks": [0] * 6}]
+    report = audit_supervision(nothing, tokenizer = tok, verbose = False)
+    assert report.zero_supervision_rows == 1
+    assert report.ok is False
+
+
+def test_completion_only_loss_decides_whether_completion_mask_applies():
+    tok = MockTokenizer()
+    ids = tok.ids("<s> user: Hi assistant: Hello </s>")
+    row = {"input_ids": ids, "completion_mask": [0, 0, 0, 0, 1, 1]}
+
+    # without a trainer a present completion_mask is applied ...
+    assert audit_supervision([row], verbose = False).labels_source == "completion_mask"
+    # ... unless the caller says the trainer will not use it
+    off = audit_supervision([row], completion_only_loss = False, verbose = False)
+    assert off.labels_source == "all_tokens"
+    assert off.num_supervised_tokens == 6
+
+    def trainer(
+        columns = None,
+        args = None,
+        **attrs,
+    ):
+        data = {"input_ids": [ids], "completion_mask": [[0, 0, 0, 0, 1, 1]], **(columns or {})}
+        return SimpleNamespace(
+            train_dataset = Dataset.from_dict(data),
+            processing_class = tok,
+            args = SimpleNamespace(**(args or {})),
+            **attrs,
+        )
+
+    # with a trainer the flag is read as the trainer resolved it (TRL stores it on the trainer) ...
+    assert (
+        audit_supervision(trainer(completion_only_loss = True), verbose = False).labels_source
+        == "completion_mask"
+    )
+    assert (
+        audit_supervision(trainer(completion_only_loss = False), verbose = False).labels_source
+        == "all_tokens"
+    )
+    # ... or from the SFTConfig field ...
+    assert (
+        audit_supervision(trainer(args = {"completion_only_loss": True}), verbose = False).labels_source
+        == "completion_mask"
+    )
+    # ... where Unsloth's recorded resolution wins over the raw field
+    recorded = trainer(
+        args = {"_unsloth_resolved_completion_only": False, "completion_only_loss": True}
+    )
+    assert audit_supervision(recorded, verbose = False).labels_source == "all_tokens"
+    # a None flag is resolved from the dataset shape: prompt/completion rows use the mask, other rows do not
+    assert (
+        audit_supervision(trainer(args = {"completion_only_loss": None}), verbose = False).labels_source
+        == "all_tokens"
+    )
+    prompt_completion = trainer(
+        columns = {"prompt": ["Hi"], "completion": ["Hello"]}, args = {"completion_only_loss": None}
+    )
+    assert audit_supervision(prompt_completion, verbose = False).labels_source == "completion_mask"
+    # an explicit argument wins over everything the trainer says
+    forced = audit_supervision(
+        trainer(completion_only_loss = False), completion_only_loss = True, verbose = False
+    )
+    assert forced.labels_source == "completion_mask"
+
+
+def test_row_ending_with_a_supervised_eos_at_the_cap_is_complete_not_truncated():
+    tok = MockTokenizer()
+    a, b, c = (tok.token_id(w) for w in "a b c".split())
+    complete = {
+        "input_ids": [1, a, b, 2],
+        "labels": [-100, a, b, 2],
+    }  # exactly at the cap, ends with EOS
+    cut = {
+        "input_ids": [1, a, b, c],
+        "labels": [-100, a, b, c],
+    }  # at the cap, still inside the response
+    longer = {
+        "input_ids": [1, a, b, c, 2],
+        "labels": [-100, -100, -100, c, 2],
+    }  # cut to 4 by the trainer
+
+    report = audit_supervision(
+        [complete, cut, longer], tokenizer = tok, max_seq_length = 4, verbose = False
+    )
+
+    assert report.rows_at_max_length == 3
+    assert report.rows_truncated_mid_response == 2
+    # `longer` is audited on its first 4 tokens: 1 supervised token, and its EOS is gone
+    assert report.num_tokens == 12
+    assert report.num_supervised_tokens == 3 + 3 + 1
+    assert report.rows_with_eos == 1
+    assert report.warnings == [
+        "2 rows (66.7%) hit max_seq_length = 4 while still inside a supervised span, so their responses are cut off before the end (and before EOS).",
+        "2 rows (66.7%) do not contain the EOS token (id 2), so the model may never learn to stop generating.",
+    ]
 
 
 def test_public_exports():
