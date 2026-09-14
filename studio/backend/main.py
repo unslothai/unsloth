@@ -327,7 +327,7 @@ from hub.utils.download_registry import (
 from routes.settings import router as settings_router
 from routes.prompts import router as prompts_router
 from routes.profile_stats import router as profile_stats_router
-from auth import storage
+from auth import policy as auth_policy, storage
 from auth.authentication import get_current_subject
 from utils.hardware import (
     start_background_detection,
@@ -650,23 +650,39 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _lifespan_log.warning("studio.db WAL keeper failed at startup: %s", exc)
 
-    # Reap workers/runs orphaned by a previous crash before new work starts.
-    try:
-        from storage.studio_db import cleanup_orphaned_runs
-        cleanup_orphaned_runs()
-    except Exception as exc:
-        _lifespan_log.warning("cleanup_orphaned_runs failed at startup: %s", exc)
+    from utils.account_context import OWNER as _owner_account, run_as as _run_as
 
     try:
-        from storage.chat_generation_runs_db import reconcile_orphaned_runs
-        reconciled_chat_runs = reconcile_orphaned_runs()
-        if reconciled_chat_runs:
-            _lifespan_log.warning(
-                "Marked %s interrupted chat generation run(s) failed after restart.",
-                reconciled_chat_runs,
-            )
+        from core.training.account_jobs import startup_reconciliation_accounts
+        _reconcile_accounts = startup_reconciliation_accounts()
     except Exception as exc:
-        _lifespan_log.warning("chat generation orphan reconciliation failed: %s", exc)
+        _lifespan_log.warning("could not enumerate accounts to reconcile: %s", exc)
+        _reconcile_accounts = [_owner_account]
+
+    for _account in _reconcile_accounts:
+        try:
+            from storage.studio_db import cleanup_orphaned_runs
+            _run_as(_account, cleanup_orphaned_runs)
+        except Exception as exc:
+            _lifespan_log.warning("cleanup_orphaned_runs failed at startup: %s", exc)
+
+        try:
+            from storage.chat_generation_runs_db import reconcile_orphaned_runs
+            reconciled_chat_runs = _run_as(_account, reconcile_orphaned_runs)
+            if reconciled_chat_runs:
+                _lifespan_log.warning(
+                    "Marked %s interrupted chat generation run(s) failed after restart.",
+                    reconciled_chat_runs,
+                )
+        except Exception as exc:
+            _lifespan_log.warning("chat generation orphan reconciliation failed: %s", exc)
+
+        # Each account has its own rag.db, so its stuck ingestion jobs are only visible from inside it.
+        try:
+            from storage.rag_db import reconcile_orphaned_ingestion_jobs
+            _run_as(_account, reconcile_orphaned_ingestion_jobs)
+        except Exception as exc:
+            _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
 
     try:
         # The boot pass above only settles runs orphaned by the previous process. A run that wedges while this one
@@ -695,12 +711,6 @@ async def lifespan(app: FastAPI):
     app.state.llama_cpp_capabilities = None
     app.state.llama_cpp_freshness = None
     _start_llama_cpp_probes_if_enabled(app)
-
-    try:
-        from storage.rag_db import reconcile_orphaned_ingestion_jobs
-        reconcile_orphaned_ingestion_jobs()
-    except Exception as exc:
-        _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
 
     # Embeddings stay cold until ingestion or retrieval actually requests vectors.
     _start_helper_precache_if_enabled()
@@ -1411,6 +1421,11 @@ from utils.remote_access_settings import RemoteAccessStopResponseMiddleware  # n
 app.add_middleware(RemoteAccessStopResponseMiddleware)
 
 app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
+app.include_router(
+    __import__("routes.accounts", fromlist = ["router"]).router,
+    prefix = "/api/accounts",
+    tags = ["accounts"],
+)
 app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
 app.include_router(chat_history_router, prefix = "/api/chat", tags = ["chat"])
@@ -1681,6 +1696,18 @@ async def liveness_check():
     return alive
 
 
+async def _desktop_shell_subject(request: Request) -> Optional[str]:
+    """Owner subject for a request carrying the desktop secret, None without one: on a multi-account install desktop-login mints no session, so the shell proves ownership with the secret itself."""
+    secret = request.headers.get("x-desktop-secret")
+    if secret is None:
+        return None
+    from starlette.concurrency import run_in_threadpool
+
+    if await run_in_threadpool(storage.validate_desktop_secret, secret) is None:
+        raise HTTPException(status_code = 401, detail = "Desktop authentication failed")
+    return storage.DEFAULT_ADMIN_USERNAME
+
+
 @app.get("/api/health")
 async def health_check(request: Request):
     """Liveness plus launcher capability bits; host fingerprint gated on a bearer.
@@ -1734,22 +1761,23 @@ async def health_check(request: Request):
         if os.environ.get(DISABLE_ENV_VAR) == "1" and not mlx_repairing:
             # Nothing is detecting until a hardware-dependent operation runs; say so instead of making clients poll.
             base["hardware_detection_deferred"] = True
+    subject = await _desktop_shell_subject(request)
     auth = request.headers.get("authorization", "")
     bearer = auth.split(" ", 1)[1] if auth.lower().startswith("bearer ") else None
-    try:
-        from auth.authentication import credentials_for_token
-        from auth.authentication import get_current_subject as _gcs
+    if subject is None:
+        try:
+            from auth.authentication import credentials_for_token
+            from auth.authentication import get_current_subject as _gcs
 
-        # resolved rather than built, so a scope covering this route answers it in full
-        creds = await credentials_for_token(request, bearer)
-        if creds is None:
+            creds = await credentials_for_token(request, bearer)
+            if creds is None:
+                return base
+            # Must await: a bare coroutine is truthy and would skip the auth check
+            subject = await _gcs(creds)
+        except HTTPException:
             return base
-        # Must await: a bare coroutine is truthy and would skip the auth check
-        subject = await _gcs(creds)
-    except HTTPException:
-        return base
-    except Exception:
-        return base
+        except Exception:
+            return base
     if not subject:
         return base
 
@@ -1838,7 +1866,10 @@ def studio_download_transport_capabilities(
     return asdict(get_download_transport_capabilities(probe = probe))
 
 
-@app.post("/api/shutdown")
+@app.post(
+    "/api/shutdown",
+    dependencies = [Depends(get_current_subject), Depends(auth_policy.require_owner)],
+)
 async def shutdown_server(request: Request, current_subject: str = Depends(get_current_subject)):
     """Gracefully shut down the Unsloth Studio server.
 
@@ -1846,6 +1877,18 @@ async def shutdown_server(request: Request, current_subject: str = Depends(get_c
     without the CLI or killing the process manually.
     """
 
+    return _schedule_shutdown(request)
+
+
+@app.post("/api/desktop/shutdown")
+async def desktop_shutdown_server(request: Request):
+    """The desktop shell's quit path, authenticated by its secret."""
+    if await _desktop_shell_subject(request) is None:
+        raise HTTPException(status_code = 401, detail = "Desktop authentication failed")
+    return _schedule_shutdown(request)
+
+
+def _schedule_shutdown(request: Request) -> dict:
     async def _delayed_shutdown():
         await asyncio.sleep(0.2)  # Let the HTTP response return first
         trigger = getattr(request.app.state, "trigger_shutdown", None)
@@ -2161,6 +2204,12 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     import secrets as _secrets
 
     if not storage.requires_password_change(storage.DEFAULT_ADMIN_USERNAME):
+        return html_bytes, None
+
+    from auth.policy import installation_has_managed_accounts
+
+    # A local browser may belong to any account, including a deactivated one.
+    if installation_has_managed_accounts():
         return html_bytes, None
 
     bootstrap_pw = getattr(app.state, "bootstrap_password", None)

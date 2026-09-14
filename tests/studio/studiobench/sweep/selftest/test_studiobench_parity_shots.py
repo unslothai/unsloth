@@ -549,6 +549,8 @@ NOT_GATED: dict[str, str] = {
     "studio/backend/core/inference/pricing.py": "cost figures, which the scene never renders",
     "studio/backend/utils/utils.py": "generic helpers imported by most of the backend; gating on "
     "it would run this workflow on nearly every PR and defeat the filter",
+    "studio/backend/utils/account_context.py": "request identity ContextVar imported across the "
+    "backend; studiobench runs as the sole owner session, where it resolves to the legacy root",
 }
 
 
