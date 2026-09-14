@@ -2457,6 +2457,72 @@ class TestWindowsCudaAttemptCoversBlackwell:
 
 
 # ===========================================================================
+class TestDirectUpstreamWindowsAmdTakesVulkan:
+    """The direct/upstream planner is reached when the caller pins --published-repo, so the
+    Windows Vulkan gate there has to match the published one. Left Intel-only, a Windows AMD
+    host with no usable ROCm took the CPU attempt even with win-vulkan in the release."""
+
+    TAG = "b9365"
+
+    def _release(self):
+        names = [
+            f"llama-{self.TAG}-bin-win-vulkan-x64.zip",
+            f"llama-{self.TAG}-bin-win-cpu-x64.zip",
+        ]
+        return {
+            "tag_name": self.TAG,
+            "assets": [
+                {"name": n, "browser_download_url": f"https://example.com/{n}"} for n in names
+            ],
+        }
+
+    def _host(self, **overrides):
+        defaults = dict(
+            system = "Windows",
+            machine = "AMD64",
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+        )
+        defaults.update(overrides)
+        return make_host(**defaults)
+
+    def test_an_amd_host_without_rocm_gets_vulkan_first(self):
+        plan = direct_upstream_release_plan(
+            self._release(), self._host(has_amd_gpu_without_rocm = True), UPSTREAM_REPO, "latest"
+        )
+        kinds = [a.install_kind for a in plan.attempts]
+        assert kinds[0] == "windows-vulkan"
+        # The CPU attempt stays as the tail, exactly as it does for an Intel host.
+        assert "windows-cpu" in kinds
+
+    def test_an_intel_host_is_unchanged(self):
+        plan = direct_upstream_release_plan(
+            self._release(), self._host(has_intel_gpu = True), UPSTREAM_REPO, "latest"
+        )
+        assert [a.install_kind for a in plan.attempts][0] == "windows-vulkan"
+
+    def test_a_windows_host_with_no_gpu_still_takes_cpu(self):
+        plan = direct_upstream_release_plan(self._release(), self._host(), UPSTREAM_REPO, "latest")
+        assert [a.install_kind for a in plan.attempts] == ["windows-cpu"]
+
+    def test_a_masked_nvidia_host_is_not_routed_to_vulkan(self):
+        # Vulkan ignores CUDA_VISIBLE_DEVICES, so it could enumerate the reserved card.
+        plan = direct_upstream_release_plan(
+            self._release(),
+            self._host(
+                has_amd_gpu_without_rocm = True,
+                has_physical_nvidia = True,
+                visible_cuda_devices = "",
+            ),
+            UPSTREAM_REPO,
+            "latest",
+        )
+        assert all(a.install_kind != "windows-vulkan" for a in plan.attempts)
+
+
 # N.1c. direct_upstream_release_plan -- Blackwell windows-cuda fallback ordering
 # ===========================================================================
 
@@ -3045,6 +3111,93 @@ class TestResolveReleaseAssetChoicePin:
         )
         result = resolve_release_asset_choice(host, self.TAG, release, checksums)
         assert "b9360" not in [a.tag for a in result]
+
+
+class TestWindowsAmdWithoutRocmTakesVulkan:
+    """An AMD Windows host with no usable ROCm must take the Vulkan bundle, not windows-cpu.
+
+    The Windows gate checked has_intel_gpu alone while the Linux one checked
+    `has_intel_gpu or has_amd_gpu_without_rocm`, so the same silicon took Vulkan on Linux
+    and CPU on Windows. Measured on a gfx1151 (Radeon 8060S) box where amd-smi.exe failed
+    to load its library and HIP_PATH / ROCM_PATH were both unset: every ref resolved
+    app-<tag>-windows-x64-cpu.zip, with a windows-vulkan bundle sitting in the same
+    release."""
+
+    TAG = "b10909"
+
+    def _release(self):
+        return make_release(
+            [
+                make_cpu_artifact(
+                    f"app-{self.TAG}-windows-x64-vulkan.zip", install_kind = "windows-vulkan"
+                ),
+                make_cpu_artifact(
+                    f"app-{self.TAG}-windows-x64-cpu.zip", install_kind = "windows-cpu"
+                ),
+            ],
+            upstream_tag = self.TAG,
+        )
+
+    def _checksums(self):
+        return make_checksums(
+            [
+                f"app-{self.TAG}-windows-x64-vulkan.zip",
+                f"app-{self.TAG}-windows-x64-cpu.zip",
+            ]
+        )
+
+    def _host(self, **overrides):
+        defaults = dict(
+            system = "Windows",
+            machine = "AMD64",
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+            has_rocm = False,
+            has_intel_gpu = False,
+            has_amd_gpu_without_rocm = True,
+        )
+        defaults.update(overrides)
+        return make_host(**defaults)
+
+    def test_vulkan_is_preferred_over_the_cpu_bundle(self):
+        result = resolve_release_asset_choice(
+            self._host(), self.TAG, self._release(), self._checksums()
+        )
+        assert result[0].install_kind == "windows-vulkan"
+        # The CPU bundle stays as the tail, exactly as it does for an Intel host.
+        assert [c.install_kind for c in result] == ["windows-vulkan", "windows-cpu"]
+
+    def test_an_intel_host_is_unchanged(self):
+        result = resolve_release_asset_choice(
+            self._host(has_intel_gpu = True, has_amd_gpu_without_rocm = False),
+            self.TAG,
+            self._release(),
+            self._checksums(),
+        )
+        assert result[0].install_kind == "windows-vulkan"
+
+    def test_a_host_with_usable_rocm_is_not_diverted_to_vulkan(self, monkeypatch):
+        # The windows-rocm branch must keep owning a ROCm host; this release carries no
+        # windows-rocm bundle, so it walks past the published pair rather than taking Vulkan.
+        # Stubbed because resolve_asset_choice reaches the upstream fetch before it can raise,
+        # and offline that is four GitHub retries and a URLError instead of the assertion.
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "github_release_assets", lambda repo, tag: {})
+        with pytest.raises(PrebuiltFallback):
+            resolve_release_asset_choice(
+                self._host(has_rocm = True), self.TAG, self._release(), self._checksums()
+            )
+
+    def test_a_plain_cpu_windows_host_still_takes_the_cpu_bundle(self):
+        result = resolve_release_asset_choice(
+            self._host(has_amd_gpu_without_rocm = False),
+            self.TAG,
+            self._release(),
+            self._checksums(),
+        )
+        assert result[0].install_kind == "windows-cpu"
 
 
 class TestPublishedWindowsCudaAppBundleSmSelection:
