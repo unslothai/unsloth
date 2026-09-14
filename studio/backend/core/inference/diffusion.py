@@ -4163,7 +4163,14 @@ class DiffusionBackend:
                             elif fam.name == IDEOGRAM4_FAMILY_NAME:
                                 # ideogram ships the same transformers-5.x Qwen stack as krea; assemble per-component too,
                                 # from the mirror for the same reason.
-                                pipe = load_ideogram4_pipeline(fetch_base, dtype, hf_token = hf_token)
+                                pipe = load_ideogram4_pipeline(
+                                    fetch_base,
+                                    dtype,
+                                    hf_token = hf_token,
+                                    check_cancelled = lambda: self._raise_if_load_cancelled(
+                                        _load_token
+                                    ),
+                                )
                             else:
                                 pipe_kwargs = {
                                     "local_files_only": local_files_only,
@@ -4185,6 +4192,7 @@ class DiffusionBackend:
                                             local_files_only = local_files_only,
                                         )
                                     )
+                                    self._raise_if_load_cancelled(_load_token)
                                 # A hosted pre-cast fp8 text encoder skips the dense TE download; the cast re-applies
                                 # idempotently.
                                 pipe_kwargs.update(
@@ -4199,6 +4207,7 @@ class DiffusionBackend:
                                         local_files_only = local_files_only,
                                     )
                                 )
+                                self._raise_if_load_cancelled(_load_token)
                                 # The prefetched snapshot dir keeps from_pretrained off the hub (24 GB per FLUX.1
                                 # otherwise)
                                 pipe = pipeline_cls.from_pretrained(
@@ -4289,6 +4298,7 @@ class DiffusionBackend:
                                             local_files_only = local_files_only,
                                         )
                                     )
+                                    self._raise_if_load_cancelled(_load_token)
                                 # Same pre-cast TE injection as above: the GGUF supplies the transformer, so the TE is the
                                 # big download.
                                 pipe_kwargs.update(
@@ -4303,6 +4313,7 @@ class DiffusionBackend:
                                         local_files_only = local_files_only,
                                     )
                                 )
+                                self._raise_if_load_cancelled(_load_token)
                                 pipe = pipeline_cls.from_pretrained(
                                     _base_local_dir or fetch_base, **pipe_kwargs
                                 )

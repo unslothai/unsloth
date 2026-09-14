@@ -851,7 +851,7 @@ def fake_runtime(monkeypatch):
 
     monkeypatch.setattr(
         "core.inference.diffusion.load_ideogram4_pipeline",
-        lambda repo_id, dtype, hf_token = None: _FakePipe(),
+        lambda repo_id, dtype, hf_token = None, check_cancelled = None: _FakePipe(),
     )
 
     monkeypatch.setitem(sys.modules, "torch", torch)
@@ -2932,6 +2932,167 @@ def test_krea_component_load_honors_eject(fake_runtime, tmp_path, monkeypatch, p
         backend.unload()
 
 
+@pytest.mark.parametrize("kind", ["pipeline", "gguf", "single_file"])
+@pytest.mark.parametrize(
+    "family,phase", [("hidream-i1", "te4"), ("hidream-i1", "encoder"), ("z-image", "encoder")]
+)
+@pytest.mark.parametrize("cancel", [False, True])
+def test_eager_encoder_cancellation_stops_pipeline_build(
+    fake_runtime, tmp_path, monkeypatch, kind, family, phase, cancel
+):
+    import gc
+    import weakref
+    from core.inference import diffusion as mod
+
+    backend = DiffusionBackend()
+    calls, ejectors, reclaimed = [], [], []
+    live = weakref.WeakSet()
+    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+    filename = "model.gguf" if kind == "gguf" else "model.safetensors"
+    (tmp_path / filename).write_bytes(b"weights")
+    sys.modules["diffusers"].HiDreamImagePipeline = _FakePipeline
+    sys.modules["diffusers"].HiDreamImageTransformer2DModel = _FakeTransformer
+
+    def prepare(name, key):
+        calls.append(name)
+        value = _FakePipe()
+        value.cycle = value
+        live.add(value)
+        if cancel and phase == name:
+            thread = threading.Thread(target = backend.unload, daemon = True)
+            ejectors.append(thread)
+            thread.start()
+            assert backend._cancel_event.wait(5)
+        return {key: value}
+
+    def pipeline(*args, **kwargs):
+        calls.append("pipeline")
+        return _FakePipe()
+
+    def reclaim():
+        gc.collect()
+        reclaimed.append(len(live))
+
+    monkeypatch.setattr(mod, "hidream_te4_kwargs", lambda *a, **k: prepare("te4", "text_encoder_4"))
+    monkeypatch.setattr(
+        mod, "te_prequant_pipe_kwargs", lambda *a, **k: prepare("encoder", "text_encoder")
+    )
+    monkeypatch.setattr(_FakePipeline, "from_pretrained", staticmethod(pipeline))
+    monkeypatch.setattr(mod, "clear_gpu_cache", reclaim)
+    expected = (["te4"] if family == "hidream-i1" else []) + ["encoder", "pipeline"]
+    kwargs = dict(family_override = family, local_files_only = True, transformer_quant = "off")
+    if kind != "pipeline":
+        kwargs.update(gguf_filename = filename, base_repo = str(tmp_path))
+    try:
+        if cancel:
+            with pytest.raises(RuntimeError, match = "cancelled"):
+                backend.load_pipeline(str(tmp_path), **kwargs)
+            assert calls == expected[: expected.index(phase) + 1]
+            assert not backend.is_loaded
+            assert reclaimed and not any(reclaimed)
+        else:
+            assert backend.load_pipeline(str(tmp_path), **kwargs)["loaded"]
+            assert calls == expected
+            assert backend.generate(prompt = "a sloth", steps = 2)["images"]
+    finally:
+        for thread in ejectors:
+            thread.join(5)
+            assert not thread.is_alive()
+        backend.unload()
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [
+        "mask",
+        "text_encoder",
+        "tokenizer",
+        "transformer",
+        "unconditional_transformer",
+        "vae",
+        "scheduler",
+        "pipeline",
+    ],
+)
+@pytest.mark.parametrize("cancel", [False, True])
+def test_ideogram_component_load_honors_eject(fake_runtime, tmp_path, monkeypatch, phase, cancel):
+    import gc
+    import weakref
+    from core.inference import diffusion as mod, diffusion_ideogram4 as ideogram
+
+    backend = DiffusionBackend()
+    calls, ejectors, reclaimed = [], [], []
+    live = weakref.WeakSet()
+    (tmp_path / "model_index.json").write_text("{}", encoding = "utf-8")
+
+    def component(name):
+        calls.append(name)
+        value = _FakePipe()
+        value.cycle = value
+        live.add(value)
+        if cancel and phase == name:
+            thread = threading.Thread(target = backend.unload, daemon = True)
+            ejectors.append(thread)
+            thread.start()
+            assert backend._cancel_event.wait(5)
+        return value
+
+    def reclaim():
+        gc.collect()
+        reclaimed.append(len(live))
+
+    monkeypatch.setattr(mod, "load_ideogram4_pipeline", ideogram.load_ideogram4_pipeline)
+    monkeypatch.setattr(ideogram, "_patch_create_causal_mask", lambda: component("mask"))
+    monkeypatch.setattr(
+        ideogram, "load_ideogram4_text_encoder", lambda *a, **k: component("text_encoder")
+    )
+    monkeypatch.setattr(ideogram, "load_krea2_tokenizer", lambda *a, **k: component("tokenizer"))
+    monkeypatch.setattr(
+        ideogram,
+        "load_ideogram4_transformer",
+        lambda repo, subfolder, *a, **k: component(subfolder),
+    )
+    diffusers = sys.modules["diffusers"]
+    diffusers.Ideogram4Pipeline = lambda **kwargs: component("pipeline")
+    diffusers.AutoencoderKLFlux2 = types.SimpleNamespace(
+        from_pretrained = lambda *a, **k: component("vae")
+    )
+    diffusers.FlowMatchEulerDiscreteScheduler = types.SimpleNamespace(
+        from_pretrained = lambda *a, **k: component("scheduler")
+    )
+    monkeypatch.setattr(mod, "clear_gpu_cache", reclaim)
+    expected = [
+        "mask",
+        "text_encoder",
+        "tokenizer",
+        "transformer",
+        "unconditional_transformer",
+        "vae",
+        "scheduler",
+        "pipeline",
+    ]
+    try:
+        if cancel:
+            with pytest.raises(RuntimeError, match = "cancelled"):
+                backend.load_pipeline(
+                    str(tmp_path), family_override = "ideogram-4", local_files_only = True
+                )
+            assert calls == expected[: expected.index(phase) + 1]
+            assert not backend.is_loaded
+            assert reclaimed and not any(reclaimed)
+        else:
+            assert backend.load_pipeline(
+                str(tmp_path), family_override = "ideogram-4", local_files_only = True
+            )["loaded"]
+            assert calls == expected
+            assert backend.generate(prompt = "a sloth", steps = 2)["images"]
+    finally:
+        for thread in ejectors:
+            thread.join(5)
+            assert not thread.is_alive()
+        backend.unload()
+
+
 @pytest.mark.parametrize("phase", ["gpu", "validation", "precision"])
 def test_begin_load_remembers_an_eject_during_preflight(fake_runtime, tmp_path, monkeypatch, phase):
     from core.inference import diffusion as diff_mod
@@ -3224,6 +3385,7 @@ def test_pipeline_kind_assembles_krea_and_ideogram_from_the_mirror(fake_runtime,
         repo_id,
         dtype,
         hf_token = None,
+        check_cancelled = None,
     ):
         seen["ideogram"] = repo_id
         return _FakePipe()
