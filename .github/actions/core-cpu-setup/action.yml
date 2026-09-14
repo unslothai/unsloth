@@ -193,11 +193,19 @@ runs:
         set -euxo pipefail
         # github.com occasionally 500s on the git fetch; retry so a
         # single upstream blip does not fail CI.
+        # fetch + checkout rather than `clone --branch`: the ref is a commit SHA once
+        # resolve-zoo-ref has pinned it, and --branch takes only an advertised branch or
+        # tag, so it would fail with "Remote branch <sha> not found in upstream origin".
+        # tests/studio/studiobench/runtime/selftest/test_studiobench_lifecycle_refs.py
+        # ::test_clone_branch_cannot_take_a_commit asserts that rule. This form takes a
+        # branch, a tag or a commit, and stays shallow.
         for attempt in 1 2 3; do
           rm -rf "$RUNNER_TEMP/unsloth-zoo"
-          if git clone --depth=1 --branch="$UNSLOTH_ZOO_REF" \
+          if git init -q "$RUNNER_TEMP/unsloth-zoo" \
+            && git -C "$RUNNER_TEMP/unsloth-zoo" remote add origin \
               https://github.com/unslothai/unsloth-zoo \
-              "$RUNNER_TEMP/unsloth-zoo"; then
+            && git -C "$RUNNER_TEMP/unsloth-zoo" fetch -q --depth=1 origin "$UNSLOTH_ZOO_REF" \
+            && git -C "$RUNNER_TEMP/unsloth-zoo" checkout -q FETCH_HEAD; then
             break
           fi
           if [ "$attempt" -eq 3 ]; then
