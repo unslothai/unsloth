@@ -39,17 +39,37 @@ def test_jupyter_on_studios_port_is_refused_with_a_remedy():
     assert "-p 9000:8888" in res.stderr, "the remedy must be printed:\n" + res.stderr
 
 
+@pytest.mark.parametrize("spelling", ["08000", " 8000", "8000 "])
+def test_other_spellings_of_8000_are_refused_too(spelling: str):
+    """Jupyter parses the port as an integer, so these bind 8000 as well."""
+    res = _run(spelling)
+    assert res.returncode != 0, spelling
+    assert "JUPYTER_PORT=8000" in res.stderr, res.stderr
+
+
 def test_another_port_is_not_refused_here():
     res = _run("8899")
     assert res.returncode == 0, res.stderr
     assert "JUPYTER_PORT=8000" not in res.stderr, res.stderr
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason = "as root the launcher would write to /etc and /root")
+def test_check_only_set_to_zero_does_not_stop_the_launcher():
+    """`=0` must mean off: the launcher goes on past the guard. On a non-root test host
+    the next step, writing /etc/profile.d, fails, which is the proof that it went on."""
+    env = dict(os.environ, JUPYTER_PORT = "8899", UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY = "0")
+    res = subprocess.run(
+        ["bash", str(LAUNCH)], capture_output = True, text = True, env = env, timeout = 120
+    )
+    assert res.returncode != 0, "check-only=0 exited 0 before touching anything"
+    assert "/etc/profile.d/unsloth_env.sh" in res.stderr, res.stderr
+
+
 def test_the_check_only_exit_comes_after_the_guard():
     """The guard is the point; check-only must not skip it, and nothing before the
     check-only exit may touch the host."""
     body = LAUNCH.read_text(encoding = "utf-8")
-    guard = body.index('"${JUPYTER_PORT}" == "8000"')
+    guard = body.index("jupyter_port_digits == 8000")
     check = body.index("UNSLOTH_STUDIO_LAUNCH_CHECK_ONLY:-")
     assert guard < check
     assert "> /etc/profile.d/unsloth_env.sh" not in body[:check]

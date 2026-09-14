@@ -30,12 +30,17 @@ command -v docker >/dev/null 2>&1 \
 # that host needs it, and gets the same answer as any remote endpoint. Same precedence as
 # the endpoint check: DOCKER_CONTEXT over DOCKER_HOST over the selected context.
 if [[ "$(uname -s)" == Darwin ]]; then
-    mac_endpoint="${DOCKER_HOST:-}"
-    if [[ -n "${DOCKER_CONTEXT:-}" || -z "$mac_endpoint" ]]; then
-        mac_endpoint="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null || true)"
+    if [[ -n "${DOCKER_CONTEXT:-}" || -z "${DOCKER_HOST:-}" ]]; then
+        mac_endpoint="$(docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)" \
+            || fail "cannot inspect the Docker context '${DOCKER_CONTEXT:-current}' (it may exist only in the invoking user's Docker config); refusing to guess which daemon it drives." 2
+    else
+        mac_endpoint="$DOCKER_HOST"
     fi
+    # Same classes as the endpoint check below: any local socket is a Mac daemon, anything
+    # else (tcp://, ssh://, a bare host:port, which Docker reads as tcp) is a remote one.
     case "$mac_endpoint" in
-        tcp://*|ssh://*) fail "the Docker CLI on this Mac talks to a remote daemon (${mac_endpoint}); run this script on that host, it configures the local Docker only." 2 ;;
+        ""|unix://*|npipe://*) ;;
+        *) fail "the Docker CLI on this Mac talks to a remote daemon (${mac_endpoint}); run this script on that host, it configures the local Docker only." 2 ;;
     esac
     say "macOS: no NVIDIA GPU can be attached on a Mac, so there is nothing to install."
     say "The image runs CPU-only there: drop --gpus and set UNSLOTH_ALLOW_CPU=1."

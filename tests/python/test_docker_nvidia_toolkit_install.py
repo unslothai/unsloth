@@ -573,6 +573,21 @@ def test_a_mac_driving_a_remote_daemon_is_sent_to_that_host(tmp_path: Path):
     )
     assert res.returncode == 2, res.stdout + res.stderr
     assert "remote daemon (tcp://gpu-box:2376)" in res.stderr
+    # a bare host:port is tcp to Docker, so it is remote here too
+    res = _run(env, extra_env = {"DOCKER_HOST": "gpu-box:2376"})
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "remote daemon (gpu-box:2376)" in res.stderr
+
+
+def test_a_mac_with_an_uninspectable_context_gets_the_error_not_nothing_to_install(tmp_path: Path):
+    """Same rule as the endpoint check further down: a context lookup failure is an
+    error, not a local daemon."""
+    _, _, env = _setup(tmp_path, driver = False, uid = 1000)
+    _stub(tmp_path / "bin" / "uname", 'if [ "$1" = -s ]; then echo Darwin; else echo arm64; fi\n')
+    res = _run(env, extra_env = {"DOCKER_CONTEXT": "missing-in-root-config"})
+    assert res.returncode == 2, res.stdout + res.stderr
+    assert "cannot inspect the Docker context 'missing-in-root-config'" in res.stderr
+    assert "nothing to install" not in res.stdout
 
 
 def test_the_old_driver_message_names_the_host_platform_even_without_verification(tmp_path: Path):
