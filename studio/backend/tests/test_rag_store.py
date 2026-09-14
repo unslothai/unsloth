@@ -75,17 +75,9 @@ def test_dense_ranks_by_cosine(rag_conn):
 
 
 def test_dense_knn_binds_k_rather_than_limit(rag_conn):
-    """The KNN bound must reach vec0 as ``k = ?``, never as a bare ``LIMIT ?``.
-
-    SQLite only hands a LIMIT to a virtual table's query planner from 3.41 on, so the LIMIT
-    spelling raises "A LIMIT or 'k = ?' constraint is required on vec0 knn queries" on older
-    runtimes and takes dense retrieval, hybrid retrieval and search_knowledge_base down with
-    it. Ubuntu 22.04 (3.37.2) and Debian 12 (3.40.1) both sit under that line.
-
-    Nothing else in this suite can catch a revert: CI runs SQLite 3.50.4, where both
-    spellings work and return the same rows. So this asserts the spelling that the runtime
-    actually saw, which is why it reads the statement off a trace callback rather than the
-    source file."""
+    """vec0's KNN bound must arrive as ``k = ?``, not a bare ``LIMIT ?``, which SQLite forwards
+    to a virtual table's planner only from 3.41 on. CI's SQLite accepts both and returns the
+    same rows, so nothing else here catches a revert and only the executed statement can say."""
     _add_doc(rag_conn, "kb_a", "d1", "f", "h1", ["alpha alpha"])
     seen = []
     rag_conn.set_trace_callback(seen.append)
