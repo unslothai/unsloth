@@ -93,9 +93,13 @@ DOCKER_BUILDKIT=1 docker build \
 echo
 echo "Built ${IMAGE_NAME}:${TAG}"
 echo
-echo "Smoke test on this host (B200, sm_100):"
+# name the GPU only from a successful query: a failing nvidia-smi prints its error on stdout
+HOST_GPU=""
+if HOST_GPU_QUERY="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null)"; then
+    HOST_GPU="$(printf '%s\n' "$HOST_GPU_QUERY" | head -1)"
+fi
+echo "Smoke test on this host${HOST_GPU:+ (${HOST_GPU})}:"
 echo "  docker run --rm --gpus all ${IMAGE_NAME}:${TAG} python /workspace/smoke_test.py"
 echo
-echo "Smoke test on an RTX 5090 host (sm_120):"
+echo "On another host, the same command after:"
 echo "  docker pull ${IMAGE_NAME}:${TAG}   # or load .tar"
-echo "  docker run --rm --gpus all ${IMAGE_NAME}:${TAG} python /workspace/smoke_test.py"

@@ -54,6 +54,34 @@ _adamw_mod = _load_module(
 )
 make_q_galore_param_groups = _adamw_mod.make_q_galore_param_groups
 
+
+_BNB_OPTIMIZER_BACKEND = {}
+
+
+def requires_bnb_optimizer(device):
+    """Skip unless bitsandbytes can really run an optimizer step on ``device``.
+
+    Not `supported_torch_devices`: it lists "cpu" from 0.46.0 but the CPU kernels landed in
+    0.50.0, so gating on it fails these tests on 0.47.x/0.49.x, which pyproject allows.
+    The probe drives bitsandbytes' own AdamW32bit, so a real regression in the code under
+    test still fails rather than turning into a skip.
+    """
+    available = _BNB_OPTIMIZER_BACKEND.get(device)
+    if available is None:
+        try:
+            import bitsandbytes
+
+            probe = nn.Parameter(torch.ones(2, device = device))
+            probe.grad = torch.zeros(2, device = device)
+            bitsandbytes.optim.AdamW32bit([probe], lr = 0.0).step()
+            available = True
+        except Exception:
+            available = False
+        _BNB_OPTIMIZER_BACKEND[device] = available
+    if not available:
+        pytest.skip(f"This bitsandbytes version cannot run an optimizer step on {device}")
+
+
 # ======================================================================
 # Projector tests
 # ======================================================================
@@ -113,6 +141,13 @@ class TestGaLoreProjector:
         # INT4 values should be in range [0, 15]
         assert proj.ortho_matrix.max() <= 15
 
+    @pytest.mark.parametrize("n_bit", [4, 8])
+    def test_quantized_projection_preserves_constant_rank_one_gradient(self, n_bit):
+        grad = torch.ones(8, 4)
+        proj = GaLoreProjector(rank = 1, quant = True, n_bit = n_bit)
+        restored = proj.project_back(proj.project(grad, step = 0))
+        torch.testing.assert_close(restored, grad)
+
     def test_adaptive_scheduling(self):
         """update_proj_gap increases when cosine similarity exceeds threshold."""
         proj = GaLoreProjector(
@@ -154,6 +189,27 @@ class TestGaLoreProjector:
 
 class TestQuantizationUtils:
     """Tests for _quantize, _dequantize, _quantize_stochastic."""
+
+    @pytest.mark.parametrize("quantize", [_quantize, _quantize_stochastic])
+    @pytest.mark.parametrize("n_bit", [4, 8])
+    @pytest.mark.parametrize("group_size", [-1, 2])
+    def test_roundtrip_single_sign_groups(self, quantize, n_bit, group_size):
+        weights = torch.tensor(
+            [
+                [1.0, 1.5, 2.0, 2.5],
+                [-1.0, -1.5, -2.0, -2.5],
+                [0.5, 0.5, 0.5, 0.5],
+                [-0.5, -0.5, -0.5, -0.5],
+                [0.0, 0.0, 0.0, 0.0],
+                [-1.0, -0.5, 0.5, 1.0],
+            ]
+        )
+        quantized = quantize(weights, q_group_size = group_size, n_bit = n_bit)
+        restored = _dequantize(*quantized)
+        scales = quantized[1]
+        error = (restored - weights).abs().reshape(scales.shape[0], -1)
+        # Stochastic rounding may move by one quantization step, but must not clip a group.
+        assert torch.all(error <= scales + 1e-6)
 
     def test_quantize_dequantize_roundtrip(self):
         """Quantize → dequantize has bounded error."""
@@ -286,6 +342,24 @@ class TestParamGroupHelper:
 # ======================================================================
 # Optimizer tests (CPU-only, no bitsandbytes dependency)
 # ======================================================================
+
+
+def test_optimizer_bias_correction_matches_adamw():
+    pytest.importorskip("bitsandbytes")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    requires_bnb_optimizer(device)
+
+    param = nn.Parameter(torch.ones(2, device = device))
+    reference = nn.Parameter(param.detach().clone())
+    optimizer = _adamw_mod.QGaLoreAdamW8bit([param], lr = 0.1, weight_decay = 0.0)
+    expected_optimizer = torch.optim.AdamW([reference], lr = 0.1, weight_decay = 0.0)
+    # Non-projected parameters use AdamW; small tensors use full-precision states.
+    for values in ([0.1, 0.2], [0.4, -0.2], [-0.05, 0.3]):
+        param.grad = torch.tensor(values, device = device)
+        reference.grad = param.grad.clone()
+        optimizer.step()
+        expected_optimizer.step()
+        torch.testing.assert_close(param, reference)
 
 
 class TestQGaLoreIntegration:

@@ -54,6 +54,7 @@ from hub.utils.hf_tokens import (
     qualify_cache_identity,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
+from utils.prebuilt.update_flow import resolves_into_studio_app_tree
 from utils.native_tls import inline_gate_source, vendor_dir
 from utils.child_stdio import utf8_child_env
 from utils.hf_cache_settings import get_hf_cache_paths
@@ -2417,6 +2418,13 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
         return True
 
     logger.warning("%s not found or incomplete at %s -- installing at runtime", label, venv_dir)
+    # The Docker image links its sidecars into the Studio home (UNSLOTH_STUDIO_APP). rmtree refuses a
+    # symlink and ignore_errors hides that, so the damaged files would survive the "wipe" and a
+    # version-satisfied install would leave them in place. Repair the directory the link points at,
+    # but only when it is the image's own tree: a link a user made to some other disk is not ours
+    # to delete, so that keeps the old behaviour.
+    if os.path.islink(venv_dir) and resolves_into_studio_app_tree(Path(venv_dir)):
+        venv_dir = os.path.realpath(venv_dir)
     shutil.rmtree(venv_dir, ignore_errors = True)
     os.makedirs(venv_dir, exist_ok = True)
     _mark_studio_owned(venv_dir)
