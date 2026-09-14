@@ -5039,8 +5039,15 @@ class TestWindowsRocmTorchaoGuard:
     @patch.object(stack_mod, "run")
     @patch.object(stack_mod, "pip_install")
     def test_install_python_stack_skips_torchao_when_windows_rocm_torch_is_installed(
-        self, mock_pip, mock_run, mock_has_nvidia, mock_cuda, mock_rocm, mock_anyio,
-        mock_accelerate, tmp_path
+        self,
+        mock_pip,
+        mock_run,
+        mock_has_nvidia,
+        mock_cuda,
+        mock_rocm,
+        mock_anyio,
+        mock_accelerate,
+        tmp_path,
     ):
         unstructured_plugin = tmp_path / "unstructured"
         github_plugin = tmp_path / "github"
@@ -5152,7 +5159,12 @@ class TestAccelerateRepair:
     the core-packages step passes -c, and install.ps1 sets SKIP_STUDIO_BASE=1 to skip that
     step after resolving accelerate itself without -c. The repair covers that path."""
 
-    def _repair(self, installed, *, is_windows = True):
+    def _repair(
+        self,
+        installed,
+        *,
+        is_windows = True,
+    ):
         with (
             patch.object(stack_mod, "IS_WINDOWS", is_windows),
             patch.object(stack_mod, "_installed_version", return_value = installed),
@@ -5194,8 +5206,14 @@ class TestAccelerateRepair:
 
     @pytest.mark.parametrize(
         "raw, expected",
-        [("1.15.0", (1, 15)), ("1.15", (1, 15)), ("1.15.0.dev0", (1, 15)),
-         ("1.14.0", (1, 14)), ("1.9.0", (1, 9)), ("unknown", None)],
+        [
+            ("1.15.0", (1, 15)),
+            ("1.15", (1, 15)),
+            ("1.15.0.dev0", (1, 15)),
+            ("1.14.0", (1, 14)),
+            ("1.9.0", (1, 9)),
+            ("unknown", None),
+        ],
     )
     def test_version_parsing(self, raw, expected):
         with patch.object(stack_mod, "_installed_version", wraps = stack_mod._installed_version):
@@ -5204,10 +5222,14 @@ class TestAccelerateRepair:
 
     def test_constraints_file_caps_accelerate_on_win32_only(self):
         """The repair and the constraint must agree, or install and update disagree."""
-        text = (PACKAGE_ROOT / "studio" / "backend" / "requirements"
-                / "single-env" / "constraints.txt").read_text(encoding = "utf-8")
-        line = next(ln for ln in text.splitlines()
-                    if ln.strip().startswith("accelerate") and not ln.strip().startswith("#"))
+        text = (
+            PACKAGE_ROOT / "studio" / "backend" / "requirements" / "single-env" / "constraints.txt"
+        ).read_text(encoding = "utf-8")
+        line = next(
+            ln
+            for ln in text.splitlines()
+            if ln.strip().startswith("accelerate") and not ln.strip().startswith("#")
+        )
         assert line.strip() == 'accelerate<1.15.0; sys_platform == "win32"'
 
 
