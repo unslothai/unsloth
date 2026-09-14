@@ -262,7 +262,10 @@ export function ExecutionsView({
     if (typeof selectedExecution.analysis?.num_records === "number") {
       return selectedExecution.analysis.num_records;
     }
-    if (selectedExecution.datasetTotal > 0) {
+    if (
+      typeof selectedExecution.datasetTotal === "number" &&
+      selectedExecution.datasetTotal > 0
+    ) {
       return selectedExecution.datasetTotal;
     }
     if (selectedExecution.dataset.length > 0) {

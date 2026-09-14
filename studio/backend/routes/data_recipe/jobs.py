@@ -33,10 +33,10 @@ from pydantic import ValidationError
 from core.data_recipe.export import (
     ExportFormat,
     RecipeDatasetExportError,
-    _safe_filename_stem,
-    _write_jsonl_rows,
     build_dataset_download,
     download_filename,
+    safe_filename_stem,
+    write_jsonl_rows,
 )
 from core.data_recipe.huggingface import (
     RecipeDatasetPublishError,
@@ -641,7 +641,7 @@ def _build_in_memory_job_dataset_download(
                     total = int(total_value) if isinstance(total_value, int) else len(rows)
                 if not rows:
                     break
-                _write_jsonl_rows(handle, rows)
+                write_jsonl_rows(handle, rows)
                 offset += len(rows)
                 if offset >= total:
                     break
@@ -650,7 +650,7 @@ def _build_in_memory_job_dataset_download(
     except BaseException:
         jsonl_path.unlink(missing_ok = True)
         raise
-    stem = _safe_filename_stem(filename_stem.strip() or job_id)
+    stem = safe_filename_stem(filename_stem.strip() or job_id)
     return jsonl_path, "application/x-ndjson", f"{stem}.jsonl"
 
 
@@ -692,7 +692,7 @@ def create_job_dataset_download_url(
             detail = "Dataset download links can only be created from the Unsloth UI or with an API key.",
         )
     resolved = _resolve_download_artifact_path(job_id = job_id, artifact_path = artifact_path)
-    stem = _safe_filename_stem(
+    stem = safe_filename_stem(
         filename.strip() if isinstance(filename, str) and filename.strip() else job_id
     )
     if resolved:

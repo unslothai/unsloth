@@ -105,9 +105,7 @@ def test_build_dataset_download_preserves_row_order_within_shard(tmp_path: Path,
 
 
 def test_build_dataset_download_exports_every_row_once_across_shards(tmp_path: Path, monkeypatch):
-    """Paging re-derived the row order per page and DuckDB's parallel scan does not repeat it, so
-    the pages overlapped and gapped: 120k rows came out as 72k distinct ones."""
-    pytest.importorskip("duckdb")
+    """Sorted shards and row-group iteration must emit every artifact row exactly once."""
     pytest.importorskip("pyarrow")
     pytest.importorskip("pandas")
     import pandas as pd
@@ -510,9 +508,7 @@ def _write_appledouble_companion(path: Path) -> None:
 
 
 def test_build_dataset_download_ignores_appledouble_companions(tmp_path: Path, monkeypatch):
-    """DuckDB cannot parse a ._batch.parquet companion, so keeping it in the shard list dropped the
-    export to the slowest fallback and put an unreadable file in the archive."""
-    pytest.importorskip("duckdb")
+    """AppleDouble companions are neither readable shards nor downloadable image files."""
     dataset_path = tmp_path / "recipe-datasets" / "job-macos"
     parquet_dir = dataset_path / "parquet-files"
     _write_parquet_rows(parquet_dir, [{"i": 0}, {"i": 1}])
@@ -527,10 +523,10 @@ def test_build_dataset_download_ignores_appledouble_companions(tmp_path: Path, m
         lambda artifact_path: dataset_path,
     )
 
-    from core.data_recipe.export import _stream_jsonl_from_parquet_with_duckdb
+    from core.data_recipe.export import _write_jsonl_from_parquet
 
     streamed = tmp_path / "streamed.jsonl"
-    assert _stream_jsonl_from_parquet_with_duckdb(
+    _write_jsonl_from_parquet(
         parquet_dir = parquet_dir,
         destination = streamed,
     )
@@ -574,35 +570,29 @@ def test_build_dataset_download_keeps_a_real_file_named_like_a_companion(
         file_path.unlink(missing_ok = True)
 
 
-def test_both_readers_export_a_decimal_column_as_the_same_number(tmp_path: Path, monkeypatch):
-    """The same artifact exported as 1.2 or as "1.20" depending on which reader was available."""
-    pytest.importorskip("duckdb")
+def test_jsonl_reader_preserves_a_high_precision_decimal_number(tmp_path: Path, monkeypatch):
+    """A durable JSONL export must not round a parquet decimal through binary float."""
     pyarrow = pytest.importorskip("pyarrow")
     import pyarrow.parquet as pyarrow_parquet
     from decimal import Decimal
 
-    from core.data_recipe.export import (
-        _stream_jsonl_from_parquet_with_duckdb,
-        _write_jsonl_with_pyarrow,
-    )
+    from core.data_recipe.export import _write_jsonl_from_parquet
 
     parquet_dir = tmp_path / "parquet-files"
     parquet_dir.mkdir(parents = True)
+    expected = Decimal("0.1234567890123456789012345678")
     pyarrow_parquet.write_table(
-        pyarrow.table({"price": pyarrow.array([Decimal("1.20")], type = pyarrow.decimal128(10, 2))}),
+        pyarrow.table({"price": pyarrow.array([expected], type = pyarrow.decimal128(28, 28))}),
         parquet_dir / "batch_00000.parquet",
     )
 
     streamed = tmp_path / "streamed.jsonl"
-    assert _stream_jsonl_from_parquet_with_duckdb(
+    _write_jsonl_from_parquet(
         parquet_dir = parquet_dir,
         destination = streamed,
     )
-    from_pyarrow = tmp_path / "pyarrow.jsonl"
-    assert _write_jsonl_with_pyarrow(parquet_dir, from_pyarrow)
 
-    assert json.loads(streamed.read_text().strip()) == {"price": 1.2}
-    assert json.loads(from_pyarrow.read_text().strip()) == {"price": 1.2}
+    assert json.loads(streamed.read_text().strip(), parse_float = Decimal) == {"price": expected}
 
 
 def test_to_jsonable_maps_pandas_missing_sentinels_to_none():
@@ -617,7 +607,6 @@ def test_to_jsonable_maps_pandas_missing_sentinels_to_none():
 
 
 def test_build_dataset_download_writes_a_missing_timestamp_as_null(tmp_path: Path, monkeypatch):
-    pytest.importorskip("duckdb")
     pytest.importorskip("pyarrow")
     pd = pytest.importorskip("pandas")
 
@@ -712,26 +701,12 @@ def test_jsonl_export_stays_a_plain_file_without_images(tmp_path: Path, monkeypa
         file_path.unlink(missing_ok = True)
 
 
-def test_pandas_fallback_exports_a_schema_duckdb_will_not_take(tmp_path: Path):
-    """DuckDB refuses a dataset carrying its own `filename`, since read_parquet wants that name."""
-    pytest.importorskip("duckdb")
-    from core.data_recipe.export import (
-        _stream_jsonl_from_parquet_with_duckdb,
-        _write_jsonl_from_parquet,
-    )
+def test_jsonl_reader_preserves_columns_named_like_old_reader_helpers(tmp_path: Path):
+    from core.data_recipe.export import _write_jsonl_from_parquet
 
     parquet_dir = tmp_path / "parquet-files"
     _write_parquet_rows(parquet_dir, [{"filename": "a.png", "text": "x"}])
 
-    # Decided from the schema, not from DuckDB raising: it refuses the option today, but if it
-    # ever disambiguated instead, EXCLUDE would drop the user's column and keep the virtual one.
-    from core.data_recipe.export import _parquet_files, _schema_uses_duckdb_helper_names
-
-    assert _schema_uses_duckdb_helper_names(_parquet_files(parquet_dir))
-    assert not _stream_jsonl_from_parquet_with_duckdb(
-        parquet_dir = parquet_dir,
-        destination = tmp_path / "unused.jsonl",
-    )
     destination = tmp_path / "out.jsonl"
     _write_jsonl_from_parquet(parquet_dir, destination)
     assert json.loads(destination.read_text().strip()) == {"filename": "a.png", "text": "x"}
@@ -779,13 +754,13 @@ def test_download_link_outlasts_the_native_save_dialog():
     assert jobs_route._DOWNLOAD_LINK_TTL >= 15 * 60
 
 
-def test_pyarrow_fallback_streams_a_merged_shard_by_row_group(tmp_path: Path):
+def test_jsonl_reader_streams_a_merged_shard_by_row_group(tmp_path: Path):
     """merge_batches collapses a whole run into one file, so a shard is not a safe unit to read."""
     pytest.importorskip("pandas")
     pyarrow_parquet = pytest.importorskip("pyarrow.parquet")
     import pandas as pd
 
-    from core.data_recipe.export import _JSONL_EXPORT_BATCH_ROWS, _write_jsonl_with_pyarrow
+    from core.data_recipe.export import _JSONL_EXPORT_BATCH_ROWS, _write_jsonl_from_parquet
 
     parquet_dir = tmp_path / "parquet-files"
     parquet_dir.mkdir(parents = True)
@@ -798,25 +773,18 @@ def test_pyarrow_fallback_streams_a_merged_shard_by_row_group(tmp_path: Path):
     assert pyarrow_parquet.ParquetFile(parquet_dir / "batch_00000.parquet").num_row_groups > 1
 
     destination = tmp_path / "out.jsonl"
-    assert _write_jsonl_with_pyarrow(parquet_dir, destination)
+    _write_jsonl_from_parquet(parquet_dir, destination)
     exported = [json.loads(line)["i"] for line in destination.read_text().splitlines()]
     assert exported == list(range(rows))
 
 
-def test_both_readers_produce_the_same_bytes_for_the_same_artifact(tmp_path: Path):
-    """DuckDB and the fallback must not disagree about an artifact, whichever one happens to run.
-    Reading DuckDB through a DataFrame made them: an int column holding nulls came back as floats
-    and a DATE as midnight."""
-    pytest.importorskip("duckdb")
+def test_jsonl_reader_preserves_arrow_value_types(tmp_path: Path):
     pyarrow = pytest.importorskip("pyarrow")
     import pyarrow.parquet as pyarrow_parquet
     from datetime import date, datetime
     from decimal import Decimal
 
-    from core.data_recipe.export import (
-        _stream_jsonl_from_parquet_with_duckdb,
-        _write_jsonl_with_pyarrow,
-    )
+    from core.data_recipe.export import _write_jsonl_from_parquet
 
     parquet_dir = tmp_path / "parquet-files"
     parquet_dir.mkdir(parents = True)
@@ -833,31 +801,68 @@ def test_both_readers_produce_the_same_bytes_for_the_same_artifact(tmp_path: Pat
         parquet_dir / "batch_00000.parquet",
     )
 
-    from_duckdb = tmp_path / "duckdb.jsonl"
-    from_pyarrow = tmp_path / "pyarrow.jsonl"
-    assert _stream_jsonl_from_parquet_with_duckdb(
+    destination = tmp_path / "out.jsonl"
+    _write_jsonl_from_parquet(
         parquet_dir = parquet_dir,
-        destination = from_duckdb,
+        destination = destination,
     )
-    assert _write_jsonl_with_pyarrow(parquet_dir, from_pyarrow)
 
-    assert from_duckdb.read_bytes() == from_pyarrow.read_bytes()
-    first = json.loads(from_duckdb.read_text().splitlines()[0])
+    first = json.loads(destination.read_text().splitlines()[0])
     assert first["i64"] == 1
     assert first["day"] == "2020-01-01"
     assert first["price"] == 1.2
+
+
+def test_jsonl_reader_preserves_hugging_face_image_struct_bytes(tmp_path: Path):
+    """Image(decode=False) rows keep their reversible Arrow bytes/path representation."""
+    pyarrow = pytest.importorskip("pyarrow")
+    import base64
+    import io
+    import pyarrow.parquet as pyarrow_parquet
+    from PIL import Image
+
+    from core.data_recipe.export import _write_jsonl_from_parquet
+
+    buffer = io.BytesIO()
+    Image.new("RGBA", (2, 2), (10, 20, 30, 40)).save(buffer, format = "PNG")
+    original = buffer.getvalue()
+    image_type = pyarrow.struct([("bytes", pyarrow.binary()), ("path", pyarrow.string())])
+    parquet_dir = tmp_path / "parquet-files"
+    parquet_dir.mkdir(parents = True)
+    pyarrow_parquet.write_table(
+        pyarrow.table(
+            {
+                "image": pyarrow.array(
+                    [{"bytes": original, "path": "images/source.png"}],
+                    type = image_type,
+                ),
+                "label": pyarrow.array(["keep-me"]),
+            }
+        ),
+        parquet_dir / "batch_00000.parquet",
+    )
+
+    destination = tmp_path / "out.jsonl"
+    _write_jsonl_from_parquet(
+        parquet_dir = parquet_dir,
+        destination = destination,
+    )
+
+    row = json.loads(destination.read_text().strip())
+    assert row["label"] == "keep-me"
+    assert row["image"]["path"] == "images/source.png"
+    assert base64.b64decode(row["image"]["bytes"]) == original
 
 
 def test_a_row_is_not_mistaken_for_an_image(tmp_path: Path):
     """to_preview_jsonable's Hugging Face image detection matches any mapping carrying `bytes` or
     `path`, and a row is one. Passing whole rows in replaced every column, labels included, with a
     single JPEG preview payload."""
-    pytest.importorskip("duckdb")
     pyarrow = pytest.importorskip("pyarrow")
     import pyarrow.parquet as pyarrow_parquet
     from PIL import Image
 
-    from core.data_recipe.export import _stream_jsonl_from_parquet_with_duckdb
+    from core.data_recipe.export import _write_jsonl_from_parquet
 
     picture = tmp_path / "pic.png"
     Image.new("RGB", (8, 8), (255, 0, 0)).save(picture)
@@ -871,7 +876,7 @@ def test_a_row_is_not_mistaken_for_an_image(tmp_path: Path):
         pyarrow_parquet.write_table(pyarrow.table(columns), parquet_dir / "batch_00000.parquet")
 
         destination = tmp_path / "out.jsonl"
-        assert _stream_jsonl_from_parquet_with_duckdb(
+        _write_jsonl_from_parquet(
             parquet_dir = parquet_dir,
             destination = destination,
         )

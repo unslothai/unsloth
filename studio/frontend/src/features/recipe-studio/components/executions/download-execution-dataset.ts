@@ -9,6 +9,7 @@ import {
 } from "@/lib/native-files";
 import { downloadRecipeJobDataset } from "../../api";
 import type { RecipeExecutionRecord } from "../../execution-types";
+import { hasCompleteLocalDataset } from "../../executions/execution-helpers";
 
 /** Whether the bytes are known to have landed: a browser anchor click resolves before the request
  * is even sent, while the native downloader streams and rejects a non-2xx. "partial" is the rows
@@ -29,15 +30,6 @@ function buildDownloadFilename(execution: RecipeExecutionRecord): string {
     return sanitizeFilenameStem(runName);
   }
   return sanitizeFilenameStem(execution.id);
-}
-
-/** Whether the rows held on the client are known to be the whole dataset rather than one page.
- * A record written before the tracker recorded the produced count carries the REQUESTED count, so
- * a complete preview that produced fewer rows than asked reads as partial here. It is reported
- * rather than refused: refusing made those runs impossible to download at all. */
-function hasCompleteLocalDataset(execution: RecipeExecutionRecord): boolean {
-  const total = execution.datasetTotal;
-  return typeof total !== "number" || execution.dataset.length >= total;
 }
 
 function triggerClientJsonlDownload(

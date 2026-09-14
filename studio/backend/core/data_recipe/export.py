@@ -5,10 +5,12 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import math
 import tempfile
 import zipfile
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 
@@ -16,27 +18,20 @@ from core.data_recipe.huggingface import (
     RecipeDatasetPublishError,
     _resolve_recipe_artifact_path,
 )
-from core.data_recipe.jsonable import to_jsonable, to_preview_jsonable_row
+from core.data_recipe.jsonable import to_jsonable
 from utils.paths.path_utils import drop_appledouble_metadata
 
 ExportFormat = Literal["jsonl", "parquet"]
 
 _JSONL_EXPORT_BATCH_ROWS = 8192
-# file_row_number, not row_number() OVER (PARTITION BY filename): a window with no ORDER BY is
-# undefined in DuckDB, and its parallel scan renumbered every query.
-# The virtual columns the ORDER BY below needs. A dataset carrying either name of its own cannot
-# be read this way: today DuckDB refuses the option outright, but were it ever to disambiguate
-# instead, the EXCLUDE would drop the user's column and keep the virtual one.
-_DUCKDB_HELPER_COLUMNS = ("filename", "file_row_number")
-_PARQUET_EXPORT_SQL = (
-    "SELECT * EXCLUDE (filename, file_row_number) "
-    "FROM read_parquet(?, filename=true, file_row_number=true) "
-    "ORDER BY filename, file_row_number"
-)
 
 
 class RecipeDatasetExportError(ValueError):
     """Raised when a recipe dataset cannot be exported."""
+
+
+class _JsonNumber(str):
+    """A validated JSON number that must be emitted without string quotes."""
 
 
 def _parquet_dir(dataset_path: Path) -> Path:
@@ -57,130 +52,70 @@ def _parquet_files(parquet_dir: Path) -> list[Path]:
 def _sanitize_json_value(value: Any) -> Any:
     if isinstance(value, float):
         return None if not math.isfinite(value) else value
+    if isinstance(value, Decimal):
+        return None if not value.is_finite() else _JsonNumber(str(value))
+    if isinstance(value, (bytes, bytearray)):
+        return base64.b64encode(bytes(value)).decode("ascii")
+    if isinstance(value, dict):
+        return {str(key): _sanitize_json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_sanitize_json_value(item) for item in value]
     converted = to_jsonable(value)
+    if converted is not value:
+        return _sanitize_json_value(converted)
     if isinstance(converted, float):
         return None if not math.isfinite(converted) else converted
     if converted is None or isinstance(converted, (str, int, bool)):
         return converted
-    if isinstance(converted, dict):
-        return {str(key): _sanitize_json_value(item) for key, item in converted.items()}
-    if isinstance(converted, (list, tuple, set)):
-        return [_sanitize_json_value(item) for item in converted]
-    return converted
+    return str(converted)
+
+
+def _json_dumps_value(value: Any) -> str:
+    if isinstance(value, _JsonNumber):
+        return str(value)
+    if isinstance(value, dict):
+        return "{" + ", ".join(
+            f"{json.dumps(str(key), ensure_ascii = False)}: {_json_dumps_value(item)}"
+            for key, item in value.items()
+        ) + "}"
+    if isinstance(value, list):
+        return "[" + ", ".join(_json_dumps_value(item) for item in value) + "]"
+    return json.dumps(value, ensure_ascii = False, allow_nan = False)
 
 
 def _json_dumps_row(row: dict[str, Any]) -> str:
-    return json.dumps(
-        _sanitize_json_value(row),
-        ensure_ascii = False,
-        allow_nan = False,
-    )
+    return _json_dumps_value(_sanitize_json_value(row))
 
 
-def _write_jsonl_rows(handle, rows: list[dict[str, Any]]) -> None:
+def write_jsonl_rows(handle, rows: list[dict[str, Any]]) -> None:
+    """Write JSONL rows with the same durable value encoding used for parquet artifacts."""
     for row in rows:
         handle.write(_json_dumps_row(row))
         handle.write("\n")
 
 
-def _schema_uses_duckdb_helper_names(parquet_files: list[Path]) -> bool:
+def _write_jsonl_from_parquet(parquet_dir: Path, destination: Path) -> None:
+    """Stream sorted parquet shards through the one supported JSONL reader."""
     try:
         import pyarrow.parquet as pyarrow_parquet  # type: ignore
-    except Exception:
-        return False
-    try:
-        return any(
-            name in _DUCKDB_HELPER_COLUMNS
-            for path in parquet_files
-            for name in pyarrow_parquet.ParquetFile(path).schema_arrow.names
-        )
-    except Exception:
-        return True
-
-
-def _stream_jsonl_from_parquet_with_duckdb(*, parquet_dir: Path, destination: Path) -> bool:
-    try:
-        import duckdb  # type: ignore
-    except Exception:
-        return False
+    except ImportError as exc:
+        raise RecipeDatasetExportError("PyArrow is required to export recipe datasets.") from exc
 
     parquet_files = _parquet_files(parquet_dir)
-    if _schema_uses_duckdb_helper_names(parquet_files):
-        return False
-
-    try:
-        conn = duckdb.connect(":memory:")
-    except Exception:
-        return False
-    try:
-        # One cursor for the whole export: the single ORDER BY is what keeps every row exactly
-        # once. A shard list, not a glob DuckDB would re-expand over the companions.
-        conn.execute(
-            _PARQUET_EXPORT_SQL,
-            [[str(path.resolve()) for path in parquet_files]],
-        )
-        # Arrow rather than a DataFrame, so this reads the same values the fallback below does: a
-        # pandas round trip turns an int column holding nulls into floats and a DATE into midnight.
-        reader = conn.to_arrow_reader(_JSONL_EXPORT_BATCH_ROWS)
-        with destination.open("w", encoding = "utf-8") as handle:
-            for batch in reader:
-                _write_jsonl_rows(handle, to_preview_jsonable_row(batch.to_pylist()))
-    except Exception:
-        return False
-    finally:
-        conn.close()
-    return True
-
-
-def _write_jsonl_with_pyarrow(parquet_dir: Path, destination: Path) -> bool:
-    """Row group at a time, for a dataset DuckDB will not take. Not shard at a time:
-    ``merge_batches`` collapses a whole run into one file. Declines rather than half-write."""
-    try:
-        import pyarrow.parquet as pyarrow_parquet  # type: ignore
-    except Exception:
-        return False
-
-    parquet_files = _parquet_files(parquet_dir)
-    if not parquet_files:
-        return False
-
     try:
         with destination.open("w", encoding = "utf-8") as handle:
             for path in parquet_files:
                 parquet_file = pyarrow_parquet.ParquetFile(path)
                 for batch in parquet_file.iter_batches(batch_size = _JSONL_EXPORT_BATCH_ROWS):
-                    _write_jsonl_rows(
+                    write_jsonl_rows(
                         handle,
-                        to_preview_jsonable_row(batch.to_pylist()),
+                        batch.to_pylist(),
                     )
-    except Exception:
-        return False
-    return True
+    except Exception as exc:
+        raise RecipeDatasetExportError(f"Could not export recipe parquet data: {exc}") from exc
 
 
-def _read_all_rows_with_data_designer(parquet_dir: Path) -> list[dict[str, Any]]:
-    from data_designer.config.utils.io_helpers import read_parquet_dataset
-
-    dataframe = read_parquet_dataset(parquet_dir)
-    rows = dataframe.to_dict(orient = "records")
-    return to_preview_jsonable_row(rows)
-
-
-def _write_jsonl_from_parquet(parquet_dir: Path, destination: Path) -> None:
-    # Only the last of these materializes the dataset; the first two stream.
-    if _stream_jsonl_from_parquet_with_duckdb(
-        parquet_dir = parquet_dir,
-        destination = destination,
-    ):
-        return
-    if _write_jsonl_with_pyarrow(parquet_dir, destination):
-        return
-
-    with destination.open("w", encoding = "utf-8") as handle:
-        _write_jsonl_rows(handle, _read_all_rows_with_data_designer(parquet_dir))
-
-
-def _safe_filename_stem(value: str) -> str:
+def safe_filename_stem(value: str) -> str:
     cleaned = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value.strip())
     cleaned = cleaned.strip("-_")
     return cleaned or "recipe-dataset"
@@ -236,7 +171,7 @@ def build_dataset_download(
     except RecipeDatasetPublishError as exc:
         raise RecipeDatasetExportError(str(exc)) from exc
 
-    stem = _safe_filename_stem(filename_stem)
+    stem = safe_filename_stem(filename_stem)
     parquet_dir = _parquet_dir(dataset_path)
 
     if export_format == "parquet":
