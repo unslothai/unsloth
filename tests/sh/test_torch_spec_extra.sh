@@ -147,12 +147,21 @@ run_probe_block() {
         . "$1/block.sh"' _ "$_tmp" 2>&1
     rm -rf "$_tmp"
 }
+# The stubs speak the production probe's sentinel, not a bare boolean: the block now
+# filters stdout to UNSLOTH_CUDA_OK= lines so a sitecustomize banner cannot be read as the
+# answer, and a stub that prints "True" is filtered out exactly as that banner would be.
 assert_contains "usable GPU is confirmed, not silent" \
-    "$(run_probe_block 'echo True')" "torch reports the GPU is usable"
+    "$(run_probe_block 'echo UNSLOTH_CUDA_OK=True')" "torch reports the GPU is usable"
+# Why the sentinel exists at all: a venv carrying a sitecustomize or an import hook prints
+# before torch does. Reading all of stdout gave "BANNER\nTrue", the equality against True
+# failed, and a working GPU was reported as landing on CPU.
+assert_contains "a startup banner does not hide the answer" \
+    "$(run_probe_block 'echo "sitecustomize: hello"; echo UNSLOTH_CUDA_OK=True')" \
+    "torch reports the GPU is usable"
 assert_contains "CPU landing warns" \
-    "$(run_probe_block 'echo False')" "torch.cuda.is_available() is False"
+    "$(run_probe_block 'echo UNSLOTH_CUDA_OK=False')" "torch.cuda.is_available() is False"
 assert_contains "CPU landing asks for a report" \
-    "$(run_probe_block 'echo False')" "Please report the result"
+    "$(run_probe_block 'echo UNSLOTH_CUDA_OK=False')" "Please report the result"
 # A torch that cannot import at all prints nothing; the message must still be readable.
 assert_contains "unimportable torch is labelled" \
     "$(run_probe_block 'exit 1')" "torch did not import"
@@ -161,7 +170,7 @@ assert_eq "no extra: block is inert" "" \
     "$(bash -c '
         set -euo pipefail
         substep() { printf "  %s\n" "$1"; }
-        _run_bounded() { echo False; }
+        _run_bounded() { echo UNSLOTH_CUDA_OK=False; }
         SKIP_TORCH=false; _VENV_PY=/nonexistent; _TORCH_EXTRA=""
         '"$(awk '/^# An extras pin lands on a leaf/{p=1} p{print} p&&/^fi$/{exit}' "$INSTALL_SH")"'
     ' 2>&1)"
