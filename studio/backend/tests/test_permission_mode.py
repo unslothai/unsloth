@@ -3812,7 +3812,9 @@ def test_credentials_inside_a_silent_root_still_ask():
     for root in hf_roots:
         assert path_gate._path_needs_approval(os.path.join(root, "token")) is True
         assert path_gate._path_needs_approval(os.path.join(root, "stored_tokens")) is True
-        assert path_gate._path_needs_approval(os.path.join(root, "hub", "m", "config.json")) is False
+        assert (
+            path_gate._path_needs_approval(os.path.join(root, "hub", "m", "config.json")) is False
+        )
     for path in ("/etc/gshadow", "/etc/krb5.keytab", "/etc/security/opasswd"):
         assert path_gate._path_needs_approval(path) is True, path
 

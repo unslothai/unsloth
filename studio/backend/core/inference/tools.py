@@ -2797,82 +2797,6 @@ def _posix_join(parts) -> str:
     return out
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def _expand_shell_assignments(command: str) -> str:
     """Best-effort substitution of `NAME=value ... $NAME`, so a sensitive path split across an
     assignment and an argument (p=/etc; cat $p/passwd) is still visible to the scan. Also applies
@@ -3032,8 +2956,6 @@ def _mode_arg_writes(mode_node) -> bool:
 def _has_kwarg_splat(node) -> bool:
     """True if the call has a ``**kwargs`` splat, which can hide a write mode."""
     return any(kw.arg is None for kw in node.keywords or [])
-
-
 
 
 def _builtin_open_writes(node) -> bool:
@@ -15744,4 +15666,3 @@ _path_gate._bind(globals())
 _PATH_FLAG_SPECS = _path_gate._PATH_FLAG_SPECS
 _python_reaches_outside_sandbox = _path_gate._python_reaches_outside_sandbox
 _terminal_reaches_outside_sandbox = _path_gate._terminal_reaches_outside_sandbox
-
