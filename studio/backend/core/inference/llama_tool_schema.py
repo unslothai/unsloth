@@ -38,6 +38,20 @@ class _RelaxedUnion(dict):
     original: Any = None
 
 
+_OBJECT_ONLY = (
+    "additionalProperties",
+    "dependentRequired",
+    "dependentSchemas",
+    "maxProperties",
+    "minProperties",
+    "patternProperties",
+    "properties",
+    "propertyNames",
+    "required",
+    "unevaluatedProperties",
+)
+
+
 def _wrap(schema: dict) -> _RelaxedUnion:
     if "$ref" in schema or "anyOf" in schema or "oneOf" in schema:
         # Templates read annotations off the node itself; the grammar ignores them next to anyOf.
@@ -45,9 +59,17 @@ def _wrap(schema: dict) -> _RelaxedUnion:
         wrapped = _RelaxedUnion({**notes, "anyOf": [dict(_PERMISSIVE_OBJECT), schema]})
     else:
         # Chat templates read the node's own type/properties/required; llama.cpp's grammar takes
-        # anyOf before them, so both stay and a type list keeps its other types as branches.
+        # anyOf before them, so both stay. A type list keeps each other type with its own constraints,
+        # as llama.cpp expands it.
         kind = schema.get("type")
-        others = [{"type": t} for t in kind if t != "object"] if isinstance(kind, list) else []
+        scalar = {
+            key: value
+            for key, value in schema.items()
+            if key not in _OBJECT_ONLY and key not in _ANNOTATIONS
+        }
+        others = (
+            [{**scalar, "type": t} for t in kind if t != "object"] if isinstance(kind, list) else []
+        )
         wrapped = _RelaxedUnion({**schema, "anyOf": [dict(_PERMISSIVE_OBJECT), *others]})
     wrapped.original = schema
     return wrapped

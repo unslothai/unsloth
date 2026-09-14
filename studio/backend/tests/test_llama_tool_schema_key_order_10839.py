@@ -82,7 +82,14 @@ def _relaxed(original):
         }
         return {**notes, "anyOf": [_PERMISSIVE_OBJECT, original]}
     kind = original.get("type")
-    others = [{"type": t} for t in kind if t != "object"] if isinstance(kind, list) else []
+    scalar = {
+        key: value
+        for key, value in original.items()
+        if key not in ("properties", "required", "additionalProperties", "description", "title")
+    }
+    others = (
+        [{**scalar, "type": t} for t in kind if t != "object"] if isinstance(kind, list) else []
+    )
     return {**original, "anyOf": [_PERMISSIVE_OBJECT, *others]}
 
 
@@ -112,6 +119,23 @@ def test_wrapper_keeps_the_fields_chat_templates_read():
         "description": "Pagination for the next page",
         "anyOf": [{"type": "object", "additionalProperties": True}, _DESCRIBED_REF],
     }
+
+
+def test_type_list_alternatives_keep_their_own_constraints():
+    target = {
+        "type": ["object", "string", "null"],
+        "description": "A cursor or a query object",
+        "pattern": "^s:[a-z0-9_]+$",
+        "minLength": 3,
+        "properties": {"a": {"type": "string"}, "b": {"type": "string"}},
+    }
+    parameters = {"type": "object", "properties": {"target": copy.deepcopy(target)}}
+
+    assert relax_nested_object_key_order(parameters)["properties"]["target"]["anyOf"] == [
+        {"type": "object", "additionalProperties": True},
+        {"type": "string", "pattern": "^s:[a-z0-9_]+$", "minLength": 3},
+        {"type": "null", "pattern": "^s:[a-z0-9_]+$", "minLength": 3},
+    ]
 
 
 @pytest.mark.parametrize("template", ["gemma-4.jinja", "gemma-4-edge.jinja"])
