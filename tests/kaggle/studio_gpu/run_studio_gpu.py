@@ -1282,15 +1282,30 @@ class Payload:
                 {
                     "model": self.args.chat_model,
                     "messages": [{"role": "user", "content": "Say OK."}],
-                    "max_tokens": 16,
+                    # Generous on purpose. A reasoning model spends its budget on
+                    # the thinking block first, so a tight cap comes back with an
+                    # empty `content` and finish_reason "length" -- a server that
+                    # decoded perfectly well, scored as a failure. Measured on
+                    # unsloth-t4-ci-d15ea193 with Qwen3-0.6B at max_tokens 16.
+                    "max_tokens": 256,
                     "stream": False,
                 },
                 timeout = self.args.chat_timeout,
             )
-            text = ((completion.get("choices") or [{}])[0].get("message") or {}).get("content")
-            detail["completion_chars"] = len(text or "")
-            if not (text or "").strip():
-                failures.append("the split server returned an empty completion")
+            choice = (completion.get("choices") or [{}])[0]
+            message = choice.get("message") or {}
+            # Either channel counts as decoding: `reasoning_content` is where a
+            # thinking model's tokens land, and tokens are tokens.
+            text = (message.get("content") or "") + (message.get("reasoning_content") or "")
+            usage = completion.get("usage") or {}
+            detail["completion_chars"] = len(text)
+            detail["completion_tokens"] = usage.get("completion_tokens")
+            detail["finish_reason"] = choice.get("finish_reason")
+            if not text.strip() and not usage.get("completion_tokens"):
+                failures.append(
+                    f"the split server decoded nothing: finish_reason="
+                    f"{choice.get('finish_reason')!r}, usage={usage}"
+                )
         except StudioError as exc:
             failures.append(f"the split server could not serve a completion: {exc}"[:600])
 
