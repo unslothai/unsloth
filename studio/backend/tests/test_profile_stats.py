@@ -278,7 +278,11 @@ def test_terminal_callback_returns_promptly_while_locked_db_eventually_persists(
         started = time.perf_counter()
         monitor.finish(entry_id)
         elapsed = time.perf_counter() - started
-        assert elapsed < 0.2
+        # The row count below is the sharp claim; this only rules out queueing on the lock.
+        # A second is already three orders of magnitude past a put_nowait, and this file is
+        # in the serial leg of studio-backend-ci.yml rather than under `-n 4`, so there is no
+        # contention to buy slack for: a looser bound just lets a stalling callback through.
+        assert elapsed < 1.0, f"finish() blocked on the locked database: {elapsed:.3f}s"
         assert (
             lock_conn.execute(
                 "SELECT COUNT(*) FROM api_usage_events WHERE id = ?", (entry_id,)
@@ -393,11 +397,24 @@ def test_writer_busy_shutdown_is_bounded_then_drains_after_unlock(monkeypatch, c
     assert writer.submit(receipt)
     assert entered.wait(timeout = 1)
 
+    # What stop() hands its join, not how long the box took to get back: a wall-clock
+    # budget loose enough to survive `-n 4` is also loose enough to pass a stop() that
+    # waited whole seconds, which is the regression named here.
+    joins: list[float | None] = []
+    joining = writer._thread.join
+
+    def record_join(timeout = None):
+        joins.append(timeout)
+        return joining(timeout = timeout)
+
+    monkeypatch.setattr(writer._thread, "join", record_join)
+
     try:
         started = time.perf_counter()
         assert writer.stop(timeout = 0.03) is False
         elapsed = time.perf_counter() - started
-        assert elapsed < 0.2
+        assert joins == [0.03], f"stop() did not wait for exactly its own timeout: {joins}"
+        assert elapsed < 1.0, f"stop() ignored its 0.03s timeout: {elapsed:.3f}s"
         assert not writer.submit(_api_receipt("rejected-after-stop", datetime.now(timezone.utc)))
         assert writer._thread.is_alive()
         assert "may be lost if the process exits" in caplog.text

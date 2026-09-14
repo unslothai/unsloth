@@ -42,6 +42,15 @@ _backend_root = Path(__file__).resolve().parent.parent
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 
+# tests/_shared, as tests/conftest.py does for its own trees. Module scope, not a fixture:
+# a test module imports from it at collection, before any fixture runs.
+for _up in Path(__file__).resolve().parents:
+    _repo_shared = _up / "tests" / "_shared"
+    if (_repo_shared / "growth.py").is_file():
+        if str(_repo_shared) not in sys.path:
+            sys.path.insert(0, str(_repo_shared))
+        break
+
 # Let the diffusion patch backend lazily import unsloth_zoo on a CPU-only test host: unsloth_zoo runs accelerator
 # detection at import and raises without a GPU unless this is set. setdefault so an explicit override wins.
 os.environ.setdefault("UNSLOTH_ALLOW_CPU", "1")
@@ -78,6 +87,32 @@ def _studio_home_root(tmp_path_factory):
 
 
 _studio_home_counter = itertools.count()
+
+
+@pytest.fixture(scope = "session")
+def _skills_home_root(tmp_path_factory):
+    # One mktemp per session; see _studio_home_root for why a per-test mktemp is quadratic.
+    return tmp_path_factory.mktemp("skills_homes")
+
+
+_skills_home_counter = itertools.count()
+
+
+@pytest.fixture(autouse = True)
+def _isolate_agent_skills(_skills_home_root, monkeypatch):
+    # A developer's own ~/.agents or ~/.claude skills must not leak into tool-selection tests.
+    from core.inference import skills as _skills
+
+    home = _skills_home_root / f"h{next(_skills_home_counter)}"
+    home.mkdir()
+    # Owner home under tmp, bundled root empty; managed-account roots stay for the account matrix.
+    monkeypatch.setattr(_skills, "_owner_home", lambda: home)
+    monkeypatch.setattr(_skills, "_BUNDLED_ROOT", ("bundled", home / "bundled-absent"))
+    try:
+        from routes import inference as _inference_routes
+    except Exception:
+        return
+    monkeypatch.setattr(_inference_routes, "_AGENT_SKILLS_CACHE", {})
 
 
 @pytest.fixture(autouse = True)
