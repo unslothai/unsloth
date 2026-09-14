@@ -3,11 +3,14 @@
 
 import pytest
 import torch
+from real_accelerator import has_real_accelerator
 
-pytestmark = pytest.mark.gpu
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(not has_real_accelerator(), reason = "CUDA Triton kernels required"),
+]
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA Triton kernels required")
 @pytest.mark.parametrize("layout", ["contiguous", "columns", "rows", "transposed", "expanded"])
 @pytest.mark.parametrize(
     "dtype", [torch.float32, torch.float16, torch.bfloat16], ids = ["float32", "float16", "bfloat16"]
@@ -57,7 +60,6 @@ def test_layernorm_backward_gradient_layout(layout, dtype, input_layout):
     torch.testing.assert_close(actual_inputs.grad, reference_inputs.grad, rtol = 2e-2, atol = 1e-2)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA Triton kernels required")
 @pytest.mark.parametrize("source_layout", ["columns", "rows", "transposed", "expanded"])
 def test_layernorm_gradient_reaches_a_live_strided_source(source_layout):
     # The matrix above detaches its views, so it never checks the scatter back to the source.
@@ -97,7 +99,6 @@ def test_layernorm_gradient_reaches_a_live_strided_source(source_layout):
     torch.testing.assert_close(actual_source.grad, reference_source.grad, rtol = 2e-2, atol = 1e-2)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA Triton kernels required")
 @pytest.mark.parametrize("layout", ["contiguous", "columns", "expanded"])
 @pytest.mark.parametrize(
     "dtype", [torch.float32, torch.float16, torch.bfloat16], ids = ["float32", "float16", "bfloat16"]
@@ -141,7 +142,6 @@ def test_layernorm_weight_and_bias_layout(layout, dtype):
     torch.testing.assert_close(actual_inputs.grad, reference_inputs.grad, rtol = 2e-2, atol = 1e-2)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA Triton kernels required")
 @pytest.mark.parametrize("layout", ["columns", "rows", "transposed", "expanded"])
 @pytest.mark.parametrize(
     "no_grad", [torch.no_grad, torch.inference_mode], ids = ["no_grad", "inference_mode"]
