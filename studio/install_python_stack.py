@@ -8965,6 +8965,8 @@ def install_python_stack() -> int:
             base_total += 1  # torch flavor invariant (step 13w), Windows
     if IS_MAC_ARM and not NO_TORCH:
         base_total += 1  # MLX stack, same gate as the step itself
+    if IS_MAC_ARM:
+        base_total += 1  # MLX grammar engine (step 11c), same gate as the step itself
     if NO_TORCH and not skip_base:
         # no-torch runtime deps, which this build announces on its own slot inside the core
         # step rather than folding into it. Same gate as the step itself.
@@ -9430,6 +9432,18 @@ def install_python_stack() -> int:
             "Installing the pinned Diffusers release",
             "--no-cache-dir",
             req = REQ_ROOT / "diffusers-pin.txt",
+        )
+
+    # 11c. Apple Silicon: the grammar engine the MLX chat paths decode response_format with.
+    #      Outside the skip_base branch, which install.sh always takes and which left a fresh
+    #      install refusing every json_schema request for a missing engine.
+    if IS_MAC_ARM:
+        _progress("MLX grammar engine")
+        pip_install(
+            "Installing the MLX grammar engine (llguidance)",
+            "--no-cache-dir",
+            "--upgrade",
+            "llguidance",
         )
 
     # 12. Patch metadata for single-env compatibility

@@ -2590,9 +2590,9 @@ def detect_think_prefill(
     unclosed block that swallows the answer; in that case return ``""`` and fall back to plain text.
 
     ``preserves_think_close`` says the stream keeps that closer anyway, as
-    ``NativeToolTokenDecoder`` does so the parser can see a call rehearsed inside the block. The
-    special-token list then says nothing, and skipping the opener is the same bug mirrored: a stray
-    ``</think>``.
+    ``NativeToolTokenDecoder`` does so the parser can see a call rehearsed inside the block, and as
+    a path streaming the detokenizer's own text does. The special-token list then says nothing, and
+    skipping the opener is the same bug mirrored: a stray ``</think>``.
     """
     if not prompt:
         return ""
