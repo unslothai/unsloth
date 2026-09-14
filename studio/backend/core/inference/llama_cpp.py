@@ -5979,10 +5979,18 @@ def _launch_required_ubatch(
             required = max(
                 required, _mmproj_required_ubatch(str(mmproj_path), n_embd_text, extra_args)
             )
-        elif extra_args_mmproj_auto(extra_args):
-            # --mmproj-auto leaves llama-server discovering an adjacent projector
-            # this process was never told about.
-            required = max(required, _unknown_projector_ubatch(extra_args))
+
+    if not vision_off and extra_args_mmproj_auto(extra_args):
+        # Forwarded unchanged, and llama-server runs its own adjacent-projector search,
+        # so this does not depend on discovery here having called the model vision: the
+        # two searches can disagree. The switch is still exempt, since the launch
+        # appends --no-mmproj-auto after the extras when it suppresses a projector.
+        required = max(
+            required,
+            _mmproj_required_ubatch(str(mmproj_path), n_embd_text, extra_args)
+            if mmproj_path
+            else _unknown_projector_ubatch(extra_args),
+        )
 
     return required
 

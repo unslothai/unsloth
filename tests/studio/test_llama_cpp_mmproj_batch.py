@@ -167,8 +167,21 @@ class TestLaunchNeedsBiggerUbatch:
             == _MMPROJ_UNKNOWN_UBATCH
         )
 
-    def test_mmproj_auto_on_a_text_only_model(self):
+    def test_mmproj_auto_does_not_trust_this_processs_classification(self, projector):
+        # llama-server runs its own adjacent-projector search and the two can disagree,
+        # so a model this discovery called text-only can still open one.
         got = _launch_required_ubatch(None, 3840, ["--mmproj-auto"], is_vision = False, env = {})
+        assert got == _MMPROJ_UNKNOWN_UBATCH
+        # With a projector to read, discovery finds that one: classify it rather than
+        # assume headroom.
+        got = _launch_required_ubatch(
+            projector("gemma4uv"), 3840, ["--mmproj-auto"], is_vision = False, env = {}
+        )
+        assert got == _GEMMA4
+
+    def test_the_vision_switch_still_exempts_mmproj_auto(self):
+        # The launch appends --no-mmproj-auto after the extras when it suppresses one.
+        got = _launch_required_ubatch(None, 3840, ["--mmproj-auto"], vision_off = True, env = {})
         assert got == 0
 
 
