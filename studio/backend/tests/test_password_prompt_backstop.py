@@ -482,59 +482,57 @@ def test_refusing_the_prompt_on_a_raw_bind_aborts(monkeypatch):
     )
 
 
-def test_an_older_prompt_modules_ambiguous_false_still_starts_a_raw_bind(monkeypatch):
-    """A torn tree must not turn the unattended fallback into a dead container.
+def test_a_false_from_any_prompt_version_fails_closed(monkeypatch):
+    """A torn tree cannot say whether False was Ctrl+C or the deadline.
 
-    An OLDER terminal_prompt.py returns False for the deadline as well as for
-    Ctrl+C, so reading False as a refusal would stop `docker run -dt`.
+    An OLDER terminal_prompt.py returns False for both, and elapsed time does not
+    separate them: the deadline bounds the FIRST key, so an operator who types,
+    retries validation and refuses after 30s looks exactly like a walk-away. So
+    False fails closed on every version, and a detached pty on a half-updated
+    tree stops starting rather than exposing the bootstrap password after a
+    refusal. The abort message names --password / UNSLOTH_STUDIO_PASSWORD for it.
     """
-    _patch_streams(monkeypatch, tty = True)
-    _patch_seeded_admin(monkeypatch, requires_change = True)
+    for tunnel, kwargs in ((False, _RAW_BIND_KWARGS), (True, _GATE_KWARGS)):
+        _patch_streams(monkeypatch, tty = True)
+        _patch_seeded_admin(monkeypatch, requires_change = True)
 
-    from auth import terminal_prompt
+        from auth import terminal_prompt
 
-    monkeypatch.delattr(terminal_prompt, "UNATTENDED_RETURNS_NONE", raising = False)
-    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
-    # The legacy module only returns False here after waiting the deadline out;
-    # a fake clock says so without spending the real 30s.
-    ticks = iter([0.0, float(run._UNATTENDED_PROMPT_SECONDS)])
-    monkeypatch.setattr(run.time, "monotonic", lambda: next(ticks))
+        monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
 
-    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (True, False)
+        assert run._terminal_password_gate(tunnel_will_start = tunnel, **kwargs) == (False, False)
 
 
-def test_an_older_prompt_modules_fast_false_is_a_refusal(monkeypatch):
-    """The other half: a legacy False that came back instantly is Ctrl+C.
+def test_the_banner_never_promises_an_abort_the_caller_will_not_perform(monkeypatch):
+    """An OLD run.py passes refusal_aborts=False for a raw bind and then CONTINUES.
 
-    Reading every legacy False as unattended would bind the socket after the
-    operator asked to abort, so the clock decides: only the deadline waits out
-    the whole timeout.
+    Telling that caller's operator "Ctrl+C to abort" would talk them into walking
+    away from a server that is about to bind with the bootstrap password live, so
+    the flag still picks the wording even though this file's own run.py aborts
+    either way.
     """
-    _patch_streams(monkeypatch, tty = True)
-    _patch_seeded_admin(monkeypatch, requires_change = True)
 
-    from auth import terminal_prompt
+    def _refuse(*_a, **_kw):
+        raise KeyboardInterrupt
 
-    monkeypatch.delattr(terminal_prompt, "UNATTENDED_RETURNS_NONE", raising = False)
-    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
+    monkeypatch.setattr(terminal_prompt, "_read_password", _refuse)
 
-    assert run._terminal_password_gate(tunnel_will_start = False, **_RAW_BIND_KWARGS) == (
-        False,
-        False,
-    )
+    banners = {}
+    for refusal_aborts in (True, False):
+        out = io.StringIO()
+        terminal_prompt.prompt_for_password_change(
+            min_length = 8,
+            is_current_password = lambda _c: False,
+            apply_change = lambda _p: None,
+            out = out,
+            exposure = "on the local network",
+            refusal_aborts = refusal_aborts,
+        )
+        banners[refusal_aborts] = out.getvalue()
 
-
-def test_an_older_prompt_modules_false_still_aborts_a_tunnel(monkeypatch):
-    """The tunnel passes no deadline, so its False is unambiguous on any version."""
-    _patch_streams(monkeypatch, tty = True)
-    _patch_seeded_admin(monkeypatch, requires_change = True)
-
-    from auth import terminal_prompt
-
-    monkeypatch.delattr(terminal_prompt, "UNATTENDED_RETURNS_NONE", raising = False)
-    monkeypatch.setattr(terminal_prompt, "prompt_for_password_change", lambda **_kw: False)
-
-    assert run._terminal_password_gate(tunnel_will_start = True, **_GATE_KWARGS) == (False, False)
+    assert "Ctrl+C to abort" in banners[True], banners[True]
+    assert "Ctrl+C to skip" in banners[False], banners[False]
+    assert "Ctrl+C to abort" not in banners[False], banners[False]
 
 
 def test_an_older_run_py_can_still_call_this_prompt(monkeypatch):

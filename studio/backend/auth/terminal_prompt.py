@@ -145,10 +145,6 @@ def _getch_posix() -> str:  # pragma: no cover - needs a real tty
 _getch: Callable[[], str] = _getch_windows if os.name == "nt" else _getch_posix
 
 
-# run.py reads this: an OLDER terminal_prompt.py returns False for the deadline too.
-UNATTENDED_RETURNS_NONE = True
-
-
 class PromptUnattended(Exception):
     """A terminal is attached but nobody answered before the deadline.
 
@@ -300,13 +296,17 @@ def prompt_for_password_change(
     ``refusal_aborts`` is accepted and ignored: an OLDER run.py beside this file
     still passes it, and an unexpected keyword would kill that launch.
     """
-    del refusal_aborts
     if out is None:
         out = sys.stderr
+    refusal = (
+        "Ctrl+C to abort."
+        if refusal_aborts
+        else "Ctrl+C to skip, and Unsloth starts with the auto-generated password."
+    )
     out.write(
         "\n"
         f"Unsloth Studio will be reachable {exposure}, so set a\n"
-        "password now. Ctrl+C to abort.\n\n"
+        f"password now. {refusal}\n\n"
     )
     out.flush()
     # Only the first read is deadlined; a key arriving proves someone is there.
