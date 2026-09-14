@@ -54,6 +54,32 @@ _adamw_mod = _load_module(
 )
 make_q_galore_param_groups = _adamw_mod.make_q_galore_param_groups
 
+
+@pytest.mark.parametrize("out_features,in_features", [(4, 3), (3, 4)])
+def test_projected_step_preserves_full_rank_gradients(out_features, in_features):
+    bnb = pytest.importorskip("bitsandbytes")
+    # Older releases advertise CPU support without CPU optimizer kernels.
+    try:
+        probe = nn.Parameter(torch.ones(2))
+        probe.grad = torch.zeros_like(probe)
+        bnb.optim.AdamW32bit([probe], lr = 0.0).step()
+    except Exception as exc:
+        pytest.skip(f"CPU optimizer backend unavailable: {exc}")
+    model = nn.Linear(in_features, out_features, bias = False)
+    optimizer = _adamw_mod.QGaLoreAdamW8bit(
+        [{"params": list(model.parameters()), "rank": 1, "quant": False}],
+        lr = 0.01,
+        weight_decay = 0.0,
+    )
+    inputs = torch.arange(2 * in_features, dtype = torch.float32).reshape(2, in_features)
+    for _ in range(2):
+        optimizer.zero_grad(set_to_none = False)
+        model(inputs).square().mean().backward()
+        expected_grad = model.weight.grad.clone()
+        optimizer.step()
+        torch.testing.assert_close(model.weight.grad, expected_grad)
+
+
 # ======================================================================
 # Projector tests
 # ======================================================================
