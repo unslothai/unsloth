@@ -368,8 +368,8 @@ def test_skips_torchao_on_windows_rocm(
     monkeypatch.setattr(mod, "_repair_damaged_core_payload", lambda *a, **k: True)
     monkeypatch.setattr(mod, "_bootstrap_uv", lambda: False)
     monkeypatch.setattr(mod, "_repair_bad_anyio", lambda: None)
-    monkeypatch.setattr(mod, "_ensure_rocm_torch", lambda: None)
-    monkeypatch.setattr(mod, "_ensure_cuda_torch", lambda: None)
+    monkeypatch.setattr(mod, "_ensure_rocm_torch", lambda: True)
+    monkeypatch.setattr(mod, "_ensure_cuda_torch", lambda: True)
     # A Windows ROCm box has no usable NVIDIA GPU. Claiming one here described a
     # machine that cannot exist, and _expected_torch_flavor_tag reads exactly this
     # flag to decide whether a CUDA expectation exists at all: with it True, the
