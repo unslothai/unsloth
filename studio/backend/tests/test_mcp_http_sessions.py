@@ -81,9 +81,8 @@ class RecordingClient:
 
     instances: list["RecordingClient"] = []
 
-    # Class-level, because "these two ran at the same time" is not a question a single
-    # instance can answer when the two calls belong to different chats and therefore to
-    # different clients. Reset by the `clients` fixture.
+    # Class-level: two chats mean two clients, and no single instance sees their overlap.
+    # Reset by the `clients` fixture.
     live_lock = threading.Lock()
     live_now = 0
     live_peak = 0
@@ -390,8 +389,6 @@ def test_two_http_calls_in_one_chat_run_concurrently(monkeypatch, clients):
     out, elapsed = _parallel(HTTP_URL, [SCOPE, SCOPE])
     assert len(out) == 2
     assert len(clients) == 1, "the two calls should share one client"
-    # `max_live == 2` IS "they overlapped", observed by the server rather than inferred
-    # from how long two threads took on a shared runner.
     assert clients[0].max_live == 2, "the server never saw them overlap"
     assert elapsed < 30.0, f"the parallel batch never came back: {elapsed:.2f}s"
 
@@ -430,8 +427,7 @@ def test_calls_in_different_chats_run_concurrently(monkeypatch, clients):
     out, elapsed = _parallel(HTTP_URL, [SCOPE, SCOPE_B])
     assert len(out) == 2
     assert len(clients) == 2
-    # Two chats means two clients, so no single client's max_live can see the overlap.
-    # The class-level peak can, and it answers without a stopwatch.
+    # Two clients, so only the class-level peak sees the overlap.
     assert RecordingClient.live_peak == 2, "different chats were serialized"
     assert elapsed < 30.0, f"the parallel batch never came back: {elapsed:.2f}s"
 
@@ -643,16 +639,12 @@ def test_closing_many_sessions_does_not_run_serially(monkeypatch, clients):
     """A popular HTTP server holds a session per chat, and close runs on the
     request thread during an edit or delete."""
     closes = []
-    # All six teardowns must be in flight together. A barrier says so outright; the
-    # wall-clock form (`< 6 * 0.4 * 0.75`) said it only as long as the runner cooperated,
-    # and six threads on a shared box under `pytest -n 4` do not always cooperate.
     overlapping = threading.Barrier(6, timeout = 30)
 
     class SlowExit(RecordingClient):
         async def __aexit__(self, *exc):
             closes.append(time.monotonic())
-            # Blocks until all six have reached it, so a serial close deadlocks here and
-            # fails with BrokenBarrierError rather than merely running slowly.
+            # A serial close deadlocks here and fails, rather than merely running slowly.
             await asyncio.to_thread(overlapping.wait)
             return await super().__aexit__(*exc)
 
@@ -719,9 +711,6 @@ def test_evicting_another_scope_does_not_run_on_the_callers_deadline(monkeypatch
     started = time.monotonic()
     assert _call(HTTP_URL, scope = SCOPE_B) == "call-1"
     elapsed = time.monotonic() - started
-    # The property without the clock in it: the caller came back while the victim's
-    # 1.5s teardown was still running, so it plainly did not wait for it. `elapsed < 0.5`
-    # asserted the same thing via a budget a contended runner can blow on its own.
     assert not closed.is_set(), "the caller waited out an unrelated eviction"
     assert elapsed < 30.0, f"the call never came back: {elapsed:.2f}s"
     assert closed.wait(10), "the evicted session was never closed"

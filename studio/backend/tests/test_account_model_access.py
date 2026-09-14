@@ -222,8 +222,7 @@ def test_a_listing_probes_its_unknown_repos_together(monkeypatch):
     which is the claim, and it cannot be answered by how busy the box is.
     """
     rows = [{"repo_id": f"org/slow-{index}"} for index in range(8)]
-    # Sized off the declared fan-out, so lowering `_PROBE_FANOUT` to 1 fails this rather
-    # than quietly satisfying a Barrier(1).
+    # Sized off the fan-out, so _PROBE_FANOUT = 1 fails rather than satisfying a Barrier(1).
     together = min(access._PROBE_FANOUT, len(rows))
     assert together > 1, f"_PROBE_FANOUT is {access._PROBE_FANOUT}; the listing is serial"
     barrier = threading.Barrier(together)

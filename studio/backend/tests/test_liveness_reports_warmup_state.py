@@ -241,13 +241,9 @@ def test_liveness_answers_immediately_and_never_starts_detection():
     15s. The stub raises if detection is started, so returning at all proves it was not."""
     result = _probe(settled = False)
 
-    # Returning at all is most of the assertion, and the snippet is built so that it is: the
-    # stub at `must_not_run` raises if the route starts detection, and DETECTION_COMPLETE is
-    # cleared, so a route that waits for a settled snapshot blocks until the subprocess is
-    # killed. What the clock still has to catch is a route that merely got slow, and the
-    # bound for that comes from the watchdog's own per-probe budget rather than from a guess:
-    # at or over it, every real probe times out. `elapsed < 0.5` could not tell any of this
-    # apart from a busy runner -- it only ever failed for that last reason.
+    # Returning at all is most of the assertion: `must_not_run` raises if detection starts,
+    # and DETECTION_COMPLETE is cleared, so a route awaiting one never returns. At or over
+    # the watchdog's per-probe budget every real probe times out, so half of it.
     ceiling = _watchdog_probe_budget_s() / 2
     assert result["elapsed"] < ceiling, (
         f"/api/liveness took {result['elapsed']:.2f}s against a "

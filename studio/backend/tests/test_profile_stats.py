@@ -278,11 +278,7 @@ def test_terminal_callback_returns_promptly_while_locked_db_eventually_persists(
         started = time.perf_counter()
         monitor.finish(entry_id)
         elapsed = time.perf_counter() - started
-        # The sharp claim is the one below: finish() handed the row to the background
-        # writer and wrote nothing itself, so the locked connection still sees zero.
-        # All the clock adds is that it came back rather than queueing behind the lock,
-        # and that needs a ceiling a busy runner cannot trip, not a 200 ms budget --
-        # this writes to SQLite on shared-runner disk, under `pytest -n 4`.
+        # The row count below is the sharp claim; this only rules out queueing on the lock.
         assert elapsed < 5.0, f"finish() blocked on the locked database: {elapsed:.3f}s"
         assert (
             lock_conn.execute(
@@ -400,9 +396,6 @@ def test_writer_busy_shutdown_is_bounded_then_drains_after_unlock(monkeypatch, c
 
     try:
         started = time.perf_counter()
-        # `is False` is the assertion: stop() gave up on its own timeout instead of
-        # waiting out the busy writer. The clock only has to rule out "it blocked
-        # anyway and something else unwedged it", so keep the ceiling generous.
         assert writer.stop(timeout = 0.03) is False
         elapsed = time.perf_counter() - started
         assert elapsed < 5.0, f"stop() ignored its 0.03s timeout: {elapsed:.3f}s"

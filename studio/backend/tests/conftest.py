@@ -42,11 +42,8 @@ _backend_root = Path(__file__).resolve().parent.parent
 if str(_backend_root) not in sys.path:
     sys.path.insert(0, str(_backend_root))
 
-# The repo's shared test helpers, the same directory tests/conftest.py puts on the path
-# for the trees under tests/. Done here at module scope, not in a fixture, because a test
-# module imports from it at collection time, before any fixture has run. The autouse
-# fixture below adds it again for the installer helper; harmless, and left alone so this
-# block can be read on its own.
+# tests/_shared, as tests/conftest.py does for its own trees. Module scope, not a fixture:
+# a test module imports from it at collection, before any fixture runs.
 for _up in Path(__file__).resolve().parents:
     _repo_shared = _up / "tests" / "_shared"
     if (_repo_shared / "growth.py").is_file():

@@ -954,12 +954,8 @@ def test_audio_stream_stays_responsive_under_blocking_next():
     async def _run(loop_coro):
         return await asyncio.gather(loop_coro, _fire_early())
 
-    # Counted in chunks, not seconds. The two patterns are run one after the other, so
-    # comparing their two separately-taken elapsed times reads a quiet window against a
-    # busy one as a real difference (or hides a real one), and `>= 0.13` was a 130ms
-    # floor on a shared runner besides. The chunk counts say the same thing exactly: the
-    # blocking loop never lets _fire_early run, so it drains all eight and only then sees
-    # a cancel that arrived at 50ms; the awaiting loop yields and stops at the first one.
+    # Counted in chunks: the blocking loop never lets _fire_early run, so it drains all
+    # eight before seeing a cancel that arrived at 50ms; the awaiting loop stops at the first.
     cancel_event.clear()
     t0 = time.monotonic()
     prefix_seen, _ = asyncio.run(_run(_prefix_loop()))
@@ -978,8 +974,6 @@ def test_audio_stream_stays_responsive_under_blocking_next():
         f"post-fix pattern saw as much as the blocking one: post={len(postfix_seen)} "
         f"vs pre={len(prefix_seen)}"
     )
-    # The blocking loop really does run to the end of the generator, so keep one loose
-    # ceiling for the case where nothing comes back at all.
     assert prefix_elapsed < 30.0, f"the blocking loop never returned: {prefix_elapsed:.3f}s"
 
 

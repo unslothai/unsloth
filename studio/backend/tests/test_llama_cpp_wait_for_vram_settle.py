@@ -148,8 +148,7 @@ def _kw(**extra):
     return base
 
 
-# Captured before anything patches it, so a probe that wants to be genuinely slow can
-# still sleep for real while the helper's own naps are being recorded.
+# Captured before the patch, so a deliberately slow probe still sleeps for real.
 _real_sleep = time.sleep
 
 
@@ -238,8 +237,6 @@ def test_two_consecutive_samples_within_tolerance_settles():
     with ctx, _Sleeps() as sleeps:
         LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 2.0, interval = 0.05))
     assert state["calls"] == 3
-    # One nap before each poll after the first, at the interval it was given. Asserted on
-    # the naps rather than on how long the three probes took to come back.
     assert sleeps.durations == [0.05, 0.05], sleeps.durations
 
 
@@ -270,12 +267,8 @@ def test_max_wait_respected_when_never_settles():
         start = time.monotonic()
         LlamaCppBackend._wait_for_vram_settle(**_kw(max_wait = 0.5, interval = 0.1))
         elapsed = time.monotonic() - start
-    # It waited, and it stopped: the naps it asked for fit inside max_wait, and it asked
-    # for more than one. A contended runner can stretch `elapsed` past any tight bound
-    # while the helper behaved perfectly, so the tight bound is on the naps instead.
     assert len(sleeps.durations) > 1, f"helper did not wait at all: {sleeps.durations}"
     assert sleeps.total <= 0.5 + 1e-9, f"helper napped past max_wait: {sleeps.durations}"
-    # The one thing wall clock still answers: it came back rather than looping forever.
     assert elapsed < 20.0, f"helper never returned: elapsed={elapsed:.3f}s"
 
 
@@ -293,8 +286,7 @@ def test_max_wait_respected_when_probe_is_slow():
             **_kw(max_wait = 0.4, interval = 0.25),
         )
         elapsed = time.monotonic() - start
-    # The property, stated directly: the probe burned 0.30 of a 0.4 s budget, so the nap
-    # that follows has to be clipped to what is left rather than taking the full interval.
+    # The probe burned 0.30 of a 0.4s budget, so the nap after it must be clipped.
     assert sleeps.durations, "helper never napped, so nothing was clipped"
     assert sleeps.durations[-1] < 0.25, (
         f"helper slept the full interval past the deadline: {sleeps.durations}"

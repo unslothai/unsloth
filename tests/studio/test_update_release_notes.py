@@ -1556,9 +1556,7 @@ def test_a_long_backtick_run_does_not_stall_the_parser(notes_module):
         lambda text: parse_sections(notes_module, text),
         lambda n: "## 1.0\n\n- " + "`" * n + " <!--\n",
         "backtick run",
-        # 5_000, so the big leg is the 20k this was previously measured at. The broken
-        # parser took over a minute there; at 80k it would take about sixteen, and the
-        # job would be killed instead of reporting the ratio.
+        # 5_000, so the big leg is the 20k previously measured. See assert_linear.
         5_000,
     )
 
@@ -2215,13 +2213,10 @@ def test_stripping_comments_stays_linear_in_the_code_spans(notes_module):
     """The comment scanner restarted its code-span search per opener, so N spans
     cost N squared. A 203 KiB line is well inside the 2 MiB accepted, and notes
     are reparsed on every request, so one held a worker for over ten seconds."""
-    # A quarter of the size the budget form used, because assert_linear also measures the
-    # 4x input: 4 * 4_000 spans is the 16_000 that shape was checked at, and the big input
-    # stays inside RELEASES_MAX_BYTES.
+    # A quarter of the budget form's size: the big leg is the 16_000 it was checked at.
     spans = 4_000
     assert len("`a` <!--x--> " * (spans * 4)) < notes_module.RELEASES_MAX_BYTES
-    # N spans cost N squared when the scanner restarts per opener: about 11s against about
-    # 40ms. That is the shape to assert, rather than an absolute `< 2.0` in the `-n 4` leg.
+    # N spans cost N squared when the scanner restarts per opener: 11s against 40ms.
     visible, in_comment = assert_linear(
         lambda text: notes_module._strip_comments(text, False, False),
         lambda n: "`a` <!--x--> " * n,

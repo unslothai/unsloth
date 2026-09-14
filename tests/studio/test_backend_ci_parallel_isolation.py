@@ -498,8 +498,7 @@ def test_the_scan_finds_all_three_shapes(tmp_path):
             "could carry a 50ms bound into the -n 4 run unnoticed"
         )
 
-    # And it must not fire on a bound with real headroom, or every test that keeps one
-    # generous anti-hang ceiling would be pushed into the serial step for nothing.
+    # And quiet on a bound with headroom, or every anti-hang ceiling goes serial for nothing.
     roomy = tmp_path / "test_roomy.py"
     roomy.write_text(
         "import time\n"
@@ -512,8 +511,6 @@ def test_the_scan_finds_all_three_shapes(tmp_path):
     )
     assert not _fragile_timing_asserts(roomy), _fragile_timing_asserts(roomy)
 
-    # Still exercised against the real tree, so a scan that silently stopped parsing
-    # anything is caught too.
     live = {
         path.name: _fragile_timing_asserts(path)
         for path in sorted(BACKEND_TESTS.glob("*.py"))

@@ -191,13 +191,8 @@ def test_the_marker_costs_nothing_to_read():
     a registry len() rather than asking the backend what it is doing."""
     result = _probe()["probes"]
 
-    # `has_busy_key` above is what pins the behaviour; the marker is a registry len() and
-    # the busy states here are stubbed, so no bound this test can set separates "read the
-    # registry" from "waited on it". What is left for the clock is the case where the route
-    # grows a real wait, and the bound for that is not a guess: anything at or over the
-    # watchdog's own per-probe budget times out every probe, so half of it is both well
-    # clear of a contended runner and provably inside what the launcher allows. The 0.5s it
-    # replaces was four subprocess probes on a shared 2-vCPU box.
+    # `has_busy_key` above pins the behaviour; this catches a route that grew a real wait.
+    # At or over the watchdog's per-probe budget every probe times out, so half of it.
     ceiling = _watchdog_probe_budget_s() / 2
     for state, sample in result.items():
         assert sample["elapsed"] < ceiling, (
