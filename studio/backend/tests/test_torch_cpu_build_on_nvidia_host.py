@@ -1184,10 +1184,9 @@ def test_an_amd_card_named_only_by_its_marketing_string_establishes_a_mismatch(
 ):
     """A Windows driver that wrote no AdapterFamily leaves the name as the only arch source.
 
-    Silence here is the worst of both: the card is one the installers do ship a wheel for,
-    so leaving it out of the mismatch drops it from Settings > System entirely and the panel
-    says "No visible GPU" beside a card the OS is listing (#10468). The name table decides,
-    which is why a gap in it costs the message as well as the wheel.
+    Dropping a card the installers do ship a wheel for also drops it from Settings > System,
+    so the panel reads "No visible GPU" beside a card the OS lists (#10468). The name table
+    decides both, so a gap in it costs the message as well as the wheel.
     """
     _shared_setup_1(monkeypatch, tmp_path)
     monkeypatch.setattr(hw, "_linux_kfd_reports_an_amd_gpu", lambda: False)
@@ -1200,8 +1199,7 @@ def test_an_amd_card_named_only_by_its_marketing_string_establishes_a_mismatch(
     for device in covered:
         assert hw._devices_that_can_establish_a_mismatch([device]) == [device], device["name"]
 
-    # The other direction still holds: RDNA 1 is declined on purpose, so it must stay quiet
-    # rather than offer a repair that reinstalls the same CPU wheel.
+    # RDNA 1 is declined on purpose: a repair here would reinstall the same CPU wheel.
     declined = [
         {"vendor": "amd", "name": "AMD Radeon RX 5700 XT", "index": 0, "gfx_candidates": []}
     ]

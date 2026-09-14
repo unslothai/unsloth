@@ -306,13 +306,12 @@ _GPU_NAME_LEAF_CASES = [
     ("AMD Radeon RX 6700 XT", "gfx103X-all"),
     ("AMD Radeon RX 6600 XT", "gfx103X-all"),
     ("AMD Radeon RX 6500 XT", "gfx103X-all"),
-    # The RDNA 2 refresh parts, which hold their own number rather than the one already listed.
-    # All three matched nothing in all seven copies and took CPU torch (#10468).
+    # RDNA 2 refresh parts: their own number, so all three matched nothing in all seven
+    # copies and took CPU torch (#10468).
     ("AMD Radeon RX 6950 XT", "gfx103X-all"),
     ("AMD Radeon RX 6850M XT", "gfx103X-all"),
     ("AMD Radeon RX 6550M", "gfx103X-all"),
-    # The rest of the Navi 24 line, found the same way: enumerating the shipped RDNA 2
-    # SKUs against the table shows these two were the only remaining names it missed.
+    # The rest of Navi 24, from enumerating the shipped RDNA 2 SKUs against the table.
     ("AMD Radeon RX 6450M", "gfx103X-all"),
     ("AMD Radeon PRO W6300", "gfx103X-all"),
 ]
