@@ -103,6 +103,17 @@ if [[ ${#GPU_FLAG[@]} -gt 0 ]] && ! host_has_nvidia; then
             done
         fi
         printf "      AMD devices found: passing /dev/kfd and /dev/dri through.\n" >&2
+        # published images only (untagged is :latest); a custom image may carry a HIP or Vulkan build
+        if [[ "$IMAGE" == unsloth/unsloth || "$IMAGE" == unsloth/unsloth:* ]]; then
+            printf "      Nothing in the image uses them yet: torch is cu128 and the bundled\n" >&2
+            printf "      llama.cpp has no HIP or Vulkan backend, so this container runs on the CPU.\n" >&2
+            if [[ "$IMAGE" == unsloth/unsloth:core* ]]; then
+                printf "      :core refuses a CPU-only start unless UNSLOTH_ALLOW_CPU=1 is set (:latest allows it).\n" >&2
+            fi
+        else
+            printf "      The published unsloth/unsloth images cannot use them (cu128 torch, no HIP\n" >&2
+            printf "      or Vulkan llama.cpp); whether %s does is up to that image.\n" "$IMAGE" >&2
+        fi
     fi
     printf "\n" >&2
 fi

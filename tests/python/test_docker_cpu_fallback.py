@@ -46,6 +46,7 @@ def _invoke_run_sh(
     nvidia,
     amd,
     groups = "both",
+    image = None,
     extra_env = None,
 ):
     """Run docker/run.sh with a recording `docker` stub and a staged /dev tree.
@@ -108,6 +109,9 @@ def _invoke_run_sh(
         "UNSLOTH_STUDIO_VOLUME",
     ):
         env.pop(leak, None)
+    env.pop("UNSLOTH_IMAGE", None)
+    if image:
+        env["UNSLOTH_IMAGE"] = image
     env.update(extra_env or {})
 
     # absolute: the "absent" case strips /usr/bin from PATH, so `bash` itself would
@@ -135,12 +139,32 @@ class TestRunShDegradesWithoutNvidia:
     def test_amd_host_gets_the_render_nodes_with_numeric_gids(self, tmp_path):
         """--group-add by NAME resolves inside the container, where the host's
         video/render groups do not exist, so the gids must be numeric."""
-        argv, _ = _invoke_run_sh(tmp_path, nvidia = False, amd = True)
+        argv, stderr = _invoke_run_sh(tmp_path, nvidia = False, amd = True)
         assert "--gpus" not in argv
         assert "--device" in argv
         assert "/dev/kfd" in argv and "/dev/dri" in argv
         gids = [argv[i + 1] for i, a in enumerate(argv) if a == "--group-add"]
         assert all(g.isdigit() for g in gids), f"non-numeric --group-add: {gids}"
+        # the devices go through, but no part of the image can drive them: torch is
+        # cu128 and the bundled llama.cpp has neither a HIP nor a Vulkan backend
+        assert "HIP" in stderr and "runs on the CPU" in stderr, (
+            "an AMD host must be told the container still runs on the CPU:\n" + stderr
+        )
+
+    def test_the_untagged_published_name_is_recognised(self, tmp_path):
+        """`unsloth/unsloth` is :latest to Docker, so the AMD notice has to treat it as a
+        published image rather than as somebody else's."""
+        _, stderr = _invoke_run_sh(tmp_path, nvidia = False, amd = True, image = "unsloth/unsloth")
+        assert "runs on the CPU" in stderr, stderr
+        assert "up to that image" not in stderr, stderr
+
+    def test_the_cpu_only_claim_is_scoped_to_the_published_images(self, tmp_path):
+        """A custom image may carry a HIP or Vulkan build; run.sh cannot know, so it
+        must not claim the container runs on the CPU."""
+        argv, stderr = _invoke_run_sh(tmp_path, nvidia = False, amd = True, image = "myorg/custom:rocm")
+        assert "/dev/kfd" in argv
+        assert "runs on the CPU" not in stderr, stderr
+        assert "myorg/custom:rocm" in stderr and "unsloth/unsloth" in stderr, stderr
 
     def test_the_group_lookup_is_guarded_on_getent_existing(self):
         """A host with no getent at all (busybox, some slim images) must skip the
