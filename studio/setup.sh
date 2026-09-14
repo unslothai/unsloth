@@ -65,8 +65,29 @@ fi
 # Consistent column layout: 2-space indent, 15-char label (fits llama-quantize), then value.
 # Usage: step <label> <message> [color]   (color defaults to C_OK)
 # Usage: substep <message> [color]         (color defaults to C_DIM)
-step()    { printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
-substep() { printf "  %-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
+_SETUP_STDIO_LOCK_FILE=""
+_setup_stdio_lock_init() {
+    [ -n "${_SETUP_STDIO_LOCK_FILE:-}" ] && return 0
+    _SETUP_STDIO_LOCK_FILE=$(mktemp) || _SETUP_STDIO_LOCK_FILE="${TMPDIR:-/tmp}/unsloth-setup-lock-$$"
+    : >"$_SETUP_STDIO_LOCK_FILE" 2>/dev/null || true
+}
+
+_step_printf() {
+    # Serialize lines from parallel setup jobs (frontend + T5 sidecars).
+    if [ -n "${_SETUP_STDIO_LOCK_FILE:-}" ] && command -v flock >/dev/null 2>&1; then
+        (
+            flock -w 600 200 || true
+            # shellcheck disable=SC2059
+            printf "$@"
+        ) 200>>"$_SETUP_STDIO_LOCK_FILE"
+    else
+        # shellcheck disable=SC2059
+        printf "$@"
+    fi
+}
+
+step()    { _step_printf "  ${C_DIM}%-15.15s${C_RST}${3:-$C_OK}%s${C_RST}\n" "$1" "$2"; }
+substep() { _step_printf "  %-15s${2:-$C_DIM}%s${C_RST}\n" "" "$1"; }
 
 setup_fail() {
     local exit_code=$1
@@ -259,6 +280,7 @@ _setup_parallel_wait() {
     local fail=0 i pid label wait_status=0
     [ "${#_SETUP_PARALLEL_PIDS[@]}" -gt 0 ] || return 0
     for i in "${!_SETUP_PARALLEL_PIDS[@]}"; do
+        _setup_frontend_reap_if_exited
         pid="${_SETUP_PARALLEL_PIDS[$i]}"
         label="${_SETUP_PARALLEL_LABELS[$i]}"
         # Capture status before testing: `if ! wait` clobbers $? under bash.
@@ -269,6 +291,7 @@ _setup_parallel_wait() {
             fail=1
         fi
     done
+    _setup_frontend_reap_if_exited
     _setup_parallel_reset
     if [ "$fail" -ne 0 ]; then
         setup_fail 1 "One or more parallel setup tasks failed"
@@ -1462,6 +1485,32 @@ _setup_frontend_build_and_oxc() {
 }
 
 _SETUP_FRONTEND_BG_PID=""
+
+# Background frontend/OXC runs in a subshell: setup_fail there only ends that job.
+# Reap as soon as it exits so the parent aborts before llama.cpp / footer wait.
+_setup_frontend_reap_if_exited() {
+    local pid="${_SETUP_FRONTEND_BG_PID:-}"
+    [ -n "$pid" ] || return 0
+    kill -0 "$pid" 2>/dev/null && return 0
+    local wait_status=0
+    wait "$pid" || wait_status=$?
+    _SETUP_FRONTEND_BG_PID=""
+    if [ "$wait_status" -ne 0 ]; then
+        setup_fail "$wait_status" "Frontend build or OXC install failed (exit code $wait_status)"
+    fi
+}
+
+_setup_frontend_join() {
+    local pid="${_SETUP_FRONTEND_BG_PID:-}"
+    [ -n "$pid" ] || return 0
+    local wait_status=0
+    wait "$pid" || wait_status=$?
+    _SETUP_FRONTEND_BG_PID=""
+    if [ "$wait_status" -ne 0 ]; then
+        setup_fail "$wait_status" "Frontend build or OXC install failed (exit code $wait_status)"
+    fi
+}
+
 _setup_abort_frontend_job() {
     local pid="${_SETUP_FRONTEND_BG_PID:-}"
     _SETUP_FRONTEND_BG_PID=""
@@ -1488,6 +1537,7 @@ _setup_abort_frontend_job() {
 }
 
 _setup_launch_frontend_build_and_oxc() {
+    _setup_stdio_lock_init
     _setup_frontend_build_and_oxc &
     _SETUP_FRONTEND_BG_PID=$!
 }
@@ -2082,6 +2132,7 @@ else
     step "python" "dependencies up to date"
     verbose_substep "python deps check: installed=$_PKG_NAME@${INSTALLED_VER:-unknown} latest=${LATEST_VER:-unknown}"
 fi
+_setup_frontend_reap_if_exited
 
 # ── 6b. Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ ──
 # Models like GLM-4.7-Flash, Qwen3 MoE need transformers>=5.3.0.
@@ -2120,6 +2171,8 @@ _target_has_pkg_version "$VENV_T5_510_DIR" "transformers" "5.10.2" || _NEED_T5_I
 [ "$_SKIP_PYTHON_DEPS" = false ] && _NEED_T5_INSTALL=true
 
 if [ "$_NEED_T5_INSTALL" = true ]; then
+    _setup_frontend_reap_if_exited
+    _setup_stdio_lock_init
     _setup_parallel_reset
     _setup_parallel_run "T5 5.3.0" _setup_install_t5_sidecar "5.3.0" "$VENV_T5_530_DIR" "transformers 5.3 sidecar venv" "t5_530"
     _setup_parallel_run "T5 5.5.0" _setup_install_t5_sidecar "5.5.0" "$VENV_T5_550_DIR" "transformers 5.5 sidecar venv" "t5_550"
@@ -2374,6 +2427,7 @@ else
     step "gpu" "none (chat-only / GGUF)" "$C_WARN"
     substep "Training and GPU inference require an NVIDIA or AMD ROCm GPU."
 fi
+_setup_frontend_reap_if_exited
 
 # ── 7. Prefer prebuilt llama.cpp bundles before any source build path ──
 # Nest llama.cpp under $STUDIO_HOME only for real env-overrides; legacy
@@ -3430,12 +3484,7 @@ PY
 fi
 
 # ── Footer ──
-if [ -n "${_SETUP_FRONTEND_BG_PID:-}" ]; then
-    if ! wait "$_SETUP_FRONTEND_BG_PID"; then
-        setup_fail 1 "frontend build failed"
-    fi
-    _SETUP_FRONTEND_BG_PID=""
-fi
+_setup_frontend_join
 
 if [ "$_LLAMA_ONLY" = "1" ]; then
     echo ""

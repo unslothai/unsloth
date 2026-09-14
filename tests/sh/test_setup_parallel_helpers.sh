@@ -11,7 +11,7 @@ _FUNC_FILE=$(mktemp)
 sed -n '/^_setup_parallel_reset()/,/^}/p' "$SETUP_SH" > "$_FUNC_FILE"
 sed -n '/^_setup_parallel_run()/,/^}/p' "$SETUP_SH" >> "$_FUNC_FILE"
 sed -n '/^_setup_parallel_wait()/,/^}/p' "$SETUP_SH" >> "$_FUNC_FILE"
-sed -n '/^step()/,/^}/p' "$SETUP_SH" | head -n 1 >> "$_FUNC_FILE"
+sed -n '/^_setup_frontend_reap_if_exited()/,/^}/p' "$SETUP_SH" >> "$_FUNC_FILE"
 sed -n '/^setup_fail()/,/^}/p' "$SETUP_SH" >> "$_FUNC_FILE"
 
 if [ ! -s "$_FUNC_FILE" ]; then
@@ -21,6 +21,9 @@ fi
 
 # shellcheck disable=SC1090
 . "$_FUNC_FILE"
+
+step() { :; }
+substep() { :; }
 
 setup_fail() {
     return 1
@@ -139,6 +142,33 @@ else
     PASS=$((PASS + 1))
 fi
 rm -f "$_ABORT_FILE"
+
+# ── frontend reap fails fast in parent when bg job already exited ──
+_REAP_FILE=$(mktemp)
+sed -n '/^_setup_frontend_reap_if_exited()/,/^}/p' "$SETUP_SH" >> "$_REAP_FILE"
+# shellcheck disable=SC1090
+. "$_REAP_FILE"
+_SETUP_FAIL_CALLED=0
+setup_fail() {
+    _SETUP_FAIL_CALLED=1
+    return 1
+}
+false &
+_SETUP_FRONTEND_BG_PID=$!
+wait "$_SETUP_FRONTEND_BG_PID" 2>/dev/null || true
+if _setup_frontend_reap_if_exited; then
+    echo "  FAIL: reap should propagate frontend failure"
+    FAIL=$((FAIL + 1))
+else
+    if [ "$_SETUP_FAIL_CALLED" -eq 1 ]; then
+        echo "  PASS: reap calls setup_fail when frontend job failed"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: reap did not call setup_fail"
+        FAIL=$((FAIL + 1))
+    fi
+fi
+rm -f "$_REAP_FILE"
 
 echo ""
 echo "Passed: $PASS  Failed: $FAIL"
