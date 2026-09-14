@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { usePlatformStore } from "@/config/env";
 import type { HfModelResult } from "@/features/hub/hooks/use-hub-model-search";
 import { getHfEndpoint } from "@/lib/hf-endpoint";
 import { cachedModelInfo } from "../lib/hf-cache";
@@ -26,6 +27,13 @@ export function useSelectedModelMetadata(
     result: HfModelResult | null;
     error: boolean;
   }>(() => ({ repoId: "", result: null, error: false }));
+
+  // getHfEndpoint() is a plain module read React cannot see change, so an
+  // endpoint that lands after this effect has run (a /api/health that first
+  // failed, or a cold desktop start) would leave the pane showing the default
+  // hub's answer, or its error. Taking it from the store puts it in the effect's
+  // identity, so a late-arriving mirror refetches.
+  const hfEndpoint = usePlatformStore((s) => s.hfEndpoint);
 
   useEffect(() => {
     if (!(repoId && enabled && online)) {
@@ -66,7 +74,7 @@ export function useSelectedModelMetadata(
     return () => {
       cancelled = true;
     };
-  }, [repoId, accessToken, enabled, online]);
+  }, [repoId, accessToken, enabled, online, hfEndpoint]);
 
   if (state.repoId !== repoId) {
     return { result: null, error: false };

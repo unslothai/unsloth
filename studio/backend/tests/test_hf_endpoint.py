@@ -244,3 +244,19 @@ class TestAssetSources:
         from utils.hf_endpoint import csp_asset_sources
         monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:9700")
         assert csp_asset_sources() == ("http://127.0.0.1:9700",)
+
+
+def test_an_uppercase_scheme_is_accepted_and_folded(monkeypatch):
+    """RFC 3986 3.1: schemes are case-insensitive.
+
+    urlsplit and the browser URL parser both fold them, so HTTPS://mirror is a
+    real mirror; rejecting it here (or reporting it unfolded) would leave the
+    frontend routed to a host its own cache and CSP spelled differently.
+    """
+    monkeypatch.setenv("HF_ENDPOINT", "HTTPS://hf-mirror.com")
+    assert get_hf_endpoint() == "https://hf-mirror.com"
+    monkeypatch.setenv("HF_ENDPOINT", "HTTP://127.0.0.1:9700")
+    assert get_hf_endpoint() == "http://127.0.0.1:9700"
+    # The loopback-only rule for http survives the case fold.
+    monkeypatch.setenv("HF_ENDPOINT", "HTTP://hf-mirror.com")
+    assert get_hf_endpoint() == "https://huggingface.co"

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { usePlatformStore } from "@/config/env";
 import { authFetch } from "@/features/auth";
 import { getHfDatasetsServerBase } from "@/lib/hf-endpoint";
 import { useEffect, useState } from "react";
@@ -143,11 +144,19 @@ export function useHfDatasetSplits(
   const [entries, setEntries] = useState<HfSplitEntry[]>([]);
   const [isLoading, setIsLoading] = useState(datasetName !== null);
   const [error, setError] = useState<string | null>(null);
+  // The splits URL is built from getHfDatasetsServerBase(), a plain module read
+  // React cannot see change, so a server that arrives after this effect has run
+  // (a /api/health that first failed, or a cold desktop start) would leave the
+  // subset/split selector populated from the official server, or stuck in the
+  // failure state it reached against it. Reading it from the store puts it in
+  // the request identity, so a late-arriving mirror refetches.
+  const hfDatasetsServer = usePlatformStore((s) => s.hfDatasetsServer);
   const requestKey = JSON.stringify([
     datasetName,
     options?.preferLocalCache === true,
     options?.localPath ?? null,
     options?.online !== false,
+    hfDatasetsServer,
   ]);
   const [previousRequestKey, setPreviousRequestKey] = useState(requestKey);
   if (requestKey !== previousRequestKey) {
@@ -215,7 +224,7 @@ export function useHfDatasetSplits(
       });
 
     return () => controller.abort();
-  }, [accessToken, datasetName, localPath, online, preferLocalCache]);
+  }, [accessToken, datasetName, localPath, online, preferLocalCache, hfDatasetsServer]);
 
   // Derive unique subsets
   const subsets = Array.from(new Set(entries.map((e) => e.config)));

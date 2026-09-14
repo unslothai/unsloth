@@ -3,6 +3,7 @@
 
 import { type ModelEntry, modelInfo } from "@huggingface/hub";
 
+import { getHfEndpoint } from "@/lib/hf-endpoint";
 import { LruMap } from "./lru-map";
 import { fingerprintToken } from "./token-fingerprint";
 
@@ -69,8 +70,16 @@ function isStale(key: string): boolean {
   return !hit || Date.now() - hit.ts >= CACHE_TTL_MS;
 }
 
-function cacheKey(name: string, token: string | undefined): string {
-  return `${name}::${fingerprintToken(token)}`;
+// The endpoint is part of the key: the same repo id names a different repo on a
+// mirror, and the endpoint can change under us (a /api/health that first failed,
+// or a cold desktop start), so a repo-and-token key would serve the old host's
+// answer for the rest of the TTL.
+function cacheKey(
+  name: string,
+  token: string | undefined,
+  hubUrl?: string,
+): string {
+  return `${hubUrl || getHfEndpoint()}::${name}::${fingerprintToken(token)}`;
 }
 
 function extractToken(
@@ -98,7 +107,7 @@ export async function cachedModelInfo(
   params: Parameters<typeof modelInfo>[0],
 ): Promise<CachedResult> {
   const token = extractToken(params);
-  const key = cacheKey(params.name, token);
+  const key = cacheKey(params.name, token, params.hubUrl);
   if (!isStale(key)) return cache.get(key)!.data;
 
   const flying = inflight.get(key);
@@ -124,7 +133,7 @@ export async function cachedModelInfo(
         private?: boolean;
       };
       if (token && !typed.private && !typed.gated) {
-        const anonKey = cacheKey(params.name, undefined);
+        const anonKey = cacheKey(params.name, undefined, params.hubUrl);
         if (isStale(anonKey)) cache.set(anonKey, entry);
       }
       return result as CachedResult;

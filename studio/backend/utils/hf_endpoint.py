@@ -127,7 +127,11 @@ def _sanitize(candidate: str, default: str, var_name: str) -> str:
                 "is plain HTTP to a non-loopback host, which would put the Hub token on the wire"
             )
         else:
-            return candidate
+            # Schemes are case-insensitive (RFC 3986 3.1) and every parser here
+            # folds them, so return the folded form: the frontend keys its model
+            # cache on this string, and "HTTPS://mirror" and "https://mirror"
+            # would otherwise be two different mirrors to it.
+            return parts.scheme + candidate[len(parts.scheme) :]
     if candidate not in _rejected_warned:
         _rejected_warned.add(candidate)
         logger.warning(

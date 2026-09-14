@@ -1831,11 +1831,29 @@ fn configured_hf_endpoints() -> Vec<String> {
         .filter(|raw| !raw.is_empty())
         .map(|raw| {
             let with_scheme = if raw.contains("://") { raw } else { format!("https://{raw}") };
-            with_scheme.trim_end_matches('/').to_string()
+            let trimmed = with_scheme.trim_end_matches('/');
+            match split_scheme(trimmed) {
+                Some((scheme, rest)) => format!("{scheme}://{rest}"),
+                None => trimmed.to_string(),
+            }
         })
         .filter(|endpoint| is_usable_csp_source(endpoint))
         .map(|endpoint| csp_origin_of(&endpoint))
         .collect()
+}
+
+/// Split "scheme://rest", with the scheme lowercased.
+///
+/// URL schemes are case-insensitive (RFC 3986 3.1), and both the backend's
+/// `urlsplit` and the browser's URL parser normalise them, so an endpoint
+/// written `HTTPS://hf-mirror.com` is routed to by the frontend. If this file
+/// treated it as unusable, the bundled desktop app would send Hub requests to a
+/// mirror its own `connect-src` did not list, and every one of them would be
+/// blocked.
+fn split_scheme(endpoint: &str) -> Option<(String, &str)> {
+    endpoint
+        .split_once("://")
+        .map(|(scheme, rest)| (scheme.to_ascii_lowercase(), rest))
 }
 
 /// Is this authority (host, optionally with :port) a loopback address?
@@ -1863,7 +1881,7 @@ fn is_loopback_host(authority: &str) -> bool {
 /// one URL and blocks every request beneath it. The path belongs in the request
 /// URL, not the policy. Mirrors `utils/hf_endpoint.py::csp_connect_sources`.
 fn csp_origin_of(endpoint: &str) -> String {
-    match endpoint.split_once("://") {
+    match split_scheme(endpoint) {
         Some((scheme, rest)) => {
             let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
             format!("{scheme}://{authority}")
@@ -1877,19 +1895,16 @@ fn csp_origin_of(endpoint: &str) -> String {
 /// origin. Mirrors the backend's `utils/hf_endpoint.py::_sanitize`, so the webview
 /// policy and `/api/health` never disagree about what counts as configured.
 fn is_usable_csp_source(endpoint: &str) -> bool {
-    if !(endpoint.starts_with("https://") || endpoint.starts_with("http://")) {
-        return false;
-    }
+    let (scheme, authority) = match split_scheme(endpoint) {
+        Some((scheme, rest)) if scheme == "http" || scheme == "https" => (scheme, rest),
+        _ => return false,
+    };
     if endpoint
         .chars()
         .any(|c| c.is_whitespace() || c.is_control() || matches!(c, ';' | ',' | '\'' | '"' | '\\'))
     {
         return false;
     }
-    let authority = match endpoint.split_once("://") {
-        Some((_, rest)) => rest,
-        None => return false,
-    };
     // No credentials, query or fragment, and a non-empty host.
     let host = authority
         .split(['/', '?', '#'])
@@ -1905,7 +1920,7 @@ fn is_usable_csp_source(endpoint: &str) -> bool {
     }
     // Hub calls carry the user's token, so a plain-HTTP mirror off-box would put a
     // bearer token on the wire in cleartext. Loopback never leaves the machine.
-    if endpoint.starts_with("http://") && !is_loopback_host(host) {
+    if scheme == "http" && !is_loopback_host(host) {
         return false;
     }
     // A scheme-less value keeps everything before the first ':' as the host, so
@@ -2347,6 +2362,21 @@ mod tests {
         // https to the same hosts stays fine.
         assert!(is_usable_csp_source("https://192.168.1.10:8080"));
         assert!(is_usable_csp_source("https://hf-mirror.com"));
+    }
+
+    #[test]
+    fn the_scheme_is_matched_case_insensitively() {
+        // RFC 3986 3.1: schemes are case-insensitive, and both urlsplit on the
+        // backend and the browser's URL parser normalise them. If this file
+        // disagreed, HF_ENDPOINT=HTTPS://hf-mirror.com would route the frontend
+        // to the mirror while connect-src omitted it, blocking every Hub call.
+        assert!(is_usable_csp_source("HTTPS://hf-mirror.com"));
+        assert!(is_usable_csp_source("Https://hf-mirror.com"));
+        assert!(is_usable_csp_source("HTTP://127.0.0.1:9700"));
+        // The loopback-only rule for http survives the case fold.
+        assert!(!is_usable_csp_source("HTTP://hf-mirror.com"));
+        // And the emitted source is lowercase, matching what the backend sends.
+        assert_eq!(csp_origin_of("HTTPS://hf-mirror.com/hf"), "https://hf-mirror.com");
     }
 
     #[test]

@@ -25,12 +25,17 @@ import {
 const _previewCache = new Map<string, Promise<string[]>>();
 
 async function fetchPreviews(repo: string): Promise<string[]> {
-  const cached = _previewCache.get(repo);
+  // Keyed by server as well as repo: the configured one can arrive after the
+  // first fetch, and an empty result cached against the default would otherwise
+  // never be retried against the mirror.
+  const base = getHfDatasetsServerBase();
+  const cacheKey = `${base}::${repo}`;
+  const cached = _previewCache.get(cacheKey);
   if (cached) return cached;
   const p = (async () => {
     try {
       const res = await fetch(
-        `${getHfDatasetsServerBase()}/first-rows?dataset=${encodeURIComponent(
+        `${base}/first-rows?dataset=${encodeURIComponent(
           repo,
         )}&config=default&split=train`,
       );
@@ -52,7 +57,7 @@ async function fetchPreviews(repo: string): Promise<string[]> {
       return [];
     }
   })();
-  _previewCache.set(repo, p);
+  _previewCache.set(cacheKey, p);
   return p;
 }
 
