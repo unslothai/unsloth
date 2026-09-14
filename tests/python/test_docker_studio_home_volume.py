@@ -560,6 +560,18 @@ def test_the_entrypoint_relinks_before_it_touches_the_studio_venv_and_stops_on_f
     assert "WARN" not in block
 
 
+def test_the_in_app_updates_know_the_images_code_tree():
+    """whisper.cpp is discovered through the Studio home, where the linker leaves a link
+    into the app dir, and the updater reads a linked component dir as the user's own
+    checkout and offers nothing. It tells the two apart by the same variable the image
+    sets, so the name must not drift apart from the image's."""
+    flow = (REPO / "studio" / "backend" / "utils" / "prebuilt" / "update_flow.py").read_text(
+        encoding = "utf-8"
+    )
+    assert 'os.environ.get("UNSLOTH_STUDIO_APP")' in flow
+    assert "UNSLOTH_STUDIO_APP=/opt/unsloth-studio-app" in STUDIO_DF.read_text(encoding = "utf-8")
+
+
 def test_the_docs_mount_the_studio_home():
     for doc in (DOCKER / "DOCKERHUB.md", REPO / "README.md"):
         assert "-v unsloth-studio:/opt/unsloth-studio" in doc.read_text(encoding = "utf-8"), doc
