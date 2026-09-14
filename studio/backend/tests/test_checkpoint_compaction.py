@@ -4062,3 +4062,83 @@ def test_the_feature_off_carries_no_note(monkeypatch):
     text = str(system.get("content", ""))
     assert "<self_note>" not in text
     assert "Approach A fails" not in text
+
+
+def _captured_note(monkeypatch, messages, **fit_kwargs):
+    """Run a reset and return the exact `self_note` string handed to `render_checkpoint`.
+
+    The rendered block wraps the note in a fixed header, so scraping the note back out of
+    the rendered text would measure the header's cost too. Capturing the argument at the
+    call site is what actually answers "did the trim respect `room`".
+    """
+    captured: dict[str, str] = {}
+    original = checkpoint.render_checkpoint
+
+    def _spy(items, searchable = True, self_note = ""):
+        captured["note"] = self_note
+        return original(items, searchable = searchable, self_note = self_note)
+
+    monkeypatch.setattr(checkpoint, "render_checkpoint", _spy)
+    fit_kwargs.setdefault("context_length", 1200)
+    fit_kwargs.setdefault("max_tokens", 256)
+    fit_kwargs.setdefault("count_tokens", count)
+    fit_kwargs.setdefault("can_reset", True)
+    fit_checkpoint_context(messages, **fit_kwargs)
+    return captured.get("note", "")
+
+
+def _note_thread(note_content):
+    messages = _thread(pad = 6, chars = 600)
+    messages.append(
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "self_note", "content": note_content},
+                {"type": "text", "text": "ok"},
+            ],
+        }
+    )
+    messages.append({"role": "user", "content": "and now the newest turn"})
+    return messages
+
+
+def test_a_quote_dense_note_is_trimmed_to_fit_the_real_estimator(monkeypatch):
+    # `note[: room * 4]` assumes ~4 chars/token, but JSON-escaping doubles the cost of
+    # `"` and `\` under the real estimator (`len(json.dumps(...)) // 4`). A note quoting
+    # JSON is exactly the case where the flat ratio undercounts, so the trim must verify
+    # against `estimate_message_tokens` rather than trust the ratio.
+    monkeypatch.setattr(checkpoint.self_note_module, "SELF_NOTE_ENABLED", True)
+    monkeypatch.setattr(checkpoint.self_note_module, "MAX_NOTE_TOKENS", 50)
+
+    quote_dense = '{"key": "value"}, ' * 300
+    note = _captured_note(monkeypatch, _note_thread(quote_dense))
+
+    assert note
+    assert estimate_message_tokens({"role": "user", "content": note}) <= 50
+
+
+def test_an_ordinary_prose_note_is_trimmed_to_fit_the_real_estimator(monkeypatch):
+    # Prose is the mild case (measured ~1.14x over with the old flat-ratio trim): still
+    # wrong, so it must be covered too, not just the adversarial quote-dense case.
+    monkeypatch.setattr(checkpoint.self_note_module, "SELF_NOTE_ENABLED", True)
+    monkeypatch.setattr(checkpoint.self_note_module, "MAX_NOTE_TOKENS", 50)
+
+    prose = "Approach A fails because of a re-entrant lock in the scheduler path. " * 40
+    note = _captured_note(monkeypatch, _note_thread(prose))
+
+    assert note
+    assert estimate_message_tokens({"role": "user", "content": note}) <= 50
+
+
+def test_a_note_that_cannot_fit_any_room_is_dropped_not_overshot(monkeypatch):
+    # A `room` too small for even a trimmed remnant to fit must give up and drop the note
+    # entirely, the same as the `room <= 0` path -- never render something that still
+    # overshoots the budget it was supposed to be bounded by.
+    monkeypatch.setattr(checkpoint.self_note_module, "SELF_NOTE_ENABLED", True)
+    monkeypatch.setattr(checkpoint.self_note_module, "MAX_NOTE_TOKENS", 1)
+
+    note = _captured_note(
+        monkeypatch, _note_thread("Approach A fails: re-entrant lock in the scheduler.")
+    )
+
+    assert note == ""

@@ -591,9 +591,29 @@ def fit_checkpoint_context(
                 note = ""
             elif estimate_message({"role": "user", "content": note}) > room:
                 # Trim rather than drop: the opening of a note says what it is about, and
-                # half a note is worth more here than none. 4 chars/token is the same
-                # rough ratio the estimator uses.
-                note = note[: max(0, room * 4)].rstrip()
+                # half a note is worth more here than none. The 4 chars/token guess is only
+                # a starting point -- JSON-escaping doubles the cost of `"` and `\`, so a
+                # note quoting JSON or a Windows path can estimate at ~2x the char count.
+                # Verify against the real estimator and shrink until it actually fits,
+                # rather than trusting the ratio; bounded so this stays a few halvings,
+                # never a per-character loop.
+                candidate = note[: max(0, room * 4)].rstrip()
+                for _ in range(8):
+                    if not candidate:
+                        break
+                    cost = estimate_message({"role": "user", "content": candidate})
+                    if cost <= room:
+                        break
+                    # Shrink by the measured overshoot, not a flat half, so a mildly-over
+                    # candidate does not lose more than it has to.
+                    shrink = min(0.5, room / cost)
+                    candidate = candidate[: int(len(candidate) * shrink)].rstrip()
+                else:
+                    # Ran out of shrink attempts without fitting: half a note is worth more
+                    # than none only while it still says something, so give up rather than
+                    # keep cutting past that point.
+                    candidate = ""
+                note = candidate
         text = render_checkpoint(items, searchable = _resolved(searchable), self_note = note)
         return _append_to_system(kept, text), text
 
