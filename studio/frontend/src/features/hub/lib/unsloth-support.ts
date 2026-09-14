@@ -31,6 +31,7 @@ const UNSUPPORTED_PIPELINE_TAGS: ReadonlySet<string> = new Set([
   "text-to-video",
   "video-to-video",
   "image-to-video",
+  "image-text-to-video",
   "video-text-to-text",
   "video-classification",
   "unconditional-image-generation",
@@ -131,7 +132,7 @@ export type UnslothSupportStatus = "supported" | "unsupported";
 export interface UnslothSupport {
   status: UnslothSupportStatus;
   reason: string | null;
-  /** Set when Studio runs this model on a dedicated page rather than in chat. The status stays "unsupported" because the chat pickers gate on it, but the UI must not call it unsupported: the Images and Video pages load it. */
+  /** Set when Unsloth runs this model on a dedicated page rather than in chat. The status stays "unsupported" because the chat pickers gate on it, but the UI must not call it unsupported: the Images and Video pages load it. */
   supportedIn?: "images" | "video";
 }
 
@@ -144,9 +145,10 @@ const IMAGE_PAGE_TASKS: ReadonlySet<string> = new Set([
 const VIDEO_PAGE_TASKS: ReadonlySet<string> = new Set([
   "text-to-video",
   "image-to-video",
+  "image-text-to-video",
 ]);
 
-/** Which Studio page runs this pipeline task, if any. */
+/** Which Unsloth page runs this pipeline task, if any. */
 export function studioPageForTask(
   pipelineTag?: string | null,
 ): "images" | "video" | undefined {

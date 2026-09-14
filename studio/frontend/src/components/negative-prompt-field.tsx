@@ -8,6 +8,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 /** Collapsible negative prompt, shared by the Images and Video Create panels. */
+// Keep normal input below the unload request budget. Restored legacy recipes may be longer, and
+// the preset API accepts them because the generation contract does too.
+export const NEGATIVE_PROMPT_MAX_LENGTH = 20_000;
+
 export function NegativePromptField({
   value,
   onChange,
@@ -54,6 +58,7 @@ export function NegativePromptField({
       {open && (
         <Textarea
           rows={2}
+          maxLength={NEGATIVE_PROMPT_MAX_LENGTH}
           placeholder="What to avoid (optional)"
           value={value}
           onChange={(e) => onChange(e.target.value)}

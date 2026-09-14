@@ -32,6 +32,7 @@ resolve_cache_type_kv = _lsa.resolve_cache_type_kv
 resolve_tensor_parallel = _lsa.resolve_tensor_parallel
 strip_shadowing_flags = _lsa.strip_shadowing_flags
 strip_split_mode_only = _lsa.strip_split_mode_only
+strip_context_only = _lsa.strip_context_only
 extra_args_disable_mmproj = _lsa.extra_args_disable_mmproj
 validate_extra_args = _lsa.validate_extra_args
 
@@ -110,8 +111,23 @@ def test_empty_list_returns_empty_list():
     assert validate_extra_args([]) == []
 
 
-def test_value_with_equals_form_passes_through():
-    assert validate_extra_args(["--top-k=20"]) == ["--top-k=20"]
+def test_the_attached_value_form_is_refused():
+    # llama.cpp looks the whole token up in its option map and folds only the
+    # underscore spelling, so "--top-k=20" is an argument it has never heard of.
+    # Measured on b10342 and b10360: "error: invalid argument: --top-k=20", and the
+    # same for --ctx-size=4096 and --flash-attn=on. Accepting it here meant the
+    # switch tore down the resident model and the child then refused to start.
+    with pytest.raises(ValueError, match = "two separate arguments"):
+        validate_extra_args(["--top-k=20"])
+    # The detached spelling is what it takes, and the underscore one still folds.
+    assert validate_extra_args(["--top-k", "20"]) == ["--top-k", "20"]
+    assert validate_extra_args(["--ctx_size", "4096"]) == ["--ctx_size", "4096"]
+    # A managed name is still named as managed: that message says which control
+    # owns it, which is the more useful of the two.
+    with pytest.raises(ValueError, match = "managed by Unsloth Studio"):
+        validate_extra_args(["--parallel=8"])
+    # An "=" inside a VALUE is untouched: it is the value's own syntax.
+    assert validate_extra_args(["--override-kv", "a=int:2"]) == ["--override-kv", "a=int:2"]
 
 
 def test_managed_long_flag_underscore_alias_is_rejected():
@@ -119,9 +135,16 @@ def test_managed_long_flag_underscore_alias_is_rejected():
         validate_extra_args(["--slot_save_path", "/tmp/slots"])
 
 
-def test_non_flag_token_passes_through():
-    # Bare positionals are passed through; llama-server can reject them.
-    assert validate_extra_args(["foo"]) == ["foo"]
+def test_a_bare_positional_is_rejected():
+    # This used to pass through on the grounds that llama-server can reject it, and
+    # it does: "error: invalid argument: foo", so the launch fails instead of the
+    # request. Refused here now that a textbox can produce one, because a build that
+    # DID accept a positional would read it as the model path, which is exactly what
+    # denying -m / --model prevents.
+    with pytest.raises(ValueError, match = "bare value"):
+        validate_extra_args(["foo"])
+    # A value that follows its flag is untouched.
+    assert validate_extra_args(["--numa", "distribute"]) == ["--numa", "distribute"]
 
 
 # ── Denylist (rejected) ──────────────────────────────────────────────
@@ -189,10 +212,46 @@ def test_non_flag_token_passes_through():
         "--embeddings",
         "--rerank",
         "--reranking",
+        "--pooling",
         # llama-server's own --tools clashes with Unsloth's tool policy.
         "--tools",
-        # Slot-state dir: Studio owns it for KV persistence across idle unload.
+        # --agent is --tools by another name ("enable CORS proxy and ALL built-in
+        # tools", which includes exec_shell_command), and --tools-runtime says where
+        # those tools run -- a container, or another host over ssh.
+        "-ag",
+        "--agent",
+        "-no-ag",
+        "--no-agent",
+        "--tools-runtime",
+        # MCP servers are the same capability from a file or an inline blob.
+        "--mcp-servers-config",
+        "--mcp-servers-json",
+        # Unsloth terminates browser access at its own origin.
+        "--cors-origins",
+        "--cors-headers",
+        "--cors-methods",
+        "--cors-credentials",
+        "--no-cors-credentials",
+        "--media-path",
+        # Startup output is how a bad GGUF is told from an OOM from a rejected flag.
+        "--log-file",
+        "--log-disable",
+        # Slot-state dir: Unsloth owns it for KV persistence across idle unload.
         "--slot-save-path",
+        # These print and exit instead of serving.
+        "-h",
+        "--help",
+        "--usage",
+        "--version",
+        "--list-devices",
+        "-cl",
+        "--cache-list",
+        "--completion-bash",
+        # Aliases of already-denied UI flags; upstream ships both spellings.
+        "--webui-config",
+        "--webui-config-file",
+        "--webui-mcp-proxy",
+        "--no-webui-mcp-proxy",
     ],
 )
 def test_denylist_rejects_all_aliases(denied):
@@ -239,8 +298,11 @@ def test_slot_save_path_is_managed_in_all_forms():
             validate_extra_args(args)
     assert is_managed_flag("--slot-save-path") is True
     assert is_managed_flag("--slot-save-path=/tmp/x") is True
-    # --slots (read-only diagnostics endpoint) stays a user choice.
+    # Endpoint exposure stays a user choice: Unsloth reads GET /props and never
+    # /slots, so neither flag can strand it.
     assert is_managed_flag("--slots") is False
+    assert is_managed_flag("--no-slots") is False
+    assert is_managed_flag("--props") is False
 
 
 @pytest.mark.parametrize(
@@ -637,13 +699,20 @@ def test_strip_shadowing_flags_defaults_strip_everything():
         ["--split-mode", "none"],
         ["--split-mode", "layer"],
         ["-sm", "tensor"],
-        ["--split-mode=row"],
-        ["-sm=tensor"],
     ],
 )
 def test_split_mode_passes_through(args):
     # Not denylisted -- a user keeps row/none/layer via extras.
     assert validate_extra_args(args) == args
+
+
+@pytest.mark.parametrize("args", [["--split-mode=row"], ["-sm=tensor"]])
+def test_the_attached_split_mode_spelling_is_refused(args):
+    # The parsers below still read the attached form, since they also run over
+    # Unsloth's own emitted flags; the boundary is where the user's spelling of it
+    # is turned back, while the message can still reach them.
+    with pytest.raises(ValueError, match = "two separate arguments"):
+        validate_extra_args(args)
 
 
 def test_split_mode_is_not_managed():
@@ -884,6 +953,36 @@ def test_strip_split_mode_only_preserves_none_and_empty():
     assert strip_split_mode_only([]) == []
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["-c", "0", "--top-k", "20"],
+        ["--ctx-size", "0", "--top-k", "20"],
+        ["-c=0", "--top-k", "20"],
+        ["--ctx-size=0", "--top-k", "20"],
+    ],
+)
+def test_strip_context_only_drops_every_context_form(args):
+    # Every -c / --ctx-size form (long/short, space/=) goes; the rest survives.
+    assert strip_context_only(args) == ["--top-k", "20"]
+
+
+def test_strip_context_only_keeps_other_shadow_flags():
+    # Only the context group: the cache/spec/template/split flags are untouched.
+    assert strip_context_only(["-c", "0", "--split-mode", "row", "--cache-type-k", "q8_0"]) == [
+        "--split-mode",
+        "row",
+        "--cache-type-k",
+        "q8_0",
+    ]
+
+
+def test_strip_context_only_preserves_none_and_empty():
+    # None means "inherit"; [] means "explicit empty" -- both must round-trip.
+    assert strip_context_only(None) is None
+    assert strip_context_only([]) == []
+
+
 def test_strip_shadowing_flags_drops_tensor_split_with_split_mode():
     # --tensor-split is coupled to the split mode: stripped together so a stale
     # ratio can't override Unsloth's computed tensor split. Other flags survive.
@@ -939,3 +1038,377 @@ def test_strip_shadowing_flags_keeps_model_draft_without_spec():
         strip_template = False,
     )
     assert out == ["--model-draft", "/custom/mtp.gguf"]
+
+
+# --- shape bounds -----------------------------------------------------------
+# Not the security boundary (the denylist is), just a floor under what reaches
+# execve, so a pasted file fails here naming the limit instead of in the child.
+
+
+def test_token_count_is_capped():
+    with pytest.raises(ValueError, match = "too many"):
+        validate_extra_args(["--verbose"] * (_lsa.MAX_EXTRA_ARG_TOKENS + 1))
+    # The cap itself still passes, so the limit is inclusive as stated.
+    assert len(validate_extra_args(["--verbose"] * _lsa.MAX_EXTRA_ARG_TOKENS)) == (
+        _lsa.MAX_EXTRA_ARG_TOKENS
+    )
+
+
+def test_total_size_is_capped():
+    with pytest.raises(ValueError, match = "too large"):
+        validate_extra_args(["--grammar", "x" * (_lsa.MAX_EXTRA_ARGS_BYTES + 1)])
+
+
+def test_a_long_single_token_is_allowed_under_the_total():
+    # A grammar or JSON schema is legitimately one long token, so the cap is on the
+    # list rather than per token.
+    schema = "x" * (_lsa.MAX_EXTRA_ARGS_BYTES // 2)
+    assert validate_extra_args(["--grammar", schema]) == ["--grammar", schema]
+
+
+def test_the_size_cap_counts_bytes_not_characters():
+    # Astral-plane characters are 4 bytes each; a character-counted cap would let
+    # through four times the argv this claims to bound.
+    big = "\U0001f600" * (_lsa.MAX_EXTRA_ARGS_BYTES // 4)
+    with pytest.raises(ValueError, match = "too large"):
+        validate_extra_args(["--grammar", big])
+
+
+@pytest.mark.parametrize("token", ["a\x00b", "a\x07b", "\x1b[31m"])
+def test_control_characters_are_rejected(token):
+    with pytest.raises(ValueError, match = "control characters"):
+        validate_extra_args([token])
+
+
+@pytest.mark.parametrize("token", ["line\nbreak", "tab\there"])
+def test_tab_and_newline_survive(token):
+    # A chat template or grammar passed inline carries both. As its flag's value,
+    # which is where such a string actually arrives: a bare one is refused now.
+    assert validate_extra_args(["--grammar", token]) == ["--grammar", token]
+
+
+# --- environment twins ------------------------------------------------------
+
+
+def test_denied_env_twins_are_scrubbed():
+    env = {
+        "LLAMA_ARG_AGENT": "1",
+        "LLAMA_ARG_TOOLS": "all",
+        "LLAMA_ARG_MCP_SERVERS_JSON": "{}",
+        "PATH": "/usr/bin",
+    }
+    removed = _lsa.scrub_denied_env(env)
+    assert set(removed) == {"LLAMA_ARG_AGENT", "LLAMA_ARG_TOOLS", "LLAMA_ARG_MCP_SERVERS_JSON"}
+    # Only the twins go.
+    assert env == {"PATH": "/usr/bin"}
+
+
+def test_scrubbing_is_a_no_op_without_the_twins():
+    env = {"PATH": "/usr/bin", "LLAMA_ARG_MLOCK": "1"}
+    assert _lsa.scrub_denied_env(env) == []
+    assert env == {"PATH": "/usr/bin", "LLAMA_ARG_MLOCK": "1"}
+
+
+def test_every_denied_env_var_names_a_denied_flag():
+    # The twins are only worth scrubbing while the flag itself is refused; this
+    # catches a group being dropped from the denylist and leaving a live back door.
+    #
+    # Both prefixes, because llama.cpp uses both: --api-key reads LLAMA_API_KEY while
+    # --api-key-file reads LLAMA_ARG_API_KEY_FILE, and which one a flag gets has
+    # changed between releases.
+    for name in _lsa.DENIED_ENV_VARS:
+        stem = name.removeprefix("LLAMA_ARG_").removeprefix("LLAMA_")
+        flag = _lsa.DENIED_ENV_TWIN_FLAGS.get(name) or "--" + stem.lower().replace("_", "-")
+        assert is_managed_flag(flag), f"{name} has no denied flag ({flag})"
+
+
+def test_every_denied_flag_with_a_twin_in_the_help_is_scrubbed():
+    # The list was enumerated from the bundled b10342 --help rather than guessed:
+    # every "(env: NAME)" whose option this module refuses. Recorded here as the
+    # pairs that mattered, so a name dropped from the denylist, or a twin dropped
+    # from the scrub, is a red test rather than a back door found later.
+    #
+    # llama.cpp applies the environment BEFORE argv, so the ones Unsloth always emits
+    # are overridden anyway; the rest are the reason this exists.
+    for env_var, flag in (
+        ("LLAMA_ARG_UI_MCP_PROXY", "--ui-mcp-proxy"),
+        ("LLAMA_ARG_UI", "--ui"),
+        ("LLAMA_ARG_STATIC_PATH", "--path"),
+        ("LLAMA_ARG_MODELS_DIR", "--models-dir"),
+        ("LLAMA_ARG_MODELS_AUTOLOAD", "--models-autoload"),
+        ("LLAMA_ARG_EMBEDDINGS", "--embeddings"),
+        ("LLAMA_ARG_RERANKING", "--reranking"),
+        ("LLAMA_ARG_MODEL", "--model"),
+        ("LLAMA_ARG_HF_REPO", "--hf-repo"),
+        ("LLAMA_ARG_HOST", "--host"),
+        ("LLAMA_ARG_PORT", "--port"),
+        ("LLAMA_ARG_N_PARALLEL", "--parallel"),
+        ("LLAMA_ARG_SSL_KEY_FILE", "--ssl-key-file"),
+        ("LLAMA_ARG_SSL_CERT_FILE", "--ssl-cert-file"),
+    ):
+        assert is_managed_flag(flag), flag
+        assert env_var in _lsa.DENIED_ENV_VARS, env_var
+    env = {name: "1" for name in _lsa.DENIED_ENV_VARS}
+    env["PATH"] = "/usr/bin"
+    # The projector twins are an INPUT here, not a back door: _launch_has_mmproj reads
+    # both to know the launch has a projector at all, which is what keeps the vision
+    # and audio state of a model loaded through an inherited one. Scrubbing them
+    # globally cleared that state (test_gpu_init_crash_message caught it), and only
+    # the paravirtual CPU recovery drops them, where an unpinned projector is the
+    # corrupt path it is undoing.
+    for kept in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"):
+        assert kept not in _lsa.DENIED_ENV_VARS, kept
+    # HF_TOKEN is deliberately not here: it is the standard Hugging Face credential
+    # Unsloth's own downloads use, not a llama-server behaviour switch, and the child
+    # is always given a local -m path rather than a repo to fetch.
+    assert "HF_TOKEN" not in _lsa.DENIED_ENV_VARS
+    _lsa.scrub_denied_env(env)
+    assert env == {"PATH": "/usr/bin"}
+
+
+def test_the_projector_env_twins_survive_the_scrub():
+    # --mmproj is refused in the box because Unsloth resolves the projector itself,
+    # but the environment twin is an INPUT: _launch_has_mmproj reads both names to
+    # know the launch has a projector at all, which is what keeps the vision and
+    # audio state of a model loaded through an inherited one. Scrubbing them made
+    # every such load report itself as text-only.
+    env = {
+        "LLAMA_ARG_MMPROJ": "/models/mmproj-F16.gguf",
+        "LLAMA_ARG_MMPROJ_URL": "https://example.invalid/mmproj-F16.gguf",
+        "LLAMA_ARG_AGENT": "1",
+    }
+    removed = _lsa.scrub_denied_env(env)
+    assert removed == ["LLAMA_ARG_AGENT"]
+    assert env == {
+        "LLAMA_ARG_MMPROJ": "/models/mmproj-F16.gguf",
+        "LLAMA_ARG_MMPROJ_URL": "https://example.invalid/mmproj-F16.gguf",
+    }
+    # Only the paravirtual CPU recovery drops them, where an unpinned projector is
+    # the corrupt path it is undoing, and it does that itself.
+    assert "LLAMA_ARG_MMPROJ" not in _lsa.DENIED_ENV_VARS
+    assert "LLAMA_ARG_MMPROJ_URL" not in _lsa.DENIED_ENV_VARS
+
+
+# ------------------------------------- an inherited loader mode is a real choice
+
+
+@pytest.mark.parametrize(
+    "env,expected",
+    [
+        ({}, False),
+        (None, False),
+        # The enum itself is handler_string, so any value assigns the mode.
+        ({"LLAMA_ARG_LOAD_MODE": "mmap"}, True),
+        ({"LLAMA_ARG_LOAD_MODE": "dio"}, True),
+        # Set but empty selects nothing; upstream would reject it, not default.
+        ({"LLAMA_ARG_LOAD_MODE": "  "}, False),
+        # --mlock is handler_void: only a truthy value assigns anything.
+        ({"LLAMA_ARG_MLOCK": "1"}, True),
+        ({"LLAMA_ARG_MLOCK": "0"}, False),
+        # The deprecated boolean twins assign the whole mode either way.
+        ({"LLAMA_ARG_MMAP": "on"}, True),
+        ({"LLAMA_ARG_MMAP": "off"}, True),
+        ({"LLAMA_ARG_DIO": "1"}, True),
+        # Negative aliases count by PRESENCE: get_value_from_env forces "0".
+        ({"LLAMA_ARG_NO_MMAP": "0"}, True),
+        ({"LLAMA_ARG_NO_DIO": ""}, True),
+        ({"LLAMA_ARG_FIT": "off", "LLAMA_ARG_DEVICE": "none"}, False),
+    ],
+)
+def test_memory_env_selects_load_mode(env, expected):
+    assert _lsa.memory_env_selects_load_mode(env) is expected
+
+
+# --- the shared "is this ctx flag the user's opt-in?" test ----------------------
+# Both stripping paths (model_override_load_kwargs on the API auto-switch, and
+# _resolve_inherited_extra_args on /load) ask this one function, so a value that
+# survives one reload survives the other.
+
+
+def test_matching_ctx_override_confirms_only_an_exact_positive_int():
+    assert _lsa.matches_explicit_ctx_override(["--ctx-size", "100352"], 100352)
+    assert _lsa.matches_explicit_ctx_override(["-c", "100352"], 100352)
+    # llama.cpp folds the underscore spelling, and so does the matcher.
+    assert _lsa.matches_explicit_ctx_override(["--ctx_size", "100352"], 100352)
+    # Last-wins, exactly as the launch parses it.
+    assert _lsa.matches_explicit_ctx_override(
+        ["--ctx-size", "8192", "--ctx-size", "100352"], 100352
+    )
+    assert not _lsa.matches_explicit_ctx_override(
+        ["--ctx-size", "100352", "--ctx-size", "8192"], 100352
+    )
+    # A different value is a stale shadow, not an opt-in.
+    assert not _lsa.matches_explicit_ctx_override(["--ctx-size", "8192"], 100352)
+    assert not _lsa.matches_explicit_ctx_override(["--top-k", "40"], 100352)
+    assert not _lsa.matches_explicit_ctx_override(None, 100352)
+
+
+def test_matching_ctx_override_is_total_over_stored_junk():
+    # Override rows are coerced on write but returned verbatim on read, so this is
+    # reached with whatever JSON an older build, the API or a hand edit left behind.
+    # None of it may raise inside a load, and none of it counts as confirmed.
+    for n_ctx in (None, 0, -1, "100352", "", "x", 100352.0, True, False, [100352], {"v": 1}):
+        assert not _lsa.matches_explicit_ctx_override(["--ctx-size", "100352"], n_ctx), n_ctx
+    # A malformed flag raises in parse_ctx_override; the matcher answers False.
+    assert not _lsa.matches_explicit_ctx_override(["--ctx-size", "--top-k"], 100352)
+
+
+# ── The pageable override never resurrects a shadowed lock ──────────────────
+# force_pageable_load rewrites an oversized non-mmap launch so the weights page in
+# from disk instead of being allocated whole in host RAM. llama.cpp resolves these
+# options last-wins, so `--mlock --no-mmap` runs UNLOCKED and unmapped: the strip has
+# to read the EFFECTIVE state, not the tokens. Dropping only the selector and leaving
+# the earlier --mlock standing hands the child mmap+mlock and page-locks the whole
+# oversized mapping into the RAM the override exists to keep pageable.
+
+
+def _rewritten_state(argv, env = None):
+    """``((mlock, reserves_ram), argv, env)`` after the pageable rewrite."""
+    env = dict(env or {})
+    out, overridden = _lsa.force_pageable_load(list(argv), env)
+    return _lsa.resolve_effective_memory_state(out, env), out, env, overridden
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--mlock", "--no-mmap"],
+        ["--mlock", "--no-direct-io"],
+        ["--mlock", "--load-mode", "none"],
+        ["--load-mode", "mlock", "--no-mmap"],
+        ["--load-mode=mlock", "--no-mmap"],
+        # The mapped spelling of the lock. It holds no unmapped copy of its own, so
+        # the rewrite has no reason to touch it -- until a later reserving selector
+        # shadows it, where leaving it standing is what re-locks the mapping.
+        ["--load-mode", "mmap+mlock", "--no-mmap"],
+        ["--load-mode=mmap+mlock", "--no-mmap"],
+        ["--load-mode", "mmap+mlock", "--no-direct-io"],
+    ],
+    ids = [
+        "no-mmap",
+        "no-dio",
+        "load-mode-none",
+        "load-mode-mlock",
+        "load-mode-mlock-equals",
+        "load-mode-mmap-mlock",
+        "load-mode-mmap-mlock-equals",
+        "load-mode-mmap-mlock-no-dio",
+    ],
+)
+def test_a_shadowed_lock_is_not_resurrected_by_the_pageable_rewrite(argv):
+    # The pre-rewrite child is already unlocked, so there is no lock to carry.
+    assert _lsa.resolve_effective_memory_state(argv) == (False, True)
+
+    (mlock, reserves), out, _env, overridden = _rewritten_state(argv)
+
+    assert overridden, f"the unmapped launch was not rewritten at all: {out}"
+    assert not reserves, f"the child still holds a full unmapped copy: {out}"
+    assert not mlock, f"the rewrite page-locked the oversized mapping: {out}"
+
+
+@pytest.mark.parametrize(
+    "argv, expect_tokens",
+    [
+        (["--no-mmap", "--mlock"], ["--mlock"]),
+        (["--load-mode", "mlock"], ["--load-mode", "mmap+mlock"]),
+        (["--load-mode=mlock"], ["--load-mode", "mmap+mlock"]),
+    ],
+    ids = ["no-mmap-then-mlock", "load-mode-mlock", "load-mode-mlock-equals"],
+)
+def test_an_effective_lock_survives_the_pageable_rewrite(argv, expect_tokens):
+    """The control. "Keep this in RAM" is a real request when nothing shadowed it, so
+    it is carried onto a mapping (mmap+mlock) rather than discarded."""
+    assert _lsa.resolve_effective_memory_state(argv) == (True, True)
+
+    (mlock, reserves), out, _env, overridden = _rewritten_state(argv)
+
+    assert overridden, f"the unmapped launch was not rewritten at all: {out}"
+    assert (mlock, reserves) == (True, False), f"the lock was dropped or kept unmapped: {out}"
+    assert out == expect_tokens, out
+
+
+def test_the_env_twin_of_a_shadowed_lock_goes_too():
+    """llama.cpp reads LLAMA_ARG_* before argv and the negative alias after the
+    affirmative one, so LLAMA_ARG_MLOCK=1 beside LLAMA_ARG_NO_MMAP is shadowed exactly
+    as the argv pair is. Leaving the var behind locks the child through the environment
+    with nothing in the argv to show it."""
+    env = {"LLAMA_ARG_MLOCK": "1", "LLAMA_ARG_NO_MMAP": "1"}
+    assert _lsa.resolve_effective_memory_state([], env) == (False, True)
+
+    (mlock, reserves), _out, out_env, overridden = _rewritten_state([], env)
+
+    assert "LLAMA_ARG_NO_MMAP" not in out_env
+    assert "LLAMA_ARG_MLOCK" not in out_env, out_env
+    assert "LLAMA_ARG_MLOCK" in overridden, overridden
+    assert (mlock, reserves) == (False, False)
+
+
+def test_the_env_mapped_lock_mode_shadowed_by_an_argv_selector_goes_too():
+    """The env half of the mapped spelling. llama.cpp reads LLAMA_ARG_* before argv,
+    so an inherited LLAMA_ARG_LOAD_MODE=mmap+mlock followed by --no-mmap on the command
+    line is shadowed exactly as the all-argv pair is, and leaving the var behind locks
+    the restored mapping through the environment with nothing in the argv to show it."""
+    env = {"LLAMA_ARG_LOAD_MODE": "mmap+mlock"}
+    assert _lsa.resolve_effective_memory_state(["--no-mmap"], env) == (False, True)
+
+    (mlock, reserves), _out, out_env, overridden = _rewritten_state(["--no-mmap"], env)
+
+    assert "LLAMA_ARG_LOAD_MODE" not in out_env, out_env
+    assert overridden, "the unmapped launch was not rewritten at all"
+    assert (mlock, reserves) == (
+        False,
+        False,
+    ), f"the rewrite page-locked the oversized mapping: {out_env}"
+
+
+def test_an_unshadowed_mapped_lock_is_left_entirely_alone():
+    """The control that keeps the strip above scoped. ``mmap+mlock`` on its own already
+    maps, so it holds no full unmapped copy and is not this override's business: it must
+    come back untouched and, with nothing rewritten, report no override at all. Without
+    that, a launch that was always pageable would be reported as having been remapped."""
+    argv = ["--load-mode", "mmap+mlock"]
+    assert _lsa.resolve_effective_memory_state(argv) == (True, False)
+
+    (mlock, reserves), out, _env, overridden = _rewritten_state(argv)
+
+    assert out == argv, out
+    assert not overridden, f"an already-mapped launch was reported as overridden: {overridden}"
+    assert (mlock, reserves) == (True, False)
+
+
+def test_the_env_mlock_mode_that_is_not_shadowed_keeps_its_lock():
+    """The control for the env half: LLAMA_ARG_LOAD_MODE=mlock with nothing after it
+    really is locked, so it becomes the mapped twin instead of being dropped."""
+    env = {"LLAMA_ARG_LOAD_MODE": "mlock"}
+    assert _lsa.resolve_effective_memory_state([], env) == (True, True)
+
+    (mlock, reserves), _out, out_env, _overridden = _rewritten_state([], env)
+
+    assert out_env["LLAMA_ARG_LOAD_MODE"] == "mmap+mlock"
+    assert (mlock, reserves) == (True, False)
+
+
+def test_an_argv_lock_that_overrides_an_inherited_selector_survives():
+    """The cross case, and the reason the rewrite cannot read either side alone: argv
+    is resolved after the environment, so --mlock beats an inherited LLAMA_ARG_NO_MMAP
+    and the lock is the user's live request."""
+    env = {"LLAMA_ARG_NO_MMAP": "1"}
+    argv = ["--mlock"]
+    assert _lsa.resolve_effective_memory_state(argv, env) == (True, True)
+
+    (mlock, reserves), out, out_env, _overridden = _rewritten_state(argv, env)
+
+    assert "LLAMA_ARG_NO_MMAP" not in out_env
+    assert out == ["--mlock"], out
+    assert (mlock, reserves) == (True, False)
+
+
+def test_a_pageable_launch_keeps_every_token_including_its_lock():
+    """Nothing here reserves RAM, so the override does not apply and the launch comes
+    back byte for byte -- the mlock strip is scoped to a rewrite, not to any --mlock."""
+    argv = ["--mlock", "--load-mode", "dio"]
+    assert _lsa.resolve_effective_memory_state(argv) == (False, False)
+
+    out, overridden = _lsa.force_pageable_load(list(argv), {})
+
+    assert out == argv and overridden == []

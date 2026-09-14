@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ArrowRight02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { IconSvgElement } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -12,10 +11,12 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import {
+  ArrowRightIcon,
+} from "lucide-react";
 
-/** The link out to another page's workspace (Images, Video, image training). Kept out of the
- *  page's mode strip, which switches modes within a page, and parked at the far right past a
- *  divider so it reads as leaving rather than as another mode. */
+/** The link out to another page's workspace (Images, Video, Audio, image training).
+ *  Kept out of the mode strip and parked past a divider so it reads as leaving. */
 export function MediaPageLink({
   to,
   label,
@@ -25,7 +26,7 @@ export function MediaPageLink({
   labelClassName,
   arrowClassName,
 }: {
-  to: "/images" | "/video";
+  to: "/images" | "/video" | "/audio";
   label: string;
   icon: IconSvgElement;
   /** Needed on a translated page: the default prefix below is English. */
@@ -59,8 +60,7 @@ export function MediaPageLink({
           >
             <HugeiconsIcon icon={icon} className="size-4 shrink-0" />
             <span className={cn("min-w-0 truncate", labelClassName)}>{label}</span>
-            <HugeiconsIcon
-              icon={ArrowRight02Icon}
+            <ArrowRightIcon
               className={cn("size-3.5 shrink-0 opacity-60", arrowClassName)}
             />
           </button>

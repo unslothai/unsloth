@@ -24,6 +24,19 @@ from pathlib import Path
 
 import pytest
 
+
+def _shared_setup_1(monkeypatch):
+    b = TrainingBackend()
+    finalized: dict = {}
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: finalized.update(kw))
+
+    b._proc = _FakeProc(alive = False)
+    b._event_queue = _IdleQueue()
+    b._progress.is_training = True
+    return b, finalized
+
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -42,12 +55,6 @@ _lg = _types.ModuleType("loggers")
 _lg.get_logger = lambda name: logging.getLogger(name)
 _stub("loggers", _lg)
 _stub("structlog", _types.ModuleType("structlog"))
-_mpl = _types.ModuleType("matplotlib")
-_plt = _types.ModuleType("matplotlib.pyplot")
-_plt.Figure = type("Figure", (), {})  # referenced in a class-def annotation
-_mpl.pyplot = _plt
-_stub("matplotlib", _mpl)
-_stub("matplotlib.pyplot", _plt)
 _hw = _types.ModuleType("utils.hardware")
 _hw.get_device = lambda: _types.SimpleNamespace(value = "cpu")
 _hw.prepare_gpu_selection = lambda *a, **k: (None, None)
@@ -70,8 +77,6 @@ from core.training.training import TrainingBackend
 for _name in (
     "loggers",
     "structlog",
-    "matplotlib",
-    "matplotlib.pyplot",
     "utils.hardware",
     "utils.native_path_leases",
     "utils.paths",
@@ -306,14 +311,7 @@ def test_pump_finalizes_when_read_keeps_raising_on_dead_worker(monkeypatch):
 
 def test_interrupted_cancel_clears_in_memory_output_dir(monkeypatch):
     # Stop-without-save interrupted before its complete event: /status must not serve the cleared output_dir.
-    b = TrainingBackend()
-    finalized: dict = {}
-    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
-    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: finalized.update(kw))
-
-    b._proc = _FakeProc(alive = False)
-    b._event_queue = _IdleQueue()
-    b._progress.is_training = True
+    b, finalized = _shared_setup_1(monkeypatch)
     b._should_stop = True
     b._cancel_requested = True
     b._output_dir = "/out/x"
@@ -327,14 +325,7 @@ def test_interrupted_cancel_clears_in_memory_output_dir(monkeypatch):
 
 
 def test_worker_exit_reuses_terminal_stop_save_error(monkeypatch):
-    b = TrainingBackend()
-    finalized: dict = {}
-    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
-    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: finalized.update(kw))
-
-    b._proc = _FakeProc(alive = False)
-    b._event_queue = _IdleQueue()
-    b._progress.is_training = True
+    b, finalized = _shared_setup_1(monkeypatch)
     b._should_stop = True
     b._cancel_requested = False
     b._output_dir = "/out/x"
@@ -359,14 +350,7 @@ def test_worker_exit_reuses_terminal_stop_save_error(monkeypatch):
 
 def test_dead_worker_crash_preserves_output_dir(monkeypatch):
     # A crash (no stop requested) after output_dir was emitted must keep the dir: checkpoints may exist.
-    b = TrainingBackend()
-    finalized: dict = {}
-    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
-    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: finalized.update(kw))
-
-    b._proc = _FakeProc(alive = False)
-    b._event_queue = _IdleQueue()
-    b._progress.is_training = True
+    b, finalized = _shared_setup_1(monkeypatch)
     b._output_dir = "/out/x"
 
     b._pump_loop()
@@ -514,6 +498,10 @@ def _stub_spawn(monkeypatch):
 
     pl = _types.ModuleType("utils.process_lifetime")
     pl.adopt_pid = lambda pid: None
+    # The spawn also reads the shutdown latch. These tests are about the pump, not about
+    # quitting, so the double answers "not shutting down" and the spawn proceeds; leaving
+    # it off makes the import fail and every start_training here return False.
+    pl.is_process_shutting_down = lambda: False
     monkeypatch.setitem(sys.modules, "utils.process_lifetime", pl)
 
     worker = _types.ModuleType("core.training.worker")

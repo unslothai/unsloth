@@ -1,0 +1,111 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+type ReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
+
+
+export interface ResearchInferenceRequest {
+  model: string;
+  providerId?: string;
+  providerType?: string;
+  externalModel?: string;
+  temperature?: number;
+  topP?: number;
+  maxTokens?: number;
+  maxOutputTokens?: number;
+  maxOutputTokensFromSavedCap?: boolean;
+  maxOutputTokensPublished?: number;
+  enableThinking?: boolean;
+  reasoningEffort?: string;
+}
+
+export function buildResearchInferenceRequest(input: {
+  checkpoint: string;
+  external?: {
+    providerId: string;
+    providerType: string;
+    modelId: string;
+    /** The connection's resolved output ceiling, or null when nothing grounds one. */
+    maxOutputTokens: number | null;
+    /** True when the connection's saved cap is the only thing grounding that ceiling. */
+    maxOutputTokensFromSavedCap: boolean;
+    /** The model's own published limit, before the connection override is folded in. */
+    maxOutputTokensPublished: number | null;
+  };
+  temperature: number;
+  topP: number;
+  maxTokens: number;
+  reasoningRequested: boolean;
+  reasoningStyle: string;
+  reasoningEffort: ReasoningEffort;
+  reasoningEffortLevels: readonly ReasoningEffort[];
+  clampReasoningEffort: (
+    effort: ReasoningEffort,
+    levels: readonly ReasoningEffort[],
+  ) => ReasoningEffort;
+}): ResearchInferenceRequest {
+  const model = input.external?.modelId ?? input.checkpoint;
+  const request: ResearchInferenceRequest = {
+    model,
+    ...(input.external
+      ? {
+          providerId: input.external.providerId,
+          providerType: input.external.providerType,
+          externalModel: input.external.modelId,
+          ...(input.external.maxOutputTokens != null &&
+          Number.isFinite(input.external.maxOutputTokens) &&
+          input.external.maxOutputTokens > 0
+            ? {
+                maxOutputTokens: Math.floor(input.external.maxOutputTokens),
+                // The run outlives the connection edit that grounded it.
+                maxOutputTokensFromSavedCap: input.external.maxOutputTokensFromSavedCap,
+                // The ceiling above has the override folded in, so it cannot say whether the
+                // model itself stops there, which is what the report floor turns on.
+                ...(input.external.maxOutputTokensPublished != null &&
+                Number.isFinite(input.external.maxOutputTokensPublished) &&
+                input.external.maxOutputTokensPublished > 0
+                  ? {
+                      maxOutputTokensPublished: Math.floor(
+                        input.external.maxOutputTokensPublished,
+                      ),
+                    }
+                  : {}),
+              }
+            : {}),
+        }
+      : {}),
+  };
+  if (Number.isFinite(input.temperature) && input.temperature >= 0 && input.temperature <= 2) {
+    request.temperature = input.temperature;
+  }
+  if (Number.isFinite(input.topP) && input.topP > 0 && input.topP <= 1) {
+    request.topP = input.topP;
+  }
+  if (Number.isFinite(input.maxTokens) && input.maxTokens > 0) {
+    request.maxTokens = Math.min(8192, Math.floor(input.maxTokens));
+  }
+  if (
+    input.reasoningStyle === "enable_thinking" ||
+    input.reasoningStyle === "enable_thinking_effort"
+  ) {
+    request.enableThinking = input.reasoningRequested;
+  }
+  if (
+    input.reasoningRequested &&
+    (input.reasoningStyle === "reasoning_effort" ||
+      input.reasoningStyle === "enable_thinking_effort")
+  ) {
+    request.reasoningEffort = input.clampReasoningEffort(
+      input.reasoningEffort,
+      input.reasoningEffortLevels,
+    );
+  }
+  return request;
+}

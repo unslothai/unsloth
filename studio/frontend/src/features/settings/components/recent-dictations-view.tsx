@@ -25,7 +25,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  DeleteChatFilesSwitch,
   deleteChatItem,
+  useChatPreferencesStore,
   useChatRuntimeStore,
   type SidebarItem,
 } from "@/features/chat";
@@ -33,13 +35,15 @@ import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import {
-  ArrowLeft01Icon,
   Copy01Icon,
   Delete02Icon,
   Message01Icon,
   Search01Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
+import {
+  ChevronLeftIcon,
+} from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
@@ -87,6 +91,9 @@ export function RecentDictationsView({
     (s) => s.clearRecentDictations,
   );
   const [pendingDelete, setPendingDelete] = useState<PendingDelete>(null);
+  // Only "Delete chat and dictation" removes a chat, so only that path shows
+  // the switch. Preselected from the preference, off for this one if asked.
+  const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
   const [search, setSearch] = useState("");
   const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
   // Pagination is keyed to the search/sort inputs so changing either restarts
@@ -95,6 +102,9 @@ export function RecentDictationsView({
   const [page, setPage] = useState({ key: pageKey, count: PAGE_SIZE });
   const visibleCount = page.key === pageKey ? page.count : PAGE_SIZE;
   const navigate = useNavigate();
+  const alwaysDeleteChatFiles = useChatPreferencesStore(
+    (s) => s.alwaysDeleteChatFiles,
+  );
   const closeSettings = useSettingsDialogStore((s) => s.closeDialog);
   const selected =
     recentDictations.find((dictation) => dictation.id === selectedId) ?? null;
@@ -145,7 +155,7 @@ export function RecentDictationsView({
   }
 
   // Delete a linked dictation together with the chat it was used in.
-  async function confirmDeleteWithChat() {
+  async function confirmDeleteWithChat(deleteFiles: boolean) {
     if (pendingDelete?.kind !== "one") {
       return;
     }
@@ -170,6 +180,7 @@ export function RecentDictationsView({
               search: { new: crypto.randomUUID() },
             });
           },
+          { deleteFiles },
         );
       } catch (error) {
         toast.error(t("settings.voice.recents.deleteWithChatFailed"), {
@@ -197,7 +208,7 @@ export function RecentDictationsView({
           }
           className="inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
+          <ChevronLeftIcon className="size-4" />
         </button>
         <h1 className="font-heading text-xl font-semibold">
           {t("settings.voice.title")}
@@ -252,7 +263,10 @@ export function RecentDictationsView({
               variant="outline"
               size="sm"
               onClick={() =>
-                setPendingDelete({ kind: "one", dictation: selected })
+                {
+                  setDeleteFilesOnDelete(alwaysDeleteChatFiles);
+                  setPendingDelete({ kind: "one", dictation: selected });
+                }
               }
               className="text-destructive hover:border-destructive/60 hover:text-destructive"
             >
@@ -420,7 +434,10 @@ export function RecentDictationsView({
                     <button
                       type="button"
                       onClick={() =>
-                        setPendingDelete({ kind: "one", dictation })
+                        {
+                        setDeleteFilesOnDelete(alwaysDeleteChatFiles);
+                        setPendingDelete({ kind: "one", dictation });
+                      }
                       }
                       aria-label={t("settings.voice.recents.delete")}
                       title={t("settings.voice.recents.delete")}
@@ -480,6 +497,14 @@ export function RecentDictationsView({
                   : t("settings.voice.recents.deleteDescription")}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {/* Only the linked case offers a chat delete, so only it can remove files. */}
+          {pendingDelete?.kind === "one" && pendingDelete.dictation.chatId ? (
+            <DeleteChatFilesSwitch
+              id="dictation-delete-files"
+              checked={deleteFilesOnDelete}
+              onCheckedChange={setDeleteFilesOnDelete}
+            />
+          ) : null}
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             {pendingDelete?.kind === "one" && pendingDelete.dictation.chatId ? (
@@ -490,7 +515,7 @@ export function RecentDictationsView({
                   // Close only through state so the dismissal can't race a
                   // click on whatever ends up under the pointer.
                   event.preventDefault();
-                  void confirmDeleteWithChat();
+                  void confirmDeleteWithChat(deleteFilesOnDelete);
                 }}
               >
                 {t("settings.voice.recents.deleteWithChat")}

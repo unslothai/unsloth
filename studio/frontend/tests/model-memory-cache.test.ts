@@ -84,6 +84,121 @@ test("concurrent reads share one request", async () => {
   assert.deepEqual(b, c);
 });
 
+test("a 404 is an absent route, not a failed read", async () => {
+  // The resident-model shortcut treats the two oppositely: an older backend has no such
+  // setting to disagree about, while a read that could not be made says nothing, and
+  // assuming it said no is how a saved policy goes missing.
+  calls = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response("{}", { status: 404 })) as typeof fetch;
+  await assert.rejects(
+    loadModelMemorySettings({ force: true }),
+    (error: Error) => {
+      assert.equal(error.name, "SettingsRouteAbsentError");
+      return true;
+    },
+  );
+  globalThis.fetch = (async () =>
+    new Response("boom", { status: 503 })) as typeof fetch;
+  await assert.rejects(
+    loadModelMemorySettings({ force: true }),
+    (error: Error) => {
+      assert.notEqual(error.name, "SettingsRouteAbsentError");
+      return true;
+    },
+  );
+  globalThis.fetch = original;
+});
+
+test("a forced read does not join one already in flight", async () => {
+  // Sharing is right for two panels painting the same answer and wrong for the
+  // resident-model shortcut: a read that started before a policy save describes the
+  // policy it replaced, and a reloadRequired false from that would suppress the very
+  // load the save was made for.
+  calls = [];
+  const joined = loadModelMemorySettings();
+  // The fake snapshots the body when the request goes out, so the second GET carries the
+  // saved policy and the first still carries the one it replaced.
+  nextBody = { ...API, reload_required: true };
+  const forced = loadModelMemorySettings({ force: true });
+  assert.equal(calls.length, 2, "the forced read must issue its own GET");
+  const [stale, fresh] = await Promise.all([joined, forced]);
+  assert.equal(
+    stale.reloadRequired,
+    false,
+    "the shared read keeps its own answer",
+  );
+  assert.equal(
+    fresh.reloadRequired,
+    true,
+    "the forced read sees the saved policy",
+  );
+  nextBody = { ...API };
+});
+
+test("a displaced read neither publishes nor frees the slot", async () => {
+  // Forcing replaces an in-flight read, and that older request is still running. It
+  // describes the state its replacement was issued because of, so it must not repaint
+  // subscribers, and it must not clear a sharing handle it no longer owns.
+  const original = globalThis.fetch;
+  const pending: ((body: Record<string, unknown>) => void)[] = [];
+  let issued = 0;
+  globalThis.fetch = (async () => {
+    issued += 1;
+    return new Promise<Response>((resolve) => {
+      pending.push((body) =>
+        resolve(
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+      );
+    });
+  }) as typeof fetch;
+
+  const published: boolean[] = [];
+  const stop = subscribeModelMemorySettings((settings) => {
+    published.push(settings.reloadRequired);
+  });
+  try {
+    const displaced = loadModelMemorySettings();
+    const forced = loadModelMemorySettings({ force: true });
+    assert.equal(issued, 2);
+
+    // The displaced request lands first, while its replacement is still in flight.
+    pending[0]({ ...API, reload_required: false });
+    assert.equal(
+      await displaced,
+      await displaced,
+      "its own caller still gets an answer",
+    );
+    await Promise.resolve();
+    assert.deepEqual(
+      published,
+      [],
+      "a superseded read must not repaint subscribers",
+    );
+
+    // The slot still belongs to the forced read, so a new caller joins it.
+    const joiner = loadModelMemorySettings();
+    assert.equal(issued, 2, "the displaced read freed a slot it did not own");
+
+    pending[1]({ ...API, reload_required: true });
+    assert.equal((await forced).reloadRequired, true);
+    assert.equal((await joiner).reloadRequired, true);
+    assert.deepEqual(
+      published,
+      [true],
+      "only the current read speaks for everyone",
+    );
+  } finally {
+    stop();
+    globalThis.fetch = original;
+  }
+});
+
 test("a later read is NOT served from a cache", async () => {
   calls = [];
   await loadModelMemorySettings();

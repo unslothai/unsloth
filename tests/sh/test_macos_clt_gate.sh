@@ -17,43 +17,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-PASS=0
-FAIL=0
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
-assert_contains() {
-    _label="$1"; _haystack="$2"; _needle="$3"
-    if echo "$_haystack" | grep -qF "$_needle"; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected to find '$_needle')"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
-assert_not_contains() {
-    _label="$1"; _haystack="$2"; _needle="$3"
-    if echo "$_haystack" | grep -qF "$_needle"; then
-        echo "  FAIL: $_label (found '$_needle' but should not)"
-        FAIL=$((FAIL + 1))
-    else
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    fi
-}
-
 # ── Extract the functions under test ──
 _FN_FILE=$(mktemp)
 sed -n '/^_has_working_git()/,/^}/p'   "$INSTALL_SH" >  "$_FN_FILE"
@@ -157,6 +122,71 @@ assert_eq "working git -> yes" "yes" "$_r"
 rm -f "$_BIN"/git
 _r="$(PATH="$_BIN" "$_SH" -c ". '$_FN_FILE'; _has_working_git && echo yes || echo no")"
 assert_eq "absent git -> no" "no" "$_r"
+
+# On macOS the probe must ANSWER FROM THE PATH, never execute /usr/bin/git: running the
+# CLT shim is what raises the "install the command line developer tools" GUI dialog. The
+# git stub here records execution, so an empty marker file is the proof it stayed unrun.
+echo "=== macOS: the CLT git shim is never executed ==="
+rm -f "$_BIN"/*
+_RAN="$(mktemp -u)"
+rm -f "$_RAN"
+_mk git "echo ran >> '$_RAN'; exit 1"
+_mk xcode-select 'exit 1'          # no toolchain selected == a clean Mac
+_r="$(PATH="$_BIN" OS=macos _CLT_GIT_SHIM="$_BIN/git" "$_SH" -c \
+    ". '$_FN_FILE'; _has_working_git && echo yes || echo no")"
+assert_eq "clean Mac + shim git -> no" "no" "$_r"
+if [ -f "$_RAN" ]; then
+    assert_eq "shim git was NOT executed (no GUI dialog)" "not-executed" "executed"
+else
+    assert_eq "shim git was NOT executed (no GUI dialog)" "not-executed" "not-executed"
+fi
+
+# Intel hosted runners can have a real working /usr/bin/git even with no selected CLT.
+# MAC_INTEL is established from hardware detection before this helper runs, so probe
+# the same path on real Intel while still refusing it on Apple Silicon.
+rm -f "$_RAN"
+_mk git "echo ran >> '$_RAN'; exit 0"
+_r="$(PATH="$_BIN" OS=macos MAC_INTEL=true _CLT_GIT_SHIM="$_BIN/git" "$_SH" -c \
+    ". '$_FN_FILE'; _has_working_git && echo yes || echo no")"
+assert_eq "Intel Mac + working system git -> yes" "yes" "$_r"
+if [ -f "$_RAN" ]; then
+    assert_eq "Intel system git WAS executed" "executed" "executed"
+else
+    assert_eq "Intel system git WAS executed" "executed" "not-executed"
+fi
+
+# An x86_64 shell under Rosetta also sets MAC_INTEL, but the machine is Apple Silicon and
+# /usr/bin/git is still its dialog shim, so the Intel exception above must not apply: the
+# hardware answer (_MAC_ROSETTA) wins over the shell's reported architecture.
+rm -f "$_RAN"
+_mk git "echo ran >> '$_RAN'; exit 1"
+_r="$(PATH="$_BIN" OS=macos MAC_INTEL=true _MAC_ROSETTA=true _CLT_GIT_SHIM="$_BIN/git" "$_SH" -c \
+    ". '$_FN_FILE'; _has_working_git && echo yes || echo no")"
+assert_eq "Rosetta on Apple Silicon + shim git -> no" "no" "$_r"
+if [ -f "$_RAN" ]; then
+    assert_eq "Rosetta shim git was NOT executed (no GUI dialog)" "not-executed" "executed"
+else
+    assert_eq "Rosetta shim git was NOT executed (no GUI dialog)" "not-executed" "not-executed"
+fi
+
+# The architecture block is what sets _MAC_ROSETTA, so pin it here too: a rename or a
+# dropped assignment would leave the guard above reading an unset variable and silently
+# fall back to executing the shim.
+assert_contains "install.sh sets _MAC_ROSETTA when sysctl reports arm64 hardware" \
+    "$(sed -n '/^MAC_INTEL=false$/,/^fi$/p' "$INSTALL_SH")" "_MAC_ROSETTA=true"
+
+# A real git elsewhere on PATH (Homebrew) must still be probed by executing it, so a Mac
+# with a working git but no CLT selected keeps working exactly as before.
+rm -f "$_RAN"
+_mk git "echo ran >> '$_RAN'; exit 1"
+_r="$(PATH="$_BIN" OS=macos _CLT_GIT_SHIM=/usr/bin/git "$_SH" -c \
+    ". '$_FN_FILE'; _has_working_git && echo yes || echo no")"
+assert_eq "clean Mac + non-shim working git -> probed" "no" "$_r"
+if [ -f "$_RAN" ]; then
+    assert_eq "non-shim git WAS executed" "executed" "executed"
+else
+    assert_eq "non-shim git WAS executed" "executed" "not-executed"
+fi
 
 rm -rf "$_BIN" "$_FN_FILE" "$_HARNESS"
 

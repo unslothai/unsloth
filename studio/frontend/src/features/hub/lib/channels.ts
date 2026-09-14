@@ -71,12 +71,6 @@ export function findChannel(id: ChannelId | null): ChannelPreset | null {
 
 export type HubSection = "trending" | "latest" | "finetune";
 
-export const HUB_SECTION_ORDER: readonly HubSection[] = [
-  "trending",
-  "latest",
-  "finetune",
-];
-
 export const SECTION_TO_CHANNEL: Record<HubSection, ChannelId> = {
   trending: "unsloth-trending",
   latest: "unsloth-latest",
@@ -94,7 +88,3 @@ export const HUB_SECTION_TITLE: Record<HubSection, string> = {
   latest: "Latest Unsloth Models",
   finetune: "Fine-tune Ready",
 };
-
-export function isHubSection(value: unknown): value is HubSection {
-  return value === "trending" || value === "latest" || value === "finetune";
-}

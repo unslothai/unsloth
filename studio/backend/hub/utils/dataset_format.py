@@ -403,15 +403,18 @@ def detect_multimodal_dataset(dataset):
 
     detected_text_col = None
     if audio_columns:
-        for col_name in column_names:
-            if col_name.lower() in [
-                "text",
-                "sentence",
-                "transcript",
-                "transcription",
-                "label",
-            ]:
-                detected_text_col = col_name
+        # Two passes, not one list: a set carrying both an instruction-like "prompt" and a real
+        # "transcript" would be mapped by schema order, training an ASR set against its instructions.
+        transcript_names = ("text", "sentence", "transcript", "transcription", "label")
+        # TTS corpora name the line to speak rather than a transcript of it: SparkTTS sets use "prompt",
+        # LJSpeech derivatives "normalized_text".
+        fallback_names = ("prompt", "normalized_text")
+        for candidates in (transcript_names, fallback_names):
+            for col_name in column_names:
+                if col_name.lower() in candidates:
+                    detected_text_col = col_name
+                    break
+            if detected_text_col:
                 break
     detected_speaker_col = None
     if audio_columns:

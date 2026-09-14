@@ -30,9 +30,29 @@ export interface NativeImportedTextFile {
   content: string;
 }
 
-export type NativeChatImport = NativeImportedTextFile;
+/** Handle for a native chat import read in bounded ranges. */
+export interface NativeChatImport {
+  name: string;
+  size: number;
+  token: string;
+}
 
-function browserDownload(blob: Blob, filename: string): void {
+export async function readNativeChatImportChunk(
+  token: string,
+  offset: number,
+  length: number,
+): Promise<Uint8Array> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const bytes = await invoke<ArrayBuffer | number[]>(
+    "read_native_chat_import_chunk",
+    { token, offset, length },
+  );
+  return bytes instanceof ArrayBuffer
+    ? new Uint8Array(bytes)
+    : new Uint8Array(bytes);
+}
+
+export function browserDownload(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;

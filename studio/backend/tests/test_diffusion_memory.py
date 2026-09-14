@@ -10,8 +10,10 @@ matrix and the applier's pipeline calls are exercised in isolation.
 
 from __future__ import annotations
 
+import sys
 import types
 
+import core.inference.diffusion_memory as diffusion_memory
 import pytest
 
 from core.inference.diffusion_memory import (
@@ -67,6 +69,204 @@ def test_normalize_memory_mode_accepts_and_rejects():
     assert normalize_memory_mode("Balanced") == "balanced"
     with pytest.raises(ValueError):
         normalize_memory_mode("ultra")
+
+
+class _FakeNativeFunction:
+    def __init__(self, result = 0):
+        self.argtypes = None
+        self.restype = None
+        self.calls = []
+        self.result = result
+
+    def __call__(self, *args):
+        self.calls.append(args)
+        return self.result
+
+
+@pytest.mark.parametrize(
+    ("platform_name", "library_name", "symbol", "native_args"),
+    [
+        ("linux", None, "malloc_trim", (0,)),
+        ("darwin", None, "malloc_zone_pressure_relief", (None, 0)),
+        ("win32", "ucrtbase.dll", "_heapmin", ()),
+    ],
+)
+def test_host_memory_reclaimer_uses_and_caches_the_native_api(
+    monkeypatch, platform_name, library_name, symbol, native_args
+):
+    native = _FakeNativeFunction()
+    library_loads = []
+
+    def fake_cdll(name):
+        library_loads.append(name)
+        return types.SimpleNamespace(**{symbol: native})
+
+    monkeypatch.setattr(diffusion_memory.sys, "platform", platform_name)
+    monkeypatch.setattr(diffusion_memory.ctypes, "CDLL", fake_cdll)
+    diffusion_memory._resolve_host_memory_reclaimer.cache_clear()
+    try:
+        assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_MODEL) is True
+        assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_MODEL) is True
+    finally:
+        diffusion_memory._resolve_host_memory_reclaimer.cache_clear()
+
+    assert library_loads == [library_name]
+    assert native.calls == [native_args, native_args]
+    assert native.argtypes is not None and native.restype is not None
+
+
+def test_host_memory_reclaimer_windows_falls_back_and_logs_heap_failure_once(monkeypatch):
+    native = _FakeNativeFunction(result = -1)
+    library_loads = []
+    warnings = []
+
+    def fake_cdll(name):
+        library_loads.append(name)
+        if name == "ucrtbase.dll":
+            raise OSError("UCRT unavailable")
+        return types.SimpleNamespace(_heapmin = native)
+
+    monkeypatch.setattr(diffusion_memory.sys, "platform", "win32")
+    monkeypatch.setattr(diffusion_memory.ctypes, "CDLL", fake_cdll)
+    monkeypatch.setattr(diffusion_memory, "_host_memory_reclaim_warning_logged", False)
+    diffusion_memory._resolve_host_memory_reclaimer.cache_clear()
+    logger = types.SimpleNamespace(warning = lambda *args: warnings.append(args))
+    try:
+        assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_MODEL, logger) is False
+        assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_MODEL, logger) is False
+    finally:
+        diffusion_memory._resolve_host_memory_reclaimer.cache_clear()
+
+    assert library_loads == ["ucrtbase.dll", "msvcrt.dll"]
+    assert native.calls == [(), ()]
+    assert len(warnings) == 1
+
+
+def test_host_memory_reclaimer_is_policy_scoped_and_best_effort(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        diffusion_memory, "_resolve_host_memory_reclaimer", lambda: lambda: calls.append(0)
+    )
+
+    for policy in (OFFLOAD_NONE, OFFLOAD_GROUP, OFFLOAD_STREAMING, OFFLOAD_SEQUENTIAL):
+        assert diffusion_memory.reclaim_offload_host_memory(policy) is False
+    assert calls == []
+    assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_MODEL) is True
+    assert calls == [0]
+
+    def resolver_failure():
+        raise OSError("allocator unavailable")
+
+    monkeypatch.setattr(diffusion_memory, "_resolve_host_memory_reclaimer", resolver_failure)
+    assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_MODEL) is False
+
+    def call_failure():
+        raise RuntimeError("pressure API failed")
+
+    monkeypatch.setattr(diffusion_memory, "_resolve_host_memory_reclaimer", lambda: call_failure)
+    assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_MODEL) is False
+
+
+def test_host_memory_reclaimer_caches_unsupported_or_missing_apis(monkeypatch):
+    loads = []
+    monkeypatch.setattr(diffusion_memory.sys, "platform", "linux")
+    monkeypatch.setattr(
+        diffusion_memory.ctypes,
+        "CDLL",
+        lambda name: loads.append(name) or types.SimpleNamespace(),
+    )
+    diffusion_memory._resolve_host_memory_reclaimer.cache_clear()
+    try:
+        assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_MODEL) is False
+        assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_MODEL) is False
+    finally:
+        diffusion_memory._resolve_host_memory_reclaimer.cache_clear()
+    assert loads == [None]
+
+    monkeypatch.setattr(diffusion_memory.sys, "platform", "haiku")
+    monkeypatch.setattr(
+        diffusion_memory.ctypes,
+        "CDLL",
+        lambda name: pytest.fail("unsupported platforms must not load an allocator library"),
+    )
+    diffusion_memory._resolve_host_memory_reclaimer.cache_clear()
+    try:
+        assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_MODEL) is False
+    finally:
+        diffusion_memory._resolve_host_memory_reclaimer.cache_clear()
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"),
+    reason = "exercises the real glibc allocator symbol",
+)
+def test_host_memory_reclaimer_calls_the_real_glibc_symbol():
+    """Every other reclaimer test replaces ctypes, so none of them would notice if the library,
+    the symbol name or the ABI stopped resolving against a real libc. Spy on the real CDLL
+    instead of standing in for it, so the assertions land on the very function pointer the
+    resolver configured (a fresh CDLL(None).malloc_trim would carry default argtypes and prove
+    nothing)."""
+    import ctypes
+
+    if not hasattr(ctypes.CDLL(None), "malloc_trim"):
+        pytest.skip("no malloc_trim on this libc (musl); the resolver correctly declines")
+
+    real_cdll = ctypes.CDLL
+    captured = {}
+
+    def spy(name, *args, **kwargs):
+        library = real_cdll(name, *args, **kwargs)
+        captured["library"] = library
+        return library
+
+    monkeypatch_target = diffusion_memory.ctypes
+    original = monkeypatch_target.CDLL
+    monkeypatch_target.CDLL = spy
+    diffusion_memory._resolve_host_memory_reclaimer.cache_clear()
+    try:
+        assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_MODEL) is True
+        pressure = captured["library"].malloc_trim
+        assert pressure.argtypes == [ctypes.c_size_t]
+        assert pressure.restype is ctypes.c_int
+        # glibc: 1 = released to the OS, 0 = could not.
+        assert pressure(0) in (0, 1)
+    finally:
+        monkeypatch_target.CDLL = original
+        diffusion_memory._resolve_host_memory_reclaimer.cache_clear()
+
+
+def test_host_memory_reclaimer_survives_a_python_without_ctypes(monkeypatch):
+    """A Python built without libffi has no _ctypes. This module is imported by diffusion,
+    video, llama_cpp, sd_cpp_backend and routes.inference, so a hard ctypes dependency would
+    turn a missing optional optimisation into a backend that cannot start at all."""
+    monkeypatch.setattr(diffusion_memory, "ctypes", None)
+    diffusion_memory._resolve_host_memory_reclaimer.cache_clear()
+    try:
+        assert diffusion_memory._resolve_host_memory_reclaimer() is None
+        assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_MODEL) is False
+        assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_NONE) is False
+    finally:
+        diffusion_memory._resolve_host_memory_reclaimer.cache_clear()
+
+
+def test_host_memory_reclaimer_reports_an_unsupported_allocator_once(monkeypatch):
+    """The call site discards the return value, so an allocator we can never trim has to say so
+    itself or a permanent no-op is invisible while host RAM climbs."""
+    messages = []
+    logger = types.SimpleNamespace(
+        info = lambda fmt, *args: messages.append(fmt % args),
+        warning = lambda fmt, *args: messages.append(fmt % args),
+    )
+    monkeypatch.setattr(diffusion_memory, "_host_memory_reclaim_unsupported_logged", False)
+    monkeypatch.setattr(diffusion_memory.sys, "platform", "haiku")
+    diffusion_memory._resolve_host_memory_reclaimer.cache_clear()
+    try:
+        assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_MODEL, logger = logger) is False
+        assert diffusion_memory.reclaim_offload_host_memory(OFFLOAD_MODEL, logger = logger) is False
+    finally:
+        diffusion_memory._resolve_host_memory_reclaimer.cache_clear()
+    assert len(messages) == 1, messages
+    assert "haiku" in messages[0]
 
 
 # ── filename / size estimates ─────────────────────────────────────────────────
@@ -901,7 +1101,7 @@ def test_plan_fits_total_capacity():
 # load-time refusal that replaces that SIGKILL with a message.
 
 _MPS_TOTAL_MIB = 16 * 1024
-_MPS_FREE_MIB = int(_MPS_TOTAL_MIB * 0.80)  # RAM free once macOS + a browser + Studio are up
+_MPS_FREE_MIB = int(_MPS_TOTAL_MIB * 0.80)  # RAM free once macOS + a browser + Unsloth are up
 
 
 def _unified_plan(
@@ -1038,7 +1238,7 @@ def test_unified_oversize_decision_matrix_for_the_real_video_families():
     where the weights genuinely cannot fit, and must stay silent where they can.
 
     ``video_families`` is a pure table module (no torch, no diffusers), so this stays hermetic.
-    ``free`` is modelled at 80% of RAM, the share left once macOS, a browser and Studio are up.
+    ``free`` is modelled at 80% of RAM, the share left once macOS, a browser and Unsloth are up.
     """
     from core.inference.video_families import _FAMILIES
     from core.inference.diffusion_memory import (
@@ -1812,3 +2012,41 @@ def test_the_batch_remedy_appears_only_when_a_batch_was_budgeted():
     assert batched is not None
     assert "at a batch of 4" in batched
     assert "or a smaller batch size" in batched
+
+
+def test_cpu_offload_hooks_take_the_indexed_card_not_a_bare_cuda():
+    # diffusers reads the index off this device and, finding none, falls back to _offload_gpu_id 0
+    # and onloads to cuda:0 (pipeline_utils.py, 0.39). A load pinned elsewhere generates there, so
+    # the modules would page onto the wrong GPU: a cross-device failure, or the small card filling.
+    for build, policy, call in (
+        (_plan, OFFLOAD_MODEL, "model_offload"),
+        (_manual_plan, OFFLOAD_SEQUENTIAL, "sequential_offload"),
+    ):
+        pipe = _RecordingPipe()
+        apply_memory_plan(
+            pipe, build(policy, tiling = False), device = "cuda", placement_device = "cuda:1"
+        )
+        assert call in pipe.calls
+        assert pipe.offload_device == "cuda:1"
+
+
+def test_the_resident_placement_follows_the_selected_card_too():
+    pipe = _RecordingPipe()
+    apply_memory_plan(
+        pipe, _plan(OFFLOAD_NONE, tiling = False), device = "cuda", placement_device = "cuda:1"
+    )
+    assert pipe.calls == ["to:cuda:1"]
+
+
+def test_an_automatic_load_still_hands_over_a_bare_device():
+    # No selection: every call receives exactly the string it did before, resolved against the
+    # current device as always.
+    for policy, expected in (
+        (OFFLOAD_NONE, ["to:cuda"]),
+        (OFFLOAD_MODEL, ["model_offload"]),
+    ):
+        pipe = _RecordingPipe()
+        apply_memory_plan(pipe, _plan(policy, tiling = False), device = "cuda")
+        assert expected[0] in pipe.calls
+        if policy is OFFLOAD_MODEL:
+            assert pipe.offload_device == "cuda"

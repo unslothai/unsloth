@@ -190,12 +190,26 @@ def _usage_chunks(lines: list[str]) -> list[dict]:
 
 
 def test_custom_provider_registry_is_hidden():
+    """Hidden entries stay filtered by default and are opt-in via include_hidden.
+
+    They used to be dropped from /registry unconditionally, which is why the UI
+    could never learn that the self-hosted presets run Unsloth tools. Exposing
+    them by default would instead make a cached pre-change bundle render them as
+    duplicate dropdown rows, since that bundle filters on a hardcoded name set
+    rather than on ``hidden``. So the default is unchanged and the current UI
+    asks for them, then filters the dropdown on the flag.
+    """
     from core.inference.providers import get_provider_info, list_available_providers
 
     info = get_provider_info("custom")
     assert info is not None
     assert info["hidden"] is True
-    assert "custom" not in {p["provider_type"] for p in list_available_providers()}
+    assert all(p["provider_type"] != "custom" for p in list_available_providers())
+    entry = next(
+        p for p in list_available_providers(include_hidden = True) if p["provider_type"] == "custom"
+    )
+    assert entry["hidden"] is True
+    assert entry["supports_studio_tools"] is True
 
 
 def test_custom_provider_uses_chat_completions_without_auth_key(monkeypatch):
@@ -234,7 +248,7 @@ def test_custom_provider_uses_chat_completions_without_auth_key(monkeypatch):
     assert any("ok" in line for line in lines)
 
 
-def test_custom_provider_test_endpoint_probes_chat_completion(monkeypatch):
+def test_custom_provider_test_endpoint_probes_models_before_chat(monkeypatch):
     import importlib.util
     import sys
     from pathlib import Path
@@ -253,12 +267,19 @@ def test_custom_provider_test_endpoint_probes_chat_completion(monkeypatch):
         def __init__(self, **kwargs):
             captured["init"] = kwargs
 
-        async def chat_completion(self, **kwargs):
-            captured["chat_completion"] = kwargs
-            return {"choices": [{"message": {"content": "ok"}}]}
-
         async def list_models(self):
-            raise AssertionError("custom provider test must not call /models")
+            captured["list_models"] = True
+            return [{"id": "kokoro"}, {"id": "tts-1"}]
+
+        async def chat_completion(self, **kwargs):
+            raise AssertionError(
+                "custom provider test must not call /chat/completions when /models works"
+            )
+
+        async def create_speech(self, **_kwargs):
+            raise AssertionError(
+                "custom provider test must not call /audio/speech when /models works"
+            )
 
         async def close(self):
             captured["closed"] = True
@@ -272,13 +293,138 @@ def test_custom_provider_test_endpoint_probes_chat_completion(monkeypatch):
                 base_url = "http://custom.example/v1",
                 model_id = "Qwen/Qwen3-0.6B",
             ),
-            current_subject = "unsloth",
+            _current_subject = "unsloth",
+            via_api_key = False,
         )
 
     result = _drive(run())
     assert result.success is True
-    assert result.models_count is None
+    assert result.models_count == 2
+    assert "Found 2 model(s)" in result.message
     assert captured["init"]["provider_type"] == "custom"
+    assert captured["closed"] is True
+
+
+def test_custom_provider_test_falls_back_to_speech_for_tts_only_gateways(monkeypatch):
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    module_path = Path(__file__).resolve().parents[1] / "routes" / "providers.py"
+    spec = importlib.util.spec_from_file_location("_providers_route_under_test", module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    providers_route = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = providers_route
+    spec.loader.exec_module(providers_route)
+
+    captured: dict = {}
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            captured["init"] = kwargs
+
+        async def list_models(self):
+            raise httpx.HTTPStatusError(
+                "not found",
+                request = httpx.Request("GET", "http://custom.example/v1/models"),
+                response = httpx.Response(
+                    404, request = httpx.Request("GET", "http://custom.example/v1/models")
+                ),
+            )
+
+        async def create_speech(self, **kwargs):
+            captured["create_speech"] = kwargs
+            return b"audio", "audio/wav"
+
+        async def chat_completion(self, **_kwargs):
+            raise AssertionError(
+                "custom provider test must not call /chat/completions when /audio/speech works"
+            )
+
+        async def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr(providers_route, "ExternalProviderClient", _FakeClient)
+
+    async def run():
+        return await providers_route.test_provider(
+            providers_route.ProviderTestRequest(
+                provider_type = "custom",
+                base_url = "http://custom.example/v1",
+                model_id = "kokoro",
+            ),
+            _current_subject = "unsloth",
+            via_api_key = False,
+        )
+
+    result = _drive(run())
+    assert result.success is True
+    assert "Audio speech endpoint responded" in result.message
+    assert captured["create_speech"]["model"] == "kokoro"
+    assert captured["create_speech"]["voice"] == "alloy"
+
+
+def test_custom_provider_test_falls_back_to_chat_when_only_completions_exist(monkeypatch):
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    module_path = Path(__file__).resolve().parents[1] / "routes" / "providers.py"
+    spec = importlib.util.spec_from_file_location("_providers_route_under_test", module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    providers_route = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = providers_route
+    spec.loader.exec_module(providers_route)
+
+    captured: dict = {}
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            captured["init"] = kwargs
+
+        async def list_models(self):
+            raise httpx.HTTPStatusError(
+                "not found",
+                request = httpx.Request("GET", "http://custom.example/v1/models"),
+                response = httpx.Response(
+                    404, request = httpx.Request("GET", "http://custom.example/v1/models")
+                ),
+            )
+
+        async def create_speech(self, **_kwargs):
+            raise httpx.HTTPStatusError(
+                "not found",
+                request = httpx.Request("POST", "http://custom.example/v1/audio/speech"),
+                response = httpx.Response(
+                    404, request = httpx.Request("POST", "http://custom.example/v1/audio/speech")
+                ),
+            )
+
+        async def chat_completion(self, **kwargs):
+            captured["chat_completion"] = kwargs
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+        async def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr(providers_route, "ExternalProviderClient", _FakeClient)
+
+    async def run():
+        return await providers_route.test_provider(
+            providers_route.ProviderTestRequest(
+                provider_type = "custom",
+                base_url = "http://custom.example/v1",
+                model_id = "Qwen/Qwen3-0.6B",
+            ),
+            _current_subject = "unsloth",
+            via_api_key = False,
+        )
+
+    result = _drive(run())
+    assert result.success is True
+    assert "Chat completions endpoint responded" in result.message
     assert captured["chat_completion"]["model"] == "Qwen/Qwen3-0.6B"
     assert captured["chat_completion"]["max_tokens"] == 1
     assert captured["closed"] is True
@@ -301,6 +447,15 @@ def test_custom_provider_test_endpoint_requires_model_id(monkeypatch):
         def __init__(self, **kwargs):
             pass
 
+        async def list_models(self):
+            raise httpx.HTTPStatusError(
+                "not found",
+                request = httpx.Request("GET", "http://custom.example/v1/models"),
+                response = httpx.Response(
+                    404, request = httpx.Request("GET", "http://custom.example/v1/models")
+                ),
+            )
+
         async def close(self):
             pass
 
@@ -312,7 +467,8 @@ def test_custom_provider_test_endpoint_requires_model_id(monkeypatch):
                 provider_type = "custom",
                 base_url = "http://custom.example/v1",
             ),
-            current_subject = "unsloth",
+            _current_subject = "unsloth",
+            via_api_key = False,
         )
 
     result = _drive(run())
@@ -633,3 +789,169 @@ def test_kimi_no_search_fallback_requests_usage(monkeypatch):
     assert "tools" in search_body
     assert "tools" not in fallback_body
     assert fallback_body["stream_options"] == {"include_usage": True}
+
+
+def test_a_type_carried_only_by_the_sse_event_field_is_honoured(monkeypatch):
+    """Only the SSE ``event:`` line carries the type here, and a type-less frame is
+    skipped rather than fatal, so the usage would vanish silently. Built raw, since
+    _openai_sse always repeats the type in data."""
+    body = (
+        b"event: response.completed\n"
+        b'data: {"response":{"usage":{"input_tokens":7,"output_tokens":3}}}\n'
+        b"\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_openai_client()
+        return await _collect(
+            client._stream_openai_responses(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "gpt-5.5",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 1024,
+                enable_thinking = None,
+                reasoning_effort = None,
+            )
+        )
+
+    usages = _usage_chunks(_drive(run()))
+    assert len(usages) == 1, usages
+
+
+def test_an_sse_event_name_does_not_carry_past_its_blank_line(monkeypatch):
+    """Held past its blank line, a stale ``response.failed`` would claim the next
+    type-less frame, emit a 502 and break the loop before the real usage."""
+    body = (
+        b"event: response.failed\n"
+        b"data:\n"
+        b"\n"
+        b'data: {"choices":[{"delta":{"content":"ok"}}]}\n'
+        b"\n"
+        b"event: response.completed\n"
+        b'data: {"response":{"usage":{"input_tokens":7,"output_tokens":3}}}\n'
+        b"\n"
+        b"data: [DONE]\n"
+        b"\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = _make_openai_client()
+        return await _collect(
+            client._stream_openai_responses(
+                messages = [{"role": "user", "content": "ping"}],
+                model = "gpt-5.5",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 1024,
+                enable_thinking = None,
+                reasoning_effort = None,
+            )
+        )
+
+    lines = _drive(run())
+    assert not [line for line in lines if '"provider_error"' in line], lines
+    assert len(_usage_chunks(lines)) == 1, lines
+
+
+def test_an_untyped_error_frame_is_surfaced_rather_than_skipped(monkeypatch):
+    """An OpenAI-compatible proxy emits its errors as a bare ``{"error": {...}}`` with no
+    ``type`` and no SSE event name, so skipping it returned zero chunks and no error."""
+    body = b'data: {"error":{"message":"you are rate limited","type":"rate_limit_error"}}\n\n'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://api.openai.com/v1",
+            api_key = "sk-openai-test",
+        )
+        out = await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "hi"}], model = "gpt-5"
+            )
+        )
+        await client.close()
+        return out
+
+    chunks = _drive(run())
+    assert chunks, "the error frame was swallowed and the answer came back empty"
+    assert any("rate limited" in str(chunk) for chunk in chunks), chunks
+
+
+def test_a_chat_completions_frame_on_the_responses_path_is_still_skipped(monkeypatch):
+    """The case the skip exists for stays skipped: no type, no event name, no error key."""
+    body = (
+        b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+        b"event: response.completed\n"
+        b'data: {"type":"response.completed"}\n\n'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://api.openai.com/v1",
+            api_key = "sk-openai-test",
+        )
+        out = await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "hi"}], model = "gpt-5"
+            )
+        )
+        await client.close()
+        return out
+
+    chunks = _drive(run())
+    assert not any("502" in str(chunk) for chunk in chunks), chunks
+
+
+@pytest.mark.parametrize("payload", [b"null", b"[]", b'"text"', b"7"])
+def test_a_valid_but_non_object_frame_is_skipped_not_fatal(monkeypatch, payload):
+    """`data: null` and `data: []` are valid JSON but not dicts, so the error check must
+    not call .get() on them: that raised AttributeError and killed the stream."""
+    body = (
+        b"data: "
+        + payload
+        + b'\n\nevent: response.completed\ndata: {"type":"response.completed"}\n\n'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content = body, headers = {"content-type": "text/event-stream"})
+
+    _mock_http_client(monkeypatch, handler)
+
+    async def run():
+        client = ExternalProviderClient(
+            provider_type = "openai",
+            base_url = "https://api.openai.com/v1",
+            api_key = "sk-openai-test",
+        )
+        out = await _collect(
+            client.stream_chat_completion(
+                messages = [{"role": "user", "content": "hi"}], model = "gpt-5"
+            )
+        )
+        await client.close()
+        return out
+
+    chunks = _drive(run())
+    assert not any("502" in str(chunk) for chunk in chunks), chunks

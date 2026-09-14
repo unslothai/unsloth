@@ -60,11 +60,11 @@ def python_runtime_dirs() -> list[str]:
                 continue
         except (OSError, ValueError):
             continue
-        candidates.extend(root.glob("nvidia/*/lib"))  # Linux convention
-        candidates.extend(root.glob("nvidia/*/bin"))  # legacy modular Windows wheels
+        candidates.extend(root.glob("nvidia/*/lib"))
+        candidates.extend(root.glob("nvidia/*/bin"))
         candidates.extend(root.glob("nvidia/*/bin/x86_64"))  # CUDA 13 Windows wheel layout
         candidates.extend(root.glob("nvidia/*/bin/x64"))
-        candidates.extend(root.glob("nvidia/*/Library/bin"))  # conda-style repacks
+        candidates.extend(root.glob("nvidia/*/Library/bin"))
         candidates.extend(root.glob("nvidia/*/Library/bin/x86_64"))
         candidates.extend(root.glob("nvidia/*/Library/bin/x64"))
         candidates.extend(root.glob("torch/lib"))

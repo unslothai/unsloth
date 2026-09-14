@@ -7,43 +7,8 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SCRIPT_DIR/_harness.sh"
 INSTALL_SH="$SCRIPT_DIR/../../install.sh"
-PASS=0
-FAIL=0
-
-assert_eq() {
-    _label="$1"; _expected="$2"; _actual="$3"
-    if [ "$_actual" = "$_expected" ]; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected '$_expected', got '$_actual')"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
-assert_contains() {
-    _label="$1"; _haystack="$2"; _needle="$3"
-    if echo "$_haystack" | grep -qF "$_needle"; then
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    else
-        echo "  FAIL: $_label (expected to find '$_needle')"
-        FAIL=$((FAIL + 1))
-    fi
-}
-
-assert_not_contains() {
-    _label="$1"; _haystack="$2"; _needle="$3"
-    if echo "$_haystack" | grep -qF "$_needle"; then
-        echo "  FAIL: $_label (found '$_needle' but should not)"
-        FAIL=$((FAIL + 1))
-    else
-        echo "  PASS: $_label"
-        PASS=$((PASS + 1))
-    fi
-}
-
 # ── Extract version_ge function from install.sh ──
 _VGE_FILE=$(mktemp)
 sed -n '/^version_ge()/,/^}/p' "$INSTALL_SH" > "$_VGE_FILE"
@@ -571,9 +536,10 @@ echo "=== Apple Silicon x86_64 (Rosetta) venv rebuild ==="
 # Extract the real guard block from install.sh so we exercise the shipped logic
 # (comment header down to its column-0 closing fi).
 _GUARD_FILE=$(mktemp)
-# The guard calls _python_is_skipped and _discard_venv_for_recreate, so the skip
-# list, its reader, and the replacement helpers have to come along or the version
-# check silently never fires and the recreate loses the venv it was handed.
+# The guard calls _python_is_skipped, _discard_venv_for_recreate and _uv_venv_arm64,
+# so the skip list, its reader, and the replacement helpers have to come along or the
+# version check silently never fires and the recreate loses the venv it was handed.
+# The awk anchors on the "independent Apple Silicon venv" substring; keep that wording in install.sh.
 {
     printf 'substep() { :; }\n'
     sed -n '/^PYTHON_SKIP=/p' "$INSTALL_SH"
@@ -581,10 +547,11 @@ _GUARD_FILE=$(mktemp)
     sed -n '/^_python_is_skipped()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_start_studio_venv_replacement()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_discard_venv_for_recreate()/,/^}/p' "$INSTALL_SH"
-    awk '/Guard against two independent Apple Silicon venv problems/{f=1} f{print} f&&/^fi$/{exit}' \
+    sed -n '/^_uv_venv_arm64()/,/^}/p' "$INSTALL_SH"
+    awk '/independent Apple Silicon venv/{f=1} f{print} f&&/^fi$/{exit}' \
         "$INSTALL_SH"
 } > "$_GUARD_FILE"
-for _needed in _python_skip_applies _python_is_skipped _start_studio_venv_replacement _discard_venv_for_recreate; do
+for _needed in _python_skip_applies _python_is_skipped _start_studio_venv_replacement _discard_venv_for_recreate _uv_venv_arm64; do
     grep -q "^$_needed()" "$_GUARD_FILE" || {
         echo "  FAIL: could not extract $_needed from install.sh"
         FAIL=$((FAIL + 1))
@@ -595,7 +562,7 @@ if [ ! -s "$_GUARD_FILE" ]; then
     echo "  FAIL: could not extract Apple Silicon venv guard from install.sh"
     FAIL=$((FAIL + 1))
 else
-    # Runner: stub uv (via run_install_cmd) + a fake venv python, source the
+    # Runner: stub the guarded uv venv runner + a fake venv python, source the
     # guard, then print "<final_arch> <final_ver> | <recreate_selectors>".
     # The stub maps a uv arm64 selector to the interpreter uv would produce:
     # cpython-3.12-* -> arm64 3.12.7, cpython-3.13-* -> arm64 $REBUILD_313_VERSION.
@@ -614,18 +581,15 @@ make_python() {  # dir machine version
     chmod +x "$1/bin/python"
 }
 RECREATE_LOG=$(mktemp); : > "$RECREATE_LOG"
-run_install_cmd() {
+_run_uv_venv() {
     shift  # drop the human label
-    if [ "$1" = "uv" ] && [ "$2" = "venv" ]; then
-        dir="$3"; sel=""; shift 3
-        while [ $# -gt 0 ]; do [ "$1" = "--python" ] && { sel="$2"; shift; }; shift; done
-        echo "$sel" >> "$RECREATE_LOG"
-        case "$sel" in
-            *3.12-macos-aarch64*) make_python "$dir" arm64 "3.12.7" ;;
-            *3.13-macos-aarch64*) make_python "$dir" arm64 "${REBUILD_313_VERSION:-3.13.3}" ;;
-            *)                    make_python "$dir" arm64 "$sel" ;;
-        esac
-    fi
+    dir="$1"; sel=""; shift
+    while [ $# -gt 0 ]; do [ "$1" = "--python" ] && { sel="$2"; shift; }; shift; done
+    echo "$sel" >> "$RECREATE_LOG"
+    case "$sel" in
+        cpython-3.12-*) make_python "$dir" arm64 3.12.7 ;;
+        cpython-3.13-*) make_python "$dir" arm64 "${REBUILD_313_VERSION:-3.13.3}" ;;
+    esac
 }
 [ "$INIT_ARCH" != none ] && make_python "$VENV_DIR" "$INIT_ARCH" "$INIT_VER"
 PYTHON_VERSION="3.13"
@@ -662,6 +626,4 @@ RUNNER_EOF
 fi
 rm -f "$_GUARD_FILE"
 
-echo ""
-echo "Results: $PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ] || exit 1
+summary

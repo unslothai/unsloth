@@ -20,10 +20,11 @@ import {
   listChatAttachments,
 } from "@/features/chat";
 import {
+  type UploadedDocument,
   deleteDocument,
   getDocumentFileUrl,
+  isLinkedFolderManaged,
   listAllDocuments,
-  type UploadedDocument,
 } from "@/features/rag";
 import { isTauri } from "@/lib/api-base";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
@@ -178,8 +179,8 @@ interface UploadedFileRow {
   /** Compare-chat rows navigate by pair id instead of opening one pane alone. */
   pairId?: string | null;
   open: () => Promise<void>;
-  remove: () => Promise<void>;
-  deleteDescription: string;
+  remove?: () => Promise<void>;
+  deleteDescription?: string;
 }
 
 function toSortTime(value: string | number | null | undefined): number {
@@ -188,10 +189,9 @@ function toSortTime(value: string | number | null | undefined): number {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-// Safari and Firefox block window.open after an await (the user gesture is
-// gone), so open a blank tab synchronously and point it at the URL once
-// resolved. A blocked synchronous open is surfaced instead of silently losing
-// the file after the asynchronous URL lookup. The Tauri webview has no
+// Safari and Firefox block window.open after an await (the user gesture is gone), so open a blank
+// tab synchronously and point it at the URL once resolved. A blocked synchronous open is surfaced
+// instead of silently losing the file after the asynchronous URL lookup. The Tauri webview has no
 // window.open at all, so it goes through the OS opener.
 async function openResolvedUrl(resolve: () => Promise<string>): Promise<void> {
   if (isTauri) {
@@ -231,11 +231,14 @@ function ragRow(doc: UploadedDocument): UploadedFileRow {
     // RAG uploads are documents (pdf, txt, md, docx, html), not images.
     thumb: <FileIconThumb />,
     open: () => openResolvedUrl(() => getDocumentFileUrl(doc.id)),
-    remove: async () => {
-      await deleteDocument(doc.id, doc.projectId);
-    },
-    deleteDescription:
-      "The file and its indexed content are removed. This cannot be undone.",
+    remove: isLinkedFolderManaged(doc)
+      ? undefined
+      : async () => {
+          await deleteDocument(doc.id, doc.projectId);
+        },
+    deleteDescription: isLinkedFolderManaged(doc)
+      ? undefined
+      : "The file and its indexed content are removed. This cannot be undone.",
   };
 }
 
@@ -254,13 +257,11 @@ const EXT_BY_MIME: Record<string, string> = {
   "audio/flac": "flac",
 };
 
-// Name the save after the bytes the route actually returns. Uploaded documents
-// come back as extracted text (TextAttachmentAdapter also wraps it in
-// <attachment name=...>), so text/plain is .txt whatever the upload was called.
-// Managed content parts arrive named "Chat image"/"Chat audio" with no
-// extension at all, which the OS cannot recognise.
-// A dot at index 0 is a dotfile (.env), not an extension: treating it as one
-// would strip the whole name and save a bare ".txt".
+// Name the save after the bytes the route actually returns. Uploaded documents come back as
+// extracted text (TextAttachmentAdapter also wraps it in <attachment name=...>), so text/plain is
+// .txt whatever the upload was called. Managed content parts arrive named "Chat image"/"Chat audio"
+// with no extension at all, which the OS cannot recognise. A dot at index 0 is a dotfile (.env),
+// not an extension: treating it as one would strip the whole name and save a bare ".txt".
 function extensionStart(name: string): number {
   const dot = name.lastIndexOf(".");
   return dot > 0 ? dot : -1;
@@ -483,7 +484,7 @@ export function UploadedFilesView() {
   async function handleDelete(row: UploadedFileRow) {
     // Offset pages and destructive mutations must not race: a deletion shifts
     // the boundary used by an in-flight page request.
-    if (loadingMore) return;
+    if (loadingMore || !row.remove) return;
     try {
       await row.remove();
       if (row.source === "rag") {
@@ -637,20 +638,22 @@ export function UploadedFilesView() {
                     className="size-4"
                   />
                 </button>
-                <button
-                  type="button"
-                  disabled={loadingMore}
-                  onClick={() => setConfirmingDelete(row)}
-                  aria-label={`Delete ${row.name}`}
-                  title="Delete"
-                  className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:cursor-wait disabled:opacity-50"
-                >
-                  <HugeiconsIcon
-                    icon={Delete02Icon}
-                    strokeWidth={1.75}
-                    className="size-4"
-                  />
-                </button>
+                {row.remove ? (
+                  <button
+                    type="button"
+                    disabled={loadingMore}
+                    onClick={() => setConfirmingDelete(row)}
+                    aria-label={`Delete ${row.name}`}
+                    title="Delete"
+                    className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:cursor-wait disabled:opacity-50"
+                  >
+                    <HugeiconsIcon
+                      icon={Delete02Icon}
+                      strokeWidth={1.75}
+                      className="size-4"
+                    />
+                  </button>
+                ) : null}
               </span>
             </div>
           ))}

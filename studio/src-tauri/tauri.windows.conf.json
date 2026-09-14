@@ -1,5 +1,8 @@
 {
   "bundle": {
+    "resources": {
+      "../../install.ps1": "install.ps1"
+    },
     "windows": {
       "signCommand": {
         "cmd": "powershell",

@@ -5,13 +5,38 @@
 
 /* eslint-disable react-refresh/only-export-components */
 
-import { MarkdownText } from "@/components/assistant-ui/markdown-text";
+import {
+  MarkdownText,
+  MarkdownTextSource,
+  SearchImagesEnabledContext,
+} from "@/components/assistant-ui/markdown-text";
+import {
+  type ReasoningPageBoundary,
+  ReasoningPageSelector,
+  createReasoningPageBoundary,
+  isReasoningPageBoundaryValid,
+  shouldPaginateReasoning,
+} from "@/components/assistant-ui/reasoning-pagination";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { resolveReasoningGroupDuration } from "@/features/chat";
+import { GRID_COLLAPSE_REASONING_ENABLED } from "@/components/assistant-ui/thread-feature-flags";
+import {
+  CLOSE_FALLBACK_MARGIN_MS,
+  UnmeasuredCollapsible,
+  UnmeasuredCollapsibleContent,
+  UnmeasuredCollapsibleTrigger,
+} from "@/components/ui/unmeasured-collapsible";
+import {
+  resolveReasoningGroupDuration,
+  resolveReasoningOpen,
+  resolveReasoningToggle,
+  startsNewReasoningRound,
+  useChatPreferencesStore,
+} from "@/features/chat";
+import { isRenderableRenderHtmlToolPart } from "@/features/chat/artifacts/html-fences";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
 import {
@@ -31,11 +56,28 @@ import {
   memo,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
+import { useShallow } from "zustand/react/shallow";
 const ANIMATION_DURATION = 200;
 const AUTO_SCROLL_THRESHOLD_PX = 24;
+
+function selectionIntersectsElement(
+  selection: Selection | null,
+  element: Element | null,
+): boolean {
+  if (!selection || selection.isCollapsed || !element) {
+    return false;
+  }
+  for (let index = 0; index < selection.rangeCount; index += 1) {
+    if (selection.getRangeAt(index).intersectsNode(element)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 export const reasoningVariants = cva("aui-reasoning-root mt-3 mb-4 w-full", {
   variants: {
@@ -71,7 +113,17 @@ function ReasoningRoot({
 }: ReasoningRootProps) {
   const collapsibleRef = useRef<HTMLDivElement>(null);
   const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
-  const lockScroll = useCollapseScrollLock(collapsibleRef, ANIMATION_DURATION);
+  // The lock starts in the click handler; the grid transition only starts once React has
+  // committed the `0fr` class, so an exact ANIMATION_DURATION releases the scroll container
+  // while the row is still shrinking and lets the remaining height change shift the thread.
+  // Same margin as the collapse backstop, and only on the grid path: `tool-group` and
+  // `tool-fallback` still animate height and keep the plain duration.
+  const lockScroll = useCollapseScrollLock(
+    collapsibleRef,
+    GRID_COLLAPSE_REASONING_ENABLED
+      ? ANIMATION_DURATION + CLOSE_FALLBACK_MARGIN_MS
+      : ANIMATION_DURATION,
+  );
 
   const isControlled = controlledOpen !== undefined;
   const isOpen = isControlled ? controlledOpen : uncontrolledOpen;
@@ -89,26 +141,25 @@ function ReasoningRoot({
     [lockScroll, isControlled, controlledOnOpenChange],
   );
 
-  return (
-    <Collapsible
-      ref={collapsibleRef}
-      data-slot="reasoning-root"
-      data-variant={variant}
-      open={isOpen}
-      onOpenChange={handleOpenChange}
-      className={cn(
-        "group/reasoning-root",
-        reasoningVariants({ variant, className }),
-      )}
-      style={
-        {
-          "--animation-duration": `${ANIMATION_DURATION}ms`,
-        } as CSSProperties
-      }
-      {...props}
-    >
-      {children}
-    </Collapsible>
+  const rootProps = {
+    ref: collapsibleRef,
+    "data-slot": "reasoning-root",
+    "data-variant": variant,
+    open: isOpen,
+    onOpenChange: handleOpenChange,
+    className: cn("group/reasoning-root", reasoningVariants({ variant, className })),
+    style: {
+      "--animation-duration": `${ANIMATION_DURATION}ms`,
+    } as CSSProperties,
+    ...props,
+  };
+
+  // Same props either way. The only difference is which primitive receives them, and the
+  // unmeasured one is a drop-in for the subset of Radix's surface this pane uses.
+  return GRID_COLLAPSE_REASONING_ENABLED ? (
+    <UnmeasuredCollapsible {...rootProps}>{children}</UnmeasuredCollapsible>
+  ) : (
+    <Collapsible {...rootProps}>{children}</Collapsible>
   );
 }
 
@@ -121,8 +172,12 @@ function ReasoningTrigger({
   active?: boolean;
   duration?: number;
 }) {
+  const Trigger = GRID_COLLAPSE_REASONING_ENABLED
+    ? UnmeasuredCollapsibleTrigger
+    : CollapsibleTrigger;
+
   return (
-    <CollapsibleTrigger
+    <Trigger
       data-slot="reasoning-trigger"
       className={cn(
         "aui-reasoning-trigger group/trigger flex min-w-0 flex-1 cursor-pointer items-center gap-2 py-1 text-muted-foreground text-sm transition-colors hover:text-foreground",
@@ -150,7 +205,7 @@ function ReasoningTrigger({
           "group-data-[state=open]/trigger:rotate-0",
         )}
       />
-    </CollapsibleTrigger>
+    </Trigger>
   );
 }
 
@@ -160,16 +215,46 @@ function ReasoningContent({
   streaming,
   ...props
 }: ComponentProps<typeof CollapsibleContent> & { streaming?: boolean }) {
+  const shared = cn(
+    "aui-reasoning-content relative overflow-hidden text-foreground/85 text-ui-13p5 outline-none",
+    "group/collapsible-content ease-out",
+    "data-[state=closed]:pointer-events-none",
+  );
+
+  if (GRID_COLLAPSE_REASONING_ENABLED) {
+    return (
+      <UnmeasuredCollapsibleContent
+        data-slot="reasoning-content"
+        closeDurationMs={ANIMATION_DURATION}
+        className={cn(
+          shared,
+          // No `animate-collapsible-*`, so nothing consumes `--radix-collapsible-content-height`
+          // and nothing needs to know the content's height. `1fr` resolves against the content on
+          // every frame, which is also what makes this correct while reasoning is still streaming
+          // into an open pane: the row simply tracks the growing content instead of holding a
+          // height captured at toggle time. The duration is unconditional here. The height
+          // keyframes needed a per-state duration because they were two different animations; this
+          // is one transition run in both directions. `prefers-reduced-motion` still reaches it:
+          // index.css forces `transition-duration: 0.01ms !important` on every element, and this is
+          // a transition.
+          "duration-(--animation-duration)",
+          className,
+        )}
+        {...props}
+      >
+        {children}
+      </UnmeasuredCollapsibleContent>
+    );
+  }
+
   return (
     <CollapsibleContent
       data-slot="reasoning-content"
       className={cn(
-        "aui-reasoning-content relative overflow-hidden text-foreground/85 text-ui-13p5 outline-none",
-        "group/collapsible-content ease-out",
+        shared,
         "data-[state=closed]:animate-collapsible-up",
         "data-[state=open]:animate-collapsible-down",
         "data-[state=closed]:fill-mode-forwards",
-        "data-[state=closed]:pointer-events-none",
         "data-[state=open]:duration-(--animation-duration)",
         "data-[state=closed]:duration-(--animation-duration)",
         className,
@@ -182,21 +267,28 @@ function ReasoningContent({
 }
 
 function ReasoningText({
+  autoScroll,
   className,
+  pageKey,
   streaming,
   children,
   ...props
-}: ComponentProps<"div"> & { streaming?: boolean }) {
+}: ComponentProps<"div"> & {
+  autoScroll?: boolean;
+  pageKey?: string;
+  streaming?: boolean;
+}) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const shouldAutoScrollRef = useRef(true);
   const detachedFromBottomRef = useRef(false);
   const lastScrollTopRef = useRef(0);
 
   useEffect(() => {
-    if (!(streaming && scrollRef.current)) {
+    if (!(streaming && (autoScroll ?? true) && scrollRef.current)) {
       return;
     }
     const el = scrollRef.current;
+    el.scrollTop = el.scrollHeight;
     const updateAutoScroll = () => {
       const currentScrollTop = el.scrollTop;
       if (currentScrollTop < lastScrollTopRef.current) {
@@ -238,8 +330,13 @@ function ReasoningText({
       el.removeEventListener("scroll", updateAutoScroll);
       el.removeEventListener("wheel", handleWheel);
     };
-  }, [streaming]);
+  }, [autoScroll, streaming]);
 
+  useEffect(() => {
+    if (autoScroll === false && scrollRef.current) {
+      scrollRef.current.scrollTop = 0;
+    }
+  }, [autoScroll, pageKey]);
   return (
     <div
       ref={scrollRef}
@@ -265,11 +362,89 @@ function ReasoningText({
   );
 }
 
-const ReasoningImpl: ReasoningMessagePartComponent = () => <MarkdownText />;
+const ReasoningImpl: ReasoningMessagePartComponent = () => (
+  <SearchImagesEnabledContext.Provider value={false}>
+    <MarkdownText />
+  </SearchImagesEnabledContext.Provider>
+);
 
 const COPY_RESET_MS = 2000;
 
-function ReasoningCopyButton({ startIndex, endIndex }: { startIndex: number; endIndex: number }) {
+function ReasoningPageNavigation({
+  hasEarlier,
+  hasNewer,
+  onEarlier,
+  onLatest,
+  onNewer,
+  start,
+  end,
+  total,
+}: {
+  hasEarlier: boolean;
+  hasNewer: boolean;
+  onEarlier: () => void;
+  onLatest: () => void;
+  onNewer: () => void;
+  start: number;
+  end: number;
+  total: number;
+}) {
+  const buttonClass =
+    "rounded px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40";
+  return (
+    <nav
+      data-slot="reasoning-page-navigation"
+      aria-label="Reasoning pages"
+      className="flex min-w-0 flex-wrap items-center gap-1 border-b border-border/60 py-1"
+    >
+      <button
+        type="button"
+        className={buttonClass}
+        disabled={!hasEarlier}
+        onClick={onEarlier}
+      >
+        Earlier
+      </button>
+      <button
+        type="button"
+        className={buttonClass}
+        disabled={!hasNewer}
+        onClick={onNewer}
+      >
+        Newer
+      </button>
+      <button
+        type="button"
+        className={buttonClass}
+        disabled={!hasNewer}
+        onClick={onLatest}
+      >
+        Latest
+      </button>
+      <span className="ml-auto truncate text-xs text-muted-foreground tabular-nums">
+        {start + 1}–{end} of {total}
+      </span>
+    </nav>
+  );
+}
+
+function OversizedReasoningCode({ source }: { source: string }) {
+  return (
+    <div data-slot="reasoning-oversized-code" className="min-w-0">
+      <p className="mb-2 rounded bg-muted/50 px-2 py-1.5 text-xs text-muted-foreground">
+        Showing part of an oversized code block. Copy reasoning preserves the
+        full source.
+      </p>
+      <pre className="max-w-full overflow-x-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 p-3 font-mono text-xs">
+        {source}
+      </pre>
+    </div>
+  );
+}
+function ReasoningCopyButton({
+  startIndex,
+  endIndex,
+}: { startIndex: number; endIndex: number }) {
   const [copied, setCopied] = useState(false);
   const resetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -339,6 +514,145 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     return true;
   });
 
+  const messageId = useAuiState(({ message }) => message.id);
+
+  const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
+    message.parts.some(isRenderableRenderHtmlToolPart),
+  );
+
+  const reasoningContentRef = useRef<HTMLDivElement>(null);
+
+  const reasoningDocuments = useAuiState(
+    useShallow(({ message }) =>
+      message.parts
+        .slice(startIndex, endIndex + 1)
+        .filter((part) => part.type === "reasoning")
+        .map((part) => ("text" in part ? (part as { text: string }).text : "")),
+    ),
+  );
+  const reasoningText = reasoningDocuments.join("");
+  const wantsPagination = shouldPaginateReasoning(reasoningText);
+  const [storedPaginationSession, setPaginationSession] = useState(() => ({
+    history: [] as ReasoningPageBoundary[],
+    messageId,
+    started: wantsPagination,
+  }));
+  const paginationSession =
+    storedPaginationSession.messageId === messageId
+      ? storedPaginationSession
+      : { history: [], messageId, started: wantsPagination };
+  if (paginationSession !== storedPaginationSession) {
+    setPaginationSession(paginationSession);
+  }
+  const pageSelector = useMemo(() => new ReasoningPageSelector(), [messageId]);
+
+  // An already-long saved trace paginates on its first render. Only the live
+  // transition from short to long waits for an active selection to finish.
+  useEffect(() => {
+    if (!wantsPagination) {
+      if (paginationSession.started || paginationSession.history.length > 0) {
+        setPaginationSession({ history: [], messageId, started: false });
+      }
+      return;
+    }
+    if (paginationSession.started) {
+      return;
+    }
+
+    const startPagination = () => {
+      setPaginationSession((current) =>
+        current.messageId === messageId
+          ? { ...current, started: true }
+          : { history: [], messageId, started: true },
+      );
+    };
+    if (
+      !selectionIntersectsElement(
+        window.getSelection(),
+        reasoningContentRef.current,
+      )
+    ) {
+      startPagination();
+      return;
+    }
+    const handleSelectionChange = () => {
+      if (
+        !selectionIntersectsElement(
+          window.getSelection(),
+          reasoningContentRef.current,
+        )
+      ) {
+        startPagination();
+      }
+    };
+    document.addEventListener("selectionchange", handleSelectionChange);
+    return () =>
+      document.removeEventListener("selectionchange", handleSelectionChange);
+  }, [messageId, paginationSession, wantsPagination]);
+
+  const historyIsValid = paginationSession.history.every((boundary) =>
+    isReasoningPageBoundaryValid(reasoningText, boundary),
+  );
+  useEffect(() => {
+    if (!historyIsValid) {
+      setPaginationSession((current) =>
+        current.messageId === messageId
+          ? { ...current, history: [] }
+          : current,
+      );
+    }
+  }, [historyIsValid, messageId]);
+  const validHistory = historyIsValid ? paginationSession.history : [];
+  const selectedEnd = validHistory.at(-1)?.end ?? null;
+  const paginationActive = paginationSession.started && wantsPagination;
+  const page = useMemo(
+    () =>
+      pageSelector.selectDocument(reasoningDocuments, {
+        end: paginationActive ? selectedEnd : reasoningText.length,
+
+        streaming:
+          paginationActive && isReasoningStreaming && selectedEnd === null,
+      }),
+    [
+      isReasoningStreaming,
+      pageSelector,
+      paginationActive,
+      reasoningDocuments,
+      reasoningText,
+      selectedEnd,
+    ],
+  );
+  const viewingLatestPage = !(paginationActive && page.hasNewer);
+
+  const showEarlierPage = useCallback(() => {
+    if (!page.hasEarlier) {
+      return;
+    }
+    setPaginationSession((current) =>
+      current.messageId === messageId
+        ? {
+            ...current,
+            history: [
+              ...current.history,
+              createReasoningPageBoundary(reasoningText, page.start),
+            ],
+          }
+        : current,
+    );
+  }, [messageId, page.hasEarlier, page.start, reasoningText]);
+  const showNewerPage = useCallback(() => {
+    setPaginationSession((current) =>
+      current.messageId === messageId
+        ? { ...current, history: current.history.slice(0, -1) }
+        : current,
+    );
+  }, [messageId]);
+  const showLatestPage = useCallback(() => {
+    setPaginationSession((current) =>
+      current.messageId === messageId ? { ...current, history: [] } : current,
+    );
+  }, [messageId]);
+
   const persistedDuration = useAuiState(({ message }) => {
     return resolveReasoningGroupDuration(
       message.parts,
@@ -346,6 +660,10 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
       message.metadata?.custom as Record<string, unknown> | undefined,
     );
   });
+
+  const collapseByDefault = useChatPreferencesStore(
+    (state) => state.collapseThinkingByDefault,
+  );
 
   const [manualOpen, setManualOpen] = useState(false);
   const [dismissedWhileStreaming, setDismissedWhileStreaming] = useState(false);
@@ -365,43 +683,63 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
     }
   }, [isReasoningStreaming]);
 
-  // Reset per-round open state. manualOpen is sticky and regenerate reuses this
-  // instance, so a hand-opened block would stay pinned open and never collapse.
-  useEffect(() => {
-    if (isReasoningStreaming) {
+  // Reset per-round open state. manualOpen is sticky and regenerate reuses this instance, so a
+  // hand-opened block would stay pinned open and never collapse. Adjusted during render, not in an
+  // effect: React re-runs this component before committing, so a stale open never reaches the DOM.
+  const [wasStreaming, setWasStreaming] = useState(isReasoningStreaming);
+  if (wasStreaming !== isReasoningStreaming) {
+    setWasStreaming(isReasoningStreaming);
+    if (startsNewReasoningRound(isReasoningStreaming, wasStreaming)) {
       setDismissedWhileStreaming(false);
       setManualOpen(false);
     }
-  }, [isReasoningStreaming]);
+  }
 
-  // Keep the streaming height cap until the automatic close finishes. Removing
-  // it on the completion frame expands long reasoning to its full height before
-  // the collapsible can close, which makes the entire chat jump.
+  // Keep the streaming height cap until the automatic close finishes. Removing it on the completion
+  // frame expands long reasoning to its full height before the collapsible can close, which makes
+  // the entire chat jump. The grid path needs the same margin the collapsible's own backstop uses.
+  // The height keyframes animate from a height captured at toggle time, so releasing the cap
+  // mid-animation cannot change what they animate; `1fr` instead resolves against the live content
+  // every frame, so an early release grows the row in the middle of the collapse and produces
+  // exactly the jump this timer prevents. The transition also starts a render after this timer is
+  // armed, so an exact ANIMATION_DURATION lands inside it.
   useEffect(() => {
+    const closeDelay = GRID_COLLAPSE_REASONING_ENABLED
+      ? ANIMATION_DURATION + CLOSE_FALLBACK_MARGIN_MS
+      : ANIMATION_DURATION;
     const timeout = window.setTimeout(
       () => setRetainStreamingHeight(isReasoningStreaming),
-      isReasoningStreaming ? 0 : ANIMATION_DURATION,
+      isReasoningStreaming ? 0 : closeDelay,
     );
     return () => window.clearTimeout(timeout);
   }, [isReasoningStreaming]);
 
-  // Open while streaming (unless dismissed), or once manually opened.
-  const isOpen = (isReasoningStreaming && !dismissedWhileStreaming) || manualOpen;
+  // Open while streaming (unless dismissed), or once manually opened. With
+  // collapse by default on, only a manual open shows the block.
+  const isOpen = resolveReasoningOpen({
+    isStreaming: isReasoningStreaming,
+    collapseByDefault,
+    dismissedWhileStreaming,
+    manualOpen,
+  });
   const variant = isOpen ? "outline" : "ghost";
 
   // Allow closing during streaming (matches ChatGPT).
   const handleOpenChange = useCallback(
     (open: boolean) => {
-      if (isReasoningStreaming) {
-        setDismissedWhileStreaming(!open);
-      } else {
-        if (open) {
-          setRetainStreamingHeight(false);
-        }
-        setManualOpen(open);
+      const next = resolveReasoningToggle(open, {
+        isStreaming: isReasoningStreaming,
+        collapseByDefault,
+      });
+      if (next.releaseStreamingHeight) {
+        setRetainStreamingHeight(false);
+      }
+      setManualOpen(next.manualOpen);
+      if (next.dismissedWhileStreaming !== undefined) {
+        setDismissedWhileStreaming(next.dismissedWhileStreaming);
       }
     },
-    [isReasoningStreaming],
+    [isReasoningStreaming, collapseByDefault],
   );
 
   return (
@@ -426,11 +764,46 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
       <ReasoningContent
         aria-busy={isReasoningStreaming}
         streaming={isReasoningStreaming}
+        ref={reasoningContentRef}
       >
+        {paginationActive && (
+          <ReasoningPageNavigation
+            hasEarlier={page.hasEarlier}
+            hasNewer={page.hasNewer}
+            onEarlier={showEarlierPage}
+            onNewer={showNewerPage}
+            onLatest={showLatestPage}
+            start={page.start}
+            end={page.end}
+            total={reasoningText.length}
+          />
+        )}
         <ReasoningText
+          autoScroll={viewingLatestPage}
+          pageKey={paginationActive ? `${page.start}:${page.end}` : undefined}
           streaming={isReasoningStreaming || retainStreamingHeight}
         >
-          {children}
+          {paginationActive ? (
+            <>
+              {page.oversizedCode ? (
+                <OversizedReasoningCode source={page.markdown} />
+              ) : (
+                <SearchImagesEnabledContext.Provider value={false}>
+                  <MarkdownTextSource
+                    key={`${page.documentIndex}:${page.start}`}
+                    messageHasRenderableRenderHtmlTool={
+                      messageHasRenderableRenderHtmlTool
+                    }
+                    messageId={messageId}
+                    sourceText={page.markdown}
+                    streaming={isReasoningStreaming && viewingLatestPage}
+                  />
+                </SearchImagesEnabledContext.Provider>
+              )}
+            </>
+          ) : (
+            children
+          )}
         </ReasoningText>
       </ReasoningContent>
     </ReasoningRoot>

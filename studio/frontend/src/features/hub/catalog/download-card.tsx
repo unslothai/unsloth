@@ -23,7 +23,7 @@ import {
   ArrowReloadHorizontalIcon,
   Delete02Icon,
   Download01Icon,
-  Settings02Icon,
+  PlayIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -62,13 +62,14 @@ export function DownloadCard({
       <div className="hub-download-card">
         <div className="group/dl flex items-center">{children}</div>
         {progress && (
-          // Match the row's inner text bounds: the trigger and the action
-          // button both inset 12px, so the bar lines up with the quant label
-          // on the left and the percentage on the right.
+          // Match the row's inner text bounds: the trigger and the action button both inset 12px,
+          // so the bar lines up with the quant label on the left and the percentage on the right.
           <div className="px-3">
             <DownloadProgressBar
               progress={progress}
               bytesPerSec={job.bytesPerSec}
+              cancelling={job.cancelling}
+              etaSeconds={job.etaSeconds}
             />
           </div>
         )}
@@ -94,36 +95,36 @@ export function CardDivider() {
   );
 }
 
-export function CardSettingsButton({
+export function ModelRunActionButton({
   label,
   onClick,
+  loading = false,
 }: {
   label: string;
   onClick: () => void;
+  loading?: boolean;
 }) {
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          aria-label={label}
-          onClick={(e) => {
-            e.stopPropagation();
-            onClick();
-          }}
-          className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition-[opacity,background-color,color] duration-150 hover:bg-foreground/[0.06] hover:text-foreground focus-visible:opacity-100 group-hover/dl:opacity-100 dark:hover:bg-white/[0.08]"
-        >
-          <HugeiconsIcon
-            icon={Settings02Icon}
-            strokeWidth={1.75}
-            className="size-4"
-          />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="top" className="tooltip-compact">
-        {label}
-      </TooltipContent>
-    </Tooltip>
+    <button
+      type="button"
+      aria-label={loading ? `${label}. Opening configuration.` : label}
+      aria-busy={loading}
+      disabled={loading}
+      onClick={onClick}
+      className="hub-run-action-btn w-28"
+    >
+      {loading ? (
+        <>
+          <Spinner />
+          Opening…
+        </>
+      ) : (
+        <>
+          <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} />
+          Run
+        </>
+      )}
+    </button>
   );
 }
 
@@ -233,7 +234,7 @@ export function DownloadActionButton({
   cancelling,
   loading = false,
   isPartial = false,
-  partialTransport = null,
+  partialResumable = false,
   stopMode = "cancel",
   progressPercent = null,
   disabled,
@@ -244,7 +245,8 @@ export function DownloadActionButton({
   cancelling: boolean;
   loading?: boolean;
   isPartial?: boolean;
-  partialTransport?: string | null;
+  /** This row's partial can be continued byte for byte (backend verdict). */
+  partialResumable?: boolean;
   /** What stopping the running job costs; see downloadStopMode. */
   stopMode?: DownloadStopMode;
   progressPercent?: number | null;
@@ -285,7 +287,7 @@ export function DownloadActionButton({
       ) : (
         <>
           <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} />
-          {downloadActionLabel(isPartial, partialTransport)}
+          {downloadActionLabel(isPartial, partialResumable)}
         </>
       )}
     </button>
@@ -299,6 +301,7 @@ export function DeleteConfirmDialog({
   title,
   description,
   deleting,
+  blocked = false,
   onConfirm,
 }: {
   open: boolean;
@@ -306,6 +309,8 @@ export function DeleteConfirmDialog({
   title: string;
   description: ReactNode;
   deleting: boolean;
+  /** Another installed model needs these files. Confirming would 400, so do not offer it. */
+  blocked?: boolean;
   onConfirm: () => void;
 }) {
   return (
@@ -319,7 +324,7 @@ export function DeleteConfirmDialog({
           <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
           <AlertDialogAction
             variant="destructive"
-            disabled={deleting}
+            disabled={deleting || blocked}
             onClick={(e) => {
               e.preventDefault();
               onConfirm();

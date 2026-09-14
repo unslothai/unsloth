@@ -409,3 +409,56 @@ def test_malformed_gemma_mapping_value_does_not_hang():
     t.start()
     t.join(timeout = 10.0)
     assert not t.is_alive(), "parse_tool_calls_from_text hung on malformed mapping input"
+
+
+# ── Wrapper-less ``call:NAME{...}``: the display strip removes only a call that OWNS
+# its position. The parser is unchanged, so a promoted call is never erased silently.
+
+
+def _strip(text: str, enabled = None) -> str:
+    from core.inference.tool_call_parser import strip_tool_markup
+    return strip_tool_markup(text, final = True, enabled_tool_names = enabled)
+
+
+def test_wrapperless_call_in_mid_sentence_prose_is_kept_by_every_display_strip():
+    from core.inference.safetensors_agentic import strip_tool_markup_streaming
+    from routes.inference import _strip_tool_xml as _routes_strip
+
+    prose = 'Here is the syntax: call:terminal{command: "rm -rf /tmp/x"}. Do not run it.'
+    en = {"terminal", "python", "web_search"}
+    assert _strip(prose, en) == prose
+    assert strip_tool_markup_streaming(prose, enabled_tool_names = en) == prose
+    assert _routes_strip(prose, en) == prose
+
+
+def test_anchored_wrapperless_calls_are_still_stripped():
+    en = {"web_search"}
+    # Content start, line start, after a reasoning close, and back-to-back calls.
+    assert _strip("call:web_search{query:cats}", en) == ""
+    assert _strip("Sure!\ncall:web_search{query:cats}", en) == "Sure!"
+    assert "call:web_search" not in _strip("<think>plan</think>call:web_search{query:cats}", en)
+    assert _strip("call:web_search{query:hi} call:web_search{query:yo}", en) == ""
+    # A leading JSON answer is data; the call after it still owns its line.
+    assert "call:web_search" not in _strip('{"summary":"done"}\ncall:web_search{query:cats}', en)
+
+
+def test_unclosed_wrapperless_call_strip_follows_the_same_anchor_rule():
+    en = {"web_search"}
+    # Anchored + enabled: a truncated call is still dropped to EOS (streaming heal).
+    assert _strip("Sure!\ncall:web_search{query:weath", en) == "Sure!"
+    # Mid-sentence: prose, kept as written.
+    inline = "You can run call:web_search{query:weath"
+    assert _strip(inline, en) == inline
+
+
+def test_streaming_display_of_prose_call_never_shrinks():
+    from core.inference.safetensors_agentic import strip_tool_markup_streaming
+
+    prose = "You can run call:web_search{query:cats} to search."
+    en = {"web_search"}
+    seen = ""
+    for i in range(1, len(prose) + 1):
+        out = strip_tool_markup_streaming(prose[:i], enabled_tool_names = en)
+        assert len(out) >= len(seen), (i, out, seen)
+        seen = out
+    assert seen == prose

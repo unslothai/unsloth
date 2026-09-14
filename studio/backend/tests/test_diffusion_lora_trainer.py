@@ -260,11 +260,16 @@ def test_config_normalized_krea2_requires_bf16_compute():
 
 
 def test_force_bf16_families_matches_trainer_specs():
-    # The route-level bf16-only preflight set must list exactly the DiT families whose trainer spec sets force_bf16. A missing
+    # The route-level bf16-only preflight set must list every family whose trainer refuses fp16. A missing
     # one lets an fp16 start pass the preflight, reserve training and evict residents, with only the child trainer raising.
+    # The DiT families declare it on their spec; MiniMax-H3 has its own trainer and declares it there, so the set is
+    # the union rather than the _SPECS projection alone.
     from core.training.diffusion_dit_trainer import _SPECS
     from core.training.diffusion_train_common import _FORCE_BF16_FAMILIES
-    assert _FORCE_BF16_FAMILIES == {fam for fam, spec in _SPECS.items() if spec.force_bf16}
+
+    dit_bf16_only = {fam for fam, spec in _SPECS.items() if spec.force_bf16}
+    assert dit_bf16_only <= _FORCE_BF16_FAMILIES
+    assert _FORCE_BF16_FAMILIES - dit_bf16_only == {"minimax-h3"}
 
 
 def _cfg(**kw):
@@ -391,7 +396,7 @@ def test_config_rejects_nonpositive_snr_gamma():
 
 
 def test_config_coerces_string_learning_rate():
-    # The Studio config path preserves learning_rate as a string; normalize to float.
+    # The Unsloth config path preserves learning_rate as a string; normalize to float.
     cfg = DiffusionLoraConfig(
         base_model = "b", data_dir = "d", output_dir = "o", learning_rate = "1e-4"
     ).normalized()
@@ -410,7 +415,7 @@ def test_config_blank_hf_token_is_anonymous():
 
 
 def test_config_from_dict_aliases_generic_studio_keys():
-    # The generic Studio training payload uses different key names; alias them.
+    # The generic Unsloth training payload uses different key names; alias them.
     cfg = _config_from_dict(
         {
             "model_name": "b",
@@ -439,7 +444,7 @@ def test_config_from_dict_canonical_key_beats_alias():
 
 
 def test_gradient_checkpointing_string_coercion():
-    # Studio sends a string; the disable words are False, everything else truthy True.
+    # Unsloth sends a string; the disable words are False, everything else truthy True.
     for off in ("none", "None", "false", "0", "no", "off", ""):
         assert _coerce_gradient_checkpointing(off) is False
     for on in ("true", "unsloth", "yes"):

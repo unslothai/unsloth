@@ -6,37 +6,20 @@ import { createRoot } from "react-dom/client";
 
 import "./index.css";
 import { App } from "./app/app";
+import {
+  applyMathBlockContainment,
+  watchMathBlockContainmentOverride,
+} from "./components/assistant-ui/math-block-containment";
 import { fetchDeviceType } from "./config/env";
 import { initializeLocale } from "./i18n";
 import { isTauri } from "./lib/api-base";
 import { watchOverlayScrollbarGutter } from "./lib/overlay-scrollbar";
 
-const globalCrypto = globalThis.crypto as Crypto | undefined;
-
-if (globalCrypto && typeof globalCrypto.randomUUID !== "function") {
-  // Some envs ship `crypto` without `randomUUID()`. Provide a best-effort v4
-  // UUID using `getRandomValues` when available.
-  const cryptoRef = globalCrypto;
-
-  function getRandomByte(): number {
-    if (typeof cryptoRef.getRandomValues === "function") {
-      return cryptoRef.getRandomValues(new Uint8Array(1))[0];
-    }
-    return Math.floor(Math.random() * 256);
-  }
-
-  cryptoRef.randomUUID = (() =>
-    "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (c) =>
-      (+c ^ (getRandomByte() & (15 >> (+c / 4)))).toString(16),
-    )) as Crypto["randomUUID"];
-}
-
 const rootElement = document.getElementById("root");
 if (!rootElement) {
   throw new Error("Root element not found");
 }
-
-initializeLocale();
+const root = createRoot(rootElement);
 
 if (isTauri) {
   document.documentElement.classList.add("tauri");
@@ -49,13 +32,37 @@ if (uaLower.includes("linux") && !uaLower.includes("android")) {
   document.documentElement.classList.add("render-linux");
 }
 
+// index.css keys off this to restore ::-webkit-scrollbar styling on Windows.
+if (uaLower.includes("windows")) {
+  document.documentElement.classList.add("client-windows");
+}
+
+// Whether off-screen maths takes containment. ON by default, subject to a feature detect for the
+// engine's find-in-page, so on a recent engine this normally SETS the attribute and arms the rule;
+// on an older one it removes an attribute that was never there. Before the first render, because
+// the rule it arms is a rendering rule and arming it late would relayout the first thread that
+// mounts.
+applyMathBlockContainment();
+// And keep watching, so a devtools flip of `__UNSLOTH_MATH_BLOCK_CONTAINMENT__` reapplies instead of
+// leaving the session measuring the arm it was already in.
+watchMathBlockContainmentOverride();
+
 // Keep right-edge controls clear of overlay scrollbars.
 watchOverlayScrollbarGutter(window);
 
-createRoot(rootElement).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-);
+function renderApp(): void {
+  root.render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  );
+}
+
+const localeInitialization = initializeLocale();
+if (typeof localeInitialization !== "string") {
+  localeInitialization.then(renderApp);
+} else {
+  renderApp();
+}
 
 fetchDeviceType().catch(() => undefined);

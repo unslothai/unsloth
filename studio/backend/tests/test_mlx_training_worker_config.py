@@ -19,8 +19,10 @@ def _load_worker_module():
         "utils.child_stdio",
         "utils.hardware",
         "utils.hf_dataset_options",
+        "utils.native_tls",
         "utils.training_runs",
         "utils.wheel_utils",
+        "utils.training_runs",
     )
     previous_modules = {name: sys.modules.get(name) for name in stub_names}
 
@@ -32,7 +34,9 @@ def _load_worker_module():
         sys.modules["loggers"] = loggers
 
         utils = types.ModuleType("utils")
-        utils.__path__ = []
+        # An empty __path__ shadows the real package and breaks the worker's own
+        # imports; only the stubs below replace it.
+        utils.__path__ = [str(Path(__file__).resolve().parents[1] / "utils")]
         sys.modules["utils"] = utils
 
         child_stdio = types.ModuleType("utils.child_stdio")
@@ -47,6 +51,13 @@ def _load_worker_module():
         hf_dataset_options.hf_dataset_split_instruction_names = lambda *_args, **_kwargs: ()
         sys.modules["utils.hf_dataset_options"] = hf_dataset_options
 
+        # worker.py calls this at import time. Without the stub the module only loads when
+        # some other test happened to import the real utils.native_tls first, so this file
+        # passed in a full run and failed on its own.
+        native_tls = types.ModuleType("utils.native_tls")
+        native_tls.activate_native_tls = lambda *_args, **_kwargs: None
+        sys.modules["utils.native_tls"] = native_tls
+
         training_runs = types.ModuleType("utils.training_runs")
         training_runs.build_default_output_dir_name = lambda *_args, **_kwargs: "training-run"
         sys.modules["utils.training_runs"] = training_runs
@@ -55,7 +66,6 @@ def _load_worker_module():
         for name in (
             "direct_wheel_url",
             "flash_attn_wheel_url",
-            "has_blackwell_gpu",
             "install_wheel",
             "probe_torch_wheel_env",
             "url_exists",
@@ -85,6 +95,7 @@ _mlx_vlm_resized_image_layout = _worker._mlx_vlm_resized_image_layout
 _copy_mlx_vlm_image_processor = _worker._copy_mlx_vlm_image_processor
 _resize_mlx_vlm_image = _worker._resize_mlx_vlm_image
 _adapt_for_mlx_vlm = _worker._adapt_for_mlx_vlm
+_mlx_dora_peft_kwargs = _worker._mlx_dora_peft_kwargs
 
 
 def test_mlx_studio_optimizer_aliases_are_explicit():
@@ -101,6 +112,64 @@ def test_mlx_studio_rejects_unknown_optimizer():
 def test_mlx_studio_rejects_unknown_scheduler():
     with pytest.raises(ValueError, match = "Unsupported LR scheduler for MLX training"):
         _normalize_mlx_studio_scheduler("linear_typo")
+
+
+def test_mlx_dora_requires_the_named_use_dora_parameter():
+    # A **kwargs catch-all absorbs use_dora and trains plain LoRA, so accepting the
+    # keyword is not support.
+    def old_zoo(
+        model,
+        r = 16,
+        **kwargs,
+    ):
+        return model
+
+    def new_zoo(
+        model,
+        r = 16,
+        use_dora = False,
+        **kwargs,
+    ):
+        return model
+
+    def keyword_only_zoo(model, *, use_dora = False):
+        return model
+
+    def positional_only_zoo(
+        model,
+        use_dora = False,
+        /,
+        **kwargs,
+    ):
+        return model
+
+    def var_positional_zoo(model, *use_dora):
+        return model
+
+    def var_keyword_zoo(model, **use_dora):
+        return model
+
+    for usable in (new_zoo, keyword_only_zoo):
+        assert _mlx_dora_peft_kwargs({"use_dora": True}, usable) == {"use_dora": True}
+    with pytest.raises(NotImplementedError, match = "unsloth-zoo"):
+        _mlx_dora_peft_kwargs({"use_dora": True}, old_zoo)
+    for unusable in (positional_only_zoo, var_positional_zoo, var_keyword_zoo):
+        with pytest.raises(NotImplementedError, match = "unsloth-zoo"):
+            _mlx_dora_peft_kwargs({"use_dora": True}, unusable)
+    with pytest.raises(NotImplementedError, match = "unsloth-zoo"):
+        _mlx_dora_peft_kwargs({"use_dora": True}, object())
+    # An image-bearing dataset is not proof of a vision model; a text
+    # model can still train language-only DoRA.
+    assert _mlx_dora_peft_kwargs(
+        {
+            "use_dora": True,
+            "is_dataset_image": True,
+            "finetune_vision_layers": True,
+        },
+        new_zoo,
+    ) == {"use_dora": True}
+    assert _mlx_dora_peft_kwargs({}, old_zoo) == {}
+    assert _mlx_dora_peft_kwargs({"use_dora": False}, old_zoo) == {}
 
 
 def test_mlx_studio_keeps_hf_style_tokenizer_dual_purpose():

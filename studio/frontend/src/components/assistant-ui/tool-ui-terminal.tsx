@@ -13,14 +13,17 @@ import {
   ToolFallbackRoot,
   ToolFallbackTrigger,
 } from "./tool-fallback";
+import { isToolCallRunning, toolArgText } from "./tool-arg-text";
 import { CopyBtn, ToolCodeCell } from "./tool-code-cell";
 import { ToolLiveOutput } from "./tool-live-output";
 import { ToolResultOutput } from "./tool-result-output";
+import { SandboxFiles } from "./sandbox-files-view";
+import { isSandboxToolResult, type SandboxFile } from "./sandbox-files";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 
-import { stringifyToolResult } from "@/lib/strip-ansi";
 import {
   preferSanitizedFullToolOutput,
+  toolResultText,
   useToolAwaitingApproval,
   useToolOutputFor,
   useToolPaneScope,
@@ -32,12 +35,25 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
   result,
   status,
 }) => {
-  const command = (args as { command?: string })?.command ?? "";
-  const isRunning = status?.type === "running";
+  const command = toolArgText((args as { command?: unknown })?.command);
+  const isRunning = isToolCallRunning(status);
   // Args still streaming = the model is WRITING the command, not running it yet.
   const { propStatus } = useToolArgsStatus();
   const isWritingCommand = isRunning && propStatus.command === "streaming";
-  const output = result == null ? "" : stringifyToolResult(result);
+  // A command that wrote files arrives as the python tool's structured shape; a plain string means
+  // it wrote none. The same test the adapter applies: a foreign result that merely has text would
+  // otherwise be rendered as that field alone.
+  const structured = isSandboxToolResult(result)
+    ? (result as unknown as { text: string; sessionId?: string; files?: SandboxFile[] })
+    : null;
+  const files = structured?.files ?? [];
+  const sessionId = structured?.sessionId ?? "";
+  const output =
+    structured !== null
+      ? toolResultText(structured.text)
+      : result == null
+        ? ""
+        : toolResultText(result);
 
   // Show the fuller live stream over a truncated result, keeping its exit
   // status. Session-transient: after a reload only the result remains.
@@ -58,7 +74,12 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
 
   return (
     // Open mid-run so command and live output show, collapsed from history.
-    <ToolFallbackRoot defaultOpen={isRunning}>
+    // awaitingApproval overrides the preference: the command lives inside the
+    // content, Allow/Deny outside it, and the trigger shows only 60 characters.
+    <ToolFallbackRoot
+      defaultOpen={isRunning}
+      awaitingApproval={awaitingApproval}
+    >
       <ToolFallbackTrigger
         toolName={command ? `$ ${command.slice(0, 60)}` : "Terminal"}
         status={status}
@@ -99,6 +120,8 @@ const TerminalToolUIImpl: ToolCallMessagePartComponent = ({
               <ToolResultOutput text={displayOutput} />
             </div>
           ) : null}
+          {/* Files the command wrote; this card used to show nothing for them */}
+          <SandboxFiles sessionId={sessionId} files={files} />
         </div>
       </ToolFallbackContent>
     </ToolFallbackRoot>

@@ -23,26 +23,26 @@ import {
 } from "@/components/ui/sheet";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
+import { BulbIcon } from "@/lib/bulb-icon";
 import { openLink } from "@/lib/open-link";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { Telescope02Icon } from "@hugeicons/core-free-icons";
+import {
+  DashedLineCircleIcon as CircleDashedIcon,
+  Telescope02Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   ArrowDown,
   ArrowUp,
-  BookOpen,
-  Brain,
   Check,
   ChevronDown,
   ExternalLink,
   FileText,
-  Globe2,
+  GlobeIcon,
   Pencil,
   Plus,
   RotateCcw,
-  Search,
-  Square,
   Trash2,
   X,
 } from "lucide-react";
@@ -79,6 +79,9 @@ const terminalStatuses = new Set<ResearchRunStatus>([
 ]);
 const ACTIVITY_FOLLOW_SETTLE_MS = 450;
 const ACTIVITY_BOTTOM_THRESHOLD_PX = 24;
+// 2px, not 1, matching use-intent-aware-autoscroll: HiDPI subpixel rounding leaves a fractional
+// gap that a 1px threshold reads as unpinned, keeping the follow loop running forever.
+const ACTIVITY_PINNED_THRESHOLD_PX = 2;
 
 function useResearchActivityScroll(runId: string) {
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -95,6 +98,10 @@ function useResearchActivityScroll(runId: string) {
     let lastScrollTop = element.scrollTop;
     let followUntil = performance.now() + ACTIVITY_FOLLOW_SETTLE_MS;
     let animationFrame: number | null = null;
+    let settleTimer: number | null = null;
+    let settleCheckDue = false;
+    // Layout signal since the last frame. True so the first frame after mount follows.
+    let layoutChanged = true;
 
     const distanceFromBottom = () =>
       Math.max(
@@ -106,24 +113,62 @@ function useResearchActivityScroll(runId: string) {
     const requestTick = () => {
       if (animationFrame === null) animationFrame = requestAnimationFrame(tick);
     };
+    // A reflow with no DOM mutation (a `font-display: swap` webfont landing, say) reaches neither
+    // observer, so the rest of the window is covered by one deferred check rather than every frame.
+    const scheduleSettleCheck = () => {
+      if (settleTimer !== null) return;
+      const remaining = followUntil - performance.now();
+      if (remaining <= 0) return;
+      settleTimer = window.setTimeout(() => {
+        settleTimer = null;
+        // The timer lands on the deadline and its tick a frame later, so the window has closed by then;
+        // this grants that tick one last follow pass rather than dropping it to the reconcile.
+        settleCheckDue = true;
+        requestTick();
+      }, remaining);
+    };
     const tick = () => {
       animationFrame = null;
-      if (!detached && performance.now() < followUntil) {
-        if (distanceFromBottom() > 1) element.scrollTop = element.scrollHeight;
+      const settling = settleCheckDue;
+      settleCheckDue = false;
+      if (!detached && (settling || performance.now() < followUntil)) {
+        const pinned = distanceFromBottom() <= ACTIVITY_PINNED_THRESHOLD_PX;
+        if (!pinned) element.scrollTop = element.scrollHeight;
         updateAtBottom(true);
-        requestTick();
+        // Chaining on the window alone forced a layout every frame for the whole run; growth that leaves
+        // the view unpinned is the signal, and a quiet frame defers to the settle check.
+        if (layoutChanged || !pinned) {
+          layoutChanged = false;
+          requestTick();
+          return;
+        }
+        scheduleSettleCheck();
         return;
       }
       updateAtBottom(distanceFromBottom() <= ACTIVITY_BOTTOM_THRESHOLD_PX);
     };
     const followLayout = () => {
       if (detached) return;
+      layoutChanged = true;
       followUntil = performance.now() + ACTIVITY_FOLLOW_SETTLE_MS;
       requestTick();
     };
     const detach = () => {
       detached = true;
       followUntil = 0;
+      // Cancel every pending follow step, not just the settle check. A frame queued before the detach
+      // still runs, falls through to the reconcile below, and reads a flick shorter than the bottom
+      // threshold as still-at-bottom: "Latest" never appears and nothing corrects it.
+      // followLayout returns early from here on, so nothing corrects it.
+      if (animationFrame !== null) {
+        cancelAnimationFrame(animationFrame);
+        animationFrame = null;
+      }
+      if (settleTimer !== null) {
+        window.clearTimeout(settleTimer);
+        settleTimer = null;
+      }
+      settleCheckDue = false;
       updateAtBottom(false);
     };
     const innerScrollWillConsumeUpward = (target: EventTarget | null) => {
@@ -216,6 +261,7 @@ function useResearchActivityScroll(runId: string) {
 
     return () => {
       if (animationFrame !== null) cancelAnimationFrame(animationFrame);
+      if (settleTimer !== null) window.clearTimeout(settleTimer);
       resizeObserver.disconnect();
       mutationObserver.disconnect();
       element.removeEventListener("scroll", onScroll);
@@ -272,12 +318,18 @@ function ActivityIcon({
   if (activity.state === "failed")
     return <X className={cn(className, "text-destructive")} />;
   if (activity.state === "cancelled")
-    return <Square className={cn(className, "text-muted-foreground")} />;
-  if (activity.kind === "reasoning") return <Brain className={className} />;
+    return (
+      <HugeiconsIcon
+        icon={CircleDashedIcon}
+        className={cn(className, "text-muted-foreground")}
+      />
+    );
+  if (activity.kind === "reasoning")
+    return <BulbIcon className={className} />;
   if (activity.kind === "plan") return <FileText className={className} />;
   if (activity.kind === "report") return <FileText className={className} />;
-  if (activity.action === "fetch") return <BookOpen className={className} />;
-  if (activity.action === "search") return <Search className={className} />;
+  if (activity.action === "fetch" || activity.action === "search")
+    return <GlobeIcon className={className} />;
   return <Check className={className} />;
 }
 
@@ -387,7 +439,7 @@ const ActivityRow = memo(function ActivityRow({
           onClick={() => openLink(source.url)}
           className="group/source flex w-full items-start gap-2 rounded-xl px-2 py-2 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          <Globe2 className="mt-0.5 size-3.5 shrink-0" />
+          <GlobeIcon className="mt-0.5 size-3.5 shrink-0" />
           <span className="min-w-0 flex-1">
             <span className="block line-clamp-2 break-words font-medium text-foreground/85">
               {source.title || source.url}
@@ -441,11 +493,11 @@ const ActivityRow = memo(function ActivityRow({
       >
         <CollapsibleTrigger
           disabled={!hasDetails}
-          className="group/activity flex min-h-10 w-full items-start gap-2 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
+          className="group/activity relative flex min-h-10 w-full items-center gap-2 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
         >
           <span
             className={cn(
-              "absolute left-0 top-3 flex size-[15px] items-center justify-center rounded-full bg-background text-muted-foreground",
+              "absolute -left-7 top-1/2 flex size-[15px] -translate-y-1/2 items-center justify-center rounded-full bg-background text-muted-foreground",
               activity.kind === "step" &&
                 activity.state !== "failed" &&
                 "bg-primary/10 text-primary",
@@ -457,14 +509,14 @@ const ActivityRow = memo(function ActivityRow({
           <span className="min-w-0 flex-1 break-words text-ui-13p5 font-medium leading-5 text-foreground/90">
             {activity.title}
           </span>
-          <time className="mt-0.5 shrink-0 text-ui-10p5 tabular-nums text-muted-foreground">
+          <time className="shrink-0 text-ui-10p5 tabular-nums text-muted-foreground">
             {new Date(activity.createdAt).toLocaleTimeString([], {
               hour: "numeric",
               minute: "2-digit",
             })}
           </time>
           {hasDetails ? (
-            <ChevronDown className="mt-0.5 size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/activity:rotate-180" />
+            <ChevronDown className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/activity:rotate-180" />
           ) : null}
         </CollapsibleTrigger>
         {hasDetails ? <CollapsibleContent>{content}</CollapsibleContent> : null}
@@ -548,7 +600,7 @@ function PlanReview({ runId }: { runId: string }): ReactElement | null {
         open={open}
         onOpenChange={(nextOpen) => setOpen(runId, nextOpen)}
       >
-        <DialogContent className="max-h-[min(680px,calc(100dvh-6rem))] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-3xl [&>[data-slot=dialog-close]]:right-6 [&>[data-slot=dialog-close]]:top-6">
+        <DialogContent className="max-h-[min(680px,calc(100dvh-6rem))] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 data-open:animate-none sm:max-w-3xl [&>[data-slot=dialog-close]]:right-6 [&>[data-slot=dialog-close]]:top-6">
           <DialogHeader className="border-b border-border/70 px-7 pb-4 pt-6 pr-16">
             <DialogTitle>Review the research plan</DialogTitle>
             <DialogDescription className="max-w-2xl leading-relaxed">
@@ -837,10 +889,14 @@ export function ResearchActivityPanel({
       style={
         variant === "panel"
           ? {
+              // The chat-model notice is an opaque absolute bar spanning the whole chat content area, the
+              // panel column included, directly under the header. Clear it the same way the header itself is
+              // cleared, or its first 2.25rem is painted over and unclickable. 0px whenever no notice is on
+              // screen, so this is the geometry it always had.
               height:
-                "calc(100% - var(--studio-content-top-inset, 0px) - var(--studio-chat-header-height, 48px))",
+                "calc(100% - var(--studio-content-top-inset, 0px) - var(--studio-chat-header-height, 48px) - var(--studio-chat-notice-height, 0px))",
               marginTop:
-                "calc(var(--studio-content-top-inset, 0px) + var(--studio-chat-header-height, 48px))",
+                "calc(var(--studio-content-top-inset, 0px) + var(--studio-chat-header-height, 48px) + var(--studio-chat-notice-height, 0px))",
             }
           : undefined
       }
@@ -875,7 +931,7 @@ export function ResearchActivityPanel({
                 className="mt-1 flex items-center gap-1 text-ui-10p5 font-medium text-primary/75"
                 title={websiteLimitTitle}
               >
-                <Globe2 className="size-3" />
+                <GlobeIcon className="size-3" />
                 <span className="truncate">{websiteLimitLabel}</span>
               </p>
             ) : null}

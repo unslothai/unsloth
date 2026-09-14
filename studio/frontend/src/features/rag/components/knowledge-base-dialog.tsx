@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Delete02Icon,
   Edit03Icon,
@@ -9,6 +8,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ChevronLeftIcon, UploadIcon } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   AlertDialog,
@@ -33,6 +33,7 @@ import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 
 import {
   createKnowledgeBase,
@@ -42,9 +43,15 @@ import {
   updateKnowledgeBase,
 } from "../api/rag-api";
 import { useRagAvailabilityStore } from "../api/rag-availability";
-import { RAG_UPLOAD_ACCEPT, type KnowledgeBase } from "../types/rag";
+import {
+  type KnowledgeBase,
+  RAG_UPLOAD_ACCEPT,
+  isLinkedFolderManaged,
+} from "../types/rag";
 import { DocumentStatusChip } from "./document-status-chip";
+import { LinkedFoldersManager } from "./linked-folders-manager";
 import { useRagDocuments } from "./use-rag-documents";
+import { useSourceDrop } from "./use-source-drop";
 
 type View =
   | { kind: "list" }
@@ -173,9 +180,7 @@ export function KnowledgeBaseDialog({
       <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>
-            {view.kind === "documents"
-              ? view.kb.name
-              : "Knowledge bases"}
+            {view.kind === "documents" ? view.kb.name : "Knowledge bases"}
           </DialogTitle>
           <DialogDescription>
             {view.kind === "documents"
@@ -332,18 +337,28 @@ function KnowledgeBaseDocuments({
   kb: KnowledgeBase;
   onBack: () => void;
 }) {
-  const lister = useCallback(
-    () => listKnowledgeBaseDocuments(kb.id),
-    [kb.id],
-  );
-  const { documents, loading, uploading, upload, remove } = useRagDocuments(
-    { type: "kb", kbId: kb.id },
-    lister,
-  );
+  const lister = useCallback(() => listKnowledgeBaseDocuments(kb.id), [kb.id]);
+  const { documents, loading, uploading, refresh, upload, remove } =
+    useRagDocuments({ type: "kb", kbId: kb.id }, lister);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const handleLinkedSourcesChanged = useCallback(() => {
+    void refresh({ quiet: true });
+  }, [refresh]);
+  const { dragging, dropProps, nativeDropTarget } = useSourceDrop({
+    onItems: (items) => void upload(items),
+    // upload() tracks one run at a time, so a second batch would clear the
+    // in-flight guard the first one is still relying on.
+    disabledReason: uploading
+      ? "An upload is already running. Add these when it finishes."
+      : undefined,
+  });
 
   return (
-    <div className="flex min-w-0 flex-col gap-3">
+    <div
+      className="flex min-w-0 flex-col gap-3"
+      ref={nativeDropTarget}
+      {...dropProps}
+    >
       <div className="flex items-center justify-between">
         <Button variant="ghost" size="sm" onClick={onBack}>
           <ChevronLeftIcon className="size-4" />
@@ -360,7 +375,7 @@ function KnowledgeBaseDocuments({
         <input
           ref={fileInputRef}
           type="file"
-          multiple
+          multiple={true}
           accept={RAG_UPLOAD_ACCEPT}
           className="hidden"
           onChange={(e) => {
@@ -374,20 +389,32 @@ function KnowledgeBaseDocuments({
           <Spinner />
         </div>
       ) : documents.length === 0 ? (
-        <div className="rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground">
-          No documents yet. Upload a PDF, Markdown, DOCX, HTML, or text file.
+        <div
+          className={cn(
+            "rounded-md border border-dashed py-6 text-center text-sm text-muted-foreground transition-colors",
+            dragging && "border-primary/60 bg-primary/5 text-foreground",
+          )}
+        >
+          No documents yet. Upload or drop a PDF, Markdown, DOCX, HTML, or text
+          file.
         </div>
       ) : (
-        <div className="flex max-h-[55dvh] flex-wrap gap-1.5 overflow-y-auto pr-0.5">
+        <div
+          className={cn(
+            "flex max-h-[55dvh] flex-wrap gap-1.5 overflow-y-auto rounded-md pr-0.5 transition-colors",
+            dragging && "bg-primary/5 ring-1 ring-primary/60",
+          )}
+        >
           {documents.map((doc) => (
             <DocumentStatusChip
               key={doc.id}
               filename={doc.filename}
               status={doc.status}
               progress={doc.progress}
+              stage={doc.stage}
               error={doc.error}
               onRemove={
-                doc.id.startsWith("pending_")
+                doc.id.startsWith("pending_") || isLinkedFolderManaged(doc)
                   ? undefined
                   : () => void remove(doc.id)
               }
@@ -395,6 +422,13 @@ function KnowledgeBaseDocuments({
           ))}
         </div>
       )}
+      <div className="border-t pt-3">
+        <LinkedFoldersManager
+          scope={{ type: "knowledge_base", id: kb.id }}
+          compact={true}
+          onSourcesChanged={handleLinkedSourcesChanged}
+        />
+      </div>
     </div>
   );
 }

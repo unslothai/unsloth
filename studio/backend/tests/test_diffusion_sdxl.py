@@ -202,6 +202,10 @@ def test_base_config_filter_skips_weights():
     assert not keep("unet/diffusion_pytorch_model.safetensors")
     assert not keep("vae/diffusion_pytorch_model.bin")
     assert not keep("text_encoder/model.onnx")
-    # transformer/ and assets/ stay excluded (inherited from _base_file_downloaded).
-    assert not keep("transformer/config.json")
+    # transformer/ and assets/ stay excluded (inherited from _base_file_downloaded), except for
+    # transformer/config.json: from_single_file(config = <repo id>, subfolder = "transformer")
+    # resolves that one off the Hub, so an offline load needs it staged and the locality gate has
+    # to count it. The shards stay excluded -- the single file supplies those.
+    assert keep("transformer/config.json")
+    assert not keep("transformer/diffusion_pytorch_model.safetensors")
     assert not keep("assets/x.png")

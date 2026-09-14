@@ -14,11 +14,12 @@ from typing import List, Literal, Optional
 
 import typer
 
-# Canonical speculative-decoding modes, mirroring the backend's
-# _CANONICAL_SPEC_MODES. Named once so the CLI's option annotations, the HTTP
-# payload builders and the in-process loader cannot drift apart when a mode is
-# added; typer reads it at runtime to validate --speculative-type.
-SpeculativeType = Literal["auto", "mtp", "dspark", "ngram", "mtp+ngram", "off", "ngram-simple"]
+# Canonical speculative-decoding modes, mirroring the backend's _CANONICAL_SPEC_MODES. Named once
+# so the CLI's option annotations, the HTTP payload builders and the in-process loader cannot
+# drift apart; typer reads it at runtime to validate --speculative-type.
+SpeculativeType = Literal[
+    "auto", "mtp", "dspark", "dflash", "ngram", "mtp+ngram", "off", "ngram-simple"
+]
 
 _THINK_OPEN = "<think>"
 _THINK_BLOCK = re.compile(rf"{re.escape(_THINK_OPEN)}.*?</think>", re.DOTALL)
@@ -58,10 +59,10 @@ def urlopen_no_redirect(request, timeout):
     return _no_redirect_opener.open(request, timeout = timeout)
 
 
-# /api/inference/load and /unload pad their body so a proxy cannot time a slow load
-# out, committing the 200 before the work finishes. A failure found after that travels
-# only in-band under this key (studio/backend/routes/inference.py), so a client that
-# treats any 200 as success reports a failed load as a successful one.
+# /api/inference/load and /unload pad their body so a proxy cannot time a slow load out,
+# committing the 200 before the work finishes. A failure found after that travels only in-band
+# under this key, so a client that treats any 200 as success reports a failed load as a
+# successful one.
 _DEFERRED_ERROR_KEY = "_deferred_error"
 
 
@@ -139,14 +140,13 @@ def ensure_studio_backend_path() -> None:
 def configure_quiet_logging() -> None:
     import logging
 
-    # The CLI never configures structlog, so without this every backend INFO
-    # line prints. LOG_LEVEL is exported so the worker subprocess inherits it.
+    # The CLI never configures structlog, so without this every backend INFO line prints. LOG_LEVEL
+    # is exported so the worker subprocess inherits it.
     level_name = os.environ.setdefault("LOG_LEVEL", "WARNING").upper()
     level = getattr(logging, level_name, logging.WARNING)
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
-    # Quieting logs must not fail a command before the import that really needs
-    # structlog gets to report itself.
+    # Quieting logs must not fail a command before the import that really needs structlog gets to report itself.
     try:
         import structlog
     except ModuleNotFoundError:
@@ -272,8 +272,8 @@ def visible_text(text: str, show_thinking: bool) -> str:
 
 
 def stream_to_stdout(stream, show_thinking: bool) -> str:
-    # Backends yield the full text-so-far on each step (llama.cpp ends with a
-    # metadata dict, skipped); print the growing tail, return the raw text.
+    # Backends yield the full text-so-far on each step (llama.cpp ends with a metadata dict,
+    # skipped); print the growing tail, return the raw text.
     raw = ""
     shown = ""
     for chunk in stream:
@@ -316,9 +316,8 @@ def collect_stream(stream, show_thinking: bool) -> str:
 
 
 def raise_on_streamed_error(stream):
-    # Match real backend errors by type (GenStreamError), not the "Error:" text
-    # prefix, so a completion whose text opens with "Error:" is not misread as a
-    # backend failure.
+    # Match real backend errors by type (GenStreamError), not the "Error:" text prefix, so a
+    # completion whose text opens with "Error:" is not misread as a backend failure.
     try:
         ensure_studio_backend_path()
         from core.inference.orchestrator import GenStreamError
@@ -349,12 +348,23 @@ def render_columns(
     (console or Console()).print(table)
 
 
+def stats_hit_token_limit(stats) -> bool:
+    """Whether a backend's end-of-generation stats say the reply ran out of budget.
+
+    Safetensors reports ``truncated``; MLX and llama-server report a finish reason.
+    """
+    if not isinstance(stats, dict):
+        return False
+    return bool(stats.get("truncated")) or stats.get("finish_reason") == "length"
+
+
 class ChatBackend:
     """Uniform stream()/close() over the llama-server and Unsloth backends."""
 
     def __init__(self, kind: str, backend) -> None:
         self._kind = kind  # "gguf" | "unsloth"
         self._backend = backend
+        self.reply_hit_token_limit = False
 
     def stream(
         self,
@@ -364,25 +374,29 @@ class ChatBackend:
         temperature: float,
         top_p: float,
         top_k: int,
-        max_new_tokens: int,
+        max_new_tokens: Optional[int],
         repetition_penalty: float,
         enable_thinking: bool,
         use_adapter: Optional[bool] = None,
     ):
+        self.reply_hit_token_limit = False
         if self._kind == "gguf":
             # llama-server takes the system prompt as the first message.
             msgs = list(messages)
             if system_prompt:
                 msgs = [{"role": "system", "content": system_prompt}, *msgs]
-            return self._backend.generate_chat_completion(
-                messages = msgs,
-                temperature = temperature,
-                top_p = top_p,
-                top_k = top_k,
-                max_tokens = max_new_tokens,
-                repetition_penalty = repetition_penalty,
-                enable_thinking = enable_thinking,
+            return self._watch_metadata(
+                self._backend.generate_chat_completion(
+                    messages = msgs,
+                    temperature = temperature,
+                    top_p = top_p,
+                    top_k = top_k,
+                    max_tokens = max_new_tokens,
+                    repetition_penalty = repetition_penalty,
+                    enable_thinking = enable_thinking,
+                )
             )
+        holder: dict = {}
         gen_kwargs = dict(
             messages = messages,
             system_prompt = system_prompt,
@@ -392,16 +406,31 @@ class ChatBackend:
             max_new_tokens = max_new_tokens,
             repetition_penalty = repetition_penalty,
             enable_thinking = enable_thinking,
+            stats_holder = holder,
         )
         if use_adapter is not None:
-            return self._backend.generate_with_adapter_control(
+            stream = self._backend.generate_with_adapter_control(
                 use_adapter = use_adapter, **gen_kwargs
             )
-        return self._backend.generate_chat_response(**gen_kwargs)
+        else:
+            stream = self._backend.generate_chat_response(**gen_kwargs)
+        return self._watch_stats(stream, holder)
+
+    def _watch_metadata(self, stream):
+        """llama-server closes a turn with a metadata event carrying the finish reason."""
+        for chunk in stream:
+            if isinstance(chunk, dict) and chunk.get("type") == "metadata":
+                self.reply_hit_token_limit = chunk.get("finish_reason") == "length"
+            yield chunk
+
+    def _watch_stats(self, stream, holder: dict):
+        """The worker fills the holder once the turn is done, so read it at the end."""
+        yield from stream
+        self.reply_hit_token_limit = stats_hit_token_limit(holder.get("stats"))
 
     def close(self) -> None:
-        # Shut the worker down directly: the graceful unload_model waits for
-        # an ack that compare mode can swallow, hanging exit for minutes.
+        # Shut the worker down directly: the graceful unload_model waits for an ack that compare mode can
+        # swallow, hanging exit for minutes.
         try:
             if self._kind == "gguf":
                 self._backend.unload_model()
@@ -474,6 +503,7 @@ def _load_gguf_backend(
             mmproj_path = model_config.gguf_mmproj_file,
             mtp_draft_path = model_config.gguf_mtp_file,
             dspark_draft_path = model_config.gguf_dspark_file,
+            dflash_draft_path = model_config.gguf_dflash_file,
         )
     if speculative_type is not None:
         intent_fields["speculative_type"] = speculative_type
@@ -617,8 +647,8 @@ def find_studio_server(timeout: float = 3.0) -> Optional[str]:
     import urllib.request
 
     base = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
-    # Try the concrete loopback addresses in order and return the first that
-    # answers, so the rest of the flow talks to that exact address.
+    # Try the concrete loopback addresses in order and return the first that answers, so the rest of
+    # the flow talks to that exact address.
     for candidate in _loopback_candidate_bases(base):
         request = urllib.request.Request(
             f"{candidate}/api/health", headers = {"User-Agent": _USER_AGENT}
@@ -670,10 +700,9 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
     parsed = urlparse(base)
     host = parsed.hostname or ""
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    # Resolve to one concrete address and talk to *that* address, then bind the
-    # proof to (address, port). A name like localhost can resolve to a squatter on
-    # ::1 while the real Unsloth is on 127.0.0.1; connecting to the resolved IP and
-    # binding to it means a proof relayed from a different address/port won't match.
+    # Resolve to one concrete address and talk to *that* address, then bind the proof to (address,
+    # port). A name like localhost can resolve to a squatter on ::1 while the real Unsloth is on
+    # 127.0.0.1.
     try:
         ip = socket.getaddrinfo(host, port, type = socket.SOCK_STREAM)[0][4][0]
     except Exception:
@@ -686,8 +715,8 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
         headers = {"User-Agent": _USER_AGENT, "Host": parsed.netloc},
     )
     try:
-        # No redirects: a 302 could relay a real Unsloth's proof (see urlopen_no_redirect).
-        # Cap the read: the server is still unverified, so don't trust its length.
+        # No redirects: a 302 could relay a real Unsloth's proof (see urlopen_no_redirect). Cap the read:
+        # the server is still unverified.
         with urlopen_no_redirect(request, timeout = timeout) as response:
             proof = json.loads(response.read(65536).decode() or "{}").get("proof")
     except Exception:
@@ -726,6 +755,7 @@ class HttpChatBackend:
     def __init__(self, base_url: str, token: str) -> None:
         self._base = base_url
         self._token = token
+        self.reply_hit_token_limit = False
 
     def _request(
         self,
@@ -777,9 +807,8 @@ class HttpChatBackend:
         if spec_draft_n_max is not None:
             payload["spec_draft_n_max"] = spec_draft_n_max
         try:
-            # Read the body, don't close at the headers: a slow load commits its 200
-            # early and pads until done, so closing here would generate mid-load and
-            # discard the only report of a late failure.
+            # Read the body, don't close at the headers: a slow load commits its 200 early and pads until
+            # done, so closing here would generate mid-load and discard the only report of a late failure.
             read_json_checking_deferred_error(
                 self._base + "/api/inference/load",
                 self._request("POST", "/api/inference/load", payload),
@@ -796,7 +825,7 @@ class HttpChatBackend:
         temperature: float,
         top_p: float,
         top_k: int,
-        max_new_tokens: int,
+        max_new_tokens: Optional[int],
         repetition_penalty: float,
         enable_thinking: bool,
         use_adapter: Optional[bool] = None,
@@ -806,25 +835,24 @@ class HttpChatBackend:
         msgs = list(messages)
         if system_prompt:
             msgs = [{"role": "system", "content": system_prompt}, *msgs]
-        resp = self._request(
-            "POST",
-            "/v1/chat/completions",
-            {
-                "model": "default",
-                "messages": msgs,
-                "stream": True,
-                "temperature": temperature,
-                "top_p": top_p,
-                "top_k": top_k,
-                "max_tokens": max_new_tokens,
-                "repetition_penalty": repetition_penalty,
-                "enable_thinking": enable_thinking,
-            },
-        )
+        body = {
+            "model": "default",
+            "messages": msgs,
+            "stream": True,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+            "repetition_penalty": repetition_penalty,
+            "enable_thinking": enable_thinking,
+        }
+        if max_new_tokens is not None:
+            body["max_tokens"] = max_new_tokens
+        resp = self._request("POST", "/v1/chat/completions", body)
+
+        self.reply_hit_token_limit = False
 
         def cumulative():
-            # Accumulate SSE deltas into the full-text-so-far convention the
-            # stream helpers expect.
+            # Accumulate SSE deltas into the full-text-so-far convention the stream helpers expect.
             text = ""
             with resp:
                 for raw_line in resp:
@@ -843,14 +871,21 @@ class HttpChatBackend:
                             f"Server error: {parsed['error'].get('message', 'Unknown server error')}"
                         )
                     try:
-                        delta = parsed["choices"][0]["delta"].get("content")
+                        choice = parsed["choices"][0]
                     except (KeyError, IndexError):
+                        continue
+                    # Read before the delta: the finish-reason chunk may carry no content.
+                    if choice.get("finish_reason") is not None:
+                        self.reply_hit_token_limit = choice["finish_reason"] == "length"
+                    try:
+                        delta = choice["delta"].get("content")
+                    except (KeyError, AttributeError, TypeError):
                         continue
                     if not delta:
                         continue
                     text += delta
-                    # An emoji can arrive split across two deltas as lone
-                    # surrogate halves: hold back a trailing half, merge pairs.
+                    # An emoji can arrive split across two deltas as lone surrogate halves: hold back a trailing
+                    # half, merge pairs.
                     visible = text
                     if "\ud800" <= visible[-1] <= "\udbff":
                         visible = visible[:-1]
@@ -878,8 +913,8 @@ def connect_studio_server(
     if not base_url:
         return None
 
-    # Explicit server (UNSLOTH_STUDIO_URL) we can't safely attach to -> fail loudly;
-    # opportunistic local discovery just falls back to a local load.
+    # Explicit server (UNSLOTH_STUDIO_URL) we can't safely attach to means fail loudly; opportunistic
+    # local discovery just falls back to a local load.
     explicit = bool(os.environ.get("UNSLOTH_STUDIO_URL"))
 
     def _refuse(reason: str):
@@ -892,8 +927,8 @@ def connect_studio_server(
         )
         raise typer.Exit(code = 1)
 
-    # Only hand the self-issued JWT (signed with the local secret) to loopback: a
-    # remote URL is unverified and a real remote Unsloth would reject it anyway.
+    # Only hand the self-issued JWT (signed with the local secret) to loopback: a remote URL is
+    # unverified and a real remote Unsloth would reject it anyway.
     if not is_loopback_url(base_url):
         return _refuse(
             "it isn't a local Unsloth, so a self-issued token can't "

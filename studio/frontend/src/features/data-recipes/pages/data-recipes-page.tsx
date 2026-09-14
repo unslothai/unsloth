@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useAppShellReadySignal } from "@/components/app-readiness";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -43,7 +44,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import type { ReactElement } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   createRecipeDraft,
   createRecipeFromLearningRecipe,
@@ -311,6 +312,7 @@ function LearningRecipeCards({
 }
 
 export function DataRecipesPage(): ReactElement {
+  const signalReady = useAppShellReadySignal();
   const navigate = useNavigate();
   const { recipes, ready } = useRecipes();
   const [creatingRecipe, setCreatingRecipe] = useState(false);
@@ -318,6 +320,15 @@ export function DataRecipesPage(): ReactElement {
   const [loadingTemplateId, setLoadingTemplateId] = useState<string | null>(
     null,
   );
+  const reloadReadySent = useRef(false);
+
+  useEffect(() => {
+    if (!ready || reloadReadySent.current) {
+      return;
+    }
+    reloadReadySent.current = true;
+    signalReady();
+  }, [ready, signalReady]);
 
   useEffect(() => {
     if (sessionStorage.getItem(OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY) !== "1") {

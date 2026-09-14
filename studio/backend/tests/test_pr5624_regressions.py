@@ -222,46 +222,121 @@ def test_kimi_bare_counter_id_is_dropped():
 # DeepSeek truncated mid-stream
 
 
-def test_deepseek_v3_1_huge_truncated_body_is_linear():
-    """Adversarial input: DeepSeek envelope with no JSON brace and a
-    50k-char body. A regex-based ``[^\\n<]+?`` name capture is O(N^2)
-    here; the parser uses ``str.find`` on the sep marker so it stays
-    linear. Budget 1s to flag any future regression."""
+def _growth(
+    build,
+    units: int,
+    factor: int = 4,
+    repeats: int = 3,
+) -> tuple[float, float, list]:
+    """How much more `factor` times the input costs. Returns (ratio, big_seconds, big_result).
+
+    The MEDIAN of `repeats` PAIRED ratios: each pair times the small input and then the big
+    one back to back, and the ratio is formed inside the pair before anything is aggregated.
+
+    This replaces an absolute ``elapsed < 1.0`` budget at one size. That budget read 0.20s on
+    a quiet runner and 1.41s on a busy one, so it failed for the wrong reason on unrelated
+    PRs, and it also sat close enough to the line that a REAL regression (#10507, which made
+    the R1 path quadratic again) only tipped it over some of the time. A ratio answers the
+    question these tests are named for: linear is ~`factor`, quadratic is ~`factor ** 2`.
+
+    It also replaces ``min(big over repeats) / min(small over repeats)``, which looked like
+    it cancelled the machine out and did not. Those two minima come from batches run at
+    different times, so a quiet window during the small batch and a busy one during the big
+    batch multiply instead of cancelling, and the quotient of two separately-taken minima is
+    not a minimum of anything. Measured on a 2-vCPU box under load, 15 trials per shape:
+
+        strategy      R1        R1-distant  GLM       V3        >= 6.0
+        min/min       max 8.69  max 8.23    max 8.27  max 8.59  7 of 60
+        paired median max 4.26  max 4.83    max 4.83  max 5.42  0 of 60
+
+    That 12% false-fail rate is not hypothetical: it is why this test failed on #10825 and
+    again on #10864 at 6.56, both times on branches that touch none of this code.
+
+    Pairing is what fixes it. Contention hits both halves of a pair roughly equally and
+    divides out, which is what the old comment claimed for the unpaired form. The median
+    then discards a pair that got unlucky, in either direction, rather than trusting one
+    reading.
+
+    Detection power is kept, which is the half worth checking before loosening anything. On
+    a synthetic path with a true 16x profile this reports 8 of 8 over the bar, same as the
+    old form. On the marginal 6.7x shape (#10832's partially fixed sweep) it reports 9 of 12
+    against the old form's 10 of 12, a difference well inside the noise at that sample size,
+    and that shape's sibling test measures 12.2x when broken, so the suite still catches it.
+    """
+    import statistics as _statistics
     import time as _time
 
-    text = "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>fn<｜tool▁sep｜>" + "x" * 50_000
-    start = _time.time()
-    calls = parse_tool_calls_from_text(text)
-    elapsed = _time.time() - start
-    assert elapsed < 1.0, f"V3 path is non-linear: {elapsed:.2f}s"
-    assert calls == []
+    def once(text: str) -> tuple[float, list]:
+        start = _time.perf_counter()
+        result = parse_tool_calls_from_text(text)
+        return _time.perf_counter() - start, result
+
+    small_text, big_text = build(units), build(units * factor)
+    ratios, big, result = [], None, None
+    for _ in range(repeats):
+        small_elapsed, _ = once(small_text)
+        big_elapsed, result = once(big_text)
+        # The backstop below reads the BEST big time, not the worst. Contention only adds, so
+        # the minimum is the closest this size got to its own cost, and the backstop should
+        # fire on a path that is genuinely too slow rather than on a runner that stalled once.
+        big = big_elapsed if big is None else min(big, big_elapsed)
+        # A timer's own resolution must not read as superlinear growth on a very fast machine.
+        ratios.append(big_elapsed / max(small_elapsed, 1e-4))
+
+    return _statistics.median(ratios), big, result
+
+
+def _assert_linear(
+    build,
+    label: str,
+    units: int,
+    *,
+    factor: int = 4,
+    tolerance: float = 6.0,
+):
+    """`build(n)` must cost ~`factor`x, not ~`factor ** 2`x, for `factor`x the input."""
+    ratio, big, result = _growth(build, units, factor)
+    # Backstop: a regression bad enough to make the ratio unmeasurable still has to fail, and
+    # fail quickly, rather than run until the job's own timeout kills it with no explanation.
+    assert big < 60.0, f"{label} path took {big:.1f}s on {units * factor} units"
+    assert ratio < tolerance, (
+        f"{label} path is not linear: {factor}x the input cost {ratio:.1f}x the time "
+        f"(linear is ~{factor}, quadratic is ~{factor ** 2})"
+    )
+    return result
+
+
+def test_deepseek_v3_1_huge_truncated_body_is_linear():
+    """Adversarial input: DeepSeek envelope with no JSON brace and a long
+    body. A regex-based ``[^\\n<]+?`` name capture is O(N^2) here; the
+    parser uses ``str.find`` on the sep marker so it stays linear."""
+    build = lambda n: "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>fn<｜tool▁sep｜>" + "x" * n
+    assert _assert_linear(build, "V3", 50_000) == []
 
 
 def test_deepseek_r1_huge_fenceless_body_is_linear():
     """R1 detection used a greedy ``([^\\n]+)\\n```json`` regex that is O(N^2) on a
     fence-less body of repeated ``function<sep>`` tokens. The parser now scans with
-    ``str.find``; budget 1s to flag any regression."""
-    import time as _time
+    ``str.find``."""
+    build = lambda n: "<｜tool▁calls▁begin｜>" + "function<｜tool▁sep｜>a" * n
+    assert _assert_linear(build, "R1", 10_000) == []
 
-    text = "<｜tool▁calls▁begin｜>" + "function<｜tool▁sep｜>a" * 40_000
-    start = _time.time()
-    calls = parse_tool_calls_from_text(text)
-    elapsed = _time.time() - start
-    assert elapsed < 1.0, f"R1 path is non-linear: {elapsed:.2f}s"
-    assert calls == []
+
+def test_deepseek_r1_fenceless_body_with_one_distant_object_is_linear():
+    """The same body with a single ``{`` after it, which is the shape that survived the
+    first fix for #10507: seeking the next object per marker found one every time and
+    rescanned the tail to reach it, so the sweep stayed quadratic while the fence-less
+    case above had gone linear."""
+    build = lambda n: "<｜tool▁calls▁begin｜>" + "function<｜tool▁sep｜>a" * n + '{"a": 1}'
+    _assert_linear(build, "R1 distant-object", 10_000)
 
 
 def test_glm_unclosed_body_many_arg_keys_is_linear():
     """An unclosed GLM ``<tool_call>`` body runs to EOF; a lazy-group ``finditer``
     over many bare ``<arg_key>`` tokens was O(N^2). The parser now walks pairs with
-    ``str.find``; budget 1s."""
-    import time as _time
-
-    text = "<tool_call>foo\n" + "<arg_key>k" * 40_000
-    start = _time.time()
-    parse_tool_calls_from_text(text)
-    elapsed = _time.time() - start
-    assert elapsed < 1.0, f"GLM path is non-linear: {elapsed:.2f}s"
+    ``str.find``."""
+    build = lambda n: "<tool_call>foo\n" + "<arg_key>k" * n
+    _assert_linear(build, "GLM", 10_000)
 
 
 def test_deepseek_r1_fenced_json_parses():
@@ -305,49 +380,42 @@ def test_deepseek_v3_1_truncated_after_end_marker_still_yields_call():
 # Routes-layer strip across the three new families
 
 
-def test_routes_layer_strip_removes_deepseek_envelope():
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param(
+            "before "
+            "<｜tool▁calls▁begin｜>"
+            "<｜tool▁call▁begin｜>get_time"
+            '<｜tool▁sep｜>{"city":"Tokyo"}'
+            "<｜tool▁call▁end｜>"
+            "<｜tool▁calls▁end｜>"
+            " after",
+            id = "routes_layer_strip_removes_deepseek_envelope",
+        ),
+        pytest.param(
+            "before "
+            "<|tool_calls_section_begin|>"
+            "<|tool_call_begin|>functions.web_search:0"
+            '<|tool_call_argument_begin|>{"q":"x"}'
+            "<|tool_call_end|>"
+            "<|tool_calls_section_end|>"
+            " after",
+            id = "routes_layer_strip_removes_kimi_section",
+        ),
+        # ``<tool_call>.*?</tool_call>`` covers GLM via the Qwen pattern.
+        pytest.param(
+            "before "
+            "<tool_call>web_search\n"
+            "<arg_key>q</arg_key>\n<arg_value>x</arg_value>\n"
+            "</tool_call>"
+            " after",
+            id = "routes_layer_strip_removes_glm_block",
+        ),
+    ],
+)
+def test_routes_layer_strip_removes_tool_envelopes(text):
     from routes.inference import _strip_tool_xml as _routes_strip
-
-    text = (
-        "before "
-        "<｜tool▁calls▁begin｜>"
-        "<｜tool▁call▁begin｜>get_time"
-        '<｜tool▁sep｜>{"city":"Tokyo"}'
-        "<｜tool▁call▁end｜>"
-        "<｜tool▁calls▁end｜>"
-        " after"
-    )
-    stripped = _routes_strip(text)
-    assert stripped == "before  after"
-
-
-def test_routes_layer_strip_removes_kimi_section():
-    from routes.inference import _strip_tool_xml as _routes_strip
-
-    text = (
-        "before "
-        "<|tool_calls_section_begin|>"
-        "<|tool_call_begin|>functions.web_search:0"
-        '<|tool_call_argument_begin|>{"q":"x"}'
-        "<|tool_call_end|>"
-        "<|tool_calls_section_end|>"
-        " after"
-    )
-    stripped = _routes_strip(text)
-    assert stripped == "before  after"
-
-
-def test_routes_layer_strip_removes_glm_block():
-    """``<tool_call>.*?</tool_call>`` covers GLM via the Qwen pattern."""
-    from routes.inference import _strip_tool_xml as _routes_strip
-
-    text = (
-        "before "
-        "<tool_call>web_search\n"
-        "<arg_key>q</arg_key>\n<arg_value>x</arg_value>\n"
-        "</tool_call>"
-        " after"
-    )
     stripped = _routes_strip(text)
     assert stripped == "before  after"
 
@@ -452,11 +520,15 @@ def test_deepseek_v3_with_call_terminator_parses_in_strict_mode():
 
 def test_strip_tool_markup_removes_nested_wrapperless_gemma_call():
     # Wrapper-less Gemma call with a NESTED object arg: the balanced helper must strip the whole call, not leave a trailing ``}``.
-    text = "answer: call:f{loc:{city:NYC},n:3} done"
+    text = "answer:\ncall:f{loc:{city:NYC},n:3} done"
     stripped = strip_tool_markup(text, final = True)
     assert "call:f" not in stripped
     assert "}" not in stripped
     assert "answer:" in stripped and "done" in stripped
+
+    # Mid-sentence the same shape is a sentence about the syntax: kept whole.
+    prose = "answer: call:f{loc:{city:NYC},n:3} done"
+    assert strip_tool_markup(prose, final = True) == prose
 
 
 # Pass-3 review findings: bare-Kimi streaming (non-final) strip symmetry
@@ -482,10 +554,14 @@ def test_routes_layer_strip_removes_wrapperless_gemma_call():
     # Gemma 4 (skip_special_tokens) emits a wrapper-less ``call:NAME{..}`` with no XML markers.
     from routes.inference import _strip_tool_xml as _routes_strip
 
-    text = 'before call:web_search{query:"weather in Sydney"} after'
+    text = 'before\ncall:web_search{query:"weather in Sydney"} after'
     stripped = _routes_strip(text)
     assert "call:web_search" not in stripped
     assert "before" in stripped and "after" in stripped
+
+    # The same call mid-sentence reads as prose, so the route keeps the answer intact.
+    prose = 'before call:web_search{query:"weather in Sydney"} after'
+    assert _routes_strip(prose) == prose
 
 
 def test_deepseek_envelope_end_inside_arg_string_is_not_a_truncation():
@@ -536,13 +612,21 @@ def test_wrapperless_gemma_call_gated_by_enabled_tools():
     assert "call:foo{x:1}" in strip_tool_markup(
         prose, final = True, enabled_tool_names = {"web_search"}
     )
-    # An enabled name is still a real call (parsed, and stripped from display).
-    real = "Answer. call:web_search{query:hi}"
+    # An enabled name is still a real call, and a call at a line boundary (the shape
+    # Gemma emits) is stripped from display.
+    real = "Answer.\ncall:web_search{query:hi}"
     calls = parse_tool_calls_from_text(real, enabled_tool_names = {"web_search"})
     assert [c["function"]["name"] for c in calls] == ["web_search"], calls
     assert "call:web_search" not in strip_tool_markup(
         real, final = True, enabled_tool_names = {"web_search"}
     )
+
+    # Mid-sentence the strip is deliberately NOT the parser's mirror: the call is still
+    # promoted, and its text stays visible instead of the answer being deleted around it.
+    inline = "Answer. call:web_search{query:hi}"
+    inline_calls = parse_tool_calls_from_text(inline, enabled_tool_names = {"web_search"})
+    assert [c["function"]["name"] for c in inline_calls] == ["web_search"], inline_calls
+    assert strip_tool_markup(inline, final = True, enabled_tool_names = {"web_search"}) == inline
 
 
 def test_kimi_section_end_inside_arg_string_is_not_a_truncation():
@@ -799,25 +883,25 @@ def test_chained_bare_json_owns_kimi_marker_in_later_call():
 def test_nested_gemma_values_keep_commas_and_parens():
     # Nested wrapper-less Gemma mappings/arrays use the top-level delimiter rules, so nested arguments are not split.
     calls = parse_tool_calls_from_text(
-        "call:python{opts:{code:print(1,2),lang:py}}", enabled_tool_names = {"python"}
+        "call:web_search{opts:{code:print(1,2),lang:py}}", enabled_tool_names = {"web_search"}
     )
-    assert [c["function"]["name"] for c in calls] == ["python"], calls
+    assert [c["function"]["name"] for c in calls] == ["web_search"], calls
     assert json.loads(calls[0]["function"]["arguments"]) == {
         "opts": {"code": "print(1,2)", "lang": "py"}
     }
 
     arr = parse_tool_calls_from_text(
-        "call:python{opts:[1,2,{a:f(1,2)}]}", enabled_tool_names = {"python"}
+        "call:web_search{opts:[1,2,{a:f(1,2)}]}", enabled_tool_names = {"web_search"}
     )
     assert json.loads(arr[0]["function"]["arguments"]) == {"opts": [1, 2, {"a": "f(1,2)"}]}
 
     prose_comma = parse_tool_calls_from_text(
-        "call:python{opts:{note:hello, world}}", enabled_tool_names = {"python"}
+        "call:web_search{opts:{note:hello, world}}", enabled_tool_names = {"web_search"}
     )
     assert json.loads(prose_comma[0]["function"]["arguments"]) == {"opts": {"note": "hello, world"}}
 
     quoted = parse_tool_calls_from_text(
-        'call:python{opts:{q:say "a, b" now,n:3}}', enabled_tool_names = {"python"}
+        'call:web_search{opts:{q:say "a, b" now,n:3}}', enabled_tool_names = {"web_search"}
     )
     assert json.loads(quoted[0]["function"]["arguments"]) == {
         "opts": {"q": 'say "a, b" now', "n": 3}
@@ -826,15 +910,15 @@ def test_nested_gemma_values_keep_commas_and_parens():
     # Controls: nested quoted values and multi-key mappings are unchanged, and
     # a truncated nested value still falls back to the raw string.
     nested_q = parse_tool_calls_from_text(
-        'call:python{loc:{city:"New York"}}', enabled_tool_names = {"python"}
+        'call:web_search{loc:{city:"New York"}}', enabled_tool_names = {"web_search"}
     )
     assert json.loads(nested_q[0]["function"]["arguments"]) == {"loc": {"city": "New York"}}
     multi = parse_tool_calls_from_text(
-        "call:python{opts:{a:1,b:2},n:3}", enabled_tool_names = {"python"}
+        "call:web_search{opts:{a:1,b:2},n:3}", enabled_tool_names = {"web_search"}
     )
     assert json.loads(multi[0]["function"]["arguments"]) == {"opts": {"a": 1, "b": 2}, "n": 3}
     trunc = parse_tool_calls_from_text(
-        "call:python{opts:{code:print(1,2}}", enabled_tool_names = {"python"}
+        "call:web_search{opts:{code:print(1,2}}", enabled_tool_names = {"web_search"}
     )
     assert json.loads(trunc[0]["function"]["arguments"]) == {"opts": "{code:print(1,2}"}
 

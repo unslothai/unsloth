@@ -3,7 +3,6 @@
 
 # Waits for the Windows Docker daemon on a hosted runner, starting the service if
 # it is installed but not running.
-#
 # Docker is installed on every windows-2022 image (runner-images uses Microsoft's
 # install-docker-ce.ps1 without -HyperV, so the daemon serves WINDOWS containers) but is
 # not always RUNNING at job start: a spike run died 21s in with "failed to connect to the

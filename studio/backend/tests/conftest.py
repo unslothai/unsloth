@@ -11,10 +11,27 @@ Model/variant for the managed mode resolve from ``--unsloth-model`` /
 ``--unsloth-gguf-variant``, then env vars, then ``test_studio_api.py`` defaults.
 """
 
+# --- torch.compile cache isolation -------------------------------------------------
+# Must run before torch is imported anywhere below, so it is here rather than in a
+# fixture. See tests/_shared/compile_cache_isolation.py for what it does and why.
+import importlib.util as _ilu  # noqa: E402
+import pathlib as _pathlib  # noqa: E402
+
+_iso = _pathlib.Path(__file__).resolve()
+for _up in _iso.parents:
+    _candidate = _up / "tests" / "_shared" / "compile_cache_isolation.py"
+    if _candidate.is_file():
+        _spec = _ilu.spec_from_file_location("_unsloth_compile_cache_isolation", _candidate)
+        _mod = _ilu.module_from_spec(_spec)
+        _spec.loader.exec_module(_mod)  # sets the env vars on import
+        break
+# -----------------------------------------------------------------------------------
+
 import contextlib
 import errno
 import itertools
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -37,6 +54,16 @@ os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 # it per-test; pin the default off for the whole suite so a new test elsewhere cannot
 # reintroduce that by accident. setdefault, so an explicit override still wins.
 os.environ.setdefault("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0")
+# Avoid a cold torch subprocess in unrelated RAG tests. The probe tests re-enable it.
+os.environ.setdefault("UNSLOTH_STUDIO_DISABLE_DEVICE_PROBE", "1")
+# settled_snapshot_device_memory spaces its retried VRAM reads a real second apart so a
+# transient tenant on a live card has time to clear. Under test the snapshots are stubs
+# whose answers do not change with time, so the wait buys nothing and the max() over the
+# reads -- which is what the retry is actually for -- is unaffected. Measured on the
+# backend suite: 142s of test_diffusion_backend.py's 328s went here, in tests reaching it
+# through _plan_memory, which has no way to pass delay_s. setdefault, so a test that wants
+# the production spacing can still set it.
+os.environ.setdefault("UNSLOTH_SETTLE_DELAY_S", "0")
 
 
 @pytest.fixture(scope = "session")
@@ -54,13 +81,34 @@ _studio_home_counter = itertools.count()
 
 
 @pytest.fixture(autouse = True)
+def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
+    """Mechanism: tests/_shared/installer_venv_root.py.
+
+    A separate pytest root, so it cannot poison the AMD fast-path probe (another job), but
+    it has the same defect: test_torchao_select.py drives install_python_stack() in process,
+    so it deletes and rewrites the manifest of the venv running the tests.
+    """
+    for _up in _iso.parents:
+        _shared = _up / "tests" / "_shared"
+        if (_shared / "installer_venv_root.py").is_file():
+            if str(_shared) not in sys.path:
+                sys.path.insert(0, str(_shared))
+            break
+    else:
+        return
+    from installer_venv_root import contain_installer_venv_root
+
+    contain_installer_venv_root(monkeypatch, tmp_path_factory)
+
+
+@pytest.fixture(autouse = True)
 def _isolate_studio_home(_studio_home_root, monkeypatch):
     home = _studio_home_root / f"home-{next(_studio_home_counter)}"
     home.mkdir()
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
     for name, module in tuple(sys.modules.items()):
         if name.startswith(("storage.", "hub.storage.")) and hasattr(module, "_schema_ready"):
-            monkeypatch.setattr(module, "_schema_ready", False)
+            monkeypatch.setattr(module, "_schema_ready", set())
 
 
 # Pytest CLI options
@@ -157,6 +205,48 @@ def _isolate_xet_health_state():
 
 
 @pytest.fixture(autouse = True)
+def _confine_prequant_registration_memo():
+    """Keep one test's answer about the pre-quant allowlist from becoming every later test's.
+
+    ``diffusion_prequant`` asks once whether this torch can register the constructor allowlist and
+    memoises the answer, INCLUDING the failure, in a module global. That is right in a process
+    where torch never changes. It is wrong in this suite, where several files put a fake torch in
+    ``sys.modules``: the question gets asked while the fake is installed, the answer is False, and
+    ``monkeypatch`` restores ``sys.modules`` but not the memo. Every later real load then refuses.
+
+    Measured on main: after ``test_diffusion_backend.py`` the memo reads False, where it reads None
+    when that file runs alone. In a full-suite run that turned 20 tests across
+    ``test_diffusion_prequant.py`` and ``test_diffusion_convrot.py`` red, all with the same
+    ``assert None is not None``, while every one of them passed when its file ran by itself.
+
+    Restored rather than cleared, so nothing re-registers 22k times and a test that sets the memo
+    deliberately still sees its own value.
+    """
+    from core.inference import diffusion_prequant
+
+    registered = diffusion_prequant._SAFE_GLOBALS_REGISTERED
+    resolved = set(diffusion_prequant._RESOLVED_SAFE_GLOBALS)
+    yield
+    diffusion_prequant._SAFE_GLOBALS_REGISTERED = registered
+    diffusion_prequant._RESOLVED_SAFE_GLOBALS.clear()
+    diffusion_prequant._RESOLVED_SAFE_GLOBALS.update(resolved)
+
+
+@pytest.fixture(autouse = True)
+def _isolate_audio_gallery(monkeypatch, tmp_path):
+    """Keep generated-clip persistence out of the developer's real gallery.
+
+    /audio/generate persists every clip, so a route test with a fake TTS core left silent
+    wavs in ``studio_root()/audio`` for the Audio page to list. Here, not per-suite, so
+    no test can leak.
+    """
+    from core.inference import audio_gallery
+
+    monkeypatch.setattr(audio_gallery, "studio_root", lambda: tmp_path)
+    yield
+
+
+@pytest.fixture(autouse = True)
 def _no_background_model_scan(monkeypatch):
     """Keep the /v1 admission hook from scanning the real HF cache during tests.
 
@@ -186,7 +276,7 @@ def _empty_hf_hub_cache(tmp_path_factory):
 def _hf_cache_is_empty(_empty_hf_hub_cache, monkeypatch):
     """Point BOTH hub-cache roots at an empty dir, so the suite is host independent.
 
-    Studio pins its live setting out of this env snapshot; huggingface_hub falls back to
+    Unsloth pins its live setting out of this env snapshot; huggingface_hub falls back to
     ``constants.HF_HUB_CACHE``. A dev holding FLUX.1-dev otherwise watches its files leave a
     download plan AND the mirror swap decline. Pinned at the ROOT, not by stubbing a probe: that
     reaches only one of the four cache reads, and ``_upstream_is_cached`` walks the tree itself.
@@ -200,6 +290,25 @@ def _hf_cache_is_empty(_empty_hf_hub_cache, monkeypatch):
     except Exception:  # optional deps absent on some CI legs
         return
     monkeypatch.setattr(constants, "HF_HUB_CACHE", _empty_hf_hub_cache)
+
+
+@pytest.fixture(autouse = True)
+def _no_leftover_generation_account(monkeypatch):
+    """Clear the media-generation owner, which is a process global no route ever resets.
+
+    ``routes.video._note_generation_account()`` records who started a generation and
+    nothing writes it back to ``None``, so any test that POSTs a generate leaves the
+    next test's poll looking like a foreign account's job -- the progress route then
+    answers the hidden shape, and an unrelated test dies on ``KeyError: 'active'``
+    somewhere else in the run. Six files already reset this by hand; doing it here
+    covers the rest, and the six keep their explicit version because there it IS the
+    thing under test.
+    """
+    # sys.modules, not an import: a module nothing imported has no global to leak.
+    routes_video = sys.modules.get("routes.video")
+    if routes_video is None:
+        return
+    monkeypatch.setattr(routes_video, "_generation_account", None, raising = False)
 
 
 @pytest.fixture(autouse = True)
@@ -653,18 +762,46 @@ def api_key(studio_server):
 # ── RAG fixtures ─────────────────────────────────────────────────────
 
 
+@pytest.fixture(scope = "session")
+def linkable_temp_base(tmp_path_factory):
+    """Session scratch root for tests whose paths must satisfy the linked-folder policy.
+
+    macOS puts the pytest temp root under /private/var/folders, which the shared denylist
+    rejects as a system directory. The directory is unique per session so concurrent runs
+    cannot delete each other's databases, and session scope keeps its removal after every
+    function-scoped monkeypatch has been undone, so teardown sees a real os.scandir.
+    """
+    basetemp = tmp_path_factory.getbasetemp()
+    root = Path.home() / ".unsloth-test-tmp"
+    base = root / basetemp.name
+    base.mkdir(parents = True, exist_ok = True)
+    # pytest keeps its numbered temp roots, so a missing one means that session is gone
+    for stale in root.iterdir():
+        if stale.name != basetemp.name and not (basetemp.parent / stale.name).exists():
+            shutil.rmtree(stale, ignore_errors = True)
+    try:
+        yield base
+    finally:
+        shutil.rmtree(base, ignore_errors = True)
+
+
 @pytest.fixture
-def rag_home(tmp_path, monkeypatch):
+def rag_home(tmp_path, monkeypatch, linkable_temp_base):
     """Isolate the RAG database under a fresh UNSLOTH_STUDIO_HOME per test.
 
-    Points the storage root at ``tmp_path`` and resets the lazy schema flag so
+    Points the storage root at a linkable directory and resets the lazy schema flag so
     each test starts from an empty rag.db. Yields the temp home path.
     """
+    from hub.storage.scan_folders import is_denied_system_path
     from storage import rag_db
 
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(rag_db, "_schema_ready", False)
-    return tmp_path
+    root = tmp_path
+    if is_denied_system_path(os.path.realpath(str(tmp_path))):
+        root = linkable_temp_base / tmp_path.name
+        root.mkdir(parents = True, exist_ok = True)
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(root))
+    monkeypatch.setattr(rag_db, "_schema_ready", set())
+    return root
 
 
 @pytest.fixture
@@ -689,8 +826,10 @@ def stub_embeddings(monkeypatch):
     import hashlib
     import math
 
-    from core.rag import embeddings
+    from core.rag import config, embeddings
 
+    # Pin the backend: "auto" reprobes the hardware (nvidia-smi) on every use.
+    monkeypatch.setattr(config, "EMBED_BACKEND", "sentence-transformers")
     dim = 32
 
     def _vec(text: str):
@@ -775,7 +914,11 @@ def healthy_diffusers(monkeypatch):
                     return getattr(_real, name)
                 except Exception:  # noqa: BLE001 -- the lazy submodule is what may be broken
                     pass
-            if name.endswith("Pipeline"):
+            # "Model" as well as "Pipeline": the gate probes whatever class a family names,
+            # and the video families name a transformer (MiniMaxH3Transformer3DModel), not a
+            # pipeline. Answering only pipelines let that probe miss and turned routing tests
+            # into the 400 about diffusers this proxy exists to prevent.
+            if name.endswith("Pipeline") or name.endswith("Model"):
                 return object
             raise AttributeError(name)
 
@@ -785,3 +928,99 @@ def healthy_diffusers(monkeypatch):
         if _real is not None and hasattr(_real, attr):
             setattr(proxy, attr, getattr(_real, attr))
     monkeypatch.setitem(sys.modules, "diffusers", proxy)
+
+
+@pytest.fixture
+def real_prequant_safe_globals(monkeypatch):
+    """Stand in for the allowlist entries this host cannot import, and hand back the real resolver.
+
+    The file header promises these tests run without torchao, and the Backend CI image keeps that
+    promise literally: it installs torch and transformers and no torchao at all. Production then
+    resolves not one entry of ``_PREQUANT_SAFE_GLOBALS``, the registration floor ("TorchVersion
+    plus at least one real torchao class") is not met, every load refuses, and 19 tests in here
+    fail on ``assert None is not None`` -- saying nothing whatever about the loader they are
+    about. ``test_diffusion_convrot.py`` loads through the same registration and needs it too,
+    which is why this lives here rather than in one of the two files. The tests also swap ``sys.modules["torch"]`` for a bare module while a load runs, so
+    even ``torch.torch_version`` is unimportable at that moment, torchao or no torchao.
+
+    Standing in only for the names that did NOT resolve keeps a host that has torchao testing the
+    real classes. Which names a given release actually ships is asked separately, by
+    ``test_the_registration_floor_needs_a_real_torchao``, which skips rather than pretends -- and
+    ``test_the_registration_refuses_when_nothing_resolves`` pins the refusal itself, so the gate
+    that the CI image trips is still under test rather than merely worked around.
+    """
+    import core.inference.diffusion_prequant as pq
+
+    resolver = pq._prequant_safe_globals
+    resolved = {name: obj for obj, name in resolver()}
+    pairs = [
+        (resolved.get(f"{module}.{name}") or type(name, (), {}), f"{module}.{name}")
+        for module, name in pq._PREQUANT_SAFE_GLOBALS
+    ]
+    monkeypatch.setattr(pq, "_prequant_safe_globals", lambda: pairs)
+    # Per test rather than per process: the memo is a module global, so one test's registration
+    # would otherwise decide the answer for every test that ran after it.
+    monkeypatch.setattr(pq, "_SAFE_GLOBALS_REGISTERED", None)
+    monkeypatch.setattr(pq, "_RESOLVED_SAFE_GLOBALS", set())
+    return resolver
+
+
+@pytest.fixture(autouse = True)
+def _no_carried_over_hardware_measurements():
+    """Both hardware caches start empty for every test, as they do in a fresh process.
+
+    The torch build snapshot and the physical GPU inventory are module globals with a
+    60 second TTL, so one test's host -- a suite that makes `import torch` fail, say --
+    would otherwise answer for every test that ran within a minute of it. Cleared
+    afterwards as well, so a test that warms one deliberately does not leak either.
+    """
+    from utils.hardware import hardware as _hw
+
+    def _clear():
+        # Under the locks: a non-blocking read hands the refresh to a daemon thread that holds
+        # these while it writes, so clearing without waiting lets a previous test's REAL host land
+        # in the cache a moment later. Torch lock FIRST, then the inventory lock, because that is
+        # the order the background refresh takes them in.
+        with _hw._torch_build_snapshot_lock, _hw._physical_gpu_inventory_lock:
+            _hw._torch_build_snapshot_cache = None
+            _hw._physical_gpu_inventory_cache = None
+
+    _clear()
+    yield
+    _clear()
+
+
+@pytest.fixture(autouse = True)
+def _process_shutdown_latch_is_clear():
+    """Clear the process-wide shutdown latch around every test.
+
+    The latch is deliberately sticky in production: quitting is terminal, and only an
+    embedded host calling run_server again clears it. In a suite that makes it a
+    global one test can leave set for the rest of the file, and any test that tears a
+    backend down sets it, so a later spawn test sees a stale "quitting" and fails in
+    whatever order pytest happens to pick.
+    """
+    from utils import process_lifetime
+
+    def _reopen():
+        process_lifetime.begin_process_lifecycle()
+        # The ROUTE latch too. Any test that exercises _graceful_shutdown reaches
+        # cancel_pending_loads, which sets it, and only run_server clears it -- so one
+        # such test cancels every load admitted by every test that follows it. That is
+        # how four tunnel-safe tests came to fail in a full run and pass alone.
+        # Only if it is ALREADY imported. Importing it here would drag a heavy module
+        # into every test that never asked for it, which perturbed source-contract and
+        # import-order tests elsewhere; and the latch cannot have been set without the
+        # module being loaded, so there is nothing to miss.
+        mod = sys.modules.get("routes.inference")
+        if mod is not None:
+            try:
+                mod.begin_load_lifecycle()
+            except Exception:
+                pass
+
+    _reopen()
+    try:
+        yield
+    finally:
+        _reopen()

@@ -671,6 +671,7 @@ def _native_backend_ready(monkeypatch):
         assets,
         token,
         cancel_event = None,
+        local_files_only = False,
     ):
         fetched.append(assets)
         raise AssertionError("the gated companion must be caught before any byte is fetched")
@@ -794,7 +795,7 @@ def _stub_shared_download(
     """Record the cache root each companion download resolves against.
 
     ``cached_elsewhere`` names the files that exist ONLY under huggingface_hub's import-time root
-    (Studio's cache folder was changed mid-session), so the live root is a miss for them."""
+    (Unsloth's cache folder was changed mid-session), so the live root is a miss for them."""
     import utils.hf_xet_fallback as X
 
     seen: list = []
@@ -835,7 +836,7 @@ def test_the_prefetch_reuses_a_base_asset_cached_under_the_other_root(monkeypatc
     assert seen == [
         # cached only under the import-time root: reached through it, not re-pulled into the live one
         ("ae.safetensors", None),
-        # nowhere on disk: a real download, still pinned to the root Studio is reading
+        # nowhere on disk: a real download, still pinned to the root Unsloth is reading
         ("text_encoder/model.safetensors", "/live-hub"),
     ]
 
@@ -949,7 +950,7 @@ def test_a_base_excused_by_the_other_root_is_loaded_from_that_snapshot(monkeypat
         lambda *a, **k: types.SimpleNamespace(name = "flux.1", single_file_is_pipeline = False),
     )
     monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: private)
-    # Studio's cache folder was changed: the live root holds none of it.
+    # Unsloth's cache folder was changed: the live root holds none of it.
     monkeypatch.setattr(
         "core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path / "live-hub")
     )
@@ -974,6 +975,9 @@ def test_a_base_excused_by_the_other_root_is_loaded_from_that_snapshot(monkeypat
         hf_token,
         cancel_event = None,
         fetch_base = None,
+        # Tracks the real signature: the staging phase now threads the no-download flag into the
+        # prefetch, and a double that refuses it turns the load into a TypeError.
+        local_files_only = False,
     ):
         staged.append(base_files)
         return None
