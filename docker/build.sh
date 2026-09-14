@@ -131,8 +131,8 @@ if [[ $ROCM -eq 1 ]]; then
     echo
     echo "Built ${IMAGE_NAME}:${TAG}"
     echo
-    echo "Smoke test on an AMD host:"
-    echo "  bash run.sh --rocm python /workspace/smoke_test_rocm.py"
+    echo "Smoke test on an AMD host (run.sh defaults to the published image, so name this one):"
+    echo "  UNSLOTH_IMAGE=${IMAGE_NAME}:${TAG} bash run.sh --rocm python /workspace/smoke_test_rocm.py"
     exit 0
 fi
 

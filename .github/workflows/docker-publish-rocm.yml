@@ -53,12 +53,14 @@ env:
   DEFAULT_ROCM_VERSION: '7.2.4'
   DEFAULT_TORCH_INDEX_URL: 'https://download.pytorch.org/whl/rocm7.2'
 
-# Serialise per-ref runs, except on main where each run gets its own group: a
+# Serialise per-ref runs, except on main where each RUN gets its own group: a
 # shared group DISCARDS a pending run when a newer one is queued (see
-# tests/studio/test_main_runs_survive_merge_bursts.py). Never cancel in progress:
-# a half-pushed digest is worse than a stale :latest for a few minutes.
+# tests/studio/test_main_runs_survive_merge_bursts.py), and the sha alone still
+# pairs a scheduled run with a dispatch on an unchanged main, so the run id is the
+# key there. Never cancel in progress: a half-pushed digest is worse than a stale
+# :latest for a few minutes.
 concurrency:
-  group: docker-publish-rocm-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  group: docker-publish-rocm-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.run_id || '' }}
   cancel-in-progress: false
 
 # Pushes use Docker Hub registry creds, not GITHUB_TOKEN, so read is enough.
@@ -260,12 +262,14 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           # latest: a default-input build of the default branch (schedule or dispatch).
           # A per-arch build gets its gfx in the tag so it is findable, never latest.
+          # An override build's sha tag carries the run id: two experiments at the same
+          # commit would otherwise overwrite each other's only name.
           tags: |
             type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && needs.prepare.outputs.stable == 'true' }}
             type=ref,event=tag,enable=${{ needs.prepare.outputs.stable == 'true' }}
             type=schedule,pattern=nightly,enable=${{ needs.prepare.outputs.stable == 'true' }}
             type=raw,value=${{ needs.prepare.outputs.rocm_gfx }},enable=${{ needs.prepare.outputs.gfx_tag == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
-            type=sha,prefix=sha-,format=short,suffix=${{ needs.prepare.outputs.rocm_gfx != '' && format('-{0}', needs.prepare.outputs.rocm_gfx) || '' }}
+            type=sha,prefix=sha-,format=short,suffix=${{ needs.prepare.outputs.rocm_gfx != '' && format('-{0}', needs.prepare.outputs.rocm_gfx) || '' }}${{ needs.prepare.outputs.stable != 'true' && format('-r{0}', github.run_id) || '' }}
 
       - name: Create manifest
         env:

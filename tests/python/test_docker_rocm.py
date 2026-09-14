@@ -283,7 +283,10 @@ class TestBuildShRocm:
         assert "DEFAULT_ROCM_VERSION: '7.2.4'" in body
         assert "DEFAULT_TORCH_INDEX_URL: 'https://download.pytorch.org/whl/rocm7.2'" in body
         assert "6.2" not in body.replace("ubuntu-22.04", "")
-        assert "github.ref == 'refs/heads/main' && github.sha" in body
+        # per RUN on main: a sha would still pair a scheduled run with a dispatch on
+        # an unchanged main, and the group keeps only one pending run
+        assert "github.ref == 'refs/heads/main' && github.run_id" in body
+        assert "-r{0}', github.run_id" in body, "override sha tags need the run id suffix"
         assert "git ls-remote https://github.com/unslothai/unsloth-zoo" in body
         assert "needs.prepare.outputs.stable == 'true'" in body
 
